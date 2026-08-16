@@ -213,11 +213,13 @@ export type AdminConnectorFactoryFailureCategory =
 const FACTORY_FAILURE_REASON = 'connector factory dependency unavailable';
 
 const sanitizeFactoryFailureReason = async (params: {
-  reason: string;
+  reason?: string | null;
   replacementSecrets?: unknown[];
   runtime?: AdminConnectorRuntime;
   targetId: string;
-}): Promise<string> => {
+}): Promise<string | null> => {
+  // Reason-less operations (save / test / discover / publish / archive) audit without one.
+  if (!params.reason) return null;
   if (!params.runtime) return FACTORY_FAILURE_REASON;
   try {
     const current = await params.runtime.secrets.loadCurrentSecretSources(params.targetId);
@@ -238,7 +240,7 @@ const appendFactoryFailureAudit = async (params: {
   action: AuditAction;
   actorUserId: string;
   category: AdminConnectorFactoryFailureCategory;
-  reason: string;
+  reason?: string | null;
   replacementSecrets?: unknown[];
   runtime?: AdminConnectorRuntime;
   serverDB: LobeChatDatabase;
@@ -273,7 +275,7 @@ export const resolveAdminConnectorMutationRuntime = async (params: {
   action: AuditAction;
   actorUserId: string;
   createRuntime: () => AdminConnectorRuntime;
-  reason: string;
+  reason?: string | null;
   replacementSecrets?: unknown[];
   serverDB: LobeChatDatabase;
   targetId: string;
@@ -297,7 +299,7 @@ export const assertAdminConnectorRuntimeDependency = async (params: {
     'redirect_unavailable' | 'transport_unavailable'
   >;
   operation: () => void;
-  reason: string;
+  reason?: string | null;
   replacementSecrets?: unknown[];
   runtime: AdminConnectorRuntime;
   serverDB: LobeChatDatabase;
@@ -393,7 +395,7 @@ export const assertConnectorDangerousReauth = async (params: {
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
-  reason: string;
+  reason?: string | null;
   replacementSecrets?: unknown[];
   runtime: AdminConnectorRuntime;
   serverDB: LobeChatDatabase;
@@ -407,6 +409,7 @@ export const assertConnectorDangerousReauth = async (params: {
       action: params.action,
       actorUserId: params.actorUserId,
       resolveDeniedReason: async () => {
+        if (!params.reason) return null;
         try {
           const current = await params.runtime.secrets.loadCurrentSecretSources(params.targetId);
           return assertConnectorPersistentTextSafe(

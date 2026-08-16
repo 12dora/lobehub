@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import type { LobeChatDatabase } from '@/database/type';
 import {
   DEFAULT_PLATFORM_AUTH_SETTINGS,
@@ -43,7 +43,7 @@ describe('resolvePlatformPublicSnapshot', () => {
     const getPublishedBranding = vi.fn();
 
     const snapshot = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
       getAuthSettings: authSettings({ openRegistration: false }),
       getDatabase,
       getPublishedBranding,
@@ -58,7 +58,7 @@ describe('resolvePlatformPublicSnapshot', () => {
   it('returns the unique strict Published branding when the flag is enabled', async () => {
     const database = {} as LobeChatDatabase;
     const snapshot = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
       getAuthSettings: authSettings(),
       getDatabase: async () => database,
       getPublishedBranding: async (db) => {
@@ -79,7 +79,7 @@ describe('resolvePlatformPublicSnapshot', () => {
 
   it('keeps the disabled revision contract when no Published branding exists', async () => {
     const snapshot = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
       getAuthSettings: authSettings(),
       getDatabase: async () => ({}) as LobeChatDatabase,
       getPublishedBranding: async () => null,
@@ -98,7 +98,7 @@ describe('resolvePlatformPublicSnapshot', () => {
     'drops branding only for %s while preserving auth settings',
     async (message) => {
       const snapshot = await resolvePlatformPublicSnapshot({
-        flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+        flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
         getAuthSettings: authSettings({ openRegistration: false }),
         getDatabase: async () => ({}) as LobeChatDatabase,
         getPublishedBranding: async () => {
@@ -117,7 +117,7 @@ describe('resolvePlatformPublicSnapshot', () => {
 
   it('branding failure + openRegistration=false remains false', async () => {
     const snapshot = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
       getAuthSettings: authSettings({ openRegistration: false }),
       getDatabase: async () => ({}) as LobeChatDatabase,
       getPublishedBranding: async () => {
@@ -131,7 +131,7 @@ describe('resolvePlatformPublicSnapshot', () => {
 
   it('fails closed to the built-in snapshot when auth settings are unavailable', async () => {
     const snapshot = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
       getAuthSettings: async () => {
         throw new Error('auth settings unavailable');
       },
@@ -146,7 +146,7 @@ describe('resolvePlatformPublicSnapshot', () => {
 
   it('fails closed entirely when the database is unavailable', async () => {
     const snapshot = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
       getAuthSettings: authSettings({ openRegistration: false }),
       getDatabase: async () => {
         throw new Error('database unavailable');
@@ -167,7 +167,7 @@ describe('resolvePlatformPublicSnapshot', () => {
     }));
 
     const snapshot = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: false },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: false },
       getAuthSettings: authSettings(),
       getDatabase: async () => ({}) as LobeChatDatabase,
       getPublishedIdentityTarget: getPublishedIdentityTarget as never,
@@ -179,7 +179,7 @@ describe('resolvePlatformPublicSnapshot', () => {
 
   it('reports workAccountEnabled false when no published IdP exists', async () => {
     const snapshot = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
       getAuthSettings: authSettings(),
       getDatabase: async () => ({}) as LobeChatDatabase,
       getPublishedIdentityTarget: async () =>
@@ -205,7 +205,7 @@ describe('resolvePlatformPublicSnapshot', () => {
     });
 
     const snapshot = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
       getAuthSettings: authSettings(),
       getDatabase: async () => database,
       getPublishedIdentityTarget: getPublishedIdentityTarget as never,
@@ -219,7 +219,7 @@ describe('resolvePlatformPublicSnapshot', () => {
     // environmentShadowed is metadata about env collision; presence of published providers
     // still enables the work-account button. Empty providers (fully shadowed away) stays false.
     const withProviders = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
       getAuthSettings: authSettings(),
       getDatabase: async () => ({}) as LobeChatDatabase,
       getPublishedIdentityTarget: async () =>
@@ -232,7 +232,7 @@ describe('resolvePlatformPublicSnapshot', () => {
     expect(withProviders.login.workAccountEnabled).toBe(true);
 
     const shadowedAway = await resolvePlatformPublicSnapshot({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
       getAuthSettings: authSettings(),
       getDatabase: async () => ({}) as LobeChatDatabase,
       getPublishedIdentityTarget: async () =>
@@ -248,7 +248,7 @@ describe('resolvePlatformPublicSnapshot', () => {
   it('fails closed to workAccountEnabled false when the identity loader throws', async () => {
     const snapshot = await resolvePlatformPublicSnapshot({
       flags: {
-        ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+        ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
         ENABLE_DATABASE_OIDC: true,
         ENABLE_RUNTIME_BRANDING: true,
       },

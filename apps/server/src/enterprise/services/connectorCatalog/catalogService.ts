@@ -144,6 +144,7 @@ export class ConnectorCatalogService {
       expectedDraftToken: string;
       expectedRevision: number;
       id: string;
+      /** Hard delete still requires an operator reason (the console keeps prompting for it). */
       reason: string;
     },
   ) => this.drafts.deleteDraft(actorUserId, input);
@@ -175,7 +176,7 @@ export class ConnectorCatalogService {
   private tryPublishImmediate = async (
     actorUserId: string,
     connectorId: string,
-    reason: string,
+    reason: string | undefined,
     options?: { softFail?: boolean },
   ) => {
     const detail = await this.getDraft(connectorId);

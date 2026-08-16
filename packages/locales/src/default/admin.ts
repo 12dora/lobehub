@@ -905,8 +905,7 @@ export default {
   'skillCatalog.form.description': 'Description',
   'skillCatalog.form.displayName': 'Display name',
   'skillCatalog.form.enabled': 'Enabled in the platform catalog',
-  'skillCatalog.form.reason': 'Reason',
-  'skillCatalog.form.required': 'Complete all required fields and provide a reason.',
+  'skillCatalog.form.required': 'Complete all required fields.',
   'skillCatalog.list.columns.distribution': 'Distribution',
   'skillCatalog.list.columns.enabled': 'Availability',
   'skillCatalog.list.columns.revision': 'Revision',
@@ -1012,7 +1011,7 @@ export default {
   'skillCatalog.version.desc':
     'Create an immutable version. Checksum is computed by the server and cannot be supplied here.',
   'skillCatalog.version.formInvalid':
-    'Provide valid SemVer, content, manifest JSON, resources JSON, and a reason.',
+    'Provide valid SemVer, content, manifest JSON, and resources JSON.',
   'skillCatalog.version.title': 'Create Skill version',
   'users.list.title': 'User management',
   'users.list.desc': 'Search and manage platform users, bans, sessions, and global roles.',
@@ -1548,7 +1547,6 @@ export default {
   'connectorCatalog.create.description':
     'Create the Connector identity and credential mode. Discover tools and test from the detail page before publishing.',
   'connectorCatalog.create.key': 'Connector key',
-  'connectorCatalog.create.reason': 'Creation reason',
   'connectorCatalog.create.required': 'Complete all required fields with valid HTTP(S) URLs.',
   'connectorCatalog.create.secret': 'Initial write-only credential',
   'connectorCatalog.create.title': 'Create connector draft',
@@ -1950,10 +1948,10 @@ export default {
     'Add at least one allowed organization before publishing.',
   'identityProviders.dingtalk.allowedCorps.remove': 'Remove',
   'identityProviders.dingtalk.allowedCorps.title': 'Allowed organizations',
-  'identityProviders.dingtalk.callbackNotice':
-    'DingTalk returns the authorization code as `authCode`, so its apps must register the address below (it forwards to the standard sign-in callback). Register the test address too — the organization capture uses it.',
   'identityProviders.dingtalk.appKey': 'Client ID (AppKey)',
   'identityProviders.dingtalk.appSecret': 'Client Secret (AppSecret)',
+  'identityProviders.dingtalk.callbackNotice':
+    'DingTalk returns the authorization code as `authCode`, so its apps must register the address below (it forwards to the standard sign-in callback). Register the test address too — the organization capture uses it.',
   'identityProviders.dingtalk.domainsWarning':
     'DingTalk rarely exposes a real email address, so members usually get a generated internal one. Leave this empty unless every member has a company email in DingTalk.',
   'identityProviders.dingtalk.fixedProtocolNotice':
@@ -2094,10 +2092,10 @@ export default {
     'The callback arrived on a different address than this console. Check APP_URL and the redirect URL registered with the provider.',
   'identityProviders.test.errors.claimValidationFailed':
     "The account was authenticated, but the returned profile is missing something we require (identifier, name or a usable email). Check the app's permissions and the email domain allowlist.",
-  'identityProviders.test.errors.corpIdMissing':
-    'DingTalk did not report an organization. Grant the app the `corpid` permission in the DingTalk Open Platform, then try again.',
   'identityProviders.test.errors.configIncomplete':
     'This login method is not complete yet. Save the client id and client secret first.',
+  'identityProviders.test.errors.corpIdMissing':
+    'DingTalk did not report an organization. Grant the app the `corpid` permission in the DingTalk Open Platform, then try again.',
   'identityProviders.test.errors.dingtalkProfileForbidden':
     'DingTalk refused to return the profile. Grant the app the 通讯录个人信息读权限 (Contact.User.Read) permission in the DingTalk Open Platform, wait for it to take effect, then try again.',
   'identityProviders.test.errors.dingtalkProfileRejected':
@@ -2112,9 +2110,9 @@ export default {
     "The provider's ID token failed verification (signature, audience or nonce).",
   'identityProviders.test.errors.issuerInvalid':
     "This login method's issuer is not valid for its type. Recreate it from the provider template.",
-  'identityProviders.test.errors.providerCode': 'DingTalk reported: {{code}}',
   'identityProviders.test.errors.providerChanged':
     'The login method changed while the test was running. Reload and try again.',
+  'identityProviders.test.errors.providerCode': 'DingTalk reported: {{code}}',
   'identityProviders.test.errors.remoteInvalid':
     'The provider rejected the request. Check that the client id and client secret are correct and that the redirect URL below is registered with the provider exactly as shown.',
   'identityProviders.test.errors.replayed': 'That test link was already used. Start a new test.',
@@ -2122,10 +2120,10 @@ export default {
     "The provider's response came from an unexpected issuer.",
   'identityProviders.test.errors.secretUnavailable':
     'The stored client secret could not be read. Enter it again and save.',
-  'identityProviders.test.errors.userinfoRequired':
-    'The provider exposes no profile endpoint, which this platform requires.',
   'identityProviders.test.errors.subjectMismatch':
     'The provider returned two different account identifiers for one sign-in.',
+  'identityProviders.test.errors.userinfoRequired':
+    'The provider exposes no profile endpoint, which this platform requires.',
   'identityProviders.test.remedies.dingtalkContactPermission':
     'Missing permission: 通讯录个人信息读权限 (Contact.User.Read). Open DingTalk Open Platform → your app → 权限管理 (Permissions), search for it, grant it, then retry.',
   'identityProviders.test.remedies.dingtalkCorpIdScope':
@@ -2277,9 +2275,6 @@ export default {
   'system.jobs.modal.cancel.description':
     'Request to cancel this task. A step already in progress may finish first.',
   'system.jobs.modal.cancel.title': 'Cancel this job?',
-  'system.jobs.modal.reason': 'Reason',
-  'system.jobs.modal.reasonPlaceholder': 'Explain why this operation is needed',
-  'system.jobs.modal.reasonRequired': 'Enter a reason before continuing.',
   'system.jobs.modal.retry.description': 'Retry the failed steps of this task.',
   'system.jobs.modal.retry.title': 'Retry this job?',
   'system.jobs.pollFailed':
@@ -3130,15 +3125,15 @@ export default {
     'Could not load the current version. Check your connection and try again.',
   'taskTemplateCatalog.form.connectorRetired': '{{identifier}} (no longer available)',
   'taskTemplateCatalog.form.errors.connectorRetired':
+    'One connector is no longer available. Replace or remove it before saving.',
+  'taskTemplateCatalog.form.errors.connectorLimit':
+    'A template can use at most {{max}} connectors.',
+  'taskTemplateCatalog.toast.importedWithSkipped':
+    'Imported: {{created}} added, {{updated}} refreshed, {{skipped}} skipped.',
   'audit.logs.action.admin.taskTemplates.reorder': 'Reorder task templates',
   'taskTemplateCatalog.list.columns.order': 'Order',
   'taskTemplateCatalog.list.dragHandle': 'Drag to reorder {{title}}',
   'taskTemplateCatalog.list.reorderHint':
     'Drag the handle to change the order users see. Clear the filters to reorder.',
   'taskTemplateCatalog.toast.reordered': 'Order saved.',
-    'One connector is no longer available. Replace or remove it before saving.',
-  'taskTemplateCatalog.form.errors.connectorLimit':
-    'A template can use at most {{max}} connectors.',
-  'taskTemplateCatalog.toast.importedWithSkipped':
-    'Imported: {{created}} added, {{updated}} refreshed, {{skipped}} skipped.',
 };

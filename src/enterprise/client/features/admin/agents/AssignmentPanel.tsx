@@ -4,8 +4,8 @@ import { Alert, Block, Flexbox, Input, Tag, Text, Tooltip } from '@lobehub/ui';
 import { Button, Select, Switch, toast } from '@lobehub/ui/base-ui';
 import { useTranslation } from 'react-i18next';
 
+import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
-import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import type { deriveAdminAgentPermissions } from './controller';
@@ -48,38 +48,30 @@ export const AssignmentPanel = ({
   const { t } = useTranslation('admin');
   const editor = useAssignmentEditor(snapshot, authMethod, lock);
 
-  const startRollout = (assignmentId: string) => {
+  const startRollout = async (assignmentId: string) => {
     // Gate on the shared detail lock so Start cannot race a committed-but-unrefreshed write.
     // Do NOT enter beginWrite/commitWrite — Start does not advance identity CAS, so the lock
     // would permanently flip to refreshFailed after every successful Start.
     if (lock.isLocked()) return;
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      buildPayload: (reason) => ({
-        agentId: snapshot.identity.id,
-        assignmentId,
-        expectedDraftToken: snapshot.draftToken,
-        expectedRevision: snapshot.identity.revision,
-        reason,
-      }),
-      description: t('agentCatalog.rollout.startDescription'),
-      onSubmit: async (input) => {
-        if (lock.isLocked()) throw new Error(t('agentCatalog.recovery.refreshFailed'));
-        await adminAgentsService.startRollout(
-          input as Parameters<typeof adminAgentsService.startRollout>[0],
-        );
-        // Job-specific path: refresh detail for the new rollout row without identity CAS gating.
-        try {
-          await refresh();
-        } catch {
-          toast.error(t('agentCatalog.rollout.refreshFailed'));
-        }
-        toast.success(t('agentCatalog.rollout.started'));
+    const committed = await runAdminMutation({
+      authMethod,
+      run: async () => {
+        await adminAgentsService.startRollout({
+          agentId: snapshot.identity.id,
+          assignmentId,
+          expectedDraftToken: snapshot.draftToken,
+          expectedRevision: snapshot.identity.revision,
+        });
       },
-      submitLabel: t('agentCatalog.rollout.start'),
-      targetLabel: snapshot.identity.agentKey,
-      title: t('agentCatalog.rollout.start'),
     });
+    if (!committed) return;
+    // Job-specific path: refresh detail for the new rollout row without identity CAS gating.
+    try {
+      await refresh();
+    } catch {
+      toast.error(t('agentCatalog.rollout.refreshFailed'));
+    }
+    toast.success(t('agentCatalog.rollout.started'));
   };
 
   return (
@@ -210,7 +202,7 @@ export const AssignmentPanel = ({
               <Button
                 disabled={editor.busy || editor.locked || Boolean(editor.validationError)}
                 type="primary"
-                onClick={editor.submit}
+                onClick={() => void editor.submit()}
               >
                 {editor.editingId
                   ? t('agentCatalog.assignment.update')
@@ -257,7 +249,10 @@ export const AssignmentPanel = ({
                     {t('agentCatalog.assignment.edit')}
                   </Button>
                   {rolloutsEnabled && snapshot.identity.systemKey !== 'default-inbox' ? (
-                    <Button disabled={editor.locked} onClick={() => startRollout(assignment.id)}>
+                    <Button
+                      disabled={editor.locked}
+                      onClick={() => void startRollout(assignment.id)}
+                    >
                       {t('agentCatalog.rollout.start')}
                     </Button>
                   ) : (

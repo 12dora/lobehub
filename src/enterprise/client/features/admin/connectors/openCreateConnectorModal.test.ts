@@ -43,7 +43,6 @@ describe('create Connector credential state', () => {
       endpoint: 'https://calendar.example.com/mcp',
       issuer: 'https://identity.example.com',
       key: 'calendar',
-      reason: 'create',
       scopes: 'calendar.read',
       tokenEndpoint: 'https://identity.example.com/token',
     });

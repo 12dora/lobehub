@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { ADMIN_MUTATION_REGISTRY } from '../security/policy/adminMutationRegistry';
 import {
+  adminSkillApplyImmediateInputSchema,
   adminSkillArchiveInputSchema,
   adminSkillCreateInputSchema,
   adminSkillCreateVersionInputSchema,
@@ -12,7 +14,11 @@ import {
   adminSkillListOutputSchema,
   adminSkillListVersionsOutputSchema,
   adminSkillPublicationOutputSchema,
+  adminSkillPublishInputSchema,
+  adminSkillPublishNowInputSchema,
+  adminSkillRollbackInputSchema,
   adminSkillUpdateDraftInputSchema,
+  adminSkillValidateInputSchema,
   adminSkillValidateOutputSchema,
   platformSkillOperationProofSchema,
   publishedSkillCatalogSchema,
@@ -372,7 +378,7 @@ describe('Skill catalog contracts', () => {
         reason: 'archive reviewed skill',
       }).success,
     ).toBe(true);
-    for (const field of ['expectedDraftToken', 'expectedRevision', 'reason']) {
+    for (const field of ['expectedDraftToken', 'expectedRevision']) {
       const input: Record<string, unknown> = {
         expectedDraftToken: 'a'.repeat(64),
         expectedRevision: 1,
@@ -382,6 +388,23 @@ describe('Skill catalog contracts', () => {
       delete input[field];
       expect(adminSkillArchiveInputSchema.safeParse(input).success).toBe(false);
     }
+    // The console no longer prompts for a reason on catalog lifecycle actions: omitting it is
+    // accepted (audited without a reason), a supplied one is still bounded and secret-scanned.
+    expect(
+      adminSkillArchiveInputSchema.safeParse({
+        expectedDraftToken: 'a'.repeat(64),
+        expectedRevision: 1,
+        id: 'skill-1',
+      }).success,
+    ).toBe(true);
+    expect(
+      adminSkillArchiveInputSchema.safeParse({
+        expectedDraftToken: 'a'.repeat(64),
+        expectedRevision: 1,
+        id: 'skill-1',
+        reason: '',
+      }).success,
+    ).toBe(false);
   });
 
   it('defines strict procedure-specific mutation outputs', () => {
@@ -533,4 +556,66 @@ describe('Skill catalog contracts', () => {
       }).success,
     ).toBe(false);
   });
+});
+
+/**
+ * The mutation registry states, per procedure, whether an audit reason is mandatory. That claim is
+ * only honest while it matches what the input contract actually accepts, so assert both directions
+ * on a payload that is complete except for the reason.
+ */
+describe('Skill catalog reason contracts match the mutation registry', () => {
+  const cas = { expectedDraftToken: 'a'.repeat(64), expectedRevision: 0 };
+
+  it.each([
+    ['admin.skills.create', adminSkillCreateInputSchema, { displayName: 'X', skillKey: 'x.skill' }],
+    [
+      'admin.skills.applyImmediate',
+      adminSkillApplyImmediateInputSchema,
+      { displayName: 'X', mode: 'create', skillKey: 'x.skill' },
+    ],
+    ['admin.skills.updateDraft', adminSkillUpdateDraftInputSchema, { ...cas, id: 'skill-1' }],
+    [
+      'admin.skills.createVersion',
+      adminSkillCreateVersionInputSchema,
+      {
+        ...cas,
+        content: '# body',
+        manifest,
+        resources: [resource],
+        skillId: 'skill-1',
+        version: '1.0.0',
+      },
+    ],
+    [
+      'admin.skills.validate',
+      adminSkillValidateInputSchema,
+      { ...cas, skillId: 'skill-1', versionId: 'version-1' },
+    ],
+    [
+      'admin.skills.publish',
+      adminSkillPublishInputSchema,
+      { ...cas, id: 'skill-1', versionId: 'version-1' },
+    ],
+    [
+      'admin.skills.rollback',
+      adminSkillRollbackInputSchema,
+      { ...cas, id: 'skill-1', targetVersionId: 'version-1' },
+    ],
+    ['admin.skills.archive', adminSkillArchiveInputSchema, { ...cas, id: 'skill-1' }],
+    ['admin.skills.publishNow', adminSkillPublishNowInputSchema, { id: 'skill-1' }],
+  ])(
+    '%s accepts an omitted reason exactly when the registry says it is optional',
+    (procedure, schema, payloadWithoutReason) => {
+      const control =
+        ADMIN_MUTATION_REGISTRY[procedure as keyof typeof ADMIN_MUTATION_REGISTRY].controls.reason;
+      // 'conditional' is the optional-reason declaration; 'enforced' means the contract must reject.
+      expect(['conditional', 'enforced']).toContain(control.status);
+      expect(schema.safeParse(payloadWithoutReason).success).toBe(control.status === 'conditional');
+      // A supplied reason is always accepted and always bounded (whitespace-only is never a reason).
+      expect(schema.safeParse({ ...payloadWithoutReason, reason: 'operator note' }).success).toBe(
+        true,
+      );
+      expect(schema.safeParse({ ...payloadWithoutReason, reason: '   ' }).success).toBe(false);
+    },
+  );
 });

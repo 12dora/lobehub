@@ -36,6 +36,12 @@ export const reasonSchema = z
   .max(2000)
   .refine((value) => !containsConnectorCredentialMaterial(value), 'secret material is not allowed');
 
+/**
+ * Audit reason for connector operations the admin console no longer prompts for (save, test,
+ * discover, publish, archive, create). Recorded when a caller supplies one.
+ */
+export const optionalReasonSchema = reasonSchema.optional();
+
 export const publicTextSchema = z
   .string()
   .trim()

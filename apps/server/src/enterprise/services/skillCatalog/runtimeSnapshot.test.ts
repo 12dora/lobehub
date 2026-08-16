@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 
 import type { SkillCatalogReadService } from './readService';
 import {
@@ -15,7 +15,7 @@ type FakeCatalogService = Pick<
 >;
 
 const flags = (enabled: boolean) => ({
-  ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+  ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
   ENABLE_PLATFORM_MANAGED_SKILLS: enabled,
 });
 const identity = { agentId: 'agent-1', operationId: 'operation-1', userId: 'user-1' };

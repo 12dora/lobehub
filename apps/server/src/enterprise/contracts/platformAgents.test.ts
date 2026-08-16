@@ -1,6 +1,7 @@
 import { PLATFORM_AGENT_GLOBAL_TARGET_ID } from '@lobechat/types';
 import { describe, expect, it } from 'vitest';
 
+import { ADMIN_MUTATION_REGISTRY } from '../security/policy/adminMutationRegistry';
 import {
   adminPlatformAgentArchiveInputSchema,
   adminPlatformAgentAssignmentListOutputSchema,
@@ -8,11 +9,13 @@ import {
   adminPlatformAgentAssignmentRemoveInputSchema,
   adminPlatformAgentAssignmentUpsertInputSchema,
   adminPlatformAgentCreateInputSchema,
+  adminPlatformAgentDeleteInputSchema,
   adminPlatformAgentDependentsOutputSchema,
   adminPlatformAgentDetailOutputSchema,
   adminPlatformAgentGetInputSchema,
   adminPlatformAgentListInputSchema,
   adminPlatformAgentListOutputSchema,
+  adminPlatformAgentRollbackInputSchema,
   adminPlatformAgentRolloutCancelInputSchema,
   adminPlatformAgentRolloutListOutputSchema,
   adminPlatformAgentRolloutRetryInputSchema,
@@ -619,4 +622,85 @@ describe('platform Agent contracts', () => {
       }).success,
     ).toBe(false);
   });
+});
+
+/**
+ * The mutation registry states, per procedure, whether an audit reason is mandatory. That claim is
+ * only honest while it matches what the input contract actually accepts, so assert both directions
+ * on a payload that is complete except for the reason.
+ */
+describe('Agent catalog reason contracts match the mutation registry', () => {
+  const cas = { expectedDraftToken: checksum, expectedRevision: 4 };
+  const pointer = { agentId: 'agent-id', ...cas };
+
+  it.each([
+    [
+      'admin.agents.create',
+      adminPlatformAgentCreateInputSchema,
+      { agentKey: 'research', config, dependencySnapshot, isDefault: false, systemKey: null },
+    ],
+    [
+      'admin.agents.save',
+      adminPlatformAgentSaveInputSchema,
+      { ...pointer, config, dependencySnapshot },
+    ],
+    [
+      'admin.agents.rollback',
+      adminPlatformAgentRollbackInputSchema,
+      { ...pointer, targetVersionId: 'version-id' },
+    ],
+    [
+      'admin.agents.setDefaultInbox',
+      adminPlatformAgentSetDefaultInboxInputSchema,
+      { currentDefault: null, nextDefault: pointer },
+    ],
+    [
+      'admin.agents.assignments.upsert',
+      adminPlatformAgentAssignmentUpsertInputSchema,
+      {
+        ...pointer,
+        enabled: true,
+        mode: 'optional',
+        pinnedVersionId: null,
+        targetId: PLATFORM_AGENT_GLOBAL_TARGET_ID,
+        targetType: 'global',
+        versionPolicy: 'latest_published',
+      },
+    ],
+    [
+      'admin.agents.assignments.remove',
+      adminPlatformAgentAssignmentRemoveInputSchema,
+      { ...pointer, assignmentId: 'assignment-id' },
+    ],
+    [
+      'admin.agents.rollouts.start',
+      adminPlatformAgentRolloutStartInputSchema,
+      { ...pointer, assignmentId: 'assignment-id' },
+    ],
+    [
+      'admin.agents.rollouts.cancel',
+      adminPlatformAgentRolloutCancelInputSchema,
+      { agentId: 'agent-id', expectedJobRevision: 1, expectedStatus: 'running', jobId: 'job-id' },
+    ],
+    [
+      'admin.agents.archive',
+      adminPlatformAgentArchiveInputSchema,
+      { ...pointer, replacementAgentId: null },
+    ],
+    ['admin.agents.delete', adminPlatformAgentDeleteInputSchema, pointer],
+  ])(
+    '%s accepts an omitted reason exactly when the registry says it is optional',
+    (procedure, schema, payloadWithoutReason) => {
+      const control =
+        ADMIN_MUTATION_REGISTRY[procedure as keyof typeof ADMIN_MUTATION_REGISTRY].controls.reason;
+      // 'conditional' is the optional-reason declaration; 'enforced' means the contract must reject.
+      expect(['conditional', 'enforced']).toContain(control.status);
+      expect(schema.safeParse(payloadWithoutReason).success).toBe(control.status === 'conditional');
+      // A supplied reason is always accepted and always bounded (whitespace-only is never a reason).
+      expect(schema.safeParse({ ...payloadWithoutReason, reason: 'operator note' }).success).toBe(
+        true,
+      );
+      expect(schema.safeParse({ ...payloadWithoutReason, reason: '   ' }).success).toBe(false);
+    },
+  );
 });

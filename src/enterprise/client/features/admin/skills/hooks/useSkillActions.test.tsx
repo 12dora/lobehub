@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   createVersion: vi.fn(),
   getVersion: vi.fn(),
   invalidatePublishedSkillCatalog: vi.fn(),
-  openReasonModal: vi.fn(),
+  openDangerConfirm: vi.fn(),
   openVersionEditorModal: vi.fn(),
   publish: vi.fn(),
   refresh: vi.fn(),
@@ -30,9 +30,27 @@ vi.mock('@/enterprise/client/errors/mapEnterpriseError', () => ({
       ? { action: 'retry', code: error.code, i18nKey: `enterprise.error.${error.code}` }
       : null,
 }));
-vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () => ({
-  openReasonModal: mocks.openReasonModal,
+vi.mock('@/enterprise/client/features/admin/primitives/DangerConfirm', () => ({
+  openDangerConfirm: mocks.openDangerConfirm,
 }));
+vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', () => {
+  const isAdminReauthRequiredError = (error: unknown) =>
+    (error as { code?: string })?.code === 'ADMIN_REAUTH_REQUIRED';
+  return {
+    AdminReauthBlockedError: class AdminReauthBlockedError extends Error {},
+    AdminReauthCancelledError: class AdminReauthCancelledError extends Error {},
+    isAdminReauthRequiredError,
+    // Mirrors production: one interactive reauth, then exactly one replay of the same call.
+    withAdminReauthRetry: async <T,>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        return await fn();
+      } catch (error) {
+        if (!isAdminReauthRequiredError(error)) throw error;
+        return await fn();
+      }
+    },
+  };
+});
 // Keep the published-catalog side effect out of the write-action suite (avoids pulling
 // business-config / model-bank into this happy-dom unit test).
 vi.mock('@/enterprise/client/features/skills', () => ({
@@ -113,6 +131,11 @@ const editor = () => ({
   updateVersionDraft: vi.fn(),
 });
 
+/** Archive and rollback keep a confirmation (no reason prompt); run whatever it captured. */
+const confirmDanger = () =>
+  (mocks.openDangerConfirm.mock.calls.at(-1)![0] as { onConfirm: () => Promise<void> }).onConfirm();
+const confirmArchive = confirmDanger;
+
 const permissions = {
   canArchive: true,
   canCreate: true,
@@ -154,25 +177,24 @@ describe('M08 Skill write actions', () => {
         }),
       { initialProps: { snapshot: data() } },
     );
-    act(() => result.current.openPublish());
-    const modal = mocks.openReasonModal.mock.calls[0][0];
-    expect(modal.authMethod).toBe('oidc');
-    const frozen = modal.buildPayload('approved');
-
+    // The CAS is frozen when the action fires, so later SWR drift cannot re-target the write.
+    let publishing!: Promise<void>;
+    act(() => {
+      publishing = result.current.openPublish();
+    });
     rerender({ snapshot: data('skill-1', 9) });
-    await act(() => modal.onSubmit(structuredClone(frozen)));
-    expect(mocks.publish).toHaveBeenCalledWith(
-      expect.objectContaining({
-        expectedDraftToken: '3'.repeat(64),
-        expectedRevision: 3,
-        id: 'skill-1',
-        reason: 'approved',
-        versionId: 'version-1',
-      }),
-    );
+    await act(async () => {
+      await publishing;
+    });
+    expect(mocks.publish).toHaveBeenCalledWith({
+      expectedDraftToken: '3'.repeat(64),
+      expectedRevision: 3,
+      id: 'skill-1',
+      versionId: 'version-1',
+    });
   });
 
-  it('rejects an old modal after the hook switches resources', async () => {
+  it('rejects a stale confirmation after the hook switches resources', async () => {
     const currentEditor = { ...editor(), dirty: false };
     const { rerender, result } = renderHook(
       ({ snapshot }) =>
@@ -186,12 +208,13 @@ describe('M08 Skill write actions', () => {
         }),
       { initialProps: { snapshot: data() } },
     );
-    act(() => result.current.openArchive());
-    const modal = mocks.openReasonModal.mock.calls[0][0];
-    const frozen = modal.buildPayload('archive');
+    act(() => void result.current.openArchive());
+    const confirm = confirmArchive;
     rerender({ snapshot: data('skill-2', 1) });
-    await expect(modal.onSubmit(frozen)).rejects.toThrow('PLATFORM_REVISION_CONFLICT');
+    await act(confirm);
     expect(mocks.archive).not.toHaveBeenCalled();
+    // The stale-epoch guard rejects the write and the failure is surfaced inline.
+    expect(currentEditor.setActionError).toHaveBeenLastCalledWith('skillCatalog.errors.generic');
   });
 
   it('preserves the local draft and enters explicit conflict mode after failed save', async () => {
@@ -207,10 +230,7 @@ describe('M08 Skill write actions', () => {
         selectedValidation: null,
       }),
     );
-    act(() => result.current.openSaveIdentity());
-    const modal = mocks.openReasonModal.mock.calls[0][0];
-    const frozen = modal.buildPayload('save it');
-    await expect(modal.onSubmit(frozen)).rejects.toBe(conflict);
+    await act(() => result.current.openSaveIdentity());
     expect(currentEditor.draft.identity.description).toBe('Local description');
     expect(currentEditor.markSaved).not.toHaveBeenCalled();
     expect(currentEditor.setConflict).toHaveBeenCalledWith(true);
@@ -219,7 +239,7 @@ describe('M08 Skill write actions', () => {
     expect(result.current.actionLoading).toBeNull();
   });
 
-  it('does not open write modals for a read-only permission set', () => {
+  it('does not run write actions for a read-only permission set', async () => {
     const currentEditor = editor();
     const { result } = renderHook(() =>
       useSkillActions({
@@ -231,16 +251,21 @@ describe('M08 Skill write actions', () => {
         selectedVersionId: 'version-1',
       }),
     );
-    act(() => {
-      result.current.openSaveIdentity();
+    await act(async () => {
+      await result.current.openSaveIdentity();
       result.current.openCreateVersion();
-      result.current.openValidate();
-      result.current.openPublish();
-      result.current.openRollback('version-1');
-      result.current.openArchive();
+      await result.current.openValidate();
+      await result.current.openPublish();
+      await result.current.openRollback('version-1');
+      await result.current.openArchive();
     });
-    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+    expect(mocks.openDangerConfirm).not.toHaveBeenCalled();
     expect(mocks.openVersionEditorModal).not.toHaveBeenCalled();
+    expect(mocks.updateDraft).not.toHaveBeenCalled();
+    expect(mocks.validate).not.toHaveBeenCalled();
+    expect(mocks.publish).not.toHaveBeenCalled();
+    expect(mocks.rollback).not.toHaveBeenCalled();
+    expect(mocks.archive).not.toHaveBeenCalled();
   });
 
   it('keeps committed writes locked until a refreshed snapshot actually advances', async () => {
@@ -259,14 +284,13 @@ describe('M08 Skill write actions', () => {
         selectedVersionId: 'version-1',
       }),
     );
-    act(() => result.current.openArchive());
-    const modal = mocks.openReasonModal.mock.calls[0][0];
-    await act(() => modal.onSubmit(modal.buildPayload('archive')));
+    act(() => void result.current.openArchive());
+    await act(confirmArchive);
     expect(result.current.refreshFailed).toBe(true);
     expect(currentEditor.setActionError).toHaveBeenLastCalledWith('skillCatalog.refresh.failed');
 
-    act(() => result.current.openRollback('version-1'));
-    expect(mocks.openReasonModal).toHaveBeenCalledTimes(1);
+    await act(() => result.current.openRollback('version-1'));
+    expect(mocks.rollback).not.toHaveBeenCalled();
 
     await act(() => result.current.retryRefresh());
     expect(result.current.refreshFailed).toBe(true);
@@ -275,6 +299,38 @@ describe('M08 Skill write actions', () => {
     await act(() => result.current.retryRefresh());
     expect(result.current.refreshFailed).toBe(false);
     expect(currentEditor.setActionError).toHaveBeenLastCalledWith(null);
+  });
+
+  it('never submits a rollback before its confirmation is accepted', async () => {
+    const currentEditor = { ...editor(), dirty: false };
+    const { result } = renderHook(() =>
+      useSkillActions({
+        authMethod: null,
+        data: data(),
+        editor: currentEditor as any,
+        permissions,
+        selectedValidation: validation,
+        selectedVersionId: 'version-1',
+      }),
+    );
+
+    await act(() => result.current.openRollback('version-1'));
+    // Restoring an older published version reaches every consumer — confirm first, submit after.
+    expect(mocks.rollback).not.toHaveBeenCalled();
+    expect(mocks.openDangerConfirm).toHaveBeenCalledOnce();
+    expect(mocks.openDangerConfirm.mock.calls[0][0]).toMatchObject({
+      confirmText: 'skillCatalog.actions.rollback.label',
+      content: 'skillCatalog.actions.rollback.impact',
+      title: 'skillCatalog.actions.rollback.title',
+    });
+
+    await act(confirmDanger);
+    expect(mocks.rollback).toHaveBeenCalledWith({
+      expectedDraftToken: '3'.repeat(64),
+      expectedRevision: 3,
+      id: 'skill-1',
+      targetVersionId: 'version-1',
+    });
   });
 
   it('clears the first reauth-required error after retrying the same frozen payload successfully', async () => {
@@ -291,16 +347,10 @@ describe('M08 Skill write actions', () => {
         selectedVersionId: 'version-1',
       }),
     );
-    act(() => result.current.openPublish());
-    const modal = mocks.openReasonModal.mock.calls[0][0];
-    const frozen = modal.buildPayload('publish');
-    await expect(modal.onSubmit(structuredClone(frozen))).rejects.toBe(reauth);
-    expect(currentEditor.setActionError).toHaveBeenCalledWith(
-      'enterprise.error.ADMIN_REAUTH_REQUIRED',
-    );
-
-    await act(() => modal.onSubmit(structuredClone(frozen)));
-    expect(mocks.publish).toHaveBeenNthCalledWith(2, frozen);
+    // The shared runner replays the SAME frozen payload once after reauth; no error surfaces.
+    await act(() => result.current.openPublish());
+    expect(mocks.publish).toHaveBeenCalledTimes(2);
+    expect(mocks.publish.mock.calls[0][0]).toEqual(mocks.publish.mock.calls[1][0]);
     expect(currentEditor.setActionError).toHaveBeenLastCalledWith(null);
   });
 
@@ -336,17 +386,14 @@ describe('M08 Skill write actions', () => {
       oldValidation.validatedAt.getTime(),
     );
 
-    act(() => result.current.openValidate());
-    const modal = mocks.openReasonModal.mock.calls[0][0];
-    await act(() => modal.onSubmit(modal.buildPayload('revalidate')));
+    await act(() => result.current.openValidate());
 
-    expect(mocks.validate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        skillId: 'skill-1',
-        versionId: 'version-1',
-        reason: 'revalidate',
-      }),
-    );
+    expect(mocks.validate).toHaveBeenCalledWith({
+      expectedDraftToken: '3'.repeat(64),
+      expectedRevision: 3,
+      skillId: 'skill-1',
+      versionId: 'version-1',
+    });
     expect(mocks.getVersion).toHaveBeenCalledWith({
       skillId: 'skill-1',
       versionId: 'version-1',
@@ -377,21 +424,17 @@ describe('M08 Skill write actions', () => {
       }),
     );
 
-    act(() => result.current.openPublish());
-    const modal = mocks.openReasonModal.mock.calls[0][0];
     // Commit succeeds; invalidation failure must not surface as a mutation error.
-    await act(async () => {
-      await modal.onSubmit(modal.buildPayload('publish'));
-    });
+    await act(() => result.current.openPublish());
 
     expect(mocks.publish).toHaveBeenCalledTimes(1);
     expect(mocks.toastSuccess).toHaveBeenCalledTimes(1);
     expect(result.current.refreshFailed).toBe(true);
     expect(currentEditor.setActionError).toHaveBeenLastCalledWith('skillCatalog.refresh.failed');
 
-    // Locked: further write modals stay closed.
-    act(() => result.current.openArchive());
-    expect(mocks.openReasonModal).toHaveBeenCalledTimes(1);
+    // Locked: further writes stay closed.
+    await act(() => result.current.openArchive());
+    expect(mocks.openDangerConfirm).not.toHaveBeenCalled();
 
     await act(() => result.current.retryRefresh());
     expect(mocks.publish).toHaveBeenCalledTimes(1);
@@ -429,9 +472,7 @@ describe('M08 Skill write actions', () => {
       }),
     );
 
-    act(() => result.current.openValidate());
-    const modal = mocks.openReasonModal.mock.calls[0][0];
-    await act(() => modal.onSubmit(modal.buildPayload('revalidate')));
+    await act(() => result.current.openValidate());
 
     // onCommitted still sets local validation from the validate response…
     expect(result.current.validation?.validatedAt.getTime()).toBe(

@@ -15,6 +15,7 @@ import {
   connectorToolWithoutIdListSchema,
   emptyConnectorSecretStateSchema,
   httpUrlSchema,
+  optionalReasonSchema,
   publicDisplayNameSchema,
   publicTextSchema,
   publishedConnectorToolListSchema,
@@ -136,7 +137,7 @@ export const connectorCreateBaseSchema = z
     enabled: z.boolean().optional(),
     endpoint: httpUrlSchema,
     key: connectorKeySchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
     sort: z.number().int().optional(),
     tools: connectorToolWithoutIdListSchema.optional(),
     transport: webConnectorTransportSchema.default('http'),
@@ -165,7 +166,7 @@ export const adminConnectorUpdateDraftInputSchema = connectorDraftFieldsSchema
     expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
     id: connectorIdSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict();
 

@@ -6,15 +6,15 @@ import type {
 import { encodePlatformAgentListId } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import type { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { PlatformAgentEffectiveResolver } from './effectiveResolver';
 import { PlatformAgentUserListService, type UnifiedAvailableAgentItem } from './userListProjection';
 
-const flagsOn = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
-const flagsOff = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: false };
+const flagsOn = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
+const flagsOff = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: false };
 
 const effectiveAgent = (
   platformAgentId: string,

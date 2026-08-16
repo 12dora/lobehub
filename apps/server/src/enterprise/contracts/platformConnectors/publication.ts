@@ -9,6 +9,7 @@ import {
   connectorSafeMessageSchema,
   connectorSharedSecretMutationSchema,
   connectorToolWithoutIdListSchema,
+  optionalReasonSchema,
   reasonSchema,
 } from './common';
 import {
@@ -18,7 +19,7 @@ import {
 } from './draft';
 
 export const adminConnectorDraftActionInputSchema = z
-  .object({ id: connectorIdSchema, reason: reasonSchema })
+  .object({ id: connectorIdSchema, reason: optionalReasonSchema })
   .strict();
 
 export const adminConnectorDiscoverInputSchema = adminConnectorDraftActionInputSchema;
@@ -52,7 +53,7 @@ export const adminConnectorPublicationInputSchema = z
     expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
     id: connectorIdSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict();
 

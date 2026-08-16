@@ -2,7 +2,7 @@
 import { INBOX_SESSION_ID } from '@lobechat/const';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import { AgentModel } from '@/database/models/agent';
 import { HomeRepository } from '@/database/repositories/home';
@@ -19,7 +19,7 @@ let db: LobeChatDatabase;
 let workspaceId: string;
 
 const options = () => ({
-  flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true },
+  flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true },
   repository: {
     listMaterializedAgentIds: vi.fn(async () => new Set<string>()),
   } as unknown as PlatformAgentCatalogRepository,

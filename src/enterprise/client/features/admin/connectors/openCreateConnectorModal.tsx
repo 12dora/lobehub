@@ -56,7 +56,6 @@ export interface CreateConnectorState {
   issuer: string;
   key: string;
   locked: boolean;
-  reason: string;
   scopes: string;
   secret: string;
   tokenEndpoint: string;
@@ -82,7 +81,6 @@ export const initialCreateConnectorState: CreateConnectorState = {
   issuer: '',
   key: '',
   locked: false,
-  reason: '',
   scopes: '',
   secret: '',
   tokenEndpoint: '',
@@ -108,10 +106,9 @@ export const buildCreateConnectorInput = (
     displayName: state.displayName.trim(),
     endpoint: state.endpoint.trim(),
     key: state.key.trim(),
-    reason: state.reason.trim(),
     transport: 'http' as const,
   };
-  if (!base.key || !base.displayName || !base.endpoint || !base.reason) return null;
+  if (!base.key || !base.displayName || !base.endpoint) return null;
   if (state.credentialMode === 'none') return { ...base, credentialMode: 'none' };
   if (state.credentialMode === 'shared_service_account') {
     return {
@@ -252,15 +249,6 @@ const CreateConnectorContent = memo<CreateConnectorContentProps>(({ authMethod, 
           <Text type={'secondary'}>{t('connectorCatalog.editor.secretNeverReturned')}</Text>
         </div>
       ) : null}
-      <div className={styles.field}>
-        <Text strong>{t('connectorCatalog.create.reason')}</Text>
-        <TextArea
-          disabled={state.locked}
-          rows={3}
-          value={state.reason}
-          onChange={(event) => text('reason')(event.target.value)}
-        />
-      </div>
       {state.error ? (
         <Text className={styles.error} role={'alert'}>
           {state.error}

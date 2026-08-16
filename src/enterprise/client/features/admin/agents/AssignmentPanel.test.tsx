@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,8 +15,11 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => k
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
   adminAgentsService: { startRollout: vi.fn() },
 }));
-vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () => ({
-  openReasonModal: vi.fn(),
+vi.mock('@/enterprise/client/features/admin/primitives/runAdminMutation', () => ({
+  runAdminMutation: vi.fn(async ({ run }: { run: () => Promise<void> }) => {
+    await run();
+    return true;
+  }),
 }));
 vi.mock('./useAssignmentEditor', () => ({ useAssignmentEditor: () => editorMock.value }));
 vi.mock('@lobehub/ui', () => ({
@@ -191,8 +194,8 @@ describe('AssignmentPanel', () => {
   });
 
   it('disables Start while the shared identity lock is active without entering commitWrite', async () => {
-    const { openReasonModal } =
-      await import('@/enterprise/client/features/admin/users/modals/openReasonModal');
+    const { runAdminMutation } =
+      await import('@/enterprise/client/features/admin/primitives/runAdminMutation');
     editorMock.value.locked = true;
     const locked = {
       ...lock,
@@ -214,14 +217,12 @@ describe('AssignmentPanel', () => {
     const start = screen.getByText('agentCatalog.rollout.start');
     expect(start).toBeDisabled();
     start.click();
-    expect(openReasonModal).not.toHaveBeenCalled();
+    expect(runAdminMutation).not.toHaveBeenCalled();
     expect(locked.beginWrite).not.toHaveBeenCalled();
     expect(locked.commitWrite).not.toHaveBeenCalled();
   });
 
   it('Start refresh path never enters identity CAS beginWrite/commitWrite', async () => {
-    const { openReasonModal } =
-      await import('@/enterprise/client/features/admin/users/modals/openReasonModal');
     const { adminAgentsService } = await import('@/enterprise/client/services/adminAgents');
     const startRollout = vi
       .spyOn(adminAgentsService, 'startRollout')
@@ -241,19 +242,17 @@ describe('AssignmentPanel', () => {
         snapshot={snapshot}
       />,
     );
-    screen.getByText('agentCatalog.rollout.start').click();
-    expect(openReasonModal).toHaveBeenCalledOnce();
-    const { onSubmit } = (openReasonModal as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
-      onSubmit: (input: unknown) => Promise<void>;
-    };
-    await onSubmit({
+    await act(async () => {
+      screen.getByText('agentCatalog.rollout.start').click();
+    });
+    // Start fires directly: no audit-reason prompt for a rollout.
+    expect(startRollout).toHaveBeenCalledOnce();
+    expect(startRollout).toHaveBeenCalledWith({
       agentId: 'agent-1',
       assignmentId: 'assignment-1',
       expectedDraftToken: snapshot.draftToken,
       expectedRevision: 1,
-      reason: 'start',
     });
-    expect(startRollout).toHaveBeenCalledOnce();
     expect(refresh).toHaveBeenCalledOnce();
     expect(beginWrite).not.toHaveBeenCalled();
     expect(commitWrite).not.toHaveBeenCalled();

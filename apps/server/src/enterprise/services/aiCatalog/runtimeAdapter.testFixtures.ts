@@ -1,7 +1,7 @@
 import type { AiProviderRuntimeState } from '@lobechat/types';
 import { sql } from 'drizzle-orm';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
   platformAiModels,
@@ -22,7 +22,7 @@ export const keyProvider: KeyProvider = {
   providerId: 'test',
 };
 export const secretService = new PlatformSecretService({ keyProvider });
-export const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
+export const flags = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
 export const upstreamState: AiProviderRuntimeState = {
   enabledAiModels: [
     {

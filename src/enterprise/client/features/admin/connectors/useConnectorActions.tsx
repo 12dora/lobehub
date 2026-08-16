@@ -7,6 +7,8 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import { openDangerConfirm } from '@/enterprise/client/features/admin/primitives/DangerConfirm';
+import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminConnectorsService } from '@/enterprise/client/services/adminConnectors';
@@ -22,11 +24,7 @@ import {
   resolveAdminConnectorPrimaryAction,
   validateConnectorRollbackTarget,
 } from './controller';
-import type {
-  AdminConnectorGetOutput,
-  AdminConnectorRollbackInput,
-  AdminConnectorUpdateDraftInput,
-} from './types';
+import type { AdminConnectorGetOutput, AdminConnectorRollbackInput } from './types';
 import { refreshAdminConnectorLists } from './useAdminConnectorCatalog';
 import type { useConnectorEditor } from './useConnectorEditor';
 
@@ -37,6 +35,12 @@ interface UseConnectorActionsParams {
   mutate: () => Promise<AdminConnectorGetOutput | undefined>;
   permissions: AdminConnectorPermissions;
 }
+
+/**
+ * Stable, non-localized audit reason for rollback. The confirmation stays because it also
+ * collects the target revision, but the operator no longer types a reason.
+ */
+const ROLLBACK_REASON = 'Connector rolled back from admin console';
 
 const RollbackRevisionField = ({
   currentRevision,
@@ -127,7 +131,7 @@ export const useConnectorActions = ({
     [editor, errorText, mutate, t],
   );
 
-  const openSave = useCallback(() => {
+  const openSave = useCallback(async () => {
     if (
       !permissions.canUpdate ||
       !editor.draft ||
@@ -136,90 +140,74 @@ export const useConnectorActions = ({
       editor.requiresSecretReentry
     )
       return;
-    const draft = structuredClone(editor.draft);
-    const secret = editor.secret;
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      buildPayload: (reason) =>
-        buildConnectorUpdatePayload({ draft, reason, secret, snapshot: data }),
-      description: t('connectorCatalog.mutations.save.description'),
-      onSubmit: async (input) => {
-        editor.setSaveState('saving');
-        try {
-          await run(
-            'save',
-            () => adminConnectorsService.updateDraft(input as AdminConnectorUpdateDraftInput),
-            'connectorCatalog.toast.saved',
-          );
-          editor.markSaved();
-        } catch (cause) {
-          editor.setSaveState('failed');
-          throw cause;
-        }
-      },
-      submitLabel: t('connectorCatalog.actions.save'),
-      targetLabel: data.draft.displayName,
-      title: t('connectorCatalog.mutations.save.title'),
+    // Freeze the draft + CAS before the write so a reauth retry replays the same request.
+    const payload = buildConnectorUpdatePayload({
+      draft: structuredClone(editor.draft),
+      secret: editor.secret,
+      snapshot: data,
     });
-  }, [authMethod, data, editor, permissions.canUpdate, run, t]);
+    editor.setSaveState('saving');
+    const committed = await runAdminMutation({
+      authMethod,
+      // `run` already mapped the failure into the editor's inline error surface.
+      onError: () => editor.setSaveState('failed'),
+      run: () =>
+        run(
+          'save',
+          () => adminConnectorsService.updateDraft(payload),
+          'connectorCatalog.toast.saved',
+        ),
+    });
+    if (committed) editor.markSaved();
+  }, [authMethod, data, editor, permissions.canUpdate, run]);
 
-  const openSimple = useCallback(
-    (params: {
+  /** Reason-less catalog action: no prompt, optional confirmation, shared error/refresh path. */
+  const runSimple = useCallback(
+    async (params: {
       action: string;
-      danger?: boolean;
-      descriptionKey: string;
-      operation: (reason: string) => Promise<unknown>;
+      operation: () => Promise<unknown>;
       permission: boolean;
-      submitKey: string;
       successKey: string;
-      titleKey: string;
     }) => {
       if (!params.permission || editor.dirty || editor.conflict || busyAction) return;
-      openReasonModal({
-        authMethod: authMethod ?? undefined,
-        buildPayload: (reason) => ({ reason }),
-        danger: params.danger,
-        description: t(params.descriptionKey as never),
-        onSubmit: async (input) => {
-          const reason = (input as { reason: string }).reason;
-          await run(params.action, () => params.operation(reason), params.successKey);
-        },
-        submitLabel: t(params.submitKey as never),
-        targetLabel: data.draft.displayName,
-        title: t(params.titleKey as never),
+      await runAdminMutation({
+        authMethod,
+        // `run` already mapped the failure into the editor's inline error surface.
+        onError: () => undefined,
+        run: () => run(params.action, params.operation, params.successKey),
       });
     },
-    [authMethod, busyAction, data.draft.displayName, editor.conflict, editor.dirty, run, t],
+    [authMethod, busyAction, editor.conflict, editor.dirty, run],
   );
 
   const discover = useCallback(
     () =>
-      openSimple({
+      runSimple({
         action: 'discover',
-        descriptionKey: 'connectorCatalog.mutations.discover.description',
-        operation: (reason) => adminConnectorsService.discover({ id: data.draft.id, reason }),
+        operation: () => adminConnectorsService.discover({ id: data.draft.id }),
         permission: permissions.canDiscover,
-        submitKey: 'connectorCatalog.actions.discover',
         successKey: 'connectorCatalog.toast.discovered',
-        titleKey: 'connectorCatalog.mutations.discover.title',
       }),
-    [data.draft.id, openSimple, permissions.canDiscover],
+    [data.draft.id, permissions.canDiscover, runSimple],
   );
 
-  const test = useCallback(() => {
+  const test = useCallback(async () => {
     if (!permissions.canTest || editor.dirty || editor.conflict || busyAction) return;
     const testedRevision = data.baseRevision;
     const testedDraftToken = data.draftToken;
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      buildPayload: (reason) => ({ reason }),
-      description: t('connectorCatalog.mutations.test.description'),
-      onSubmit: async (input) => {
-        const reason = (input as { reason: string }).reason;
-        setBusyAction('test');
-        editor.setActionError(null);
-        try {
-          const result = await adminConnectorsService.test({ id: data.draft.id, reason });
+    setBusyAction('test');
+    editor.setActionError(null);
+    try {
+      await runAdminMutation({
+        authMethod,
+        onError: (cause) => {
+          setSessionTest(null);
+          const mapped = mapEnterpriseError(cause);
+          if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') editor.setConflict(true);
+          editor.setActionError(errorText(cause));
+        },
+        run: async () => {
+          const result = await adminConnectorsService.test({ id: data.draft.id });
           if (result.status === 'success') {
             setSessionTest({
               status: 'success',
@@ -232,25 +220,15 @@ export const useConnectorActions = ({
             editor.setActionError(t('connectorCatalog.errors.generic'));
           }
           await Promise.allSettled([mutate(), refreshAdminConnectorLists()]);
-        } catch (cause) {
-          setSessionTest(null);
-          const mapped = mapEnterpriseError(cause);
-          if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') editor.setConflict(true);
-          editor.setActionError(errorText(cause));
-          throw cause;
-        } finally {
-          setBusyAction(null);
-        }
-      },
-      submitLabel: t('connectorCatalog.actions.test'),
-      targetLabel: data.draft.displayName,
-      title: t('connectorCatalog.mutations.test.title'),
-    });
+        },
+      });
+    } finally {
+      setBusyAction(null);
+    }
   }, [
     authMethod,
     busyAction,
     data.baseRevision,
-    data.draft.displayName,
     data.draft.id,
     data.draftToken,
     editor,
@@ -262,64 +240,89 @@ export const useConnectorActions = ({
 
   const publish = useCallback(
     () =>
-      openSimple({
+      runSimple({
         action: 'publish',
-        descriptionKey: 'connectorCatalog.mutations.publish.description',
-        operation: (reason) =>
+        operation: () =>
           adminConnectorsService.publish({
             expectedDraftToken: data.draftToken,
             expectedRevision: data.baseRevision,
             id: data.draft.id,
-            reason,
           }),
         permission: permissions.canPublish && isPersistedConnectorTestCurrent(data, sessionTest),
-        submitKey: 'connectorCatalog.actions.publish',
         successKey: 'connectorCatalog.toast.published',
-        titleKey: 'connectorCatalog.mutations.publish.title',
       }),
-    [data, openSimple, permissions.canPublish, sessionTest],
+    [data, permissions.canPublish, runSimple, sessionTest],
   );
 
-  const archive = useCallback(
-    () =>
-      openSimple({
-        action: 'archive',
-        danger: true,
-        descriptionKey: 'connectorCatalog.mutations.archive.description',
-        operation: (reason) =>
-          adminConnectorsService.archive({
-            expectedDraftToken: data.draftToken,
-            expectedRevision: data.baseRevision,
-            id: data.draft.id,
-            reason,
-          }),
-        permission: permissions.canArchive,
-        submitKey: 'connectorCatalog.actions.archive',
-        successKey: 'connectorCatalog.toast.archived',
-        titleKey: 'connectorCatalog.mutations.archive.title',
-      }),
-    [data, openSimple, permissions.canArchive],
-  );
+  const archive = useCallback(() => {
+    if (!permissions.canArchive || editor.dirty || editor.conflict || busyAction) return;
+    openDangerConfirm({
+      confirmText: t('connectorCatalog.actions.archive'),
+      content: t('connectorCatalog.mutations.archive.description'),
+      title: t('connectorCatalog.mutations.archive.title'),
+      onConfirm: () =>
+        runSimple({
+          action: 'archive',
+          operation: () =>
+            adminConnectorsService.archive({
+              expectedDraftToken: data.draftToken,
+              expectedRevision: data.baseRevision,
+              id: data.draft.id,
+            }),
+          permission: permissions.canArchive,
+          successKey: 'connectorCatalog.toast.archived',
+        }),
+    });
+  }, [busyAction, data, editor.conflict, editor.dirty, permissions.canArchive, runSimple, t]);
 
-  const revokeBindings = useCallback(
-    () =>
-      openSimple({
-        action: 'revoke',
-        danger: true,
-        descriptionKey: 'connectorCatalog.mutations.revoke.description',
-        operation: (reason) =>
-          adminConnectorsService.revokeAllBindings({
-            expectedRevision: data.published!.publishedRevision,
-            id: data.draft.id,
-            reason,
-          }),
-        permission: permissions.canRevokeBindings && Boolean(data.published),
-        submitKey: 'connectorCatalog.actions.revokeBindings',
-        successKey: 'connectorCatalog.toast.revoked',
-        titleKey: 'connectorCatalog.mutations.revoke.title',
-      }),
-    [data.draft.id, data.published, openSimple, permissions.canRevokeBindings],
-  );
+  /**
+   * Revoking every user's connection is destructive and irreversible for them — this is one of
+   * the few actions that still requires the operator to record an audit reason.
+   */
+  const revokeBindings = useCallback(() => {
+    if (
+      !permissions.canRevokeBindings ||
+      !data.published ||
+      editor.dirty ||
+      editor.conflict ||
+      busyAction
+    ) {
+      return;
+    }
+    const publishedRevision = data.published.publishedRevision;
+    openReasonModal({
+      authMethod: authMethod ?? undefined,
+      buildPayload: (reason) => ({ reason }),
+      danger: true,
+      description: t('connectorCatalog.mutations.revoke.description'),
+      onSubmit: async (input) => {
+        await run(
+          'revoke',
+          () =>
+            adminConnectorsService.revokeAllBindings({
+              expectedRevision: publishedRevision,
+              id: data.draft.id,
+              reason: (input as { reason: string }).reason,
+            }),
+          'connectorCatalog.toast.revoked',
+        );
+      },
+      submitLabel: t('connectorCatalog.actions.revokeBindings'),
+      targetLabel: data.draft.displayName,
+      title: t('connectorCatalog.mutations.revoke.title'),
+    });
+  }, [
+    authMethod,
+    busyAction,
+    data.draft.displayName,
+    data.draft.id,
+    data.published,
+    editor.conflict,
+    editor.dirty,
+    permissions.canRevokeBindings,
+    run,
+    t,
+  ]);
 
   const rollback = useCallback(() => {
     const currentRevision = data.published?.publishedRevision;
@@ -335,6 +338,7 @@ export const useConnectorActions = ({
     const targetRevisionRef: { current: number | null } = { current: null };
     openReasonModal({
       authMethod: authMethod ?? undefined,
+      autoReason: ROLLBACK_REASON,
       buildPayload: (reason) => ({
         expectedDraftToken: data.draftToken,
         expectedRevision: data.baseRevision,
@@ -344,6 +348,7 @@ export const useConnectorActions = ({
       }),
       danger: true,
       description: t('connectorCatalog.mutations.rollback.description'),
+      hideReason: true,
       extra: ({ locked }) => (
         <RollbackRevisionField
           currentRevision={currentRevision}
@@ -414,9 +419,9 @@ export const useConnectorActions = ({
 
   const onPrimaryAction = useCallback(
     (action: AdminConnectorPrimaryAction) => {
-      if (action === 'save' || action === 'retry') openSave();
-      else if (action === 'test') test();
-      else if (action === 'publish') publish();
+      if (action === 'save' || action === 'retry') void openSave();
+      else if (action === 'test') void test();
+      else if (action === 'publish') void publish();
     },
     [openSave, publish, test],
   );

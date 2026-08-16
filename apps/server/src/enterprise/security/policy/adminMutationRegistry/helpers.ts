@@ -23,6 +23,15 @@ export const notApplicable = (rationale: string): NotApplicableControl => ({
 });
 
 export const reasonInput = enforced('Bounded non-empty reason in the procedure input contract.');
+/**
+ * The admin console no longer prompts for an audit reason on non-destructive operations
+ * (save / publish / toggle / test / rollout / assignment edits). The contract still bounds and
+ * secret-scans a supplied reason; omitted reasons persist as a null audit column.
+ */
+export const optionalReasonInput = conditional(
+  'Bounded optional reason in the procedure input contract, persisted when the caller supplies one.',
+  'The admin console does not prompt for a reason on this non-destructive operation, so audit rows may carry none.',
+);
 export const serviceAudit = enforced('Service persists a sanitized platform audit outcome.');
 export const recentReauth = enforced(
   'Router checks the server-authenticated recent-session timestamp.',
@@ -48,6 +57,10 @@ export const remoteProbeNoLkg = notApplicable(
 );
 export const assetNoLkg = notApplicable(
   'Asset recovery uses object-storage operation records rather than an LKG file.',
+);
+export const optionalReason = conditional(
+  'Bounded reason accepted in the procedure input contract and persisted when supplied.',
+  'Routine draft work does not prompt for one; the audit records an em dash and the change itself is reconstructable from the before/after diff and the revision history.',
 );
 export const noReason = notApplicable(
   'The validation operation does not persist business configuration.',

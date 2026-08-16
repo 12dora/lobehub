@@ -12,7 +12,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import { createUnmanagedResourcePolicyMap } from '@/database/models/platform';
 import {
@@ -31,7 +31,7 @@ import {
   queryVisibleWinnerPage,
 } from './effectiveResolver';
 
-const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
+const flags = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
 const CHECKSUM = 'a'.repeat(64);
 const PROVIDER_CHECKSUM = 'b'.repeat(64);
 

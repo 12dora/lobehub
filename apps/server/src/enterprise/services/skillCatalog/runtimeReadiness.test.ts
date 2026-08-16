@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import {
   clearManagedResourceReadinessForTest,
   hasManagedResourceReadinessProbeForTest,
@@ -14,7 +14,7 @@ import {
 } from './runtimeReadiness';
 
 const managedFlags = {
-  ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+  ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
   ENABLE_PLATFORM_MANAGED_SKILLS: true,
 };
 const checksum = 'a'.repeat(64);
@@ -54,7 +54,7 @@ describe('Skill catalog runtime readiness', () => {
     await expect(
       resolveSkillCatalogRuntimeReadiness({
         db: new Proxy({}, { get: () => expect.unreachable('must not read DB') }) as never,
-        flags: DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+        flags: DISABLED_ENTERPRISE_FEATURE_FLAGS,
         service,
       }),
     ).resolves.toBe(false);

@@ -92,7 +92,8 @@ export const assertAgentDangerousReauth = async (params: {
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
-  reason: string;
+  /** Optional: reason-less mutations (assignments, rollouts, rollback) audit denials without one. */
+  reason?: string | null;
   serverDB: LobeChatDatabase;
   targetId: string;
 }) =>

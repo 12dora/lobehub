@@ -2,7 +2,7 @@
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
   createUnmanagedResourcePolicyMap,
@@ -202,7 +202,7 @@ describe('ManagedResourcePolicyService', () => {
     // pre-publish regime for the whole memo TTL, and the client's immediate post-transition
     // revalidation would cache the wrong regime permanently.
     resetPlatformAiTakeoverCacheForTest();
-    const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
+    const flags = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
     const service = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
     const initial = await service.get();
     const draft = createUnmanagedResourcePolicyMap();

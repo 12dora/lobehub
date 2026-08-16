@@ -164,7 +164,7 @@ const rolloutMutation = async (params: {
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertAgentDangerousReauth>[0]['authMethod'];
-  reason: string;
+  reason?: string | null;
   serverDB: Parameters<typeof assertAgentDangerousReauth>[0]['serverDB'];
   targetId: string;
 }) =>

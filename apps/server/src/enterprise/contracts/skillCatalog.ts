@@ -34,6 +34,11 @@ const skillVersionSchema = z
 
 const checksumSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const reasonSchema = boundedSafeText(2000);
+/**
+ * Audit reason for Skill operations the admin console no longer prompts for (create, save,
+ * new version, validate, publish, archive, rollback). Recorded when a caller supplies one.
+ */
+const optionalReasonSchema = reasonSchema.optional();
 const draftTokenSchema = z.string().length(64);
 const revisionSchema = z.number().int().nonnegative();
 const cursorSchema = z.string().min(1).max(1000);
@@ -298,7 +303,7 @@ export const adminSkillCreateInputSchema = skillIdentityFieldsSchema
   .extend({
     allowBuiltinOverride: z.boolean().default(false),
     displayName: boundedSafeText(200),
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
     skillKey: skillKeySchema,
   })
   .strict();
@@ -308,7 +313,7 @@ export const adminSkillUpdateDraftInputSchema = skillIdentityFieldsSchema
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
     id: z.string().min(1),
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict();
 
@@ -319,7 +324,7 @@ export const adminSkillCreateVersionInputSchema = z
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
     manifest: skillManifestSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
     resources: skillResourcesSchema.default([]),
     skillId: z.string().min(1),
     version: skillVersionSchema,
@@ -330,7 +335,7 @@ export const adminSkillValidateInputSchema = z
   .object({
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
     skillId: z.string().min(1),
     versionId: z.string().min(1),
   })
@@ -341,7 +346,7 @@ const skillPublicationInputSchema = z
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
     id: z.string().min(1),
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict();
 

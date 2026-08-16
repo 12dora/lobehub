@@ -3,11 +3,9 @@ import { Button, toast } from '@lobehub/ui/base-ui';
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import {
-  type AdminReauthAuthMethod,
-  isAdminReauthRequiredError,
-} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
-import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
+import { openDangerConfirm } from '@/enterprise/client/features/admin/primitives/DangerConfirm';
+import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
+import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import type { deriveAdminAgentPermissions } from './controller';
@@ -63,120 +61,111 @@ export const RolloutPanel = ({
       setLocalRefreshFailed(true);
     }
   };
+  /** Job control without an audit-reason prompt; cancel/rollback still confirm before firing. */
+  const runRolloutAction = async (
+    rollout: AdminAgentDetailOutput['rollouts'][number],
+    action: 'cancel' | 'retry' | 'rollback',
+  ) => {
+    // busyJobRef resets in finally so it never blocks the shared reauth retry.
+    // isLocked is only consulted here when there is no write token (cancel/retry).
+    // One token for this logical write — shared reauth retry re-enters with the same token.
+    const writeToken: WriteToken | null = action === 'rollback' ? {} : null;
+    if (busyJobRef.current || (!writeToken && lock.isLocked())) return;
+    busyJobRef.current = rollout.jobId;
+    setBusyJobId(rollout.jobId);
+    setLocalRefreshFailed(false);
+
+    if (writeToken && !lock.beginWrite(writeToken)) {
+      busyJobRef.current = null;
+      setBusyJobId(null);
+      return;
+    }
+
+    const identity = { agentId: snapshot.identity.id, jobId: rollout.jobId };
+    let rollbackDeferred = false;
+    let committed: boolean;
+    try {
+      committed = await runAdminMutation({
+        authMethod,
+        run: async () => {
+          if (action === 'cancel') {
+            await adminAgentsService.cancelRollout({
+              ...identity,
+              expectedJobRevision: rollout.revision,
+              expectedStatus: rollout.status as 'pending' | 'running',
+            });
+            return;
+          }
+          if (action === 'retry') {
+            await adminAgentsService.retryRollout({
+              ...identity,
+              expectedJobRevision: rollout.revision,
+              expectedStatus: rollout.status as 'cancelled' | 'dead' | 'failed',
+            });
+            return;
+          }
+          const result = await adminAgentsService.rollbackRollout({
+            ...identity,
+            expectedJobRevision: rollout.revision,
+            expectedStatus: 'completed' as const,
+            targetVersionId: rollout.previousVersionId!,
+          });
+          rollbackDeferred = result.invalidationStatus === 'deferred';
+        },
+      });
+    } finally {
+      busyJobRef.current = null;
+      setBusyJobId(null);
+    }
+
+    if (!committed) {
+      if (writeToken) lock.abortWrite(writeToken);
+      return;
+    }
+
+    if (action === 'rollback') {
+      if (rollbackDeferred) toast.warning(t('agentCatalog.toast.refreshDeferred'));
+      // Identity CAS advanced server-side — commit through the shared freshness lock.
+      if (writeToken) {
+        lock.markCommitted(writeToken);
+        await lock.commitWrite(writeToken);
+        if (lock.isLocked()) return; // refreshFailed banner lives on the shared lock surface
+      }
+      if (!rollbackDeferred) toast.success(t('agentCatalog.rollout.rollbackRequested'));
+      return;
+    }
+
+    let refreshed = false;
+    try {
+      refreshed = Boolean(await refresh());
+    } catch {
+      // The mutation has committed; keep the loaded projection visible and offer an explicit retry.
+    }
+    if (!refreshed) {
+      setLocalRefreshFailed(true);
+      return;
+    }
+    toast.success(t(`agentCatalog.rollout.${action}Requested` as never));
+  };
+
   const mutateRollout = (
     rollout: AdminAgentDetailOutput['rollouts'][number],
     action: 'cancel' | 'retry' | 'rollback',
   ) => {
-    // Gate concurrency before opening the modal — same pattern as useAgentActions. Do NOT check
-    // isLocked() inside onSubmit when a writeToken exists: reauth retry re-enters with the lock
-    // still held so beginWrite can apply its same-token re-entry rule.
+    // Gate concurrency before confirming — same pattern as useAgentActions.
     if (lock.isLocked()) return;
-    // One token for this logical write — shared reauth retry re-enters with the same token.
-    const writeToken: WriteToken | null = action === 'rollback' ? {} : null;
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      danger: action === 'cancel' || action === 'rollback',
-      description: t(`agentCatalog.rollout.${action}Description` as never),
-      buildPayload: (reason) => {
-        if (action === 'rollback') {
-          return {
-            agentId: snapshot.identity.id,
-            expectedJobRevision: rollout.revision,
-            expectedStatus: 'completed' as const,
-            jobId: rollout.jobId,
-            reason,
-            targetVersionId: rollout.previousVersionId!,
-          };
-        }
-        if (action === 'cancel') {
-          return {
-            agentId: snapshot.identity.id,
-            expectedJobRevision: rollout.revision,
-            expectedStatus: rollout.status as 'pending' | 'running',
-            jobId: rollout.jobId,
-            reason,
-          };
-        }
-        return {
-          agentId: snapshot.identity.id,
-          expectedJobRevision: rollout.revision,
-          expectedStatus: rollout.status as 'cancelled' | 'dead' | 'failed',
-          jobId: rollout.jobId,
-          reason,
-        };
-      },
-      onPhaseChange: (phase) => {
-        // Reauth cancel / terminal idle → unlock rollback if the write never committed.
-        if (phase === 'idle' && writeToken) lock.abortWrite(writeToken);
-      },
-      onSubmit: async (input) => {
-        // busyJobRef resets in finally so it never blocks the reauth retry.
-        // isLocked is only consulted here when there is no write token (cancel/retry).
-        if (busyJobRef.current || (!writeToken && lock.isLocked())) {
-          throw new Error(t('agentCatalog.recovery.refreshFailed'));
-        }
-        busyJobRef.current = rollout.jobId;
-        setBusyJobId(rollout.jobId);
-        setLocalRefreshFailed(false);
-
-        if (writeToken && !lock.beginWrite(writeToken)) {
-          busyJobRef.current = null;
-          setBusyJobId(null);
-          throw new Error(t('agentCatalog.recovery.refreshFailed'));
-        }
-
-        try {
-          if (action === 'cancel') {
-            await adminAgentsService.cancelRollout(
-              input as Parameters<typeof adminAgentsService.cancelRollout>[0],
-            );
-          } else if (action === 'retry') {
-            await adminAgentsService.retryRollout(
-              input as Parameters<typeof adminAgentsService.retryRollout>[0],
-            );
-          } else {
-            if (!rollout.previousVersionId) return;
-            const result = await adminAgentsService.rollbackRollout(
-              input as Parameters<typeof adminAgentsService.rollbackRollout>[0],
-            );
-            if (result.invalidationStatus === 'deferred') {
-              toast.warning(t('agentCatalog.toast.refreshDeferred'));
-            }
-            // Identity CAS advanced server-side — commit through the shared freshness lock.
-            if (writeToken) {
-              lock.markCommitted(writeToken);
-              await lock.commitWrite(writeToken);
-              if (lock.isLocked()) return; // refreshFailed banner lives on the shared lock surface
-            }
-            if (result.invalidationStatus !== 'deferred') {
-              toast.success(t(`agentCatalog.rollout.${action}Requested` as never));
-            }
-            return;
-          }
-
-          let refreshed = false;
-          try {
-            refreshed = Boolean(await refresh());
-          } catch {
-            // The mutation has committed; keep the loaded projection visible and offer an explicit retry.
-          }
-          if (!refreshed) {
-            setLocalRefreshFailed(true);
-            return;
-          }
-          toast.success(t(`agentCatalog.rollout.${action}Requested` as never));
-        } catch (cause) {
-          if (isAdminReauthRequiredError(cause)) throw cause; // retryable: keep frozen CAS payload
-          if (writeToken) lock.abortWrite(writeToken);
-          throw cause;
-        } finally {
-          busyJobRef.current = null;
-          setBusyJobId(null);
-        }
-      },
-      submitLabel: t(`agentCatalog.rollout.${action}` as never),
-      targetLabel: snapshot.identity.agentKey,
+    if (action === 'rollback' && !rollout.previousVersionId) return;
+    if (action === 'retry') {
+      void runRolloutAction(rollout, action);
+      return;
+    }
+    // Cancel stops an in-flight rollout and rollback re-publishes an older version for everyone —
+    // both stay behind an explicit confirmation, without the audit-reason prompt.
+    openDangerConfirm({
+      confirmText: t(`agentCatalog.rollout.${action}` as never),
+      content: t(`agentCatalog.rollout.${action}Description` as never),
       title: t(`agentCatalog.rollout.${action}` as never),
+      onConfirm: () => runRolloutAction(rollout, action),
     });
   };
 

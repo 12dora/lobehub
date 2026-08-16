@@ -5,8 +5,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import { openDangerConfirm } from '@/enterprise/client/features/admin/primitives/DangerConfirm';
+import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
-import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { invalidatePublishedSkillCatalog } from '@/enterprise/client/features/skills';
 import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
 
@@ -23,7 +24,6 @@ import type {
   AdminSkillGetOutput,
   AdminSkillPublishInput,
   AdminSkillRollbackInput,
-  AdminSkillUpdateDraftInput,
   AdminSkillValidateInput,
   AdminSkillValidateOutput,
 } from '../types';
@@ -155,7 +155,7 @@ export const useSkillActions = ({
     }
   }, [editor, t, writeGuard]);
 
-  const openSaveIdentity = useCallback(() => {
+  const openSaveIdentity = useCallback(async () => {
     if (
       !permissions.canUpdate ||
       !editor.draft ||
@@ -168,44 +168,42 @@ export const useSkillActions = ({
     const epoch = writeGuard.begin(data.draft.id);
     if (epoch === null) return;
     const operation = freezeSkillWriteSnapshot(data);
-    const identity = structuredClone(editor.draft.identity);
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      buildPayload: (reason) =>
-        buildSkillUpdatePayload({
-          draft: identity,
-          draftToken: operation.draftToken,
-          id: operation.id,
-          reason,
-          revision: operation.baseRevision,
-        }),
-      description: t('skillCatalog.actions.save.desc'),
-      onSubmit: async (input) => {
-        writeGuard.assertCurrent(epoch, operation.id);
-        setActionLoading('save');
-        editor.setSaveState('saving');
-        try {
+    // Freeze the identity draft + CAS before the write so a reauth retry replays the same request.
+    const payload = buildSkillUpdatePayload({
+      draft: structuredClone(editor.draft.identity),
+      draftToken: operation.draftToken,
+      id: operation.id,
+      revision: operation.baseRevision,
+    });
+    if (!payload) {
+      writeGuard.invalidate();
+      editor.setActionError(t('skillCatalog.form.required'));
+      return;
+    }
+    setActionLoading('save');
+    editor.setSaveState('saving');
+    try {
+      await runAdminMutation({
+        authMethod,
+        onError: async (cause) => {
+          editor.setSaveState('failed');
+          await handleMutationError(cause);
+        },
+        run: async () => {
+          writeGuard.assertCurrent(epoch, operation.id);
           await commitAndRefresh({
-            commit: () => adminSkillsService.updateDraft(input as AdminSkillUpdateDraftInput),
+            commit: () => adminSkillsService.updateDraft(payload),
             onCommitted: () => {
               editor.markSaved();
               toast.success(t('skillCatalog.toast.saved'));
             },
             previousFingerprint: operation.fingerprint,
           });
-        } catch (cause) {
-          editor.setSaveState('failed');
-          await handleMutationError(cause);
-          throw cause;
-        } finally {
-          setActionLoading(null);
-        }
-      },
-      submitLabel: t('skillCatalog.actions.save.label'),
-      targetLabel: data.draft.displayName,
-      title: t('skillCatalog.actions.save.title'),
-      validateExtra: () => (identity.displayName.trim() ? null : 'skillCatalog.form.required'),
-    });
+        },
+      });
+    } finally {
+      setActionLoading(null);
+    }
   }, [
     authMethod,
     commitAndRefresh,
@@ -261,7 +259,7 @@ export const useSkillActions = ({
     writeGuard,
   ]);
 
-  const openValidate = useCallback(() => {
+  const openValidate = useCallback(async () => {
     if (
       !permissions.canUpdate ||
       !selectedVersionId ||
@@ -273,22 +271,21 @@ export const useSkillActions = ({
     const epoch = writeGuard.begin(data.draft.id);
     if (epoch === null) return;
     const operation = freezeSkillWriteSnapshot(data, { versionId: selectedVersionId });
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      buildPayload: (reason) => ({
-        expectedDraftToken: operation.draftToken,
-        expectedRevision: operation.baseRevision,
-        reason,
-        skillId: operation.id,
-        versionId: operation.versionId!,
-      }),
-      description: t('skillCatalog.actions.validate.desc'),
-      onSubmit: async (input) => {
-        writeGuard.assertCurrent(epoch, operation.id);
-        setActionLoading('validate');
-        try {
+    const payload: AdminSkillValidateInput = {
+      expectedDraftToken: operation.draftToken,
+      expectedRevision: operation.baseRevision,
+      skillId: operation.id,
+      versionId: operation.versionId!,
+    };
+    setActionLoading('validate');
+    try {
+      await runAdminMutation({
+        authMethod,
+        onError: (cause) => handleMutationError(cause),
+        run: async () => {
+          writeGuard.assertCurrent(epoch, operation.id);
           await commitAndRefresh({
-            commit: () => adminSkillsService.validate(input as AdminSkillValidateInput),
+            commit: () => adminSkillsService.validate(payload),
             onCommitted: (result) => {
               setValidation(result);
               toast[
@@ -304,17 +301,11 @@ export const useSkillActions = ({
               return JSON.stringify(version.validation) === JSON.stringify(result);
             },
           });
-        } catch (cause) {
-          await handleMutationError(cause);
-          throw cause;
-        } finally {
-          setActionLoading(null);
-        }
-      },
-      submitLabel: t('skillCatalog.actions.validate.label'),
-      targetLabel: data.draft.displayName,
-      title: t('skillCatalog.actions.validate.title'),
-    });
+        },
+      });
+    } finally {
+      setActionLoading(null);
+    }
   }, [
     authMethod,
     commitAndRefresh,
@@ -329,7 +320,7 @@ export const useSkillActions = ({
   ]);
 
   const openPublication = useCallback(
-    (kind: 'archive' | 'publish' | 'rollback', targetVersionId?: string) => {
+    async (kind: 'archive' | 'publish' | 'rollback', targetVersionId?: string) => {
       const allowed = kind === 'archive' ? permissions.canArchive : permissions.canPublish;
       if (!allowed || editor.dirty || editor.conflict || refreshFailed) return;
       if ((kind === 'publish' || kind === 'rollback') && !targetVersionId) return;
@@ -340,47 +331,61 @@ export const useSkillActions = ({
         data,
         kind === 'publish' ? { versionId: targetVersionId } : { targetVersionId },
       );
-      openReasonModal({
-        authMethod: authMethod ?? undefined,
-        buildPayload: (reason) => ({
-          expectedDraftToken: operation.draftToken,
-          expectedRevision: operation.baseRevision,
-          id: operation.id,
-          reason,
-          ...(kind === 'publish' ? { versionId: operation.versionId } : {}),
-          ...(kind === 'rollback' ? { targetVersionId: operation.targetVersionId } : {}),
-        }),
-        danger: kind !== 'publish',
-        description: t(`skillCatalog.actions.${kind}.desc` as never),
-        impact: t(`skillCatalog.actions.${kind}.impact` as never),
-        onSubmit: async (input) => {
-          writeGuard.assertCurrent(epoch, operation.id);
-          setActionLoading(kind);
-          try {
-            await commitAndRefresh({
-              commit: () =>
-                kind === 'publish'
-                  ? adminSkillsService.publish(input as AdminSkillPublishInput)
-                  : kind === 'rollback'
-                    ? adminSkillsService.rollback(input as AdminSkillRollbackInput)
-                    : adminSkillsService.archive(input as AdminSkillArchiveInput),
-              onCommitted: () => {
-                toast.success(t(`skillCatalog.toast.${kind}` as never));
-              },
-              previousFingerprint: operation.fingerprint,
-              recover: (result) => invalidatePublishedSkillCatalog(result.catalogRevision),
-            });
-          } catch (cause) {
-            await handleMutationError(cause);
-            throw cause;
-          } finally {
-            setActionLoading(null);
-          }
-        },
-        submitLabel: t(`skillCatalog.actions.${kind}.label` as never),
-        targetLabel: data.draft.displayName,
-        title: t(`skillCatalog.actions.${kind}.title` as never),
-      });
+      const base = {
+        expectedDraftToken: operation.draftToken,
+        expectedRevision: operation.baseRevision,
+        id: operation.id,
+      };
+      const commit = () => {
+        if (kind === 'publish') {
+          return adminSkillsService.publish({
+            ...base,
+            versionId: operation.versionId!,
+          } satisfies AdminSkillPublishInput);
+        }
+        if (kind === 'rollback') {
+          return adminSkillsService.rollback({
+            ...base,
+            targetVersionId: operation.targetVersionId!,
+          } satisfies AdminSkillRollbackInput);
+        }
+        return adminSkillsService.archive(base satisfies AdminSkillArchiveInput);
+      };
+      const perform = async () => {
+        setActionLoading(kind);
+        try {
+          await runAdminMutation({
+            authMethod,
+            onError: (cause) => handleMutationError(cause),
+            run: async () => {
+              writeGuard.assertCurrent(epoch, operation.id);
+              await commitAndRefresh({
+                commit,
+                onCommitted: () => {
+                  toast.success(t(`skillCatalog.toast.${kind}` as never));
+                },
+                previousFingerprint: operation.fingerprint,
+                recover: (result) => invalidatePublishedSkillCatalog(result.catalogRevision),
+              });
+            },
+          });
+        } finally {
+          setActionLoading(null);
+        }
+      };
+      // Archive pulls a published Skill out of every assistant that depends on it, and rollback
+      // republishes an older version to every consumer — both keep an explicit confirmation with
+      // their own copy (never an audit-reason prompt). Publish fires directly.
+      if (kind === 'archive' || kind === 'rollback') {
+        openDangerConfirm({
+          confirmText: t(`skillCatalog.actions.${kind}.label` as never),
+          content: t(`skillCatalog.actions.${kind}.impact` as never),
+          title: t(`skillCatalog.actions.${kind}.title` as never),
+          onConfirm: perform,
+        });
+        return;
+      }
+      await perform();
     },
     [
       authMethod,

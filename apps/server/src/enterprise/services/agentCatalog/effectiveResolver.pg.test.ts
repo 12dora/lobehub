@@ -13,7 +13,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import { createUnmanagedResourcePolicyMap } from '@/database/models/platform';
 import {
@@ -45,7 +45,7 @@ const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABA
 const run = enabled ? describe : describe.skip;
 
 const CHECKSUM = 'a'.repeat(64);
-const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
+const flags = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
 
 const config = (displayName: string) => ({
   avatar: null,

@@ -218,9 +218,10 @@ describe('useAgentEditorForm create', () => {
       }),
       dependencySnapshot: { connectors: [], model, skills: [] },
       isDefault: false,
-      reason: expect.any(String),
       systemKey: null,
     });
+    // Creating an assistant is an ordinary authoring save — no synthetic audit reason is sent.
+    expect(mocks.create.mock.calls[0]![0]).not.toHaveProperty('reason');
     expect(mocks.save).not.toHaveBeenCalled();
     expect(mocks.toastSuccess).toHaveBeenCalledWith('agentCatalog.toast.created');
     expect(onSaved).toHaveBeenCalledWith(createdOutput, true);
@@ -309,8 +310,9 @@ describe('useAgentEditorForm edit', () => {
       dependencySnapshot: { connectors: [], model, skills: [] },
       expectedDraftToken: 'b'.repeat(64),
       expectedRevision: 7,
-      reason: expect.any(String),
     });
+    // Saving an assistant is an ordinary authoring save — no synthetic audit reason is sent.
+    expect(mocks.save.mock.calls[0]![0]).not.toHaveProperty('reason');
     // No client-side version label — the server generates it.
     expect(mocks.save.mock.calls[0]![0]).not.toHaveProperty('version');
     expect(mocks.create).not.toHaveBeenCalled();

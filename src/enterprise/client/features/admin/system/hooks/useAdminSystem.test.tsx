@@ -234,7 +234,7 @@ describe('useAdminSystemJobMutations refresh lock', () => {
     );
 
     await act(async () => {
-      expect(await result.current.cancel(original, 'planned cancellation')).toBe('succeeded');
+      expect(await result.current.cancel(original)).toBe('succeeded');
     });
     expect(result.current.refreshPendingJobIds).toEqual([]);
   });
@@ -257,7 +257,7 @@ describe('useAdminSystemJobMutations refresh lock', () => {
     );
 
     await act(async () => {
-      expect(await result.current.cancel(original, 'planned cancellation')).toBe('refresh_failed');
+      expect(await result.current.cancel(original)).toBe('refresh_failed');
     });
     expect(result.current.refreshPendingJobIds).toEqual([original.jobId]);
 
@@ -286,9 +286,9 @@ describe('useAdminSystemJobMutations refresh lock', () => {
 
     let firstRequest: Promise<string> | undefined;
     act(() => {
-      firstRequest = result.current.cancel(original, 'planned cancellation');
+      firstRequest = result.current.cancel(original);
     });
-    await expect(result.current.cancel(original, 'duplicate cancellation')).resolves.toBe('failed');
+    await expect(result.current.cancel(original)).resolves.toBe('failed');
     expect(cancelJob).toHaveBeenCalledTimes(1);
 
     resolveCancel(committed);

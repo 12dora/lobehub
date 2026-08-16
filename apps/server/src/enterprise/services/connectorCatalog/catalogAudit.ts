@@ -32,8 +32,10 @@ export const loadConnectorSecretSourcesSafe = async (
 export const sanitizeConnectorReason = async (
   secrets: ConnectorCurrentSecretLoader,
   connectorId: string,
-  reason: string,
-): Promise<string> => {
+  reason: string | null | undefined,
+): Promise<string | null> => {
+  // Reason-less operations (save / test / discover / publish / archive) audit without one.
+  if (!reason) return null;
   const sources = await loadConnectorSecretSourcesSafe(secrets, connectorId);
   return assertConnectorPersistentTextSafe(
     reason,

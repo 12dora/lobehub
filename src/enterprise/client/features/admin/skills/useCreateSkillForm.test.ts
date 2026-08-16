@@ -14,15 +14,12 @@ describe('useCreateSkillForm reducer', () => {
     expect(buildCreateSkillInput(base)).toEqual({ error: 'required' });
 
     const ready = createSkillFormReducer(
-      createSkillFormReducer(
-        createSkillFormReducer(base, {
-          field: 'skillKey',
-          type: 'setField',
-          value: '  demo.skill  ',
-        }),
-        { field: 'displayName', type: 'setField', value: ' Demo ' },
-      ),
-      { field: 'reason', type: 'setField', value: ' approved ' },
+      createSkillFormReducer(base, {
+        field: 'skillKey',
+        type: 'setField',
+        value: '  demo.skill  ',
+      }),
+      { field: 'displayName', type: 'setField', value: ' Demo ' },
     );
     expect(buildCreateSkillInput(ready)).toEqual({
       allowBuiltinOverride: false,
@@ -30,7 +27,6 @@ describe('useCreateSkillForm reducer', () => {
       displayName: 'Demo',
       distribution: 'default',
       enabled: true,
-      reason: 'approved',
       skillKey: 'demo.skill',
     });
   });
@@ -58,7 +54,7 @@ describe('useCreateSkillForm reducer', () => {
 
   it('types setField as string fields only (compile-time regression)', () => {
     expectTypeOf<CreateSkillFormStringField>().toEqualTypeOf<
-      'description' | 'displayName' | 'reason' | 'skillKey'
+      'description' | 'displayName' | 'skillKey'
     >();
     // Non-string identity fields are excluded from setField and use dedicated actions.
     expectTypeOf<'enabled'>().not.toMatchTypeOf<CreateSkillFormStringField>();

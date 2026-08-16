@@ -122,12 +122,10 @@ export const buildSkillUpdatePayload = (params: {
   draft: EditableSkillIdentityDraft;
   draftToken: string;
   id: string;
-  reason: string;
   revision: number;
 }): AdminSkillUpdateDraftInput | null => {
   const displayName = params.draft.displayName.trim();
-  const reason = params.reason.trim();
-  if (!displayName || !reason) return null;
+  if (!displayName) return null;
   return {
     description: params.draft.description.trim() || null,
     displayName,
@@ -136,7 +134,6 @@ export const buildSkillUpdatePayload = (params: {
     expectedDraftToken: params.draftToken,
     expectedRevision: params.revision,
     id: params.id,
-    reason,
   };
 };
 
@@ -184,14 +181,12 @@ export const parseEditableSkillVersionDraft = (
 export const buildSkillVersionPayload = (params: {
   draft: EditableSkillVersionDraft;
   draftToken: string;
-  reason: string;
   revision: number;
   skillId: string;
 }): AdminSkillCreateVersionInput | null => {
   const parsed = parseEditableSkillVersionDraft(params.draft);
-  const reason = params.reason.trim();
   const version = params.draft.version.trim();
-  if (!parsed.valid || !parsed.manifest || !parsed.resources || !reason || !version) return null;
+  if (!parsed.valid || !parsed.manifest || !parsed.resources || !version) return null;
   return {
     content: params.draft.content,
     // Managed runtime is inline-only; opaque refs are rejected at validation/publish.
@@ -199,7 +194,6 @@ export const buildSkillVersionPayload = (params: {
     expectedDraftToken: params.draftToken,
     expectedRevision: params.revision,
     manifest: parsed.manifest,
-    reason,
     resources: parsed.resources,
     skillId: params.skillId,
     version,

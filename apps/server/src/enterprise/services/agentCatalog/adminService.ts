@@ -91,7 +91,7 @@ export class PlatformAgentAdminService {
     actorUserId: string;
     afterDiff?: Record<string, unknown>;
     db?: LobeChatDatabase | Transaction;
-    reason: string;
+    reason?: string | null;
     result: 'failure' | 'success';
     targetId: string;
   }) =>
@@ -109,7 +109,7 @@ export class PlatformAgentAdminService {
     action: AuditAction;
     actorUserId: string;
     errorCategory: string;
-    reason: string;
+    reason?: string | null;
     targetId: string;
   }) => {
     try {
@@ -132,7 +132,7 @@ export class PlatformAgentAdminService {
   private atomicMutation = async <T>(params: {
     action: AuditAction;
     actorUserId: string;
-    reason: string;
+    reason?: string | null;
     run: (tx: Transaction) => Promise<T>;
     summarize: (result: T) => Record<string, unknown>;
     targetId: string;

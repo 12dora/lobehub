@@ -6,14 +6,24 @@ import type { AdminAgentDetailOutput } from './types';
 import { useAssignmentEditor } from './useAssignmentEditor';
 import type { RefreshLock } from './useRefreshLock';
 
-const mocks = vi.hoisted(() => ({ openReasonModal: vi.fn(), previewAssignment: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  previewAssignment: vi.fn(),
+  runAdminMutation: vi.fn(async ({ run }: { run: () => Promise<void> }) => {
+    await run();
+    return true;
+  }),
+  upsertAssignment: vi.fn(),
+}));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () => ({
-  openReasonModal: mocks.openReasonModal,
+vi.mock('@/enterprise/client/features/admin/primitives/runAdminMutation', () => ({
+  runAdminMutation: mocks.runAdminMutation,
 }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
-  adminAgentsService: { previewAssignment: mocks.previewAssignment },
+  adminAgentsService: {
+    previewAssignment: mocks.previewAssignment,
+    upsertAssignment: mocks.upsertAssignment,
+  },
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
@@ -58,8 +68,9 @@ const preview = async (result: { current: ReturnType<typeof useAssignmentEditor>
 
 describe('assignment preview invalidation (B6)', () => {
   beforeEach(() => {
-    mocks.openReasonModal.mockReset();
+    mocks.runAdminMutation.mockClear();
     mocks.previewAssignment.mockReset();
+    mocks.upsertAssignment.mockReset().mockResolvedValue(undefined);
   });
 
   it.each<[string, (e: ReturnType<typeof useAssignmentEditor>) => void]>([
@@ -96,8 +107,10 @@ describe('assignment preview invalidation (B6)', () => {
 
     const previewAssignmentArg = mocks.previewAssignment.mock.calls.at(-1)![0].assignment;
 
-    act(() => result.current.submit());
-    const built = mocks.openReasonModal.mock.calls.at(-1)![0].buildPayload('why');
+    await act(async () => {
+      await result.current.submit();
+    });
+    const built = mocks.upsertAssignment.mock.calls.at(-1)![0];
 
     // The preview payload and the mutation payload describe the exact same assignment.
     expect({
@@ -153,8 +166,9 @@ describe('assignment preview invalidation (B6)', () => {
 
 describe('assignment write lock (refresh-required)', () => {
   beforeEach(() => {
-    mocks.openReasonModal.mockReset();
+    mocks.runAdminMutation.mockClear();
     mocks.previewAssignment.mockReset();
+    mocks.upsertAssignment.mockReset().mockResolvedValue(undefined);
   });
 
   const lockedLock: RefreshLock = {
@@ -169,19 +183,23 @@ describe('assignment write lock (refresh-required)', () => {
     retryRefresh: vi.fn(),
   };
 
-  it('does not open a submit modal while the refresh lock is engaged', () => {
+  it('does not write while the refresh lock is engaged', async () => {
     const { result } = renderHook(() => useAssignmentEditor(snapshot, null, lockedLock));
-    act(() => result.current.submit()); // global default is a valid draft
-    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+    await act(async () => {
+      await result.current.submit(); // global default is a valid draft
+    });
+    expect(mocks.upsertAssignment).not.toHaveBeenCalled();
   });
 
-  it('the re-enabled submit uses the NEW agent CAS after the surface refreshes', () => {
+  it('the re-enabled submit uses the NEW agent CAS after the surface refreshes', async () => {
     const { result, rerender } = renderHook(
       (current: AdminAgentDetailOutput) => useAssignmentEditor(current, null, lock),
       { initialProps: snapshot },
     );
-    act(() => result.current.submit());
-    expect(mocks.openReasonModal.mock.calls.at(-1)![0].buildPayload('r').expectedRevision).toBe(4);
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(mocks.upsertAssignment.mock.calls.at(-1)![0].expectedRevision).toBe(4);
 
     const advanced = {
       ...snapshot,
@@ -189,8 +207,10 @@ describe('assignment write lock (refresh-required)', () => {
       identity: { ...snapshot.identity, revision: 5 },
     } as AdminAgentDetailOutput;
     rerender(advanced);
-    act(() => result.current.submit());
-    const built = mocks.openReasonModal.mock.calls.at(-1)![0].buildPayload('r2');
+    await act(async () => {
+      await result.current.submit();
+    });
+    const built = mocks.upsertAssignment.mock.calls.at(-1)![0];
     expect(built.expectedRevision).toBe(5);
     expect(built.expectedDraftToken).toBe('f'.repeat(64));
   });

@@ -237,7 +237,6 @@ export const normalizeConnectorTools = (
 
 export const buildConnectorUpdatePayload = (params: {
   draft: EditableAdminConnectorDraft;
-  reason: string;
   secret: ConnectorSecretEdit;
   snapshot: AdminConnectorGetOutput;
 }): AdminConnectorUpdateDraftInput => {
@@ -250,7 +249,6 @@ export const buildConnectorUpdatePayload = (params: {
     expectedDraftToken: params.snapshot.draftToken,
     expectedRevision: params.snapshot.baseRevision,
     id: params.snapshot.draft.id,
-    reason: params.reason,
     sort: params.draft.sort,
     tools: normalizeConnectorTools(params.draft.tools),
   };

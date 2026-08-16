@@ -20,8 +20,8 @@ import {
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { readFileBase64 } from '../primitives/readFileBase64';
+import { runAdminMutation } from '../primitives/runAdminMutation';
 import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
-import { openReasonModal } from '../users/modals/openReasonModal';
 import { BrandingFields } from './BrandingFields';
 import { BrandingPreview } from './BrandingPreview';
 import { isValidPrimaryColor } from './PrimaryColorField';
@@ -240,57 +240,51 @@ const BrandingPage = memo(() => {
     }
   }, [platform, t]);
 
-  const save = useCallback(() => {
+  const save = useCallback(async () => {
     if (!branding || !canSave || !dirty || !valid || busy || conflict) return;
-    openReasonModal({
+    // Freeze the exact payload (branding + CAS + idempotency key) before the write so a reauth
+    // retry replays the same request instead of a newer, half-edited one.
+    const payload: AdminBrandingSaveInput = {
+      branding,
+      expectedRevision: revision,
+      expectedToken: token,
+      requestId: crypto.randomUUID(),
+    };
+    setEditorState('saving');
+    await runAdminMutation({
       authMethod: admin.authMethod,
-      buildPayload: (reason) => ({
-        branding,
-        expectedRevision: revision,
-        expectedToken: token,
-        reason,
-        requestId: crypto.randomUUID(),
-      }),
-      description: t('branding.save.description'),
-      impact: t('branding.save.impact'),
-      onSubmit: async (payload) => {
-        setEditorState('saving');
-        try {
-          const result = await adminBrandingService.save(payload as AdminBrandingSaveInput);
-          // A response that lands after a newer revision was already observed is history:
-          // it committed, but it must not roll the editor or the cache back over the newer one.
-          const adopted = adopt(result);
-          if (adopted) observedServerSnapshot.current = `${result.revision}:${result.token}`;
-          else markConflict(result.revision);
-          setActionError(null);
-          setActionNotice(t('branding.status.saved'));
-          // The save response is authoritative — only the runtime snapshot still needs a refresh.
-          const [runtimeRefresh] = await Promise.allSettled([
-            platform.refresh(),
-            adopted
-              ? mutate(
-                  (current) =>
-                    !current || current.revision > result.revision
-                      ? current
-                      : { ...current, ...result },
-                  { revalidate: false },
-                )
-              : Promise.resolve(),
-          ]);
-          setRefreshWarning(
-            runtimeRefresh.status === 'rejected' ? t('branding.refresh.postCommitFailed') : null,
-          );
-        } catch (cause) {
-          const isConflict = mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT';
-          if (isConflict) markConflict();
-          else setEditorState('dirty');
-          setActionError(formatError(cause));
-          throw cause;
-        }
+      onError: (cause) => {
+        const isConflict = mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT';
+        if (isConflict) markConflict();
+        else setEditorState('dirty');
+        setActionError(formatError(cause));
       },
-      submitLabel: t('branding.actions.save'),
-      targetLabel: branding.name ?? t('branding.title', { platformName: runtimeBranding.name }),
-      title: t('branding.save.title'),
+      run: async () => {
+        const result = await adminBrandingService.save(payload);
+        // A response that lands after a newer revision was already observed is history:
+        // it committed, but it must not roll the editor or the cache back over the newer one.
+        const adopted = adopt(result);
+        if (adopted) observedServerSnapshot.current = `${result.revision}:${result.token}`;
+        else markConflict(result.revision);
+        setActionError(null);
+        setActionNotice(t('branding.status.saved'));
+        // The save response is authoritative — only the runtime snapshot still needs a refresh.
+        const [runtimeRefresh] = await Promise.allSettled([
+          platform.refresh(),
+          adopted
+            ? mutate(
+                (current) =>
+                  !current || current.revision > result.revision
+                    ? current
+                    : { ...current, ...result },
+                { revalidate: false },
+              )
+            : Promise.resolve(),
+        ]);
+        setRefreshWarning(
+          runtimeRefresh.status === 'rejected' ? t('branding.refresh.postCommitFailed') : null,
+        );
+      },
     });
   }, [
     admin.authMethod,
@@ -305,7 +299,6 @@ const BrandingPage = memo(() => {
     mutate,
     platform,
     revision,
-    runtimeBranding.name,
     setEditorState,
     t,
     token,
@@ -315,51 +308,52 @@ const BrandingPage = memo(() => {
   const upload = useCallback(
     async (kind: AdminBrandingUploadAssetInput['kind'], file: File) => {
       if (!canSave || conflict || busy || !data?.storageConfigured) return;
+      let payload: AdminBrandingUploadAssetInput;
       try {
-        const bytesBase64 = await readFileBase64(file);
-        openReasonModal({
-          buildPayload: (reason) => ({
-            bytesBase64,
-            fileName: file.name,
-            kind,
-            reason,
-            requestId: crypto.randomUUID(),
-          }),
-          description: t('branding.upload.description'),
-          onSubmit: async (payload) => {
-            try {
-              const result = await adminBrandingService.uploadAsset(
-                payload as AdminBrandingUploadAssetInput,
-              );
-              // Merge against the current values: a newer snapshot may have hydrated during
-              // the file read, the reason modal and the upload itself.
-              if (kind === 'desktopIcon') {
-                patchDesktop({ iconUrl: result.url });
-              } else {
-                const field = {
-                  favicon: 'faviconUrl',
-                  icon: 'iconUrl',
-                  logo: 'logoUrl',
-                  ogImage: 'ogImageUrl',
-                }[kind] as 'faviconUrl' | 'iconUrl' | 'logoUrl' | 'ogImageUrl';
-                patch({ [field]: result.url });
-              }
-              setActionError(null);
-              setActionNotice(t('branding.status.assetUploaded'));
-            } catch (cause) {
-              setActionError(formatError(cause));
-              throw cause;
-            }
-          },
-          submitLabel: t('branding.actions.upload'),
-          targetLabel: file.name,
-          title: t('branding.upload.title'),
-        });
+        payload = {
+          bytesBase64: await readFileBase64(file),
+          fileName: file.name,
+          kind,
+          requestId: crypto.randomUUID(),
+        };
       } catch (cause) {
         setActionError(formatError(cause));
+        return;
       }
+      await runAdminMutation({
+        authMethod: admin.authMethod,
+        onError: (cause) => setActionError(formatError(cause)),
+        run: async () => {
+          const result = await adminBrandingService.uploadAsset(payload);
+          // Merge against the current values: a newer snapshot may have hydrated during
+          // the file read and the upload itself.
+          if (kind === 'desktopIcon') {
+            patchDesktop({ iconUrl: result.url });
+          } else {
+            const field = {
+              favicon: 'faviconUrl',
+              icon: 'iconUrl',
+              logo: 'logoUrl',
+              ogImage: 'ogImageUrl',
+            }[kind] as 'faviconUrl' | 'iconUrl' | 'logoUrl' | 'ogImageUrl';
+            patch({ [field]: result.url });
+          }
+          setActionError(null);
+          setActionNotice(t('branding.status.assetUploaded'));
+        },
+      });
     },
-    [busy, canSave, conflict, data?.storageConfigured, formatError, patch, patchDesktop, t],
+    [
+      admin.authMethod,
+      busy,
+      canSave,
+      conflict,
+      data?.storageConfigured,
+      formatError,
+      patch,
+      patchDesktop,
+      t,
+    ],
   );
 
   if (isLoading || (!data && !error)) {
@@ -396,7 +390,7 @@ const BrandingPage = memo(() => {
             disabled={!canSave || !dirty || !valid || busy || conflict}
             loading={busy}
             type="primary"
-            onClick={save}
+            onClick={() => void save()}
           >
             {t('branding.actions.save')}
           </Button>

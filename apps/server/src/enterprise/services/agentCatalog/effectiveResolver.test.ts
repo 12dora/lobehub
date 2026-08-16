@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import {
   createUnmanagedResourcePolicyMap,
   type ManagedResourcePolicySnapshot,
@@ -33,7 +33,7 @@ const config = {
   tags: [],
 };
 
-const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
+const flags = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
 const managedPolicy = (): ManagedResourcePolicySnapshot => {
   const published = createUnmanagedResourcePolicyMap();
   published.agents = { enforcementMode: 'enforced', managed: true };
@@ -399,7 +399,7 @@ describe('PlatformAgentEffectiveResolver', () => {
   });
 
   it('does not read policy, Agent, or hidden tables while the feature is disabled', async () => {
-    const result = await createResolver(DEFAULT_ENTERPRISE_FEATURE_FLAGS).getEffectiveList('user');
+    const result = await createResolver(DISABLED_ENTERPRISE_FEATURE_FLAGS).getEffectiveList('user');
     expect(result.agents).toEqual([]);
     expect(result.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(getSnapshot).not.toHaveBeenCalled();
@@ -641,7 +641,7 @@ describe('PlatformAgentEffectiveResolver', () => {
 
   describe('system operation handle (PR-051)', () => {
     it('does not read policy or catalog state while the feature is disabled', async () => {
-      const result = await createResolver(DEFAULT_ENTERPRISE_FEATURE_FLAGS).beginSystemOperation(
+      const result = await createResolver(DISABLED_ENTERPRISE_FEATURE_FLAGS).beginSystemOperation(
         'user',
         'default-inbox',
       );

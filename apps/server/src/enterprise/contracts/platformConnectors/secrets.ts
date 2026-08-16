@@ -167,7 +167,7 @@ export const assertNoKnownSecret = (value: unknown, secretLeaves: ReadonlySet<st
 
 export const assertConnectorPersistentFieldsSafe = (
   draft: z.infer<typeof adminConnectorDraftSchema>,
-  reason: string,
+  reason: string | null | undefined,
   secretContext: TrustedConnectorSecretContext,
 ): void => {
   const trusted = resolveTrustedSecretLeaves(secretContext);

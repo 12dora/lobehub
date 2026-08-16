@@ -32,13 +32,6 @@ import {
   selectLatestPlatformAgentVersion,
 } from './versionSelection';
 
-/**
- * Stable, non-localized audit reasons. The server still requires a non-empty reason; keeping the
- * text locale-independent keeps the audit trail consistent across admin languages (mirrors delete).
- */
-export const CREATE_AGENT_REASON = 'Platform assistant created from admin console';
-export const SAVE_AGENT_REASON = 'Platform assistant saved from admin console';
-
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 
 /** The contract's own identifier rule (charset AND the 128-char ceiling), never a local copy. */
@@ -303,7 +296,6 @@ export const useAgentEditorForm = ({
                 dependencySnapshot,
                 expectedDraftToken: agent.draftToken,
                 expectedRevision: agent.identity.revision,
-                reason: SAVE_AGENT_REASON,
               }),
             { authMethod: authMethod ?? null },
           )
@@ -314,7 +306,6 @@ export const useAgentEditorForm = ({
                 config: nextConfig,
                 dependencySnapshot,
                 isDefault: false,
-                reason: CREATE_AGENT_REASON,
                 systemKey: null,
               }),
             { authMethod: authMethod ?? null },

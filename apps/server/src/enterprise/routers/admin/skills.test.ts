@@ -399,7 +399,7 @@ describe('adminSkillsRouter reauthentication', () => {
     ).resolves.toMatchObject({ draft: { allowBuiltinOverride: true } });
   });
 
-  it('requires reason and recent reauth for rollback and archive', async () => {
+  it('requires recent reauth for rollback and accepts a reason-less archive', async () => {
     const draft = await createDraft();
     const version = await createVersion(draft);
     let detail = await createVersionDetail(draft.draft.id);
@@ -422,13 +422,14 @@ describe('adminSkillsRouter reauthentication', () => {
         targetVersionId: version.id,
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    // Archiving a catalog item is no longer prompted for a reason: the CAS + reauth still gate it.
     await expect(
       fresh.archive({
         expectedDraftToken: detail.draftToken,
         expectedRevision: detail.baseRevision,
         id: draft.draft.id,
-      } as never),
-    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      }),
+    ).resolves.toMatchObject({ status: 'archived' });
   });
 });
 

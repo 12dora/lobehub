@@ -302,7 +302,7 @@ export class AdminBrandingService {
     error: unknown,
     action: AuditAction,
     actorUserId: string,
-    input: { reason: string; requestId: string },
+    input: { reason?: string | null; requestId: string },
   ): Promise<void> => {
     const errorCategory = operationErrorCategory(error);
     await this.operations.fail(claim, errorCategory);
@@ -557,7 +557,7 @@ export class AdminBrandingService {
   private appendFailureAudit = async (
     action: AuditAction,
     actorUserId: string,
-    input: { reason: string; requestId: string },
+    input: { reason?: string | null; requestId: string },
     errorCategory?: PlatformBrandingOperationErrorCategory,
   ): Promise<void> => {
     try {

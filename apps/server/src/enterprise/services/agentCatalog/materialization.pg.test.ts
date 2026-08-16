@@ -10,7 +10,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import { createUnmanagedResourcePolicyMap } from '@/database/models/platform';
 import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
@@ -32,7 +32,7 @@ import {
 } from './errors';
 import { PlatformAgentMaterializationService } from './materialization';
 
-const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
+const flags = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
 const CHECKSUM_V1 = 'a'.repeat(64);
 const CHECKSUM_V2 = 'c'.repeat(64);
 

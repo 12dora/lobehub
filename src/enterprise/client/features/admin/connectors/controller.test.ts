@@ -230,7 +230,6 @@ describe('admin Connector controller', () => {
     expect(
       buildConnectorUpdatePayload({
         draft: value,
-        reason: 'rotate credential',
         secret: updateConnectorSecretEdit('private-token'),
         snapshot,
       }),
@@ -263,7 +262,6 @@ describe('admin Connector controller', () => {
     expect(
       buildConnectorUpdatePayload({
         draft: value,
-        reason: 'replace',
         secret: updateConnectorSecretEdit('shared-token'),
         snapshot: sharedSnapshot(),
       }),
@@ -273,7 +271,6 @@ describe('admin Connector controller', () => {
     expect(
       buildConnectorUpdatePayload({
         draft: value,
-        reason: 'clear',
         secret: clearConnectorSecretEdit(),
         snapshot: sharedSnapshot(),
       }),
@@ -292,7 +289,6 @@ describe('admin Connector controller', () => {
     expect(
       buildConnectorUpdatePayload({
         draft: value,
-        reason: 'replace',
         secret: updateConnectorSecretEdit('oauth-secret'),
         snapshot: sharedSnapshot(),
       }),
@@ -302,7 +298,6 @@ describe('admin Connector controller', () => {
     expect(
       buildConnectorUpdatePayload({
         draft: value,
-        reason: 'clear',
         secret: clearConnectorSecretEdit(),
         snapshot: sharedSnapshot(),
       }),

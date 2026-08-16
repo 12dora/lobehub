@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { checksumPayload } from '@/database/models/platform';
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
 import { platformResourceRevisions } from '@/database/schemas/platform';
@@ -99,7 +99,7 @@ describe('SkillCatalogReadService historical resolution', () => {
   });
 
   describe('resolvePinnedPlatformSkillRuntimeSnapshot exact historical (SKILL-EXACT)', () => {
-    const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_SKILLS: true };
+    const flags = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_SKILLS: true };
     const identity = { agentId: 'agent-1', operationId: 'op-1', userId: 'user-1' };
 
     it('resolves the pinned v1 content after v2 is published (head moved forward)', async () => {

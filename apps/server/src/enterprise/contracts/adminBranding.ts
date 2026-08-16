@@ -92,7 +92,11 @@ export const adminBrandingGetOutputSchema = z
 
 const mutationContextSchema = z
   .object({
-    reason: secretSafeAuditReasonSchema,
+    /**
+     * Branding edits are ordinary configuration saves — the console no longer prompts for a
+     * reason. Still accepted (and audited) when a caller supplies one.
+     */
+    reason: secretSafeAuditReasonSchema.optional(),
     requestId: z.string().uuid(),
   })
   .strict();
@@ -120,7 +124,7 @@ export const adminBrandingUploadAssetInputSchema = z
     bytesBase64: z.string().min(4).max(8_000_000),
     fileName: z.string().trim().min(1).max(255),
     kind: adminBrandingAssetKindSchema,
-    reason: secretSafeAuditReasonSchema,
+    reason: secretSafeAuditReasonSchema.optional(),
     requestId: z.string().uuid(),
   })
   .strict();

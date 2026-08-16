@@ -5,6 +5,7 @@ import {
   enforced,
   noReason,
   notApplicable,
+  optionalReasonInput,
   recentReauth,
   regularMutation,
   remoteProbeNoLkg,
@@ -50,11 +51,11 @@ const taskTemplateContentAudit = enforced(
  * The import touches many rows at once, so its evidence is per-identifier: what each row became
  * and, for an overwrite, the content it replaced. Bounded by the import cap.
  */
-const taskTemplateImportAudit = enforced(
 const taskTemplateOrderAudit = enforced(
   'Router persists the resulting identifier order and slot assignment in the write transaction.',
 );
 
+const taskTemplateImportAudit = enforced(
   'Router persists per-identifier bounded sanitized before/after row summaries, plus batch counts, in the write transaction.',
 );
 
@@ -69,18 +70,19 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'admin.agents.assignments.remove',
     'high',
     'Remove an agent assignment from a target scope.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.agents.assignments.upsert': dangerousMutation(
     'admin.agents.assignments.upsert',
     'high',
     'Create or change an agent assignment.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.agents.create': regularMutation(
     'admin.agents.create',
     'medium',
     'Create an agent and publish its first version live in one transaction.',
+    { reason: optionalReasonInput },
   ),
   'admin.agents.delete': dangerousMutation(
     'admin.agents.delete',
@@ -92,43 +94,43 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'admin.agents.rollback',
     'high',
     'Move an agent publication pointer to an older version.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.agents.rollouts.cancel': dangerousMutation(
     'admin.agents.rollouts.cancel',
     'high',
     'Cancel an active agent rollout.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.agents.rollouts.retry': dangerousMutation(
     'admin.agents.rollouts.retry',
     'high',
     'Retry a failed agent rollout.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.agents.rollouts.rollback': dangerousMutation(
     'admin.agents.rollouts.rollback',
     'critical',
     'Roll back materialized agent state across users.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.agents.rollouts.start': dangerousMutation(
     'admin.agents.rollouts.start',
     'high',
     'Start materializing an agent assignment across users.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.agents.save': dangerousMutation(
     'admin.agents.save',
     'high',
     'Append an agent version and publish it to its consumers immediately (the only agent write).',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.agents.setDefaultInbox': dangerousMutation(
     'admin.agents.setDefaultInbox',
     'critical',
     'Replace the global default inbox agent.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.agents.validateDependencies': validationMutation(
     'admin.agents.validateDependencies',
@@ -192,24 +194,25 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'admin.skills.applyImmediate',
     'high',
     'Create or update a platform skill draft and publish immediately (no outbound).',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.skills.archive': dangerousMutation(
     'admin.skills.archive',
     'high',
     'Archive a published platform skill.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.skills.create': regularMutation(
     'admin.skills.create',
     'medium',
     'Create a platform skill draft.',
-    { reauth: conditionalReauth },
+    { reason: optionalReasonInput, reauth: conditionalReauth },
   ),
   'admin.skills.createVersion': regularMutation(
     'admin.skills.createVersion',
     'medium',
     'Append an immutable platform skill version.',
+    { reason: optionalReasonInput },
   ),
   'admin.skills.parseImportSource': regularMutation(
     'admin.skills.parseImportSource',
@@ -230,7 +233,7 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'admin.skills.publish',
     'high',
     'Publish a platform skill version.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.skills.publishNow': dangerousMutation(
     'admin.skills.publishNow',
@@ -242,17 +245,19 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'admin.skills.rollback',
     'high',
     'Restore an earlier platform skill version.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.skills.updateDraft': regularMutation(
     'admin.skills.updateDraft',
     'medium',
     'Change a platform skill draft.',
+    { reason: optionalReasonInput },
   ),
   'admin.skills.validate': regularMutation(
     'admin.skills.validate',
     'low',
     'Validate a stored platform skill version.',
+    { reason: optionalReasonInput },
   ),
   'admin.taskTemplates.create': regularMutation(
     'admin.taskTemplates.create',
@@ -276,17 +281,17 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
       reason: taskTemplateContentReason,
     },
   ),
-  'admin.taskTemplates.setEnabled': regularMutation(
-    'admin.taskTemplates.setEnabled',
-    'low',
-    'Show or hide a single platform task template without deleting its content.',
-    { audit: taskTemplateContentAudit, reason: taskTemplateContentReason },
   'admin.taskTemplates.reorder': regularMutation(
     'admin.taskTemplates.reorder',
     'low',
     'Change the display order of platform task templates on the home and task-list surfaces.',
     { audit: taskTemplateOrderAudit, reason: taskTemplateContentReason },
   ),
+  'admin.taskTemplates.setEnabled': regularMutation(
+    'admin.taskTemplates.setEnabled',
+    'low',
+    'Show or hide a single platform task template without deleting its content.',
+    { audit: taskTemplateContentAudit, reason: taskTemplateContentReason },
   ),
   'admin.taskTemplates.update': regularMutation(
     'admin.taskTemplates.update',

@@ -3,7 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+  DISABLED_ENTERPRISE_FEATURE_FLAGS,
   type EnterpriseFeatureFlags,
 } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
@@ -38,7 +38,7 @@ const keyProvider: KeyProvider = {
 };
 const secretService = new PlatformSecretService({ keyProvider });
 const managedFlags: EnterpriseFeatureFlags = {
-  ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+  ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
   ENABLE_PLATFORM_MANAGED_AI: true,
 };
 
@@ -114,7 +114,7 @@ describe('AI catalog runtime readiness', () => {
     await expect(
       resolveAiCatalogRuntimeReadiness({
         db: failOnRead,
-        flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+        flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
         secretService: null,
       }),
     ).resolves.toBe(false);

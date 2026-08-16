@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { MANAGED_ERROR_CODES } from '@/const/platform/errorCodes';
 import {
-  DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+  DISABLED_ENTERPRISE_FEATURE_FLAGS,
   type EnterpriseFeatureFlags,
 } from '@/const/platform/featureFlags';
 import {
@@ -92,7 +92,7 @@ const readinessFor = (resource: ManagedResourceKind, ready: boolean) => async ()
 });
 
 const flagsFor = (resource: ManagedResourceKind, enabled: boolean): EnterpriseFeatureFlags => ({
-  ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+  ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
   ENABLE_PLATFORM_MANAGED_AGENTS: resource === 'agents' && enabled,
   ENABLE_PLATFORM_MANAGED_AI: (resource === 'aiModels' || resource === 'aiProviders') && enabled,
   ENABLE_PLATFORM_MANAGED_CONNECTORS: resource === 'connectors' && enabled,

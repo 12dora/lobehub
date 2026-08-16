@@ -9,7 +9,13 @@ describe('connector runtime integration mode', () => {
   it('does no policy or readiness I/O when the feature flag is off', async () => {
     const resolveState = vi.fn();
 
-    await expect(resolveConnectorRuntimeMode({ env: {}, resolveState })).resolves.toBe('legacy');
+    // Managed connectors are on by default, so the flag has to be turned off explicitly.
+    await expect(
+      resolveConnectorRuntimeMode({
+        env: { ENABLE_PLATFORM_MANAGED_CONNECTORS: '0' },
+        resolveState,
+      }),
+    ).resolves.toBe('legacy');
     expect(resolveState).not.toHaveBeenCalled();
   });
 

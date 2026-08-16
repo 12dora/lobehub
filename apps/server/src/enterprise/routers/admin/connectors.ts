@@ -63,7 +63,7 @@ const adminConnectorProcedure = authedProcedure
 
 const replacementSecrets = (input: {
   oauthClientSecret?: { operation: string; value?: unknown };
-  reason: string;
+  reason?: string;
   sharedSecret?: { operation: string; value?: unknown };
 }): unknown[] => [
   ...(input.oauthClientSecret?.operation === 'replace' ? [input.oauthClientSecret.value] : []),

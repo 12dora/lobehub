@@ -89,7 +89,9 @@ describe('aiProviderRouter', () => {
   };
 
   beforeEach(() => {
-    delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    // This suite covers the upstream (user-owned) AI provider router. Managed AI is on by
+    // default now, so it has to be turned off explicitly or the managed-resource guard runs.
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '0';
     enforcementMocks.takeover = false;
     clearAiCatalogRuntimeCache();
     vi.clearAllMocks();

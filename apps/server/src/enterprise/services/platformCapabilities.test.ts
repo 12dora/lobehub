@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { DISABLED_PLATFORM_CAPABILITIES } from '@/types/platform/capabilities';
 
 import { findForbiddenCapabilityKeys } from './__test-support__/capabilityTestHelpers';
@@ -9,7 +9,7 @@ import { buildPlatformCapabilities } from './platformCapabilities';
 
 describe('buildPlatformCapabilities', () => {
   it('returns fully disabled snapshot when flags are default-off', () => {
-    const caps = buildPlatformCapabilities({ flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS } });
+    const caps = buildPlatformCapabilities({ flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS } });
     expect(caps).toEqual({
       ...DISABLED_PLATFORM_CAPABILITIES,
       features: { ...DISABLED_PLATFORM_CAPABILITIES.features },
@@ -22,7 +22,7 @@ describe('buildPlatformCapabilities', () => {
   it('does not infer managed resources from rollout flags alone', () => {
     const caps = buildPlatformCapabilities({
       flags: {
-        ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+        ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
         ENABLE_PLATFORM_ADMIN: true,
         ENABLE_PLATFORM_MANAGED_AI: true,
       },
@@ -37,7 +37,7 @@ describe('buildPlatformCapabilities', () => {
   it('accepts only already-resolved published policy booleans', () => {
     const caps = buildPlatformCapabilities({
       flags: {
-        ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+        ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
         ENABLE_PLATFORM_MANAGED_AI: true,
       },
       managedResources: {
@@ -55,11 +55,11 @@ describe('buildPlatformCapabilities', () => {
   it('exposes aiTakeover only with the managed-AI flag and a resolved server verdict', () => {
     const flagOff = buildPlatformCapabilities({
       aiTakeover: true,
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
     });
     expect(flagOff.aiTakeover).toBe(false);
 
-    const flagOn = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
+    const flagOn = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
     expect(buildPlatformCapabilities({ flags: flagOn }).aiTakeover).toBe(false);
     expect(buildPlatformCapabilities({ aiTakeover: true, flags: flagOn }).aiTakeover).toBe(true);
 
@@ -82,13 +82,13 @@ describe('buildPlatformCapabilities', () => {
   it('sets adminAccess only when flag on and caller marks access', () => {
     const denied = buildPlatformCapabilities({
       adminAccess: true,
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
     });
     expect(denied.adminAccess).toBe(false);
 
     const allowed = buildPlatformCapabilities({
       adminAccess: true,
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_ADMIN: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_ADMIN: true },
     });
     expect(allowed.adminAccess).toBe(true);
   });
@@ -97,7 +97,7 @@ describe('buildPlatformCapabilities', () => {
     const caps = buildPlatformCapabilities({
       adminAccess: true,
       flags: {
-        ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+        ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
         ENABLE_PLATFORM_ADMIN: true,
         ENABLE_PLATFORM_MANAGED_AGENTS: true,
         ENABLE_RUNTIME_BRANDING: true,

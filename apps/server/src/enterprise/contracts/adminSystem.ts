@@ -298,7 +298,11 @@ const jobMutationIntentSchema = z
   .object({
     expectedRevision: platformJobRevisionSchema,
     jobId: platformJobIdSchema,
-    reason: reasonSchema,
+    /**
+     * Job control is an operational action the console no longer prompts for. A supplied reason
+     * is still bounded and secret-scanned; omitted reasons persist as a null audit column.
+     */
+    reason: reasonSchema.optional(),
     requestId: z.string().uuid(),
   })
   .strict();

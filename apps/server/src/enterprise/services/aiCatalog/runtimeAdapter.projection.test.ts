@@ -3,7 +3,7 @@ import { ModelRuntime } from '@lobechat/model-runtime';
 import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import {
   createUnmanagedResourcePolicyMap,
   PlatformCatalogAuthorityModel,
@@ -71,7 +71,7 @@ describe('AiCatalogRuntimeAdapter', () => {
     ) as LobeChatDatabase;
     const adapter = new AiCatalogRuntimeAdapter(failOnReadDb);
     const result = await adapter.resolve({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
       upstreamState,
     });
     expect(result).toBe(upstreamState);
@@ -343,7 +343,7 @@ describe('AiCatalogRuntimeAdapter', () => {
     });
 
     await expect(
-      adapter.resolve({ flags: DEFAULT_ENTERPRISE_FEATURE_FLAGS, upstreamState }),
+      adapter.resolve({ flags: DISABLED_ENTERPRISE_FEATURE_FLAGS, upstreamState }),
     ).resolves.toBe(upstreamState);
     expect(loadCurrentSnapshot).not.toHaveBeenCalled();
     expect(reportRuntimeState).not.toHaveBeenCalled();
@@ -584,7 +584,7 @@ describe('AiCatalogRuntimeAdapter', () => {
       expect(
         await resolveAiCatalogRuntimeState({
           db: failOnRead,
-          flags: DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+          flags: DISABLED_ENTERPRISE_FEATURE_FLAGS,
           upstreamState,
         }),
       ).toBe(upstreamState);

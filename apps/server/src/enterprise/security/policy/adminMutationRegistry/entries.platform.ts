@@ -2,6 +2,7 @@ import {
   dangerousMutation,
   identityLkg,
   noReason,
+  optionalReasonInput,
   prepareRestartAudit,
   recentReauth,
   regularMutation,
@@ -77,7 +78,7 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'admin.system.cancelJob',
     'high',
     'Cancel an eligible active platform job with atomic compare-and-set.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
   'admin.system.prepareRestart': dangerousMutation(
     'admin.system.prepareRestart',
@@ -95,6 +96,6 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'admin.system.retryJob',
     'high',
     'Retry an eligible terminal platform job with atomic compare-and-set.',
-    { reauth: recentReauth },
+    { reason: optionalReasonInput, reauth: recentReauth },
   ),
 } as const satisfies Record<`admin.${string}`, AdminMutationDefinition>;

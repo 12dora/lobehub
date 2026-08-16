@@ -25,6 +25,7 @@ export {
 } from './localDraftSafety';
 export { cloneFromCanonical, createCanonicalSnapshot, deepFreeze } from './payloadSnapshot';
 export { default as RevisionBanner, type RevisionBannerProps } from './RevisionBanner';
+export { runAdminMutation, type RunAdminMutationOptions } from './runAdminMutation';
 export { default as StatusBadge, type StatusBadgeProps } from './StatusBadge';
 export {
   type AdminResourceStatus,

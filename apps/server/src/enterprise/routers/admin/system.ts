@@ -167,7 +167,7 @@ const assertJobMutationReauth = async (
     serverDB: ConstructorParameters<typeof PlatformAuditService>[0];
     userId: string;
   },
-  input: { jobId: string; reason: string; requestId: string },
+  input: { jobId: string; reason?: string | null; requestId: string },
   action: typeof AUDIT_ACTION.SYSTEM_JOBS_CANCEL | typeof AUDIT_ACTION.SYSTEM_JOBS_RETRY,
 ): Promise<void> =>
   assertDangerousReauthWithAudit({

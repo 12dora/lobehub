@@ -190,7 +190,7 @@ export class SkillCatalogAdminService {
     actorUserId: string;
     afterDiff?: Record<string, unknown>;
     db?: LobeChatDatabase | Transaction;
-    reason: string;
+    reason?: string | null;
     result: 'failure' | 'success';
     targetId: string;
   }) => {
@@ -208,7 +208,7 @@ export class SkillCatalogAdminService {
   private appendFailureAudit = async (params: {
     action: AuditAction;
     actorUserId: string;
-    reason: string;
+    reason?: string | null;
     targetId: string;
   }) => {
     try {
@@ -227,7 +227,7 @@ export class SkillCatalogAdminService {
   private atomicMutation = async <T>(params: {
     action: AuditAction;
     actorUserId: string;
-    reason: string;
+    reason?: string | null;
     run: (tx: Transaction) => Promise<T>;
     summarize: (result: T) => Record<string, unknown>;
     targetId: (result?: T) => string;
@@ -540,7 +540,7 @@ export class SkillCatalogAdminService {
   private tryPublishImmediate = async (
     actorUserId: string,
     skillId: string,
-    reason: string,
+    reason: string | null | undefined,
     versionId: string | null,
     options?: { softFail?: boolean },
   ) => {

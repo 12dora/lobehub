@@ -164,15 +164,14 @@ describe('useConnectorActions', () => {
 
     await act(async () => {
       result.current.onPrimaryAction('test');
-      // Allow openReasonModal async onSubmit to settle.
+      // Allow the direct (prompt-less) mutation to settle.
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(mocks.test).toHaveBeenCalledWith({
-      id: 'connector-1',
-      reason: 'test connection',
-    });
+    // Testing a connector no longer prompts for an audit reason.
+    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+    expect(mocks.test).toHaveBeenCalledWith({ id: 'connector-1' });
     expect(mocks.mutate).toHaveBeenCalled();
 
     // After refetch with connectionTest still null, session retention unlocks Publish.
@@ -201,15 +200,6 @@ describe('useConnectorActions', () => {
 
     const editor = idleEditor();
     editor.dirty = true as never;
-    mocks.openReasonModal.mockImplementationOnce(({ onSubmit }) => {
-      void onSubmit({
-        displayName: 'Calendar',
-        expectedDraftToken: 'c'.repeat(64),
-        expectedRevision: 3,
-        id: 'connector-1',
-        reason: 'save draft',
-      });
-    });
 
     const { result } = renderHook(() =>
       useConnectorActions({

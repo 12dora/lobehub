@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { adminPlatformAgentDetailOutputSchema } from './adminLifecycle';
-import { draftTokenSchema, idSchema, reasonSchema, revisionSchema } from './common';
+import { draftTokenSchema, idSchema, optionalReasonSchema, revisionSchema } from './common';
 import {
   platformAgentAssignmentSchema,
   platformAgentImmutableVersionSchema,
@@ -14,7 +14,7 @@ export const adminPlatformAgentRolloutStartInputSchema = z
     assignmentId: idSchema,
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict();
 
@@ -89,7 +89,7 @@ const rolloutJobMutationBaseSchema = z
     agentId: idSchema,
     expectedJobRevision: revisionSchema,
     jobId: idSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict();
 

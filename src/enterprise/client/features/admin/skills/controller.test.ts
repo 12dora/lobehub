@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { skillResourceContentChecksum } from '@/server/enterprise/contracts/skillCatalog';
 
 import {
   buildApplyImmediateVersionPayloadFromImport,
@@ -85,7 +86,8 @@ const parseImportOutput = (
   packageVersion: '2.3.4',
   resources: [
     {
-      checksum: 'c'.repeat(64),
+      // The contract binds the checksum to the SHA-256 of the UTF-8 content bytes.
+      checksum: skillResourceContentChecksum('helper text'),
       content: 'helper text',
       mediaType: 'text/plain',
       path: 'helpers/note.txt',
@@ -185,14 +187,12 @@ describe('M08 Skill UI controller', () => {
         draft: { ...editable.identity, description: ' updated ' },
         draftToken: 'a'.repeat(64),
         id: 'skill-1',
-        reason: ' reviewed update ',
         revision: 3,
       }),
     ).toMatchObject({
       description: 'updated',
       expectedDraftToken: 'a'.repeat(64),
       expectedRevision: 3,
-      reason: 'reviewed update',
     });
 
     const versionPayload = buildSkillVersionPayload({
@@ -204,7 +204,6 @@ describe('M08 Skill UI controller', () => {
         version: '1.1.0',
       },
       draftToken: 'a'.repeat(64),
-      reason: 'reviewed immutable version',
       revision: 3,
       skillId: 'skill-1',
     });
@@ -234,7 +233,6 @@ describe('M08 Skill UI controller', () => {
       buildSkillVersionPayload({
         draft,
         draftToken: 'a'.repeat(64),
-        reason: 'reviewed',
         revision: 3,
         skillId: 'skill-1',
       }),

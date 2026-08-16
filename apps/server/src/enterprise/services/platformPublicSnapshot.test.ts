@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { DISABLED_PLATFORM_PUBLIC_SNAPSHOT } from '@/types/platform/publicSnapshot';
 
 import { buildPlatformPublicSnapshot } from './platformPublicSnapshot';
@@ -27,7 +27,7 @@ const branding = {
 
 describe('buildPlatformPublicSnapshot', () => {
   it('returns disabled public snapshot when flags are off', () => {
-    const snap = buildPlatformPublicSnapshot({ flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS } });
+    const snap = buildPlatformPublicSnapshot({ flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS } });
     expect(snap).toEqual({
       ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
       branding: null,
@@ -38,7 +38,7 @@ describe('buildPlatformPublicSnapshot', () => {
   it('hides branding fields when runtime branding flag is off', () => {
     const snap = buildPlatformPublicSnapshot({
       branding: { ...branding, logoUrl: '/x.png', revision: '9' },
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
     });
     expect(snap.platformName).toBeNull();
     expect(snap.logoUrl).toBeNull();
@@ -48,7 +48,7 @@ describe('buildPlatformPublicSnapshot', () => {
   it('surfaces branding only when ENABLE_RUNTIME_BRANDING is on', () => {
     const snap = buildPlatformPublicSnapshot({
       branding,
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
     });
     expect(snap.platformName).toBe('AIHub');
     expect(snap.logoUrl).toBe('/logo.png');
@@ -60,7 +60,7 @@ describe('buildPlatformPublicSnapshot', () => {
     const snap = buildPlatformPublicSnapshot({
       branding,
       configRevision: 'public-config-7',
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
     });
 
     expect(snap.brandingRevision).toBe('2');
@@ -70,14 +70,14 @@ describe('buildPlatformPublicSnapshot', () => {
   it('enables work account only when OIDC flag and published IdP are both true', () => {
     expect(
       buildPlatformPublicSnapshot({
-        flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
+        flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
         workAccountEnabled: false,
       }).login.workAccountEnabled,
     ).toBe(false);
 
     expect(
       buildPlatformPublicSnapshot({
-        flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
+        flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_DATABASE_OIDC: true },
         workAccountEnabled: true,
       }).login.workAccountEnabled,
     ).toBe(true);
@@ -87,7 +87,7 @@ describe('buildPlatformPublicSnapshot', () => {
     const snap = buildPlatformPublicSnapshot({
       branding: { ...branding, logoUrl: '/a.png', revision: '1' },
       flags: {
-        ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+        ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
         ENABLE_DATABASE_OIDC: true,
         ENABLE_RUNTIME_BRANDING: true,
       },

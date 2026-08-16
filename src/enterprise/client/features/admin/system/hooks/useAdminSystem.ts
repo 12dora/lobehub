@@ -247,9 +247,9 @@ export const useAdminSystemJobs = (
 
 export interface AdminSystemJobMutations {
   busyJobIds: readonly string[];
-  cancel: (job: AdminSystemJob, reason: string) => Promise<AdminSystemJobMutationResult>;
+  cancel: (job: AdminSystemJob) => Promise<AdminSystemJobMutationResult>;
   refreshPendingJobIds: readonly string[];
-  retry: (job: AdminSystemJob, reason: string) => Promise<AdminSystemJobMutationResult>;
+  retry: (job: AdminSystemJob) => Promise<AdminSystemJobMutationResult>;
   retryRefresh: () => Promise<boolean>;
 }
 
@@ -288,7 +288,7 @@ export const useAdminSystemJobMutations = ({
   }, [onRefresh]);
 
   const run = useCallback(
-    async (job: AdminSystemJob, reason: string, action: AdminSystemJobAction) => {
+    async (job: AdminSystemJob, action: AdminSystemJobAction) => {
       if (
         busyRef.current.has(job.jobId) ||
         refreshPendingRef.current.has(job.jobId) ||
@@ -309,7 +309,6 @@ export const useAdminSystemJobMutations = ({
               const base = {
                 expectedRevision,
                 jobId: job.jobId,
-                reason,
                 requestId,
               };
               if (action === 'cancel') {
@@ -378,9 +377,9 @@ export const useAdminSystemJobMutations = ({
 
   return {
     busyJobIds,
-    cancel: (job, reason) => run(job, reason, 'cancel'),
+    cancel: (job) => run(job, 'cancel'),
     refreshPendingJobIds,
     retryRefresh,
-    retry: (job, reason) => run(job, reason, 'retry'),
+    retry: (job) => run(job, 'retry'),
   };
 };

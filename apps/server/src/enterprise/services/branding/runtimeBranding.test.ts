@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 
 import { resolveServerRuntimeBranding } from './runtimeBranding';
 
@@ -9,7 +9,7 @@ describe('resolveServerRuntimeBranding', () => {
     const getDatabase = vi.fn();
 
     const branding = await resolveServerRuntimeBranding({
-      flags: DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+      flags: DISABLED_ENTERPRISE_FEATURE_FLAGS,
       getDatabase,
     });
 
@@ -42,7 +42,7 @@ describe('resolveServerRuntimeBranding', () => {
     });
 
     const branding = await resolveServerRuntimeBranding({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
       getDatabase,
       getPublishedBranding,
     });
@@ -58,7 +58,7 @@ describe('resolveServerRuntimeBranding', () => {
 
   it('fails closed to built-in branding when the database is unavailable', async () => {
     const branding = await resolveServerRuntimeBranding({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
       getDatabase: vi.fn().mockRejectedValue(new Error('offline')),
     });
 
@@ -69,7 +69,7 @@ describe('resolveServerRuntimeBranding', () => {
 
   it('fails closed when an injected Published projection violates the strict schema', async () => {
     const branding = await resolveServerRuntimeBranding({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
       getDatabase: vi.fn().mockResolvedValue({}),
       getPublishedBranding: vi.fn().mockResolvedValue({
         name: '<script>alert(1)</script>',

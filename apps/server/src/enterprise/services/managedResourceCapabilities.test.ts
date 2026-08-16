@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
   createUnmanagedResourcePolicyMap,
@@ -48,7 +48,7 @@ describe('resolvePublishedManagedResourcePolicies', () => {
     policies.skills = { enforcementMode: 'observe', managed: true };
     await model.materializePublished({ policies, revision: 1 });
     const flags = {
-      ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+      ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
       ENABLE_PLATFORM_MANAGED_SKILLS: true,
     };
 
@@ -66,7 +66,7 @@ describe('resolvePublishedManagedResourcePolicies', () => {
 
     const result = await resolvePublishedManagedResourcePolicies({
       db: serverDB,
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
       readiness,
     });
     expect(result.publicCapabilities.aiProviders).toBe(false);
@@ -84,7 +84,7 @@ describe('resolvePublishedManagedResourcePolicies', () => {
     const flagsOn = await resolvePublishedManagedResourcePolicies({
       db: serverDB,
       flags: {
-        ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+        ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
         ENABLE_PLATFORM_MANAGED_AGENTS: true,
         ENABLE_PLATFORM_MANAGED_AI: true,
       },
@@ -103,7 +103,7 @@ describe('resolvePublishedManagedResourcePolicies', () => {
 
     const flagsOff = await resolvePublishedManagedResourcePolicies({
       db: serverDB,
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
       readiness,
     });
     expect(Object.values(flagsOff.publicCapabilities).every((managed) => !managed)).toBe(true);
@@ -122,7 +122,7 @@ describe('resolvePublishedManagedResourcePolicies', () => {
     const result = await resolvePublishedManagedResourcePolicies({
       db: serverDB,
       flags: {
-        ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+        ...DISABLED_ENTERPRISE_FEATURE_FLAGS,
         ENABLE_PLATFORM_MANAGED_AI: true,
         ENABLE_PLATFORM_MANAGED_CONNECTORS: true,
       },
@@ -216,12 +216,12 @@ describe('resolveManagedResourceReadinessCached', () => {
 
     await resolvePublishedManagedResourcePolicies({
       db: serverDB,
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
       readiness: probe,
     });
     await resolvePublishedManagedResourcePolicies({
       db: serverDB,
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
       readiness: probe,
     });
 

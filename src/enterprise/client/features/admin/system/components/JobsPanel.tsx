@@ -7,6 +7,7 @@ import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { openDangerConfirm } from '@/enterprise/client/features/admin/primitives/DangerConfirm';
 import DataTable from '@/enterprise/client/features/admin/primitives/DataTable';
 import type { AdminSystemJobAction } from '@/enterprise/client/features/admin/system/controller';
 import { canRunAdminSystemJobAction } from '@/enterprise/client/features/admin/system/controller';
@@ -14,7 +15,6 @@ import type {
   AdminSystemJobMutations,
   AdminSystemJobsState,
 } from '@/enterprise/client/features/admin/system/hooks/useAdminSystem';
-import { openJobActionModal } from '@/enterprise/client/features/admin/system/modals/openJobActionModal';
 import { formatAdminDateTime } from '@/enterprise/client/features/admin/users/utils';
 import type { AdminSystemJob } from '@/enterprise/client/services/adminSystem';
 
@@ -58,14 +58,19 @@ export const JobsPanel = memo<JobsPanelProps>(({ canOperate, mutations, state })
   const openAction = useCallback(
     (job: AdminSystemJob, action: AdminSystemJobAction) => {
       if (blocked.has(job.jobId) || !canRunAdminSystemJobAction(job, action)) return;
-      openJobActionModal({
-        action,
-        jobId: job.jobId,
-        onSubmit: async (reason) => {
+      // Job control is operational, not destructive: confirm intent, never ask for a reason.
+      openDangerConfirm({
+        confirmText: t(`system.jobs.actions.${action}` as never),
+        title: t(`system.jobs.modal.${action}.title` as never),
+        content:
+          action === 'cancel'
+            ? `${t('system.jobs.modal.cancel.description', { jobId: job.jobId })} ${t(
+                'system.jobs.modal.cancel.completedItems',
+              )}`
+            : t('system.jobs.modal.retry.description', { jobId: job.jobId }),
+        onConfirm: async () => {
           const result =
-            action === 'cancel'
-              ? await mutations.cancel(job, reason)
-              : await mutations.retry(job, reason);
+            action === 'cancel' ? await mutations.cancel(job) : await mutations.retry(job);
           if (result === 'succeeded') {
             toast.success(t(`system.jobs.toast.${action}Requested` as never));
           } else if (result === 'conflict') {

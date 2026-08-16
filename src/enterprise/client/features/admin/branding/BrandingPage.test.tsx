@@ -28,7 +28,6 @@ const mocks = vi.hoisted(() => ({
   },
   /** Mounted subscribers of the fake SWR hook, so a snapshot change re-renders the page. */
   listeners: new Set<() => void>(),
-  modalCalls: [] as Record<string, unknown>[],
   platformRefresh: vi.fn(async () => {}),
   save: vi.fn(),
   uploadAsset: vi.fn(),
@@ -75,12 +74,6 @@ vi.mock('@/enterprise/client/services/adminBranding', () => ({
   },
 }));
 
-vi.mock('../users/modals/openReasonModal', () => ({
-  openReasonModal: (params: Record<string, unknown>) => {
-    mocks.modalCalls.push(params);
-  },
-}));
-
 // Stands in for the SWR hook: same shape, plus a subscription so a changed snapshot
 // re-renders the page the way a revalidation would.
 vi.mock('./useAdminBranding', async () => {
@@ -95,6 +88,26 @@ vi.mock('./useAdminBranding', async () => {
         };
       }, [bump]);
       return mocks.fetch;
+    },
+  };
+});
+
+// Real reauth semantics without a popup: one interactive reauth, then exactly one replay of the
+// SAME frozen request (so a reauth retry must never mint a new requestId).
+vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', () => {
+  const isAdminReauthRequiredError = (error: unknown) =>
+    (error as { code?: string })?.code === 'ADMIN_REAUTH_REQUIRED';
+  return {
+    AdminReauthBlockedError: class AdminReauthBlockedError extends Error {},
+    AdminReauthCancelledError: class AdminReauthCancelledError extends Error {},
+    isAdminReauthRequiredError,
+    withAdminReauthRetry: async <T,>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        return await fn();
+      } catch (error) {
+        if (!isAdminReauthRequiredError(error)) throw error;
+        return await fn();
+      }
     },
   };
 });
@@ -151,11 +164,13 @@ const emitSnapshot = async () => {
   });
 };
 
-const latestModal = () =>
-  mocks.modalCalls.at(-1) as {
-    buildPayload: (reason: string) => unknown;
-    onSubmit: (payload: unknown) => Promise<void>;
-  };
+/** Save and upload fire directly — no audit-reason prompt stands between click and request. */
+const flush = async () => {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+};
 
 const saveButton = () => screen.getByRole('button', { name: 'branding.actions.save' });
 
@@ -180,7 +195,6 @@ const deferredSave = () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.modalCalls.length = 0;
   mocks.admin.permissions = [
     PLATFORM_PERMISSIONS.BRANDING_READ,
     PLATFORM_PERMISSIONS.BRANDING_UPDATE,
@@ -203,14 +217,14 @@ describe('BrandingPage interactions', () => {
     fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
       target: { value: 'Saved Brand' },
     });
-    fireEvent.click(saveButton());
-    const modal = latestModal();
-    expect(modal.buildPayload('save reason')).toMatchObject({
-      expectedRevision: 2,
-      expectedToken: 'a'.repeat(64),
-      reason: 'save reason',
+    await act(async () => {
+      fireEvent.click(saveButton());
     });
-    await act(() => modal.onSubmit(modal.buildPayload('save reason')));
+    expect(mocks.save).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedRevision: 2, expectedToken: 'a'.repeat(64) }),
+    );
+    // No audit reason is collected for an ordinary branding save.
+    expect(mocks.save.mock.calls[0][0]).not.toHaveProperty('reason');
 
     expect(mocks.save).toHaveBeenCalledOnce();
     expect(mocks.platformRefresh).toHaveBeenCalled();
@@ -268,10 +282,8 @@ describe('BrandingPage interactions', () => {
     fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
       target: { value: 'Conflicting' },
     });
-    fireEvent.click(saveButton());
-    const modal = latestModal();
     await act(async () => {
-      await expect(modal.onSubmit(modal.buildPayload('conflict reason'))).rejects.toThrow();
+      fireEvent.click(saveButton());
     });
 
     expect(screen.getByText('enterprise.error.PLATFORM_REVISION_CONFLICT')).toBeInTheDocument();
@@ -377,9 +389,9 @@ describe('BrandingPage interactions', () => {
     fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
       target: { value: 'Saved Brand' },
     });
-    fireEvent.click(saveButton());
-    const modal = latestModal();
-    await act(() => modal.onSubmit(modal.buildPayload('save reason')));
+    await act(async () => {
+      fireEvent.click(saveButton());
+    });
 
     // A cached revalidation still holding revision 2 must not roll the editor back.
     await emitSnapshot();
@@ -394,11 +406,8 @@ describe('BrandingPage interactions', () => {
     fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
       target: { value: 'Mine' },
     });
-    fireEvent.click(saveButton());
-    const modal = latestModal();
-    let submission!: Promise<void>;
     await act(async () => {
-      submission = modal.onSubmit(modal.buildPayload('race reason'));
+      fireEvent.click(saveButton());
     });
     expect(useBrandingEditorStore.getState().editorState).toBe('saving');
 
@@ -408,9 +417,7 @@ describe('BrandingPage interactions', () => {
     expect(screen.getByText('branding.conflict.title')).toBeInTheDocument();
 
     release(data({ branding: payload('Mine'), revision: 3, token: 'h'.repeat(64) }));
-    await act(async () => {
-      await submission;
-    });
+    await flush();
 
     // The older response neither rolls the editor back nor overwrites the SWR entry.
     expect(useBrandingEditorStore.getState()).toMatchObject({
@@ -431,11 +438,8 @@ describe('BrandingPage interactions', () => {
     });
     expect(leaveGuardArmed()).toBe(true);
 
-    fireEvent.click(saveButton());
-    const modal = latestModal();
-    let submission!: Promise<void>;
     await act(async () => {
-      submission = modal.onSubmit(modal.buildPayload('guard reason'));
+      fireEvent.click(saveButton());
     });
     // The edits are still only local while the request is in flight.
     expect(leaveGuardArmed()).toBe(true);
@@ -443,9 +447,7 @@ describe('BrandingPage interactions', () => {
     mocks.fetch.data = data({ branding: payload('Theirs'), revision: 4, token: 'i'.repeat(64) });
     await emitSnapshot();
     release(data({ branding: payload('Unsaved'), revision: 3, token: 'j'.repeat(64) }));
-    await act(async () => {
-      await submission;
-    });
+    await flush();
 
     expect(screen.getByText('branding.conflict.title')).toBeInTheDocument();
     expect(leaveGuardArmed()).toBe(true);
@@ -460,7 +462,7 @@ describe('BrandingPage interactions', () => {
     expect(saveButton()).toBeDisabled();
   });
 
-  it('keeps a failed save retryable with the same canonical modal payload', async () => {
+  it('keeps a failed save retryable on the same frozen CAS', async () => {
     mocks.save
       .mockRejectedValueOnce(new Error('NETWORK_UNAVAILABLE'))
       .mockResolvedValueOnce(
@@ -470,17 +472,43 @@ describe('BrandingPage interactions', () => {
     fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
       target: { value: 'Retry Brand' },
     });
-    fireEvent.click(saveButton());
-    const modal = latestModal();
-    const payloadOnce = modal.buildPayload('retry reason');
-
     await act(async () => {
-      await expect(modal.onSubmit(payloadOnce)).rejects.toThrow();
+      fireEvent.click(saveButton());
     });
-    // Transient failure returns to dirty — the same payload is retryable.
+    // Transient failure returns to dirty — the same CAS is retryable.
     expect(saveButton()).not.toBeDisabled();
-    await act(() => modal.onSubmit(payloadOnce));
+    await act(async () => {
+      fireEvent.click(saveButton());
+    });
     await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(2));
+    expect(mocks.save.mock.calls[1][0]).toMatchObject({
+      expectedRevision: 2,
+      expectedToken: 'a'.repeat(64),
+    });
+    // A user-initiated retry is a NEW request: it must not reuse the failed attempt's
+    // idempotency key (the CAS is what keeps a double apply impossible).
+    expect(mocks.save.mock.calls[0][0].requestId).not.toBe(mocks.save.mock.calls[1][0].requestId);
+    expect(screen.getByText('branding.status.saved')).toBeInTheDocument();
+  });
+
+  it('replays the identical frozen request after a reauth challenge', async () => {
+    const reauth = Object.assign(new Error('reauth'), { code: 'ADMIN_REAUTH_REQUIRED' });
+    mocks.save
+      .mockRejectedValueOnce(reauth)
+      .mockResolvedValueOnce(
+        data({ branding: payload('Reauth Brand'), revision: 3, token: 'k'.repeat(64) }),
+      );
+    renderPage();
+    fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
+      target: { value: 'Reauth Brand' },
+    });
+    await act(async () => {
+      fireEvent.click(saveButton());
+    });
+
+    // One logical save: the reauth retry replays the SAME payload, idempotency key included.
+    expect(mocks.save).toHaveBeenCalledTimes(2);
+    expect(mocks.save.mock.calls[0][0]).toEqual(mocks.save.mock.calls[1][0]);
     expect(screen.getByText('branding.status.saved')).toBeInTheDocument();
   });
 
@@ -493,9 +521,9 @@ describe('BrandingPage interactions', () => {
     fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
       target: { value: 'Saved Brand' },
     });
-    fireEvent.click(saveButton());
-    const modal = latestModal();
-    await act(() => modal.onSubmit(modal.buildPayload('save reason')));
+    await act(async () => {
+      fireEvent.click(saveButton());
+    });
 
     expect(screen.getByText('branding.refresh.postCommitFailed')).toBeInTheDocument();
     // The save itself committed: the editor stays usable on the new revision.
@@ -544,9 +572,8 @@ describe('BrandingPage interactions', () => {
     await act(async () => {
       fireEvent.change(desktopInput, { target: { files: [file] } });
     });
-    await waitFor(() => expect(mocks.modalCalls.length).toBeGreaterThan(0));
-    const modal = latestModal();
-    await act(() => modal.onSubmit(modal.buildPayload('upload desktop icon')));
+    await waitFor(() => expect(mocks.uploadAsset).toHaveBeenCalled());
+    await flush();
 
     expect(mocks.uploadAsset).toHaveBeenCalledWith(
       expect.objectContaining({ fileName: 'desktop.png', kind: 'desktopIcon' }),
@@ -559,7 +586,13 @@ describe('BrandingPage interactions', () => {
   });
 
   it('merges a finished desktop upload into the values current at that moment', async () => {
-    mocks.uploadAsset.mockResolvedValueOnce({ url: '/f/desktop-icon' });
+    let releaseUpload!: (result: { url: string }) => void;
+    mocks.uploadAsset.mockImplementationOnce(
+      () =>
+        new Promise<{ url: string }>((resolve) => {
+          releaseUpload = resolve;
+        }),
+    );
     renderPage();
     await screen.findByLabelText('branding.fields.desktopProductName');
 
@@ -571,9 +604,9 @@ describe('BrandingPage interactions', () => {
         target: { files: [new File([new Uint8Array([1])], 'desktop.png', { type: 'image/png' })] },
       });
     });
-    await waitFor(() => expect(mocks.modalCalls.length).toBeGreaterThan(0));
+    await waitFor(() => expect(mocks.uploadAsset).toHaveBeenCalled());
 
-    // A newer snapshot lands between picking the file and confirming the upload.
+    // A newer snapshot lands between starting the upload and its response.
     mocks.fetch.data = data({
       branding: { ...payload(), desktop: { iconUrl: null, productName: 'Renamed Desktop' } },
       revision: 3,
@@ -581,8 +614,8 @@ describe('BrandingPage interactions', () => {
     });
     await emitSnapshot();
 
-    const modal = latestModal();
-    await act(() => modal.onSubmit(modal.buildPayload('upload desktop icon')));
+    releaseUpload({ url: '/f/desktop-icon' });
+    await flush();
 
     expect(useBrandingEditorStore.getState()).toMatchObject({
       branding: { desktop: { iconUrl: '/f/desktop-icon', productName: 'Renamed Desktop' } },

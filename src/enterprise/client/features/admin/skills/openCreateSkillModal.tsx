@@ -135,16 +135,6 @@ const CreateSkillContent = memo<CreateSkillModalProps>(({ authMethod, onSubmit }
       {state.allowBuiltinOverride ? (
         <Text type="warning">{t('skillCatalog.form.builtinOverrideWarning')}</Text>
       ) : null}
-      <div className={styles.field}>
-        <Text strong>{t('skillCatalog.form.reason')}</Text>
-        <TextArea
-          disabled={loading}
-          maxLength={2000}
-          rows={3}
-          value={state.reason}
-          onChange={(e) => dispatch({ field: 'reason', type: 'setField', value: e.target.value })}
-        />
-      </div>
       {error ? (
         <Text className={styles.error} role="alert">
           {error}

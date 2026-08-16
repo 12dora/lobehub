@@ -94,6 +94,25 @@ const userId = 'user-persona-service';
 const PERSONA_PROVIDER_ID = 'persona-provider';
 const originalManagedAiFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
 
+/**
+ * Enterprise flags ship ON by default, so this suite pins its own baseline: everything off,
+ * and each managed case opts `ENABLE_PLATFORM_MANAGED_AI` back in. Without this the settings
+ * policy / managed-resource flags change how platform AI takeover resolves.
+ */
+const OTHER_ENTERPRISE_FLAGS = [
+  'ENABLE_DATABASE_OIDC',
+  'ENABLE_ENTERPRISE_ADMIN',
+  'ENABLE_PLATFORM_ADMIN',
+  'ENABLE_PLATFORM_MANAGED_AGENTS',
+  'ENABLE_PLATFORM_MANAGED_CONNECTORS',
+  'ENABLE_PLATFORM_MANAGED_SKILLS',
+  'ENABLE_PLATFORM_SETTINGS_POLICY',
+  'ENABLE_RUNTIME_BRANDING',
+] as const;
+const originalOtherFlags = Object.fromEntries(
+  OTHER_ENTERPRISE_FLAGS.map((key) => [key, process.env[key]]),
+);
+
 /** Catalog authority only surfaces revisions joined from a non-zero provider pointer. */
 const seedPublishedPersonaProvider = async (modelType: 'chat' | 'image') => {
   const payload = {
@@ -129,7 +148,9 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+  // Managed AI is on by default now, so the unmanaged baseline has to disable it explicitly.
+  process.env.ENABLE_PLATFORM_MANAGED_AI = '0';
+  for (const key of OTHER_ENTERPRISE_FLAGS) process.env[key] = '0';
   clearAiCatalogRuntimeCache();
   toolCall.mockClear();
   aiInfraMocks.getAiProviderRuntimeState.mockReset();
@@ -175,6 +196,11 @@ beforeEach(async () => {
 afterAll(() => {
   if (originalManagedAiFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
   else process.env.ENABLE_PLATFORM_MANAGED_AI = originalManagedAiFlag;
+  for (const key of OTHER_ENTERPRISE_FLAGS) {
+    const original = originalOtherFlags[key];
+    if (original === undefined) delete process.env[key];
+    else process.env[key] = original;
+  }
 });
 
 describe('UserPersonaService', () => {

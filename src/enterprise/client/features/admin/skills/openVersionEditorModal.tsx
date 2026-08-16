@@ -55,7 +55,6 @@ const VersionEditorContent = memo<VersionEditorModalProps>(
     const { t } = useTranslation('admin');
     const { close } = useModalContext();
     const [draft, setDraft] = useState(() => structuredClone(initialDraft));
-    const [reason, setReason] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -73,7 +72,6 @@ const VersionEditorContent = memo<VersionEditorModalProps>(
       const input = buildSkillVersionPayload({
         draft,
         draftToken: snapshot.draftToken,
-        reason,
         revision: snapshot.baseRevision,
         skillId: snapshot.id,
       });
@@ -138,16 +136,6 @@ const VersionEditorContent = memo<VersionEditorModalProps>(
               onChange={(e) => update('resourcesText', e.target.value)}
             />
           </div>
-        </div>
-        <div className={styles.field}>
-          <Text strong>{t('skillCatalog.form.reason')}</Text>
-          <TextArea
-            disabled={loading}
-            maxLength={2000}
-            rows={3}
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-          />
         </div>
         {error ? (
           <Text className={styles.error} role="alert">

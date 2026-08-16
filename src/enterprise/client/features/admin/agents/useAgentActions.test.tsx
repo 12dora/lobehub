@@ -7,6 +7,7 @@ import { useAgentActions } from './useAgentActions';
 import type { RefreshLock } from './useRefreshLock';
 
 const mocks = vi.hoisted(() => ({
+  openDangerConfirm: vi.fn(),
   openReasonModal: vi.fn(),
   service: {
     archive: vi.fn(),
@@ -25,6 +26,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () => ({
   openReasonModal: mocks.openReasonModal,
+}));
+vi.mock('@/enterprise/client/features/admin/primitives/DangerConfirm', () => ({
+  openDangerConfirm: mocks.openDangerConfirm,
 }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({ adminAgentsService: mocks.service }));
 vi.mock('./useAdminAgents', () => ({
@@ -87,12 +91,16 @@ const makeLock = (refresh: 'ok' | 'fail'): RefreshLock => {
   };
 };
 
-const lastModalConfig = () => mocks.openReasonModal.mock.calls.at(-1)![0];
+/** Run the confirmation the reason-less actions now open instead of the reason modal. */
+const confirmLast = async () => {
+  await mocks.openDangerConfirm.mock.calls.at(-1)![0].onConfirm();
+};
 
 describe('useAgentActions reauth + commit/refresh + write-lock', () => {
   beforeEach(() => {
     for (const fn of Object.values(mocks.service)) fn.mockReset();
     mocks.openReasonModal.mockReset();
+    mocks.openDangerConfirm.mockReset();
     mocks.findDefaultAdminAgent.mockReset().mockResolvedValue(undefined);
     mocks.fetchPublishedAdminAgentReplacements.mockReset().mockResolvedValue([]);
     mocks.toastError.mockReset();
@@ -100,7 +108,7 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     mocks.toastWarning.mockReset();
   });
 
-  it('routes rollback through the shared reauth modal with authMethod and a frozen CAS payload', async () => {
+  it('confirms rollback without an audit-reason prompt and sends the frozen CAS payload', async () => {
     const mutate = vi.fn().mockResolvedValue(undefined);
     mocks.service.rollback.mockResolvedValue({ agentId: 'agent-1', revision: 8, versionId: 'v1' });
     const { result } = renderHook(() =>
@@ -113,20 +121,16 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     );
 
     act(() => result.current.rollback('v1'));
-    const config = lastModalConfig();
-    expect(config.authMethod).toBe('better-auth');
-    expect(config.buildPayload('do it')).toEqual({
+    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+    expect(mocks.openDangerConfirm).toHaveBeenCalledOnce();
+
+    await act(confirmLast);
+    expect(mocks.service.rollback).toHaveBeenCalledWith({
       agentId: 'agent-1',
       expectedDraftToken: 'b'.repeat(64),
       expectedRevision: 7,
-      reason: 'do it',
       targetVersionId: 'v1',
     });
-
-    await act(async () => {
-      await config.onSubmit(config.buildPayload('do it'));
-    });
-    expect(mocks.service.rollback).toHaveBeenCalledOnce();
   });
 
   it('warns on deferred rollback invalidation without showing contradictory success', async () => {
@@ -146,9 +150,7 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     );
 
     act(() => result.current.rollback('v1'));
-    await act(async () => {
-      await lastModalConfig().onSubmit(lastModalConfig().buildPayload('rollback'));
-    });
+    await act(confirmLast);
 
     expect(mocks.toastWarning).toHaveBeenCalledWith('agentCatalog.toast.refreshDeferred');
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
@@ -171,16 +173,14 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     );
 
     act(() => result.current.rollback('v1'));
-    await act(async () => {
-      await lastModalConfig().onSubmit(lastModalConfig().buildPayload('reason'));
-    });
+    await act(confirmLast);
     expect(mocks.service.rollback).toHaveBeenCalledOnce();
     expect(lock.isLocked()).toBe(true);
 
-    // Second rollback while locked must NOT open a modal or call the service again.
-    const modalCalls = mocks.openReasonModal.mock.calls.length;
+    // Second rollback while locked must NOT confirm or call the service again.
+    const modalCalls = mocks.openDangerConfirm.mock.calls.length;
     act(() => result.current.rollback('v1'));
-    expect(mocks.openReasonModal.mock.calls.length).toBe(modalCalls);
+    expect(mocks.openDangerConfirm.mock.calls.length).toBe(modalCalls);
     expect(mocks.service.rollback).toHaveBeenCalledOnce();
 
     // A successful refresh unlocks; the surface re-renders with the advanced CAS.
@@ -200,11 +200,12 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     });
 
     act(() => result.current.rollback('v1'));
-    expect(mocks.openReasonModal.mock.calls.length).toBe(modalCalls + 1);
+    expect(mocks.openDangerConfirm.mock.calls.length).toBe(modalCalls + 1);
     // The re-enabled write uses the NEW CAS, never the stale pre-refresh values.
-    const built = lastModalConfig().buildPayload('again');
-    expect(built.expectedRevision).toBe(8);
-    expect(built.expectedDraftToken).toBe('c'.repeat(64));
+    await act(confirmLast);
+    expect(mocks.service.rollback).toHaveBeenLastCalledWith(
+      expect.objectContaining({ expectedDraftToken: 'c'.repeat(64), expectedRevision: 8 }),
+    );
   });
 
   it('surfaces a default-switch preflight failure without opening the confirmation modal', async () => {
@@ -223,7 +224,7 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
       await result.current.setDefaultInbox();
     });
 
-    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+    expect(mocks.openDangerConfirm).not.toHaveBeenCalled();
     expect(mocks.toastError).toHaveBeenCalledWith('agentCatalog.toast.actionFailed');
     consoleError.mockRestore();
   });

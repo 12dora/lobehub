@@ -141,7 +141,7 @@ const assertDangerousReauth = async (params: {
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
-  reason: string;
+  reason?: string | null;
   requestId: string;
   serverDB: ConstructorParameters<typeof AdminBrandingService>[0];
 }): Promise<void> =>

@@ -96,8 +96,8 @@ const revisionSecretFingerprint = (payload: PlatformConnectorRevisionPayload): s
 const sanitizeEmergencyReason = async (
   secrets: ConnectorCatalogSecretStore,
   connectorId: string,
-  reason: string,
-): Promise<string> => {
+  reason: string | null | undefined,
+): Promise<string | null> => {
   try {
     return await sanitizeConnectorReason(secrets, connectorId, reason);
   } catch (error) {

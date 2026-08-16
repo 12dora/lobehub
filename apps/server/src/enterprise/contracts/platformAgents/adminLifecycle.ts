@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   draftTokenSchema,
   idSchema,
+  optionalReasonSchema,
   platformAgentDependencySnapshotSchema,
   platformAgentKeySchema,
   platformAgentSystemKeySchema,
@@ -28,7 +29,7 @@ export const adminPlatformAgentSaveInputSchema = z
     dependencySnapshot: platformAgentDependencySnapshotSchema,
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict();
 
@@ -53,7 +54,7 @@ export const adminPlatformAgentCreateInputSchema = z
     config: platformAgentVersionConfigSchema,
     dependencySnapshot: platformAgentDependencySnapshotSchema,
     isDefault: z.boolean().default(false),
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
     systemKey: platformAgentSystemKeySchema.default(null),
   })
   .strict()
@@ -119,7 +120,7 @@ export const adminPlatformAgentRollbackInputSchema = z
     agentId: idSchema,
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
     targetVersionId: idSchema,
   })
   .strict();
@@ -179,7 +180,7 @@ export const adminPlatformAgentSetDefaultInboxInputSchema = z
   .object({
     currentDefault: platformAgentPointerCasSchema.nullable(),
     nextDefault: platformAgentPointerCasSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict()
   .superRefine((input, ctx) => {

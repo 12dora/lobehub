@@ -6,6 +6,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
 
+import { openDangerConfirm } from '@/enterprise/client/features/admin/primitives/DangerConfirm';
+import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
 import {
   type AdminReauthAuthMethod,
   isAdminReauthRequiredError,
@@ -90,6 +92,12 @@ const ArchiveReplacementField = ({
   );
 };
 
+/**
+ * Stable, non-localized audit reason for archive. Archive keeps a confirmation because it also
+ * collects the replacement Agent, but the operator no longer types a reason (mirrors delete).
+ */
+const ARCHIVE_REASON = 'Platform assistant archived from admin console';
+
 /** Merge an authoritative identity/draftToken mutation output into the cached detail. */
 const applyIdentity =
   (output: IdentityMutationOutput) =>
@@ -102,44 +110,37 @@ export const useAgentActions = ({ authMethod, lock, mutate, snapshot }: UseAgent
   const rollback = useCallback(
     (versionId: string) => {
       if (lock.isLocked()) return;
-      const writeToken = {};
-      openReasonModal({
-        authMethod: authMethod ?? undefined,
-        buildPayload: (reason) => ({
-          agentId: snapshot.identity.id,
-          expectedDraftToken: snapshot.draftToken,
-          expectedRevision: snapshot.identity.revision,
-          reason,
-          targetVersionId: versionId,
-        }),
-        danger: true,
-        description: t('agentCatalog.rollback.description'),
-        onPhaseChange: (phase) => {
-          if (phase === 'idle') lock.abortWrite(writeToken);
-        },
-        onSubmit: async (input) => {
+      // Freeze the CAS payload at confirm time so a background revalidation cannot shift it.
+      const payload = {
+        agentId: snapshot.identity.id,
+        expectedDraftToken: snapshot.draftToken,
+        expectedRevision: snapshot.identity.revision,
+        targetVersionId: versionId,
+      };
+      openDangerConfirm({
+        confirmText: t('agentCatalog.rollback.submit'),
+        content: t('agentCatalog.rollback.description'),
+        title: t('agentCatalog.rollback.title'),
+        onConfirm: async () => {
+          const writeToken = {};
           if (!lock.beginWrite(writeToken)) return;
-          let invalidationDeferred: boolean;
-          try {
-            const result = await adminAgentsService.rollback(
-              input as Parameters<typeof adminAgentsService.rollback>[0],
-            );
-            invalidationDeferred = result.invalidationStatus === 'deferred';
-            if (invalidationDeferred) {
-              toast.warning(t('agentCatalog.toast.refreshDeferred'));
-            }
-          } catch (cause) {
-            if (isAdminReauthRequiredError(cause)) throw cause;
+          let invalidationDeferred = false;
+          const committed = await runAdminMutation({
+            authMethod,
+            run: async () => {
+              const result = await adminAgentsService.rollback(payload);
+              invalidationDeferred = result.invalidationStatus === 'deferred';
+            },
+          });
+          if (!committed) {
             lock.abortWrite(writeToken);
-            throw cause;
+            return;
           }
           lock.markCommitted(writeToken);
+          if (invalidationDeferred) toast.warning(t('agentCatalog.toast.refreshDeferred'));
           await lock.commitWrite(writeToken);
           if (!invalidationDeferred) toast.success(t('agentCatalog.toast.rolledBack'));
         },
-        submitLabel: t('agentCatalog.rollback.submit'),
-        targetLabel: snapshot.identity.agentKey,
-        title: t('agentCatalog.rollback.title'),
       });
     },
     [authMethod, lock, snapshot, t],
@@ -160,40 +161,37 @@ export const useAgentActions = ({ authMethod, lock, mutate, snapshot }: UseAgent
       toast.error(t('agentCatalog.toast.actionFailed'));
       return;
     }
-    const writeToken = {};
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      buildPayload: (reason) => ({
-        currentDefault: currentDefault
-          ? {
-              agentId: currentDefault.identity.id,
-              expectedDraftToken: currentDefault.draftToken,
-              expectedRevision: currentDefault.identity.revision,
-            }
-          : null,
-        nextDefault: {
-          agentId: snapshot.identity.id,
-          expectedDraftToken: snapshot.draftToken,
-          expectedRevision: snapshot.identity.revision,
-        },
-        reason,
-      }),
-      danger: true,
-      description: t('agentCatalog.defaultSwitch.description'),
-      onPhaseChange: (phase) => {
-        if (phase === 'idle') lock.abortWrite(writeToken);
+    const payload = {
+      currentDefault: currentDefault
+        ? {
+            agentId: currentDefault.identity.id,
+            expectedDraftToken: currentDefault.draftToken,
+            expectedRevision: currentDefault.identity.revision,
+          }
+        : null,
+      nextDefault: {
+        agentId: snapshot.identity.id,
+        expectedDraftToken: snapshot.draftToken,
+        expectedRevision: snapshot.identity.revision,
       },
-      onSubmit: async (input) => {
+    };
+    openDangerConfirm({
+      confirmText: t('agentCatalog.defaultSwitch.submit'),
+      content: t('agentCatalog.defaultSwitch.description'),
+      title: t('agentCatalog.defaultSwitch.title'),
+      onConfirm: async () => {
+        const writeToken = {};
         if (!lock.beginWrite(writeToken)) return;
-        let output: Awaited<ReturnType<typeof adminAgentsService.setDefaultInbox>>;
-        try {
-          output = await adminAgentsService.setDefaultInbox(
-            input as Parameters<typeof adminAgentsService.setDefaultInbox>[0],
-          );
-        } catch (cause) {
-          if (isAdminReauthRequiredError(cause)) throw cause;
+        let output: Awaited<ReturnType<typeof adminAgentsService.setDefaultInbox>> | undefined;
+        const committed = await runAdminMutation({
+          authMethod,
+          run: async () => {
+            output = await adminAgentsService.setDefaultInbox(payload);
+          },
+        });
+        if (!committed || !output) {
           lock.abortWrite(writeToken);
-          throw cause;
+          return;
         }
         // Committed on the server → mark synchronously before any cache apply.
         lock.markCommitted(writeToken);
@@ -206,9 +204,6 @@ export const useAgentActions = ({ authMethod, lock, mutate, snapshot }: UseAgent
         }
         toast.success(t('agentCatalog.defaultSwitch.success'));
       },
-      submitLabel: t('agentCatalog.defaultSwitch.submit'),
-      targetLabel: snapshot.identity.agentKey,
-      title: t('agentCatalog.defaultSwitch.title'),
     });
   }, [authMethod, lock, mutate, snapshot, t]);
 
@@ -220,6 +215,7 @@ export const useAgentActions = ({ authMethod, lock, mutate, snapshot }: UseAgent
     const writeToken = {};
     openReasonModal({
       authMethod: authMethod ?? undefined,
+      autoReason: ARCHIVE_REASON,
       buildPayload: (reason) => ({
         agentId: snapshot.identity.id,
         expectedDraftToken: snapshot.draftToken,
@@ -229,6 +225,7 @@ export const useAgentActions = ({ authMethod, lock, mutate, snapshot }: UseAgent
       }),
       danger: true,
       description: t('agentCatalog.archive.description'),
+      hideReason: true,
       extra: ({ locked }) => (
         <ArchiveReplacementField
           disabled={locked}

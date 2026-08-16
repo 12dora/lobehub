@@ -2,7 +2,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
   platformAiModels,
@@ -330,7 +330,7 @@ describe('AiCatalogAdminService applyImmediate (unconditional publish)', () => {
       code: 'PLATFORM_NOT_FOUND',
     });
     const runtime = await new AiCatalogRuntimeAdapter(db).resolve({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
       upstreamState: getEmptyAiProviderRuntimeState(),
     });
     expect(runtime.enabledAiProviders.map((provider) => provider.id)).not.toContain(providerKey);
@@ -617,7 +617,7 @@ describe('AiCatalogAdminService applyImmediate (unconditional publish)', () => {
     // Runtime materialization must exclude published-disabled providers.
     clearAiCatalogRuntimeCache();
     const runtime = await new AiCatalogRuntimeAdapter(db).resolve({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
       upstreamState: getEmptyAiProviderRuntimeState(),
     });
     expect(runtime.enabledAiProviders.map((p) => p.id)).not.toContain('disable-pub');
@@ -637,7 +637,7 @@ describe('AiCatalogAdminService applyImmediate (unconditional publish)', () => {
 
     clearAiCatalogRuntimeCache();
     const runtimeOn = await new AiCatalogRuntimeAdapter(db).resolve({
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
       upstreamState: getEmptyAiProviderRuntimeState(),
     });
     expect(runtimeOn.enabledAiProviders.map((p) => p.id)).toContain('disable-pub');
@@ -672,7 +672,7 @@ describe('AiCatalogAdminService applyImmediate (unconditional publish)', () => {
     const runtimeProviders = async () => {
       clearAiCatalogRuntimeCache();
       const runtime = await new AiCatalogRuntimeAdapter(db).resolve({
-        flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+        flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
         upstreamState: getEmptyAiProviderRuntimeState(),
       });
       return runtime.enabledAiProviders.map((provider) => provider.id);

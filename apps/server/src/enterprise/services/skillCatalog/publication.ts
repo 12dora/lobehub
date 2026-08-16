@@ -27,7 +27,7 @@ interface PublicationInput {
   expectedDraftToken: string;
   expectedRevision: number;
   id: string;
-  reason: string;
+  reason?: string | null;
 }
 
 export interface PublishSkillInput extends PublicationInput {
@@ -60,7 +60,7 @@ export class SkillCatalogPublicationService {
   private appendFailureAudit = async (params: {
     action: AuditAction;
     actorUserId: string;
-    reason: string;
+    reason?: string | null;
     targetId: string;
   }): Promise<void> => {
     try {

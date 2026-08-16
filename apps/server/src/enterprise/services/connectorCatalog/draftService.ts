@@ -426,7 +426,7 @@ export class ConnectorCatalogDraftService {
         },
         secretContext,
       );
-      safeReason = normalized.command.reason;
+      safeReason = normalized.command.reason ?? null;
       const mutations = {
         oauthClientSecret:
           normalized.command.credentialMode === 'per_user_oauth'
@@ -525,16 +525,20 @@ export class ConnectorCatalogDraftService {
           : undefined,
         patch.sharedSecret?.operation === 'replace' ? patch.sharedSecret.value : undefined,
       );
-      safeReason = assertConnectorPersistentTextSafe(
-        patch.reason,
-        new Set([
-          ...collectConnectorSecretLeaves(
-            currentSources.oauthClientSecret,
-            currentSources.sharedSecret,
-          ),
-          ...replacementLeaves,
-        ]),
-      );
+      // Reason-less saves audit without one; a supplied reason is still secret-scanned.
+      safeReason =
+        patch.reason === undefined
+          ? null
+          : assertConnectorPersistentTextSafe(
+              patch.reason,
+              new Set([
+                ...collectConnectorSecretLeaves(
+                  currentSources.oauthClientSecret,
+                  currentSources.sharedSecret,
+                ),
+                ...replacementLeaves,
+              ]),
+            );
       const secretContext = await loadTrustedSecretContextSafe(this.secrets, patch.id, {
         oauthClientSecret:
           patch.oauthClientSecret?.operation === 'replace'

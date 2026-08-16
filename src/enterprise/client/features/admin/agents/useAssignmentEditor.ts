@@ -5,11 +5,9 @@ import { toast } from '@lobehub/ui/base-ui';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import {
-  type AdminReauthAuthMethod,
-  isAdminReauthRequiredError,
-} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
-import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
+import { openDangerConfirm } from '@/enterprise/client/features/admin/primitives/DangerConfirm';
+import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
+import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import { getAdminAgentErrorMessage } from './errorPresentation';
@@ -165,95 +163,75 @@ export const useAssignmentEditor = (
     }
   };
 
-  const submit = () => {
+  const submit = async () => {
     // Locked after a committed change whose refresh failed → block the stale-CAS write.
     if (lock.isLocked()) return;
     if (validationError) {
       setError(t(validationError as never));
       return;
     }
-    // Freeze the exact normalized draft + CAS + assignmentId at confirm time (identical to preview).
-    const frozenDraft = { ...draft };
-    const frozenAssignmentId = editingId;
+    // Freeze the exact normalized draft + CAS + assignmentId at submit time (identical to preview).
+    const payload: AdminPlatformAgentAssignmentUpsertInput = {
+      agentId: snapshot.identity.id,
+      ...draft,
+      ...(editingId ? { assignmentId: editingId } : {}),
+      expectedDraftToken: snapshot.draftToken,
+      expectedRevision: snapshot.identity.revision,
+    };
     const writeToken = {};
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      buildPayload: (reason) => ({
-        agentId: snapshot.identity.id,
-        ...frozenDraft,
-        ...(frozenAssignmentId ? { assignmentId: frozenAssignmentId } : {}),
-        expectedDraftToken: snapshot.draftToken,
-        expectedRevision: snapshot.identity.revision,
-        reason,
-      }),
-      description: t('agentCatalog.assignment.upsertDescription'),
-      onPhaseChange: (phase) => {
-        if (phase === 'idle') lock.abortWrite(writeToken);
+    if (!lock.beginWrite(writeToken)) return; // lock BEFORE the service; reject concurrent writes
+    setError(null);
+    const committed = await runAdminMutation({
+      authMethod,
+      onError: (cause) => setError(getAdminAgentErrorMessage(cause, t)),
+      run: async () => {
+        await adminAgentsService.upsertAssignment(payload);
       },
-      onSubmit: async (input) => {
-        if (!lock.beginWrite(writeToken)) return; // lock BEFORE the service; reject concurrent writes
-        try {
-          await adminAgentsService.upsertAssignment(
-            input as AdminPlatformAgentAssignmentUpsertInput,
-          );
-        } catch (cause) {
-          if (isAdminReauthRequiredError(cause)) throw cause;
-          lock.abortWrite(writeToken);
-          throw cause;
-        }
-        // Committed on the server → mark synchronously before touching local state or refreshing.
-        lock.markCommitted(writeToken);
-        // Reset the form so the stale CAS cannot be resubmitted, then revalidate.
-        resetForm();
-        await lock.commitWrite(writeToken);
-        toast.success(t('agentCatalog.assignment.saved'));
-      },
-      submitLabel: t(
-        editingId ? 'agentCatalog.assignment.update' : 'agentCatalog.assignment.create',
-      ),
-      targetLabel: snapshot.identity.agentKey,
-      title: t(
-        editingId ? 'agentCatalog.assignment.updateTitle' : 'agentCatalog.assignment.createTitle',
-      ),
     });
+    if (!committed) {
+      lock.abortWrite(writeToken);
+      return;
+    }
+    // Committed on the server → mark synchronously before touching local state or refreshing.
+    lock.markCommitted(writeToken);
+    // Reset the form so the stale CAS cannot be resubmitted, then revalidate.
+    resetForm();
+    await lock.commitWrite(writeToken);
+    toast.success(t('agentCatalog.assignment.saved'));
   };
 
   const remove = (assignment: Assignment) => {
     if (lock.isLocked()) return;
-    const writeToken = {};
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      buildPayload: (reason) => ({
-        agentId: snapshot.identity.id,
-        assignmentId: assignment.id,
-        expectedDraftToken: snapshot.draftToken,
-        expectedRevision: snapshot.identity.revision,
-        reason,
-      }),
-      danger: true,
-      description: t('agentCatalog.assignment.removeDescription'),
-      onPhaseChange: (phase) => {
-        if (phase === 'idle') lock.abortWrite(writeToken);
-      },
-      onSubmit: async (input) => {
+    const payload = {
+      agentId: snapshot.identity.id,
+      assignmentId: assignment.id,
+      expectedDraftToken: snapshot.draftToken,
+      expectedRevision: snapshot.identity.revision,
+    };
+    openDangerConfirm({
+      confirmText: t('agentCatalog.assignment.remove'),
+      content: t('agentCatalog.assignment.removeDescription'),
+      title: t('agentCatalog.assignment.remove'),
+      onConfirm: async () => {
+        const writeToken = {};
         if (!lock.beginWrite(writeToken)) return;
-        try {
-          await adminAgentsService.removeAssignment(
-            input as Parameters<typeof adminAgentsService.removeAssignment>[0],
-          );
-        } catch (cause) {
-          if (isAdminReauthRequiredError(cause)) throw cause;
+        setError(null);
+        const committed = await runAdminMutation({
+          authMethod,
+          onError: (cause) => setError(getAdminAgentErrorMessage(cause, t)),
+          run: async () => {
+            await adminAgentsService.removeAssignment(payload);
+          },
+        });
+        if (!committed) {
           lock.abortWrite(writeToken);
-          throw cause;
+          return;
         }
         lock.markCommitted(writeToken); // committed on the server → mark before local state / refresh
         if (editingId === assignment.id) resetForm();
         await lock.commitWrite(writeToken);
         toast.success(t('agentCatalog.assignment.removed'));
       },
-      submitLabel: t('agentCatalog.assignment.remove'),
-      targetLabel: snapshot.identity.agentKey,
-      title: t('agentCatalog.assignment.remove'),
     });
   };
 

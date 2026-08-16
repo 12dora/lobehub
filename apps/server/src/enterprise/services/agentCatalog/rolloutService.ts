@@ -347,7 +347,7 @@ const appendRolloutAudit = async (
     action: AuditAction;
     actorUserId: string;
     afterDiff: Record<string, unknown>;
-    reason: string;
+    reason?: string | null;
     result: 'failure' | 'success';
     targetId: string;
   },
@@ -397,7 +397,7 @@ export class PlatformAgentRolloutService {
   private auditedMutation = async <T>(params: {
     action: AuditAction;
     actorUserId: string;
-    reason: string;
+    reason?: string | null;
     run: (tx: Transaction) => Promise<T>;
     summarize: (result: T) => Record<string, unknown>;
     targetId: string;

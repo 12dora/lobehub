@@ -18,6 +18,12 @@ export const checksumSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const revisionSchema = z.number().int().nonnegative();
 export const positiveRevisionSchema = z.number().int().positive();
 export const reasonSchema = safeText(2000, 1);
+/**
+ * Audit reason for operations the admin console no longer prompts for (assignment edits,
+ * rollouts, rollback, default switch). Accepted and recorded when a caller supplies one;
+ * omitted rows simply carry no reason.
+ */
+export const optionalReasonSchema = reasonSchema.optional();
 export const draftTokenSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const platformAgentKeySchema = z

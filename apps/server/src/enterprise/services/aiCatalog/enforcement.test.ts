@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
   createUnmanagedResourcePolicyMap,
@@ -28,7 +28,7 @@ vi.mock('../managedResourceReadiness', async (importOriginal) => ({
 }));
 
 const db: LobeChatDatabase = await getTestDB();
-const flagsOn = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
+const flagsOn = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
 
 const publish = async (aiProviders: ManagedResourcePolicyItem) => {
   const model = new PlatformManagedResourcePolicyModel(db);
@@ -71,7 +71,7 @@ describe('isPlatformAiTakeoverActive', () => {
       },
     ) as LobeChatDatabase;
 
-    expect(await isPlatformAiTakeoverActive(failOnRead, DEFAULT_ENTERPRISE_FEATURE_FLAGS)).toBe(
+    expect(await isPlatformAiTakeoverActive(failOnRead, DISABLED_ENTERPRISE_FEATURE_FLAGS)).toBe(
       false,
     );
   });

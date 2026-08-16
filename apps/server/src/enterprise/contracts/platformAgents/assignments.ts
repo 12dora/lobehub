@@ -5,7 +5,7 @@ import {
   platformAgentAssignmentCoreSchema,
   refinePlatformAgentAssignmentInvariants,
 } from './assignmentCore';
-import { draftTokenSchema, idSchema, reasonSchema, revisionSchema } from './common';
+import { draftTokenSchema, idSchema, optionalReasonSchema, revisionSchema } from './common';
 import { platformAgentAssignmentSchema } from './domain';
 
 export {
@@ -36,7 +36,7 @@ export const adminPlatformAgentAssignmentUpsertInputSchema = z
     assignmentId: idSchema.optional(),
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
     ...platformAgentAssignmentCoreFields,
   })
   .strict()
@@ -48,7 +48,7 @@ export const adminPlatformAgentAssignmentRemoveInputSchema = z
     assignmentId: idSchema,
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict();
 

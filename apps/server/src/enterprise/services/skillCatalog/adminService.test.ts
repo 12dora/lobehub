@@ -2,7 +2,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import { platformSkillVersionChecksum } from '@/database/models/platform';
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
@@ -158,7 +158,7 @@ describe('SkillCatalogAdminService', () => {
     const runtime = await resolvePlatformSkillRuntimeSnapshot({
       db,
       effectiveMode: 'enforced',
-      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_SKILLS: true },
+      flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_SKILLS: true },
       identity: { agentId: 'agent-1', operationId: 'op-1', userId: 'admin-1' },
       options: {
         catalogService: reader,

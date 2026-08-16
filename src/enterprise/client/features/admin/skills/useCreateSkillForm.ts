@@ -41,7 +41,6 @@ export interface CreateSkillFormState {
   enabled: boolean;
   error: string | null;
   loading: boolean;
-  reason: string;
   skillKey: string;
 }
 
@@ -50,7 +49,7 @@ export interface CreateSkillFormState {
  * Booleans (`enabled`, `allowBuiltinOverride`) and the distribution enum use dedicated actions
  * so callers cannot assign a string into a non-string field.
  */
-export type CreateSkillFormStringField = 'description' | 'displayName' | 'reason' | 'skillKey';
+export type CreateSkillFormStringField = 'description' | 'displayName' | 'skillKey';
 
 export type CreateSkillFormAction =
   | {
@@ -73,7 +72,6 @@ export const initialCreateSkillFormState = (): CreateSkillFormState => ({
   enabled: true,
   error: null,
   loading: false,
-  reason: '',
   skillKey: '',
 });
 
@@ -114,15 +112,13 @@ export const buildCreateSkillInput = (
 ): AdminSkillCreateWithVersionInput | { error: 'required' } => {
   const skillKey = state.skillKey.trim();
   const displayName = state.displayName.trim();
-  const reason = state.reason.trim();
-  if (!skillKey || !displayName || !reason) return { error: 'required' };
+  if (!skillKey || !displayName) return { error: 'required' };
   return {
     allowBuiltinOverride: state.allowBuiltinOverride,
     description: state.description.trim() || null,
     displayName,
     distribution: state.distribution,
     enabled: state.enabled,
-    reason,
     skillKey,
   };
 };
