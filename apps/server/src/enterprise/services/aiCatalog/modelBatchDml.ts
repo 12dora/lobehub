@@ -1,6 +1,12 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import type { z } from 'zod';
 
-import { type CreatePlatformAuditLogParams, redactSensitive } from '@/database/models/platform';
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import {
+  type CreatePlatformAuditLogParams,
+  type PlatformAiModelDraftView,
+  redactSensitive,
+} from '@/database/models/platform';
 import {
   type NewPlatformAiModel,
   type NewPlatformAuditLog,
@@ -14,6 +20,14 @@ import {
   platformAuditLogs,
 } from '@/database/schemas/platform';
 import type { Transaction } from '@/database/type';
+
+import type {
+  AdminAiModelApplyImmediateInput,
+  adminAiModelCreateInputSchema,
+  adminAiModelUpdateInputSchema,
+} from '../../contracts/aiCatalog';
+import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
+import { AiCatalogPermissionDeniedError } from './errors';
 
 /** Bound multi-row insert/update/audit statements so a max batch (500) stays a handful of round-trips. */
 const WRITE_CHUNK = 100;
@@ -250,6 +264,161 @@ export const mergeModelUpdateFields = (
   settings: (patch.settings ?? current.settings) as PlatformAiModelSettings,
   type: (patch.type ?? current.type) as PlatformAiModelItem['type'],
 });
+
+type CreateModelInput = z.infer<typeof adminAiModelCreateInputSchema>;
+type UpdateModelInput = z.infer<typeof adminAiModelUpdateInputSchema>;
+type BatchUpdateModelItem = Extract<
+  AdminAiModelApplyImmediateInput,
+  { operation: 'batchUpdate' }
+>['models'][number];
+
+type PlannedUpdate = ReturnType<typeof mergeModelUpdateFields> & {
+  id: string;
+  updatedBy: string;
+};
+
+export const planBatchModelWrites = (params: {
+  actorUserId: string;
+  capabilities: { allowModelCreate: boolean };
+  draftRevision: number;
+  keyVaults: unknown;
+  models: BatchUpdateModelItem[];
+  modelsById: Map<string, PlatformAiModelDraftView>;
+  providerId: string;
+}): {
+  createAuditModelKeys: string[];
+  creates: NewPlatformAiModel[];
+  updateAuditIds: string[];
+  updatesById: Map<string, PlannedUpdate>;
+} => {
+  const { actorUserId, capabilities, draftRevision, keyVaults, models, modelsById, providerId } =
+    params;
+  const creates: NewPlatformAiModel[] = [];
+  const createAuditModelKeys: string[] = [];
+  // Duplicate update ids: compose patches in input order (same as sequential
+  // per-item updates that re-read the row), then DML once per unique id.
+  const updatesById = new Map<string, PlannedUpdate>();
+  const updateAuditIds: string[] = [];
+
+  for (const item of models) {
+    const current = modelsById.get(item.id);
+    if (!current) {
+      // An id with no platform row is an INSERT (this is how toggling a builtin
+      // model-bank model materializes its first platform row). Least privilege: that
+      // branch needs AI_MODEL_CREATE, which the declared `batchUpdate` operation does
+      // not select — so a caller holding only UPDATE+PUBLISH is denied here.
+      if (!capabilities.allowModelCreate) {
+        throw new AiCatalogPermissionDeniedError(PLATFORM_PERMISSIONS.AI_MODEL_CREATE);
+      }
+      // Creates keep every input row so duplicate modelKeys still hit the unique
+      // constraint (same failure as sequential create-then-create).
+      const values = {
+        abilities: item.abilities as CreateModelInput['abilities'],
+        config: item.config as CreateModelInput['config'],
+        contextWindowTokens: item.contextWindowTokens as CreateModelInput['contextWindowTokens'],
+        description: item.description as CreateModelInput['description'],
+        displayName: item.displayName as CreateModelInput['displayName'],
+        enabled: item.enabled as CreateModelInput['enabled'],
+        modelKey: item.id,
+        parameters: item.parameters as CreateModelInput['parameters'],
+        pricing: item.pricing as CreateModelInput['pricing'],
+        settings: item.settings as CreateModelInput['settings'],
+        type: item.type as CreateModelInput['type'],
+      };
+      assertAiCatalogPublicFieldsExcludeCredentials(values, keyVaults);
+      creates.push({
+        ...values,
+        abilities: values.abilities as PlatformAiModelAbilities | undefined,
+        config: values.config as PlatformAiModelConfig | null | undefined,
+        createdBy: actorUserId,
+        parameters: values.parameters as PlatformAiModelParameters | undefined,
+        pricing: values.pricing as PlatformAiModelPricing | null | undefined,
+        providerId,
+        revision: draftRevision,
+        settings: values.settings as PlatformAiModelSettings | undefined,
+        status: 'draft',
+        updatedBy: actorUserId,
+      });
+      createAuditModelKeys.push(item.id);
+    } else {
+      const values = {
+        abilities: item.abilities as UpdateModelInput['abilities'],
+        config: item.config as UpdateModelInput['config'],
+        contextWindowTokens: item.contextWindowTokens as UpdateModelInput['contextWindowTokens'],
+        description: item.description as UpdateModelInput['description'],
+        displayName: item.displayName as UpdateModelInput['displayName'],
+        enabled: item.enabled as UpdateModelInput['enabled'],
+        parameters: item.parameters as UpdateModelInput['parameters'],
+        pricing: item.pricing as UpdateModelInput['pricing'],
+        settings: item.settings as UpdateModelInput['settings'],
+        type: item.type as UpdateModelInput['type'],
+      };
+      const base = updatesById.get(item.id) ?? current;
+      const merged = modelBatchDml.mergeModelUpdateFields(base, values);
+      assertAiCatalogPublicFieldsExcludeCredentials(merged, keyVaults);
+      updatesById.set(item.id, {
+        id: item.id,
+        updatedBy: actorUserId,
+        ...merged,
+      });
+      updateAuditIds.push(item.id);
+    }
+  }
+
+  return { createAuditModelKeys, creates, updateAuditIds, updatesById };
+};
+
+export const buildBatchModelAuditEntries = (params: {
+  actorUserId: string;
+  createAuditModelKeys: string[];
+  createdByModelKey: Map<string, PlatformAiModelItem>;
+  models: BatchUpdateModelItem[];
+  modelsById: Map<string, PlatformAiModelDraftView>;
+  providerId: string;
+  reasonText: string;
+  updateAuditIds: string[];
+}): CreatePlatformAuditLogParams[] => {
+  const {
+    actorUserId,
+    createAuditModelKeys,
+    createdByModelKey,
+    models,
+    modelsById,
+    providerId,
+    reasonText,
+    updateAuditIds,
+  } = params;
+  const auditEntries: CreatePlatformAuditLogParams[] = [];
+  let createIdx = 0;
+  let updateIdx = 0;
+  for (const item of models) {
+    if (modelsById.has(item.id)) {
+      const modelId = updateAuditIds[updateIdx++]!;
+      auditEntries.push({
+        action: 'admin.aiModels.update',
+        actorUserId,
+        afterDiff: { modelId, providerId },
+        reason: reasonText,
+        result: 'success',
+        targetId: modelId,
+        targetType: 'model',
+      });
+    } else {
+      const modelKey = createAuditModelKeys[createIdx++]!;
+      const row = createdByModelKey.get(modelKey)!;
+      auditEntries.push({
+        action: 'admin.aiModels.create',
+        actorUserId,
+        afterDiff: { modelKey: row.modelKey, providerId },
+        reason: reasonText,
+        result: 'success',
+        targetId: row.id,
+        targetType: 'model',
+      });
+    }
+  }
+  return auditEntries;
+};
 
 /**
  * Namespace object so tests can spy call counts (named ESM imports are not live-bound).

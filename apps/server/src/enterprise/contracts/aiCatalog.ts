@@ -1,13 +1,21 @@
 import { AiModelTypeSchema } from 'model-bank';
 import { z } from 'zod';
 
-import {
-  containsSensitiveMaterial,
-  isCredentialBearingUrl,
-  isSensitiveKey,
-  M07_REDACTION_OPTIONS,
-} from '../security/redaction';
-import { httpHeaderNameSchema, httpHeaderValueSchema } from './shared';
+import { boundedJsonObjectSchema } from './aiCatalog/boundedJson';
+import { boundedHeaderMapSchema } from './aiCatalog/headers';
+
+export {
+  BOUNDED_JSON_MAX_DEPTH,
+  BOUNDED_JSON_MAX_KEYS_PER_OBJECT,
+  BOUNDED_JSON_MAX_NODES,
+  BOUNDED_JSON_MAX_SERIALIZED_BYTES,
+} from './aiCatalog/boundedJson';
+export {
+  BOUNDED_HEADER_MAP_MAX_ENTRIES,
+  BOUNDED_HEADER_NAME_MAX,
+  BOUNDED_HEADER_VALUE_MAX,
+  boundedHeaderMapSchema,
+} from './aiCatalog/headers';
 
 const providerKeySchema = z
   .string()
@@ -17,171 +25,6 @@ const providerKeySchema = z
   .regex(/^[a-z0-9][a-z0-9._-]*$/);
 
 const modelKeySchema = z.string().trim().min(1).max(150);
-
-/** Hard bounds for provider/model JSON config trees (iterative walk — no stack blow-up). */
-export const BOUNDED_JSON_MAX_DEPTH = 32;
-export const BOUNDED_JSON_MAX_NODES = 4096;
-export const BOUNDED_JSON_MAX_KEYS_PER_OBJECT = 256;
-export const BOUNDED_JSON_MAX_SERIALIZED_BYTES = 256 * 1024;
-
-type JsonWalkFrame = {
-  depth: number;
-  path: Array<number | string>;
-  value: unknown;
-};
-
-const validateNonSecretJson = (root: unknown, ctx: z.RefinementCtx): void => {
-  let serializedBytes: number;
-  try {
-    serializedBytes = Buffer.byteLength(JSON.stringify(root), 'utf8');
-  } catch {
-    ctx.addIssue({ code: 'custom', message: 'JSON value is not serializable' });
-    return;
-  }
-  if (serializedBytes > BOUNDED_JSON_MAX_SERIALIZED_BYTES) {
-    ctx.addIssue({
-      code: 'custom',
-      message: `JSON exceeds max serialized size of ${BOUNDED_JSON_MAX_SERIALIZED_BYTES} bytes`,
-    });
-    return;
-  }
-
-  const stack: JsonWalkFrame[] = [{ depth: 0, path: [], value: root }];
-  let nodes = 0;
-
-  while (stack.length > 0) {
-    const frame = stack.pop()!;
-    nodes += 1;
-    if (nodes > BOUNDED_JSON_MAX_NODES) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `JSON exceeds max node count of ${BOUNDED_JSON_MAX_NODES}`,
-        path: frame.path,
-      });
-      return;
-    }
-
-    const { value, path, depth } = frame;
-
-    // Accept only JSON values: null, string, boolean, finite number, array, plain object.
-    // Reject undefined, non-finite numbers, and non-plain objects before size/secret checks
-    // so JSONB persistence cannot reshape accepted input.
-    if (value === null || typeof value === 'boolean') {
-      continue;
-    }
-
-    if (typeof value === 'number') {
-      if (!Number.isFinite(value)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'non-finite number is not allowed in JSON',
-          path,
-        });
-      }
-      continue;
-    }
-
-    if (typeof value === 'string') {
-      if (containsSensitiveMaterial(value)) {
-        ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
-      }
-      if (isCredentialBearingUrl(value)) {
-        ctx.addIssue({ code: 'custom', message: 'credential-bearing URL is not allowed', path });
-      }
-      continue;
-    }
-
-    if (typeof value === 'undefined') {
-      ctx.addIssue({ code: 'custom', message: 'undefined is not allowed in JSON', path });
-      continue;
-    }
-
-    if (typeof value !== 'object') {
-      ctx.addIssue({
-        code: 'custom',
-        message: `JSON value type '${typeof value}' is not allowed`,
-        path,
-      });
-      continue;
-    }
-
-    if (Array.isArray(value)) {
-      // Depth limit applies to nested containers, not primitive leaves under a max-depth object.
-      if (depth > BOUNDED_JSON_MAX_DEPTH) {
-        ctx.addIssue({
-          code: 'custom',
-          message: `JSON exceeds max depth of ${BOUNDED_JSON_MAX_DEPTH}`,
-          path,
-        });
-        return;
-      }
-      for (let index = value.length - 1; index >= 0; index -= 1) {
-        stack.push({ depth: depth + 1, path: [...path, index], value: value[index] });
-      }
-      continue;
-    }
-
-    const proto = Object.getPrototypeOf(value);
-    if (proto !== Object.prototype && proto !== null) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'non-plain object is not allowed in JSON',
-        path,
-      });
-      continue;
-    }
-
-    if (depth > BOUNDED_JSON_MAX_DEPTH) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `JSON exceeds max depth of ${BOUNDED_JSON_MAX_DEPTH}`,
-        path,
-      });
-      return;
-    }
-
-    const entries = Object.entries(value);
-    if (entries.length > BOUNDED_JSON_MAX_KEYS_PER_OBJECT) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `JSON object exceeds max key count of ${BOUNDED_JSON_MAX_KEYS_PER_OBJECT}`,
-        path,
-      });
-      return;
-    }
-
-    // Parent key of this object's entries = nearest named ancestor key (skipping array
-    // indexes, matching walkRedact's array semantics; undefined at the blob root). Lets
-    // the M07 predicate position-scope OAuth config keys.
-    let parentKey: string | undefined;
-    for (let i = path.length - 1; i >= 0; i -= 1) {
-      const segment = path[i];
-      if (typeof segment === 'string') {
-        parentKey = segment;
-        break;
-      }
-    }
-    for (let i = entries.length - 1; i >= 0; i -= 1) {
-      const [key, child] = entries[i]!;
-      // `child` is passed so the predicate can shape-check the value too: a configuration
-      // key name (`authorizationCode`, `allowAccessTokenPaste`, `grantFlow`) must not let an
-      // opaque credential through this boundary just because it sits in the right place.
-      if (isSensitiveKey(key) && !M07_REDACTION_OPTIONS.isBenignKey(key, parentKey, child)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'sensitive key is not allowed',
-          path: [...path, key],
-        });
-        continue;
-      }
-      stack.push({ depth: depth + 1, path: [...path, key], value: child });
-    }
-  }
-};
-
-const boundedJsonObjectSchema = z
-  .record(z.string(), z.unknown())
-  .superRefine((value, ctx) => validateNonSecretJson(value, ctx));
 
 export const aiConnectionTestStateSchema = z
   .object({
@@ -197,35 +40,6 @@ export const aiConnectionTestStateSchema = z
     testedRevision: z.number().int().nonnegative(),
   })
   .strict();
-
-/** Hard bounds for credential / connector HTTP header maps. */
-export const BOUNDED_HEADER_MAP_MAX_ENTRIES = 50;
-export const BOUNDED_HEADER_NAME_MAX = 200;
-export const BOUNDED_HEADER_VALUE_MAX = 8192;
-
-const boundedHeaderNameSchema = httpHeaderNameSchema.max(BOUNDED_HEADER_NAME_MAX);
-const boundedHeaderValueSchema = httpHeaderValueSchema.max(BOUNDED_HEADER_VALUE_MAX);
-
-/**
- * Write-time header-map schema: entry cap, RFC 9110 field-name tokens, bounded
- * values, no control chars. Used only by secret *mutations* (`aiSecretMutationSchema`).
- *
- * Already-persisted vaults are NOT revalidated with this grammar on read —
- * `AiCatalogSecretManager.decrypt` accepts any string-keyed customHeaders map so
- * admins can load and correct providers that predate the token rule via
- * keep/merge/replace (accept-on-read, reject-on-write). Detail APIs remain
- * presence-only — secret values are not projected for display.
- */
-export const boundedHeaderMapSchema = z
-  .record(boundedHeaderNameSchema, boundedHeaderValueSchema)
-  .superRefine((value, ctx) => {
-    if (Object.keys(value).length > BOUNDED_HEADER_MAP_MAX_ENTRIES) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `header map exceeds max entry count of ${BOUNDED_HEADER_MAP_MAX_ENTRIES}`,
-      });
-    }
-  });
 
 const aiStructuredCredentialSchema = z
   .object({
