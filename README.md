@@ -1,231 +1,125 @@
 <div align="center">
 
-**English** · [简体中文](./README.zh-CN.md)
+**简体中文** · [English](./README.en-US.md)
+
+# LobeHub Enhanced・LobeHub 企业增强版
 
 </div>
 
-# LobeHub Enhanced
+把开源的 LobeHub 变成一套**开箱即用的企业 AI 平台**：自带管理面板和用户管理，支持**钉钉扫码登录**与 **Authentik / 通用 OIDC 单点登录**，额外接入 **ChatGPT 网页版**等服务商并可全员共享一个账号，品牌名称与颜色随你定制，所有管理操作**全程留痕可审计**。一条 `docker compose up -d` 就能私有部署，Docker 镜像同时支持 x86-64 与 ARM（含 Apple 芯片）。
 
-An enterprise admin console, audit trail and platform-governance layer built on top of LobeHub.
+> 本项目是社区维护的非官方分支，**与 LobeHub LLC 无关，也未获其背书或支持**。它基于 [lobehub/lobehub](https://github.com/lobehub/lobehub) 二次开发，按 LobeHub Community License 分发（见 [LICENSE](./LICENSE)）。“LobeHub” 是 LobeHub LLC 的商标，此处仅用于说明上游项目。
 
-> **Unofficial community fork.** LobeHub Enhanced is **not affiliated with, endorsed by, or supported by LobeHub LLC**.
-> It is a derivative work of [`lobehub/lobehub`](https://github.com/lobehub/lobehub), distributed under the **LobeHub Community License** (see [`LICENSE`](./LICENSE)).
-> "LobeHub" is a trademark of LobeHub LLC, used here only to identify the upstream project.
+|          |                                              |          |                                   |
+| -------- | -------------------------------------------- | -------- | --------------------------------- |
+| 代码仓库 | `https://github.com/12dora/lobehub-enhanced` | 容器镜像 | `ghcr.io/12dora/lobehub-enhanced` |
+| 当前版本 | `v1.0.0`                                     | 上游基线 | `lobehub/lobehub` v2.2.10         |
 
-|                 |                                              |
-| --------------- | -------------------------------------------- |
-| Repository      | `https://github.com/12dora/lobehub-enhanced` |
-| Container image | `ghcr.io/12dora/lobehub-enhanced`            |
-| First release   | `v1.0.0`                                     |
-| Upstream base   | `lobehub/lobehub` v2.2.10                    |
+## 新增功能
 
----
+所有增强功能**默认开启**，需要时可用环境变量逐项关闭（见下文）。
 
-## What is added
+| 新增功能                               | 支持 | 新增功能                               | 支持 |
+| -------------------------------------- | :--: | -------------------------------------- | :--: |
+| 管理面板（`/admin`）                   |  ✓   | 用户管理（角色、封禁、会话、删除）     |  ✓   |
+| 钉钉扫码登录（企业白名单）             |  ✓   | Authentik / 通用 OIDC 单点登录         |  ✓   |
+| 登录方式向导（测试、发布、回滚）       |  ✓   | 开放注册 + 邮箱域名白名单              |  ✓   |
+| ChatGPT 网页版服务商                   |  ✓   | 共享平台账号（成员无需各自登录）       |  ✓   |
+| AI 服务商与模型统一管理                |  ✓   | 平台助理（全员下发、灰度发布）         |  ✓   |
+| 技能与连接器治理                       |  ✓   | 共享 OAuth 连接器授权                  |  ✓   |
+| 设置策略（默认值 / 锁定）              |  ✓   | 侧边栏布局管控                         |  ✓   |
+| 任务模板（首页推荐可增删改、拖拽排序） |  ✓   | 品牌自定义（名称、Logo、主色）         |  ✓   |
+| 操作日志与实时查看                     |  ✓   | 会话历史、证据导出、法律保全、数据保留 |  ✓   |
+| 数据统计与活跃度热力图                 |  ✓   | 状态监控（服务实例、后台任务）         |  ✓   |
+| 平台密钥信封加密（主密钥 / Vault）     |  ✓   | 关闭遥测上报                           |  ✓   |
+| 首个管理员容器内自动引导               |  ✓   | 多架构镜像（linux/amd64、linux/arm64） |  ✓   |
 
-Everything below is additive: the upstream chat product is unchanged for end users unless an
-administrator turns a governance feature on. All enterprise features are behind env flags that
-default to **off**.
-
-| Area             | Feature                       | Notes                                                                                                                                                                                                                                                                                                     |
-| ---------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Admin console    | Overview & statistics         | `/admin` and `/admin/stats`: totals, per-user totals, agent/model/topic rankings, 52-week activity heatmap, hourly strip, token/cost views; time-range and per-user filters.                                                                                                                              |
-| Admin console    | Users management              | List + detail, role assignment, source labels, session revoke, and hard delete with cascade (self-delete refused).                                                                                                                                                                                        |
-| Admin console    | Managed resources             | `/admin/unified`: platform takes over AI / skills / connectors / assistants; per-resource enable, override and visibility.                                                                                                                                                                                |
-| Admin console    | Settings policies             | Resolution order `builtin default → platform default → user override → platform lock`, with `mode` (user / default / locked) independent of visibility.                                                                                                                                                   |
-| Admin console    | AI providers & models         | Platform-owned provider and model catalog, connection test, secret `keep\|replace\|clear`, hard delete. A **takeover gate** means platform AI only replaces user AI when the managed AI catalog is actually published.                                                                                    |
-| Admin console    | Platform assistants           | Global assistants with versions, assignments, staged rollouts (start / retry / rollback / cancel), forced non-hideable assistants, default inbox.                                                                                                                                                         |
-| Admin console    | Skills & connectors           | Platform catalogs with the same lifecycle, a builtin-tool permission matrix, and **platform-hosted shared OAuth** accounts with per-user bindings and bulk revoke.                                                                                                                                        |
-| Admin console    | Sidebar layout                | Platform-controlled sidebar ordering and visibility; the per-user layout menu disappears while managed.                                                                                                                                                                                                   |
-| Admin console    | Task templates                | Admin CRUD plus enable / disable for the recommended task templates shown on the home page; one-click import of the current recommendations. Once any template exists, the platform list replaces the market feed.                                                                                        |
-| Admin console    | Branding                      | Name, logos, favicon, OG image, legal name, email sender, page-title template and **primary colour** — saved once and live site-wide, seeded synchronously so there is no first-paint flash.                                                                                                              |
-| Security & auth  | Login methods                 | Authentik, generic OIDC and DingTalk (钉钉) configured in the database through a wizard: live discovery, network validation, safe-login test, enable or disable, rollback. Several login methods can coexist. DingTalk adds an organisation allowlist whose corp ids are captured by scanning, not typed. |
-| Security & auth  | Activation control            | `PLATFORM_OIDC_RESTART_MODE=supervisor` enables the "restart to activate" button; a last-known-good snapshot on disk keeps sign-in working if a new config fails to load. Break-glass local admin retained.                                                                                               |
-| Security & auth  | Registration policy           | Open registration toggle gated on an email-domain allowlist, enforced inside the sign-up path.                                                                                                                                                                                                            |
-| Audit            | Operation logs & live view    | Append-only admin action log with searchable, translated action and target names; a live view of in-flight conversations.                                                                                                                                                                                 |
-| Audit            | Session evidence              | Browse and search conversation evidence per user and per topic, behind dedicated permissions (topic titles are treated as evidence).                                                                                                                                                                      |
-| Audit            | Export, legal hold, retention | Asynchronous evidence exports, legal holds, and retention runs — an active hold blocks retention deletion.                                                                                                                                                                                                |
-| Providers        | ChatGPT Web (`chatgptweb`)    | A web-session provider: browser-fingerprinted transport via a bundled `curl-impersonate` binary, paste-your-web-session connection, automatic session-cookie renewal, shared managed account, and a status panel that reports when the connection expired and an operator must reconnect.                 |
-| Platform secrets | Envelope encryption           | AES-256-GCM envelope encryption for every platform-stored secret, keyed by `PLATFORM_MASTER_KEY` or a HashiCorp Vault KEK, with a versioned key id and an async rewrap job for rotation.                                                                                                                  |
-| Runtime & ops    | Jobs, instances, status       | A lease-based job queue that survives across HTTP workers, a service-instance registry with a reaper, and `/admin/system/status` for live instance and job monitoring.                                                                                                                                    |
-
-Server-side authorization is a single gate: every admin procedure declares its permission, and a
-registry test asserts the declared count so a new endpoint cannot ship ungated.
-
-## Screenshots
+## 截图
 
 <table>
 <tr>
-<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-overview.png" alt="Admin overview"><br><sub><b>Admin overview</b></sub></td>
-<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-task-templates.png" alt="Task templates"><br><sub><b>Task templates</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-overview.png" alt="管理概览"><br><sub><b>管理概览</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-task-templates.png" alt="任务模板"><br><sub><b>任务模板</b></sub></td>
 </tr>
 <tr>
-<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-login-methods.png" alt="Login methods"><br><sub><b>Login methods</b></sub></td>
-<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-audit-logs.png" alt="Audit logs"><br><sub><b>Audit logs</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-login-methods.png" alt="登录方式"><br><sub><b>登录方式（钉钉企业白名单）</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-audit-logs.png" alt="操作日志"><br><sub><b>操作日志</b></sub></td>
 </tr>
 <tr>
-<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-chatgpt-web.png" alt="ChatGPT Web shared account"><br><sub><b>ChatGPT Web shared account</b></sub></td>
-<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-branding.png" alt="Branding"><br><sub><b>Branding</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-chatgpt-web.png" alt="ChatGPT 网页版"><br><sub><b>ChatGPT 网页版共享账号</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-branding.png" alt="品牌自定义"><br><sub><b>品牌自定义</b></sub></td>
 </tr>
 </table>
 
-## Changes vs upstream
+## 快速部署（Docker）
 
-| Change                         | Detail                                                                                                                             |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Telemetry disabled             | Chat telemetry is driven off the Langfuse setting only; PostHog / Umami / Sentry remain unset build args.                          |
-| EasyAuth removed               | The EasyAuth IAM integration was removed in favour of database-configured identity providers.                                      |
-| Provider draft/publish removed | The AI provider draft → publish flow was dismantled: a change made in the admin console is live immediately.                       |
-| Migration chain squashed       | Fresh databases start from `0000_squash_baseline`; an existing upstream 2.2.10 database is upgraded by `0001_upgrade_from_2_2_10`. |
-| Release pipeline reduced       | Desktop and upstream release workflows are removed. The only published artifact is the multi-arch Docker image.                    |
-| Docs rewritten                 | READMEs rewritten; fork documentation lives in [`docs/enterprise/`](./docs/enterprise/).                                           |
-| Upstream sync is manual        | There is no automatic upstream sync. Upstream changes are reviewed and cherry-picked deliberately.                                 |
-
-Changes are recorded in git history and in this file, satisfying the Apache-2.0 §4 change notice.
-
-## Deploy with Docker
-
-### Requirements
-
-| Component      | Requirement                                                                                                                                                                                      |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Runtime        | Docker Engine + Docker Compose                                                                                                                                                                   |
-| Database       | **`paradedb/paradedb:latest-pg17`** — ParadeDB bundles `pgvector` and BM25 search; a plain `postgres` image will not satisfy the migrations.                                                     |
-| Object storage | S3-compatible storage (the bundled compose runs `rustfs`). The public S3 endpoint must be reachable **from the browser**, not just from the container — presigned URLs are handed to the client. |
-| Cache          | Redis is optional but recommended.                                                                                                                                                               |
-
-### Quick start
-
-1. Clone the repository, or download just the [`docker-compose/enhanced/`](./docker-compose/enhanced/) directory.
-
-   ```bash
-   git clone https://github.com/12dora/lobehub-enhanced.git
-   cd lobehub-enhanced/docker-compose/enhanced
-   ```
-
-2. Create your env file.
-
-   ```bash
-   cp .env.example .env
-   ```
-
-3. Generate three independent secrets and put them in `.env`.
-
-   ```bash
-   openssl rand -base64 32 # AUTH_SECRET
-   openssl rand -base64 32 # KEY_VAULTS_SECRET
-   openssl rand -base64 32 # PLATFORM_MASTER_KEY
-   ```
-
-4. Set `APP_URL` to the public origin, and set `BOOTSTRAP_SUPER_ADMIN_EMAIL` (plus
-   `BOOTSTRAP_ALLOW_CREATE=1` if that account does not exist yet). The one-time admin password is
-   printed **once** in the application log on the first boot:
-
-   ```bash
-   docker compose up -d
-   docker compose logs app | grep -i bootstrap
-   ```
-
-5. Open `<APP_URL>/admin` and sign in with that account. Change the password immediately.
-
-### Environment variables
-
-Required:
-
-| Variable                | Meaning                                                                                      |
-| ----------------------- | -------------------------------------------------------------------------------------------- |
-| `APP_URL`               | Public origin, e.g. `https://chat.example.com`. Used for OAuth callbacks and presigned URLs. |
-| `DATABASE_URL`          | `postgresql://user:pass@host:5432/dbname`. Migrations run automatically at container start.  |
-| `AUTH_SECRET`           | Session signing secret. `openssl rand -base64 32`.                                           |
-| `KEY_VAULTS_SECRET`     | Encrypts user-level API keys. `openssl rand -base64 32`.                                     |
-| `PLATFORM_MASTER_KEY`   | Base64 of exactly 32 bytes — the KEK for every platform-stored secret.                       |
-| `ENABLE_PLATFORM_ADMIN` | `1` mounts `/admin`, the `admin.*` API surface and the admin entry in the user menu.         |
-
-> **Back up `PLATFORM_MASTER_KEY`.** Losing or changing it without running the rewrap job makes every
-> stored platform secret — provider keys, connector credentials, identity-provider client secrets —
-> permanently unreadable.
-
-Feature flags (all default to off; accepted truthy values are `1`, `true`, `yes`, `on`):
-
-| Variable                             | Meaning                                                            |
-| ------------------------------------ | ------------------------------------------------------------------ |
-| `ENABLE_PLATFORM_MANAGED_AI`         | Platform takes over AI providers and models.                       |
-| `ENABLE_PLATFORM_MANAGED_SKILLS`     | Platform-managed skill catalog replaces user-owned skills.         |
-| `ENABLE_PLATFORM_MANAGED_CONNECTORS` | Platform-managed connectors and shared OAuth accounts.             |
-| `ENABLE_PLATFORM_MANAGED_AGENTS`     | Platform assistants are pushed to users.                           |
-| `ENABLE_PLATFORM_SETTINGS_POLICY`    | Settings default / lock policy resolution.                         |
-| `ENABLE_RUNTIME_BRANDING`            | Database-driven branding overrides the compile-time name and logo. |
-| `ENABLE_DATABASE_OIDC`               | Database-configured login methods (otherwise only env-based SSO).  |
-
-`ENABLE_ENTERPRISE_ADMIN` is accepted as an alias of `ENABLE_PLATFORM_ADMIN`.
-
-Other settings:
-
-| Variable                                                                                                                                      | Meaning                                                                                                                                           |
-| --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PLATFORM_OIDC_RESTART_MODE`                                                                                                                  | `supervisor` enables the "restart to activate" button for login methods; any other value marks restart unsupported.                               |
-| `PLATFORM_OIDC_LKG_PATH`                                                                                                                      | File path for the last-known-good login-method snapshot. Point it at a persistent volume.                                                         |
-| `AUTH_COOKIE_PREFIX`                                                                                                                          | Namespaces session cookies. **Set a distinct value per instance** if several instances share a host or domain, otherwise they log each other out. |
-| `AUTH_SSO_PROVIDERS`                                                                                                                          | Leave **blank** when using database-configured login methods, so env providers do not shadow them.                                                |
-| `S3_ENDPOINT`, `S3_PUBLIC_DOMAIN`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_ENABLE_PATH_STYLE`, `S3_SET_ACL` | S3-compatible storage. `S3_PUBLIC_DOMAIN` is the host baked into presigned URLs and must resolve from the browser.                                |
-| `REDIS_URL`                                                                                                                                   | Optional cache / rate-limit backend.                                                                                                              |
-| `PLATFORM_KEY_PROVIDER`, `VAULT_*`                                                                                                            | Set `PLATFORM_KEY_PROVIDER=vault` to source the KEK from HashiCorp Vault instead of `PLATFORM_MASTER_KEY`.                                        |
-| `SSRF_ALLOW_PRIVATE_IP_ADDRESS`                                                                                                               | `1` permits private / loopback outbound targets, needed on single-box installs. Cloud metadata `169.254.169.254` stays blocked regardless.        |
-
-### Upgrade
+准备：一台装有 Docker 与 Docker Compose 的机器；数据库使用 `paradedb/paradedb:latest-pg17`（自带向量与全文检索，普通 postgres 镜像跑不通迁移）；对象存储用自带的 rustfs（其地址必须能被**浏览器**访问）；Redis 可选。
 
 ```bash
-docker compose pull && docker compose up -d
+# 1. 获取部署文件（只需要 docker-compose/enhanced 目录）
+git clone https://github.com/12dora/lobehub-enhanced.git
+cd lobehub-enhanced/docker-compose/enhanced
+cp .env.example .env
+
+# 2. 生成三个独立密钥，填入 .env 的 AUTH_SECRET / KEY_VAULTS_SECRET / PLATFORM_MASTER_KEY
+openssl rand -base64 32
+
+# 3. 编辑 .env：APP_URL（对外访问地址）、S3_ENDPOINT / S3_PUBLIC_DOMAIN（浏览器可达的对象存储地址）、
+#    BOOTSTRAP_SUPER_ADMIN_EMAIL（首个管理员邮箱）+ BOOTSTRAP_ALLOW_CREATE=1
+
+# 4. 启动，并从日志里取一次性管理员密码
+docker compose up -d
+docker compose logs app | grep -i bootstrap
+
+# 5. 打开 <APP_URL>/admin 登录，随后修改密码
 ```
 
-Migrations run automatically when the container starts; no separate migrate step is needed.
+| 必填变量                      | 说明                                                                                                  |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `APP_URL`                     | 对外访问地址，如 `https://chat.example.com`                                                           |
+| `DATABASE_URL`                | `postgresql://user:pass@host:5432/db`（启动时自动迁移）                                               |
+| `AUTH_SECRET`                 | 登录会话签名密钥                                                                                      |
+| `KEY_VAULTS_SECRET`           | 用户级 API Key 的加密密钥                                                                             |
+| `PLATFORM_MASTER_KEY`         | 平台密钥的主密钥（base64，32 字节）。**务必备份**，丢失后已存的服务商 / 连接器 / 登录方式密钥无法解密 |
+| `BOOTSTRAP_SUPER_ADMIN_EMAIL` | 首个管理员邮箱；配合 `BOOTSTRAP_ALLOW_CREATE=1` 自动创建                                              |
 
-### Image
+增强功能默认全部开启；如需关闭某项，把对应变量设为 `0`：`ENABLE_PLATFORM_ADMIN`（管理面板）、`ENABLE_PLATFORM_MANAGED_AI`、`ENABLE_PLATFORM_MANAGED_SKILLS`、`ENABLE_PLATFORM_MANAGED_CONNECTORS`、`ENABLE_PLATFORM_MANAGED_AGENTS`、`ENABLE_PLATFORM_SETTINGS_POLICY`、`ENABLE_RUNTIME_BRANDING`、`ENABLE_DATABASE_OIDC`。使用数据库配置的登录方式时请保持 `AUTH_SSO_PROVIDERS` 为空。
 
-`ghcr.io/12dora/lobehub-enhanced` — tags `latest`, `<major>.<minor>` and `<semver>` (e.g. `1.0.0`; the git tag is `v1.0.0`), built for
-`linux/amd64` and `linux/arm64`. Apple Silicon Macs pull the `arm64` image through Docker Desktop.
+升级：`docker compose pull && docker compose up -d`（迁移自动执行）。镜像标签：`latest`、`1.0`、`1.0.0`，支持 `linux/amd64` 与 `linux/arm64`（Apple 芯片的 Mac 通过 Docker Desktop 直接使用 arm64 镜像）。完整示例见 [`docker-compose/enhanced/`](./docker-compose/enhanced/)。
 
-Reference compose files live in [`docker-compose/enhanced/`](./docker-compose/enhanced/); operational
-documentation, references and runbooks live in [`docs/enterprise/`](./docs/enterprise/).
+## AI 一键部署提示词
 
-## Login methods
-
-- **Authentik** — configure in 系统 → 安全与认证 → 登录方式. The wizard performs live discovery against the issuer's `.well-known/openid-configuration`. See [`docs/enterprise/authentik-setup.md`](./docs/enterprise/authentik-setup.md).
-- **Generic OIDC** — any standards-compliant OpenID Connect provider; discovery URL, client id/secret, scopes and claim mapping are configured in the same wizard.
-- **DingTalk (钉钉)** — its own login-method kind (AppKey / AppSecret from the DingTalk Open Platform), `unionId` as the stable subject. Sign-in is restricted to an organisation allowlist: the admin clicks "Add organisation via DingTalk login", scans, and the corp id is captured automatically. See [`docs/enterprise/dingtalk-login.md`](./docs/enterprise/dingtalk-login.md).
-
-All database-configured login methods use the same callback URL pattern — register it verbatim on
-the identity-provider side:
+把下面这段话直接发给你的 AI 助手（Claude Code、Codex、Cursor 等），它会替你完成部署：
 
 ```text
-<APP_URL>/api/auth/oauth2/callback/<providerId>
+请在这台机器上用 Docker 部署 LobeHub Enhanced：
+1. git clone https://github.com/12dora/lobehub-enhanced.git，进入 docker-compose/enhanced，把 .env.example 复制为 .env。
+2. 用 openssl rand -base64 32 生成三个不同的值，分别填入 AUTH_SECRET、KEY_VAULTS_SECRET、PLATFORM_MASTER_KEY。
+3. 把 APP_URL 设为对外访问地址（本机试用填 http://localhost:3210）；把 S3_ENDPOINT 和 S3_PUBLIC_DOMAIN 设为浏览器能访问到的 http://<本机IP或域名>:9000；
+   设置 BOOTSTRAP_SUPER_ADMIN_EMAIL=<我的邮箱> 和 BOOTSTRAP_ALLOW_CREATE=1。
+4. 执行 docker compose up -d，等待 app 容器日志出现数据库迁移通过与 Ready，然后从日志中找到 bootstrap 打印的一次性管理员密码告诉我（只打印一次）。
+5. 最后告诉我访问地址 <APP_URL>/admin，并把 .env 里需要备份的 PLATFORM_MASTER_KEY 提醒我保存好。
+如遇端口冲突或镜像拉取失败，请说明原因并给出修复方案。
 ```
 
-## Development
+## 登录方式
+
+在管理面板 **系统 → 安全与认证 → 登录方式** 中新建，向导会带你完成配置、测试与发布：
+
+- **钉钉**：填写钉钉开放平台应用的 AppKey / AppSecret，然后点击「通过钉钉登录添加企业」扫码，企业 ID 会自动加入白名单 —— 只有白名单里的企业成员才能登录。回调地址：`<APP_URL>/oauth/identity-provider/dingtalk/<登录方式标识>`；应用需开通「通讯录个人信息读权限」，授权范围包含 `openid corpid`。详见 [`docs/enterprise/dingtalk-login.md`](./docs/enterprise/dingtalk-login.md)。
+- **Authentik / 通用 OIDC**：填写发现地址与客户端凭据即可，回调地址：`<APP_URL>/api/auth/oauth2/callback/<登录方式标识>`。详见 [`docs/enterprise/authentik-setup.md`](./docs/enterprise/authentik-setup.md)。
+- 测试登录用回调地址统一为 `<APP_URL>/oauth/identity-provider/test/callback`；多种登录方式可同时启用。
+
+## 开发
 
 ```bash
-pnpm install  # install dependencies
-bun run dev   # Next.js + Vite SPA
-bun run check # lint + related tests in one pass
+pnpm install  # 安装依赖
+bun run dev   # 启动开发环境
+bun run check # 代码检查 + 相关测试
 ```
 
-Conventions, project structure and the quality checklist are in [`AGENTS.md`](./AGENTS.md);
-architecture and operations notes for the fork are in [`docs/enterprise/`](./docs/enterprise/).
+约定与结构见 [`AGENTS.md`](./AGENTS.md)，运维文档见 [`docs/enterprise/`](./docs/enterprise/)。
 
-## License
+## 许可证
 
-This repository is distributed under the **LobeHub Community License** — see [`LICENSE`](./LICENSE),
-which is retained unmodified. That license is Apache-2.0 **plus additional conditions**.
-
-- **Commercial licensing.** Per clause 1(b) of the LobeHub Community License, a commercial license
-  must be obtained from LobeHub LLC in order to develop and distribute a derivative work based on
-  the upstream project. LobeHub Enhanced **is** such a derivative work. Contact
-  `hello@lobehub.com`. Anyone deploying, modifying or redistributing this repository is responsible
-  for their own compliance.
-- **Change notice.** Per Apache-2.0 §4, the changes made relative to `lobehub/lobehub` v2.2.10 are
-  stated in the "Changes vs upstream" section above and recorded in full in the git history.
-- **Copyright.** Copyright of the upstream code remains with LobeHub LLC. All upstream copyright,
-  license and attribution notices are retained.
-- **Trademark.** No trademark rights are granted by the license. "LobeHub" is a trademark of
-  LobeHub LLC and is used in this repository only to describe the upstream project this fork is
-  derived from.
+本仓库按 **LobeHub Community License**（Apache-2.0 附加条款）分发，`LICENSE` 原样保留。本项目是 lobehub/lobehub 的衍生作品：按该许可证第 1 (b) 条，**开发并分发衍生作品需要向 LobeHub LLC 取得商业授权**（<hello@lobehub.com>），使用者须自行确保合规。上游代码版权归 LobeHub LLC 所有，全部版权与许可声明均已保留；相对上游的改动记录在 git 历史与本文档中。
