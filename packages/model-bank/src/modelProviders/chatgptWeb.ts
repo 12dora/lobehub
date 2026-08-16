@@ -6,9 +6,14 @@ import type { ModelProviderCard } from '../types';
  * (web search, image generation, file upload) instead of the Codex/Responses
  * surface used by the `chatgpt` provider.
  *
- * The connect flow is an OAuth authorization-code + PKCE grant where the user
- * signs in in a browser and pastes the callback URL back into the app, because
- * the redirect URI belongs to OpenAI and cannot point at this deployment.
+ * Connecting is a one-time paste of the chatgpt.com web session, which the server
+ * then spends at `chatgpt.com/api/auth/session` to mint access tokens exactly as
+ * the web app does — sign in once, renewed from then on (`webSessionOnly`).
+ *
+ * The authorization-code fields below are NOT the connect route: that grant asks
+ * for the platform API audience and lands on platform.openai.com, which is not the
+ * chatgpt.com subscription this provider serves. They stay declared because
+ * connections stored before `webSessionOnly` still renew through that grant.
  */
 const ChatGPTWeb: ModelProviderCard = {
   chatModels: [],
@@ -48,6 +53,7 @@ const ChatGPTWeb: ModelProviderCard = {
       scopes: ['openid', 'profile', 'email', 'offline_access'],
       tokenEndpoint: 'https://auth.openai.com/oauth/token',
       tokenExchangeEndpoint: 'https://auth.openai.com/api/accounts/oauth/token',
+      webSessionOnly: true,
     },
     sdkType: 'openai',
     searchMode: 'params',

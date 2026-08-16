@@ -4,6 +4,7 @@ import { Alert, CopyButton, Flexbox, Icon, Skeleton, Tag, Text } from '@lobehub/
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { CheckCircle2Icon, ExternalLinkIcon, Loader2Icon, UnplugIcon } from 'lucide-react';
+import { isProviderWebSessionOnly } from 'model-bank/modelProviders';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -82,6 +83,11 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   const { t } = useTranslation('admin');
   const storeApi = useAiInfraStoreApi();
   const name = useProviderName(providerId);
+  /**
+   * Read from the provider card, never from an id list: this panel serves every
+   * rotating-refresh provider, and only the card knows which connect routes it has.
+   */
+  const webSessionOnly = isProviderWebSessionOnly(providerId);
   const [disconnecting, setDisconnecting] = useState(false);
   /**
    * Whether the platform AI catalog actually OVERRIDES what members use right now
@@ -188,7 +194,8 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   const [openSessionSection, setOpenSessionSection] = useState(false);
 
   const handleConnect = useCallback(async () => {
-    setOpenSessionSection(false);
+    // A web-session-only provider has exactly one box to land on, and this is it.
+    setOpenSessionSection(webSessionOnly);
     const info = await connect();
     // The paste flow opens the authorization page from its own explicit step: the operator
     // has to come back with the callback URL, so the instructions must be read first.
@@ -197,7 +204,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     // the explicit button below stays as the fallback when it is blocked.
     const uri = info?.verificationUriComplete || info?.verificationUri;
     if (uri) window.open(uri, '_blank', 'noopener,noreferrer');
-  }, [connect]);
+  }, [connect, webSessionOnly]);
 
   /** Same flow, landing on the web-session box — the one-paste route to auto-renewal. */
   const handleConnectWithSession = useCallback(async () => {
@@ -334,6 +341,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
           submitError={submitError}
           submitErrorSource={submitErrorSource}
           submitting={submitting}
+          webSessionOnly={webSessionOnly}
           onCancel={reset}
           onOpenAuthorizePage={handleOpenVerification}
           onRegenerate={handleConnect}
@@ -456,17 +464,31 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
                     <Button size={'small'} type={'primary'} onClick={handleConnectWithSession}>
                       {t('aiProviderSettings.sharedOAuth.paste.pasteSession')}
                     </Button>
-                    <Button size={'small'} onClick={handleConnect}>
-                      {t('aiProviderSettings.sharedOAuth.paste.reconnectRenewable')}
-                    </Button>
+                    {/* Only where that route exists: a web-session-only provider would be
+                        offering the one page its own server refuses to complete. */}
+                    {!webSessionOnly && (
+                      <Button size={'small'} onClick={handleConnect}>
+                        {t('aiProviderSettings.sharedOAuth.paste.reconnectRenewable')}
+                      </Button>
+                    )}
                   </Flexbox>
                 }
                 message={
+                  /* Two ways out, or one — the copy has to name the remedies that are
+                     actually on screen, so a web-session-only provider drops the sentence
+                     about the authorization page along with the button. */
                   expiry
-                    ? t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore', {
-                        time: expiry,
-                      })
-                    : t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenew')
+                    ? t(
+                        webSessionOnly
+                          ? 'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBeforeSessionOnly'
+                          : 'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore',
+                        { time: expiry },
+                      )
+                    : t(
+                        webSessionOnly
+                          ? 'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewSessionOnly'
+                          : 'aiProviderSettings.sharedOAuth.paste.cannotAutoRenew',
+                      )
                 }
               />
             ) : (

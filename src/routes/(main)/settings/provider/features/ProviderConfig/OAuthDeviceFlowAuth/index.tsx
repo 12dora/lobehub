@@ -7,7 +7,7 @@ import { Button, confirmModal } from '@lobehub/ui/base-ui';
 import { Avatar, Typography } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { ExternalLinkIcon, Loader2Icon, LogOutIcon, UnplugIcon } from 'lucide-react';
-import { getProviderOAuthGrantFlow } from 'model-bank/modelProviders';
+import { getProviderOAuthGrantFlow, isProviderWebSessionOnly } from 'model-bank/modelProviders';
 import { type ReactNode } from 'react';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -164,6 +164,11 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
      */
     const isPasteFlowProvider =
       getProviderOAuthGrantFlow(providerId) === 'authorization_code_paste';
+    /**
+     * Read from the provider card, never from an id list: this panel serves every device-flow
+     * provider, and only the card knows which connect routes it has.
+     */
+    const webSessionOnly = isProviderWebSessionOnly(providerId);
     const accountEmail = isPasteFlowProvider ? authStatus?.email : undefined;
     const expiresAtLabel = isPasteFlowProvider ? formatExpiry(authStatus?.expiresAt) : undefined;
     // Only a POSITIVE "cannot refresh" reading warns: silence must never be read as a
@@ -269,7 +274,8 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
     const handleStartAuth = useCallback(async () => {
       if (!canManageProvider) return;
 
-      setOpenSessionSection(false);
+      // A web-session-only provider has exactly one box to land on, and this is it.
+      setOpenSessionSection(webSessionOnly);
       setJustConnected(false);
       hasAutoClosedRef.current = false;
       setIsAuthenticating(true);
@@ -286,7 +292,7 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
       const uri = info?.verificationUriComplete || info?.verificationUri;
       // noopener/noreferrer: the provider's page must never get a handle on this window.
       if (uri) window.open(uri, '_blank', 'noopener,noreferrer');
-    }, [canManageProvider, startAuth]);
+    }, [canManageProvider, startAuth, webSessionOnly]);
 
     /** Same flow, landing on the web-session box — the one-paste route to auto-renewal. */
     const handleStartAuthWithSession = useCallback(async () => {
@@ -403,22 +409,36 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
                     >
                       {t('providerModels.config.oauth.paste.pasteSession')}
                     </Button>
-                    <Button
-                      disabled={!canManageProvider}
-                      icon={<Icon icon={ExternalLinkIcon} />}
-                      size="small"
-                      onClick={handleStartAuth}
-                    >
-                      {t('providerModels.config.oauth.paste.reconnectRenewable')}
-                    </Button>
+                    {/* Only where that route exists: a web-session-only provider would be
+                        offering the one page its own server refuses to complete. */}
+                    {!webSessionOnly && (
+                      <Button
+                        disabled={!canManageProvider}
+                        icon={<Icon icon={ExternalLinkIcon} />}
+                        size="small"
+                        onClick={handleStartAuth}
+                      >
+                        {t('providerModels.config.oauth.paste.reconnectRenewable')}
+                      </Button>
+                    )}
                   </Flexbox>
                 }
                 message={
+                  /* Two ways out, or one — the copy has to name the remedies that are
+                     actually on screen, so a web-session-only provider drops the sentence
+                     about the authorization page along with the button. */
                   expiresAtLabel
-                    ? t('providerModels.config.oauth.paste.cannotAutoRenewBefore', {
-                        time: expiresAtLabel,
-                      })
-                    : t('providerModels.config.oauth.paste.cannotAutoRenew')
+                    ? t(
+                        webSessionOnly
+                          ? 'providerModels.config.oauth.paste.cannotAutoRenewBeforeSessionOnly'
+                          : 'providerModels.config.oauth.paste.cannotAutoRenewBefore',
+                        { time: expiresAtLabel },
+                      )
+                    : t(
+                        webSessionOnly
+                          ? 'providerModels.config.oauth.paste.cannotAutoRenewSessionOnly'
+                          : 'providerModels.config.oauth.paste.cannotAutoRenew',
+                      )
                 }
               />
             )}
@@ -510,6 +530,7 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
                 submitError={submitError}
                 submitErrorSource={submitErrorSource}
                 submitting={submitting}
+                webSessionOnly={webSessionOnly}
                 authorizeUri={
                   deviceCodeInfo.verificationUriComplete || deviceCodeInfo.verificationUri
                 }

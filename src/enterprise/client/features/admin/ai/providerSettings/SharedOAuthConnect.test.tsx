@@ -551,7 +551,7 @@ describe('SharedOAuthConnect', () => {
       verificationUriComplete: null,
     };
 
-    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    render(<SharedOAuthConnect providerId="chatgpt" />);
 
     expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.instruction')).toBeTruthy();
     expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.openAuthorizePage')).toBeTruthy();
@@ -573,7 +573,7 @@ describe('SharedOAuthConnect', () => {
       verificationUriComplete: null,
     };
 
-    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    render(<SharedOAuthConnect providerId="chatgpt" />);
 
     const input = screen.getByPlaceholderText(
       'aiProviderSettings.sharedOAuth.paste.callbackPlaceholder',
@@ -588,6 +588,72 @@ describe('SharedOAuthConnect', () => {
     );
     // The pasted-credential route is opt-in per provider; this card did not offer it.
     expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.sessionToggle')).toBeNull();
+  });
+
+  it('offers the web session alone for a provider that connects no other way', () => {
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: true,
+      deviceCode: 'envelope',
+      expiresIn: 600,
+      flow: 'authorization_code_paste',
+      interval: 0,
+      userCode: '',
+      verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+      verificationUriComplete: null,
+    };
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionOnlyTitle')).toBeTruthy();
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionOnlyDesc')).toBeTruthy();
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionHint')).toBeTruthy();
+    // The box is the whole form — never behind a disclosure the operator has to find.
+    expect(
+      screen.getByPlaceholderText('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder'),
+    ).toBeTruthy();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.sessionToggle')).toBeNull();
+    // The authorization page signs the operator into a different product and the server
+    // refuses the exchange: none of that UI may be on screen.
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.openAuthorizePage')).toBeNull();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.instruction')).toBeNull();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.regenerate')).toBeNull();
+    expect(
+      screen.queryByPlaceholderText('aiProviderSettings.sharedOAuth.paste.callbackPlaceholder'),
+    ).toBeNull();
+    expect(screen.queryByText(/auth\.openai\.com/)).toBeNull();
+  });
+
+  it('submits the pasted session from the primary action of a web-session-only provider', () => {
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: true,
+      deviceCode: 'envelope',
+      expiresIn: 600,
+      flow: 'authorization_code_paste',
+      interval: 0,
+      userCode: '',
+      verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+      verificationUriComplete: null,
+    };
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    const submit = screen
+      .getByText('aiProviderSettings.sharedOAuth.paste.submit')
+      .closest('button')!;
+    // Nothing pasted yet: the one action of the form says so instead of failing on submit.
+    expect(submit.hasAttribute('disabled')).toBe(true);
+
+    fireEvent.change(
+      screen.getByPlaceholderText('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder'),
+      { target: { value: `__Secure-next-auth.session-token=${SESSION_JWE}` } },
+    );
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.detected.session')).toBeTruthy();
+
+    fireEvent.click(submit);
+    expect(mocks.flow.submitSessionToken).toHaveBeenCalledWith(SESSION_JWE);
+    expect(mocks.flow.submitCallback).not.toHaveBeenCalled();
   });
 
   it('warns that a hand-pasted token connection cannot renew itself', () => {
@@ -605,9 +671,16 @@ describe('SharedOAuthConnect', () => {
 
     render(<SharedOAuthConnect providerId="chatgptweb" />);
 
+    // The session-only wording: it names the one remedy this provider actually offers, and
+    // the generic copy (which also points at the authorization page) stays off screen.
     expect(
-      screen.getByText(/aiProviderSettings\.sharedOAuth\.paste\.cannotAutoRenewBefore/),
+      screen.getByText(/aiProviderSettings\.sharedOAuth\.paste\.cannotAutoRenewBeforeSessionOnly/),
     ).toBeTruthy();
+    expect(
+      screen.queryByText(
+        /aiProviderSettings\.sharedOAuth\.paste\.cannotAutoRenewBefore(?!SessionOnly)/,
+      ),
+    ).toBeNull();
     expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.expiresAt/)).toBeNull();
   });
 
@@ -624,13 +697,43 @@ describe('SharedOAuthConnect', () => {
       }),
     );
 
-    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    render(<SharedOAuthConnect providerId="chatgpt" />);
+
+    // A provider that still HAS an authorization page keeps the copy that offers it — the
+    // session-only variant would name a remedy that is missing one of its two buttons.
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.cannotAutoRenew')).toBeTruthy();
+    expect(
+      screen.queryByText('aiProviderSettings.sharedOAuth.paste.cannotAutoRenewSessionOnly'),
+    ).toBeNull();
 
     // Both ways out are offered, and both start the same flow — one lands on the web-session
     // box (the cheap fix), the other on the authorization page.
     fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.pasteSession'));
     fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.reconnectRenewable'));
     expect(mocks.flow.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers only the session fix where the authorization page is not a route at all', () => {
+    mocks.swr.mockReturnValue(
+      swrResult({
+        accountEmail: 'ops@example.com',
+        accountIdMasked: 'acc1…',
+        canRefresh: false,
+        connected: true,
+        expiresAt: null,
+        flow: 'authorization_code_paste',
+        secretConfigured: true,
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    // The server refuses a callback exchange for this provider, so pointing at that page
+    // would be pointing at a dead end.
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.pasteSession')).toBeTruthy();
+    expect(
+      screen.queryByText('aiProviderSettings.sharedOAuth.paste.reconnectRenewable'),
+    ).toBeNull();
   });
 
   it('opens the paste panel on the web-session box when the warning sent the operator there', async () => {
@@ -799,7 +902,7 @@ describe('SharedOAuthConnect', () => {
     };
     mocks.flow.submitError = 'invalidCallback';
 
-    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    render(<SharedOAuthConnect providerId="chatgpt" />);
 
     const field = screen.getByPlaceholderText(
       'aiProviderSettings.sharedOAuth.paste.callbackPlaceholder',
@@ -851,7 +954,7 @@ describe('SharedOAuthConnect', () => {
       verificationUriComplete: null,
     };
 
-    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    render(<SharedOAuthConnect providerId="chatgpt" />);
     fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionToggle'));
 
     const field = screen.getByPlaceholderText(
@@ -891,7 +994,7 @@ describe('SharedOAuthConnect', () => {
       verificationUriComplete: null,
     };
 
-    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    render(<SharedOAuthConnect providerId="chatgpt" />);
     fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionToggle'));
     fireEvent.change(
       screen.getByPlaceholderText('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder'),
@@ -923,7 +1026,7 @@ describe('SharedOAuthConnect', () => {
     mocks.flow.submitError = 'authError';
     mocks.flow.submitErrorSource = 'token';
 
-    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    render(<SharedOAuthConnect providerId="chatgpt" />);
     fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionToggle'));
 
     const tokenField = screen.getByPlaceholderText(
@@ -939,6 +1042,49 @@ describe('SharedOAuthConnect', () => {
       'aiProviderSettings.sharedOAuth.paste.errors.authError',
     );
   });
+
+  /**
+   * Two rejections whose generic copy sends the operator to the authorization page. That page
+   * is a dead end for a web-session-only provider, so the copy switches with the layout — and
+   * only for that provider: `chatgpt` still has the page and keeps the sentence offering it.
+   */
+  it.each(['accessTokenInvalid', 'tokenNotWeb'])(
+    'points a rejected %s at the page it still has, or at the web session alone',
+    (submitError) => {
+      mocks.flow.state = 'awaiting';
+      mocks.flow.deviceCode = {
+        allowAccessTokenPaste: true,
+        deviceCode: 'envelope',
+        expiresIn: 600,
+        flow: 'authorization_code_paste',
+        interval: 0,
+        userCode: '',
+        verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+        verificationUriComplete: null,
+      };
+      mocks.flow.submitError = submitError;
+
+      const generic = render(<SharedOAuthConnect providerId="chatgpt" />);
+      fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionToggle'));
+      const genericField = screen.getByPlaceholderText(
+        'aiProviderSettings.sharedOAuth.paste.sessionPlaceholder',
+      );
+      expect(
+        document.getElementById(genericField.getAttribute('aria-describedby')!.split(' ')[0])
+          ?.textContent,
+      ).toBe(`aiProviderSettings.sharedOAuth.paste.errors.${submitError}`);
+      generic.unmount();
+
+      render(<SharedOAuthConnect providerId="chatgptweb" />);
+      const sessionOnlyField = screen.getByPlaceholderText(
+        'aiProviderSettings.sharedOAuth.paste.sessionPlaceholder',
+      );
+      expect(
+        document.getElementById(sessionOnlyField.getAttribute('aria-describedby')!.split(' ')[0])
+          ?.textContent,
+      ).toBe(`aiProviderSettings.sharedOAuth.paste.errors.${submitError}SessionOnly`);
+    },
+  );
 
   it('ignores persisted models that belong to a different provider', () => {
     mocks.flow.state = 'success';

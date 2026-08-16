@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 
 import { BrandingProviderCard } from '@/business/client/features/BrandingProviderCard';
 import { useIsDark } from '@/hooks/useIsDark';
+import { useLocalizedProviderTitle } from '@/hooks/useLocalizedProviderTitle';
 import { type AiProviderListItem } from '@/types/aiProvider';
 
 import { ProviderSettingsContext } from '../../features/ModelList/ProviderSettingsContext';
@@ -26,6 +27,12 @@ const ProviderCard = memo<ProviderCardProps>(
     const { t } = useTranslation(['providers', 'modelProvider']);
     const isDarkMode = useIsDark();
     const { hidePersonalAuth } = use(ProviderSettingsContext);
+    /**
+     * Non-null only where the `providers` namespace really translates the name — the card
+     * then shows the same words as the sidebar and the detail header, instead of an English
+     * wordmark next to a translated description.
+     */
+    const localizedTitle = useLocalizedProviderTitle(id, name || undefined);
     // Admin platform surface: chatgpt/chatgptweb/supergrok are hosted through ONE shared platform
     // account (connected in the provider detail), so label them — they stay enableable.
     const sharedOAuthAdmin = Boolean(hidePersonalAuth && isRotatingRefreshOAuthProvider(id));
@@ -58,12 +65,24 @@ const ProviderCard = memo<ProviderCardProps>(
               <Flexbox horizontal align={'center'} justify={'space-between'}>
                 {source === 'builtin' ? (
                   <Flexbox horizontal align={'center'} gap={8}>
-                    <ProviderCombine
-                      provider={id}
-                      size={24}
-                      style={{ color: cssVar.colorText }}
-                      title={name}
-                    />
+                    {localizedTitle ? (
+                      <>
+                        <ProviderIcon
+                          provider={id}
+                          size={24}
+                          style={{ borderRadius: 6 }}
+                          type={'avatar'}
+                        />
+                        <Text style={{ fontSize: 16, fontWeight: 'bold' }}>{localizedTitle}</Text>
+                      </>
+                    ) : (
+                      <ProviderCombine
+                        provider={id}
+                        size={24}
+                        style={{ color: cssVar.colorText }}
+                        title={name}
+                      />
+                    )}
                     {isCodingPlanProvider(id) && <Tag color={'geekblue'}>{'Coding Plan'}</Tag>}
                   </Flexbox>
                 ) : (

@@ -89,10 +89,23 @@ const deviceCode = {
   verificationUriComplete: 'https://x.ai/device?code=ABCD-EFGH',
 };
 
+/**
+ * The two-route paste layout (authorization page + a disclosed paste box). `chatgpt` stands
+ * in for a provider whose card does NOT set `webSessionOnly`: the panel picks the layout off
+ * the card, and `chatgptweb` now declares the session as its only route.
+ */
 const startPasteFlow = async () => {
-  const view = render(<OAuthDeviceFlowAuth name="ChatGPT Web" providerId="chatgptweb" />);
+  const view = render(<OAuthDeviceFlowAuth name="ChatGPT" providerId="chatgpt" />);
   fireEvent.click(screen.getByText('providerModels.config.oauth.connect'));
   await screen.findByText('providerModels.config.oauth.paste.openAuthorizePage');
+  return view;
+};
+
+/** The single-route layout: paste the chatgpt.com web session, connect, done. */
+const startSessionOnlyFlow = async () => {
+  const view = render(<OAuthDeviceFlowAuth name="ChatGPT Web" providerId="chatgptweb" />);
+  fireEvent.click(screen.getByText('providerModels.config.oauth.connect'));
+  await screen.findByPlaceholderText('providerModels.config.oauth.paste.sessionPlaceholder');
   return view;
 };
 
@@ -248,6 +261,43 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     );
   });
 
+  it('offers the web session alone for a provider that connects no other way', async () => {
+    await startSessionOnlyFlow();
+
+    expect(screen.getByText('providerModels.config.oauth.paste.sessionOnlyTitle')).toBeTruthy();
+    expect(screen.getByText('providerModels.config.oauth.paste.sessionOnlyDesc')).toBeTruthy();
+    expect(screen.getByText('providerModels.config.oauth.paste.sessionHint')).toBeTruthy();
+    // The box is the whole form — never behind a disclosure the user has to find.
+    expect(screen.queryByText('providerModels.config.oauth.paste.sessionToggle')).toBeNull();
+    // The authorization page signs the user into a different product and the server refuses
+    // the exchange: none of that UI may be on screen.
+    expect(screen.queryByText('providerModels.config.oauth.paste.openAuthorizePage')).toBeNull();
+    expect(screen.queryByText('providerModels.config.oauth.paste.instruction')).toBeNull();
+    expect(screen.queryByText('providerModels.config.oauth.paste.regenerate')).toBeNull();
+    expect(
+      screen.queryByPlaceholderText('providerModels.config.oauth.paste.callbackPlaceholder'),
+    ).toBeNull();
+    expect(screen.queryByText(pasteDeviceCode.verificationUri)).toBeNull();
+  });
+
+  it('submits the pasted session from the primary action of a web-session-only provider', async () => {
+    await startSessionOnlyFlow();
+
+    const submit = screen.getByText('providerModels.config.oauth.paste.submit').closest('button')!;
+    // Nothing pasted yet: the one action of the form says so instead of failing on submit.
+    expect(submit.hasAttribute('disabled')).toBe(true);
+
+    fireEvent.change(
+      screen.getByPlaceholderText('providerModels.config.oauth.paste.sessionPlaceholder'),
+      { target: { value: `__Secure-next-auth.session-token=${SESSION_JWE}` } },
+    );
+    expect(screen.getByText('providerModels.config.oauth.paste.detected.session')).toBeTruthy();
+
+    fireEvent.click(submit);
+    expect(mocks.flow.submitSessionToken).toHaveBeenCalledWith(SESSION_JWE);
+    expect(mocks.flow.submitCallback).not.toHaveBeenCalled();
+  });
+
   it('names the connected account and warns when it cannot be renewed', () => {
     mocks.authStatus = {
       canRefresh: false,
@@ -259,17 +309,23 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     render(<OAuthDeviceFlowAuth name="ChatGPT Web" providerId="chatgptweb" />);
 
     expect(screen.getByText('providerModels.config.oauth.paste.connectedEmail')).toBeTruthy();
+    // The session-only wording: it names the one remedy this provider actually offers, and
+    // the generic copy (which also points at the authorization page) stays off screen.
     expect(
-      screen.getByText('providerModels.config.oauth.paste.cannotAutoRenewBefore'),
+      screen.getByText('providerModels.config.oauth.paste.cannotAutoRenewBeforeSessionOnly'),
     ).toBeTruthy();
+    expect(
+      screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenewBefore'),
+    ).toBeNull();
     // ONE deadline, in the warning that explains it — not printed again as a neutral
     // "Expires {{time}}" line right above it.
     expect(screen.queryByText('providerModels.config.oauth.paste.expiresAt')).toBeNull();
 
-    // The warning is not a dead end: BOTH ways out are offered right there.
-    expect(screen.getByText('providerModels.config.oauth.paste.pasteSession')).toBeTruthy();
-    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.reconnectRenewable'));
+    // The warning is not a dead end: the way out is offered right there. The authorization
+    // page is not among them — this provider's server refuses that exchange.
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.pasteSession'));
     expect(mocks.flow.startAuth).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('providerModels.config.oauth.paste.reconnectRenewable')).toBeNull();
   });
 
   it('lands on the web-session box when the warning sent the user there', async () => {
@@ -317,10 +373,7 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     expect(screen.queryByText('providerModels.config.oauth.paste.expiresAt')).toBeNull();
     // Nothing to fix, so no reconnect prompt and no warning.
     expect(screen.queryByText('providerModels.config.oauth.paste.reconnectRenewable')).toBeNull();
-    expect(screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenew')).toBeNull();
-    expect(
-      screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenewBefore'),
-    ).toBeNull();
+    expect(screen.queryByText(/providerModels\.config\.oauth\.paste\.cannotAutoRenew/)).toBeNull();
   });
 
   it('stays quiet about renewal when the server does not report it', () => {
@@ -328,10 +381,7 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
 
     render(<OAuthDeviceFlowAuth name="ChatGPT Web" providerId="chatgptweb" />);
 
-    expect(screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenew')).toBeNull();
-    expect(
-      screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenewBefore'),
-    ).toBeNull();
+    expect(screen.queryByText(/providerModels\.config\.oauth\.paste\.cannotAutoRenew/)).toBeNull();
   });
 
   it('leaves the connected card of device-code providers untouched', () => {
@@ -353,10 +403,7 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     expect(screen.getByText('providerModels.config.oauth.connected')).toBeTruthy();
     expect(screen.queryByText('providerModels.config.oauth.paste.connectedEmail')).toBeNull();
     expect(screen.queryByText('providerModels.config.oauth.paste.expiresAt')).toBeNull();
-    expect(screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenew')).toBeNull();
-    expect(
-      screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenewBefore'),
-    ).toBeNull();
+    expect(screen.queryByText(/providerModels\.config\.oauth\.paste\.cannotAutoRenew/)).toBeNull();
     expect(screen.queryByText('providerModels.config.oauth.paste.autoRenew')).toBeNull();
     expect(screen.queryByText('providerModels.config.oauth.paste.reconnectRenewable')).toBeNull();
     expect(screen.queryByText('providerModels.config.oauth.paste.pasteSession')).toBeNull();
@@ -404,7 +451,33 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     );
     expect(callbackField.getAttribute('aria-invalid')).toBeNull();
     expect(tokenField.getAttribute('aria-invalid')).toBe('true');
+    // A provider that still HAS an authorization page keeps the copy that offers it.
+    expect(
+      document.getElementById(tokenField.getAttribute('aria-describedby')!.split(' ')[0])
+        ?.textContent,
+    ).toBe('providerModels.config.oauth.paste.errors.accessTokenInvalid');
   });
+
+  /**
+   * The same two rejections, on a provider whose authorization page its own server refuses:
+   * the copy has to stop sending the user there, and only there.
+   */
+  it.each(['accessTokenInvalid', 'tokenNotWeb'])(
+    'points a rejected %s at the web session alone for a web-session-only provider',
+    async (submitError) => {
+      mocks.flow.submitError = submitError;
+
+      await startSessionOnlyFlow();
+
+      const tokenField = screen.getByPlaceholderText(
+        'providerModels.config.oauth.paste.sessionPlaceholder',
+      );
+      expect(
+        document.getElementById(tokenField.getAttribute('aria-describedby')!.split(' ')[0])
+          ?.textContent,
+      ).toBe(`providerModels.config.oauth.paste.errors.${submitError}SessionOnly`);
+    },
+  );
 
   it('keeps a generic token failure on the token field it was submitted from', async () => {
     // A network blip during a token submit maps to the generic `authError`, which carries no

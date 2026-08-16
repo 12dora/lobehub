@@ -106,47 +106,43 @@ describe('oauthDeviceFlow.pollAuthStatus (paste flow)', () => {
     expect(mocks.updateConfig).not.toHaveBeenCalled();
   });
 
-  it('exchanges a pasted callback URL and stores every identity leaf', async () => {
+  /**
+   * The authorization page of this provider asks for the platform API audience and lands on
+   * platform.openai.com — a different product from the chatgpt.com subscription the runtime
+   * talks to, so a grant redeemed there can be stored and still fail every conversation. The
+   * card declares `webSessionOnly` and the router refuses the exchange, including for an
+   * older client that still offers the button.
+   */
+  it.each([
+    ['a pasted callback URL', 'https://platform.openai.com/auth/callback?code=the-code&state=s'],
+    ['a bare authorization code', 'the-code'],
+  ])('refuses %s for a web-session-only provider', async (_label, callbackUrl) => {
     const { deviceCode } = await startFlow();
-    const state = JSON.parse(deviceCode).state;
-    authFetch.mockResolvedValue(
-      jsonResponse({
-        access_token: jwt({ exp: futureExp }),
-        id_token: jwt({
-          'email': 'user@example.com',
-          'https://api.openai.com/auth': { chatgpt_account_id: 'acct-42' },
-        }),
-        refresh_token: 'refresh-1',
-      }),
-    );
 
-    const result = await caller().pollAuthStatus({
-      callbackUrl: `https://platform.openai.com/auth/callback?code=the-code&state=${state}`,
-      deviceCode,
-      providerId: PROVIDER,
-    });
+    await expect(
+      caller().pollAuthStatus({ callbackUrl, deviceCode, providerId: PROVIDER }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
 
-    expect(result).toEqual({ status: 'success' });
-    expect(mocks.updateConfig).toHaveBeenCalledWith(
-      PROVIDER,
-      {
-        keyVaults: {
-          oauthAccessToken: jwt({ exp: futureExp }),
-          oauthAccountEmail: 'user@example.com',
-          oauthAccountId: 'acct-42',
-          oauthDeviceId: JSON.parse(deviceCode).deviceId,
-          // Connect time anchors the 3-day keepalive for a grant never yet refreshed.
-          oauthLastRefreshAt: expect.any(String),
-          oauthLastRefreshErrorAt: undefined,
-          oauthRefreshToken: 'refresh-1',
-          // A PKCE grant renews at the token endpoint, not through the web session.
-          oauthRenewalKind: 'oauth',
-          oauthTokenExpiresAt: String(futureExp * 1000),
-        },
-      },
-      expect.anything(),
-      expect.anything(),
-    );
+    // Refused before any exchange: the code is never spent and nothing is stored.
+    expect(authFetch).not.toHaveBeenCalled();
+    expect(mocks.updateConfig).not.toHaveBeenCalled();
+  });
+
+  /**
+   * An empty callback is a malformed submit, not "nothing pasted yet". Accepted by the
+   * contract it slipped past the truthiness gates into the pending branch, so the one client
+   * this refusal exists for — an older build that still shows the authorization page — was
+   * told to keep polling instead of being told to stop.
+   */
+  it('rejects an empty callback URL instead of reading it as nothing pasted', async () => {
+    const { deviceCode } = await startFlow();
+
+    await expect(
+      caller().pollAuthStatus({ callbackUrl: '', deviceCode, providerId: PROVIDER }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+    expect(authFetch).not.toHaveBeenCalled();
+    expect(mocks.updateConfig).not.toHaveBeenCalled();
   });
 
   it('stores a pasted access token without a refresh token, reusing the envelope device id', async () => {
@@ -316,67 +312,6 @@ describe('oauthDeviceFlow.pollAuthStatus (paste flow)', () => {
         providerId: PROVIDER,
       }),
     ).rejects.toThrow();
-  });
-
-  it.each([
-    [
-      'state_mismatch',
-      async (deviceCode: string) => ({
-        callbackUrl: 'https://platform.openai.com/auth/callback?code=c&state=forged',
-        deviceCode,
-        providerId: PROVIDER,
-      }),
-    ],
-    [
-      'state_mismatch',
-      async (deviceCode: string) => ({
-        // A pasted redirect URL always echoes state back; one without it is fabricated.
-        callbackUrl: 'https://platform.openai.com/auth/callback?code=c',
-        deviceCode,
-        providerId: PROVIDER,
-      }),
-    ],
-    [
-      'invalid_callback',
-      async (deviceCode: string) => ({ callbackUrl: '   ', deviceCode, providerId: PROVIDER }),
-    ],
-  ])('maps a bad paste to %s and stores nothing', async (code, buildInput) => {
-    const { deviceCode } = await startFlow();
-
-    const result = await caller().pollAuthStatus(await buildInput(deviceCode));
-
-    expect(result).toEqual({ error: code, status: 'error' });
-    expect(mocks.updateConfig).not.toHaveBeenCalled();
-  });
-
-  it('maps a stale envelope to expired', async () => {
-    const { deviceCode } = await startFlow();
-    const envelope = JSON.parse(deviceCode);
-    envelope.createdAt = Date.now() - 11 * 60 * 1000;
-
-    const result = await caller().pollAuthStatus({
-      callbackUrl: 'the-code',
-      deviceCode: JSON.stringify(envelope),
-      providerId: PROVIDER,
-    });
-
-    expect(result).toEqual({ error: 'expired', status: 'error' });
-  });
-
-  it('maps a rejected exchange to exchange_failed without echoing provider prose', async () => {
-    const { deviceCode } = await startFlow();
-    authFetch.mockResolvedValue(
-      jsonResponse({ error: 'invalid_grant', error_description: 'code already used' }, 400),
-    );
-
-    const result = await caller().pollAuthStatus({
-      callbackUrl: 'the-code',
-      deviceCode,
-      providerId: PROVIDER,
-    });
-
-    expect(result).toEqual({ error: 'exchange_failed', status: 'error' });
-    expect(JSON.stringify(result)).not.toContain('already used');
   });
 
   /**

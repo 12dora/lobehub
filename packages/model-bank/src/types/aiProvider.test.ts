@@ -64,4 +64,57 @@ describe('OAuthDeviceFlowConfigSchema', () => {
       }),
     ).toThrow();
   });
+
+  /**
+   * `webSessionOnly` hides the authorization-code UI and makes the pasted web session the ONE
+   * connect route. That only holds together on a card that already connects by paste and
+   * already accepts a pasted credential — otherwise the flag either hides nothing (device
+   * code is a different branch) or renders the only offered form into a server-side
+   * rejection. The contract has to refuse those, not trust the card author.
+   */
+  describe('webSessionOnly', () => {
+    const sessionOnly = {
+      ...oauthDeviceFlow,
+      allowAccessTokenPaste: true,
+      grantFlow: 'authorization_code_paste' as const,
+      webSessionOnly: true,
+    };
+
+    it('accepts the paste-flow card that ChatGPT Web ships', () => {
+      const parsed = CreateAiProviderSchema.parse({
+        ...createPayload,
+        settings: { oauthDeviceFlow: sessionOnly },
+      });
+
+      expect(parsed.settings?.oauthDeviceFlow).toEqual(sessionOnly);
+    });
+
+    it.each([
+      [
+        'a device-code card, where the flag hides nothing',
+        { ...sessionOnly, grantFlow: 'device_code' as const },
+      ],
+      [
+        'a card whose pasted-credential gate is closed',
+        { ...sessionOnly, allowAccessTokenPaste: false },
+      ],
+    ])('rejects %s', (_label, oauth) => {
+      expect(() =>
+        CreateAiProviderSchema.parse({ ...createPayload, settings: { oauthDeviceFlow: oauth } }),
+      ).toThrow();
+
+      expect(() =>
+        UpdateAiProviderSchema.parse({
+          name: 'ChatGPT Web',
+          settings: { oauthDeviceFlow: oauth },
+        }),
+      ).toThrow();
+    });
+
+    it('leaves a card that never sets the flag alone', () => {
+      const parsed = CreateAiProviderSchema.parse(createPayload);
+
+      expect(parsed.settings?.oauthDeviceFlow).not.toHaveProperty('webSessionOnly');
+    });
+  });
 });

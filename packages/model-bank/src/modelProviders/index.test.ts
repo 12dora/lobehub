@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type ModelProviderCard } from '../types';
+import { CreateAiProviderSchema } from '../types/aiProvider';
 import {
   DEFAULT_MODEL_PROVIDER_LIST,
   getProviderOAuthGrantFlow,
@@ -8,6 +9,7 @@ import {
   isProviderDisableBrowserRequest,
   isProviderNativeFileInput,
   isProviderOAuthDeviceFlow,
+  isProviderWebSessionOnly,
   isRotatingRefreshOAuthProvider,
 } from './index';
 
@@ -117,6 +119,12 @@ describe('model provider predicates', () => {
     expect(isProviderAccessTokenPasteAllowed('oauth-provider')).toBe(false);
     expect(isProviderAccessTokenPasteAllowed('not-exists')).toBe(false);
     expect(isProviderAccessTokenPasteAllowed()).toBe(false);
+
+    // A paste-flow card that did not opt out of the authorization page keeps both routes.
+    expect(isProviderWebSessionOnly('paste-provider')).toBe(false);
+    expect(isProviderWebSessionOnly('oauth-provider')).toBe(false);
+    expect(isProviderWebSessionOnly('not-exists')).toBe(false);
+    expect(isProviderWebSessionOnly()).toBe(false);
   });
 
   it('detects native file input providers from the card settings', () => {
@@ -171,5 +179,52 @@ describe('model provider predicates', () => {
     // The Codex-backed chatgpt provider keeps its device-code grant.
     expect(getProviderOAuthGrantFlow('chatgpt')).toBe('device_code');
     expect(isProviderAccessTokenPasteAllowed('chatgpt')).toBe(false);
+  });
+
+  it('connects chatgptweb through the web session alone, and nothing else', () => {
+    DEFAULT_MODEL_PROVIDER_LIST.length = 0;
+    DEFAULT_MODEL_PROVIDER_LIST.push(...originalProviders);
+
+    const sessionOnly = DEFAULT_MODEL_PROVIDER_LIST.filter((provider) =>
+      isProviderWebSessionOnly(provider.id),
+    ).map((provider) => provider.id);
+    expect(sessionOnly).toEqual(['chatgptweb']);
+
+    // The authorization-code grant stays declared: connections stored before the flag was
+    // set renew through it, and dropping the config would kill them.
+    const config = DEFAULT_MODEL_PROVIDER_LIST.find((provider) => provider.id === 'chatgptweb')
+      ?.settings?.oauthDeviceFlow;
+    expect(config?.authorizationCode?.authorizeEndpoint).toBeTruthy();
+    expect(config?.clientId).toBeTruthy();
+    expect(config?.refreshTokenGrant).toBe(true);
+    expect(config?.tokenEndpoint).toBeTruthy();
+    expect(config?.scopes?.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * TypeScript cannot narrow `webSessionOnly` on the card (the same interface is the wire
+   * type for create/update, where the flag arrives as a plain optional boolean), so the
+   * contradictory combinations are refused by `OAuthDeviceFlowConfigSchema` — and every
+   * builtin card is held to that same contract here rather than only stored providers.
+   */
+  it('holds every builtin OAuth card to the stored-provider contract', () => {
+    DEFAULT_MODEL_PROVIDER_LIST.length = 0;
+    DEFAULT_MODEL_PROVIDER_LIST.push(...originalProviders);
+
+    const rejected = DEFAULT_MODEL_PROVIDER_LIST.filter(
+      (provider) => provider.settings?.oauthDeviceFlow,
+    )
+      .filter(
+        (provider) =>
+          !CreateAiProviderSchema.safeParse({
+            id: provider.id,
+            name: provider.name,
+            settings: provider.settings,
+            source: 'builtin',
+          }).success,
+      )
+      .map((provider) => provider.id);
+
+    expect(rejected).toEqual([]);
   });
 });

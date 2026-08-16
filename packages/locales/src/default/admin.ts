@@ -517,6 +517,10 @@ export default {
     'This connection was made with a pasted access token, so it cannot renew itself and members lose access when it expires. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
   'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore':
     'This connection was made with a pasted access token, so it cannot renew itself and members lose access on {{time}}. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
+  'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBeforeSessionOnly':
+    'This connection was made with a pasted access token, so it cannot renew itself and members lose access on {{time}}. Paste a ChatGPT web session to make it renew itself.',
+  'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewSessionOnly':
+    'This connection was made with a pasted access token, so it cannot renew itself and members lose access when it expires. Paste a ChatGPT web session to make it renew itself.',
   'aiProviderSettings.sharedOAuth.paste.detected.accessToken':
     'Detected: access token — this cannot renew itself.',
   'aiProviderSettings.sharedOAuth.paste.detected.session':
@@ -525,6 +529,8 @@ export default {
     'Not recognised. Paste the cookie, a copied cURL command, or an access token.',
   'aiProviderSettings.sharedOAuth.paste.errors.accessTokenInvalid':
     'That access token was rejected. Copy it again, or use the authorization page instead.',
+  'aiProviderSettings.sharedOAuth.paste.errors.accessTokenInvalidSessionOnly':
+    'That access token was rejected. Sign in at chatgpt.com again and copy the web session instead — it renews itself.',
   'aiProviderSettings.sharedOAuth.paste.errors.authError':
     'The connection could not be completed. Please try again.',
   'aiProviderSettings.sharedOAuth.paste.errors.exchangeFailed':
@@ -537,6 +543,8 @@ export default {
     'This link belongs to a different attempt. Generate a new link and sign in again.',
   'aiProviderSettings.sharedOAuth.paste.errors.tokenNotWeb':
     'That token belongs to the Codex CLI and has no chatgpt.com web permission. Paste a chatgpt.com web session, or connect through the authorization page.',
+  'aiProviderSettings.sharedOAuth.paste.errors.tokenNotWebSessionOnly':
+    'That token belongs to the Codex CLI and has no chatgpt.com web permission. Paste a chatgpt.com web session instead.',
   'aiProviderSettings.sharedOAuth.paste.instruction':
     'Sign in with the account the whole platform should use. You will land on a blank page at platform.openai.com/auth/callback — copy that full address from the browser and paste it below.',
   'aiProviderSettings.sharedOAuth.paste.openAuthorizePage': 'Open authorization page',
@@ -544,8 +552,11 @@ export default {
   'aiProviderSettings.sharedOAuth.paste.reconnectRenewable': 'Reconnect via authorization page',
   'aiProviderSettings.sharedOAuth.paste.regenerate': 'Generate a new link',
   'aiProviderSettings.sharedOAuth.paste.sessionHint':
-    'Sign in at chatgpt.com, then open DevTools → Application/Storage → Cookies and copy `__Secure-next-auth.session-token`; or pick any chatgpt.com request in the Network panel, "Copy as cURL", and paste it here. Just like the web app: sign in once and it renews itself from then on. An access token works too, but it cannot renew itself.',
+    '1. Sign in at chatgpt.com in a browser. 2. Open DevTools → Application/Storage → Cookies and copy the value of `__Secure-next-auth.session-token` (or pick any chatgpt.com request in the Network panel and "Copy as cURL"). 3. Paste what you copied into the box and connect.',
   'aiProviderSettings.sharedOAuth.paste.sessionLabel': 'ChatGPT web session',
+  'aiProviderSettings.sharedOAuth.paste.sessionOnlyDesc':
+    'Just like the web app: sign in once and the platform renews it from then on — nobody has to sign in again.',
+  'aiProviderSettings.sharedOAuth.paste.sessionOnlyTitle': 'Connect with a chatgpt.com web session',
   'aiProviderSettings.sharedOAuth.paste.sessionPlaceholder':
     'Paste the cookie, a copied cURL command, or an access token',
   'aiProviderSettings.sharedOAuth.paste.sessionSubmit': 'Connect with what I pasted',

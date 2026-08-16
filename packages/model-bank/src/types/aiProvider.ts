@@ -107,6 +107,22 @@ export interface OAuthDeviceFlowConfig {
    * Optional: Provider-specific token exchange endpoint (e.g., GitHub Copilot)
    */
   tokenExchangeEndpoint?: string;
+  /**
+   * Connect ONLY via a pasted web session: the authorization-code UI is hidden and a
+   * callback exchange is rejected server-side.
+   *
+   * Set where the authorization page signs the user into a DIFFERENT product than the one
+   * the provider talks to (ChatGPT Web: the authorize call has the platform API as its
+   * audience and lands on platform.openai.com, which is not the chatgpt.com subscription).
+   * The `authorizationCode` / `clientId` / `tokenEndpoint` fields stay declared regardless:
+   * connections stored before the flag was set still renew through that grant.
+   *
+   * Only meaningful on a card that already connects by paste: `OAuthDeviceFlowConfigSchema`
+   * refuses it unless `grantFlow` is `authorization_code_paste` and `allowAccessTokenPaste`
+   * is `true`, because the session-only UI lives inside the paste panel and submits through
+   * the pasted-credential gate.
+   */
+  webSessionOnly?: boolean;
 }
 
 /**
@@ -300,31 +316,65 @@ const ResponseAnimationType = z.enum(['smooth', 'fadeIn', 'none']);
 
 const AiProviderAuthTypes = ['apiKey', 'oauthDeviceFlow'] as const;
 
-const OAuthDeviceFlowConfigSchema = z.object({
-  allowAccessTokenPaste: z.boolean().optional(),
-  authorizationCode: z
-    .object({
-      audience: z.string().optional(),
-      authorizeEndpoint: z.string(),
-      redirectUri: z.string(),
-    })
-    .optional(),
-  clientId: z.string(),
-  defaultPollingInterval: z.number().optional(),
-  deviceCodeEndpoint: z.string(),
-  grantFlow: z.enum(['device_code', 'authorization_code_paste']).optional(),
-  /**
-   * Proactive-refresh window in milliseconds. Integer and non-negative — `.int()` also
-   * rejects `NaN`/`Infinity`, which would otherwise poison every expiry comparison.
-   * Absent from the schema it was silently stripped from create/update payloads, leaving
-   * the runtime on the 2-minute default for providers that declare a wider window.
-   */
-  refreshSkewMs: z.number().int().nonnegative().optional(),
-  refreshTokenGrant: z.boolean().optional(),
-  scopes: z.array(z.string()),
-  tokenEndpoint: z.string(),
-  tokenExchangeEndpoint: z.string().optional(),
-});
+/**
+ * `webSessionOnly` is not a free-standing switch: the session-only UI is a layout INSIDE the
+ * paste panel and it submits through the pasted-credential gate. Declared next to
+ * `grantFlow: 'device_code'` it would hide nothing (the device-code UI is a different
+ * branch), and declared next to `allowAccessTokenPaste: false` it would render the only
+ * offered form straight into a server-side rejection. Both combinations are refused here so
+ * the guarantee rests on the contract rather than on every card being authored correctly.
+ */
+const requireWebSessionOnlyPasteFlow = (
+  config: { allowAccessTokenPaste?: boolean; grantFlow?: string; webSessionOnly?: boolean },
+  ctx: z.RefinementCtx,
+) => {
+  if (!config.webSessionOnly) return;
+
+  if (config.grantFlow !== 'authorization_code_paste') {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'webSessionOnly requires grantFlow "authorization_code_paste"',
+      path: ['grantFlow'],
+    });
+  }
+
+  if (config.allowAccessTokenPaste !== true) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'webSessionOnly requires allowAccessTokenPaste true',
+      path: ['allowAccessTokenPaste'],
+    });
+  }
+};
+
+const OAuthDeviceFlowConfigSchema = z
+  .object({
+    allowAccessTokenPaste: z.boolean().optional(),
+    authorizationCode: z
+      .object({
+        audience: z.string().optional(),
+        authorizeEndpoint: z.string(),
+        redirectUri: z.string(),
+      })
+      .optional(),
+    clientId: z.string(),
+    defaultPollingInterval: z.number().optional(),
+    deviceCodeEndpoint: z.string(),
+    grantFlow: z.enum(['device_code', 'authorization_code_paste']).optional(),
+    /**
+     * Proactive-refresh window in milliseconds. Integer and non-negative — `.int()` also
+     * rejects `NaN`/`Infinity`, which would otherwise poison every expiry comparison.
+     * Absent from the schema it was silently stripped from create/update payloads, leaving
+     * the runtime on the 2-minute default for providers that declare a wider window.
+     */
+    refreshSkewMs: z.number().int().nonnegative().optional(),
+    refreshTokenGrant: z.boolean().optional(),
+    scopes: z.array(z.string()),
+    tokenEndpoint: z.string(),
+    tokenExchangeEndpoint: z.string().optional(),
+    webSessionOnly: z.boolean().optional(),
+  })
+  .superRefine(requireWebSessionOnlyPasteFlow);
 
 const AiProviderSettingsSchema = z.object({
   authType: z.enum(AiProviderAuthTypes).optional(),

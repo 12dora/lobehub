@@ -4,6 +4,7 @@ import {
   DEFAULT_MODEL_PROVIDER_LIST,
   getProviderOAuthGrantFlow,
   isProviderAccessTokenPasteAllowed,
+  isProviderWebSessionOnly,
   isRotatingRefreshOAuthProvider,
 } from 'model-bank/modelProviders';
 import { z } from 'zod';
@@ -198,9 +199,17 @@ export const oauthDeviceFlowRouter = router({
     .use(withManagedResourceGuard('oauthDeviceFlow.pollAuthStatus'))
     .input(
       z.object({
-        /** Paste flow only: the pasted redirect URL, or the bare authorization code. */
-        accessToken: z.string().max(8192).optional(),
-        callbackUrl: z.string().max(4096).optional(),
+        /**
+         * Paste flow only: the pasted redirect URL, or the bare authorization code.
+         *
+         * `.min(1)` like the admin contract, and not decoration: an empty string is a
+         * malformed submit, not "nothing pasted yet", and every gate below reads these
+         * fields for truthiness. An empty `callbackUrl` therefore reached the pending
+         * branch and answered `pending` where a web-session-only provider owes a
+         * `BAD_REQUEST`.
+         */
+        accessToken: z.string().min(1).max(8192).optional(),
+        callbackUrl: z.string().min(1).max(4096).optional(),
         // Same bound as the admin contract: for the paste flow this is a client-held
         // envelope, and an unbounded string would be an unbounded server-side JSON parse.
         deviceCode: z.string().max(8192),
@@ -239,6 +248,23 @@ export const oauthDeviceFlowRouter = router({
         // but the server does no network work at all until the user acts.
         if (!input.callbackUrl && !input.accessToken && !input.sessionToken) {
           return { status: 'pending' as const };
+        }
+
+        /**
+         * A web-session-only provider connects through the pasted chatgpt.com session and
+         * nothing else: its authorization page asks for the platform API audience and lands
+         * on platform.openai.com, which is NOT the subscription this provider serves — a
+         * grant redeemed there can be stored and still fail every conversation. The UI no
+         * longer offers it; this refuses it for an older client that still would.
+         *
+         * Only the code exchange is refused. Connections already stored with
+         * `oauthRenewalKind: 'oauth'` keep renewing through `refreshAccessToken`.
+         */
+        if (input.callbackUrl && isProviderWebSessionOnly(input.providerId)) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Provider ${input.providerId} connects only through a pasted web session`,
+          });
         }
 
         // One gate for both pasted-credential kinds: whether a user may hand this provider

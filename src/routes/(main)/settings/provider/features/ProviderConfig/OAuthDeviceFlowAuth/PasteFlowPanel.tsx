@@ -66,6 +66,12 @@ export interface PasteFlowPanelProps {
   /** Which input the failed submit came from; decides where the error is shown. */
   submitErrorSource?: PasteSubmitSource;
   submitting?: boolean;
+  /**
+   * The provider connects through the pasted web session ALONE (card flag
+   * `oauthDeviceFlow.webSessionOnly`): the authorization page belongs to a different product
+   * and the server refuses a callback exchange, so none of that UI may be offered here.
+   */
+  webSessionOnly?: boolean;
 }
 
 /** Submit errors that belong to the pasted-credential box rather than the callback box. */
@@ -74,6 +80,13 @@ const TOKEN_SOURCE_ERRORS = new Set<PasteSubmitError>([
   'sessionInvalid',
   'tokenNotWeb',
 ]);
+
+/**
+ * Rejections whose generic copy sends the user to the authorization page. That page is a dead
+ * end for a web-session-only provider — its own server refuses the exchange — so those two get
+ * a variant that names the one remedy that works here.
+ */
+const SESSION_ONLY_ERRORS = new Set<PasteSubmitError>(['accessTokenInvalid', 'tokenNotWeb']);
 
 /**
  * Connect UI for the authorization-code paste flow: the provider's redirect URI points at
@@ -96,6 +109,7 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
     submitError,
     submitErrorSource,
     submitting,
+    webSessionOnly,
   }) => {
     const { t } = useTranslation('modelProvider');
     const [callbackUrl, setCallbackUrl] = useState('');
@@ -122,6 +136,11 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
       (submitError && TOKEN_SOURCE_ERRORS.has(submitError) ? 'token' : 'callback');
     const tokenError = submitError && errorSource === 'token' ? submitError : undefined;
     const callbackError = submitError && !tokenError ? submitError : undefined;
+    const tokenErrorKey =
+      tokenError &&
+      `providerModels.config.oauth.paste.errors.${tokenError}${
+        webSessionOnly && SESSION_ONLY_ERRORS.has(tokenError) ? 'SessionOnly' : ''
+      }`;
 
     /**
      * What was pasted, resolved live: a session cookie, a whole "Copy as cURL" command, the
@@ -150,6 +169,87 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
       if (parsed.sessionToken) onSubmitSessionToken(parsed.sessionToken);
       else if (parsed.accessToken) onSubmitAccessToken(parsed.accessToken);
     }, [onSubmitAccessToken, onSubmitSessionToken, parsed.accessToken, parsed.sessionToken]);
+
+    /** The pasted-credential input itself: same field, label and live detection either way. */
+    const sessionFields = (
+      <>
+        <label className={styles.label} htmlFor={tokenFieldId}>
+          {t('providerModels.config.oauth.paste.sessionLabel')}
+        </label>
+        <TextArea
+          aria-invalid={tokenError ? true : undefined}
+          autoCapitalize="none"
+          // A raw session cookie: no autofill, no autocorrect mangling it, and no
+          // spellchecker — which on several platforms means uploading it.
+          autoComplete="off"
+          autoCorrect="off"
+          autoSize={{ maxRows: 6, minRows: 3 }}
+          disabled={disabled}
+          id={tokenFieldId}
+          placeholder={t('providerModels.config.oauth.paste.sessionPlaceholder')}
+          spellCheck={false}
+          value={pasted}
+          aria-describedby={
+            [tokenError ? tokenErrorId : undefined, detection ? detectionId : undefined]
+              .filter(Boolean)
+              .join(' ') || undefined
+          }
+          onChange={(e) => setPasted(e.target.value)}
+        />
+        {detection && (
+          <Text
+            className={styles.hint}
+            id={detectionId}
+            // Live, because it changes while the user types into the box above.
+            role="status"
+            type={detection === 'session' ? 'secondary' : 'warning'}
+          >
+            {t(`providerModels.config.oauth.paste.detected.${detection}` as any)}
+          </Text>
+        )}
+        {tokenErrorKey && (
+          <Text className={styles.errorText} id={tokenErrorId} role="alert">
+            {t(tokenErrorKey as any)}
+          </Text>
+        )}
+      </>
+    );
+
+    /**
+     * Web-session-only providers get ONE route and it is the primary one. The authorization
+     * page is not merely demoted here: it signs the user into a different product, and the
+     * server refuses the exchange — so offering it would be offering a dead end.
+     */
+    if (webSessionOnly)
+      return (
+        <Flexbox className={styles.panel} gap={16}>
+          <Flexbox gap={4}>
+            <Text className={styles.label}>
+              {t('providerModels.config.oauth.paste.sessionOnlyTitle')}
+            </Text>
+            <Text className={styles.instruction}>
+              {t('providerModels.config.oauth.paste.sessionOnlyDesc')}
+            </Text>
+          </Flexbox>
+          {/* Above the box, because it is what to do BEFORE there is anything to paste. */}
+          <Text className={styles.hint}>{t('providerModels.config.oauth.paste.sessionHint')}</Text>
+          <Flexbox gap={8}>{sessionFields}</Flexbox>
+          <Flexbox gap={12}>
+            <Button
+              block
+              disabled={disabled || parsed.kind === 'unknown'}
+              loading={submitting}
+              type="primary"
+              onClick={handleSubmitPasted}
+            >
+              {t('providerModels.config.oauth.paste.submit')}
+            </Button>
+            <Button block size="small" type="text" onClick={onCancel}>
+              {t('providerModels.config.oauth.cancel')}
+            </Button>
+          </Flexbox>
+        </Flexbox>
+      );
 
     return (
       <Flexbox className={styles.panel} gap={16}>
@@ -233,45 +333,7 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
             </Flexbox>
             {showTokenSection && (
               <Flexbox gap={8} id={tokenSectionId}>
-                <label className={styles.label} htmlFor={tokenFieldId}>
-                  {t('providerModels.config.oauth.paste.sessionLabel')}
-                </label>
-                <TextArea
-                  aria-invalid={tokenError ? true : undefined}
-                  autoCapitalize="none"
-                  // A raw session cookie: no autofill, no autocorrect mangling it, and no
-                  // spellchecker — which on several platforms means uploading it.
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoSize={{ maxRows: 6, minRows: 3 }}
-                  disabled={disabled}
-                  id={tokenFieldId}
-                  placeholder={t('providerModels.config.oauth.paste.sessionPlaceholder')}
-                  spellCheck={false}
-                  value={pasted}
-                  aria-describedby={
-                    [tokenError ? tokenErrorId : undefined, detection ? detectionId : undefined]
-                      .filter(Boolean)
-                      .join(' ') || undefined
-                  }
-                  onChange={(e) => setPasted(e.target.value)}
-                />
-                {detection && (
-                  <Text
-                    className={styles.hint}
-                    id={detectionId}
-                    // Live, because it changes while the user types into the box above.
-                    role="status"
-                    type={detection === 'session' ? 'secondary' : 'warning'}
-                  >
-                    {t(`providerModels.config.oauth.paste.detected.${detection}` as any)}
-                  </Text>
-                )}
-                {tokenError && (
-                  <Text className={styles.errorText} id={tokenErrorId} role="alert">
-                    {t(`providerModels.config.oauth.paste.errors.${tokenError}` as any)}
-                  </Text>
-                )}
+                {sessionFields}
                 <Text className={styles.hint}>
                   {t('providerModels.config.oauth.paste.sessionHint')}
                 </Text>

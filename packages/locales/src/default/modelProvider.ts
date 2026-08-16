@@ -237,6 +237,10 @@ export default {
     'This connection was made with a pasted access token, so it cannot renew itself and stops working when it expires. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
   'providerModels.config.oauth.paste.cannotAutoRenewBefore':
     'This connection was made with a pasted access token, so it cannot renew itself and stops working on {{time}}. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
+  'providerModels.config.oauth.paste.cannotAutoRenewBeforeSessionOnly':
+    'This connection was made with a pasted access token, so it cannot renew itself and stops working on {{time}}. Paste a ChatGPT web session to make it renew itself.',
+  'providerModels.config.oauth.paste.cannotAutoRenewSessionOnly':
+    'This connection was made with a pasted access token, so it cannot renew itself and stops working when it expires. Paste a ChatGPT web session to make it renew itself.',
   'providerModels.config.oauth.paste.connectedEmail': 'Signed in as {{email}}',
   'providerModels.config.oauth.paste.currentTokenUntil': 'Current access token runs to {{time}}',
   'providerModels.config.oauth.paste.detected.accessToken':
@@ -247,6 +251,8 @@ export default {
     'Not recognised. Paste the cookie, a copied cURL command, or an access token.',
   'providerModels.config.oauth.paste.errors.accessTokenInvalid':
     'That access token was rejected. Copy it again, or use the authorization page instead.',
+  'providerModels.config.oauth.paste.errors.accessTokenInvalidSessionOnly':
+    'That access token was rejected. Sign in at chatgpt.com again and copy the web session instead — it renews itself.',
   'providerModels.config.oauth.paste.errors.authError':
     'The connection could not be completed. Please try again.',
   'providerModels.config.oauth.paste.errors.exchangeFailed':
@@ -259,6 +265,8 @@ export default {
     'This link belongs to a different attempt. Generate a new link and sign in again.',
   'providerModels.config.oauth.paste.errors.tokenNotWeb':
     'That token belongs to the Codex CLI and has no chatgpt.com web permission. Paste a chatgpt.com web session, or connect through the authorization page.',
+  'providerModels.config.oauth.paste.errors.tokenNotWebSessionOnly':
+    'That token belongs to the Codex CLI and has no chatgpt.com web permission. Paste a chatgpt.com web session instead.',
   'providerModels.config.oauth.paste.expiresAt': 'Expires {{time}}',
   'providerModels.config.oauth.paste.instruction':
     'Sign in on the page that opens. You will land on a blank page at platform.openai.com/auth/callback — copy that full address from the browser and paste it below.',
@@ -267,8 +275,11 @@ export default {
   'providerModels.config.oauth.paste.reconnectRenewable': 'Reconnect via authorization page',
   'providerModels.config.oauth.paste.regenerate': 'Generate a new link',
   'providerModels.config.oauth.paste.sessionHint':
-    'Sign in at chatgpt.com, then open DevTools → Application/Storage → Cookies and copy `__Secure-next-auth.session-token`; or pick any chatgpt.com request in the Network panel, "Copy as cURL", and paste it here. Just like the web app: sign in once and it renews itself from then on. An access token works too, but it cannot renew itself.',
+    '1. Sign in at chatgpt.com in a browser. 2. Open DevTools → Application/Storage → Cookies and copy the value of `__Secure-next-auth.session-token` (or pick any chatgpt.com request in the Network panel and "Copy as cURL"). 3. Paste what you copied into the box and connect.',
   'providerModels.config.oauth.paste.sessionLabel': 'ChatGPT web session',
+  'providerModels.config.oauth.paste.sessionOnlyDesc':
+    'Just like the web app: sign in once and it renews itself from then on — you never have to sign in again.',
+  'providerModels.config.oauth.paste.sessionOnlyTitle': 'Connect with a chatgpt.com web session',
   'providerModels.config.oauth.paste.sessionPlaceholder':
     'Paste the cookie, a copied cURL command, or an access token',
   'providerModels.config.oauth.paste.sessionSubmit': 'Connect with what I pasted',

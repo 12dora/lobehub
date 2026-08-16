@@ -4,6 +4,7 @@ import {
   DEFAULT_MODEL_PROVIDER_LIST,
   getProviderOAuthGrantFlow,
   isProviderAccessTokenPasteAllowed,
+  isProviderWebSessionOnly,
   isRotatingRefreshOAuthProvider,
 } from 'model-bank/modelProviders';
 
@@ -576,6 +577,22 @@ export const adminAiProviderOAuthRouter = router({
         // no audit row — the client may poll this the same way it polls a device code.
         if (!input.callbackUrl && !input.accessToken && !input.sessionToken) {
           return { ...unfinished, status: 'pending' as const };
+        }
+        /**
+         * A web-session-only provider connects through the pasted chatgpt.com session and
+         * nothing else: its authorization page asks for the platform API audience and lands
+         * on platform.openai.com, which is NOT the subscription this provider serves — a
+         * grant redeemed there can be stored and still fail every conversation. The UI no
+         * longer offers it; this refuses it for an older client that still would.
+         *
+         * Only the code exchange is refused. Connections already stored with
+         * `oauthRenewalKind: 'oauth'` keep renewing through `refreshAccessToken`.
+         */
+        if (input.callbackUrl && isProviderWebSessionOnly(input.id)) {
+          return throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+            httpCode: 'PRECONDITION_FAILED',
+          });
         }
         // One gate for BOTH pasted-credential kinds: whether an operator may hand this
         // provider a credential out of band is one decision, not two.

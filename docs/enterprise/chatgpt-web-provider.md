@@ -89,24 +89,25 @@ bun run curl-impersonate:install
 
 ## 4. 接入流程（管理端 / 用户端）
 
-服务商卡片：`packages/model-bank/src/modelProviders/chatgptWeb.ts`。关键位：`authType: 'oauthDeviceFlow'` + `oauthDeviceFlow.grantFlow: 'authorization_code_paste'` + `refreshTokenGrant: true`（因此复用既有的**共享 OAuth + 轮转刷新**机制，没有新增管理端 procedure）、`allowAccessTokenPaste: true`、`nativeFileInput: true`、`searchMode: 'params'`、`showApiKey: false`。
+服务商卡片：`packages/model-bank/src/modelProviders/chatgptWeb.ts`。关键位：`authType: 'oauthDeviceFlow'` + `oauthDeviceFlow.grantFlow: 'authorization_code_paste'` + `refreshTokenGrant: true`（因此复用既有的**共享 OAuth + 轮转刷新**机制，没有新增管理端 procedure）、`allowAccessTokenPaste: true`、`webSessionOnly: true`、`nativeFileInput: true`、`searchMode: 'params'`、`showApiKey: false`。
 
-### 4.1 两种连接方式
+### 4.1 连接方式：只有「粘贴网页会话」
 
-| 方式                                  | 入口文案                                                                          | 是否自动续期                             | 适用                       |
-| ------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------- | -------------------------- |
-| **打开授权页 → 粘贴回调 URL**（推荐） | 「打开授权页面」→ 登录 → 复制浏览器地址栏整串 → 粘到「回调地址」→「连接共享账号」 | **是**（拿到 `oauthRefreshToken`）       | 常规接入，连上即长期有效   |
-| **粘贴网页会话（Cookie /cURL）**      | 「粘贴网页会话」→ 粘 Cookie /cURL →「使用粘贴内容连接」                           | **是**（存的是 next-auth 会话，见 §4.4） | 有 2FA、不方便走授权页时   |
-| **粘贴访问令牌**（兜底）              | 同一个输入框，粘 access token 即可（会被自动识别）                                | **否**                                   | 临时手段，到期即停需要重连 |
+| 方式                             | 入口文案                                                  | 是否自动续期                             | 适用                       |
+| -------------------------------- | --------------------------------------------------------- | ---------------------------------------- | -------------------------- |
+| **粘贴网页会话（Cookie /cURL）** | 「使用 chatgpt.com 网页会话连接」→ 粘贴 →「连接共享账号」 | **是**（存的是 next-auth 会话，见 §4.4） | 唯一的连接方式             |
+| **粘贴访问令牌**（兜底）         | 同一个输入框，粘 access token 即可（会被自动识别）        | **否**                                   | 临时手段，到期即停需要重连 |
 
-- 授权后会跳到 `https://platform.openai.com/auth/callback?code=…` 的**空白页**，那串完整地址就是要粘的内容。链接一次性绑 `state`/PKCE verifier，换过一次要点「重新生成链接」再登录，否则报「该链接属于另一次连接尝试」。
+- **OAuth 授权页已从两端 UI 移除**（卡片 `oauthDeviceFlow.webSessionOnly: true`，谓词 `isProviderWebSessionOnly`）。原因：那条授权 URL 的 `audience` 是 `https://api.openai.com/v1`、`redirect_uri` 落在 `platform.openai.com`—— 它登录的是 **OpenAI 平台（API）**，不是本服务商实际调用的 chatgpt.com 订阅；换出来的令牌能入库却可能在 `chatgpt.com/backend-api` 上全线 403。服务端也一并把它堵死：`admin.aiProviderOAuth.pollAuthStatus` 与 `lambda.oauthDeviceFlow.pollAuthStatus` 收到 `callbackUrl` 时直接拒（`PLATFORM_CONFIG_VALIDATION_FAILED` / `BAD_REQUEST`），不再兑换。
+- **存量兼容**：卡片里的 `authorizationCode` / `clientId` / `tokenEndpoint` / `scopes` **保留不删**。已经以 `oauthRenewalKind: 'oauth'` 存在的连接照常在 `auth.openai.com/oauth/token` 续期（`refreshAccessToken` 的 `'oauth'` 分支未动），被去掉的只是「新建连接的入口」。
+- `initiateDeviceCode` **仍然保留**：会话路径也要靠它产出信封里的 `deviceId`（`oai-device-id` 的稳定来源）。
 - **粘贴区只有一个多行输入框**，粘什么由客户端识别（`packages/utils/src/chatgptWebPaste.ts`）：原始 Cookie 值、`Cookie: …` 整行、开发者工具「复制为 cURL」的整条命令（bash /cmd/ PowerShell 引号都行，`-b` 与 `-H 'cookie: …'` 都认）、`/api/auth/session` 的 JSON 响应体、`Bearer <jwt>`、裸 access token。next-auth 把超长会话切成 `…session-token.0/.1` 时会按序拼回。输入框下方实时显示「已识别：网页会话（可自动续期）/ 访问令牌（无法自动续期）/ 无法识别」，识别不出就禁用提交。**同时粘到会话和令牌时永远存会话**（能续期的那个）。
-- 已经用访问令牌连上的，连接卡片会出现**告警条**（不是一行灰字）：「此连接使用粘贴的访问令牌建立，无法自动续期…… 粘贴网页会话即可自动续期，也可以通过授权页面重新连接」（有 `exp` 时带失效时间），告警条上直接给出 \*\*「粘贴网页会话」**（主按钮，点开即展开会话输入框）和**「通过授权页面重新连接」\*\* 两条出路。管理端与用户端两侧行为一致。
+- 已经用访问令牌连上的，连接卡片会出现**告警条**（不是一行灰字）：「此连接使用粘贴的访问令牌建立，无法自动续期…… 粘贴网页会话即可自动续期」（有 `exp` 时带失效时间），告警条上直接给出 \*\*「粘贴网页会话」\*\* 主按钮（点开即落在会话输入框）。管理端与用户端两侧行为一致。
 - 反过来，可续期连接的状态行说的是「已连接，自动续期中（网页会话 / 授权登录）」，另起一行「当前访问令牌有效期至 {{time}}」并附「上次续期于 {{time}}」——`expiresAt` 在这里是轮转日期而不是最后期限，不要按告警读。
-- **令牌来源校验**：粘贴的（以及会话签出的）access token 会解 `client_id` 声明，Codex CLI 客户端 `app_EMoamEEZ73f0CkXaXp7hrann` 没有网页版权限，连接时直接拒（`token_not_web`，文案指向粘会话或走授权页）。已知可用的是网页客户端 `app_X8zY6vW2pQ9tR3dE7nK1jL5gH` 与本仓库 PKCE 用的 `app_2SKx67EdpoN0G6j64rFvigXD`；**其余未知 client\_id 一律放行**（清单不是公开契约，且令牌随后还要过 `/backend-api/me`）。
-- **重复连接会清空上一次未提供的字段**：用访问令牌重连一个原本 OAuth 连上的账号，会把 refresh token 抹掉、退化成不可续期。
+- **令牌来源校验**：粘贴的（以及会话签出的）access token 会解 `client_id` 声明，Codex CLI 客户端 `app_EMoamEEZ73f0CkXaXp7hrann` 没有网页版权限，连接时直接拒（`token_not_web`，文案指向改粘网页会话）。已知可用的是网页客户端 `app_X8zY6vW2pQ9tR3dE7nK1jL5gH` 与本仓库 PKCE 用的 `app_2SKx67EdpoN0G6j64rFvigXD`；**其余未知 client\_id 一律放行**（清单不是公开契约，且令牌随后还要过 `/backend-api/me`）。
+- **重复连接会清空上一次未提供的字段**：用访问令牌重连一个原本可续期的账号，会把续期凭据（会话 /refresh token）连同 `oauthRenewalKind` 一起抹掉、退化成不可续期。
 - 管理端（共享账号）：`src/enterprise/client/features/admin/ai/providerSettings/SharedOAuthConnect.tsx` + `SharedOAuthPasteForm.tsx`，写平台 Vault（`admin.aiProviderOAuth`）。
-  用户端（个人账号，平台未接管时可见）：设置 → 服务商 → `OAuthDeviceFlowAuth/PasteFlowPanel.tsx`，写调用方自己的 Vault（`lambda/oauthDeviceFlow`）。两侧文案一致，仅提交按钮不同（「连接共享账号」/「完成连接」）。
+  用户端（个人账号，平台未接管时可见）：设置 → 服务商 → `OAuthDeviceFlowAuth/PasteFlowPanel.tsx`，写调用方自己的 Vault（`lambda/oauthDeviceFlow`）。两侧文案一致，仅提交按钮不同（「连接共享账号」/「完成连接」）。两个组件都按 `webSessionOnly` 这一个 prop 切换版式，**不硬编码服务商 id**—— 没有该标志的服务商（授权页 + 折叠粘贴区）行为完全不变。
 
 ### 4.2 凭据落点
 
@@ -137,9 +138,9 @@ bun run curl-impersonate:install
   - 响应里的 `Set-Cookie` 会**轮转**会话值，轮转后必须存新值（继续用已消费的那个下次就是 401）；服务端读的是 `Headers.getSetCookie()`，并且**认 next-auth 的分片形式**：会话超过一个 Cookie 时上游发的是 `…session-token.0/.1/…`，服务端按下标**从 0 连续拼回**，同时忽略同一响应里 `Max-Age=0` / 空值的**清理头**。分片有缺口、或拼出来的值不满足字符集，就**整个丢弃这次轮转、继续用手上的值**—— 只读半截存下去等于确定性地废掉凭据，而留用旧值最多是下次 401，走的是已有的重连路径。
   - **Cloudflare 挑战（403 `cf-mitigated: challenge`）、429、5xx、超时一律按瞬时错误处理**，绝不能当成会话失效 —— 把挑战判死会一次性废掉全站共享凭据。只有 **401 或 “成功解析出的响应体里没有 `accessToken`”**（空 `{}` / 只有 `WARNING_BANNER` 的未登录响应）才是**会话真的过期**，此时抛 `OAuthInvalidGrantError`，与 refresh token 失效走同一条「需要重连」的终态路径。
   - **响应体读不出来 ≠ 会话失效**：200 但连接中断 / 截断 / 不是 JSON，按**瞬时**处理并重试，绝不判死凭据。如果这次尝试**已经拿到了轮转值**，重试会改用轮转后的会话（上游一旦轮转，手上那份就已经作废，拿它重试只会白烧剩下的次数）。
-  - **调用内自带有界重试**（实测机房 IP 下约 2/3 的请求会被挑战，不重试的话管理员点一次「连接」大概率直接失败）：连接 **4 次**、续期 **3 次**（续期少一次是因为整个调用必须塞进 30s 租约以内），退避 **400 / 900 / 1600 ms 各带 ≤30% 抖动**，每次都是全新的传输调用。**只对瞬时结果重试**——401、200 无令牌、调用方超时 / 中断都不重试（重试一个已死会话只是白烧预算，而超出调用方 deadline 的重试会跑过租约）。整体预算：连接 **25s（覆盖整次连接**—— 会话签发**和**随后的邮箱 / 账号身份探测共用这一条 deadline，探测各自的 10s / 20s 上限只与它取交集）、续期沿用调用方的 20s，另有每次尝试 8s 上限（永远与整体预算取交集，因此不会放大总时长）。日志只在 `debug`（`lobe-server:chatgpt-web-oauth`）打印**尝试次数 + 失败分类**（challenge /rate\_limit/server\_error /forbidden/network），绝不打印令牌或响应内容。重试用尽后仍是瞬时错误，交给上面那条 5 分钟退避在下次请求时再试。
+  - **调用内自带有界重试**（实测机房 IP 下约 2/3 的请求会被挑战，不重试的话管理员点一次「连接」大概率直接失败）：连接 **4 次**、续期 **3 次**（续期少一次是因为整个调用必须塞进 30s 租约以内），退避 **400 / 900 / 1600 ms 各带 ≤30% 抖动**，每次都是全新的传输调用。**只对瞬时结果重试**——401、200 无令牌、调用方超时 / 中断都不重试（重试一个已死会话只是白烧预算，而超出调用方 deadline 的重试会跑过租约）。整体预算：连接 **25s（覆盖整次连接**—— 会话签发**和**随后的邮箱 / 账号身份探测共用这一条 deadline，探测各自的 10s / 20s 上限只与它取交集）、续期沿用调用方的 20s，另有每次尝试 8s 上限（永远与整体预算取交集，因此不会放大总时长）。日志只在 `debug`（`lobe-server:chatgpt-web-oauth`）打印**尝试次数 + 失败分类**（challenge /rate\_limit/server\_error/forbidden/network），绝不打印令牌或响应内容。重试用尽后仍是瞬时错误，交给上面那条 5 分钟退避在下次请求时再试。
 - **`invalid_grant` 自愈按 “重读到的那份凭据” 重试**：自愈会重读持久态再试一次，而这期间的并发重连**可能已经把叶子换成另一种凭据**（网页会话 ⇄ PKCE refresh token，设备 id 也可能不同）。因此续期选项是**按每份凭据自己的 Vault 现算的**，而不是沿用最初那次的种类 —— 否则会把刚存下的 refresh token 当会话 Cookie 送去 chatgpt.com（或反过来），把一个刚建好的连接一次打死。重试仍然共用**最初那条 deadline**（整次续期必须塞进 30s 租约），写回与返回的种类 / 设备 id 都是**实际消费的那份**。
-- **访问令牌方式无法续期**：没有 refresh token 的连接不参与上述任何一项，到期即停（面板 `canRefresh: false`）。出路有两条：卡片上的「粘贴网页会话」（一次粘贴即可转成可续期）或「通过授权页面重新连接」（走一次 §4.1 的 PKCE 流程）。
+- **访问令牌方式无法续期**：没有续期凭据的连接不参与上述任何一项，到期即停（面板 `canRefresh: false`）。出路只有一条：卡片告警条上的「粘贴网页会话」—— 一次粘贴即可转成可续期。
 - 管理端「共享账号」卡片读的是 `admin.aiProviderOAuth.getConnectionStatus`：`expiresAt` / `lastRefreshAt` 都是 epoch 毫秒字符串，`renewalKind` 说明是哪种续期凭据（无凭据时为 `null`），`expired: true` 表示续期凭据已被上游判死（`invalid_grant`，会话过期同样落在这里），必须重连；瞬时刷新失败不会置该位，只会退回已存值。
 
 ### 4.5 连通性检查

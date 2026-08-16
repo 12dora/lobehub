@@ -1112,9 +1112,27 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     return { envelope, started };
   };
 
-  it('exchanges a pasted callback URL and stores the full identity', async () => {
+  /** next-auth compact JWE: `dir` header, empty encrypted-key segment. */
+  const sessionJwe = [
+    Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+    '',
+    'aXY',
+    'Y3Q',
+    'dGFn',
+  ].join('.');
+
+  /** The chatgpt.com endpoints a web-session connect touches, in one seam. */
+  const mockSessionBackend = (body: unknown, email = 'session@example.test') => {
+    chatgptWeb.transportFetch.mockImplementation(async (url: string) => {
+      if (String(url).endsWith('/api/auth/session')) return jsonResponse(body);
+      if (String(url).endsWith('/backend-api/me')) return jsonResponse({ email });
+      return jsonResponse({ accounts: { default: { account: { id: 'acct-web-3' } } } });
+    });
+  };
+
+  it('starts the connect flow with an envelope and a pasted-credential route', async () => {
     const caller = await callerFor();
-    const { envelope, started } = await startFlow(caller);
+    const { started } = await startFlow(caller);
 
     expect(started).toMatchObject({
       allowAccessTokenPaste: true,
@@ -1122,34 +1140,38 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
       interval: 0,
       userCode: '',
     });
+    // Still minted: the envelope carries the device id the session path presents as
+    // `oai-device-id`, so initiate stays the entry point of BOTH pasted-credential routes.
     expect(started.verificationUri).toContain('https://auth.openai.com/api/accounts/authorize');
+  });
 
-    chatgptWeb.authFetch.mockResolvedValue(
-      jsonResponse({
-        access_token: PASTE_ACCESS_TOKEN,
-        id_token: jwt({ email: 'shared@example.test' }),
-        refresh_token: 'web-refresh-1',
+  /**
+   * The authorization page of this provider asks for the platform API audience and lands on
+   * platform.openai.com — a different product from the chatgpt.com subscription the runtime
+   * talks to, so a grant redeemed there can be stored and still fail every conversation. The
+   * card declares `webSessionOnly` and the router refuses the exchange, including for an
+   * older client that still offers the button.
+   */
+  it.each([
+    ['a pasted callback URL', 'https://platform.openai.com/auth/callback?code=the-code&state=s'],
+    ['a bare authorization code', 'the-code'],
+  ])('refuses %s for a web-session-only provider', async (_label, callbackUrl) => {
+    const caller = await callerFor();
+    const { started } = await startFlow(caller);
+
+    await expect(
+      caller.aiProviderOAuth.pollAuthStatus({
+        callbackUrl,
+        deviceCode: started.deviceCode,
+        id: 'chatgptweb',
+        reason: 'connect the shared ChatGPT Web account',
       }),
-    );
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
 
-    const result = await caller.aiProviderOAuth.pollAuthStatus({
-      callbackUrl: `https://platform.openai.com/auth/callback?code=the-code&state=${envelope.state}`,
-      deviceCode: started.deviceCode,
-      id: 'chatgptweb',
-      reason: 'connect the shared ChatGPT Web account',
-    });
-
-    expect(result).toMatchObject({ error: null, status: 'success', stored: true });
-
-    const status = await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgptweb' });
-    expect(status).toMatchObject({
-      accountEmail: 'shared@example.test',
-      accountIdMasked: 'acct…',
-      canRefresh: true,
-      connected: true,
-      flow: 'authorization_code_paste',
-    });
-    // The pasted callback carries a live authorization code — never audited, never logged.
+    // Refused before any exchange: the code is never spent and nothing is stored.
+    expect(chatgptWeb.authFetch).not.toHaveBeenCalled();
+    expect(await db.select().from(platformAiProviders)).toEqual([]);
+    // A pasted callback carries a live authorization code — never audited, never logged.
     expect(JSON.stringify(await db.select().from(platformAuditLogs))).not.toContain('the-code');
   });
 
@@ -1166,41 +1188,6 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     expect(result).toEqual({ error: null, revision: null, status: 'pending', stored: false });
     expect(chatgptWeb.authFetch).not.toHaveBeenCalled();
     expect(chatgptWeb.transportFetch).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['a state mismatch', 'state_mismatch', (state: string) => `${state}-tampered`],
-    ['a callback URL with no state at all', 'state_mismatch', () => undefined],
-  ])('reports %s with a stable code', async (_label, expected, mutate) => {
-    const caller = await callerFor();
-    const { envelope, started } = await startFlow(caller);
-    const state = mutate(envelope.state);
-
-    const result = await caller.aiProviderOAuth.pollAuthStatus({
-      callbackUrl: `https://platform.openai.com/auth/callback?code=c${state ? `&state=${state}` : ''}`,
-      deviceCode: started.deviceCode,
-      id: 'chatgptweb',
-      reason: 'connect the shared ChatGPT Web account',
-    });
-
-    expect(result).toMatchObject({ error: expected, status: 'error', stored: false });
-    expect(chatgptWeb.authFetch).not.toHaveBeenCalled();
-  });
-
-  it('refuses an exchange the provider answered without a refresh token', async () => {
-    const caller = await callerFor();
-    const { envelope, started } = await startFlow(caller);
-    chatgptWeb.authFetch.mockResolvedValue(jsonResponse({ access_token: PASTE_ACCESS_TOKEN }));
-
-    const result = await caller.aiProviderOAuth.pollAuthStatus({
-      callbackUrl: `https://platform.openai.com/auth/callback?code=c&state=${envelope.state}`,
-      deviceCode: started.deviceCode,
-      id: 'chatgptweb',
-      reason: 'connect the shared ChatGPT Web account',
-    });
-
-    expect(result).toMatchObject({ error: 'exchange_failed', status: 'error', stored: false });
-    expect(await db.select().from(platformAiProviders)).toEqual([]);
   });
 
   it.each([
@@ -1247,25 +1234,23 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
    * connection auto-renews, and at expiry the shared refresh would redeem the old grant
    * and overwrite the new connection with a different account's credentials.
    */
-  it('drops the previous refresh token when reconnecting with a pasted access token', async () => {
+  it('drops the previous renewal credential when reconnecting with a pasted access token', async () => {
     const caller = await callerFor();
     const first = await startFlow(caller);
-    chatgptWeb.authFetch.mockResolvedValue(
-      jsonResponse({
-        access_token: PASTE_ACCESS_TOKEN,
-        id_token: jwt({ email: 'first@example.test' }),
-        refresh_token: 'web-refresh-1',
-      }),
+    mockSessionBackend(
+      { accessToken: PASTE_ACCESS_TOKEN, user: { email: 'first@example.test' } },
+      'first@example.test',
     );
     await caller.aiProviderOAuth.pollAuthStatus({
-      callbackUrl: `https://platform.openai.com/auth/callback?code=c&state=${first.envelope.state}`,
       deviceCode: first.started.deviceCode,
       id: 'chatgptweb',
       reason: 'connect the shared ChatGPT Web account',
+      sessionToken: sessionJwe,
     });
-    expect(
-      (await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgptweb' })).canRefresh,
-    ).toBe(true);
+    expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgptweb' })).toMatchObject({
+      canRefresh: true,
+      renewalKind: 'web_session',
+    });
 
     // Reconnect as a different account, this time by pasting a bare access token.
     const second = await startFlow(caller);
@@ -1289,9 +1274,12 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
       accountEmail: 'second@example.test',
       canRefresh: false,
       connected: true,
+      // The label moves as a unit with the credential it describes: a stale `web_session`
+      // here would send the next renewal to chatgpt.com with nothing to spend.
+      renewalKind: null,
     });
     const [row] = await db.select().from(platformAiProviders);
-    expect(row.encryptedKeyVaults).not.toContain('web-refresh-1');
+    expect(row.encryptedKeyVaults).not.toContain(sessionJwe);
     expect(row.encryptedKeyVaults).not.toContain('first@example.test');
   });
 
@@ -1301,25 +1289,6 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
    * every renewal mechanism behind it — applies without a second lifecycle.
    */
   describe('web-session paste', () => {
-    /** next-auth compact JWE: `dir` header, empty encrypted-key segment. */
-    const sessionJwe = [
-      Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
-      '',
-      'aXY',
-      'Y3Q',
-      'dGFn',
-    ].join('.');
-
-    const mockSessionBackend = (body: unknown) => {
-      chatgptWeb.transportFetch.mockImplementation(async (url: string) => {
-        if (String(url).endsWith('/api/auth/session')) return jsonResponse(body);
-        if (String(url).endsWith('/backend-api/me')) {
-          return jsonResponse({ email: 'session@example.test' });
-        }
-        return jsonResponse({ accounts: { default: { account: { id: 'acct-web-3' } } } });
-      });
-    };
-
     it('stores the session as a RENEWABLE credential and names the renewal path', async () => {
       const caller = await callerFor();
       const { started } = await startFlow(caller);
@@ -1392,7 +1361,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
       expect(chatgptWeb.transportFetch).not.toHaveBeenCalled();
     });
 
-    it('flips the renewal kind when the same provider is reconnected through PKCE', async () => {
+    it('replaces the stored session when the same provider is reconnected', async () => {
       const caller = await callerFor();
       const first = await startFlow(caller);
       mockSessionBackend({ accessToken: PASTE_ACCESS_TOKEN, user: { email: 's@example.test' } });
@@ -1403,28 +1372,34 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
         sessionToken: sessionJwe,
       });
 
+      const secondJwe = [
+        Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+        '',
+        'aXY2',
+        'Y3Q2',
+        'dGFnMg',
+      ].join('.');
       const second = await startFlow(caller);
-      chatgptWeb.authFetch.mockResolvedValue(
-        jsonResponse({
-          access_token: PASTE_ACCESS_TOKEN,
-          id_token: jwt({ email: 'pkce@example.test' }),
-          refresh_token: 'web-refresh-2',
-        }),
+      mockSessionBackend(
+        { accessToken: PASTE_ACCESS_TOKEN, user: { email: 'next@example.test' } },
+        'next@example.test',
       );
       await caller.aiProviderOAuth.pollAuthStatus({
-        callbackUrl: `https://platform.openai.com/auth/callback?code=c&state=${second.envelope.state}`,
         deviceCode: second.started.deviceCode,
         id: 'chatgptweb',
-        reason: 'reconnect through the authorization page',
+        reason: 'reconnect with a fresh web session',
+        sessionToken: secondJwe,
       });
 
-      // The label moves with the credential: renewing the new grant at chatgpt.com would fail.
       expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgptweb' })).toMatchObject({
+        accountEmail: 'next@example.test',
         canRefresh: true,
-        renewalKind: 'oauth',
+        renewalKind: 'web_session',
       });
+      // The previous account's session must not survive under the new one.
       const [row] = await db.select().from(platformAiProviders);
       expect(row.encryptedKeyVaults).not.toContain(sessionJwe);
+      expect(row.encryptedKeyVaults).not.toContain('s@example.test');
     });
   });
 
@@ -1438,28 +1413,21 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     caller: Awaited<ReturnType<typeof callerFor>>,
     reason: string,
     email: string,
-    refreshToken: string,
   ) => {
-    const { envelope, started } = await startFlow(caller);
-    chatgptWeb.authFetch.mockResolvedValue(
-      jsonResponse({
-        access_token: PASTE_ACCESS_TOKEN,
-        id_token: jwt({ email }),
-        refresh_token: refreshToken,
-      }),
-    );
+    const { started } = await startFlow(caller);
+    mockSessionBackend({ accessToken: PASTE_ACCESS_TOKEN, user: { email } }, email);
     return caller.aiProviderOAuth.pollAuthStatus({
-      callbackUrl: `https://platform.openai.com/auth/callback?code=c&state=${envelope.state}`,
       deviceCode: started.deviceCode,
       id: 'chatgptweb',
       reason,
+      sessionToken: sessionJwe,
     });
   };
 
   it('first connect materializes the card default-enabled models as enabled rows', async () => {
     const caller = await callerFor();
     expect(
-      await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test', 'r1'),
+      await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test'),
     ).toMatchObject({ status: 'success', stored: true });
 
     const rows = await db.select().from(platformAiModels);
@@ -1487,11 +1455,11 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
 
   it('reconnect leaves the materialized rows exactly as they were', async () => {
     const caller = await callerFor();
-    await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test', 'r1');
+    await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test');
     const before = await db.select().from(platformAiModels);
 
     expect(
-      await connect(caller, 'reconnect the shared ChatGPT Web account', 'b@example.test', 'r2'),
+      await connect(caller, 'reconnect the shared ChatGPT Web account', 'b@example.test'),
     ).toMatchObject({ status: 'success', stored: true });
 
     const after = await db.select().from(platformAiModels);
@@ -1509,7 +1477,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
       userId: ids.providerOnly,
     });
     expect(
-      await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test', 'r1'),
+      await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test'),
     ).toMatchObject({ status: 'success', stored: true });
     expect(await db.select().from(platformAiModels)).toHaveLength(6);
   });

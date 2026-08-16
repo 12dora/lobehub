@@ -2,7 +2,7 @@
 
 import { BRANDING_PROVIDER } from '@lobechat/business-const';
 import { AES_GCM_URL, BASE_PROVIDER_DOC_URL, FORM_STYLE } from '@lobechat/const';
-import { ProviderCombine } from '@lobehub/icons';
+import { ProviderCombine, ProviderIcon } from '@lobehub/icons';
 import { type FormGroupItemType, type FormItemProps } from '@lobehub/ui';
 import {
   Alert,
@@ -14,6 +14,7 @@ import {
   Skeleton,
   stopPropagation,
   Tag,
+  Text,
   Tooltip,
 } from '@lobehub/ui';
 import { useDebounceFn } from 'ahooks';
@@ -29,6 +30,8 @@ import { z } from 'zod';
 
 import { FormInput, FormPassword } from '@/components/FormInput';
 import { SkeletonInput, SkeletonSwitch } from '@/components/Skeleton';
+import { PROVIDERS_WITHOUT_UPSTREAM_DOC } from '@/const/providerDoc';
+import { useLocalizedProviderTitle } from '@/hooks/useLocalizedProviderTitle';
 import { usePermission } from '@/hooks/usePermission';
 import { useProviderName } from '@/hooks/useProviderName';
 import { lambdaQuery } from '@/libs/trpc/client';
@@ -167,6 +170,12 @@ const ProviderConfig = memo<ProviderConfigProps>(
      * fallback and comes back untouched.
      */
     const displayName = useProviderName(id, name || id);
+    /**
+     * Non-null only where the `providers` namespace really translates the name, which today
+     * means `chatgptweb` outside en-US. The header then reads the same as the sidebar item
+     * instead of contradicting it with an English wordmark.
+     */
+    const localizedTitle = useLocalizedProviderTitle(id, name || undefined);
     const [form] = Form.useForm();
     const { allowed: canManageProvider } = usePermission('manage_provider_key');
     const { hideFetchOnClient, hidePersonalAuth, secretConfigured, sharedOAuthPanel } =
@@ -503,19 +512,34 @@ const ProviderConfig = memo<ProviderConfigProps>(
           </Flexbox>
         ) : (
           <>
-            {title ?? <ProviderCombine provider={id} size={24} />}
-            <Tooltip title={t('providerModels.config.helpDoc')}>
-              <a
-                href={urlJoin(BASE_PROVIDER_DOC_URL, id)}
-                rel="noreferrer"
-                target="_blank"
-                onClick={stopPropagation}
-              >
-                <Center className={styles.help} height={20} width={20}>
-                  ?
-                </Center>
-              </a>
-            </Tooltip>
+            {title ??
+              (localizedTitle ? (
+                <Flexbox horizontal align={'center'} gap={8}>
+                  <ProviderIcon
+                    provider={id}
+                    size={24}
+                    style={{ borderRadius: 6 }}
+                    type={'avatar'}
+                  />
+                  <Text style={{ fontSize: 16, fontWeight: 700 }}>{localizedTitle}</Text>
+                </Flexbox>
+              ) : (
+                <ProviderCombine provider={id} size={24} />
+              ))}
+            {!PROVIDERS_WITHOUT_UPSTREAM_DOC.has(id) && (
+              <Tooltip title={t('providerModels.config.helpDoc')}>
+                <a
+                  href={urlJoin(BASE_PROVIDER_DOC_URL, id)}
+                  rel="noreferrer"
+                  target="_blank"
+                  onClick={stopPropagation}
+                >
+                  <Center className={styles.help} height={20} width={20}>
+                    ?
+                  </Center>
+                </a>
+              </Tooltip>
+            )}
           </>
         )}
       </Flexbox>

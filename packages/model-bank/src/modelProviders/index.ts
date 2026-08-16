@@ -301,6 +301,17 @@ export const isProviderAccessTokenPasteAllowed = (id?: string) =>
       provider.id === id && provider.settings?.oauthDeviceFlow?.allowAccessTokenPaste === true,
   );
 
+/**
+ * Whether the provider connects ONLY through a pasted web session: the authorization-code
+ * UI is hidden and a callback exchange is refused. Reading the card (rather than the
+ * provider id) keeps the connect components generic — they serve every device-flow
+ * provider, and only the card decides which routes exist.
+ */
+export const isProviderWebSessionOnly = (id?: string) =>
+  DEFAULT_MODEL_PROVIDER_LIST.some(
+    (provider) => provider.id === id && provider.settings?.oauthDeviceFlow?.webSessionOnly === true,
+  );
+
 export { default as Ai21ProviderCard } from './ai21';
 export { default as Ai302ProviderCard } from './ai302';
 export { default as Ai360ProviderCard } from './ai360';

@@ -55,6 +55,12 @@ interface SharedOAuthPasteFormProps {
   /** Which input the failed submit came from; decides where the error is shown. */
   submitErrorSource?: SharedOAuthPasteSource;
   submitting?: boolean;
+  /**
+   * The provider connects through the pasted web session ALONE (card flag
+   * `oauthDeviceFlow.webSessionOnly`): the authorization page belongs to a different product
+   * and the server refuses a callback exchange, so none of that UI may be offered here.
+   */
+  webSessionOnly?: boolean;
 }
 
 /** Submit errors that belong to the pasted-credential box rather than the callback box. */
@@ -63,6 +69,13 @@ const TOKEN_SOURCE_ERRORS = new Set<SharedOAuthPasteError>([
   'sessionInvalid',
   'tokenNotWeb',
 ]);
+
+/**
+ * Rejections whose generic copy sends the operator to the authorization page. That page is a
+ * dead end for a web-session-only provider — its own server refuses the exchange — so those
+ * two get a variant that names the one remedy that works here.
+ */
+const SESSION_ONLY_ERRORS = new Set<SharedOAuthPasteError>(['accessTokenInvalid', 'tokenNotWeb']);
 
 /**
  * Shared-account variant of the authorization-code paste flow: the operator signs in as the
@@ -83,6 +96,7 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
     submitError,
     submitErrorSource,
     submitting,
+    webSessionOnly,
   }) => {
     const { t } = useTranslation('admin');
     const [callbackUrl, setCallbackUrl] = useState('');
@@ -109,6 +123,11 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
       (submitError && TOKEN_SOURCE_ERRORS.has(submitError) ? 'token' : 'callback');
     const tokenError = submitError && errorSource === 'token' ? submitError : undefined;
     const callbackError = submitError && !tokenError ? submitError : undefined;
+    const tokenErrorKey =
+      tokenError &&
+      `aiProviderSettings.sharedOAuth.paste.errors.${tokenError}${
+        webSessionOnly && SESSION_ONLY_ERRORS.has(tokenError) ? 'SessionOnly' : ''
+      }`;
 
     /**
      * What the operator actually pasted, resolved live: a session cookie, a whole "Copy as
@@ -137,6 +156,83 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
       if (parsed.sessionToken) onSubmitSessionToken(parsed.sessionToken);
       else if (parsed.accessToken) onSubmitAccessToken(parsed.accessToken);
     }, [onSubmitAccessToken, onSubmitSessionToken, parsed.accessToken, parsed.sessionToken]);
+
+    /** The pasted-credential input itself: same field, label and live detection either way. */
+    const sessionFields = (
+      <>
+        <label className={styles.label} htmlFor={tokenFieldId}>
+          {t('aiProviderSettings.sharedOAuth.paste.sessionLabel')}
+        </label>
+        <TextArea
+          aria-invalid={tokenError ? true : undefined}
+          autoCapitalize={'none'}
+          // A raw session cookie: no autofill, no autocorrect mangling it, and no
+          // spellchecker — which on several platforms means uploading it.
+          autoComplete={'off'}
+          autoCorrect={'off'}
+          autoSize={{ maxRows: 6, minRows: 3 }}
+          id={tokenFieldId}
+          placeholder={t('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder')}
+          spellCheck={false}
+          value={pasted}
+          aria-describedby={
+            [tokenError ? tokenErrorId : undefined, detection ? detectionId : undefined]
+              .filter(Boolean)
+              .join(' ') || undefined
+          }
+          onChange={(e) => setPasted(e.target.value)}
+        />
+        {detection && (
+          <Text
+            className={styles.hint}
+            id={detectionId}
+            // Live, because it changes while the operator types into the box above.
+            role={'status'}
+            type={detection === 'session' ? 'secondary' : 'warning'}
+          >
+            {t(`aiProviderSettings.sharedOAuth.paste.detected.${detection}` as any)}
+          </Text>
+        )}
+        {tokenErrorKey && (
+          <Text className={styles.error} id={tokenErrorId} role={'alert'}>
+            {t(tokenErrorKey as any)}
+          </Text>
+        )}
+      </>
+    );
+
+    /**
+     * Web-session-only providers get ONE route and it is the primary one. The authorization
+     * page is not merely demoted here: it signs the operator into a different product, and
+     * the server refuses the exchange — so offering it would be offering a dead end.
+     */
+    if (webSessionOnly)
+      return (
+        <Flexbox gap={12}>
+          <Flexbox gap={4}>
+            <Text weight={600}>{t('aiProviderSettings.sharedOAuth.paste.sessionOnlyTitle')}</Text>
+            <Text className={styles.meta}>
+              {t('aiProviderSettings.sharedOAuth.paste.sessionOnlyDesc')}
+            </Text>
+          </Flexbox>
+          {/* Above the box, because it is what to do BEFORE there is anything to paste. */}
+          <Text className={styles.hint}>
+            {t('aiProviderSettings.sharedOAuth.paste.sessionHint')}
+          </Text>
+          <Flexbox gap={8}>{sessionFields}</Flexbox>
+          <Flexbox horizontal gap={8}>
+            <Button
+              disabled={parsed.kind === 'unknown'}
+              loading={submitting}
+              type={'primary'}
+              onClick={handleSubmitPasted}
+            >
+              {t('aiProviderSettings.sharedOAuth.paste.submit')}
+            </Button>
+            <Button onClick={onCancel}>{t('aiProviderSettings.sharedOAuth.cancel')}</Button>
+          </Flexbox>
+        </Flexbox>
+      );
 
     return (
       <Flexbox gap={12}>
@@ -205,44 +301,7 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
             </Flexbox>
             {showTokenSection && (
               <Flexbox gap={8} id={tokenSectionId}>
-                <label className={styles.label} htmlFor={tokenFieldId}>
-                  {t('aiProviderSettings.sharedOAuth.paste.sessionLabel')}
-                </label>
-                <TextArea
-                  aria-invalid={tokenError ? true : undefined}
-                  autoCapitalize={'none'}
-                  // A raw session cookie: no autofill, no autocorrect mangling it, and no
-                  // spellchecker — which on several platforms means uploading it.
-                  autoComplete={'off'}
-                  autoCorrect={'off'}
-                  autoSize={{ maxRows: 6, minRows: 3 }}
-                  id={tokenFieldId}
-                  placeholder={t('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder')}
-                  spellCheck={false}
-                  value={pasted}
-                  aria-describedby={
-                    [tokenError ? tokenErrorId : undefined, detection ? detectionId : undefined]
-                      .filter(Boolean)
-                      .join(' ') || undefined
-                  }
-                  onChange={(e) => setPasted(e.target.value)}
-                />
-                {detection && (
-                  <Text
-                    className={styles.hint}
-                    id={detectionId}
-                    // Live, because it changes while the operator types into the box above.
-                    role={'status'}
-                    type={detection === 'session' ? 'secondary' : 'warning'}
-                  >
-                    {t(`aiProviderSettings.sharedOAuth.paste.detected.${detection}` as any)}
-                  </Text>
-                )}
-                {tokenError && (
-                  <Text className={styles.error} id={tokenErrorId} role={'alert'}>
-                    {t(`aiProviderSettings.sharedOAuth.paste.errors.${tokenError}` as any)}
-                  </Text>
-                )}
+                {sessionFields}
                 <Text className={styles.hint}>
                   {t('aiProviderSettings.sharedOAuth.paste.sessionHint')}
                 </Text>
