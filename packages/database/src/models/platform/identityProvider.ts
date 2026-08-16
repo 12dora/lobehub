@@ -1,4 +1,5 @@
 import {
+  parseDingTalkAllowedCorps,
   parsePlatformIdentityProviderClaimMapping,
   type PlatformIdentityProviderDraft,
   type PlatformIdentityProviderSecretState,
@@ -28,6 +29,7 @@ const toSafeDraft = (
   secretConfigured: boolean,
 ): PlatformIdentityProviderInternalDraft => {
   const claimMapping = parsePlatformIdentityProviderClaimMapping(row.claimMapping);
+  const dingtalkAllowedCorps = parseDingTalkAllowedCorps(row.dingtalkAllowedCorps ?? []);
   const publicConfig = {
     buttonLabel: row.buttonLabel,
     claimMapping: row.claimMapping,
@@ -45,6 +47,8 @@ const toSafeDraft = (
     : true;
   if (
     !claimMapping ||
+    !dingtalkAllowedCorps ||
+    (row.type !== 'dingtalk' && dingtalkAllowedCorps.length > 0) ||
     hasCredentialClaim ||
     row.usePkce !== true ||
     containsEnterpriseSecretMaterial(publicConfig)
@@ -57,6 +61,7 @@ const toSafeDraft = (
     buttonLabel: row.buttonLabel,
     claimMapping,
     clientId: row.clientId,
+    dingtalkAllowedCorps,
     displayName: row.displayName,
     domainAllowlist: row.domainAllowlist,
     enabled: row.enabled,

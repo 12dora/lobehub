@@ -30,3 +30,4 @@ export * from './secretPatterns';
 export * from './settings';
 export * from './sidebarLayout';
 export * from './skillCatalog';
+export * from './taskTemplate';

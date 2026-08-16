@@ -1,4 +1,5 @@
 import type {
+  PlatformIdentityProviderAllowedCorp,
   PlatformIdentityProviderClaimMapping,
   PlatformIdentityProviderClaimPreview,
   PlatformIdentityProviderStatus,
@@ -63,6 +64,15 @@ export const platformIdentityProviders = pgTable(
         subject: ['sub'],
       }),
     domainAllowlist: jsonb('domain_allowlist').$type<string[]>().notNull().default([]),
+    /**
+     * DingTalk organisation allowlist (kind `dingtalk` only). Entries are captured by running a
+     * DingTalk login from the admin wizard; the runtime rejects any login whose token `corpId`
+     * is absent from this list, so an empty list allows nobody.
+     */
+    dingtalkAllowedCorps: jsonb('dingtalk_allowed_corps')
+      .$type<PlatformIdentityProviderAllowedCorp[]>()
+      .notNull()
+      .default([]),
     autoProvision: boolean('auto_provision').notNull().default(true),
     groupRoleMapping: jsonb('group_role_mapping')
       .$type<Record<string, string>>()
@@ -92,7 +102,7 @@ export const platformIdentityProviders = pgTable(
     ),
     check(
       'platform_identity_providers_type_check',
-      sql`${t.type} IN ('authentik', 'generic_oidc')`,
+      sql`${t.type} IN ('authentik', 'generic_oidc', 'dingtalk')`,
     ),
     check(
       'platform_identity_providers_status_check',
@@ -168,6 +178,24 @@ export const platformIdentityProviders = pgTable(
         AND NOT jsonb_path_exists(${t.claimMapping}, '$.*[*] ? (!(@ like_regex "^[A-Za-z0-9_.:-]{1,128}$"))')
         AND octet_length(${t.claimMapping}::text) <= 8192
         AND ${t.claimMapping}::text !~* '(client.?secret|api.?key|access.?token|refresh.?token|id.?token|password|authorization|bearer|credential)'`,
+    ),
+    /**
+     * DingTalk organisation allowlist shape. Only the `dingtalk` kind may carry entries, so a
+     * kind change can never leave a stale organisation grant behind.
+     */
+    check(
+      'platform_identity_providers_dingtalk_corps_check',
+      sql`jsonb_typeof(${t.dingtalkAllowedCorps}) = 'array'
+        AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.dingtalkAllowedCorps}) = 'array' THEN ${t.dingtalkAllowedCorps} ELSE '[]'::jsonb END) <= 200
+        AND octet_length(${t.dingtalkAllowedCorps}::text) <= 65536
+        AND (${t.type} = 'dingtalk'
+          OR jsonb_array_length(CASE WHEN jsonb_typeof(${t.dingtalkAllowedCorps}) = 'array' THEN ${t.dingtalkAllowedCorps} ELSE '[]'::jsonb END) = 0)
+        AND NOT jsonb_path_exists(${t.dingtalkAllowedCorps}, '$[*] ? (@.type() != "object")')
+        AND NOT jsonb_path_exists(${t.dingtalkAllowedCorps}, '$[*] ? (!(exists(@.corpId)))')
+        AND NOT jsonb_path_exists(${t.dingtalkAllowedCorps}, '$[*].corpId ? (@.type() != "string")')
+        AND NOT jsonb_path_exists(${t.dingtalkAllowedCorps}, '$[*].corpId ? (!(@ like_regex "^[A-Za-z0-9_-]{1,64}$"))')
+        AND NOT jsonb_path_exists(${t.dingtalkAllowedCorps}, '$[*].label ? (@.type() != "string")')
+        AND NOT jsonb_path_exists(${t.dingtalkAllowedCorps}, '$[*].addedAt ? (@.type() != "string")')`,
     ),
     check(
       'platform_identity_providers_policy_json_check',
