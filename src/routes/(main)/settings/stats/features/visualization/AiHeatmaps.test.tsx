@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { fireEvent, render, screen } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -11,7 +11,11 @@ import {
   StatsFilterProvider,
 } from '@/features/SettingsStats';
 
-import { CALENDAR_MAX_LEVEL, OUT_OF_RANGE_LEVEL_OFFSET } from './activity.utils';
+import {
+  CALENDAR_MAX_LEVEL,
+  OUT_OF_RANGE_LEVEL_OFFSET,
+  resolveCalendarColumns,
+} from './activity.utils';
 import AiHeatmaps from './AiHeatmaps';
 
 const mocks = vi.hoisted(() => ({
@@ -19,9 +23,14 @@ const mocks = vi.hoisted(() => ({
   getHeatmaps: vi.fn(),
   getTokenHeatmaps: vi.fn(),
   mutate: vi.fn(),
+  // What the card measures its own width as; unmeasured (jsdom's default) unless a
+  // test pins it, which is what the year-view block size assertions rely on.
+  size: undefined as { width: number } | undefined,
   swrData: undefined as unknown,
   swrError: undefined as unknown,
 }));
+
+vi.mock('ahooks', () => ({ useSize: () => mocks.size }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -38,6 +47,7 @@ vi.mock('@lobehub/charts', () => ({
     data,
     hideColorLegend,
     maxLevel,
+    weekStart,
   }: {
     blockSize?: number;
     className?: string;
@@ -45,6 +55,7 @@ vi.mock('@lobehub/charts', () => ({
     data: Array<{ date: string; level: number }>;
     hideColorLegend?: boolean;
     maxLevel?: number;
+    weekStart?: number;
   }) => (
     <div
       className={className}
@@ -55,6 +66,7 @@ vi.mock('@lobehub/charts', () => ({
       data-levels={data.map((row) => row.level).join(',')}
       data-max-level={maxLevel}
       data-testid="heatmaps"
+      data-week-start={weekStart}
     />
   ),
 }));
@@ -154,7 +166,7 @@ const daySeries = (startDay: string, days: number) =>
 const renderCard = (
   filter?: StatsFilter,
   dataSource: StatsDataSource = RANGED_SOURCE,
-  props: { inShare?: boolean } = {},
+  props: Partial<ComponentProps<typeof AiHeatmaps>> = {},
 ) => {
   const card = (
     <StatsDataSourceProvider value={dataSource}>
@@ -170,6 +182,7 @@ describe('AiHeatmaps', () => {
     mocks.getHeatmaps.mockReset().mockResolvedValue([]);
     mocks.getTokenHeatmaps.mockReset().mockResolvedValue([]);
     mocks.mutate.mockReset();
+    mocks.size = undefined;
     mocks.swrData = [];
     mocks.swrError = undefined;
   });
@@ -305,6 +318,62 @@ describe('AiHeatmaps', () => {
     const heatmaps = screen.getByTestId('heatmaps');
     expect(heatmaps.dataset.dates?.split(',')).toHaveLength(366);
     expect(heatmaps.dataset.blockSize).toBe('14');
+  });
+
+  it('fillsTheMeasuredCardWidthEdgeToEdgeInsteadOfCappingTheBlocks', () => {
+    // A full-row admin card: the trailing 52-week calendar spans the whole 1300px
+    // instead of stopping at the old 14px block ceiling ~370px short of the right edge.
+    mocks.size = { width: 1300 };
+    mocks.swrData = daySeries('2025-08-24', 358);
+    renderCard({
+      endAt: new Date(2026, 7, 16, 9, 30).toISOString(),
+      rangeLabel: 'Last 7 days',
+      startAt: new Date(2026, 7, 10).toISOString(),
+    });
+
+    const blockSize = Number(screen.getByTestId('heatmaps').dataset.blockSize);
+    expect(blockSize).toBeGreaterThan(14);
+    // The chart draws 52 columns and 51 gaps: exactly the width the card measured.
+    expect(52 * blockSize + 51 * 4).toBeCloseTo(1300, 6);
+  });
+
+  it('sizesTheGridByTheColumnsTheChartsWeekStartActuallyProduces', () => {
+    // Sunday 2025-08-24 → Monday 2026-08-17 is 52 Sunday-started columns but 53
+    // Monday-started ones; sizing it as 52 would draw a whole column past the card.
+    mocks.size = { width: 1300 };
+    mocks.swrData = daySeries('2025-08-24', 359);
+    renderCard(
+      {
+        endAt: new Date(2026, 7, 18).toISOString(),
+        rangeLabel: 'Last 7 days',
+        startAt: new Date(2026, 7, 11).toISOString(),
+      },
+      RANGED_SOURCE,
+      { weekStart: 1 },
+    );
+
+    const heatmaps = screen.getByTestId('heatmaps');
+    // The chart must be told the same weekStart the width was computed from.
+    expect(heatmaps.dataset.weekStart).toBe('1');
+    const blockSize = Number(heatmaps.dataset.blockSize);
+    expect(53 * blockSize + 52 * 4).toBeCloseTo(1300, 6);
+  });
+
+  it('sizesTheInFlightSkeletonByTheYearOfColumnsItActuallyDraws', () => {
+    // The skeleton is a calendar year whatever the window is — 53 columns in 2026 —
+    // so sizing it by the window's own few columns would blow it past the card.
+    mocks.size = { width: 1300 };
+    mocks.swrData = undefined;
+    renderCard({
+      endAt: '2026-08-16T09:30:00.000Z',
+      rangeLabel: 'Last 7 days',
+      startAt: '2026-08-10T00:00:00.000Z',
+    });
+
+    const blockSize = Number(screen.getByTestId('heatmaps').dataset.blockSize);
+    const columns = resolveCalendarColumns();
+    expect(columns).toBeGreaterThanOrEqual(53);
+    expect(columns * blockSize + (columns - 1) * 4).toBeCloseTo(1300, 6);
   });
 
   it('holdsTheYearViewBlockSizeWhileTheRangedRequestIsStillInFlight', () => {

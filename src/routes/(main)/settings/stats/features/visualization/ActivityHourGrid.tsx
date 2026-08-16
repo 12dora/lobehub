@@ -16,12 +16,13 @@ const AXIS_STEP = 6;
 const HOUR_SLOTS = Array.from({ length: HOURS_PER_DAY }, (_, hour) => hour);
 
 /**
- * The strip fills the width it is given — 24 fluid squares per row — capped so a
- * wide card does not turn the hours into tiles; the calendar's own gap and radius.
+ * The strip fills the width it is given — 24 fluid squares per row, no ceiling, so a
+ * wide card is filled edge to edge exactly like the calendar grid is; the calendar's
+ * own gap and radius, tightened on mobile.
  */
 const BLOCK = {
-  desktop: { gap: 4, maxSize: 40, radius: 3 },
-  mobile: { gap: 3, maxSize: 24, radius: 2 },
+  desktop: { gap: 4, radius: 3 },
+  mobile: { gap: 3, radius: 2 },
 };
 
 const pulse = keyframes`
@@ -48,15 +49,12 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   block: css`
     aspect-ratio: 1;
     width: 100%;
-    max-width: var(--activity-hour-max-size);
     border-radius: var(--activity-hour-radius);
-
     box-shadow: inset 0 0 0 1px ${cssVar.colorFillTertiary};
   `,
   blockEmpty: css`
     aspect-ratio: 1;
     width: 100%;
-    max-width: var(--activity-hour-max-size);
   `,
   blockLoading: css`
     animation: ${pulse} 1.75s ease-in-out infinite;
@@ -149,7 +147,6 @@ const ActivityHourGrid = memo<ActivityHourGridProps>(
 
     const cssVars = {
       '--activity-hour-gap': `${block.gap}px`,
-      '--activity-hour-max-size': `${block.maxSize}px`,
       '--activity-hour-radius': `${block.radius}px`,
     } as CSSProperties;
 

@@ -1,9 +1,19 @@
 import { createStaticStyles } from 'antd-style';
 import { memo } from 'react';
 
+/**
+ * The swatch is a fixed 14px — the size the hour strip's own legend draws — rather
+ * than the grid's square, which is fluid: it grows past 20px on a full-row card and
+ * shrinks to a few pixels on a phone, and neither reads as a key beside a 12px label.
+ */
 const styles = createStaticStyles(({ css, cssVar }) => ({
   block: css`
     flex: none;
+
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+
     box-shadow: inset 0 0 0 1px ${cssVar.colorFillTertiary};
   `,
   legend: css`
@@ -21,8 +31,6 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 }));
 
 interface ActivityLegendProps {
-  blockRadius: number;
-  blockSize: number;
   /** Level 0 first, darkest last — the calendar's own scale. */
   colors: string[];
   labels: { less: string; more: string };
@@ -32,20 +40,11 @@ interface ActivityLegendProps {
  * The calendar chart's 较少 → 较多 legend, drawn by hand for the ranged card: its
  * built-in one would list the dimmed out-of-range half of the palette too.
  */
-const ActivityLegend = memo<ActivityLegendProps>(({ blockRadius, blockSize, colors, labels }) => (
+const ActivityLegend = memo<ActivityLegendProps>(({ colors, labels }) => (
   <div className={styles.legend}>
     <span>{labels.less}</span>
     {colors.map((color, level) => (
-      <span
-        className={styles.block}
-        key={level}
-        style={{
-          background: color,
-          borderRadius: blockRadius,
-          height: blockSize,
-          width: blockSize,
-        }}
-      />
+      <span className={styles.block} key={level} style={{ background: color }} />
     ))}
     <span>{labels.more}</span>
   </div>

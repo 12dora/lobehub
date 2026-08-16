@@ -14,6 +14,7 @@ import type { StatsActivityBucket } from '@/features/SettingsStats';
 export type ActivityView = 'hour' | 'calendar';
 
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 /** Windows shorter than this are cut by hour, so they get the hour strip. */
 const HOURLY_SPAN_MS = 48 * HOUR_MS;
@@ -48,34 +49,113 @@ export interface CalendarBlockMetrics {
 /** Week columns the trailing calendar always draws — the year view's own shape. */
 export const CALENDAR_WEEKS = 52;
 
-/** The year view's block metrics; also the ceiling the fluid grid grows to. */
+/** The metrics a card of unknown width draws at — the year view's own shape. */
 const DESKTOP_CALENDAR_BLOCK = { blockMargin: 4, blockRadius: 2, blockSize: 14 };
 const MOBILE_CALENDAR_BLOCK = { blockMargin: 3, blockRadius: 2, blockSize: 6 };
-/** Below this the gap gives way first, then the block; nothing smaller stays legible. */
-const TIGHT_BLOCK_MARGIN = 2;
-const MIN_BLOCK_SIZE = 4;
 
 /**
- * Fit the 52-week calendar to the width it has been given: blocks shrink from the
- * year-view size until every column fits, then the gap tightens, down to a floor that
- * still reads as squares. Without a measured width (first paint, tests) it is exactly
- * the year-view metrics.
+ * How the gap gives way as the card narrows, widest first: the block shrinks until it
+ * would stop reading as a square, then the gap tightens and the block gets that space
+ * back. The last step has no gap at all — the card is far too narrow for the year by
+ * then, and drawing past its right edge would be worse than a solid band.
+ */
+const BLOCK_MARGIN_STEPS: Array<{ margin: number; minBlockSize: number; radius: number }> = [
+  { margin: 2, minBlockSize: 4, radius: 1 },
+  { margin: 1, minBlockSize: 2, radius: 1 },
+];
+
+/**
+ * Fit the calendar to the width it has been given — exactly, at every width.
+ *
+ * The chart draws an SVG of intrinsic width `columns * (blockSize + blockMargin) -
+ * blockMargin` inside a `max-content` box, so the block size *is* the grid's width:
+ * anything the blocks do not claim is dead space on the right of the card, and
+ * anything they over-claim is a horizontal scrollbar. Sizing the block to
+ * `(width - gaps) / columns` makes grid and card equal, so
+ * `columns * blockSize + (columns - 1) * blockMargin === width` holds for every
+ * measured width — no blank strip, and nothing ever drawn past the edge.
+ *
+ * The block is therefore a float and has no ceiling: a wide card gets bigger squares
+ * rather than a blank strip. Narrowing shrinks the block, then steps the gap down
+ * ({@link BLOCK_MARGIN_STEPS}) so the block keeps a little more of the room.
+ *
+ * `columns` is the number of week columns the chart will really draw (see
+ * {@link resolveCalendarColumns}); it is not fixed — the trailing calendar is 52, but
+ * a widened custom range or the loading skeleton reaches 53 or 54, and a non-Sunday
+ * `weekStart` shifts it again. Without a measured width (first paint, tests) the
+ * year-view metrics are used as-is.
  */
 export const resolveCalendarBlockMetrics = (
   width?: number,
   mobile = false,
+  columns: number = CALENDAR_WEEKS,
 ): CalendarBlockMetrics => {
   const base = mobile ? MOBILE_CALENDAR_BLOCK : DESKTOP_CALENDAR_BLOCK;
-  if (!width || width <= 0) return base;
-  const columns = CALENDAR_WEEKS + 1;
-  const fit = (margin: number) => Math.floor((width - (columns - 1) * margin) / columns);
+  if (!width || width <= 0 || !columns || columns <= 0) return base;
+  const fit = (margin: number) => (width - (columns - 1) * margin) / columns;
 
   const roomy = fit(base.blockMargin);
-  if (roomy >= MOBILE_CALENDAR_BLOCK.blockSize) {
-    return { ...base, blockSize: Math.min(base.blockSize, roomy) };
+  if (roomy >= MOBILE_CALENDAR_BLOCK.blockSize) return { ...base, blockSize: roomy };
+
+  for (const step of BLOCK_MARGIN_STEPS) {
+    const blockSize = fit(step.margin);
+    if (blockSize >= step.minBlockSize) {
+      return { ...base, blockMargin: step.margin, blockRadius: step.radius, blockSize };
+    }
   }
-  const tight = Math.max(MIN_BLOCK_SIZE, Math.min(base.blockSize, fit(TIGHT_BLOCK_MARGIN)));
-  return { ...base, blockMargin: TIGHT_BLOCK_MARGIN, blockRadius: 1, blockSize: tight };
+  // Not even a hairline gap leaves a visible square: give the gap up altogether rather
+  // than let the grid run past the card.
+  return { ...base, blockMargin: 0, blockRadius: 0, blockSize: width / columns };
+};
+
+/** Local midnight for a `YYYY-MM-DD…` key, as the chart's own `parseISO` reads it. */
+const parseLocalDay = (date: string): Date | undefined => {
+  const [year, month, day] = date.slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return undefined;
+  return new Date(year, month - 1, day);
+};
+
+/**
+ * Week columns spanning `[first, last]` once the first week is left-padded to the
+ * preceding `weekStart` weekday — the chart's own `nextDay`/`subWeeks` padding, which
+ * is `(weekday - weekStart + 7) % 7` days.
+ */
+const weekColumns = (first: Date, last: Date, weekStart: number): number => {
+  const days = Math.round((last.getTime() - first.getTime()) / DAY_MS) + 1;
+  const padding = (first.getDay() - weekStart + 7) % 7;
+  return Math.max(1, Math.ceil((padding + days) / 7));
+};
+
+export interface CalendarColumnsOptions {
+  /** Stands in for "today" when the series is empty; the loading skeleton's year. */
+  now?: Date;
+  /** The weekday each column starts on, as handed to the chart. Sunday by default. */
+  weekStart?: number;
+}
+
+/**
+ * How many week columns the chart will really draw for `activities` — the divisor
+ * {@link resolveCalendarBlockMetrics} needs, since the grid is sized column by column.
+ *
+ * Mirrors the chart's own `groupByWeeks`: the series is hole-filled from its first day
+ * to its last, the first week is left-padded to its `weekStart` weekday, and the result
+ * is cut into weeks of seven. An empty series is the chart's loading skeleton, which is
+ * a whole calendar year whatever the selected window is.
+ */
+export const resolveCalendarColumns = (
+  activities?: Array<{ date: string }>,
+  { now = new Date(), weekStart = 0 }: CalendarColumnsOptions = {},
+): number => {
+  const rows = activities ?? [];
+  const firstRow = rows.at(0);
+  const lastRow = rows.at(-1);
+  const first = firstRow ? parseLocalDay(firstRow.date) : undefined;
+  const last = lastRow ? parseLocalDay(lastRow.date) : undefined;
+  if (!first || !last || last < first) {
+    const year = now.getFullYear();
+    return weekColumns(new Date(year, 0, 1), new Date(year, 11, 31), weekStart);
+  }
+  return weekColumns(first, last, weekStart);
 };
 
 /** Half-open ISO window `[startAt, endAt)`. */
@@ -83,8 +163,6 @@ export interface ActivityWindow {
   endAt: string;
   startAt: string;
 }
-
-const DAY_MS = 24 * HOUR_MS;
 
 /** Local midnight on/before `instant`. */
 const startOfLocalDay = (instant: Date): Date => {

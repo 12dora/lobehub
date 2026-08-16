@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   activityBucketDay,
   activitySpansDays,
+  type CalendarBlockMetrics,
   currentDayInZone,
   formatActivityBucketLabel,
   isBucketInRange,
@@ -11,6 +12,7 @@ import {
   OUT_OF_RANGE_LEVEL_OFFSET,
   resolveActivityView,
   resolveCalendarBlockMetrics,
+  resolveCalendarColumns,
   resolveCalendarWindow,
   resolveRangeDays,
   rowsInRange,
@@ -44,6 +46,10 @@ describe('resolveActivityView', () => {
 });
 
 describe('resolveCalendarBlockMetrics', () => {
+  /** The grid width the chart draws from these metrics — its intrinsic SVG width. */
+  const gridWidth = (columns: number, { blockMargin, blockSize }: CalendarBlockMetrics) =>
+    columns * blockSize + (columns - 1) * blockMargin;
+
   it('keeps the year-view metrics without a measured width', () => {
     expect(resolveCalendarBlockMetrics()).toEqual({
       blockMargin: 4,
@@ -57,29 +63,63 @@ describe('resolveCalendarBlockMetrics', () => {
     });
   });
 
-  it('never grows past the year-view block on a wide card', () => {
-    expect(resolveCalendarBlockMetrics(2000).blockSize).toBe(14);
-  });
-
-  it('shrinks the block so all 53 week columns fit a narrower card', () => {
-    // 53 columns × 12px + 52 gaps × 4px = 844px
-    expect(resolveCalendarBlockMetrics(850).blockSize).toBe(12);
-    expect(resolveCalendarBlockMetrics(700).blockSize).toBe(9);
-  });
-
-  it('tightens the gap before giving up on the block, and never below a legible square', () => {
-    // 53 columns × 6px + 52 × 4px = 526px is the last width the roomy gap can hold.
-    expect(resolveCalendarBlockMetrics(526)).toMatchObject({ blockMargin: 4, blockSize: 6 });
-    // Below that the gap drops to 2px: 53 × 5 + 52 × 2 = 369.
-    expect(resolveCalendarBlockMetrics(370)).toMatchObject({ blockMargin: 2, blockSize: 5 });
-    expect(resolveCalendarBlockMetrics(100)).toMatchObject({ blockMargin: 2, blockSize: 4 });
-  });
-
-  it('keeps every column inside the measured width once it is at all possible', () => {
-    for (const width of [320, 400, 526, 600, 760, 900, 1200]) {
-      const { blockMargin, blockSize } = resolveCalendarBlockMetrics(width);
-      expect(53 * blockSize + 52 * blockMargin).toBeLessThanOrEqual(width);
+  it('fills the measured width exactly, at every card width and column count', () => {
+    // The admin overview row, the statistics column, a phone — and the 52/53/54 columns
+    // the trailing calendar, a widened custom range and the loading skeleton produce.
+    for (const width of [1600, 1300, 900, 840, 700, 520, 400, 360, 320, 300, 100]) {
+      for (const columns of [52, 53, 54]) {
+        for (const mobile of [false, true]) {
+          const metrics = resolveCalendarBlockMetrics(width, mobile, columns);
+          // Neither a blank strip on the right nor a column drawn past the card
+          // (the slack is float arithmetic, not layout).
+          expect(gridWidth(columns, metrics)).toBeCloseTo(width, 6);
+          expect(gridWidth(columns, metrics)).toBeLessThanOrEqual(width + 1e-9);
+        }
+      }
     }
+  });
+
+  it('grows the block past the year-view size rather than leaving the right blank', () => {
+    // The old 14px ceiling left ~370px of dead space on a full-row admin card.
+    const metrics = resolveCalendarBlockMetrics(1300, false, 52);
+    expect(metrics.blockSize).toBeGreaterThan(14);
+    expect(gridWidth(52, metrics)).toBeCloseTo(1300, 6);
+  });
+
+  it('sizes by the real column count instead of reserving a week that is never drawn', () => {
+    expect(resolveCalendarBlockMetrics(1300, false, 52).blockSize).toBeGreaterThan(
+      resolveCalendarBlockMetrics(1300, false, 53).blockSize,
+    );
+  });
+
+  it('steps the gap down as the card narrows, so the block keeps the room', () => {
+    // 52 columns × 6px + 51 gaps × 4px = 516px is the last width the roomy gap can hold.
+    expect(resolveCalendarBlockMetrics(516, false, 52)).toMatchObject({
+      blockMargin: 4,
+      blockSize: 6,
+    });
+    expect(resolveCalendarBlockMetrics(515, false, 52)).toMatchObject({
+      blockMargin: 2,
+      blockRadius: 1,
+    });
+    // 53 columns × 4px + 52 gaps × 2px = 316px is the last width the 2px gap can hold;
+    // below it the gap is a hairline rather than the grid running past the card.
+    expect(resolveCalendarBlockMetrics(316, false, 53)).toMatchObject({
+      blockMargin: 2,
+      blockSize: 4,
+    });
+    expect(resolveCalendarBlockMetrics(315, false, 53)).toMatchObject({ blockMargin: 1 });
+    // A 54-column loading year on the same narrow card: still no overflow.
+    expect(resolveCalendarBlockMetrics(320, false, 54)).toMatchObject({ blockMargin: 1 });
+    expect(gridWidth(54, resolveCalendarBlockMetrics(320, false, 54))).toBeCloseTo(320, 6);
+  });
+
+  it('gives the gap up altogether rather than draw past an impossibly narrow card', () => {
+    // 52 columns in 100px is not a chart any more, but it must still stay inside.
+    const cramped = resolveCalendarBlockMetrics(100, false, 52);
+    expect(cramped).toMatchObject({ blockMargin: 0, blockRadius: 0 });
+    expect(cramped.blockSize).toBeGreaterThan(0);
+    expect(gridWidth(52, cramped)).toBeCloseTo(100, 6);
   });
 
   it('scales down on mobile, where the card is a phone wide', () => {
@@ -88,6 +128,75 @@ describe('resolveCalendarBlockMetrics', () => {
       blockRadius: 2,
       blockSize: 6,
     });
+    // A phone-wide card still fills its width — with the tight gap, as it must.
+    const phone = resolveCalendarBlockMetrics(360, true, 52);
+    expect(phone.blockMargin).toBe(2);
+    expect(gridWidth(52, phone)).toBeCloseTo(360, 6);
+  });
+});
+
+describe('resolveCalendarColumns', () => {
+  /** `days` consecutive `YYYY-MM-DD` keys from `start`, as the chart reads them. */
+  const dayKeys = (start: string, days: number) => {
+    const [year, month, day] = start.split('-').map(Number);
+    return Array.from({ length: days }, (_, index) => {
+      const date = new Date(year, month - 1, day + index);
+      return {
+        date: [
+          date.getFullYear(),
+          String(date.getMonth() + 1).padStart(2, '0'),
+          String(date.getDate()).padStart(2, '0'),
+        ].join('-'),
+      };
+    });
+  };
+
+  it('counts 52 columns for the Sunday-aligned trailing calendar', () => {
+    // What resolveCalendarWindow yields: Sunday 2025-08-24 through Sunday 2026-08-16.
+    expect(resolveCalendarColumns(dayKeys('2025-08-24', 358))).toBe(52);
+  });
+
+  it('counts the extra columns a widened custom range really draws', () => {
+    // A 366-day range starting on a Saturday: one padded day, then 52 more weeks.
+    expect(resolveCalendarColumns(dayKeys('2025-08-16', 366))).toBe(54);
+    expect(resolveCalendarColumns(dayKeys('2025-08-22', 360))).toBe(53);
+  });
+
+  it('pads the first week to its Sunday, as the chart does', () => {
+    // Wednesday 2026-08-12 through Sunday 2026-08-16: two columns, not one.
+    expect(resolveCalendarColumns(dayKeys('2026-08-12', 5))).toBe(2);
+    expect(resolveCalendarColumns(dayKeys('2026-08-16', 1))).toBe(1);
+  });
+
+  it('pads to whatever weekday the chart was told to start its columns on', () => {
+    // The chart cuts the same series into different columns per weekStart, and the
+    // grid is sized column by column — reading it as Sunday-only overflows by one.
+    // Sunday 2025-08-24 → Monday 2026-08-17: 52 Sunday columns, 53 Monday ones.
+    const trailing = dayKeys('2025-08-24', 359);
+    expect(resolveCalendarColumns(trailing)).toBe(52);
+    expect(resolveCalendarColumns(trailing, { weekStart: 1 })).toBe(53);
+    // Sunday + Monday share a Sunday-started column but straddle a Monday-started one.
+    expect(resolveCalendarColumns(dayKeys('2026-08-16', 2))).toBe(1);
+    expect(resolveCalendarColumns(dayKeys('2026-08-16', 2), { weekStart: 1 })).toBe(2);
+  });
+
+  it('falls back to the year-long skeleton the chart draws while loading', () => {
+    // 2026 opens on a Thursday: 4 padded days + 365 = 53 columns.
+    expect(resolveCalendarColumns(undefined, { now: new Date(2026, 0, 15) })).toBe(53);
+    expect(resolveCalendarColumns([], { now: new Date(2026, 5, 1) })).toBe(53);
+    // A leap year that opens on a Saturday needs one more.
+    expect(resolveCalendarColumns([], { now: new Date(2028, 5, 1) })).toBe(54);
+    // The skeleton is cut by weekStart too: Thursday is 2 days into a Tuesday week.
+    expect(resolveCalendarColumns([], { now: new Date(2026, 5, 1), weekStart: 2 })).toBe(53);
+  });
+
+  it('falls back rather than trusting a series it cannot read', () => {
+    expect(resolveCalendarColumns([{ date: 'whenever' }], { now: new Date(2026, 5, 1) })).toBe(53);
+    expect(
+      resolveCalendarColumns([{ date: '2026-08-16' }, { date: '2026-08-10' }], {
+        now: new Date(2026, 5, 1),
+      }),
+    ).toBe(53);
   });
 });
 

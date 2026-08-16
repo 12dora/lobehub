@@ -21,6 +21,7 @@ import {
   markActivityRange,
   OUT_OF_RANGE_LEVEL_OFFSET,
   resolveCalendarBlockMetrics,
+  resolveCalendarColumns,
   rowsInRange,
 } from './activity.utils';
 import ActivityHourGrid from './ActivityHourGrid';
@@ -50,7 +51,9 @@ const styles = createStaticStyles(({ css }) => ({
 
 const AiHeatmaps = memo<
   Omit<HeatmapsProps, 'data' | 'ref'> & { inShare?: boolean; mobile?: boolean }
->(({ inShare, mobile, ...rest }) => {
+>(({ inShare, mobile, weekStart = 0, ...rest }) => {
+  // `weekStart` is pulled out of the passthrough on purpose: it decides how many week
+  // columns the chart cuts the series into, so the width math has to see it too.
   const { t } = useTranslation('auth');
   const { getHeatmaps, getTokenHeatmaps } = useStatsDataSource();
   const [type, setType] = useState<HeatmapType>(
@@ -84,11 +87,18 @@ const AiHeatmaps = memo<
   // In-range palette, then the same palette again for out-of-range days (dimmed via CSS).
   const calendarColors = useMemo(() => [...levelColors, ...levelColors], [levelColors]);
 
-  // The calendar fits itself to the width it is given, so a card that shares its row
-  // with another still shows the full year instead of scrolling.
+  // The calendar fits itself to the width it is given — exactly, so a card that shares
+  // its row with another shows the full year without scrolling, and a full-row card is
+  // filled edge to edge instead of trailing a blank strip. Sizing needs the column
+  // count the chart will really draw, which is the series' own span (a year while the
+  // request is in flight, since that is the skeleton the chart draws then).
   const measureRef = useRef<HTMLDivElement>(null);
   const width = useSize(measureRef)?.width;
-  const blocks = resolveCalendarBlockMetrics(width, mobile);
+  const columns = useMemo(
+    () => resolveCalendarColumns(isLoading ? undefined : activities, { weekStart }),
+    [activities, isLoading, weekStart],
+  );
+  const blocks = resolveCalendarBlockMetrics(width, mobile, columns);
 
   const days = rangeRows.filter((item) => item.level > 0).length || '--';
   const hotDays = rangeRows.filter((item) => item.level >= 3).length || '--';
@@ -127,6 +137,7 @@ const AiHeatmaps = memo<
           hideTotalCount={isTokens || ranged}
           loading={isLoading}
           maxLevel={ranged ? CALENDAR_MAX_LEVEL + OUT_OF_RANGE_LEVEL_OFFSET : CALENDAR_MAX_LEVEL}
+          weekStart={weekStart}
           labels={{
             legend: legendLabels,
             months: [
@@ -146,18 +157,10 @@ const AiHeatmaps = memo<
             tooltip: isTokens ? t('heatmaps.tooltipTokens') : t('heatmaps.tooltip'),
             totalCount: isTokens ? t('heatmaps.totalCountTokens') : t('heatmaps.totalCount'),
           }}
-          style={{
-            alignSelf: 'center',
-          }}
           {...rest}
         />
         {ranged && !isLoading ? (
-          <ActivityLegend
-            blockRadius={blocks.blockRadius}
-            blockSize={blocks.blockSize}
-            colors={levelColors}
-            labels={legendLabels}
-          />
+          <ActivityLegend colors={levelColors} labels={legendLabels} />
         ) : null}
       </div>
     ) : (

@@ -126,11 +126,15 @@ describe('ActivityHourGrid', () => {
     expect(screen.getByText('Less')).toBeTruthy();
   });
 
-  it('scalesTheBlocksDownOnMobile', () => {
+  it('tightensTheGapAndTheRadiusOnMobile', () => {
+    // The squares themselves are fluid — they always fill the row, so what a phone
+    // changes is the gap between them and how round they are.
     renderGrid({ data: [{ bucket: '2026-08-16T09:00', count: 1, level: 1 }], mobile: true });
 
-    expect(screen.getByTestId('grid-root').style.getPropertyValue('--activity-hour-max-size')).toBe(
-      '24px',
-    );
+    const root = screen.getByTestId('grid-root').style;
+    expect(root.getPropertyValue('--activity-hour-gap')).toBe('3px');
+    expect(root.getPropertyValue('--activity-hour-radius')).toBe('2px');
+    // Nothing caps the block any more: a wide card gets bigger squares, not a blank strip.
+    expect(root.getPropertyValue('--activity-hour-max-size')).toBe('');
   });
 });
