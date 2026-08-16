@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DependencyEditor } from './DependencyEditor';
@@ -8,6 +9,8 @@ import type { AdminAgentDraftDependencies } from './types';
 
 const hooks = vi.hoisted(() => ({
   connectorDetail: {} as Record<string, unknown>,
+  /** Per-id detail states, so a queue of picks can settle one connector at a time. */
+  connectorDetailById: {} as Record<string, Record<string, unknown>>,
   connectorRefDetails: {} as Record<string, unknown>,
   connectors: {} as Record<string, unknown>,
   providerQueries: [] as (string | undefined)[],
@@ -22,7 +25,8 @@ vi.mock('antd-style', () => ({
   cssVar: new Proxy({}, { get: () => '' }),
 }));
 vi.mock('./useDependencyCatalog', () => ({
-  useAdminConnectorDetail: () => hooks.connectorDetail,
+  useAdminConnectorDetail: (connectorId?: string) =>
+    (connectorId ? hooks.connectorDetailById[connectorId] : undefined) ?? hooks.connectorDetail,
   useAdminConnectorDetails: () => hooks.connectorRefDetails,
   useAdminProviderModelSource: () => hooks.source,
   useAdminPublishedConnectors: () => hooks.connectors,
@@ -44,6 +48,7 @@ vi.mock('@lobehub/ui', () => ({
   ),
   Block: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Icon: () => <i />,
   Input: ({ 'aria-label': label, value, onChange, ...props }: any) => (
     <input
       aria-label={label}
@@ -55,6 +60,7 @@ vi.mock('@lobehub/ui', () => ({
   NeuralNetworkLoading: () => null,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  Tooltip: ({ children, title }: any) => <span data-tooltip={String(title)}>{children}</span>,
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({ children, href, ...props }: any) =>
@@ -73,13 +79,32 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {...props}
     />
   ),
-  Select: ({ 'aria-label': label, disabled, id, options, required, onChange }: any) => (
+  Select: ({
+    'aria-label': label,
+    disabled,
+    id,
+    mode,
+    options,
+    required,
+    value,
+    onChange,
+  }: any) => (
     <select
       aria-label={label}
       disabled={disabled}
       id={id}
       required={required}
-      onChange={(event) => onChange?.(event.target.value)}
+      onChange={(event) => {
+        const picked = event.target.value;
+        if (mode !== 'multiple') return onChange?.(picked);
+        // A multiple Select toggles exactly one option per interaction.
+        const current: string[] = Array.isArray(value) ? value : [];
+        onChange?.(
+          current.includes(picked)
+            ? current.filter((entry) => entry !== picked)
+            : [...current, picked],
+        );
+      }}
     >
       <option value="">--</option>
       {(options ?? []).map((option: any) => (
@@ -102,6 +127,7 @@ beforeEach(() => {
   hooks.connectors = { ...idle, data: page([]) };
   hooks.source = { ...idle };
   hooks.connectorDetail = { ...idle };
+  hooks.connectorDetailById = {};
   hooks.connectorRefDetails = { ...idle };
 });
 
@@ -261,10 +287,10 @@ describe('DependencyEditor exact authoring', () => {
     };
     const onChange = vi.fn();
     renderEditor(emptyDeps(), onChange);
+    // One control: picking it is the whole gesture — the exact detail is fetched and applied for you.
     fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
       target: { value: 'c1' },
     });
-    fireEvent.click(screen.getByText('agentCatalog.dependency.connector.addAction'));
     expect(onChange).toHaveBeenCalledWith({
       connectors: [
         {
@@ -280,7 +306,7 @@ describe('DependencyEditor exact authoring', () => {
     });
   });
 
-  it('removes an existing connector dependency', () => {
+  it('removes an existing connector dependency by unpicking it', () => {
     const deps: AdminAgentDraftDependencies = {
       connectors: [
         {
@@ -294,9 +320,66 @@ describe('DependencyEditor exact authoring', () => {
       model: null,
       skills: [],
     };
+    hooks.connectors = {
+      ...idle,
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
+    };
     const onChange = vi.fn();
     renderEditor(deps, onChange);
-    fireEvent.click(screen.getByText('agentCatalog.dependency.connector.remove'));
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
+      target: { value: 'c1' },
+    });
+    expect(onChange).toHaveBeenCalledWith({ connectors: [], model: null, skills: [] });
+  });
+
+  it('keeps a referenced connector the catalog no longer lists pickable, so it can be dropped', () => {
+    const deps: AdminAgentDraftDependencies = {
+      connectors: [connectorRef],
+      model: null,
+      skills: [],
+    };
+    const onChange = vi.fn();
+    renderEditor(deps, onChange);
+    const picker = screen.getByLabelText('agentCatalog.dependency.connector.add');
+    expect([...picker.querySelectorAll('option')].map((option) => option.value)).toContain('c1');
+    fireEvent.change(picker, { target: { value: 'c1' } });
+    expect(onChange).toHaveBeenCalledWith({ connectors: [], model: null, skills: [] });
+  });
+
+  it('adds and drops a Skill through the one picker', () => {
+    const skillOption = {
+      checksum: 'f'.repeat(64),
+      displayName: 'Writer',
+      distribution: 'optional',
+      skillKey: 'writer',
+      version: '1.0.0',
+    };
+    hooks.skills = { ...idle, data: [skillOption] };
+    const onChange = vi.fn();
+    const { rerender } = renderEditor(emptyDeps(), onChange);
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.skill.add'), {
+      target: { value: 'writer' },
+    });
+    const added = {
+      checksum: 'f'.repeat(64),
+      skillKey: 'writer',
+      version: '1.0.0',
+    };
+    expect(onChange).toHaveBeenCalledWith({ connectors: [], model: null, skills: [added] });
+
+    onChange.mockClear();
+    rerender(
+      <DependencyEditor
+        editable
+        enabled
+        agentId="agent-1"
+        dependencies={{ connectors: [], model: null, skills: [added] }}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.skill.add'), {
+      target: { value: 'writer' },
+    });
     expect(onChange).toHaveBeenCalledWith({ connectors: [], model: null, skills: [] });
   });
 
@@ -694,8 +777,9 @@ describe('DependencyEditor fails closed on the provider list / connector list / 
     fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
       target: { value: 'c1' },
     });
-    fireEvent.click(screen.getByText('agentCatalog.dependency.connector.addAction'));
-    expect(onChange).not.toHaveBeenCalled(); // disabled Add → fail closed, never author from a stale snapshot
+    // The pick is held, not authored: fail closed, never build a ref from a stale snapshot.
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText('agentCatalog.dependency.revalidating')).toBeTruthy();
   });
 
   it('will NOT author a connector while the current detail errors with retained data (retry offered)', () => {
@@ -710,9 +794,8 @@ describe('DependencyEditor fails closed on the provider list / connector list / 
     fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
       target: { value: 'c1' },
     });
-    // The error branch renders a retry instead of the Add action.
+    // The error branch states the failure and offers a retry instead of authoring the ref.
     expect(screen.getByText('agentCatalog.dependency.retry')).toBeTruthy();
-    expect(screen.queryByText('agentCatalog.dependency.connector.addAction')).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -728,7 +811,6 @@ describe('DependencyEditor fails closed on the provider list / connector list / 
     fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
       target: { value: 'c1' },
     });
-    fireEvent.click(screen.getByText('agentCatalog.dependency.connector.addAction'));
     expect(onChange).toHaveBeenCalledTimes(1); // settled → authored exactly once
   });
 });
@@ -947,6 +1029,272 @@ describe('DependencyEditor: a SELECTED connector requires a settled current deta
       'agentCatalog.dependency.connector.add',
     ) as HTMLSelectElement;
     expect(picker.disabled).toBe(true);
+  });
+});
+
+describe('DependencyEditor queues EVERY connector pick until its exact detail settles', () => {
+  /** The host owns the draft, so a dropped pick shows up as a connector missing from the state. */
+  const ControlledEditor = ({
+    onValidity,
+    state,
+  }: {
+    onValidity?: (validity: unknown) => void;
+    state: { dependencies: AdminAgentDraftDependencies };
+  }) => {
+    const [dependencies, setDependencies] = useState(state.dependencies);
+    state.dependencies = dependencies;
+    return (
+      <DependencyEditor
+        editable
+        enabled
+        agentId="agent-1"
+        dependencies={dependencies}
+        onChange={setDependencies}
+        onValidityChange={onValidity}
+      />
+    );
+  };
+
+  const detailOf = (connectorId: string, connectorKey: string) => ({
+    connectorId,
+    connectorKey,
+    publishedChecksum: 'e'.repeat(64),
+    publishedRevision: 3,
+    tools: [{ platformPolicy: 'allow', toolKey: 'search' }],
+  });
+
+  const refOf = (connectorId: string, connectorKey: string) => ({
+    allowedToolKeys: ['search'],
+    connectorId,
+    connectorKey,
+    publishedChecksum: 'e'.repeat(64),
+    publishedRevision: 3,
+  });
+
+  const twoPickable = () => {
+    hooks.connectors = {
+      ...idle,
+      data: page([
+        { displayName: 'Issues', id: 'c1', key: 'issues' },
+        { displayName: 'Docs', id: 'c2', key: 'docs' },
+      ]),
+    };
+    hooks.connectorDetailById = {
+      c1: { ...idle, isLoading: true },
+      c2: { ...idle, isLoading: true },
+    };
+  };
+
+  const pick = (connectorId: string) =>
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
+      target: { value: connectorId },
+    });
+
+  it('keeps the first pick when a second is made before its detail resolves', () => {
+    currentModel();
+    twoPickable();
+    const state = { dependencies: emptyDeps() };
+    const view = render(<ControlledEditor state={state} />);
+
+    pick('c1');
+    pick('c2'); // while c1 is still resolving — it must not replace c1
+
+    // Nothing is authored yet: neither detail has settled.
+    expect(state.dependencies.connectors).toEqual([]);
+
+    hooks.connectorDetailById.c1 = { ...idle, data: detailOf('c1', 'issues') };
+    view.rerender(<ControlledEditor state={state} />);
+    expect(state.dependencies.connectors).toEqual([refOf('c1', 'issues')]);
+
+    hooks.connectorDetailById.c2 = { ...idle, data: detailOf('c2', 'docs') };
+    view.rerender(<ControlledEditor state={state} />);
+    // The queued second pick survived the first one's resolution.
+    expect(state.dependencies.connectors).toEqual([refOf('c1', 'issues'), refOf('c2', 'docs')]);
+  });
+
+  it('cancels a queued pick when it is unpicked before its detail resolves', () => {
+    currentModel();
+    twoPickable();
+    const state = { dependencies: emptyDeps() };
+    const view = render(<ControlledEditor state={state} />);
+
+    pick('c1');
+    pick('c2');
+    pick('c1'); // taken back while still queued
+
+    hooks.connectorDetailById.c1 = { ...idle, data: detailOf('c1', 'issues') };
+    hooks.connectorDetailById.c2 = { ...idle, data: detailOf('c2', 'docs') };
+    view.rerender(<ControlledEditor state={state} />);
+
+    // Only the pick that was still queued is authored; the cancelled one never lands.
+    expect(state.dependencies.connectors).toEqual([refOf('c2', 'docs')]);
+  });
+
+  it('FAILS CLOSED while ANY pick is still queued, and clears once they all settle', async () => {
+    const model = currentModel();
+    twoPickable();
+    const onValidity = vi.fn();
+    const state = { dependencies: { connectors: [], model, skills: [] } };
+    const view = render(<ControlledEditor state={state} onValidity={onValidity} />);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: true })),
+    );
+
+    pick('c1');
+    pick('c2');
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+
+    hooks.connectorDetailById.c1 = { ...idle, data: detailOf('c1', 'issues') };
+    view.rerender(<ControlledEditor state={state} onValidity={onValidity} />);
+    // The second pick is still resolving → save stays closed.
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+
+    hooks.connectorDetailById.c2 = { ...idle, data: detailOf('c2', 'docs') };
+    hooks.connectorRefDetails = {
+      ...idle,
+      data: { c1: detailOf('c1', 'issues'), c2: detailOf('c2', 'docs') },
+    };
+    view.rerender(<ControlledEditor state={state} onValidity={onValidity} />);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: true })),
+    );
+  });
+
+  it('never authors a queued pick after the editor is unmounted', () => {
+    currentModel();
+    twoPickable();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const state = { dependencies: emptyDeps() };
+    const view = render(<ControlledEditor state={state} />);
+
+    pick('c1');
+    view.unmount();
+
+    // The detail arriving after teardown reaches nothing: no author, no state update, no warning.
+    hooks.connectorDetailById.c1 = { ...idle, data: detailOf('c1', 'issues') };
+    expect(state.dependencies.connectors).toEqual([]);
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it('will not author a pick from a detail that belongs to another connector', () => {
+    currentModel();
+    twoPickable();
+    // The stale snapshot of a previously fetched connector must never be applied to this pick.
+    hooks.connectorDetailById.c2 = { ...idle, data: detailOf('c1', 'issues') };
+    const state = { dependencies: emptyDeps() };
+    render(<ControlledEditor state={state} />);
+
+    pick('c2');
+    expect(state.dependencies.connectors).toEqual([]);
+  });
+
+  it('never reports ready between the picks and BOTH the queue draining and the batch validating', async () => {
+    const model = currentModel();
+    twoPickable();
+    const onValidity = vi.fn();
+    const state = { dependencies: { connectors: [], model, skills: [] } };
+    const view = render(<ControlledEditor state={state} onValidity={onValidity} />);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: true })),
+    );
+
+    pick('c1');
+    pick('c2');
+    onValidity.mockClear();
+    const readyStates = () =>
+      (onValidity.mock.calls as [{ ready: boolean }][]).map(([validity]) => validity.ready);
+
+    // The head settling makes it authorable, NOT saveable: c2 is still queued behind it, so a
+    // ready:true here would let a snapshot commit without c2.
+    hooks.connectorDetailById.c1 = { ...idle, data: detailOf('c1', 'issues') };
+    view.rerender(<ControlledEditor state={state} onValidity={onValidity} />);
+    await waitFor(() => expect(state.dependencies.connectors).toHaveLength(1));
+    expect(readyStates()).not.toContain(true);
+
+    // Queue drained — but the two freshly authored refs have not been batch-validated yet.
+    hooks.connectorDetailById.c2 = { ...idle, data: detailOf('c2', 'docs') };
+    view.rerender(<ControlledEditor state={state} onValidity={onValidity} />);
+    await waitFor(() => expect(state.dependencies.connectors).toHaveLength(2));
+    expect(readyStates()).not.toContain(true);
+
+    hooks.connectorRefDetails = {
+      ...idle,
+      data: { c1: detailOf('c1', 'issues'), c2: detailOf('c2', 'docs') },
+    };
+    view.rerender(<ControlledEditor state={state} onValidity={onValidity} />);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: true })),
+    );
+  });
+
+  /** One editor instance, one draft per Agent — exactly how the host swaps the edited Agent. */
+  const MultiAgentEditor = ({
+    agentId,
+    drafts,
+  }: {
+    agentId: string;
+    drafts: Record<string, AdminAgentDraftDependencies>;
+  }) => {
+    const [, bump] = useState(0);
+    return (
+      <DependencyEditor
+        editable
+        enabled
+        agentId={agentId}
+        dependencies={drafts[agentId]}
+        onChange={(next) => {
+          drafts[agentId] = next;
+          bump((value) => value + 1);
+        }}
+      />
+    );
+  };
+
+  it('never authors a queued pick into the draft of the Agent switched to', () => {
+    currentModel();
+    twoPickable();
+    const drafts: Record<string, AdminAgentDraftDependencies> = {
+      'agent-1': emptyDeps(),
+      'agent-2': emptyDeps(),
+    };
+    const view = render(<MultiAgentEditor agentId="agent-1" drafts={drafts} />);
+
+    pick('c1');
+    // The detail lands in the very flush that switches Agent: the queue belongs to agent-1, so it
+    // must be gone for agent-1 (never committed) and invisible to agent-2.
+    hooks.connectorDetailById.c1 = { ...idle, data: detailOf('c1', 'issues') };
+    view.rerender(<MultiAgentEditor agentId="agent-2" drafts={drafts} />);
+
+    expect(drafts['agent-2'].connectors).toEqual([]);
+    expect(drafts['agent-1'].connectors).toEqual([]);
+  });
+
+  it('drops a queued update when the stale row is removed before its detail settles', () => {
+    currentModel();
+    twoPickable();
+    // c1 is referenced but drifted, so its row offers Update / Remove.
+    hooks.connectorRefDetails = {
+      ...idle,
+      data: { c1: { ...detailOf('c1', 'issues'), publishedRevision: 4 } },
+    };
+    const state = {
+      dependencies: { connectors: [refOf('c1', 'issues')], model: null, skills: [] },
+    };
+    const view = render(<ControlledEditor state={state} />);
+
+    fireEvent.click(screen.getByText('agentCatalog.dependency.connector.update'));
+    fireEvent.click(screen.getByText('agentCatalog.dependency.connector.remove'));
+    expect(state.dependencies.connectors).toEqual([]);
+
+    // The update the admin abandoned must not resurrect the row it removed.
+    hooks.connectorDetailById.c1 = { ...idle, data: detailOf('c1', 'issues') };
+    view.rerender(<ControlledEditor state={state} />);
+    expect(state.dependencies.connectors).toEqual([]);
   });
 });
 

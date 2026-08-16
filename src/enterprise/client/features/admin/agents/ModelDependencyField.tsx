@@ -163,7 +163,11 @@ export const ModelDependencyField = ({
             </div>
 
             <div className={styles.field}>
-              <FieldLabel required htmlFor={MODEL_SELECT_ID}>
+              <FieldLabel
+                required
+                help={t('agentCatalog.dependency.model.required')}
+                htmlFor={MODEL_SELECT_ID}
+              >
                 {t('agentCatalog.dependency.model.model')}
               </FieldLabel>
               {providerId ? (
@@ -220,6 +224,7 @@ export const ModelDependencyField = ({
             </div>
           </div>
 
+          {/* What was chosen, echoed once. Why it is needed lives in the label's help. */}
           {model ? (
             <Flexbox horizontal align="center" gap={8} wrap="wrap">
               <Tag>
@@ -230,10 +235,7 @@ export const ModelDependencyField = ({
               ) : null}
               {source.isValidating && source.data ? <RevalidatingHint /> : null}
             </Flexbox>
-          ) : (
-            // A neutral hint, never an error: nothing has gone wrong before the admin has chosen.
-            <Text type="secondary">{t('agentCatalog.dependency.model.required')}</Text>
-          )}
+          ) : null}
         </Flexbox>
       </CatalogListBody>
     </Flexbox>

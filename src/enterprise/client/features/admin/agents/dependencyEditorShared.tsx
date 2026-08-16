@@ -1,17 +1,42 @@
 'use client';
 
-import { Flexbox, NeuralNetworkLoading, Text } from '@lobehub/ui';
+import { Flexbox, Icon, NeuralNetworkLoading, Text, Tooltip } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { CircleHelp } from 'lucide-react';
 import { useReducedMotion } from 'motion/react';
 import type { ReactNode } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 export const styles = createStaticStyles(({ css }) => ({
+  help: css`
+    cursor: help;
+
+    display: inline-flex;
+    align-items: center;
+
+    padding: 0;
+    border: none;
+
+    color: ${cssVar.colorTextTertiary};
+
+    background: none;
+
+    &:hover,
+    &:focus-visible {
+      color: ${cssVar.colorTextSecondary};
+    }
+  `,
   label: css`
     font-size: ${cssVar.fontSize};
     font-weight: 500;
     color: ${cssVar.colorText};
+  `,
+  labelRow: css`
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
   `,
   required: css`
     margin-inline-start: 4px;
@@ -20,26 +45,61 @@ export const styles = createStaticStyles(({ css }) => ({
 }));
 
 /**
+ * The help affordance for a field's static guidance. It is a real button, so the guidance is not
+ * pointer-only: Tab reaches it, focus opens the tooltip and blur closes it again. It is rendered
+ * beside the `<label>` rather than inside it, so its accessible name never leaks into the
+ * control's own name.
+ */
+export const HelpTooltip = ({ field, title }: { field?: string; title: ReactNode }) => {
+  const { t } = useTranslation('admin');
+  const [open, setOpen] = useState(false);
+  return (
+    <Tooltip open={open} title={title} onOpenChange={setOpen}>
+      <button
+        className={styles.help}
+        type="button"
+        aria-label={
+          field ? t('agentCatalog.editor.helpFor', { field }) : t('agentCatalog.editor.help')
+        }
+        onBlur={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+      >
+        <Icon icon={CircleHelp} size={14} />
+      </button>
+    </Tooltip>
+  );
+};
+
+/**
  * The one field label used across the assistant editor: a real `<label>` so pointer and assistive
  * technology reach the control, with an explicit marker for the fields the contract requires.
+ * Static guidance belongs in `help` — a hover/focus target next to the label instead of a
+ * paragraph between the label and the box it explains.
  */
 export const FieldLabel = ({
   children,
+  help,
   htmlFor,
   required,
 }: {
   children: ReactNode;
+  help?: ReactNode;
   htmlFor?: string;
   required?: boolean;
 }) => (
-  <label className={styles.label} htmlFor={htmlFor}>
-    {children}
-    {required ? (
-      <span aria-hidden className={styles.required}>
-        *
-      </span>
+  <span className={styles.labelRow}>
+    <label className={styles.label} htmlFor={htmlFor}>
+      {children}
+      {required ? (
+        <span aria-hidden className={styles.required}>
+          *
+        </span>
+      ) : null}
+    </label>
+    {help ? (
+      <HelpTooltip field={typeof children === 'string' ? children : undefined} title={help} />
     ) : null}
-  </label>
+  </span>
 );
 
 /**

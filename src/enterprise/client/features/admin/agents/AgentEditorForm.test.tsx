@@ -32,16 +32,20 @@ vi.mock('@lobehub/ui', () => ({
   Flexbox: ({ children, horizontal }: { children?: ReactNode; horizontal?: boolean }) => (
     <div data-horizontal={String(Boolean(horizontal))}>{children}</div>
   ),
+  Icon: () => <i />,
   NeuralNetworkLoading: () => null,
   Text: ({ children, ...rest }: any) => <span {...rest}>{children}</span>,
+  // The real tooltip only paints its title on hover, so the mock keeps it off the text content too.
+  Tooltip: ({ children, title }: any) => <span data-tooltip={String(title)}>{children}</span>,
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
-  FormGroup: ({ children, collapsible, defaultActive, title }: any) => (
+  FormGroup: ({ children, collapsible, defaultActive, extra, title }: any) => (
     <section
       data-collapsed={String(collapsible === true && defaultActive === false)}
       data-group={title}
     >
+      {extra}
       {children}
     </section>
   ),
@@ -122,6 +126,8 @@ const named = (displayName: string) => {
 };
 
 const groupOf = (node: HTMLElement | null) => node?.closest('section')?.dataset.group;
+/** Static guidance lives on a hover target, never as a paragraph between a label and its box. */
+const helpFor = (key: string) => document.querySelector(`[data-tooltip="${key}"]`);
 
 beforeEach(() => {
   formMock.value = baseForm();
@@ -153,12 +159,40 @@ describe('AgentEditorForm layout', () => {
     expect(groupOf(screen.getByText('connectors-field'))).toBe('agentCatalog.editor.section.more');
   });
 
-  it('reads the avatar, name and background swatches as one identity block', () => {
+  it('reads the avatar, name, identifier and swatches as one identity block', () => {
     render(<AgentEditorForm />);
-    const identity = screen.getByRole('group', { name: 'agentCatalog.editor.avatarBackground' });
+    const identity = screen.getByRole('group', { name: 'agentCatalog.editor.identity' });
     expect(identity).toContainElement(screen.getByText('emoji-picker'));
     expect(identity).toContainElement(screen.getByText('background-swatches'));
     expect(identity).toContainElement(screen.getByLabelText('agentCatalog.editor.name'));
+    expect(identity).toContainElement(screen.getByLabelText('agentCatalog.editor.key'));
+  });
+
+  it('puts the identifier beside the name, with the swatch strip in the name column', () => {
+    render(<AgentEditorForm />);
+    const nameColumn = screen.getByLabelText('agentCatalog.editor.name').closest('.identityName')!;
+    const identifier = screen.getByLabelText('agentCatalog.editor.key');
+
+    // Placement is structural, not a breakpoint rule: the strip lives INSIDE the name's own
+    // column, so no width can reflow it away from the box it colours or behind the identifier.
+    expect(nameColumn).toContainElement(screen.getByText('background-swatches'));
+    // …and the identifier is a sibling column, never inside it — it wraps as a whole when narrow.
+    expect(nameColumn).not.toContainElement(identifier);
+    expect(identifier.parentElement!.className).toContain('identityKey');
+  });
+
+  it('reads name → swatches → identifier in DOM order, so keyboard order matches the layout', () => {
+    render(<AgentEditorForm />);
+    const identity = screen.getByRole('group', { name: 'agentCatalog.editor.identity' });
+    const inOrder = [...identity.querySelectorAll('*')];
+    const at = (node: Element) => inOrder.indexOf(node);
+
+    expect(at(screen.getByLabelText('agentCatalog.editor.name'))).toBeLessThan(
+      at(screen.getByText('background-swatches')),
+    );
+    expect(at(screen.getByText('background-swatches'))).toBeLessThan(
+      at(screen.getByLabelText('agentCatalog.editor.key')),
+    );
   });
 
   it('labels every field the contract requires as required', () => {
@@ -186,11 +220,17 @@ describe('AgentEditorForm layout', () => {
     }
   });
 
-  it('renders the guidance that used to be dropped by the group chrome', () => {
+  it('keeps the long guidance available but out of the way, behind a help hint', () => {
     render(<AgentEditorForm />);
-    expect(screen.getByText('agentCatalog.editor.systemRoleDesc')).toBeTruthy();
-    expect(screen.getByText('agentCatalog.editor.section.paramsDesc')).toBeTruthy();
-    expect(screen.getByText('agentCatalog.editor.openingQuestionsDesc')).toBeTruthy();
+    for (const key of [
+      'agentCatalog.editor.systemRoleDesc',
+      'agentCatalog.editor.section.paramsDesc',
+      'agentCatalog.editor.openingQuestionsDesc',
+    ]) {
+      expect(helpFor(key)).toBeTruthy();
+      // …and not as a paragraph wedged between the label and the box it explains.
+      expect(screen.queryByText(key)).toBeNull();
+    }
   });
 
   it('lays the model parameters out as compact labelled boxes', () => {
@@ -202,11 +242,11 @@ describe('AgentEditorForm layout', () => {
     }
   });
 
-  it('offers the identifier only while creating, and captions it below the input', () => {
+  it('offers the identifier only while creating, and states its rules in the label help', () => {
     render(<AgentEditorForm />);
     expect(screen.getByLabelText('agentCatalog.editor.key')).not.toBeDisabled();
-    expect(screen.getByText('agentCatalog.editor.keyDesc')).toBeTruthy();
-    expect(screen.getByText('agentCatalog.editor.keyAutoNote')).toBeTruthy();
+    expect(helpFor('agentCatalog.editor.keyDesc')).toBeTruthy();
+    expect(screen.queryByText('agentCatalog.editor.keyDesc')).toBeNull();
   });
 
   it('caps the identifier at the contract length and explains an illegal one inline', () => {
@@ -234,7 +274,7 @@ describe('AgentEditorForm layout', () => {
     formMock.value = { ...baseForm(), isCreate: false };
     render(<AgentEditorForm />);
     expect(screen.getByLabelText('agentCatalog.editor.key')).toBeDisabled();
-    expect(screen.getByText('agentCatalog.editor.keyLockedDesc')).toBeTruthy();
+    expect(helpFor('agentCatalog.editor.keyLockedDesc')).toBeTruthy();
   });
 
   it('states the immediate effect and keeps Save closed until the form can commit', () => {

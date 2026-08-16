@@ -83,17 +83,13 @@ export default {
     'The default Inbox and system assistants cannot be hard-deleted — reassign the default first.',
   'agentCatalog.delete.submit': 'Delete permanently',
   'agentCatalog.delete.title': 'Delete assistant',
-  'agentCatalog.dependency.connector.add': 'Add a published Connector',
-  'agentCatalog.dependency.connector.addAction': 'Add Connector',
-  'agentCatalog.dependency.connector.empty': 'No connector dependencies.',
+  'agentCatalog.dependency.connector.add': 'Search or select published Connectors',
   'agentCatalog.dependency.connector.loadError': 'Could not load the published Connector catalog.',
   'agentCatalog.dependency.connector.remove': 'Remove',
   'agentCatalog.dependency.connector.title': 'Connectors',
   'agentCatalog.dependency.connector.validateError':
     'Could not verify the referenced Connectors against the current catalog.',
   'agentCatalog.dependency.connector.validating': 'Verifying referenced Connectors…',
-  'agentCatalog.dependency.connector.toolsAvailable': '{{count}} allowed tools',
-  'agentCatalog.dependency.connector.toolsLabel': 'tools',
   'agentCatalog.dependency.connector.unresolvable':
     'This Connector has no resolvable published revision. Publish it before referencing it.',
   'agentCatalog.dependency.connector.update': 'Update',
@@ -118,15 +114,15 @@ export default {
     'This provider has no published revision with a resolvable checksum. Publish the provider before referencing it.',
   'agentCatalog.dependency.retry': 'Retry',
   'agentCatalog.dependency.revalidating': 'Re-checking the current published catalog…',
-  'agentCatalog.dependency.skill.add': 'Add a published Skill',
-  'agentCatalog.dependency.skill.empty': 'No Skill dependencies.',
+  'agentCatalog.dependency.skill.add': 'Search or select published Skills',
   'agentCatalog.dependency.skill.loadError': 'Could not load the published Skill catalog.',
   'agentCatalog.dependency.skill.remove': 'Remove',
   'agentCatalog.dependency.skill.title': 'Skills',
   'agentCatalog.dependency.stale': 'Outdated',
   'agentCatalog.errors.generic':
     'The Agent action failed. Your input is still here; check your connection and retry.',
-  'agentCatalog.editor.avatarBackground': 'Avatar & background',
+  'agentCatalog.editor.avatar': 'Avatar',
+  'agentCatalog.editor.background': 'Background',
   'agentCatalog.editor.blocked.connectorCatalog':
     'Checking the published Connector catalog. Saving is unavailable until it settles.',
   'agentCatalog.editor.blocked.model': 'Pick a published provider and model before saving.',
@@ -142,10 +138,12 @@ export default {
   'agentCatalog.editor.effectHint': 'Saving takes effect immediately for assigned members.',
   'agentCatalog.editor.effectHintArchived':
     'Saving republishes this archived assistant and takes effect immediately for assigned members.',
+  'agentCatalog.editor.help': 'Help',
+  'agentCatalog.editor.helpFor': 'Help for {{field}}',
+  'agentCatalog.editor.identity': 'Identity',
   'agentCatalog.editor.key': 'Identifier',
-  'agentCatalog.editor.keyAutoNote': 'Generated from the name; edit it if you prefer another.',
   'agentCatalog.editor.keyDesc':
-    'Permanent identifier used in the API and audit log. Lowercase letters, digits, and . _ - only.',
+    'Permanent identifier: lowercase letters, digits and . _ -. Generated from the name; editable.',
   'agentCatalog.editor.keyInvalid':
     'Use lowercase letters, digits and . _ - only, starting with a letter or digit, up to {{max}} characters.',
   'agentCatalog.editor.keyLockedDesc': 'The identifier is permanent and cannot be changed.',

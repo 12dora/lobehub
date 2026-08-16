@@ -13,7 +13,7 @@ import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/r
 import BackgroundSwatches from '@/features/AgentSetting/AgentMeta/BackgroundSwatches';
 
 import { DependencyEditor } from './DependencyEditor';
-import { FieldLabel } from './dependencyEditorShared';
+import { FieldLabel, HelpTooltip } from './dependencyEditorShared';
 import type { AdminAgentDetailOutput, AdminPlatformAgentSaveOutput } from './types';
 import { AGENT_KEY_MAX_LENGTH, useAgentEditorForm } from './useAgentEditorForm';
 
@@ -27,15 +27,6 @@ const styles = createStaticStyles(({ css }) => ({
     padding-block: 16px;
     padding-inline: 16px;
   `,
-  caption: css`
-    font-size: ${cssVar.fontSizeSM};
-    color: ${cssVar.colorTextTertiary};
-  `,
-  captions: css`
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  `,
   error: css`
     font-size: ${cssVar.fontSizeSM};
     color: ${cssVar.colorError};
@@ -46,9 +37,6 @@ const styles = createStaticStyles(({ css }) => ({
     flex-direction: column;
     gap: 8px;
     min-width: 0;
-  `,
-  fieldFull: css`
-    grid-column: 1 / -1;
   `,
   footer: css`
     display: flex;
@@ -71,49 +59,54 @@ const styles = createStaticStyles(({ css }) => ({
     flex-shrink: 0;
     border-block-start: 1px solid ${cssVar.colorBorderSecondary};
   `,
-  grid: css`
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
-
-    @media (width <= 640px) {
-      grid-template-columns: 1fr;
+  /**
+   * base-ui's borderless group header ships 16px between the title and its rule and nothing after
+   * it, which reads as a title floating away from its own section. The rhythm here is
+   * title → 8px → rule → 16px → first field, for collapsible and plain groups alike.
+   */
+  group: css`
+    & > :first-child {
+      padding-block-end: 8px;
     }
+  `,
+  groupBody: css`
+    padding-block-start: 16px;
   `,
   hint: css`
     font-size: ${cssVar.fontSizeSM};
     color: ${cssVar.colorTextTertiary};
   `,
-  /** Avatar, name and the background swatches read as one identity, not three fields. */
-  identity: css`
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+  /**
+   * Avatar, name and identifier are one identity, read left to right. The identifier wraps under
+   * them and takes the full width once the row can no longer hold all three.
+   */
+  identityAvatar: css`
+    flex: 0 0 auto;
   `,
+  identityKey: css`
+    flex: 1 1 240px;
+    min-width: 0;
+  `,
+  /**
+   * The name box and the swatch strip are ONE column at every width — the strip is a child of the
+   * name's own column, so it can never be reflowed away from the box it colours.
+   */
   identityName: css`
     display: flex;
-    flex: 1 1 auto;
+    flex: 1 1 240px;
     flex-direction: column;
-    gap: 8px;
+    gap: 12px;
 
     min-width: 0;
   `,
   identityRow: css`
     display: flex;
-    gap: 16px;
-    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    align-items: flex-start;
   `,
-  /**
-   * The identifier row spans the grid so its caption stays on one line; the box itself
-   * keeps the width of a half-grid field, because an identifier is a short string and a
-   * full-width input would promise room it does not need.
-   */
-  keyControl: css`
-    max-width: calc(50% - 8px);
-
-    @media (width <= 640px) {
-      max-width: none;
-    }
+  identitySwatches: css`
+    min-width: 0;
   `,
   paramsGrid: css`
     display: grid;
@@ -217,13 +210,14 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
     );
 
     const basics = (model: ReactNode): ReactNode => (
-      <div className={styles.grid}>
+      <div className={styles.stack}>
         <div
-          aria-label={t('agentCatalog.editor.avatarBackground')}
-          className={cx(styles.identity, styles.fieldFull)}
+          aria-label={t('agentCatalog.editor.identity')}
+          className={styles.identityRow}
           role={'group'}
         >
-          <div className={styles.identityRow}>
+          <div className={cx(styles.field, styles.identityAvatar)}>
+            <FieldLabel>{t('agentCatalog.editor.avatar')}</FieldLabel>
             <EmojiPicker
               background={background}
               size={48}
@@ -232,7 +226,11 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
               value={config.avatar ?? DEFAULT_AVATAR}
               onChange={(next: string) => form.patchConfig('avatar', next || null)}
             />
-            <div className={styles.identityName}>
+          </div>
+
+          {/* One column: the swatch strip is part of the name box, ending exactly where it ends. */}
+          <div className={styles.identityName}>
+            <div className={styles.field}>
               <FieldLabel required htmlFor={NAME_ID}>
                 {t('agentCatalog.editor.name')}
               </FieldLabel>
@@ -245,14 +243,52 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
                 onChange={(event) => form.setDisplayName(event.target.value)}
               />
             </div>
+
+            <div
+              aria-label={t('agentCatalog.editor.background')}
+              className={styles.identitySwatches}
+              role={'group'}
+            >
+              <BackgroundSwatches
+                value={background}
+                onChange={(next) => form.patchConfig('backgroundColor', next || null)}
+              />
+            </div>
           </div>
-          <BackgroundSwatches
-            value={background}
-            onChange={(next) => form.patchConfig('backgroundColor', next || null)}
-          />
+
+          <div className={cx(styles.field, styles.identityKey)}>
+            <FieldLabel
+              htmlFor={KEY_ID}
+              required={form.isCreate}
+              help={
+                form.isCreate
+                  ? t('agentCatalog.editor.keyDesc')
+                  : t('agentCatalog.editor.keyLockedDesc')
+              }
+            >
+              {t('agentCatalog.editor.key')}
+            </FieldLabel>
+            <Input
+              aria-label={t('agentCatalog.editor.key')}
+              disabled={!form.isCreate}
+              id={KEY_ID}
+              maxLength={AGENT_KEY_MAX_LENGTH}
+              placeholder={'research-assistant'}
+              required={form.isCreate}
+              value={form.agentKey}
+              onChange={(event) => form.changeAgentKey(event.target.value)}
+            />
+            {keyInvalid || keyMissing ? (
+              <span className={styles.error} role={'alert'}>
+                {keyMissing
+                  ? t('agentCatalog.editor.keyRequired')
+                  : t('agentCatalog.editor.keyInvalid', { max: AGENT_KEY_MAX_LENGTH })}
+              </span>
+            ) : null}
+          </div>
         </div>
 
-        <div className={cx(styles.field, styles.fieldFull)}>
+        <div className={styles.field}>
           <FieldLabel htmlFor={DESCRIPTION_ID}>{t('agentCatalog.editor.description')}</FieldLabel>
           <TextArea
             aria-label={t('agentCatalog.editor.description')}
@@ -264,53 +300,20 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
           />
         </div>
 
-        <div className={cx(styles.field, styles.fieldFull)}>
-          <FieldLabel htmlFor={KEY_ID} required={form.isCreate}>
-            {t('agentCatalog.editor.key')}
-          </FieldLabel>
-          <div className={styles.keyControl}>
-            <Input
-              aria-label={t('agentCatalog.editor.key')}
-              disabled={!form.isCreate}
-              id={KEY_ID}
-              maxLength={AGENT_KEY_MAX_LENGTH}
-              placeholder={'research-assistant'}
-              required={form.isCreate}
-              value={form.agentKey}
-              onChange={(event) => form.changeAgentKey(event.target.value)}
-            />
-          </div>
-          {keyInvalid || keyMissing ? (
-            <span className={styles.error} role={'alert'}>
-              {keyMissing
-                ? t('agentCatalog.editor.keyRequired')
-                : t('agentCatalog.editor.keyInvalid', { max: AGENT_KEY_MAX_LENGTH })}
-            </span>
-          ) : null}
-          {/* Below the input, where a caption belongs — never inside the label column. */}
-          <div className={styles.captions}>
-            <span className={styles.caption}>
-              {form.isCreate
-                ? t('agentCatalog.editor.keyDesc')
-                : t('agentCatalog.editor.keyLockedDesc')}
-            </span>
-            {form.isCreate ? (
-              <span className={styles.caption}>{t('agentCatalog.editor.keyAutoNote')}</span>
-            ) : null}
-          </div>
-        </div>
-
         {/* The model is required, so it stays above the fold with the other basics. */}
-        <div className={styles.fieldFull}>{model}</div>
+        {model}
       </div>
     );
 
     const prompt: ReactNode = (
       <div className={styles.field}>
-        <FieldLabel required htmlFor={SYSTEM_ROLE_ID}>
+        <FieldLabel
+          required
+          help={t('agentCatalog.editor.systemRoleDesc')}
+          htmlFor={SYSTEM_ROLE_ID}
+        >
           {t('agentCatalog.editor.systemRole')}
         </FieldLabel>
-        <span className={styles.caption}>{t('agentCatalog.editor.systemRoleDesc')}</span>
         <TextArea
           required
           aria-label={t('agentCatalog.editor.systemRole')}
@@ -325,7 +328,6 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
 
     const params: ReactNode = (
       <div className={styles.stack}>
-        <span className={styles.caption}>{t('agentCatalog.editor.section.paramsDesc')}</span>
         <div className={styles.paramsGrid}>
           {PARAM_ROWS.map(({ key, max, min, step }) => (
             <div className={styles.field} key={key}>
@@ -384,7 +386,10 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
           />
         </div>
         <div className={styles.field}>
-          <FieldLabel htmlFor={OPENING_QUESTIONS_ID}>
+          <FieldLabel
+            help={t('agentCatalog.editor.openingQuestionsDesc')}
+            htmlFor={OPENING_QUESTIONS_ID}
+          >
             {t('agentCatalog.editor.openingQuestions')}
           </FieldLabel>
           <TextArea
@@ -397,7 +402,6 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
               form.patchConfig('openingQuestions', event.target.value.split('\n'))
             }
           />
-          <span className={styles.caption}>{t('agentCatalog.editor.openingQuestionsDesc')}</span>
         </div>
         {skills}
         {connectors}
@@ -417,8 +421,12 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
           >
             {(slots) => (
               <div className={styles.sections}>
-                <FormGroup title={t('agentCatalog.editor.section.basic')} variant={'borderless'}>
-                  <div className={styles.stack}>
+                <FormGroup
+                  className={styles.group}
+                  title={t('agentCatalog.editor.section.basic')}
+                  variant={'borderless'}
+                >
+                  <div className={cx(styles.stack, styles.groupBody)}>
                     {basics(slots.model)}
                     {form.depValidity.issues.length > 0 ? (
                       <Alert
@@ -432,26 +440,38 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
                   </div>
                 </FormGroup>
 
-                <FormGroup title={t('agentCatalog.editor.section.prompt')} variant={'borderless'}>
-                  {prompt}
+                <FormGroup
+                  className={styles.group}
+                  title={t('agentCatalog.editor.section.prompt')}
+                  variant={'borderless'}
+                >
+                  <div className={styles.groupBody}>{prompt}</div>
                 </FormGroup>
 
                 <FormGroup
                   collapsible
+                  className={styles.group}
                   defaultActive={false}
                   title={t('agentCatalog.editor.section.params')}
                   variant={'borderless'}
+                  extra={
+                    <HelpTooltip
+                      field={t('agentCatalog.editor.section.params')}
+                      title={t('agentCatalog.editor.section.paramsDesc')}
+                    />
+                  }
                 >
-                  {params}
+                  <div className={styles.groupBody}>{params}</div>
                 </FormGroup>
 
                 <FormGroup
                   collapsible
+                  className={styles.group}
                   defaultActive={false}
                   title={t('agentCatalog.editor.section.more')}
                   variant={'borderless'}
                 >
-                  {more(slots.skills, slots.connectors)}
+                  <div className={styles.groupBody}>{more(slots.skills, slots.connectors)}</div>
                 </FormGroup>
               </div>
             )}

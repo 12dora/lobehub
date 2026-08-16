@@ -1,21 +1,21 @@
 'use client';
 
 import type { PlatformAgentConnectorDependencyRef } from '@lobechat/types';
-import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Button, Input, Select } from '@lobehub/ui/base-ui';
 import { useTranslation } from 'react-i18next';
 
-import {
-  allowedConnectorToolKeys,
-  type PublishedConnectorDetail,
-  type PublishedConnectorSummary,
-} from './dependencyCatalog';
+import { type PublishedConnectorDetail, type PublishedConnectorSummary } from './dependencyCatalog';
 import {
   DetailFetchBody,
+  FieldLabel,
   LoadingHint,
   RetryAction,
   RevalidatingHint,
 } from './dependencyEditorShared';
+
+const CONNECTOR_SEARCH_ID = 'admin-agent-editor-connector-search';
+const CONNECTOR_SELECT_ID = 'admin-agent-editor-connectors';
 
 interface SelectOption {
   label: string;
@@ -33,8 +33,6 @@ interface SwrSlice<T> {
 
 export interface ConnectorDependencyFieldProps {
   connectorDetail: SwrSlice<PublishedConnectorDetail | null>;
-  connectorDetailUsable: boolean;
-  connectorId: string | undefined;
   connectorOptions: SelectOption[];
   connectorRefDetails: SwrSlice<unknown>;
   connectors: SwrSlice<PublishedConnectorSummary[]>;
@@ -43,11 +41,13 @@ export interface ConnectorDependencyFieldProps {
   connectorsSettled: boolean;
   editable: boolean;
   enabled: boolean;
-  onAdd: () => void;
+  /** The whole selection after a pick or an unpick — one control, one change. */
+  onChange: (connectorIds: string[]) => void;
   onConnectorSearchChange: (query: string) => void;
   onRemove: (connectorKey: string) => void;
-  onSelectConnector: (connectorId: string | undefined) => void;
   onUpdateExisting: (connectorKey: string) => void;
+  /** Picks whose exact detail is still resolving, in pick order — none is authored yet. */
+  pendingConnectorIds: string[];
   staleConnectors: string[];
   value: PlatformAgentConnectorDependencyRef[];
 }
@@ -87,14 +87,15 @@ const ConnectorValidationBanner = ({
   return null;
 };
 
-const ConnectorDetailPanel = ({
+/**
+ * A pick is not a dependency until its exact published detail (revision + checksum + tools) has
+ * settled, so the wait — and every way it can fail — is stated here instead of silently dropping
+ * the pick.
+ */
+const ConnectorPendingPanel = ({
   connectorDetail,
-  connectorDetailUsable,
-  onAdd,
 }: {
   connectorDetail: SwrSlice<PublishedConnectorDetail | null>;
-  connectorDetailUsable: boolean;
-  onAdd: () => void;
 }) => {
   const { t } = useTranslation('admin');
 
@@ -120,28 +121,13 @@ const ConnectorDetailPanel = ({
         />
       }
     >
-      {(detail) => (
-        <Flexbox horizontal align="center" gap={8}>
-          <Text type="secondary">
-            {t('agentCatalog.dependency.connector.toolsAvailable', {
-              count: allowedConnectorToolKeys(detail).length,
-            })}
-          </Text>
-          {/* Add is disabled while the detail is revalidating — never author from a stale snapshot. */}
-          <Button disabled={!connectorDetailUsable} type="primary" onClick={onAdd}>
-            {t('agentCatalog.dependency.connector.addAction')}
-          </Button>
-          {connectorDetail.isValidating ? <RevalidatingHint /> : null}
-        </Flexbox>
-      )}
+      {() => (connectorDetail.isValidating ? <RevalidatingHint /> : <LoadingHint />)}
     </DetailFetchBody>
   );
 };
 
 export const ConnectorDependencyField = ({
   connectorDetail,
-  connectorDetailUsable,
-  connectorId,
   connectorOptions,
   connectorRefDetails,
   connectorSearch,
@@ -150,21 +136,33 @@ export const ConnectorDependencyField = ({
   connectorsSettled,
   editable,
   enabled,
-  onAdd,
+  onChange,
   onConnectorSearchChange,
   onRemove,
-  onSelectConnector,
   onUpdateExisting,
+  pendingConnectorIds,
   staleConnectors,
   value,
 }: ConnectorDependencyFieldProps) => {
   const { t } = useTranslation('admin');
 
+  // The picker's own search only filters the page already loaded. Once the server says there is
+  // more beyond it, the admin needs a real query — so the box appears exactly then, and stays for
+  // as long as a query is active (a narrowing query un-truncates the page).
+  const serverSearchable = Boolean(connectors.truncated) || connectorSearch.length > 0;
+  const selected = value.map((connector) => connector.connectorId);
+  // EVERY pick shows as chosen while its detail resolves — a second pick made during the first
+  // one's fetch must not push it out of the value. Dropping one here cancels just that authoring.
+  const picked = [
+    ...selected,
+    ...pendingConnectorIds.filter((connectorId) => !selected.includes(connectorId)),
+  ];
+
   return (
     <Flexbox gap={8}>
-      <Text as="h4" fontSize={14} weight={600}>
+      <FieldLabel htmlFor={CONNECTOR_SELECT_ID}>
         {t('agentCatalog.dependency.connector.title')}
-      </Text>
+      </FieldLabel>
 
       <ConnectorValidationBanner
         connectorRefDetails={connectorRefDetails}
@@ -182,10 +180,49 @@ export const ConnectorDependencyField = ({
         />
       ) : (
         <Flexbox gap={8}>
-          {value.length === 0 ? (
-            <Text type="secondary">{t('agentCatalog.dependency.connector.empty')}</Text>
-          ) : (
-            value.map((connector) => (
+          {serverSearchable ? (
+            <Input
+              aria-label={t('agentCatalog.dependency.connector.search')}
+              disabled={!editable}
+              id={CONNECTOR_SEARCH_ID}
+              placeholder={t('agentCatalog.dependency.connector.searchPlaceholder')}
+              type="search"
+              value={connectorSearch}
+              onChange={(event) => onConnectorSearchChange(event.target.value)}
+            />
+          ) : null}
+          {/* One searchable control that both picks and shows what is picked. */}
+          <Select
+            showSearch
+            aria-label={t('agentCatalog.dependency.connector.add')}
+            disabled={!editable || !connectorsListUsable}
+            id={CONNECTOR_SELECT_ID}
+            mode="multiple"
+            options={connectorOptions}
+            value={picked}
+            placeholder={
+              connectors.isLoading
+                ? t('agentCatalog.dependency.loading')
+                : t('agentCatalog.dependency.connector.add')
+            }
+            onChange={(next) => {
+              // Never mutate the selection from a stale/errored/revalidating connector list.
+              if (!connectorsListUsable) return;
+              onChange(Array.isArray(next) ? (next as string[]) : []);
+            }}
+          />
+          {connectors.truncated ? (
+            <Text type="secondary">{t('agentCatalog.dependency.catalogTruncated')}</Text>
+          ) : null}
+          {connectors.isValidating && connectors.data ? <RevalidatingHint /> : null}
+          {pendingConnectorIds.length > 0 ? (
+            <ConnectorPendingPanel connectorDetail={connectorDetail} />
+          ) : null}
+
+          {/* A Connector that drifted from the published catalog blocks Save: refresh it or drop it. */}
+          {value
+            .filter((connector) => staleConnectors.includes(connector.connectorKey))
+            .map((connector) => (
               <Flexbox
                 horizontal
                 align="center"
@@ -193,17 +230,9 @@ export const ConnectorDependencyField = ({
                 justify="space-between"
                 key={connector.connectorKey}
               >
-                <Flexbox gap={2}>
-                  <Flexbox horizontal align="center" gap={8}>
-                    <Tag>{connector.connectorKey}</Tag>
-                    <Text type="secondary">
-                      {connector.allowedToolKeys.length}{' '}
-                      {t('agentCatalog.dependency.connector.toolsLabel')}
-                    </Text>
-                    {staleConnectors.includes(connector.connectorKey) ? (
-                      <Tag color="warning">{t('agentCatalog.dependency.stale')}</Tag>
-                    ) : null}
-                  </Flexbox>
+                <Flexbox horizontal align="center" gap={8}>
+                  <Tag>{connector.connectorKey}</Tag>
+                  <Tag color="warning">{t('agentCatalog.dependency.stale')}</Tag>
                 </Flexbox>
                 {editable ? (
                   <Flexbox horizontal gap={8}>
@@ -223,48 +252,7 @@ export const ConnectorDependencyField = ({
                   </Flexbox>
                 ) : null}
               </Flexbox>
-            ))
-          )}
-
-          {editable ? (
-            <Flexbox gap={8}>
-              <Input
-                allowClear
-                aria-label={t('agentCatalog.dependency.connector.search')}
-                disabled={!editable}
-                placeholder={t('agentCatalog.dependency.connector.searchPlaceholder')}
-                value={connectorSearch}
-                onChange={(event) => onConnectorSearchChange(event.target.value)}
-              />
-              <Select
-                aria-label={t('agentCatalog.dependency.connector.add')}
-                disabled={!connectorsListUsable}
-                options={connectorOptions}
-                value={connectorId}
-                placeholder={
-                  connectors.isLoading
-                    ? t('agentCatalog.dependency.loading')
-                    : t('agentCatalog.dependency.connector.add')
-                }
-                onChange={(next) => {
-                  // Never mutate the selection from a stale/errored/revalidating connector list.
-                  if (!connectorsListUsable) return;
-                  onSelectConnector(next as string | undefined);
-                }}
-              />
-              {connectors.truncated ? (
-                <Text type="secondary">{t('agentCatalog.dependency.catalogTruncated')}</Text>
-              ) : null}
-              {connectors.isValidating && connectors.data ? <RevalidatingHint /> : null}
-              {connectorId ? (
-                <ConnectorDetailPanel
-                  connectorDetail={connectorDetail}
-                  connectorDetailUsable={connectorDetailUsable}
-                  onAdd={onAdd}
-                />
-              ) : null}
-            </Flexbox>
-          ) : null}
+            ))}
         </Flexbox>
       )}
     </Flexbox>
