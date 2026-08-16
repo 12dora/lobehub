@@ -78,42 +78,54 @@ export const DingTalkAllowedCorpsField = memo<DingTalkAllowedCorpsFieldProps>(
             type="warning"
           />
         ) : (
-          <Flexbox gap={8}>
+          <div className={styles.corpTable} role="table">
+            <div className={styles.corpTableHead} role="row">
+              <span role="columnheader">
+                {t('identityProviders.dingtalk.allowedCorps.columns.organization')}
+              </span>
+              <span role="columnheader">
+                {t('identityProviders.dingtalk.allowedCorps.columns.added')}
+              </span>
+              <span role="columnheader">{t('identityProviders.dingtalk.allowedCorps.label')}</span>
+              <span role="columnheader" />
+            </div>
             {entries.map((entry) => (
-              <Flexbox
-                horizontal
-                align="center"
-                className={styles.callback}
-                gap={8}
-                key={entry.corpId}
-              >
-                <Flexbox flex={1} gap={2}>
-                  <Text className={styles.endpointValue}>{entry.corpId}</Text>
-                  <Text fontSize={12} type="secondary">
-                    {t('identityProviders.dingtalk.allowedCorps.addedAt', {
-                      time: new Date(entry.addedAt).toLocaleString(),
-                    })}
+              <div className={styles.corpTableRow} key={entry.corpId} role="row">
+                <Flexbox gap={2} role="cell" style={{ minWidth: 0 }}>
+                  <Text ellipsis strong>
+                    {entry.corpName ?? t('identityProviders.dingtalk.allowedCorps.unnamed')}
                   </Text>
+                  <span className={styles.corpId} title={entry.corpId}>
+                    {entry.corpId}
+                  </span>
                 </Flexbox>
-                <Input
-                  aria-label={t('identityProviders.dingtalk.allowedCorps.label')}
-                  maxLength={DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH}
-                  placeholder={t('identityProviders.dingtalk.allowedCorps.label')}
-                  value={entry.label ?? ''}
-                  onChange={(e) => updateLabel(entry.corpId, e.target.value)}
-                />
-                <Button
-                  danger
-                  aria-label={t('identityProviders.dingtalk.allowedCorps.remove')}
-                  icon={Trash2}
-                  size="small"
-                  onClick={() => remove(entry.corpId)}
-                >
-                  {t('identityProviders.dingtalk.allowedCorps.remove')}
-                </Button>
-              </Flexbox>
+                <Text fontSize={12} role="cell" type="secondary">
+                  {new Date(entry.addedAt).toLocaleString()}
+                </Text>
+                <div role="cell">
+                  <Input
+                    aria-label={t('identityProviders.dingtalk.allowedCorps.label')}
+                    maxLength={DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH}
+                    placeholder={t('identityProviders.dingtalk.allowedCorps.label')}
+                    size="small"
+                    value={entry.label ?? ''}
+                    onChange={(e) => updateLabel(entry.corpId, e.target.value)}
+                  />
+                </div>
+                <div role="cell">
+                  <Button
+                    danger
+                    aria-label={t('identityProviders.dingtalk.allowedCorps.remove')}
+                    icon={Trash2}
+                    size="small"
+                    onClick={() => remove(entry.corpId)}
+                  >
+                    {t('identityProviders.dingtalk.allowedCorps.remove')}
+                  </Button>
+                </div>
+              </div>
             ))}
-          </Flexbox>
+          </div>
         )}
         <Flexbox gap={6}>
           <Button

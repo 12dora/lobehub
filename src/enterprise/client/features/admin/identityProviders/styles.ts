@@ -71,6 +71,52 @@ export const identityProviderStyles = createStaticStyles(({ css }) => ({
       grid-template-columns: 1fr;
     }
   `,
+  corpTable: css`
+    overflow: hidden;
+    border: 1px solid ${cssVar.colorBorderSecondary};
+    border-radius: ${cssVar.borderRadius};
+  `,
+  corpTableHead: css`
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1.2fr) auto;
+    gap: 12px;
+    align-items: center;
+
+    padding-block: 8px;
+    padding-inline: 12px;
+
+    font-size: 12px;
+    color: ${cssVar.colorTextSecondary};
+
+    background: ${cssVar.colorFillQuaternary};
+
+    @media (width <= 640px) {
+      display: none;
+    }
+  `,
+  corpTableRow: css`
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1.2fr) auto;
+    gap: 12px;
+    align-items: center;
+
+    padding-block: 10px;
+    padding-inline: 12px;
+    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
+
+    @media (width <= 640px) {
+      grid-template-columns: 1fr;
+    }
+  `,
+  corpId: css`
+    overflow: hidden;
+
+    font-family: ${cssVar.fontFamilyCode};
+    font-size: 12px;
+    color: ${cssVar.colorTextTertiary};
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  `,
   endpointValue: css`
     font-family: ${cssVar.fontFamilyCode};
     overflow-wrap: anywhere;

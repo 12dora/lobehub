@@ -20,10 +20,13 @@ import {
   assertDingTalkCorpAllowed,
   assertDingTalkIssuer,
   buildDingTalkDiscoveryMetadata,
+  DINGTALK_APP_TOKEN_ENDPOINT,
+  DINGTALK_ORG_AUTH_INFO_ENDPOINT,
   DINGTALK_TOKEN_ENDPOINT,
   DINGTALK_USERINFO_ENDPOINT,
   DingTalkApiError,
   exchangeDingTalkAuthorizationCode,
+  fetchDingTalkCorpName,
   fetchDingTalkUserProfile,
   toDingTalkClaims,
 } from './dingtalk';
@@ -279,6 +282,61 @@ describe('DingTalk profile read', () => {
     await expect(
       fetchDingTalkUserProfile({ accessToken: 'access-token', outbound }),
     ).rejects.toThrow('PLATFORM_DINGTALK_USERINFO_INVALID');
+  });
+});
+
+describe('DingTalk organisation name lookup', () => {
+  const creds = { clientId: 'app-key', clientSecret: 'app-secret', corpId: 'ding42' };
+
+  it('resolves the name via the app access token and the org auth-info endpoint', async () => {
+    const transport = vi.fn<PinnedTransport>(async (request) => {
+      const url = request.url.toString();
+      if (url === DINGTALK_APP_TOKEN_ENDPOINT) {
+        expect(request.method).toBe('POST');
+        expect(JSON.parse(String(request.body))).toEqual({
+          appKey: 'app-key',
+          appSecret: 'app-secret',
+        });
+        return response({ accessToken: 'app-token', expireIn: 7200 });
+      }
+      expect(url).toBe(`${DINGTALK_ORG_AUTH_INFO_ENDPOINT}?targetCorpId=ding42`);
+      expect(request.headers).toMatchObject({ 'x-acs-dingtalk-access-token': 'app-token' });
+      return response({ corpName: '  示例科技有限公司 ', licenseOrgName: 'x' });
+    });
+
+    await expect(fetchDingTalkCorpName({ ...creds, outbound: setup(transport) })).resolves.toEqual({
+      corpName: '示例科技有限公司',
+    });
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports the missing permission DingTalk names instead of failing', async () => {
+    const outbound = setup(async (request) =>
+      request.url.toString() === DINGTALK_APP_TOKEN_ENDPOINT
+        ? response({ accessToken: 'app-token' })
+        : response(
+            {
+              accessdenieddetail: { requiredScopes: ['Contact.Org.Read'] },
+              code: 'Forbidden.AccessDenied.AccessTokenPermissionDenied',
+              message: 'secret-bearing free text must not travel',
+            },
+            { status: 403, statusText: 'Forbidden' },
+          ),
+    );
+    await expect(fetchDingTalkCorpName({ ...creds, outbound })).resolves.toEqual({
+      missingScope: 'Contact.Org.Read',
+    });
+  });
+
+  it('never throws — a rejected app token or a network failure yields no name', async () => {
+    const rejected = setup(async () =>
+      response({ code: 'invalidParameter.idOrSecret.notFound' }, { status: 400 }),
+    );
+    await expect(fetchDingTalkCorpName({ ...creds, outbound: rejected })).resolves.toEqual({});
+    const failing = setup(async () => {
+      throw new Error('ECONNRESET');
+    });
+    await expect(fetchDingTalkCorpName({ ...creds, outbound: failing })).resolves.toEqual({});
   });
 });
 

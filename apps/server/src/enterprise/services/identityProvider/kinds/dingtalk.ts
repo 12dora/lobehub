@@ -282,6 +282,88 @@ export const fetchDingTalkUserProfile = async (input: {
   }
 };
 
+export const DINGTALK_APP_TOKEN_ENDPOINT = 'https://api.dingtalk.com/v1.0/oauth2/accessToken';
+export const DINGTALK_ORG_AUTH_INFO_ENDPOINT =
+  'https://api.dingtalk.com/v1.0/contact/organizations/authInfos';
+export const DINGTALK_CORP_NAME_MAX_LENGTH = 128;
+/** DingTalk permission that unlocks organisation names (企业信息读权限). */
+export const DINGTALK_ORG_READ_SCOPE = 'Contact.Org.Read';
+
+const appTokenResponseSchema = z.object({ accessToken: z.string().min(1) }).passthrough();
+const orgAuthInfoResponseSchema = z.object({ corpName: z.string().optional() }).passthrough();
+
+export interface DingTalkCorpNameLookup {
+  corpName?: string;
+  /** DingTalk permission the app still lacks, when the lookup was refused for that reason. */
+  missingScope?: string;
+}
+
+/**
+ * Best-effort organisation name for a captured corpId, so the admin allowlist can show
+ * 「XX 科技有限公司」 instead of an opaque `ding…` id.
+ *
+ * Uses the app's own access token (AppKey/AppSecret → `/v1.0/oauth2/accessToken`) and the
+ * 企业认证信息 endpoint. It needs the `Contact.Org.Read` permission; when DingTalk refuses,
+ * the missing scope is reported back so the wizard can tell the admin exactly what to enable.
+ * Never throws — a name is a nicety, the capture itself must not depend on it.
+ */
+export const fetchDingTalkCorpName = async (input: {
+  clientId: string;
+  clientSecret: string;
+  corpId: string;
+  outbound: SafeOutboundHttpClient;
+}): Promise<DingTalkCorpNameLookup> => {
+  try {
+    const tokenResponse = await input.outbound.fetch(DINGTALK_APP_TOKEN_ENDPOINT, {
+      body: JSON.stringify({ appKey: input.clientId, appSecret: input.clientSecret }),
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      maxRedirects: 0,
+      maxResponseBytes: RESPONSE_MAX_BYTES,
+      method: 'POST',
+      secretBearing: true,
+      timeoutMs: REQUEST_TIMEOUT_MS,
+    });
+    if (!tokenResponse.ok || tokenResponse.truncated || !isJsonResponse(tokenResponse)) return {};
+    const { accessToken } = appTokenResponseSchema.parse(await tokenResponse.json());
+    const url = new URL(DINGTALK_ORG_AUTH_INFO_ENDPOINT);
+    url.searchParams.set('targetCorpId', input.corpId);
+    const response = await input.outbound.fetch(url.toString(), {
+      headers: { 'Accept': 'application/json', 'x-acs-dingtalk-access-token': accessToken },
+      maxRedirects: 0,
+      maxResponseBytes: RESPONSE_MAX_BYTES,
+      method: 'GET',
+      secretBearing: true,
+      timeoutMs: REQUEST_TIMEOUT_MS,
+    });
+    if (!response.ok || response.truncated || !isJsonResponse(response)) {
+      // DingTalk names the missing permission itself (`accessdenieddetail.requiredScopes`).
+      const scope = await readDingTalkRequiredScope(response);
+      return scope ? { missingScope: scope } : {};
+    }
+    const parsed = orgAuthInfoResponseSchema.parse(await response.json());
+    const corpName = parsed.corpName?.trim();
+    return corpName ? { corpName: corpName.slice(0, DINGTALK_CORP_NAME_MAX_LENGTH) } : {};
+  } catch {
+    return {};
+  }
+};
+
+const readDingTalkRequiredScope = async (
+  response: Awaited<ReturnType<SafeOutboundHttpClient['fetch']>>,
+): Promise<string | undefined> => {
+  if (!isJsonResponse(response) || response.truncated) return undefined;
+  try {
+    const body = (await response.json()) as {
+      accessdenieddetail?: { requiredScopes?: unknown };
+    };
+    const scopes = body?.accessdenieddetail?.requiredScopes;
+    const first = Array.isArray(scopes) ? scopes[0] : undefined;
+    return typeof first === 'string' && DINGTALK_ERROR_CODE_PATTERN.test(first) ? first : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 /**
  * Project a DingTalk profile onto the claim record the shared claim mapping consumes.
  *

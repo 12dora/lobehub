@@ -28,6 +28,7 @@ import {
   assertDingTalkIssuer,
   DingTalkApiError,
   exchangeDingTalkAuthorizationCode,
+  fetchDingTalkCorpName,
   fetchDingTalkUserProfile,
   resolveStaticIdentityProviderMetadata,
   toDingTalkClaims,
@@ -623,10 +624,20 @@ export class IdentityProviderTestFlowService {
       errorCode: 'OIDC_TEST_CLAIM_VALIDATION_FAILED',
       providerKey: input.providerKey,
     });
+    // Organisation name is a nicety on top of the capture: never fatal, and when DingTalk
+    // refuses for a missing permission the scope name travels back so the admin can enable it.
+    const corpName = await fetchDingTalkCorpName({
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      corpId: token.corpId,
+      outbound: this.outbound,
+    });
     return {
       claims,
       dingtalk: {
         corpId: token.corpId,
+        ...(corpName.corpName ? { corpName: corpName.corpName } : {}),
+        ...(corpName.missingScope ? { corpNameMissingScope: corpName.missingScope } : {}),
         ...(profile.nick?.trim() ? { nick: profile.nick.trim().slice(0, 256) } : {}),
       },
     };

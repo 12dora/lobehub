@@ -222,8 +222,12 @@ export interface PlatformIdentityProviderAllowedCorp {
   /** Admin user id that captured this organisation, when known. */
   addedBy?: string;
   corpId: string;
+  /** Organisation name DingTalk reported at capture time (needs `Contact.Org.Read`). */
+  corpName?: string;
   label?: string;
 }
+
+export const DINGTALK_CORP_NAME_MAX_LENGTH = 128;
 
 /** Permissive on charset (DingTalk ids are opaque), strict on length. */
 export const DINGTALK_CORP_ID_PATTERN = /^[\w-]{1,64}$/;
@@ -254,13 +258,19 @@ export const parseDingTalkAllowedCorps = (
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const record = entry as Record<string, unknown>;
     if (
-      Object.keys(record).some((key) => !['addedAt', 'addedBy', 'corpId', 'label'].includes(key)) ||
+      Object.keys(record).some(
+        (key) => !['addedAt', 'addedBy', 'corpId', 'corpName', 'label'].includes(key),
+      ) ||
       !isValidDingTalkCorpId(record.corpId) ||
       seen.has(record.corpId) ||
       typeof record.addedAt !== 'string' ||
       Number.isNaN(Date.parse(record.addedAt)) ||
       (record.addedBy !== undefined &&
         (typeof record.addedBy !== 'string' || !record.addedBy || record.addedBy.length > 128)) ||
+      (record.corpName !== undefined &&
+        (typeof record.corpName !== 'string' ||
+          !record.corpName ||
+          record.corpName.length > DINGTALK_CORP_NAME_MAX_LENGTH)) ||
       (record.label !== undefined &&
         (typeof record.label !== 'string' ||
           record.label.length > DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH))
@@ -272,6 +282,7 @@ export const parseDingTalkAllowedCorps = (
       addedAt: record.addedAt,
       ...(record.addedBy === undefined ? {} : { addedBy: record.addedBy as string }),
       corpId: record.corpId,
+      ...(record.corpName === undefined ? {} : { corpName: record.corpName as string }),
       ...(record.label === undefined ? {} : { label: record.label as string }),
     });
   }
@@ -443,6 +454,10 @@ export interface PlatformIdentityProviderClaimValidationIssue {
  */
 export interface PlatformIdentityProviderDingTalkCapture {
   corpId: string;
+  /** Organisation name, when the app holds `Contact.Org.Read`. */
+  corpName?: string;
+  /** DingTalk permission still missing for the name lookup (e.g. `Contact.Org.Read`). */
+  corpNameMissingScope?: string;
   nick?: string;
 }
 

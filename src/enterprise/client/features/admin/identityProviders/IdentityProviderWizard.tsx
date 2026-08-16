@@ -264,6 +264,13 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
           return current;
         }
         toast.success(t('identityProviders.dingtalk.allowedCorps.added'));
+        if (!captured.corpName && captured.corpNameMissingScope) {
+          toast.info(
+            t('identityProviders.dingtalk.allowedCorps.nameNeedsScope', {
+              scope: captured.corpNameMissingScope,
+            }),
+          );
+        }
         return {
           ...current,
           dingtalkAllowedCorps: [
@@ -271,6 +278,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             {
               addedAt: new Date().toISOString(),
               corpId: captured.corpId,
+              ...(captured.corpName ? { corpName: captured.corpName } : {}),
               // `nick` may be far longer than the persisted label limit — bound it so the
               // capture never leaves an unsavable draft behind.
               ...(captured.nick

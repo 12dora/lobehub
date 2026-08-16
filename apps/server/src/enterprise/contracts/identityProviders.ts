@@ -2,6 +2,7 @@ import {
   DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH,
   DINGTALK_ALLOWED_CORPS_MAX,
   DINGTALK_CORP_ID_PATTERN,
+  DINGTALK_CORP_NAME_MAX_LENGTH,
   DINGTALK_IDENTITY_PROVIDER_ISSUER,
   isCanonicalDingTalkIdentityContract,
   isDingTalkIdentityProviderIssuer,
@@ -86,6 +87,7 @@ export const identityProviderAllowedCorpsSchema = z
         addedAt: z.string().datetime({ offset: true }),
         addedBy: z.string().min(1).max(128).optional(),
         corpId: z.string().regex(DINGTALK_CORP_ID_PATTERN),
+        corpName: z.string().trim().min(1).max(DINGTALK_CORP_NAME_MAX_LENGTH).optional(),
         label: z.string().trim().max(DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH).optional(),
       })
       .strict(),
@@ -462,6 +464,8 @@ export const identityProviderClaimPreviewSchema = z
     dingtalk: z
       .object({
         corpId: z.string().regex(DINGTALK_CORP_ID_PATTERN),
+        corpName: z.string().max(DINGTALK_CORP_NAME_MAX_LENGTH).optional(),
+        corpNameMissingScope: z.string().max(64).optional(),
         nick: z.string().max(256).optional(),
       })
       .strict()

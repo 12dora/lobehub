@@ -1918,7 +1918,6 @@ export default {
     'Configure, test, publish, and activate controlled work-account sign-in.',
   'identityProviders.dingtalk.allowedCorps.add': 'Add organization via DingTalk login',
   'identityProviders.dingtalk.allowedCorps.added': 'Organization added to the allowlist',
-  'identityProviders.dingtalk.allowedCorps.addedAt': 'Added {{time}}',
   'identityProviders.dingtalk.allowedCorps.addedBy': 'Added by {{nick}}',
   'identityProviders.dingtalk.allowedCorps.addHint':
     'Opens a DingTalk login. Choose the organization there — its id is captured automatically. Save afterwards to apply the change.',
@@ -1948,6 +1947,11 @@ export default {
     'Add at least one allowed organization before publishing.',
   'identityProviders.dingtalk.allowedCorps.remove': 'Remove',
   'identityProviders.dingtalk.allowedCorps.title': 'Allowed organizations',
+  'identityProviders.dingtalk.allowedCorps.columns.organization': 'Organization',
+  'identityProviders.dingtalk.allowedCorps.columns.added': 'Added',
+  'identityProviders.dingtalk.allowedCorps.unnamed': 'Organization name unavailable',
+  'identityProviders.dingtalk.allowedCorps.nameNeedsScope':
+    'Grant the {{scope}} permission (企业信息读权限) to the DingTalk app to show organization names automatically; the id was added anyway.',
   'identityProviders.dingtalk.appKey': 'Client ID (AppKey)',
   'identityProviders.dingtalk.appSecret': 'Client Secret (AppSecret)',
   'identityProviders.dingtalk.callbackNotice':
