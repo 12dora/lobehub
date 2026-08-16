@@ -82,13 +82,23 @@ const styles = createStaticStyles(({ css }) => ({
       background: ${cssVar.colorFillQuaternary};
     }
 
-    .ant-table-tbody > tr:focus-within {
-      outline: 2px solid ${cssVar.colorPrimary};
-      outline-offset: -2px;
+    /*
+     * Descendant selector (not "> tr") so virtual tables — where rows render as
+     * div.ant-table-row instead of tbody > tr — get the same affordances.
+     */
+    .ant-table-tbody .admin-table-row-clickable {
+      cursor: pointer;
     }
 
-    .ant-table-tbody > tr.admin-table-row-clickable {
-      cursor: pointer;
+    /*
+     * Keyboard-only focus ring on the activatable row itself.
+     * Deliberately NOT :focus-within — that also fired on mouse clicks, on nested action
+     * buttons, and on focus-restore after a modal closed, painting a heavy frame around a
+     * (often single-row) table.
+     */
+    .ant-table-tbody .admin-table-row-clickable:focus-visible {
+      outline: 2px solid ${cssVar.colorPrimaryBorder};
+      outline-offset: -2px;
     }
   `,
 }));

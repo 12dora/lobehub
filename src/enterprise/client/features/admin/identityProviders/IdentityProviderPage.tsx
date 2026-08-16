@@ -310,10 +310,12 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         title: t('identityProviders.columns.type'),
         width: 160,
         render: (_, item) => (
-          <Tag color={item.type === 'authentik' ? 'blue' : 'default'}>
+          <Tag color={item.type === 'generic_oidc' ? 'default' : 'blue'}>
             {item.type === 'authentik'
               ? 'Authentik'
-              : t('identityProviders.templates.genericOidc.label')}
+              : item.type === 'dingtalk'
+                ? t('identityProviders.templates.dingtalk.label')
+                : t('identityProviders.templates.genericOidc.label')}
           </Tag>
         ),
       },
@@ -332,10 +334,10 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     return <Alert showIcon description={t('identityProviders.errors.forbidden')} type="warning" />;
   }
 
-  // Single login method: once a provider exists, editing the existing row is the only
-  // path — creating a second one is intentionally withheld (one mutable draft head).
-  const hasAnyProvider = (providers.data?.items.length ?? 0) > 0;
-  const showCreateAction = canCreate && !setupGuidance && !hasAnyProvider;
+  // Multiple sign-in methods are supported (the server has no single-provider limit), so
+  // "New" stays available whenever the principal may create. It is withheld only while the
+  // setup guidance replaces the page — nothing can be created before deploy config exists.
+  const showCreateAction = canCreate && !setupGuidance;
   const showRuntime = canRestart && !setupGuidance;
 
   return (

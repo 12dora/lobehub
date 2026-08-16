@@ -177,7 +177,7 @@ vi.mock('../primitives/DataTable', () => ({
       onNext: () => void;
       onPrevious: () => void;
     };
-    dataSource?: { displayName: string; id: string; status?: string }[];
+    dataSource?: { displayName: string; id: string; status?: string; type?: string }[];
     onRowActivate?: (item: { id: string }) => void;
   }) => (
     <div data-testid="provider-table">
@@ -186,6 +186,13 @@ vi.mock('../primitives/DataTable', () => ({
           <button type="button" onClick={() => onRowActivate?.(item)}>
             {item.displayName}
           </button>
+          <div data-testid={`provider-type-${item.id}`}>
+            {columns
+              ?.filter((column) => column.key === 'type')
+              .map((column, index) => (
+                <div key={column.key ?? index}>{column.render?.(null, item)}</div>
+              ))}
+          </div>
           <div data-testid={`provider-actions-${item.id}`}>
             {columns
               ?.filter((column) => column.key === 'actions')
@@ -310,7 +317,7 @@ describe('IdentityProviderPage rendering rules', () => {
     expect(screen.getByTestId('restart-progress')).toBeTruthy();
   });
 
-  it('shows the create action and opens the create modal only when no provider exists yet', () => {
+  it('shows the create action and opens the create modal when no provider exists yet', () => {
     mocks.providers.data = { items: [] };
 
     render(<IdentityProviderPage />);
@@ -321,16 +328,38 @@ describe('IdentityProviderPage rendering rules', () => {
     expect(openModalMock.mock.calls[0][0].provider).toBeUndefined();
   });
 
-  it('renders the table and withholds create once a provider exists (single login method)', async () => {
+  it('keeps the create action available once a provider exists (multiple login methods)', async () => {
     mocks.providers.data = { items: [{ ...sampleProvider, hasPublishedHistory: false }] };
 
     render(<IdentityProviderPage />);
 
     expect(screen.getByTestId('provider-table')).toBeTruthy();
-    // Single login method: no "New" once one exists — edit the existing row instead.
-    expect(screen.queryByText('identityProviders.actions.create')).toBeNull();
+    // Multiple sign-in methods: "New" stays available and still opens create mode.
+    fireEvent.click(screen.getByText('identityProviders.actions.create'));
+    expect(openModalMock).toHaveBeenCalledTimes(1);
+    expect(openModalMock.mock.calls[0][0].provider).toBeUndefined();
     // Server batches history onto list items — no per-row listPublishedRevisions fan-out.
     expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
+  });
+
+  it('labels every supported provider kind in the type column', () => {
+    mocks.providers.data = {
+      items: [
+        { ...sampleProvider, id: 'idp-authentik', type: 'authentik' },
+        { ...sampleProvider, id: 'idp-dingtalk', type: 'dingtalk' },
+        { ...sampleProvider, id: 'idp-oidc', type: 'generic_oidc' },
+      ],
+    };
+
+    render(<IdentityProviderPage />);
+
+    expect(screen.getByTestId('provider-type-idp-authentik').textContent).toBe('Authentik');
+    expect(screen.getByTestId('provider-type-idp-dingtalk').textContent).toBe(
+      'identityProviders.templates.dingtalk.label',
+    );
+    expect(screen.getByTestId('provider-type-idp-oidc').textContent).toBe(
+      'identityProviders.templates.genericOidc.label',
+    );
   });
 
   it('opens the wizard modal in edit mode when a row is activated', async () => {
