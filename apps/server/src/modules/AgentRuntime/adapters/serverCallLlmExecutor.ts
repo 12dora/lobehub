@@ -434,6 +434,7 @@ export const callLlm =
                   },
                 },
                 metadata: {
+                  assistantMessageId: assistantMessageItem.id,
                   operationId,
                   topicId: state.metadata?.topicId,
                   trigger: state.metadata?.trigger,

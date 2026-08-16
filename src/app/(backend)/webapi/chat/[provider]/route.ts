@@ -3,6 +3,7 @@ import { AGENT_RUNTIME_ERROR_SET } from '@lobechat/model-runtime';
 import { ChatErrorType } from '@lobechat/types';
 
 import { checkAuth } from '@/app/(backend)/middleware/auth';
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { createTraceOptions, initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { type ChatStreamPayload } from '@/types/openai/chat';
 import { createErrorResponse } from '@/utils/errorResponse';
@@ -41,6 +42,25 @@ export const POST = checkAuth(async (req: Request, { params, userId, serverDB })
       signal: req.signal,
     });
   } catch (e) {
+    // B2 ↔ B5: block body is `{ message, category?, recordId }` — do not wrap it
+    // in the generic `{ error, provider, ... }` envelope used for other runtime errors.
+    if (
+      e &&
+      typeof e === 'object' &&
+      (e as { errorType?: unknown }).errorType ===
+        PLATFORM_ERROR_CODES.PLATFORM_CONTENT_MODERATION_BLOCKED
+    ) {
+      const blocked = e as { category?: string; message?: string; recordId?: string };
+      return createErrorResponse(
+        PLATFORM_ERROR_CODES.PLATFORM_CONTENT_MODERATION_BLOCKED as ChatCompletionErrorPayload['errorType'],
+        {
+          ...(blocked.message ? { message: blocked.message } : {}),
+          ...(blocked.category ? { category: blocked.category } : {}),
+          ...(blocked.recordId ? { recordId: blocked.recordId } : {}),
+        },
+      );
+    }
+
     const {
       errorType = ChatErrorType.InternalServerError,
       error: errorContent,

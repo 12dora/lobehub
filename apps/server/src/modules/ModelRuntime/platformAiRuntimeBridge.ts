@@ -1,11 +1,19 @@
 import { createHash } from 'node:crypto';
 
-import type { ModelRuntimeHooks } from '@lobechat/model-runtime';
+import type { ModelRuntime, ModelRuntimeHooks } from '@lobechat/model-runtime';
 import type { AiProviderRuntimeState } from '@lobechat/types';
 import type { EnabledAiModel, ModelSearchImplementType } from 'model-bank';
 
 import { isEnterpriseFlagEnabled } from '@/const/platform/featureFlags';
 import type { LobeChatDatabase } from '@/database/type';
+
+export interface WrapModelRuntimeContext {
+  db: LobeChatDatabase;
+  provider: string;
+  skipModeration?: boolean;
+  userId: string;
+  workspaceId?: string;
+}
 
 /**
  * Opaque identity of the credential a runtime was actually built with.
@@ -116,6 +124,11 @@ export interface PlatformAiRuntimeImplementation {
     db: LobeChatDatabase;
     upstreamState: AiProviderRuntimeState;
   }) => Promise<AiProviderRuntimeState>;
+  /**
+   * Optional enterprise wrap applied just before `initModelRuntimeFromDB` returns.
+   * Content moderation hangs here: OSS / unregistered builds leave the runtime untouched.
+   */
+  wrapModelRuntime?: (runtime: ModelRuntime, ctx: WrapModelRuntimeContext) => ModelRuntime;
 }
 
 let implementation: PlatformAiRuntimeImplementation | null = null;
@@ -219,6 +232,15 @@ export const listPlatformPublishedModels = (
   db: LobeChatDatabase,
   providerKey: string,
 ): Promise<EnabledAiModel[] | null> => requireImplementation().listPublishedModels(db, providerKey);
+
+/**
+ * Apply the optional enterprise runtime wrap (content moderation). Identity when the
+ * implementation is missing or does not implement `wrapModelRuntime`.
+ */
+export const wrapPlatformModelRuntime = (
+  runtime: ModelRuntime,
+  ctx: WrapModelRuntimeContext,
+): ModelRuntime => implementation?.wrapModelRuntime?.(runtime, ctx) ?? runtime;
 
 export const getEmptyPlatformAiRuntimeState = (): AiProviderRuntimeState => ({
   enabledAiModels: [],

@@ -7,6 +7,7 @@ import {
   digestPlatformAiCredential,
   type PlatformAiRuntimeImplementation,
   registerPlatformAiRuntime,
+  wrapPlatformModelRuntime,
 } from './platformAiRuntimeBridge';
 
 const reportExecutionAuthFailure = vi.fn();
@@ -103,5 +104,38 @@ describe('createPlatformAiAuthFailureHooks', () => {
       hooks.onChatError!({ errorType: 'OAuthAuthorizationExpired' } as never, {} as never),
     ).toBeUndefined();
     await Promise.resolve();
+  });
+});
+
+describe('wrapPlatformModelRuntime', () => {
+  it('is identity when the implementation has no wrap', () => {
+    register();
+    const runtime = new ModelRuntime({ chat: vi.fn() } as never);
+    expect(
+      wrapPlatformModelRuntime(runtime, {
+        db: {} as never,
+        provider: 'openai',
+        userId: 'user-1',
+      }),
+    ).toBe(runtime);
+  });
+
+  it('delegates to the registered wrap', () => {
+    const wrapped = new ModelRuntime({ chat: vi.fn() } as never);
+    const wrapModelRuntime = vi.fn(() => wrapped);
+    registerPlatformAiRuntime({
+      isEnabled: () => true,
+      wrapModelRuntime,
+    } as unknown as PlatformAiRuntimeImplementation);
+
+    const runtime = new ModelRuntime({ chat: vi.fn() } as never);
+    expect(
+      wrapPlatformModelRuntime(runtime, {
+        db: {} as never,
+        provider: 'openai',
+        userId: 'user-1',
+      }),
+    ).toBe(wrapped);
+    expect(wrapModelRuntime).toHaveBeenCalledOnce();
   });
 });

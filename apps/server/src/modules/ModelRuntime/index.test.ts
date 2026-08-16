@@ -24,11 +24,13 @@ import {
 import { LobeVertexAI } from '@lobechat/model-runtime/vertexai';
 import { type ClientSecretPayload } from '@lobechat/types';
 import { ModelProvider } from 'model-bank';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import type * as AiCatalogEnforcement from '@/server/enterprise/services/aiCatalog/enforcement';
+import { wrapModelRuntimeWithModeration } from '@/server/enterprise/services/contentModeration/runtime';
+import { createDefaultModerationRuntimeDeps } from '@/server/enterprise/services/contentModeration/runtime/defaults';
 
 import {
   buildPayloadFromKeyVaults,
@@ -38,6 +40,7 @@ import {
   initPlatformExactModelRuntime,
   resolveManagedChatApiMode,
 } from './index';
+import * as platformAiRuntimeBridge from './platformAiRuntimeBridge';
 
 interface InspectableBedrockRuntime {
   client: {
@@ -944,6 +947,159 @@ describe('initModelRuntimeFromDB managed model guard', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+});
+
+describe('initModelRuntimeFromDB wrapModelRuntime seam', () => {
+  const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+  });
+
+  it('wraps the platform runtime exactly once', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockResolvedValue({
+      allowedModels: [{ modelKey: 'allow-chat', type: 'chat' }],
+      config: {},
+      keyVaults: { apiKey: 'managed-runtime-secret' },
+      providerKey: 'openai',
+      revision: 1,
+      runtimeProvider: 'openai',
+    });
+    const wrap = vi.spyOn(platformAiRuntimeBridge, 'wrapPlatformModelRuntime');
+
+    await initModelRuntimeFromDB({} as never, 'user-1', 'openai');
+
+    expect(wrap).toHaveBeenCalledOnce();
+    expect(wrap.mock.calls[0][1]).toMatchObject({
+      provider: 'openai',
+      skipModeration: undefined,
+      userId: 'user-1',
+    });
+  });
+
+  it('wraps the BYOK fallback exactly once (PLATFORM_NOT_FOUND)', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockRejectedValue(
+      Object.assign(new Error('PLATFORM_NOT_FOUND'), { code: 'PLATFORM_NOT_FOUND' }),
+    );
+    const wrap = vi.spyOn(platformAiRuntimeBridge, 'wrapPlatformModelRuntime');
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'openai',
+      keyVaults: null,
+      settings: {},
+      source: 'builtin',
+    };
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [providerRow] }) }) }),
+    };
+
+    await initModelRuntimeFromDB(db as never, 'user-1', 'openai');
+
+    expect(wrap).toHaveBeenCalledOnce();
+  });
+
+  it('forwards skipModeration so the wrap is a no-op', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockResolvedValue({
+      allowedModels: [{ modelKey: 'allow-chat', type: 'chat' }],
+      config: {},
+      keyVaults: { apiKey: 'managed-runtime-secret' },
+      providerKey: 'openai',
+      revision: 1,
+      runtimeProvider: 'openai',
+    });
+    const wrap = vi.spyOn(platformAiRuntimeBridge, 'wrapPlatformModelRuntime');
+
+    const runtime = await initModelRuntimeFromDB({} as never, 'user-1', 'openai', undefined, {
+      skipModeration: true,
+    });
+
+    expect(wrap).toHaveBeenCalledOnce();
+    expect(wrap.mock.calls[0][1]).toMatchObject({ skipModeration: true });
+    // skipModeration short-circuits before Proxy construction.
+    expect(runtime).toBeInstanceOf(ModelRuntime);
+  });
+
+  it('wraps initPlatformExactModelRuntime once; cross-provider downgrade inits via skipModeration', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfigAtRevision',
+    ).mockResolvedValue({
+      allowedModels: [{ modelKey: 'pin-chat', type: 'chat' }],
+      config: {},
+      keyVaults: { apiKey: 'exact-revision-secret' },
+      providerKey: 'openai',
+      revision: 7,
+      runtimeProvider: 'openai',
+    });
+
+    const wrap = vi
+      .spyOn(platformAiRuntimeBridge, 'wrapPlatformModelRuntime')
+      .mockImplementation((runtime, wrapCtx) =>
+        wrapModelRuntimeWithModeration(runtime, wrapCtx, {
+          evaluate: async () => ({
+            downgradeTarget: { model: 'haiku', provider: 'anthropic' },
+            effectiveAction: 'downgrade',
+            skipped: false,
+          }),
+          extractPromptText: () => 'hello',
+          getSnapshot: async () => ({
+            config: { messages: { showCategoryToUser: true }, mode: 'enforce' },
+          }),
+          initRuntime: createDefaultModerationRuntimeDeps(wrapCtx).initRuntime,
+          record: vi.fn(),
+        }),
+      );
+
+    const runtime = await initPlatformExactModelRuntime({} as never, 'user-1', {
+      modelKey: 'pin-chat',
+      providerChecksum: 'checksum',
+      providerKey: 'openai',
+      providerRevision: 7,
+    });
+    expect(wrap).toHaveBeenCalledOnce();
+
+    const modelRuntimeModule = await import('./index');
+    const initSpy = vi.spyOn(modelRuntimeModule, 'initModelRuntimeFromDB').mockResolvedValue({
+      chat: vi.fn().mockResolvedValue(new Response('downgraded')),
+    } as never);
+
+    await runtime.chat({
+      messages: [{ content: 'hello', role: 'user' }],
+      model: 'pin-chat',
+    });
+
+    expect(initSpy).toHaveBeenCalledWith(expect.anything(), 'user-1', 'anthropic', undefined, {
+      skipModeration: true,
+    });
   });
 });
 

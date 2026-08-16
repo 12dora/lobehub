@@ -36,6 +36,7 @@ import {
   type PlatformAiExactModelRef,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfigAtRevision,
+  wrapPlatformModelRuntime,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { createLLMGenerationTracingHook } from '@/server/services/llmGenerationTracing/hook';
 import { ensureFreshOAuthToken } from '@/server/services/oauthDeviceFlow/refresh';
@@ -679,7 +680,17 @@ export const initModelRuntimeFromDB = async (
   userId: string,
   provider: string,
   workspaceId?: string,
+  options?: { skipModeration?: boolean },
 ): Promise<ModelRuntime> => {
+  const wrap = (runtime: ModelRuntime) =>
+    wrapPlatformModelRuntime(runtime, {
+      db,
+      provider,
+      skipModeration: options?.skipModeration,
+      userId,
+      workspaceId,
+    });
+
   if (isPlatformManagedAiEnabled()) {
     try {
       const providerConfig = await resolvePlatformAiExecutionConfig(db, provider);
@@ -714,7 +725,7 @@ export const initModelRuntimeFromDB = async (
           ),
         ),
       );
-      return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
+      return wrap(await initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks));
     } catch (error) {
       // Platform catalog governs platform providers only. User self-built / BYOK providers
       // are absent from the catalog → fall back to the user's own config. Other platform
@@ -723,7 +734,7 @@ export const initModelRuntimeFromDB = async (
     }
   }
 
-  return initUserModelRuntimeFromDB(db, userId, provider, workspaceId);
+  return wrap(await initUserModelRuntimeFromDB(db, userId, provider, workspaceId));
 };
 
 /**
@@ -767,5 +778,8 @@ export const initPlatformExactModelRuntime = async (
       mergeModelRuntimeHooks(authFailureHooks, mergeModelRuntimeHooks(businessHooks, tracingHooks)),
     ),
   );
-  return initModelRuntimeWithUserPayload(ref.providerKey, payload, { userId }, hooks);
+  return wrapPlatformModelRuntime(
+    await initModelRuntimeWithUserPayload(ref.providerKey, payload, { userId }, hooks),
+    { db, provider: ref.providerKey, userId, workspaceId },
+  );
 };

@@ -733,6 +733,19 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     reason: 'Mocks AI catalog resolver at runtime path test',
   },
   {
+    file: 'apps/server/src/modules/ModelRuntime/index.test.ts',
+    importSpecifier: '@/server/enterprise/services/contentModeration/runtime',
+    owner: 'content-moderation',
+    reason:
+      'Documents the exact-revision wrap: a cross-provider downgrade from a MODEL-EXACT pin inits the target via initModelRuntimeFromDB({ skipModeration: true })',
+  },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.test.ts',
+    importSpecifier: '@/server/enterprise/services/contentModeration/runtime/defaults',
+    owner: 'content-moderation',
+    reason: 'Uses the default initRuntime wiring to assert skipModeration on the exact-pin path',
+  },
+  {
     file: 'apps/server/src/routers/lambda/__tests__/agentSkills.resolvePlatformPinned.test.ts',
     importSpecifier: '@/server/enterprise/featureFlags',
     owner: 'M08',
@@ -1283,6 +1296,13 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     owner: 'M13',
     reason:
       'Pass-through mock of the managed-resource guard (it needs a live DB); the real guard keys stay asserted by managedResourceRealRouters.test.ts',
+  },
+  {
+    file: 'src/app/(backend)/webapi/chat/[provider]/route.test.ts',
+    importSpecifier: '@/server/enterprise/services/contentModeration/runtime',
+    owner: 'content-moderation',
+    reason:
+      'Route-level proof that a moderation-aware runtime block/downgrade maps to HTTP 403 / x-lobe-moderation* headers',
   },
 ] as const satisfies readonly EnterpriseTestImportAllowance[];
 
