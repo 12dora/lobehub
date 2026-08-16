@@ -23,6 +23,8 @@ import {
   adminTaskTemplateItemSchema,
   adminTaskTemplateListInputSchema,
   adminTaskTemplateListOutputSchema,
+  adminTaskTemplateReorderInputSchema,
+  adminTaskTemplateReorderOutputSchema,
   adminTaskTemplateSetEnabledInputSchema,
   adminTaskTemplateUpdateInputSchema,
 } from '../../contracts/adminTaskTemplates';
@@ -280,6 +282,40 @@ export const adminTaskTemplatesRouter = router({
         totalAll,
         totalFiltered: page.total,
       };
+    }),
+
+  /**
+   * Persist the display order the operator dragged into place.
+   * Same permission as any other edit; one transaction, CAS-checked per row.
+   */
+  reorder: updateProcedure
+    .input(adminTaskTemplateReorderInputSchema)
+    .output(adminTaskTemplateReorderOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await ctx.serverDB.transaction(async (tx) => {
+          const model = new PlatformTaskTemplateModel(tx as unknown as LobeChatDatabase);
+          const items = await model.reorder({ actorUserId: ctx.userId!, items: input.items });
+          if (!items) return notFound();
+
+          await new PlatformAuditService(tx).append({
+            action: 'admin.taskTemplates.reorder',
+            actorUserId: ctx.userId!,
+            // Order is the whole change; record it as the identifier sequence it produced.
+            afterDiff: {
+              order: items.map((item) => item.identifier),
+              sortOrders: items.map((item) => item.sortOrder),
+            },
+            result: 'success',
+            targetId: 'order',
+            targetType: 'task_template',
+          });
+
+          return { items: items.map((item) => toAdminTaskTemplateItem(item)) };
+        });
+      } catch (error) {
+        return mapWriteError(error);
+      }
     }),
 
   setEnabled: updateProcedure

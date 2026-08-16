@@ -35,6 +35,8 @@ const mocks = vi.hoisted(() => ({
   openEditor: vi.fn(),
   permissions: [] as string[],
   refreshLists: vi.fn(),
+  reorder: vi.fn(),
+  reorderProps: undefined as { ids: string[]; onReorder: (ids: string[]) => void } | undefined,
   setEnabled: vi.fn(),
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
@@ -60,6 +62,7 @@ vi.mock('@/enterprise/client/services/adminTaskTemplates', () => ({
   adminTaskTemplatesService: {
     delete: (...args: unknown[]) => mocks.deleteTemplate(...args),
     importRecommendations: (...args: unknown[]) => mocks.importRecommendations(...args),
+    reorder: (...args: unknown[]) => mocks.reorder(...args),
     setEnabled: (...args: unknown[]) => mocks.setEnabled(...args),
   },
 }));
@@ -81,6 +84,17 @@ vi.mock('./useAdminTaskTemplates', () => ({
     isLoading: false,
     mutate: mocks.mutate,
   }),
+}));
+
+vi.mock('./SortableRow', () => ({
+  createSortableRow: () => (props: Record<string, unknown>) => <tr {...props} />,
+  SortableTable: ({ children, ids, onReorder }: any) => {
+    mocks.reorderProps = { ids, onReorder };
+    return <div>{children}</div>;
+  },
+  TaskTemplateDragHandle: ({ label }: { label: string }) => (
+    <button aria-label={label} type="button" />
+  ),
 }));
 
 vi.mock('../primitives/DangerConfirm', () => ({
@@ -179,6 +193,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.data = { items: [item], totalAll: 1, totalFiltered: 1 };
   mocks.refreshLists.mockResolvedValue([item]);
+  mocks.reorderProps = undefined;
   mocks.permissions = [
     PLATFORM_PERMISSIONS.AGENT_READ,
     PLATFORM_PERMISSIONS.AGENT_CREATE,
@@ -245,6 +260,42 @@ describe('TaskTemplateListPage', () => {
     await mocks.confirm.mock.calls[0][0].onConfirm();
     expect(mocks.deleteTemplate).toHaveBeenCalledWith({ expectedRevision: 3, id: 'tpl-1' });
     expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.deleted');
+  });
+
+  it('persists a drag with each row CAS token and confirms it', async () => {
+    const second = { ...item, id: 'tpl-2', revision: 5, title: 'Second' };
+    mocks.data = { items: [item, second], totalAll: 2, totalFiltered: 2 };
+    mocks.reorder.mockResolvedValue({ items: [] });
+    renderPage();
+
+    expect(mocks.reorderProps?.ids).toEqual(['tpl-1', 'tpl-2']);
+    mocks.reorderProps!.onReorder(['tpl-2', 'tpl-1']);
+
+    await waitFor(() => expect(mocks.reorder).toHaveBeenCalled());
+    expect(mocks.reorder).toHaveBeenCalledWith({
+      items: [
+        { expectedRevision: 5, id: 'tpl-2' },
+        { expectedRevision: 3, id: 'tpl-1' },
+      ],
+    });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.reordered');
+  });
+
+  it('rolls the order back and reports a conflict when the drag was stale', async () => {
+    const second = { ...item, id: 'tpl-2', revision: 5, title: 'Second' };
+    mocks.data = { items: [item, second], totalAll: 2, totalFiltered: 2 };
+    mocks.reorder.mockRejectedValue(
+      Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }),
+    );
+    renderPage();
+
+    mocks.reorderProps!.onReorder(['tpl-2', 'tpl-1']);
+
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith('taskTemplateCatalog.toast.conflict'),
+    );
+    // Rollback is a refetch: the server order is authoritative again.
+    expect(mocks.refreshLists).toHaveBeenCalled();
   });
 
   it('hides import from a create-only operator (it also overwrites existing rows)', () => {

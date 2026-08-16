@@ -8,6 +8,8 @@ import type {
   AdminTaskTemplateItem,
   AdminTaskTemplateListInput,
   AdminTaskTemplateListOutput,
+  AdminTaskTemplateReorderInput,
+  AdminTaskTemplateReorderOutput,
   AdminTaskTemplateSetEnabledInput,
   AdminTaskTemplateUpdateInput,
 } from '@/server/enterprise/contracts/adminTaskTemplates';
@@ -30,6 +32,9 @@ class AdminTaskTemplatesService {
 
   list = async (input: AdminTaskTemplateListInput): Promise<AdminTaskTemplateListOutput> =>
     lambdaClient.admin.taskTemplates.list.query(input);
+
+  reorder = async (input: AdminTaskTemplateReorderInput): Promise<AdminTaskTemplateReorderOutput> =>
+    lambdaClient.admin.taskTemplates.reorder.mutate(input);
 
   setEnabled = async (input: AdminTaskTemplateSetEnabledInput): Promise<AdminTaskTemplateItem> =>
     lambdaClient.admin.taskTemplates.setEnabled.mutate(input);

@@ -154,6 +154,7 @@ export const AUDIT_ACTIONS = [
   'admin.taskTemplates.create',
   'admin.taskTemplates.delete',
   'admin.taskTemplates.importRecommendations',
+  'admin.taskTemplates.reorder',
   'admin.taskTemplates.setEnabled',
   'admin.taskTemplates.update',
   'admin.users.ban',

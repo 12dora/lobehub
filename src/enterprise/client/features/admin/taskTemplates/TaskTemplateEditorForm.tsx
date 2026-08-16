@@ -433,37 +433,19 @@ const TaskTemplateEditorForm = memo<TaskTemplateEditorFormProps>(
           ) : null}
         </fieldset>
 
-        <div className={styles.grid}>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor={id('sortOrder')}>
-              {t('taskTemplateCatalog.form.sortOrder')}
-            </label>
-            <InputNumber
-              aria-describedby={id('sortOrder-hint')}
+        {/* Display order is not a field here — it is dragged on the list page. */}
+        <div className={styles.field}>
+          <label className={styles.label} htmlFor={id('enabled')}>
+            {t('taskTemplateCatalog.form.enabled')}
+          </label>
+          <Flexbox horizontal>
+            <Switch
+              checked={state.enabled}
               disabled={submitting}
-              id={id('sortOrder')}
-              max={9999}
-              min={0}
-              value={state.sortOrder}
-              onChange={(value) => dispatch({ type: 'setSortOrder', value: Number(value ?? 0) })}
+              id={id('enabled')}
+              onChange={(value) => dispatch({ type: 'setEnabled', value })}
             />
-            <Text id={id('sortOrder-hint')} type="secondary">
-              {t('taskTemplateCatalog.form.sortOrderHint')}
-            </Text>
-          </div>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor={id('enabled')}>
-              {t('taskTemplateCatalog.form.enabled')}
-            </label>
-            <Flexbox horizontal>
-              <Switch
-                checked={state.enabled}
-                disabled={submitting}
-                id={id('enabled')}
-                onChange={(value) => dispatch({ type: 'setEnabled', value })}
-              />
-            </Flexbox>
-          </div>
+          </Flexbox>
         </div>
 
         {submitError ? (

@@ -3077,8 +3077,6 @@ export default {
   'taskTemplateCatalog.form.icon': 'Icon',
   'taskTemplateCatalog.form.iconNone': 'Auto',
   'taskTemplateCatalog.form.enabled': 'Show to users',
-  'taskTemplateCatalog.form.sortOrder': 'Sort order',
-  'taskTemplateCatalog.form.sortOrderHint': 'Smaller numbers come first.',
   'taskTemplateCatalog.form.preset.daily': 'Daily',
   'taskTemplateCatalog.form.preset.weekdays': 'Weekdays',
   'taskTemplateCatalog.form.preset.weekly': 'Weekly',
@@ -3132,6 +3130,12 @@ export default {
     'Could not load the current version. Check your connection and try again.',
   'taskTemplateCatalog.form.connectorRetired': '{{identifier}} (no longer available)',
   'taskTemplateCatalog.form.errors.connectorRetired':
+  'audit.logs.action.admin.taskTemplates.reorder': 'Reorder task templates',
+  'taskTemplateCatalog.list.columns.order': 'Order',
+  'taskTemplateCatalog.list.dragHandle': 'Drag to reorder {{title}}',
+  'taskTemplateCatalog.list.reorderHint':
+    'Drag the handle to change the order users see. Clear the filters to reorder.',
+  'taskTemplateCatalog.toast.reordered': 'Order saved.',
     'One connector is no longer available. Replace or remove it before saving.',
   'taskTemplateCatalog.form.errors.connectorLimit':
     'A template can use at most {{max}} connectors.',

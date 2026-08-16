@@ -134,7 +134,6 @@ const draft = (overrides: Record<string, unknown> = {}) => ({
   icon: null,
   instruction: 'Summarize yesterday.',
   interests: ['coding' as const],
-  sortOrder: 0,
   title: 'Engineering digest',
   ...overrides,
 });
@@ -521,6 +520,157 @@ describe('admin.taskTemplates.importRecommendations', () => {
   });
 });
 
+describe('admin.taskTemplates.reorder', () => {
+  const createThree = async () => {
+    const caller = await adminCaller();
+    const first = await caller.create(draft({ title: 'First' }));
+    const second = await caller.create(draft({ title: 'Second' }));
+    const third = await caller.create(draft({ title: 'Third' }));
+    return { caller, first, second, third };
+  };
+
+  it('appends new rows to the end rather than letting them jump the queue', async () => {
+    const { caller } = await createThree();
+    const listed = await caller.list({ limit: 20, offset: 0 });
+    expect(listed.items.map((item) => item.title)).toEqual(['First', 'Second', 'Third']);
+  });
+
+  it('moves a row and audits the resulting order', async () => {
+    const { caller, first, second, third } = await createThree();
+    appendSpy.mockClear();
+
+    const result = await caller.reorder({
+      items: [third, first, second].map((item) => ({
+        expectedRevision: item.revision,
+        id: item.id,
+      })),
+    });
+    expect(result.items.map((item) => item.title)).toEqual(['Third', 'First', 'Second']);
+
+    // The order is what the list actually serves afterwards.
+    const listed = await caller.list({ limit: 20, offset: 0 });
+    expect(listed.items.map((item) => item.title)).toEqual(['Third', 'First', 'Second']);
+    // …and what the user-facing read serves.
+    const platform = await (await platformCaller()).list();
+    expect(platform.templates.map((item) => item.title)).toEqual(['Third', 'First', 'Second']);
+
+    expect(appendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'admin.taskTemplates.reorder',
+        afterDiff: expect.objectContaining({
+          order: [third.identifier, first.identifier, second.identifier],
+        }),
+        targetType: 'task_template',
+      }),
+    );
+  });
+
+  it('reuses the slots the moved rows already occupied', async () => {
+    const { caller, first, second, third } = await createThree();
+    const before = await db.select().from(platformTaskTemplates);
+    const slots = before.map((row) => row.sortOrder).sort((a, b) => a - b);
+
+    await caller.reorder({
+      items: [second, third, first].map((item) => ({
+        expectedRevision: item.revision,
+        id: item.id,
+      })),
+    });
+
+    const after = await db.select().from(platformTaskTemplates);
+    // No global renumbering: the same slot values are simply handed out in the new order.
+    expect(after.map((row) => row.sortOrder).sort((a, b) => a - b)).toEqual(slots);
+  });
+
+  it('gives imported rows their own slots so they can be dragged afterwards', async () => {
+    const caller = await adminCaller();
+    listDailyRecommendSpy.mockResolvedValue([
+      marketTemplate({ id: 1, identifier: 'market-a', title: 'A' }),
+      marketTemplate({ id: 2, identifier: 'market-b', title: 'B' }),
+      marketTemplate({ id: 3, identifier: 'market-c', title: 'C' }),
+    ]);
+    await caller.importRecommendations({});
+
+    const rows = await db.select().from(platformTaskTemplates);
+    // Sharing slot 0 would leave nothing for a later drag to reorder.
+    expect(new Set(rows.map((row) => row.sortOrder)).size).toBe(3);
+
+    const listed = await caller.list({ limit: 20, offset: 0 });
+    const reversed = [...listed.items].reverse();
+    const result = await caller.reorder({
+      items: reversed.map((item) => ({ expectedRevision: item.revision, id: item.id })),
+    });
+    expect(result.items.map((item) => item.title)).toEqual(reversed.map((item) => item.title));
+  });
+
+  it('separates rows that share a legacy slot instead of collapsing the new order', async () => {
+    const caller = await adminCaller();
+    const { first, second, third } = await createThree();
+    // Simulate rows written before drag ordering existed.
+    await db.update(platformTaskTemplates).set({ sortOrder: 0 });
+
+    const listed = await caller.list({ limit: 20, offset: 0 });
+    await caller.reorder({
+      items: [third, second, first].map((item) => ({
+        expectedRevision: listed.items.find((row) => row.id === item.id)!.revision,
+        id: item.id,
+      })),
+    });
+
+    const rows = await db.select().from(platformTaskTemplates);
+    expect(new Set(rows.map((row) => row.sortOrder)).size).toBe(3);
+    expect((await caller.list({ limit: 20, offset: 0 })).items.map((item) => item.title)).toEqual([
+      'Third',
+      'Second',
+      'First',
+    ]);
+  });
+
+  it('rejects a drag performed against a stale table without applying any of it', async () => {
+    const { caller, first, second, third } = await createThree();
+    // Someone else edits `second` after the table was rendered.
+    await caller.update({
+      ...draft({ title: 'Edited elsewhere' }),
+      expectedRevision: second.revision,
+      id: second.id,
+    });
+
+    await expect(
+      caller.reorder({
+        items: [third, second, first].map((item) => ({
+          expectedRevision: item.revision,
+          id: item.id,
+        })),
+      }),
+    ).rejects.toMatchObject({
+      cause: { data: { code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT } },
+      code: 'CONFLICT',
+    });
+
+    const listed = await caller.list({ limit: 20, offset: 0 });
+    expect(listed.items.map((item) => item.title)).toEqual(['First', 'Edited elsewhere', 'Third']);
+  });
+
+  it('reports an unknown id as NOT_FOUND', async () => {
+    const { caller, first } = await createThree();
+    await expect(
+      caller.reorder({
+        items: [
+          { expectedRevision: first.revision, id: first.id },
+          { expectedRevision: 1, id: 'does-not-exist' },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('needs the update permission, not just read', async () => {
+    await createThree();
+    await expect(
+      (await adminCaller(ids.viewer)).reorder({ items: [{ expectedRevision: 1, id: 'x' }] }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
 describe('retired connectors (a provider removed from the catalogs after the row was written)', () => {
   /** Writes straight to JSONB, bypassing the write-time contract, exactly as history would. */
   const seedRetiredConnectorRow = async (overrides: Record<string, unknown> = {}) => {
@@ -609,7 +759,7 @@ describe('platform.taskTemplates.list', () => {
 
   it('becomes authoritative once a row exists and serves only enabled rows', async () => {
     const admin = await adminCaller();
-    const shown = await admin.create(draft({ sortOrder: 1, title: 'Shown' }));
+    const shown = await admin.create(draft({ title: 'Shown' }));
     const hidden = await admin.create(draft({ title: 'Hidden' }));
     await admin.setEnabled({ enabled: false, expectedRevision: hidden.revision, id: hidden.id });
 
@@ -622,7 +772,7 @@ describe('platform.taskTemplates.list', () => {
   it('caps the per-user response at the recommendation maximum', async () => {
     const admin = await adminCaller();
     for (let index = 0; index < TASK_TEMPLATE_RECOMMEND_MAX_COUNT + 3; index += 1) {
-      await admin.create(draft({ sortOrder: index, title: `Template ${index}` }));
+      await admin.create(draft({ title: `Template ${index}` }));
     }
 
     const result = await (await platformCaller()).list();

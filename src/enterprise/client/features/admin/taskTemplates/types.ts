@@ -5,6 +5,7 @@ export type {
   AdminTaskTemplateItem,
   AdminTaskTemplateListInput,
   AdminTaskTemplateListOutput,
+  AdminTaskTemplateReorderInput,
   AdminTaskTemplateUpdateInput,
 } from '@/server/enterprise/contracts/adminTaskTemplates';
 

@@ -82,7 +82,6 @@ const taskTemplateWritableFields = {
   icon: z.enum(TASK_TEMPLATE_ICONS).nullable(),
   instruction: z.string().trim().min(1).max(TASK_TEMPLATE_INSTRUCTION_MAX),
   interests: z.array(z.enum(INTEREST_AREA_KEYS)).max(INTEREST_AREA_KEYS.length),
-  sortOrder: z.number().int().min(0).max(9999),
   title: z.string().trim().min(1).max(TASK_TEMPLATE_TITLE_MAX),
 } as const;
 
@@ -178,6 +177,39 @@ export type AdminTaskTemplateDeleteInput = z.infer<typeof adminTaskTemplateDelet
 
 export const adminTaskTemplateDeleteOutputSchema = z.object({ id: z.string() }).strict();
 export type AdminTaskTemplateDeleteOutput = z.infer<typeof adminTaskTemplateDeleteOutputSchema>;
+
+/** Upper bound on one reorder call — the admin table's largest page size. */
+export const TASK_TEMPLATE_REORDER_MAX_ITEMS = 100;
+
+/**
+ * Display order for the rows the operator can currently see.
+ *
+ * The client sends the ids of one page in their new order together with each row's CAS token, so
+ * a drag performed against a stale table is rejected rather than silently republished. The server
+ * redistributes the `sortOrder` slots those rows already occupy, which keeps reordering inside a
+ * page from disturbing rows on any other page.
+ */
+export const adminTaskTemplateReorderInputSchema = z
+  .object({
+    items: z
+      .array(
+        z
+          .object({
+            expectedRevision: z.number().int().nonnegative(),
+            id: z.string().min(1).max(64),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(TASK_TEMPLATE_REORDER_MAX_ITEMS),
+  })
+  .strict();
+export type AdminTaskTemplateReorderInput = z.infer<typeof adminTaskTemplateReorderInputSchema>;
+
+export const adminTaskTemplateReorderOutputSchema = z
+  .object({ items: z.array(adminTaskTemplateItemSchema) })
+  .strict();
+export type AdminTaskTemplateReorderOutput = z.infer<typeof adminTaskTemplateReorderOutputSchema>;
 
 export const adminTaskTemplateImportInputSchema = z
   .object({

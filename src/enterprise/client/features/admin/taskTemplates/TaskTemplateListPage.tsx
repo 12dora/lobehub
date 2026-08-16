@@ -18,6 +18,7 @@ import DataTable from '../primitives/DataTable';
 import { deriveTaskTemplatePermissions } from './controller';
 import { openTaskTemplateEditorModal } from './openTaskTemplateEditorModal';
 import { formatTaskTemplateSchedule } from './schedule';
+import { createSortableRow, SortableTable, TaskTemplateDragHandle } from './SortableRow';
 import type { AdminTaskTemplateItem, AdminTaskTemplateListQuery } from './types';
 import { refreshAdminTaskTemplateLists, useFetchAdminTaskTemplates } from './useAdminTaskTemplates';
 
@@ -36,6 +37,21 @@ const styles = createStaticStyles(({ css }) => ({
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
+  `,
+  /** Search grows; the status select keeps a fixed width pinned to the right. */
+  toolbar: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  `,
+  toolbarSearch: css`
+    flex: 1 1 240px;
+    min-width: 200px;
+  `,
+  toolbarStatus: css`
+    flex: 0 0 180px;
+    margin-inline-start: auto;
   `,
 }));
 
@@ -59,6 +75,8 @@ const TaskTemplateListPage = memo(() => {
   const [importing, setImporting] = useState(false);
   /** Rows whose switch is optimistically flipped while the mutation is in flight. */
   const [pendingEnabled, setPendingEnabled] = useState<Record<string, boolean>>({});
+  /** Optimistic drag result: ids in their new order, discarded once the server answers. */
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
   const searchTimerRef = useRef<number | null>(null);
 
   const input = useMemo<AdminTaskTemplateListQuery>(
@@ -71,6 +89,20 @@ const TaskTemplateListPage = memo(() => {
     [enabled, normalizedQuery, page, pageSize],
   );
   const { data, error, isLoading, mutate } = useFetchAdminTaskTemplates(input, canRead);
+
+  const filtered = Boolean(normalizedQuery || enabled !== undefined);
+  // Dragging reassigns the sort slots of the rows on screen. Under a filter the visible rows are
+  // not contiguous, so the result would be meaningless — reorder is offered on the plain list only.
+  const canReorder = canUpdate && !filtered && (data?.items.length ?? 0) > 1;
+
+  const rows = useMemo(() => {
+    const items = data?.items ?? [];
+    if (!pendingOrder) return items;
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const reordered = pendingOrder.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
+    // Fall back to the server order if the page changed underneath the drag.
+    return reordered.length === items.length ? reordered : items;
+  }, [data?.items, pendingOrder]);
 
   const patchFilter = useCallback(
     (key: 'enabled' | 'q', value?: string) => {
@@ -95,6 +127,38 @@ const TaskTemplateListPage = memo(() => {
       if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
     };
   }, [patchFilter, query, queryDraft]);
+
+  const handleReorder = useCallback(
+    async (orderedIds: string[]) => {
+      const items = data?.items ?? [];
+      const byId = new Map(items.map((item) => [item.id, item]));
+      if (orderedIds.some((id) => !byId.has(id))) return;
+
+      // Optimistic: the row lands where it was dropped immediately.
+      setPendingOrder(orderedIds);
+      try {
+        await adminTaskTemplatesService.reorder({
+          items: orderedIds.map((id) => ({
+            expectedRevision: byId.get(id)!.revision,
+            id,
+          })),
+        });
+        toast.success(t('taskTemplateCatalog.toast.reordered'));
+        await refreshAdminTaskTemplateLists();
+      } catch (error) {
+        // Rollback to the server order; a stale drag is a conflict, not a lost write.
+        toast.error(
+          mapEnterpriseError(error)?.code === 'PLATFORM_REVISION_CONFLICT'
+            ? t('taskTemplateCatalog.toast.conflict')
+            : t('taskTemplateCatalog.toast.error'),
+        );
+        await refreshAdminTaskTemplateLists();
+      } finally {
+        setPendingOrder(null);
+      }
+    },
+    [data?.items, t],
+  );
 
   const handleToggle = useCallback(
     async (item: AdminTaskTemplateItem, next: boolean) => {
@@ -163,8 +227,8 @@ const TaskTemplateListPage = memo(() => {
         // Conflict path: refresh the table and hand the editor the current server row. Errors and
         // a deleted row both propagate to the modal, which stays open and reports them there.
         onReload: async (stale: AdminTaskTemplateItem) => {
-          const rows = await refreshAdminTaskTemplateLists();
-          return rows.find((row) => row.id === stale.id);
+          const refreshed = await refreshAdminTaskTemplateLists();
+          return refreshed.find((row) => row.id === stale.id);
         },
         onSubmit: async (payload) => {
           if (item) {
@@ -215,8 +279,21 @@ const TaskTemplateListPage = memo(() => {
     });
   }, [i18n.language, i18n.resolvedLanguage, t]);
 
+  // A new row component identity remounts every row, so it must only change with `canReorder`.
+  const sortableRow = useMemo(() => createSortableRow(!canReorder), [canReorder]);
+
   const columns = useMemo<TableColumnsType<AdminTaskTemplateItem>>(
     () => [
+      {
+        key: 'order',
+        title: t('taskTemplateCatalog.list.columns.order'),
+        width: 56,
+        render: (_, item) => (
+          <TaskTemplateDragHandle
+            label={t('taskTemplateCatalog.list.dragHandle', { title: item.title })}
+          />
+        ),
+      },
       {
         key: 'template',
         title: t('taskTemplateCatalog.list.columns.template'),
@@ -320,7 +397,6 @@ const TaskTemplateListPage = memo(() => {
     ],
   );
 
-  const filtered = Boolean(normalizedQuery || enabled !== undefined);
   const headerActions = (
     <>
       {canImport ? (
@@ -342,52 +418,62 @@ const TaskTemplateListPage = memo(() => {
       description={t('taskTemplateCatalog.desc')}
       title={t('taskTemplateCatalog.title')}
       toolbar={
-        <Flexbox horizontal gap={8} wrap="wrap">
-          <Input
-            allowClear
-            aria-label={t('taskTemplateCatalog.list.filters.query')}
-            placeholder={t('taskTemplateCatalog.list.filters.query')}
-            style={{ minWidth: 240 }}
-            value={queryDraft}
-            onChange={(event) => setQueryDraft(event.target.value)}
-          />
-          <Select
-            allowClear
-            aria-label={t('taskTemplateCatalog.list.filters.enabled')}
-            placeholder={t('taskTemplateCatalog.list.filters.enabled')}
-            style={{ minWidth: 140 }}
-            value={enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined}
-            options={[
-              { label: t('taskTemplateCatalog.boolean.true'), value: 'true' },
-              { label: t('taskTemplateCatalog.boolean.false'), value: 'false' },
-            ]}
-            onChange={(value) => patchFilter('enabled', value as string | undefined)}
-          />
-        </Flexbox>
+        <div className={styles.toolbar}>
+          <div className={styles.toolbarSearch}>
+            <Input
+              allowClear
+              aria-label={t('taskTemplateCatalog.list.filters.query')}
+              placeholder={t('taskTemplateCatalog.list.filters.query')}
+              style={{ width: '100%' }}
+              value={queryDraft}
+              onChange={(event) => setQueryDraft(event.target.value)}
+            />
+          </div>
+          <div className={styles.toolbarStatus}>
+            <Select
+              allowClear
+              aria-label={t('taskTemplateCatalog.list.filters.enabled')}
+              placeholder={t('taskTemplateCatalog.list.filters.enabled')}
+              style={{ width: '100%' }}
+              value={enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined}
+              options={[
+                { label: t('taskTemplateCatalog.boolean.true'), value: 'true' },
+                { label: t('taskTemplateCatalog.boolean.false'), value: 'false' },
+              ]}
+              onChange={(value) => patchFilter('enabled', value as string | undefined)}
+            />
+          </div>
+        </div>
       }
     >
-      <DataTable<AdminTaskTemplateItem>
-        columns={columns}
-        dataSource={data?.items}
-        error={Boolean(error) && !data}
-        loading={isLoading && !data}
-        rowKey="id"
-        emptyDescription={
-          filtered
-            ? t('taskTemplateCatalog.list.empty.filtered')
-            : t('taskTemplateCatalog.list.empty.default')
-        }
-        pagination={{
-          current: page,
-          pageSize,
-          total: data?.totalFiltered ?? 0,
-        }}
-        onRetry={() => void mutate()}
-        onPaginationChange={(nextPage, nextPageSize) => {
-          setPage(nextPage);
-          setPageSize(nextPageSize);
-        }}
-      />
+      {canUpdate && filtered && (data?.items.length ?? 0) > 1 ? (
+        <Text type="secondary">{t('taskTemplateCatalog.list.reorderHint')}</Text>
+      ) : null}
+      <SortableTable ids={rows.map((row) => row.id)} onReorder={(next) => void handleReorder(next)}>
+        <DataTable<AdminTaskTemplateItem>
+          columns={columns}
+          components={{ body: { row: sortableRow } }}
+          dataSource={rows}
+          error={Boolean(error) && !data}
+          loading={isLoading && !data}
+          rowKey="id"
+          emptyDescription={
+            filtered
+              ? t('taskTemplateCatalog.list.empty.filtered')
+              : t('taskTemplateCatalog.list.empty.default')
+          }
+          pagination={{
+            current: page,
+            pageSize,
+            total: data?.totalFiltered ?? 0,
+          }}
+          onRetry={() => void mutate()}
+          onPaginationChange={(nextPage, nextPageSize) => {
+            setPage(nextPage);
+            setPageSize(nextPageSize);
+          }}
+        />
+      </SortableTable>
       {error && data ? (
         <Alert
           showIcon

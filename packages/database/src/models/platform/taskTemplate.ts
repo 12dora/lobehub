@@ -1,4 +1,15 @@
-import { and, asc, desc, eq, getTableColumns, ilike, or, type SQL, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  ilike,
+  inArray,
+  or,
+  type SQL,
+  sql,
+} from 'drizzle-orm';
 
 import { likeContains } from '../../repositories/platformSearch';
 import type { PlatformTaskTemplateConnector } from '../../schemas/platform';
@@ -25,7 +36,11 @@ export interface PlatformTaskTemplateRecord {
   updatedAt: Date;
 }
 
-/** Editable content of a task template (everything except identity + CAS bookkeeping). */
+/**
+ * Editable content of a task template.
+ * `sortOrder` is deliberately absent: display order is owned by drag-and-drop
+ * ({@link PlatformTaskTemplateModel.reorder}), not by the editor form.
+ */
 export interface PlatformTaskTemplateDocument {
   category: string;
   connectors: PlatformTaskTemplateConnector[];
@@ -35,7 +50,6 @@ export interface PlatformTaskTemplateDocument {
   icon: string | null;
   instruction: string;
   interests: string[];
-  sortOrder: number;
   title: string;
 }
 
@@ -199,13 +213,24 @@ export class PlatformTaskTemplateModel {
     return row ? toRecord(row) : undefined;
   };
 
+  /** Slot for a row appended to the end of the list. */
+  nextSortOrder = async (): Promise<number> => {
+    const [row] = await this.db
+      .select({ value: sql<number | null>`max(${platformTaskTemplates.sortOrder})` })
+      .from(platformTaskTemplates);
+    return (row?.value ?? -1) + 1;
+  };
+
   create = async (params: {
     actorUserId: string | null;
     document: PlatformTaskTemplateDocument;
     id: string;
     identifier: string;
     source: 'manual' | 'market';
+    /** Defaults to the end of the list — new rows never jump the queue. */
+    sortOrder?: number;
   }): Promise<PlatformTaskTemplateRecord> => {
+    const sortOrder = params.sortOrder ?? (await this.nextSortOrder());
     let row: typeof platformTaskTemplates.$inferSelect | undefined;
     try {
       [row] = await this.db
@@ -215,6 +240,7 @@ export class PlatformTaskTemplateModel {
           id: params.id,
           identifier: params.identifier,
           revision: 1,
+          sortOrder,
           source: params.source,
           updatedBy: params.actorUserId,
         })
@@ -326,6 +352,79 @@ export class PlatformTaskTemplateModel {
     return this.rejectStale(params.id, params.expectedRevision);
   };
 
+  /**
+   * Apply a new display order to a set of rows.
+   *
+   * The rows keep the `sortOrder` **slots they already occupy**: the occupied values are sorted
+   * ascending and handed out in the requested id order. Reordering one page of the admin table
+   * therefore never disturbs rows on another page, and no global renumbering is needed.
+   *
+   * Every row is locked and CAS-checked first, so a drag performed against a stale table is
+   * rejected as a whole instead of half-applied.
+   *
+   * @throws PlatformRevisionConflictError when any row moved on
+   * @returns undefined when any id no longer exists (404)
+   */
+  reorder = async (params: {
+    actorUserId: string | null;
+    items: { expectedRevision: number; id: string }[];
+  }): Promise<PlatformTaskTemplateRecord[] | undefined> => {
+    const ids = params.items.map((item) => item.id);
+    const locked = await this.db
+      .select()
+      .from(platformTaskTemplates)
+      .where(inArray(platformTaskTemplates.id, ids))
+      // Deterministic lock order (by id) so two concurrent reorders cannot deadlock.
+      .orderBy(asc(platformTaskTemplates.id))
+      .for('update');
+
+    if (locked.length !== ids.length) return undefined;
+
+    const byId = new Map(locked.map((row) => [row.id, row]));
+    for (const item of params.items) {
+      const row = byId.get(item.id);
+      if (row && row.revision !== item.expectedRevision) {
+        throw new PlatformRevisionConflictError(
+          'Task template revision conflict: the list changed before this reorder was applied',
+          {
+            currentRevision: row.revision,
+            expectedRevision: item.expectedRevision,
+            resourceId: item.id,
+            resourceType: 'task_template',
+          },
+        );
+      }
+    }
+
+    // Rows written before drag ordering existed can share slot 0, so force the reused slots to be
+    // strictly increasing — otherwise the "new" order would collapse back onto one value.
+    // Accumulates over the running previous slot, not the original array.
+    const slots: number[] = [];
+    for (const slot of locked.map((row) => row.sortOrder).sort((a, b) => a - b)) {
+      const previous = slots.at(-1);
+      slots.push(previous === undefined ? slot : Math.max(slot, previous + 1));
+    }
+    const updatedAt = new Date();
+    const results: PlatformTaskTemplateRecord[] = [];
+
+    for (const [index, item] of params.items.entries()) {
+      const [row] = await this.db
+        .update(platformTaskTemplates)
+        .set({
+          revision: item.expectedRevision + 1,
+          sortOrder: slots[index]!,
+          updatedAt,
+          updatedBy: params.actorUserId,
+        })
+        .where(eq(platformTaskTemplates.id, item.id))
+        .returning();
+      if (!row) return undefined;
+      results.push(toRecord(row));
+    }
+
+    return results;
+  };
+
   /** A conditional write that matched nothing is either a missing row or a stale revision. */
   private rejectStale = async (id: string, expectedRevision: number): Promise<undefined> => {
     const current = await this.findById(id);
@@ -365,6 +464,9 @@ export class PlatformTaskTemplateModel {
     updated: number;
   }> => {
     const changes: PlatformTaskTemplateImportChange[] = [];
+    // Imported rows land at the end, each in its own slot — otherwise every import would share
+    // slot 0 and there would be nothing for a later drag to reorder.
+    let nextSlot = await this.nextSortOrder();
     let created = 0;
     let updated = 0;
 
@@ -393,6 +495,8 @@ export class PlatformTaskTemplateModel {
           instruction: row.instruction,
           interests: row.interests,
           revision: 1,
+          // Discarded when the row already exists (the conflict `set` omits sortOrder).
+          sortOrder: nextSlot,
           source: 'market',
           title: row.title,
           updatedBy: params.actorUserId,
@@ -423,8 +527,10 @@ export class PlatformTaskTemplateModel {
         });
 
       const inserted = Boolean(result?.inserted);
-      if (inserted) created += 1;
-      else updated += 1;
+      if (inserted) {
+        created += 1;
+        nextSlot += 1;
+      } else updated += 1;
 
       changes.push({
         after: result ? toRecord(result) : undefined,

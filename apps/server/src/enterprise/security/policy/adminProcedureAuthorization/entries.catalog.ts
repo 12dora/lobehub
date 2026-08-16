@@ -340,6 +340,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   },
   {
     kind: 'mutation',
+    path: 'admin.taskTemplates.reorder',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.taskTemplates.setEnabled',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE] },
   },

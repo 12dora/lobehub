@@ -142,6 +142,11 @@ export interface AdminTableChangeMeta {
 export interface DataTableProps<T extends object = Record<string, unknown>> {
   columns: TableColumnsType<T>;
   /**
+   * Ant Design row/cell overrides — the supported seam for drag-and-drop rows.
+   * Callers own the wrapper (DndContext / SortableContext) around the table.
+   */
+  components?: TableProps<T>['components'];
+  /**
    * Keyset cursor controls when the server does not provide an exact total.
    * Mutually exclusive with numeric `pagination` — use `pagination={false}`.
    */
@@ -187,6 +192,7 @@ const toAdminPagination = (
  */
 function DataTableInner<T extends object>({
   columns,
+  components,
   cursorPagination,
   dataSource,
   emptyDescription,
@@ -356,6 +362,7 @@ function DataTableInner<T extends object>({
     <div className={styles.root}>
       <Table<T>
         columns={columns}
+        components={components}
         dataSource={dataSource}
         pagination={tablePagination}
         rowKey={rowKey}

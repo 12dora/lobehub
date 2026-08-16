@@ -51,6 +51,10 @@ const taskTemplateContentAudit = enforced(
  * and, for an overwrite, the content it replaced. Bounded by the import cap.
  */
 const taskTemplateImportAudit = enforced(
+const taskTemplateOrderAudit = enforced(
+  'Router persists the resulting identifier order and slot assignment in the write transaction.',
+);
+
   'Router persists per-identifier bounded sanitized before/after row summaries, plus batch counts, in the write transaction.',
 );
 
@@ -277,6 +281,12 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'low',
     'Show or hide a single platform task template without deleting its content.',
     { audit: taskTemplateContentAudit, reason: taskTemplateContentReason },
+  'admin.taskTemplates.reorder': regularMutation(
+    'admin.taskTemplates.reorder',
+    'low',
+    'Change the display order of platform task templates on the home and task-list surfaces.',
+    { audit: taskTemplateOrderAudit, reason: taskTemplateContentReason },
+  ),
   ),
   'admin.taskTemplates.update': regularMutation(
     'admin.taskTemplates.update',

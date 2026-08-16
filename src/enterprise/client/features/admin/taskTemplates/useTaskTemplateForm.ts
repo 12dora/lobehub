@@ -24,7 +24,6 @@ export interface TaskTemplateFormState {
   instruction: string;
   interests: InterestAreaKey[];
   schedule: TaskTemplateScheduleDraft;
-  sortOrder: number;
   title: string;
 }
 
@@ -47,7 +46,6 @@ export type TaskTemplateFormAction =
   | { type: 'setInterval'; value: number }
   | { type: 'setMinute'; value: number }
   | { type: 'setPreset'; value: TaskTemplateSchedulePreset }
-  | { type: 'setSortOrder'; value: number }
   | { type: 'setWeekday'; value: number };
 
 const clamp = (value: number, min: number, max: number) =>
@@ -64,7 +62,6 @@ export const createTaskTemplateFormState = (
   instruction: item?.instruction ?? '',
   interests: item ? [...item.interests] : [],
   schedule: draftFromCron(item?.cronPattern ?? '0 9 * * *'),
-  sortOrder: item?.sortOrder ?? 0,
   title: item?.title ?? '',
 });
 
@@ -92,9 +89,6 @@ const reducer = (
     }
     case 'setEnabled': {
       return { ...state, enabled: action.value };
-    }
-    case 'setSortOrder': {
-      return { ...state, sortOrder: clamp(action.value, 0, 9999) };
     }
     case 'setPreset': {
       // Moving into the advanced field must show what the presets were building, not a blank box.
@@ -196,7 +190,6 @@ export const toTaskTemplatePayload = (state: TaskTemplateFormState) => ({
   icon: state.icon,
   instruction: state.instruction.trim(),
   interests: state.interests,
-  sortOrder: state.sortOrder,
   title: state.title.trim(),
 });
 
