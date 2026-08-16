@@ -208,18 +208,33 @@ export const optionalReasonSchema = reasonSchema.optional();
 /** Recorded in the audit trail when an operation does not collect a reason. */
 export const NO_REASON_AUDIT_PLACEHOLDER = '—';
 
+/**
+ * Partial-save writable fields. `issuer` / `clientId` may be omitted so a wizard can persist
+ * the first step before discovery/client are filled. Completeness is enforced on publish
+ * (`publicationService`), not here.
+ */
+const optionalIdentityProviderClientIdSchema = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? null : (value ?? null)),
+  z.string().trim().min(1).max(1000).nullable(),
+);
+
+const optionalIdentityProviderIssuerSchema = z.preprocess(
+  (value) => (value === '' || value === undefined ? null : value),
+  identityProviderIssuerSchema.nullable(),
+);
+
 const editableIdentityProviderDraftSchema = z
   .object({
     autoProvision: z.boolean().default(true),
     buttonLabel: z.string().trim().min(1).max(200),
     claimMapping: identityProviderClaimMappingSchema,
-    clientId: z.string().trim().min(1).max(1000),
+    clientId: optionalIdentityProviderClientIdSchema,
     dingtalkAllowedCorps: identityProviderAllowedCorpsSchema.default([]),
     displayName: z.string().trim().min(1).max(200),
     domainAllowlist: z.array(z.string().trim().min(1).max(253)).max(256).default([]),
     groupRoleMapping: z.record(z.string().min(1).max(256), z.string().min(1).max(128)).default({}),
     icon: z.string().max(4096).nullable().default(null),
-    issuer: z.string().url().max(4096),
+    issuer: optionalIdentityProviderIssuerSchema,
     providerKey: z
       .string()
       .trim()
@@ -245,7 +260,7 @@ const assertFixedProtocolIdentityContract = (
   value: {
     claimMapping: z.infer<typeof identityProviderClaimMappingSchema>;
     dingtalkAllowedCorps?: z.infer<typeof identityProviderAllowedCorpsSchema>;
-    issuer: string;
+    issuer: string | null;
     providerKey: string;
     scopes: string[];
     type: z.infer<typeof identityProviderTypeSchema>;
@@ -274,7 +289,8 @@ const assertFixedProtocolIdentityContract = (
       path: ['providerKey'],
     });
   }
-  if (!isDingTalkIdentityProviderIssuer(value.issuer)) {
+  // Partial save may omit issuer; when present it must stay the protocol-fixed value.
+  if (value.issuer && !isDingTalkIdentityProviderIssuer(value.issuer)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: `DingTalk issuer must be exactly ${DINGTALK_IDENTITY_PROVIDER_ISSUER}`,

@@ -1,10 +1,9 @@
 'use client';
 
 import type { PlatformIdentityProviderDraft } from '@lobechat/types';
-import { confirmModal, createModal, toast, useModalContext } from '@lobehub/ui/base-ui';
+import { confirmModal, createModal, useModalContext } from '@lobehub/ui/base-ui';
 import i18next from 'i18next';
 import { memo, useCallback, useState } from 'react';
-import { useTranslation } from 'react-i18next';
 
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 
@@ -16,6 +15,7 @@ import {
 } from './controller';
 import IdentityProviderTypePicker from './IdentityProviderTypePicker';
 import IdentityProviderWizard from './IdentityProviderWizard';
+import { type IdentityProviderPersistResult, resolveIdentityProviderWizardClose } from './persist';
 import { useIdentityProviderCallbacks, useIdentityProviders } from './useIdentityProviders';
 
 export interface IdentityProviderWizardModalProps {
@@ -33,20 +33,33 @@ export interface IdentityProviderWizardModalProps {
 interface ContentProps extends IdentityProviderWizardModalProps {
   /** Shared with the opener so it can guard an unsaved close (Escape / close button). */
   dirtyRef: { current: boolean };
+  /** Silent non-secret persist used when the modal closes mid-edit. */
+  persistRef?: { current: (() => Promise<IdentityProviderPersistResult>) | null };
+  secretDirtyRef?: { current: boolean };
 }
 
 /**
  * Hosts the identity-provider wizard inside a modal. Create mode opens on the
- * type picker, then the wizard; the first save persists a draft (which appears
- * in the table) and closes — the admin reopens that row to test and publish.
+ * type picker, then the wizard. The first save stays in the modal and adopts
+ * the returned `{id, revision}` so the admin can continue to test and publish.
  * Edit mode opens the wizard directly and keeps the modal open across saves,
  * feeding it the live provider from the shared cache so its revision stays
  * fresh for the next test/publish.
  */
 /** Exported for mounted save→test/publish revision regressions (identity/F8). */
 export const IdentityProviderWizardModalContent = memo<ContentProps>(
-  ({ authMethod, canCreate, canPublish, canTest, canUpdate, dirtyRef, onChanged, provider }) => {
-    const { t } = useTranslation('admin');
+  ({
+    authMethod,
+    canCreate,
+    canPublish,
+    canTest,
+    canUpdate,
+    dirtyRef,
+    onChanged,
+    persistRef,
+    provider,
+    secretDirtyRef,
+  }) => {
     const { close } = useModalContext();
     const callbacks = useIdentityProviderCallbacks(true);
     const isEdit = Boolean(provider);
@@ -74,14 +87,8 @@ export const IdentityProviderWizardModalContent = memo<ContentProps>(
       async (saved?: PlatformIdentityProviderDraft) => {
         if (saved) setCanonicalProvider(saved);
         await onChanged();
-        // Creating: the draft now exists in the table — reopen it to continue.
-        if (!isEdit) {
-          dirtyRef.current = false;
-          toast.success(t('identityProviders.save.draftSaved'));
-          close();
-        }
       },
-      [close, dirtyRef, isEdit, onChanged, t],
+      [onChanged],
     );
 
     if (!isEdit && !seed) {
@@ -105,7 +112,9 @@ export const IdentityProviderWizardModalContent = memo<ContentProps>(
         canTest={canTest}
         canUpdate={canUpdate}
         createSeed={isEdit ? undefined : (seed ?? undefined)}
+        persistRef={persistRef}
         provider={liveProvider}
+        secretDirtyRef={secretDirtyRef}
         onRefresh={onChanged}
         onSaved={handleSaved}
         onDirtyChange={(dirty) => {
@@ -124,32 +133,63 @@ IdentityProviderWizardModalContent.displayName = 'IdentityProviderWizardModalCon
 
 export const openIdentityProviderWizardModal = (props: IdentityProviderWizardModalProps) => {
   // Tracks the wizard's dirty state so a user-initiated close (Escape / X) can
-  // confirm before discarding unsaved input (including a write-only secret).
+  // persist non-secret fields, then confirm before discarding a write-only secret.
   const dirtyRef = { current: false };
+  const persistRef: {
+    current: (() => Promise<IdentityProviderPersistResult>) | null;
+  } = { current: null };
+  const secretDirtyRef = { current: false };
   const instance = createModal({
-    content: <IdentityProviderWizardModalContent {...props} dirtyRef={dirtyRef} />,
+    content: (
+      <IdentityProviderWizardModalContent
+        {...props}
+        dirtyRef={dirtyRef}
+        persistRef={persistRef}
+        secretDirtyRef={secretDirtyRef}
+      />
+    ),
     footer: null,
     maskClosable: false,
-    styles: { content: { maxHeight: '80vh', overflow: 'auto' } },
+    styles: { content: { maxHeight: '80vh', overflow: 'auto', paddingBlockStart: 0 } },
     title: props.provider
       ? i18next.t('identityProviders.editProvider', { ns: 'admin' })
       : i18next.t('identityProviders.actions.create', { ns: 'admin' }),
     width: 'min(94vw, 820px)',
     // Only user-initiated closes fire this; programmatic close() (save/discard) does not.
     onOpenChange: (open) => {
-      if (open || !dirtyRef.current) return;
-      // base-ui already flipped the modal closed — keep it open and confirm first.
+      if (open) return;
+      const first = resolveIdentityProviderWizardClose({
+        dirty: dirtyRef.current,
+        secretDirty: secretDirtyRef.current,
+      });
+      if (first === 'close') return;
+      // base-ui already flipped the modal closed — keep it open while we persist / confirm.
       instance.update({ open: true });
-      confirmModal({
-        cancelText: i18next.t('identityProviders.unsaved.stay', { ns: 'admin' }),
-        content: i18next.t('identityProviders.unsaved.description', { ns: 'admin' }),
-        okText: i18next.t('identityProviders.unsaved.discard', { ns: 'admin' }),
-        title: i18next.t('identityProviders.unsaved.title', { ns: 'admin' }),
-        onOk: () => {
+      void (async () => {
+        const persist = persistRef.current;
+        const persistResult = persist ? await persist() : 'blocked';
+        const next = resolveIdentityProviderWizardClose({
+          dirty: dirtyRef.current,
+          persistResult,
+          secretDirty: secretDirtyRef.current,
+        });
+        if (next === 'stay') return;
+        if (next === 'close') {
           dirtyRef.current = false;
           instance.close();
-        },
-      });
+          return;
+        }
+        confirmModal({
+          cancelText: i18next.t('identityProviders.unsaved.stay', { ns: 'admin' }),
+          content: i18next.t('identityProviders.unsaved.description', { ns: 'admin' }),
+          okText: i18next.t('identityProviders.unsaved.discard', { ns: 'admin' }),
+          title: i18next.t('identityProviders.unsaved.title', { ns: 'admin' }),
+          onOk: () => {
+            dirtyRef.current = false;
+            instance.close();
+          },
+        });
+      })();
     },
   });
   return instance;

@@ -30,6 +30,19 @@ import {
   serializeIdentityProviderAllowedCorps,
   toIdentityProviderStatusBadge,
 } from './controller';
+import {
+  canPersistIdentityProviderDraft,
+  createIdentityProviderPersistGate,
+  formatIdentityProviderAutoSavedAt,
+  resolveIdentityProviderSecretMutation,
+  resolveIdentityProviderWizardClose,
+  shouldSkipIdentityProviderPersist,
+  toWritableIdentityProviderFields,
+} from './persist';
+import {
+  getIdentityProviderStatusPresentation,
+  isIdentityProviderConfigured,
+} from './statusPresentation';
 
 describe('identity provider editor controller', () => {
   it('allows the test and publish workflow only for server-side drafts', () => {
@@ -118,6 +131,73 @@ describe('identity provider editor controller', () => {
     expect(toIdentityProviderStatusBadge('disabled')).toBe('disabled');
     expect(toIdentityProviderStatusBadge('archived')).toBe('archived');
     expect(toIdentityProviderStatusBadge('weird')).toBe('unknown');
+  });
+
+  it('treats unpublished rows as pending configuration and describes completeness', () => {
+    const incomplete = getIdentityProviderStatusPresentation({ status: 'draft' });
+    expect(incomplete.kind).toBe('pendingConfiguration');
+    expect(incomplete.configured).toBe(false);
+    expect(incomplete.descriptionKey).toBe(
+      'identityProviders.status.pendingConfiguration.incomplete',
+    );
+    const configured = getIdentityProviderStatusPresentation({
+      clientId: 'app',
+      displayName: 'Work',
+      issuer: 'https://login.example.test',
+      providerKey: 'work',
+      secret: { configured: true },
+      status: 'draft',
+      type: 'generic_oidc',
+    });
+    expect(configured.kind).toBe('pendingConfiguration');
+    expect(configured.configured).toBe(true);
+    expect(configured.descriptionKey).toBe(
+      'identityProviders.status.pendingConfiguration.configured',
+    );
+    expect(getIdentityProviderStatusPresentation({ status: undefined }).kind).toBe(
+      'pendingConfiguration',
+    );
+    expect(getIdentityProviderStatusPresentation({ status: 'pending_restart' }).labelKey).toBe(
+      'identityProviders.status.restartPending',
+    );
+    expect(getIdentityProviderStatusPresentation({ status: 'published' }).kind).toBe(
+      'restartPending',
+    );
+    expect(getIdentityProviderStatusPresentation({ status: 'active' }).kind).toBe('enabled');
+    expect(getIdentityProviderStatusPresentation({ status: 'disabled' }).kind).toBe('disabled');
+    expect(getIdentityProviderStatusPresentation({ status: 'archived' }).kind).toBe('disabled');
+    expect(getIdentityProviderStatusPresentation({ status: 'error' }).kind).toBe('error');
+  });
+
+  it('requires display name, key, issuer, client, secret, and DingTalk allowlist to be configured', () => {
+    const complete = {
+      clientId: 'app',
+      dingtalkAllowedCorps: [{ corpId: 'ding1' }],
+      displayName: 'Work',
+      issuer: 'https://login.example.test',
+      providerKey: 'work',
+      secret: { configured: true },
+      type: 'generic_oidc',
+    };
+    expect(isIdentityProviderConfigured(complete)).toBe(true);
+    expect(isIdentityProviderConfigured({ ...complete, issuer: null })).toBe(false);
+    expect(isIdentityProviderConfigured({ ...complete, clientId: '' })).toBe(false);
+    expect(isIdentityProviderConfigured({ ...complete, secret: { configured: false } })).toBe(
+      false,
+    );
+    expect(
+      isIdentityProviderConfigured({
+        ...complete,
+        dingtalkAllowedCorps: [],
+        type: 'dingtalk',
+      }),
+    ).toBe(false);
+    expect(
+      isIdentityProviderConfigured({
+        ...complete,
+        type: 'dingtalk',
+      }),
+    ).toBe(true);
   });
 
   it('treats missing published-history as unknown (never no-history)', () => {
@@ -436,6 +516,198 @@ describe('identity provider editor controller', () => {
         preserveDraft: false,
       }),
     ).toBe('unchanged');
+    expect(
+      resolveIdentityProviderRevisionRefresh({
+        currentRevision: undefined,
+        nextRevision: 0,
+        preserveDraft: true,
+      }),
+    ).toBe('preserve');
+    expect(
+      resolveIdentityProviderRevisionRefresh({
+        currentRevision: 0,
+        nextRevision: 0,
+        preserveDraft: false,
+      }),
+    ).toBe('unchanged');
+  });
+
+  describe('identity provider persist helpers', () => {
+    it('allows a first-step save without issuer or client id', () => {
+      expect(
+        canPersistIdentityProviderDraft({
+          displayName: 'Work',
+          invalidJson: false,
+          providerKey: 'work',
+          providerKeyError: null,
+        }),
+      ).toBe(true);
+      expect(
+        canPersistIdentityProviderDraft({
+          displayName: '',
+          invalidJson: false,
+          providerKey: 'work',
+          providerKeyError: null,
+        }),
+      ).toBe(false);
+      expect(
+        toWritableIdentityProviderFields({
+          autoProvision: true,
+          buttonLabel: 'Sign in',
+          claimMapping: {
+            dingtalkTitle: [],
+            dingtalkUserId: [],
+            email: ['email'],
+            name: ['name'],
+            picture: [],
+            subject: ['sub'],
+          },
+          clientId: '',
+          dingtalkAllowedCorps: [],
+          displayName: 'Work',
+          domainAllowlist: [],
+          groupRoleMapping: {},
+          icon: null,
+          issuer: '  ',
+          providerKey: 'work',
+          scopes: ['openid'],
+          type: 'generic_oidc',
+          usePkce: true,
+        }),
+      ).toMatchObject({ clientId: null, issuer: null });
+    });
+
+    it('never includes a typed secret on autosave and clears it on create', () => {
+      expect(
+        resolveIdentityProviderSecretMutation({
+          clearSecret: false,
+          isCreate: true,
+          secret: 'typed-secret',
+        }),
+      ).toEqual({ operation: 'replace', value: 'typed-secret' });
+      expect(
+        resolveIdentityProviderSecretMutation({
+          clearSecret: false,
+          isCreate: true,
+          secret: '',
+        }),
+      ).toEqual({ operation: 'clear' });
+      expect(
+        resolveIdentityProviderSecretMutation({
+          clearSecret: false,
+          isCreate: false,
+          secret: '',
+        }),
+      ).toEqual({ operation: 'keep' });
+      expect(formatIdentityProviderAutoSavedAt(new Date('2026-08-17T09:05:00'))).toBe('09:05');
+    });
+
+    it('skips persist unless content or an explicit secret mutation is dirty', () => {
+      expect(
+        shouldSkipIdentityProviderPersist({
+          contentDirty: false,
+          includeSecret: true,
+          secretDirty: false,
+        }),
+      ).toBe(true);
+      expect(
+        shouldSkipIdentityProviderPersist({
+          contentDirty: false,
+          includeSecret: false,
+          secretDirty: true,
+        }),
+      ).toBe(true);
+      expect(
+        shouldSkipIdentityProviderPersist({
+          contentDirty: false,
+          includeSecret: true,
+          secretDirty: true,
+        }),
+      ).toBe(false);
+      expect(
+        shouldSkipIdentityProviderPersist({
+          contentDirty: true,
+          includeSecret: false,
+          secretDirty: false,
+        }),
+      ).toBe(false);
+    });
+
+    it('closes after a successful persist unless a typed secret remains', () => {
+      expect(resolveIdentityProviderWizardClose({ dirty: false, secretDirty: false })).toBe(
+        'close',
+      );
+      expect(resolveIdentityProviderWizardClose({ dirty: true, secretDirty: false })).toBe(
+        'persist',
+      );
+      expect(
+        resolveIdentityProviderWizardClose({
+          dirty: true,
+          persistResult: 'saved',
+          secretDirty: false,
+        }),
+      ).toBe('close');
+      expect(
+        resolveIdentityProviderWizardClose({
+          dirty: true,
+          persistResult: 'saved',
+          secretDirty: true,
+        }),
+      ).toBe('confirm');
+      expect(
+        resolveIdentityProviderWizardClose({
+          dirty: true,
+          persistResult: 'conflict',
+          secretDirty: false,
+        }),
+      ).toBe('stay');
+      expect(
+        resolveIdentityProviderWizardClose({
+          dirty: true,
+          persistResult: 'error',
+          secretDirty: false,
+        }),
+      ).toBe('stay');
+      expect(
+        resolveIdentityProviderWizardClose({
+          dirty: true,
+          persistResult: 'blocked',
+          secretDirty: false,
+        }),
+      ).toBe('confirm');
+    });
+
+    it('coalesces overlapping persist requests onto one follow-up call', async () => {
+      const gate = createIdentityProviderPersistGate();
+      let release!: () => void;
+      const first = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const persist = vi
+        .fn<(request: { includeSecret: boolean; silent: boolean }) => Promise<'saved'>>()
+        .mockImplementationOnce(async () => {
+          await first;
+          return 'saved';
+        })
+        .mockResolvedValueOnce('saved');
+      const cancelScheduled = vi.fn();
+
+      const pendingFirst = gate.enqueue(
+        { includeSecret: false, silent: true },
+        persist,
+        cancelScheduled,
+      );
+      const pendingSecond = gate.enqueue(
+        { includeSecret: true, silent: false },
+        persist,
+        cancelScheduled,
+      );
+      expect(persist).toHaveBeenCalledTimes(1);
+      release();
+      await expect(Promise.all([pendingFirst, pendingSecond])).resolves.toEqual(['saved', 'saved']);
+      expect(persist).toHaveBeenCalledTimes(2);
+      expect(persist.mock.calls[1]?.[0]).toEqual({ includeSecret: true, silent: false });
+    });
   });
 
   it('prefers fresher list hits over retained mutation rows when present', () => {

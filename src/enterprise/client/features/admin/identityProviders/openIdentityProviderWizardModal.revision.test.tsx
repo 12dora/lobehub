@@ -42,8 +42,10 @@ vi.mock('antd-style', () => ({
 
 vi.mock('@lobehub/ui', () => ({
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Icon: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  Tooltip: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   copyToClipboard: vi.fn(),
 }));
 
@@ -71,7 +73,11 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 
 vi.mock('lucide-react', () => ({
   AlertCircle: () => null,
+  Ban: () => null,
   Check: () => null,
+  CheckCircle2: () => null,
+  Clock3: () => null,
+  FileText: () => null,
 }));
 
 vi.mock('@/enterprise/client/services/adminIdentityProviders', () => ({
@@ -120,7 +126,21 @@ vi.mock('./IdentityProviderTypePicker', () => ({
 // Leaf steps are presentational; keep them light so collection stays fast while the
 // wizard shell (save/test/publish + provider.revision CAS) remains the real module.
 vi.mock('./steps', () => ({
-  BasicStep: () => <div data-testid="step-basic" />,
+  BasicStep: ({
+    draft,
+    patch,
+  }: {
+    draft: { displayName: string };
+    patch: (key: 'displayName', value: string) => void;
+  }) => (
+    <div data-testid="step-basic">
+      <input
+        aria-label="displayName"
+        value={draft.displayName}
+        onChange={(event) => patch('displayName', event.target.value)}
+      />
+    </div>
+  ),
   ClaimsStep: () => <div data-testid="step-claims" />,
   ClientStep: () => <div data-testid="step-client" />,
   DiscoveryStep: () => <div data-testid="step-discovery" />,
@@ -180,7 +200,11 @@ const page2Provider: PlatformIdentityProviderDraft = {
 describe('IdentityProviderWizardModal revision retention (identity/F8)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    serviceMocks.update.mockResolvedValue({ ...page2Provider, revision: 5 });
+    serviceMocks.update.mockImplementation(async (input: { expectedRevision: number }) => ({
+      ...page2Provider,
+      displayName: (input as { displayName?: string }).displayName ?? page2Provider.displayName,
+      revision: input.expectedRevision + 1,
+    }));
     serviceMocks.testStart.mockResolvedValue({
       attemptId: 'attempt-1',
       authorizationUrl: 'https://idp.example.test/authorize',
@@ -211,7 +235,11 @@ describe('IdentityProviderWizardModal revision retention (identity/F8)', () => {
 
     expect(screen.getByTestId('identity-provider-wizard')).toBeTruthy();
 
-    // Real wizard save action (openReasonModal auto-submits).
+    fireEvent.change(screen.getByLabelText('displayName'), {
+      target: { value: 'Page 2 Provider edited' },
+    });
+
+    // Real wizard save action after a content edit (clean Save must not update).
     await act(async () => {
       fireEvent.click(screen.getByText('identityProviders.actions.save'));
     });
@@ -222,6 +250,8 @@ describe('IdentityProviderWizardModal revision retention (identity/F8)', () => {
       );
     });
     expect(onChanged).toHaveBeenCalled();
+    // Create used to close the modal; edit/save must keep it mounted for test/publish.
+    expect(screen.getByTestId('identity-provider-wizard')).toBeTruthy();
 
     // Navigate to publish step so test + publish actions are available.
     await act(async () => {
@@ -250,5 +280,26 @@ describe('IdentityProviderWizardModal revision retention (identity/F8)', () => {
         expect.objectContaining({ expectedRevision: 5, id: 'idp-page-2' }),
       );
     });
+  });
+
+  it('does not call update when explicit Save is clicked on a clean form', async () => {
+    render(
+      <IdentityProviderWizardModalContent
+        canCreate
+        canPublish
+        canTest
+        canUpdate
+        authMethod="better-auth"
+        dirtyRef={{ current: false }}
+        provider={page2Provider}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('identityProviders.actions.save'));
+    });
+
+    expect(serviceMocks.update).not.toHaveBeenCalled();
   });
 });

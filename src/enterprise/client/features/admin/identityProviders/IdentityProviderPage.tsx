@@ -1,7 +1,7 @@
 'use client';
 
 import type { PlatformIdentityProviderDraft } from '@lobechat/types';
-import { Alert, Flexbox, NeuralNetworkLoading, Tag, Text } from '@lobehub/ui';
+import { Alert, Flexbox, NeuralNetworkLoading, Tag, Text, Tooltip } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
@@ -18,7 +18,6 @@ import { lambdaClient } from '@/libs/trpc/client';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import DataTable from '../primitives/DataTable';
-import StatusBadge from '../primitives/StatusBadge';
 import { useCursorStack } from '../skills/useCursorPagedList';
 import { openReasonModal } from '../users/modals/openReasonModal';
 import {
@@ -27,9 +26,9 @@ import {
   isIdentityProviderSetupGuidanceError,
   type PublishedHistorySignal,
   resolvePublishedHistorySignal,
-  toIdentityProviderStatusBadge,
 } from './controller';
 import IdentityProviderSetupGuidance from './IdentityProviderSetupGuidance';
+import IdentityProviderStatusBadge from './IdentityProviderStatusBadge';
 import { openIdentityProviderWizardModal } from './openIdentityProviderWizardModal';
 import { identityProviderStyles as styles } from './styles';
 import { useIdentityProviderRestartLifecycle } from './useIdentityProviderRestartLifecycle';
@@ -324,7 +323,7 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         key: 'status',
         title: t('identityProviders.columns.status'),
         width: 150,
-        render: (_, item) => <StatusBadge status={toIdentityProviderStatusBadge(item.status)} />,
+        render: (_, item) => <IdentityProviderStatusBadge provider={item} />,
       },
     ],
     [t],
@@ -334,10 +333,9 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     return <Alert showIcon description={t('identityProviders.errors.forbidden')} type="warning" />;
   }
 
-  // Multiple sign-in methods are supported (the server has no single-provider limit), so
-  // "New" stays available whenever the principal may create. It is withheld only while the
-  // setup guidance replaces the page — nothing can be created before deploy config exists.
-  const showCreateAction = canCreate && !setupGuidance;
+  // Create immediately becomes update after the first persist, so New requires both.
+  const showCreateAction = canCreate && canUpdate && !setupGuidance;
+  const showCreateNeedsUpdate = canCreate && !canUpdate && !setupGuidance;
   const showRuntime = canRestart && !setupGuidance;
 
   return (
@@ -352,6 +350,14 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
               <Button type="primary" onClick={() => openWizard()}>
                 {t('identityProviders.actions.create')}
               </Button>
+            ) : showCreateNeedsUpdate ? (
+              <Tooltip title={t('identityProviders.actions.createNeedsUpdate')}>
+                <span>
+                  <Button disabled type="primary">
+                    {t('identityProviders.actions.create')}
+                  </Button>
+                </span>
+              </Tooltip>
             ) : null}
             {showRuntime && runtime.data?.pendingRestart && runtime.data.restart.supported ? (
               <Button danger onClick={requestRestart}>

@@ -200,7 +200,8 @@ describe('AdminIdentityProviderService', () => {
     );
     const select = vi.spyOn(db, 'select');
     const first = await service.list({ limit: 100 });
-    expect(select).toHaveBeenCalledTimes(1);
+    // list page + published-history batch + secret-binding / test-ready lookup
+    expect(select).toHaveBeenCalledTimes(3);
     expect(first.items).toHaveLength(100);
     expect(first.nextCursor).toBe('provider-099');
     select.mockClear();
@@ -208,8 +209,42 @@ describe('AdminIdentityProviderService', () => {
       items: [{ providerKey: 'provider-100' }],
       nextCursor: null,
     });
-    expect(select).toHaveBeenCalledTimes(1);
+    expect(select).toHaveBeenCalledTimes(3);
     select.mockRestore();
+  });
+
+  it('persists a partial create with null issuer and clientId', async () => {
+    const created = await service.create('admin-1', {
+      ...draftInput({ operation: 'clear' }),
+      clientId: null,
+      issuer: null,
+    });
+    expect(created).toMatchObject({
+      clientId: null,
+      issuer: null,
+      providerKey: 'work',
+      status: 'draft',
+    });
+    const [row] = await db
+      .select({
+        clientId: platformIdentityProviders.clientId,
+        issuer: platformIdentityProviders.issuer,
+      })
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, created.id));
+    expect(row).toEqual({ clientId: null, issuer: null });
+
+    const filled = await service.update('admin-1', {
+      ...draftInput({ operation: 'clear' }),
+      expectedRevision: created.revision,
+      id: created.id,
+      secret: { operation: 'keep' },
+    });
+    expect(filled).toMatchObject({
+      clientId: 'client-id',
+      issuer: 'https://login.example.test',
+      revision: created.revision + 1,
+    });
   });
 
   it('exposes canonical callback URLs and delegates public-only discovery checks', async () => {

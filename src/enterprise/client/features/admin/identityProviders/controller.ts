@@ -528,7 +528,10 @@ export const resolveIdentityProviderRevisionRefresh = (input: {
   nextRevision?: number;
   preserveDraft: boolean;
 }): 'hydrate' | 'preserve' | 'unchanged' => {
-  if (!input.nextRevision || input.currentRevision === input.nextRevision) return 'unchanged';
+  // Revision 0 is a real CAS value (create without a secret). Do not treat it as missing.
+  if (input.nextRevision === undefined || input.currentRevision === input.nextRevision) {
+    return 'unchanged';
+  }
   return input.preserveDraft ? 'preserve' : 'hydrate';
 };
 

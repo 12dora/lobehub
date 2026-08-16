@@ -37,8 +37,10 @@ vi.mock('antd-style', () => ({
 
 vi.mock('@lobehub/ui', () => ({
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Icon: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  Tooltip: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   copyToClipboard: vi.fn(),
 }));
 
@@ -66,7 +68,11 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 
 vi.mock('lucide-react', () => ({
   AlertCircle: () => null,
+  Ban: () => null,
   Check: () => null,
+  CheckCircle2: () => null,
+  Clock3: () => null,
+  FileText: () => null,
 }));
 
 vi.mock('@/enterprise/client/services/adminIdentityProviders', () => ({
@@ -99,7 +105,21 @@ vi.mock('./useUnsavedIdentityProviderGuard', () => ({
 }));
 
 vi.mock('./steps', () => ({
-  BasicStep: () => <div data-testid="step-basic" />,
+  BasicStep: ({
+    draft,
+    patch,
+  }: {
+    draft: { displayName: string };
+    patch: (key: 'displayName', value: string) => void;
+  }) => (
+    <div data-testid="step-basic">
+      <input
+        aria-label="displayName"
+        value={draft.displayName}
+        onChange={(event) => patch('displayName', event.target.value)}
+      />
+    </div>
+  ),
   ClaimsStep: () => <div data-testid="step-claims" />,
   ClientStep: () => <div data-testid="step-client" />,
   DiscoveryStep: () => <div data-testid="step-discovery" />,
@@ -344,9 +364,12 @@ describe('IdentityProviderWizard publish gate matrix (ASI-009)', () => {
     });
 
     // Edit + save → revision 6, publishTestReady false (server keys attempt to revision).
-    // Navigate is not required: save is available on publish step.
-    // Trigger a dirty field via save without client-side draft mutation: service returns
-    // next revision; wizard rehydrates from provider prop.
+    await act(async () => {
+      fireEvent.click(screen.getByText(/identityProviders\.steps\.basic/));
+    });
+    fireEvent.change(screen.getByLabelText('displayName'), {
+      target: { value: `${live.displayName} edited` },
+    });
     await act(async () => {
       fireEvent.click(screen.getByText('identityProviders.actions.save'));
     });
@@ -356,6 +379,8 @@ describe('IdentityProviderWizard publish gate matrix (ASI-009)', () => {
     });
     expect(live.revision).toBe(6);
     expect(live.publishTestReady).toBe(false);
+
+    await goToPublishStep();
 
     // Re-render with the post-save provider (modal stays open across saves — no remount key).
     rerender(

@@ -260,3 +260,101 @@ describe('DingTalk fixed identity contract at the write boundary', () => {
     ).toBe(false);
   });
 });
+
+describe('identity provider partial save contract', () => {
+  const partialCreate = () => ({
+    autoProvision: true,
+    buttonLabel: 'Sign in with work',
+    claimMapping: {
+      dingtalkTitle: [],
+      dingtalkUserId: [],
+      email: ['email'],
+      name: ['name'],
+      picture: [],
+      subject: ['sub'],
+    },
+    displayName: 'Work',
+    domainAllowlist: [],
+    groupRoleMapping: {},
+    icon: null,
+    providerKey: 'work',
+    scopes: ['openid'],
+    secret: { operation: 'clear' as const },
+    type: 'generic_oidc' as const,
+    usePkce: true as const,
+  });
+
+  it('accepts create/update without issuer or clientId so a first step can persist', () => {
+    const created = adminIdentityProviderCreateInputSchema.safeParse(partialCreate());
+    expect(created.success).toBe(true);
+    if (created.success) {
+      expect(created.data.issuer).toBeNull();
+      expect(created.data.clientId).toBeNull();
+    }
+
+    const emptied = adminIdentityProviderCreateInputSchema.safeParse({
+      ...partialCreate(),
+      clientId: '',
+      issuer: '',
+    });
+    expect(emptied.success).toBe(true);
+    if (emptied.success) {
+      expect(emptied.data.issuer).toBeNull();
+      expect(emptied.data.clientId).toBeNull();
+    }
+  });
+
+  it('still rejects a non-canonical issuer when one is supplied', () => {
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse({
+        ...partialCreate(),
+        issuer: 'http://insecure.example.test',
+      }).success,
+    ).toBe(false);
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse({
+        ...partialCreate(),
+        issuer: 'https://login.example.test:8443',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('still requires displayName and providerKey on create', () => {
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse({
+        ...partialCreate(),
+        displayName: '',
+      }).success,
+    ).toBe(false);
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse({
+        ...partialCreate(),
+        providerKey: '',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('allows a DingTalk partial save to omit issuer but rejects a foreign issuer', () => {
+    const dingtalkPartial = {
+      autoProvision: true,
+      buttonLabel: DINGTALK_IDENTITY_PROVIDER_TEMPLATE.buttonLabel,
+      claimMapping: structuredClone(DINGTALK_IDENTITY_PROVIDER_TEMPLATE.claimMapping),
+      displayName: 'DingTalk',
+      domainAllowlist: [],
+      groupRoleMapping: {},
+      icon: 'dingtalk',
+      providerKey: 'dingtalk',
+      scopes: [...DINGTALK_IDENTITY_PROVIDER_TEMPLATE.scopes],
+      secret: { operation: 'clear' as const },
+      type: 'dingtalk' as const,
+      usePkce: true as const,
+    };
+    expect(adminIdentityProviderCreateInputSchema.safeParse(dingtalkPartial).success).toBe(true);
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse({
+        ...dingtalkPartial,
+        issuer: 'https://evil.example',
+      }).success,
+    ).toBe(false);
+  });
+});

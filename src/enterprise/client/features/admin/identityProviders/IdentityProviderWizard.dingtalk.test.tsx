@@ -48,10 +48,12 @@ vi.mock('antd-style', () => ({
 vi.mock('@lobehub/ui', () => ({
   Alert: ({ description }: { description?: ReactNode }) => <div role="status">{description}</div>,
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Icon: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Input: (props: Record<string, unknown>) => <input {...props} />,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   TextArea: (props: Record<string, unknown>) => <textarea {...props} />,
+  Tooltip: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   copyToClipboard: vi.fn(),
 }));
 
@@ -81,7 +83,11 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 
 vi.mock('lucide-react', () => ({
   AlertCircle: () => null,
+  Ban: () => null,
   Check: () => null,
+  CheckCircle2: () => null,
+  Clock3: () => null,
+  FileText: () => null,
   Plus: () => null,
   Trash2: () => null,
 }));
@@ -213,6 +219,10 @@ describe('IdentityProviderWizard DingTalk shape', () => {
     stepMocks.mockSteps = true;
     testResultMocks.data = null;
     vi.clearAllMocks();
+    serviceMocks.update.mockImplementation(async (input: { expectedRevision?: number }) => ({
+      ...baseProvider,
+      revision: (input.expectedRevision ?? baseProvider.revision) + 1,
+    }));
   });
 
   it('drops the discovery and claims steps for DingTalk', () => {
@@ -243,6 +253,10 @@ describe('IdentityProviderWizard DingTalk organisation allowlist', () => {
       attemptId: 'attempt-capture',
       authorizationUrl: 'https://login.dingtalk.com/oauth2/auth',
     });
+    serviceMocks.update.mockImplementation(async (input: { expectedRevision?: number }) => ({
+      ...baseProvider,
+      revision: (input.expectedRevision ?? baseProvider.revision) + 1,
+    }));
   });
 
   it('warns when no organisation is allowed and blocks Publish', async () => {
@@ -362,6 +376,10 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
       attemptId: 'attempt-capture',
       authorizationUrl: 'https://login.dingtalk.com/oauth2/auth',
     });
+    serviceMocks.update.mockImplementation(async (input: { expectedRevision?: number }) => ({
+      ...baseProvider,
+      revision: (input.expectedRevision ?? baseProvider.revision) + 1,
+    }));
   });
 
   it('starts only one DingTalk login even when the button is clicked repeatedly', async () => {
@@ -494,6 +512,11 @@ describe('IdentityProviderWizard DingTalk operator friction', () => {
       dingtalkAllowedCorps: [{ addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42' }],
     });
     await openPolicyStep();
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('identityProviders.dingtalk.allowedCorps.label'), {
+        target: { value: 'HQ' },
+      });
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'identityProviders.actions.save' }));
     });

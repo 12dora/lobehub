@@ -6,10 +6,10 @@ import {
   isValidDingTalkProviderKey,
   type PlatformIdentityProviderDraft,
 } from '@lobechat/types';
-import { copyToClipboard, Flexbox, Tag, Text } from '@lobehub/ui';
+import { copyToClipboard, Flexbox, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
 import { AnimatePresence, m, useReducedMotion } from 'motion/react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
@@ -31,15 +31,27 @@ import {
   openIdentityProviderTestPopup,
   parseIdentityProviderJsonObject,
   resolveIdentityProviderRevisionRefresh,
-  serializeIdentityProviderAllowedCorps,
 } from './controller';
 import { IdentityProviderConflictAlert } from './IdentityProviderConflictAlert';
+import IdentityProviderStatusBadge from './IdentityProviderStatusBadge';
 import {
   IDENTITY_PROVIDER_STEPS,
   type IdentityProviderStep,
   type IdentityProviderStepState,
   IdentityProviderWizardNavigation,
 } from './IdentityProviderWizardNavigation';
+import {
+  canPersistIdentityProviderDraft,
+  createIdentityProviderPersistGate,
+  formatIdentityProviderAutoSavedAt,
+  IDENTITY_PROVIDER_AUTOSAVE_DEBOUNCE_MS,
+  type IdentityProviderPersistRequest,
+  type IdentityProviderPersistResult,
+  resolveIdentityProviderSecretMutation,
+  shouldSkipIdentityProviderPersist,
+  toWritableIdentityProviderFields,
+} from './persist';
+import { getIdentityProviderStatusPresentation } from './statusPresentation';
 import {
   BasicStep,
   ClaimsStep,
@@ -105,7 +117,13 @@ interface IdentityProviderWizardProps {
   onRefresh: () => Promise<unknown>;
   /** Called after save/publish; pass the mutation response so revision CAS stays fresh. */
   onSaved: (saved?: PlatformIdentityProviderDraft) => Promise<unknown>;
+  /**
+   * Flush a silent non-secret persist (step change / modal close).
+   * Returns whether content was saved, already clean, or could not persist.
+   */
+  persistRef?: { current: (() => Promise<IdentityProviderPersistResult>) | null };
   provider?: PlatformIdentityProviderDraft;
+  secretDirtyRef?: { current: boolean };
 }
 
 const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
@@ -118,7 +136,9 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     canUpdate,
     createSeed,
     embedded,
+    persistRef,
     provider,
+    secretDirtyRef,
     onDirtyChange,
     onDiscard,
     onRefresh,
@@ -173,7 +193,15 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const [conflict, setConflict] = useState(false);
     const [conflictRefreshFailed, setConflictRefreshFailed] = useState(false);
     const lastProviderRevisionRef = useRef(provider?.revision);
+    const providerRef = useRef(provider);
+    providerRef.current = provider;
     const preserveDraftOnRefreshRef = useRef(false);
+    const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const persistGateRef = useRef(createIdentityProviderPersistGate());
+    const persistLatestRef = useRef<
+      (input: IdentityProviderPersistRequest) => Promise<IdentityProviderPersistResult>
+    >(async () => 'clean');
+    const [lastAutoSavedAt, setLastAutoSavedAt] = useState<Date | null>(null);
     // The DingTalk login that captured an organisation is the same server flow as the
     // pre-publish safe-login test; the attempt id below marks which entry point started it.
     const capturedAttemptRef = useRef<string | null>(null);
@@ -191,7 +219,9 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     // Kinds with a protocol-fixed issuer, endpoints and claim mapping (DingTalk) have nothing
     // to discover and nothing to remap, so those two steps are dropped instead of shown empty.
     const fixedProtocol = isFixedProtocolIdentityProviderType(provider?.type ?? draft.type);
-    const dirty = JSON.stringify(draft) !== baseline || Boolean(secret) || clearSecret;
+    const contentDirty = JSON.stringify(draft) !== baseline;
+    const secretDirty = Boolean(secret) || clearSecret;
+    const dirty = contentDirty || secretDirty;
     const draftWorkflowReady = isIdentityProviderDraftWorkflowReady(provider);
     const sessionTestSucceeded =
       attempt != null &&
@@ -298,6 +328,9 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
 
     useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
     useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+    useEffect(() => {
+      if (secretDirtyRef) secretDirtyRef.current = secretDirty;
+    }, [secretDirty, secretDirtyRef]);
 
     useUnsavedIdentityProviderGuard(dirty);
 
@@ -405,63 +438,148 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       }
     };
 
-    const save = () => {
+    const persistDraft = async (
+      input: IdentityProviderPersistRequest,
+    ): Promise<IdentityProviderPersistResult> => {
+      const currentProvider = providerRef.current;
+      const canWrite = currentProvider ? canUpdate : canCreate;
       if (
-        invalidJson ||
-        !draft.displayName.trim() ||
-        !draft.providerKey.trim() ||
-        !draft.issuer ||
-        !draft.clientId
+        !canWrite ||
+        !canPersistIdentityProviderDraft({
+          displayName: draft.displayName,
+          invalidJson,
+          providerKey: draft.providerKey,
+          providerKeyError,
+        })
       ) {
-        toast.error(t('identityProviders.errors.required'));
-        return;
+        if (!input.silent) {
+          toast.error(providerKeyError ?? t('identityProviders.errors.required'));
+        }
+        return 'blocked';
       }
-      if (providerKeyError) {
-        toast.error(providerKeyError);
-        return;
+      // Never call update when neither content nor an explicit secret mutation is dirty.
+      if (
+        shouldSkipIdentityProviderPersist({
+          contentDirty,
+          includeSecret: input.includeSecret,
+          secretDirty,
+        })
+      ) {
+        return 'clean';
       }
-      // Saving a draft changes nothing live and is fully reconstructable from the audit
-      // before/after diff, so it no longer asks for a written reason.
-      void run(
-        'save',
-        async () => {
-          const secretMutation = clearSecret
-            ? ({ operation: 'clear' } as const)
-            : secret
-              ? ({ operation: 'replace', value: secret } as const)
-              : ({ operation: 'keep' } as const);
-          // Preserve persisted groupRoleMapping on edit; new drafts start empty.
-          // Organisation notes are kept raw while typing and normalised here.
-          const policyDraft = {
-            ...draft,
-            dingtalkAllowedCorps: serializeIdentityProviderAllowedCorps(draft.dingtalkAllowedCorps),
-          };
-          if (provider) {
-            const updated = await adminIdentityProvidersService.update({
-              ...policyDraft,
-              expectedRevision: provider.revision,
-              id: provider.id,
-              secret: secretMutation,
-            });
-            setSecret('');
-            setClearSecret(false);
-            setConflict(false);
-            await onSaved(updated);
-          } else {
-            const created = await adminIdentityProvidersService.create({
-              ...policyDraft,
-              secret: secretMutation.operation === 'keep' ? { operation: 'clear' } : secretMutation,
-            });
-            setSecret('');
-            setClearSecret(false);
-            setConflict(false);
-            await onSaved(created);
-          }
+
+      const writable = toWritableIdentityProviderFields(draft);
+      const secretMutation = input.includeSecret
+        ? resolveIdentityProviderSecretMutation({
+            clearSecret,
+            isCreate: !currentProvider,
+            secret,
+          })
+        : resolveIdentityProviderSecretMutation({
+            clearSecret: false,
+            isCreate: !currentProvider,
+            secret: '',
+          });
+
+      try {
+        // Preserve local keystrokes that arrive while this request is in flight.
+        preserveDraftOnRefreshRef.current = true;
+        let saved: PlatformIdentityProviderDraft;
+        if (currentProvider) {
+          saved = await adminIdentityProvidersService.update({
+            ...writable,
+            expectedRevision: lastProviderRevisionRef.current ?? currentProvider.revision,
+            id: currentProvider.id,
+            secret: secretMutation,
+          });
+        } else {
+          saved = await adminIdentityProvidersService.create({
+            ...writable,
+            secret: secretMutation.operation === 'keep' ? { operation: 'clear' } : secretMutation,
+          });
+        }
+        lastProviderRevisionRef.current = saved.revision;
+        providerRef.current = saved;
+        if (input.includeSecret) {
+          setSecret('');
+          setClearSecret(false);
+        }
+        setConflict(false);
+        await onSaved(saved);
+        if (input.silent) {
+          setLastAutoSavedAt(new Date());
+        } else {
           toast.success(t('identityProviders.save.success'));
-        },
-        false,
-      );
+        }
+        return 'saved';
+      } catch (cause) {
+        if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') {
+          setConflict(true);
+          preserveDraftOnRefreshRef.current = true;
+          await refreshConflict();
+          toast.error(friendlyError(cause));
+          return 'conflict';
+        }
+        toast.error(friendlyError(cause));
+        return 'error';
+      }
     };
+
+    persistLatestRef.current = persistDraft;
+
+    const cancelScheduledAutosave = () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+
+    const enqueuePersist = (request: IdentityProviderPersistRequest) =>
+      persistGateRef.current.enqueue(
+        request,
+        (next) => persistLatestRef.current(next),
+        cancelScheduledAutosave,
+      );
+
+    const save = () => {
+      void (async () => {
+        setBusy('save');
+        try {
+          await enqueuePersist({ includeSecret: true, silent: false });
+        } finally {
+          setBusy(null);
+        }
+      })();
+    };
+
+    const flushAutosave = useCallback(async (): Promise<IdentityProviderPersistResult> => {
+      return enqueuePersist({ includeSecret: false, silent: true });
+      // enqueuePersist reads persistLatestRef; the gate is stable.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const scheduleAutosave = useCallback(() => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = setTimeout(() => {
+        autosaveTimerRef.current = null;
+        void flushAutosave();
+      }, IDENTITY_PROVIDER_AUTOSAVE_DEBOUNCE_MS);
+    }, [flushAutosave]);
+
+    useEffect(() => {
+      if (!persistRef) return;
+      persistRef.current = flushAutosave;
+      return () => {
+        persistRef.current = null;
+      };
+    }, [flushAutosave, persistRef]);
+
+    useEffect(
+      () => () => {
+        if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+      },
+      [],
+    );
 
     // Discover alone validates network + endpoints; do not also call validateNetwork
     // (that would preflight the same discovery URL a second time).
@@ -582,6 +700,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       if (nextIndex === -1 || nextIndex === currentIndex) return;
       setStepDirection(nextIndex > currentIndex ? 1 : -1);
       setStep(next);
+      scheduleAutosave();
     };
 
     const navigateStep = (offset: -1 | 1) => {
@@ -735,24 +854,38 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         : resolvedType === 'dingtalk'
           ? t('identityProviders.templates.dingtalk.label')
           : t('identityProviders.templates.genericOidc.label');
+    const statusPresentation = getIdentityProviderStatusPresentation({
+      clientId: draft.clientId,
+      dingtalkAllowedCorps: draft.dingtalkAllowedCorps,
+      displayName: draft.displayName,
+      issuer: draft.issuer,
+      providerKey: draft.providerKey,
+      secret: {
+        configured: Boolean(provider?.secret.configured && !clearSecret) || Boolean(secret),
+      },
+      status: provider?.status ?? 'draft',
+      type: draft.type,
+    });
+    const statusTag = <IdentityProviderStatusBadge presentation={statusPresentation} />;
 
     return (
       <div
-        className={embedded ? styles.stack : styles.panel}
+        className={embedded ? styles.embeddedStack : styles.panel}
         data-testid="identity-provider-wizard"
       >
-        <Flexbox horizontal align="center" gap={8} justify="space-between">
-          <Text type="secondary">
-            {provider ? typeLabel : `${t('identityProviders.newProvider')} · ${typeLabel}`}
-          </Text>
-          <Flexbox horizontal align="center" gap={8}>
-            {dirty ? <Text type="secondary">{t('identityProviders.unsaved')}</Text> : null}
-            <Tag>
-              {t(`identityProviders.values.providerStatus.${provider?.status ?? 'draft'}` as never)}
-            </Tag>
+        {embedded ? null : (
+          <Flexbox horizontal align="center" gap={8} justify="space-between">
+            <Text type="secondary">
+              {provider ? typeLabel : `${t('identityProviders.newProvider')} · ${typeLabel}`}
+            </Text>
+            <Flexbox horizontal align="center" gap={8}>
+              {dirty ? <Text type="secondary">{t('identityProviders.unsaved')}</Text> : null}
+              {statusTag}
+            </Flexbox>
           </Flexbox>
-        </Flexbox>
+        )}
         <IdentityProviderWizardNavigation
+          extra={embedded ? statusTag : undefined}
           stepStates={stepStates}
           steps={steps}
           value={step}
@@ -776,11 +909,20 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             {renderStep()}
           </m.div>
         </AnimatePresence>
-        <Flexbox horizontal justify="space-between">
+        <Flexbox horizontal align="center" justify="space-between">
           <Button disabled={step === steps[0]} onClick={() => navigateStep(-1)}>
             {t('identityProviders.actions.previous')}
           </Button>
-          <Flexbox horizontal gap={8}>
+          <Flexbox horizontal align="center" gap={8}>
+            {lastAutoSavedAt ? (
+              <Text type="secondary">
+                {t('identityProviders.save.autoSaved', {
+                  time: formatIdentityProviderAutoSavedAt(lastAutoSavedAt),
+                })}
+              </Text>
+            ) : dirty ? (
+              <Text type="secondary">{t('identityProviders.unsaved')}</Text>
+            ) : null}
             <Button
               loading={busy === 'save'}
               type={isLastStep ? 'default' : 'primary'}

@@ -47,6 +47,14 @@ vi.mock('antd-style', () => ({
   cssVar: new Proxy({}, { get: () => '' }),
 }));
 
+vi.mock('lucide-react', () => ({
+  AlertCircle: () => null,
+  Ban: () => null,
+  CheckCircle2: () => null,
+  Clock3: () => null,
+  FileText: () => null,
+}));
+
 vi.mock('react-i18next', () => ({
   // Preserve defaultValue so action labels render when keys are missing.
   useTranslation: () => ({
@@ -119,8 +127,12 @@ vi.mock('@lobehub/ui', () => ({
   ),
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   NeuralNetworkLoading: () => <span data-testid="restart-progress" />,
+  Icon: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children, ...rest }: { children?: ReactNode }) => <span {...rest}>{children}</span>,
+  Tooltip: ({ children, title }: { children?: ReactNode; title?: ReactNode }) => (
+    <span data-tooltip={String(title ?? '')}>{children}</span>
+  ),
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
@@ -189,6 +201,13 @@ vi.mock('../primitives/DataTable', () => ({
           <div data-testid={`provider-type-${item.id}`}>
             {columns
               ?.filter((column) => column.key === 'type')
+              .map((column, index) => (
+                <div key={column.key ?? index}>{column.render?.(null, item)}</div>
+              ))}
+          </div>
+          <div data-testid={`provider-status-${item.id}`}>
+            {columns
+              ?.filter((column) => column.key === 'status')
               .map((column, index) => (
                 <div key={column.key ?? index}>{column.render?.(null, item)}</div>
               ))}
@@ -315,6 +334,51 @@ describe('IdentityProviderPage rendering rules', () => {
       screen.getByRole('status', { name: 'identityProviders.restart.monitoring' }),
     ).toBeTruthy();
     expect(screen.getByTestId('restart-progress')).toBeTruthy();
+  });
+
+  it('disables New when the administrator can create but cannot update', () => {
+    mocks.admin.permissions = [
+      PLATFORM_PERMISSIONS.IDENTITY_READ,
+      PLATFORM_PERMISSIONS.IDENTITY_CREATE,
+    ];
+    mocks.providers.data = { items: [] };
+
+    render(<IdentityProviderPage />);
+
+    const create = screen.getByText('identityProviders.actions.create').closest('button');
+    expect(create?.hasAttribute('disabled')).toBe(true);
+    expect(
+      screen
+        .getByText('identityProviders.actions.create')
+        .closest('[data-tooltip]')
+        ?.getAttribute('data-tooltip'),
+    ).toBe('identityProviders.actions.createNeedsUpdate');
+    fireEvent.click(screen.getByText('identityProviders.actions.create'));
+    expect(openModalMock).not.toHaveBeenCalled();
+  });
+
+  it('shows pending-configuration helper text for unpublished rows', () => {
+    mocks.providers.data = {
+      items: [
+        {
+          ...sampleProvider,
+          clientId: 'client',
+          displayName: 'Corp SSO',
+          issuer: 'https://login.example.test',
+          providerKey: 'corp',
+          secret: { configured: true },
+          status: 'draft',
+        },
+      ],
+    };
+
+    render(<IdentityProviderPage />);
+
+    const status = screen.getByTestId('provider-status-idp-1');
+    expect(status.textContent).toContain('identityProviders.status.pendingConfiguration');
+    expect(status.querySelector('[data-tooltip]')?.getAttribute('data-tooltip')).toBe(
+      'identityProviders.status.pendingConfiguration.configured',
+    );
   });
 
   it('shows the create action and opens the create modal when no provider exists yet', () => {

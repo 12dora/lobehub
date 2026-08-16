@@ -201,6 +201,11 @@ export const identityProviderStyles = createStaticStyles(({ css }) => ({
     flex-direction: column;
     gap: 16px;
   `,
+  embeddedStack: css`
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  `,
   templateGrid: css`
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
