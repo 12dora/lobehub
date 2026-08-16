@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ConnectorModel } from '@/database/models/connector';
+import { ConnectorToolModel } from '@/database/models/connectorTool';
 import { checksumPayload } from '@/database/models/platform';
 import type * as PlatformConnectorCatalogModule from '@/database/repositories/platformConnectorCatalog';
 import type { LobeChatDatabase } from '@/database/type';
@@ -329,6 +331,96 @@ describe('managed Connector operation integration security', () => {
     ]);
     // User-visible description stays empty; code is a dedicated machine field.
     expect(result.manifests[0]?.meta?.description).toBe('');
+  });
+
+  it('drops a disabled legacy tool and marks needs_approval with humanIntervention', async () => {
+    const overlayPayload = {
+      ...payload(1),
+      tools: [
+        {
+          description: null,
+          displayName: 'Search',
+          inputSchema: { type: 'object' },
+          outputSchema: {},
+          platformPolicy: 'allow' as const,
+          requiresConfirmation: false,
+          riskLevel: 'low' as const,
+          sort: 0,
+          toolKey: 'search',
+        },
+        {
+          description: null,
+          displayName: 'Delete',
+          inputSchema: { type: 'object' },
+          outputSchema: {},
+          platformPolicy: 'allow' as const,
+          requiresConfirmation: false,
+          riskLevel: 'low' as const,
+          sort: 1,
+          toolKey: 'delete',
+        },
+      ],
+    };
+    const overlayRuntime = {
+      payload: overlayPayload,
+      provenance: {
+        checksum: checksumPayload(overlayPayload),
+        connectorId: 'connector-1',
+        publishedAt: new Date(),
+        revision: 1,
+        revisionId: 'revision-1',
+      },
+    };
+    mocks.getConnectorByKey.mockResolvedValue({
+      connectorKey: 'catalog',
+      enabled: true,
+      id: 'connector-1',
+      publishedChecksum: overlayRuntime.provenance.checksum,
+      publishedRevision: 1,
+      status: 'published',
+    });
+    mocks.getCurrentPublishedRuntime.mockResolvedValue(overlayRuntime);
+    vi.mocked(ConnectorModel).mockImplementationOnce(
+      () =>
+        ({
+          queryByIdentifiers: vi.fn(async () => [{ id: 'legacy-catalog', identifier: 'catalog' }]),
+        }) as never,
+    );
+    vi.mocked(ConnectorToolModel).mockImplementationOnce(
+      () =>
+        ({
+          queryAllByConnectorIds: vi.fn(async () => [
+            {
+              permission: 'disabled',
+              toolName: 'delete',
+              userConnectorId: 'legacy-catalog',
+            },
+            {
+              permission: 'needs_approval',
+              toolName: 'search',
+              userConnectorId: 'legacy-catalog',
+            },
+          ]),
+        }) as never,
+    );
+
+    const result = await buildManagedConnectorManifests({
+      agentId: 'agent-1',
+      connectorKeys: ['catalog'],
+      db,
+      env,
+      operationId: 'operation-overlay',
+      serverAllowedConnectorKeys: ['catalog'],
+      userId: 'user-1',
+    });
+
+    expect(result.manifests[0]?.api.map((tool) => tool.name)).toEqual(['search']);
+    expect(result.manifests[0]?.api[0]).toEqual(
+      expect.objectContaining({
+        humanIntervention: 'always',
+        name: 'search',
+      }),
+    );
   });
 
   it('rejects dispatch when the connector archives after manifest construction', async () => {

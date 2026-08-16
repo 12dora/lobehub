@@ -217,85 +217,17 @@ export class PlatformConnectorRuntimeAdapter {
       let headers: Record<string, string> | undefined;
       const taintedValues: string[] = [];
       if (connector.credentialMode === 'shared_service_account') {
-        const allowed = await this.dependencies.rateLimiter.consume(
-          `${connector.id}:${invocation.userId}`,
-        );
-        if (!allowed) {
-          await this.auditShared(invocation, connector.id, 'rate_limited');
-          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RATE_LIMITED');
-        }
-        await this.auditShared(invocation, connector.id, 'admitted');
-        await this.dependencies.outbound.preflight(connector.endpoint);
-        const secret = await resolveConnectorSecretVersion(
-          this.dependencies.secrets,
-          connector.id,
-          'sharedSecret',
-          connector.sharedSecretFingerprint,
-        );
-        // Accept-on-read: legacy header names parse so admins can still repair via replace.
-        const credential = connectorSharedCredentialReadSchema.parse(secret.value);
-        headers = sharedCredentialHeaders(credential);
-        // Canonical collector treats dynamic header *keys* and values as secret leaves.
-        taintedValues.push(
-          ...collectConnectorSecretLeaves(credential),
-          ...collectConnectorSecretLeaves({ headers }),
-          ...Object.values(headers),
-        );
+        const shared = await this.resolveSharedCredentials(invocation, connector);
+        headers = shared.headers;
+        taintedValues.push(...shared.taintedValues);
       } else if (connector.credentialMode === 'per_user_oauth') {
-        const allowedScopes = connector.oauthConfig?.scopes ?? [];
-        let binding = await this.loadBinding(
+        const oauth = await this.resolveOAuthCredentials(
           invocation,
-          connector.id,
+          connector,
           snapshot.proof.publishedRevision,
-          allowedScopes,
         );
-        await this.dependencies.outbound.preflight(connector.endpoint);
-        binding = await this.reloadExactBinding(invocation, binding, allowedScopes);
-        const now = (this.dependencies.clock ?? (() => new Date()))();
-        const tokenExpiresAt = binding.expiresAt;
-        if (
-          tokenExpiresAt &&
-          tokenExpiresAt.getTime() - now.getTime() <= DEFAULT_REFRESH_WINDOW_MS &&
-          this.dependencies.refreshBinding
-        ) {
-          // Refresh runs under the effective binding identity: the shared
-          // auth owner while governance designates one, else the invoking user.
-          await this.dependencies.refreshBinding(
-            invocation.effectiveBindingUserId ?? invocation.userId,
-            connector.id,
-            snapshot.proof.publishedRevision,
-          );
-          binding = await this.loadBinding(
-            invocation,
-            connector.id,
-            snapshot.proof.publishedRevision,
-            allowedScopes,
-          );
-        }
-        if (binding.expiresAt && binding.expiresAt <= now) {
-          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_BINDING_NOT_FOUND');
-        }
-        const tokenSecret = await this.dependencies.secrets.resolveSecretRef({
-          connectorId: connector.id,
-          ref: binding.oauthTokenRef!,
-          slot: 'oauthBindingToken',
-        });
-        const token = storedOAuthTokenSchema.safeParse(tokenSecret?.value);
-        if (
-          !tokenSecret ||
-          tokenSecret.ref !== binding.oauthTokenRef ||
-          tokenSecret.fingerprint !== binding.tokenFingerprint ||
-          !token.success
-        ) {
-          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-        }
-        await this.reloadExactBinding(invocation, binding, allowedScopes);
-        headers = { Authorization: `Bearer ${token.data.accessToken}` };
-        taintedValues.push(
-          token.data.accessToken,
-          ...(token.data.refreshToken ? [token.data.refreshToken] : []),
-          ...Object.values(headers),
-        );
+        headers = oauth.headers;
+        taintedValues.push(...oauth.taintedValues);
       } else {
         await this.dependencies.outbound.preflight(connector.endpoint);
       }
@@ -304,30 +236,9 @@ export class PlatformConnectorRuntimeAdapter {
       // running journal entry that later reconciles as unknown.
       await this.dependencies.assertCurrentPublished?.();
       if (connector.credentialMode === 'shared_service_account') {
-        const journal = await this.dependencies.journal.begin({
-          connectorId: connector.id,
-          operationId: invocation.proof.operationId,
-          requestFingerprint: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
-          toolCallId: invocation.toolCallId,
-          toolKey: tool.toolKey,
-          userId: invocation.userId,
-        });
-        if (journal.status === 'reserved') {
-          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
-        }
-        if (journal.status === 'replay') {
-          if (journal.auditPending) {
-            try {
-              await this.deliverJournalAudit(journal.token);
-            } catch (error) {
-              console.error('[connector-runtime] terminal audit reconciliation pending', {
-                errorClass: error instanceof Error ? error.name : 'UnknownError',
-              });
-            }
-          }
-          return journal.result;
-        }
-        journalToken = journal.token;
+        const reserved = await this.reserveSharedJournal(invocation, connector, tool, args);
+        if (reserved.kind === 'replay') return reserved.result;
+        journalToken = reserved.token;
       }
       try {
         // Close the archive race opened between the pre-reservation check and
@@ -383,16 +294,7 @@ export class PlatformConnectorRuntimeAdapter {
       }
       return executionResult;
     } catch (error) {
-      if (
-        connector.credentialMode === 'shared_service_account' &&
-        !(outboundStarted && journalToken) &&
-        !(
-          error instanceof PlatformConnectorContractError &&
-          (error.code === 'PLATFORM_CONNECTOR_RATE_LIMITED' ||
-            error.code === 'PLATFORM_CONNECTOR_NOT_PUBLISHED' ||
-            error.code === 'PLATFORM_CONNECTOR_RESOURCE_MISMATCH')
-        )
-      ) {
+      if (shouldAuditSharedFailure(connector, outboundStarted, journalToken, error)) {
         try {
           await this.auditShared(invocation, connector.id, 'failed');
         } catch (auditError) {
@@ -404,6 +306,141 @@ export class PlatformConnectorRuntimeAdapter {
       if (error instanceof PlatformConnectorContractError) throw error;
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED');
     }
+  };
+
+  private reserveSharedJournal = async (
+    invocation: PlatformConnectorRuntimeInvocation,
+    connector: { id: string },
+    tool: { toolKey: string },
+    args: Record<string, unknown>,
+  ): Promise<
+    | { kind: 'replay'; result: PlatformConnectorRuntimeResult }
+    | { kind: 'reserved'; token: ConnectorRuntimeJournalToken }
+  > => {
+    const journal = await this.dependencies.journal.begin({
+      connectorId: connector.id,
+      operationId: invocation.proof.operationId,
+      requestFingerprint: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+      toolCallId: invocation.toolCallId,
+      toolKey: tool.toolKey,
+      userId: invocation.userId,
+    });
+    if (journal.status === 'reserved') {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
+    }
+    if (journal.status === 'replay') {
+      if (journal.auditPending) {
+        try {
+          await this.deliverJournalAudit(journal.token);
+        } catch (error) {
+          console.error('[connector-runtime] terminal audit reconciliation pending', {
+            errorClass: error instanceof Error ? error.name : 'UnknownError',
+          });
+        }
+      }
+      return { kind: 'replay', result: journal.result };
+    }
+    return { kind: 'reserved', token: journal.token };
+  };
+
+  private resolveOAuthCredentials = async (
+    invocation: PlatformConnectorRuntimeInvocation,
+    connector: {
+      id: string;
+      endpoint: string;
+      oauthConfig: { scopes?: string[] } | null;
+    },
+    publishedRevision: number,
+  ): Promise<{ headers: Record<string, string>; taintedValues: string[] }> => {
+    const allowedScopes = connector.oauthConfig?.scopes ?? [];
+    let binding = await this.loadBinding(
+      invocation,
+      connector.id,
+      publishedRevision,
+      allowedScopes,
+    );
+    await this.dependencies.outbound.preflight(connector.endpoint);
+    binding = await this.reloadExactBinding(invocation, binding, allowedScopes);
+    const now = (this.dependencies.clock ?? (() => new Date()))();
+    const tokenExpiresAt = binding.expiresAt;
+    if (
+      tokenExpiresAt &&
+      tokenExpiresAt.getTime() - now.getTime() <= DEFAULT_REFRESH_WINDOW_MS &&
+      this.dependencies.refreshBinding
+    ) {
+      // Refresh runs under the effective binding identity: the shared
+      // auth owner while governance designates one, else the invoking user.
+      await this.dependencies.refreshBinding(
+        invocation.effectiveBindingUserId ?? invocation.userId,
+        connector.id,
+        publishedRevision,
+      );
+      binding = await this.loadBinding(invocation, connector.id, publishedRevision, allowedScopes);
+    }
+    if (binding.expiresAt && binding.expiresAt <= now) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_BINDING_NOT_FOUND');
+    }
+    const tokenSecret = await this.dependencies.secrets.resolveSecretRef({
+      connectorId: connector.id,
+      ref: binding.oauthTokenRef!,
+      slot: 'oauthBindingToken',
+    });
+    const token = storedOAuthTokenSchema.safeParse(tokenSecret?.value);
+    if (
+      !tokenSecret ||
+      tokenSecret.ref !== binding.oauthTokenRef ||
+      tokenSecret.fingerprint !== binding.tokenFingerprint ||
+      !token.success
+    ) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+    }
+    await this.reloadExactBinding(invocation, binding, allowedScopes);
+    const headers = { Authorization: `Bearer ${token.data.accessToken}` };
+    return {
+      headers,
+      taintedValues: [
+        token.data.accessToken,
+        ...(token.data.refreshToken ? [token.data.refreshToken] : []),
+        ...Object.values(headers),
+      ],
+    };
+  };
+
+  private resolveSharedCredentials = async (
+    invocation: PlatformConnectorRuntimeInvocation,
+    connector: {
+      endpoint: string;
+      id: string;
+      sharedSecretFingerprint: string | null;
+    },
+  ): Promise<{ headers: Record<string, string>; taintedValues: string[] }> => {
+    const allowed = await this.dependencies.rateLimiter.consume(
+      `${connector.id}:${invocation.userId}`,
+    );
+    if (!allowed) {
+      await this.auditShared(invocation, connector.id, 'rate_limited');
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RATE_LIMITED');
+    }
+    await this.auditShared(invocation, connector.id, 'admitted');
+    await this.dependencies.outbound.preflight(connector.endpoint);
+    const secret = await resolveConnectorSecretVersion(
+      this.dependencies.secrets,
+      connector.id,
+      'sharedSecret',
+      connector.sharedSecretFingerprint,
+    );
+    // Accept-on-read: legacy header names parse so admins can still repair via replace.
+    const credential = connectorSharedCredentialReadSchema.parse(secret.value);
+    const headers = sharedCredentialHeaders(credential);
+    // Canonical collector treats dynamic header *keys* and values as secret leaves.
+    return {
+      headers,
+      taintedValues: [
+        ...collectConnectorSecretLeaves(credential),
+        ...collectConnectorSecretLeaves({ headers }),
+        ...Object.values(headers),
+      ],
+    };
   };
 
   private cancelJournal = async (token: ConnectorRuntimeJournalToken): Promise<void> => {
@@ -520,6 +557,21 @@ export class PlatformConnectorRuntimeAdapter {
     return current;
   };
 }
+
+const shouldAuditSharedFailure = (
+  connector: { credentialMode: string },
+  outboundStarted: boolean,
+  journalToken: ConnectorRuntimeJournalToken | undefined,
+  error: unknown,
+): boolean =>
+  connector.credentialMode === 'shared_service_account' &&
+  !(outboundStarted && journalToken) &&
+  !(
+    error instanceof PlatformConnectorContractError &&
+    (error.code === 'PLATFORM_CONNECTOR_RATE_LIMITED' ||
+      error.code === 'PLATFORM_CONNECTOR_NOT_PUBLISHED' ||
+      error.code === 'PLATFORM_CONNECTOR_RESOURCE_MISMATCH')
+  );
 
 const parseArguments = (value: string | Record<string, unknown>): Record<string, unknown> => {
   let parsed: unknown = value;

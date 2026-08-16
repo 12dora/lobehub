@@ -304,6 +304,25 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     expect(harness.dependencies.outbound.requestJson).toHaveBeenCalledTimes(1);
   });
 
+  it('audits a rate-limited shared call once and never appends a failed entry', async () => {
+    const harness = createHarness('shared_service_account');
+    vi.mocked(harness.dependencies.rateLimiter.consume).mockResolvedValueOnce(false);
+
+    await expect(harness.adapter.execute(invocation)).rejects.toThrow(
+      'PLATFORM_CONNECTOR_RATE_LIMITED',
+    );
+
+    expect(harness.dependencies.audit.appendSharedCall).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.audit.appendSharedCall).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'rate_limited' }),
+    );
+    expect(harness.dependencies.audit.appendSharedCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'failed' }),
+    );
+    expect(harness.resolveSecretVersion).not.toHaveBeenCalled();
+    expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+  });
+
   it('binds OAuth to exact user/revision/status/scopes/expiry and token fingerprint', async () => {
     const harness = createHarness('per_user_oauth');
     await expect(harness.adapter.execute(invocation)).resolves.toMatchObject({ success: true });
