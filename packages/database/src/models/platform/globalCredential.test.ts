@@ -21,6 +21,7 @@ import {
   PlatformGlobalCredentialValidationError,
   repairPlatformGlobalCredentialIdSequence,
 } from './globalCredential';
+import { isUniqueViolation } from './pgUniqueViolation';
 
 const db: LobeChatDatabase = await getTestDB();
 
@@ -640,5 +641,35 @@ describe('PlatformGlobalCredentialModel', () => {
     expect(c.id).toBeGreaterThan(b.id);
     expect(c.id).not.toBe(a.id);
     expect(c.id).not.toBe(b.id);
+  });
+});
+
+describe('isUniqueViolation', () => {
+  it('detects a { code: "23505" } error', () => {
+    expect(isUniqueViolation({ code: '23505' })).toBe(true);
+    expect(isUniqueViolation(Object.assign(new Error('pg'), { code: '23505' }))).toBe(true);
+  });
+
+  it('walks nested error.cause.cause for code 23505', () => {
+    const nested = { cause: { cause: { code: '23505' } } };
+    expect(isUniqueViolation(nested)).toBe(true);
+  });
+
+  it('falls back to the per-candidate message regex (unique|duplicate|already exists)', () => {
+    expect(isUniqueViolation(new Error('duplicate key value'))).toBe(true);
+    expect(isUniqueViolation({ message: 'already exists' })).toBe(true);
+    expect(isUniqueViolation({ message: 'Unique constraint violated' })).toBe(true);
+  });
+
+  it('falls back to the top-level message regex (non-object / constraint-name path)', () => {
+    expect(isUniqueViolation('duplicate key')).toBe(true);
+    expect(isUniqueViolation('platform_global_credentials_key_unique')).toBe(true);
+  });
+
+  it('returns false for unrelated errors', () => {
+    expect(isUniqueViolation({ code: '23503' })).toBe(false);
+    expect(isUniqueViolation(new Error('connection refused'))).toBe(false);
+    expect(isUniqueViolation({ message: 'syntax error' })).toBe(false);
+    expect(isUniqueViolation(null)).toBe(false);
   });
 });

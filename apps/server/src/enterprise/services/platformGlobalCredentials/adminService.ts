@@ -19,29 +19,31 @@ import {
   PlatformGlobalCredentialValidationError,
   PlatformRevisionConflictError,
 } from '@/database/models/platform';
-import {
-  PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES,
-  type PlatformGlobalCredentialType,
-} from '@/database/schemas/platform';
+import { PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
-import { PLATFORM_GLOBAL_CREDENTIAL_MASK } from '../../contracts/adminCreds';
 import type { PlatformSecretService } from '../../security/secret';
 import { PlatformAuditService } from '../platformAudit';
+import type {
+  PlatformGlobalCredentialGetDto,
+  PlatformGlobalCredentialPublicMaskValue,
+  PlatformGlobalCredentialSummaryDto,
+} from './adminService.dto';
+import { maskValue, toSummary } from './adminService.dto';
+import {
+  assertNoMaskedSecretValues,
+  filterNonEmptySecretValues,
+  isCanonicalBase64,
+} from './adminService.validation';
 
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
-type PlatformGlobalCredentialPublicMaskValue =
-  typeof PLATFORM_GLOBAL_CREDENTIAL_MASK | 'configured' | 'not_configured';
 
-/** Canonical base64 only — Node's Buffer decoder is lenient with invalid chars. */
-const isCanonicalBase64 = (value: string, bytes: Buffer): boolean => {
-  if (!/^(?:[A-Z\d+/]{4})*(?:[A-Z\d+/]{2}==|[A-Z\d+/]{3}=)?$/i.test(value)) {
-    return false;
-  }
-  return bytes.toString('base64') === value;
-};
-
-export { PLATFORM_GLOBAL_CREDENTIAL_MASK };
+export { PLATFORM_GLOBAL_CREDENTIAL_MASK } from '../../contracts/adminCreds';
+export type {
+  PlatformGlobalCredentialGetDto,
+  PlatformGlobalCredentialSummaryDto,
+} from './adminService.dto';
+export { assertNoMaskedSecretValues, filterNonEmptySecretValues } from './adminService.validation';
 
 export class PlatformGlobalCredentialOauthUnsupportedError extends Error {
   readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_OAUTH_UNSUPPORTED';
@@ -50,75 +52,6 @@ export class PlatformGlobalCredentialOauthUnsupportedError extends Error {
     this.name = 'PlatformGlobalCredentialOauthUnsupportedError';
   }
 }
-
-export interface PlatformGlobalCredentialSummaryDto {
-  createdAt: string;
-  description?: string;
-  fileName?: string;
-  fileSize?: number;
-  id: number;
-  key: string;
-  maskedPreview?: string;
-  name: string;
-  /** Optimistic CAS generation; required on subsequent updates. */
-  revision: number;
-  type: PlatformGlobalCredentialType;
-  updatedAt: string;
-}
-
-/** Get response: metadata + configured flag; plaintext keys map to masks only when decrypt requested. */
-export interface PlatformGlobalCredentialGetDto extends PlatformGlobalCredentialSummaryDto {
-  /** Always true when a secret envelope exists; never reveals material. */
-  configured: boolean;
-  /**
-   * When decrypt=true: public key names → fixed mask (M13: no plaintext echo).
-   * When decrypt=false/undefined: omitted.
-   */
-  plaintext?: Record<string, PlatformGlobalCredentialPublicMaskValue>;
-}
-
-const toIso = (d: Date) => d.toISOString();
-
-const toSummary = (
-  row: PlatformGlobalCredentialPublicView,
-): PlatformGlobalCredentialSummaryDto => ({
-  createdAt: toIso(row.createdAt),
-  description: row.description,
-  fileName: row.fileName,
-  fileSize: row.fileSize,
-  id: row.id,
-  key: row.key,
-  maskedPreview: row.maskedPreview ?? (row.type === 'file' ? row.fileName : 'configured'),
-  name: row.name,
-  revision: row.revision,
-  type: row.type,
-  updatedAt: toIso(row.updatedAt),
-});
-
-const maskValue = (): typeof PLATFORM_GLOBAL_CREDENTIAL_MASK => PLATFORM_GLOBAL_CREDENTIAL_MASK;
-
-/** Reject any field whose value is the public mask string (prevents silent secret destruction). */
-export const assertNoMaskedSecretValues = (values: Record<string, string>): void => {
-  for (const [key, value] of Object.entries(values)) {
-    if (value === PLATFORM_GLOBAL_CREDENTIAL_MASK) {
-      throw new PlatformGlobalCredentialValidationError(
-        `Refusing to store masked placeholder for key "${key}". Leave the field empty to keep the existing value, or enter a new secret.`,
-      );
-    }
-  }
-};
-
-/** Drop empty values; empty object means "no secret rotation". */
-export const filterNonEmptySecretValues = (
-  values: Record<string, string>,
-): Record<string, string> => {
-  const next: Record<string, string> = {};
-  for (const [key, value] of Object.entries(values)) {
-    if (!key || value == null || value === '') continue;
-    next[key] = value;
-  }
-  return next;
-};
 
 export interface PlatformGlobalCredentialAdminServiceOptions {
   /**
@@ -356,50 +289,10 @@ export class PlatformGlobalCredentialAdminService {
 
       // File rotation: consume owner-bound staging under the same CAS/lock path.
       if (params.fileHashId !== undefined) {
-        const existing = await model.getByIdForUpdate(params.id);
-        if (!existing) throw new PlatformGlobalCredentialNotFoundError();
-        if (existing.type !== 'file') {
-          throw new PlatformGlobalCredentialValidationError(
-            'fileHashId can only be used to rotate file credentials',
-          );
-        }
-
-        const updated = await model.updateFromStagedUpload({
-          createdBy: params.actorUserId,
-          expectedRevision: params.expectedRevision,
-          fileHashId: params.fileHashId,
-          id: params.id,
-          meta: {
-            description:
-              params.description !== undefined ? params.description : existing.description,
-            fileName: params.fileName,
-          },
-          name: params.name,
-        });
-
-        await audit.append({
-          action: 'admin.creds.update',
-          actorUserId: params.actorUserId,
-          afterDiff: {
-            fileName: updated.fileName,
-            fileSize: updated.fileSize,
-            id: updated.id,
-            name: updated.name,
-            revision: updated.revision,
-            rotatedSecret: true,
-          },
-          beforeDiff: {
-            id: existing.id,
-            name: existing.name,
-            revision: existing.revision,
-          },
-          reason: 'platform_global_credential_mutation',
-          result: 'success',
-          targetId: String(updated.id),
-          targetType: 'platform_global_credential',
-        });
-
-        return toSummary(updated);
+        return this.updateFileFromStaging(
+          { ...params, fileHashId: params.fileHashId },
+          { audit, model },
+        );
       }
 
       // Lock first so concurrent partial secret updates serialize before merge.
@@ -480,6 +373,64 @@ export class PlatformGlobalCredentialAdminService {
 
       return toSummary(updated);
     });
+  };
+
+  private updateFileFromStaging = async (
+    params: {
+      actorUserId: string;
+      description?: string;
+      expectedRevision: number;
+      fileHashId: string;
+      fileName?: string;
+      id: number;
+      name?: string;
+    },
+    ctx: { audit: PlatformAuditService; model: PlatformGlobalCredentialModel },
+  ): Promise<PlatformGlobalCredentialSummaryDto> => {
+    const { audit, model } = ctx;
+    const existing = await model.getByIdForUpdate(params.id);
+    if (!existing) throw new PlatformGlobalCredentialNotFoundError();
+    if (existing.type !== 'file') {
+      throw new PlatformGlobalCredentialValidationError(
+        'fileHashId can only be used to rotate file credentials',
+      );
+    }
+
+    const updated = await model.updateFromStagedUpload({
+      createdBy: params.actorUserId,
+      expectedRevision: params.expectedRevision,
+      fileHashId: params.fileHashId,
+      id: params.id,
+      meta: {
+        description: params.description !== undefined ? params.description : existing.description,
+        fileName: params.fileName,
+      },
+      name: params.name,
+    });
+
+    await audit.append({
+      action: 'admin.creds.update',
+      actorUserId: params.actorUserId,
+      afterDiff: {
+        fileName: updated.fileName,
+        fileSize: updated.fileSize,
+        id: updated.id,
+        name: updated.name,
+        revision: updated.revision,
+        rotatedSecret: true,
+      },
+      beforeDiff: {
+        id: existing.id,
+        name: existing.name,
+        revision: existing.revision,
+      },
+      reason: 'platform_global_credential_mutation',
+      result: 'success',
+      targetId: String(updated.id),
+      targetType: 'platform_global_credential',
+    });
+
+    return toSummary(updated);
   };
 
   delete = async (params: { actorUserId: string; id: number }): Promise<{ success: boolean }> =>

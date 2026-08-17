@@ -5,203 +5,62 @@
  * Envelope material is only returned via internal secret accessors for server
  * services that decrypt in-process.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import { and, asc, eq, gt, isNull, lt, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformGlobalCredential,
-  PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES,
   type PlatformGlobalCredentialItem,
   type PlatformGlobalCredentialMeta,
   platformGlobalCredentials,
   type PlatformGlobalCredentialSecretItem,
   platformGlobalCredentialSecrets,
-  type PlatformGlobalCredentialType,
   type PlatformGlobalCredentialUploadItem,
   platformGlobalCredentialUploads,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
-import { PlatformRevisionConflictError } from './errors';
+import {
+  PlatformGlobalCredentialConflictError,
+  PlatformGlobalCredentialNotFoundError,
+  PlatformGlobalCredentialValidationError,
+  PlatformRevisionConflictError,
+} from './globalCredential.errors';
+import { assertPlatformGlobalCredentialFileSize, toPublicView } from './globalCredential.helpers';
+import type {
+  CreatePlatformGlobalCredentialParams,
+  PlatformGlobalCredentialPublicView,
+  StagePlatformGlobalCredentialUploadParams,
+  UpdatePlatformGlobalCredentialParams,
+} from './globalCredential.types';
+import {
+  assertActor,
+  assertEnvelope,
+  assertFileHashId,
+  assertKey,
+  assertName,
+} from './globalCredential.validators';
+import { isUniqueViolation } from './pgUniqueViolation';
 
-export class PlatformGlobalCredentialConflictError extends Error {
-  readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_CONFLICT';
-  constructor(message = 'Credential key already exists') {
-    super(message);
-    this.name = 'PlatformGlobalCredentialConflictError';
-  }
-}
-
-export { PlatformRevisionConflictError };
-
-export class PlatformGlobalCredentialNotFoundError extends Error {
-  readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_NOT_FOUND';
-  constructor(message = 'Credential not found') {
-    super(message);
-    this.name = 'PlatformGlobalCredentialNotFoundError';
-  }
-}
-
-export class PlatformGlobalCredentialFileTooLargeError extends Error {
-  readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_FILE_TOO_LARGE';
-  readonly maxBytes = PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES;
-  constructor(message = `File exceeds ${PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES} byte limit`) {
-    super(message);
-    this.name = 'PlatformGlobalCredentialFileTooLargeError';
-  }
-}
-
-export class PlatformGlobalCredentialValidationError extends Error {
-  readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_VALIDATION';
-  constructor(
-    message: string,
-    readonly validationCode?: string,
-  ) {
-    super(message);
-    this.name = 'PlatformGlobalCredentialValidationError';
-  }
-}
-
-/** Public row projection (API / list / get). Never carries secret material. */
-export interface PlatformGlobalCredentialPublicView {
-  createdAt: Date;
-  createdBy: string | null;
-  description?: string;
-  enabled: boolean;
-  fileName?: string;
-  fileSize?: number;
-  id: number;
-  key: string;
-  maskedPreview?: string;
-  name: string;
-  /** Optimistic CAS generation; clients must echo this on update. */
-  revision: number;
-  type: PlatformGlobalCredentialType;
-  updatedAt: Date;
-  updatedBy: string | null;
-  valueKeys?: string[];
-}
-
-/** Envelope payload accepted by the model (already encrypted by PlatformSecretService). */
-export interface PlatformGlobalCredentialEnvelope {
-  ciphertext: string;
-  fingerprint: string;
-  keyId: string;
-  ref?: string;
-}
-
-export interface CreatePlatformGlobalCredentialParams {
-  createdBy?: string | null;
-  envelope: PlatformGlobalCredentialEnvelope;
-  key: string;
-  meta?: PlatformGlobalCredentialMeta;
-  name: string;
-  type: PlatformGlobalCredentialType;
-}
-
-export interface UpdatePlatformGlobalCredentialParams {
-  envelope?: PlatformGlobalCredentialEnvelope;
-  /**
-   * Required optimistic CAS token. Must equal the locked row's revision or the
-   * update is rejected with {@link PlatformRevisionConflictError}.
-   */
-  expectedRevision: number;
-  id: number;
-  meta?: PlatformGlobalCredentialMeta;
-  name?: string;
-  updatedBy?: string | null;
-}
-
-export interface StagePlatformGlobalCredentialUploadParams {
-  /** Required owning administrator — staging rows are never anonymous. */
-  createdBy: string;
-  envelope: PlatformGlobalCredentialEnvelope;
-  expiresAt: Date;
-  /** SHA-256 of plaintext content (metadata only; not the sole ownership key). */
-  fileHashId: string;
-  fileName: string;
-  fileSize: number;
-  fileType: string;
-}
-
-const KEY_PATTERN = /^[\w-]+$/;
-
-const toPublicView = (row: PlatformGlobalCredentialItem): PlatformGlobalCredentialPublicView => {
-  const meta = row.meta ?? {};
-  return {
-    createdAt: row.createdAt,
-    createdBy: row.createdBy ?? null,
-    description: meta.description,
-    enabled: row.enabled,
-    fileName: meta.fileName,
-    fileSize: meta.fileSize,
-    id: row.id,
-    key: row.key,
-    maskedPreview: meta.maskedPreview,
-    name: row.name,
-    revision: row.revision,
-    type: row.type,
-    updatedAt: row.updatedAt,
-    updatedBy: row.updatedBy ?? null,
-    valueKeys: meta.valueKeys,
-  };
-};
-
-/** Assert file size against the 256 KiB platform limit. */
-export const assertPlatformGlobalCredentialFileSize = (byteLength: number): void => {
-  if (!Number.isFinite(byteLength) || byteLength <= 0) {
-    throw new PlatformGlobalCredentialValidationError('File size must be a positive integer');
-  }
-  if (byteLength > PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES) {
-    throw new PlatformGlobalCredentialFileTooLargeError();
-  }
-};
-
-/**
- * Repair `platform_global_credentials_id_seq` after restore/import (DB-012).
- *
- * Serial PKs require the sequence to sit at `max(id)` or the next INSERT collides.
- * Call from restore runbooks and integration tests. Idempotent.
- *
- * Operator docs: `docs/self-hosting/advanced/database-restore-sequence-repair.md`
- *
- * Equivalent SQL:
- * ```sql
- * SELECT setval(
- *   pg_get_serial_sequence('platform_global_credentials', 'id'),
- *   COALESCE((SELECT MAX(id) FROM platform_global_credentials), 1),
- *   (SELECT MAX(id) IS NOT NULL FROM platform_global_credentials)
- * );
- * ```
- */
-export const repairPlatformGlobalCredentialIdSequence = async (
-  db: LobeChatDatabase | Transaction,
-): Promise<{ maxId: number; nextVal: number }> => {
-  const result = await db.execute(sql`
-    SELECT setval(
-      pg_get_serial_sequence('platform_global_credentials', 'id'),
-      COALESCE((SELECT MAX(id) FROM platform_global_credentials), 1),
-      (SELECT MAX(id) IS NOT NULL FROM platform_global_credentials)
-    ) AS next_val,
-    COALESCE((SELECT MAX(id) FROM platform_global_credentials), 0) AS max_id
-  `);
-  const rows =
-    (result as unknown as { rows?: Array<{ max_id: string | number; next_val: string | number }> })
-      .rows ??
-    (Array.isArray(result)
-      ? (result as Array<{ max_id: string | number; next_val: string | number }>)
-      : []);
-  const row = rows[0];
-  return {
-    maxId: Number(row?.max_id ?? 0),
-    nextVal: Number(row?.next_val ?? 1),
-  };
-};
-
-export const fingerprintPayload = (payload: string | Uint8Array): string => {
-  const buf = typeof payload === 'string' ? Buffer.from(payload, 'utf8') : Buffer.from(payload);
-  return createHash('sha256').update(buf).digest('hex');
-};
+export {
+  PlatformGlobalCredentialConflictError,
+  PlatformGlobalCredentialFileTooLargeError,
+  PlatformGlobalCredentialNotFoundError,
+  PlatformGlobalCredentialValidationError,
+  PlatformRevisionConflictError,
+} from './globalCredential.errors';
+export {
+  assertPlatformGlobalCredentialFileSize,
+  fingerprintPayload,
+  repairPlatformGlobalCredentialIdSequence,
+} from './globalCredential.helpers';
+export type {
+  CreatePlatformGlobalCredentialParams,
+  PlatformGlobalCredentialEnvelope,
+  PlatformGlobalCredentialPublicView,
+  StagePlatformGlobalCredentialUploadParams,
+  UpdatePlatformGlobalCredentialParams,
+} from './globalCredential.types';
 
 export class PlatformGlobalCredentialModel {
   private readonly db: LobeChatDatabase | Transaction;
@@ -293,9 +152,9 @@ export class PlatformGlobalCredentialModel {
   create = async (
     params: CreatePlatformGlobalCredentialParams,
   ): Promise<PlatformGlobalCredentialPublicView> => {
-    this.assertKey(params.key);
-    this.assertName(params.name);
-    this.assertEnvelope(params.envelope);
+    assertKey(params.key);
+    assertName(params.name);
+    assertEnvelope(params.envelope);
     if (params.type === 'file') {
       const size = params.meta?.fileSize;
       if (typeof size === 'number') assertPlatformGlobalCredentialFileSize(size);
@@ -319,7 +178,7 @@ export class PlatformGlobalCredentialModel {
         if (!row) throw new PlatformGlobalCredentialValidationError('Failed to insert credential');
         inserted = row;
       } catch (error) {
-        if (this.isUniqueViolation(error)) {
+        if (isUniqueViolation(error)) {
           throw new PlatformGlobalCredentialConflictError(
             `Credential key already exists: ${params.key}`,
           );
@@ -346,8 +205,8 @@ export class PlatformGlobalCredentialModel {
   update = async (
     params: UpdatePlatformGlobalCredentialParams,
   ): Promise<PlatformGlobalCredentialPublicView> => {
-    if (params.name !== undefined) this.assertName(params.name);
-    if (params.envelope) this.assertEnvelope(params.envelope);
+    if (params.name !== undefined) assertName(params.name);
+    if (params.envelope) assertEnvelope(params.envelope);
     if (params.meta?.fileSize !== undefined) {
       assertPlatformGlobalCredentialFileSize(params.meta.fileSize);
     }
@@ -469,9 +328,9 @@ export class PlatformGlobalCredentialModel {
       afterMutations?: () => Promise<void> | void;
     };
   }): Promise<PlatformGlobalCredentialPublicView> => {
-    this.assertActor(params.createdBy);
-    this.assertFileHashId(params.fileHashId);
-    if (params.name !== undefined) this.assertName(params.name);
+    assertActor(params.createdBy);
+    assertFileHashId(params.fileHashId);
+    if (params.name !== undefined) assertName(params.name);
     if (!Number.isInteger(params.expectedRevision) || params.expectedRevision < 0) {
       throw new PlatformGlobalCredentialValidationError(
         'expectedRevision must be a non-negative integer',
@@ -627,9 +486,9 @@ export class PlatformGlobalCredentialModel {
     params: StagePlatformGlobalCredentialUploadParams,
   ): Promise<{ fileHashId: string; fileName: string }> => {
     assertPlatformGlobalCredentialFileSize(params.fileSize);
-    this.assertEnvelope(params.envelope);
-    this.assertActor(params.createdBy);
-    this.assertFileHashId(params.fileHashId);
+    assertEnvelope(params.envelope);
+    assertActor(params.createdBy);
+    assertFileHashId(params.fileHashId);
 
     const ref =
       params.envelope.ref ?? `kms://platform-global-credentials/upload/${params.fileHashId}`;
@@ -689,10 +548,10 @@ export class PlatformGlobalCredentialModel {
     meta?: PlatformGlobalCredentialMeta;
     name: string;
   }): Promise<PlatformGlobalCredentialPublicView> => {
-    this.assertKey(params.key);
-    this.assertName(params.name);
-    this.assertActor(params.createdBy);
-    this.assertFileHashId(params.fileHashId);
+    assertKey(params.key);
+    assertName(params.name);
+    assertActor(params.createdBy);
+    assertFileHashId(params.fileHashId);
 
     return this.inTransaction(async (tx) => {
       const [upload] = await tx
@@ -737,7 +596,7 @@ export class PlatformGlobalCredentialModel {
         if (!row) throw new PlatformGlobalCredentialValidationError('Failed to insert credential');
         inserted = row;
       } catch (error) {
-        if (this.isUniqueViolation(error)) {
+        if (isUniqueViolation(error)) {
           throw new PlatformGlobalCredentialConflictError(
             `Credential key already exists: ${params.key}`,
           );
@@ -777,8 +636,8 @@ export class PlatformGlobalCredentialModel {
     fileHashId: string,
     createdBy: string,
   ): Promise<PlatformGlobalCredentialUploadItem | null> => {
-    this.assertActor(createdBy);
-    this.assertFileHashId(fileHashId);
+    assertActor(createdBy);
+    assertFileHashId(fileHashId);
     const [row] = await this.db
       .select()
       .from(platformGlobalCredentialUploads)
@@ -801,8 +660,8 @@ export class PlatformGlobalCredentialModel {
     fileHashId: string,
     createdBy: string,
   ): Promise<PlatformGlobalCredentialUploadItem | null> => {
-    this.assertActor(createdBy);
-    this.assertFileHashId(fileHashId);
+    assertActor(createdBy);
+    assertFileHashId(fileHashId);
     return this.inTransaction(async (tx) => {
       const [row] = await tx
         .select()
@@ -835,70 +694,5 @@ export class PlatformGlobalCredentialModel {
       .from(platformGlobalCredentialSecrets)
       .where(eq(platformGlobalCredentialSecrets.credentialId, credentialId));
     return row?.count ?? 0;
-  };
-
-  private assertKey = (key: string) => {
-    if (!key || key.length > 100 || !KEY_PATTERN.test(key)) {
-      throw new PlatformGlobalCredentialValidationError(
-        'Credential key must be 1–100 chars of [A-Za-z0-9_-]',
-      );
-    }
-  };
-
-  private assertName = (name: string) => {
-    if (!name || name.length > 255) {
-      throw new PlatformGlobalCredentialValidationError('Credential name must be 1–255 characters');
-    }
-  };
-
-  private assertActor = (actor: string | null | undefined) => {
-    if (!actor || !actor.trim()) {
-      throw new PlatformGlobalCredentialValidationError(
-        'createdBy is required for staged credential uploads',
-      );
-    }
-  };
-
-  private assertFileHashId = (fileHashId: string) => {
-    if (!/^[a-f0-9]{64}$/.test(fileHashId)) {
-      throw new PlatformGlobalCredentialValidationError('fileHashId must be a 64-char hex SHA-256');
-    }
-  };
-
-  private assertEnvelope = (envelope: PlatformGlobalCredentialEnvelope) => {
-    if (!envelope.ciphertext || !envelope.keyId) {
-      throw new PlatformGlobalCredentialValidationError('Secret envelope is incomplete');
-    }
-    if (!/^[a-f0-9]{64}$/.test(envelope.fingerprint)) {
-      throw new PlatformGlobalCredentialValidationError('Secret fingerprint is invalid');
-    }
-  };
-
-  private isUniqueViolation = (error: unknown): boolean => {
-    const candidates: unknown[] = [error];
-    if (error && typeof error === 'object') {
-      const e = error as { cause?: unknown; originalError?: unknown };
-      if (e.cause) candidates.push(e.cause);
-      if (e.originalError) candidates.push(e.originalError);
-      // drizzle-orm often nests: Error { cause: DatabaseError { code: '23505' } }
-      if (e.cause && typeof e.cause === 'object' && 'cause' in e.cause) {
-        candidates.push((e.cause as { cause?: unknown }).cause);
-      }
-    }
-    for (const candidate of candidates) {
-      if (!candidate || typeof candidate !== 'object') continue;
-      const code = 'code' in candidate ? String((candidate as { code?: unknown }).code) : '';
-      // Postgres unique_violation
-      if (code === '23505') return true;
-      const message =
-        candidate instanceof Error
-          ? candidate.message
-          : 'message' in candidate
-            ? String((candidate as { message?: unknown }).message)
-            : '';
-      if (/unique|duplicate|already exists/i.test(message)) return true;
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    return /unique|duplicate|already exists|platform_global_credentials_key_unique/i.test(message);
   };
 }
