@@ -3,6 +3,7 @@
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import SetupGuideCard from '@/enterprise/client/features/admin/modules/SetupGuideCard';
 import { OverviewDashboard } from '@/enterprise/client/features/admin/overview';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
@@ -27,6 +28,7 @@ const OverviewPage = memo(() => {
         />
       }
     >
+      <SetupGuideCard />
       <OverviewDashboard range={range} />
     </AdminPageTemplate>
   );

@@ -5,6 +5,8 @@ import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
+import { useModuleEnabled } from '@/enterprise/client/hooks/useModuleEnabled';
+
 import GeneralSettingsPage from '../generalSettings/GeneralSettingsPage';
 import IdentityProviderPage from '../identityProviders/IdentityProviderPage';
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
@@ -21,15 +23,21 @@ const SecurityAuthPage = memo(() => {
   const { t } = useTranslation('admin');
   const [params, setParams] = useSearchParams();
 
+  // 登录方式 is the database-IdP module; 通用设置 (registration/login policy) is core, so the
+  // surface stays reachable with the module off — only the tab it owns goes away.
+  const loginTabEnabled = useModuleEnabled('databaseIdp');
+
   const tabs = useMemo(
     () => [
-      { key: 'login' as const, label: t('securityAuth.tabs.login') },
+      ...(loginTabEnabled ? [{ key: 'login' as const, label: t('securityAuth.tabs.login') }] : []),
       { key: 'general' as const, label: t('securityAuth.tabs.general') },
     ],
-    [t],
+    [loginTabEnabled, t],
   );
 
-  const tab: SecurityAuthTab = params.get('tab') === 'general' ? 'general' : 'login';
+  // Never strand an admin on a tab that is no longer offered.
+  const tab: SecurityAuthTab =
+    !loginTabEnabled || params.get('tab') === 'general' ? 'general' : 'login';
 
   return (
     <AdminPageTemplate

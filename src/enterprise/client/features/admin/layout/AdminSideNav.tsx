@@ -5,6 +5,7 @@ import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useLocation, useNavigate } from 'react-router';
 
+import { useDisabledModules } from '@/enterprise/client/hooks/useModuleEnabled';
 import { ADMIN_NAV_ICONS } from '@/enterprise/client/nav/adminIcons';
 import {
   ADMIN_NAV_ITEMS,
@@ -63,10 +64,11 @@ AdminNavLink.displayName = 'AdminNavLink';
 const AdminSideNav = memo(() => {
   const { t } = useTranslation('admin');
   const { permissions } = useAdminAccess();
+  const disabledModules = useDisabledModules();
 
   const items = useMemo(
-    () => filterAdminNavByPermissions(ADMIN_NAV_ITEMS, permissions),
-    [permissions],
+    () => filterAdminNavByPermissions(ADMIN_NAV_ITEMS, permissions, disabledModules),
+    [disabledModules, permissions],
   );
 
   const defaultExpandedKeys = useMemo(

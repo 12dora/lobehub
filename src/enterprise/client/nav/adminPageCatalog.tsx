@@ -60,6 +60,7 @@ const SystemPage = lazy(() => import('@/enterprise/client/features/admin/system'
 const SystemGeneralPage = lazy(
   () => import('@/enterprise/client/features/admin/systemGeneral/SystemGeneralPage'),
 );
+const ModulesPage = lazy(() => import('@/enterprise/client/features/admin/modules/ModulesPage'));
 const TaskTemplateListPage = lazy(
   () => import('@/enterprise/client/features/admin/taskTemplates/TaskTemplateListPage'),
 );
@@ -186,6 +187,7 @@ export const ADMIN_PAGE_BY_ID: Readonly<
     element: withLazy(<SystemGeneralPage />),
   },
   'system-status': { componentId: 'SystemPage', element: withLazy(<SystemPage />) },
+  'modules': { componentId: 'ModulesPage', element: withLazy(<ModulesPage />) },
   'task-templates': {
     componentId: 'TaskTemplateListPage',
     element: withLazy(<TaskTemplateListPage />),

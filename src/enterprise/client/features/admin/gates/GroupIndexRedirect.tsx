@@ -5,10 +5,12 @@ import { memo, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
+import { useDisabledModules } from '@/enterprise/client/hooks/useModuleEnabled';
 import {
   ADMIN_NAV_ITEMS,
   type AdminNavItem,
   hasAllPermissions,
+  isAdminNavItemModuleDisabled,
 } from '@/enterprise/client/nav/adminNavMeta';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
@@ -21,12 +23,17 @@ const GroupIndexRedirect = memo<{ groupId: string }>(({ groupId }) => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const { permissions } = useAdminAccess();
+  const disabledModules = useDisabledModules();
 
   const firstChild = useMemo(() => {
     const group = ADMIN_NAV_ITEMS.find((item) => item.id === groupId);
     const children = group?.children ?? [];
+    // A group index must never land on a page the deployment switched off — that would show
+    // "module not enabled" for a link the admin never chose.
     const reachable = (child: AdminNavItem) =>
-      !child.hideFromNav && hasAllPermissions(permissions, child.requiredPermissions);
+      !child.hideFromNav &&
+      !isAdminNavItemModuleDisabled(child, disabledModules) &&
+      hasAllPermissions(permissions, child.requiredPermissions);
     // A group may pin its index destination (legacy deep link) instead of the menu's first
     // entry; if that child is hidden or not permitted, fall back to the first reachable one.
     const pinned = group?.indexRedirectTo
@@ -34,7 +41,7 @@ const GroupIndexRedirect = memo<{ groupId: string }>(({ groupId }) => {
       : undefined;
     if (pinned && reachable(pinned)) return pinned;
     return children.find(reachable);
-  }, [groupId, permissions]);
+  }, [disabledModules, groupId, permissions]);
 
   useEffect(() => {
     if (firstChild) navigate(firstChild.path, { replace: true });

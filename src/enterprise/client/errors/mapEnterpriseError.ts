@@ -18,6 +18,10 @@ export interface MappedEnterpriseError {
 }
 
 const ACTION_BY_CODE: Partial<Record<EnterpriseErrorCode, MappedEnterpriseError['action']>> = {
+  // A request that hit a module the deployment switched off. Retrying, re-authenticating or
+  // contacting an admin all miss the point; the code's own copy says what happened, and the UI
+  // degradation (hidden nav + AdminModuleDisabledSurface) carries the next step.
+  [PLATFORM_ERROR_CODES.PLATFORM_MODULE_DISABLED]: 'none',
   [PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED]: 'contact_admin',
   [PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT]: 'retry',
   [PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE]: 'retry',

@@ -3,14 +3,17 @@
 import { memo } from 'react';
 import { Outlet, useLocation, useMatches } from 'react-router';
 
+import { useDisabledModules } from '@/enterprise/client/hooks/useModuleEnabled';
 import {
   canAccessAdminPath,
   findAdminNavItemByPath,
   hasAllPermissions,
+  isAdminNavItemModuleDisabled,
 } from '@/enterprise/client/nav/adminNavMeta';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 import { AdminNotFoundSurface, AdminPageForbiddenSurface } from '../pages/AdminStateSurfaces';
+import ModuleDisabledRoute from './ModuleDisabledRoute';
 
 type AdminRouteHandle = {
   admin?: {
@@ -39,6 +42,7 @@ const AdminPermissionOutlet = memo(() => {
   const { permissions, status } = useAdminAccess();
   const location = useLocation();
   const matches = useMatches();
+  const disabledModules = useDisabledModules();
 
   if (status !== 'allowed') {
     return null;
@@ -51,6 +55,11 @@ const AdminPermissionOutlet = memo(() => {
   if (item) {
     if (!canAccessAdminPath(pathname, permissions)) {
       return <AdminPageForbiddenSurface />;
+    }
+    // Registered route, switched-off module: explain and offer the way back on — never a 404,
+    // which would read as a bug and send the operator hunting for a broken deployment.
+    if (isAdminNavItemModuleDisabled(item, disabledModules) && item.moduleId) {
+      return <ModuleDisabledRoute moduleId={item.moduleId} />;
     }
     return <Outlet />;
   }

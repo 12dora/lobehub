@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { useModuleEnabled } from '@/enterprise/client/hooks/useModuleEnabled';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 import ManagedResourcesPolicyPage from '../managedResources/ManagedResourcesPolicyPage';
@@ -32,11 +33,17 @@ const UnifiedManagementPage = memo(() => {
   const [params, setParams] = useSearchParams();
 
   const granted = useMemo(() => new Set(permissions), [permissions]);
-  const canReadSettings = granted.has(PLATFORM_PERMISSIONS.SETTINGS_READ);
+  // Each tab belongs to an optional module. Gating only the (hidden) legacy deep links would
+  // leave the very same surface reachable here, where every request degrades to a module error —
+  // so the module has to reach the tab that actually renders it.
+  const settingsPolicyModule = useModuleEnabled('settingsPolicy');
+  const managedAiModule = useModuleEnabled('managedAi');
+  const canReadSettings = granted.has(PLATFORM_PERMISSIONS.SETTINGS_READ) && settingsPolicyModule;
   // Policy map OR connector governance (nested shared-OAuth control is independently authorized).
   const canReadManaged =
-    granted.has(PLATFORM_PERMISSIONS.POLICY_READ) ||
-    granted.has(PLATFORM_PERMISSIONS.CONNECTOR_READ);
+    (granted.has(PLATFORM_PERMISSIONS.POLICY_READ) ||
+      granted.has(PLATFORM_PERMISSIONS.CONNECTOR_READ)) &&
+    managedAiModule;
 
   const tabs = useMemo(() => {
     const items: { key: UnifiedTab; label: string }[] = [];

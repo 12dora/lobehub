@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { SWRConfig } from 'swr';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as ZodModule from 'zod';
 
@@ -112,30 +113,34 @@ const Probe = () => {
   );
 };
 
+// Fresh SWR cache per render: `useClientDataSWR` now dedupes identical keys for 2s
+// (src/libs/swr), so back-to-back tests sharing the global cache would skip the fetch.
 const renderProvider = (disableFetch = false, initialPublicSnapshot?: PlatformPublicSnapshot) =>
   render(
-    <Provider
-      createStore={() =>
-        initServerConfigStore({
-          serverConfig: {
-            aiProvider: {},
-            enterprise: { enabled: serverConfigState.enterpriseEnabled },
-            telemetry: {},
-          },
-          serverConfigInit: serverConfigState.serverConfigInit,
-        })
-      }
-    >
-      <EnterprisePlatformProvider
-        disableFetch={disableFetch}
-        fetchCapabilities={fetchCapabilities}
-        fetchPublicSnapshot={fetchPublicSnapshot}
-        initialPublicSnapshot={initialPublicSnapshot}
+    <SWRConfig value={{ provider: () => new Map() }}>
+      <Provider
+        createStore={() =>
+          initServerConfigStore({
+            serverConfig: {
+              aiProvider: {},
+              enterprise: { enabled: serverConfigState.enterpriseEnabled },
+              telemetry: {},
+            },
+            serverConfigInit: serverConfigState.serverConfigInit,
+          })
+        }
       >
-        <DefaultInboxBrandingSync />
-        <Probe />
-      </EnterprisePlatformProvider>
-    </Provider>,
+        <EnterprisePlatformProvider
+          disableFetch={disableFetch}
+          fetchCapabilities={fetchCapabilities}
+          fetchPublicSnapshot={fetchPublicSnapshot}
+          initialPublicSnapshot={initialPublicSnapshot}
+        >
+          <DefaultInboxBrandingSync />
+          <Probe />
+        </EnterprisePlatformProvider>
+      </Provider>
+    </SWRConfig>,
   );
 
 describe('EnterprisePlatformProvider', () => {

@@ -2,8 +2,10 @@
 
 import { type Dispatch, type SetStateAction, useCallback, useMemo, useState } from 'react';
 
+import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
+
 export const AUDIT_DEFAULT_LIST_LIMIT = 50;
-export const AUDIT_LIST_POLL_MS = 4000;
+export const AUDIT_LIST_POLL_MS = ADMIN_POLL_INTERVALS.auditList;
 
 export type AuditInFlightStatus = string | null | undefined;
 

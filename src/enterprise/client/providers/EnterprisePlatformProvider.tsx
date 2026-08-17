@@ -1,15 +1,11 @@
 'use client';
 
-import { createContext, type ReactNode, use, useEffect, useMemo } from 'react';
+import { type ReactNode, useEffect, useMemo } from 'react';
 
 import { useServerConfigStore } from '@/store/serverConfig';
 import { useToolStore } from '@/store/tool';
 import { useUserStore } from '@/store/user';
 import { authSelectors } from '@/store/user/selectors';
-import {
-  DISABLED_PLATFORM_CAPABILITIES,
-  type PlatformCapabilities,
-} from '@/types/platform/capabilities';
 import {
   DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
   type PlatformPublicSnapshot,
@@ -17,18 +13,13 @@ import {
 
 import { usePublishedSkillCatalog } from '../features/skills';
 import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from '../services/platform';
+import {
+  EnterprisePlatformContext,
+  type EnterprisePlatformContextValue,
+  useEnterprisePlatform,
+} from './enterprisePlatformContext';
 import { RuntimeBrandingProvider } from './RuntimeBrandingProvider';
 import { useEnterprisePlatformData } from './useEnterprisePlatformData';
-
-export interface EnterprisePlatformContextValue {
-  capabilities: PlatformCapabilities;
-  error: Error | null;
-  loading: boolean;
-  publicSnapshot: PlatformPublicSnapshot;
-  refresh: () => Promise<void>;
-}
-
-const EnterprisePlatformContext = createContext<EnterprisePlatformContextValue | null>(null);
 
 export interface EnterprisePlatformProviderProps {
   children: ReactNode;
@@ -98,17 +89,6 @@ export default function EnterprisePlatformProvider({
   );
 }
 
-export const useEnterprisePlatform = (): EnterprisePlatformContextValue => {
-  const ctx = use(EnterprisePlatformContext);
-  if (!ctx) {
-    // Safe fallback for tests or partial trees — never throw when flags are off.
-    return {
-      capabilities: DISABLED_PLATFORM_CAPABILITIES,
-      error: null,
-      loading: false,
-      publicSnapshot: DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
-      refresh: async () => {},
-    };
-  }
-  return ctx;
-};
+// Re-exported so the many existing `from './EnterprisePlatformProvider'` call sites keep working;
+// new read-only consumers should import from `./enterprisePlatformContext` instead.
+export { type EnterprisePlatformContextValue, useEnterprisePlatform };

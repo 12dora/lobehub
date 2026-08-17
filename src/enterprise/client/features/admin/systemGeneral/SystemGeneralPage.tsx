@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
 import { deriveAdminSystemPermissions } from '@/enterprise/client/features/admin/system/controller';
+import { useModuleEnabled } from '@/enterprise/client/hooks/useModuleEnabled';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminSystemService } from '@/enterprise/client/services/adminSystem';
 
@@ -35,7 +36,15 @@ const SystemGeneralPage = memo(() => {
   const [params, setParams] = useSearchParams();
 
   const { canOperate, canRead } = deriveAdminSystemPermissions(permissions);
-  const proxy = deriveNetworkProxyPermissions(permissions);
+  const rawProxy = deriveNetworkProxyPermissions(permissions);
+  // 网络代理 is an optional module: when the deployment switched it off the tab must disappear
+  // exactly like a missing permission does, rather than offer a page that answers FORBIDDEN.
+  const networkProxyModule = useModuleEnabled('networkProxy');
+  const proxy = {
+    ...rawProxy,
+    canManage: rawProxy.canManage && networkProxyModule,
+    canRead: rawProxy.canRead && networkProxyModule,
+  };
   const allowed = accessStatus === 'allowed';
 
   const raw = params.get('tab');

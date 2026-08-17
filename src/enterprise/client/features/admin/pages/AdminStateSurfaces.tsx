@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
+import type { PlatformModuleId } from '@/const/platform/modules';
 
 import { adminShellStyles } from '../layout/style';
 
@@ -98,6 +99,51 @@ export const AdminFeatureOffSurface = memo(() => {
 });
 
 AdminFeatureOffSurface.displayName = 'AdminFeatureOffSurface';
+
+export interface AdminModuleDisabledSurfaceProps {
+  /** `envDisabledBy[moduleId]` — the exact container parameter that switched the module off. */
+  envVariable?: string | null;
+  /** Module owning this page; drives the "what this is" line. */
+  moduleId: PlatformModuleId;
+}
+
+/**
+ * A registered page whose module is switched off for this deployment.
+ *
+ * Deliberately NOT a 404: the route exists, the admin's link was right, and the reason is
+ * knowable. Say what the module is, then give exactly one next step — the modules page when
+ * the state came from the database, or the variable name when a container parameter pinned it
+ * (that switch cannot be flipped from the console).
+ */
+export const AdminModuleDisabledSurface = memo<AdminModuleDisabledSurfaceProps>(
+  ({ envVariable, moduleId }) => {
+    const { t } = useTranslation('admin');
+    const navigate = useNavigate();
+
+    return (
+      <StateCenter>
+        <FluentEmoji emoji="🧩" size={56} />
+        <h2 style={{ fontWeight: 700, margin: 0 }}>{t('modules.disabledSurface.title')}</h2>
+        <p style={{ maxWidth: 460, margin: 0 }}>
+          {t(`modules.items.${moduleId}.desc` as never, {
+            defaultValue: t('modules.disabledSurface.desc'),
+          })}
+        </p>
+        {envVariable ? (
+          <p style={{ maxWidth: 460, margin: 0 }}>
+            {t('modules.disabledSurface.byEnv', { variable: envVariable })}
+          </p>
+        ) : (
+          <Button type="primary" onClick={() => navigate('/admin/system/modules')}>
+            {t('modules.disabledSurface.action')}
+          </Button>
+        )}
+      </StateCenter>
+    );
+  },
+);
+
+AdminModuleDisabledSurface.displayName = 'AdminModuleDisabledSurface';
 
 export const AdminMobileUnsupportedSurface = memo(() => {
   const { t } = useTranslation('admin');

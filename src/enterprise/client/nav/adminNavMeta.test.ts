@@ -71,6 +71,8 @@ describe('adminNavMeta', () => {
       'system-general',
       'users',
       'unified-management',
+      // 模块 sits next to the other deployment-level surfaces, above 系统状态.
+      'modules',
       'system-status',
       'identity-providers',
       'branding',

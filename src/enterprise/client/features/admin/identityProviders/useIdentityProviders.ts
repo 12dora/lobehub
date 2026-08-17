@@ -1,6 +1,7 @@
 'use client';
 
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
+import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
 import { useClientDataSWR } from '@/libs/swr';
 
 import { isIdentityProviderTestTerminal } from './controller';
@@ -34,7 +35,7 @@ export const useIdentityProviderTestResult = (
     attemptId ? ['admin.identityProviders.testResult', attemptId] : null,
     () => adminIdentityProvidersService.testResult(attemptId!),
     {
-      refreshInterval: poll ? 1500 : 0,
+      refreshInterval: poll ? ADMIN_POLL_INTERVALS.identityProviderRestart : 0,
       revalidateOnFocus: false,
       onSuccess: (data) => {
         if (isIdentityProviderTestTerminal(data.status)) onTerminal();
@@ -46,5 +47,8 @@ export const useAuthSnapshotStatus = (enabled: boolean, poll: boolean) =>
   useClientDataSWR(
     enabled ? ['admin.system.authSnapshotStatus'] : null,
     () => adminIdentityProvidersService.getAuthSnapshotStatus(),
-    { refreshInterval: poll ? 2000 : 0, revalidateOnFocus: false },
+    {
+      refreshInterval: poll ? ADMIN_POLL_INTERVALS.identityProviderSnapshot : 0,
+      revalidateOnFocus: false,
+    },
   );

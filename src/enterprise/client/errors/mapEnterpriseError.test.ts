@@ -194,4 +194,23 @@ describe('mapEnterpriseError (structured)', () => {
     expect(mapped?.action).toBe('contact_admin');
     expect(mapped?.i18nKey).toBe('enterprise.error.PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
   });
+
+  it('maps PLATFORM_MODULE_DISABLED to a no-action failure carrying the module id', () => {
+    const mapped = mapEnterpriseError({
+      data: {
+        errorData: {
+          code: 'PLATFORM_MODULE_DISABLED',
+          details: { moduleId: 'audit' },
+        },
+      },
+    });
+    // Retry / reauth / contact-admin would all be wrong advice: the deployment switched the
+    // module off on purpose, and the UI already offers the way back on.
+    expect(mapped).toMatchObject({
+      action: 'none',
+      code: 'PLATFORM_MODULE_DISABLED',
+      details: { moduleId: 'audit' },
+      i18nKey: 'enterprise.error.PLATFORM_MODULE_DISABLED',
+    });
+  });
 });

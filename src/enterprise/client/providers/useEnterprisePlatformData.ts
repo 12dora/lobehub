@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
+import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
 import { mutate, useClientDataSWR } from '@/libs/swr';
 import {
   DISABLED_PLATFORM_CAPABILITIES,
@@ -17,14 +18,14 @@ import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from '../servi
 
 export const PLATFORM_CAPABILITIES_SWR_KEY = 'platform.getCapabilities';
 export const PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY = 'platform.getPublicSnapshot';
-export const PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL = 30_000;
+export const PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL = ADMIN_POLL_INTERVALS.publicSnapshot;
 /**
  * Capabilities carry managed-resource enforcement, which decides whether whole settings trees
  * are blocked and whose credentials the chat runtime uses. `revalidateOnFocus` alone leaves a
  * user sitting on an open page on a stale answer indefinitely after an admin flips 平台托管,
  * so poll at a modest cadence (half the public-snapshot cadence's sibling — cheap, one query).
  */
-export const PLATFORM_CAPABILITIES_REFRESH_INTERVAL = 60_000;
+export const PLATFORM_CAPABILITIES_REFRESH_INTERVAL = ADMIN_POLL_INTERVALS.capabilities;
 
 /**
  * Second AI-cache revalidation after a managed-resource transition.

@@ -1,5 +1,6 @@
 import { matchPath } from 'react-router';
 
+import type { PlatformModuleId } from '@/const/platform/modules';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 /** i18n keys used by the admin nav catalog (`admin` namespace). */
@@ -42,6 +43,7 @@ export type AdminNavLabelKey =
   | 'nav.system'
   | 'nav.systemGeneral'
   | 'nav.systemStatus'
+  | 'nav.modules'
   | 'nav.taskTemplates';
 
 /**
@@ -63,6 +65,13 @@ export interface AdminNavItem {
   indexRedirectTo?: string;
   /** i18n key under the `admin` namespace. */
   labelKey: AdminNavLabelKey;
+  /**
+   * Optional platform module owning this surface. When the module is disabled the item is
+   * hidden from the side nav and a direct link renders `AdminModuleDisabledSurface` instead of
+   * a 404 — the route stays registered so the reason is always explainable.
+   * Core admin surfaces (overview / users / system / security & auth) carry no module id.
+   */
+  moduleId?: PlatformModuleId;
   /**
    * Absolute path pattern under `/admin` (e.g. `/admin/users` or `/admin/users/:id`).
    * Use React Router path patterns; matching uses `matchPath` (most specific wins).
@@ -87,6 +96,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
   {
     id: 'stats',
     labelKey: 'nav.stats',
+    moduleId: 'platformStats',
     path: '/admin/stats',
     requiredPermissions: [PLATFORM_PERMISSIONS.STATS_READ],
   },
@@ -103,6 +113,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
       {
         id: 'ai-providers',
         labelKey: 'nav.aiProviders',
+        moduleId: 'managedAi',
         path: '/admin/ai/providers',
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
@@ -110,18 +121,21 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         hideFromNav: true,
         id: 'ai-provider-detail',
         labelKey: 'nav.aiProviderDetail',
+        moduleId: 'managedAi',
         path: '/admin/ai/providers/:id',
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
       {
         id: 'ai-service-model',
         labelKey: 'nav.aiServiceModel',
+        moduleId: 'managedAi',
         path: '/admin/ai/service-model',
         requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
       },
       {
         id: 'ai-skills',
         labelKey: 'nav.aiSkills',
+        moduleId: 'managedSkills',
         path: '/admin/ai/skills',
         requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
       },
@@ -129,12 +143,14 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         hideFromNav: true,
         id: 'ai-skill-detail',
         labelKey: 'nav.aiSkillDetail',
+        moduleId: 'managedSkills',
         path: '/admin/ai/skills/:id',
         requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
       },
       {
         id: 'ai-connectors',
         labelKey: 'nav.aiConnectors',
+        moduleId: 'managedConnectors',
         path: '/admin/ai/connectors',
         requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
       },
@@ -142,12 +158,14 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         hideFromNav: true,
         id: 'ai-connector-detail',
         labelKey: 'nav.aiConnectorDetail',
+        moduleId: 'managedConnectors',
         path: '/admin/ai/connectors/:id',
         requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
       },
       {
         id: 'ai-memory',
         labelKey: 'nav.aiMemory',
+        moduleId: 'memory',
         path: '/admin/ai/memory',
         requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
       },
@@ -156,6 +174,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         // so they reuse the platform-agent permission codes (no extra RBAC seeding).
         id: 'task-templates',
         labelKey: 'nav.taskTemplates',
+        moduleId: 'taskTemplates',
         path: '/admin/ai/task-templates',
         requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],
       },
@@ -170,6 +189,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     hideFromNav: true,
     id: 'skills',
     labelKey: 'nav.skills',
+    moduleId: 'managedSkills',
     path: '/admin/skills',
     requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
   },
@@ -177,6 +197,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     hideFromNav: true,
     id: 'skills-detail',
     labelKey: 'nav.skillDetail',
+    moduleId: 'managedSkills',
     path: '/admin/skills/:id',
     requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
   },
@@ -184,6 +205,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     hideFromNav: true,
     id: 'connectors',
     labelKey: 'nav.connectors',
+    moduleId: 'managedConnectors',
     path: '/admin/connectors',
     requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
   },
@@ -191,12 +213,14 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     hideFromNav: true,
     id: 'connectors-detail',
     labelKey: 'nav.connectorDetail',
+    moduleId: 'managedConnectors',
     path: '/admin/connectors/:id',
     requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
   },
   {
     id: 'agents',
     labelKey: 'nav.agents',
+    moduleId: 'managedAgents',
     path: '/admin/agents',
     requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],
   },
@@ -205,18 +229,21 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
       {
         id: 'audit-logs',
         labelKey: 'nav.auditLogs',
+        moduleId: 'audit',
         path: '/admin/audit/logs',
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_READ],
       },
       {
         id: 'audit-live',
         labelKey: 'nav.auditLive',
+        moduleId: 'audit',
         path: '/admin/audit/live',
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
       },
       {
         id: 'audit-conversations',
         labelKey: 'nav.auditConversations',
+        moduleId: 'audit',
         path: '/admin/audit/conversations',
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
       },
@@ -224,6 +251,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         hideFromNav: true,
         id: 'audit-conversation-user',
         labelKey: 'nav.auditConversationUser',
+        moduleId: 'audit',
         path: '/admin/audit/conversations/:userId',
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
       },
@@ -231,36 +259,43 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         hideFromNav: true,
         id: 'audit-conversation-topic',
         labelKey: 'nav.auditConversationTopic',
+        moduleId: 'audit',
         path: '/admin/audit/conversations/:userId/topics/:topicId',
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
       },
       {
         id: 'content-moderation',
         labelKey: 'nav.contentModeration',
+        moduleId: 'moderation',
         path: '/admin/audit/content-moderation',
         requiredPermissions: [PLATFORM_PERMISSIONS.MODERATION_READ],
       },
       {
         id: 'audit-exports',
         labelKey: 'nav.auditExports',
+        moduleId: 'audit',
         path: '/admin/audit/exports',
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_EXPORT],
       },
       {
         id: 'audit-legal-holds',
         labelKey: 'nav.auditLegalHolds',
+        moduleId: 'audit',
         path: '/admin/audit/holds',
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE],
       },
       {
         id: 'audit-retention',
         labelKey: 'nav.auditRetention',
+        moduleId: 'audit',
         path: '/admin/audit/retention',
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE],
       },
     ],
     id: 'audit',
     labelKey: 'nav.audit',
+    // No `moduleId` on the group itself: 内容审计 is its own module, so the group must stay
+    // visible while any child is. The group disappears automatically once every child is gone.
     path: '/admin/audit',
     // Group shell: visible when any child is allowed (same as `ai` group).
     requiredPermissions: [],
@@ -301,6 +336,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         hideFromNav: true,
         id: 'settings',
         labelKey: 'nav.settings',
+        moduleId: 'settingsPolicy',
         // M05: production settings policy page
         path: '/admin/settings',
         requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
@@ -312,8 +348,17 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         hideFromNav: true,
         id: 'managed-resources',
         labelKey: 'nav.managedResources',
+        moduleId: 'managedAi',
         path: '/admin/managed-resources',
         requiredPermissions: [PLATFORM_PERMISSIONS.POLICY_READ],
+      },
+      {
+        // 模块 — deployment-level on/off switches. Core surface (it is how a disabled module
+        // gets turned back on), so it never carries a `moduleId` of its own.
+        id: 'modules',
+        labelKey: 'nav.modules',
+        path: '/admin/system/modules',
+        requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
       },
       {
         // Former `/admin/system` leaf. `/admin/system` is now the group index redirect
@@ -328,12 +373,15 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         // registration/login policy ("通用设置") tab. Path kept for deep-link back-compat.
         id: 'identity-providers',
         labelKey: 'nav.securityAuth',
+        // Core surface: the 通用设置 tab is registration/login policy, which no module owns.
+        // Only the 登录方式 tab is gated on `databaseIdp` (in-page, like the network-proxy tab).
         path: '/admin/identity-providers',
         requiredPermissions: [PLATFORM_PERMISSIONS.IDENTITY_READ],
       },
       {
         id: 'branding',
         labelKey: 'nav.branding',
+        moduleId: 'branding',
         path: '/admin/branding',
         requiredPermissions: [PLATFORM_PERMISSIONS.BRANDING_READ],
       },
@@ -419,22 +467,39 @@ export const hasAllPermissions = (
   return required.every((p) => set.has(p));
 };
 
+const NO_DISABLED_MODULES: ReadonlySet<PlatformModuleId> = new Set<PlatformModuleId>();
+
+/** Whether this catalog entry belongs to a module the deployment has switched off. */
+export const isAdminNavItemModuleDisabled = (
+  item: AdminNavItem | undefined,
+  disabledModules: ReadonlySet<PlatformModuleId> = NO_DISABLED_MODULES,
+): boolean => Boolean(item?.moduleId && disabledModules.has(item.moduleId));
+
+/** Module owning the surface behind a path, if any. */
+export const findAdminNavModuleId = (pathname: string): PlatformModuleId | undefined =>
+  findAdminNavItemByPath(pathname)?.moduleId;
+
 /**
  * Filter nav tree by granted permissions.
  * Parent groups without a direct permission stay when any child is visible.
  * Hidden detail routes are never shown in the menu.
+ *
+ * `disabledModules` additionally drops surfaces whose module is switched off for this
+ * deployment. Defaults to empty, so every existing caller keeps today's behaviour.
  */
 export const filterAdminNavByPermissions = (
   items: readonly AdminNavItem[],
   granted: readonly string[],
+  disabledModules: ReadonlySet<PlatformModuleId> = NO_DISABLED_MODULES,
 ): AdminNavItem[] => {
   const result: AdminNavItem[] = [];
 
   for (const item of items) {
     if (item.hideFromNav) continue;
+    if (isAdminNavItemModuleDisabled(item, disabledModules)) continue;
 
     const children = item.children
-      ? filterAdminNavByPermissions(item.children, granted)
+      ? filterAdminNavByPermissions(item.children, granted, disabledModules)
       : undefined;
 
     const selfAllowed = hasAllPermissions(granted, item.requiredPermissions);

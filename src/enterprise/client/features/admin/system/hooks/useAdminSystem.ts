@@ -29,6 +29,7 @@ import type {
   AdminSystemJobs,
   AdminSystemService,
 } from '@/enterprise/client/services/adminSystem';
+import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
 import { useClientDataSWR } from '@/libs/swr';
 
 import {
@@ -40,7 +41,7 @@ import {
 } from '../swrKeys';
 
 const DEFAULT_PAGE_SIZE = 50;
-const ACTIVE_JOB_POLL_INTERVAL_MS = 3000;
+const ACTIVE_JOB_POLL_INTERVAL_MS = ADMIN_POLL_INTERVALS.jobs;
 
 export const useAdminSystemStatus = (enabled: boolean, service: AdminSystemService) =>
   useClientDataSWR(buildAdminSystemStatusKey(enabled), () => service.getStatus(), {
