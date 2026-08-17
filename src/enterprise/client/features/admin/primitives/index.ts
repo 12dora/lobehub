@@ -33,6 +33,13 @@ export {
   MAX_LOCAL_DRAFT_SCAN_NODES,
   utf8ByteLength,
 } from './localDraftSafety';
+export {
+  openReasonModal,
+  ReasonModalContent,
+  type ReasonModalContentProps,
+  type ReasonModalDismissGuard,
+  type ReasonModalPhase,
+} from './openReasonModal';
 export { cloneFromCanonical, createCanonicalSnapshot, deepFreeze } from './payloadSnapshot';
 export { default as RevisionBanner, type RevisionBannerProps } from './RevisionBanner';
 export { runAdminMutation, type RunAdminMutationOptions } from './runAdminMutation';
@@ -43,6 +50,7 @@ export {
   getAdminStatusPresentation,
   normalizeAdminStatus,
 } from './statusBadge.utils';
+export { useModalPhaseGuard, type UseModalPhaseGuardOptions } from './useModalPhaseGuard';
 export {
   type AdminReauthBusyPhase,
   type RunReauthedSubmitOptions,

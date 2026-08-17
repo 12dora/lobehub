@@ -1,9 +1,9 @@
 'use client';
 
 import { Text } from '@lobehub/ui';
-import { Checkbox, Input, toast } from '@lobehub/ui/base-ui';
+import { Checkbox, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import dayjs, { type Dayjs } from 'dayjs';
+import { type Dayjs } from 'dayjs';
 import i18n from 'i18next';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -20,11 +20,11 @@ import type {
 import { AUTO_REASON } from '../auditReasonCodes';
 import { getAdminUsersMutationErrorKey } from '../utils';
 import {
-  BanExtraFields,
   type BanMode,
   buildReplaceGlobalRolesPayload,
   getEligibleAssignableRoles,
 } from './actions';
+import { createBanExtra, createTypeToConfirmExtra, validateBanExtra } from './extras';
 import { openReasonModal } from './openReasonModal';
 
 const BULK_PREVIEW = 3;
@@ -139,37 +139,10 @@ export const openBulkBanModal = (params: {
     mode: 'permanent' as BanMode,
   };
 
-  const ControlledBan = memo<{ locked: boolean; reportExtraChange: () => void }>(
-    ({ locked, reportExtraChange }) => {
-      const [mode, setMode] = useState<BanMode>('permanent');
-      const [expiresAt, setExpiresAt] = useState<Dayjs | null>(null);
-      return (
-        <div className={styles.field}>
-          <BulkTargetPreview targets={targets} />
-          <BanExtraFields
-            expiresAt={expiresAt}
-            locked={locked}
-            mode={mode}
-            onExpiresAtChange={(next) => {
-              setExpiresAt(next);
-              banState.expiresAt = next;
-              reportExtraChange();
-            }}
-            onModeChange={(next) => {
-              setMode(next);
-              banState.mode = next;
-              if (next === 'permanent') {
-                setExpiresAt(null);
-                banState.expiresAt = null;
-              }
-              reportExtraChange();
-            }}
-          />
-        </div>
-      );
-    },
-  );
-  ControlledBan.displayName = 'BulkControlledBan';
+  const ControlledBan = createBanExtra(banState, {
+    displayName: 'BulkControlledBan',
+    prefix: <BulkTargetPreview targets={targets} />,
+  });
 
   openReasonModal({
     authMethod: params.authMethod,
@@ -182,12 +155,7 @@ export const openBulkBanModal = (params: {
     extra: ({ locked, reportExtraChange }) => (
       <ControlledBan locked={locked} reportExtraChange={reportExtraChange} />
     ),
-    validateExtra: () => {
-      if (banState.mode === 'permanent') return null;
-      if (!banState.expiresAt) return 'users.modals.ban.expiryRequired';
-      if (!banState.expiresAt.isAfter(dayjs())) return 'users.modals.ban.expiryFuture';
-      return null;
-    },
+    validateExtra: () => validateBanExtra(banState),
     buildPayload: (reason) => {
       const payload: Omit<AdminUsersBanInput, 'userId'> = { reason };
       if (banState.mode === 'temporary' && banState.expiresAt) {
@@ -253,36 +221,14 @@ export const openBulkDeleteModal = (params: {
   const confirmValue = String(targets.length);
   const deleteState = { confirmText: '' };
 
-  const ControlledDeleteConfirm = memo<{ locked: boolean; reportExtraChange: () => void }>(
-    ({ locked, reportExtraChange }) => {
-      const { t: tr } = useTranslation('admin');
-      const [text, setText] = useState('');
-      return (
-        <div className={styles.field}>
-          <BulkTargetPreview targets={targets} />
-          <Text type="danger">
-            {tr('users.modals.bulk.delete.typeConfirmHint', {
-              confirm: confirmValue,
-              count: targets.length,
-            })}
-          </Text>
-          <Input
-            aria-label={tr('users.modals.delete.typeConfirmLabel')}
-            disabled={locked}
-            placeholder={confirmValue}
-            value={text}
-            onChange={(event) => {
-              const next = event.target.value;
-              setText(next);
-              deleteState.confirmText = next;
-              reportExtraChange();
-            }}
-          />
-        </div>
-      );
-    },
-  );
-  ControlledDeleteConfirm.displayName = 'BulkControlledDeleteConfirm';
+  const ControlledDeleteConfirm = createTypeToConfirmExtra(deleteState, {
+    ariaLabelKey: 'users.modals.delete.typeConfirmLabel',
+    displayName: 'BulkControlledDeleteConfirm',
+    hintKey: 'users.modals.bulk.delete.typeConfirmHint',
+    hintParams: { confirm: confirmValue, count: targets.length },
+    placeholder: confirmValue,
+    prefix: <BulkTargetPreview targets={targets} />,
+  });
 
   openReasonModal({
     authMethod: params.authMethod,

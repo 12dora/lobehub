@@ -1,7 +1,7 @@
 'use client';
 
 import { DatePicker, Text } from '@lobehub/ui';
-import { Checkbox, Input, Select, toast } from '@lobehub/ui/base-ui';
+import { Checkbox, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
 import i18n from 'i18next';
@@ -20,7 +20,10 @@ import type {
 
 import { AUTO_REASON } from '../auditReasonCodes';
 import { validateHardDeleteConfirm } from './deleteConfirm';
+import { type BanMode, createBanExtra, createTypeToConfirmExtra, validateBanExtra } from './extras';
 import { openReasonModal } from './openReasonModal';
+
+export { BanExtraFields, type BanMode } from './extras';
 
 const styles = createStaticStyles(({ css }) => ({
   field: css`
@@ -69,46 +72,6 @@ export const getEligibleAssignableRoles = (
 
 // ── Ban ─────────────────────────────────────────────────────────────────────
 
-export type BanMode = 'permanent' | 'temporary';
-
-export const BanExtraFields = memo<{
-  expiresAt: Dayjs | null;
-  locked: boolean;
-  mode: BanMode;
-  onExpiresAtChange: (v: Dayjs | null) => void;
-  onModeChange: (mode: BanMode) => void;
-}>(({ mode, expiresAt, locked, onModeChange, onExpiresAtChange }) => {
-  const { t: tr } = useTranslation('admin');
-  return (
-    <div className={styles.field}>
-      <Text>{tr('users.modals.ban.duration')}</Text>
-      <Select
-        disabled={locked}
-        value={mode}
-        options={[
-          { label: tr('users.modals.ban.permanent'), value: 'permanent' },
-          { label: tr('users.modals.ban.temporary'), value: 'temporary' },
-        ]}
-        onChange={(value) => {
-          onModeChange(value === 'temporary' ? 'temporary' : 'permanent');
-        }}
-      />
-      {mode === 'temporary' ? (
-        <DatePicker
-          showTime
-          aria-label={tr('users.modals.ban.expiryLabel')}
-          disabled={locked}
-          disabledDate={(d) => d.isBefore(dayjs(), 'day')}
-          size="small"
-          value={expiresAt}
-          onChange={(v) => onExpiresAtChange(v as Dayjs | null)}
-        />
-      ) : null}
-    </div>
-  );
-});
-BanExtraFields.displayName = 'BanExtraFields';
-
 export const openBanUserModal = (params: {
   authMethod?: AdminReauthAuthMethod;
   onConfirm: (input: AdminUsersBanInput) => Promise<unknown>;
@@ -121,34 +84,7 @@ export const openBanUserModal = (params: {
     mode: 'permanent' as BanMode,
   };
 
-  const ControlledBan = memo<{ locked: boolean; reportExtraChange: () => void }>(
-    ({ locked, reportExtraChange }) => {
-      const [m, setM] = useState<BanMode>('permanent');
-      const [exp, setExp] = useState<Dayjs | null>(null);
-      return (
-        <BanExtraFields
-          expiresAt={exp}
-          locked={locked}
-          mode={m}
-          onExpiresAtChange={(next) => {
-            setExp(next);
-            banState.expiresAt = next;
-            reportExtraChange();
-          }}
-          onModeChange={(next) => {
-            setM(next);
-            banState.mode = next;
-            if (next === 'permanent') {
-              setExp(null);
-              banState.expiresAt = null;
-            }
-            reportExtraChange();
-          }}
-        />
-      );
-    },
-  );
-  ControlledBan.displayName = 'ControlledBan';
+  const ControlledBan = createBanExtra(banState, { displayName: 'ControlledBan' });
 
   openReasonModal({
     authMethod: params.authMethod,
@@ -161,12 +97,7 @@ export const openBanUserModal = (params: {
     extra: ({ locked, reportExtraChange }) => (
       <ControlledBan locked={locked} reportExtraChange={reportExtraChange} />
     ),
-    validateExtra: () => {
-      if (banState.mode === 'permanent') return null;
-      if (!banState.expiresAt) return 'users.modals.ban.expiryRequired';
-      if (!banState.expiresAt.isAfter(dayjs())) return 'users.modals.ban.expiryFuture';
-      return null;
-    },
+    validateExtra: () => validateBanExtra(banState),
     buildPayload: (reason) => {
       const payload: AdminUsersBanInput = { reason, userId: params.userId };
       if (banState.mode === 'temporary' && banState.expiresAt) {
@@ -593,32 +524,13 @@ export const openDeleteUserModal = (params: {
   // Updated only from onChange — requires exact match of the displayed target label.
   const deleteState = { confirmText: '' };
 
-  const ControlledDeleteConfirm = memo<{ locked: boolean; reportExtraChange: () => void }>(
-    ({ locked, reportExtraChange }) => {
-      const { t: tr } = useTranslation('admin');
-      const [text, setText] = useState('');
-      return (
-        <div className={styles.field}>
-          <Text type="danger">
-            {tr('users.modals.delete.typeConfirmHint', { target: params.targetLabel })}
-          </Text>
-          <Input
-            aria-label={tr('users.modals.delete.typeConfirmLabel')}
-            disabled={locked}
-            placeholder={params.targetLabel}
-            value={text}
-            onChange={(e) => {
-              const next = e.target.value;
-              setText(next);
-              deleteState.confirmText = next;
-              reportExtraChange();
-            }}
-          />
-        </div>
-      );
-    },
-  );
-  ControlledDeleteConfirm.displayName = 'ControlledDeleteConfirm';
+  const ControlledDeleteConfirm = createTypeToConfirmExtra(deleteState, {
+    ariaLabelKey: 'users.modals.delete.typeConfirmLabel',
+    displayName: 'ControlledDeleteConfirm',
+    hintKey: 'users.modals.delete.typeConfirmHint',
+    hintParams: { target: params.targetLabel },
+    placeholder: params.targetLabel,
+  });
 
   openReasonModal({
     authMethod: params.authMethod,

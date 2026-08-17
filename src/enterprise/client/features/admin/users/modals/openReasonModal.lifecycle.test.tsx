@@ -360,6 +360,36 @@ describe('ReasonModalContent lifecycle (R4)', () => {
     expect(attempts).toBe(1);
   });
 
+  it('Escape is not swallowed while phase is idle', async () => {
+    // Pins the negative case: the capture-phase listener must not stop Escape
+    // while idle, so extracted `blockEscapeWhen` cannot silently widen.
+    const dismissSpy = vi.fn();
+    document.addEventListener('keydown', dismissSpy);
+
+    try {
+      openReasonModal({
+        title: 'T',
+        targetLabel: 'u',
+        submitLabel: 'Confirm',
+        buildPayload: (r) => ({ reason: r }),
+        onSubmit: async () => {},
+      });
+
+      await waitFor(() => expect(screen.getByLabelText('reason')).toBeTruthy());
+
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      expect(dismissSpy).toHaveBeenCalledTimes(1);
+
+      // onOpenChange veto must also stay idle-only: no re-open.
+      committedOpen = false;
+      capturedOnOpenChange!(false);
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(committedOpen).toBe(false);
+    } finally {
+      document.removeEventListener('keydown', dismissSpy);
+    }
+  });
+
   it('Escape during mutating re-opens the modal so the in-flight mutation keeps its UI', async () => {
     updateSpy.mockReset();
     let resolveSubmit!: () => void;
