@@ -314,22 +314,38 @@ export const updateModuleSettings = async (
   );
 };
 
-let bootModules: PlatformModuleStateMap | null = null;
+// The boot view lives on `globalThis`, not in a module-level variable: Next.js bundles
+// `instrumentation.ts` and each route handler into separate module graphs, so this file can be
+// evaluated more than once per process. A module-level slot set by instrumentation would be
+// invisible to the tRPC handlers (measured: `pendingRestart` always empty, gateway/start
+// answering as if bots were on). One process = one boot view.
+const BOOT_MODULES_GLOBAL_KEY = Symbol.for('lobehub.enterprise.bootModules');
+type BootModulesGlobal = { [BOOT_MODULES_GLOBAL_KEY]?: PlatformModuleStateMap | null };
+const bootGlobal = globalThis as unknown as BootModulesGlobal;
+
+const readBootModules = (): PlatformModuleStateMap | null =>
+  bootGlobal[BOOT_MODULES_GLOBAL_KEY] ?? null;
+const writeBootModules = (value: PlatformModuleStateMap | null): void => {
+  bootGlobal[BOOT_MODULES_GLOBAL_KEY] = value;
+};
 
 /** First step of instrumentation.register(). Idempotent; failures degrade to env-only. */
 export const initBootModules = async (): Promise<PlatformModuleStateMap> => {
-  if (bootModules) return bootModules;
+  const existing = readBootModules();
+  if (existing) return existing;
+  let resolved: PlatformModuleStateMap;
   try {
-    bootModules = (await getModuleSettingsSnapshot()).effective;
+    resolved = (await getModuleSettingsSnapshot()).effective;
   } catch {
-    bootModules = envOnlySnapshot().effective;
+    resolved = envOnlySnapshot().effective;
   }
-  return bootModules;
+  writeBootModules(resolved);
+  return resolved;
 };
 
-/** Sync boot view; env-only until `initBootModules()` has resolved. */
+/** Sync boot view; env-only until `initBootModules()` has resolved (in any module copy). */
 export const getBootModules = (): PlatformModuleStateMap =>
-  bootModules ?? envOnlySnapshot().effective;
+  readBootModules() ?? envOnlySnapshot().effective;
 
 export const isBootModuleEnabled = (id: PlatformModuleId): boolean => getBootModules()[id];
 
@@ -341,7 +357,7 @@ export const getPendingRestartModules = async (): Promise<PlatformModuleId[]> =>
 
 /** Test helper. */
 export const resetModuleSettingsForTest = (): void => {
-  bootModules = null;
+  writeBootModules(null);
   cache = null;
   lastLoaded = null;
   warnedFailOpen = false;
