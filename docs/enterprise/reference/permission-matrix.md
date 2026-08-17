@@ -10,42 +10,44 @@
 
 平台权限统一格式 `platform_<资源>:<动作>:all`，仅可由 `workspace_id IS NULL` 的全局角色满足。
 
-| 域        | 资源前缀               | 动作                                                                                        |
-| --------- | ---------------------- | ------------------------------------------------------------------------------------------- |
-| 准入      | `platform_admin`       | `access`                                                                                    |
-| 用户      | `platform_user`        | `read` `create` `update` `ban` `delete` `session_revoke` `role_manage`                      |
-| 角色      | `platform_role`        | `read` `update`                                                                             |
-| 内容审计  | `platform_moderation`  | `read`（概况 / 记录 / 设置）`manage`（改设置 / 试跑 / 显示原文 / 删记录 / 清缓存）          |
-| 设置      | `platform_settings`    | `read` `update` `publish`                                                                   |
-| 策略      | `platform_policy`      | `read` `update` `publish`                                                                   |
-| AI 服务商 | `platform_ai_provider` | `read` `create` `update` `delete` `test` `publish`                                          |
-| AI 模型   | `platform_ai_model`    | `read` `create` `update` `delete` `publish`                                                 |
-| 技能      | `platform_skill`       | `read` `create` `update` `delete` `publish`                                                 |
-| 连接器    | `platform_connector`   | `read` `create` `update` `delete` `test` `publish`                                          |
-| 助理      | `platform_agent`       | `read` `create` `update` `delete` `publish` `assign`                                        |
-| 凭据      | `platform_credential`  | `read` `create` `update` `delete`                                                           |
-| 身份      | `platform_identity`    | `read` `create` `update` `delete` `test` `publish`                                          |
-| OIDC      | `platform_oidc`        | `publish`                                                                                   |
-| 品牌      | `platform_branding`    | `read` `update` `publish`                                                                   |
-| 审计      | `platform_audit`       | `read` `export` `conversation_read` `policy_update` `retention_operate` `legal_hold_manage` |
-| 统计      | `platform_stats`       | `read`                                                                                      |
-| 系统      | `platform_system`      | `read` `operate`                                                                            |
+| 域        | 资源前缀                 | 动作                                                                                                |
+| --------- | ------------------------ | --------------------------------------------------------------------------------------------------- |
+| 准入      | `platform_admin`         | `access`                                                                                            |
+| 用户      | `platform_user`          | `read` `create` `update` `ban` `delete` `session_revoke` `role_manage`                              |
+| 角色      | `platform_role`          | `read` `update`                                                                                     |
+| 内容审计  | `platform_moderation`    | `read`（概况 / 记录 / 设置）`manage`（改设置 / 试跑 / 显示原文 / 删记录 / 清缓存）                  |
+| 设置      | `platform_settings`      | `read` `update` `publish`                                                                           |
+| 策略      | `platform_policy`        | `read` `update` `publish`                                                                           |
+| AI 服务商 | `platform_ai_provider`   | `read` `create` `update` `delete` `test` `publish`                                                  |
+| AI 模型   | `platform_ai_model`      | `read` `create` `update` `delete` `publish`                                                         |
+| 技能      | `platform_skill`         | `read` `create` `update` `delete` `publish`                                                         |
+| 连接器    | `platform_connector`     | `read` `create` `update` `delete` `test` `publish`                                                  |
+| 助理      | `platform_agent`         | `read` `create` `update` `delete` `publish` `assign`                                                |
+| 凭据      | `platform_credential`    | `read` `create` `update` `delete`                                                                   |
+| 身份      | `platform_identity`      | `read` `create` `update` `delete` `test` `publish`                                                  |
+| OIDC      | `platform_oidc`          | `publish`                                                                                           |
+| 品牌      | `platform_branding`      | `read` `update` `publish`                                                                           |
+| 审计      | `platform_audit`         | `read` `export` `conversation_read` `policy_update` `retention_operate` `legal_hold_manage`         |
+| 统计      | `platform_stats`         | `read`                                                                                              |
+| 系统      | `platform_system`        | `read` `operate`                                                                                    |
+| 网络代理  | `platform_network_proxy` | `read`（设置 / 状态 / 订阅 / 节点 / 引擎日志）`manage`（改出口 / 作用域 / 订阅、装产物 / 重启引擎） |
 
 ## 角色 → 权限矩阵
 
 内置全局系统角色见 `PLATFORM_SYSTEM_ROLES`。图例：`✓` 全量（读 + 写 / 发布 / 操作）、`R` 只读、`R/X` 只读 + 导出、`—` 无。除 `platform_user` 外，所有角色均持 `platform_admin:access`。
 
-| 角色            | 用户 | 角色 | 设置 | 策略 | AI  | 技能 | 连接器 | 助理 | 凭据 | 身份 / OIDC | 品牌 | 审计 | 审计・内容 | 统计 | 系统 |
-| --------------- | :--: | :--: | :--: | :--: | :-: | :--: | :----: | :--: | :--: | :---------: | :--: | :--: | :--------: | :--: | :--: |
-| super\_admin    |  ✓   |  ✓   |  ✓   |  ✓   |  ✓  |  ✓   |   ✓    |  ✓   |  ✓   |      ✓      |  ✓   |  ✓   |     ✓      |  ✓   |  ✓   |
-| user\_admin     |  ✓   |  ✓   |  —   |  —   |  —  |  —   |   —    |  —   |  —   |      —      |  —   |  R   |     —      |  —   |  —   |
-| ai\_admin       |  R   |  —   |  R   |  ✓   |  ✓  |  ✓   |   ✓    |  ✓   |  ✓   |      —      |  —   |  R   |     —      |  —   |  —   |
-| identity\_admin |  R   |  —   |  —   |  —   |  —  |  —   |   —    |  —   |  —   |      ✓      |  ✓   |  R   |     —      |  —   |  —   |
-| auditor         |  R   |  R   |  R   |  R   |  R  |  R   |   R    |  R   |  R   |      R      |  R   | R/X  |     —      |  R   |  R   |
-| platform\_user  |  —   |  —   |  —   |  —   |  —  |  —   |   —    |  —   |  —   |      —      |  —   |  —   |     —      |  —   |  —   |
+| 角色            | 用户 | 角色 | 设置 | 策略 | AI  | 技能 | 连接器 | 助理 | 凭据 | 身份 / OIDC | 品牌 | 审计 | 审计・内容 | 统计 | 系统 | 网络代理 |
+| --------------- | :--: | :--: | :--: | :--: | :-: | :--: | :----: | :--: | :--: | :---------: | :--: | :--: | :--------: | :--: | :--: | :------: |
+| super\_admin    |  ✓   |  ✓   |  ✓   |  ✓   |  ✓  |  ✓   |   ✓    |  ✓   |  ✓   |      ✓      |  ✓   |  ✓   |     ✓      |  ✓   |  ✓   |    ✓     |
+| user\_admin     |  ✓   |  ✓   |  —   |  —   |  —  |  —   |   —    |  —   |  —   |      —      |  —   |  R   |     —      |  —   |  —   |    —     |
+| ai\_admin       |  R   |  —   |  R   |  ✓   |  ✓  |  ✓   |   ✓    |  ✓   |  ✓   |      —      |  —   |  R   |     —      |  —   |  —   |    —     |
+| identity\_admin |  R   |  —   |  —   |  —   |  —  |  —   |   —    |  —   |  —   |      ✓      |  ✓   |  R   |     —      |  —   |  —   |    —     |
+| auditor         |  R   |  R   |  R   |  R   |  R  |  R   |   R    |  R   |  R   |      R      |  R   | R/X  |     —      |  R   |  R   |    R     |
+| platform\_user  |  —   |  —   |  —   |  —   |  —  |  —   |   —    |  —   |  —   |      —      |  —   |  —   |     —      |  —   |  —   |    —     |
 
 - 审计・内容 = `conversation_read` / `policy_update` / `retention_operate` / `legal_hold_manage`，默认仅 `super_admin`；`auditor` 只有元数据读取与导出，看不到会话内容。
 - `auditor` 的只读集合由 `roles.ts` 从所有 `:read:` / `:export:` 代码派生，新增只读权限自动纳入。
+- 网络代理 `manage` 默认只给 `super_admin`；`auditor` 的 `NETWORK_PROXY_READ` 来自上面的只读派生（`:read:` 自动纳入），能看设置 / 状态 / 订阅但改不了。已部署实例新增这两个权限后必须重播种 RBAC（bootstrap CLI），否则老的 `super_admin` 角色包里没有它们，网络代理 Tab 不可见。
 - `workspace_owner`（连同 `workspace_member` / `workspace_viewer`）是工作区角色，权限来自 `WORKSPACE_ROLE_PERMISSIONS`（`workspace_id` 指向所属工作区），**不继承任何平台权限**，无法进入 admin 面板。
 
 ## 关键不变式

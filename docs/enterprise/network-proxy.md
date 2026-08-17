@@ -325,3 +325,23 @@ interface NetworkProxyConfig {
 吸收（已改入正文）：SafeOutbound / ssrfSafeFetch 走代理时丢失解析后 IP 策略 → 引擎规则改 REJECT 兜底 + 明示信任边界；`node-fetch` 单 agent 不能叠加 → 分支实现；ModelRuntime 桥外的裸 fetch → 方法级 ALS 包装 + 覆盖清单测试；决策必须逐请求带目标 URL；静态出口"恒可用" → 探针 + 连接阶段熔断、绝不重放；上传只落本实例 → 明示约束；凭据必然入 YAML → `0600` + 统一脱敏；上传加固（流式解压上限、`O_EXCL|O_NOFOLLOW`、`0500`、spawn 前重校验、运维覆盖显式标记）；订阅改由 Node 经 SafeOutbound 拉取；webapi 上传路由需要独立守卫 + 注册表；改出站去向的写操作一律重认证；`PROXY_URL` 生效时拒绝开启；`PUT /configs` 需 body；`geodata-mode` 与产物对应关系；实例新鲜度 90 s；密码 keep/replace/clear；dispatcher 缓存有界并回收；UI 一个主操作 / 长任务三态 / 冲突不静默回滚；验证矩阵。
 
 未吸收（判断为过度设计或与产品决策冲突）：跨实例共享产物存储与「期望版本拉取」流水线（用户已选本地卷）；持久化定向命令队列 + fencing（v1 广播语义足够，见 §8）；改造 `startServer.js` 为信号转发 / 子进程收割的 init（容器停止会连带杀死全部进程，引擎无状态）；`nlink` / 属主逐项校验等超出 lkg.ts 既有强度的文件校验；每个 provider 操作各写契约测试（以覆盖清单测试 + 假代理集成测试替代）；PID 复用问题用进程启动身份比对（用 `/proc/<pid>/exe` 路径比对即可）；`/group/<name>/delay` 改为 `/proxies/<name>/delay`（前者是 mihomo 组测速端点，正文两者并列说明）。
+
+## 10. 实施落地备注（2026-08-17）
+
+B1–B5 五个 commit 已上线，以下是**实现与本设计正文不一致或正文未写死**的点，以代码为准：
+
+- **引擎清单是 TS 常量**：`NETWORK_PROXY_ENGINE_MANIFEST`（`packages/const/src/platform/networkProxy.ts`），不是 `scripts/networkProxy/manifest.json`；`bun run network-proxy:install` 直接 import 该常量。
+- **runtimeDir 按实例隔离**：`<dataDir>/runtime/<instanceId>`（`config.yaml` / pid / providers），`engine/` 与 `geodata/` 仍共享。启动只重建自己那棵；兄弟目录**不做 PID 探活**（共享卷上的副本处于不同 PID 命名空间，探活会误删活实例），仅在目录 mtime 超 7 天时回收。
+- **上传路由先预检 `Content-Length`**：缺失或 `Transfer-Encoding: chunked` → 411，`Content-Length` 超 64 MiB + 64 KiB → 413，两者都在读 body 之前；通过后才用 `request.formData()`（文件上限 64 MiB），没有引入流式 multipart 解析器。`?kind=` 非法时审计里记闭合值 `invalid`，原始参数不落库。
+- **订阅由 Node 经 SafeOutbound 拉取**（不交给引擎）：手动 `redirect: 'manual'`、≤ 3 跳、逐跳主机策略 + 元数据地址拒绝；出口不可用时降级直连，并在 `last_error` 注明 `outlet unavailable, fetched direct`。
+- **变更注册表 `noReason`**：`createSubscription` / `updateSubscription` / `installArtifact` 的 DTO 没有 `reason` 字段，登记为 `noReason`；为此把 `DangerousAdminMutationDefinition.reason` 放宽到 `AdminMutationControl`（危险操作允许 `not-applicable`），并在 `adminMutationRegistry.test.ts` 把这三条钉成唯一白名单，其余危险 mutation 仍必须有 reason。
+- **`local` 结果字段**：`installArtifact` / `restartEngine` / `selectNode` 在写期望态之外还会**本机立即执行**，响应带 `local: { ok, error }`。DB 写已提交，`local.ok === false` 只代表本实例这一次没成功（前端按长任务错误态展示，不当成静默成功）；本机结果另写一条 post-commit 审计，该审计插入失败只记日志，不把已提交的写变成 500。
+- **注册表计数**：授权注册表 `197/95/102 → 214/101/113`（网络代理 +6 query / +11 mutation）；另有批次并行加了 1 个 mutation，**实际数字以 `adminProcedureAuthorizationRegistry.test.ts` 为准**。webapi 上传路由登记在新增的 `adminWebapiRouteRegistry.ts`（目录扫描测试逐一对账）。
+- **§8「不做」项的落地形态**：MCP **stdio** 子进程不注入代理 env（HTTP 型 MCP 已接入，`httpFetch = createEgressFetch`，fail 模式贯穿为 `PLATFORM_NETWORK_PROXY_UNAVAILABLE`）；用户私有自定义服务商的作用域一律关闭 —— 作用域 key 取目录 provider id，未列出的私有 id 走 `scope_off` 直连。
+- **重定向链只认首跳出口**：`ssrfSafeFetch` 走代理时，首跳选定的代理贯穿整条重定向链，后续跳只再校主机 / 元数据策略，不会中途切直连（避免半程改变信任边界）。
+- **静态出口健康**：从 `unknown` 起步，启动与快照变更各探一次、之后每 60 s 一次；熔断只统计**代理连接阶段**失败（407 计失败；目标证书过期 / 目标 DNS 失败不计）。
+- **spawn 前重校验有身份缓存**：每次 `startEngine` 都重新校验产物 sha256，但状态 / reconcile / 上报路径按 `(dev, ino, size, mtime)` 缓存，不会在热路径上重算 ~50 MB。
+- **可观测性缺口**：`ENTERPRISE_CACHE_DOMAINS` 还没有 `network_proxy` 成员，设置快照缓存目前靠 cast，指标里会归为 unknown。
+- **i18n 未补齐**：`admin` 命名空间的 264 个 `networkProxy.*` 键（外加 `enterprise.error.PLATFORM_NETWORK_PROXY_*`）只手写了 en-US / zh-CN，其余 14 语言的 `bun run i18n` **未运行**，这些语言下回退英文。
+- **已部署实例需重播种 RBAC**：`NETWORK_PROXY_READ` / `NETWORK_PROXY_MANAGE` 是新权限，老实例的 `super_admin` 角色包里没有，必须跑一次 bootstrap CLI 重播种，否则连超管都看不到网络代理 Tab。
+- **验收缺口**：设计 §7 列的 Playwright 冒烟未写（只有 Vitest + RTL 覆盖）；真机验收（上传引擎 → 加订阅 → 组测速 → 对话经代理）与 compose/`.env.example`/runbook 仍属 B6 收口，尚未完成。

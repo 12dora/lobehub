@@ -110,6 +110,14 @@ AIHub 二开的表统一位于**平台域**，以 `platform_` 前缀与上游用
 | `platform_content_moderation_hourly_stats` | 小时聚合（bucket × 请求类型 × 处置 × 拟处置 × 来源 × 类别）`ON CONFLICT` 累加，保证放行量可画趋势图                                                                                    |
 | `platform_content_moderation_decisions`    | 决策缓存：`prompt_hash` → 分类器类别分数（TTL 可配，命中回放后按当前策略重算动作）                                                                                                     |
 
+## 网络代理（`networkProxy.ts`，迁移 0017）
+
+| 表                                       | 用途                                                                                                                                                                                                                                            |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform_network_proxy_settings`        | 网络代理配置单例（`id='default'`，`config` jsonb，CAS `revision`）；`engine_generation`（重启引擎）与 `desired_artifacts`（期望产物版本）是期望态广播，各实例观察到落后即重启 / 下载；静态代理口令只存密文引用                                  |
+| `platform_network_proxy_subscriptions`   | 管理端订阅：`kind=url` 存 URL 密文 + 明文 `url_host`（仅列表 / 审计用），`kind=manual` 存分享链接或 Clash YAML 密文；含启用 / 排序 / 更新间隔 / User-Agent / 过滤，`refresh_requested_at` 触发实例重拉，回写更新时间 / 错误 / 节点数 / 流量用量 |
+| `platform_network_proxy_instance_status` | 每实例引擎状态（主键即心跳 `instance_id`，随心跳行级联删除）：引擎状态 / 版本 / 平台 / 架构、产物清单、已应用 `revision` 与 `engine_generation`、当前节点 / 存活节点数、代理与兜底计数、最近错误                                                |
+
 ## 实例运维（`instances.ts` / `jobs.ts` / `adminMutationRate.ts`）
 
 | 表                                     | 用途                                                                  |
