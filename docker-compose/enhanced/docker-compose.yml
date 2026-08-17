@@ -3,6 +3,11 @@ services:
   lobehub:
     image: ghcr.io/12dora/lobehub-enhanced:latest
     container_name: lobehub-enhanced
+    # Cursor Agent hashes the first MAC (then hostname) as its runtime machine id.
+    # Pin deployment-specific values across restarts when using the Cursor provider:
+    # hostname: aihub-cursor-stable
+    # mac_address: '02:42:ac:11:00:02'
+    # Concurrent replicas must not share a MAC address.
     ports:
       - '${LOBE_PORT:-3210}:3210'
     depends_on:

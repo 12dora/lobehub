@@ -1,5 +1,9 @@
 ## Set global build ENV
-ARG NODEJS_VERSION="24"
+## Pinned to a Node MINOR line, not the floating major: the browser-device profile
+## re-derives timezone offsets and long zone names from the runtime's own ICU/tzdata,
+## so a silent Node bump can change what the profile presents upstream. No digest —
+## patch releases still land automatically for security fixes.
+ARG NODEJS_VERSION="24.19"
 
 ## Base image for all building stages
 FROM node:${NODEJS_VERSION}-slim AS base
@@ -18,6 +22,15 @@ ARG CURL_IMPERSONATE_DOWNLOAD_BASE=""
 ARG CURL_IMPERSONATE_SHA256_AARCH64="e6dea0ce4fe5d6e7f01c1926c2b3bf6bbd140e1b890c0788881a10bfc09b25e2"
 ARG CURL_IMPERSONATE_SHA256_X86_64="4fb112bd537ab701c197506b7a06d6711a564f8338dac30a8862683b9f7107e9"
 
+## Cursor Agent CLI: the Cursor provider transport. Distroless has no bash, so the
+## server spawns `<home>/node --use-system-ca <home>/index.js` with
+## CURSOR_INVOKED_AS=cursor-agent rather than the bash launcher. downloads.cursor.com
+## is Cloudflare; no CN mirror is used. Digests recorded from the 2026.08.11-e8db854
+## linux tarballs (sha256sum of agent-cli-package.tar.gz).
+ARG CURSOR_AGENT_VERSION="2026.08.11-e8db854"
+ARG CURSOR_AGENT_SHA256_X64="bfff4bf6f4e9dd30c1d0ef0a70b6077b074015dd2948e4c50685d53afdcfce5a"
+ARG CURSOR_AGENT_SHA256_ARM64="ea13f92e295f523a99ce8d8f57d6894d21e5d1e2d030ffad718ccd5955ca2eed"
+
 ENV DEBIAN_FRONTEND="noninteractive"
 
 RUN set -e && \
@@ -32,6 +45,8 @@ RUN set -e && \
     cp /usr/bin/proxychains4 /distroless/bin/proxychains && \
     cp /etc/proxychains4.conf /distroless/etc/proxychains4.conf && \
     cp /usr/lib/$(arch)-linux-gnu/libstdc++.so.6 /distroless/lib/libstdc++.so.6 && \
+    ## zlib: the Cursor Agent CLI's file_service addon links libz.so.1 dynamically
+    cp /usr/lib/$(arch)-linux-gnu/libz.so.1 /distroless/lib/libz.so.1 && \
     cp /usr/lib/$(arch)-linux-gnu/libgcc_s.so.1 /distroless/lib/libgcc_s.so.1 && \
     cp /usr/lib/$(arch)-linux-gnu/librt.so.1 /distroless/lib/librt.so.1 && \
     cp /usr/local/bin/node /distroless/bin/node && \
@@ -66,6 +81,27 @@ RUN set -e && \
     /tmp/curl-impersonate/curl-impersonate --version | head -n 1 && \
     mv -f /tmp/curl-impersonate/curl-impersonate /distroless/usr/local/bin/curl-impersonate && \
     rm -rf /tmp/curl-impersonate
+
+RUN set -e && \
+    case "$(arch)" in \
+        x86_64) CURSOR_AGENT_ARCH="x64"; CURSOR_AGENT_SHA256="${CURSOR_AGENT_SHA256_X64}" ;; \
+        aarch64|arm64) CURSOR_AGENT_ARCH="arm64"; CURSOR_AGENT_SHA256="${CURSOR_AGENT_SHA256_ARM64}" ;; \
+        *) echo "cursor-agent: unsupported architecture $(arch)" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /tmp/cursor-agent /distroless/opt/cursor-agent && \
+    curl -fsSL "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/${CURSOR_AGENT_ARCH}/agent-cli-package.tar.gz" \
+        -o /tmp/cursor-agent/agent-cli-package.tar.gz && \
+    ## Fail closed on anything but the reviewed release: HTTPS says who served the file,
+    ## not that it is the file we pinned — and this binary runs with the server's secrets.
+    echo "${CURSOR_AGENT_SHA256}  /tmp/cursor-agent/agent-cli-package.tar.gz" | sha256sum -c - && \
+    ## Extract dist-package/ onto /opt/cursor-agent (strip the dist-package/ prefix).
+    ## Keep tarball file modes; do not rewrite them or plant a launcher symlink —
+    ## distroless has no bash, so the server execs node index.js directly.
+    tar -xzf /tmp/cursor-agent/agent-cli-package.tar.gz -C /distroless/opt/cursor-agent --strip-components=1 && \
+    test -f /distroless/opt/cursor-agent/index.js && test ! -L /distroless/opt/cursor-agent/index.js && \
+    test -f /distroless/opt/cursor-agent/node && test ! -L /distroless/opt/cursor-agent/node && \
+    /distroless/opt/cursor-agent/node --version && \
+    rm -rf /tmp/cursor-agent
 
 ## Builder image, install all the dependencies and build the app
 FROM base AS builder
@@ -211,6 +247,9 @@ ENV APP_URL="" \
 # ChatGPT Web provider transport (browser-fingerprinted curl, shipped in this image)
 ENV CHATGPT_WEB_CURL_IMPERSONATE_BIN="/usr/local/bin/curl-impersonate" \
     CHATGPT_WEB_ALLOWED_HOSTS=""
+
+# Cursor provider transport (pinned agent CLI, shipped in this image)
+ENV CURSOR_AGENT_HOME="/opt/cursor-agent"
 
 # Network proxy engine (downloaded / uploaded at runtime — not baked into the image)
 ENV NETWORK_PROXY_DATA_DIR="" \
