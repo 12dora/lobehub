@@ -371,7 +371,6 @@ const EngineSection = memo<EngineSectionProps>(
                     : t('networkProxy.engine.deps.installAll')}
                 </Button>
               </div>
-              <span className={styles.hintText}>{t('networkProxy.engine.deps.desc')}</span>
               <FieldStatus
                 actions={actions}
                 field={geodataField}

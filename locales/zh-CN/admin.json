@@ -1875,7 +1875,6 @@
   "networkProxy.engine.configSynced": "已同步",
   "networkProxy.engine.currentState": "当前实例引擎",
   "networkProxy.engine.deps.allInstalled": "已全部安装",
-  "networkProxy.engine.deps.desc": "代理引擎与智能分流规则数据，每个实例各安装一份；无法联网时可下载官方文件后在此上传。",
   "networkProxy.engine.deps.installAll": "一键安装",
   "networkProxy.engine.deps.title": "依赖",
   "networkProxy.engine.desc": "代理引擎与分流规则数据需在每个实例上单独安装，默认只接受与官方发布一致的文件。",

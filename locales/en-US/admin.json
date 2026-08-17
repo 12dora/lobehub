@@ -1875,7 +1875,6 @@
   "networkProxy.engine.configSynced": "Up to date",
   "networkProxy.engine.currentState": "Engine on this instance",
   "networkProxy.engine.deps.allInstalled": "All installed",
-  "networkProxy.engine.deps.desc": "The proxy engine and the smart-routing rule data, installed once per instance. Without internet access, download the official file and upload it here.",
   "networkProxy.engine.deps.installAll": "Install all",
   "networkProxy.engine.deps.title": "Dependencies",
   "networkProxy.engine.desc": "The proxy engine and the rule data are installed on each instance. By default only files identical to the official release are accepted.",

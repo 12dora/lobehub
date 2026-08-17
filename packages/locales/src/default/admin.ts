@@ -3523,8 +3523,6 @@ export default {
   'networkProxy.engine.platform': 'Platform',
   'networkProxy.engine.currentState': 'Engine on this instance',
   'networkProxy.engine.deps.title': 'Dependencies',
-  'networkProxy.engine.deps.desc':
-    'The proxy engine and the smart-routing rule data, installed once per instance. Without internet access, download the official file and upload it here.',
   'networkProxy.engine.deps.installAll': 'Install all',
   'networkProxy.engine.deps.allInstalled': 'All installed',
   'networkProxy.engine.downloadFile': 'Download file',
