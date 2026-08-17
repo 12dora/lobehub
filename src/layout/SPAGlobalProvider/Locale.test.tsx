@@ -52,11 +52,13 @@ vi.mock('@/utils/dayjsLocale', () => ({
   normalizeDayjsLocale: (lang: string) => lang.toLowerCase(),
 }));
 
-const getAntdLocale = vi.fn(async (lang: string) => {
+const resolveAntdLocale = async (lang: string) => {
   if (lang === 'zh-CN') return { locale: 'zh-cn' };
   if (lang === 'en-US') return { locale: 'en' };
   throw new Error(`Unsupported antd locale: ${lang}`);
-});
+};
+
+const getAntdLocale = vi.fn(resolveAntdLocale);
 
 vi.mock('@/utils/locale', () => ({
   getAntdLocale: (lang: string) => getAntdLocale(lang),
@@ -72,7 +74,8 @@ vi.mock('@/locales/create', () => ({
 describe('Locale', () => {
   beforeEach(() => {
     listeners.clear();
-    getAntdLocale.mockClear();
+    getAntdLocale.mockReset();
+    getAntdLocale.mockImplementation(resolveAntdLocale);
     i18nInstance.isInitialized = false;
     i18nInstance.language = 'zh-CN';
   });
@@ -105,6 +108,47 @@ describe('Locale', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('config-provider').dataset.locale).toBe('en');
+    });
+  });
+
+  it('ignores a stale antd locale that resolves after a newer request', async () => {
+    const pending = new Map<string, (value: { locale: string }) => void>();
+    getAntdLocale.mockImplementation(
+      (lang: string) =>
+        new Promise((resolve, reject) => {
+          if (lang === 'zh-CN' || lang === 'en-US') {
+            pending.set(lang, resolve);
+            return;
+          }
+          reject(new Error(`Unsupported antd locale: ${lang}`));
+        }),
+    );
+    i18nInstance.language = 'en-US';
+
+    render(
+      <Locale defaultLang="zh-CN">
+        <div data-testid="child" />
+      </Locale>,
+    );
+
+    await waitFor(() => {
+      expect(pending.has('zh-CN')).toBe(true);
+      expect(pending.has('en-US')).toBe(true);
+    });
+
+    const requested = getAntdLocale.mock.calls.map(([lang]) => lang as string);
+    const older = requested[0]!;
+    const newer = requested.at(-1)!;
+    const localeFor = (lang: string) => (lang === 'en-US' ? { locale: 'en' } : { locale: 'zh-cn' });
+
+    pending.get(newer)!(localeFor(newer));
+    await waitFor(() => {
+      expect(screen.getByTestId('config-provider').dataset.locale).toBe(localeFor(newer).locale);
+    });
+
+    pending.get(older)!(localeFor(older));
+    await waitFor(() => {
+      expect(screen.getByTestId('config-provider').dataset.locale).toBe(localeFor(newer).locale);
     });
   });
 

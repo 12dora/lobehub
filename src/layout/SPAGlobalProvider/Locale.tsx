@@ -1,7 +1,7 @@
 import { ConfigProvider } from 'antd';
 import dayjs from 'dayjs';
 import type { PropsWithChildren } from 'react';
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { isRtlLang } from 'rtl-detect';
 
 import Editor from '@/layout/GlobalProvider/Editor';
@@ -56,15 +56,22 @@ const Locale = memo<LocaleLayoutProps>(({ children, defaultLang, antdLocale }) =
   const [i18n] = useState(() => createI18nNext(defaultLang));
   const [lang, setLang] = useState(defaultLang);
   const [locale, setLocale] = useState(antdLocale);
+  const antdLocaleGenerationRef = useRef(0);
 
   /**
    * antd's built-in copy (date pickers, table filters, pagination, modal buttons…) comes from
    * `ConfigProvider locale`. `getAntdLocale` throws for languages antd does not ship — keep the
    * previous locale in that case instead of blanking the whole app back to en_US.
+   *
+   * Mount + init/languageChanged can race: apply only the latest requested language.
    */
   const applyAntdLocale = useCallback((lng: string) => {
+    const generation = ++antdLocaleGenerationRef.current;
     void getAntdLocale(lng)
-      .then(setLocale)
+      .then((next) => {
+        if (generation !== antdLocaleGenerationRef.current) return;
+        setLocale(next);
+      })
       .catch(() => {});
   }, []);
 

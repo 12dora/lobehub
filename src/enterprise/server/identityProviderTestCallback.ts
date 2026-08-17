@@ -4,6 +4,10 @@ import type { LobeChatDatabase } from '@/database/type';
 import { appEnv } from '@/envs/app';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { createAdminIdentityProviderRuntime } from '@/server/enterprise/routers/admin/identityProvidersSupport';
+import {
+  IdentityProviderTestAttemptError,
+  isIdentityProviderTestStateShape,
+} from '@/server/enterprise/services/identityProvider/testAttemptStore';
 
 const isTruthy = (value: string | undefined): boolean =>
   value === '1' || value?.toLowerCase() === 'true';
@@ -153,12 +157,66 @@ const renderTerminalPage = (success: boolean, locale: CallbackLocale): NextRespo
   });
 };
 
+/** Unauthenticated public route — keep this well below a login-page crawl. */
+export const IDENTITY_PROVIDER_TEST_CALLBACK_RATE_LIMIT = 30;
+const IDENTITY_PROVIDER_TEST_CALLBACK_RATE_WINDOW_MS = 60_000;
+const IDENTITY_PROVIDER_TEST_CALLBACK_RATE_PRUNE_AT = 1024;
+
+const callbackRateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+export const resetIdentityProviderTestCallbackRateLimitForTest = (): void => {
+  callbackRateBuckets.clear();
+};
+
+const pruneCallbackRateBuckets = (now: number): void => {
+  if (callbackRateBuckets.size < IDENTITY_PROVIDER_TEST_CALLBACK_RATE_PRUNE_AT) return;
+  for (const [key, bucket] of callbackRateBuckets) {
+    if (bucket.resetAt <= now) callbackRateBuckets.delete(key);
+  }
+};
+
+const consumeCallbackRateLimit = (ip: string, now = Date.now()): boolean => {
+  pruneCallbackRateBuckets(now);
+  const existing = callbackRateBuckets.get(ip);
+  if (!existing || existing.resetAt <= now) {
+    callbackRateBuckets.set(ip, {
+      count: 1,
+      resetAt: now + IDENTITY_PROVIDER_TEST_CALLBACK_RATE_WINDOW_MS,
+    });
+    return true;
+  }
+  existing.count += 1;
+  return existing.count <= IDENTITY_PROVIDER_TEST_CALLBACK_RATE_LIMIT;
+};
+
+const readCallbackClientIp = (request: NextRequest): string => {
+  const forwarded = request.headers.get('x-forwarded-for');
+  if (forwarded) {
+    const first = forwarded.split(',')[0]?.trim();
+    if (first && first.length <= 64 && !/[\r\n]/.test(first)) return first;
+  }
+  return parseSingleHeader(request.headers.get('x-real-ip')) ?? 'unknown';
+};
+
+const isExpectedCallbackNoise = (error: unknown): boolean => {
+  const code =
+    error instanceof IdentityProviderTestAttemptError
+      ? error.code
+      : error instanceof Error
+        ? error.message
+        : '';
+  return code === 'OIDC_TEST_INVALID_STATE' || code === 'OIDC_TEST_REPLAYED';
+};
+
 export const handleIdentityProviderTestCallback = async (
   request: NextRequest,
   db: LobeChatDatabase,
 ): Promise<NextResponse> => {
   const locale = resolveCallbackLocale(request.headers.get('accept-language'));
   if (!parseEnterpriseFeatureFlags(process.env).ENABLE_DATABASE_OIDC) {
+    return renderTerminalPage(false, locale);
+  }
+  if (!consumeCallbackRateLimit(readCallbackClientIp(request))) {
     return renderTerminalPage(false, locale);
   }
   let effectiveOrigin: string;
@@ -174,7 +232,8 @@ export const handleIdentityProviderTestCallback = async (
   const state = request.nextUrl.searchParams.get('state');
   // RFC 9207: preserve the authorization-response `iss` for exact-match validation.
   const iss = request.nextUrl.searchParams.get('iss');
-  if (!state) return renderTerminalPage(false, locale);
+  // Reject a malformed `state` before constructing the runtime or touching the attempt row.
+  if (!isIdentityProviderTestStateShape(state)) return renderTerminalPage(false, locale);
 
   try {
     const service = createAdminIdentityProviderRuntime(db).test;
@@ -185,11 +244,13 @@ export const handleIdentityProviderTestCallback = async (
     const result = await service.callback({ code, effectiveOrigin, iss, state });
     return renderTerminalPage(result.valid, locale);
   } catch (error) {
-    // Neutral page for the browser; sanitized server log (name only) so a real callback failure
-    // is not invisible in production.
-    console.error('[identity-provider-test] callback failed', {
-      errorClass: error instanceof Error ? error.name : 'UnknownError',
-    });
+    // Neutral page for the browser. Expected noise (bad/replayed state) is not an outage.
+    const payload = { errorClass: error instanceof Error ? error.name : 'UnknownError' };
+    if (isExpectedCallbackNoise(error)) {
+      console.warn('[identity-provider-test] callback rejected', payload);
+    } else {
+      console.error('[identity-provider-test] callback failed', payload);
+    }
     return renderTerminalPage(false, locale);
   }
 };

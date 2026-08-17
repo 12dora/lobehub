@@ -233,6 +233,7 @@ describe('IdentityProviderWizard DingTalk shape', () => {
     stepMocks.mockSteps = true;
     testResultMocks.data = null;
     testResultMocks.error = undefined;
+    testResultMocks.mutate.mockReset();
     popupMocks.popup.closed = false;
     vi.clearAllMocks();
     serviceMocks.update.mockImplementation(async (input: { expectedRevision?: number }) => ({
@@ -265,6 +266,7 @@ describe('IdentityProviderWizard DingTalk organisation allowlist', () => {
     stepMocks.mockSteps = false;
     testResultMocks.data = null;
     testResultMocks.error = undefined;
+    testResultMocks.mutate.mockReset();
     popupMocks.popup.closed = false;
     vi.clearAllMocks();
     serviceMocks.testStart.mockResolvedValue({
@@ -407,6 +409,7 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
     stepMocks.mockSteps = false;
     testResultMocks.data = null;
     testResultMocks.error = undefined;
+    testResultMocks.mutate.mockReset();
     popupMocks.popup.closed = false;
     vi.clearAllMocks();
     serviceMocks.testStart.mockResolvedValue({
@@ -536,6 +539,32 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
     }
   });
 
+  it('shows windowClosed when the closed-path revalidate rejects, without retrying mutate', async () => {
+    vi.useFakeTimers();
+    const { toast } = await import('@lobehub/ui/base-ui');
+    testResultMocks.mutate.mockRejectedValue(new Error('network'));
+    try {
+      renderWizard(baseProvider);
+      await openPolicyStep();
+      await act(async () => {
+        fireEvent.click(captureButton());
+      });
+
+      popupMocks.popup.closed = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(testResultMocks.mutate).toHaveBeenCalledTimes(1);
+      expect(toast.info).toHaveBeenCalledWith('identityProviders.test.windowClosed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('explains a missing organisation name instead of only the missing-scope case', async () => {
     const { toast } = await import('@lobehub/ui/base-ui');
     renderWizard(baseProvider);
@@ -558,7 +587,8 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
     });
   });
 
-  it('revalidates the test result when the callback posts a same-origin message', async () => {
+  it('revalidates the test result when the callback posts a same-origin message from the popup', async () => {
+    testResultMocks.mutate.mockResolvedValue({ status: 'succeeded' });
     renderWizard(baseProvider);
     await openPolicyStep();
     await act(async () => {
@@ -571,12 +601,55 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
         new MessageEvent('message', {
           data: { success: true, type: 'aihub-identity-provider-test' },
           origin: window.location.origin,
+          source: popupMocks.popup as unknown as MessageEventSource,
         }),
       );
     });
 
     expect(testResultMocks.mutate).toHaveBeenCalled();
     expect(captureButton().hasAttribute('disabled')).toBe(false);
+  });
+
+  it('keeps polling when the popup message revalidate is not yet terminal', async () => {
+    testResultMocks.mutate.mockResolvedValue({ status: 'processing' });
+    renderWizard(baseProvider);
+    await openPolicyStep();
+    await act(async () => {
+      fireEvent.click(captureButton());
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { success: true, type: 'aihub-identity-provider-test' },
+          origin: window.location.origin,
+          source: popupMocks.popup as unknown as MessageEventSource,
+        }),
+      );
+    });
+
+    expect(testResultMocks.mutate).toHaveBeenCalled();
+    expect(captureButton().hasAttribute('disabled')).toBe(true);
+  });
+
+  it('ignores a same-origin message that did not come from the popup', async () => {
+    renderWizard(baseProvider);
+    await openPolicyStep();
+    await act(async () => {
+      fireEvent.click(captureButton());
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { success: true, type: 'aihub-identity-provider-test' },
+          origin: window.location.origin,
+        }),
+      );
+    });
+
+    expect(testResultMocks.mutate).not.toHaveBeenCalled();
+    expect(captureButton().hasAttribute('disabled')).toBe(true);
   });
 });
 
@@ -585,6 +658,7 @@ describe('IdentityProviderWizard DingTalk operator friction', () => {
     stepMocks.mockSteps = false;
     testResultMocks.data = null;
     testResultMocks.error = undefined;
+    testResultMocks.mutate.mockReset();
     popupMocks.popup.closed = false;
     vi.clearAllMocks();
     serviceMocks.testStart.mockResolvedValue({

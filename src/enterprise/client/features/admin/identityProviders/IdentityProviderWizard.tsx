@@ -228,8 +228,16 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     useEffect(() => {
       if (!attempt || !testPolling) return;
 
+      let cancelled = false;
+      const watchedAttemptId = attempt.id;
+
+      const readStatus = (latest: unknown): string | undefined =>
+        latest && typeof latest === 'object' && 'status' in latest
+          ? (latest as { status?: string }).status
+          : undefined;
+
       const finishWait = (message: string | null) => {
-        if (testWaitSettledRef.current) return;
+        if (cancelled || testWaitSettledRef.current) return;
         testWaitSettledRef.current = true;
         setTestPolling(false);
         if (!message) return;
@@ -237,34 +245,49 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         toast.info(message);
       };
 
+      const stopIfTerminal = (latest: unknown): boolean => {
+        const status = readStatus(latest);
+        if (!status || !isIdentityProviderTestTerminal(status)) return false;
+        testWaitSettledRef.current = true;
+        setTestPolling(false);
+        return true;
+      };
+
       const onMessage = (event: MessageEvent) => {
+        if (cancelled) return;
         if (event.origin !== window.location.origin) return;
+        if (event.source !== testPopupRef.current) return;
         const data = event.data as { type?: unknown } | null;
         if (!data || data.type !== IDENTITY_PROVIDER_TEST_MESSAGE_TYPE) return;
-        testWaitSettledRef.current = true;
-        void testResultMutateRef.current();
-        setTestPolling(false);
+        void Promise.resolve(testResultMutateRef.current())
+          .then((latest) => {
+            if (cancelled || watchedAttemptId !== attempt.id) return;
+            stopIfTerminal(latest);
+          })
+          .catch(() => {
+            // Keep polling — a failed revalidate is not a completed login.
+          });
       };
 
       window.addEventListener('message', onMessage);
 
+      let closedInFlight = false;
       const closedTimer = window.setInterval(() => {
         const popup = testPopupRef.current;
-        if (!popup?.closed) return;
+        if (!popup?.closed || closedInFlight || testWaitSettledRef.current || cancelled) return;
+        closedInFlight = true;
         testPopupRef.current = null;
-        if (testWaitSettledRef.current) return;
-        void Promise.resolve(testResultMutateRef.current()).then((latest) => {
-          const status =
-            latest && typeof latest === 'object' && 'status' in latest
-              ? (latest as { status?: string }).status
-              : undefined;
-          if (status && isIdentityProviderTestTerminal(status)) {
-            testWaitSettledRef.current = true;
-            setTestPolling(false);
-            return;
-          }
-          finishWait(t('identityProviders.test.windowClosed'));
-        });
+        window.clearInterval(closedTimer);
+        void Promise.resolve(testResultMutateRef.current())
+          .then((latest) => {
+            if (cancelled || watchedAttemptId !== attempt.id) return;
+            if (stopIfTerminal(latest)) return;
+            finishWait(t('identityProviders.test.windowClosed'));
+          })
+          .catch(() => {
+            if (cancelled || watchedAttemptId !== attempt.id) return;
+            finishWait(t('identityProviders.test.windowClosed'));
+          });
       }, 1000);
 
       const remaining = Math.max(0, 120_000 - (Date.now() - attempt.startedAt));
@@ -273,6 +296,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       }, remaining);
 
       return () => {
+        cancelled = true;
         window.removeEventListener('message', onMessage);
         window.clearInterval(closedTimer);
         window.clearTimeout(timeout);

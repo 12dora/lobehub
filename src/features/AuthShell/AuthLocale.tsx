@@ -1,7 +1,7 @@
 'use client';
 
 import { ConfigProvider } from 'antd';
-import { memo, type PropsWithChildren, useCallback, useEffect, useState } from 'react';
+import { memo, type PropsWithChildren, useCallback, useEffect, useRef, useState } from 'react';
 import { isRtlLang } from 'rtl-detect';
 
 import { getAntdLocale } from '@/utils/locale';
@@ -16,11 +16,16 @@ const AuthLocale = memo<AuthLocaleProps>(({ children, defaultLang }) => {
   const [i18n] = useState(() => createAuthI18n(defaultLang));
   const [lang, setLang] = useState(defaultLang ?? 'en-US');
   const [locale, setLocale] = useState<any>();
+  const antdLocaleGenerationRef = useRef(0);
 
   /** `getAntdLocale` throws for languages antd does not ship — keep the previous locale then. */
   const applyAntdLocale = useCallback((lng: string) => {
+    const generation = ++antdLocaleGenerationRef.current;
     void getAntdLocale(lng)
-      .then(setLocale)
+      .then((next) => {
+        if (generation !== antdLocaleGenerationRef.current) return;
+        setLocale(next);
+      })
       .catch(() => {});
   }, []);
 

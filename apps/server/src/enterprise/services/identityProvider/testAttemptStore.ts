@@ -13,7 +13,17 @@ import type { PlatformSecretService } from '../../security/secret';
 
 const ATTEMPT_TTL_MS = 5 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 500;
-const STATE_PREFIX = 'aihub-m11-test-v1.';
+/** Issued as `${prefix}${randomBytes(32).toString('base64url')}` — 43-char token, no padding. */
+export const IDENTITY_PROVIDER_TEST_STATE_PREFIX = 'aihub-m11-test-v1.';
+export const IDENTITY_PROVIDER_TEST_STATE_TOKEN_LENGTH = 43;
+
+export const isIdentityProviderTestStateShape = (state: unknown): state is string => {
+  if (typeof state !== 'string' || !state.startsWith(IDENTITY_PROVIDER_TEST_STATE_PREFIX)) {
+    return false;
+  }
+  const token = state.slice(IDENTITY_PROVIDER_TEST_STATE_PREFIX.length);
+  return token.length === IDENTITY_PROVIDER_TEST_STATE_TOKEN_LENGTH && /^[\w-]+$/.test(token);
+};
 
 /** Callbacks normally finish in seconds; this lease leaves ample room for bounded OIDC requests. */
 export const IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS = 10 * 60 * 1000;
@@ -127,7 +137,7 @@ export class IdentityProviderTestAttemptStore {
     sessionId: string;
     userId: string;
   }) => {
-    const state = `${STATE_PREFIX}${randomToken()}`;
+    const state = `${IDENTITY_PROVIDER_TEST_STATE_PREFIX}${randomToken()}`;
     const nonce = randomToken();
     const pkceVerifier = randomToken();
     const pkceCiphertext = await this.secrets.encrypt(pkceVerifier);
@@ -160,7 +170,7 @@ export class IdentityProviderTestAttemptStore {
   };
 
   reserve = async (state: string): Promise<ReservedIdentityProviderTestAttempt> => {
-    if (!state.startsWith(STATE_PREFIX) || state.length > 256) {
+    if (!isIdentityProviderTestStateShape(state)) {
       throw new IdentityProviderTestAttemptError('OIDC_TEST_INVALID_STATE');
     }
     const now = new Date();

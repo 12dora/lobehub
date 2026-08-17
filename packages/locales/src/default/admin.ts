@@ -1889,8 +1889,6 @@ export default {
     'The requested authorization scope is not allowed by your organization.',
   'enterprise.error.PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED':
     'The operation was blocked because it could expose a credential.',
-  'identityProviders.dingtalk.allowedCorps.nameUnavailable':
-    'Could not fetch the organization name from DingTalk; you can fill in the remark manually.',
   'enterprise.error.PLATFORM_CONNECTOR_SSRF_BLOCKED':
     'The Connector endpoint was blocked by the network safety policy.',
   'enterprise.error.PLATFORM_CONNECTOR_STDIO_UNSUPPORTED':
@@ -1900,6 +1898,8 @@ export default {
   'enterprise.error.PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED':
     'This Connector transport is not supported.',
   'identityProviders.actions.create': 'New',
+  'identityProviders.dingtalk.allowedCorps.nameUnavailable':
+    'Could not fetch the organization name from DingTalk; you can enter it in the list.',
   'identityProviders.actions.createNeedsUpdate':
     'Creating a sign-in method also requires permission to update it.',
   'identityProviders.actions.delete': 'Delete',

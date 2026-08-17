@@ -12,8 +12,11 @@ import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/sec
 
 import {
   IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS,
+  IDENTITY_PROVIDER_TEST_STATE_PREFIX,
+  IDENTITY_PROVIDER_TEST_STATE_TOKEN_LENGTH,
   IDENTITY_PROVIDER_TEST_TERMINAL_RETENTION_MS,
   IdentityProviderTestAttemptStore,
+  isIdentityProviderTestStateShape,
 } from './testAttemptStore';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -57,6 +60,19 @@ const issue = async () => {
 };
 
 describe('IdentityProviderTestAttemptStore', () => {
+  it('issues a state whose exact prefix + base64url token shape is accepted', async () => {
+    const issued = await issue();
+    expect(isIdentityProviderTestStateShape(issued.state)).toBe(true);
+    expect(issued.state.startsWith(IDENTITY_PROVIDER_TEST_STATE_PREFIX)).toBe(true);
+    expect(issued.state.slice(IDENTITY_PROVIDER_TEST_STATE_PREFIX.length)).toHaveLength(
+      IDENTITY_PROVIDER_TEST_STATE_TOKEN_LENGTH,
+    );
+    expect(isIdentityProviderTestStateShape(`${issued.state}x`)).toBe(false);
+    expect(isIdentityProviderTestStateShape(`${IDENTITY_PROVIDER_TEST_STATE_PREFIX}short`)).toBe(
+      false,
+    );
+  });
+
   it('stores only state/nonce hashes and encrypted PKCE, then reserves once', async () => {
     const issued = await issue();
     const [persisted] = await db.select().from(platformIdentityProviderTestAttempts);
