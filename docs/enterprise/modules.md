@@ -296,3 +296,7 @@ Measured on `aihub:slim-r2` (2026-08-17, arm64, commander `platform.ts`
 fix included): image **1.07 GB** (was 1.72 GB), `/app` **634 MiB**
 (was 1.25 GiB), `/app/src` **80 KiB** (was 43 MiB). Full table:
 `scratchpad/slim/reports/G5.md`.
+
+## Phase 2 / handoff
+
+The next slimming round (builtin-tools split, `platform_jobs` dispatcher, per-message costs, first-screen vendor chunk, image layering, polling) is specified in [`audit/slim-2026-08-17/HANDOFF.md`](../../audit/slim-2026-08-17/HANDOFF.md) together with all measurement reports of round 1.
