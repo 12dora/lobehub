@@ -10,5 +10,6 @@ export const GlobalStyle = createGlobalStyle(({ theme }) => [
   antdOverride({ prefixCls, token: theme }),
 ]);
 
+export { a11yStyles } from './a11y';
 export { shinyTextStyles } from './loading';
 export * from './text';

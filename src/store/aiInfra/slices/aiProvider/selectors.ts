@@ -27,6 +27,23 @@ const isProviderEnabled = (id: string) => (s: AIProviderStoreState) =>
 const isProviderLoading = (id: string) => (s: AIProviderStoreState) =>
   s.aiProviderLoadingIds.includes(id);
 
+/**
+ * Stored description of a provider, the only place a CUSTOM provider's description exists on
+ * the client — builtin ids carry theirs in the model-bank card instead (see
+ * `useProviderDescription`, which prefers the localized card copy and falls back to this).
+ */
+const providerDescriptionById = (id: string | undefined) => (s: AIProviderStoreState) =>
+  id ? s.aiProviderList.find((item) => item.id === id)?.description : undefined;
+
+/**
+ * Stored display name of a provider — the only place a CUSTOM provider's name exists on the
+ * client. Builtin ids carry theirs in the model-bank card (localized by `useProviderName`),
+ * so callers pass `undefined` for those rather than paying for a list scan that would answer
+ * with the same string.
+ */
+const providerNameById = (id: string | undefined) => (s: AIProviderStoreState) =>
+  id ? s.aiProviderList.find((item) => item.id === id)?.name : undefined;
+
 // Detail
 
 /**
@@ -154,6 +171,8 @@ export const aiProviderSelectors = {
   isProviderHasBuiltinSearchConfig,
   isProviderLoading,
   providerConfigById,
+  providerDescriptionById,
   providerDetailById,
   providerKeyVaults,
+  providerNameById,
 };

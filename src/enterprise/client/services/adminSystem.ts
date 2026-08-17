@@ -2,6 +2,10 @@ import type { z } from 'zod';
 
 import { lambdaClient } from '@/libs/trpc/client';
 import type {
+  AdminBrowserProfileRegenerateInput,
+  AdminBrowserProfileSummary,
+} from '@/server/enterprise/contracts/adminBrowserProfile';
+import type {
   AdminSystemCancelJobInput,
   adminSystemGetInfraSettingsOutputSchema,
   AdminSystemGetInstanceRevisionsInput,
@@ -49,11 +53,22 @@ export interface AdminInfraSettingsService {
   ) => Promise<AdminSystemUpdateInfraSettingsOutput>;
 }
 
-class AdminSystemServiceImpl implements AdminSystemService, AdminInfraSettingsService {
+export interface AdminBrowserProfileService {
+  getBrowserProfile: () => Promise<AdminBrowserProfileSummary>;
+  regenerateBrowserProfile: (
+    input: AdminBrowserProfileRegenerateInput,
+  ) => Promise<AdminBrowserProfileSummary>;
+}
+
+class AdminSystemServiceImpl
+  implements AdminSystemService, AdminInfraSettingsService, AdminBrowserProfileService
+{
   cancelJob = (input: AdminSystemCancelJobInput) =>
     lambdaClient.admin.system.cancelJob.mutate(input);
 
   getInfraSettings = () => lambdaClient.admin.system.getInfraSettings.query();
+
+  getBrowserProfile = () => lambdaClient.admin.browserProfile.get.query();
 
   getInstanceRevisions = (input?: AdminSystemGetInstanceRevisionsInput) =>
     lambdaClient.admin.system.getInstanceRevisions.query(input);
@@ -64,6 +79,9 @@ class AdminSystemServiceImpl implements AdminSystemService, AdminInfraSettingsSe
 
   retryJob = (input: AdminSystemRetryJobInput) => lambdaClient.admin.system.retryJob.mutate(input);
 
+  regenerateBrowserProfile = (input: AdminBrowserProfileRegenerateInput) =>
+    lambdaClient.admin.browserProfile.regenerate.mutate(input);
+
   testDependency = (input: AdminSystemTestDependencyInput) =>
     lambdaClient.admin.system.testDependency.mutate(input);
 
@@ -71,8 +89,9 @@ class AdminSystemServiceImpl implements AdminSystemService, AdminInfraSettingsSe
     lambdaClient.admin.system.updateInfraSettings.mutate(input);
 }
 
-export const adminSystemService: AdminSystemService & AdminInfraSettingsService =
-  new AdminSystemServiceImpl();
+export const adminSystemService: AdminSystemService &
+  AdminInfraSettingsService &
+  AdminBrowserProfileService = new AdminSystemServiceImpl();
 
 export type {
   AdminSystemCancelJobInput,
@@ -83,3 +102,4 @@ export type {
   AdminSystemUpdateInfraSettingsInput,
   AdminSystemUpdateInfraSettingsOutput,
 };
+export type { AdminBrowserProfileRegenerateInput, AdminBrowserProfileSummary };

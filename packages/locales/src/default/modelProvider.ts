@@ -203,6 +203,9 @@ export default {
   'providerModels.config.baseURL.title': 'API Proxy URL',
   'providerModels.config.checker.button': 'Check',
   'providerModels.config.checker.desc': 'Test if the API Key and proxy URL are correctly filled',
+  'providerModels.config.checker.descApiKeyOnly': 'Test if the API Key is correctly filled',
+  'providerModels.config.checker.descEndpointOnly': 'Test if the proxy URL is correctly filled',
+  'providerModels.config.checker.descNoCredential': 'Test whether the current configuration works',
   'providerModels.config.checker.pass': 'Check passed',
   'providerModels.config.checker.title': 'Connectivity Check',
   'providerModels.config.fetchOnClient.desc':
@@ -228,6 +231,18 @@ export default {
     'Are you sure you want to disconnect? You will need to re-authorize to use this provider.',
   'providerModels.config.oauth.enterCode': 'Enter the code on the opened page:',
   'providerModels.config.oauth.openBrowser': 'Open browser to authorize',
+  'providerModels.config.oauth.openLinkToAuthorize':
+    'Open the link in your browser and finish signing in — there is no code to enter.',
+  'providerModels.config.oauth.paste.apiKeyError':
+    'Could not connect with that API key. Check the key and try again.',
+  'providerModels.config.oauth.paste.apiKeyHint':
+    'Create one in the {{name}} dashboard, under API Keys. An API-key connection keeps renewing itself; a browser sign-in has to be repeated once it expires.',
+  'providerModels.config.oauth.paste.apiKeyHintWithUrl':
+    'Create one in the <1>{{name}} dashboard</1>, under API Keys. An API-key connection keeps renewing itself; a browser sign-in has to be repeated once it expires.',
+  'providerModels.config.oauth.paste.apiKeyLabel': 'API key',
+  'providerModels.config.oauth.paste.apiKeyPlaceholder': 'Paste your {{name}} API key',
+  'providerModels.config.oauth.paste.apiKeySubmit': 'Connect account',
+  'providerModels.config.oauth.paste.apiKeyToggle': 'Connect with an API key',
   'providerModels.config.oauth.paste.callbackLabel': 'Callback URL',
   'providerModels.config.oauth.paste.callbackPlaceholder':
     'https://platform.openai.com/auth/callback?code=…',
@@ -294,11 +309,13 @@ export default {
   'providerModels.config.oauth.paste.sessionToggle': 'Paste a web session instead',
   'providerModels.config.oauth.paste.submit': 'Complete connection',
   'providerModels.config.oauth.polling': 'Waiting for authorization...',
+  'providerModels.config.oauth.renewalKind.apiKey': 'API key',
   'providerModels.config.oauth.renewalKind.oauth': 'authorization sign-in',
   'providerModels.config.oauth.renewalKind.webSession': 'web session',
   'providerModels.config.oauth.retry': 'Retry',
   'providerModels.config.oauth.serviceNote': 'Service provided by {{name}}',
   'providerModels.config.oauth.title': 'OAuth Authorization',
+  'providerModels.config.oauth.verificationUrlLabel': 'Popup blocked? Copy this link:',
   'providerModels.config.responsesApi.desc':
     "Uses OpenAI's next-generation request format specification to unlock advanced features like chain-of-thought (supported by OpenAI models only)",
   'providerModels.config.responsesApi.title': 'Use Responses API Specification',

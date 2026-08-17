@@ -28,10 +28,22 @@ interface SharedOAuthConnectionStatus {
   expiresAt?: string | null;
   flow?: string | null;
   lastRefreshAt?: string | null;
-  renewalKind?: 'oauth' | 'web_session' | null;
+  renewalKind?: 'cursor_api_key' | 'oauth' | 'web_session' | null;
 }
 
 interface SharedOAuthConnectedCardProps {
+  /**
+   * The provider's second connect route, when it has one. Rendered under the connect button
+   * and only while nothing is connected: it is an alternative to connecting, not to the
+   * account that is already stored.
+   */
+  apiKeyForm?: ReactNode;
+  /**
+   * A connect run is already in flight elsewhere on this card (the API-key route requesting
+   * or redeeming its envelope). Starting a browser login now would retire that envelope, so
+   * every action that starts one stands down until it settles.
+   */
+  connectDisabled?: boolean;
   disconnecting: boolean;
   enforcementHint: ReactNode;
   name: string;
@@ -46,6 +58,8 @@ interface SharedOAuthConnectedCardProps {
 
 const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
   ({
+    apiKeyForm,
+    connectDisabled,
     disconnecting,
     enforcementHint,
     name,
@@ -78,19 +92,29 @@ const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
     const cannotAutoRenew = pasteFlow && status?.canRefresh === false;
     /**
      * The good outcome, and only on a POSITIVE reading: the connection holds a renewal
-     * credential (an OAuth refresh token, or a web session that mints tokens the way the web
-     * app does), so it rolls over on its own and its `expiresAt` is a routine rollover date
-     * rather than a deadline. Saying only "expires {{time}}" there reads as a warning it is not.
+     * credential (an OAuth refresh token, a web session that mints tokens the way the web app
+     * does, or an API key the server re-exchanges), so it rolls over on its own and its
+     * `expiresAt` is a routine rollover date rather than a deadline. Saying only
+     * "expires {{time}}" there reads as a warning it is not.
+     *
+     * Not gated on the paste flow any more: a device-code provider that stores a renewal
+     * credential (Cursor — an API key it re-exchanges, or the refresh token of its browser
+     * login) rolls over exactly the same way, and `renewalKind` is the POSITIVE reading that
+     * says so. The paste flow keeps its previous condition verbatim so connections stored
+     * before the label existed still read as renewable, and a card that reports
+     * `canRefresh: false` (GitHub Copilot style) is untouched by either half.
      */
-    const autoRenews = status?.flow === 'authorization_code_paste' && status?.canRefresh === true;
+    const autoRenews = status?.canRefresh === true && (pasteFlow || Boolean(status?.renewalKind));
     const lastRefresh = formatExpiry(status?.lastRefreshAt ?? null);
     /** Which credential does the renewing — the operator's cue for what they connected with. */
     const renewalKindLabel =
       status?.renewalKind === 'web_session'
         ? t('aiProviderSettings.sharedOAuth.renewalKind.webSession')
-        : status?.renewalKind === 'oauth'
-          ? t('aiProviderSettings.sharedOAuth.renewalKind.oauth')
-          : undefined;
+        : status?.renewalKind === 'cursor_api_key'
+          ? t('aiProviderSettings.sharedOAuth.renewalKind.apiKey')
+          : status?.renewalKind === 'oauth'
+            ? t('aiProviderSettings.sharedOAuth.renewalKind.oauth')
+            : undefined;
 
     /**
      * A dead grant still HAS an account (the vault keeps it as the evidence), so the identity
@@ -124,17 +148,27 @@ const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
                   <Flexbox horizontal gap={8}>
                     {pasteFlow ? (
                       <>
-                        <Button size={'small'} type={'primary'} onClick={onConnectWithSession}>
+                        <Button
+                          disabled={connectDisabled}
+                          size={'small'}
+                          type={'primary'}
+                          onClick={onConnectWithSession}
+                        >
                           {t('aiProviderSettings.sharedOAuth.paste.pasteSession')}
                         </Button>
                         {!webSessionOnly && (
-                          <Button size={'small'} onClick={onConnect}>
+                          <Button disabled={connectDisabled} size={'small'} onClick={onConnect}>
                             {t('aiProviderSettings.sharedOAuth.paste.reconnectRenewable')}
                           </Button>
                         )}
                       </>
                     ) : (
-                      <Button size={'small'} type={'primary'} onClick={onConnect}>
+                      <Button
+                        disabled={connectDisabled}
+                        size={'small'}
+                        type={'primary'}
+                        onClick={onConnect}
+                      >
                         {t('aiProviderSettings.sharedOAuth.reconnect')}
                       </Button>
                     )}
@@ -153,13 +187,18 @@ const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
                 type={'warning'}
                 action={
                   <Flexbox horizontal gap={8}>
-                    <Button size={'small'} type={'primary'} onClick={onConnectWithSession}>
+                    <Button
+                      disabled={connectDisabled}
+                      size={'small'}
+                      type={'primary'}
+                      onClick={onConnectWithSession}
+                    >
                       {t('aiProviderSettings.sharedOAuth.paste.pasteSession')}
                     </Button>
                     {/* Only where that route exists: a web-session-only provider would be
                         offering the one page its own server refuses to complete. */}
                     {!webSessionOnly && (
-                      <Button size={'small'} onClick={onConnect}>
+                      <Button disabled={connectDisabled} size={'small'} onClick={onConnect}>
                         {t('aiProviderSettings.sharedOAuth.paste.reconnectRenewable')}
                       </Button>
                     )}
@@ -219,7 +258,11 @@ const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
           {/* While the account needs re-authorizing the ONE primary action lives in the alert
               above; repeating it here would offer the same remedy twice, in two shapes. */}
           {!needsReauth && (
-            <Button type={showAccount ? 'default' : 'primary'} onClick={onConnect}>
+            <Button
+              disabled={connectDisabled}
+              type={showAccount ? 'default' : 'primary'}
+              onClick={onConnect}
+            >
               {t(
                 showAccount
                   ? 'aiProviderSettings.sharedOAuth.reconnect'
@@ -234,6 +277,13 @@ const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
             </Button>
           )}
         </Flexbox>
+        {/*
+          The other way in, as a closed disclosure right under the primary one. It used to be
+          reachable only from the awaiting state, which meant an operator holding a dashboard
+          key had to start a real browser login against the provider and then abandon it — the
+          harder path to the connection that actually lasts.
+        */}
+        {!showAccount && apiKeyForm}
       </Flexbox>
     );
   },

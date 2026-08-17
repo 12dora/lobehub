@@ -597,3 +597,176 @@ describe('useOAuthDeviceFlow stale reconciliation', () => {
     expect(onSuccess).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The API-key connect route. It owns both halves of the round trip — envelope, then exchange —
+ * because envelope liveness is a REF reading: expiry, denial and a terminal poll all retire the
+ * envelope while the rendered `deviceCodeInfo` a caller would consult still describes it.
+ */
+describe('useOAuthDeviceFlow API-key route', () => {
+  /** Cursor's envelope: a device-flow shape whose paste route takes a dashboard key. */
+  const apiKeyEnvelope = (deviceCode: string) => ({
+    allowAccessTokenPaste: true,
+    deviceCode,
+    expiresIn: 3600,
+    flow: 'device_code',
+    interval: 3600,
+    userCode: '',
+    verificationUri: 'https://cursor.com/loginDeepControl',
+    verificationUriComplete: 'https://cursor.com/loginDeepControl?challenge=abc',
+  });
+
+  const exchangeCalls = () => mocks.poll.mock.calls.filter(([input]) => Boolean(input.accessToken));
+
+  it('requests an envelope, exchanges the key, and reports both phases', async () => {
+    const pendingEnvelope = deferred<ReturnType<typeof apiKeyEnvelope>>();
+    const pendingExchange = deferred<{ status: string }>();
+    mocks.initiate.mockReturnValue(pendingEnvelope.promise);
+    mocks.poll.mockReturnValue(pendingExchange.promise);
+    const onSuccess = vi.fn();
+
+    const { result } = renderHook(() => useOAuthDeviceFlow({ onSuccess, providerId: 'cursor' }));
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = result.current.submitApiKey('key_live_abc');
+    });
+
+    // The two halves fail for different reasons, so they are two phases, not one spinner.
+    expect(result.current.apiKeyPhase).toBe('requestingEnvelope');
+
+    await act(async () => {
+      pendingEnvelope.resolve(apiKeyEnvelope('envelope-1'));
+      await Promise.resolve();
+    });
+    expect(result.current.apiKeyPhase).toBe('exchangingKey');
+
+    await act(async () => {
+      pendingExchange.resolve({ status: 'success' });
+      await submitted;
+    });
+    expect(result.current.apiKeyPhase).toBe('idle');
+    expect(exchangeCalls()[0]![0]).toMatchObject({
+      accessToken: 'key_live_abc',
+      deviceCode: 'envelope-1',
+    });
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaces an envelope a terminal poll already spent', async () => {
+    vi.useFakeTimers();
+    mocks.initiate
+      .mockResolvedValueOnce(apiKeyEnvelope('envelope-1'))
+      .mockResolvedValueOnce(apiKeyEnvelope('envelope-2'));
+    // The browser login was denied: the run is dead and its envelope with it.
+    mocks.poll.mockResolvedValueOnce({ status: 'denied' });
+
+    const { result } = renderHook(() => useOAuthDeviceFlow({ providerId: 'cursor' }));
+
+    await act(async () => {
+      await result.current.startAuth();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(result.current.state).toBe('error');
+    // The rendered envelope goes with the ref — nothing may keep offering a spent device code.
+    expect(result.current.deviceCodeInfo).toBeUndefined();
+
+    vi.useRealTimers();
+    mocks.poll.mockResolvedValueOnce({ status: 'success' });
+    await act(async () => {
+      await result.current.submitApiKey('key_live_abc');
+    });
+
+    // The submit used to return silently here: the ref was empty, so nothing was sent at all.
+    expect(mocks.initiate).toHaveBeenCalledTimes(2);
+    expect(exchangeCalls()[0]![0]).toMatchObject({ deviceCode: 'envelope-2' });
+    expect(result.current.state).toBe('success');
+  });
+
+  it('reuses a live envelope instead of discarding the device code in flight', async () => {
+    mocks.initiate.mockResolvedValue(apiKeyEnvelope('envelope-1'));
+    mocks.poll.mockResolvedValue({ status: 'success' });
+
+    const { result } = renderHook(() => useOAuthDeviceFlow({ providerId: 'cursor' }));
+
+    await act(async () => {
+      await result.current.startAuth();
+    });
+    await act(async () => {
+      await result.current.submitApiKey('key_live_abc');
+    });
+
+    expect(mocks.initiate).toHaveBeenCalledTimes(1);
+    expect(exchangeCalls()[0]![0]).toMatchObject({ deviceCode: 'envelope-1' });
+  });
+
+  it('leaves an envelope failure on the flow, with nothing said about the key', async () => {
+    mocks.initiate.mockRejectedValue(new Error('offline'));
+
+    const { result } = renderHook(() => useOAuthDeviceFlow({ providerId: 'cursor' }));
+
+    await act(async () => {
+      await result.current.submitApiKey('key_live_abc');
+    });
+
+    expect(result.current.state).toBe('error');
+    expect(result.current.error).toBe('authError');
+    // The exchange never happened, so no verdict on the key exists to report.
+    expect(mocks.poll).not.toHaveBeenCalled();
+    expect(result.current.submitError).toBeUndefined();
+    expect(result.current.apiKeyPhase).toBe('idle');
+  });
+
+  it('spends one envelope for a key submitted twice from the same render', async () => {
+    const pendingEnvelope = deferred<ReturnType<typeof apiKeyEnvelope>>();
+    mocks.initiate.mockReturnValue(pendingEnvelope.promise);
+    mocks.poll.mockResolvedValue({ status: 'success' });
+
+    const { result } = renderHook(() => useOAuthDeviceFlow({ providerId: 'cursor' }));
+
+    let both: Promise<unknown> | undefined;
+    act(() => {
+      both = Promise.all([
+        result.current.submitApiKey('key_live_abc'),
+        result.current.submitApiKey('key_live_abc'),
+      ]);
+    });
+
+    await act(async () => {
+      pendingEnvelope.resolve(apiKeyEnvelope('envelope-1'));
+      await both;
+    });
+
+    // A second envelope would have retired the grant the first exchange is redeeming.
+    expect(mocks.initiate).toHaveBeenCalledTimes(1);
+    expect(exchangeCalls()).toHaveLength(1);
+  });
+
+  it('abandons a cancelled attempt without redeeming the envelope it was waiting for', async () => {
+    const pendingEnvelope = deferred<ReturnType<typeof apiKeyEnvelope>>();
+    mocks.initiate.mockReturnValue(pendingEnvelope.promise);
+
+    const { result } = renderHook(() => useOAuthDeviceFlow({ providerId: 'cursor' }));
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = result.current.submitApiKey('key_live_abc');
+    });
+    act(() => {
+      result.current.cancelAuth();
+    });
+    expect(result.current.apiKeyPhase).toBe('idle');
+
+    await act(async () => {
+      pendingEnvelope.resolve(apiKeyEnvelope('envelope-late'));
+      await submitted;
+    });
+
+    // The user asked for this to stop: the late envelope is dropped, not redeemed.
+    expect(mocks.poll).not.toHaveBeenCalled();
+    expect(result.current.state).toBe('idle');
+    expect(result.current.apiKeyPhase).toBe('idle');
+  });
+});

@@ -7,7 +7,13 @@ import { Button, confirmModal } from '@lobehub/ui/base-ui';
 import { Avatar, Typography } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { ExternalLinkIcon, Loader2Icon, LogOutIcon, UnplugIcon } from 'lucide-react';
-import { getProviderOAuthGrantFlow, isProviderWebSessionOnly } from 'model-bank/modelProviders';
+import {
+  getProviderApiKeyUrl,
+  getProviderOAuthGrantFlow,
+  getProviderPastedCredentialKind,
+  isProviderAccessTokenPasteAllowed,
+  isProviderWebSessionOnly,
+} from 'model-bank/modelProviders';
 import { type ReactNode } from 'react';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -15,6 +21,7 @@ import { useTranslation } from 'react-i18next';
 import { usePermission } from '@/hooks/usePermission';
 import { lambdaQuery } from '@/libs/trpc/client';
 
+import ApiKeyPastePanel from './ApiKeyPastePanel';
 import PasteFlowPanel from './PasteFlowPanel';
 import { useOAuthDeviceFlow } from './useOAuthDeviceFlow';
 
@@ -98,6 +105,18 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     color: ${cssVar.colorTextDescription};
     text-align: center;
   `,
+  fallbackUrl: css`
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: center;
+
+    width: 100%;
+
+    font-size: 13px;
+    color: ${cssVar.colorTextDescription};
+    overflow-wrap: anywhere;
+  `,
   successBadge: css`
     display: flex;
     gap: 6px;
@@ -169,23 +188,44 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
      * provider, and only the card knows which connect routes it has.
      */
     const webSessionOnly = isProviderWebSessionOnly(providerId);
+    /**
+     * What the provider's paste route actually takes. `'apiKey'` (Cursor) is a dashboard key
+     * the server exchanges and then renews from forever — a different object from the access
+     * token the `'accessToken'` providers accept, and it must be labelled as one.
+     */
+    const pastedCredentialKind = getProviderPastedCredentialKind(providerId);
+    /**
+     * Whether the API-key route exists at all — read off the card, so it is answerable BEFORE
+     * a flow envelope exists. That is the point: the durable route used to be reachable only
+     * from the awaiting state, i.e. only by first firing a real device-code request against
+     * the provider and then abandoning the browser login it started.
+     */
+    const offerApiKey =
+      pastedCredentialKind === 'apiKey' && isProviderAccessTokenPasteAllowed(providerId);
+    /** Where this provider's keys are created; the hint links it instead of describing it. */
+    const apiKeyUrl = getProviderApiKeyUrl(providerId);
     const accountEmail = isPasteFlowProvider ? authStatus?.email : undefined;
-    const expiresAtLabel = isPasteFlowProvider ? formatExpiry(authStatus?.expiresAt) : undefined;
+    const expiresAtLabel = formatExpiry(authStatus?.expiresAt);
     // Only a POSITIVE "cannot refresh" reading warns: silence must never be read as a
     // credential that will die without notice.
     const cannotAutoRenew = isPasteFlowProvider && authStatus?.canRefresh === false;
-    // The mirror image, and equally positive-only: a renewable connection holds either an
-    // OAuth refresh token or a chatgpt.com web session, so its expiry is a routine rollover
-    // date rather than a deadline — say so, or the bare "Expires {{time}}" line reads as a
-    // warning it is not.
-    const autoRenews = isPasteFlowProvider && authStatus?.canRefresh === true;
+    // The mirror image, and equally positive-only: a renewable connection holds a renewal
+    // credential (an OAuth refresh token, a chatgpt.com web session, or an API key the server
+    // re-exchanges), so its expiry is a routine rollover date rather than a deadline — say so,
+    // or the bare "Expires {{time}}" line reads as a warning it is not. A device-code provider
+    // joins on a NAMED renewal credential only, which leaves the silent cards (GitHub Copilot)
+    // exactly as they were.
+    const autoRenews =
+      authStatus?.canRefresh === true && (isPasteFlowProvider || Boolean(authStatus?.renewalKind));
     /** Which credential does the renewing; absent for connections that predate the label. */
     const renewalKindLabel =
       authStatus?.renewalKind === 'web_session'
         ? t('providerModels.config.oauth.renewalKind.webSession')
-        : authStatus?.renewalKind === 'oauth'
-          ? t('providerModels.config.oauth.renewalKind.oauth')
-          : undefined;
+        : authStatus?.renewalKind === 'cursor_api_key'
+          ? t('providerModels.config.oauth.renewalKind.apiKey')
+          : authStatus?.renewalKind === 'oauth'
+            ? t('providerModels.config.oauth.renewalKind.oauth')
+            : undefined;
 
     /**
      * The flow reported the credential stored and the status query has not caught up yet.
@@ -209,6 +249,13 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
      * user hunt for the section they just asked for.
      */
     const [openSessionSection, setOpenSessionSection] = useState(false);
+
+    /**
+     * The user is connecting with an API key rather than a browser login. The two routes share
+     * one flow underneath (the key is redeemed against a device-code envelope), so this is what
+     * keeps the card they are looking at on screen while that envelope is fetched.
+     */
+    const [apiKeyRoute, setApiKeyRoute] = useState(false);
 
     const handleSuccess = useCallback(() => {
       /**
@@ -238,12 +285,14 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
     }, [providerId, utils.oauthDeviceFlow.getAuthStatus]);
 
     const {
+      apiKeyPhase,
       state,
       deviceCodeInfo,
       error,
       startAuth,
       cancelAuth,
       submitAccessToken,
+      submitApiKey,
       submitCallback,
       submitError,
       submitErrorSource,
@@ -256,6 +305,14 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
     });
 
     const isPasteFlow = deviceCodeInfo?.flow === 'authorization_code_paste';
+    /** The API-key route is mid-round-trip: envelope request or exchange. */
+    const apiKeyPending = apiKeyPhase !== 'idle';
+    /**
+     * The FLOW's own failure — a refused envelope, a network error, an expired code. The
+     * exchange either never happened or never got as far as judging the key, so this is
+     * reported in the flow's own words and never inside the key form.
+     */
+    const flowFailed = state === 'error' && Boolean(error);
 
     const handleDisconnect = useCallback(() => {
       if (!canManageProvider) return;
@@ -275,6 +332,7 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
       if (!canManageProvider) return;
 
       // A web-session-only provider has exactly one box to land on, and this is it.
+      setApiKeyRoute(false);
       setOpenSessionSection(webSessionOnly);
       setJustConnected(false);
       hasAutoClosedRef.current = false;
@@ -298,6 +356,7 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
     const handleStartAuthWithSession = useCallback(async () => {
       if (!canManageProvider) return;
 
+      setApiKeyRoute(false);
       setOpenSessionSection(true);
       setJustConnected(false);
       hasAutoClosedRef.current = false;
@@ -305,7 +364,24 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
       await startAuth();
     }, [canManageProvider, startAuth]);
 
+    /**
+     * Connect with a dashboard API key. The envelope handling belongs to the flow — whether one
+     * is still live is a reading only it can make — so this only records WHICH route is running.
+     * `isAuthenticating` is deliberately NOT set: no page is opened and no user code exists on
+     * this route, so the device-code chrome would only flash for the length of a round trip.
+     */
+    const handleSubmitApiKey = useCallback(
+      async (apiKey: string) => {
+        if (!canManageProvider) return;
+
+        setApiKeyRoute(true);
+        await submitApiKey(apiKey);
+      },
+      [canManageProvider, submitApiKey],
+    );
+
     const handleCancelAuth = useCallback(() => {
+      setApiKeyRoute(false);
       setIsAuthenticating(false);
       setJustConnected(false);
       cancelAuth();
@@ -360,7 +436,7 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
                  * cannot renew has exactly one deadline — the warning's, which would
                  * otherwise be printed twice in two different voices.
                  */}
-                {expiresAtLabel && !autoRenews && !cannotAutoRenew && (
+                {isPasteFlowProvider && expiresAtLabel && !autoRenews && !cannotAutoRenew && (
                   <Text style={{ fontSize: 13 }} type="secondary">
                     {t('providerModels.config.oauth.paste.expiresAt', { time: expiresAtLabel })}
                   </Text>
@@ -545,16 +621,39 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
           );
         }
 
+        /**
+         * Not every device-flow provider hands out a code. Cursor's browser login is approved
+         * on the opened page itself (the server answers with an empty `userCode`), so a code
+         * box and "type this code" instructions would send the user hunting for something
+         * that does not exist. Read off the server's answer, never off the provider id.
+         */
+        const hasUserCode = Boolean(deviceCodeInfo.userCode);
+        /**
+         * The paste route rides ALONGSIDE the browser login here, because for an API-key
+         * provider it is the durable one: the server renews from the key forever, while a
+         * browser sign-in has to be repeated when it expires. Card-driven — an access-token
+         * paste provider keeps its own chrome in the branch above — and only once the envelope
+         * says a paste is allowed.
+         */
+        const offerApiKeyHere = Boolean(deviceCodeInfo.allowAccessTokenPaste) && offerApiKey;
+        const fallbackUri = hasUserCode
+          ? deviceCodeInfo.verificationUri
+          : deviceCodeInfo.verificationUriComplete || deviceCodeInfo.verificationUri;
+
         // Device code display
         return (
           <div className={styles.content}>
-            <Flexbox align="center" gap={12} style={{ width: '100%' }} width={320}>
-              <Text type="secondary">{t('providerModels.config.oauth.enterCode')}</Text>
-              <Flexbox horizontal align="center" gap={12} style={{ width: '100%' }}>
-                <div className={styles.codeBox}>{deviceCodeInfo.userCode}</div>
-                <CopyButton content={deviceCodeInfo.userCode} />
+            {hasUserCode ? (
+              <Flexbox align="center" gap={12} style={{ width: '100%' }} width={320}>
+                <Text type="secondary">{t('providerModels.config.oauth.enterCode')}</Text>
+                <Flexbox horizontal align="center" gap={12} style={{ width: '100%' }}>
+                  <div className={styles.codeBox}>{deviceCodeInfo.userCode}</div>
+                  <CopyButton content={deviceCodeInfo.userCode} />
+                </Flexbox>
               </Flexbox>
-            </Flexbox>
+            ) : (
+              <Text type="secondary">{t('providerModels.config.oauth.openLinkToAuthorize')}</Text>
+            )}
 
             <Flexbox gap={12} style={{ width: '100%' }} width={280}>
               <Button
@@ -568,18 +667,40 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
               </Button>
             </Flexbox>
 
-            <Link
-              href={deviceCodeInfo.verificationUri}
-              style={{ fontSize: 13 }}
-              target="_blank"
-              type="secondary"
-            >
-              {deviceCodeInfo.verificationUri}
-            </Link>
-
             <div className={styles.pollingHint}>
               <Icon spin icon={Loader2Icon} />
               <span>{t('providerModels.config.oauth.polling')}</span>
+            </div>
+
+            {/* The OTHER connect route, above the fallback URL: it is a real alternative, not a
+                footnote to a link that reads like debug output. */}
+            {offerApiKeyHere && (
+              <ApiKeyPastePanel
+                apiKeyUrl={apiKeyUrl}
+                disabled={!canManageProvider}
+                name={name}
+                submitFailed={Boolean(submitError)}
+                submitting={submitting || apiKeyPending}
+                onCancel={handleCancelAuth}
+                onSubmit={handleSubmitApiKey}
+              />
+            )}
+
+            {/*
+              The copy/paste fallback for when the popup was blocked, so it has to be the URL
+              that actually authorizes: without a user code the bare verification page carries
+              no challenge and approves nothing, so the prefilled URI is the only usable one.
+
+              Labelled and copyable: for a code-less provider this link IS the connect route.
+            */}
+            <div className={styles.fallbackUrl}>
+              <span>{t('providerModels.config.oauth.verificationUrlLabel')}</span>
+              <Flexbox horizontal align="center" gap={8} style={{ maxWidth: '100%' }}>
+                <Link href={fallbackUri} style={{ fontSize: 13 }} target="_blank" type="secondary">
+                  {fallbackUri}
+                </Link>
+                <CopyButton content={fallbackUri} size="small" />
+              </Flexbox>
             </div>
 
             <Button type="text" onClick={handleCancelAuth}>
@@ -589,41 +710,53 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
         );
       }
 
-      // Error state (not authenticating)
-      if (state === 'error' && error) {
-        const errorKey = `providerModels.config.oauth.${error}`;
-        return (
-          <div className={styles.content}>
-            <Flexbox horizontal align="center" gap={8}>
-              <Icon color={cssVar.colorError} icon={UnplugIcon} size={18} />
-              <Text className={styles.errorText}>{t(errorKey as any)}</Text>
-            </Flexbox>
-            <Button
-              disabled={!canManageProvider}
-              size="large"
-              type="primary"
-              onClick={handleStartAuth}
-            >
-              {t('providerModels.config.oauth.connect', { name })}
-            </Button>
-            <div className={styles.serviceNote}>
-              {t('providerModels.config.oauth.serviceNote', { name })}
-            </div>
-          </div>
-        );
-      }
+      /**
+       * The idle card, with the provider's SECOND connect route under the primary one — a
+       * closed disclosure, so the browser login stays the one-click default while a user who
+       * already holds a dashboard key no longer has to start (and abandon) a browser login to
+       * find the box.
+       */
+      const apiKeyPanel = offerApiKey ? (
+        <ApiKeyPastePanel
+          apiKeyUrl={apiKeyUrl}
+          defaultOpen={apiKeyRoute}
+          disabled={!canManageProvider}
+          name={name}
+          // ONLY a rejected exchange. A refused envelope never judged the key, and saying
+          // "check the key" about a network failure sends the user to rewrite a good one.
+          submitFailed={Boolean(submitError)}
+          submitting={apiKeyPending || submitting}
+          onCancel={handleCancelAuth}
+          onSubmit={handleSubmitApiKey}
+        />
+      ) : null;
 
-      // Default state - show connect button
+      /*
+        The idle card, in ONE shape: the flow's own failure is a line above the connect
+        button, not a second card. Two structures meant the API-key box was torn down and
+        rebuilt the moment a request failed — taking the key the user had just typed with it.
+      */
       return (
         <div className={styles.content}>
+          {flowFailed && (
+            <Flexbox horizontal align="center" gap={8}>
+              <Icon color={cssVar.colorError} icon={UnplugIcon} size={18} />
+              <Text className={styles.errorText}>
+                {t(`providerModels.config.oauth.${error}` as any)}
+              </Text>
+            </Flexbox>
+          )}
           <Button
-            disabled={!canManageProvider}
+            // No competing run while the API-key route holds an envelope in flight: starting
+            // a browser login here would retire the one the exchange is about to use.
+            disabled={!canManageProvider || apiKeyPending}
             size="large"
             type="primary"
             onClick={handleStartAuth}
           >
             {t('providerModels.config.oauth.connect', { name })}
           </Button>
+          {apiKeyPanel}
           <div className={styles.serviceNote}>
             {t('providerModels.config.oauth.serviceNote', { name })}
           </div>

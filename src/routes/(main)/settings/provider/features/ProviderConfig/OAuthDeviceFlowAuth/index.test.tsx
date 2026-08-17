@@ -12,12 +12,14 @@ const render = (ui: ReactElement) =>
 const mocks = vi.hoisted(() => ({
   authStatus: undefined as unknown,
   flow: {
+    apiKeyPhase: 'idle' as string,
     cancelAuth: vi.fn(),
     deviceCodeInfo: undefined as unknown,
     error: undefined as unknown,
     startAuth: vi.fn(),
     state: 'idle' as string,
     submitAccessToken: vi.fn(),
+    submitApiKey: vi.fn(),
     submitCallback: vi.fn(),
     submitError: undefined as unknown,
     submitErrorSource: undefined as unknown,
@@ -53,6 +55,8 @@ vi.mock('@/libs/trpc/client', () => ({
 }));
 
 vi.mock('react-i18next', () => ({
+  // The key is the assertion surface here; the link markup is exercised by the browser check.
+  Trans: ({ i18nKey }: { i18nKey: string }) => <span>{i18nKey}</span>,
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
@@ -112,12 +116,14 @@ const startSessionOnlyFlow = async () => {
 beforeEach(() => {
   mocks.authStatus = undefined;
   mocks.revoke = vi.fn();
+  mocks.flow.apiKeyPhase = 'idle';
   mocks.flow.cancelAuth = vi.fn();
   mocks.flow.deviceCodeInfo = pasteDeviceCode;
   mocks.flow.error = undefined;
   mocks.flow.state = 'pending_user_auth';
   mocks.flow.startAuth = vi.fn().mockResolvedValue(pasteDeviceCode);
   mocks.flow.submitAccessToken = vi.fn();
+  mocks.flow.submitApiKey = vi.fn();
   mocks.flow.submitCallback = vi.fn();
   mocks.flow.submitError = undefined;
   mocks.flow.submitErrorSource = undefined;
@@ -598,6 +604,178 @@ describe('OAuthDeviceFlowAuth failure states', () => {
   });
 });
 
+/**
+ * Cursor: a device-flow SHAPE with no code to type (the browser login is approved on the page
+ * itself) and a second route whose pasted credential is a dashboard API KEY, not an access
+ * token. Both are read off the card / the server's answer, never off the provider id.
+ */
+describe('OAuthDeviceFlowAuth code-less browser login', () => {
+  const cursorDeviceCode = {
+    allowAccessTokenPaste: true,
+    deviceCode: 'uuid.verifier',
+    expiresIn: 1400,
+    flow: 'device_code',
+    interval: 3,
+    userCode: '',
+    verificationUri: 'https://cursor.com/loginDeepControl',
+    verificationUriComplete: 'https://cursor.com/loginDeepControl?challenge=abc&uuid=u1',
+  };
+
+  const startCursorFlow = async () => {
+    mocks.flow.deviceCodeInfo = cursorDeviceCode;
+    mocks.flow.startAuth = vi.fn().mockResolvedValue(cursorDeviceCode);
+    const view = render(<OAuthDeviceFlowAuth name="Cursor" providerId="cursor" />);
+    fireEvent.click(screen.getByText('providerModels.config.oauth.connect'));
+    await screen.findByText('providerModels.config.oauth.openLinkToAuthorize');
+    return view;
+  };
+
+  it('drops the code block when the provider issues no user code', async () => {
+    await startCursorFlow();
+
+    expect(screen.queryByText('providerModels.config.oauth.enterCode')).toBeNull();
+    // The polling/expiry chrome is untouched — only the code instructions go.
+    expect(screen.getByText('providerModels.config.oauth.polling')).toBeTruthy();
+    expect(screen.getByText('providerModels.config.oauth.openBrowser')).toBeTruthy();
+    // The bare verification page approves nothing without the challenge, so the copyable
+    // fallback has to be the prefilled URI.
+    expect(screen.getByText(cursorDeviceCode.verificationUriComplete)).toBeTruthy();
+  });
+
+  it('labels the pasted credential as an API key and submits it trimmed', async () => {
+    await startCursorFlow();
+
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.apiKeyToggle'));
+
+    const field = screen.getByPlaceholderText(
+      'providerModels.config.oauth.paste.apiKeyPlaceholder',
+    );
+    expect(screen.getByText('providerModels.config.oauth.paste.apiKeyLabel')).toBeTruthy();
+    // Cursor's card names a dashboard, so the hint is the linked variant.
+    expect(screen.getByText('providerModels.config.oauth.paste.apiKeyHintWithUrl')).toBeTruthy();
+    // No access-token / web-session wording on this route.
+    expect(screen.queryByText('providerModels.config.oauth.paste.sessionLabel')).toBeNull();
+
+    const submit = screen.getByText('providerModels.config.oauth.paste.apiKeySubmit');
+    // Empty is not a submit: no shape validation, but no blank redemption either.
+    fireEvent.click(submit);
+    expect(mocks.flow.submitApiKey).not.toHaveBeenCalled();
+
+    fireEvent.change(field, { target: { value: '  key_live_abc  ' } });
+    fireEvent.click(submit);
+
+    expect(mocks.flow.submitApiKey).toHaveBeenCalledWith('key_live_abc');
+  });
+
+  it('labels the fallback URL and makes it copyable instead of dumping it as body text', async () => {
+    await startCursorFlow();
+
+    // For a code-less provider this link IS the connect route, so it cannot read as debug
+    // output printed under the spinner.
+    expect(screen.getByText('providerModels.config.oauth.verificationUrlLabel')).toBeTruthy();
+    expect(screen.getByText(cursorDeviceCode.verificationUriComplete).getAttribute('href')).toBe(
+      cursorDeviceCode.verificationUriComplete,
+    );
+  });
+
+  it('offers the API-key route from the idle card, before any browser login is started', () => {
+    mocks.flow.deviceCodeInfo = undefined;
+    mocks.flow.state = 'idle';
+    mocks.flow.startAuth = vi.fn();
+
+    render(<OAuthDeviceFlowAuth name="Cursor" providerId="cursor" />);
+
+    // The durable route used to be reachable only after firing a real device-code request.
+    expect(screen.getByText('providerModels.config.oauth.connect')).toBeTruthy();
+    expect(screen.getByText('providerModels.config.oauth.paste.apiKeyToggle')).toBeTruthy();
+    expect(mocks.flow.startAuth).not.toHaveBeenCalled();
+  });
+
+  it('hands the key to the flow instead of deciding envelope liveness from render state', async () => {
+    // Nothing started yet: the shared beforeEach seeds a paste envelope this case must not see.
+    mocks.flow.deviceCodeInfo = undefined;
+    mocks.flow.state = 'idle';
+    mocks.flow.startAuth = vi.fn().mockResolvedValue(cursorDeviceCode);
+
+    render(<OAuthDeviceFlowAuth name="Cursor" providerId="cursor" />);
+
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.apiKeyToggle'));
+    fireEvent.change(
+      screen.getByPlaceholderText('providerModels.config.oauth.paste.apiKeyPlaceholder'),
+      { target: { value: ' key_live_idle ' } },
+    );
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.apiKeySubmit'));
+
+    // The envelope belongs to the flow: only it can tell a live one from render state an
+    // expiry already invalidated. No page opened and no user code shown on this route either.
+    await vi.waitFor(() => expect(mocks.flow.submitApiKey).toHaveBeenCalledWith('key_live_idle'));
+    expect(mocks.flow.startAuth).not.toHaveBeenCalled();
+    expect(mocks.flow.submitAccessToken).not.toHaveBeenCalled();
+    expect(screen.queryByText('providerModels.config.oauth.openBrowser')).toBeNull();
+  });
+
+  it('reports a refused envelope in the flow’s own words, not as a rejected key', () => {
+    mocks.flow.deviceCodeInfo = undefined;
+    mocks.flow.state = 'error';
+    mocks.flow.error = 'authError';
+
+    render(<OAuthDeviceFlowAuth name="Cursor" providerId="cursor" />);
+
+    // The idle card owns the failure; the key form keeps the box (and the typed key) intact.
+    expect(screen.getByText('providerModels.config.oauth.authError')).toBeTruthy();
+    expect(screen.getByText('providerModels.config.oauth.paste.apiKeyToggle')).toBeTruthy();
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.apiKeyToggle'));
+    expect(screen.queryByText('providerModels.config.oauth.paste.apiKeyError')).toBeNull();
+  });
+
+  it('offers a way out of a pending exchange and stands the browser login down', () => {
+    mocks.flow.deviceCodeInfo = undefined;
+    mocks.flow.state = 'idle';
+    mocks.flow.apiKeyPhase = 'exchangingKey';
+
+    render(<OAuthDeviceFlowAuth name="Cursor" providerId="cursor" />);
+
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.apiKeyToggle'));
+    // A hidden round trip against the provider must never be a dead end.
+    fireEvent.click(screen.getByText('providerModels.config.oauth.cancel'));
+    expect(mocks.flow.cancelAuth).toHaveBeenCalledTimes(1);
+
+    // And nothing else may start a competing run that would retire the same envelope.
+    expect(
+      screen
+        .getByText('providerModels.config.oauth.connect')
+        .closest('button')!
+        .hasAttribute('disabled'),
+    ).toBe(true);
+  });
+
+  it('keeps the API-key route off a provider whose card does not offer one', () => {
+    mocks.flow.deviceCodeInfo = undefined;
+    mocks.flow.state = 'idle';
+
+    render(<OAuthDeviceFlowAuth name="SuperGrok" providerId="supergrok" />);
+
+    expect(screen.queryByText('providerModels.config.oauth.paste.apiKeyToggle')).toBeNull();
+  });
+
+  it('names the API key as what renews the connection, and warns about nothing', () => {
+    mocks.authStatus = {
+      canRefresh: true,
+      expiresAt: Date.UTC(2030, 0, 1),
+      renewalKind: 'cursor_api_key',
+      status: 'ACTIVE',
+    };
+
+    render(<OAuthDeviceFlowAuth name="Cursor" providerId="cursor" />);
+
+    expect(screen.getByText('providerModels.config.oauth.paste.autoRenewKind')).toBeTruthy();
+    // It renews forever: the expiry is the current token's rollover, never a deadline.
+    expect(screen.getByText('providerModels.config.oauth.paste.currentTokenUntil')).toBeTruthy();
+    expect(screen.queryByText('providerModels.config.oauth.paste.expiresAt')).toBeNull();
+    expect(screen.queryByText(/providerModels\.config\.oauth\.paste\.cannotAutoRenew/)).toBeNull();
+  });
+});
+
 describe('OAuthDeviceFlowAuth device-code flow', () => {
   it('still shows the user code and polling hint for SuperGrok', async () => {
     mocks.flow.deviceCodeInfo = deviceCode;
@@ -611,6 +789,8 @@ describe('OAuthDeviceFlowAuth device-code flow', () => {
     expect(screen.getByText('providerModels.config.oauth.polling')).toBeTruthy();
     // The paste chrome belongs to the other grant only.
     expect(screen.queryByText('providerModels.config.oauth.paste.instruction')).toBeNull();
+    // And the API-key route belongs to the cards that declare one.
+    expect(screen.queryByText('providerModels.config.oauth.paste.apiKeyToggle')).toBeNull();
     // Connect counts as user activation, so the prefilled page opens right away — isolated.
     expect(window.open).toHaveBeenCalledWith(
       deviceCode.verificationUriComplete,

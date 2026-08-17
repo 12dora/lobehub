@@ -99,6 +99,47 @@ describe('aiProviderSelectors', () => {
     });
   });
 
+  describe('providerNameById / providerDescriptionById', () => {
+    /**
+     * The only place a CUSTOM provider's name and description exist on the client. Builtin
+     * ids are answered from the model-bank card instead, so the hooks pass `undefined` here
+     * rather than paying for a scan per rendered row.
+     */
+    const withCustomRow: any = {
+      ...mockState,
+      aiProviderList: [
+        ...mockState.aiProviderList,
+        {
+          description: 'Our in-house gateway',
+          enabled: true,
+          id: 'internal_proxy',
+          name: 'Internal Gateway',
+          sort: 4,
+          source: 'custom',
+        },
+      ],
+    };
+
+    it('returns the stored name of a custom provider', () => {
+      expect(aiProviderSelectors.providerNameById('internal_proxy')(withCustomRow)).toBe(
+        'Internal Gateway',
+      );
+    });
+
+    it('returns undefined without an id, so callers can opt out of the scan', () => {
+      expect(aiProviderSelectors.providerNameById(undefined)(withCustomRow)).toBeUndefined();
+      expect(aiProviderSelectors.providerDescriptionById(undefined)(withCustomRow)).toBeUndefined();
+    });
+
+    it('returns undefined for a row that carries no name or description', () => {
+      expect(aiProviderSelectors.providerNameById('provider1')(withCustomRow)).toBeUndefined();
+      expect(aiProviderSelectors.providerNameById('nope')(withCustomRow)).toBeUndefined();
+      expect(
+        aiProviderSelectors.providerDescriptionById('provider1')(withCustomRow),
+      ).toBeUndefined();
+    });
+  });
+
   describe('providerDetailById', () => {
     it('should return provider detail by id', () => {
       expect(aiProviderSelectors.providerDetailById('provider1')(mockState)).toEqual(

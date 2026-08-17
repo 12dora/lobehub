@@ -3,7 +3,12 @@
 import { Alert, Flexbox, Skeleton, Text } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
-import { isProviderWebSessionOnly } from 'model-bank/modelProviders';
+import {
+  getProviderApiKeyUrl,
+  getProviderPastedCredentialKind,
+  isProviderAccessTokenPasteAllowed,
+  isProviderWebSessionOnly,
+} from 'model-bank/modelProviders';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -16,6 +21,7 @@ import { useClientDataSWR } from '@/libs/swr';
 import { lambdaClient } from '@/libs/trpc/client';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
+import SharedOAuthApiKeyForm from './SharedOAuthApiKeyForm';
 import SharedOAuthBadge from './SharedOAuthBadge';
 import SharedOAuthConnectedCard from './SharedOAuthConnectedCard';
 import SharedOAuthFlowStates from './SharedOAuthFlowStates';
@@ -63,6 +69,22 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
    * rotating-refresh provider, and only the card knows which connect routes it has.
    */
   const webSessionOnly = isProviderWebSessionOnly(providerId);
+  /**
+   * What the provider's paste route actually takes. `'apiKey'` (Cursor) is a dashboard key
+   * the server exchanges and then renews from forever — a different object from the access
+   * token `'accessToken'` providers accept, and it has to be labelled as one.
+   */
+  const pastedCredentialKind = getProviderPastedCredentialKind(providerId);
+  /**
+   * Whether the API-key route exists at all for this provider — read off the card, so it is
+   * answerable BEFORE a flow envelope exists. That is the whole point: the durable connect
+   * route used to be reachable only from the awaiting state, i.e. only by first firing a real
+   * device-code request against the provider and then abandoning the browser login.
+   */
+  const offerApiKey =
+    pastedCredentialKind === 'apiKey' && isProviderAccessTokenPasteAllowed(providerId);
+  /** Where this provider's keys are created; the hint links it instead of describing it. */
+  const apiKeyUrl = getProviderApiKeyUrl(providerId);
   const [disconnecting, setDisconnecting] = useState(false);
   /**
    * Whether the platform AI catalog actually OVERRIDES what members use right now
@@ -144,12 +166,14 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   }, [refreshStatus]);
 
   const {
+    apiKeyPhase,
     connect,
     deviceCode,
     error,
     reset,
     state,
     submitAccessToken,
+    submitApiKey,
     submitCallback,
     submitError,
     submitErrorSource,
@@ -168,8 +192,20 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
    */
   const [openSessionSection, setOpenSessionSection] = useState(false);
 
+  /**
+   * The operator is connecting with an API key rather than a browser login. Held here, because
+   * the two routes share one flow underneath: the key is redeemed against a device-code
+   * envelope, so an envelope has to be requested first — silently, with no page to open and no
+   * code to read. Without this flag the panel would flash the device-code chrome for the
+   * length of that round trip, and land a failed exchange on a screen that has no field on it.
+   */
+  const [apiKeyRoute, setApiKeyRoute] = useState(false);
+  /** The API-key route is mid-round-trip: envelope request or exchange. */
+  const apiKeyPending = apiKeyPhase !== 'idle';
+
   const handleConnect = useCallback(async () => {
     // A web-session-only provider has exactly one box to land on, and this is it.
+    setApiKeyRoute(false);
     setOpenSessionSection(webSessionOnly);
     const info = await connect();
     // The paste flow opens the authorization page from its own explicit step: the operator
@@ -183,9 +219,29 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
 
   /** Same flow, landing on the web-session box — the one-paste route to auto-renewal. */
   const handleConnectWithSession = useCallback(async () => {
+    setApiKeyRoute(false);
     setOpenSessionSection(true);
     await connect();
   }, [connect]);
+
+  /**
+   * Connect with a dashboard API key. The envelope handling belongs to the flow — whether one
+   * is still live is a reading only it can make — so this only records WHICH route is running.
+   * No window is opened and no user code is surfaced: this route has neither.
+   */
+  const handleSubmitApiKey = useCallback(
+    async (apiKey: string) => {
+      setApiKeyRoute(true);
+      await submitApiKey(apiKey);
+    },
+    [submitApiKey],
+  );
+
+  /** Cancel drops the API-key route with the flow it was driving. */
+  const handleReset = useCallback(() => {
+    setApiKeyRoute(false);
+    reset();
+  }, [reset]);
 
   /**
    * Withdraw the shared account. Confirmation is mandatory: unlike the user-side disconnect
@@ -293,7 +349,73 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     return <Alert message={t(messageKey)} type={'success'} />;
   };
 
+  /**
+   * The API-key box, wherever it is offered. `defaultOpen` while that route is running, so a
+   * failed exchange lands next to the field that produced it instead of behind a closed
+   * disclosure.
+   */
+  const renderApiKeyForm = () =>
+    offerApiKey ? (
+      <SharedOAuthApiKeyForm
+        apiKeyUrl={apiKeyUrl}
+        defaultOpen={apiKeyRoute}
+        name={name}
+        // ONLY a rejected exchange. A refused envelope never judged the key, and saying
+        // "check the key" about a network failure sends the operator to rewrite a good one.
+        submitFailed={Boolean(submitError)}
+        submitting={apiKeyPending || submitting}
+        onCancel={handleReset}
+        onSubmit={handleSubmitApiKey}
+      />
+    ) : null;
+
+  const renderConnectedCard = () => (
+    <SharedOAuthConnectedCard
+      apiKeyForm={renderApiKeyForm()}
+      // No competing run while the API-key route holds an envelope in flight: a browser login
+      // started here would retire the one the exchange is about to use.
+      connectDisabled={apiKeyPending}
+      disconnecting={disconnecting}
+      enforcementHint={renderEnforcementHint()}
+      name={name}
+      needsReauth={needsReauth}
+      reauthDetail={reauthDetail}
+      status={status}
+      webSessionOnly={webSessionOnly}
+      onConnect={handleConnect}
+      onConnectWithSession={handleConnectWithSession}
+      onDisconnect={handleDisconnect}
+    />
+  );
+
+  /**
+   * The idle card, with the API-key route's own failure surface above it.
+   *
+   * ONE shape, whichever half is showing: a failed envelope must not swap the card for a
+   * different tree, or the key form is torn down and rebuilt — taking the key the operator
+   * has just typed with it. The flow's own words for the flow's own failure; a rejected key
+   * is reported inside the form instead.
+   */
+  const renderIdleCard = () => (
+    <Flexbox gap={12}>
+      {apiKeyRoute && state === 'error' && (
+        <Alert
+          message={t(`aiProviderSettings.sharedOAuth.error.${error ?? 'authError'}` as any)}
+          type={'error'}
+        />
+      )}
+      {renderConnectedCard()}
+    </Flexbox>
+  );
+
   const renderBody = () => {
+    /**
+     * The API-key route runs the same flow underneath, but it is not a browser login: keep the
+     * operator on the card they are looking at rather than flashing the device-code chrome at
+     * them, until the credential is actually stored.
+     */
+    if (apiKeyRoute && state !== 'success') return renderIdleCard();
+
     if (state === 'awaiting' && deviceCode?.flow === 'authorization_code_paste') {
       return (
         <SharedOAuthPasteForm
@@ -304,7 +426,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
           submitErrorSource={submitErrorSource}
           submitting={submitting}
           webSessionOnly={webSessionOnly}
-          onCancel={reset}
+          onCancel={handleReset}
           onOpenAuthorizePage={handleOpenVerification}
           onRegenerate={handleConnect}
           onSubmitAccessToken={submitAccessToken}
@@ -315,15 +437,25 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     }
 
     if (state === 'requesting' || state === 'error' || (state === 'awaiting' && deviceCode)) {
+      /**
+       * The API-key route rides ALONGSIDE the browser login rather than replacing it: both
+       * connect the same account, and only one of them survives the sign-in expiry. Offered
+       * strictly off the card — a provider whose pasted credential is an access token keeps
+       * its own (web-session) chrome — and only once the envelope says the paste is allowed.
+       */
+      const offerApiKeyHere =
+        state === 'awaiting' && Boolean(deviceCode?.allowAccessTokenPaste) && offerApiKey;
+
       return (
         <SharedOAuthFlowStates
+          alternativeRoute={offerApiKeyHere ? renderApiKeyForm() : undefined}
           deviceCode={deviceCode}
           error={error}
           name={name}
           state={state}
           onConnect={handleConnect}
           onOpenVerification={handleOpenVerification}
-          onReset={reset}
+          onReset={handleReset}
         />
       );
     }
@@ -334,7 +466,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
           {renderStoredAlert()}
           {renderEnforcementHint()}
           <Flexbox horizontal>
-            <Button onClick={reset}>{t('aiProviderSettings.sharedOAuth.done')}</Button>
+            <Button onClick={handleReset}>{t('aiProviderSettings.sharedOAuth.done')}</Button>
           </Flexbox>
         </Flexbox>
       );
@@ -355,20 +487,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
       );
     }
 
-    return (
-      <SharedOAuthConnectedCard
-        disconnecting={disconnecting}
-        enforcementHint={renderEnforcementHint()}
-        name={name}
-        needsReauth={needsReauth}
-        reauthDetail={reauthDetail}
-        status={status}
-        webSessionOnly={webSessionOnly}
-        onConnect={handleConnect}
-        onConnectWithSession={handleConnectWithSession}
-        onDisconnect={handleDisconnect}
-      />
-    );
+    return renderIdleCard();
   };
 
   return (

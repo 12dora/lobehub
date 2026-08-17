@@ -1,10 +1,15 @@
+import { ProviderIcon } from '@lobehub/icons';
 import { Accordion, AccordionItem, Flexbox, Icon, Tag, Text, Tooltip } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
-import { ArrowDownToDot, ArrowUpFromDot, CircleFadingArrowUp } from 'lucide-react';
+import { ArrowDownToDot, ArrowUpFromDot, CircleFadingArrowUp, Info } from 'lucide-react';
 import type { FC } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useProviderDescription } from '@/hooks/useProviderDescription';
+import { useProviderDisplayName } from '@/hooks/useProviderName';
+import { a11yStyles } from '@/styles/a11y';
+import { nonInteractiveTooltipProps } from '@/styles/tooltip';
 import type { EnabledProviderWithModels } from '@/types/aiProvider';
 
 import type { FormattedUnitPrice } from '../hooks/useModelDetailPanel';
@@ -46,6 +51,33 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     gap: 4px;
     align-items: baseline;
   `,
+  provider: css`
+    padding-block: 8px 6px;
+    padding-inline: 8px;
+    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
+  `,
+  /**
+   * Same affordance the model picker uses for the same fact, and the same contrast floor
+   * (WCAG 1.4.11, 3:1) — it is the only thing advertising the description.
+   */
+  providerInfo: css`
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    color: ${cssVar.colorTextSecondary};
+
+    &:hover {
+      color: ${cssVar.colorText};
+    }
+  `,
+  /**
+   * Deliberately quieter than the metric labels below it: this panel's subject is the MODEL,
+   * and a 12px/500 `colorText` provider name above 14px labels inverted that hierarchy.
+   */
+  providerName: css`
+    font-size: ${cssVar.fontSizeSM};
+    color: ${cssVar.colorTextSecondary};
+  `,
   titleText: css`
     font-size: 14px;
     font-weight: 400;
@@ -85,6 +117,13 @@ interface ModelDetailPanelProps {
 const ModelDetailPanel: FC<ModelDetailPanelProps> = memo(
   ({ model: modelId, provider, enabledList: enabledListProp, pricingMode }) => {
     const { t } = useTranslation(['components', 'models']);
+    /**
+     * Which service these models come from. Groups in the picker are told apart by brand name
+     * alone (xAI / SuperGrok / Grok / ChatGPT / ChatGPT Web), so the detail panel is where that
+     * ambiguity gets resolved.
+     */
+    const providerName = useProviderDisplayName(provider);
+    const providerDescription = useProviderDescription(provider);
     const {
       approximatePriceLabel,
       contextWindowLabel,
@@ -122,8 +161,42 @@ const ModelDetailPanel: FC<ModelDetailPanelProps> = memo(
         ).trim()
       : undefined;
 
+    // A custom provider with neither a name nor a description has nothing to show: rendering an
+    // empty block would only add a divider above the model description.
+    const hasProviderInfo = !!provider && (!!providerName || !!providerDescription);
+
     return (
       <Flexbox className={styles.container}>
+        {hasProviderInfo && (
+          /**
+           * ONE line: which service serves this model. The description used to sit here as a
+           * two-line paragraph, which made the provider the loudest thing in a panel whose
+           * subject is the model — and it repeats verbatim for every model in the group. It
+           * hangs off the same ⓘ tooltip the picker uses instead.
+           */
+          <Flexbox horizontal align={'center'} className={styles.provider} gap={6}>
+            <ProviderIcon provider={provider} size={14} type={'mono'} />
+            {/* The id is the last resort of an already-identified block, never its reason
+                to exist — `hasProviderInfo` decides that from the name and description. */}
+            <span className={styles.providerName}>{providerName || provider}</span>
+            {providerDescription && (
+              <>
+                <Tooltip
+                  {...nonInteractiveTooltipProps}
+                  placement={'right'}
+                  title={providerDescription}
+                >
+                  <span aria-hidden className={styles.providerInfo}>
+                    <Icon icon={Info} size={12} />
+                  </span>
+                </Tooltip>
+                {/* The tooltip is a pointer affordance only; the copy is carried in
+                    visually hidden text so it is announced with the name it qualifies. */}
+                <span className={a11yStyles.srOnly}>{providerDescription}</span>
+              </>
+            )}
+          </Flexbox>
+        )}
         {description && (
           <Text as={'p'} className={styles.description} fontSize={12} type={'secondary'}>
             {description}

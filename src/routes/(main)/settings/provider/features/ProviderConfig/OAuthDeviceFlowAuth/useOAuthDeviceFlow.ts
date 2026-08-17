@@ -36,6 +36,13 @@ export type PasteSubmitError =
  */
 export type PasteSubmitSource = 'callback' | 'token';
 
+/**
+ * Phase of the API-key connect route. The two halves fail for different reasons — an envelope
+ * the server refused is an authorization/network failure and says nothing about the key, only
+ * a rejected exchange does — so the surface has to be able to tell them apart.
+ */
+export type ApiKeyConnectPhase = 'idle' | 'requestingEnvelope' | 'exchangingKey';
+
 /** Server error literal (K3) → i18n suffix used by the paste form. */
 const PASTE_ERROR_MAP: Record<string, PasteSubmitError | 'expired'> = {
   access_token_invalid: 'accessTokenInvalid',
@@ -82,6 +89,8 @@ interface UseOAuthDeviceFlowOptions {
 }
 
 interface UseOAuthDeviceFlowResult {
+  /** Phase of the API-key route; `idle` whenever it is not running. */
+  apiKeyPhase: ApiKeyConnectPhase;
   cancelAuth: () => void;
   deviceCodeInfo?: DeviceCodeInfo;
   error?: string;
@@ -90,6 +99,14 @@ interface UseOAuthDeviceFlowResult {
   state: AuthState;
   /** Paste flow: hand a raw access token to the server (no auto-renewal). */
   submitAccessToken: (accessToken: string) => Promise<void>;
+  /**
+   * Connect with a dashboard API key. The key is redeemed against a device-code envelope, so
+   * this requests one whenever the run holds none — including after an expiry, a denial or a
+   * terminal polling error, which retire the envelope while its render state lingers. Owned by
+   * the hook because only the hook can read that liveness synchronously: a caller that decided
+   * from `deviceCodeInfo` submitted into a spent envelope and silently did nothing.
+   */
+  submitApiKey: (apiKey: string) => Promise<void>;
   /** Paste flow: hand the pasted callback URL (or bare code) to the server. */
   submitCallback: (callbackUrl: string) => Promise<void>;
   /** Paste flow: recoverable submit error; the form stays open so the user can retry. */
@@ -128,6 +145,7 @@ export function useOAuthDeviceFlow({
   const [submitError, setSubmitError] = useState<PasteSubmitError | undefined>();
   const [submitErrorSource, setSubmitErrorSource] = useState<PasteSubmitSource | undefined>();
   const [submitting, setSubmitting] = useState(false);
+  const [apiKeyPhase, setApiKeyPhaseState] = useState<ApiKeyConnectPhase>('idle');
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const expiryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -143,6 +161,10 @@ export function useOAuthDeviceFlow({
    * both read `submitting === false` and both redeem the single-use grant.
    */
   const submittingRef = useRef(false);
+  /** Mirrors `apiKeyPhase` synchronously — two clicks in one render read the same state. */
+  const apiKeyPhaseRef = useRef<ApiKeyConnectPhase>('idle');
+  /** Bumped by cancel and by every new API-key submit; a superseded one may not write. */
+  const apiKeySubmitIdRef = useRef(0);
   const onSuccessRef = useRef(onSuccess);
   onSuccessRef.current = onSuccess;
   const onStatusStaleRef = useRef(onStatusStale);
@@ -168,6 +190,11 @@ export function useOAuthDeviceFlow({
     }
   }, []);
 
+  const setApiKeyPhase = useCallback((phase: ApiKeyConnectPhase) => {
+    apiKeyPhaseRef.current = phase;
+    if (!disposedRef.current) setApiKeyPhaseState(phase);
+  }, []);
+
   /**
    * Ask the caller to re-read the connection status. Mounted-only: after unmount there is no
    * card left to correct, and the query cache belongs to whoever renders next.
@@ -180,23 +207,37 @@ export function useOAuthDeviceFlow({
   /**
    * Retire whatever run is in flight: stop its timers, orphan its awaited calls, and drop
    * the envelope. Anything that resolves afterwards finds a run id it no longer owns.
+   *
+   * The rendered envelope goes with the ref, never after it. While `deviceCodeInfo` outlived
+   * an expiry / denial / terminal error, the card kept offering a device code the hook had
+   * already thrown away — and anything that read liveness off it submitted into nothing.
    */
   const invalidateRun = useCallback(() => {
     clearTimers();
     runIdRef.current += 1;
     deviceCodeRef.current = null;
     submittingRef.current = false;
+    if (disposedRef.current) return;
+    setDeviceCodeInfo(undefined);
+    // The rendered submit flag belongs to the run as well: `submitPasted`'s own cleanup is
+    // skipped once the run is stale, which left the box spinning (and its submit disabled)
+    // after a terminal expiry — with the retry it was asking for out of reach.
+    setSubmitting(false);
   }, [clearTimers]);
 
   const cancelAuth = useCallback(() => {
     invalidateRun();
+    // Supersede the API-key route with the flow it was driving: a submit that is still in
+    // flight may no longer report its phase, and the box unlocks for a fresh attempt.
+    apiKeySubmitIdRef.current += 1;
+    setApiKeyPhase('idle');
     setState('idle');
     setDeviceCodeInfo(undefined);
     setError(undefined);
     setSubmitError(undefined);
     setSubmitErrorSource(undefined);
     setSubmitting(false);
-  }, [invalidateRun]);
+  }, [invalidateRun, setApiKeyPhase]);
 
   const startPolling = useCallback(
     (runId: number, deviceCode: string, interval: number) => {
@@ -426,6 +467,49 @@ export function useOAuthDeviceFlow({
     [submitPasted],
   );
 
+  /**
+   * The API-key connect route, end to end: get an envelope if this run holds none, then
+   * exchange the key against it.
+   *
+   * Both halves live here because both readings they depend on are refs, not render state:
+   * whether the envelope is still live (an expiry, a denial or a terminal poll retires it
+   * between renders) and whether another submit is already spending it.
+   */
+  const submitApiKey = useCallback(
+    async (apiKey: string) => {
+      // Synchronous latch: two clicks in one render both read `apiKeyPhase === 'idle'`, and
+      // the second would spend the single-use grant the first is already redeeming.
+      if (apiKeyPhaseRef.current !== 'idle' || submittingRef.current) return;
+
+      /** Retired by cancel or by a newer submit; a superseded attempt may not write. */
+      const submitId = ++apiKeySubmitIdRef.current;
+      const setPhase = (phase: ApiKeyConnectPhase) => {
+        if (apiKeySubmitIdRef.current === submitId) setApiKeyPhase(phase);
+      };
+
+      // A live envelope (the box was opened from the awaiting card) is redeemed as it stands,
+      // rather than discarding a device code the provider may be about to approve.
+      if (!deviceCodeRef.current) {
+        setPhase('requestingEnvelope');
+        const info = await startAuth();
+        // No envelope: `state` / `error` already carry the authorization or network failure,
+        // and it says nothing about the key — the surface must not report a rejected key.
+        if (!info || !deviceCodeRef.current) {
+          setPhase('idle');
+          return;
+        }
+      }
+
+      setPhase('exchangingKey');
+      try {
+        await submitPasted({ accessToken: apiKey });
+      } finally {
+        setPhase('idle');
+      }
+    },
+    [setApiKeyPhase, startAuth, submitPasted],
+  );
+
   useEffect(() => {
     disposedRef.current = false;
     return () => {
@@ -439,12 +523,14 @@ export function useOAuthDeviceFlow({
   }, [clearTimers]);
 
   return {
+    apiKeyPhase,
     cancelAuth,
     deviceCodeInfo,
     error,
     startAuth,
     state,
     submitAccessToken,
+    submitApiKey,
     submitCallback,
     submitError,
     submitErrorSource,

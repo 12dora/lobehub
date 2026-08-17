@@ -4,7 +4,12 @@ import { ChatErrorType } from '@lobechat/types';
 
 import { checkAuth } from '@/app/(backend)/middleware/auth';
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import { createTraceOptions, initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
+import {
+  createTraceOptions,
+  initModelRuntimeFromDB,
+  readConversationSourceFromRequest,
+  resolveModelRuntimeConversation,
+} from '@/server/modules/ModelRuntime';
 import { type ChatStreamPayload } from '@/types/openai/chat';
 import { createErrorResponse } from '@/utils/errorResponse';
 import { getTracePayload } from '@/utils/trace';
@@ -20,15 +25,30 @@ export const POST = checkAuth(async (req: Request, { params, userId, serverDB })
 
   try {
     const workspaceId = await resolveValidWorkspaceIdFromRequest({ req, serverDB, userId });
+    const tracePayload = getTracePayload(req);
 
     // ============  1. init chat model   ============ //
-    const modelRuntime = await initModelRuntimeFromDB(serverDB, userId, provider, workspaceId);
+    /**
+     * The CLI-shaped runtimes (Grok, Cursor) present ONE upstream session per AIHub
+     * conversation, derived from the topic id and the topic's `createdAt` so every
+     * replica agrees (see `conversationIdentity.ts`). It is a THUNK: the seam calls it
+     * only after it knows the runtime provider, so ChatGPT Web and every ordinary
+     * provider pay no lookup, while a custom provider running on the Grok/Cursor SDK
+     * still gets a real conversation identity.
+     */
+    const modelRuntime = await initModelRuntimeFromDB(serverDB, userId, provider, workspaceId, {
+      resolveConversation: () =>
+        resolveModelRuntimeConversation({
+          db: serverDB,
+          userId,
+          workspaceId,
+          ...readConversationSourceFromRequest(req, tracePayload),
+        }),
+    });
 
     // ============  2. create chat completion   ============ //
 
     const data = (await req.json()) as ChatStreamPayload;
-
-    const tracePayload = getTracePayload(req);
 
     let traceOptions = {};
     // If user enable trace

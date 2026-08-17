@@ -14,12 +14,14 @@ const mocks = vi.hoisted(() => ({
   disconnect: vi.fn(),
   enabledAiModels: [] as { id: string; providerId: string }[],
   flow: {
+    apiKeyPhase: 'idle' as string,
     connect: vi.fn(),
     deviceCode: undefined as unknown,
     error: undefined as unknown,
     reset: vi.fn(),
     state: 'idle' as string,
     submitAccessToken: vi.fn(),
+    submitApiKey: vi.fn(),
     submitCallback: vi.fn(),
     submitError: undefined as unknown,
     submitErrorSource: undefined as unknown,
@@ -103,6 +105,8 @@ vi.mock('./useAdminSharedOAuthFlow', () => ({
 }));
 
 vi.mock('react-i18next', () => ({
+  // The key is the assertion surface here; the link markup is exercised by the browser check.
+  Trans: ({ i18nKey }: { i18nKey: string }) => <span>{i18nKey}</span>,
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) =>
       options ? `${key}:${JSON.stringify(options)}` : key,
@@ -181,12 +185,14 @@ beforeEach(() => {
   mocks.aiProviderList = [{ enabled: true, id: 'chatgpt' }];
   mocks.aiProviderModelList = [];
   mocks.enabledAiModels = [];
+  mocks.flow.apiKeyPhase = 'idle';
   mocks.flow.connect = vi.fn();
   mocks.flow.deviceCode = undefined;
   mocks.flow.error = undefined;
   mocks.flow.reset = vi.fn();
   mocks.flow.state = 'idle';
   mocks.flow.submitAccessToken = vi.fn();
+  mocks.flow.submitApiKey = vi.fn();
   mocks.flow.submitCallback = vi.fn();
   mocks.flow.submitError = undefined;
   mocks.flow.submitErrorSource = undefined;
@@ -1193,6 +1199,230 @@ describe('SharedOAuthConnect', () => {
     expect(screen.getByText('aiProviderSettings.sharedOAuth.connected')).toBeTruthy();
     expect(screen.queryByText('aiProviderSettings.sharedOAuth.needsReauth')).toBeNull();
     expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.reauth\.message/)).toBeNull();
+  });
+
+  /**
+   * Cursor: a device-flow SHAPE with no code to type (the browser login is approved on the
+   * page itself) and a second route whose pasted credential is a dashboard API key, not an
+   * access token. Both are read off the card / the server's answer, never off the id.
+   */
+  describe('code-less browser login with an API-key route', () => {
+    const cursorDeviceCode = {
+      allowAccessTokenPaste: true,
+      deviceCode: 'uuid.verifier',
+      expiresIn: 1400,
+      flow: 'device_code',
+      interval: 3,
+      userCode: '',
+      verificationUri: 'https://cursor.com/loginDeepControl',
+      verificationUriComplete: 'https://cursor.com/loginDeepControl?challenge=abc&uuid=u1',
+    };
+
+    beforeEach(() => {
+      mocks.flow.state = 'awaiting';
+      mocks.flow.deviceCode = cursorDeviceCode;
+    });
+
+    it('drops the code block when the provider issues no user code', () => {
+      render(<SharedOAuthConnect providerId="cursor" />);
+
+      expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.openLinkToAuthorize/)).toBeTruthy();
+      expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.enterCode/)).toBeNull();
+      // The polling/expiry chrome is untouched — only the code instructions go.
+      expect(screen.getByText('aiProviderSettings.sharedOAuth.polling')).toBeTruthy();
+      expect(screen.getByText('aiProviderSettings.sharedOAuth.openPage')).toBeTruthy();
+      // The bare verification page approves nothing without the challenge, so the copyable
+      // fallback has to be the prefilled URI.
+      expect(screen.getByText(cursorDeviceCode.verificationUriComplete)).toBeTruthy();
+    });
+
+    it('labels the pasted credential as an API key and submits it trimmed', () => {
+      render(<SharedOAuthConnect providerId="cursor" />);
+
+      fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeyToggle'));
+
+      const field = screen.getByPlaceholderText(
+        /aiProviderSettings\.sharedOAuth\.paste\.apiKeyPlaceholder/,
+      );
+      // No access-token wording anywhere on this route.
+      expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeyLabel')).toBeTruthy();
+      expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.paste\.apiKeyHint/)).toBeTruthy();
+      expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.sessionLabel')).toBeNull();
+
+      const submit = screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeySubmit');
+      // Empty is not a submit: no shape validation, but no blank redemption either.
+      fireEvent.click(submit);
+      expect(mocks.flow.submitApiKey).not.toHaveBeenCalled();
+
+      fireEvent.change(field, { target: { value: '  key_live_abc  ' } });
+      fireEvent.click(submit);
+
+      expect(mocks.flow.submitApiKey).toHaveBeenCalledWith('key_live_abc');
+    });
+
+    it('labels the fallback URL and makes it copyable instead of dumping it as body text', () => {
+      render(<SharedOAuthConnect providerId="cursor" />);
+
+      // For a code-less provider this link IS the connect route, so it cannot read as debug
+      // output printed under the spinner.
+      expect(screen.getByText('aiProviderSettings.sharedOAuth.verificationUrlLabel')).toBeTruthy();
+      const link = screen.getByText(cursorDeviceCode.verificationUriComplete);
+      expect(link.getAttribute('href')).toBe(cursorDeviceCode.verificationUriComplete);
+    });
+
+    it('offers the API-key route from the idle card, before any browser login is started', () => {
+      mocks.flow.state = 'idle';
+      mocks.flow.deviceCode = undefined;
+
+      render(<SharedOAuthConnect providerId="cursor" />);
+
+      // The durable route used to be reachable only after firing a real device-code request.
+      expect(screen.getByText('aiProviderSettings.sharedOAuth.connect')).toBeTruthy();
+      expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeyToggle')).toBeTruthy();
+      expect(mocks.flow.connect).not.toHaveBeenCalled();
+    });
+
+    it('hands the key to the flow instead of deciding envelope liveness from render state', async () => {
+      mocks.flow.state = 'idle';
+      mocks.flow.deviceCode = undefined;
+      mocks.flow.connect = vi.fn().mockResolvedValue(cursorDeviceCode);
+
+      render(<SharedOAuthConnect providerId="cursor" />);
+
+      fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeyToggle'));
+      fireEvent.change(
+        screen.getByPlaceholderText(/aiProviderSettings\.sharedOAuth\.paste\.apiKeyPlaceholder/),
+        { target: { value: ' key_live_idle ' } },
+      );
+      fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeySubmit'));
+
+      // The envelope belongs to the flow: only it can tell a live one from the render state
+      // an expiry already invalidated. No page opened, no user code shown either.
+      await vi.waitFor(() => expect(mocks.flow.submitApiKey).toHaveBeenCalledWith('key_live_idle'));
+      expect(mocks.flow.connect).not.toHaveBeenCalled();
+      expect(mocks.flow.submitAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('reports a refused envelope in the flow’s own words, not as a rejected key', async () => {
+      mocks.flow.state = 'idle';
+      mocks.flow.deviceCode = undefined;
+      // The envelope request fails before the key is ever sent: the flow reports the
+      // authorization/network failure and `submitError` — the exchange's verdict — stays unset.
+      mocks.flow.submitApiKey = vi.fn().mockImplementation(async () => {
+        mocks.flow.state = 'error';
+        mocks.flow.error = 'authError';
+      });
+
+      render(<SharedOAuthConnect providerId="cursor" />);
+
+      fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeyToggle'));
+      fireEvent.change(
+        screen.getByPlaceholderText(/aiProviderSettings\.sharedOAuth\.paste\.apiKeyPlaceholder/),
+        { target: { value: 'key_live_idle' } },
+      );
+      fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeySubmit'));
+
+      await vi.waitFor(() =>
+        expect(screen.getByText('aiProviderSettings.sharedOAuth.error.authError')).toBeTruthy(),
+      );
+      // "Check the key" about a network failure sends the operator to rewrite a good key.
+      expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.apiKeyError')).toBeNull();
+      // The box is still there, with what was typed in it: a failure must not rebuild the
+      // form and throw away the key the operator just pasted.
+      expect(
+        (
+          screen.getByPlaceholderText(
+            /aiProviderSettings\.sharedOAuth\.paste\.apiKeyPlaceholder/,
+          ) as HTMLInputElement
+        ).value,
+      ).toBe('key_live_idle');
+    });
+
+    it('offers a way out of a pending exchange and stands the browser login down', () => {
+      mocks.flow.state = 'idle';
+      mocks.flow.deviceCode = undefined;
+      mocks.flow.apiKeyPhase = 'exchangingKey';
+
+      render(<SharedOAuthConnect providerId="cursor" />);
+
+      fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeyToggle'));
+      // A hidden round trip against the provider must never be a dead end.
+      fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.cancel'));
+      expect(mocks.flow.reset).toHaveBeenCalledTimes(1);
+
+      // And nothing else may start a competing run that would retire the same envelope.
+      expect(
+        screen
+          .getByText('aiProviderSettings.sharedOAuth.connect')
+          .closest('button')!
+          .hasAttribute('disabled'),
+      ).toBe(true);
+    });
+
+    it('reports a rejected key inside the form that produced it', () => {
+      mocks.flow.state = 'idle';
+      mocks.flow.deviceCode = undefined;
+      mocks.flow.submitError = 'accessTokenInvalid';
+
+      render(<SharedOAuthConnect providerId="cursor" />);
+
+      expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.apiKeyError')).toBeTruthy();
+    });
+
+    it('keeps the API-key route off the idle card of a provider that has no such route', () => {
+      mocks.flow.state = 'idle';
+      mocks.flow.deviceCode = undefined;
+
+      render(<SharedOAuthConnect providerId="supergrok" />);
+
+      expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.apiKeyToggle')).toBeNull();
+    });
+
+    it('keeps the API-key route off the providers whose card does not offer one', () => {
+      // SuperGrok: RFC 8628 chrome, no paste route at all.
+      mocks.flow.deviceCode = {
+        allowAccessTokenPaste: false,
+        deviceCode: 'dc-1',
+        expiresIn: 600,
+        flow: 'device_code',
+        interval: 5,
+        userCode: 'ABCD-EFGH',
+        verificationUri: 'https://x.ai/device',
+        verificationUriComplete: 'https://x.ai/device?code=ABCD-EFGH',
+      };
+
+      render(<SharedOAuthConnect providerId="supergrok" />);
+
+      expect(screen.getByText('ABCD-EFGH')).toBeTruthy();
+      expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.apiKeyToggle')).toBeNull();
+    });
+
+    it('names the API key as what renews the connection, and warns about nothing', () => {
+      mocks.flow.state = 'idle';
+      mocks.flow.deviceCode = undefined;
+      mocks.swr.mockReturnValue(
+        swrResult({
+          accountIdMasked: null,
+          canRefresh: true,
+          connected: true,
+          expiresAt: String(Date.UTC(2030, 0, 1)),
+          flow: 'device_code',
+          renewalKind: 'cursor_api_key',
+          secretConfigured: true,
+        }),
+      );
+
+      render(<SharedOAuthConnect providerId="cursor" />);
+
+      expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.autoRenewKind/)).toBeTruthy();
+      expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.renewalKind\.apiKey/)).toBeTruthy();
+      // It renews forever: the expiry is the current token's rollover, never a deadline.
+      expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.currentTokenUntil/)).toBeTruthy();
+      expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.expiresAt/)).toBeNull();
+      expect(
+        screen.queryByText(/aiProviderSettings\.sharedOAuth\.paste\.cannotAutoRenew/),
+      ).toBeNull();
+    });
   });
 
   it('ignores persisted models that belong to a different provider', () => {

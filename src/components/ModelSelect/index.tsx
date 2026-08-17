@@ -7,6 +7,7 @@ import { createStaticStyles, useResponsive } from 'antd-style';
 import {
   AudioLines,
   Infinity as InfinityIcon,
+  Info,
   LucideEye,
   LucideImage,
   LucidePaperclip,
@@ -19,7 +20,10 @@ import { type CSSProperties, type FC } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useProviderDescription } from '@/hooks/useProviderDescription';
 import { useProviderName } from '@/hooks/useProviderName';
+import { a11yStyles } from '@/styles/a11y';
+import { nonInteractiveTooltipProps } from '@/styles/tooltip';
 import { type AiProviderSourceType } from '@/types/aiProvider';
 import { formatTokenNumber } from '@/utils/format';
 
@@ -28,6 +32,22 @@ import NewModelBadgeI18n, { NewModelBadge as NewModelBadgeCore } from './NewMode
 export const TAG_CLASSNAME = 'lobe-model-info-tags';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
+  /**
+   * The ONLY affordance advertising the provider description, so it has to clear WCAG 1.4.11's
+   * 3:1 for a UI component: `colorTextQuaternary` (#bbb on #fff) is 1.9:1 and
+   * `colorTextTertiary` still only 2.85:1 — `colorTextSecondary` is the first token that
+   * passes, and it is a 12px glyph next to an already-grey label.
+   */
+  providerInfo: css`
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    color: ${cssVar.colorTextSecondary};
+
+    &:hover {
+      color: ${cssVar.colorText};
+    }
+  `,
   tag: css`
     cursor: default;
 
@@ -349,6 +369,12 @@ export const ProviderItemRender = memo<ProviderItemRenderProps>(
      * fallback — which also skips the model-bank lookup in these long list renderers.
      */
     const displayName = useProviderName(provider, name);
+    /**
+     * Group headers are the only thing separating "xAI" from "SuperGrok" from "Grok", and a
+     * brand name alone does not say which is which. The row is a dense single line, so the
+     * description hangs off an info affordance instead of taking a second line.
+     */
+    const description = useProviderDescription(provider);
     return (
       <Flexbox
         horizontal
@@ -375,6 +401,30 @@ export const ProviderItemRender = memo<ProviderItemRenderProps>(
         <Text ellipsis color={'inherit'}>
           {displayName}
         </Text>
+        {!!description && (
+          <>
+            {/*
+              `right`, not the default `top`: inside a grouped dropdown a top-placed tooltip
+              always lands on the PREVIOUS group's option rows. The shared non-interactive
+              props are the other half — popup AND positioner drop out of hit-testing, so
+              whatever a flipped or long tooltip overlaps stays hoverable and clickable.
+            */}
+            <Tooltip {...nonInteractiveTooltipProps} placement={'right'} title={description}>
+              {/* No `stopPropagation`: the hint sits INSIDE the header, so a click on it still
+                  selects/toggles the group exactly like a click on the name does. */}
+              <span aria-hidden className={styles.providerInfo}>
+                <Icon icon={Info} size={12} />
+              </span>
+            </Tooltip>
+            {/*
+              The tooltip is a pointer affordance only, and this row is a composite item in a
+              select — a focusable trigger would add a tab stop inside it. The copy is carried
+              in visually hidden text instead, so it is read out with the group name it
+              disambiguates.
+            */}
+            <span className={a11yStyles.srOnly}>{description}</span>
+          </>
+        )}
       </Flexbox>
     );
   },

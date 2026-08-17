@@ -191,6 +191,19 @@ export default {
   'agentCatalog.toast.refreshDeferred':
     'Assistant saved, but some server instances are still refreshing. Wait a moment before starting new runs.',
   'agentCatalog.toast.saved': 'Assistant saved and live.',
+  'aiProviderSettings.sharedOAuth.openLinkToAuthorize':
+    'Open the {{name}} link in your browser and finish signing in — there is no code to enter.',
+  'aiProviderSettings.sharedOAuth.paste.apiKeyError':
+    'Could not connect with that API key. Check the key and try again.',
+  'aiProviderSettings.sharedOAuth.paste.apiKeyHint':
+    'Create one in the {{name}} dashboard, under API Keys. An API-key connection keeps renewing itself; a browser sign-in has to be repeated once it expires.',
+  'aiProviderSettings.sharedOAuth.paste.apiKeyHintWithUrl':
+    'Create one in the <1>{{name}} dashboard</1>, under API Keys. An API-key connection keeps renewing itself; a browser sign-in has to be repeated once it expires.',
+  'aiProviderSettings.sharedOAuth.paste.apiKeyLabel': 'API key',
+  'aiProviderSettings.sharedOAuth.paste.apiKeyPlaceholder': 'Paste the {{name}} API key',
+  'aiProviderSettings.sharedOAuth.paste.apiKeySubmit': 'Connect account',
+  'aiProviderSettings.sharedOAuth.paste.apiKeyToggle': 'Connect with an API key',
+  'aiProviderSettings.sharedOAuth.renewalKind.apiKey': 'API key',
   'globalCredentials.validation.filePayloadInvalid':
     'The file data is invalid. Select the file again and retry.',
   'agentCatalog.unsaved.description':
@@ -489,6 +502,7 @@ export default {
   'aiProviderSettings.sharedOAuth.success.published':
     'Account connected. This provider is on for members.',
   'aiProviderSettings.sharedOAuth.title': 'Shared platform account',
+  'aiProviderSettings.sharedOAuth.verificationUrlLabel': 'Popup blocked? Copy this link:',
   'aiSkillSettings.orgDefault.saved': 'Saved. Applies to every member.',
   'aiSkillSettings.actions.draftSaved': 'Skill saved, but not live yet.',
   'nav.aria': 'Admin navigation',
@@ -1450,6 +1464,32 @@ export default {
   'connectorCatalog.unsaved.title': 'Unsaved connector changes',
   'connectorCatalog.validation.httpUrl': 'Enter an HTTP(S) URL without embedded credentials.',
   'connectorCatalog.validation.required': 'This field is required.',
+  'browserProfile.actions.generate': 'Generate fingerprint',
+  'browserProfile.actions.regenerate': 'Regenerate fingerprint',
+  'browserProfile.actions.retry': 'Retry',
+  'browserProfile.confirm.description':
+    'ChatGPT Web, Grok, Cursor and other services that use the browser identity will treat later requests as coming from a new device. Shared accounts may need to be verified again.',
+  'browserProfile.confirm.title': 'Regenerate browser fingerprint?',
+  'browserProfile.description':
+    'The platform reaches services that require browser emulation with one stable browser fingerprint. After regenerating, upstream services treat the platform as a new device.',
+  'browserProfile.fields.chrome': 'Chrome version',
+  'browserProfile.fields.compute': 'CPU / memory',
+  'browserProfile.fields.generatedAt': 'Generated at',
+  'browserProfile.fields.installationId': 'Installation ID',
+  'browserProfile.fields.localeTimezone': 'Locale / timezone',
+  'browserProfile.fields.platform': 'Platform',
+  'browserProfile.fields.revision': 'Fingerprint revision',
+  'browserProfile.fields.screen': 'Screen',
+  'browserProfile.states.empty': 'No browser fingerprint has been generated yet.',
+  'browserProfile.states.error': 'Could not load browser fingerprint',
+  'browserProfile.states.errorDescription':
+    'Try again later; the current device identity is unchanged.',
+  'browserProfile.title': 'Browser fingerprint',
+  'browserProfile.toast.failed': 'Could not regenerate browser fingerprint',
+  'browserProfile.toast.regenerated': 'Browser fingerprint regenerated',
+  'browserProfile.values.compute': '{{cores}} cores · {{memory}} GiB',
+  'browserProfile.values.impersonateProfile': 'Emulation target: {{profile}}',
+  'browserProfile.values.screen': '{{width}} × {{height}} @ {{dpr}}×',
   'branding.actions.exportDesktop': 'Export desktop branding',
   'branding.actions.retry': 'Retry',
   'branding.actions.save': 'Save',
@@ -2448,6 +2488,7 @@ export default {
   'audit.logs.action.network_proxy.subscription.delete': 'Delete network proxy subscription',
   'audit.logs.action.network_proxy.subscription.refresh': 'Refresh network proxy subscription',
   'audit.logs.action.network_proxy.subscription.update': 'Update network proxy subscription',
+  'audit.logs.action.system.browser_profile.regenerate': 'Regenerate browser fingerprint',
   'audit.logs.action.system.email.send': 'Send platform email',
   'audit.logs.action.system.infra.mail.update': 'Update mail service',
   'audit.logs.action.system.infra.object_storage.update': 'Update object storage',

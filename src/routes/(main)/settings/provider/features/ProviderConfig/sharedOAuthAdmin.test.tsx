@@ -21,6 +21,9 @@ vi.mock('@/store/aiInfra', () => ({
     isProviderConfigUpdating: () => () => false,
     isProviderEnabled: () => () => true,
     providerConfigById: () => () => undefined,
+    // Added when the header started showing the provider description; without it every case
+    // in this file threw before rendering anything.
+    providerDescriptionById: () => () => undefined,
     providerDetailById: () => () => undefined,
   },
   useAiInfraStoreApi: () => ({ getState: () => ({}) }),
@@ -80,6 +83,59 @@ describe('ProviderConfig shared OAuth surfaces', () => {
 
     expect(screen.getByTestId('personal-oauth')).toBeTruthy();
     expect(screen.queryByTestId('shared-panel')).toBeNull();
+  });
+
+  it('describes the connectivity check by what the form actually holds', () => {
+    // Grok / Cursor connect with an account: no API-key field, no proxy URL. Naming them told
+    // the operator to check fields that are not on the page, and promised encryption of a
+    // secret this form never collects.
+    render(
+      <ProviderSettingsContext value={{ hidePersonalAuth: true, sharedOAuthPanel: sharedPanel }}>
+        <ProviderConfig id="cursor" name="Cursor" settings={oauthSettings} />
+      </ProviderSettingsContext>,
+    );
+
+    expect(screen.getByText('providerModels.config.checker.descNoCredential')).toBeTruthy();
+    expect(screen.queryByText('providerModels.config.checker.desc')).toBeNull();
+    expect(screen.queryByText('providerModels.config.aesGcm')).toBeNull();
+  });
+
+  it('names only the API Key where that is the single field on the form (openai)', () => {
+    render(<ProviderConfig id="openai" name="OpenAI" settings={{ showApiKey: true }} />);
+
+    expect(screen.getByText('providerModels.config.checker.descApiKeyOnly')).toBeTruthy();
+    // The combined sentence names a proxy URL this form does not offer.
+    expect(screen.queryByText('providerModels.config.checker.desc')).toBeNull();
+    expect(screen.getByText('providerModels.config.aesGcm')).toBeTruthy();
+  });
+
+  it('names only the endpoint for a provider that takes no API Key (ollama)', () => {
+    render(
+      <ProviderConfig
+        id="ollama"
+        name="Ollama"
+        settings={{ proxyUrl: { placeholder: 'http://127.0.0.1:11434' }, showApiKey: false }}
+      />,
+    );
+
+    expect(screen.getByText('providerModels.config.checker.descEndpointOnly')).toBeTruthy();
+    expect(screen.queryByText('providerModels.config.checker.desc')).toBeNull();
+    expect(screen.queryByText('providerModels.config.checker.descApiKeyOnly')).toBeNull();
+    // The proxy URL is stored encrypted like any credential, so the footer stays.
+    expect(screen.getByText('providerModels.config.aesGcm')).toBeTruthy();
+  });
+
+  it('keeps the combined wording where the form really collects both', () => {
+    render(
+      <ProviderConfig
+        id="openai"
+        name="OpenAI"
+        settings={{ proxyUrl: { placeholder: 'https://api.openai.com/v1' }, showApiKey: true }}
+      />,
+    );
+
+    expect(screen.getByText('providerModels.config.checker.desc')).toBeTruthy();
+    expect(screen.getByText('providerModels.config.aesGcm')).toBeTruthy();
   });
 
   it('admin surface explains per-user-only device flow providers (githubcopilot)', () => {

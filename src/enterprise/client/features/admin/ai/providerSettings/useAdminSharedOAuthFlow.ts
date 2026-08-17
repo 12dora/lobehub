@@ -38,6 +38,13 @@ export type SharedOAuthPasteError =
  */
 export type SharedOAuthPasteSource = 'callback' | 'token';
 
+/**
+ * Phase of the API-key connect route. The two halves fail for different reasons — an envelope
+ * the server refused is an authorization/network failure and says nothing about the key, only
+ * a rejected exchange does — so the panel has to be able to tell them apart.
+ */
+export type SharedOAuthApiKeyPhase = 'idle' | 'requestingEnvelope' | 'exchangingKey';
+
 /** Server error literal (K3) → i18n suffix used by the paste form. */
 const PASTE_ERROR_MAP: Record<string, SharedOAuthPasteError | 'expired'> = {
   access_token_invalid: 'accessTokenInvalid',
@@ -124,10 +131,15 @@ export const useAdminSharedOAuthFlow = ({
   const [submitError, setSubmitError] = useState<SharedOAuthPasteError | undefined>();
   const [submitErrorSource, setSubmitErrorSource] = useState<SharedOAuthPasteSource | undefined>();
   const [submitting, setSubmitting] = useState(false);
+  const [apiKeyPhase, setApiKeyPhaseState] = useState<SharedOAuthApiKeyPhase>('idle');
 
   /** Paste flow: the envelope the pasted callback URL has to be redeemed against. */
   const deviceCodeRef = useRef<string | null>(null);
   const submittingRef = useRef(false);
+  /** Mirrors `apiKeyPhase` synchronously — two clicks in one render read the same state. */
+  const apiKeyPhaseRef = useRef<SharedOAuthApiKeyPhase>('idle');
+  /** Bumped by cancel and by every new API-key submit; a superseded one may not write. */
+  const apiKeySubmitIdRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Bumped by cancel / a new connect / unmount; every run owns the id it started with. */
@@ -150,6 +162,11 @@ export const useAdminSharedOAuthFlow = ({
     }
   }, []);
 
+  const setApiKeyPhase = useCallback((phase: SharedOAuthApiKeyPhase) => {
+    apiKeyPhaseRef.current = phase;
+    if (!disposedRef.current) setApiKeyPhaseState(phase);
+  }, []);
+
   /** Ask the caller to re-read the connection status; never fired after unmount. */
   const markStatusStale = useCallback(() => {
     if (disposedRef.current) return;
@@ -160,6 +177,10 @@ export const useAdminSharedOAuthFlow = ({
     clearTimers();
     runIdRef.current += 1;
     deviceCodeRef.current = null;
+    // Supersede the API-key route with the flow it was driving: a submit still in flight may
+    // no longer report its phase, and the box unlocks for a fresh attempt.
+    apiKeySubmitIdRef.current += 1;
+    setApiKeyPhase('idle');
     // Release the submit latch with the run that owned it: leaving it set until an
     // abandoned paste mutation settles blocks the flow the operator just started.
     submittingRef.current = false;
@@ -173,7 +194,7 @@ export const useAdminSharedOAuthFlow = ({
     // Cancelling does not undo whatever the server already stored — re-read it so the
     // idle card cannot claim "Not connected" for a connection that just landed.
     markStatusStale();
-  }, [clearTimers, markStatusStale]);
+  }, [clearTimers, markStatusStale, setApiKeyPhase]);
 
   const connect = useCallback(async (): Promise<SharedOAuthDeviceCode | undefined> => {
     clearTimers();
@@ -196,6 +217,16 @@ export const useAdminSharedOAuthFlow = ({
       clearTimers();
       runIdRef.current += 1;
       submittingRef.current = false;
+      // The envelope dies with the run — expiry, denial and a terminal poll all spend it.
+      // Leaving it behind let the next submit redeem a grant the provider had already
+      // retired, and report the resulting rejection as a bad API key.
+      deviceCodeRef.current = null;
+      if (!disposedRef.current) {
+        setDeviceCode(undefined);
+        // The rendered submit flag belongs to the run too: `submitPasted`'s own cleanup is
+        // skipped once the run is stale, which left the box spinning after a terminal failure.
+        setSubmitting(false);
+      }
       setError(reason);
       setState('error');
       // A failed flow may still follow a stored connection (e.g. expiry after success).
@@ -391,6 +422,10 @@ export const useAdminSharedOAuthFlow = ({
           clearTimers();
           runIdRef.current += 1;
           deviceCodeRef.current = null;
+          setDeviceCode(undefined);
+          // Same reason as `fail()`: the `finally` below cannot clear this once the run it
+          // belonged to is retired, and a spinning box refuses the retry it just asked for.
+          setSubmitting(false);
           setError('codeExpired');
           setState('error');
           markStatusStale();
@@ -429,6 +464,49 @@ export const useAdminSharedOAuthFlow = ({
     [submitPasted],
   );
 
+  /**
+   * The API-key connect route, end to end: get an envelope if this run holds none, then
+   * exchange the key against it.
+   *
+   * Both halves live here because both readings they depend on are refs, not render state:
+   * whether the envelope is still live (an expiry, a denial or a terminal poll retires it
+   * between renders) and whether another submit is already spending it.
+   */
+  const submitApiKey = useCallback(
+    async (apiKey: string) => {
+      // Synchronous latch: two clicks in one render both read `apiKeyPhase === 'idle'`, and
+      // the second would spend the single-use grant the first is already redeeming.
+      if (apiKeyPhaseRef.current !== 'idle' || submittingRef.current) return;
+
+      /** Retired by cancel or by a newer submit; a superseded attempt may not write. */
+      const submitId = ++apiKeySubmitIdRef.current;
+      const setPhase = (phase: SharedOAuthApiKeyPhase) => {
+        if (apiKeySubmitIdRef.current === submitId) setApiKeyPhase(phase);
+      };
+
+      // A live envelope (the box was opened from the awaiting card) is redeemed as it stands,
+      // rather than discarding a device code the provider may be about to approve.
+      if (!deviceCodeRef.current) {
+        setPhase('requestingEnvelope');
+        const info = await connect();
+        // No envelope: `state` / `error` already carry the authorization or network failure,
+        // and it says nothing about the key — the panel must not report a rejected key.
+        if (!info || !deviceCodeRef.current) {
+          setPhase('idle');
+          return;
+        }
+      }
+
+      setPhase('exchangingKey');
+      try {
+        await submitPasted({ accessToken: apiKey });
+      } finally {
+        setPhase('idle');
+      }
+    },
+    [connect, setApiKeyPhase, submitPasted],
+  );
+
   useEffect(() => {
     disposedRef.current = false;
     return () => {
@@ -442,6 +520,7 @@ export const useAdminSharedOAuthFlow = ({
   }, [clearTimers]);
 
   return {
+    apiKeyPhase,
     connect,
     deviceCode,
     error,
@@ -449,6 +528,7 @@ export const useAdminSharedOAuthFlow = ({
     reset,
     state,
     submitAccessToken,
+    submitApiKey,
     submitCallback,
     submitError,
     submitErrorSource,

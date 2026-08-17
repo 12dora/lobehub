@@ -33,6 +33,7 @@ import { SkeletonInput, SkeletonSwitch } from '@/components/Skeleton';
 import { PROVIDERS_WITHOUT_UPSTREAM_DOC } from '@/const/providerDoc';
 import { useLocalizedProviderTitle } from '@/hooks/useLocalizedProviderTitle';
 import { usePermission } from '@/hooks/usePermission';
+import { useProviderDescription } from '@/hooks/useProviderDescription';
 import { useProviderName } from '@/hooks/useProviderName';
 import { lambdaQuery } from '@/libs/trpc/client';
 import {
@@ -60,6 +61,13 @@ import UpdateProviderInfo from './UpdateProviderInfo';
 const prefixCls = 'ant';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
+  headerDescription: css`
+    /* Bounded so the two-row clamp has something to clamp against in every host this header
+       is rendered in (form group label, OAuth card header) — and so the line stays readable. */
+    max-width: 560px;
+    font-size: 12px;
+    color: ${cssVar.colorTextSecondary};
+  `,
   aceGcm: css`
     padding-block: 0 !important;
     .${prefixCls}-form-item-label {
@@ -176,6 +184,12 @@ const ProviderConfig = memo<ProviderConfigProps>(
      * instead of contradicting it with an English wordmark.
      */
     const localizedTitle = useLocalizedProviderTitle(id, name || undefined);
+    /**
+     * What this provider IS. The grid card the operator arrived from shows it; the detail page
+     * dropped it, which is exactly where the sibling providers (xAI / SuperGrok / Grok) are
+     * hardest to tell apart.
+     */
+    const description = useProviderDescription(id);
     const [form] = Form.useForm();
     const { allowed: canManageProvider } = usePermission('manage_provider_key');
     const { hideFetchOnClient, hidePersonalAuth, secretConfigured, sharedOAuthPanel } =
@@ -384,6 +398,32 @@ const ProviderConfig = memo<ProviderConfigProps>(
 
     const showEndpoint = !!proxyUrl || isCustom;
 
+    /**
+     * The two credential fields, read separately — they are not interchangeable. Ollama shows
+     * a proxy URL and no API key (`showApiKey: false`), an account-connected provider (Grok,
+     * Cursor) shows neither, and a plain provider shows only the key. Collapsing them into one
+     * boolean is what put "test the API Key and proxy URL" under a form with no API-key field.
+     */
+    const hasApiKeyField = apiKeyItem.length > 0;
+    const hasEndpointField = showEndpoint;
+    /**
+     * Whether this form holds anything that is stored encrypted — either field qualifies, so
+     * the AES-GCM footer follows the OR. A provider that connects through an account has
+     * nothing on the page the footer could be describing.
+     */
+    const hasEncryptedField = hasApiKeyField || hasEndpointField;
+    /**
+     * What the connectivity check actually tests, named after the fields that are on screen.
+     */
+    const checkerDescKey =
+      hasApiKeyField && hasEndpointField
+        ? 'providerModels.config.checker.desc'
+        : hasApiKeyField
+          ? 'providerModels.config.checker.descApiKeyOnly'
+          : hasEndpointField
+            ? 'providerModels.config.checker.descEndpointOnly'
+            : 'providerModels.config.checker.descNoCredential';
+
     const endpointItem = showEndpoint
       ? {
           children: isLoading ? (
@@ -480,17 +520,17 @@ const ProviderConfig = memo<ProviderConfigProps>(
                 }}
               />
             ),
-            desc: t('providerModels.config.checker.desc'),
+            desc: t(checkerDescKey),
             label: t('providerModels.config.checker.title'),
           }
         : undefined,
-      showAceGcm && aceGcmItem,
+      showAceGcm && hasEncryptedField && aceGcmItem,
     ].filter(Boolean) as FormItemProps[];
 
     const logoUrl = data?.logo ?? logo;
 
     // Header components - shared between OAuth card and Form
-    const headerTitle = (
+    const headerTitleRow = (
       <Flexbox
         horizontal
         align={'center'}
@@ -498,7 +538,6 @@ const ProviderConfig = memo<ProviderConfigProps>(
         style={{
           height: 24,
           maxHeight: 24,
-          ...(enabled ? {} : { filter: 'grayscale(100%)', maxHeight: 24, opacity: 0.66 }),
         }}
       >
         {isCustom ? (
@@ -541,6 +580,24 @@ const ProviderConfig = memo<ProviderConfigProps>(
               </Tooltip>
             )}
           </>
+        )}
+      </Flexbox>
+    );
+
+    const headerTitle = (
+      <Flexbox
+        flex={1}
+        gap={4}
+        style={{
+          minWidth: 0,
+          ...(enabled ? {} : { filter: 'grayscale(100%)', opacity: 0.66 }),
+        }}
+      >
+        {headerTitleRow}
+        {!!description && (
+          <Text className={styles.headerDescription} ellipsis={{ rows: 2, tooltip: true }}>
+            {description}
+          </Text>
         )}
       </Flexbox>
     );

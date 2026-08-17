@@ -765,3 +765,174 @@ describe('useAdminSharedOAuthFlow paste flow', () => {
     });
   });
 });
+
+/**
+ * The API-key connect route (Cursor). It owns both halves of the round trip — envelope, then
+ * exchange — because envelope liveness is a REF reading: expiry, denial and a terminal poll all
+ * retire the envelope while the rendered `deviceCode` a caller would consult still describes it.
+ */
+describe('useAdminSharedOAuthFlow API-key route', () => {
+  /** Cursor's envelope: a device-flow shape whose paste route takes a dashboard key. */
+  const apiKeyEnvelope = (deviceCode: string, interval = 3600) => ({
+    ...deviceCodeResponse,
+    allowAccessTokenPaste: true,
+    deviceCode,
+    // Long enough that the expiry never fires inside a test; the cadence is per-case, so a
+    // test that wants the polling loop to answer can bring it forward.
+    expiresIn: 36_000,
+    interval,
+    userCode: '',
+  });
+
+  const exchangeCalls = () => mocks.poll.mock.calls.filter(([input]) => Boolean(input.accessToken));
+
+  const renderApiKeyFlow = () =>
+    renderHook(() => useAdminSharedOAuthFlow({ providerId: 'cursor' }));
+
+  it('requests an envelope, exchanges the key, and reports both phases', async () => {
+    const envelope = deferred<ReturnType<typeof apiKeyEnvelope>>();
+    const exchange = deferred<typeof success>();
+    mocks.initiate.mockReturnValue(envelope.promise);
+    mocks.poll.mockReturnValue(exchange.promise);
+
+    const { result } = renderApiKeyFlow();
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = result.current.submitApiKey('key_live_abc');
+    });
+    // The two halves fail for different reasons, so they are two phases, not one spinner.
+    expect(result.current.apiKeyPhase).toBe('requestingEnvelope');
+
+    await act(async () => {
+      envelope.settle(apiKeyEnvelope('envelope-1'));
+      await Promise.resolve();
+    });
+    expect(result.current.apiKeyPhase).toBe('exchangingKey');
+
+    await act(async () => {
+      exchange.settle(success);
+      await submitted;
+    });
+    expect(result.current.apiKeyPhase).toBe('idle');
+    expect(result.current.state).toBe('success');
+    expect(exchangeCalls()[0]![0]).toMatchObject({
+      accessToken: 'key_live_abc',
+      deviceCode: 'envelope-1',
+    });
+  });
+
+  it('replaces an envelope a terminal poll already spent', async () => {
+    mocks.initiate
+      .mockResolvedValueOnce(apiKeyEnvelope('envelope-1', 1))
+      .mockResolvedValueOnce(apiKeyEnvelope('envelope-2'));
+    // The browser login was denied: the run is dead and its envelope with it.
+    mocks.poll.mockResolvedValueOnce({ ...pending, status: 'denied' });
+
+    const { result } = renderApiKeyFlow();
+
+    await act(async () => {
+      await result.current.connect();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(result.current.state).toBe('error');
+    // The rendered envelope goes with the ref — nothing may keep offering a spent device code.
+    expect(result.current.deviceCode).toBeUndefined();
+
+    mocks.poll.mockResolvedValueOnce(success);
+    await act(async () => {
+      await result.current.submitApiKey('key_live_abc');
+    });
+
+    // Redeeming the dead envelope would have been reported to the operator as a bad key.
+    expect(mocks.initiate).toHaveBeenCalledTimes(2);
+    expect(exchangeCalls()[0]![0]).toMatchObject({ deviceCode: 'envelope-2' });
+    expect(result.current.state).toBe('success');
+  });
+
+  it('reuses a live envelope instead of discarding the device code in flight', async () => {
+    mocks.initiate.mockResolvedValue(apiKeyEnvelope('envelope-1'));
+    mocks.poll.mockResolvedValue(success);
+
+    const { result } = renderApiKeyFlow();
+
+    await act(async () => {
+      await result.current.connect();
+    });
+    await act(async () => {
+      await result.current.submitApiKey('key_live_abc');
+    });
+
+    expect(mocks.initiate).toHaveBeenCalledTimes(1);
+    expect(exchangeCalls()[0]![0]).toMatchObject({ deviceCode: 'envelope-1' });
+  });
+
+  it('leaves an envelope failure on the flow, with nothing said about the key', async () => {
+    mocks.initiate.mockRejectedValue(new Error('offline'));
+
+    const { result } = renderApiKeyFlow();
+
+    await act(async () => {
+      await result.current.submitApiKey('key_live_abc');
+    });
+
+    expect(result.current.state).toBe('error');
+    expect(result.current.error).toBe('authError');
+    // The exchange never happened, so no verdict on the key exists to report.
+    expect(mocks.poll).not.toHaveBeenCalled();
+    expect(result.current.submitError).toBeUndefined();
+    expect(result.current.apiKeyPhase).toBe('idle');
+  });
+
+  it('spends one envelope for a key submitted twice from the same render', async () => {
+    const envelope = deferred<ReturnType<typeof apiKeyEnvelope>>();
+    mocks.initiate.mockReturnValue(envelope.promise);
+    mocks.poll.mockResolvedValue(success);
+
+    const { result } = renderApiKeyFlow();
+
+    let both: Promise<unknown> | undefined;
+    act(() => {
+      both = Promise.all([
+        result.current.submitApiKey('key_live_abc'),
+        result.current.submitApiKey('key_live_abc'),
+      ]);
+    });
+
+    await act(async () => {
+      envelope.settle(apiKeyEnvelope('envelope-1'));
+      await both;
+    });
+
+    expect(mocks.initiate).toHaveBeenCalledTimes(1);
+    expect(exchangeCalls()).toHaveLength(1);
+  });
+
+  it('abandons a cancelled attempt without redeeming the envelope it was waiting for', async () => {
+    const envelope = deferred<ReturnType<typeof apiKeyEnvelope>>();
+    mocks.initiate.mockReturnValue(envelope.promise);
+
+    const { result } = renderApiKeyFlow();
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = result.current.submitApiKey('key_live_abc');
+    });
+    act(() => {
+      result.current.reset();
+    });
+    expect(result.current.apiKeyPhase).toBe('idle');
+
+    await act(async () => {
+      envelope.settle(apiKeyEnvelope('envelope-late'));
+      await submitted;
+    });
+
+    // The operator asked for this to stop: the late envelope is dropped, not redeemed.
+    expect(mocks.poll).not.toHaveBeenCalled();
+    expect(result.current.state).toBe('idle');
+    expect(result.current.apiKeyPhase).toBe('idle');
+  });
+});
