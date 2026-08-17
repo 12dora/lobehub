@@ -87,7 +87,11 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 
 vi.mock('@/enterprise/client/services/adminModules', () => ({
   ADMIN_MODULES_SWR_KEY: 'admin.modules.get',
-  adminModulesService: { get: vi.fn(), requestRestart: vi.fn(), update: (...args: unknown[]) => update(...args) },
+  adminModulesService: {
+    get: vi.fn(),
+    requestRestart: vi.fn(),
+    update: (...args: unknown[]) => update(...args),
+  },
 }));
 
 // Keep the real `isModuleRevisionConflict` — the point of the CAS test is that the page uses
@@ -200,9 +204,9 @@ describe('ModulesPage', () => {
     fireEvent.click(switches()[0]);
 
     expect(fullCard.dataset.active).toBe('false');
-    expect(
-      screen.getByText('modules.presets.custom.title').parentElement!.dataset.active,
-    ).toBe('true');
+    expect(screen.getByText('modules.presets.custom.title').parentElement!.dataset.active).toBe(
+      'true',
+    );
   });
 
   it('locks the switch of a module pinned off by the environment', () => {
@@ -228,19 +232,16 @@ describe('ModulesPage', () => {
       .textContent;
 
     // networkProxy owns background workers; switching it off must move the number immediately.
-    fireEvent.click(
-      moduleSwitch('networkProxy'),
-    );
+    fireEvent.click(moduleSwitch('networkProxy'));
 
-    const after = screen.getByText('modules.summary.backgroundJobs').nextElementSibling!.textContent;
+    const after = screen.getByText('modules.summary.backgroundJobs').nextElementSibling!
+      .textContent;
     expect(Number(after)).toBeLessThan(Number(before));
   });
 
   it('confirms before switching off a compliance module and only then saves', async () => {
     render(<ModulesPage />);
-    fireEvent.click(
-      moduleSwitch('audit'),
-    );
+    fireEvent.click(moduleSwitch('audit'));
     fireEvent.click(screen.getByText('modules.save'));
 
     expect(dangerConfirm).toHaveBeenCalledTimes(1);
@@ -250,9 +251,7 @@ describe('ModulesPage', () => {
 
   it('saves a non-compliance change without a confirmation step', async () => {
     render(<ModulesPage />);
-    fireEvent.click(
-      moduleSwitch('taskTemplates'),
-    );
+    fireEvent.click(moduleSwitch('taskTemplates'));
     fireEvent.click(screen.getByText('modules.save'));
 
     expect(dangerConfirm).not.toHaveBeenCalled();
@@ -375,13 +374,14 @@ describe('ModulesPage', () => {
     });
   });
 
-  it('says 未测量 instead of inventing a memory figure the table does not have', () => {
+  it('shows the measured resident-memory figure and the memory half of the preset comparison', () => {
     render(<ModulesPage />);
-    // Every module in the constant table is currently unmeasured; "≥ 0 MB" would read as real.
-    expect(screen.getByText('modules.summary.unmeasured')).toBeTruthy();
-    expect(screen.queryByText(/modules\.summary\.idleRss(Value|AtLeast)/)).toBeNull();
-    // …and the preset comparison drops its memory half rather than subtracting partial sums.
-    expect(screen.getByText(/modules\.summary\.compareStandardJobs/)).toBeTruthy();
+    // Every module in the constant table now carries a measured `idleRssMb` (0 for on-demand
+    // modules), so the summary shows a real value — never the 未测量 fallback or a "≥" hedge.
+    expect(screen.queryByText('modules.summary.unmeasured')).toBeNull();
+    expect(screen.queryByText(/modules\.summary\.idleRssAtLeast/)).toBeNull();
+    expect(screen.getByText(/modules\.summary\.idleRssValue/)).toBeTruthy();
+    expect(screen.getByText(/modules\.summary\.compareStandard(?!Jobs)/)).toBeTruthy();
   });
 
   it('offers a retry and a way past a failed infrastructure probe', () => {

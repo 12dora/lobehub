@@ -104,8 +104,10 @@ export interface PlatformModuleCost {
   backgroundJobs: number;
   externalDeps: PlatformModuleExternalDep[];
   /**
-   * Estimated resident memory the module adds to the server process once loaded
-   * (MB, reference build; null = not measured yet). Filled from the B0/B3 measurements.
+   * Resident memory the module adds to the server process at rest (MB, measured on the
+   * reference build 2026-08-17 with all routers lazy + preloadEntriesOnStart:false, so most
+   * request-time modules correctly cost ≈0 until used; null = not measured). Subprocess memory
+   * (e.g. mihomo ≈43 MB once installed) is NOT included — see `subprocess`.
    */
   idleRssMb: number | null;
   loadKind: PlatformModuleLoadKind;
@@ -160,7 +162,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: ['redis'],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -181,7 +183,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 2,
       externalDeps: ['s3'],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'perRequest',
       loadSensitive: false,
       subprocess: false,
@@ -203,7 +205,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 1,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 22,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -224,7 +226,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 1,
       externalDeps: ['s3'],
-      idleRssMb: null,
+      idleRssMb: 6,
       loadKind: 'none',
       loadSensitive: false,
       subprocess: false,
@@ -246,7 +248,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -267,7 +269,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 2,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'none',
       loadSensitive: false,
       subprocess: false,
@@ -289,7 +291,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: ['externalService'],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -315,7 +317,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: ['s3'],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -343,7 +345,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: ['s3'],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -364,7 +366,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 1,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'none',
       loadSensitive: false,
       subprocess: false,
@@ -386,7 +388,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 6,
       loadKind: 'perMessage',
       loadSensitive: false,
       subprocess: false,
@@ -408,7 +410,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 3,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'none',
       loadSensitive: false,
       subprocess: false,
@@ -430,7 +432,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'none',
       loadSensitive: false,
       subprocess: false,
@@ -452,7 +454,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -473,7 +475,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'perMessage',
       loadSensitive: false,
       subprocess: false,
@@ -494,7 +496,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: ['redis'],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'perMessage',
       loadSensitive: true,
       subprocess: false,
@@ -515,7 +517,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 3,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 8,
       loadKind: 'perFetch',
       loadSensitive: false,
       subprocess: true,
@@ -536,7 +538,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -558,7 +560,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: ['externalService'],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -579,7 +581,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'perRequest',
       loadSensitive: false,
       subprocess: false,
@@ -601,7 +603,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -622,7 +624,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: [],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'none',
       loadSensitive: false,
       subprocess: false,
@@ -643,7 +645,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: ['searxng'],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,
@@ -667,7 +669,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     cost: {
       backgroundJobs: 0,
       externalDeps: ['externalService'],
-      idleRssMb: null,
+      idleRssMb: 0,
       loadKind: 'onUse',
       loadSensitive: false,
       subprocess: false,

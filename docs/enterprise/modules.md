@@ -1,6 +1,6 @@
 # Platform modules
 
-How to run a smaller LobeHub Enhanced deployment: what a *module* is, which
+How to run a smaller LobeHub Enhanced deployment: what a _module_ is, which
 preset to pick, which Compose profiles to turn on, and what happens when a
 module is off.
 
@@ -34,9 +34,9 @@ operator may leave out of a deployment to save memory, CPU, or sidecars.
   `effective[id] = envDisabled ? false : (db.modules[id] ?? true)` where the env layer is
   `LOBE_MODULE_PRESET` + `LOBE_MODULES_DISABLED` + legacy `ENABLE_PLATFORM_*=0`
   (`packages/const/src/platform/modules.ts`).
-  - *Hot view* (`getModuleSettingsSnapshot()` / `isModuleEnabled()`): 30 s `DomainConfigCache`
-    + Redis scope `modules` for cross-instance invalidation; used by every request-time gate.
-  - *Boot view* (`initBootModules()` / `getBootModules()`): resolved once at the start of
+  - _Hot view_ (`getModuleSettingsSnapshot()` / `isModuleEnabled()`): 30 s `DomainConfigCache`
+    - Redis scope `modules` for cross-instance invalidation; used by every request-time gate.
+  - _Boot view_ (`initBootModules()` / `getBootModules()`): resolved once at the start of
     `instrumentation.register()` and frozen for the process; used by the worker registry,
     the bot gateway, the mihomo supervisor and the moderation / egress wrappers.
 - **Gates**: `enterprise/guards/platformPermission.ts` (every `admin.*` procedure, by router
@@ -56,7 +56,7 @@ operator may leave out of a deployment to save memory, CPU, or sidecars.
 
 ## Admin page
 
-`/admin/system/modules` (nav group *System*, `SYSTEM_READ` to view, `SYSTEM_OPERATE` to change):
+`/admin/system/modules` (nav group _System_, `SYSTEM_READ` to view, `SYSTEM_OPERATE` to change):
 
 - **Presets** 小机器 / 标准 / 完整 are a starting point; every module can then be toggled
   individually. When the selection matches no preset the page shows 自定义.
@@ -82,32 +82,32 @@ operator may leave out of a deployment to save memory, CPU, or sidecars.
 
 <!-- BEGIN MODULE TABLE -->
 
-| id | origin | tier | kind | minimal | standard | full | cost |
-|---|---|---|---|---|---|---|---|
-| `knowledgeBase` | upstream | full | hot | ✗ | ✗ | ✓ | rss ?, 0 jobs, onUse, s3 |
-| `imageGen` | upstream | standard | hot | ✗ | ✓ | ✓ | rss ?, 0 jobs, onUse, s3 |
-| `speech` | upstream | full | hot | ✗ | ✗ | ✓ | rss ?, 0 jobs, onUse |
-| `webSearch` | upstream | standard | hot | ✗ | ✓ | ✓ | rss ?, 0 jobs, onUse, searxng |
-| `market` | upstream | full | hot | ✗ | ✗ | ✓ | rss ?, 0 jobs, onUse |
-| `memory` | upstream | standard | hot | ✗ | ✓ | ✓ | rss ?, 0 jobs, perMessage |
-| `bots` | upstream | full | restart | ✗ | ✗ | ✓ | rss ?, 1 jobs, onUse |
-| `agentSignal` | upstream | full | restart | ✗ | ✗ | ✓ | rss ?, 0 jobs, onUse, redis |
-| `workflows` | upstream | full | hot | ✗ | ✗ | ✓ | rss ?, 0 jobs, onUse, externalService |
-| `sandbox` | upstream | full | hot | ✗ | ✗ | ✓ | rss ?, 0 jobs, onUse, externalService |
-| `deviceGateway` | upstream | full | hot | ✗ | ✗ | ✓ | rss ?, 0 jobs, onUse, externalService |
-| `managedAi` | fork | minimal | hot | ✓ | ✓ | ✓ | rss ?, 0 jobs, perMessage |
-| `managedSkills` | fork | minimal | hot | ✓ | ✓ | ✓ | rss ?, 0 jobs, none |
-| `managedConnectors` | fork | standard | restart | ✗ | ✓ | ✓ | rss ?, 3 jobs, none |
-| `managedAgents` | fork | standard | restart | ✗ | ✓ | ✓ | rss ?, 1 jobs, none |
-| `settingsPolicy` | fork | minimal | hot | ✓ | ✓ | ✓ | rss ?, 0 jobs, perRequest |
-| `branding` | fork | minimal | hot | ✓ | ✓ | ✓ | rss ?, 1 jobs, none, s3 |
-| `databaseIdp` | fork | minimal | restart | ✓ | ✓ | ✓ | rss ?, 2 jobs, none |
-| `audit` | fork | standard | restart | ✗ | ✓ | ✓ | rss ?, 2 jobs, perRequest, s3 |
-| `moderation` | fork | standard | restart | ✗ | ✓ | ✓ | rss ?, 0 jobs, perMessage, load-sensitive, redis |
-| `networkProxy` | fork | standard | restart | ✗ | ✓ | ✓ | rss ?, 3 jobs, perFetch, subprocess |
-| `platformStats` | fork | minimal | hot | ✓ | ✓ | ✓ | rss ?, 0 jobs, onUse |
-| `taskTemplates` | fork | full | hot | ✗ | ✗ | ✓ | rss ?, 0 jobs, none |
-| `chatgptWeb` | fork | standard | restart | ✗ | ✓ | ✓ | rss ?, 0 jobs, onUse |
+| id                  | origin   | tier     | kind    | minimal | standard | full | cost                                               |
+| ------------------- | -------- | -------- | ------- | ------- | -------- | ---- | -------------------------------------------------- |
+| `knowledgeBase`     | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, s3                         |
+| `imageGen`          | upstream | standard | hot     | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, onUse, s3                         |
+| `speech`            | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse                             |
+| `webSearch`         | upstream | standard | hot     | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, onUse, searxng                    |
+| `market`            | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse                             |
+| `memory`            | upstream | standard | hot     | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, perMessage                        |
+| `bots`              | upstream | full     | restart | ✗       | ✗        | ✓    | rss 22MB, 1 jobs, onUse                            |
+| `agentSignal`       | upstream | full     | restart | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, redis                      |
+| `workflows`         | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, externalService            |
+| `sandbox`           | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, externalService            |
+| `deviceGateway`     | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, externalService            |
+| `managedAi`         | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 6MB, 0 jobs, perMessage                        |
+| `managedSkills`     | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 0MB, 0 jobs, none                              |
+| `managedConnectors` | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 3 jobs, none                              |
+| `managedAgents`     | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 1 jobs, none                              |
+| `settingsPolicy`    | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 0MB, 0 jobs, perRequest                        |
+| `branding`          | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 6MB, 1 jobs, none, s3                          |
+| `databaseIdp`       | fork     | minimal  | restart | ✓       | ✓        | ✓    | rss 0MB, 2 jobs, none                              |
+| `audit`             | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 2 jobs, perRequest, s3                    |
+| `moderation`        | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, perMessage, load-sensitive, redis |
+| `networkProxy`      | fork     | standard | restart | ✗       | ✓        | ✓    | rss 8MB, 3 jobs, perFetch, subprocess              |
+| `platformStats`     | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 0MB, 0 jobs, onUse                             |
+| `taskTemplates`     | fork     | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, none                              |
+| `chatgptWeb`        | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, onUse                             |
 
 <!-- END MODULE TABLE -->
 
@@ -121,40 +121,54 @@ process (e.g. mihomo). External deps (`s3` / `redis` / `searxng` /
 missing.
 
 **Tier** is the lowest preset in which the module is ON. Core surfaces
-(chat, auth, `/admin` skeleton, BYOK providers, file upload *when S3 is
-configured*) are not modules and cannot be turned off.
+(chat, auth, `/admin` skeleton, BYOK providers, file upload _when S3 is
+configured_) are not modules and cannot be turned off.
 
 ## Presets & sizing
 
-| Preset | Typical box | `LOBE_NODE_HEAP_MB` | Sidecars | What you keep |
-| --- | --- | --- | --- | --- |
-| `minimal` | 1–2 CPU / 2–4 GiB | **1024** | ParadeDB only | Chat + admin skeleton + managed AI/skills, settings policy, branding, stats, DB identity |
-| `standard` | 2–4 CPU / 4–8 GiB | **1536** (default) | + Redis + S3 | Above + audit / moderation / network proxy / managed agents & connectors / ChatGPT Web / image / memory / web search |
-| `full` | 4+ CPU / 8+ GiB | **2048** | + SearXNG | Everything. This is the default and today's behaviour. |
+| Preset     | Typical box       | `LOBE_NODE_HEAP_MB` | Sidecars      | What you keep                                                                                                        |
+| ---------- | ----------------- | ------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `minimal`  | 1–2 CPU / 2–4 GiB | **1024**            | ParadeDB only | Chat + admin skeleton + managed AI/skills, settings policy, branding, stats, DB identity                             |
+| `standard` | 2–4 CPU / 4–8 GiB | **1536** (default)  | + Redis + S3  | Above + audit / moderation / network proxy / managed agents & connectors / ChatGPT Web / image / memory / web search |
+| `full`     | 4+ CPU / 8+ GiB   | **2048**            | + SearXNG     | Everything. This is the default and today's behaviour.                                                               |
+
+### Measured (reference build, arm64, standalone server, 2026-08-17)
+
+|                                      | before this batch                                              | after                                                                   |
+| ------------------------------------ | -------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Idle CPU of `next-server`            | ~1.5 % (11 workers polling every 2–5 s, ~2.3 DB xact/s)        | ~0.1 % / ~0.2 xact/s (workers module-gated + idle backoff to 60 s)      |
+| Boot RSS (`full`)                    | ~500 MB (every server entry pre-required at Ready)             | ~275 MB (`preloadEntriesOnStart: false`, entries load on first request) |
+| RSS after a typical browsing session | ~650 MB (first tRPC call pulled the whole static router graph) | ~375 MB (every non-core sub-router is tRPC `lazy()`)                    |
+| Boot RSS `minimal` vs `full`         | —                                                              | ≈ −45 MB at boot (gateway / audit / connector graphs never load)        |
+| Image                                | 1.72 GB (`/app/dist` 270 MB of Vite intermediates traced in)   | ~1.07 GB                                                                |
+| First-screen JS (chat home)          | 33.8 MB / 423 files                                            | 22.4 MB / 127 files                                                     |
+
+Cold latency of a lazily loaded router is +20–60 ms once per process; the very first
+request after boot pays ~0.4 s to load the tRPC entry.
 
 Heap is a **V8 old-space cap**, not a container memory limit. Idle RSS of the
-current image is ~674 MiB; 1024 is tight under load (knowledge-base parse +
+current image is ~375 MiB after warm-up; 1024 is tight under load (knowledge-base parse +
 concurrent streams). Symptom of too-low a cap: process exit with
 `JavaScript heap out of memory`, then Compose `restart: always` loops it.
 Unset = no cap (raw `docker run`). Compose injects `1536`. `0` also disables.
 
-OOM-kill of the *container* (as opposed to V8) means `mem_limit` is below
+OOM-kill of the _container_ (as opposed to V8) means `mem_limit` is below
 heap + native buffers (canvas / sharp / ffmpeg). Leave ~1.5× heap for RSS.
 
 ## Env reference
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `LOBE_MODULE_PRESET` | `full` | `minimal` \| `standard` \| `full`. Sets the *default* enabled set. |
-| `LOBE_MODULES_DISABLED` | empty | Extra module ids to force off, comma-separated (`bots,knowledgeBase`). |
-| `ENABLE_PLATFORM_*` | on | Legacy enterprise flags. An explicit `0` also disables the mapped module. |
-| `LOBE_NODE_HEAP_MB` | unset (no cap) | Appended to the **child** `NODE_OPTIONS` by `startServer.js` **only when set**. Compose injects `1536`. Does not clobber an existing `--max-old-space-size`. `0` = off. |
-| `ENABLE_BOT_GATEWAY` | on | `0` skips the launcher POST to `/api/agent/gateway/start`. G2's handler also no-ops when the `bots` module is off. |
-| `SKIP_DB_MIGRATION` | unset | `1` skips `/app/docker.cjs` (only if you migrate the DB yourself). |
-| `REDIS_URL` | empty | Empty → Redis off (`enabled: false`). Required for multi-replica config invalidation. |
-| `S3_ENDPOINT` / `S3_SECRET_ACCESS_KEY` | empty | Empty → `enableUploadFileToServer` is false; uploads / KB files / branding assets stay off. |
-| `SEARXNG_URL` | empty | Empty → built-in SearXNG search is off; other search providers still work. |
-| `FEATURE_FLAGS` | all on | Upstream flags. Disabled modules also force the mapped flags off (`knowledge_base`, `ai_image`, `speech_to_text`, `market`). |
+| Variable                               | Default        | Meaning                                                                                                                                                                 |
+| -------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOBE_MODULE_PRESET`                   | `full`         | `minimal` \| `standard` \| `full`. Sets the _default_ enabled set.                                                                                                      |
+| `LOBE_MODULES_DISABLED`                | empty          | Extra module ids to force off, comma-separated (`bots,knowledgeBase`).                                                                                                  |
+| `ENABLE_PLATFORM_*`                    | on             | Legacy enterprise flags. An explicit `0` also disables the mapped module.                                                                                               |
+| `LOBE_NODE_HEAP_MB`                    | unset (no cap) | Appended to the **child** `NODE_OPTIONS` by `startServer.js` **only when set**. Compose injects `1536`. Does not clobber an existing `--max-old-space-size`. `0` = off. |
+| `ENABLE_BOT_GATEWAY`                   | on             | `0` skips the launcher POST to `/api/agent/gateway/start`. G2's handler also no-ops when the `bots` module is off.                                                      |
+| `SKIP_DB_MIGRATION`                    | unset          | `1` skips `/app/docker.cjs` (only if you migrate the DB yourself).                                                                                                      |
+| `REDIS_URL`                            | empty          | Empty → Redis off (`enabled: false`). Required for multi-replica config invalidation.                                                                                   |
+| `S3_ENDPOINT` / `S3_SECRET_ACCESS_KEY` | empty          | Empty → `enableUploadFileToServer` is false; uploads / KB files / branding assets stay off.                                                                             |
+| `SEARXNG_URL`                          | empty          | Empty → built-in SearXNG search is off; other search providers still work.                                                                                              |
+| `FEATURE_FLAGS`                        | all on         | Upstream flags. Disabled modules also force the mapped flags off (`knowledge_base`, `ai_image`, `speech_to_text`, `market`).                                            |
 
 ## Compose profiles
 
@@ -163,11 +177,11 @@ ParadeDB, Redis and rustfs are **always on** (today's stack; existing `.env`
 files keep working). SearXNG is new and opt-in (`profiles: [search]`). The
 smaller box is a sibling file, not a missing-profile default.
 
-| Command | Sidecars | Suggested preset |
-| --- | --- | --- |
-| `docker compose up -d` | ParadeDB + Redis + rustfs | `full` / `standard` |
-| `docker compose --profile search up -d` | + SearXNG | `full` |
-| `docker compose -f docker-compose.minimal.yml up -d` | ParadeDB only | `minimal` |
+| Command                                              | Sidecars                  | Suggested preset    |
+| ---------------------------------------------------- | ------------------------- | ------------------- |
+| `docker compose up -d`                               | ParadeDB + Redis + rustfs | `full` / `standard` |
+| `docker compose --profile search up -d`              | + SearXNG                 | `full`              |
+| `docker compose -f docker-compose.minimal.yml up -d` | ParadeDB only             | `minimal`           |
 
 `docker-compose.yml` still hard-checks `S3_ENDPOINT` / `S3_PUBLIC_DOMAIN`
 (`:?`). The minimal file leaves them empty; the app then disables
@@ -201,32 +215,32 @@ A disabled module does **not** unmount its router.
 { "error": "PLATFORM_MODULE_DISABLED", "moduleId": "<id>" }
 ```
 
-| Module | Hidden from the user | Still there | Extra boot cost if left on |
-| --- | --- | --- | --- |
-| `knowledgeBase` | KB / RAG / chunk / ragEval UI (`knowledge_base` flag) | pgvector tables | file-loader / canvas on first parse |
-| `imageGen` | Image / video / ComfyUI (`ai_image` flag) | — | `sharp` / `ffmpeg-static` on first use |
-| `speech` | TTS / STT (`speech_to_text` flag) | — | — |
-| `webSearch` | Built-in search / web-browsing tool | Other search providers | 11 search-provider imports |
-| `market` | Agent / plugin market (`market` flag) | — | — |
-| `memory` | User-memory extraction | tables | per-message extractor |
-| `bots` | Messenger / gateway | — | GatewayService + 9 adapters (restart) |
-| `agentSignal` | Agent-signal workflows | — | eager graph (restart) |
-| `workflows` | Upstash workflow routes | — | needs QStash |
-| `sandbox` | Python / cloud sandbox tools | — | needs sandbox service |
-| `deviceGateway` | Remote-device routes | — | needs `DEVICE_GATEWAY_URL` |
-| `managedAi` | Platform AI catalog | BYOK providers | per-message catalog lookup |
-| `managedSkills` | Platform skill catalog | user skills | — |
-| `managedConnectors` | Connector admin + 3 workers | — | restart |
-| `managedAgents` | Platform assistants + rollout worker | user agents | restart |
-| `settingsPolicy` | Platform default / lock policy | user settings | per-request resolve |
-| `branding` | Runtime brand assets | build-time brand | S3 cleanup job |
-| `databaseIdp` | DB identity providers + 2 workers | env SSO | restart |
-| `audit` | Audit UI + 2 workers | — | restart; export needs S3 |
-| `moderation` | Content-moderation wrapper | — | per-message, load-sensitive |
-| `networkProxy` | mihomo subprocess + egress wrap | direct egress | restart + subprocess |
-| `platformStats` | Global stats page | — | heavy on-demand queries |
-| `taskTemplates` | Task-template admin / home | — | — |
-| `chatgptWeb` | ChatGPT Web provider transport | other providers | restart; curl-impersonate is still in the image |
+| Module              | Hidden from the user                                  | Still there            | Extra boot cost if left on                      |
+| ------------------- | ----------------------------------------------------- | ---------------------- | ----------------------------------------------- |
+| `knowledgeBase`     | KB / RAG / chunk / ragEval UI (`knowledge_base` flag) | pgvector tables        | file-loader / canvas on first parse             |
+| `imageGen`          | Image / video / ComfyUI (`ai_image` flag)             | —                      | `sharp` / `ffmpeg-static` on first use          |
+| `speech`            | TTS / STT (`speech_to_text` flag)                     | —                      | —                                               |
+| `webSearch`         | Built-in search / web-browsing tool                   | Other search providers | 11 search-provider imports                      |
+| `market`            | Agent / plugin market (`market` flag)                 | —                      | —                                               |
+| `memory`            | User-memory extraction                                | tables                 | per-message extractor                           |
+| `bots`              | Messenger / gateway                                   | —                      | GatewayService + 9 adapters (restart)           |
+| `agentSignal`       | Agent-signal workflows                                | —                      | eager graph (restart)                           |
+| `workflows`         | Upstash workflow routes                               | —                      | needs QStash                                    |
+| `sandbox`           | Python / cloud sandbox tools                          | —                      | needs sandbox service                           |
+| `deviceGateway`     | Remote-device routes                                  | —                      | needs `DEVICE_GATEWAY_URL`                      |
+| `managedAi`         | Platform AI catalog                                   | BYOK providers         | per-message catalog lookup                      |
+| `managedSkills`     | Platform skill catalog                                | user skills            | —                                               |
+| `managedConnectors` | Connector admin + 3 workers                           | —                      | restart                                         |
+| `managedAgents`     | Platform assistants + rollout worker                  | user agents            | restart                                         |
+| `settingsPolicy`    | Platform default / lock policy                        | user settings          | per-request resolve                             |
+| `branding`          | Runtime brand assets                                  | build-time brand       | S3 cleanup job                                  |
+| `databaseIdp`       | DB identity providers + 2 workers                     | env SSO                | restart                                         |
+| `audit`             | Audit UI + 2 workers                                  | —                      | restart; export needs S3                        |
+| `moderation`        | Content-moderation wrapper                            | —                      | per-message, load-sensitive                     |
+| `networkProxy`      | mihomo subprocess + egress wrap                       | direct egress          | restart + subprocess                            |
+| `platformStats`     | Global stats page                                     | —                      | heavy on-demand queries                         |
+| `taskTemplates`     | Task-template admin / home                            | —                      | —                                               |
+| `chatgptWeb`        | ChatGPT Web provider transport                        | other providers        | restart; curl-impersonate is still in the image |
 
 Permissions are orthogonal: turning a module off never revokes RBAC.
 
@@ -259,7 +273,7 @@ This batch:
   excludes with picomatch `{ contains: true }`, and `./dist/**` also hits
   `node_modules/next/dist/**` (drops `app-route-turbo.runtime.prod.js`) and
   `es-toolkit/dist/**`.
-- `define-config.ts` no longer *includes* `dist/desktop/**` and
+- `define-config.ts` no longer _includes_ `dist/desktop/**` and
   `dist/mobile/**` (the comment said exclude; the code did the opposite).
 - `public/_spa/**` stays included — that is what the runtime serves
   (`scripts/copySpaBuild.mts`).
