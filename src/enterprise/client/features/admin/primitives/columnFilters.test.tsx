@@ -7,7 +7,12 @@ import type { Key, ReactNode } from 'react';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { dateRangeColumnFilter, enumColumnFilter, searchColumnFilter } from './columnFilters';
+import {
+  dateRangeColumnFilter,
+  enumColumnFilter,
+  firstColumnFilterValue,
+  searchColumnFilter,
+} from './columnFilters';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -204,5 +209,21 @@ describe('dateRangeColumnFilter', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'primitives.columnFilter.reset' }));
     expect(onChange).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe('firstColumnFilterValue', () => {
+  it('collapses empty payloads to undefined', () => {
+    expect(firstColumnFilterValue(undefined)).toBeUndefined();
+    expect(firstColumnFilterValue([])).toBeUndefined();
+    expect(firstColumnFilterValue([''])).toBeUndefined();
+  });
+
+  it('returns the first entry of a multi-value filter', () => {
+    expect(firstColumnFilterValue(['a', 'b'])).toBe('a');
+  });
+
+  it('stringifies a non-array value', () => {
+    expect(firstColumnFilterValue(12 as never)).toBe('12');
   });
 });

@@ -38,6 +38,18 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
+/**
+ * First non-empty value from an antd column-filter payload (`FilterValue` or a scalar).
+ * `undefined` / `[]` / `['']` / `null` collapse to `undefined`.
+ */
+export const firstColumnFilterValue = (
+  value: FilterValue | null | undefined,
+): string | undefined => {
+  const first = Array.isArray(value) ? value[0] : value;
+  if (first === undefined || first === null || first === '') return undefined;
+  return String(first);
+};
+
 const toFilteredValue = (value?: string | string[] | null): FilterValue | null => {
   if (value === undefined || value === null || value === '') return null;
   if (Array.isArray(value)) {

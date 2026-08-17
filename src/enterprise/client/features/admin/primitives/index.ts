@@ -5,6 +5,7 @@ export {
   enumColumnFilter,
   type EnumColumnFilterOption,
   type EnumColumnFilterOptions,
+  firstColumnFilterValue,
   searchColumnFilter,
   type SearchColumnFilterOptions,
 } from './columnFilters';

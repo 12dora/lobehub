@@ -158,24 +158,28 @@ vi.mock('../primitives/StatusBadge', () => ({
   default: ({ status }: any) => <span>{status}</span>,
 }));
 
-vi.mock('../primitives/columnFilters', () => ({
-  dateRangeColumnFilter: ({ onChange }: any) => ({
-    filterDropdown: () => (
-      <button
-        aria-label="users.list.columns.createdAt"
-        type="button"
-        onClick={() => {
-          onChange?.([new Date(2024, 0, 15), new Date(2024, 0, 31)]);
-        }}
-      >
-        date-range
-      </button>
-    ),
-  }),
-  enumColumnFilter: ({ value }: any) => ({
-    filteredValue: value ? [value] : null,
-  }),
-}));
+vi.mock('../primitives/columnFilters', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    dateRangeColumnFilter: ({ onChange }: any) => ({
+      filterDropdown: () => (
+        <button
+          aria-label="users.list.columns.createdAt"
+          type="button"
+          onClick={() => {
+            onChange?.([new Date(2024, 0, 15), new Date(2024, 0, 31)]);
+          }}
+        >
+          date-range
+        </button>
+      ),
+    }),
+    enumColumnFilter: ({ value }: any) => ({
+      filteredValue: value ? [value] : null,
+    }),
+  };
+});
 
 vi.mock('../primitives/DataTable', () => ({
   default: ({

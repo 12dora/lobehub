@@ -1,31 +1,23 @@
 'use client';
 
-import { Alert, Avatar, Skeleton, Text } from '@lobehub/ui';
+import { Alert, Avatar, Text } from '@lobehub/ui';
 import { Button, Tabs } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { useReducedMotion } from 'motion/react';
-import { memo, useCallback, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { type PlatformSystemRoleName, resolvePlatformRoleLabel } from '@/const/platform/roles';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import StatusBadge from '../primitives/StatusBadge';
+import { UserDetailError, UserDetailLoading, UserDetailNotFound } from './detail/UserDetailStates';
 import { useAdminUserMutations, useFetchAdminUserDetail } from './hooks/useAdminUsers';
-import {
-  getEligibleAssignableRoles,
-  openBanUserModal,
-  openDeleteUserModal,
-  openReplaceRolesModal,
-  openRevokeRoleModal,
-  openRevokeSessionsModal,
-  openRevokeSingleSessionModal,
-  openUnbanUserModal,
-} from './modals/actions';
+import { useUserDetailActions } from './hooks/useUserDetailActions';
+import { getEligibleAssignableRoles } from './modals/actions';
 import AccessTab from './tabs/AccessTab';
 import AuditTab from './tabs/AuditTab';
 import OverviewTab from './tabs/OverviewTab';
@@ -44,14 +36,6 @@ const styles = createStaticStyles(({ css }) => ({
     flex-direction: column;
     gap: 24px;
     padding-block-start: 8px;
-  `,
-  state: css`
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    align-items: flex-start;
-
-    padding-block: 32px;
   `,
 }));
 
@@ -93,169 +77,48 @@ const UserDetailPage = memo(() => {
   const { banUser, unbanUser, deleteUser, revokeSessions, replaceGlobalRoles } =
     useAdminUserMutations();
 
-  // Post-commit SWR refresh lives inside useAdminUserMutations (soft — never fails the mutation).
-  // Do not await a second mutate() here: a refresh rejection would surface as a mutation failure.
-
-  const openBan = useCallback(() => {
-    if (!data || !userId || data.isSelf) return;
-    openBanUserModal({
-      authMethod,
-      targetLabel: displayUserName(data),
-      userId,
-      onConfirm: async (input) => {
-        await banUser(input);
-      },
-    });
-  }, [authMethod, banUser, data, userId]);
-
-  const openUnban = useCallback(() => {
-    if (!data || !userId || data.isSelf) return;
-    openUnbanUserModal({
-      authMethod,
-      targetLabel: displayUserName(data),
-      userId,
-      onConfirm: async (input) => {
-        await unbanUser(input);
-      },
-    });
-  }, [authMethod, data, unbanUser, userId]);
-
-  const openDelete = useCallback(() => {
-    if (!data || !userId || data.isSelf) return;
-    openDeleteUserModal({
-      authMethod,
-      targetLabel: displayUserName(data),
-      userId,
-      onConfirm: async (input) => {
-        await deleteUser(input);
-        // The user is gone — return to the list.
-        navigate('/admin/users');
-      },
-    });
-  }, [authMethod, data, deleteUser, navigate, userId]);
-
-  const openRevokeAll = useCallback(() => {
-    if (!data || !userId) return;
-    openRevokeSessionsModal({
-      authMethod,
-      isSelf: data.isSelf,
-      targetLabel: displayUserName(data),
-      userId,
-      onConfirm: async (input) => {
-        await revokeSessions(input);
-      },
-    });
-  }, [authMethod, data, revokeSessions, userId]);
-
-  const openRevokeSingle = useCallback(
-    (sessionId: string) => {
-      if (!data || !userId) return;
-      openRevokeSingleSessionModal({
-        authMethod,
-        isSelf: data.isSelf,
-        sessionId,
-        targetLabel: displayUserName(data),
-        userId,
-        onConfirm: async (input) => {
-          await revokeSessions(input);
-        },
-      });
-    },
-    [authMethod, data, revokeSessions, userId],
+  const mutations = useMemo(
+    () => ({ banUser, deleteUser, replaceGlobalRoles, revokeSessions, unbanUser }),
+    [banUser, deleteUser, replaceGlobalRoles, revokeSessions, unbanUser],
   );
 
-  const openUpdatePermissions = useCallback(() => {
-    if (!data || !userId) return;
-    openReplaceRolesModal({
-      actorRoles,
-      authMethod,
-      // Pass full grants so the modal can preserve per-role expiry and protected roles.
-      currentRoles: data.roles.map((r) => ({ expiresAt: r.expiresAt ?? null, name: r.name })),
-      targetLabel: displayUserName(data),
-      userId,
-      onConfirm: async (input) => {
-        await replaceGlobalRoles(input);
-      },
-    });
-  }, [actorRoles, authMethod, data, replaceGlobalRoles, userId]);
-
-  const openRevokeRole = useCallback(
-    (roleName: string) => {
-      if (!data || !userId) return;
-      const remaining = data.roles
-        .map((r) => r.name)
-        .filter((name) => name !== roleName) as PlatformSystemRoleName[];
-      const revoked = data.roles.find((r) => r.name === roleName);
-      const revokedRoleLabel = resolvePlatformRoleLabel(
-        { displayName: revoked?.displayName, name: roleName },
-        (key, options) => String(t(key as never, { defaultValue: options?.defaultValue })),
-      );
-      openRevokeRoleModal({
-        authMethod,
-        remainingRoleNames: remaining,
-        revokedRoleLabel,
-        targetLabel: displayUserName(data),
-        userId,
-        onConfirm: async (input) => {
-          await replaceGlobalRoles(input);
-        },
-      });
-    },
-    [authMethod, data, replaceGlobalRoles, t, userId],
-  );
+  const {
+    openBan,
+    openDelete,
+    openRevokeAll,
+    openRevokeRole,
+    openRevokeSingle,
+    openUnban,
+    openUpdatePermissions,
+  } = useUserDetailActions({
+    actorRoles,
+    authMethod,
+    data,
+    mutations,
+    navigate,
+    t,
+    userId,
+  });
 
   // ── State ordering (UI-R1-03) ────────────────────────────────────────────
   // 1) Loading (no settled data)
   if (isLoading && !data && !error) {
-    return (
-      <AdminPageTemplate title={t('users.detail.loading')}>
-        <div aria-label={t('primitives.dataTable.loading')} className={styles.state} role="status">
-          <Skeleton title active={!reduceMotion} paragraph={{ rows: 6 }} />
-        </div>
-      </AdminPageTemplate>
-    );
+    return <UserDetailLoading reduceMotion={reduceMotion} t={t} />;
   }
 
   // 2) Structured not-found only
   if (isNotFoundError(error)) {
-    return (
-      <AdminPageTemplate title={t('users.detail.notFoundTitle')}>
-        <div className={styles.state}>
-          <Text>{t('users.detail.notFoundDesc')}</Text>
-          <Button type="default" onClick={() => navigate('/admin/users')}>
-            {t('users.detail.backToList')}
-          </Button>
-        </div>
-      </AdminPageTemplate>
-    );
+    return <UserDetailNotFound navigate={navigate} t={t} />;
   }
 
   // 3) Generic network/server error + retry (must be reachable)
   if (error && !data) {
-    return (
-      <AdminPageTemplate title={t('users.detail.title')}>
-        <div className={styles.state} role="alert">
-          <Text>{t('primitives.dataTable.error')}</Text>
-          <Button type="primary" onClick={() => void mutate()}>
-            {t('primitives.dataTable.retry')}
-          </Button>
-        </div>
-      </AdminPageTemplate>
-    );
+    return <UserDetailError t={t} onRetry={() => void mutate()} />;
   }
 
   // 4) No-data fallback (should be rare after loading/error)
   if (!data || !userId) {
-    return (
-      <AdminPageTemplate title={t('users.detail.notFoundTitle')}>
-        <div className={styles.state}>
-          <Text>{t('users.detail.notFoundDesc')}</Text>
-          <Button type="default" onClick={() => navigate('/admin/users')}>
-            {t('users.detail.backToList')}
-          </Button>
-        </div>
-      </AdminPageTemplate>
-    );
+    return <UserDetailNotFound navigate={navigate} t={t} />;
   }
 
   const titleName = displayUserName(data);
