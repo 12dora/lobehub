@@ -296,6 +296,11 @@ export class IdentityProviderTestAttemptStore {
     return failed.length === 1;
   };
 
+  /**
+   * `sessionId` is still accepted (and still bound at `issue`) so callers stay unchanged.
+   * The read is keyed by the unguessable attempt id + userId only: the same admin who
+   * re-logs in must be able to collect an in-flight result.
+   */
   getResult = async (input: { attemptId: string; sessionId: string; userId: string }) => {
     const [row] = await this.db
       .select({
@@ -329,7 +334,6 @@ export class IdentityProviderTestAttemptStore {
       .where(
         and(
           eq(platformIdentityProviderTestAttempts.id, input.attemptId),
-          eq(platformIdentityProviderTestAttempts.sessionId, input.sessionId),
           eq(platformIdentityProviderTestAttempts.userId, input.userId),
         ),
       )

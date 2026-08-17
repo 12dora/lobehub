@@ -140,7 +140,10 @@ vi.mock('./controller', async (importOriginal) => {
     ...actual,
     openIdentityProviderTestPopup: async <Result extends { authorizationUrl?: string }>(
       start: () => Promise<Result>,
-    ) => start(),
+    ) => ({
+      popup: { closed: false, close: vi.fn(), location: { assign: vi.fn() } } as unknown as Window,
+      result: await start(),
+    }),
   };
 });
 

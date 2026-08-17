@@ -482,6 +482,9 @@ export const identityProviderClaimPreviewSchema = z
         corpId: z.string().regex(DINGTALK_CORP_ID_PATTERN),
         corpName: z.string().max(DINGTALK_CORP_NAME_MAX_LENGTH).optional(),
         corpNameMissingScope: z.string().max(64).optional(),
+        corpNameReason: z
+          .enum(['app_token_rejected', 'forbidden', 'name_absent', 'network'])
+          .optional(),
         nick: z.string().max(256).optional(),
       })
       .strict()

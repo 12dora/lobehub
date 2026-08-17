@@ -93,13 +93,14 @@ describe('IdentityProviderTestAttemptStore', () => {
     expect(row.status).toBe('pending');
   });
 
-  it('binds result reads to both authenticated user and session', async () => {
+  it('binds result reads to the authenticated user, not the issuing session', async () => {
     const issued = await issue();
     const reserved = await store.reserve(issued.state);
     await store.succeed(reserved, { claims: { sub: 'subject' }, issues: [], valid: true });
+    // Same user, rotated session — must still collect the in-flight result.
     await expect(
       store.getResult({ attemptId: issued.attemptId, sessionId: 'session-b', userId: 'user-a' }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ status: 'succeeded' });
     await expect(
       store.getResult({ attemptId: issued.attemptId, sessionId: 'session-a', userId: 'user-b' }),
     ).resolves.toBeUndefined();

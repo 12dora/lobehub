@@ -214,7 +214,7 @@ export const isDingTalkIdentityProviderIssuer = (issuer: string | null | undefin
  *
  * `corpId` is never typed by hand: the admin launches a DingTalk login from the wizard, picks
  * the organisation in DingTalk's own UI, and the platform captures the `corpId` the token
- * response reports. `label` is a human note (defaulted from the authorizing user's nick).
+ * response reports. `label` is an optional human note; `corpName` is the organisation name.
  */
 export interface PlatformIdentityProviderAllowedCorp {
   /** ISO 8601 capture timestamp. */
@@ -446,6 +446,9 @@ export interface PlatformIdentityProviderClaimValidationIssue {
   field: 'email' | 'name' | 'subject';
 }
 
+export type PlatformIdentityProviderCorpNameReason =
+  'app_token_rejected' | 'forbidden' | 'name_absent' | 'network';
+
 /**
  * DingTalk capture outcome of a safe-login test. Unlike the claim preview (which reports only
  * presence, never values) these two are the *point* of the test for this kind: the admin runs a
@@ -458,6 +461,8 @@ export interface PlatformIdentityProviderDingTalkCapture {
   corpName?: string;
   /** DingTalk permission still missing for the name lookup (e.g. `Contact.Org.Read`). */
   corpNameMissingScope?: string;
+  /** Why the org-name lookup produced no name. Absent when `corpName` is present. */
+  corpNameReason?: PlatformIdentityProviderCorpNameReason;
   nick?: string;
 }
 

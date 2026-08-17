@@ -77,7 +77,7 @@ describe('defineConfig public routes', () => {
     expect(response?.headers.get('x-middleware-rewrite')).toBeNull();
   });
 
-  it('keeps the admin test callback session-gated', async () => {
+  it('lets the unauthenticated test callback reach its handler', async () => {
     getSessionMock.mockResolvedValue(null);
 
     const response = await middleware(
@@ -86,8 +86,22 @@ describe('defineConfig public routes', () => {
       ),
     );
 
-    // Unauthenticated: the admin-only test callback must NOT be publicly reachable.
-    expect(response?.headers.get('location')).toContain('/signin');
+    // The handler never reads the session; the one-time high-entropy `state` is the capability.
+    expect(response?.headers.get('location')).toBeNull();
+    expect(response?.headers.get('x-middleware-rewrite')).toBeNull();
+  });
+
+  it('keeps siblings of the test callback session-gated', async () => {
+    getSessionMock.mockResolvedValue(null);
+
+    for (const path of [
+      '/oauth/identity-provider/test',
+      '/oauth/identity-provider/test/other',
+      '/oauth/identity-provider/test/callback/extra',
+    ]) {
+      const response = await middleware(new NextRequest(`http://localhost:3010${path}`));
+      expect(response?.headers.get('location'), path).toContain('/signin');
+    }
   });
 
   it('does not expose the rest of the /oauth/identity-provider tree', async () => {

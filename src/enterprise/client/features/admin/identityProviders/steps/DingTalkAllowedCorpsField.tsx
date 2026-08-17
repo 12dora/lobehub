@@ -1,6 +1,9 @@
 'use client';
 
-import { DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH } from '@lobechat/types';
+import {
+  DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH,
+  DINGTALK_CORP_NAME_MAX_LENGTH,
+} from '@lobechat/types';
 import { Alert, Flexbox, Input, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { Plus, Trash2 } from 'lucide-react';
@@ -34,7 +37,7 @@ interface DingTalkAllowedCorpsFieldProps {
  *
  * Administrators never type a corpId: they launch a real DingTalk login, pick the enterprise in
  * DingTalk's own UI, and the platform captures the organisation id from the token response.
- * Only the human-readable label is editable here.
+ * The organisation name and the human-readable note are editable here.
  */
 export const DingTalkAllowedCorpsField = memo<DingTalkAllowedCorpsFieldProps>(
   ({
@@ -57,6 +60,12 @@ export const DingTalkAllowedCorpsField = memo<DingTalkAllowedCorpsFieldProps>(
       patch(
         'dingtalkAllowedCorps',
         entries.map((entry) => (entry.corpId === corpId ? { ...entry, label } : entry)),
+      );
+
+    const updateCorpName = (corpId: string, corpName: string) =>
+      patch(
+        'dingtalkAllowedCorps',
+        entries.map((entry) => (entry.corpId === corpId ? { ...entry, corpName } : entry)),
       );
 
     const remove = (corpId: string) =>
@@ -92,9 +101,14 @@ export const DingTalkAllowedCorpsField = memo<DingTalkAllowedCorpsFieldProps>(
             {entries.map((entry) => (
               <div className={styles.corpTableRow} key={entry.corpId} role="row">
                 <Flexbox gap={2} role="cell" style={{ minWidth: 0 }}>
-                  <Text ellipsis strong>
-                    {entry.corpName ?? t('identityProviders.dingtalk.allowedCorps.unnamed')}
-                  </Text>
+                  <Input
+                    aria-label={t('identityProviders.dingtalk.allowedCorps.columns.organization')}
+                    maxLength={DINGTALK_CORP_NAME_MAX_LENGTH}
+                    placeholder={t('identityProviders.dingtalk.allowedCorps.unnamed')}
+                    size="small"
+                    value={entry.corpName ?? ''}
+                    onChange={(e) => updateCorpName(entry.corpId, e.target.value)}
+                  />
                   <span className={styles.corpId} title={entry.corpId}>
                     {entry.corpId}
                   </span>

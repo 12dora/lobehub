@@ -6,7 +6,6 @@ import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import {
   acceptIdentityProviderRestart,
   AUTHENTIK_ISSUER_PLACEHOLDER,
-  boundIdentityProviderCorpLabel,
   buildIdentityProviderTestFailureMessage,
   classifyIdentityProviderWorkflowError,
   createIdentityProviderDraftFromTemplate,
@@ -291,7 +290,8 @@ describe('identity provider editor controller', () => {
 
     resolveStart({ authorizationUrl: 'https://login.example.test/authorize' });
     await expect(pending).resolves.toEqual({
-      authorizationUrl: 'https://login.example.test/authorize',
+      popup,
+      result: { authorizationUrl: 'https://login.example.test/authorize' },
     });
     expect(popup.location.assign).toHaveBeenCalledWith('https://login.example.test/authorize');
   });
@@ -747,12 +747,21 @@ describe('DingTalk organisation allowlist helpers', () => {
     ]);
   });
 
-  it('bounds a generated label to the persisted 64-character limit', () => {
-    expect(boundIdentityProviderCorpLabel('Added by Ada')).toBe('Added by Ada');
-    const long = boundIdentityProviderCorpLabel(`Added by ${'长'.repeat(250)}`);
-    expect(long.length).toBe(64);
-    expect(long.endsWith('…')).toBe(true);
-    expect(boundIdentityProviderCorpLabel('x'.repeat(64)).length).toBe(64);
+  it('serializes an emptied organisation name to absent, like an emptied note', () => {
+    expect(
+      serializeIdentityProviderAllowedCorps([
+        {
+          addedAt: '2026-01-01T00:00:00.000Z',
+          corpId: 'ding42',
+          corpName: '  示例科技  ',
+          label: 'HQ',
+        },
+        { addedAt: '2026-01-02T00:00:00.000Z', corpId: 'ding43', corpName: '   ' },
+      ]),
+    ).toEqual([
+      { addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42', corpName: '示例科技', label: 'HQ' },
+      { addedAt: '2026-01-02T00:00:00.000Z', corpId: 'ding43' },
+    ]);
   });
 });
 

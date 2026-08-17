@@ -32,16 +32,19 @@ export class IdentityProviderTestPopupBlockedError extends Error {
   }
 }
 
+/** Posted by the isolated test-callback page to `window.opener` when the attempt finishes. */
+export const IDENTITY_PROVIDER_TEST_MESSAGE_TYPE = 'aihub-identity-provider-test';
+
 export const openIdentityProviderTestPopup = async <Result extends { authorizationUrl: string }>(
   start: () => Promise<Result>,
   openWindow: typeof window.open = window.open.bind(window),
-): Promise<Result> => {
+): Promise<{ popup: Window; result: Result }> => {
   const popup = openWindow('about:blank', 'oidc-provider-test', 'width=520,height=720');
   if (!popup) throw new IdentityProviderTestPopupBlockedError();
   try {
     const result = await start();
     popup.location.assign(result.authorizationUrl);
-    return result;
+    return { popup, result };
   } catch (error) {
     if (!popup.closed) popup.close();
     throw error;

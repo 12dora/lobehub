@@ -14,10 +14,12 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 import { openReasonModal } from '../users/modals/openReasonModal';
 import {
   buildIdentityProviderTestFailureMessage,
+  IDENTITY_PROVIDER_TEST_MESSAGE_TYPE,
   type IdentityProviderCallbackUrls,
   type IdentityProviderCreateDraftSeed,
   isFixedProtocolIdentityProviderType,
   isIdentityProviderDraftWorkflowReady,
+  isIdentityProviderTestTerminal,
   openIdentityProviderTestPopup,
   parseIdentityProviderJsonObject,
   resolveIdentityProviderRevisionRefresh,
@@ -126,6 +128,11 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const testResult = useIdentityProviderTestResult(attempt?.id ?? null, testPolling, () =>
       setTestPolling(false),
     );
+    const testPopupRef = useRef<Window | null>(null);
+    const testResultMutateRef = useRef(testResult.mutate);
+    testResultMutateRef.current = testResult.mutate;
+    const testWaitSettledRef = useRef(false);
+    const [testWaitMessage, setTestWaitMessage] = useState<string | null>(null);
     const [conflict, setConflict] = useState(false);
     const [conflictRefreshFailed, setConflictRefreshFailed] = useState(false);
     const lastProviderRevisionRef = useRef(provider?.revision);
@@ -220,10 +227,57 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
 
     useEffect(() => {
       if (!attempt || !testPolling) return;
+
+      const finishWait = (message: string | null) => {
+        if (testWaitSettledRef.current) return;
+        testWaitSettledRef.current = true;
+        setTestPolling(false);
+        if (!message) return;
+        setTestWaitMessage(message);
+        toast.info(message);
+      };
+
+      const onMessage = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
+        const data = event.data as { type?: unknown } | null;
+        if (!data || data.type !== IDENTITY_PROVIDER_TEST_MESSAGE_TYPE) return;
+        testWaitSettledRef.current = true;
+        void testResultMutateRef.current();
+        setTestPolling(false);
+      };
+
+      window.addEventListener('message', onMessage);
+
+      const closedTimer = window.setInterval(() => {
+        const popup = testPopupRef.current;
+        if (!popup?.closed) return;
+        testPopupRef.current = null;
+        if (testWaitSettledRef.current) return;
+        void Promise.resolve(testResultMutateRef.current()).then((latest) => {
+          const status =
+            latest && typeof latest === 'object' && 'status' in latest
+              ? (latest as { status?: string }).status
+              : undefined;
+          if (status && isIdentityProviderTestTerminal(status)) {
+            testWaitSettledRef.current = true;
+            setTestPolling(false);
+            return;
+          }
+          finishWait(t('identityProviders.test.windowClosed'));
+        });
+      }, 1000);
+
       const remaining = Math.max(0, 120_000 - (Date.now() - attempt.startedAt));
-      const timeout = window.setTimeout(() => setTestPolling(false), remaining);
-      return () => window.clearTimeout(timeout);
-    }, [attempt, testPolling]);
+      const timeout = window.setTimeout(() => {
+        finishWait(t('identityProviders.test.timeout'));
+      }, remaining);
+
+      return () => {
+        window.removeEventListener('message', onMessage);
+        window.clearInterval(closedTimer);
+        window.clearTimeout(timeout);
+      };
+    }, [attempt, t, testPolling]);
 
     const patch = <Key extends keyof EditableDraft>(key: Key, value: EditableDraft[Key]) =>
       setDraft((current) => ({ ...current, [key]: value }));
@@ -249,7 +303,9 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             { errorCode: testResult.data.errorCode, type: provider?.type ?? draft.type },
             (key, options) => String(t(key as never, options as never)),
           )
-        : null;
+        : testResult.error
+          ? t('identityProviders.test.resultLoadError')
+          : testWaitMessage;
     /** True while THIS wizard's organisation capture is still waiting on DingTalk. */
     const capturePending =
       busy === 'capture' || (testPolling && attempt != null && attempt.id === captureAttemptId);
@@ -447,12 +503,15 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       void run(
         intent === 'capture' ? 'capture' : 'test',
         async () => {
-          const result = await openIdentityProviderTestPopup(() =>
+          testWaitSettledRef.current = false;
+          setTestWaitMessage(null);
+          const { popup, result } = await openIdentityProviderTestPopup(() =>
             adminIdentityProvidersService.testStart({
               expectedRevision: provider.revision,
               id: provider.id,
             }),
           );
+          testPopupRef.current = popup;
           setAttempt({
             id: result.attemptId,
             revision: provider.revision,

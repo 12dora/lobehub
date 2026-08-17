@@ -25,6 +25,7 @@ import {
   exchangeDingTalkAuthorizationCode,
   fetchDingTalkCorpName,
   fetchDingTalkUserProfile,
+  pickDingTalkCorpNameFromProfile,
   resolveStaticIdentityProviderMetadata,
   toDingTalkClaims,
 } from './kinds';
@@ -42,6 +43,63 @@ import { exchangePlatformOidcAuthorizationCode } from './tokenExchange';
 
 const TOKEN_TIMEOUT_MS = 5000;
 const TOKEN_MAX_BYTES = 64 * 1024;
+
+/**
+ * DingTalk safe-login claims AND organisation capture. Exported so the org-name lookup
+ * (found / forbidden / absent, plus the userinfo fallback) can be tested without a full
+ * attempt-store callback.
+ */
+export const resolveDingTalkClaims = async (input: {
+  clientId: string;
+  clientSecret: string;
+  code: string;
+  issuer: string;
+  outbound: SafeOutboundHttpClient;
+  providerKey: string;
+}): Promise<{
+  claims: Record<string, unknown>;
+  dingtalk?: PlatformIdentityProviderDingTalkCapture;
+}> => {
+  assertDingTalkIssuer(input.issuer, 'OIDC_TEST_ISSUER_INVALID');
+  const token = await exchangeDingTalkAuthorizationCode({
+    clientId: input.clientId,
+    clientSecret: input.clientSecret,
+    code: input.code,
+    errorCode: 'OIDC_TEST_DINGTALK_TOKEN_REJECTED',
+    outbound: input.outbound,
+  });
+  // Without the `corpid` scope there is nothing to capture and nothing the runtime could
+  // ever match, so the test fails rather than reporting a green result the admin cannot use.
+  if (!isValidDingTalkCorpId(token.corpId)) throw new Error('OIDC_TEST_CORP_ID_MISSING');
+  const profile = await fetchDingTalkUserProfile({
+    accessToken: token.accessToken,
+    errorCode: 'OIDC_TEST_DINGTALK_PROFILE_REJECTED',
+    outbound: input.outbound,
+  });
+  const claims = toDingTalkClaims(profile, {
+    errorCode: 'OIDC_TEST_CLAIM_VALIDATION_FAILED',
+    providerKey: input.providerKey,
+  });
+  // Organisation name is a nicety on top of the capture: never fatal, and when DingTalk
+  // refuses for a missing permission the scope name travels back so the admin can enable it.
+  const lookup = await fetchDingTalkCorpName({
+    clientId: input.clientId,
+    clientSecret: input.clientSecret,
+    corpId: token.corpId,
+    outbound: input.outbound,
+  });
+  const corpName = lookup.corpName ?? pickDingTalkCorpNameFromProfile(profile);
+  return {
+    claims,
+    dingtalk: {
+      corpId: token.corpId,
+      ...(corpName ? { corpName } : {}),
+      ...(!corpName && lookup.missingScope ? { corpNameMissingScope: lookup.missingScope } : {}),
+      ...(!corpName && lookup.reason ? { corpNameReason: lookup.reason } : {}),
+      ...(profile.nick?.trim() ? { nick: profile.nick.trim().slice(0, 256) } : {}),
+    },
+  };
+};
 
 export { buildIdentityProviderClaimPreview } from './claimValidation';
 export {
@@ -306,11 +364,12 @@ export class IdentityProviderTestFlowService {
       if (!secret) throw new Error('OIDC_TEST_SECRET_UNAVAILABLE');
       const resolved =
         provider.type === 'dingtalk'
-          ? await this.resolveDingTalkClaims({
+          ? await resolveDingTalkClaims({
               clientId: provider.clientId,
               clientSecret: secret,
               code: input.code,
               issuer: provider.issuer,
+              outbound: this.outbound,
               providerKey: provider.providerKey,
             })
           : {
@@ -470,64 +529,6 @@ export class IdentityProviderTestFlowService {
     );
     if (userinfo.sub !== idClaims.sub) throw new Error('OIDC_TEST_SUBJECT_MISMATCH');
     return { ...idClaims, ...userinfo };
-  };
-
-  /**
-   * DingTalk safe-login claims AND organisation capture: JSON token exchange (no id_token, no
-   * PKCE) then the header-authenticated profile read — exactly the sequence the production
-   * adapter runs, so a green test really does gate publication.
-   *
-   * The organisation allowlist is deliberately NOT enforced here: this flow is how an
-   * administrator discovers a corpId in the first place. Nothing about it touches user or
-   * account state, and its result is a claim *preview* only.
-   */
-  private resolveDingTalkClaims = async (input: {
-    clientId: string;
-    clientSecret: string;
-    code: string;
-    issuer: string;
-    providerKey: string;
-  }): Promise<{
-    claims: Record<string, unknown>;
-    dingtalk?: PlatformIdentityProviderDingTalkCapture;
-  }> => {
-    assertDingTalkIssuer(input.issuer, 'OIDC_TEST_ISSUER_INVALID');
-    const token = await exchangeDingTalkAuthorizationCode({
-      clientId: input.clientId,
-      clientSecret: input.clientSecret,
-      code: input.code,
-      errorCode: 'OIDC_TEST_DINGTALK_TOKEN_REJECTED',
-      outbound: this.outbound,
-    });
-    // Without the `corpid` scope there is nothing to capture and nothing the runtime could
-    // ever match, so the test fails rather than reporting a green result the admin cannot use.
-    if (!isValidDingTalkCorpId(token.corpId)) throw new Error('OIDC_TEST_CORP_ID_MISSING');
-    const profile = await fetchDingTalkUserProfile({
-      accessToken: token.accessToken,
-      errorCode: 'OIDC_TEST_DINGTALK_PROFILE_REJECTED',
-      outbound: this.outbound,
-    });
-    const claims = toDingTalkClaims(profile, {
-      errorCode: 'OIDC_TEST_CLAIM_VALIDATION_FAILED',
-      providerKey: input.providerKey,
-    });
-    // Organisation name is a nicety on top of the capture: never fatal, and when DingTalk
-    // refuses for a missing permission the scope name travels back so the admin can enable it.
-    const corpName = await fetchDingTalkCorpName({
-      clientId: input.clientId,
-      clientSecret: input.clientSecret,
-      corpId: token.corpId,
-      outbound: this.outbound,
-    });
-    return {
-      claims,
-      dingtalk: {
-        corpId: token.corpId,
-        ...(corpName.corpName ? { corpName: corpName.corpName } : {}),
-        ...(corpName.missingScope ? { corpNameMissingScope: corpName.missingScope } : {}),
-        ...(profile.nick?.trim() ? { nick: profile.nick.trim().slice(0, 256) } : {}),
-      },
-    };
   };
 
   private exchangeCode = async (input: {

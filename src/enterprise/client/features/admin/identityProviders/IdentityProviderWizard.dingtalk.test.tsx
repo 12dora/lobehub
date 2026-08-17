@@ -22,9 +22,23 @@ const serviceMocks = vi.hoisted(() => ({
 const testResultMocks = vi.hoisted(() => ({
   data: null as null | {
     errorCode?: string | null;
-    result?: { dingtalk?: { corpId: string; nick?: string }; valid?: boolean };
+    result?: {
+      dingtalk?: {
+        corpId: string;
+        corpName?: string;
+        corpNameMissingScope?: string;
+        corpNameReason?: string;
+        nick?: string;
+      };
+      valid?: boolean;
+    };
     status: string;
   },
+  error: undefined as unknown,
+  mutate: vi.fn(),
+}));
+const popupMocks = vi.hoisted(() => ({
+  popup: { closed: false, close: vi.fn(), location: { assign: vi.fn() } },
 }));
 const stepMocks = vi.hoisted(() => ({ mockSteps: true }));
 
@@ -77,7 +91,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
   Checkbox: (props: Record<string, unknown>) => <input type="checkbox" {...props} />,
   confirmModal: vi.fn(),
   createModal: vi.fn(),
-  toast: { error: vi.fn(), success: vi.fn() },
+  toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
   useModalContext: () => ({ close: vi.fn() }),
 }));
 
@@ -114,8 +128,8 @@ vi.mock('../users/modals/openReasonModal', () => ({
 vi.mock('./useIdentityProviders', () => ({
   useIdentityProviderTestResult: () => ({
     data: testResultMocks.data,
-    error: undefined,
-    mutate: vi.fn(),
+    error: testResultMocks.error,
+    mutate: testResultMocks.mutate,
   }),
 }));
 
@@ -130,7 +144,7 @@ vi.mock('./controller', async (importOriginal) => {
     ...actual,
     openIdentityProviderTestPopup: async <Result extends { authorizationUrl?: string }>(
       start: () => Promise<Result>,
-    ) => start(),
+    ) => ({ popup: popupMocks.popup as unknown as Window, result: await start() }),
   };
 });
 
@@ -218,6 +232,8 @@ describe('IdentityProviderWizard DingTalk shape', () => {
   beforeEach(() => {
     stepMocks.mockSteps = true;
     testResultMocks.data = null;
+    testResultMocks.error = undefined;
+    popupMocks.popup.closed = false;
     vi.clearAllMocks();
     serviceMocks.update.mockImplementation(async (input: { expectedRevision?: number }) => ({
       ...baseProvider,
@@ -248,6 +264,8 @@ describe('IdentityProviderWizard DingTalk organisation allowlist', () => {
   beforeEach(() => {
     stepMocks.mockSteps = false;
     testResultMocks.data = null;
+    testResultMocks.error = undefined;
+    popupMocks.popup.closed = false;
     vi.clearAllMocks();
     serviceMocks.testStart.mockResolvedValue({
       attemptId: 'attempt-capture',
@@ -266,7 +284,7 @@ describe('IdentityProviderWizard DingTalk organisation allowlist', () => {
     expect(captureButton()).toBeTruthy();
   });
 
-  it('captures an organisation from a DingTalk login, labels it and marks the draft dirty', async () => {
+  it('captures an organisation from a DingTalk login and marks the draft dirty', async () => {
     const onDirtyChange = vi.fn();
     renderWizard(baseProvider, { onDirtyChange });
     await openPolicyStep();
@@ -292,9 +310,26 @@ describe('IdentityProviderWizard DingTalk organisation allowlist', () => {
       expect(screen.getByText('ding42')).toBeTruthy();
     });
     expect(
-      screen.getByDisplayValue('identityProviders.dingtalk.allowedCorps.addedBy:Ada'),
-    ).toBeTruthy();
+      (screen.getByLabelText('identityProviders.dingtalk.allowedCorps.label') as HTMLInputElement)
+        .value,
+    ).toBe('');
     expect(onDirtyChange).toHaveBeenCalledWith(true);
+  });
+
+  it('lets the administrator type the organisation name when DingTalk omitted it', async () => {
+    renderWizard({
+      ...baseProvider,
+      dingtalkAllowedCorps: [{ addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42' }],
+    });
+    await openPolicyStep();
+    const name = screen.getByLabelText(
+      'identityProviders.dingtalk.allowedCorps.columns.organization',
+    );
+    expect((name as HTMLInputElement).value).toBe('');
+    await act(async () => {
+      fireEvent.change(name, { target: { value: '示例科技' } });
+    });
+    expect((name as HTMLInputElement).value).toBe('示例科技');
   });
 
   it('does not add the same organisation twice', async () => {
@@ -371,6 +406,8 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
   beforeEach(() => {
     stepMocks.mockSteps = false;
     testResultMocks.data = null;
+    testResultMocks.error = undefined;
+    popupMocks.popup.closed = false;
     vi.clearAllMocks();
     serviceMocks.testStart.mockResolvedValue({
       attemptId: 'attempt-capture',
@@ -453,7 +490,7 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
     expect((note as HTMLInputElement).value).toBe('Head office');
   });
 
-  it('never generates a label longer than the persisted limit', async () => {
+  it('leaves the remark empty even when DingTalk returned a long nick', async () => {
     renderWizard(baseProvider);
     await openPolicyStep();
     await act(async () => {
@@ -472,7 +509,74 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
     const note = await waitFor(() =>
       screen.getByLabelText('identityProviders.dingtalk.allowedCorps.label'),
     );
-    expect((note as HTMLInputElement).value.length).toBeLessThanOrEqual(64);
+    expect((note as HTMLInputElement).value).toBe('');
+  });
+
+  it('stops polling and toasts when the login window is closed before completion', async () => {
+    vi.useFakeTimers();
+    const { toast } = await import('@lobehub/ui/base-ui');
+    try {
+      renderWizard(baseProvider);
+      await openPolicyStep();
+      await act(async () => {
+        fireEvent.click(captureButton());
+      });
+      expect(captureButton().hasAttribute('disabled')).toBe(true);
+
+      popupMocks.popup.closed = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(toast.info).toHaveBeenCalledWith('identityProviders.test.windowClosed');
+      expect(screen.getByText('identityProviders.test.windowClosed')).toBeTruthy();
+      expect(captureButton().hasAttribute('disabled')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('explains a missing organisation name instead of only the missing-scope case', async () => {
+    const { toast } = await import('@lobehub/ui/base-ui');
+    renderWizard(baseProvider);
+    await openPolicyStep();
+    await act(async () => {
+      fireEvent.click(captureButton());
+    });
+    testResultMocks.data = {
+      result: { dingtalk: { corpId: 'ding42', corpNameReason: 'name_absent' }, valid: true },
+      status: 'succeeded',
+    };
+    await act(async () => {
+      fireEvent.click(screen.getByText(/identityProviders\.steps\.client/));
+    });
+    await openPolicyStep();
+    await waitFor(() => {
+      expect(toast.info).toHaveBeenCalledWith(
+        'identityProviders.dingtalk.allowedCorps.nameUnavailable',
+      );
+    });
+  });
+
+  it('revalidates the test result when the callback posts a same-origin message', async () => {
+    renderWizard(baseProvider);
+    await openPolicyStep();
+    await act(async () => {
+      fireEvent.click(captureButton());
+    });
+    expect(testResultMocks.mutate).not.toHaveBeenCalled();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { success: true, type: 'aihub-identity-provider-test' },
+          origin: window.location.origin,
+        }),
+      );
+    });
+
+    expect(testResultMocks.mutate).toHaveBeenCalled();
+    expect(captureButton().hasAttribute('disabled')).toBe(false);
   });
 });
 
@@ -480,6 +584,8 @@ describe('IdentityProviderWizard DingTalk operator friction', () => {
   beforeEach(() => {
     stepMocks.mockSteps = false;
     testResultMocks.data = null;
+    testResultMocks.error = undefined;
+    popupMocks.popup.closed = false;
     vi.clearAllMocks();
     serviceMocks.testStart.mockResolvedValue({
       attemptId: 'attempt-capture',

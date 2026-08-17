@@ -22,6 +22,7 @@ import {
   buildDingTalkDiscoveryMetadata,
   DINGTALK_APP_TOKEN_ENDPOINT,
   DINGTALK_ORG_AUTH_INFO_ENDPOINT,
+  DINGTALK_ORG_READ_SCOPE,
   DINGTALK_TOKEN_ENDPOINT,
   DINGTALK_USERINFO_ENDPOINT,
   DingTalkApiError,
@@ -325,6 +326,35 @@ describe('DingTalk organisation name lookup', () => {
     );
     await expect(fetchDingTalkCorpName({ ...creds, outbound })).resolves.toEqual({
       missingScope: 'Contact.Org.Read',
+      reason: 'forbidden',
+    });
+  });
+
+  it('falls back to Contact.Org.Read when a 403 does not echo requiredScopes', async () => {
+    const outbound = setup(async (request) =>
+      request.url.toString() === DINGTALK_APP_TOKEN_ENDPOINT
+        ? response({ accessToken: 'app-token' })
+        : response({ code: 'Forbidden.AccessDenied' }, { status: 403, statusText: 'Forbidden' }),
+    );
+    await expect(fetchDingTalkCorpName({ ...creds, outbound })).resolves.toEqual({
+      missingScope: DINGTALK_ORG_READ_SCOPE,
+      reason: 'forbidden',
+    });
+  });
+
+  it.each([
+    ['orgName', { orgName: '  示例科技有限公司 ' }],
+    ['organizationName', { organizationName: '示例科技有限公司' }],
+    ['licenseOrgName', { licenseOrgName: '示例科技有限公司' }],
+    ['result.corpName', { result: { corpName: '示例科技有限公司' } }],
+  ])('accepts the organisation name from %s', async (_label, body) => {
+    const outbound = setup(async (request) =>
+      request.url.toString() === DINGTALK_APP_TOKEN_ENDPOINT
+        ? response({ accessToken: 'app-token' })
+        : response(body),
+    );
+    await expect(fetchDingTalkCorpName({ ...creds, outbound })).resolves.toEqual({
+      corpName: '示例科技有限公司',
     });
   });
 
@@ -332,11 +362,15 @@ describe('DingTalk organisation name lookup', () => {
     const rejected = setup(async () =>
       response({ code: 'invalidParameter.idOrSecret.notFound' }, { status: 400 }),
     );
-    await expect(fetchDingTalkCorpName({ ...creds, outbound: rejected })).resolves.toEqual({});
+    await expect(fetchDingTalkCorpName({ ...creds, outbound: rejected })).resolves.toEqual({
+      reason: 'app_token_rejected',
+    });
     const failing = setup(async () => {
       throw new Error('ECONNRESET');
     });
-    await expect(fetchDingTalkCorpName({ ...creds, outbound: failing })).resolves.toEqual({});
+    await expect(fetchDingTalkCorpName({ ...creds, outbound: failing })).resolves.toEqual({
+      reason: 'network',
+    });
   });
 });
 

@@ -47,11 +47,13 @@ const persistLocaleCookie = (
 
 export function defineConfig() {
   // `/oauth/connector` is a backend route handler (custom connector OAuth callback);
-  // `/oauth/identity-provider` is the M11 admin test-login callback route handler
-  // (state-bound capability, validates the attempt itself — must not be swallowed
-  // by the SPA shell or auth-redirected); the rest of `/oauth/*`
+  // `/oauth/identity-provider` is the backend subtree for identity-provider callbacks
+  // (production DingTalk shim + the admin test callback). Both handlers are state-bound
+  // capabilities — they never read the session; the one-time high-entropy `state` is
+  // the capability — and must not be swallowed by the SPA shell. The rest of `/oauth/*`
   // (e.g. /oauth/callback/success) are SPA pages, so scope the passthrough
-  // to those backend subtrees only.
+  // to those backend subtrees only. Auth-gating of the test callback is decided
+  // separately in `isPublicRoute` (exact `/oauth/identity-provider/test/callback`).
   const backendApiEndpoints = [
     '/api',
     '/trpc',
@@ -221,9 +223,12 @@ export function defineConfig() {
     // session (it is the sign-in itself), so session-gating it would redirect the callback to
     // /signin and the login could never complete. It only rewrites `authCode` → `code` and
     // 302s to the Better Auth callback, where the signed, one-time state remains the CSRF
-    // control. Scoped to this exact sub-tree: the admin test callback under
-    // /oauth/identity-provider/test stays session-gated.
+    // control.
     '/oauth/identity-provider/dingtalk/(.*)',
+    // Admin isolated test / organisation-capture callback. The handler never reads the
+    // session; the one-time high-entropy `state` is the capability, same as the production
+    // shim. Exact path only — siblings under `/oauth/identity-provider/test` stay gated.
+    '/oauth/identity-provider/test/callback',
     '/oidc/handoff',
     '/oidc/device/auth',
     '/oidc/token',

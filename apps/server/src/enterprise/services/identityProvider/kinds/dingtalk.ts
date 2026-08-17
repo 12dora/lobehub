@@ -52,10 +52,12 @@ const tokenResponseSchema = z
 const userProfileSchema = z
   .object({
     avatarUrl: z.string().max(4096).optional(),
+    corpName: z.string().max(256).optional(),
     email: z.string().max(320).optional(),
     mobile: z.string().max(64).optional(),
     nick: z.string().max(256).optional(),
     openId: z.string().max(256).optional(),
+    orgName: z.string().max(256).optional(),
     stateCode: z.string().max(16).optional(),
     unionId: z.string().max(256).optional(),
   })
@@ -290,13 +292,62 @@ export const DINGTALK_CORP_NAME_MAX_LENGTH = 128;
 export const DINGTALK_ORG_READ_SCOPE = 'Contact.Org.Read';
 
 const appTokenResponseSchema = z.object({ accessToken: z.string().min(1) }).passthrough();
-const orgAuthInfoResponseSchema = z.object({ corpName: z.string().optional() }).passthrough();
+const orgNameFieldsSchema = z
+  .object({
+    corpName: z.string().optional(),
+    licenseOrgName: z.string().optional(),
+    organizationName: z.string().optional(),
+    orgName: z.string().optional(),
+  })
+  .passthrough();
+const orgAuthInfoResponseSchema = orgNameFieldsSchema.extend({
+  result: orgNameFieldsSchema.optional(),
+});
+
+export type DingTalkCorpNameReason = 'app_token_rejected' | 'forbidden' | 'name_absent' | 'network';
 
 export interface DingTalkCorpNameLookup {
   corpName?: string;
   /** DingTalk permission the app still lacks, when the lookup was refused for that reason. */
   missingScope?: string;
+  /** Why the lookup produced no name — never contains credentials or third-party free text. */
+  reason?: DingTalkCorpNameReason;
 }
+
+const pickDingTalkCorpName = (...candidates: Array<string | undefined>): string | undefined => {
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim();
+    if (trimmed) return trimmed.slice(0, DINGTALK_CORP_NAME_MAX_LENGTH);
+  }
+  return undefined;
+};
+
+const readOrgAuthInfoName = (body: z.infer<typeof orgAuthInfoResponseSchema>): string | undefined =>
+  pickDingTalkCorpName(
+    body.corpName,
+    body.orgName,
+    body.organizationName,
+    body.licenseOrgName,
+    body.result?.corpName,
+    body.result?.orgName,
+    body.result?.organizationName,
+    body.result?.licenseOrgName,
+  );
+
+/** Best-effort name from `/v1.0/contact/users/me` when the org lookup yields none. */
+export const pickDingTalkCorpNameFromProfile = (
+  profile: Pick<DingTalkUserProfile, 'corpName' | 'orgName'>,
+): string | undefined => pickDingTalkCorpName(profile.corpName, profile.orgName);
+
+const logCorpNameLookupUnavailable = (input: {
+  reason: DingTalkCorpNameReason;
+  status?: number;
+}): void => {
+  console.error('[dingtalk] corp name lookup unavailable', {
+    reason: input.reason,
+    ...(input.status === undefined ? {} : { status: input.status }),
+  });
+};
 
 /**
  * Best-effort organisation name for a captured corpId, so the admin allowlist can show
@@ -323,8 +374,17 @@ export const fetchDingTalkCorpName = async (input: {
       secretBearing: true,
       timeoutMs: REQUEST_TIMEOUT_MS,
     });
-    if (!tokenResponse.ok || tokenResponse.truncated || !isJsonResponse(tokenResponse)) return {};
-    const { accessToken } = appTokenResponseSchema.parse(await tokenResponse.json());
+    if (!tokenResponse.ok || tokenResponse.truncated || !isJsonResponse(tokenResponse)) {
+      logCorpNameLookupUnavailable({ reason: 'app_token_rejected', status: tokenResponse.status });
+      return { reason: 'app_token_rejected' };
+    }
+    let accessToken: string;
+    try {
+      ({ accessToken } = appTokenResponseSchema.parse(await tokenResponse.json()));
+    } catch {
+      logCorpNameLookupUnavailable({ reason: 'app_token_rejected', status: tokenResponse.status });
+      return { reason: 'app_token_rejected' };
+    }
     const url = new URL(DINGTALK_ORG_AUTH_INFO_ENDPOINT);
     url.searchParams.set('targetCorpId', input.corpId);
     const response = await input.outbound.fetch(url.toString(), {
@@ -335,16 +395,23 @@ export const fetchDingTalkCorpName = async (input: {
       secretBearing: true,
       timeoutMs: REQUEST_TIMEOUT_MS,
     });
+    if (response.status === 403) {
+      const scope = (await readDingTalkRequiredScope(response)) ?? DINGTALK_ORG_READ_SCOPE;
+      logCorpNameLookupUnavailable({ reason: 'forbidden', status: 403 });
+      return { missingScope: scope, reason: 'forbidden' };
+    }
     if (!response.ok || response.truncated || !isJsonResponse(response)) {
-      // DingTalk names the missing permission itself (`accessdenieddetail.requiredScopes`).
-      const scope = await readDingTalkRequiredScope(response);
-      return scope ? { missingScope: scope } : {};
+      logCorpNameLookupUnavailable({ reason: 'name_absent', status: response.status });
+      return { reason: 'name_absent' };
     }
     const parsed = orgAuthInfoResponseSchema.parse(await response.json());
-    const corpName = parsed.corpName?.trim();
-    return corpName ? { corpName: corpName.slice(0, DINGTALK_CORP_NAME_MAX_LENGTH) } : {};
+    const corpName = readOrgAuthInfoName(parsed);
+    if (corpName) return { corpName };
+    logCorpNameLookupUnavailable({ reason: 'name_absent', status: response.status });
+    return { reason: 'name_absent' };
   } catch {
-    return {};
+    logCorpNameLookupUnavailable({ reason: 'network' });
+    return { reason: 'network' };
   }
 };
 

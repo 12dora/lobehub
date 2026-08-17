@@ -7,7 +7,6 @@ import { useEffect, useRef } from 'react';
 
 import type { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 
-import { boundIdentityProviderCorpLabel } from './controller';
 import type { EditableDraft } from './steps';
 
 export const useDingTalkCorpCapture = ({
@@ -45,11 +44,13 @@ export const useDingTalkCorpCapture = ({
         return current;
       }
       toast.success(t('identityProviders.dingtalk.allowedCorps.added'));
-      if (!captured.corpName && captured.corpNameMissingScope) {
+      if (!captured.corpName) {
         toast.info(
-          t('identityProviders.dingtalk.allowedCorps.nameNeedsScope', {
-            scope: captured.corpNameMissingScope,
-          }),
+          captured.corpNameMissingScope
+            ? t('identityProviders.dingtalk.allowedCorps.nameNeedsScope', {
+                scope: captured.corpNameMissingScope,
+              })
+            : t('identityProviders.dingtalk.allowedCorps.nameUnavailable'),
         );
       }
       return {
@@ -60,17 +61,6 @@ export const useDingTalkCorpCapture = ({
             addedAt: new Date().toISOString(),
             corpId: captured.corpId,
             ...(captured.corpName ? { corpName: captured.corpName } : {}),
-            // `nick` may be far longer than the persisted label limit — bound it so the
-            // capture never leaves an unsavable draft behind.
-            ...(captured.nick
-              ? {
-                  label: boundIdentityProviderCorpLabel(
-                    t('identityProviders.dingtalk.allowedCorps.addedBy', {
-                      nick: captured.nick,
-                    }),
-                  ),
-                }
-              : {}),
           },
         ],
       };

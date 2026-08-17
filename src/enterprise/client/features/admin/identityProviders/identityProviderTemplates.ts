@@ -1,5 +1,4 @@
 import {
-  DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH,
   DINGTALK_IDENTITY_PROVIDER_ISSUER,
   PLATFORM_IDENTITY_PROVIDER_TEMPLATES,
   type PlatformIdentityProviderAllowedCorp,
@@ -49,16 +48,15 @@ export const isFixedProtocolIdentityProviderType = (type: PlatformIdentityProvid
 export const serializeIdentityProviderAllowedCorps = (
   entries: readonly PlatformIdentityProviderAllowedCorp[],
 ): PlatformIdentityProviderAllowedCorp[] =>
-  entries.map(({ label, ...entry }) => {
-    const trimmed = label?.trim();
-    return trimmed ? { ...entry, label: trimmed } : entry;
+  entries.map(({ corpName, label, ...entry }) => {
+    const trimmedName = corpName?.trim();
+    const trimmedLabel = label?.trim();
+    return {
+      ...entry,
+      ...(trimmedName ? { corpName: trimmedName } : {}),
+      ...(trimmedLabel ? { label: trimmedLabel } : {}),
+    };
   });
-
-/** Keep generated labels inside the persisted `label` limit — `nick` may be far longer. */
-export const boundIdentityProviderCorpLabel = (label: string): string =>
-  label.length <= DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH
-    ? label
-    : `${label.slice(0, DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH - 1)}\u2026`;
 
 /** Authentik issuer field placeholder used in the discovery step. */
 export const AUTHENTIK_ISSUER_PLACEHOLDER = 'https://auth.example.com/application/o/<slug>/';

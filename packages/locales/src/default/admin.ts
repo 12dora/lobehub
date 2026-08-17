@@ -1880,6 +1880,8 @@ export default {
     'The requested authorization scope is not allowed by your organization.',
   'enterprise.error.PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED':
     'The operation was blocked because it could expose a credential.',
+  'identityProviders.dingtalk.allowedCorps.nameUnavailable':
+    'Could not fetch the organization name from DingTalk; you can fill in the remark manually.',
   'enterprise.error.PLATFORM_CONNECTOR_SSRF_BLOCKED':
     'The Connector endpoint was blocked by the network safety policy.',
   'enterprise.error.PLATFORM_CONNECTOR_STDIO_UNSUPPORTED':
@@ -1940,7 +1942,6 @@ export default {
     'Configure, test, publish, and activate controlled work-account sign-in.',
   'identityProviders.dingtalk.allowedCorps.add': 'Add organization via DingTalk login',
   'identityProviders.dingtalk.allowedCorps.added': 'Organization added to the allowlist',
-  'identityProviders.dingtalk.allowedCorps.addedBy': 'Added by {{nick}}',
   'identityProviders.dingtalk.allowedCorps.addHint':
     'Opens a DingTalk login. Choose the organization there — its id is captured automatically. Save afterwards to apply the change.',
   'identityProviders.dingtalk.allowedCorps.alreadyAdded':
@@ -2085,6 +2086,7 @@ export default {
   'identityProviders.setup.flag': 'enable the Database OIDC feature',
   'identityProviders.setup.masterKey': 'platform secret master key for encrypting client secrets',
   'identityProviders.setup.masterKeyHint': 'Generate with',
+  'identityProviders.test.windowClosed': 'The login window was closed before sign-in completed.',
   'identityProviders.setup.restart': 'Restart the server after changing these values.',
   'identityProviders.setup.title': 'Enable identity providers',
   'identityProviders.templates.authentik.description':
