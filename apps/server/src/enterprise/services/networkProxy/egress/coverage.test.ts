@@ -69,7 +69,7 @@ const ALLOWLIST: Record<string, SiteKind> = {
     'als',
   'providers/chatgptWeb/createImage.references.ts:ssrfSafeFetch( url, { signal: composed.signal }, // one byte over the limit is enough to prove t':
     'als',
-  "providers/chatgptWeb/http.ts:fetchImpl(url, { ...init, redirect: 'manual', signal: composed.signal, }); return { fail, releas":
+  "providers/chatgptWeb/http.ts:fetchImpl(url, { ...init, headers: this.withCookieJarHeader(url, init.headers), redirect: 'manua":
     'explicit-fetch',
   'providers/cloudflare/index.ts:globalThis.fetch(input, init)); } async chat(payload: ChatStreamPayload, options?: ChatMethodOpt':
     'explicit-fetch',
@@ -80,6 +80,10 @@ const ALLOWLIST: Record<string, SiteKind> = {
   'providers/comfyui/index.ts:globalThis.fetch(input, init)); this.baseURL = options.baseURL || process.env.COMFYUI_DEFAULT_UR':
     'explicit-fetch',
   'providers/comfyui/index.ts:fetchImpl(`${appUrl}/webapi/create-image/comfyui`, { body: JSON.stringify({ model: payload.model':
+    'explicit-fetch',
+  'providers/cursor/index.ts:globalThis.fetch(input, init)); } async chat(payload: ChatStreamPayload, options?: ChatMethodOpt':
+    'explicit-fetch',
+  'providers/cursor/index.ts:fetchImpl(url, { ...init, headers: { ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}`':
     'explicit-fetch',
   "providers/github/index.ts:fetch('https://models.github.ai/catalog/models'); const modelList: GithubModelCard[] = await res":
     'als',
@@ -95,6 +99,8 @@ const ALLOWLIST: Record<string, SiteKind> = {
     'als',
   "providers/google/index.ts:fetch(url, { headers: { 'x-goog-api-key': this.apiKey!, }, method: 'GET', signal: options?.signa":
     'als',
+  "providers/grok/index.ts:new OpenAI({ ...options, defaultHeaders: { ...options.defaultHeaders, ...suppressStainlessHeader":
+    'explicit-fetch',
   "providers/huggingface/index.ts:fetch('https://router.huggingface.co/v1/models'); if (!response.ok) { throw new Error(`HuggingFa":
     'als',
   "providers/hunyuan/createImage.ts:fetch(submitUrl, { body: JSON.stringify(requestBody), headers: { 'Authorization': `Bearer ${apiK":

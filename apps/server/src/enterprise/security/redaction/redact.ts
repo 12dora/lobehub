@@ -107,6 +107,7 @@ export const M07_BENIGN_KEY_CANDIDATES = [
   'grantFlow',
   'authorizationCode',
   'allowAccessTokenPaste',
+  'pastedCredentialKind',
   'authorizeEndpoint',
   'redirectUri',
   'audience',
@@ -131,6 +132,7 @@ const M07_BENIGN_UNDER_OAUTH_DEVICE_FLOW = new Set(
     'grantFlow',
     'authorizationCode',
     'allowAccessTokenPaste',
+    'pastedCredentialKind',
   ].map((key) => key.toLowerCase()),
 );
 
@@ -185,6 +187,7 @@ const M07_OAUTH_VALUE_SHAPES: Record<string, (value: unknown) => boolean> = {
     ),
   authorizeendpoint: isPublicConfigUrl,
   grantflow: (value) => typeof value === 'string' && M07_OAUTH_GRANT_FLOWS.has(value),
+  pastedcredentialkind: (value) => value === 'accessToken' || value === 'apiKey',
   redirecturi: isPublicConfigUrl,
   refreshtokengrant: (value) => typeof value === 'boolean',
   // `showApiKey` toggles a form field; a string there is not a UI flag.

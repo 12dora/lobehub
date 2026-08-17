@@ -89,6 +89,12 @@ export const transformResponseToStream = (data: OpenAI.ChatCompletion) =>
     },
   });
 
+const hasNonEmptyReasoningSummary = (
+  summary: OpenAI.Responses.ResponseReasoningItem['summary'] | undefined,
+) =>
+  Array.isArray(summary) &&
+  summary.some((part) => typeof part.text === 'string' && part.text.length > 0);
+
 /**
  * transform the OpenAI Response API data to stream format for non-streaming responses
  */
@@ -120,7 +126,7 @@ export const transformResponseAPIToStream = (data: OpenAI.Responses.Response) =>
               break;
             }
             case 'reasoning': {
-              if (output.encrypted_content) {
+              if (output.encrypted_content || hasNonEmptyReasoningSummary(output.summary)) {
                 controller.enqueue({
                   item: output,
                   output_index: outputIndex,

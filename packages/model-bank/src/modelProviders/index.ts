@@ -21,6 +21,7 @@ import CloudflareProvider from './cloudflare';
 import CohereProvider from './cohere';
 import CometAPIProvider from './cometapi';
 import ComfyUIProvider from './comfyui';
+import CursorProvider from './cursor';
 import DeepSeekProvider from './deepseek';
 import FalProvider from './fal';
 import FireworksAIProvider from './fireworksai';
@@ -29,6 +30,7 @@ import GithubProvider from './github';
 import GithubCopilotProvider from './githubCopilot';
 import GLMCodingPlanProvider from './glmCodingPlan';
 import GoogleProvider from './google';
+import GrokProvider from './grok';
 import GroqProvider from './groq';
 import HigressProvider from './higress';
 import HuggingFaceProvider from './huggingface';
@@ -187,6 +189,8 @@ export const DEFAULT_MODEL_PROVIDER_LIST = [
   UpstageProvider,
   XAIProvider,
   SuperGrokProvider,
+  GrokProvider,
+  CursorProvider,
   JinaProvider,
   SambaNovaProvider,
   CohereProvider,
@@ -302,6 +306,22 @@ export const isProviderAccessTokenPasteAllowed = (id?: string) =>
   );
 
 /**
+ * What the pasted-credential field holds for this provider. Defaults to `accessToken`
+ * (a ready bearer) so every card that predates the discriminator keeps its wording.
+ */
+export const getProviderPastedCredentialKind = (id?: string): 'accessToken' | 'apiKey' =>
+  DEFAULT_MODEL_PROVIDER_LIST.find((provider) => provider.id === id)?.settings?.oauthDeviceFlow
+    ?.pastedCredentialKind ?? 'accessToken';
+
+/**
+ * Where this provider's API keys are created, when the card names a page. Read by the
+ * connect panels so the "paste an API key" hint can LINK the dashboard instead of describing
+ * it — and so a provider without such a page simply gets no link rather than a dead one.
+ */
+export const getProviderApiKeyUrl = (id?: string): string | undefined =>
+  DEFAULT_MODEL_PROVIDER_LIST.find((provider) => provider.id === id)?.apiKeyUrl;
+
+/**
  * Whether the provider connects ONLY through a pasted web session: the authorization-code
  * UI is hidden and a callback exchange is refused. Reading the card (rather than the
  * provider id) keeps the connect components generic — they serve every device-flow
@@ -332,6 +352,7 @@ export { default as CloudflareProviderCard } from './cloudflare';
 export { default as CohereProviderCard } from './cohere';
 export { default as CometAPIProviderCard } from './cometapi';
 export { default as ComfyUIProviderCard } from './comfyui';
+export { default as CursorProviderCard } from './cursor';
 export { default as DeepSeekProviderCard } from './deepseek';
 export { default as FalProviderCard } from './fal';
 export { default as FireworksAIProviderCard } from './fireworksai';
@@ -340,6 +361,7 @@ export { default as GithubProviderCard } from './github';
 export { default as GithubCopilotProviderCard } from './githubCopilot';
 export { default as GLMCodingPlanProviderCard } from './glmCodingPlan';
 export { default as GoogleProviderCard } from './google';
+export { default as GrokProviderCard } from './grok';
 export { default as GroqProviderCard } from './groq';
 export { default as HigressProviderCard } from './higress';
 export { default as HuggingFaceProviderCard } from './huggingface';

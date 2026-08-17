@@ -1,9 +1,11 @@
+import { type AgentState } from '@lobechat/agent-runtime';
 import type { ModelRuntime } from '@lobechat/model-runtime';
 
 import { AgentOperationModel, platformStartBindingsEqual } from '@/database/models/agentOperation';
 import {
   initModelRuntimeFromDB,
   initPlatformExactModelRuntime,
+  rememberModelRuntimeConversationStartMs,
 } from '@/server/modules/ModelRuntime';
 
 import type { RuntimeExecutorContext } from '../context';
@@ -39,6 +41,36 @@ export class PlatformExactModelUnavailableError extends Error {
  * - Ordinary / builtin operation (no platform marker, or the managed-AI flag off, or an anonymous
  *   call with no trusted userId) → byte-for-byte the legacy `initModelRuntimeFromDB` path.
  */
+/** The operation's own start time, when its persisted state carries a usable one. */
+const persistedStartMs = (state?: AgentState | null): number | undefined => {
+  const createdAt = state?.createdAt;
+  if (typeof createdAt !== 'string') return undefined;
+  const startedAtMs = Date.parse(createdAt);
+
+  return Number.isFinite(startedAtMs) ? startedAtMs : undefined;
+};
+
+/**
+ * The operation IS the conversation for the CLI-shaped runtimes: every LLM call of one
+ * operation belongs to one upstream session, and two operations never share one. Without
+ * an explicit key each call would open its own session (the seam's per-construction
+ * default), which is honest but loses the multi-step context the CLI would keep.
+ *
+ * The session id also encodes WHEN the conversation started, so that time must be as
+ * durable as the key: it is the operation's persisted `createdAt`. An operation resumed
+ * after a human interruption, after the in-memory registry evicted it, after a restart,
+ * or on another replica therefore keeps the SAME upstream session. Only a state with no
+ * usable timestamp falls back to the first sighting in this process.
+ */
+const conversationOptions = (ctx: RuntimeExecutorContext, state?: AgentState | null) => {
+  const conversationKey = `user:${ctx.userId}:operation:${ctx.operationId}`;
+  return {
+    conversationKey,
+    firstSeenMs:
+      persistedStartMs(state) ?? rememberModelRuntimeConversationStartMs(conversationKey),
+  };
+};
+
 export const initOperationModelRuntime = async (
   ctx: RuntimeExecutorContext,
   provider: string,
@@ -86,8 +118,20 @@ export const initOperationModelRuntime = async (
     if (!pin || pin.providerKey !== provider || pin.modelKey !== model) {
       throw new PlatformExactModelUnavailableError();
     }
-    return initPlatformExactModelRuntime(ctx.serverDB, ctx.userId!, pin, ctx.workspaceId);
+    return initPlatformExactModelRuntime(
+      ctx.serverDB,
+      ctx.userId!,
+      pin,
+      ctx.workspaceId,
+      conversationOptions(ctx, state),
+    );
   }
 
-  return initModelRuntimeFromDB(ctx.serverDB, ctx.userId!, provider, ctx.workspaceId);
+  return initModelRuntimeFromDB(
+    ctx.serverDB,
+    ctx.userId!,
+    provider,
+    ctx.workspaceId,
+    conversationOptions(ctx, state),
+  );
 };

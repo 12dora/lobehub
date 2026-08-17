@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { randomUUID } from 'node:crypto';
+
 import {
   LobeAnthropicAI,
   LobeAzureOpenAI,
@@ -21,6 +23,10 @@ import {
   LobeZhipuAI,
   ModelRuntime,
 } from '@lobechat/model-runtime';
+import {
+  DEFAULT_BROWSER_DEVICE_PROFILE,
+  generateBrowserDeviceProfile,
+} from '@lobechat/model-runtime/browserProfile';
 import { LobeVertexAI } from '@lobechat/model-runtime/vertexai';
 import { type ClientSecretPayload } from '@lobechat/types';
 import { ModelProvider } from 'model-bank';
@@ -38,7 +44,10 @@ import {
   initModelRuntimeFromDB,
   initModelRuntimeWithUserPayload,
   initPlatformExactModelRuntime,
+  resolveGrokUserAgentPlatform,
   resolveManagedChatApiMode,
+  runtimeConsumesConversationIdentity,
+  runtimePresentsInstallationIdentity,
 } from './index';
 import * as platformAiRuntimeBridge from './platformAiRuntimeBridge';
 
@@ -1122,6 +1131,26 @@ describe('hasModelRuntimeEnvironmentFallback SuperGrok', () => {
   });
 });
 
+describe('hasModelRuntimeEnvironmentFallback Grok', () => {
+  it('never treats GROK_API_KEY as a valid environment fallback', () => {
+    expect(
+      hasModelRuntimeEnvironmentFallback(ModelProvider.Grok, {
+        GROK_API_KEY: 'would-have-been-false-ready',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('hasModelRuntimeEnvironmentFallback Cursor', () => {
+  it('never treats CURSOR_API_KEY as a valid environment fallback', () => {
+    expect(
+      hasModelRuntimeEnvironmentFallback(ModelProvider.Cursor, {
+        CURSOR_API_KEY: 'would-have-been-false-ready',
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('hasModelRuntimeEnvironmentFallback ChatGPT', () => {
   it('never treats CHATGPT_API_KEY as a valid environment fallback', () => {
     expect(
@@ -1189,14 +1218,35 @@ describe('ChatGPT Web transport injection', () => {
     const spy = vi
       .spyOn(ModelRuntime, 'initializeWithProvider')
       .mockReturnValue({} as unknown as ModelRuntime);
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'chatgptweb-installation' });
 
-    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload);
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload, { browserProfile });
 
     const params = spy.mock.calls[0][1] as Record<string, unknown>;
     expect(params.apiKey).toBe('oauth-token-value');
     expect(params.chatgptAccountId).toBe('account-id');
     expect(params.chatgptDeviceId).toBe('device-id');
+    // The seed reconstructs the entire identity and never reaches the runtime.
+    expect(params.browserProfile).toEqual(
+      Object.fromEntries(Object.entries(browserProfile).filter(([key]) => key !== 'seed')),
+    );
+    expect(params.browserProfile).not.toHaveProperty('seed');
     expect(typeof params.fetch).toBe('function');
+  });
+
+  /**
+   * A caller that forgot to resolve the persisted profile would silently open a SECOND
+   * device (different UA, TLS fingerprint and OAI-Session-Id) on the same account.
+   */
+  it('fails closed when no browser profile was supplied', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    expect(() => initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload)).toThrow(
+      /browser device profile/,
+    );
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it('lets an explicit transport win (the connection probe supplies its own)', () => {
@@ -1204,10 +1254,17 @@ describe('ChatGPT Web transport injection', () => {
       .spyOn(ModelRuntime, 'initializeWithProvider')
       .mockReturnValue({} as unknown as ModelRuntime);
     const probeFetch = vi.fn() as unknown as typeof fetch;
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'runtime-injected-profile' });
 
-    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload, { fetch: probeFetch });
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload, {
+      browserProfile,
+      fetch: probeFetch,
+    });
 
-    expect((spy.mock.calls[0][1] as Record<string, unknown>).fetch).toBe(probeFetch);
+    const params = spy.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.browserProfile).toMatchObject({ id: browserProfile.id });
+    expect(params.browserProfile).not.toHaveProperty('seed');
+    expect(params.fetch).toBe(probeFetch);
   });
 
   it('scopes egress to the catalog provider id, not the SDK runtimeProvider', () => {
@@ -1262,6 +1319,329 @@ describe('buildPayloadFromKeyVaults SuperGrok contract', () => {
       apiKey: 'oauth-token-value',
       runtimeProvider: ModelProvider.SuperGrok,
     });
+  });
+});
+
+describe('buildPayloadFromKeyVaults Grok contract', () => {
+  it('only accepts oauthAccessToken — plain apiKey does not become a usable bearer', () => {
+    expect(buildPayloadFromKeyVaults({ apiKey: 'sk-ignored' }, ModelProvider.Grok)).toEqual({
+      apiKey: undefined,
+      runtimeProvider: ModelProvider.Grok,
+    });
+    expect(
+      buildPayloadFromKeyVaults({ oauthAccessToken: 'oauth-token-value' }, ModelProvider.Grok),
+    ).toEqual({
+      apiKey: 'oauth-token-value',
+      runtimeProvider: ModelProvider.Grok,
+    });
+  });
+});
+
+describe('Grok installation identity injection', () => {
+  const payload: ClientSecretPayload = {
+    apiKey: 'oauth-token-value',
+    runtimeProvider: ModelProvider.Grok,
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('normalizes server operating-system and architecture values for the CLI user agent', () => {
+    expect(resolveGrokUserAgentPlatform('linux', 'x64')).toBe('linux; x86_64');
+    expect(resolveGrokUserAgentPlatform('linux', 'arm64')).toBe('linux; aarch64');
+    expect(resolveGrokUserAgentPlatform('darwin', 'arm64')).toBe('macos; aarch64');
+    expect(resolveGrokUserAgentPlatform('win32', 'x64')).toBe('windows; x86_64');
+  });
+
+  /**
+   * The whole point of the feature: there is no compiled-in Grok device. A caller that
+   * did not resolve the installation profile must not be able to send a request whose
+   * `x-grok-agent-id` is a constant shared by every AIHub deployment.
+   */
+  it('fails closed when no browser profile was supplied', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    expect(() =>
+      initModelRuntimeWithUserPayload(ModelProvider.Grok, payload, { userId: 'user-1' }),
+    ).toThrow(/browser device profile/);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('withholds the installation id when the profile is the bundled fallback', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    initModelRuntimeWithUserPayload(ModelProvider.Grok, payload, {
+      browserProfile: DEFAULT_BROWSER_DEVICE_PROFILE,
+      userId: 'user-1',
+    });
+
+    const params = spy.mock.calls[0][1] as Record<string, unknown>;
+    // The runtime then refuses the request instead of presenting the package constant.
+    expect(params.installationId).toBeUndefined();
+    expect(params.conversationKey).toMatch(/^user:user-1:op:/);
+  });
+
+  it('forwards an injected profile, conversation key, first-seen time and platform token', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'grok-runtime-profile' });
+
+    initModelRuntimeWithUserPayload(ModelProvider.Grok, payload, {
+      browserProfile,
+      conversationKey: 'user:user-1:topic:topic-1',
+      firstSeenMs: 1_700_000_000_123,
+      userAgentPlatform: 'macos; aarch64',
+    });
+
+    const params = spy.mock.calls[0][1] as Record<string, unknown>;
+    expect(params).toMatchObject({
+      conversationKey: 'user:user-1:topic:topic-1',
+      firstSeenMs: 1_700_000_000_123,
+      installationId: browserProfile.installationId,
+      userAgentPlatform: 'macos; aarch64',
+    });
+    // The turn index is the payload's user-message count, derived inside the runtime.
+    expect(params.turnIndex).toBeUndefined();
+  });
+
+  it('derives the same identity from the same key and start time, with no shared state', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'grok-runtime-profile' });
+    const conversationKey = `user:user-1:topic:${randomUUID()}`;
+
+    initModelRuntimeWithUserPayload(ModelProvider.Grok, payload, {
+      browserProfile,
+      conversationKey,
+      firstSeenMs: 1_700_000_000_123,
+    });
+    initModelRuntimeWithUserPayload(ModelProvider.Grok, payload, {
+      browserProfile,
+      conversationKey,
+      firstSeenMs: 1_700_000_000_123,
+    });
+
+    const first = spy.mock.calls[0][1] as Record<string, unknown>;
+    const second = spy.mock.calls[1][1] as Record<string, unknown>;
+    expect(second.conversationKey).toBe(first.conversationKey);
+    expect(second.firstSeenMs).toBe(first.firstSeenMs);
+  });
+
+  it('starts a NEW conversation per construction when the caller has none', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'grok-runtime-profile' });
+    const before = Date.now();
+
+    initModelRuntimeWithUserPayload(ModelProvider.Grok, payload, { browserProfile, userId: 'u-1' });
+    initModelRuntimeWithUserPayload(ModelProvider.Grok, payload, { browserProfile, userId: 'u-1' });
+
+    const first = spy.mock.calls[0][1] as Record<string, unknown>;
+    const second = spy.mock.calls[1][1] as Record<string, unknown>;
+    // Two unrelated headless operations must never share one upstream conversation.
+    expect(first.conversationKey).toMatch(/^user:u-1:op:/);
+    expect(second.conversationKey).not.toBe(first.conversationKey);
+    expect(first.firstSeenMs as number).toBeGreaterThanOrEqual(before);
+    expect(first.firstSeenMs as number).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('keeps a userless caller out of any shared bucket too', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'grok-runtime-profile' });
+
+    initModelRuntimeWithUserPayload(ModelProvider.Grok, payload, { browserProfile });
+    initModelRuntimeWithUserPayload(ModelProvider.Grok, payload, { browserProfile });
+
+    const first = spy.mock.calls[0][1] as Record<string, unknown>;
+    const second = spy.mock.calls[1][1] as Record<string, unknown>;
+    expect(first.conversationKey).toMatch(/^installation:op:/);
+    expect(second.conversationKey).not.toBe(first.conversationKey);
+  });
+});
+
+describe('lazy conversation resolution at the DB seam', () => {
+  const providerRow = (settings: Record<string, unknown>, id: string, source = 'builtin') => ({
+    enabled: true,
+    fetchOnClient: false,
+    id,
+    keyVaults: { oauthAccessToken: 'oauth-token-value' },
+    settings,
+    source,
+  });
+  const dbWith = (row: Record<string, unknown>) => ({
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) }),
+  });
+
+  beforeEach(() => {
+    // These are user-owned (BYOK) providers: the catalog answers PLATFORM_NOT_FOUND and
+    // the seam falls through to the user's own row.
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockRejectedValue(
+      Object.assign(new Error('PLATFORM_NOT_FOUND'), { code: 'PLATFORM_NOT_FOUND' }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('never resolves a conversation for ChatGPT Web, which does not send one', async () => {
+    vi.spyOn(ModelRuntime, 'initializeWithProvider').mockReturnValue({} as unknown as ModelRuntime);
+    const resolveConversation = vi.fn();
+
+    await initModelRuntimeFromDB(
+      dbWith(providerRow({}, ModelProvider.ChatGPTWeb)) as never,
+      'user-1',
+      ModelProvider.ChatGPTWeb,
+      undefined,
+      { resolveConversation },
+    );
+
+    expect(resolveConversation).not.toHaveBeenCalled();
+  });
+
+  it('resolves it for a CUSTOM provider whose sdkType is grok, and forwards the identity', async () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const resolveConversation = vi.fn().mockResolvedValue({
+      conversationKey: 'user:user-1:topic:topic-7',
+      firstSeenMs: 1_700_000_000_123,
+    });
+
+    await initModelRuntimeFromDB(
+      dbWith(providerRow({ sdkType: ModelProvider.Grok }, 'my-grok', 'custom')) as never,
+      'user-1',
+      'my-grok',
+      undefined,
+      { resolveConversation },
+    );
+
+    expect(resolveConversation).toHaveBeenCalledOnce();
+    expect(spy.mock.calls[0][1] as Record<string, unknown>).toMatchObject({
+      conversationKey: 'user:user-1:topic:topic-7',
+      firstSeenMs: 1_700_000_000_123,
+    });
+  });
+});
+
+describe('conversation identity predicates', () => {
+  it('separates presenting an installation identity from consuming a conversation one', () => {
+    for (const provider of [ModelProvider.ChatGPTWeb, ModelProvider.Grok, ModelProvider.Cursor]) {
+      expect(runtimePresentsInstallationIdentity(provider)).toBe(true);
+    }
+    for (const provider of [ModelProvider.OpenAI, ModelProvider.SuperGrok, 'catalog-custom']) {
+      expect(runtimePresentsInstallationIdentity(provider)).toBe(false);
+    }
+    // ChatGPT Web never sends a conversation id, so it must not pay the topic lookup.
+    expect(runtimeConsumesConversationIdentity(ModelProvider.ChatGPTWeb)).toBe(false);
+    expect(runtimeConsumesConversationIdentity(ModelProvider.Grok)).toBe(true);
+    expect(runtimeConsumesConversationIdentity(ModelProvider.Cursor)).toBe(true);
+    expect(runtimeConsumesConversationIdentity(ModelProvider.OpenAI)).toBe(false);
+  });
+});
+
+describe('Cursor installation identity injection', () => {
+  const payload: ClientSecretPayload = {
+    apiKey: 'oauth-token-value',
+    runtimeProvider: ModelProvider.Cursor,
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('forwards the installation id and conversation key so the CLI chat id is stable', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'cursor-runtime-profile' });
+
+    initModelRuntimeWithUserPayload(ModelProvider.Cursor, payload, {
+      browserProfile,
+      conversationKey: 'user:user-1:topic:topic-1',
+    });
+
+    const params = spy.mock.calls[0][1] as Record<string, unknown>;
+    expect(params).toMatchObject({
+      conversationKey: 'user:user-1:topic:topic-1',
+      installationId: browserProfile.installationId,
+    });
+  });
+
+  /** Cursor degrades instead of failing closed: the CLI simply mints its own chat id. */
+  it('builds without a profile and then carries no installation id', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    initModelRuntimeWithUserPayload(ModelProvider.Cursor, payload, { userId: 'user-1' });
+
+    const params = spy.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.installationId).toBeUndefined();
+    expect(params.conversationKey).toMatch(/^user:user-1:op:/);
+  });
+});
+
+describe('buildPayloadFromKeyVaults Cursor contract', () => {
+  it('only accepts oauthAccessToken — plain apiKey does not become a usable bearer', () => {
+    expect(buildPayloadFromKeyVaults({ apiKey: 'sk-ignored' }, ModelProvider.Cursor)).toEqual({
+      apiKey: undefined,
+      runtimeProvider: ModelProvider.Cursor,
+    });
+    expect(
+      buildPayloadFromKeyVaults({ oauthAccessToken: 'oauth-token-value' }, ModelProvider.Cursor),
+    ).toEqual({
+      apiKey: 'oauth-token-value',
+      runtimeProvider: ModelProvider.Cursor,
+    });
+  });
+});
+
+describe('Cursor Agent transport injection', () => {
+  it('injects the CLI fetch so https://cursor.local never hits real DNS', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    initModelRuntimeWithUserPayload(ModelProvider.Cursor, {
+      apiKey: 'oauth-token-value',
+      runtimeProvider: ModelProvider.Cursor,
+    });
+
+    const params = spy.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.apiKey).toBe('oauth-token-value');
+    expect(typeof params.fetch).toBe('function');
+  });
+
+  it('lets an explicit transport win (the connection probe supplies its own)', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const probeFetch = vi.fn() as unknown as typeof fetch;
+
+    initModelRuntimeWithUserPayload(
+      ModelProvider.Cursor,
+      { apiKey: 'oauth-token-value', runtimeProvider: ModelProvider.Cursor },
+      { fetch: probeFetch },
+    );
+
+    expect((spy.mock.calls[0][1] as Record<string, unknown>).fetch).toBe(probeFetch);
   });
 });
 

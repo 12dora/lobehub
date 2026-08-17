@@ -41,6 +41,16 @@ describe('OAuthDeviceFlowConfigSchema', () => {
     expect(parsed.settings?.oauthDeviceFlow?.refreshSkewMs).toBe(24 * 60 * 60 * 1000);
   });
 
+  it('keeps pastedCredentialKind through create parsing', () => {
+    const withKind = { ...oauthDeviceFlow, pastedCredentialKind: 'apiKey' as const };
+    const parsed = CreateAiProviderSchema.parse({
+      ...createPayload,
+      settings: { oauthDeviceFlow: withKind },
+    });
+
+    expect(parsed.settings?.oauthDeviceFlow).toEqual(withKind);
+  });
+
   it('accepts an omitted skew (the runtime default applies)', () => {
     const { refreshSkewMs: _omitted, ...withoutSkew } = oauthDeviceFlow;
     const parsed = CreateAiProviderSchema.parse({

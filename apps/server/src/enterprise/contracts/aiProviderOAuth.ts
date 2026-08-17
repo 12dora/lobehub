@@ -218,7 +218,7 @@ export const adminAiProviderOAuthStatusOutputSchema = z
      * access tokens exactly as the web app does). Null when nothing renews it, or when the
      * provider has a single renewal path. Never token material — a label only.
      */
-    renewalKind: z.enum(['oauth', 'web_session']).nullable().optional(),
+    renewalKind: z.enum(['oauth', 'web_session', 'cursor_api_key']).nullable().optional(),
     secretConfigured: z.boolean(),
   })
   .strict();

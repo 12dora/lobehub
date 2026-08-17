@@ -9,7 +9,10 @@ import { UserModel } from '@/database/models/user';
 import { agents, agentsToSessions, aiModels, aiProviders } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
-import { initModelRuntimeWithUserPayload } from '@/server/modules/ModelRuntime';
+import {
+  initModelRuntimeWithUserPayload,
+  resolvePlatformBrowserProfile,
+} from '@/server/modules/ModelRuntime';
 import { resolveSystemAgentModelConfig } from '@/server/services/systemAgent/modelConfig';
 
 import { BaseService } from '../common/base.service';
@@ -331,7 +334,12 @@ export class ChatService extends BaseService {
       const modelRuntime = await initModelRuntimeWithUserPayload(
         provider,
         { apiKey, userId: this.userId! },
-        {},
+        {
+          // Same installation identity as the chat path: a runtime that presents a
+          // browser/CLI device must never be built from the bundled fallback here.
+          browserProfile: await resolvePlatformBrowserProfile(this.db, provider),
+          userId: this.userId!,
+        },
         hooks,
       );
 

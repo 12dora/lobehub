@@ -25,6 +25,7 @@ import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import {
   buildPayloadFromKeyVaults,
   initModelRuntimeWithUserPayload,
+  resolvePlatformBrowserProfile,
 } from '@/server/modules/ModelRuntime';
 import {
   assertPlatformPublishedModel,
@@ -36,6 +37,7 @@ import {
 import {
   type ProviderKeyVaultMap,
   type RuntimeResolveOptions,
+  withProviderRuntimeProviders,
 } from '@/server/services/memory/userMemory/extract';
 import { resolveRuntimeAgentConfig } from '@/server/services/memory/userMemory/extract';
 import { LayersEnum } from '@/types/userMemory';
@@ -142,7 +144,14 @@ export class UserPersonaService {
           return initModelRuntimeWithUserPayload(
             providerId,
             secretPayload,
-            { userId: payload.userId },
+            {
+              // No-op unless the platform provider presents a browser identity upstream.
+              browserProfile: await resolvePlatformBrowserProfile(
+                this.db,
+                execution.runtimeProvider,
+              ),
+              userId: payload.userId,
+            },
             mergeModelRuntimeHooks(
               createPlatformAiModelAllowlistHooks(execution.allowedModels),
               hooks,
@@ -151,16 +160,24 @@ export class UserPersonaService {
         })()
       : await resolveRuntimeAgentConfig(
           agentConfig,
-          Object.entries(runtimeState.runtimeConfig || {}).reduce((acc, [provider, config]) => {
-            acc[provider.toLowerCase()] = config?.keyVaults;
-            return acc;
-          }, {} as ProviderKeyVaultMap),
+          // Vaults plus the runtime provider of each row: a custom provider backed by
+          // grok / cursor / chatgpt-web must reach the installation-identity seam too.
+          withProviderRuntimeProviders(
+            Object.entries(runtimeState.runtimeConfig || {}).reduce((acc, [provider, config]) => {
+              acc[provider.toLowerCase()] = config?.keyVaults;
+              return acc;
+            }, {} as ProviderKeyVaultMap),
+            runtimeState.runtimeConfig || {},
+          ),
           {
             fallback: {
               apiKey: agentConfig.apiKey,
               baseURL: agentConfig.baseURL,
             },
             preferred: { providerIds: [providerId] },
+            // Only queried when the selected provider presents an installation identity.
+            resolveBrowserProfile: (runtimeProvider) =>
+              resolvePlatformBrowserProfile(this.db, runtimeProvider),
             userId: payload.userId,
           } satisfies RuntimeResolveOptions,
           hooks,

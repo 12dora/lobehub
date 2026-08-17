@@ -297,6 +297,81 @@ describe('AI catalog credential adapter', () => {
     ).not.toThrow();
   });
 
+  it('accepts Grok as a shared-OAuth platform runtime with an OAuth-only vault', () => {
+    expect(() => validateAiCatalogRuntimeProvider(ModelProvider.Grok, {}, 'builtin')).not.toThrow();
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.Grok, { apiKey: 'sk-any' }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.Grok, {
+        oauthAccessToken: 'at-1',
+        oauthRefreshToken: 'rt-1',
+        oauthTokenExpiresAt: '1750000000000',
+      }),
+    ).not.toThrow();
+    expectValidationIssues(
+      () =>
+        normalizeAiCatalogExecutionCredentials({
+          config: {},
+          env: { GROK_API_KEY: 'false-ready-key' },
+          keyVaults: { oauthAccessToken: 'at-1' },
+          providerKey: ModelProvider.Grok,
+          settings: {},
+          source: 'builtin',
+        }),
+      ['Grok shared OAuth connection is incomplete'],
+    );
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults: { oauthAccessToken: 'at-1', oauthRefreshToken: 'rt-1' },
+        providerKey: ModelProvider.Grok,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts Cursor as a shared-OAuth platform runtime with an OAuth-only vault', () => {
+    expect(() =>
+      validateAiCatalogRuntimeProvider(ModelProvider.Cursor, {}, 'builtin'),
+    ).not.toThrow();
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.Cursor, { apiKey: 'sk-any' }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.Cursor, {
+        oauthAccessToken: 'at-1',
+        oauthRefreshToken: 'rt-1',
+        oauthRenewalKind: 'cursor_api_key',
+        oauthTokenExpiresAt: '1750000000000',
+      }),
+    ).not.toThrow();
+    expectValidationIssues(
+      () =>
+        normalizeAiCatalogExecutionCredentials({
+          config: {},
+          env: { CURSOR_API_KEY: 'false-ready-key' },
+          keyVaults: { oauthAccessToken: 'at-1' },
+          providerKey: ModelProvider.Cursor,
+          settings: {},
+          source: 'builtin',
+        }),
+      ['Cursor shared OAuth connection is incomplete'],
+    );
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults: { oauthAccessToken: 'at-1', oauthRefreshToken: 'rt-1' },
+        providerKey: ModelProvider.Cursor,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).not.toThrow();
+  });
+
   it('accepts ChatGPT as a shared-OAuth platform runtime requiring the Codex account id', () => {
     expect(() =>
       validateAiCatalogRuntimeProvider(ModelProvider.ChatGPT, {}, 'builtin'),
@@ -452,6 +527,10 @@ describe('AI catalog credential adapter', () => {
     expect(providerCredentialKeys(ModelProvider.ChatGPTWeb).has('oauthRenewalKind')).toBe(true);
     expect(providerCredentialKeys(ModelProvider.ChatGPT).has('oauthDeviceId')).toBe(false);
     expect(providerCredentialKeys(ModelProvider.SuperGrok).has('oauthAccountEmail')).toBe(false);
+    expect(providerCredentialKeys(ModelProvider.Grok).has('oauthAccountEmail')).toBe(false);
+    expect(providerCredentialKeys(ModelProvider.Grok).has('oauthAccessToken')).toBe(true);
+    expect(providerCredentialKeys(ModelProvider.Cursor).has('oauthAccessToken')).toBe(true);
+    expect(providerCredentialKeys(ModelProvider.Cursor).has('oauthRenewalKind')).toBe(true);
     // Unknown providers fall back to the OpenAI-compatible shape.
     expect([...providerCredentialKeys('some-custom-provider')]).toEqual(['apiKey', 'baseURL']);
   });

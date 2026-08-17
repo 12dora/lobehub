@@ -1,3 +1,4 @@
+import { generateBrowserDeviceProfile } from '@lobechat/model-runtime/browserProfile';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { PlatformAiProviderItem } from '@/database/schemas/platform';
@@ -29,8 +30,11 @@ const chatMock = vi.hoisted(() =>
 
 /** Sentinel standing in for the browser-fingerprinted transport. */
 const impersonatedFetch = vi.hoisted(() => vi.fn());
+/** Sentinel standing in for the Cursor Agent CLI transport. */
+const cursorAgentFetch = vi.hoisted(() => vi.fn());
 
 vi.mock('../chatgptWeb/transport', () => ({ getChatGPTWebFetch: () => impersonatedFetch }));
+vi.mock('../cursorAgent', () => ({ getCursorAgentFetch: () => cursorAgentFetch }));
 
 /** Captures the runtime init options so transport/retry wiring is assertable. */
 const initRuntimeMock = vi.hoisted(() => vi.fn());
@@ -305,8 +309,10 @@ describe('createSafeAiConnectionProbe ChatGPT Web transport', () => {
     chatMock.mockClear();
     initRuntimeMock.mockClear();
     chatMock.mockResolvedValueOnce(streamingResponse());
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'connection-test-profile' });
 
     await probe()({
+      browserProfile,
       keyVaults: { oauthAccessToken: 'fake-token' },
       model: 'auto',
       provider: { ...provider, checkModel: 'auto', providerKey: 'chatgptweb' },
@@ -316,12 +322,59 @@ describe('createSafeAiConnectionProbe ChatGPT Web transport', () => {
     const transport = initRuntimeMock.mock.calls[0][2] as Record<string, unknown>;
     // Wrapped, not raw: the child process has no deadline of its own (see below).
     expect(transport.fetch).not.toBe(impersonatedFetch);
+    expect(transport.browserProfile).toBe(browserProfile);
     // Streaming-first backend + one honest attempt, same as the other subscription runtimes.
     expect(transport.maxRetries).toBe(0);
     expect(chatMock).toHaveBeenCalledWith(
       expect.objectContaining({ model: 'auto', stream: true }),
       expect.anything(),
     );
+  });
+
+  it('probes cursor through the CLI transport, streaming', async () => {
+    chatMock.mockClear();
+    initRuntimeMock.mockClear();
+    chatMock.mockResolvedValueOnce(streamingResponse());
+
+    await probe()({
+      keyVaults: { oauthAccessToken: 'fake-token' },
+      model: 'composer-2.5',
+      provider: { ...provider, checkModel: 'composer-2.5', providerKey: 'cursor' },
+      runtimeProvider: 'cursor',
+    });
+
+    const transport = initRuntimeMock.mock.calls[0][2] as Record<string, unknown>;
+    expect(transport.fetch).not.toBe(cursorAgentFetch);
+    expect(transport.fetch).not.toBe(impersonatedFetch);
+    expect(transport.maxRetries).toBe(0);
+    expect(chatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'composer-2.5', stream: true }),
+      expect.anything(),
+    );
+  });
+
+  /**
+   * R2 §H2: the probe used to inject the browser profile for ChatGPT Web only, so an
+   * admin's "test connection" on the platform Grok provider went out as a device id
+   * compiled into the package — a different machine than the one chat presents.
+   */
+  it('forwards the installation profile to Grok and gives the probe its own conversation', async () => {
+    chatMock.mockClear();
+    initRuntimeMock.mockClear();
+    chatMock.mockResolvedValueOnce(streamingResponse());
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'connection-test-profile' });
+
+    await probe()({
+      browserProfile,
+      keyVaults: { oauthAccessToken: 'fake-token' },
+      model: 'grok-4.6',
+      provider: { ...provider, checkModel: 'grok-4.6', providerKey: 'grok' },
+      runtimeProvider: 'grok',
+    });
+
+    const transport = initRuntimeMock.mock.calls[0][2] as Record<string, unknown>;
+    expect(transport.browserProfile).toBe(browserProfile);
+    expect(transport.conversationKey).toBe('platform:connection-test:grok');
   });
 
   it('leaves every other runtime on the enterprise outbound adapter', async () => {
@@ -354,6 +407,34 @@ describe('createSafeAiConnectionProbe ChatGPT Web transport', () => {
     expect(aiConnectionFailureCode(failure.errorCategory, failure.errorType)).toBe(
       'connection_failed_transport',
     );
+  });
+
+  it('gives a missing Cursor Agent CLI its own stable code', () => {
+    const failure = classifyAiConnectionFailure({
+      code: 'cli_unavailable',
+      message: 'Cursor Agent transport unavailable',
+      name: 'CursorAgentUnavailableError',
+    });
+
+    expect(failure).toMatchObject({
+      errorCategory: 'invalid_config',
+      errorType: 'cli_unavailable',
+    });
+    expect(aiConnectionFailureCode(failure.errorCategory, failure.errorType)).toBe(
+      'connection_failed_transport',
+    );
+
+    // Runtime wraps the 503 JSON body as ProviderBizError; the nested `code` still wins.
+    const wrapped = classifyAiConnectionFailure({
+      error: { code: 'cli_unavailable', message: 'cursor-agent missing', status: 503 },
+      errorType: 'ProviderBizError',
+      message: 'cursor-agent missing',
+      provider: 'cursor',
+    });
+    expect(wrapped).toMatchObject({
+      errorCategory: 'invalid_config',
+      errorType: 'cli_unavailable',
+    });
   });
 
   it('bounds the impersonated probe with the streaming connection-test deadline', async () => {

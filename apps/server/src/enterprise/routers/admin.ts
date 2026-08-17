@@ -22,6 +22,7 @@ import { adminAiProviderOAuthRouter } from './admin/aiProviderOAuth';
 import { adminAuditRouter } from './admin/audit';
 import { adminAuthSettingsRouter } from './admin/authSettings';
 import { adminBrandingRouter } from './admin/branding';
+import { adminBrowserProfileRouter } from './admin/browserProfile';
 import { adminConnectorsRouter } from './admin/connectors';
 import { adminContentModerationRouter } from './admin/contentModeration';
 import { adminCredsRouter } from './admin/creds';
@@ -175,6 +176,7 @@ export const adminRouter = router({
   auth: adminAuthRouter,
   authSettings: adminAuthSettingsRouter,
   branding: adminBrandingRouter,
+  browserProfile: adminBrowserProfileRouter,
   connectors: adminConnectorsRouter,
   contentModeration: adminContentModerationRouter,
   creds: adminCredsRouter,

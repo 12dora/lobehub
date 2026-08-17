@@ -5,6 +5,7 @@ import { CreateAiProviderSchema } from '../types/aiProvider';
 import {
   DEFAULT_MODEL_PROVIDER_LIST,
   getProviderOAuthGrantFlow,
+  getProviderPastedCredentialKind,
   isProviderAccessTokenPasteAllowed,
   isProviderDisableBrowserRequest,
   isProviderNativeFileInput,
@@ -120,6 +121,11 @@ describe('model provider predicates', () => {
     expect(isProviderAccessTokenPasteAllowed('not-exists')).toBe(false);
     expect(isProviderAccessTokenPasteAllowed()).toBe(false);
 
+    expect(getProviderPastedCredentialKind('paste-provider')).toBe('accessToken');
+    expect(getProviderPastedCredentialKind('oauth-provider')).toBe('accessToken');
+    expect(getProviderPastedCredentialKind('not-exists')).toBe('accessToken');
+    expect(getProviderPastedCredentialKind()).toBe('accessToken');
+
     // A paste-flow card that did not opt out of the authorization page keeps both routes.
     expect(isProviderWebSessionOnly('paste-provider')).toBe(false);
     expect(isProviderWebSessionOnly('oauth-provider')).toBe(false);
@@ -156,7 +162,7 @@ describe('model provider predicates', () => {
     expect(isProviderNativeFileInput('anthropic')).toBe(false);
   });
 
-  it('marks exactly chatgpt, chatgptweb and supergrok as rotating-refresh OAuth in the real catalog', () => {
+  it('marks exactly chatgpt, chatgptweb, cursor, grok and supergrok as rotating-refresh OAuth in the real catalog', () => {
     DEFAULT_MODEL_PROVIDER_LIST.length = 0;
     DEFAULT_MODEL_PROVIDER_LIST.push(...originalProviders);
     const personalOnly = DEFAULT_MODEL_PROVIDER_LIST.filter((provider) =>
@@ -164,7 +170,7 @@ describe('model provider predicates', () => {
     )
       .map((provider) => provider.id)
       .sort();
-    expect(personalOnly).toEqual(['chatgpt', 'chatgptweb', 'supergrok']);
+    expect(personalOnly).toEqual(['chatgpt', 'chatgptweb', 'cursor', 'grok', 'supergrok']);
     // GitHub Copilot uses a device flow but exchanges a platform-storable token.
     expect(isRotatingRefreshOAuthProvider('githubcopilot')).toBe(false);
   });
@@ -176,9 +182,14 @@ describe('model provider predicates', () => {
     expect(isProviderOAuthDeviceFlow('chatgptweb')).toBe(true);
     expect(getProviderOAuthGrantFlow('chatgptweb')).toBe('authorization_code_paste');
     expect(isProviderAccessTokenPasteAllowed('chatgptweb')).toBe(true);
+    expect(getProviderPastedCredentialKind('chatgptweb')).toBe('accessToken');
     // The Codex-backed chatgpt provider keeps its device-code grant.
     expect(getProviderOAuthGrantFlow('chatgpt')).toBe('device_code');
     expect(isProviderAccessTokenPasteAllowed('chatgpt')).toBe(false);
+    // Cursor is device-code shaped (URL + poll) and pastes a dashboard API key.
+    expect(getProviderOAuthGrantFlow('cursor')).toBe('device_code');
+    expect(isProviderAccessTokenPasteAllowed('cursor')).toBe(true);
+    expect(getProviderPastedCredentialKind('cursor')).toBe('apiKey');
   });
 
   it('connects chatgptweb through the web session alone, and nothing else', () => {

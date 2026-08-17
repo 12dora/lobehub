@@ -18,6 +18,12 @@ import {
 import type { AdminMutationDefinition } from './types';
 
 export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
+  'admin.browserProfile.regenerate': regularMutation(
+    'admin.browserProfile.regenerate',
+    'medium',
+    'Replace the installation-wide synthetic browser identity and clear tied cookie jars.',
+    { reason: optionalReasonInput },
+  ),
   'admin.contentModeration.clearDecisionCache': regularMutation(
     'admin.contentModeration.clearDecisionCache',
     'medium',

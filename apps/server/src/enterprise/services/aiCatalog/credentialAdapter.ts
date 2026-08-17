@@ -94,6 +94,19 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
     'oauthAccessToken',
   ]),
   [ModelProvider.Ollama]: new Set(['baseURL']),
+  [ModelProvider.Grok]: new Set([
+    'oauthAccessToken',
+    ...REFRESH_LIFECYCLE_KEYS,
+    'oauthRefreshToken',
+    'oauthTokenExpiresAt',
+  ]),
+  [ModelProvider.Cursor]: new Set([
+    'oauthAccessToken',
+    ...REFRESH_LIFECYCLE_KEYS,
+    'oauthRefreshToken',
+    'oauthRenewalKind',
+    'oauthTokenExpiresAt',
+  ]),
   [ModelProvider.SuperGrok]: new Set([
     'oauthAccessToken',
     ...REFRESH_LIFECYCLE_KEYS,

@@ -360,6 +360,102 @@ describe('nonStreamToStream', () => {
   });
 
   describe('transformResponseAPIToStream', () => {
+    it('emits summary-only Grok reasoning before the message in non-streaming order', async () => {
+      const reasoning = {
+        id: 'rs_grok',
+        summary: [
+          {
+            text: 'The user asked for a single-word reply.',
+            type: 'summary_text',
+          },
+        ],
+        type: 'reasoning',
+      };
+      const message = {
+        content: [{ text: 'pong', type: 'output_text' }],
+        id: 'msg_grok',
+        role: 'assistant',
+        status: 'completed',
+        type: 'message',
+      };
+      const mockResponse = {
+        created_at: 1_755_000_000,
+        id: 'resp_grok_ns',
+        model: 'grok-4.6-build',
+        object: 'response',
+        output: [reasoning, message],
+        status: 'completed',
+        usage: {
+          input_tokens: 12,
+          output_tokens: 20,
+          output_tokens_details: { reasoning_tokens: 16 },
+          total_tokens: 32,
+        },
+      } as unknown as OpenAI.Responses.Response;
+
+      const stream = transformResponseAPIToStream(mockResponse);
+      const events = [];
+      const reader = stream.getReader();
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        events.push(value);
+      }
+
+      expect(events).toEqual([
+        {
+          item: reasoning,
+          output_index: 0,
+          sequence_number: 0,
+          type: 'response.output_item.done',
+        },
+        {
+          delta: 'pong',
+          type: 'response.output_text.delta',
+        },
+        {
+          response: mockResponse,
+          sequence_number: 999,
+          type: 'response.completed',
+        },
+      ]);
+    });
+
+    it('does not emit reasoning items that have neither encrypted content nor summary text', async () => {
+      const reasoning = {
+        id: 'rs_empty',
+        summary: [{ text: '', type: 'summary_text' }],
+        type: 'reasoning',
+      };
+      const mockResponse = {
+        created_at: 1_755_000_000,
+        id: 'resp_empty_reasoning',
+        model: 'gpt-5.6-sol',
+        object: 'response',
+        output: [reasoning],
+        status: 'completed',
+      } as unknown as OpenAI.Responses.Response;
+
+      const stream = transformResponseAPIToStream(mockResponse);
+      const events = [];
+      const reader = stream.getReader();
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        events.push(value);
+      }
+
+      expect(events).toEqual([
+        {
+          response: mockResponse,
+          sequence_number: 999,
+          type: 'response.completed',
+        },
+      ]);
+    });
+
     it('should preserve encrypted reasoning in a non-streaming response', async () => {
       const reasoning = {
         encrypted_content: 'encrypted-signature',

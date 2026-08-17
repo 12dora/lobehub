@@ -694,6 +694,20 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     reason: 'Early-exit when the workflows module is disabled',
   },
   {
+    file: 'apps/server/src/modules/ModelRuntime/index.ts',
+    importSpecifier: '@/server/enterprise/services/browserProfile',
+    owner: 'D1',
+    reason:
+      'Single runtime-construction seam resolves the installation-wide synthetic browser profile before constructing ChatGPT Web; server-only, never bundled into model-runtime',
+  },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.ts',
+    importSpecifier: '@/server/enterprise/services/cursorAgent',
+    owner: 'C1',
+    reason:
+      'Single runtime-construction seam injects the Cursor Agent CLI transport (pseudo-HTTP https://cursor.local); server-only, never bundled into model-runtime',
+  },
+  {
     file: 'apps/server/src/services/oauthDeviceFlow/providers/githubCopilot.ts',
     importSpecifier: '@/server/enterprise/services/chatgptWeb/oauthService',
     owner: 'M13',

@@ -132,6 +132,9 @@ const syncCaches = () => {
   void import('../../chatgptWeb/transport/curlImpersonateFetch').then(({ evictChatGPTWebFetchExcept }) => {
     evictChatGPTWebFetchExcept(keep);
   });
+  void import('../../cursorAgent').then(({ evictCursorAgentFetchExcept }) => {
+    evictCursorAgentFetchExcept(keep);
+  });
 };
 
 let cacheInvalidationBound = false;

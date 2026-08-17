@@ -1,3 +1,4 @@
+import type { BrowserDeviceProfile } from '@lobechat/model-runtime/browserProfile';
 import { isChatGPTWebSessionToken } from '@lobechat/utils/chatgptWebPaste';
 import {
   DEFAULT_MODEL_PROVIDER_LIST,
@@ -217,12 +218,14 @@ export const auditProvider = (
 export const acquireSharedConnectionTokens = async ({
   actorUserId,
   audit,
+  browserProfile,
   card,
   input,
   targetId,
 }: {
   actorUserId: string;
   audit: PlatformAuditService;
+  browserProfile?: BrowserDeviceProfile;
   card: RotatingOAuthProviderCard;
   input: AdminAiProviderOAuthPollInput;
   targetId: string;
@@ -231,7 +234,7 @@ export const acquireSharedConnectionTokens = async ({
   | { kind: 'tokens'; tokens: SharedConnectionTokens }
 > => {
   const unfinished = { error: null, revision: null, stored: false };
-  const oauthService = getOAuthService(input.id);
+  const oauthService = getOAuthService(input.id, browserProfile ? { browserProfile } : undefined);
   let connectionTokens: SharedConnectionTokens;
 
   if (getProviderOAuthGrantFlow(input.id) === 'authorization_code_paste') {
@@ -319,7 +322,17 @@ export const acquireSharedConnectionTokens = async ({
   } else {
     let pollResult;
     try {
-      pollResult = await oauthService.pollForToken(card.config, input.deviceCode);
+      if (input.accessToken) {
+        if (!isProviderAccessTokenPasteAllowed(input.id)) {
+          return throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+            httpCode: 'PRECONDITION_FAILED',
+          });
+        }
+        pollResult = await oauthService.exchangePastedCredential(card.config, input.accessToken);
+      } else {
+        pollResult = await oauthService.pollForToken(card.config, input.deviceCode);
+      }
     } catch {
       await auditProvider(audit, {
         action: 'admin.aiProviderOAuth.pollAuthStatus',
@@ -351,6 +364,7 @@ export const acquireSharedConnectionTokens = async ({
       ...(tokens.email ? { email: tokens.email } : {}),
       ...(expiresAt ? { expiresAt } : {}),
       ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+      ...(tokens.renewalKind ? { renewalKind: tokens.renewalKind } : {}),
     };
   }
 

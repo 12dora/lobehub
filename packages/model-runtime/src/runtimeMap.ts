@@ -18,6 +18,7 @@ import { LobeCloudflareAI } from './providers/cloudflare';
 import { LobeCohereAI } from './providers/cohere';
 import { LobeCometAPIAI } from './providers/cometapi';
 import { LobeComfyUI } from './providers/comfyui';
+import { LobeCursorAI } from './providers/cursor';
 import { LobeDeepSeekAI } from './providers/deepseek';
 import { LobeFalAI } from './providers/fal';
 import { LobeFireworksAI } from './providers/fireworksai';
@@ -26,6 +27,7 @@ import { LobeGithubAI } from './providers/github';
 import { LobeGithubCopilotAI } from './providers/githubCopilot';
 import { LobeGLMCodingPlanAI } from './providers/glmCodingPlan';
 import { LobeGoogleAI } from './providers/google';
+import { LobeGrokAI } from './providers/grok';
 import { LobeGroq } from './providers/groq';
 import { LobeHigressAI } from './providers/higress';
 import { LobeHuggingFaceAI } from './providers/huggingface';
@@ -104,6 +106,7 @@ export const providerRuntimeMap = {
   cohere: LobeCohereAI,
   cometapi: LobeCometAPIAI,
   comfyui: LobeComfyUI,
+  cursor: LobeCursorAI,
   deepseek: LobeDeepSeekAI,
   fal: LobeFalAI,
   fireworksai: LobeFireworksAI,
@@ -112,6 +115,7 @@ export const providerRuntimeMap = {
   githubcopilot: LobeGithubCopilotAI,
   google: LobeGoogleAI,
   glmcodingplan: LobeGLMCodingPlanAI,
+  grok: LobeGrokAI,
   groq: LobeGroq,
   higress: LobeHigressAI,
   huggingface: LobeHuggingFaceAI,

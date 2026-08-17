@@ -16,6 +16,7 @@ import {
   type PlatformAiProviderSettings,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
+import { resolvePlatformBrowserProfile } from '@/server/modules/ModelRuntime';
 
 import {
   type adminAiProviderCreateDraftInputSchema,
@@ -717,7 +718,18 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
         source: snapshot.provider.source,
         settings: snapshot.provider.settings,
       });
+      /**
+       * Every runtime that presents an installation identity upstream gets the SAME
+       * persisted profile the chat path uses — a probe that goes out as a different
+       * device than production is not a probe of production (and for Grok a missing
+       * profile used to mean the package's constant agent id).
+       */
+      const browserProfile = await resolvePlatformBrowserProfile(
+        this.db,
+        normalized.runtimeProvider,
+      );
       return await this.connectionTests.test({
+        browserProfile,
         keyVaults: normalized.keyVaults,
         model: snapshot.model!.modelKey,
         provider: snapshot.provider,

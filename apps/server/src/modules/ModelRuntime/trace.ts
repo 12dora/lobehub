@@ -27,9 +27,7 @@ export const createTraceOptions = (
     input: messages,
     metadata: { messageLength, model, provider, systemRole, tools },
     name: tracePayload?.traceName,
-    sessionId: tracePayload?.topicId
-      ? tracePayload.topicId
-      : `${tracePayload?.sessionId || INBOX_SESSION_ID}@default`,
+    sessionId: tracePayload?.topicId || `${tracePayload?.sessionId || INBOX_SESSION_ID}@default`,
     tags: tracePayload?.tags,
     userId: tracePayload?.userId,
   });

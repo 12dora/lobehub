@@ -41,6 +41,7 @@ import {
 import { attributesCommon } from '@lobechat/observability-otel/node';
 import type {
   AiProviderRuntimeState,
+  BrowserDeviceProfile,
   ChatTopicMetadata,
   IdentityMemoryDetail,
   MemoryExtractionAgentCallTrace,
@@ -76,6 +77,9 @@ import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import {
   buildPayloadFromKeyVaults,
   initModelRuntimeWithUserPayload,
+  resolveModelRuntimeProvider,
+  resolvePlatformBrowserProfile,
+  runtimePresentsInstallationIdentity,
 } from '@/server/modules/ModelRuntime';
 import {
   assertPlatformPublishedModel,
@@ -266,6 +270,15 @@ export type ProviderKeyVaultMap = Record<
   AiProviderRuntimeState['runtimeConfig'][string]['keyVaults'] | undefined
 >;
 
+/**
+ * Runtime provider (`settings.sdkType`, resolved) per catalog provider id, carried BESIDE
+ * the vaults: the unmanaged path only ever receives this map, and a custom provider whose
+ * sdkType is grok / cursor / chatgpt-web must still go through the installation-identity
+ * seam even though its catalog id is arbitrary. Non-enumerable, so the candidate order
+ * (`Object.keys(keyVaults)`) is unchanged.
+ */
+const RUNTIME_PROVIDERS = Symbol('providerRuntimeProviders');
+
 const MANAGED_EXECUTIONS = Symbol('platformManagedAiExecutions');
 /** Exact provider selected per runtime role — never re-search a shared execution map. */
 const MANAGED_ROLE_BINDINGS = Symbol('platformManagedRoleBindings');
@@ -279,7 +292,38 @@ type ManagedRoleBindings = {
 type ManagedProviderKeyVaultMap = ProviderKeyVaultMap & {
   [MANAGED_EXECUTIONS]?: Record<string, PlatformAiExecutionConfig>;
   [MANAGED_ROLE_BINDINGS]?: ManagedRoleBindings;
+  [RUNTIME_PROVIDERS]?: Record<string, string>;
 };
+
+/**
+ * Attach the runtime provider of every provider the caller has already loaded. Callers own
+ * the provider rows (`runtimeConfig`), the memory/persona resolver does not — this is the
+ * only channel it has.
+ */
+export const withProviderRuntimeProviders = <T extends ProviderKeyVaultMap>(
+  keyVaults: T,
+  runtimeConfig: Record<string, { settings?: { sdkType?: string } } | undefined>,
+): T => {
+  const runtimeProviders: Record<string, string> = {};
+  for (const [providerId, config] of Object.entries(runtimeConfig || {})) {
+    const normalized = normalizeProvider(providerId);
+    runtimeProviders[normalized] = resolveModelRuntimeProvider(
+      normalized,
+      config?.settings?.sdkType,
+    );
+  }
+  Object.defineProperty(keyVaults, RUNTIME_PROVIDERS, {
+    configurable: true,
+    value: runtimeProviders,
+  });
+
+  return keyVaults;
+};
+
+/** The runtime provider a catalog provider id resolves to; the id itself when unknown. */
+const readRuntimeProvider = (keyVaults: ProviderKeyVaultMap | undefined, provider: string) =>
+  (keyVaults as ManagedProviderKeyVaultMap | undefined)?.[RUNTIME_PROVIDERS]?.[provider] ??
+  provider;
 
 const toDefinedKeyVaults = (
   keyVaults: Record<string, Record<string, string> | string | undefined>,
@@ -520,10 +564,23 @@ const maskSecret = (value?: string) => {
 export type ProviderCredential = { apiKey?: string; baseURL?: string };
 
 export type RuntimeResolveOptions = {
+  /**
+   * Installation-wide browser device profile of the MANAGED execution, resolved by the
+   * caller. Required by a managed execution whose runtime presents a browser identity
+   * upstream (ChatGPT Web), ignored by every other provider.
+   */
+  browserProfile?: BrowserDeviceProfile;
   fallback?: ProviderCredential;
   preferred?: {
     providerIds?: string[];
   };
+  /**
+   * Resolve the installation profile for an UNMANAGED (user vault / system config)
+   * selection, whose provider is only known while walking the candidate list. Required
+   * before such a selection may land on a provider that presents an installation
+   * identity; every other provider never calls it.
+   */
+  resolveBrowserProfile?: (runtimeProvider: string) => Promise<BrowserDeviceProfile | undefined>;
   /**
    * Exact platform execution for this agent role. When set, the runtime is bound to this
    * provider only — never the first hit from a shared multi-role execution map.
@@ -532,7 +589,52 @@ export type RuntimeResolveOptions = {
   userId?: string;
 };
 
-export const resolveRuntimeAgentConfig = (
+/**
+ * Build an unmanaged (user-vault or system-config) memory/persona runtime.
+ *
+ * ChatGPT Web, Grok and Cursor derive their whole upstream identity from the persisted
+ * installation profile, so they may NEVER be constructed straight through
+ * `ModelRuntime.initializeWithProvider`: that bypasses the server seam and would either
+ * present the bundled fallback device or fail on the first request with a bare runtime
+ * error. They go through the seam with the resolved profile; every other provider keeps
+ * the original construction byte for byte.
+ */
+const initUnmanagedMemoryRuntime = async (
+  provider: string,
+  credential: ProviderCredential,
+  options?: RuntimeResolveOptions,
+  /**
+   * The RUNTIME provider (`settings.sdkType`) — equal to the catalog id for builtin
+   * providers, and the reason a user's custom provider backed by grok / cursor /
+   * chatgpt-web is still recognised here.
+   */
+  runtimeProvider: string = provider,
+): Promise<ModelRuntime> => {
+  if (!runtimePresentsInstallationIdentity(runtimeProvider))
+    return ModelRuntime.initializeWithProvider(provider, {
+      apiKey: credential.apiKey,
+      baseURL: credential.baseURL,
+      userId: options?.userId,
+    });
+
+  if (!options?.resolveBrowserProfile)
+    throw new Error(
+      `Memory agent provider "${provider}" needs the installation browser profile; select another provider for this agent or run it through a platform-managed provider.`,
+    );
+
+  return initModelRuntimeWithUserPayload(
+    // Catalog id stays the caller-facing provider (scoping, egress, hooks); the payload
+    // carries the runtime provider so the correct SDK is constructed for a custom row.
+    provider,
+    { apiKey: credential.apiKey, baseURL: credential.baseURL, runtimeProvider },
+    {
+      browserProfile: await options.resolveBrowserProfile(runtimeProvider),
+      userId: options.userId,
+    },
+  );
+};
+
+export const resolveRuntimeAgentConfig = async (
   agent: MemoryAgentConfig,
   keyVaults?: ProviderKeyVaultMap,
   options?: RuntimeResolveOptions,
@@ -556,7 +658,7 @@ export const resolveRuntimeAgentConfig = (
     return initModelRuntimeWithUserPayload(
       execution.providerKey,
       payload,
-      { userId: options.userId },
+      { browserProfile: options.browserProfile, userId: options.userId },
       mergeModelRuntimeHooks(createPlatformAiModelAllowlistHooks(execution.allowedModels), hooks),
     );
   }
@@ -590,11 +692,12 @@ export const resolveRuntimeAgentConfig = (
 
     // Only use the user baseURL if we are also using their API key; otherwise fall back entirely
     // to system config to avoid mixing credentials.
-    return ModelRuntime.initializeWithProvider(provider, {
-      apiKey: userApiKey,
-      baseURL: userBaseURL,
-      userId: options?.userId,
-    });
+    return initUnmanagedMemoryRuntime(
+      provider,
+      { apiKey: userApiKey, baseURL: userBaseURL },
+      options,
+      readRuntimeProvider(keyVaults, provider),
+    );
   }
 
   debugRuntimeInit(agent, {
@@ -604,11 +707,17 @@ export const resolveRuntimeAgentConfig = (
     source: 'system-config' as const,
   });
 
-  return ModelRuntime.initializeWithProvider(agent.provider || 'openai', {
-    apiKey: agent.apiKey || options?.fallback?.apiKey,
-    baseURL: agent.baseURL || options?.fallback?.baseURL,
-    userId: options?.userId,
-  });
+  const fallbackProvider = agent.provider || 'openai';
+
+  return initUnmanagedMemoryRuntime(
+    fallbackProvider,
+    {
+      apiKey: agent.apiKey || options?.fallback?.apiKey,
+      baseURL: agent.baseURL || options?.fallback?.baseURL,
+    },
+    options,
+    readRuntimeProvider(keyVaults, normalizeProvider(fallbackProvider)),
+  );
 };
 
 const logRuntime = debug('lobe-server:memory:user-memory:runtime');
@@ -2537,6 +2646,9 @@ export class MemoryExtractionExecutor {
       const runtime = normalizedRuntimeConfig[providerId];
       if (runtime?.keyVaults) keyVaults[providerId] = runtime.keyVaults;
     }
+    // The unmanaged path receives nothing but this map, and it must predicate on the
+    // RUNTIME provider (a custom row backed by grok/cursor still needs the identity seam).
+    withProviderRuntimeProviders(keyVaults, normalizedRuntimeConfig);
 
     if (platformOwned.size === 0) return keyVaults;
 
@@ -2612,7 +2724,21 @@ export class MemoryExtractionExecutor {
       return execution;
     };
 
+    const browserProfileFor = async (execution?: PlatformAiExecutionConfig) =>
+      execution
+        ? resolvePlatformBrowserProfile(await this.db, execution.runtimeProvider)
+        : undefined;
+    // Unmanaged selections only learn their provider while walking the candidate list,
+    // so they resolve the profile lazily — no query unless the selection lands on a
+    // provider that presents an installation identity.
+    const resolveBrowserProfile = async (runtimeProvider: string) =>
+      resolvePlatformBrowserProfile(await this.db, runtimeProvider);
+    const embeddingExecution = executionFor('embedding');
+    const gatekeeperExecution = executionFor('gatekeeper');
+    const layerExtractorExecution = executionFor('layerExtractor');
+
     const embeddingOptions: RuntimeResolveOptions = {
+      browserProfile: await browserProfileFor(embeddingExecution),
       fallback: {
         apiKey: memoryServiceConfig.agents.embedding.apiKey,
         baseURL: memoryServiceConfig.agents.embedding.baseURL,
@@ -2622,11 +2748,13 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.embeddingPreferredProviders,
       },
-      managedExecution: executionFor('embedding'),
+      managedExecution: embeddingExecution,
+      resolveBrowserProfile,
       userId,
     };
 
     const gatekeeperOptions: RuntimeResolveOptions = {
+      browserProfile: await browserProfileFor(gatekeeperExecution),
       fallback: {
         apiKey: memoryServiceConfig.agents.gatekeeper.apiKey,
         baseURL: memoryServiceConfig.agents.gatekeeper.baseURL,
@@ -2636,11 +2764,13 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.gatekeeperPreferredProviders,
       },
-      managedExecution: executionFor('gatekeeper'),
+      managedExecution: gatekeeperExecution,
+      resolveBrowserProfile,
       userId,
     };
 
     const layerExtractorOptions: RuntimeResolveOptions = {
+      browserProfile: await browserProfileFor(layerExtractorExecution),
       fallback: {
         apiKey: memoryServiceConfig.agents.layerExtractor.apiKey,
         baseURL: memoryServiceConfig.agents.layerExtractor.baseURL,
@@ -2650,7 +2780,8 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.layerPreferredProviders,
       },
-      managedExecution: executionFor('layerExtractor'),
+      managedExecution: layerExtractorExecution,
+      resolveBrowserProfile,
       userId,
     };
 

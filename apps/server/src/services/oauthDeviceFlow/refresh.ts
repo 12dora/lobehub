@@ -1,4 +1,5 @@
 import { AgentRuntimeError } from '@lobechat/model-runtime';
+import type { BrowserDeviceProfile } from '@lobechat/model-runtime/browserProfile';
 import { AgentRuntimeErrorType } from '@lobechat/types';
 import debug from 'debug';
 
@@ -103,6 +104,7 @@ export interface OAuthTokenStore {
 }
 
 interface EnsureFreshOAuthTokenParams {
+  browserProfile?: BrowserDeviceProfile;
   config: OAuthDeviceFlowConfig;
   db: LobeChatDatabase;
   keyVaults: OAuthTokenKeyVaults;
@@ -112,6 +114,8 @@ interface EnsureFreshOAuthTokenParams {
 }
 
 export interface EnsureFreshOAuthTokenWithStoreParams {
+  /** Shared installation profile for browser-impersonating OAuth providers. */
+  browserProfile?: BrowserDeviceProfile;
   config: OAuthDeviceFlowConfig;
   /** In-process single-flight key; concurrent callers with the same key share one refresh. */
   flightKey: string;
@@ -456,7 +460,10 @@ const refreshAndPersist = async (
    * the only path that ever refreshes. Providers without an override get the base service,
    * exactly as before.
    */
-  const service = getOAuthService(providerId);
+  const service = getOAuthService(
+    providerId,
+    params.browserProfile ? { browserProfile: params.browserProfile } : undefined,
+  );
   const usedRefreshToken = keyVaults.oauthRefreshToken!;
   const invalidGrant = params.onInvalidGrant ?? throwInvalidGrant;
   /**
@@ -624,9 +631,10 @@ export const ensureFreshOAuthTokenWithStore = async (
 export const ensureFreshOAuthToken = async (
   params: EnsureFreshOAuthTokenParams,
 ): Promise<OAuthTokenKeyVaults> => {
-  const { config, db, keyVaults, providerId, userId, workspaceId } = params;
+  const { browserProfile, config, db, keyVaults, providerId, userId, workspaceId } = params;
 
   return ensureFreshOAuthTokenWithStore({
+    browserProfile,
     config,
     flightKey: `${userId}:${workspaceId ?? ''}:${providerId}`,
     keyVaults,

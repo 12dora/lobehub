@@ -2,8 +2,18 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 import type { AdminProcedureAuthorization } from './types';
 
-/** Authorization declarations for admin.branding/contentModeration/managedResources/security/settings/sidebarLayout/stats/system procedures. */
+/** Authorization declarations for admin.browserProfile/branding/contentModeration/managedResources/security/settings/sidebarLayout/stats/system procedures. */
 export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
+  {
+    kind: 'query',
+    path: 'admin.browserProfile.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.browserProfile.regenerate',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
   {
     kind: 'query',
     path: 'admin.branding.get',

@@ -1,4 +1,8 @@
 // @vitest-environment node
+import {
+  DEFAULT_BROWSER_DEVICE_PROFILE,
+  generateBrowserDeviceProfile,
+} from '@lobechat/model-runtime/browserProfile';
 import { AgentRuntimeErrorType } from '@lobechat/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -471,9 +475,9 @@ describe('ensureFreshOAuthToken (chatgptweb override)', () => {
 
     const [url, init] = mockFetch.mock.calls[0];
     expect(url).toBe(chatgptWebConfig.tokenEndpoint);
-    expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
+    expect(init.headers['content-type']).toBe('application/x-www-form-urlencoded');
     // The base service sends no UA at all — its presence IS the proof of the override.
-    expect(init.headers['User-Agent']).toContain('Chrome/136');
+    expect(init.headers['user-agent']).toContain('Chrome/150');
     expect(init.body).toContain('grant_type=refresh_token');
     expect(init.body).toContain('refresh_token=rt-old');
     // Bounded below the shared refresh lease.
@@ -492,6 +496,34 @@ describe('ensureFreshOAuthToken (chatgptweb override)', () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  /**
+   * The refresh path is one of the async seams that must hand the PERSISTED installation
+   * identity down: refreshing behind a different User-Agent than the one that minted the
+   * session is exactly the mismatch the shared profile exists to prevent.
+   */
+  it('presents the persisted browser profile, not the bundled fallback', async () => {
+    mockUpdateConfig.mockResolvedValue(undefined);
+    mockFetch.mockResolvedValueOnce(
+      tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+    );
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'refresh-seam-installation' });
+    expect(browserProfile.userAgent).not.toBe(DEFAULT_BROWSER_DEVICE_PROFILE.userAgent);
+
+    await ensureFreshOAuthToken({
+      browserProfile,
+      config: chatgptWebConfig as any,
+      db,
+      keyVaults: expiringVault(),
+      providerId: 'chatgptweb',
+      userId: `user-${++userSeq}`,
+    });
+
+    const [, init] = mockFetch.mock.calls[0];
+    expect(init.headers['user-agent']).toBe(browserProfile.userAgent);
+    expect(init.headers['sec-ch-ua']).toBe(browserProfile.secChUa);
+    expect(init.headers['accept-language']).toBe(browserProfile.acceptLanguage);
   });
 
   it('never echoes the provider error_description into the surfaced error', async () => {
@@ -787,6 +819,44 @@ describe('ensureFreshOAuthToken (chatgptweb override)', () => {
       expect(mockTransportFetch).not.toHaveBeenCalled();
       expect(mockFetch.mock.calls[0][0]).toBe(chatgptWebConfig.tokenEndpoint);
     });
+  });
+});
+
+describe('ensureFreshOAuthToken (cursor api-key refresh)', () => {
+  const cursorConfig = {
+    clientId: 'cursor-cli',
+    deviceCodeEndpoint: 'https://cursor.com/loginDeepControl',
+    refreshTokenGrant: true,
+    scopes: [],
+    tokenEndpoint: 'https://api2.cursor.sh/auth/poll',
+    tokenExchangeEndpoint: 'https://api2.cursor.sh/auth/exchange_user_api_key',
+  };
+
+  const expiringApiKeyVault = () => ({
+    oauthAccessToken: 'at-old',
+    oauthRefreshToken: 'key_live_abc',
+    oauthRenewalKind: 'cursor_api_key',
+    oauthTokenExpiresAt: String(Date.now() - 1000),
+  });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('maps a rejected cursor_api_key exchange onto the reconnect-required reauth marker', async () => {
+    const vault = expiringApiKeyVault();
+    mockFetch.mockResolvedValue(tokenResponse({ error: 'invalid_api_key' }, false));
+    mockGetAiProviderById.mockResolvedValue({ keyVaults: vault });
+
+    await expect(
+      ensureFreshOAuthToken({
+        config: cursorConfig as any,
+        db,
+        keyVaults: vault,
+        providerId: 'cursor',
+        userId: `user-${++userSeq}`,
+      }),
+    ).rejects.toMatchObject({ errorType: AgentRuntimeErrorType.OAuthAuthorizationExpired });
   });
 });
 

@@ -19,11 +19,13 @@ import {
   chatgptWebSessionTokenSchema,
 } from '@/server/enterprise/contracts/aiProviderOAuth';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
+import { PlatformBrowserProfileService } from '@/server/enterprise/services/browserProfile';
 import {
   type ChatGPTWebConnection,
   ChatGPTWebOAuthError,
   ChatGPTWebOAuthService,
   parsePasteEnvelope,
+  wipeChatGPTWebCookieJar,
 } from '@/server/enterprise/services/chatgptWeb/oauthService';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import {
@@ -112,6 +114,27 @@ const connectionKeyVaults = (connection: ChatGPTWebConnection) => ({
   oauthTokenExpiresAt: connection.expiresAt ? String(connection.expiresAt) : undefined,
 });
 
+const genericOAuthKeyVaults = (tokens: {
+  accessToken: string;
+  accountId?: string;
+  expiresIn?: number;
+  refreshToken?: string;
+  renewalKind?: OAuthRenewalKind;
+}) => {
+  const expiresAt = tokens.expiresIn
+    ? Date.now() + tokens.expiresIn * 1000
+    : parseJwtExpiry(tokens.accessToken);
+  return {
+    oauthAccountId: tokens.accountId,
+    oauthAccessToken: tokens.accessToken,
+    oauthLastRefreshAt: String(Date.now()),
+    oauthLastRefreshErrorAt: undefined,
+    oauthRefreshToken: tokens.refreshToken,
+    oauthRenewalKind: tokens.refreshToken ? tokens.renewalKind : undefined,
+    oauthTokenExpiresAt: expiresAt ? String(expiresAt) : undefined,
+  };
+};
+
 export const oauthDeviceFlowRouter = router({
   /**
    * Get current OAuth authentication status for a provider
@@ -166,7 +189,7 @@ export const oauthDeviceFlowRouter = router({
   initiateDeviceCode: oauthWriteProcedure
     .use(withManagedResourceGuard('oauthDeviceFlow.initiateDeviceCode'))
     .input(z.object({ providerId: z.string() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const config = getOAuthConfig(input.providerId);
 
       if (!config) {
@@ -176,7 +199,13 @@ export const oauthDeviceFlowRouter = router({
         });
       }
 
-      const service = getOAuthService(input.providerId);
+      const browserProfile = isPasteFlow(input.providerId)
+        ? await new PlatformBrowserProfileService(ctx.serverDB).getOrFallback()
+        : undefined;
+      const service = getOAuthService(
+        input.providerId,
+        browserProfile ? { browserProfile } : undefined,
+      );
       const deviceCodeResponse = await service.initiateDeviceCode(config);
 
       return {
@@ -234,7 +263,13 @@ export const oauthDeviceFlowRouter = router({
         });
       }
 
-      const service = getOAuthService(input.providerId);
+      const browserProfile = isPasteFlow(input.providerId)
+        ? await new PlatformBrowserProfileService(ctx.serverDB).getOrFallback()
+        : undefined;
+      const service = getOAuthService(
+        input.providerId,
+        browserProfile ? { browserProfile } : undefined,
+      );
 
       if (isPasteFlow(input.providerId)) {
         if (!(service instanceof ChatGPTWebOAuthService)) {
@@ -353,30 +388,35 @@ export const oauthDeviceFlowRouter = router({
         }
       }
 
-      // Generic OAuth flow
+      // Generic OAuth flow (device_code). Providers that also accept a pasted
+      // credential (Cursor API key) exchange it here — the paste-flow branch
+      // above is authorization-code only.
+      if (input.accessToken) {
+        if (!isProviderAccessTokenPasteAllowed(input.providerId)) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Provider ${input.providerId} does not accept a pasted credential`,
+          });
+        }
+
+        const pollResult = await service.exchangePastedCredential(config, input.accessToken);
+        if (pollResult.status === 'success' && pollResult.tokens) {
+          await ctx.aiProviderModel.updateConfig(
+            input.providerId,
+            { keyVaults: genericOAuthKeyVaults(pollResult.tokens) },
+            ctx.gateKeeper.encrypt,
+            KeyVaultsGateKeeper.getUserKeyVaults,
+          );
+        }
+        return { status: pollResult.status };
+      }
+
       const pollResult = await service.pollForToken(config, input.deviceCode);
 
       if (pollResult.status === 'success' && pollResult.tokens) {
-        // Expiry: prefer the explicit expires_in, fall back to the JWT exp
-        // claim — some providers (e.g. xAI) don't always return expires_in.
-        const expiresAt = pollResult.tokens.expiresIn
-          ? Date.now() + pollResult.tokens.expiresIn * 1000
-          : parseJwtExpiry(pollResult.tokens.accessToken);
-
-        // Save tokens to keyVaults
         await ctx.aiProviderModel.updateConfig(
           input.providerId,
-          {
-            keyVaults: {
-              oauthAccountId: pollResult.tokens.accountId,
-              oauthAccessToken: pollResult.tokens.accessToken,
-              // Keepalive anchor / backoff reset — see `connectionKeyVaults`.
-              oauthLastRefreshAt: String(Date.now()),
-              oauthLastRefreshErrorAt: undefined,
-              oauthRefreshToken: pollResult.tokens.refreshToken,
-              oauthTokenExpiresAt: expiresAt ? String(expiresAt) : undefined,
-            },
-          },
+          { keyVaults: genericOAuthKeyVaults(pollResult.tokens) },
           ctx.gateKeeper.encrypt,
           KeyVaultsGateKeeper.getUserKeyVaults,
         );
@@ -392,6 +432,20 @@ export const oauthDeviceFlowRouter = router({
     .use(withManagedResourceGuard('oauthDeviceFlow.revokeAuth'))
     .input(z.object({ providerId: z.string() }))
     .mutation(async ({ input, ctx }) => {
+      if (input.providerId === 'chatgptweb') {
+        try {
+          const providerDetail = await ctx.aiProviderModel.getAiProviderById(
+            input.providerId,
+            KeyVaultsGateKeeper.getUserKeyVaults,
+          );
+          const deviceId = (providerDetail?.keyVaults as Record<string, unknown> | undefined)
+            ?.oauthDeviceId;
+          wipeChatGPTWebCookieJar(typeof deviceId === 'string' ? deviceId : undefined);
+        } catch {
+          // Best-effort: a missing jar or a vault read error must not block revoke.
+        }
+      }
+
       // Clear OAuth tokens and user info from keyVaults
       await ctx.aiProviderModel.updateConfig(
         input.providerId,

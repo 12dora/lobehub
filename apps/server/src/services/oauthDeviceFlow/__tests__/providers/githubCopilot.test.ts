@@ -255,6 +255,8 @@ describe('getOAuthService', () => {
     expect(typeof service.verifyAccessToken).toBe('function');
     // The device-code providers must keep their own services.
     expect(getOAuthService('supergrok').constructor.name).toBe('OAuthDeviceFlowService');
+    expect(getOAuthService('grok').constructor.name).toBe('OAuthDeviceFlowService');
+    expect(getOAuthService('cursor').constructor.name).toBe('CursorOAuthService');
     expect(getOAuthService('chatgpt').constructor.name).toBe('ChatGPTOAuthService');
   });
 });

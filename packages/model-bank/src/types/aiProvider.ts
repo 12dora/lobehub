@@ -76,6 +76,14 @@ export interface OAuthDeviceFlowConfig {
    */
   grantFlow?: 'device_code' | 'authorization_code_paste';
   /**
+   * What the pasted-credential field actually holds when `allowAccessTokenPaste` is on.
+   * - `accessToken`: a ready-to-use bearer (ChatGPT Web's fallback).
+   * - `apiKey`: a dashboard API key that the server must exchange before storing
+   *   (`oauthAccessToken` / `oauthRefreshToken`). Defaults to `accessToken` when omitted
+   *   so existing paste-flow cards keep their wording.
+   */
+  pastedCredentialKind?: 'accessToken' | 'apiKey';
+  /**
    * How long BEFORE the access token expires the server starts refreshing it.
    *
    * Defaults to 2 minutes, which is the right budget for a provider that hands out
@@ -361,6 +369,7 @@ const OAuthDeviceFlowConfigSchema = z
     defaultPollingInterval: z.number().optional(),
     deviceCodeEndpoint: z.string(),
     grantFlow: z.enum(['device_code', 'authorization_code_paste']).optional(),
+    pastedCredentialKind: z.enum(['accessToken', 'apiKey']).optional(),
     /**
      * Proactive-refresh window in milliseconds. Integer and non-negative — `.int()` also
      * rejects `NaN`/`Infinity`, which would otherwise poison every expiry comparison.

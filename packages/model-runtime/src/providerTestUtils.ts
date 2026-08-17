@@ -14,6 +14,11 @@ interface TesstProviderParams {
   provider: string;
   responseDebugEnv?: string;
   Runtime: any;
+  /**
+   * Extra constructor options every instance in this shared suite is built with —
+   * for a runtime that refuses to work without them (e.g. Grok's installation id).
+   */
+  runtimeParams?: Record<string, unknown>;
   test?: {
     skipAPICall?: boolean;
     skipErrorHandle?: boolean;
@@ -30,6 +35,7 @@ export const testProvider = ({
   chatDebugEnv,
   responseDebugEnv,
   chatModel,
+  runtimeParams = {},
   test = {},
 }: TesstProviderParams) => {
   // Mock the console.error to avoid polluting test output
@@ -38,7 +44,7 @@ export const testProvider = ({
   let instance: LobeOpenAICompatibleRuntime;
 
   beforeEach(() => {
-    instance = new Runtime({ apiKey: 'test' });
+    instance = new Runtime({ ...runtimeParams, apiKey: 'test' });
 
     // Use vi.spyOn to mock the chat.completions.create method or responses.create method
     vi.spyOn(instance['client'].chat.completions, 'create').mockResolvedValue(
@@ -54,7 +60,7 @@ export const testProvider = ({
   describe(`${provider} Runtime`, () => {
     describe('init', () => {
       it('should correctly initialize with an API key', async () => {
-        const instance = new Runtime({ apiKey: 'test_api_key' });
+        const instance = new Runtime({ ...runtimeParams, apiKey: 'test_api_key' });
         expect(instance).toBeInstanceOf(Runtime);
         expect(instance.baseURL).toEqual(defaultBaseURL);
       });
@@ -219,6 +225,7 @@ export const testProvider = ({
             const apiError = new OpenAI.APIError(400, errorInfo, 'module error', new Headers());
 
             instance = new Runtime({
+              ...runtimeParams,
               apiKey: 'test',
               baseURL: 'https://api.abc.com/v1',
             });

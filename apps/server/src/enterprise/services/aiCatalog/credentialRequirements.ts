@@ -78,12 +78,16 @@ const requireGithubCopilot = (keyVaults: AiCatalogCredentialVault): void => {
   }
 };
 
-const requireSuperGrok = (keyVaults: AiCatalogCredentialVault): void => {
-  // Shared platform OAuth connection: rotating refresh token.
-  if (!hasText(keyVaults.oauthAccessToken) || !hasText(keyVaults.oauthRefreshToken)) {
-    throw new AiCatalogValidationError(['SuperGrok shared OAuth connection is incomplete']);
-  }
-};
+const requireSharedOAuth =
+  (displayName: string) =>
+  (keyVaults: AiCatalogCredentialVault): void => {
+    // Shared platform OAuth connection: rotating refresh token.
+    if (!hasText(keyVaults.oauthAccessToken) || !hasText(keyVaults.oauthRefreshToken)) {
+      throw new AiCatalogValidationError([`${displayName} shared OAuth connection is incomplete`]);
+    }
+  };
+
+const requireSuperGrok = requireSharedOAuth('SuperGrok');
 
 const requireVertexAI = (keyVaults: AiCatalogCredentialVault): void => {
   if (!hasText(keyVaults.apiKey)) {
@@ -120,6 +124,8 @@ export const REQUIRED_CREDENTIALS: Partial<Record<string, (kv: AiCatalogCredenti
     [ModelProvider.ChatGPT]: requireChatGPT,
     [ModelProvider.ChatGPTWeb]: requireChatGPTWeb,
     [ModelProvider.GithubCopilot]: requireGithubCopilot,
+    [ModelProvider.Grok]: requireSharedOAuth('Grok'),
+    [ModelProvider.Cursor]: requireSharedOAuth('Cursor'),
     [ModelProvider.SuperGrok]: requireSuperGrok,
     [ModelProvider.VertexAI]: requireVertexAI,
   };

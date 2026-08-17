@@ -87,6 +87,9 @@ vi.mock('@lobechat/memory-user-memory', () => ({
 
 vi.mock('@/server/services/memory/userMemory/extract', () => ({
   resolveRuntimeAgentConfig: vi.fn().mockResolvedValue({}),
+  // Side channel that tells the resolver each row's runtime provider; what it carries is
+  // asserted in extract's own suite, here it only has to stay transparent.
+  withProviderRuntimeProviders: vi.fn((keyVaults: unknown) => keyVaults),
 }));
 
 let db: LobeChatDatabase;

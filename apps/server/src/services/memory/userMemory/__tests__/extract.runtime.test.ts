@@ -1,7 +1,8 @@
 import { ModelRuntime } from '@lobechat/model-runtime';
+import { generateBrowserDeviceProfile } from '@lobechat/model-runtime/browserProfile';
 import { type AiProviderRuntimeState } from '@lobechat/types';
 import { type EnabledAiModel } from 'model-bank';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
@@ -10,7 +11,12 @@ import { type MemoryExtractionPrivateConfig } from '@/server/globalConfig/parseM
 import * as ModelRuntimeModule from '@/server/modules/ModelRuntime';
 import type * as PlatformAiRuntimeBridge from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
-import { makeTaskErrorItem, MemoryExtractionExecutor, resolveRuntimeAgentConfig } from '../extract';
+import {
+  makeTaskErrorItem,
+  MemoryExtractionExecutor,
+  resolveRuntimeAgentConfig,
+  withProviderRuntimeProviders,
+} from '../extract';
 
 /** Providers the platform does NOT publish as enabled — i.e. the caller's own (BYOK). */
 const userOnlyProviders = vi.hoisted(() => new Set<string>());
@@ -103,9 +109,126 @@ const resolveRuntimeKeyVaults = async (
   return (executor as any).resolveRuntimeKeyVaults(runtimeState, memoryServiceConfig);
 };
 
+describe('resolveRuntimeAgentConfig installation identity', () => {
+  const grokProfile = generateBrowserDeviceProfile({ seed: 'memory-grok-profile' });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The unmanaged path used to construct the provider SDK directly, which for Grok means
+   * no installation id at all — the request would either present the bundled fallback
+   * device or fail on the wire.
+   */
+  it('routes a Grok selection through the server seam with the installation profile', async () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const resolveBrowserProfile = vi.fn().mockResolvedValue(grokProfile);
+
+    await resolveRuntimeAgentConfig(
+      { model: 'grok-4.6', provider: 'grok' },
+      { grok: { apiKey: 'grok-user-key' } },
+      { resolveBrowserProfile, userId: 'memory-user' },
+    );
+
+    expect(resolveBrowserProfile).toHaveBeenCalledWith('grok');
+    expect(spy.mock.calls[0][1] as Record<string, unknown>).toMatchObject({
+      apiKey: 'grok-user-key',
+      installationId: grokProfile.installationId,
+    });
+    // Memory extraction is a one-off operation, never the user's chat conversation.
+    expect((spy.mock.calls[0][1] as Record<string, unknown>).conversationKey).toMatch(
+      /^user:memory-user:op:/,
+    );
+  });
+
+  it('refuses such a selection with an actionable error when no profile can be resolved', async () => {
+    await expect(
+      resolveRuntimeAgentConfig(
+        { model: 'grok-4.6', provider: 'grok' },
+        { grok: { apiKey: 'grok-user-key' } },
+        { userId: 'memory-user' },
+      ),
+    ).rejects.toThrow(/installation browser profile/);
+  });
+
+  /**
+   * A user's own provider row can be backed by the Grok SDK under any catalog id. The
+   * predicate must run on the RUNTIME provider, otherwise this selection skips the seam and
+   * is built without an installation identity at all.
+   */
+  it('routes a custom provider whose sdkType is grok through the seam as well', async () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const resolveBrowserProfile = vi.fn().mockResolvedValue(grokProfile);
+
+    await resolveRuntimeAgentConfig(
+      { model: 'grok-4.6', provider: 'my-grok' },
+      withProviderRuntimeProviders(
+        { 'my-grok': { apiKey: 'custom-grok-key' } },
+        { 'my-grok': { settings: { sdkType: 'grok' } } },
+      ),
+      { resolveBrowserProfile, userId: 'memory-user' },
+    );
+
+    expect(resolveBrowserProfile).toHaveBeenCalledWith('grok');
+    // The Grok SDK is constructed, not an OpenAI-compatible client under the custom id.
+    expect(spy.mock.calls[0][0]).toBe('grok');
+    expect(spy.mock.calls[0][1] as Record<string, unknown>).toMatchObject({
+      apiKey: 'custom-grok-key',
+      installationId: grokProfile.installationId,
+    });
+  });
+
+  it('leaves a custom provider with an ordinary sdkType on the direct construction', async () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const resolveBrowserProfile = vi.fn();
+
+    await resolveRuntimeAgentConfig(
+      { model: 'gpt-4o-mini', provider: 'my-gateway' },
+      withProviderRuntimeProviders(
+        { 'my-gateway': { apiKey: 'gateway-key' } },
+        { 'my-gateway': { settings: { sdkType: 'openai' } } },
+      ),
+      { resolveBrowserProfile, userId: 'memory-user' },
+    );
+
+    expect(resolveBrowserProfile).not.toHaveBeenCalled();
+    expect(spy).toHaveBeenCalledWith('my-gateway', {
+      apiKey: 'gateway-key',
+      userId: 'memory-user',
+    });
+  });
+
+  it('leaves an ordinary provider on the untouched direct construction', async () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const resolveBrowserProfile = vi.fn();
+
+    await resolveRuntimeAgentConfig(
+      { model: 'gpt-4o-mini', provider: 'openai' },
+      { openai: { apiKey: 'openai-user-key', baseURL: 'https://proxy.example' } },
+      { resolveBrowserProfile, userId: 'memory-user' },
+    );
+
+    expect(resolveBrowserProfile).not.toHaveBeenCalled();
+    expect(spy).toHaveBeenCalledWith('openai', {
+      apiKey: 'openai-user-key',
+      baseURL: 'https://proxy.example',
+      userId: 'memory-user',
+    });
+  });
+});
+
 describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
   it('blocks unpublished managed memory models before the provider SDK', async () => {
-    const runtime = resolveRuntimeAgentConfig(
+    const runtime = await resolveRuntimeAgentConfig(
       { model: 'allow-memory', provider: 'openai' },
       { openai: { apiKey: 'platform-memory-secret' } },
       {

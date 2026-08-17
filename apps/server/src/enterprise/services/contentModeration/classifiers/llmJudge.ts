@@ -8,6 +8,7 @@ import {
   buildPayloadFromKeyVaults,
   createManagedRequestModeHooks,
   initModelRuntimeWithUserPayload,
+  resolvePlatformBrowserProfile,
 } from '@/server/modules/ModelRuntime';
 import {
   createPlatformAiAuthFailureHooks,
@@ -165,10 +166,13 @@ const defaultRuntimeFactory =
         ),
       ),
     );
+    // Browser-identity runtimes (ChatGPT Web) must present the installation's persisted
+    // device here too, or the judge would open a second device on the same account.
+    const browserProfile = await resolvePlatformBrowserProfile(db, execution.runtimeProvider);
     return initModelRuntimeWithUserPayload(
       provider,
       secretPayload,
-      { userId: JUDGE_USER_ID },
+      { browserProfile, userId: JUDGE_USER_ID },
       hooks,
     ) as unknown as LlmJudgeRuntime;
   };

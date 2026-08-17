@@ -6,6 +6,8 @@
  * store branches with their audits, sanitized failure audits, and the presence-only
  * projection of the status query.
  */
+import { existsSync } from 'node:fs';
+
 import { eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -33,6 +35,7 @@ import { digestPlatformAiCredential } from '@/server/modules/ModelRuntime/platfo
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
 import { markSharedOAuthGrantInvalidForProvider } from '../../services/aiCatalog/sharedOAuthReauthMarker';
 import { ChatGPTWebOAuthService } from '../../services/chatgptWeb/oauthService';
+import { getCookieJarPath, seedSessionJar } from '../../services/chatgptWeb/transport';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { adminRouter } from '../admin';
@@ -1612,5 +1615,30 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
       await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test'),
     ).toMatchObject({ status: 'success', stored: true });
     expect(await db.select().from(platformAiModels)).toHaveLength(6);
+  });
+
+  it('wipes the ChatGPT Web cookie jar on disconnect', async () => {
+    const caller = await callerFor();
+    const { envelope, started } = await startFlow(caller);
+    mockSessionBackend({
+      accessToken: PASTE_ACCESS_TOKEN,
+      user: { email: 'session@example.test' },
+    });
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: started.deviceCode,
+      id: 'chatgptweb',
+      reason: 'connect the shared ChatGPT Web account',
+      sessionToken: sessionJwe,
+    });
+
+    seedSessionJar(envelope.deviceId);
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
+
+    const result = await caller.aiProviderOAuth.disconnect({
+      id: 'chatgptweb',
+      reason: 'withdraw the shared account',
+    });
+    expect(result.disconnected).toBe(true);
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(false);
   });
 });

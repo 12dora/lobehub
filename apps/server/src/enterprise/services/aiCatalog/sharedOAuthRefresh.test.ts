@@ -208,8 +208,8 @@ describe('refreshSharedOAuthVault', () => {
 
     const [url, init] = mockFetch.mock.calls[0];
     expect(url).toBe('https://auth.openai.com/oauth/token');
-    expect(init.headers['User-Agent']).toContain('Chrome/136');
-    expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
+    expect(init.headers['user-agent']).toContain('Chrome/150');
+    expect(init.headers['content-type']).toBe('application/x-www-form-urlencoded');
     expect(init.body).toContain('grant_type=refresh_token');
     expect(init.body).toContain('refresh_token=rt-old');
     // Bounded strictly below LEASE_SECONDS so the lease cannot expire mid-call.

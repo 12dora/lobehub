@@ -1,11 +1,18 @@
 import '@/server/globalConfig';
 
+import { randomUUID } from 'node:crypto';
+
 import { type GoogleGenAIOptions } from '@google/genai';
 import {
   mergeModelRuntimeHooks,
   ModelRuntime,
   type ModelRuntimeHooks,
 } from '@lobechat/model-runtime';
+import type { BrowserDeviceProfile } from '@lobechat/model-runtime/browserProfile';
+import {
+  DEFAULT_BROWSER_DEVICE_PROFILE,
+  isFallbackBrowserProfile,
+} from '@lobechat/model-runtime/browserProfile';
 import { LobeVertexAI } from '@lobechat/model-runtime/vertexai';
 import {
   type AWSBedrockKeyVault,
@@ -29,6 +36,7 @@ import { providerEgressScope } from '@/const/platform/networkProxy';
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
+import { PlatformBrowserProfileService } from '@/server/enterprise/services/browserProfile';
 import { isBootModuleEnabled } from '@/server/enterprise/services/moduleSettings';
 import { bindNetworkProxyEgressIfEnabled } from '@/server/enterprise/services/networkProxy/engine/bindEgress';
 import {
@@ -46,7 +54,9 @@ import { ensureFreshOAuthToken } from '@/server/services/oauthDeviceFlow/refresh
 
 import { KeyVaultsGateKeeper } from '../KeyVaultsEncrypt';
 import apiKeyManager from './apiKeyManager';
+import type { ModelRuntimeConversation } from './conversationIdentity';
 
+export * from './conversationIdentity';
 export * from './trace';
 
 /**
@@ -88,6 +98,81 @@ export const resolveModelRuntimeProvider = (
 
 type ModelRuntimeEnvironment = Record<string, string | undefined>;
 
+export const resolveGrokUserAgentPlatform = (
+  platform: NodeJS.Platform = process.platform,
+  architecture: string = process.arch,
+): string => {
+  const os = platform === 'darwin' ? 'macos' : platform === 'win32' ? 'windows' : 'linux';
+  const arch = architecture === 'arm64' ? 'aarch64' : 'x86_64';
+
+  return `${os}; ${arch}`;
+};
+
+/**
+ * Runtimes whose upstream identity is derived from the installation profile:
+ * ChatGPT Web presents the whole browser device, Grok derives `x-grok-agent-id`
+ * from the installation id, Cursor derives the CLI chat id from it.
+ */
+export const runtimePresentsInstallationIdentity = (runtimeProvider: string): boolean =>
+  runtimeProvider === ModelProvider.ChatGPTWeb ||
+  runtimeProvider === ModelProvider.Grok ||
+  runtimeProvider === ModelProvider.Cursor;
+
+/**
+ * …and the subset that must FAIL CLOSED without it. For these two a missing profile
+ * means the request would go out with a package constant as its device id — the exact
+ * failure this feature exists to prevent — so the seam refuses to build the runtime.
+ * Cursor degrades instead: without an installation id the CLI mints its own chat id.
+ */
+const PROFILE_REQUIRED_RUNTIMES = new Set<string>([ModelProvider.ChatGPTWeb, ModelProvider.Grok]);
+
+/**
+ * Runtimes that actually CONSUME the conversation identity (upstream session id +
+ * turn index): the CLI-shaped ones. ChatGPT Web presents an installation identity but
+ * never sends a conversation id, so it must not pay the topic lookup.
+ *
+ * Keyed on the RUNTIME provider, so a custom provider whose sdkType is grok/cursor is
+ * covered too — the caller-facing id is only known to be a runtime provider after the
+ * provider row has been read.
+ */
+export const runtimeConsumesConversationIdentity = (runtimeProvider: string): boolean =>
+  runtimeProvider === ModelProvider.Grok || runtimeProvider === ModelProvider.Cursor;
+
+/**
+ * The conversation fields to hand the seam: the caller's explicit key wins, otherwise
+ * the lazy resolver runs for the runtimes that read it, otherwise nothing (the seam
+ * mints a per-operation key).
+ */
+const resolveConversationParams = async (
+  runtimeProvider: string,
+  options?: InitModelRuntimeFromDBOptions,
+): Promise<{ conversationKey?: string; firstSeenMs?: number }> => {
+  if (options?.conversationKey)
+    return { conversationKey: options.conversationKey, firstSeenMs: options.firstSeenMs };
+  if (!options?.resolveConversation || !runtimeConsumesConversationIdentity(runtimeProvider))
+    return {};
+
+  const conversation = await options.resolveConversation();
+  return { conversationKey: conversation.conversationKey, firstSeenMs: conversation.firstSeenMs };
+};
+
+/**
+ * Resolve the installation-wide browser profile for a runtime that presents a browser
+ * identity upstream, and nothing (no query) for every other provider.
+ *
+ * Exported so that every async caller of {@link initModelRuntimeWithUserPayload} outside
+ * this module (moderation judge, memory/persona runtimes) injects the SAME persisted
+ * identity: a missed seam would otherwise present a different UA, a different TLS
+ * fingerprint and a different session id for the same account.
+ */
+export const resolvePlatformBrowserProfile = async (
+  db: LobeChatDatabase,
+  runtimeProvider: string,
+): Promise<BrowserDeviceProfile | undefined> =>
+  runtimePresentsInstallationIdentity(runtimeProvider)
+    ? await new PlatformBrowserProfileService(db).getOrFallback()
+    : undefined;
+
 /** Mirrors the environment branches consumed by getParamsFromPayload/buildVertexOptions. */
 export const hasModelRuntimeEnvironmentFallback = (
   provider: string,
@@ -119,6 +204,8 @@ export const hasModelRuntimeEnvironmentFallback = (
     case ModelProvider.GithubCopilot:
     case ModelProvider.ChatGPT:
     case ModelProvider.ChatGPTWeb:
+    case ModelProvider.Cursor:
+    case ModelProvider.Grok:
     case ModelProvider.LobeHub:
     case ModelProvider.SuperGrok: {
       return false;
@@ -251,10 +338,12 @@ export const buildPayloadFromKeyVaults = (
       };
     }
 
+    case ModelProvider.Cursor:
+    case ModelProvider.Grok:
     case ModelProvider.SuperGrok: {
       // OAuth-only provider: the (already refreshed) access token IS the
-      // bearer credential for api.x.ai — expose it as apiKey so the runtime
-      // stays a stateless OpenAI-compatible client.
+      // bearer credential — expose it as apiKey so the runtime stays a
+      // stateless OpenAI-compatible client.
       return {
         apiKey: keyVaults.oauthAccessToken,
         runtimeProvider,
@@ -373,6 +462,8 @@ const getParamsFromPayload = (provider: string, payload: ClientSecretPayload) =>
       };
     }
 
+    case ModelProvider.Cursor:
+    case ModelProvider.Grok:
     case ModelProvider.SuperGrok: {
       // OAuth-only: never fall back to env API keys
       return { apiKey: payload.apiKey };
@@ -545,6 +636,7 @@ const extractFetchUrl = (input: RequestInfo | URL): string => {
 const resolveChatGPTWebTransport = (
   runtimeProvider: string,
   scope: EgressScopeId,
+  browserProfile: BrowserDeviceProfile,
 ): typeof fetch | undefined => {
   if (runtimeProvider !== ModelProvider.ChatGPTWeb) return undefined;
   return (async (input, init) => {
@@ -556,7 +648,9 @@ const resolveChatGPTWebTransport = (
     try {
       const { getChatGPTWebFetch } =
         await import('@/server/enterprise/services/chatgptWeb/transport');
-      const response = await getChatGPTWebFetch(proxyUrl)(input, init);
+      const response = await getChatGPTWebFetch(proxyUrl, {
+        impersonate: browserProfile.impersonateProfile,
+      })(input, init);
       // Proxied 2xx / 3xx / 4xx (≠ 407) clear prior connect-phase failures.
       // 407 is a CONNECT / proxy-auth failure, not a successful hop.
       if (proxyUrl && response.status !== 407) {
@@ -575,9 +669,50 @@ const resolveChatGPTWebTransport = (
   }) as typeof fetch;
 };
 
+/**
+ * Cursor chat is a spawned `cursor-agent` CLI, not Node fetch. Same `??` seam as
+ * ChatGPT Web: intercept `https://cursor.local` and honour the network-proxy hook.
+ */
+const resolveCursorAgentTransport = (
+  runtimeProvider: string,
+  scope: EgressScopeId,
+): typeof fetch | undefined => {
+  if (runtimeProvider !== ModelProvider.Cursor) return undefined;
+  return (async (input, init) => {
+    const hook = getEgressHook();
+    const proxyUrl = hook
+      ? await hook.getEgressProxyUrlForCurl(scope, extractFetchUrl(input))
+      : null;
+    try {
+      const { getCursorAgentFetch } = await import('@/server/enterprise/services/cursorAgent');
+      const response = await getCursorAgentFetch(proxyUrl)(input, init);
+      if (proxyUrl && response.status !== 407) {
+        hook?.recordProxiedConnectSuccess?.(proxyUrl);
+      } else if (proxyUrl && response.status === 407) {
+        hook?.recordProxiedConnectFailure?.(
+          proxyUrl,
+          Object.assign(new Error('Proxy authentication required'), { status: 407 }),
+        );
+      }
+      return response;
+    } catch (error) {
+      if (proxyUrl) hook?.recordProxiedConnectFailure?.(proxyUrl, error);
+      throw error;
+    }
+  }) as typeof fetch;
+};
+
 export type ModelRuntimeInitParams = {
+  browserProfile?: BrowserDeviceProfile;
+  conversationKey?: string;
   fetch?: typeof fetch;
+  /** Real start time of `conversationKey` (the topic's `createdAt`); "now" when omitted. */
+  firstSeenMs?: number;
+  installationId?: string;
   requestHandler?: unknown;
+  /** Overrides the payload-derived turn index (tests / replay). */
+  turnIndex?: number;
+  userAgentPlatform?: string;
   userId?: string;
   // Allow provider-specific construction fields without losing transport options.
   [key: string]: unknown;
@@ -590,10 +725,55 @@ export const initModelRuntimeWithUserPayload = (
   hooks?: ModelRuntimeHooks,
 ) => {
   const runtimeProvider = payload.runtimeProvider ?? provider;
-  const { fetch: paramsFetch, requestHandler, ...restParams } = params;
+  const { browserProfile, fetch: paramsFetch, requestHandler, ...restParams } = params;
+  /**
+   * ChatGPT Web and Grok fail CLOSED. Their whole identity — UA, UA-CH, TLS/H2
+   * fingerprint, `OAI-Session-Id`, cookie jar; `x-grok-agent-id` and the session id —
+   * is derived from the persisted profile, so a caller that forgot to resolve it would
+   * silently present a second, different device for the same account (and, for Grok, a
+   * device shared with every other AIHub deployment) instead of raising.
+   */
+  if (PROFILE_REQUIRED_RUNTIMES.has(runtimeProvider) && !browserProfile) {
+    throw new Error(`${runtimeProvider} runtime requires the platform browser device profile`);
+  }
+  const resolvedBrowserProfile = browserProfile ?? DEFAULT_BROWSER_DEVICE_PROFILE;
+  // The seed reconstructs the whole identity; the runtime never needs it.
+  const { seed: _seed, ...runtimeBrowserProfile } = resolvedBrowserProfile;
   if (isBootModuleEnabled('networkProxy')) {
     bindNetworkProxyEgressIfEnabled();
   }
+  /**
+   * A caller with a real conversation (the chat route) passes its key; anything else is
+   * a one-off headless operation and gets its OWN key per runtime construction. Sharing
+   * one `user:<uid>` bucket would merge unrelated tasks, tools, moderation judgements
+   * and memory runs into a single upstream conversation whose turn index never stops
+   * growing — an identity no CLI ever produces.
+   */
+  const conversationKey =
+    typeof restParams.conversationKey === 'string' && restParams.conversationKey.trim()
+      ? restParams.conversationKey
+      : typeof restParams.userId === 'string' && restParams.userId
+        ? `user:${restParams.userId}:op:${randomUUID()}`
+        : `installation:op:${randomUUID()}`;
+  /**
+   * When the conversation started. The chat route resolves it from the topic row (same
+   * value on every replica); a headless operation starts now, by construction.
+   */
+  const conversationFirstSeenMs =
+    typeof restParams.firstSeenMs === 'number' && Number.isFinite(restParams.firstSeenMs)
+      ? restParams.firstSeenMs
+      : Date.now();
+  /**
+   * The bundled fallback profile is NOT an identity — it is the same object in every
+   * AIHub deployment on earth. Its installation id is therefore withheld: Grok then
+   * fails closed on the request itself, and Cursor simply lets the CLI mint a chat id.
+   */
+  const installationId =
+    typeof restParams.installationId === 'string' && restParams.installationId
+      ? restParams.installationId
+      : browserProfile && !isFallbackBrowserProfile(browserProfile)
+        ? browserProfile.installationId
+        : undefined;
   /**
    * Egress scope key is the *catalog / caller provider id*, not the SDK
    * `runtimeProvider`. Platform custom providers use their directory id;
@@ -609,7 +789,8 @@ export const initModelRuntimeWithUserPayload = (
   const hook = getEgressHook();
   const customFetch =
     paramsFetch ??
-    resolveChatGPTWebTransport(runtimeProvider, scope) ??
+    resolveChatGPTWebTransport(runtimeProvider, scope, resolvedBrowserProfile) ??
+    resolveCursorAgentTransport(runtimeProvider, scope) ??
     hook?.createEgressFetch(scope);
 
   const wrap = <T extends object>(runtime: T): T =>
@@ -631,6 +812,28 @@ export const initModelRuntimeWithUserPayload = (
       {
         ...getParamsFromPayload(runtimeProvider, payload),
         ...restParams,
+        ...(runtimeProvider === ModelProvider.ChatGPTWeb
+          ? { browserProfile: runtimeBrowserProfile }
+          : {}),
+        ...(runtimeProvider === ModelProvider.Grok
+          ? {
+              conversationKey,
+              firstSeenMs: conversationFirstSeenMs,
+              // Withheld on the fallback profile: the runtime refuses the request rather
+              // than sending a device id that is a package constant.
+              installationId,
+              // Deliberately absent: the turn index is the user-message count of the
+              // payload, which every replica derives identically (tests/replay may pin it).
+              ...(typeof restParams.turnIndex === 'number'
+                ? { turnIndex: restParams.turnIndex }
+                : {}),
+              userAgentPlatform:
+                typeof restParams.userAgentPlatform === 'string'
+                  ? restParams.userAgentPlatform
+                  : resolveGrokUserAgentPlatform(),
+            }
+          : {}),
+        ...(runtimeProvider === ModelProvider.Cursor ? { conversationKey, installationId } : {}),
         ...(customFetch ? { fetch: customFetch } : {}),
         ...(requestHandler ? { requestHandler: requestHandler as never } : {}),
       } as never,
@@ -704,6 +907,7 @@ const initUserModelRuntimeFromDB = async (
   userId: string,
   provider: string,
   workspaceId?: string,
+  options?: InitModelRuntimeFromDBOptions,
 ): Promise<ModelRuntime> => {
   // 1. Get user's provider configuration from database
   const aiProviderModel = new AiProviderModel(db, userId, workspaceId);
@@ -730,8 +934,12 @@ const initUserModelRuntimeFromDB = async (
   // converges on this function.
   const oauthDeviceFlowConfig = DEFAULT_MODEL_PROVIDER_LIST.find((p) => p.id === provider)?.settings
     ?.oauthDeviceFlow;
+  const browserProfile = runtimePresentsInstallationIdentity(runtimeProvider)
+    ? await new PlatformBrowserProfileService(db).getOrFallback()
+    : undefined;
   if (oauthDeviceFlowConfig?.refreshTokenGrant) {
     const freshKeyVaults = await ensureFreshOAuthToken({
+      browserProfile,
       config: oauthDeviceFlowConfig,
       db,
       keyVaults,
@@ -751,20 +959,41 @@ const initUserModelRuntimeFromDB = async (
   //    service is unconfigured, so OSS / self-hosted setups pay nothing for it).
   const tracingHooks = createLLMGenerationTracingHook(userId, provider, workspaceId);
   const hooks = mergeModelRuntimeHooks(businessHooks, tracingHooks);
-
   // 6. Initialize ModelRuntime with the payload and hooks
   // Note: providerConfig.config (e.g. enableResponseApi) is returned by getAiProviderById
   // and remains available to callers that read runtime state elsewhere; this path does not
   // strip config — payload/hooks construction only consumes keyVaults + sdkType (pre-existing).
-  return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
+  return initModelRuntimeWithUserPayload(
+    provider,
+    payload,
+    {
+      browserProfile,
+      ...(await resolveConversationParams(runtimeProvider, options)),
+      userId,
+    },
+    hooks,
+  );
 };
+
+export interface InitModelRuntimeFromDBOptions {
+  conversationKey?: string;
+  firstSeenMs?: number;
+  /**
+   * Lazily resolve the conversation identity, invoked ONLY when the resolved runtime
+   * provider consumes one (Grok / Cursor — including a custom provider whose sdkType is
+   * one of them). Keeping it a thunk is what stops ChatGPT Web and every ordinary
+   * provider from paying a topic lookup they never read.
+   */
+  resolveConversation?: () => Promise<ModelRuntimeConversation>;
+  skipModeration?: boolean;
+}
 
 export const initModelRuntimeFromDB = async (
   db: LobeChatDatabase,
   userId: string,
   provider: string,
   workspaceId?: string,
-  options?: { skipModeration?: boolean },
+  options?: InitModelRuntimeFromDBOptions,
 ): Promise<ModelRuntime> => {
   const wrap = (runtime: ModelRuntime) =>
     wrapPlatformModelRuntime(runtime, {
@@ -809,7 +1038,21 @@ export const initModelRuntimeFromDB = async (
           ),
         ),
       );
-      return wrap(await initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks));
+      const browserProfile = runtimePresentsInstallationIdentity(runtimeProvider)
+        ? await new PlatformBrowserProfileService(db).getOrFallback()
+        : undefined;
+      return wrap(
+        await initModelRuntimeWithUserPayload(
+          provider,
+          payload,
+          {
+            browserProfile,
+            ...(await resolveConversationParams(runtimeProvider, options)),
+            userId,
+          },
+          hooks,
+        ),
+      );
     } catch (error) {
       // Platform catalog governs platform providers only. User self-built / BYOK providers
       // are absent from the catalog → fall back to the user's own config. Other platform
@@ -818,7 +1061,7 @@ export const initModelRuntimeFromDB = async (
     }
   }
 
-  return wrap(await initUserModelRuntimeFromDB(db, userId, provider, workspaceId));
+  return wrap(await initUserModelRuntimeFromDB(db, userId, provider, workspaceId, options));
 };
 
 /**
@@ -837,6 +1080,7 @@ export const initPlatformExactModelRuntime = async (
   userId: string,
   ref: PlatformAiExactModelRef,
   workspaceId?: string,
+  options?: InitModelRuntimeFromDBOptions,
 ): Promise<ModelRuntime> => {
   const providerConfig = await resolvePlatformAiExecutionConfigAtRevision(db, ref);
   const payload = buildPayloadFromKeyVaults(
@@ -862,8 +1106,20 @@ export const initPlatformExactModelRuntime = async (
       mergeModelRuntimeHooks(authFailureHooks, mergeModelRuntimeHooks(businessHooks, tracingHooks)),
     ),
   );
+  const browserProfile = runtimePresentsInstallationIdentity(providerConfig.runtimeProvider)
+    ? await new PlatformBrowserProfileService(db).getOrFallback()
+    : undefined;
   return wrapPlatformModelRuntime(
-    await initModelRuntimeWithUserPayload(ref.providerKey, payload, { userId }, hooks),
+    await initModelRuntimeWithUserPayload(
+      ref.providerKey,
+      payload,
+      {
+        browserProfile,
+        ...(await resolveConversationParams(providerConfig.runtimeProvider, options)),
+        userId,
+      },
+      hooks,
+    ),
     { db, provider: ref.providerKey, userId, workspaceId },
   );
 };

@@ -44,6 +44,7 @@ import { getServerDefaultFilesConfig } from '@/server/globalConfig';
 import {
   initModelRuntimeFromDB,
   initModelRuntimeWithUserPayload,
+  resolvePlatformBrowserProfile,
 } from '@/server/modules/ModelRuntime';
 import {
   emitToolOutcomeSafely,
@@ -217,7 +218,16 @@ class MemoryServerRuntimeService implements MemoryRuntimeService {
       ? initModelRuntimeWithUserPayload(
           this.memoryEmbeddingRuntime.provider,
           this.memoryEmbeddingRuntime.payload,
-          { userId: this.userId },
+          {
+            // No-op for every embedding provider; a browser-identity runtime must never
+            // be constructed without the installation's persisted device.
+            browserProfile: await resolvePlatformBrowserProfile(
+              this.serverDB,
+              this.memoryEmbeddingRuntime.payload.runtimeProvider ??
+                this.memoryEmbeddingRuntime.provider,
+            ),
+            userId: this.userId,
+          },
         )
       : await initModelRuntimeFromDB(
           this.serverDB,

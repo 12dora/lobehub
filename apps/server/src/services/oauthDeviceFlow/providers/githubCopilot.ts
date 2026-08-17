@@ -1,10 +1,14 @@
 import { getProviderOAuthGrantFlow } from 'model-bank/modelProviders';
 
-import { ChatGPTWebOAuthService } from '@/server/enterprise/services/chatgptWeb/oauthService';
+import {
+  ChatGPTWebOAuthService,
+  type ChatGPTWebOAuthServiceOptions,
+} from '@/server/enterprise/services/chatgptWeb/oauthService';
 import { type OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
 import { OAuthDeviceFlowService } from '../index';
 import { ChatGPTOAuthService } from './chatGPT';
+import { CursorOAuthService } from './cursor';
 
 export interface CopilotTokenResponse {
   expiresAt: number;
@@ -131,11 +135,19 @@ export class GithubCopilotOAuthService extends OAuthDeviceFlowService {
 /**
  * Factory function to get the appropriate OAuth service based on provider
  */
-export function getOAuthService(providerId: string): OAuthDeviceFlowService {
+export function getOAuthService(
+  providerId: string,
+  chatgptWebOptions?: ChatGPTWebOAuthServiceOptions,
+): OAuthDeviceFlowService {
+  // Cursor's grant is device-code *shaped* (URL + poll) plus an API-key paste, so it
+  // must win before the authorization-code paste-flow branch.
+  if (providerId === 'cursor') {
+    return new CursorOAuthService();
+  }
   // Card-driven, not id-driven: the authorization-code paste flow is a property of the
   // provider's grant, so every provider declaring it gets the same service.
   if (getProviderOAuthGrantFlow(providerId) === 'authorization_code_paste') {
-    return new ChatGPTWebOAuthService();
+    return new ChatGPTWebOAuthService(chatgptWebOptions);
   }
   if (providerId === 'chatgpt') {
     return new ChatGPTOAuthService();

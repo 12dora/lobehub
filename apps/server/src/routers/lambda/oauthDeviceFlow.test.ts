@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   getAiProviderById: vi.fn(),
   getOAuthService: vi.fn(),
   updateConfig: vi.fn(),
+  wipeChatGPTWebCookieJar: vi.fn(),
 }));
 
 vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(async () => ({})) }));
@@ -37,6 +38,11 @@ vi.mock('@/server/enterprise/guards/managedResource', async () => {
 vi.mock('@/server/services/oauthDeviceFlow/providers/githubCopilot', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, getOAuthService: mocks.getOAuthService };
+});
+
+vi.mock('@/server/enterprise/services/chatgptWeb/oauthService', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, wipeChatGPTWebCookieJar: mocks.wipeChatGPTWebCookieJar };
 });
 
 const { oauthDeviceFlowRouter } = await import('./oauthDeviceFlow');
@@ -484,5 +490,38 @@ describe('oauthDeviceFlow.revokeAuth', () => {
       oauthRefreshToken: undefined,
       oauthTokenExpiresAt: undefined,
     });
+  });
+
+  it('wipes the cookie jar for the vault device id before clearing', async () => {
+    mocks.getAiProviderById.mockResolvedValue({
+      keyVaults: { oauthDeviceId: 'old-device-id' },
+    });
+
+    await caller().revokeAuth({ providerId: PROVIDER });
+
+    expect(mocks.wipeChatGPTWebCookieJar).toHaveBeenCalledWith('old-device-id');
+    expect(mocks.updateConfig).toHaveBeenCalled();
+  });
+
+  it('still revokes when the jar wipe throws', async () => {
+    mocks.getAiProviderById.mockResolvedValue({
+      keyVaults: { oauthDeviceId: 'old-device-id' },
+    });
+    mocks.wipeChatGPTWebCookieJar.mockImplementation(() => {
+      throw new Error('fs');
+    });
+
+    await expect(caller().revokeAuth({ providerId: PROVIDER })).resolves.toEqual({ success: true });
+    expect(mocks.updateConfig).toHaveBeenCalled();
+  });
+
+  it('does not wipe a jar for a non-chatgptweb provider', async () => {
+    mocks.getAiProviderById.mockResolvedValue({
+      keyVaults: { oauthDeviceId: 'old-device-id' },
+    });
+
+    await caller().revokeAuth({ providerId: 'githubcopilot' });
+
+    expect(mocks.wipeChatGPTWebCookieJar).not.toHaveBeenCalled();
   });
 });

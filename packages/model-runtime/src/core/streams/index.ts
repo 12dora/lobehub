@@ -1,6 +1,7 @@
 export * from './anthropic';
 export * from './bedrock';
 export * from './chatgptWeb';
+export * from './cursor';
 export * from './google';
 export * from './model';
 export * from './ollama';

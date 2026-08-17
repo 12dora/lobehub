@@ -2,16 +2,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeExecutorContext } from '../context';
 
-const { findPlatformOperationRef, initModelRuntimeFromDB, initPlatformExactModelRuntime } =
-  vi.hoisted(() => ({
-    findPlatformOperationRef: vi.fn(),
-    initModelRuntimeFromDB: vi.fn(async () => ({ id: 'ordinary-runtime' })),
-    initPlatformExactModelRuntime: vi.fn(async () => ({ id: 'exact-runtime' })),
-  }));
+const FIRST_SIGHTING_MS = 1_700_000_000_000;
+
+const {
+  findPlatformOperationRef,
+  initModelRuntimeFromDB,
+  initPlatformExactModelRuntime,
+  rememberConversationStartMs,
+} = vi.hoisted(() => ({
+  findPlatformOperationRef: vi.fn(),
+  initModelRuntimeFromDB: vi.fn(async () => ({ id: 'ordinary-runtime' })),
+  initPlatformExactModelRuntime: vi.fn(async () => ({ id: 'exact-runtime' })),
+  // The in-process fallback, used only when the operation state has no persisted start.
+  rememberConversationStartMs: vi.fn((_key: string) => 1_700_000_000_000),
+}));
 
 vi.mock('@/server/modules/ModelRuntime', () => ({
   initModelRuntimeFromDB,
   initPlatformExactModelRuntime,
+  rememberModelRuntimeConversationStartMs: rememberConversationStartMs,
 }));
 
 vi.mock('@/database/models/agentOperation', () => ({
@@ -77,6 +86,9 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
       'user-a',
       pin,
       undefined,
+      // Every LLM call of one operation is one upstream conversation, and no two
+      // operations share one.
+      { conversationKey: expect.stringContaining(':operation:'), firstSeenMs: expect.any(Number) },
     );
     expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
   });
@@ -127,6 +139,7 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
       'user-a',
       'openai',
       undefined,
+      { conversationKey: expect.stringContaining(':operation:'), firstSeenMs: expect.any(Number) },
     );
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
   });
@@ -255,6 +268,59 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
       'PLATFORM_MODEL_UNAVAILABLE',
     );
     expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+  });
+
+  it('uses the operation start time persisted in its state as the session start', async () => {
+    findPlatformOperationRef.mockResolvedValue(platformRef);
+    const startedAt = '2026-08-18T04:05:06.000Z';
+    const resumedCtx = {
+      ...ctx,
+      loadAgentState: vi.fn().mockResolvedValue({
+        createdAt: startedAt,
+        metadata: {
+          platformStartBinding: platformStart,
+          platformStartClassification: 'complete',
+        },
+      }),
+    } as RuntimeExecutorContext;
+
+    await initOperationModelRuntime(resumedCtx, 'internal-provider', 'chat-model');
+
+    // Durable: the same operation resumed after an eviction, a restart or on another
+    // replica derives the SAME upstream session id, because both halves come from the row.
+    expect(initPlatformExactModelRuntime).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-a',
+      pin,
+      undefined,
+      {
+        conversationKey: 'user:user-a:operation:op-1',
+        firstSeenMs: Date.parse(startedAt),
+      },
+    );
+    expect(rememberConversationStartMs).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the first sighting only when the state carries no usable start time', async () => {
+    findPlatformOperationRef.mockResolvedValue(null);
+    const legacyCtx = {
+      ...ctx,
+      loadAgentState: vi.fn().mockResolvedValue({
+        createdAt: 'not-a-timestamp',
+        metadata: { platformStartClassification: 'ordinary' },
+      }),
+    } as RuntimeExecutorContext;
+
+    await initOperationModelRuntime(legacyCtx, 'openai', 'gpt-4o');
+
+    expect(rememberConversationStartMs).toHaveBeenCalledWith('user:user-a:operation:op-1');
+    expect(initModelRuntimeFromDB).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-a',
+      'openai',
+      undefined,
+      { conversationKey: 'user:user-a:operation:op-1', firstSeenMs: FIRST_SIGHTING_MS },
+    );
   });
 
   it('never reads the ref (or hits exact) when there is no trusted userId', async () => {

@@ -9,6 +9,7 @@ import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import { platformJobs } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
+import { PlatformBrowserProfileService } from '@/server/enterprise/services/browserProfile';
 import {
   ensureFreshOAuthTokenWithStore,
   type OAuthTokenKeyVaults,
@@ -334,7 +335,12 @@ export const refreshSharedOAuthVault = async (
 
   let refreshed: OAuthTokenKeyVaults;
   try {
+    const browserProfile =
+      params.providerKey === 'chatgptweb'
+        ? await new PlatformBrowserProfileService(params.db).getOrFallback()
+        : undefined;
     refreshed = await ensureFreshOAuthTokenWithStore({
+      browserProfile,
       config,
       flightKey: `platform:${params.providerKey}`,
       force: params.force,

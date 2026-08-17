@@ -21,6 +21,7 @@ import { default as cloudflare } from './cloudflare';
 import { default as cohere } from './cohere';
 import { default as cometapi } from './cometapi';
 import { default as comfyui } from './comfyui';
+import { default as cursor } from './cursor';
 import { default as deepseek } from './deepseek';
 import { default as fal } from './fal';
 import { default as fireworksai } from './fireworksai';
@@ -29,6 +30,7 @@ import { default as github } from './github';
 import { default as githubcopilot } from './githubCopilot';
 import { default as glmcodingplan } from './glmCodingPlan';
 import { default as google } from './google';
+import { default as grok } from './grok';
 import { default as groq } from './groq';
 import { default as higress } from './higress';
 import { default as huggingface } from './huggingface';
@@ -132,6 +134,7 @@ const staticModelMap: ModelsMap = {
   cohere,
   cometapi,
   comfyui,
+  cursor,
   deepseek,
   fal,
   fireworksai,
@@ -140,6 +143,7 @@ const staticModelMap: ModelsMap = {
   githubcopilot,
   google,
   glmcodingplan,
+  grok,
   groq,
   higress,
   huggingface,
@@ -282,6 +286,7 @@ export { default as cloudflare } from './cloudflare';
 export { default as cohere } from './cohere';
 export { default as cometapi } from './cometapi';
 export { default as comfyui } from './comfyui';
+export { default as cursor } from './cursor';
 export { default as deepseek } from './deepseek';
 export { default as fal, fluxSchnellParamsSchema } from './fal';
 export { default as fireworksai } from './fireworksai';
@@ -290,6 +295,7 @@ export { default as github } from './github';
 export { default as githubcopilot } from './githubCopilot';
 export { default as glmcodingplan } from './glmCodingPlan';
 export { default as google } from './google';
+export { default as grok } from './grok';
 export { default as groq } from './groq';
 export { default as higress } from './higress';
 export { default as huggingface } from './huggingface';

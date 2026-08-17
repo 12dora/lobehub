@@ -321,6 +321,8 @@ export const AI_CONNECTION_TEST_ERROR_TYPES = [
   'AgentRuntimeError',
   // The ChatGPT Web transport binary (curl-impersonate) is not installed on this host.
   'CHATGPT_WEB_TRANSPORT_UNAVAILABLE',
+  // The Cursor Agent CLI (`cursor-agent`) is not installed on this host.
+  'cli_unavailable',
   'ConnectionCheckFailed',
   'ExceededContextWindow',
   'InsufficientQuota',

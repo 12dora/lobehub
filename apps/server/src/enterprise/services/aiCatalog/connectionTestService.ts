@@ -1,4 +1,6 @@
 import { runWithBoundFetch } from '@lobechat/model-runtime';
+import type { BrowserDeviceProfile } from '@lobechat/model-runtime/browserProfile';
+import { DEFAULT_BROWSER_DEVICE_PROFILE } from '@lobechat/model-runtime/browserProfile';
 import { RequestTrigger } from '@lobechat/types';
 import debug from 'debug';
 import { ModelProvider } from 'model-bank';
@@ -22,6 +24,7 @@ import {
   type SafeOutboundHttpClient,
 } from '../../security/outboundHttp';
 import { getChatGPTWebFetch } from '../chatgptWeb/transport';
+import { getCursorAgentFetch } from '../cursorAgent';
 import { getEgressProxyUrlForCurl } from '../networkProxy/egress/router';
 import { createEgressSafeOutboundTransport } from '../networkProxy/egress/safeOutboundTransport';
 import { resolveAiCatalogOutboundMode } from './outboundMode';
@@ -35,6 +38,7 @@ type AiConnectionErrorCategory = NonNullable<AiConnectionTestResult['errorCatego
 const log = debug('lobe-server:ai-catalog-connection-test');
 
 export interface AiConnectionProbeParams {
+  browserProfile?: BrowserDeviceProfile;
   keyVaults: PlatformProviderKeyVaults;
   /** Model to probe — the provider's stored `checkModel`, or an operator override. */
   model: string;
@@ -51,6 +55,7 @@ export type AiConnectionProbe = (params: AiConnectionProbeParams) => Promise<voi
  */
 export interface AiConnectionRuntimeTransportOptions {
   [key: string]: unknown;
+  browserProfile?: BrowserDeviceProfile;
   fetch: typeof fetch;
 }
 
@@ -60,7 +65,7 @@ export interface AiConnectionRuntimeTransportOptions {
  * production never uses, so the probe streams for exactly these — every other runtime keeps
  * the cheaper single-shot completion.
  */
-const RESPONSES_ONLY_RUNTIMES = new Set(['chatgpt', 'chatgptweb', 'supergrok', 'xai']);
+const RESPONSES_ONLY_RUNTIMES = new Set(['chatgpt', 'chatgptweb', 'grok', 'supergrok', 'xai']);
 
 /**
  * Runtimes whose production transport is NOT the enterprise outbound adapter.
@@ -74,7 +79,10 @@ const RESPONSES_ONLY_RUNTIMES = new Set(['chatgpt', 'chatgptweb', 'supergrok', '
  * probes use — but the DNS/IP guard cannot be enforced on a child process, which is
  * acceptable here because the endpoint is a fixed, provider-owned host.
  */
-const IMPERSONATED_TRANSPORT_RUNTIMES = new Set<string>([ModelProvider.ChatGPTWeb]);
+const IMPERSONATED_TRANSPORT_RUNTIMES = new Set<string>([
+  ModelProvider.ChatGPTWeb,
+  ModelProvider.Cursor,
+]);
 
 const AI_CONNECTION_TEST_TIMEOUT_MS = 15_000;
 /**
@@ -95,8 +103,9 @@ const KNOWN_ERROR_TYPES = new Set<string>(AI_CONNECTION_TEST_ERROR_TYPES);
  */
 const ERROR_TYPE_CATEGORY: Record<string, AiConnectionErrorCategory> = {
   AccountDeactivated: 'auth',
-  // Deployment problem (the impersonation binary is missing), not a provider verdict.
+  // Deployment problem (the impersonation binary / CLI is missing), not a provider verdict.
   CHATGPT_WEB_TRANSPORT_UNAVAILABLE: 'invalid_config',
+  cli_unavailable: 'invalid_config',
   ConnectionCheckFailed: 'network',
   ExceededContextWindow: 'invalid_config',
   InsufficientQuota: 'rate_limit',
@@ -160,6 +169,7 @@ const extractStatus = (error: unknown): number => {
 
 /** The transport's own code, and the runtime error kind it is carried as. */
 const TRANSPORT_UNAVAILABLE_CODE = 'CHATGPT_WEB_TRANSPORT_UNAVAILABLE';
+const CURSOR_CLI_UNAVAILABLE_CODE = 'cli_unavailable';
 const TRANSPORT_UNAVAILABLE_KIND = 'transport_unavailable';
 
 /**
@@ -177,8 +187,12 @@ const isTransportUnavailable = (error: unknown): boolean =>
     (node) => node.code === TRANSPORT_UNAVAILABLE_CODE || node.kind === TRANSPORT_UNAVAILABLE_KIND,
   );
 
+const isCursorCliUnavailable = (error: unknown): boolean =>
+  errorChain(error).some((node) => node.code === CURSOR_CLI_UNAVAILABLE_CODE);
+
 const extractErrorType = (error: unknown): string | undefined => {
   if (isTransportUnavailable(error)) return TRANSPORT_UNAVAILABLE_CODE;
+  if (isCursorCliUnavailable(error)) return CURSOR_CLI_UNAVAILABLE_CODE;
 
   for (const node of errorChain(error)) {
     const errorType = node.errorType ?? node.code;
@@ -237,6 +251,7 @@ export const classifyAiConnectionFailure = (error: unknown): AiConnectionFailure
     // Decisive, ahead of every heuristic: the request never left this host, so neither a
     // wrapper's name nor its message describes what actually failed.
     if (rawErrorType === TRANSPORT_UNAVAILABLE_CODE) return 'invalid_config';
+    if (rawErrorType === CURSOR_CLI_UNAVAILABLE_CODE) return 'invalid_config';
     // A named abort/timeout is decisive: an aborted request has no verdict from the provider,
     // whatever generic wrapper (`ProviderBizError`) the runtime put around it.
     if (name && NETWORK_ERROR_NAMES.has(name)) return 'network';
@@ -282,7 +297,9 @@ export const aiConnectionFailureCode = (
   if (errorType === 'OAuthAuthorizationExpired') return 'connection_failed_shared_account_expired';
   // Same reasoning as above: the fix ("install the ChatGPT Web transport on the server")
   // is not implied by the `invalid_config` category, so it gets its own stable code.
-  if (errorType === 'CHATGPT_WEB_TRANSPORT_UNAVAILABLE') return 'connection_failed_transport';
+  if (errorType === 'CHATGPT_WEB_TRANSPORT_UNAVAILABLE' || errorType === 'cli_unavailable') {
+    return 'connection_failed_transport';
+  }
   return {
     auth: 'connection_failed_auth',
     invalid_config: 'connection_failed_invalid_config',
@@ -329,7 +346,7 @@ export const createSafeAiConnectionProbe = (
   // Tests may inject a client; production builds a per-provider egress-aware client.
   outbound?: SafeOutboundHttpClient,
 ): AiConnectionProbe => {
-  return async ({ keyVaults, model, provider, runtimeProvider }) => {
+  return async ({ browserProfile, keyVaults, model, provider, runtimeProvider }) => {
     if (!model) throw new Error('check model is required');
     const payload = buildPayloadFromKeyVaults(keyVaults, runtimeProvider);
     const scope = `provider:${provider.providerKey}` as const;
@@ -365,7 +382,10 @@ export const createSafeAiConnectionProbe = (
     // Match production's transport where it matters: a Responses-API subscription backend
     // (Codex) is streaming-first, and a probe that takes a different transport than chat can
     // pass or fail for reasons chat never sees.
-    const stream = apiMode === 'responses' || RESPONSES_ONLY_RUNTIMES.has(runtimeProvider);
+    const stream =
+      apiMode === 'responses' ||
+      RESPONSES_ONLY_RUNTIMES.has(runtimeProvider) ||
+      runtimeProvider === ModelProvider.Cursor;
 
     // One deadline for the WHOLE probe, not per hop — see `withProbeDeadline`. It is armed
     // here, once per invocation, and reaches both the transport and the runtime call.
@@ -384,12 +404,27 @@ export const createSafeAiConnectionProbe = (
     const fetchAdapter = probeDeadline
       ? withProbeDeadline(async (input, init) => {
           const proxyUrl = await getEgressProxyUrlForCurl(scope, extractUrl(input));
-          return getChatGPTWebFetch(proxyUrl)(input, init);
+          if (runtimeProvider === ModelProvider.Cursor) {
+            return getCursorAgentFetch(proxyUrl)(input, init);
+          }
+          return getChatGPTWebFetch(proxyUrl, {
+            impersonate: (browserProfile ?? DEFAULT_BROWSER_DEVICE_PROFILE).impersonateProfile,
+          })(input, init);
         }, probeDeadline)
       : stream
         ? streamingFetchAdapter
         : bufferedFetchAdapter;
     const transport: AiConnectionRuntimeTransportOptions = {
+      /**
+       * Whatever the caller resolved, for EVERY runtime that presents an installation
+       * identity — never a constant. The seam fails closed for ChatGPT Web / Grok
+       * without it, and Grok would otherwise probe as a device shared by every AIHub
+       * deployment while chat used the real one.
+       */
+      ...(browserProfile ? { browserProfile } : {}),
+      // Probes are their own conversation: one short session per provider, never mixed
+      // into a user's chat session id.
+      conversationKey: `platform:connection-test:${provider.providerKey}`,
       fetch: fetchAdapter,
       // One honest attempt. The SDK's default (2 retries) multiplied every deadline by three
       // and reported the last failure, so an operator waited ~45s for a misleading verdict.

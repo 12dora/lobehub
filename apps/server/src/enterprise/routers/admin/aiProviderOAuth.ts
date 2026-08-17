@@ -38,6 +38,8 @@ import {
   isOAuthAuthorizationExpiredError,
   refreshSharedOAuthVault,
 } from '../../services/aiCatalog/sharedOAuthRefresh';
+import { PlatformBrowserProfileService } from '../../services/browserProfile';
+import { wipeChatGPTWebCookieJar } from '../../services/chatgptWeb/oauthService';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { assertDangerousReauth, createService, mapServiceError } from './aiCatalogSupport';
 import {
@@ -109,6 +111,25 @@ export const adminAiProviderOAuthRouter = router({
       // Nothing was ever connected: idempotent no-op, and no audit row for a write that
       // did not happen.
       if (!detail) return { disconnected: false, revision: null };
+
+      if (input.id === 'chatgptweb') {
+        try {
+          const provider = await new PlatformAiCatalogRepository(ctx.serverDB).getProvider(
+            detail.draft.id,
+          );
+          if (provider?.encryptedKeyVaults) {
+            const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise();
+            if (secrets) {
+              const keyVaults = await new AiCatalogSecretManager(secrets).decrypt(
+                provider.encryptedKeyVaults,
+              );
+              wipeChatGPTWebCookieJar(asVaultString(keyVaults.oauthDeviceId));
+            }
+          }
+        } catch {
+          // Best-effort: never fail the disconnect on a jar unlink or vault-read error.
+        }
+      }
 
       const audit = new PlatformAuditService(ctx.serverDB);
       let result;
@@ -330,7 +351,14 @@ export const adminAiProviderOAuthRouter = router({
 
       let response;
       try {
-        response = await getOAuthService(input.id).initiateDeviceCode(card.config);
+        const browserProfile =
+          getProviderOAuthGrantFlow(input.id) === 'authorization_code_paste'
+            ? await new PlatformBrowserProfileService(ctx.serverDB).getOrFallback()
+            : undefined;
+        response = await getOAuthService(
+          input.id,
+          browserProfile ? { browserProfile } : undefined,
+        ).initiateDeviceCode(card.config);
       } catch {
         await auditProvider(audit, {
           action: 'admin.aiProviderOAuth.initiateDeviceCode',
@@ -411,9 +439,14 @@ export const adminAiProviderOAuthRouter = router({
         targetId,
       });
 
+      const browserProfile =
+        getProviderOAuthGrantFlow(input.id) === 'authorization_code_paste'
+          ? await new PlatformBrowserProfileService(ctx.serverDB).getOrFallback()
+          : undefined;
       const acquired = await acquireSharedConnectionTokens({
         actorUserId: ctx.userId!,
         audit,
+        browserProfile,
         card,
         input,
         targetId,

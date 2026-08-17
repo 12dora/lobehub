@@ -20,6 +20,12 @@ export interface TokenResponse {
   email?: string;
   expiresIn?: number;
   refreshToken?: string;
+  /**
+   * How `refreshToken` must be spent on renewal. Written at connect; the refresh
+   * pipeline carries it through `oauthRenewalKind`. Absent for providers with a
+   * single renewal path.
+   */
+  renewalKind?: OAuthRenewalKind;
   scope?: string;
   tokenType: string;
 }
@@ -91,13 +97,15 @@ export const parseJwtIssuedAt = (token: string | undefined): number | undefined 
  * - `oauth`: an OAuth refresh token (RFC 6749 §6), spent at the token endpoint.
  * - `web_session`: the chatgpt.com next-auth session cookie, presented to
  *   `/api/auth/session` to mint a fresh access token — exactly what the web app does.
+ * - `cursor_api_key`: a Cursor dashboard API key, re-exchanged at
+ *   `/auth/exchange_user_api_key` (the key never rotates).
  *
  * The single source of truth for the label: it is written by the connect routers, stored in a
  * non-secret vault leaf, and dispatched on by the provider's `refreshAccessToken`. Spending a
  * credential the wrong way is a silent, terminal failure, so the value is never carried as a
  * free-form string across a boundary — {@link parseOAuthRenewalKind} is the only way in.
  */
-export const OAUTH_RENEWAL_KINDS = ['oauth', 'web_session'] as const;
+export const OAUTH_RENEWAL_KINDS = ['oauth', 'web_session', 'cursor_api_key'] as const;
 
 export type OAuthRenewalKind = (typeof OAUTH_RENEWAL_KINDS)[number];
 
@@ -281,5 +289,17 @@ export class OAuthDeviceFlowService {
       scope: data.scope,
       tokenType: data.token_type || 'bearer',
     };
+  }
+
+  /**
+   * Exchange a pasted credential (access token or dashboard API key) for vault tokens.
+   * Device-code providers that also accept paste (Cursor) override this; the base
+   * implementation refuses so a caller that skipped the card gate cannot mint a grant.
+   */
+  async exchangePastedCredential(
+    _config: OAuthDeviceFlowConfig,
+    _pastedValue: string,
+  ): Promise<PollResult> {
+    throw new Error('Provider does not accept a pasted credential');
   }
 }

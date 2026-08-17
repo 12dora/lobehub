@@ -248,3 +248,60 @@ describe('generateObject tool-calling fallback', () => {
     expect(getCreateMock(instance)).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * `chatCompletion.handleError` is a CHAT contract. Providers such as 302.AI and
+ * SiliconCloud map every error through it, so `generateObject` must keep rethrowing the
+ * raw error for them — only a provider that explicitly opts in gets its own payload here.
+ */
+describe('generateObject custom error mapping', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const upstreamFailure = Object.assign(new Error('Insufficient Balance'), { status: 402 });
+
+  const handleEveryError = vi.fn(() => ({
+    error: { message: 'mapped by the provider' },
+    errorType: AgentRuntimeErrorType.ProviderBizError,
+    message: 'mapped by the provider',
+  }));
+
+  const MapsEveryErrorRuntime = createOpenAICompatibleRuntime({
+    baseURL: 'https://api.mapseverything.com/v1',
+    chatCompletion: { handleError: handleEveryError },
+    provider: 'mapseverything',
+  });
+
+  const OptedInRuntime = createOpenAICompatibleRuntime({
+    baseURL: 'https://api.optedin.com/v1',
+    chatCompletion: { handleError: handleEveryError },
+    generateObject: { preserveCustomMappedErrors: true },
+    provider: 'optedin',
+  });
+
+  it('rethrows the raw error for a provider that did not opt in (unchanged behaviour)', async () => {
+    const instance = new MapsEveryErrorRuntime({ apiKey: 'test' });
+    vi.spyOn((instance as any).client.chat.completions, 'create').mockRejectedValue(
+      upstreamFailure,
+    );
+
+    await expect(instance.generateObject(generateObjectPayload)).rejects.toBe(upstreamFailure);
+    // Mapped once per failure, never twice: the handler is a mapper, not guaranteed pure.
+    expect(handleEveryError).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the provider payload for a provider that opted in', async () => {
+    const instance = new OptedInRuntime({ apiKey: 'test' });
+    vi.spyOn((instance as any).client.chat.completions, 'create').mockRejectedValue(
+      upstreamFailure,
+    );
+
+    await expect(instance.generateObject(generateObjectPayload)).rejects.toMatchObject({
+      errorType: AgentRuntimeErrorType.ProviderBizError,
+      message: 'mapped by the provider',
+      provider: 'optedin',
+    });
+    expect(handleEveryError).toHaveBeenCalledTimes(1);
+  });
+});

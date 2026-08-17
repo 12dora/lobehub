@@ -267,6 +267,18 @@ export interface OpenAICompatibleFactoryOptions<T extends Record<string, any> = 
      */
     handleSchema?: (schema: any) => any;
     /**
+     * Opt-in: keep the provider's OWN `chatCompletion.handleError` payload when
+     * `generateObject` fails, instead of rethrowing the raw error for the factory's
+     * generic business-error branch.
+     *
+     * OFF by default on purpose. Providers whose handler maps EVERY error (302.AI,
+     * SiliconCloud) would otherwise start returning structured mapped payloads from
+     * `generateObject` where they used to rethrow raw — a silent contract change for
+     * their callers. Only a provider that refuses a request itself (Grok without an
+     * installation identity) needs its mapping preserved here.
+     */
+    preserveCustomMappedErrors?: boolean;
+    /**
      * Transform Chat Completions payload before sending generateObject requests to the provider.
      */
     handlePayload?: (
@@ -1080,7 +1092,9 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
 
         if (tools) {
           log('using tools-based generation');
-          return this.generateObjectWithTools(payload, options, usagePayload);
+          // Awaited on purpose: a bare `return promise` would escape the catch below, so a
+          // provider-mapped failure (e.g. a missing CLI identity) would surface raw.
+          return await this.generateObjectWithTools(payload, options, usagePayload);
         }
 
         if (!schema) throw new Error('tools or schema is required');
@@ -1206,7 +1220,22 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           return undefined;
         }
       } catch (error) {
-        const handledError = this.handleError(error);
+        /**
+         * Computed ONCE and handed to `handleError`, so the provider's handler is never
+         * invoked twice for one failure (it is a mapper, not necessarily idempotent).
+         */
+        const customMapped = this.mapCustomProviderError(error);
+
+        /**
+         * A provider that OPTED IN keeps the payload it mapped itself. The generic branch
+         * below rethrows the RAW error for the factory's business error type, which would
+         * erase a deliberate mapping — Grok refusing to send a request without an
+         * installation identity reaches `generateObject` and forced tool calling exactly
+         * as it reaches `chat`. Every other provider keeps its previous behaviour.
+         */
+        if (customMapped && generateObjectConfig?.preserveCustomMappedErrors) throw customMapped;
+
+        const handledError = this.handleError(error, { customMapped });
 
         if (
           handledError.errorType === AgentRuntimeErrorType.AgentRuntimeError ||
@@ -1311,7 +1340,30 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
       }
     }
 
-    protected handleError(error: any): ChatCompletionErrorPayload {
+    /**
+     * The provider's OWN error mapping (`chatCompletion.handleError`), so every path can
+     * ask "did the provider classify this itself?" instead of guessing from the mapped
+     * error type (which collides with the factory's generic business error).
+     */
+    private mapCustomProviderError(error: unknown): ChatCompletionErrorPayload | undefined {
+      if (!chatCompletion?.handleError) return undefined;
+      const errorResult = chatCompletion.handleError(error, this._options);
+      if (!errorResult) return undefined;
+
+      return AgentRuntimeError.chat({
+        ...errorResult,
+        provider: this.id,
+      } as ChatCompletionErrorPayload);
+    }
+
+    /**
+     * @param precomputed - a caller that already asked {@link mapCustomProviderError} passes
+     *   its result here, so one failure never runs the provider's handler twice.
+     */
+    protected handleError(
+      error: any,
+      precomputed?: { customMapped: ChatCompletionErrorPayload | undefined },
+    ): ChatCompletionErrorPayload {
       const log = debug(`${this.logPrefix}:error`);
       log('handling error: %O', error);
 
@@ -1336,15 +1388,12 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         });
       }
 
-      if (chatCompletion?.handleError) {
+      const customMapped = precomputed
+        ? precomputed.customMapped
+        : this.mapCustomProviderError(error);
+      if (customMapped) {
         log('using custom error handler');
-        const errorResult = chatCompletion.handleError(error, this._options);
-
-        if (errorResult)
-          return AgentRuntimeError.chat({
-            ...errorResult,
-            provider: this.id,
-          } as ChatCompletionErrorPayload);
+        return customMapped;
       }
 
       if ('status' in (error as any)) {
