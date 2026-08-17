@@ -553,10 +553,8 @@ describe('admin.connectors.applyImmediate', () => {
     expect(result.publishError).toBeTruthy();
   });
 
-  it('update republishes an already-published connector', async () => {
+  it('update on a revised draft hard-fails visibly when the live probe cannot succeed', async () => {
     const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.aiAdmin });
-    // Seed draft with tools + publish via classic path so preflight can succeed when possible.
-    // applyImmediate update: soft/hard based on revision.
     const created = await caller.createDraft({
       credentialMode: 'none',
       displayName: 'Publishable Connector',
@@ -567,21 +565,26 @@ describe('admin.connectors.applyImmediate', () => {
       tools: [connectorToolFixture()],
       transport: 'http',
     });
-    // First publish may soft-fail if outbound preflight fails in test env — still exercise update path.
-    const first = await caller.applyImmediate({
-      displayName: 'Publishable Connector Renamed',
-      expectedDraftToken: created.draftToken,
-      expectedRevision: created.draft.revision,
-      id: created.draft.id,
-      mode: 'update',
-      reason: 'rename via applyImmediate',
+    // The update bumps the draft revision, so applyImmediate no longer soft-fails: the
+    // publish path runs the live connection probe first, and against the unreachable test
+    // endpoint that probe fails — which must surface as a stable code, never silently.
+    await expect(
+      caller.applyImmediate({
+        displayName: 'Publishable Connector Renamed',
+        expectedDraftToken: created.draftToken,
+        expectedRevision: created.draft.revision,
+        id: created.draft.id,
+        mode: 'update',
+        reason: 'rename via applyImmediate',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
     });
-    expect(first.draft.displayName).toBe('Publishable Connector Renamed');
-    // Either published or soft-failed with visible draft state (never silent).
-    expect(typeof first.published).toBe('boolean');
-    if (!first.published) {
-      expect(first.publishError).toBeTruthy();
-    }
+    // The rename itself landed — only the publish step was refused.
+    const after = await caller.get({ id: created.draft.id });
+    expect(after.draft.displayName).toBe('Publishable Connector Renamed');
+    expect(after.published).toBeNull();
   });
 
   it('denies callers without publish permission', async () => {
