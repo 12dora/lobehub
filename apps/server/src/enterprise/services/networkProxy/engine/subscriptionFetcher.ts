@@ -50,8 +50,6 @@ const SUBSCRIPTION_HOST_POLICY: OutboundPolicy = {
 export const OUTLET_UNAVAILABLE_FETCH_NOTE = 'outlet unavailable, fetched direct';
 
 const HTTP_STATUS_RE = /subscription fetch failed \((\d{3})\)/;
-const SHARE_LINK_RE = /^(?:ss|ssr|vmess|vless|trojan|hysteria2|hy2|tuic|anytls):\/\//mu;
-const CLASH_YAML_RE = /^\s*proxies\s*:/mu;
 
 export const makeSubscriptionIssue = (
   code: NetworkProxySubscriptionIssueCode,
@@ -297,17 +295,18 @@ const countNodesInPayload = (body: string): number | null => {
   return links.length > 0 ? links.length : null;
 };
 
-/** After a successful HTTP fetch: empty / unparseable bodies become lastIssue failures. */
+/**
+ * After a successful HTTP fetch. Only an EMPTY body is a verdict we can make here: mihomo accepts
+ * YAML, share-link lists and base64 bundles in shapes this counter does not fully understand, so
+ * anything non-empty that we cannot count is left to the engine (nodeCount unknown, no issue) —
+ * a heuristic `parse_failed` here would flag working subscriptions.
+ */
 export const classifySubscriptionPayload = (
   body: string,
-): { code: 'no_nodes' | 'parse_failed' | null; nodeCount: number | null } => {
-  const nodeCount = countNodesInPayload(body);
-  if (nodeCount && nodeCount > 0) return { code: null, nodeCount };
+): { code: 'no_nodes' | null; nodeCount: number | null } => {
   if (!body.trim()) return { code: 'no_nodes', nodeCount: 0 };
-  if (SHARE_LINK_RE.test(body) || CLASH_YAML_RE.test(body) || /^\s{0,2}-\s+name:/mu.test(body)) {
-    return { code: 'no_nodes', nodeCount: 0 };
-  }
-  return { code: 'parse_failed', nodeCount: null };
+  const nodeCount = countNodesInPayload(body);
+  return { code: null, nodeCount: nodeCount && nodeCount > 0 ? nodeCount : null };
 };
 
 const issueForFetchedSubscription = (fetched: {

@@ -166,6 +166,44 @@ describe('artifactManager.installFromStream', () => {
     );
   });
 
+  it('accepted engine: smoke-tests the temp file, then reports its real version on every read', async () => {
+    const script = Buffer.from('#!/bin/sh\necho "Mihomo Meta v9.9.9 test build"\n');
+    const spec: ArtifactSpec = {
+      compressed: 'none',
+      destName: 'mihomo-0000000000000000',
+      destParent: path.join(dataDir, 'engine', 'v1.19.30'),
+      downloadUrl: 'https://example.com/mihomo.gz',
+      kind: 'engine',
+      mode: 0o500,
+      sha256: '0'.repeat(64),
+      size: script.length,
+      version: 'v1.19.30',
+    };
+    setResolveArtifactSpecForTest(() => spec);
+    const installed = await artifactManager.installFromStream('engine', Readable.from(script), {
+      acceptMismatch: true,
+      compressed: 'none',
+      source: 'upload',
+    });
+    expect(installed.pinnedDigestMatch).toBe(false);
+    expect(installed.version).toBe('v9.9.9');
+    // Status / spawn-time reverify keep accepting it (marker bound to the manifest version) and
+    // keep reporting what it really is, not the pinned version.
+    resetArtifactCachesForTest();
+    const again = await artifactManager.resolveEngineBinary({ reverify: true });
+    expect(again).toMatchObject({ pinnedDigestMatch: false, source: 'upload', version: 'v9.9.9' });
+    // A broken accepted upload never replaces the working copy.
+    await expect(
+      artifactManager.installFromStream('engine', Readable.from(Buffer.from('not a binary')), {
+        acceptMismatch: true,
+        compressed: 'none',
+        source: 'upload',
+      }),
+    ).rejects.toBeTruthy();
+    resetArtifactCachesForTest();
+    expect(await artifactManager.resolveEngineBinary()).toMatchObject({ version: 'v9.9.9' });
+  });
+
   it('never accepts a mismatch for a download, even when asked', async () => {
     const body = Buffer.from('not-the-pinned-bytes');
     stubSpec(body.length, '0'.repeat(64));
@@ -289,10 +327,15 @@ describe('verify cache vs spawn re-verify', () => {
     expect(getDigestHashCount()).toBe(afterInstall);
     const dest = path.join(dataDir, 'geodata', 'test', 'geoip.metadb');
     const { materializeGeodataIntoRuntime, verifyPinnedFile } = await import('./artifacts');
+    // Copying into the engine home is a consumption path: it rehashes rather than trusting the
+    // (dev, ino, size, mtime) identity of the source file.
     await materializeGeodataIntoRuntime(path.join(dataDir, 'runtime'));
-    expect(getDigestHashCount()).toBe(afterInstall);
+    const afterMaterialize = getDigestHashCount();
+    expect(afterMaterialize).toBeGreaterThan(afterInstall);
+    await artifactManager.getStatus();
+    expect(getDigestHashCount()).toBe(afterMaterialize);
     await verifyPinnedFile(dest, sha256(body), { reverify: true });
-    expect(getDigestHashCount()).toBeGreaterThan(afterInstall);
+    expect(getDigestHashCount()).toBeGreaterThan(afterMaterialize);
   });
 
   it('refuses a mutated file on a later forced re-verify', async () => {

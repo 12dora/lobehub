@@ -118,6 +118,8 @@ const ArtifactUploadButton = memo<ArtifactUploadButtonProps>(
 
     const upload = useCallback(
       async (file: File) => {
+        // A new pick supersedes anything still pending from the previous one (hash or dialog).
+        const generation = ++generationRef.current;
         if (file.size > NETWORK_PROXY_LIMITS.UPLOAD_MAX_COMPRESSED_BYTES) {
           setState({
             errorKey: 'networkProxy.engine.uploadTooLarge',
@@ -136,7 +138,6 @@ const ArtifactUploadButton = memo<ArtifactUploadButtonProps>(
           return;
         }
 
-        const generation = ++generationRef.current;
         setState({ phase: 'hashing' });
         let local: { gzip: boolean; sha256: string };
         try {

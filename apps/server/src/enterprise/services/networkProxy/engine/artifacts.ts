@@ -206,7 +206,10 @@ export const acceptedDigestPath = (artifactPath: string): string => `${artifactP
 interface AcceptedDigestClaim {
   digest: string;
   kind: NetworkProxyArtifactKind;
-  version: string;
+  /** The pinned manifest version / geodata commit this acceptance was granted under. */
+  manifestVersion: string;
+  /** What the accepted file really is (engine `-v` output); the manifest version for data files. */
+  reportedVersion: string;
 }
 
 /**
@@ -228,10 +231,12 @@ export const setAcceptedDigestSecretsForTest = (
   acceptedDigestSecretsOverride = service;
 };
 
+type AcceptedDigestLookup = Pick<AcceptedDigestClaim, 'kind' | 'manifestVersion'>;
+
 const readAcceptedDigest = async (
   artifactPath: string,
-  claim: Omit<AcceptedDigestClaim, 'digest'>,
-): Promise<string | null> => {
+  claim: AcceptedDigestLookup,
+): Promise<{ digest: string; reportedVersion: string } | null> => {
   const secrets = acceptedDigestSecrets();
   if (!secrets) return null;
   try {
@@ -250,22 +255,21 @@ const readAcceptedDigest = async (
     const parsed = JSON.parse(await secrets.decrypt(sealed)) as Partial<AcceptedDigestClaim>;
     if (
       parsed.kind !== claim.kind ||
-      parsed.version !== claim.version ||
+      parsed.manifestVersion !== claim.manifestVersion ||
       typeof parsed.digest !== 'string' ||
-      !/^[\da-f]{64}$/u.test(parsed.digest)
+      !/^[\da-f]{64}$/u.test(parsed.digest) ||
+      typeof parsed.reportedVersion !== 'string'
     ) {
       return null;
     }
-    return parsed.digest;
+    return { digest: parsed.digest, reportedVersion: parsed.reportedVersion };
   } catch {
     return null;
   }
 };
 
-const writeAcceptedDigest = async (
-  artifactPath: string,
-  claim: AcceptedDigestClaim,
-): Promise<void> => {
+/** Writes the sealed marker to `target` (a staging path; the caller renames it into place). */
+const writeAcceptedDigest = async (target: string, claim: AcceptedDigestClaim): Promise<void> => {
   const secrets = acceptedDigestSecrets();
   if (!secrets) {
     return throwNetworkProxyError(
@@ -274,7 +278,6 @@ const writeAcceptedDigest = async (
     );
   }
   const sealed = await secrets.encrypt(JSON.stringify(claim));
-  const target = acceptedDigestPath(artifactPath);
   await removeIfPresent(target);
   const handle = await open(
     target,
@@ -298,12 +301,13 @@ const isAcceptableDigest = async (
   path: string,
   digest: string,
   expectedSha256: string,
-  claim: Omit<AcceptedDigestClaim, 'digest'> | undefined,
-): Promise<{ matched: boolean; ok: boolean }> => {
-  if (digest === expectedSha256) return { matched: true, ok: true };
-  if (!claim) return { matched: false, ok: false };
+  claim: AcceptedDigestLookup | undefined,
+): Promise<{ matched: boolean; ok: boolean; reportedVersion: string | null }> => {
+  if (digest === expectedSha256) return { matched: true, ok: true, reportedVersion: null };
+  if (!claim) return { matched: false, ok: false, reportedVersion: null };
   const accepted = await readAcceptedDigest(path, claim);
-  return { matched: false, ok: accepted !== null && accepted === digest };
+  const ok = accepted !== null && accepted.digest === digest;
+  return { matched: false, ok, reportedVersion: ok ? accepted.reportedVersion : null };
 };
 
 export const verifyPinnedFile = async (
@@ -311,10 +315,16 @@ export const verifyPinnedFile = async (
   expectedSha256: string,
   opts?: {
     /** Identifies the artifact so an operator-accepted digest marker can be honoured. */
-    accept?: Omit<AcceptedDigestClaim, 'digest'>;
+    accept?: AcceptedDigestLookup;
     reverify?: boolean;
   },
-): Promise<{ digest: string; identity: FileIdentity; pinnedDigestMatch: boolean }> => {
+): Promise<{
+  digest: string;
+  identity: FileIdentity;
+  pinnedDigestMatch: boolean;
+  /** Real version of an accepted mismatch (from its marker); null for a pinned match. */
+  reportedVersion: string | null;
+}> => {
   const stat = await lstat(path);
   if (stat.isSymbolicLink() || !stat.isFile()) {
     return throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH);
@@ -327,7 +337,12 @@ export const verifyPinnedFile = async (
       digestCache.delete(path);
       return throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH);
     }
-    return { digest: cached.digest, identity, pinnedDigestMatch: verdict.matched };
+    return {
+      digest: cached.digest,
+      identity,
+      pinnedDigestMatch: verdict.matched,
+      reportedVersion: verdict.reportedVersion,
+    };
   }
   if (opts?.reverify) spawnDigestVerifyCount += 1;
   const hashed = await hashNoFollow(path);
@@ -338,7 +353,11 @@ export const verifyPinnedFile = async (
   }
   digestCache.set(path, { digest: hashed.digest, identity: hashed.identity });
   if (opts?.reverify) await afterReverifyHook?.();
-  return { ...hashed, pinnedDigestMatch: verdict.matched };
+  return {
+    ...hashed,
+    pinnedDigestMatch: verdict.matched,
+    reportedVersion: verdict.reportedVersion,
+  };
 };
 
 /** Test seam: run after a successful forced re-verify (used to mutate the file between spawn attempts). */
@@ -558,20 +577,37 @@ const installVerifiedStream = async (
           throw error;
         }
       }
-      // The acceptance marker must describe exactly the file about to sit at `dest`. Sealing it
-      // needs the platform KEK — without one the mismatch is rejected before the rename.
-      if (!matched) {
+      // The acceptance marker must describe exactly the file about to sit at `dest`. It is staged
+      // next to the temp file and only swapped in after the artifact rename succeeded, so a
+      // failure leaves the previous artifact AND its marker untouched. Sealing needs the platform
+      // KEK — without one the mismatch is rejected before anything is replaced.
+      const markerTmp = matched
+        ? null
+        : `${acceptedDigestPath(dest)}.${process.pid}.${randomUUID()}.tmp`;
+      if (markerTmp) {
         try {
-          await writeAcceptedDigest(dest, { digest, kind: spec.kind, version });
+          await writeAcceptedDigest(markerTmp, {
+            digest,
+            kind: spec.kind,
+            manifestVersion: spec.version,
+            reportedVersion: version,
+          });
         } catch (error) {
           await removeIfPresent(tmpPath);
           throw error;
         }
       }
-      await rename(tmpPath, dest);
+      try {
+        await rename(tmpPath, dest);
+      } catch (error) {
+        await removeIfPresent(tmpPath);
+        if (markerTmp) await removeIfPresent(markerTmp);
+        throw error;
+      }
       await chmod(dest, spec.mode);
+      if (markerTmp) await rename(markerTmp, acceptedDigestPath(dest));
       // A matching file replacing an accepted one drops the stale marker.
-      if (matched) await removeIfPresent(acceptedDigestPath(dest));
+      else await removeIfPresent(acceptedDigestPath(dest));
       await rememberPinnedDigest(dest, digest);
       return {
         kind: spec.kind,
@@ -654,7 +690,7 @@ const resolveInstalledEngine = async (
   const dest = path.join(spec.destParent, spec.destName);
   if (!(await isRegularFile(dest))) return null;
   const verified = await verifyPinnedFile(dest, spec.sha256, {
-    accept: { kind: 'engine', version: spec.version },
+    accept: { kind: 'engine', manifestVersion: spec.version },
     reverify: opts?.reverify === true,
   });
   return {
@@ -665,7 +701,7 @@ const resolveInstalledEngine = async (
     smokeOutput: lastSmokeOutput,
     // An accepted mismatch can only come from a manual upload; a matching file may be either.
     source: verified.pinnedDigestMatch ? 'download' : 'upload',
-    version: spec.version,
+    version: verified.reportedVersion ?? spec.version,
   };
 };
 
@@ -677,7 +713,7 @@ const resolveInstalledGeodata = async (
   const dest = path.join(spec.destParent, spec.destName);
   if (!(await isRegularFile(dest))) return null;
   const verified = await verifyPinnedFile(dest, spec.sha256, {
-    accept: { kind, version: spec.version },
+    accept: { kind, manifestVersion: spec.version },
     reverify: opts?.reverify === true,
   });
   return {
@@ -751,11 +787,15 @@ export const materializeGeodataIntoRuntime = async (runtimeDir: string): Promise
   const geoipSrc = path.join(geoipSpec.destParent, geoipSpec.destName);
   const geositeSrc = path.join(geositeSpec.destParent, geositeSpec.destName);
   if (!(await isRegularFile(geoipSrc)) || !(await isRegularFile(geositeSrc))) return false;
+  // Full rehash (not the identity cache): these bytes are about to be copied into the engine's
+  // home directory, so an in-place edit that preserved size/mtime must not slip through.
   await verifyPinnedFile(geoipSrc, geoipSpec.sha256, {
-    accept: { kind: 'geoip', version: geoipSpec.version },
+    accept: { kind: 'geoip', manifestVersion: geoipSpec.version },
+    reverify: true,
   });
   await verifyPinnedFile(geositeSrc, geositeSpec.sha256, {
-    accept: { kind: 'geosite', version: geositeSpec.version },
+    accept: { kind: 'geosite', manifestVersion: geositeSpec.version },
+    reverify: true,
   });
   const geoip = { path: geoipSrc };
   const geosite = { path: geositeSrc };

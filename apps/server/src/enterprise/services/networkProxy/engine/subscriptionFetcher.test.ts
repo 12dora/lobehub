@@ -160,9 +160,11 @@ describe('resolveSubscriptionIssueCode', () => {
       'outlet_unavailable_fetched_direct',
     );
     expect(classifySubscriptionPayload('')).toEqual({ code: 'no_nodes', nodeCount: 0 });
-    expect(classifySubscriptionPayload('proxies:\n')).toEqual({ code: 'no_nodes', nodeCount: 0 });
-    expect(classifySubscriptionPayload('not a subscription')).toEqual({
-      code: 'parse_failed',
+    // Non-empty bodies we cannot count are left to the engine — never a heuristic failure
+    // (base64 bundles / YAML variants are valid mihomo provider files).
+    expect(classifySubscriptionPayload('proxies:\n')).toEqual({ code: null, nodeCount: null });
+    expect(classifySubscriptionPayload('dm1lc3M6Ly9leUoySWpvaU1pSjk=')).toEqual({
+      code: null,
       nodeCount: null,
     });
     expect(classifySubscriptionPayload('- name: hk-1\n  type: ss\n')).toEqual({

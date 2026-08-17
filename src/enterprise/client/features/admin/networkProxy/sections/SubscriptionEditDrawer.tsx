@@ -36,7 +36,7 @@ const SubscriptionIssueAlert = memo<{ issue: SubscriptionIssue }>(({ issue }) =>
   const label = (
     <Text
       className={informational ? styles.hintText : undefined}
-      role="alert"
+      role={informational ? 'status' : 'alert'}
       type={informational ? undefined : 'danger'}
     >
       {t(networkProxySubscriptionIssueKey(issue.code) as never, { detail: issue.detail ?? '' })}
