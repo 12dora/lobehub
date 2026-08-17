@@ -30,11 +30,6 @@ export {
 } from './sharedOAuthFormat';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
-  card: css`
-    width: 100%;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: 8px;
-  `,
   hint: css`
     font-size: 12px;
     color: ${cssVar.colorTextDescription};
@@ -377,10 +372,12 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   };
 
   return (
-    <Flexbox className={styles.card} gap={16} padding={16}>
+    <Flexbox gap={16}>
       <Flexbox horizontal align={'flex-start'} gap={12} justify={'space-between'}>
         <Flexbox gap={2}>
-          <Text weight={600}>{t('aiProviderSettings.sharedOAuth.title')}</Text>
+          <Text strong style={{ fontSize: 16 }}>
+            {t('aiProviderSettings.sharedOAuth.title')}
+          </Text>
           <Text className={styles.hint}>
             {t('aiProviderSettings.sharedOAuth.description', { name })}
           </Text>

@@ -1,7 +1,7 @@
 import { ConfigProvider } from 'antd';
 import dayjs from 'dayjs';
 import type { PropsWithChildren } from 'react';
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { isRtlLang } from 'rtl-detect';
 
 import Editor from '@/layout/GlobalProvider/Editor';
@@ -57,23 +57,42 @@ const Locale = memo<LocaleLayoutProps>(({ children, defaultLang, antdLocale }) =
   const [lang, setLang] = useState(defaultLang);
   const [locale, setLocale] = useState(antdLocale);
 
-  // Set dayjs locale immediately on mount (don't wait for i18n init) to avoid
-  // "a few seconds ago" showing in English when UI is already in Chinese
+  /**
+   * antd's built-in copy (date pickers, table filters, pagination, modal buttons…) comes from
+   * `ConfigProvider locale`. `getAntdLocale` throws for languages antd does not ship — keep the
+   * previous locale in that case instead of blanking the whole app back to en_US.
+   */
+  const applyAntdLocale = useCallback((lng: string) => {
+    void getAntdLocale(lng)
+      .then(setLocale)
+      .catch(() => {});
+  }, []);
+
+  // Seed dayjs AND antd on mount (don't wait for i18n init) to avoid "a few seconds ago" or
+  // "Select date" showing in English when the UI is already in Chinese. The `languageChanged`
+  // listener below cannot do this: with bundled resources i18next emits that event
+  // synchronously inside `init()`, i.e. before any effect subscribes to it.
   useEffect(() => {
-    if (defaultLang) updateDayjs(defaultLang);
-  }, [defaultLang]);
+    if (!defaultLang) return;
+    void updateDayjs(defaultLang);
+    applyAntdLocale(defaultLang);
+  }, [applyAntdLocale, defaultLang]);
 
   if (!i18n.instance.isInitialized)
     i18n.init().then(async () => {
+      // The effective language can differ from `defaultLang` (detection / fallback chain), and
+      // the `languageChanged` event for it has already fired — resolve it explicitly here.
       const resolvedLang = i18n.instance.language || defaultLang;
-      if (resolvedLang) await updateDayjs(resolvedLang);
+      if (!resolvedLang) return;
+      setLang(resolvedLang);
+      applyAntdLocale(resolvedLang);
+      await updateDayjs(resolvedLang);
     });
 
   useEffect(() => {
     const handleLang = async (lng: string) => {
       setLang(lng);
-      const newLocale = await getAntdLocale(lng);
-      setLocale(newLocale);
+      applyAntdLocale(lng);
       await updateDayjs(lng);
     };
 
@@ -81,7 +100,7 @@ const Locale = memo<LocaleLayoutProps>(({ children, defaultLang, antdLocale }) =
     return () => {
       i18n.instance.off('languageChanged', handleLang);
     };
-  }, [i18n]);
+  }, [applyAntdLocale, i18n]);
 
   const documentDir = isRtlLang(lang!) ? 'rtl' : 'ltr';
 

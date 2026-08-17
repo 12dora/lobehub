@@ -250,6 +250,7 @@ const CreateExportModal = memo<CreateExportModalProps>(
               <DatePicker.RangePicker
                 showTime
                 allowClear={false}
+                placeholder={[t('timeRange.from'), t('timeRange.to')]}
                 style={{ width: '100%' }}
                 value={range}
                 onChange={(vals) => {

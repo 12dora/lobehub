@@ -287,6 +287,7 @@ const RolesExtra = memo<{
             aria-label={tr('users.modals.roles.expiryOptional')}
             disabled={locked}
             disabledDate={(d) => d.isBefore(dayjs(), 'day')}
+            placeholder={tr('primitives.datePicker.placeholder')}
             value={expiresAt}
             onChange={(v) => onExpiresAtChange(v as Dayjs | null)}
           />

@@ -698,6 +698,7 @@ export default {
   'nav.skills': 'Skills',
   'nav.skillDetail': 'Skill detail',
   'nav.system': 'System',
+  'primitives.datePicker.placeholder': 'Select date',
   'nav.systemGeneral': 'General settings',
   'nav.systemStatus': 'Status monitoring',
   'nav.unifiedManagement': 'Unified management',

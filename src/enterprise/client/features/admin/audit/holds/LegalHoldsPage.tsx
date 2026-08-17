@@ -337,6 +337,7 @@ const LegalHoldsPage = memo(() => {
           <Text>{t('audit.holds.create.expiresAt')}</Text>
           <DatePicker
             showTime
+            placeholder={t('primitives.datePicker.placeholder')}
             style={{ width: '100%' }}
             value={newExpires}
             disabledDate={(current) => {

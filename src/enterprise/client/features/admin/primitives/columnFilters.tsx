@@ -235,6 +235,7 @@ const DateRangeFilterDropdown = ({
       <DatePicker.RangePicker
         allowClear
         getPopupContainer={(trigger) => trigger.parentElement ?? document.body}
+        placeholder={[t('timeRange.from'), t('timeRange.to')]}
         size="small"
         style={{ width: '100%' }}
         value={draft}

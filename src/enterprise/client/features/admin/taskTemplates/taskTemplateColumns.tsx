@@ -1,17 +1,26 @@
 'use client';
 
-import { Flexbox, Tag, Text } from '@lobehub/ui';
+import { Tag, Text, Tooltip } from '@lobehub/ui';
 import { Button, Switch } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import type { TFunction } from 'i18next';
 
 import { enumColumnFilter } from '../primitives/columnFilters';
+import { formatAdminDateTime } from '../users/utils';
 import { formatTaskTemplateSchedule } from './schedule';
 import { TaskTemplateDragHandle } from './SortableRow';
 import type { AdminTaskTemplateItem } from './types';
 
 const styles = createStaticStyles(({ css }) => ({
+  connectors: css`
+    overflow: hidden;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+
+    min-width: 0;
+  `,
   identity: css`
     display: flex;
     flex-direction: column;
@@ -25,6 +34,9 @@ const styles = createStaticStyles(({ css }) => ({
     align-items: center;
   `,
 }));
+
+/** Connector tags rendered inline before the rest collapses into a "+N" tag. */
+const CONNECTOR_TAG_LIMIT = 3;
 
 export interface BuildTaskTemplateColumnsParams {
   canDelete: boolean;
@@ -62,8 +74,10 @@ export const buildTaskTemplateColumns = ({
     ),
   },
   {
+    ellipsis: true,
     key: 'template',
     title: t('taskTemplateCatalog.list.columns.template'),
+    width: 240,
     render: (_, item) => (
       <div className={styles.identity}>
         <Text ellipsis strong>
@@ -77,15 +91,19 @@ export const buildTaskTemplateColumns = ({
   },
   {
     dataIndex: 'category',
+    ellipsis: true,
     key: 'category',
     title: t('taskTemplateCatalog.list.columns.category'),
+    width: 100,
     render: (value: AdminTaskTemplateItem['category']) =>
       t(`taskTemplateCatalog.category.${value}` as never),
   },
   {
     dataIndex: 'cronPattern',
+    ellipsis: true,
     key: 'schedule',
     title: t('taskTemplateCatalog.list.columns.schedule'),
+    width: 140,
     render: (value: string) =>
       formatTaskTemplateSchedule(value, t as never, resolvedLanguage || language),
   },
@@ -93,21 +111,36 @@ export const buildTaskTemplateColumns = ({
     dataIndex: 'connectors',
     key: 'connectors',
     title: t('taskTemplateCatalog.list.columns.connectors'),
-    render: (value: AdminTaskTemplateItem['connectors']) =>
-      value.length === 0 ? (
-        <Text type="secondary">{t('taskTemplateCatalog.list.connectors.none')}</Text>
-      ) : (
-        <Flexbox horizontal gap={4} wrap="wrap">
-          {value.map((connector) => (
-            <Tag key={`${connector.source}:${connector.identifier}`}>{connector.identifier}</Tag>
+    width: 160,
+    render: (value: AdminTaskTemplateItem['connectors']) => {
+      if (value.length === 0) {
+        return <Text type="secondary">{t('taskTemplateCatalog.list.connectors.none')}</Text>;
+      }
+      // Keep every row exactly one line tall: only the first few tags are rendered,
+      // the rest collapse into a "+N" tag that lists them on hover.
+      const visible = value.slice(0, CONNECTOR_TAG_LIMIT);
+      const overflow = value.slice(CONNECTOR_TAG_LIMIT);
+      return (
+        <div className={styles.connectors}>
+          {visible.map((connector) => (
+            <Tag key={`${connector.source}:${connector.identifier}`} size="small">
+              {connector.identifier}
+            </Tag>
           ))}
-        </Flexbox>
-      ),
+          {overflow.length > 0 ? (
+            <Tooltip title={overflow.map((connector) => connector.identifier).join(', ')}>
+              <Tag size="small">{`+${overflow.length}`}</Tag>
+            </Tooltip>
+          ) : null}
+        </div>
+      );
+    },
   },
   {
     dataIndex: 'enabled',
     key: 'enabled',
     title: t('taskTemplateCatalog.list.columns.enabled'),
+    width: 90,
     ...enumColumnFilter({
       options: [
         { label: t('taskTemplateCatalog.boolean.true'), value: 'true' },
@@ -126,20 +159,25 @@ export const buildTaskTemplateColumns = ({
   },
   {
     dataIndex: 'source',
+    ellipsis: true,
     key: 'source',
     title: t('taskTemplateCatalog.list.columns.source'),
+    width: 100,
     render: (value: AdminTaskTemplateItem['source']) =>
       t(`taskTemplateCatalog.source.${value}` as never),
   },
   {
     dataIndex: 'updatedAt',
+    ellipsis: true,
     key: 'updatedAt',
     title: t('taskTemplateCatalog.list.columns.updatedAt'),
-    render: (value: Date) => new Date(value).toLocaleString(),
+    width: 160,
+    render: (value: Date) => formatAdminDateTime(value),
   },
   {
     key: 'actions',
     title: t('taskTemplateCatalog.list.columns.actions'),
+    width: 130,
     render: (_, item) => (
       <div className={styles.rowActions}>
         {canUpdate ? (

@@ -2,7 +2,7 @@
 
 import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
 import type { TableColumnsType } from 'antd';
-import { createStaticStyles } from 'antd-style';
+import { createStaticStyles, cssVar } from 'antd-style';
 import type { TFunction } from 'i18next';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
@@ -32,6 +32,16 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 const ROLE_OPTIONS = Object.values(PLATFORM_SYSTEM_ROLES);
+
+/**
+ * The shared DataTable paints header cells with a translucent fill, which a `fixed` header
+ * cell would let the columns scrolling underneath bleed through. Repaint the same fill over
+ * an opaque base so the pinned action header stays readable.
+ */
+const FIXED_HEADER_CELL_STYLE = {
+  backgroundColor: cssVar.colorBgContainer,
+  backgroundImage: `linear-gradient(${cssVar.colorFillQuaternary}, ${cssVar.colorFillQuaternary})`,
+} as const;
 
 export interface BuildUsersListColumnsParams {
   actorRoles: readonly { name: string }[];
@@ -70,6 +80,7 @@ export const buildUsersListColumns = ({
   {
     key: 'identity',
     title: t('users.list.columns.identity'),
+    width: 220,
     render: (_, row) => (
       <div className={styles.identity}>
         <Avatar avatar={row.avatar ?? undefined} size={32} />
@@ -88,20 +99,25 @@ export const buildUsersListColumns = ({
   },
   {
     dataIndex: 'email',
+    ellipsis: true,
     key: 'email',
     title: t('users.list.columns.email'),
+    width: 220,
     render: (value: string | null) => value ?? '—',
   },
   {
     dataIndex: 'dingtalkTitle',
+    ellipsis: true,
     key: 'dingtalkTitle',
     title: t('users.list.columns.jobTitle'),
+    width: 140,
     render: (value: string | null) => (value?.trim() ? value : '—'),
   },
   {
     dataIndex: 'status',
     key: 'status',
     title: t('users.list.columns.status'),
+    width: 100,
     ...enumColumnFilter({
       options: [
         { label: t('users.status.active'), value: 'active' },
@@ -115,6 +131,7 @@ export const buildUsersListColumns = ({
     dataIndex: 'roles',
     key: 'roles',
     title: t('users.list.columns.roles'),
+    width: 180,
     ...enumColumnFilter({
       options: ROLE_OPTIONS.map((item) => ({
         label: t(`users.roles.${item}` as never, { defaultValue: item }),
@@ -139,7 +156,7 @@ export const buildUsersListColumns = ({
     dataIndex: 'providerIds',
     key: 'source',
     title: t('users.list.columns.source'),
-    width: 160,
+    width: 140,
     ...enumColumnFilter({
       options: [
         { label: t('users.source.local'), value: 'local' },
@@ -151,8 +168,10 @@ export const buildUsersListColumns = ({
   },
   {
     dataIndex: 'createdAt',
+    ellipsis: true,
     key: 'createdAt',
     title: t('users.list.columns.createdAt'),
+    width: 170,
     ...dateRangeColumnFilter({
       value: createdRange,
       onChange: handleCreatedRange,
@@ -161,14 +180,18 @@ export const buildUsersListColumns = ({
   },
   {
     dataIndex: 'lastActiveAt',
+    ellipsis: true,
     key: 'lastActiveAt',
     title: t('users.list.columns.lastActiveAt'),
+    width: 170,
     render: (value: Date | null) => formatAdminDateTime(value),
   },
   {
+    fixed: 'right',
     key: 'actions',
     title: t('users.list.columns.actions'),
-    width: 220,
+    width: 200,
+    onHeaderCell: () => ({ style: FIXED_HEADER_CELL_STYLE }),
     render: (_, row) => (
       <UsersListRowActions
         actorRoles={actorRoles}

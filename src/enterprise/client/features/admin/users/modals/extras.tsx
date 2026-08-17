@@ -45,6 +45,7 @@ export const BanExtraFields = memo<{
           aria-label={tr('users.modals.ban.expiryLabel')}
           disabled={locked}
           disabledDate={(d) => d.isBefore(dayjs(), 'day')}
+          placeholder={tr('primitives.datePicker.placeholder')}
           size="small"
           value={expiresAt}
           onChange={(v) => onExpiresAtChange(v as Dayjs | null)}

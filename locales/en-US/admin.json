@@ -2266,6 +2266,7 @@
   "sidebarLayout.conflict": "Sidebar layout was changed elsewhere. Reloading the latest version before you can save again.",
   "sidebarLayout.desc": "Choose whether each user customizes their own home sidebar or the platform manages it centrally.",
   "sidebarLayout.loadError": "Could not load sidebar layout.",
+  "primitives.datePicker.placeholder": "Select date",
   "sidebarLayout.mode.platform": "Platform-managed",
   "sidebarLayout.mode.user": "User-customized",
   "sidebarLayout.reload": "Reload",

@@ -2266,6 +2266,7 @@
   "sidebarLayout.conflict": "侧边栏布局已在别处更改。正在重新加载最新版本，之后才能再次保存。",
   "sidebarLayout.desc": "选择由用户自定义主页侧边栏，还是由平台统一托管。",
   "sidebarLayout.loadError": "无法加载侧边栏布局。",
+  "primitives.datePicker.placeholder": "选择日期",
   "sidebarLayout.mode.platform": "平台托管",
   "sidebarLayout.mode.user": "用户自定义",
   "sidebarLayout.reload": "重新加载",

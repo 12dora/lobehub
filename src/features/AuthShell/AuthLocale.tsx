@@ -1,8 +1,10 @@
 'use client';
 
 import { ConfigProvider } from 'antd';
-import { memo, type PropsWithChildren, useEffect, useState } from 'react';
+import { memo, type PropsWithChildren, useCallback, useEffect, useState } from 'react';
 import { isRtlLang } from 'rtl-detect';
+
+import { getAntdLocale } from '@/utils/locale';
 
 import { createAuthI18n } from './createAuthI18n';
 
@@ -13,10 +15,24 @@ interface AuthLocaleProps extends PropsWithChildren {
 const AuthLocale = memo<AuthLocaleProps>(({ children, defaultLang }) => {
   const [i18n] = useState(() => createAuthI18n(defaultLang));
   const [lang, setLang] = useState(defaultLang ?? 'en-US');
+  const [locale, setLocale] = useState<any>();
+
+  /** `getAntdLocale` throws for languages antd does not ship — keep the previous locale then. */
+  const applyAntdLocale = useCallback((lng: string) => {
+    void getAntdLocale(lng)
+      .then(setLocale)
+      .catch(() => {});
+  }, []);
 
   if (!i18n.instance.isInitialized) {
     i18n.init();
   }
+
+  // Seed antd's built-in copy on mount: i18next emits `languageChanged` synchronously inside
+  // `init()`, so the subscription below never sees the initial language.
+  useEffect(() => {
+    applyAntdLocale(lang);
+  }, [applyAntdLocale, lang]);
 
   useEffect(() => {
     const handleLang = (lng: string) => {
@@ -34,6 +50,7 @@ const AuthLocale = memo<AuthLocaleProps>(({ children, defaultLang }) => {
   return (
     <ConfigProvider
       direction={documentDir}
+      locale={locale}
       theme={{
         components: {
           Button: {
