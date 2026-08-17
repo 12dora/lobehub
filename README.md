@@ -85,6 +85,8 @@ docker compose logs app | grep -i bootstrap
 
 增强功能默认全部开启；如需关闭某项，把对应变量设为 `0`：`ENABLE_PLATFORM_ADMIN`（管理面板）、`ENABLE_PLATFORM_MANAGED_AI`、`ENABLE_PLATFORM_MANAGED_SKILLS`、`ENABLE_PLATFORM_MANAGED_CONNECTORS`、`ENABLE_PLATFORM_MANAGED_AGENTS`、`ENABLE_PLATFORM_SETTINGS_POLICY`、`ENABLE_RUNTIME_BRANDING`、`ENABLE_DATABASE_OIDC`。使用数据库配置的登录方式时请保持 `AUTH_SSO_PROVIDERS` 为空。
 
+**更小的部署**：`docker compose up -d` 仍是今天的栈（app + ParadeDB + Redis + 对象存储）。SearXNG 用 `docker compose --profile search up -d` 另加；只要数据库时用 `docker compose -f docker-compose.minimal.yml up -d`。模块预设 `LOBE_MODULE_PRESET=minimal|standard|full`（默认 full，只关不开）。堆上限 `LOBE_NODE_HEAP_MB` 由 compose 注入 1536（裸 `docker run` 不设则不封顶），见 [`docs/enterprise/modules.md`](./docs/enterprise/modules.md)。
+
 升级：`docker compose pull && docker compose up -d`（迁移自动执行）。镜像标签：`latest`、`1.0`、`1.0.0`，支持 `linux/amd64` 与 `linux/arm64`（Apple 芯片的 Mac 通过 Docker Desktop 直接使用 arm64 镜像）。完整示例见 [`docker-compose/enhanced/`](./docker-compose/enhanced/)。
 
 ## AI 一键部署提示词

@@ -113,13 +113,25 @@ ${protocol} ${ip} ${port} ${user} ${pass}
   console.log('-------------------------------------');
 };
 
+// Append --max-old-space-size only when LOBE_NODE_HEAP_MB is explicitly set. 0 = off.
+const applyHeapCap = (env) => {
+  const raw = env.LOBE_NODE_HEAP_MB;
+  if (!raw) return env;
+  const heapMb = Number.parseInt(raw, 10);
+  if (!Number.isFinite(heapMb) || heapMb <= 0) return env;
+  const current = env.NODE_OPTIONS || '';
+  if (/(?:^|\s)--max-old-space-size(?:=|\s)/.test(current)) return env;
+  return { ...env, NODE_OPTIONS: `${current} --max-old-space-size=${heapMb}`.trim() };
+};
+
 // Function to execute a script with child process spawn
 const runScript = (scriptPath, useProxy = false) => {
   const command = useProxy
     ? ['/bin/proxychains', '-q', '/bin/node', scriptPath]
     : ['/bin/node', scriptPath];
+  const childEnv = applyHeapCap(process.env);
   return new Promise((resolve, reject) => {
-    const process = spawn(command.shift(), command, { stdio: 'inherit' });
+    const process = spawn(command.shift(), command, { env: childEnv, stdio: 'inherit' });
     process.on('close', (code) =>
       code === 0 ? resolve() : reject(new Error(`🔴 Process exited with code ${code}`)),
     );
@@ -224,26 +236,33 @@ const runServer = async () => {
   console.log('-------------------------------------');
 
   if (process.env.DATABASE_DRIVER) {
-    try {
-      await fs.access(DB_MIGRATION_SCRIPT_PATH);
+    if (process.env.SKIP_DB_MIGRATION === '1') {
+      console.log('⚠️ DB Migration: SKIP_DB_MIGRATION=1. Skipping DB migration.');
+      console.log('-------------------------------------');
+    } else {
+      try {
+        await fs.access(DB_MIGRATION_SCRIPT_PATH);
 
-      await runScript(DB_MIGRATION_SCRIPT_PATH);
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        console.log(
-          `⚠️ DB Migration: Not found ${DB_MIGRATION_SCRIPT_PATH}. Skipping DB migration. Ensure to migrate database manually.`,
-        );
-        console.log('-------------------------------------');
-      } else {
-        console.error('❌ Error during DB migration:');
-        console.error(err);
-        process.exit(1);
+        await runScript(DB_MIGRATION_SCRIPT_PATH);
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          console.log(
+            `⚠️ DB Migration: Not found ${DB_MIGRATION_SCRIPT_PATH}. Skipping DB migration. Ensure to migrate database manually.`,
+          );
+          console.log('-------------------------------------');
+        } else {
+          console.error('❌ Error during DB migration:');
+          console.error(err);
+          process.exit(1);
+        }
       }
     }
   }
 
-  // Start gateway in background after server is ready
-  startGateway();
+  // ENABLE_BOT_GATEWAY=0 skips the launcher POST (G2's handler also no-ops when bots is off).
+  if (process.env.ENABLE_BOT_GATEWAY !== '0') {
+    startGateway();
+  }
 
   // Create QStash schedule for workflow task dispatching
   createQstashSchedule();

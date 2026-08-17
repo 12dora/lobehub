@@ -1,0 +1,96 @@
+# Smaller stack: app + ParadeDB + OIDC LKG init. No Redis, rustfs, or SearXNG.
+#   docker compose -f docker-compose.minimal.yml up -d
+# Uploads stay off (`enableUploadFileToServer` is false without S3).
+# Multi-replica config invalidation needs Redis — do not scale this file.
+name: lobehub-enhanced-minimal
+services:
+  lobehub:
+    image: ghcr.io/12dora/lobehub-enhanced:latest
+    container_name: lobehub-enhanced
+    ports:
+      - '${LOBE_PORT:-3210}:3210'
+    depends_on:
+      platform-oidc-lkg-init:
+        condition: service_completed_successfully
+      postgresql:
+        condition: service_healthy
+    environment:
+      - 'APP_URL=${APP_URL}'
+      - 'INTERNAL_APP_URL=http://localhost:3210'
+      - 'DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${LOBE_DB_NAME:-lobechat}'
+      - 'KEY_VAULTS_SECRET=${KEY_VAULTS_SECRET}'
+      - 'AUTH_SECRET=${AUTH_SECRET}'
+      - 'AUTH_COOKIE_PREFIX=${AUTH_COOKIE_PREFIX:-lobehub-enhanced}'
+      - 'AUTH_SSO_PROVIDERS=${AUTH_SSO_PROVIDERS:-}'
+      - 'PLATFORM_MASTER_KEY=${PLATFORM_MASTER_KEY}'
+      - 'ENABLE_PLATFORM_ADMIN=${ENABLE_PLATFORM_ADMIN:-}'
+      - 'ENABLE_PLATFORM_MANAGED_AI=${ENABLE_PLATFORM_MANAGED_AI:-}'
+      - 'ENABLE_PLATFORM_MANAGED_SKILLS=${ENABLE_PLATFORM_MANAGED_SKILLS:-}'
+      - 'ENABLE_PLATFORM_MANAGED_CONNECTORS=${ENABLE_PLATFORM_MANAGED_CONNECTORS:-}'
+      - 'ENABLE_PLATFORM_MANAGED_AGENTS=${ENABLE_PLATFORM_MANAGED_AGENTS:-}'
+      - 'ENABLE_PLATFORM_SETTINGS_POLICY=${ENABLE_PLATFORM_SETTINGS_POLICY:-}'
+      - 'ENABLE_RUNTIME_BRANDING=${ENABLE_RUNTIME_BRANDING:-}'
+      - 'ENABLE_DATABASE_OIDC=${ENABLE_DATABASE_OIDC:-}'
+      - 'LOBE_MODULE_PRESET=${LOBE_MODULE_PRESET:-minimal}'
+      - 'LOBE_MODULES_DISABLED=${LOBE_MODULES_DISABLED:-}'
+      # Documented compose default. Unset (raw `docker run`) = no heap cap.
+      - 'LOBE_NODE_HEAP_MB=${LOBE_NODE_HEAP_MB:-1024}'
+      - 'ENABLE_BOT_GATEWAY=${ENABLE_BOT_GATEWAY:-}'
+      - 'SKIP_DB_MIGRATION=${SKIP_DB_MIGRATION:-}'
+      - 'PLATFORM_OIDC_RESTART_MODE=${PLATFORM_OIDC_RESTART_MODE:-supervisor}'
+      - 'PLATFORM_OIDC_LKG_PATH=${PLATFORM_OIDC_LKG_PATH:-/app/.lobe/platform-oidc-lkg.v1.json}'
+      - 'BOOTSTRAP_SUPER_ADMIN_EMAIL=${BOOTSTRAP_SUPER_ADMIN_EMAIL:-}'
+      - 'BOOTSTRAP_ALLOW_CREATE=${BOOTSTRAP_ALLOW_CREATE:-1}'
+      - 'BOOTSTRAP_SUPER_ADMIN_PASSWORD=${BOOTSTRAP_SUPER_ADMIN_PASSWORD:-}'
+      - 'S3_ENDPOINT=${S3_ENDPOINT:-}'
+      - 'S3_PUBLIC_DOMAIN=${S3_PUBLIC_DOMAIN:-}'
+      - 'REDIS_URL=${REDIS_URL:-}'
+      - 'SEARXNG_URL=${SEARXNG_URL:-}'
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - 'platform-oidc-lkg:/app/.lobe'
+    restart: always
+    networks:
+      - lobe-network
+
+  postgresql:
+    image: paradedb/paradedb:latest-pg17
+    container_name: lobehub-enhanced-postgres
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - 'postgres-data:/var/lib/postgresql/data'
+    command: ['postgres', '-c', 'shared_preload_libraries=pg_search']
+    environment:
+      - 'POSTGRES_DB=${LOBE_DB_NAME:-lobechat}'
+      - 'POSTGRES_PASSWORD=${POSTGRES_PASSWORD}'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - lobe-network
+
+  platform-oidc-lkg-init:
+    image: busybox:latest
+    container_name: lobehub-enhanced-lkg-init
+    command: sh -c 'chown 1001:1001 /lkg && chmod 0700 /lkg'
+    volumes:
+      - 'platform-oidc-lkg:/lkg'
+    restart: 'no'
+    networks:
+      - lobe-network
+
+networks:
+  lobe-network:
+    driver: bridge
+
+volumes:
+  platform-oidc-lkg:
+    driver: local
+  postgres-data:
+    driver: local

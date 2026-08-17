@@ -36,5 +36,6 @@ AIHub 是基于 LobeHub 的企业内部版二次开发。本目录是这套二�
 - **[network-proxy.md](./network-proxy.md)** — 网络代理：后装 mihomo 引擎（订阅 / 多协议节点 / 全局单出口）+ 按 AI 服务商 / 网站功能的作用域开关、失败兜底策略、通用设置「网络代理」Tab。
 - **[infra-settings.md](./infra-settings.md)** — 对象存储 / 邮件服务：管理端可编辑、运行时生效；按卡片 all-or-nothing，环境变量回退。
 - **[chatgpt-web-provider.md](./chatgpt-web-provider.md)** — ChatGPT Web (`chatgptweb`) 服务商：curl-impersonate 传输层环境变量、开发机 / 镜像准备、共享账号接入、能力范围与已知限制。
+- **[modules.md](./modules.md)** — 可选模块 / 部署分档：预设、环境变量、Compose profiles、关闭后的返回值、镜像体积。
 - **[runbooks/](./runbooks/)** — 运维手册：回滚、灾难恢复、Prometheus 告警、上线预检、安全验收。
 - **[../security/](../security/)** — 企业威胁模型与 Vault 密钥提供方设计。

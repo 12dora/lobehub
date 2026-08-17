@@ -16,6 +16,9 @@ services:
         condition: service_healthy
       rustfs-init:
         condition: service_completed_successfully
+      searxng:
+        condition: service_started
+        required: false
     environment:
       # --- core ---
       - 'APP_URL=${APP_URL}'
@@ -45,6 +48,15 @@ services:
       - 'ENABLE_RUNTIME_BRANDING=${ENABLE_RUNTIME_BRANDING:-}'
       - 'ENABLE_DATABASE_OIDC=${ENABLE_DATABASE_OIDC:-}'
 
+      # --- module presets (see docs/enterprise/modules.md) ---
+      # Default `full` = today's behaviour (every module on). env can only disable.
+      - 'LOBE_MODULE_PRESET=${LOBE_MODULE_PRESET:-full}'
+      - 'LOBE_MODULES_DISABLED=${LOBE_MODULES_DISABLED:-}'
+      # Documented compose default. Unset (raw `docker run`) = no heap cap.
+      - 'LOBE_NODE_HEAP_MB=${LOBE_NODE_HEAP_MB:-1536}'
+      - 'ENABLE_BOT_GATEWAY=${ENABLE_BOT_GATEWAY:-}'
+      - 'SKIP_DB_MIGRATION=${SKIP_DB_MIGRATION:-}'
+
       # --- database-driven OIDC activation ---
       # `supervisor` enables the admin "restart to activate" button; the last-known-good
       # snapshot below must live on a persistent volume.
@@ -66,8 +78,7 @@ services:
       # S3_ENDPOINT is used for BOTH the server-side SDK calls and the presigned URLs
       # handed to the browser (S3_SET_ACL=0 means every read is presigned), so it must
       # resolve from inside this container AND from the user's browser. Use the host
-      # address that publishes the rustfs port below — never `localhost`, which inside
-      # the app container points at the app itself.
+      # address that publishes the rustfs port below — never `localhost`.
       - 'S3_ENDPOINT=${S3_ENDPOINT:?set S3_ENDPOINT to http://<your-server-ip-or-domain>:9000 — localhost will not work}'
       - 'S3_PUBLIC_DOMAIN=${S3_PUBLIC_DOMAIN:?set S3_PUBLIC_DOMAIN to the same host address as S3_ENDPOINT}'
       - 'S3_BUCKET=lobe'
@@ -82,6 +93,9 @@ services:
       - 'REDIS_URL=redis://redis:6379'
       - 'REDIS_PREFIX=lobehub'
       - 'REDIS_TLS=0'
+
+      # --- built-in search (empty = searxng off; other providers still work) ---
+      - 'SEARXNG_URL=${SEARXNG_URL:-}'
     env_file:
       # Anything extra you put in .env (proxies, CHATGPT_WEB_*, …) reaches the container.
       - path: .env
@@ -92,6 +106,12 @@ services:
     restart: always
     networks:
       - lobe-network
+    # Resource hints — uncomment one tier. Heap is LOBE_NODE_HEAP_MB (default 1536).
+    # minimal  (1–2C / 2–4G, heap 1024):  mem_limit: 4g    cpus: '2.0'
+    # standard (2–4C / 4–8G, heap 1536):  mem_limit: 8g    cpus: '4.0'
+    # full     (4C+  / 8G+,  heap 2048):  mem_limit: 12g   cpus: '4.0'
+    # mem_limit: 8g
+    # cpus: '4.0'
 
   postgresql:
     # ParadeDB bundles pgvector + BM25 search; plain `postgres` cannot run the migrations.
@@ -167,6 +187,18 @@ services:
     # The bucket name is fixed at `lobe` so it always matches the ARN in bucket.config.json.
     command: -c ' set -eu; mc alias set rustfs "http://rustfs:9000" "${RUSTFS_ACCESS_KEY}" "${RUSTFS_SECRET_KEY}"; mc mb "rustfs/lobe" --ignore-existing; mc anonymous set-json "/bucket.config.json" "rustfs/lobe"; '
     restart: 'no'
+    networks:
+      - lobe-network
+
+  searxng:
+    profiles: [search]
+    image: searxng/searxng
+    container_name: lobehub-enhanced-searxng
+    volumes:
+      - './searxng-settings.yml:/etc/searxng/settings.yml'
+    environment:
+      - 'SEARXNG_SETTINGS_FILE=/etc/searxng/settings.yml'
+    restart: always
     networks:
       - lobe-network
 

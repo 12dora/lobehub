@@ -167,6 +167,9 @@ COPY --from=builder /deps/node_modules/drizzle-orm /app/node_modules/drizzle-orm
 COPY --from=builder /app/scripts/serverLauncher/startServer.js /app/startServer.js
 COPY --from=builder /app/scripts/_shared /app/scripts/_shared
 
+# @vitejs/devtools is a build-time leak (require.resolve fails at runtime).
+RUN find /app/node_modules/.pnpm -maxdepth 1 -name '@vitejs+devtools*' -exec rm -rf {} + || true
+
 RUN set -e && \
     addgroup -S -g 1001 nodejs && \
     adduser -D -G nodejs -H -S -h /app -u 1001 nextjs && \
@@ -198,7 +201,12 @@ ENV APP_URL="" \
     DEFAULT_AGENT_CONFIG="" \
     SYSTEM_AGENT="" \
     FEATURE_FLAGS="" \
-    PROXY_URL=""
+    PROXY_URL="" \
+    LOBE_MODULE_PRESET="" \
+    LOBE_MODULES_DISABLED="" \
+    LOBE_NODE_HEAP_MB="" \
+    ENABLE_BOT_GATEWAY="" \
+    SKIP_DB_MIGRATION=""
 
 # ChatGPT Web provider transport (browser-fingerprinted curl, shipped in this image)
 ENV CHATGPT_WEB_CURL_IMPERSONATE_BIN="/usr/local/bin/curl-impersonate" \

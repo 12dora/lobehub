@@ -17,6 +17,27 @@ openssl rand -base64 32 # PLATFORM_MASTER_KEY
 docker compose up -d
 ```
 
+### Module presets / smaller deployments
+
+`docker compose up -d` is today's stack: app + ParadeDB + Redis + rustfs.
+SearXNG is new and opt-in (`--profile search` or `COMPOSE_PROFILES=search`).
+A smaller box uses the sibling file:
+
+```bash
+docker compose -f docker-compose.minimal.yml up -d
+```
+
+| Stack | How to start | Sidecars |
+| --- | --- | --- |
+| today | `docker compose up -d` | Redis + S3 |
+| + search | `docker compose --profile search up -d` | Redis + S3 + SearXNG |
+| minimal | `docker compose -f docker-compose.minimal.yml up -d` | ParadeDB only |
+
+Set `LOBE_MODULE_PRESET` to match (`minimal` / `standard` / `full`). Compose
+injects `LOBE_NODE_HEAP_MB=1536` (1024 on the minimal file) — a raw
+`docker run` without that variable does not cap the heap. See
+[docs/enterprise/modules.md](../../docs/enterprise/modules.md).
+
 Database migrations run automatically when the app container starts.
 
 **Every enhancement is on by default** — the admin console, managed AI / skills / connectors /
@@ -45,7 +66,8 @@ Notes worth reading before you go to production:
   cannot be `http://rustfs:9000` (the browser cannot resolve it). Use the host address that
   publishes `RUSTFS_PORT` — `http://192.168.1.20:9000`, or a real hostname such as
   `https://files.example.com` if you terminate TLS in front of it — and set `S3_PUBLIC_DOMAIN` to
-  the same value. Compose refuses to start while either is unset.
+  the same value. Compose (`docker-compose.yml`) refuses to start while either is unset. The
+  minimal file leaves both empty and the app disables server-side uploads.
 - **The bucket name is fixed at `lobe`**, because `bucket.config.json` grants public reads on
   `arn:aws:s3:::lobe/*`. Change both together if you really need a different name.
 - **`PLATFORM_MASTER_KEY` is not recoverable.** Back it up. Every stored platform secret is
