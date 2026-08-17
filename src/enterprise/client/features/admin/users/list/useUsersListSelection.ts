@@ -43,7 +43,7 @@ export const useUsersListSelection = ({
   const rowSelection: TableRowSelection<AdminUserListItem> = {
     // Without an explicit width the fixed table layout splits the leftover `scroll.x`
     // evenly across width-less columns, leaving ~100px for a 16px checkbox.
-    columnWidth: 48,
+    columnWidth: 40,
     getCheckboxProps: (row) => ({
       disabled: row.id === currentUserId,
       title: row.id === currentUserId ? selfActionDisabledTitle : undefined,

@@ -70,7 +70,7 @@ export const buildUsersListColumns = ({
   {
     key: 'identity',
     title: t('users.list.columns.identity'),
-    width: 220,
+    width: 200,
     render: (_, row) => (
       <div className={styles.identity}>
         <Avatar avatar={row.avatar ?? undefined} size={32} />
@@ -92,7 +92,7 @@ export const buildUsersListColumns = ({
     ellipsis: true,
     key: 'email',
     title: t('users.list.columns.email'),
-    width: 220,
+    width: 230,
     render: (value: string | null) => value ?? '—',
   },
   {
@@ -100,14 +100,14 @@ export const buildUsersListColumns = ({
     ellipsis: true,
     key: 'dingtalkTitle',
     title: t('users.list.columns.jobTitle'),
-    width: 140,
+    width: 110,
     render: (value: string | null) => (value?.trim() ? value : '—'),
   },
   {
     dataIndex: 'status',
     key: 'status',
     title: t('users.list.columns.status'),
-    width: 100,
+    width: 90,
     ...enumColumnFilter({
       options: [
         { label: t('users.status.active'), value: 'active' },
@@ -121,7 +121,7 @@ export const buildUsersListColumns = ({
     dataIndex: 'roles',
     key: 'roles',
     title: t('users.list.columns.roles'),
-    width: 180,
+    width: 130,
     ...enumColumnFilter({
       options: ROLE_OPTIONS.map((item) => ({
         label: t(`users.roles.${item}` as never, { defaultValue: item }),
@@ -146,7 +146,7 @@ export const buildUsersListColumns = ({
     dataIndex: 'providerIds',
     key: 'source',
     title: t('users.list.columns.source'),
-    width: 140,
+    width: 100,
     ...enumColumnFilter({
       options: [
         { label: t('users.source.local'), value: 'local' },
@@ -161,7 +161,7 @@ export const buildUsersListColumns = ({
     ellipsis: true,
     key: 'createdAt',
     title: t('users.list.columns.createdAt'),
-    width: 170,
+    width: 150,
     ...dateRangeColumnFilter({
       value: createdRange,
       onChange: handleCreatedRange,
@@ -173,14 +173,14 @@ export const buildUsersListColumns = ({
     ellipsis: true,
     key: 'lastActiveAt',
     title: t('users.list.columns.lastActiveAt'),
-    width: 170,
+    width: 150,
     render: (value: Date | null) => formatAdminDateTime(value),
   },
   {
     fixed: 'right',
     key: 'actions',
     title: t('users.list.columns.actions'),
-    width: 200,
+    width: 170,
     render: (_, row) => (
       <UsersListRowActions
         actorRoles={actorRoles}
