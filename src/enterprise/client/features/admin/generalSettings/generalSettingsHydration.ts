@@ -3,6 +3,8 @@
  * Prevents SWR/server identity churn from silently wiping unsaved edits.
  */
 
+import { normalizeEmailDomainAllowlist } from '@/types/platform/authSettings';
+
 export interface GeneralSettingsDraftSnapshot {
   emailDomainAllowlistEnabled: boolean;
   emailDomainText: string;
@@ -18,6 +20,12 @@ export const fingerprintGeneralSettingsDraft = (value: GeneralSettingsDraftSnaps
     value.emailDomainAllowlistEnabled ? '1' : '0',
     value.emailDomainText,
   ].join('|');
+
+export const normalizedDraftFingerprint = (draft: GeneralSettingsDraftSnapshot): string =>
+  fingerprintGeneralSettingsDraft({
+    ...draft,
+    emailDomainText: normalizeEmailDomainAllowlist(draft.emailDomainText).join('\n'),
+  });
 
 export const decideGeneralSettingsHydration = (params: {
   baselineFp: string | null;
