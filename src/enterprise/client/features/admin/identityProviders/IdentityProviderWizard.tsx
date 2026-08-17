@@ -1,15 +1,10 @@
 'use client';
 
-import {
-  DEFAULT_IDP_BUTTON_LABEL,
-  DINGTALK_ALLOWED_CORPS_MAX,
-  isValidDingTalkProviderKey,
-  type PlatformIdentityProviderDraft,
-} from '@lobechat/types';
+import { isValidDingTalkProviderKey, type PlatformIdentityProviderDraft } from '@lobechat/types';
 import { copyToClipboard, Flexbox, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
 import { AnimatePresence, m, useReducedMotion } from 'motion/react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
@@ -18,14 +13,9 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 
 import { openReasonModal } from '../users/modals/openReasonModal';
 import {
-  boundIdentityProviderCorpLabel,
   buildIdentityProviderTestFailureMessage,
-  classifyIdentityProviderWorkflowError,
-  extractIdentityProviderTestErrorCode,
   type IdentityProviderCallbackUrls,
   type IdentityProviderCreateDraftSeed,
-  identityProviderTestErrorKey,
-  IdentityProviderTestPopupBlockedError,
   isFixedProtocolIdentityProviderType,
   isIdentityProviderDraftWorkflowReady,
   openIdentityProviderTestPopup,
@@ -42,9 +32,7 @@ import {
 } from './IdentityProviderWizardNavigation';
 import {
   canPersistIdentityProviderDraft,
-  createIdentityProviderPersistGate,
   formatIdentityProviderAutoSavedAt,
-  IDENTITY_PROVIDER_AUTOSAVE_DEBOUNCE_MS,
   type IdentityProviderPersistRequest,
   type IdentityProviderPersistResult,
   resolveIdentityProviderSecretMutation,
@@ -52,54 +40,17 @@ import {
   toWritableIdentityProviderFields,
 } from './persist';
 import { getIdentityProviderStatusPresentation } from './statusPresentation';
-import {
-  BasicStep,
-  ClaimsStep,
-  ClientStep,
-  DiscoveryStep,
-  type EditableDraft,
-  PolicyStep,
-  PublishStep,
-} from './steps';
+import type { EditableDraft } from './steps';
 import { identityProviderStyles as styles } from './styles';
+import { useDingTalkCorpCapture } from './useDingTalkCorpCapture';
+import { useIdentityProviderAutosave } from './useIdentityProviderAutosave';
 import { useIdentityProviderTestResult } from './useIdentityProviders';
 import { useUnsavedIdentityProviderGuard } from './useUnsavedIdentityProviderGuard';
-
-const fromSeed = (seed: IdentityProviderCreateDraftSeed): EditableDraft => ({
-  autoProvision: true,
-  buttonLabel: seed.buttonLabel,
-  claimMapping: structuredClone(seed.claimMapping),
-  clientId: '',
-  dingtalkAllowedCorps: [],
-  displayName: '',
-  domainAllowlist: [],
-  groupRoleMapping: {},
-  icon: seed.icon,
-  issuer: seed.issuer,
-  providerKey: '',
-  scopes: [...seed.scopes],
-  type: seed.type,
-  usePkce: true,
-});
-
-const fromProvider = (provider: PlatformIdentityProviderDraft): EditableDraft => ({
-  autoProvision: provider.autoProvision,
-  buttonLabel: provider.buttonLabel,
-  claimMapping: structuredClone(provider.claimMapping),
-  clientId: provider.clientId ?? '',
-  dingtalkAllowedCorps: provider.dingtalkAllowedCorps.map((entry) => ({ ...entry })),
-  displayName: provider.displayName,
-  domainAllowlist: [...provider.domainAllowlist],
-  // Preserve existing mapping across unrelated edits; Policy UI edits remain out of scope
-  // until a dedicated group-mapping editor ships. Runtime enforces non-empty maps at login.
-  groupRoleMapping: { ...provider.groupRoleMapping },
-  icon: provider.icon,
-  issuer: provider.issuer ?? '',
-  providerKey: provider.providerKey,
-  scopes: [...provider.scopes],
-  type: provider.type,
-  usePkce: true,
-});
+import { resolveDingTalkCaptureBlockedReason } from './wizardCaptureGuard';
+import { DEFAULT_IDENTITY_PROVIDER_SEED, fromProvider, fromSeed } from './wizardDraft';
+import { resolveIdentityProviderWizardErrorMessage } from './wizardErrorMessage';
+import { WizardStepBody } from './WizardStepBody';
+import { computeIdentityProviderStepStates } from './wizardStepStates';
 
 interface IdentityProviderWizardProps {
   authMethod: AdminReauthAuthMethod;
@@ -153,22 +104,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         ? fromProvider(provider)
         : createSeed
           ? fromSeed(createSeed)
-          : fromSeed({
-              buttonLabel: DEFAULT_IDP_BUTTON_LABEL,
-              claimMapping: {
-                dingtalkTitle: [],
-                dingtalkUserId: [],
-                email: ['email'],
-                name: ['name', 'preferred_username'],
-                picture: ['picture'],
-                subject: ['sub'],
-              },
-              icon: null,
-              issuer: '',
-              scopes: ['openid', 'profile', 'email'],
-              type: 'generic_oidc',
-              usePkce: true,
-            }),
+          : fromSeed(DEFAULT_IDENTITY_PROVIDER_SEED),
     );
     const [claimJson, setClaimJson] = useState(() => JSON.stringify(draft.claimMapping, null, 2));
     const [jsonErrors, setJsonErrors] = useState({ claims: false });
@@ -196,15 +132,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const providerRef = useRef(provider);
     providerRef.current = provider;
     const preserveDraftOnRefreshRef = useRef(false);
-    const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const persistGateRef = useRef(createIdentityProviderPersistGate());
-    const persistLatestRef = useRef<
-      (input: IdentityProviderPersistRequest) => Promise<IdentityProviderPersistResult>
-    >(async () => 'clean');
     const [lastAutoSavedAt, setLastAutoSavedAt] = useState<Date | null>(null);
-    // The DingTalk login that captured an organisation is the same server flow as the
-    // pre-publish safe-login test; the attempt id below marks which entry point started it.
-    const capturedAttemptRef = useRef<string | null>(null);
     /** Attempt id of the in-flight/last organisation capture (vs a plain safe-login test). */
     const [captureAttemptId, setCaptureAttemptId] = useState<string | null>(null);
     const baseline = useMemo(
@@ -274,57 +202,13 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       setTestPolling(false);
     }, [provider]);
 
-    // Organisation capture: fold the corpId the DingTalk login reported into the draft
-    // allowlist (dedupe by corpId, keep the first label). Runs once per attempt.
-    useEffect(() => {
-      const captured = testResult.data?.result?.dingtalk;
-      if (
-        !captured ||
-        !attempt ||
-        attempt.id !== captureAttemptId ||
-        capturedAttemptRef.current === attempt.id ||
-        testResult.data?.status !== 'succeeded'
-      ) {
-        return;
-      }
-      capturedAttemptRef.current = attempt.id;
-      setDraft((current) => {
-        if (current.dingtalkAllowedCorps.some((entry) => entry.corpId === captured.corpId)) {
-          toast.success(t('identityProviders.dingtalk.allowedCorps.alreadyAdded'));
-          return current;
-        }
-        toast.success(t('identityProviders.dingtalk.allowedCorps.added'));
-        if (!captured.corpName && captured.corpNameMissingScope) {
-          toast.info(
-            t('identityProviders.dingtalk.allowedCorps.nameNeedsScope', {
-              scope: captured.corpNameMissingScope,
-            }),
-          );
-        }
-        return {
-          ...current,
-          dingtalkAllowedCorps: [
-            ...current.dingtalkAllowedCorps,
-            {
-              addedAt: new Date().toISOString(),
-              corpId: captured.corpId,
-              ...(captured.corpName ? { corpName: captured.corpName } : {}),
-              // `nick` may be far longer than the persisted label limit — bound it so the
-              // capture never leaves an unsavable draft behind.
-              ...(captured.nick
-                ? {
-                    label: boundIdentityProviderCorpLabel(
-                      t('identityProviders.dingtalk.allowedCorps.addedBy', {
-                        nick: captured.nick,
-                      }),
-                    ),
-                  }
-                : {}),
-            },
-          ],
-        };
-      });
-    }, [attempt, captureAttemptId, testResult.data, t]);
+    useDingTalkCorpCapture({
+      attempt,
+      captureAttemptId,
+      setDraft,
+      t,
+      testResultData: testResult.data,
+    });
 
     useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
     useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
@@ -352,37 +236,8 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         ? t('identityProviders.dingtalk.providerKeyInvalid')
         : null;
 
-    const friendlyError = (cause: unknown): string => {
-      if (cause instanceof IdentityProviderTestPopupBlockedError) {
-        return t('identityProviders.test.popupBlocked');
-      }
-      const mapped = mapEnterpriseError(cause);
-      if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
-        return t('identityProviders.conflict.description');
-      }
-      if (mapped?.code === 'PLATFORM_SSRF_BLOCKED') {
-        return t('identityProviders.errors.networkBlocked');
-      }
-      if (mapped?.code === 'PLATFORM_OIDC_DISCOVERY_FAILED') {
-        return t('identityProviders.errors.discoveryFailed');
-      }
-      const workflowError = classifyIdentityProviderWorkflowError(cause);
-      if (workflowError === 'draft-required') {
-        return t('identityProviders.workflow.draftRequired');
-      }
-      if (workflowError === 'test-required') {
-        return t('identityProviders.workflow.testRequired');
-      }
-      if (workflowError === 'corp-allowlist-required') {
-        return t('identityProviders.dingtalk.allowedCorps.publishBlocked');
-      }
-      // Safe-login / capture failures carry a stable OIDC_TEST_* code. Surfacing the mapped
-      // instruction (wrong AppSecret, redirect URL not registered, `corpid` scope missing …)
-      // is the difference between an actionable message and "something went wrong".
-      const testErrorCode = extractIdentityProviderTestErrorCode(cause);
-      if (testErrorCode) return t(identityProviderTestErrorKey(testErrorCode) as never);
-      return t('identityProviders.errors.generic');
-    };
+    const friendlyError = (cause: unknown): string =>
+      resolveIdentityProviderWizardErrorMessage(cause, t);
 
     /**
      * Admin-facing explanation of a terminal safe-login / capture failure: our own instruction
@@ -400,6 +255,18 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       busy === 'capture' || (testPolling && attempt != null && attempt.id === captureAttemptId);
     const captureFailureMessage =
       attempt != null && attempt.id === captureAttemptId ? testFailureMessage : null;
+    /** Why the capture button is unavailable, or `null` when it can run. */
+    const captureBlockedReason = resolveDingTalkCaptureBlockedReason(
+      {
+        canTest,
+        capturePending,
+        corpCount: draft.dingtalkAllowedCorps.length,
+        dirty,
+        draftWorkflowReady,
+        provider,
+      },
+      t,
+    );
 
     const refreshConflict = async () => {
       setConflictRefreshFailed(false);
@@ -525,21 +392,10 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       }
     };
 
-    persistLatestRef.current = persistDraft;
-
-    const cancelScheduledAutosave = () => {
-      if (autosaveTimerRef.current) {
-        clearTimeout(autosaveTimerRef.current);
-        autosaveTimerRef.current = null;
-      }
-    };
-
-    const enqueuePersist = (request: IdentityProviderPersistRequest) =>
-      persistGateRef.current.enqueue(
-        request,
-        (next) => persistLatestRef.current(next),
-        cancelScheduledAutosave,
-      );
+    const { enqueuePersist, scheduleAutosave, setPersist } = useIdentityProviderAutosave({
+      persistRef,
+    });
+    setPersist(persistDraft);
 
     const save = () => {
       void (async () => {
@@ -551,35 +407,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         }
       })();
     };
-
-    const flushAutosave = useCallback(async (): Promise<IdentityProviderPersistResult> => {
-      return enqueuePersist({ includeSecret: false, silent: true });
-      // enqueuePersist reads persistLatestRef; the gate is stable.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    const scheduleAutosave = useCallback(() => {
-      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-      autosaveTimerRef.current = setTimeout(() => {
-        autosaveTimerRef.current = null;
-        void flushAutosave();
-      }, IDENTITY_PROVIDER_AUTOSAVE_DEBOUNCE_MS);
-    }, [flushAutosave]);
-
-    useEffect(() => {
-      if (!persistRef) return;
-      persistRef.current = flushAutosave;
-      return () => {
-        persistRef.current = null;
-      };
-    }, [flushAutosave, persistRef]);
-
-    useEffect(
-      () => () => {
-        if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-      },
-      [],
-    );
 
     // Discover alone validates network + endpoints; do not also call validateNetwork
     // (that would preflight the same discovery URL a second time).
@@ -637,27 +464,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         false,
       );
     };
-
-    /** Why the capture button is unavailable, or `null` when it can run. */
-    const captureBlockedReason = !provider
-      ? t('identityProviders.dingtalk.allowedCorps.blockedUnsaved')
-      : !draftWorkflowReady
-        ? t('identityProviders.dingtalk.allowedCorps.blockedNotDraft')
-        : !provider.clientId || !provider.secret.configured
-          ? t('identityProviders.dingtalk.allowedCorps.blockedNoCredentials')
-          : dirty
-            ? t('identityProviders.dingtalk.allowedCorps.blockedUnsavedChanges')
-            : !canTest
-              ? t('identityProviders.dingtalk.allowedCorps.blockedNoPermission')
-              : // One attempt at a time: a second launch would overwrite `attempt` and orphan
-                // the first DingTalk window's result.
-                capturePending
-                ? t('identityProviders.dingtalk.allowedCorps.blockedPending')
-                : draft.dingtalkAllowedCorps.length >= DINGTALK_ALLOWED_CORPS_MAX
-                  ? t('identityProviders.dingtalk.allowedCorps.blockedFull', {
-                      max: DINGTALK_ALLOWED_CORPS_MAX,
-                    })
-                  : null;
 
     const publish = () => {
       if (!provider) return;
@@ -719,25 +525,21 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const stepStates = useMemo((): Partial<
       Record<IdentityProviderStep, IdentityProviderStepState>
     > => {
-      const basicComplete = Boolean(draft.displayName.trim() && draft.providerKey.trim());
-      const discoveryComplete = Boolean(draft.issuer && networkValid && discovery);
-      const clientComplete = Boolean(draft.clientId && (secret || provider?.secret.configured));
-      const claimsComplete = !jsonErrors.claims;
-      return {
-        basic: basicComplete ? 'complete' : 'pending',
-        claims: jsonErrors.claims ? 'error' : claimsComplete ? 'complete' : 'pending',
-        client: clientComplete ? 'complete' : 'pending',
-        discovery: discoveryComplete ? 'complete' : 'pending',
-        policy: 'complete',
-        publish:
-          provider?.status === 'published' ||
-          provider?.status === 'active' ||
-          provider?.status === 'pending_restart'
-            ? 'complete'
-            : testResult.data?.status === 'failed'
-              ? 'error'
-              : 'pending',
-      };
+      return computeIdentityProviderStepStates({
+        discovery,
+        draft: {
+          clientId: draft.clientId,
+          displayName: draft.displayName,
+          issuer: draft.issuer,
+          providerKey: draft.providerKey,
+        },
+        jsonErrorsClaims: jsonErrors.claims,
+        networkValid,
+        providerSecretConfigured: provider?.secret.configured,
+        providerStatus: provider?.status,
+        secret,
+        testResultData: testResult.data,
+      });
     }, [
       discovery,
       draft.clientId,
@@ -751,101 +553,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       secret,
       testResult.data,
     ]);
-
-    const renderStep = () => {
-      switch (step) {
-        case 'basic': {
-          return (
-            <BasicStep
-              draft={draft}
-              patch={patch}
-              providerKeyError={providerKeyError}
-              providerKeyLocked={Boolean(provider)}
-            />
-          );
-        }
-        case 'discovery': {
-          return (
-            <DiscoveryStep
-              busy={busy}
-              canTest={canTest}
-              discovery={discovery}
-              draft={draft}
-              networkValid={networkValid}
-              patch={patch}
-              onDiscover={discover}
-              onIssuerChange={() => {
-                setNetworkValid(false);
-                setDiscovery(null);
-              }}
-            />
-          );
-        }
-        case 'client': {
-          return (
-            <ClientStep
-              callbacks={callbacks}
-              clearSecret={clearSecret}
-              draft={draft}
-              patch={patch}
-              secret={secret}
-              secretConfigured={Boolean(provider?.secret.configured)}
-              secretUpdatedAt={provider?.secret.updatedAt}
-              setClearSecret={setClearSecret}
-              setSecret={setSecret}
-              onCopyUrl={copyUrl}
-            />
-          );
-        }
-        case 'claims': {
-          return (
-            <ClaimsStep
-              claimJson={claimJson}
-              invalidJson={jsonErrors.claims}
-              onClaimJsonChange={handleClaimJsonChange}
-            />
-          );
-        }
-        case 'policy': {
-          return (
-            <PolicyStep
-              callbacks={callbacks}
-              captureBlockedReason={captureBlockedReason}
-              captureError={captureFailureMessage}
-              capturing={capturePending}
-              draft={draft}
-              patch={patch}
-              onCaptureCorp={() => startTest('capture')}
-              onCopyUrl={copyUrl}
-            />
-          );
-        }
-        case 'publish': {
-          return (
-            <PublishStep
-              attempt={attempt}
-              busy={busy}
-              canPublish={canPublish}
-              canTest={canTest}
-              dirty={dirty}
-              draftWorkflowReady={draftWorkflowReady}
-              failureMessage={testFailureMessage}
-              hasProvider={Boolean(provider)}
-              resultError={Boolean(testResult.error)}
-              testResult={testResult.data}
-              testSucceeded={testSucceeded}
-              blocker={
-                corpAllowlistMissing
-                  ? t('identityProviders.dingtalk.allowedCorps.publishBlocked')
-                  : undefined
-              }
-              onRetryResult={() => void testResult.mutate()}
-              onStartTest={() => startTest('test')}
-            />
-          );
-        }
-      }
-    };
 
     const resolvedType = provider?.type ?? draft.type;
     const typeLabel =
@@ -906,7 +613,42 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             key={step}
             transition={{ duration: reduceMotion ? 0 : 0.18 }}
           >
-            {renderStep()}
+            <WizardStepBody
+              attempt={attempt}
+              busy={busy}
+              callbacks={callbacks}
+              canPublish={canPublish}
+              canTest={canTest}
+              captureBlockedReason={captureBlockedReason}
+              captureFailureMessage={captureFailureMessage}
+              capturePending={capturePending}
+              claimJson={claimJson}
+              clearSecret={clearSecret}
+              copyUrl={copyUrl}
+              corpAllowlistMissing={corpAllowlistMissing}
+              dirty={dirty}
+              discover={discover}
+              discovery={discovery}
+              draft={draft}
+              draftWorkflowReady={draftWorkflowReady}
+              handleClaimJsonChange={handleClaimJsonChange}
+              jsonErrors={jsonErrors}
+              networkValid={networkValid}
+              patch={patch}
+              provider={provider}
+              providerKeyError={providerKeyError}
+              secret={secret}
+              setClearSecret={setClearSecret}
+              setDiscovery={setDiscovery}
+              setNetworkValid={setNetworkValid}
+              setSecret={setSecret}
+              startTest={startTest}
+              step={step}
+              t={t}
+              testFailureMessage={testFailureMessage}
+              testResult={testResult}
+              testSucceeded={testSucceeded}
+            />
           </m.div>
         </AnimatePresence>
         <Flexbox horizontal align="center" justify="space-between">
