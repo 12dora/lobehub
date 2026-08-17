@@ -1,11 +1,6 @@
 import { resolveFileS3Config } from '@/server/modules/S3/resolveFileS3Config';
 
 import { PlatformSecretService } from '../../security/secret';
-import {
-  parsePlatformKeyProviderName,
-  parsePlatformSecretConfig,
-  VAULT_ADDR_ENV,
-} from '../../security/secret/config';
 
 export type InfraEnvBag = Record<string, string | undefined>;
 
@@ -147,31 +142,4 @@ export const keyManagementHealth = (env: InfraEnvBag): DependencyHealth => {
   } catch {
     return incompleteHealth();
   }
-};
-
-export const resolveKeyManagementOverview = (env: InfraEnvBag) => {
-  const health = keyManagementHealth(env);
-  let provider: 'env' | 'unconfigured' | 'vault';
-  try {
-    provider = parsePlatformKeyProviderName(env);
-    if (provider === 'env' && !parsePlatformSecretConfig(env).masterKeyBase64) {
-      provider = 'unconfigured';
-    }
-  } catch {
-    provider = 'unconfigured';
-  }
-  let masterKeyConfigured: boolean;
-  try {
-    masterKeyConfigured = PlatformSecretService.tryFromEnv(env) !== null;
-  } catch {
-    masterKeyConfigured = false;
-  }
-  return {
-    errorCategory: health.errorCategory,
-    keyId: provider === 'env' ? (trim(parsePlatformSecretConfig(env).masterKeyId) ?? null) : null,
-    masterKeyConfigured,
-    provider,
-    status: health.status,
-    vaultAddress: provider === 'vault' ? (trim(env[VAULT_ADDR_ENV]) ?? null) : null,
-  };
 };

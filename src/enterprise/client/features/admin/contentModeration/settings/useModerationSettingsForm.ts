@@ -53,6 +53,7 @@ export const useModerationSettingsForm = ({
   const { data, error, isLoading, mutate } = useModerationSettings(enabled);
 
   const [draft, setDraft] = useState<ModerationSettingsDraft | null>(null);
+  // Internal optimistic-concurrency token echoed back on save — never displayed to the admin.
   const [baseRevision, setBaseRevision] = useState<number | null>(null);
   const [conflict, setConflict] = useState(false);
   const [saving, setSaving] = useState(false);

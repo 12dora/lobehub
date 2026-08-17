@@ -118,7 +118,6 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
 
   const body = (
     <AdminPageTemplate
-      description={t('managedResources.desc')}
       hideTitle={embedded}
       title={t('managedResources.title')}
       banner={

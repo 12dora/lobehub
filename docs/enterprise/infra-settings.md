@@ -22,7 +22,7 @@ A single warning log includes the age of the last-known-good snapshot (`lastKnow
 ## What stays env-only
 
 - `NEXT_PUBLIC_S3_FILE_PATH` (object key prefix). Changing it would break existing keys.
-- 密钥管理 (KEK / Vault). The KEK decrypts every DB-stored secret — a DB-sourced Vault address is a confused-deputy. Credentials stay in the start environment; the card is status + 测试连接 only.
+- 密钥管理 (KEK / Vault). The KEK decrypts every DB-stored secret — a DB-sourced Vault address is a confused-deputy. Credentials stay in the start environment; the 基础设施 tab has no card for it at all, and its health is reported on the 系统 status page.
 
 ## Secrets
 

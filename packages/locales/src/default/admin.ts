@@ -220,8 +220,6 @@ export default {
   'mobile.unsupported.title': 'Desktop required',
   'managedResources.actions.save': 'Save',
   'managedResources.saveReason': 'Updated via unified management',
-  'managedResources.desc':
-    'Manage providers, models, skills, connectors, and assistants centrally. When enabled, the platform provides them and the corresponding user settings are hidden; personal data is untouched.',
   'managedResources.errors.generic': 'The policy action failed. Check the form and try again.',
   'managedResources.errors.savedRefreshFailed':
     'Saved, but the latest policy could not be reloaded. Refresh if the view looks stale.',
@@ -1233,8 +1231,6 @@ export default {
   'users.errors.passwordAuthDisabled':
     'Email & password sign-in is disabled on this deployment, so password accounts cannot be created.',
   'settingsPolicy.title': 'Settings policy',
-  'settingsPolicy.desc':
-    'Configure organization defaults, locks, and visibility for user settings without overwriting user data.',
   'settingsPolicy.featureDisabled':
     'Platform settings policy is not enabled on this deployment, so no settings policy is loaded or applied here.',
   'settingsPolicy.readOnlyHint': 'You have read-only access.',
@@ -2369,7 +2365,7 @@ export default {
   'system.values.status.unreported': 'Unreported',
   'system.values.unavailable': 'Unavailable',
   'systemGeneral.title': 'General settings',
-  'systemGeneral.description': 'Object storage, email, and secret management for this deployment.',
+  'systemGeneral.description': 'Object storage and mail service for this deployment.',
   'systemGeneral.empty': 'General settings will appear here in an upcoming release.',
   'systemGeneral.tabs.infrastructure': 'Infrastructure',
   'systemGeneral.tabs.networkProxy': 'Network proxy',
@@ -2406,14 +2402,6 @@ export default {
   'systemGeneral.mail.provider.smtp': 'SMTP',
   'systemGeneral.mail.provider.resend': 'Resend',
   'systemGeneral.mail.provider.unconfigured': 'Not configured',
-  'systemGeneral.keyManagement.title': 'Secret management',
-  'systemGeneral.keyManagement.fields.provider': 'Provider',
-  'systemGeneral.keyManagement.fields.masterKeyConfigured': 'Master key',
-  'systemGeneral.keyManagement.fields.keyId': 'Key ID',
-  'systemGeneral.keyManagement.fields.vaultAddress': 'Vault address',
-  'systemGeneral.keyManagement.provider.env': 'Environment',
-  'systemGeneral.keyManagement.provider.vault': 'Vault',
-  'systemGeneral.keyManagement.provider.unconfigured': 'Not configured',
   'systemGeneral.values.yes': 'Yes',
   'systemGeneral.values.no': 'No',
   'systemGeneral.values.unset': '—',
@@ -2508,8 +2496,6 @@ export default {
   'systemGeneral.mail.hints.senderName': 'Display name shown next to the sender address.',
   'systemGeneral.mail.hints.brandingOverride':
     'When a sender address is published under Branding, it overrides the address set here.',
-  'systemGeneral.keyManagement.readOnlyNotice':
-    'The encryption key is provided by the runtime environment and cannot be changed here.',
   'nav.auditLogs': 'Operation logs',
   'nav.auditConversations': 'Conversation history',
   'nav.auditConversationUser': 'User history',
@@ -3461,12 +3447,12 @@ export default {
   'contentModeration.records.deleteRecord': 'Delete record',
   'contentModeration.settings.save': 'Save',
   'contentModeration.settings.helpFor': 'Help for {{field}}',
-  'contentModeration.settings.saved': 'Saved · revision {{revision}}',
+  'contentModeration.settings.saved': 'Saved',
   'contentModeration.settings.dirty': 'Unsaved changes',
   'contentModeration.settings.readOnly': 'You can read these settings but not change them.',
   'contentModeration.settings.loadFailed': 'Could not load the moderation settings.',
   'contentModeration.settings.reload': 'Reload latest',
-  'contentModeration.settings.conflictTitle': 'Someone else saved first',
+  'contentModeration.settings.conflictTitle': 'Settings were updated by another admin',
   'contentModeration.settings.conflictDesc':
     'Your changes were not written. Reload the latest configuration and reapply them.',
   'contentModeration.settings.enforceConfirmTitle': 'Switch to enforce?',

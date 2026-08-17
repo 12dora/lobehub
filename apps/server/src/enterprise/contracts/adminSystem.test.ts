@@ -200,14 +200,6 @@ describe('admin system operational contracts', () => {
 
 describe('admin system infrastructure settings contracts', () => {
   const settings = {
-    keyManagement: {
-      errorCategory: 'passive_check_only',
-      keyId: 'env:default',
-      masterKeyConfigured: true,
-      provider: 'env',
-      status: 'unknown',
-      vaultAddress: null,
-    },
     mail: {
       enabled: false,
       errorCategory: null,
@@ -248,6 +240,19 @@ describe('admin system infrastructure settings contracts', () => {
     expect(
       adminSystemGetInfraSettingsOutputSchema.safeParse({
         ...settings,
+        keyManagement: {
+          errorCategory: 'passive_check_only',
+          keyId: 'env:default',
+          masterKeyConfigured: true,
+          provider: 'env',
+          status: 'unknown',
+          vaultAddress: null,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSystemGetInfraSettingsOutputSchema.safeParse({
+        ...settings,
         objectStorage: {
           ...settings.objectStorage,
           secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
@@ -266,6 +271,9 @@ describe('admin system infrastructure settings contracts', () => {
     expect(adminSystemTestDependencyInputSchema.parse({ dependency: 'objectStorage' })).toEqual({
       dependency: 'objectStorage',
     });
+    expect(
+      adminSystemTestDependencyInputSchema.safeParse({ dependency: 'keyManagement' }).success,
+    ).toBe(false);
     expect(
       adminSystemTestDependencyInputSchema.safeParse({
         dependency: 'objectStorage',

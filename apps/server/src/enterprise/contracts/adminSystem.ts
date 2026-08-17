@@ -440,7 +440,7 @@ export const adminSystemRequestRestartOutputSchema = z
   })
   .strict();
 
-export const adminSystemInfraDependencySchema = z.enum(['keyManagement', 'mail', 'objectStorage']);
+export const adminSystemInfraDependencySchema = z.enum(['mail', 'objectStorage']);
 
 export const adminSystemTestDependencyReasonSchema = z.enum([
   'configured_unverified',
@@ -597,14 +597,6 @@ export const adminSystemTestDependencyInputSchema = z
   .strict()
   .superRefine((value, ctx) => {
     if (!value.draft) return;
-    if (value.dependency === 'keyManagement') {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'keyManagement does not accept a draft',
-        path: ['draft'],
-      });
-      return;
-    }
     const isStorageDraft = 'bucket' in value.draft;
     if (value.dependency === 'objectStorage' && !isStorageDraft) {
       ctx.addIssue({
@@ -633,16 +625,6 @@ export const adminSystemTestDependencyOutputSchema = z
 
 export const adminSystemGetInfraSettingsOutputSchema = z
   .object({
-    keyManagement: z
-      .object({
-        errorCategory: adminSystemDependencyErrorCategorySchema.nullable(),
-        keyId: z.string().trim().max(256).nullable(),
-        masterKeyConfigured: z.boolean(),
-        provider: z.enum(['env', 'unconfigured', 'vault']),
-        status: adminSystemDependencyStatusSchema,
-        vaultAddress: z.string().trim().max(2048).nullable(),
-      })
-      .strict(),
     mail: z
       .object({
         enabled: z.boolean(),

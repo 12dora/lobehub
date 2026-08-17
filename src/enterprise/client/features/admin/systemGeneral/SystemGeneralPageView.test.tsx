@@ -72,14 +72,6 @@ vi.mock('@/enterprise/client/features/admin/primitives/AdminPageTemplate', () =>
 }));
 
 const settings = (): AdminSystemInfraSettings => ({
-  keyManagement: {
-    errorCategory: null,
-    keyId: 'env:default',
-    masterKeyConfigured: true,
-    provider: 'env',
-    status: 'unknown',
-    vaultAddress: null,
-  },
   mail: {
     enabled: false,
     errorCategory: null,
@@ -148,6 +140,25 @@ describe('SystemGeneralPageView', () => {
     expect(screen.getByText('AKIA****MPLE')).toBeTruthy();
     expect(screen.getByText('noreply@example.com')).toBeTruthy();
     expect(screen.queryByText('systemGeneral.testConnection')).toBeNull();
+  });
+
+  it('shows only the two configurable dependencies — the encryption key is not a card here', () => {
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={settings()}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('systemGeneral.objectStorage.title')).toBeTruthy();
+    expect(screen.getByText('systemGeneral.mail.title')).toBeTruthy();
+    expect(screen.queryByText('systemGeneral.keyManagement.title')).toBeNull();
   });
 
   it('runs a live probe from the object-storage card', () => {
@@ -251,24 +262,5 @@ describe('SystemGeneralPageView', () => {
     expect(screen.getByText('systemGeneral.failOpen.title')).toBeTruthy();
     // Mail is a normal environment card, so exactly one warning is shown.
     expect(screen.queryAllByText('systemGeneral.failOpen.title')).toHaveLength(1);
-  });
-
-  it('states plainly that the encryption key cannot be changed here', () => {
-    render(
-      <SystemGeneralPageView
-        canOperate
-        data={settings()}
-        error={undefined}
-        isLoading={false}
-        probeBusy={{}}
-        probeResults={{}}
-        onRetry={vi.fn()}
-        onTest={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText('systemGeneral.keyManagement.readOnlyNotice')).toBeTruthy();
-    // Only the two environment-sourced cards still explain how to change the variables.
-    expect(screen.getAllByText('systemGeneral.howToChange.title')).toHaveLength(2);
   });
 });

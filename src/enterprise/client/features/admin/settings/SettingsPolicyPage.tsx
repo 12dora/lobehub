@@ -1,6 +1,6 @@
 'use client';
 
-import { Alert, Flexbox, Input, Skeleton, Text } from '@lobehub/ui';
+import { Alert, Input, Skeleton, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { useReducedMotion } from 'motion/react';
@@ -48,6 +48,29 @@ const styles = createStaticStyles(({ css }) => ({
     font-size: 13px;
     color: ${cssVar.colorTextSecondary};
   `,
+  toolbarActions: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+
+    margin-inline-start: auto;
+  `,
+  /** Search on the left (capped), page-level actions pinned to the right. */
+  toolbarRow: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+
+    width: 100%;
+  `,
+  toolbarSearch: css`
+    flex: 1 1 240px;
+    min-width: 200px;
+    max-width: 320px;
+  `,
 }));
 
 const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
@@ -84,11 +107,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   // U1: policy flag off → disabled surface, zero getDraft
   if (!policyEnabled) {
     return (
-      <AdminPageTemplate
-        description={t('settingsPolicy.desc')}
-        hideTitle={embedded}
-        title={t('settingsPolicy.title')}
-      >
+      <AdminPageTemplate hideTitle={embedded} title={t('settingsPolicy.title')}>
         <Text type="secondary">{t('settingsPolicy.featureDisabled')}</Text>
       </AdminPageTemplate>
     );
@@ -99,7 +118,6 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     const mapped = mapEnterpriseError(error);
     return (
       <AdminPageTemplate
-        description={t('settingsPolicy.desc')}
         hideTitle={embedded}
         title={t('settingsPolicy.title')}
         actions={
@@ -129,11 +147,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
 
   if (isLoading || !data) {
     return (
-      <AdminPageTemplate
-        description={t('settingsPolicy.desc')}
-        hideTitle={embedded}
-        title={t('settingsPolicy.title')}
-      >
+      <AdminPageTemplate hideTitle={embedded} title={t('settingsPolicy.title')}>
         <div aria-label={t('primitives.dataTable.loading')} role="status">
           <Skeleton title active={!reduceMotion} paragraph={{ rows: 8 }} />
         </div>
@@ -145,20 +159,6 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     <AdminPageTemplate
       hideTitle={embedded}
       title={t('settingsPolicy.title')}
-      actions={
-        canSave ? (
-          <Flexbox horizontal gap={8}>
-            <Button
-              disabled={
-                hasEffectiveChanges || saveState === 'saving' || ownPublishedOverrideCount === 0
-              }
-              onClick={handleResetDefaults}
-            >
-              {t('settingsPolicy.resetDefaults')}
-            </Button>
-          </Flexbox>
-        ) : null
-      }
       banner={
         <>
           {conflictState === 'reloaded' ? (
@@ -198,18 +198,31 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
           ) : null}
         </>
       }
-      description={
-        canSave
-          ? t('settingsPolicy.desc')
-          : `${t('settingsPolicy.desc')} ${t('settingsPolicy.readOnlyHint')}`
+      notice={
+        canSave ? undefined : <Text type="secondary">{t('settingsPolicy.readOnlyHint')}</Text>
       }
       toolbar={
-        <Input
-          allowClear
-          placeholder={t('settingsPolicy.searchPlaceholder')}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+        <div className={styles.toolbarRow}>
+          <Input
+            allowClear
+            className={styles.toolbarSearch}
+            placeholder={t('settingsPolicy.searchPlaceholder')}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {canSave ? (
+            <div className={styles.toolbarActions}>
+              <Button
+                disabled={
+                  hasEffectiveChanges || saveState === 'saving' || ownPublishedOverrideCount === 0
+                }
+                onClick={handleResetDefaults}
+              >
+                {t('settingsPolicy.resetDefaults')}
+              </Button>
+            </div>
+          ) : null}
+        </div>
       }
     >
       <div className={styles.scroll}>

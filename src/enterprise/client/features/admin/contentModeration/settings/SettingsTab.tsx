@@ -29,7 +29,6 @@ export interface SettingsTabProps {
  */
 const SettingsTab = memo<SettingsTabProps>(({ canManage, enabled }) => {
   const {
-    baseRevision,
     classifierMessage,
     clearingCache,
     configDirty,
@@ -105,7 +104,7 @@ const SettingsTab = memo<SettingsTabProps>(({ canManage, enabled }) => {
             ? t('contentModeration.settings.keywordsValidating')
             : dirty
               ? t('contentModeration.settings.dirty')
-              : t('contentModeration.settings.saved', { revision: baseRevision ?? 0 })}
+              : t('contentModeration.settings.saved')}
         </Text>
         <ManageGuard allowed={canManage}>
           <Button

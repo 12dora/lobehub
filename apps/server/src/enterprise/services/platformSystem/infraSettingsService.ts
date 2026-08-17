@@ -13,7 +13,6 @@ import { resolveFileS3Config } from '@/server/modules/S3/resolveFileS3Config';
 import type { MailUpdate, ObjectStorageUpdate } from '@/types/platform/infraSettings';
 
 import { createSafeOutboundHttpClient } from '../../security/outboundHttp';
-import { PlatformSecretService } from '../../security/secret';
 import {
   envPreviewUrlExpireIn,
   getInfraSnapshot,
@@ -47,7 +46,6 @@ import {
   objectStorageHealth,
   parseFromField,
   resolveEmailConfig,
-  resolveKeyManagementOverview,
 } from './infraDependencyConfig';
 
 const PROBE_TIMEOUT_MS = 8000;
@@ -80,10 +78,6 @@ export interface InfraMailTransport {
   verify: () => Promise<unknown>;
 }
 
-export interface InfraSecretService {
-  getActiveKeyId: () => Promise<string>;
-}
-
 export interface InfraOutboundFetch {
   (
     input: string | URL,
@@ -108,7 +102,6 @@ export interface InfraSettingsServiceOptions {
   env?: EnvBag;
   now?: () => Date;
   outboundFetch?: InfraOutboundFetch;
-  secretServiceFromEnv?: (env: EnvBag) => InfraSecretService | null;
 }
 
 const resolveEnv = (override?: EnvBag): EnvBag => resolveInfraEnvBag(override);
@@ -202,9 +195,6 @@ const defaultOutboundFetch: InfraOutboundFetch = async (input, init) => {
   });
 };
 
-const defaultSecretServiceFromEnv = (env: EnvBag): InfraSecretService | null =>
-  PlatformSecretService.tryFromEnv(env);
-
 const probeObjectStorage = async (
   env: EnvBag,
   createS3Client: NonNullable<InfraSettingsServiceOptions['createS3Client']>,
@@ -292,30 +282,6 @@ const probeMail = async (
   }
 };
 
-const probeKeyManagement = async (
-  env: EnvBag,
-  secretServiceFromEnv: (env: EnvBag) => InfraSecretService | null,
-): Promise<void> => {
-  let service: InfraSecretService | null;
-  try {
-    service = secretServiceFromEnv(env);
-  } catch {
-    throw new InfraProbeError('configuration_incomplete');
-  }
-  if (!service) throw new InfraProbeError('not_configured');
-
-  try {
-    await withTimeout(async () => {
-      await service.getActiveKeyId();
-    });
-  } catch (error) {
-    if (error instanceof InfraProbeError) throw error;
-    if (isUnauthorizedError(error)) throw new InfraProbeError('unauthorized');
-    if (isTimeoutError(error)) throw new InfraProbeError('timeout');
-    throw new InfraProbeError('unreachable');
-  }
-};
-
 export class InfraSettingsService {
   private readonly createMailTransport: NonNullable<
     InfraSettingsServiceOptions['createMailTransport']
@@ -327,7 +293,6 @@ export class InfraSettingsService {
   private readonly envOverride: boolean;
   private readonly now: () => Date;
   private readonly outboundFetch: InfraOutboundFetch;
-  private readonly secretServiceFromEnv: (env: EnvBag) => InfraSecretService | null;
 
   constructor(options: InfraSettingsServiceOptions = {}) {
     this.envOverride = options.env !== undefined;
@@ -336,7 +301,6 @@ export class InfraSettingsService {
     this.createS3Client = options.createS3Client ?? defaultCreateS3Client;
     this.createMailTransport = options.createMailTransport ?? defaultCreateMailTransport;
     this.outboundFetch = options.outboundFetch ?? defaultOutboundFetch;
-    this.secretServiceFromEnv = options.secretServiceFromEnv ?? defaultSecretServiceFromEnv;
     this.assertObjectStorageDestinations =
       options.assertObjectStorageDestinations ?? assertObjectStorageDestinationsAllowed;
     this.assertMailDestinations = options.assertMailDestinations ?? assertMailDestinationsAllowed;
@@ -427,11 +391,6 @@ export class InfraSettingsService {
     const started = Date.now();
     const checkedAt = this.now();
     try {
-      if (input.dependency === 'keyManagement') {
-        await probeKeyManagement(this.env, this.secretServiceFromEnv);
-        return { checkedAt, latencyMs: Date.now() - started, ok: true };
-      }
-
       const draftBag = input.draft
         ? await this.envBagFromDraft(input.dependency, input.draft)
         : null;
@@ -499,12 +458,10 @@ export class InfraSettingsService {
     const mail = mailHealth(env);
     const s3 = resolveFileS3Config(env);
     const email = resolveEmailConfig(env);
-    const keyManagement = resolveKeyManagementOverview(env);
     const rawAccessId =
       s3.kind === 'complete' ? s3.accessKeyId : env.S3_ACCESS_KEY_ID?.trim() || undefined;
 
     return {
-      keyManagement,
       mail: {
         enabled: extras.mail.enabled,
         errorCategory: mail.errorCategory,

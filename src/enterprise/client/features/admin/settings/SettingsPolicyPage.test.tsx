@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -168,13 +168,14 @@ vi.mock('./PolicyValueEditor', () => ({
 }));
 
 vi.mock('../primitives/AdminPageTemplate', () => ({
-  default: ({ actions, banner, children, description, title, toolbar }: any) => (
+  default: ({ actions, banner, children, description, notice, title, toolbar }: any) => (
     <main>
       <h1>{title}</h1>
       <p>{description}</p>
+      <div data-testid="page-notice">{notice}</div>
       {actions}
       {banner}
-      {toolbar}
+      <div data-testid="page-toolbar">{toolbar}</div>
       {children}
     </main>
   ),
@@ -434,6 +435,16 @@ describe('SettingsPolicyPage', () => {
       reason: 'settingsPolicy.resetReason',
     });
     expect(mocks.toastSuccess).toHaveBeenCalled();
+  });
+
+  it('keeps restore-defaults in the filter toolbar next to the search box', async () => {
+    mocks.permissions = FULL_ACCESS;
+    render(<SettingsPolicyPage />);
+    const toolbar = await screen.findByTestId('page-toolbar');
+    expect(
+      within(toolbar).getByRole('button', { name: 'settingsPolicy.resetDefaults' }),
+    ).toBeInTheDocument();
+    expect(within(toolbar).getByPlaceholderText('settingsPolicy.searchPlaceholder')).toBeTruthy();
   });
 
   it('disables restore-defaults when the only published overrides belong to the service-model page', async () => {

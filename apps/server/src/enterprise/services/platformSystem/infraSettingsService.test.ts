@@ -72,12 +72,6 @@ describe('InfraSettingsService.getInfraSettings', () => {
 
     expect(() => adminSystemGetInfraSettingsOutputSchema.parse(settings)).not.toThrow();
     expect(settings).toMatchObject({
-      keyManagement: {
-        keyId: null,
-        masterKeyConfigured: true,
-        provider: 'vault',
-        vaultAddress: 'https://vault.internal.example',
-      },
       mail: {
         fromAddress: 'alerts@example.com',
         host: 'smtp.example.com',
@@ -96,6 +90,7 @@ describe('InfraSettingsService.getInfraSettings', () => {
       },
       snapshotAt: now,
     });
+    expect(settings).not.toHaveProperty('keyManagement');
 
     const serialized = JSON.stringify(settings);
     for (const secret of SECRET_VALUES) {
@@ -137,11 +132,7 @@ describe('InfraSettingsService.getInfraSettings', () => {
       provider: 'unconfigured',
       status: 'disabled',
     });
-    expect(settings.keyManagement).toMatchObject({
-      masterKeyConfigured: false,
-      provider: 'unconfigured',
-      status: 'disabled',
-    });
+    expect(settings).not.toHaveProperty('keyManagement');
   });
 });
 
@@ -256,26 +247,6 @@ describe('InfraSettingsService.testDependency factories', () => {
     }).testDependency({ dependency: 'mail' });
 
     expect(result).toMatchObject({ message: 'unauthorized', ok: false });
-  });
-
-  it('validates the configured master key through getActiveKeyId', async () => {
-    const getActiveKeyId = vi.fn().mockResolvedValue('vault:live');
-    const result = await new InfraSettingsService({
-      env: { PLATFORM_KEY_PROVIDER: 'vault', VAULT_TOKEN: 'vault-root-token' },
-      secretServiceFromEnv: () => ({ getActiveKeyId }),
-    }).testDependency({ dependency: 'keyManagement' });
-
-    expect(result.ok).toBe(true);
-    expect(getActiveKeyId).toHaveBeenCalledOnce();
-    expect(JSON.stringify(result)).not.toContain('vault-root-token');
-  });
-
-  it('fails closed when secret management is missing', async () => {
-    const result = await new InfraSettingsService({
-      env: {},
-    }).testDependency({ dependency: 'keyManagement' });
-
-    expect(result).toMatchObject({ message: 'not_configured', ok: false });
   });
 
   it('reuses the env secret for draft keep only when the destination tuple matches', async () => {

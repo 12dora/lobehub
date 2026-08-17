@@ -170,7 +170,6 @@ describe('admin.system operations gate', () => {
   it('lets a system reader load masked infra settings and denies a live probe', async () => {
     const operator = await callerFor(ids.operator);
     await expect(operator.getInfraSettings()).resolves.toMatchObject({
-      keyManagement: { provider: expect.any(String) },
       mail: { provider: expect.any(String) },
       objectStorage: { pathStyle: expect.any(Boolean) },
     });
@@ -188,7 +187,7 @@ describe('admin.system operations gate', () => {
 
   it('runs a non-persisting probe without a reason or reauth session', async () => {
     const operator = await callerFor(ids.operator, new Date(Date.now() - 60 * 60 * 1000));
-    const result = await operator.testDependency({ dependency: 'keyManagement' });
+    const result = await operator.testDependency({ dependency: 'mail' });
     expect(result).toEqual(
       expect.objectContaining({
         checkedAt: expect.any(Date),
