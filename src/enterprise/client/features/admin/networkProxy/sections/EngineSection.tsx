@@ -132,12 +132,14 @@ const EngineSection = memo<EngineSectionProps>(
         {
           dataIndex: 'instanceId',
           key: 'instanceId',
-          render: (_: unknown, row) => (
-            <span className={styles.code}>
-              {shortInstanceId(row.instanceId)}
-              {row.isCurrent ? t('networkProxy.engine.thisInstance') : ''}
-            </span>
-          ),
+          // The current instance is named, never identified by its opaque id; other
+          // instances (multi-node deployments only) fall back to the shortened id.
+          render: (_: unknown, row) =>
+            row.isCurrent ? (
+              <span>{t('networkProxy.engine.thisInstance')}</span>
+            ) : (
+              <span className={styles.code}>{shortInstanceId(row.instanceId)}</span>
+            ),
           title: t('networkProxy.engine.columns.instance'),
         },
         {

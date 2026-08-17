@@ -59,6 +59,7 @@ import { getEngineRuntime } from '../../services/networkProxy/engine/runtime';
 import {
   type InstanceStatusUpsert,
   listFreshInstanceStatuses,
+  upsertInstanceStatus,
 } from '../../services/networkProxy/instanceStatusService';
 import { redactSecrets } from '../../services/networkProxy/redact';
 import {
@@ -180,6 +181,8 @@ export interface NetworkProxyRuntime {
   peekNetworkProxySnapshot: () => { staticProxyUrl: string | null } | null;
   publishNetworkProxyInvalidation: (revision: number) => Promise<void>;
   redactSecrets: (text: string) => string;
+  /** Best-effort heartbeat upsert so getStatus sees a just-installed artifact immediately. */
+  reportLocalInstanceStatus?: () => Promise<boolean>;
   requestSubscriptionRefresh: (db: LobeChatDatabase | Transaction, id: string) => Promise<void>;
   setDesiredArtifacts: (
     db: LobeChatDatabase | Transaction,
@@ -248,6 +251,17 @@ const loadNetworkProxyRuntime = async (): Promise<NetworkProxyRuntime> => ({
   peekNetworkProxySnapshot,
   publishNetworkProxyInvalidation,
   redactSecrets,
+  reportLocalInstanceStatus: async () => {
+    try {
+      const { getServerDB } = await import('@/database/core/db-adaptor');
+      return await upsertInstanceStatus(
+        await getServerDB(),
+        await buildLocalInstanceStatus(getEngineRuntime()),
+      );
+    } catch {
+      return false;
+    }
+  },
   requestSubscriptionRefresh: (db, id) => requestSubscriptionRefresh(asDb(db), id),
   setDesiredArtifacts: async (db, patch, input) =>
     new NetworkProxySettingsModel(asDb(db)).setDesiredArtifacts(patch, input),
@@ -393,7 +407,12 @@ export const buildArtifactStatusView = async (
           key as keyof typeof NETWORK_PROXY_ENGINE_MANIFEST.assets
         ]
       : null;
-  const instances = await runtime.listFreshInstanceStatuses(db, currentInstanceId());
+  const instanceId = currentInstanceId();
+  const instances = await withLocalInstanceStatus(
+    runtime,
+    await runtime.listFreshInstanceStatuses(db, instanceId),
+    instanceId,
+  );
   return {
     engine: {
       binSha256: asset?.binSha256 ?? null,
@@ -425,6 +444,7 @@ export const runLocalArtifactInstall = async (
   try {
     const installed = await runtime.artifactManager.installFromDownload(kind, { proxyUrl });
     log('local artifact install finished %s', kind);
+    await runtime.reportLocalInstanceStatus?.().catch(() => false);
     return { error: null, ok: true, sha256: installed.sha256, version: installed.version };
   } catch (error: unknown) {
     const sanitized = sanitizeLocalError(error, runtime.redactSecrets);
@@ -746,6 +766,8 @@ export const handleNetworkProxyArtifactUpload = async (
       },
     );
 
+    await runtime.reportLocalInstanceStatus?.().catch(() => false);
+
     await appendUploadAudit(ctx, {
       action,
       afterDiff: { kind, sha256: installed.sha256, source: 'upload', version: installed.version },
@@ -805,41 +827,74 @@ const appendUploadAudit = async (
 };
 
 /**
+ * Overlay live local engine/artifact fields onto a status row. Heartbeat time,
+ * updatedAt, and egress counters stay on the persisted row.
+ */
+export const overlayLiveLocalInstanceStatus = (
+  row: InstanceStatusView,
+  local: InstanceStatusUpsert,
+): InstanceStatusView => ({
+  ...row,
+  activeNode: local.activeNode,
+  aliveNodeCount: local.aliveNodeCount,
+  appliedRevision: local.appliedRevision,
+  artifacts: local.artifacts,
+  engineState: local.engineState,
+  engineVersion: local.engineVersion,
+  healing: local.healing,
+  lastIssue: local.lastIssue,
+});
+
+/**
  * The answering instance always appears in status output — even before its heartbeat row
- * exists (or when heartbeats are disabled), so the admin never sees "no instances" while
- * talking to a live server. DB rows win when present (they carry the real heartbeat time).
+ * exists (or when heartbeats are disabled). When a heartbeat row is present, live local
+ * engine/artifact state is overlaid so a just-finished install is visible immediately.
  */
 export const withLocalInstanceStatus = async (
   runtime: Pick<NetworkProxyRuntime, 'buildLocalInstanceStatus'>,
   instances: InstanceStatusView[],
   instanceId: string,
 ): Promise<InstanceStatusView[]> => {
-  if (instances.some((instance) => instance.instanceId === instanceId)) return instances;
+  let local: InstanceStatusUpsert | null = null;
   try {
-    const local = await runtime.buildLocalInstanceStatus();
-    const now = new Date().toISOString();
-    return [
+    local = await runtime.buildLocalInstanceStatus();
+  } catch {
+    local = null;
+  }
+
+  if (instances.some((instance) => instance.instanceId === instanceId)) {
+    if (!local) return instances;
+    return instances.map((instance) =>
+      instance.instanceId === instanceId
+        ? overlayLiveLocalInstanceStatus({ ...instance, isCurrent: true }, local)
+        : instance,
+    );
+  }
+
+  if (!local) return instances;
+  const now = new Date().toISOString();
+  return [
+    overlayLiveLocalInstanceStatus(
       {
-        activeNode: local.activeNode,
-        aliveNodeCount: local.aliveNodeCount,
-        appliedRevision: local.appliedRevision,
+        activeNode: null,
+        aliveNodeCount: null,
+        appliedRevision: null,
         arch: local.arch,
-        artifacts: local.artifacts,
+        artifacts: [],
         engineState: local.engineState,
-        engineVersion: local.engineVersion,
+        engineVersion: null,
         fallbackCount: local.fallbackCount,
-        healing: local.healing,
+        healing: null,
         instanceId,
         isCurrent: true,
         lastHeartbeatAt: now,
-        lastIssue: local.lastIssue,
+        lastIssue: null,
         platform: local.platform,
         proxiedCount: local.proxiedCount,
         updatedAt: now,
       },
-      ...instances,
-    ];
-  } catch {
-    return instances;
-  }
+      local,
+    ),
+    ...instances,
+  ];
 };

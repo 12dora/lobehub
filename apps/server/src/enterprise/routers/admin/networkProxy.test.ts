@@ -339,6 +339,74 @@ describe('admin.networkProxy mutations', () => {
     expect(runtime.publishNetworkProxyInvalidation).toHaveBeenCalledWith(2);
   });
 
+  it('rejects simple→smart updateSettings without desired geodata', async () => {
+    const caller = await callerFor();
+    const config = createDefaultNetworkProxyConfig();
+    try {
+      await caller.updateSettings({
+        config: {
+          bypassHosts: config.bypassHosts,
+          downloadViaStaticProxy: false,
+          engineLogLevel: config.engineLogLevel,
+          masterEnabled: false,
+          outlet: config.outlet,
+          ruleMode: 'smart',
+          staticProxy: null,
+          subscriptionUpdateViaOutlet: false,
+        },
+        expectedRevision: 1,
+      });
+      expect.fail('should throw');
+    } catch (error) {
+      expect(getEnterpriseErrorBody(error)?.code).toBe(
+        PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_GEODATA_MISSING,
+      );
+    }
+  });
+
+  it('rejects a smart→smart updateSettings that restates ruleMode without geodata', async () => {
+    const row = defaultRow();
+    row.config = { ...row.config, ruleMode: 'smart' };
+    setNetworkProxyRuntimeForTests(
+      createRuntime({
+        getNetworkProxySettings: vi.fn(async () => row),
+      }),
+    );
+    const caller = await callerFor();
+    try {
+      await caller.updateSettings({
+        config: {
+          bypassHosts: row.config.bypassHosts,
+          downloadViaStaticProxy: false,
+          engineLogLevel: 'info',
+          masterEnabled: false,
+          outlet: row.config.outlet,
+          ruleMode: 'smart',
+          staticProxy: null,
+          subscriptionUpdateViaOutlet: false,
+        },
+        expectedRevision: 1,
+      });
+      expect.fail('should throw');
+    } catch (error) {
+      expect(getEnterpriseErrorBody(error)?.code).toBe(
+        PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_GEODATA_MISSING,
+      );
+    }
+  });
+
+  it('lets selectNode write an already-smart row without desired geodata', async () => {
+    const row = defaultRow();
+    row.config = { ...row.config, ruleMode: 'smart' };
+    const runtime = createRuntime({
+      getNetworkProxySettings: vi.fn(async () => row),
+    });
+    setNetworkProxyRuntimeForTests(runtime);
+    const caller = await callerFor();
+    await caller.selectNode({ expectedRevision: 1, nodeName: 'node-a' });
+    expect(runtime.updateNetworkProxySettings).toHaveBeenCalled();
+  });
+
   it('audits subscription create with host only', async () => {
     const caller = await callerFor();
     await caller.createSubscription({

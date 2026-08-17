@@ -22,6 +22,12 @@ const loadLocale = (locale: 'en-US' | 'zh-CN'): Record<string, string> =>
 
 const defaults = admin as unknown as Record<string, string>;
 
+/** A complete i18next interpolation — the closing braces are part of the contract. */
+const INTERPOLATION = /\{\{\s*([\w.]+)\s*\}\}/g;
+
+const variables = (value: string): string[] =>
+  [...value.matchAll(INTERPOLATION)].map((match) => match[1]).sort();
+
 describe('admin namespace locale parity', () => {
   const en = loadLocale('en-US');
   const zh = loadLocale('zh-CN');
@@ -50,12 +56,33 @@ describe('admin namespace locale parity', () => {
   });
 
   it('keeps zh-CN interpolation variables in step with the source copy', () => {
-    const variables = (value: string): string[] =>
-      [...value.matchAll(/\{\{\s*([\w.]+)/g)].map((match) => match[1]).sort();
-
     const mismatched = Object.keys(defaults).filter(
       (key) => variables(defaults[key]).join('|') !== variables(zh[key] ?? '').join('|'),
     );
     expect(mismatched, `zh-CN interpolation mismatch for: ${mismatched.join(', ')}`).toEqual([]);
+  });
+
+  /**
+   * Counting only well-formed `{{…}}` pairs would silently accept a half-typed placeholder
+   * (`{{count}` renders the braces to the admin), so every brace pair in a value has to belong
+   * to a complete interpolation.
+   */
+  it('has no malformed interpolation braces in any value', () => {
+    const occurrences = (value: string, needle: string): number => value.split(needle).length - 1;
+
+    const malformed: string[] = [];
+    for (const [locale, table] of [
+      ['admin.ts', defaults],
+      ['en-US', en],
+      ['zh-CN', zh],
+    ] as const) {
+      for (const [key, value] of Object.entries(table)) {
+        const complete = [...value.matchAll(INTERPOLATION)].length;
+        if (occurrences(value, '{{') !== complete || occurrences(value, '}}') !== complete) {
+          malformed.push(`${locale}:${key}`);
+        }
+      }
+    }
+    expect(malformed, `malformed interpolation: ${malformed.join(', ')}`).toEqual([]);
   });
 });

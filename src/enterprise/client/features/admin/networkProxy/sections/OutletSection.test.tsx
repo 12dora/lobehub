@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { NetworkProxyConfigView, StaticProxyUpdate } from '@/types/platform/networkProxy';
 
+import type { NetworkProxyGeodataState } from '../geodataState';
 import type { NetworkProxyActions, NetworkProxyEntry } from '../useNetworkProxyActions';
 import OutletSection from './OutletSection';
 
@@ -134,14 +135,14 @@ const stubActions = (entries: Record<string, NetworkProxyEntry>): NetworkProxyAc
 const renderSection = (
   actions: NetworkProxyActions,
   view: NetworkProxyConfigView,
-  extra: { geodataReady?: boolean; onInstallGeodata?: () => void } = {},
+  extra: { geodataState?: NetworkProxyGeodataState; onInstallGeodata?: () => void } = {},
 ) =>
   render(
     <OutletSection
       canManage
       actions={actions}
       config={view}
-      geodataReady={extra.geodataReady ?? true}
+      geodataState={extra.geodataState ?? 'ready'}
       subscriptions={[]}
       onInstallGeodata={extra.onInstallGeodata}
       onReloadNodes={vi.fn()}
@@ -217,7 +218,7 @@ describe('OutletSection static proxy', () => {
 describe('OutletSection smart routing', () => {
   it('offers the install instead of a dead-end explanation when the rule data is missing', () => {
     const onInstallGeodata = vi.fn();
-    renderSection(stubActions({}), config(), { geodataReady: false, onInstallGeodata });
+    renderSection(stubActions({}), config(), { geodataState: 'missing', onInstallGeodata });
 
     expect(screen.getByText('networkProxy.outlet.geodataInstallHint')).toBeTruthy();
     fireEvent.click(screen.getByText('networkProxy.outlet.geodataInstallAction'));
@@ -241,10 +242,21 @@ describe('OutletSection smart routing', () => {
         },
       }),
       config(),
-      { geodataReady: false, onInstallGeodata: vi.fn() },
+      { geodataState: 'missing', onInstallGeodata: vi.fn() },
     );
 
     expect(screen.getByText(/networkProxy\.engineIssue\.artifact_download_failed/)).toBeTruthy();
     expect(screen.getByText('networkProxy.actions.retry')).toBeTruthy();
+  });
+
+  it('says the state is unreadable instead of offering an install it cannot justify', () => {
+    const onInstallGeodata = vi.fn();
+    renderSection(stubActions({}), config(), { geodataState: 'unknown', onInstallGeodata });
+
+    expect(screen.getByText('networkProxy.outlet.geodataUnknown')).toBeTruthy();
+    // No claim that it is missing, and nothing to click.
+    expect(screen.queryByText('networkProxy.outlet.geodataInstallHint')).toBeNull();
+    expect(screen.queryByText('networkProxy.outlet.geodataInstallAction')).toBeNull();
+    expect(onInstallGeodata).not.toHaveBeenCalled();
   });
 });

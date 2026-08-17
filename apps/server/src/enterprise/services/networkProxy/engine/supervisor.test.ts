@@ -217,9 +217,8 @@ describe('EngineSupervisor child process', () => {
     await supervisor.reconcile();
     expect(supervisor.getState().state).toBe('error');
     expect(supervisor.getState().appliedRevision).toBeNull();
-    // Pinned to the current generation so reconcile does not treat this as a bump
-    // and hot-loop restartNow() (which would reset crash/heal backoff).
-    expect(supervisor.getState().appliedEngineGeneration).toBe(1);
+    // Success-path only: a failed start must not pretend the generation applied.
+    expect(supervisor.getState().appliedEngineGeneration).toBeNull();
     expect(supervisor.getState().lastIssue?.code).toBe('start_timeout');
     expect(supervisor.getState().nextHealAt).toBeGreaterThan(Date.now());
   });
@@ -424,4 +423,72 @@ describe('EngineSupervisor child process', () => {
     expect(supervisor.getState().healAttempts).toBe(0);
     expect(supervisor.getState().nextHealAt).toBeNull();
   });
+
+  it('does not treat a failed generation-2 restart as a fresh bump (heal cooldown)', async () => {
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      healBackoffBaseMs: 60_000,
+      healBackoffMaxMs: 60_000,
+      startWaitMs: 1500,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    expect(supervisor.getState().appliedEngineGeneration).toBe(1);
+    const startsAfterGen1 = readFileSync(startsFile, 'utf8').length;
+
+    writeWrapper({ FAKE_ENGINE_SKIP_LISTEN: '99' });
+    const current = snapshotHolder.current!;
+    snapshotHolder.current = { ...current, engineGeneration: 2 };
+
+    await supervisor.reconcile();
+    expect(supervisor.getState().state).toBe('error');
+    expect(supervisor.getState().appliedEngineGeneration).toBe(1);
+    const startsAfterFail = readFileSync(startsFile, 'utf8').length;
+    expect(startsAfterFail).toBeGreaterThan(startsAfterGen1);
+
+    await supervisor.reconcile();
+    await supervisor.reconcile();
+    expect(readFileSync(startsFile, 'utf8').length).toBe(startsAfterFail);
+    expect(supervisor.getState().state).toBe('error');
+    expect(supervisor.getState().nextHealAt).toBeGreaterThan(Date.now());
+
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 20_000);
+
+  it('heals a failed generation-2 start after the cooldown', async () => {
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      healBackoffBaseMs: 1,
+      healBackoffMaxMs: 1,
+      startWaitMs: 1500,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+
+    const startsAfterGen1 = readFileSync(startsFile, 'utf8').length;
+    writeWrapper({ FAKE_ENGINE_SKIP_LISTEN: String(startsAfterGen1 + 3) });
+    snapshotHolder.current = { ...snapshotHolder.current!, engineGeneration: 2 };
+
+    await supervisor.reconcile();
+    expect(supervisor.getState().state).toBe('error');
+    const startsAfterFail = readFileSync(startsFile, 'utf8').length;
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    expect(readFileSync(startsFile, 'utf8').length).toBeGreaterThan(startsAfterFail);
+    expect(supervisor.getState().appliedEngineGeneration).toBe(2);
+
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 25_000);
 });

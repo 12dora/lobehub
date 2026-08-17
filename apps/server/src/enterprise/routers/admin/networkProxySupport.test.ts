@@ -14,6 +14,7 @@ import {
   isDangerousSettingsUpdate,
   redactSecretsFallback,
   rejectOversizedUpload,
+  runLocalArtifactInstall,
   sanitizeLocalError,
   setNetworkProxyRuntimeForTests,
   withLocalInstanceStatus,
@@ -184,6 +185,113 @@ describe('withLocalInstanceStatus', () => {
     expect(rows[0]?.healing).toEqual(healing);
     expect(rows[0]?.isCurrent).toBe(true);
     expect(rows[0]).not.toHaveProperty('lastError');
+  });
+
+  it('overlays live local state onto an existing heartbeat row', async () => {
+    const heartbeatAt = '2026-08-17T00:00:00.000Z';
+    const rows = await withLocalInstanceStatus(
+      {
+        buildLocalInstanceStatus: async () => ({
+          activeNode: 'node-live',
+          aliveNodeCount: 3,
+          appliedEngineGeneration: 2,
+          appliedRevision: 9,
+          arch: 'arm64',
+          artifacts: [
+            {
+              installed: true,
+              kind: 'geoip' as const,
+              source: 'download' as const,
+              version: 'abc',
+            },
+          ],
+          engineState: 'running',
+          engineVersion: 'v1.19.30',
+          fallbackCount: 99,
+          healing: null,
+          instanceId: 'pinst_local',
+          lastIssue: null,
+          platform: 'darwin',
+          proxiedCount: 99,
+        }),
+      },
+      [
+        {
+          activeNode: 'stale-node',
+          aliveNodeCount: 0,
+          appliedRevision: 1,
+          arch: 'arm64',
+          artifacts: [],
+          engineState: 'stopped',
+          engineVersion: null,
+          fallbackCount: 4,
+          healing: null,
+          instanceId: 'pinst_local',
+          isCurrent: true,
+          lastHeartbeatAt: heartbeatAt,
+          lastIssue: {
+            at: heartbeatAt,
+            code: 'exited',
+            detail: 'stale',
+          },
+          platform: 'darwin',
+          proxiedCount: 7,
+          updatedAt: heartbeatAt,
+        },
+      ],
+      'pinst_local',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.artifacts).toEqual([
+      { installed: true, kind: 'geoip', source: 'download', version: 'abc' },
+    ]);
+    expect(rows[0]?.engineState).toBe('running');
+    expect(rows[0]?.engineVersion).toBe('v1.19.30');
+    expect(rows[0]?.activeNode).toBe('node-live');
+    expect(rows[0]?.aliveNodeCount).toBe(3);
+    expect(rows[0]?.appliedRevision).toBe(9);
+    expect(rows[0]?.lastIssue).toBeNull();
+    expect(rows[0]?.lastHeartbeatAt).toBe(heartbeatAt);
+    expect(rows[0]?.updatedAt).toBe(heartbeatAt);
+    expect(rows[0]?.fallbackCount).toBe(4);
+    expect(rows[0]?.proxiedCount).toBe(7);
+  });
+});
+
+describe('runLocalArtifactInstall', () => {
+  it('reports local instance status after a successful install', async () => {
+    const reportLocalInstanceStatus = vi.fn(async () => true);
+    const result = await runLocalArtifactInstall(
+      {
+        artifactManager: {
+          installFromDownload: vi.fn(async () => ({ sha256: 'abc', version: 'v1' })),
+        },
+        reportLocalInstanceStatus,
+      } as never,
+      'geoip',
+      null,
+    );
+    expect(result).toEqual({ error: null, ok: true, sha256: 'abc', version: 'v1' });
+    expect(reportLocalInstanceStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report status when install fails', async () => {
+    const reportLocalInstanceStatus = vi.fn(async () => true);
+    const result = await runLocalArtifactInstall(
+      {
+        artifactManager: {
+          installFromDownload: vi.fn(async () => {
+            throw new Error('boom');
+          }),
+        },
+        redactSecrets: (text: string) => text,
+        reportLocalInstanceStatus,
+      } as never,
+      'geoip',
+      null,
+    );
+    expect(result.ok).toBe(false);
+    expect(reportLocalInstanceStatus).not.toHaveBeenCalled();
   });
 });
 

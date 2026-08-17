@@ -141,6 +141,11 @@ export const platformNetworkProxyInstanceStatus = pgTable(
     fallbackCount: integer('fallback_count').notNull().default(0),
     lastIssue: jsonb('last_issue').$type<EngineIssue | null>(),
     healing: jsonb('healing').$type<InstanceHealing | null>(),
+    /**
+     * @deprecated Kept for rolling upgrade; old processes still select/upsert this
+     * column. New writers leave it untouched. Drop in a later migration.
+     */
+    lastError: text('last_error'),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
 );

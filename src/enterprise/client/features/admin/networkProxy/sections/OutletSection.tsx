@@ -23,6 +23,7 @@ import type {
 import { applyConfigPatch, patchOutlet, patchStaticProxy } from '../configUpdate';
 import FieldStatus from '../FieldStatus';
 import { formatDelay } from '../format';
+import type { NetworkProxyGeodataState } from '../geodataState';
 import { Field, Section } from '../Section';
 import { networkProxyStyles as styles } from '../styles';
 import { NETWORK_PROXY_FIELDS, type NetworkProxyActions } from '../useNetworkProxyActions';
@@ -33,8 +34,11 @@ export interface OutletSectionProps {
   actions: NetworkProxyActions;
   canManage: boolean;
   config: NetworkProxyConfigView;
-  /** Smart routing needs both geodata files installed on this instance. */
-  geodataReady: boolean;
+  /**
+   * Smart routing needs both rule files installed on this instance. `unknown` means the status
+   * query gave no answer — the option stays locked, but nothing is offered or claimed.
+   */
+  geodataState: NetworkProxyGeodataState;
   nodes?: AdminNetworkProxyNodes;
   nodesError?: unknown;
   nodesLoading?: boolean;
@@ -114,7 +118,7 @@ const OutletSection = memo<OutletSectionProps>(
     actions,
     canManage,
     config,
-    geodataReady,
+    geodataState,
     nodes,
     nodesError,
     nodesLoading,
@@ -223,7 +227,7 @@ const OutletSection = memo<OutletSectionProps>(
               disabled={lock(F.ruleMode)}
               value={ruleMode}
               options={NETWORK_PROXY_RULE_MODES.map((mode) => ({
-                disabled: mode === 'smart' && !geodataReady,
+                disabled: mode === 'smart' && geodataState !== 'ready',
                 label: t(`networkProxy.ruleMode.${mode}` as never),
                 value: mode,
               }))}
@@ -289,8 +293,12 @@ const OutletSection = memo<OutletSectionProps>(
         </div>
 
         {/* Smart routing stays disabled until the rule data is there — but the way to get it is
-            right here, rather than a dead end pointing at another block. */}
-        {!geodataReady ? (
+            right here, rather than a dead end pointing at another block. It is only offered once
+            we know the data is actually missing; an unread status says nothing about the disk. */}
+        {geodataState === 'unknown' ? (
+          <Text className={styles.hintText}>{t('networkProxy.outlet.geodataUnknown')}</Text>
+        ) : null}
+        {geodataState === 'missing' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
             <div className={styles.inlineActions}>
               <Text className={styles.hintText}>{t('networkProxy.outlet.geodataInstallHint')}</Text>

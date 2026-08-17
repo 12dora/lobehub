@@ -61,6 +61,27 @@ describe('formatAuditReason (production mapping)', () => {
     );
   });
 
+  it('passes the raw reason through when the violation count is not a real tally', () => {
+    // A rounded or absent tally must never be shown as if the recorder had written it.
+    for (const raw of [
+      `${MODERATION_AUTO_BAN_REASON_CODE}:0`,
+      `${MODERATION_AUTO_BAN_REASON_CODE}:-1`,
+      `${MODERATION_AUTO_BAN_REASON_CODE}:9007199254740993`,
+      `${MODERATION_AUTO_BAN_REASON_CODE}:`,
+      '内容审计：窗口内违规 0 次',
+      '内容审计：窗口内违规 9007199254740993 次',
+    ]) {
+      expect(formatAuditReason(raw, t)).toBe(raw);
+    }
+    // The largest exactly representable tally still interpolates.
+    expect(formatAuditReason(`${MODERATION_AUTO_BAN_REASON_CODE}:9007199254740991`, t)).toBe(
+      'zh:audit.autoReason.moderationAutoBan#9007199254740991',
+    );
+    expect(formatAuditReason(`${MODERATION_AUTO_BAN_REASON_CODE}:1`, t)).toBe(
+      'zh:audit.autoReason.moderationAutoBan#1',
+    );
+  });
+
   it('leaves free-form admin reasons verbatim', () => {
     expect(formatAuditReason('policy violation: spam', t)).toBe('policy violation: spam');
     expect(formatAuditReason(`${MODERATION_AUTO_BAN_REASON_CODE}:not-a-number`, t)).toBe(

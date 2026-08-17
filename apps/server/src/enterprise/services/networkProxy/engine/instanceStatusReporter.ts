@@ -10,7 +10,7 @@ import { redactSecrets, upsertInstanceStatus } from './b1';
 import { detectEnginePlatform } from './platform';
 import type { EngineRuntime, EngineRuntimeState } from './types';
 
-const STATE_CHANGE_DEBOUNCE_MS = 2000;
+export const INSTANCE_STATUS_STATE_CHANGE_DEBOUNCE_MS = 2000;
 
 const sanitizeIssue = (issue: EngineIssue | null): EngineIssue | null => {
   if (!issue) return null;
@@ -86,15 +86,23 @@ export const reportInstanceStatus = async (runtime: EngineRuntime): Promise<bool
 export const startInstanceStatusReporter = (
   runtime: EngineRuntime,
   intervalMs = 30_000,
+  report: (runtime: EngineRuntime) => Promise<boolean> = reportInstanceStatus,
+  debounceMs = INSTANCE_STATUS_STATE_CHANGE_DEBOUNCE_MS,
 ): (() => void) => {
   let inFlight = false;
-  let lastStateChangeWrite = 0;
+  let dirty = false;
+  let lastWriteAt = 0;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   const write = () => {
-    if (inFlight) return;
+    if (inFlight) {
+      dirty = true;
+      return;
+    }
     inFlight = true;
-    void reportInstanceStatus(runtime)
+    dirty = false;
+    lastWriteAt = Date.now();
+    void report(runtime)
       .catch((error) => {
         log(
           'report failed instanceId=%s errorClass=%s',
@@ -104,6 +112,7 @@ export const startInstanceStatusReporter = (
       })
       .finally(() => {
         inFlight = false;
+        if (dirty) write();
       });
   };
 
@@ -112,19 +121,20 @@ export const startInstanceStatusReporter = (
   };
 
   const tickFromStateChange = () => {
-    const now = Date.now();
-    const elapsed = now - lastStateChangeWrite;
-    if (elapsed < STATE_CHANGE_DEBOUNCE_MS) {
+    if (inFlight) {
+      dirty = true;
+      return;
+    }
+    const elapsed = Date.now() - lastWriteAt;
+    if (lastWriteAt > 0 && elapsed < debounceMs) {
       if (debounceTimer) return;
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        lastStateChangeWrite = Date.now();
         write();
-      }, STATE_CHANGE_DEBOUNCE_MS - elapsed);
+      }, debounceMs - elapsed);
       debounceTimer.unref();
       return;
     }
-    lastStateChangeWrite = now;
     write();
   };
 

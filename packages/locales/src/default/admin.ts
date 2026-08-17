@@ -189,7 +189,7 @@ export default {
   'agentCatalog.toast.created': 'Assistant created and live.',
   'agentCatalog.toast.deleted': 'Assistant deleted.',
   'agentCatalog.toast.refreshDeferred':
-    'Assistant saved. Changes may take a moment to reach every member.',
+    'Assistant saved, but some server instances are still refreshing. Wait a moment before starting new runs.',
   'agentCatalog.toast.saved': 'Assistant saved and live.',
   'globalCredentials.validation.filePayloadInvalid':
     'The file data is invalid. Select the file again and retry.',
@@ -630,7 +630,8 @@ export default {
   'skillCatalog.editor.unsaved.stay': 'Keep editing',
   'skillCatalog.editor.unsaved.title': 'Unsaved skill changes',
   'skillCatalog.actions.retry': 'Retry',
-  'skillCatalog.actions.archive.impact': 'Published historical versions remain available.',
+  'skillCatalog.actions.archive.impact':
+    'Existing references pinned to a published historical version continue to work.',
   'skillCatalog.actions.archive.label': 'Archive',
   'skillCatalog.actions.archive.title': 'Archive skill',
   'skillCatalog.actions.publish.label': 'Publish',
@@ -1427,7 +1428,7 @@ export default {
   'connectorCatalog.toast.archived': 'Connector archived.',
   'connectorCatalog.toast.created': 'Connector created.',
   'connectorCatalog.toast.createdDiscoveryFailed':
-    'Connector created, but the server could not be reached to load its tools. Check the server URL and try again.',
+    'Connector created, but its tools could not be loaded. Open the connector details, review the configuration, and retry discovery.',
   'connectorCatalog.toast.deleted': 'Connector deleted.',
   'connectorCatalog.toast.discovered': 'Tools discovered.',
   'connectorCatalog.toast.published': 'Connector published.',
@@ -1663,7 +1664,7 @@ export default {
   'identityProviders.disable.cancel': 'Cancel',
   'identityProviders.disable.confirm': 'Disable',
   'identityProviders.disable.impact':
-    'After the service restarts, this sign-in method no longer accepts new logins. To restore it, publish the configuration again.',
+    'After all running instances restart, this sign-in method will stop accepting new sign-ins. To restore it, publish the configuration again.',
   'identityProviders.disable.success': 'Sign-in method disabled — restart required',
   'identityProviders.disable.committedRefreshFailed':
     'Sign-in method disabled, but the runtime status could not be refreshed. Retry the status check — do not disable again.',
@@ -1688,7 +1689,7 @@ export default {
   'identityProviders.conflict.refreshFailed':
     'Could not reload the latest configuration. Your local changes are still here; retry before saving.',
   'identityProviders.description':
-    'A new sign-in method takes effect once it is tested, published and the service is restarted.',
+    'A new sign-in method takes effect after it is tested, published, and all running instances restart.',
   'identityProviders.dingtalk.allowedCorps.add': 'Add organization via DingTalk login',
   'identityProviders.dingtalk.allowedCorps.added': 'Organization added to the allowlist',
   'identityProviders.dingtalk.allowedCorps.addHint':
@@ -2011,7 +2012,7 @@ export default {
   'system.oidc.attention': 'Attention needed',
   'system.oidc.attentionHint': 'Single sign-on needs attention.',
   'system.oidc.enabled': 'Enabled',
-  'system.oidc.enabledHint': 'Single sign-on is enabled.',
+  'system.oidc.enabledHint': 'Single sign-on is running on this instance.',
   'system.oidc.notConfigured': 'Not configured',
   'system.oidc.notConfiguredHint': 'No single sign-on method is set up.',
   'system.oidc.pendingRestart': 'Restart pending',
@@ -3454,6 +3455,8 @@ export default {
   'networkProxy.banners.selfHealing': 'Recovering automatically…',
   'networkProxy.banners.selfHealingDesc':
     'The engine is being restarted. The next attempt is in {{seconds}} s — nothing for you to do.',
+  'networkProxy.banners.selfHealingAlso':
+    '{{count}} other instance(s) are recovering automatically.',
   'networkProxy.banners.selfHealed': 'The engine recovered on its own',
   'networkProxy.banners.fallback': 'Some traffic has fallen back to a direct connection',
   'networkProxy.banners.fallbackDesc':
@@ -3532,7 +3535,7 @@ export default {
     'No engine build is available for this platform, so installing is disabled.',
   'networkProxy.engine.restart': 'Restart engine',
   'networkProxy.engine.viewLogs': 'Logs',
-  'networkProxy.engine.thisInstance': ' (this instance)',
+  'networkProxy.engine.thisInstance': 'This instance',
   'networkProxy.engine.instancesCaption':
     'Live instances only, and whether each one is running the current configuration.',
   'networkProxy.engine.instancesEmpty':
@@ -3571,6 +3574,8 @@ export default {
   'networkProxy.ruleMode.smart': 'Smart',
   'networkProxy.outlet.geodataInstallHint':
     'Smart routing becomes available once the routing rule data is installed.',
+  'networkProxy.outlet.geodataUnknown':
+    'The rule data install state could not be read right now, so smart routing cannot be chosen.',
   'networkProxy.outlet.geodataInstallAction': 'Install',
   'networkProxy.outlet.latencyUrl': 'Latency test URL',
   'networkProxy.outlet.latencyUrlHint': 'Also used by "test connectivity".',

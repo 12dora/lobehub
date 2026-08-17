@@ -702,7 +702,7 @@ describe('NetworkProxyTab', () => {
     render(<NetworkProxyTab canManage enabled service={stubService()} />);
 
     expect(screen.getByText('networkProxy.banners.selfHealing')).toBeTruthy();
-    // One banner about one engine — not "it is down" next to "it is coming back".
+    // Nothing here needs a human, so the red "act now" banner must not be raised.
     expect(screen.queryByText('networkProxy.banners.engineIssue')).toBeNull();
     // The reason survives, and so does the manual escape hatch.
     expect(screen.getByText('networkProxy.engineIssue.start_timeout')).toBeTruthy();
@@ -716,7 +716,34 @@ describe('NetworkProxyTab', () => {
     ).toBe(true);
   });
 
-  it('confirms an engine that came back on its own', async () => {
+  it('confirms an engine the supervisor brought back by itself', async () => {
+    mocks.status = statusFixture(
+      {},
+      {
+        engineState: 'error',
+        healing: { attempt: 1, nextAttemptAt: new Date(Date.now() + 5000).toISOString() },
+        lastIssue: engineIssue('exited'),
+      },
+    );
+    const view = render(<NetworkProxyTab canManage enabled service={stubService()} />);
+    expect(screen.getByText('networkProxy.banners.selfHealing')).toBeTruthy();
+
+    mocks.status = statusFixture();
+    await act(async () => {
+      view.rerender(<NetworkProxyTab canManage enabled service={stubService()} />);
+    });
+
+    expect(screen.getByText('networkProxy.banners.selfHealed')).toBeTruthy();
+    expect(screen.queryByText('networkProxy.banners.selfHealing')).toBeNull();
+  });
+
+  it('does not congratulate itself on an engine that was healthy all along', () => {
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+    expect(screen.queryByText('networkProxy.banners.selfHealed')).toBeNull();
+  });
+
+  it('does not claim self-recovery for a failure the supervisor never retried', async () => {
+    // No `healing`: whatever cleared this — an admin restart, a redeploy — was not automatic.
     mocks.status = statusFixture({}, { engineState: 'error', lastIssue: engineIssue('exited') });
     const view = render(<NetworkProxyTab canManage enabled service={stubService()} />);
     expect(screen.getByText('networkProxy.banners.engineIssue')).toBeTruthy();
@@ -726,13 +753,90 @@ describe('NetworkProxyTab', () => {
       view.rerender(<NetworkProxyTab canManage enabled service={stubService()} />);
     });
 
+    expect(screen.queryByText('networkProxy.banners.selfHealed')).toBeNull();
+  });
+
+  it('waits for the engine to actually be up before saying it recovered', async () => {
+    mocks.status = statusFixture(
+      {},
+      {
+        engineState: 'error',
+        healing: { attempt: 1, nextAttemptAt: new Date(Date.now() + 5000).toISOString() },
+        lastIssue: engineIssue('exited'),
+      },
+    );
+    const view = render(<NetworkProxyTab canManage enabled service={stubService()} />);
+
+    // The retry fired: the row is no longer `error`, but nothing is serving yet.
+    mocks.status = statusFixture({}, { engineState: 'starting', lastIssue: null });
+    await act(async () => {
+      view.rerender(<NetworkProxyTab canManage enabled service={stubService()} />);
+    });
+    expect(screen.queryByText('networkProxy.banners.selfHealed')).toBeNull();
+
+    mocks.status = statusFixture();
+    await act(async () => {
+      view.rerender(<NetworkProxyTab canManage enabled service={stubService()} />);
+    });
     expect(screen.getByText('networkProxy.banners.selfHealed')).toBeTruthy();
+  });
+
+  it('never lets a recovering instance hide one that still needs a human', () => {
+    const base = statusFixture();
+    const first = base.instances[0]!;
+    mocks.status = {
+      ...base,
+      instances: [
+        {
+          ...first,
+          engineState: 'error',
+          healing: { attempt: 2, nextAttemptAt: new Date(Date.now() + 30_000).toISOString() },
+          lastIssue: engineIssue('start_timeout'),
+        },
+        {
+          ...first,
+          engineState: 'error',
+          instanceId: 'pinst_2',
+          isCurrent: false,
+          lastIssue: engineIssue('crash_loop'),
+        },
+      ],
+    };
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+
+    // One terminal instance → the singular error banner, naming ITS reason...
+    expect(screen.getByText('networkProxy.banners.engineIssue')).toBeTruthy();
+    expect(screen.getByText('networkProxy.engineIssue.crash_loop')).toBeTruthy();
+    // ...with the recovering one mentioned, not promoted to its own banner.
+    expect(screen.getByText('networkProxy.banners.selfHealingAlso')).toBeTruthy();
+    expect(screen.queryByText('networkProxy.banners.selfHealing')).toBeNull();
+  });
+
+  it('treats a healing marker on a live engine as no recovery at all', () => {
+    // Automatic recovery only exists on an instance the supervisor gave up starting.
+    mocks.status = statusFixture(
+      {},
+      {
+        engineState: 'running',
+        healing: { attempt: 1, nextAttemptAt: new Date(Date.now() + 30_000).toISOString() },
+      },
+    );
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+
+    expect(screen.queryByText('networkProxy.banners.selfHealing')).toBeNull();
     expect(screen.queryByText('networkProxy.banners.engineIssue')).toBeNull();
   });
 
-  it('does not congratulate itself on an engine that was healthy all along', () => {
+  it('does not claim the rule data is missing while the status is unreadable', () => {
+    mocks.settings = settingsFixture();
+    mocks.settings.config.ruleMode = 'smart';
+    mocks.statusError = new Error('network');
     render(<NetworkProxyTab canManage enabled service={stubService()} />);
-    expect(screen.queryByText('networkProxy.banners.selfHealed')).toBeNull();
+
+    // Unknown is not "empty disk": no claim, and no install offered for a state we cannot read.
+    expect(screen.queryByText('networkProxy.banners.geodata')).toBeNull();
+    expect(screen.queryByText('networkProxy.engine.geodata.install')).toBeNull();
+    expect(screen.getByText('networkProxy.banners.statusUnknown')).toBeTruthy();
   });
 
   it('hides the applied-configuration ratio when there is only one node', () => {

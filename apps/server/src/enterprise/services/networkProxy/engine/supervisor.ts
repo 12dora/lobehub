@@ -110,6 +110,8 @@ const memberAlive = (
 
 export class EngineSupervisor implements EngineRuntime {
   private appliedEngineGeneration: number | null = null;
+  /** Last engineGeneration we tried to start — not only the last successful apply. */
+  private lastAttemptedEngineGeneration: number | null = null;
   private appliedRevision: number | null = null;
   private backoffMs = 1000;
   private child: ChildProcess | null = null;
@@ -272,7 +274,7 @@ export class EngineSupervisor implements EngineRuntime {
       }
 
       if (this.state.state === 'error') {
-        if (snapshot.engineGeneration > (this.appliedEngineGeneration ?? -1)) {
+        if (this.isUnattemptedGeneration(snapshot.engineGeneration)) {
           this.pendingRestart = false;
           this.clearHealState();
           this.patchState({ lastIssue: null });
@@ -289,7 +291,7 @@ export class EngineSupervisor implements EngineRuntime {
         return;
       }
 
-      if (snapshot.engineGeneration > (this.appliedEngineGeneration ?? -1)) {
+      if (this.isUnattemptedGeneration(snapshot.engineGeneration)) {
         this.pendingRestart = false;
         await this.restartNow();
         return;
@@ -373,10 +375,17 @@ export class EngineSupervisor implements EngineRuntime {
     this.patchState({ healAttempts: 0, nextHealAt: null });
   };
 
-  private enterErrorState = (generation: number | null = this.appliedEngineGeneration): void => {
-    if (this.appliedEngineGeneration === null && generation !== null) {
-      this.appliedEngineGeneration = generation;
-    }
+  private isUnattemptedGeneration = (generation: number): boolean =>
+    generation > (this.lastAttemptedEngineGeneration ?? this.appliedEngineGeneration ?? -1);
+
+  private markAttemptedGeneration = (generation: number): void => {
+    this.lastAttemptedEngineGeneration = generation;
+  };
+
+  private enterErrorState = (
+    generation: number | null = this.lastAttemptedEngineGeneration,
+  ): void => {
+    if (generation !== null) this.markAttemptedGeneration(generation);
     let { healAttempts, nextHealAt } = this.state;
     if (nextHealAt === null) {
       healAttempts = Math.max(healAttempts, 1);
@@ -573,11 +582,15 @@ export class EngineSupervisor implements EngineRuntime {
     await removeStaleRuntimeDirs(dataDir, paths.instanceId);
     await ensureSecureDirectory(paths.runtimeDir, { create: true, root: dataDir });
 
+    const opening = await getNetworkProxySnapshot();
+    this.markAttemptedGeneration(opening.engineGeneration);
+
     let lastError: unknown;
     for (let attempt = 0; attempt < PORT_RETRY; attempt += 1) {
       let spawned = false;
       try {
         const snapshot = await getNetworkProxySnapshot();
+        this.markAttemptedGeneration(snapshot.engineGeneration);
         const artifact = await artifactManager.resolveEngineBinary({ reverify: true });
         if (!this.desiredRun(snapshot, artifact)) {
           await this.stopEngineNow();
@@ -644,6 +657,7 @@ export class EngineSupervisor implements EngineRuntime {
         // generation bump — instead of treating stale YAML as current.
         this.appliedRevision = snapshot.revision;
         this.appliedEngineGeneration = snapshot.engineGeneration;
+        this.markAttemptedGeneration(snapshot.engineGeneration);
         const proxyUrl = `http://${NETWORK_PROXY_ENGINE_LISTENER_USER}:${this.listenerPassword}@127.0.0.1:${mixedPort}`;
         const geodataIssue =
           this.state.lastIssue && INFORMATIONAL_ISSUE_CODES.has(this.state.lastIssue.code)

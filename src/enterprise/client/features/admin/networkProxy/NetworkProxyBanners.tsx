@@ -14,6 +14,7 @@ import type {
 } from '@/types/platform/networkProxy';
 
 import { networkProxyIssueKey } from './errors';
+import type { NetworkProxyGeodataState } from './geodataState';
 import { networkProxyStyles as styles } from './styles';
 import { NETWORK_PROXY_FIELDS, type NetworkProxyActions } from './useNetworkProxyActions';
 
@@ -26,7 +27,8 @@ export interface NetworkProxyBannersProps {
   artifactsStale?: boolean;
   canManage: boolean;
   config: NetworkProxyConfigView;
-  geodataReady: boolean;
+  /** `unknown` means the status query gave no answer — never claim the data is missing then. */
+  geodataState: NetworkProxyGeodataState;
   globalProxyActive: boolean;
   onInstallGeodata: () => void;
   onReloadArtifacts: () => void;
@@ -80,25 +82,32 @@ const useCountdown = (at: string | null | undefined): number => {
   return seconds;
 };
 
+/** Engine states that mean the process is up and serving, whatever it reported before. */
+const LIVE_STATES = new Set(['degraded', 'running']);
+
 /**
- * `true` for one moment after the engine goes from "broken or recovering" back to healthy, so the
- * admin who saw the red banner learns it resolved instead of just finding it gone.
+ * `true` for one moment after an engine the supervisor was *automatically* retrying comes back
+ * up, so the admin who saw the recovery banner learns it worked instead of just finding it gone.
+ *
+ * Both halves are load-bearing. Without `healingObserved` this would congratulate itself on a
+ * stop the admin asked for or a restart they performed by hand; without `recovered` it would fire
+ * the moment the row leaves `error`, while the engine is still only `starting`.
  */
-const useSelfHealed = (unhealthy: boolean, known: boolean): boolean => {
-  const wasUnhealthy = useRef(false);
+const useSelfHealed = (healingObserved: boolean, recovered: boolean): boolean => {
+  const sawHealing = useRef(false);
   const [healedAt, setHealedAt] = useState<number | null>(null);
 
   useEffect(() => {
-    if (unhealthy) {
-      wasUnhealthy.current = true;
+    if (healingObserved) {
+      sawHealing.current = true;
       setHealedAt(null);
       return;
     }
-    if (known && wasUnhealthy.current) {
-      wasUnhealthy.current = false;
+    if (sawHealing.current && recovered) {
+      sawHealing.current = false;
       setHealedAt(Date.now());
     }
-  }, [known, unhealthy]);
+  }, [healingObserved, recovered]);
 
   useEffect(() => {
     if (healedAt === null) return;
@@ -150,7 +159,7 @@ const NetworkProxyBanners = memo<NetworkProxyBannersProps>(
     artifactsStale,
     canManage,
     config,
-    geodataReady,
+    geodataState,
     globalProxyActive,
     onInstallGeodata,
     onReloadArtifacts,
@@ -163,17 +172,21 @@ const NetworkProxyBanners = memo<NetworkProxyBannersProps>(
     const instances = status?.instances ?? [];
     const troubled = instances.filter(hasEngineIssue);
     // Missing rule data is a setup step, not a breakage — it gets the install banner below.
-    const broken = troubled.filter((instance) => issueOf(instance)?.code !== 'geodata_missing');
     const geodataMissing = troubled.some(
       (instance) => issueOf(instance)?.code === 'geodata_missing',
     );
-    const healingInstance = instances.find((instance) => healingOf(instance) !== null);
-    const healingSeconds = useCountdown(
-      healingInstance ? healingOf(healingInstance)?.nextAttemptAt : null,
+    const actionable = troubled.filter((instance) => issueOf(instance)?.code !== 'geodata_missing');
+    // Automatic recovery only exists on an instance the supervisor has given up starting; every
+    // other broken instance is terminal and still needs a human. One recovering instance must
+    // never hide the ones that are not — they are different problems on different machines.
+    const healing = actionable.filter(
+      (instance) => instance.engineState === 'error' && healingOf(instance) !== null,
     );
+    const terminal = actionable.filter((instance) => !healing.includes(instance));
+    const healingSeconds = useCountdown(healing[0] ? healingOf(healing[0])?.nextAttemptAt : null);
     const selfHealed = useSelfHealed(
-      troubled.length > 0 || healingInstance !== undefined,
-      instances.length > 0,
+      healing.length > 0,
+      terminal.length === 0 && instances.some((instance) => LIVE_STATES.has(instance.engineState)),
     );
     const fallbackScopes = status?.fallbackScopes ?? [];
     const conflictCount = actions.conflicts.length;
@@ -287,7 +300,30 @@ const NetworkProxyBanners = memo<NetworkProxyBannersProps>(
           <Alert showIcon message={t('networkProxy.banners.selfHealed')} type="success" />
         ) : null}
 
-        {healingInstance ? (
+        {terminal.length > 0 ? (
+          <Alert
+            showIcon
+            action={restartAction}
+            type="error"
+            description={
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+                <IssueDescription issue={terminal[0] ? issueOf(terminal[0]) : null} />
+                {/* The recovering instances are real, but they are not what this banner is
+                    asking the admin to act on. */}
+                {healing.length > 0 ? (
+                  <span>
+                    {t('networkProxy.banners.selfHealingAlso', { count: healing.length })}
+                  </span>
+                ) : null}
+              </div>
+            }
+            message={
+              terminal.length > 1
+                ? t('networkProxy.banners.engineIssueMulti', { count: terminal.length })
+                : t('networkProxy.banners.engineIssue')
+            }
+          />
+        ) : healing.length > 0 ? (
           <Alert
             showIcon
             action={restartAction}
@@ -298,20 +334,8 @@ const NetworkProxyBanners = memo<NetworkProxyBannersProps>(
                 <span>
                   {t('networkProxy.banners.selfHealingDesc', { seconds: healingSeconds })}
                 </span>
-                <IssueDescription issue={issueOf(healingInstance)} />
+                <IssueDescription issue={healing[0] ? issueOf(healing[0]) : null} />
               </div>
-            }
-          />
-        ) : broken.length > 0 ? (
-          <Alert
-            showIcon
-            action={restartAction}
-            description={<IssueDescription issue={broken[0] ? issueOf(broken[0]) : null} />}
-            type="error"
-            message={
-              broken.length > 1
-                ? t('networkProxy.banners.engineIssueMulti', { count: broken.length })
-                : t('networkProxy.banners.engineIssue')
             }
           />
         ) : null}
@@ -327,8 +351,9 @@ const NetworkProxyBanners = memo<NetworkProxyBannersProps>(
           />
         ) : null}
 
-        {/* Only claim geodata is missing when we actually know what is installed. */}
-        {(geodataMissing || (config.ruleMode === 'smart' && !geodataReady)) &&
+        {/* Only claim geodata is missing when we actually know what is installed — an
+            unreachable status query is not evidence of an empty disk. */}
+        {(geodataMissing || (config.ruleMode === 'smart' && geodataState === 'missing')) &&
         !(artifactsError && !artifacts) ? (
           <Alert
             showIcon

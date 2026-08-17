@@ -13,6 +13,7 @@ import type { EgressScopeOp } from '@/types/platform/networkProxy';
 import { applyConfigPatch } from './configUpdate';
 import FieldStatus from './FieldStatus';
 import { formatDelay } from './format';
+import { deriveGeodataState } from './geodataState';
 import {
   useNetworkProxyArtifacts,
   useNetworkProxyNodes,
@@ -99,13 +100,9 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
     const appliedCount = instances.filter(
       (instance) => instance.appliedRevision === settings?.revision,
     ).length;
-    const geodataReady = useMemo(
-      () =>
-        (['geoip', 'geosite'] as const).every((kind) =>
-          Boolean(current?.artifacts.find((item) => item.kind === kind)?.installed),
-        ),
-      [current?.artifacts],
-    );
+    // Tri-state on purpose: with no instance reporting we know nothing, and "unknown" must not
+    // be rendered as "not installed" (which would offer an install for a state we cannot read).
+    const geodataState = useMemo(() => deriveGeodataState(current), [current]);
 
     // Bulk scope writes must cover every provider that HAS a scope, not only the ones the
     // catalog currently lists — otherwise "route none" silently leaves a delisted provider on.
@@ -230,7 +227,7 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
           artifactsStale={artifactsStale}
           canManage={canManage}
           config={config}
-          geodataReady={geodataReady}
+          geodataState={geodataState}
           globalProxyActive={globalProxyActive}
           status={statusQuery.data}
           statusError={statusQuery.error}
@@ -328,7 +325,7 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
           actions={actions}
           canManage={canManage}
           config={config}
-          geodataReady={geodataReady}
+          geodataState={geodataState}
           nodes={nodesQuery.data}
           nodesError={nodesQuery.error}
           nodesLoading={nodesQuery.isLoading}

@@ -623,7 +623,10 @@ export const adminNetworkProxyRouter = router({
             subscriptionUpdateViaOutlet: input.config.subscriptionUpdateViaOutlet,
           };
           runtime.assertCanEnable(nextConfig);
-          assertSmartModeGeodata(nextConfig, current.desiredArtifacts);
+          assertSmartModeGeodata(nextConfig, current.desiredArtifacts, {
+            currentRuleMode: current.config.ruleMode,
+            ruleModeTouched: true,
+          });
           const row = await runtime.updateNetworkProxySettings(tx, {
             config: nextConfig,
             expectedRevision: input.expectedRevision,

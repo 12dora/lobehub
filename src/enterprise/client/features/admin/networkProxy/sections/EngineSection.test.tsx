@@ -268,9 +268,10 @@ describe('EngineSection instances table', () => {
     expect(screen.queryByText('3')).toBeNull();
   });
 
-  it('marks the instance the admin is talking to without gluing the brackets on in code', () => {
+  it('names the current instance instead of showing its opaque id', () => {
     renderSection();
-    // The parentheses belong to the translated value, so a locale can drop or change them.
-    expect(screen.getByText(/networkProxy\.engine\.thisInstance/)).toBeTruthy();
+    expect(screen.getByText('networkProxy.engine.thisInstance')).toBeTruthy();
+    // The pinst_… id is internal state — it never reaches the current-instance cell.
+    expect(screen.queryByText(/pinst_1/)).toBeNull();
   });
 });

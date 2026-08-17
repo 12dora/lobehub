@@ -125,13 +125,20 @@ interface CountedReason {
   key: string;
 }
 
-/** Reasons that carry a numeric parameter after the stable code. */
+/**
+ * Reasons that carry a numeric parameter after the stable code.
+ *
+ * The count is a violation tally, so only a positive, exactly representable integer can be
+ * interpolated: `:0` is not a real auto-ban, and a value past `Number.MAX_SAFE_INTEGER` would be
+ * rounded by `parseInt` and rendered as a number the recorder never wrote. Anything else falls
+ * through so the caller shows the stored reason verbatim instead of inventing a figure.
+ */
 const parseCountedReason = (reason: string): CountedReason | null => {
   const match =
     MODERATION_AUTO_BAN_PATTERN.exec(reason) ?? MODERATION_AUTO_BAN_LEGACY_PATTERN.exec(reason);
   if (!match) return null;
   const count = Number.parseInt(match[1], 10);
-  if (!Number.isFinite(count)) return null;
+  if (!Number.isSafeInteger(count) || count <= 0) return null;
   return { count, key: 'audit.autoReason.moderationAutoBan' };
 };
 

@@ -55,7 +55,12 @@ export const updateNetworkProxySettings = async (
   const model = new NetworkProxySettingsModel(db);
   const current = await model.ensureDefault();
   assertCanEnable(config);
-  assertSmartModeGeodata(config, current.desiredArtifacts);
+  assertSmartModeGeodata(config, current.desiredArtifacts, {
+    currentRuleMode: current.config.ruleMode,
+    // Generic settings writes (selectNode / updateScopes) carry ruleMode
+    // through; they do not elect smart mode.
+    ruleModeTouched: false,
+  });
   const row = await model.update({
     config,
     expectedRevision: input.expectedRevision,
@@ -166,12 +171,22 @@ export const assertCanEnable = (config: NetworkProxyConfig): void => {
 /**
  * Smart routing needs both geoip and geosite requested (desired), not necessarily
  * installed on this instance yet — other nodes converge from desired state.
+ *
+ * Only enforced when the write *enters* smart mode, or when the caller payload
+ * explicitly includes `ruleMode`. Already-smart rows stay writable for unrelated
+ * fields (selectNode / updateScopes) so a pre-upgrade row is not frozen.
  */
 export const assertSmartModeGeodata = (
-  config: NetworkProxyConfig,
+  next: Pick<NetworkProxyConfig, 'ruleMode'>,
   desiredArtifacts: DesiredArtifacts,
+  options: {
+    currentRuleMode: NetworkProxyConfig['ruleMode'];
+    ruleModeTouched: boolean;
+  },
 ): void => {
-  if (config.ruleMode !== 'smart') return;
+  if (next.ruleMode !== 'smart') return;
+  const enteringSmart = options.currentRuleMode !== 'smart';
+  if (!enteringSmart && !options.ruleModeTouched) return;
   if (desiredArtifacts.geoip && desiredArtifacts.geosite) return;
   throwEnterpriseError({
     code: PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_GEODATA_MISSING,

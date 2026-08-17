@@ -244,7 +244,7 @@ interface NetworkProxyConfig {
 
 ### 4.3 `platform_network_proxy_instance_status`（每实例一行）
 
-`instance_id`（PK，FK → `platform_instance_heartbeats.id` ON DELETE CASCADE，随实例回收器一起清理）、`engine_state`、`engine_version`、`platform`、`arch`、`artifact_state jsonb`（engine/geoip/geosite 各自 installed/version/source，`source` 含 `operator_override` 表示 `NETWORK_PROXY_ENGINE_BIN` 未校验覆盖）、`applied_revision`（该实例已生效的设置 revision）、`active_node`、`alive_node_count`、`proxied_count`、`fallback_count`、`last_issue jsonb`（`{ at, code, detail }` 结构化问题，不再存原始英文异常）、`healing jsonb`（自愈中：`{ attempt, nextAttemptAt }`，仅 `error` 且已安排重试时非空）、`updated_at`。由各实例在状态变化与心跳时 upsert；面板「实例」列表 **join 心跳表、只展示 `last_heartbeat_at` 在 90 s 内的实例**（过期行仅作历史，不参与「已生效 / 落后」计数）。
+`instance_id`（PK，FK → `platform_instance_heartbeats.id` ON DELETE CASCADE，随实例回收器一起清理）、`engine_state`、`engine_version`、`platform`、`arch`、`artifact_state jsonb`（engine/geoip/geosite 各自 installed/version/source，`source` 含 `operator_override` 表示 `NETWORK_PROXY_ENGINE_BIN` 未校验覆盖）、`applied_revision`（该实例已生效的设置 revision）、`active_node`、`alive_node_count`、`proxied_count`、`fallback_count`、`last_issue jsonb`（`{ at, code, detail }` 结构化问题，不再把原始英文异常当作面板正文）、`healing jsonb`（自愈中：`{ attempt, nextAttemptAt }`，仅 `error` 且已安排重试时非空）、`last_error`（本版保留、可空、新写入不再使用，供滚动升级期间旧进程读写；后续迁移再删）、`updated_at`。由各实例在状态变化与心跳时 upsert；面板「实例」列表 **join 心跳表、只展示 `last_heartbeat_at` 在 90 s 内的实例**（过期行仅作历史，不参与「已生效 / 落后」计数）。
 
 ### 4.4 不入库
 

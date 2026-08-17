@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -94,6 +95,33 @@ describe('NetworkProxyInstanceStatusModel', () => {
     expect(fresh).toHaveLength(1);
     expect(fresh[0]?.lastIssue).toEqual(lastIssue);
     expect(fresh[0]?.healing).toEqual(healing);
+  });
+
+  it('leaves deprecated last_error untouched on upsert', async () => {
+    const now = new Date();
+    const id = instanceId('f');
+    await db.insert(platformInstanceHeartbeats).values({
+      instanceId: id,
+      lastHeartbeatAt: now,
+      startedAt: new Date(now.getTime() - 60_000),
+    });
+    await db.insert(platformNetworkProxyInstanceStatus).values({
+      arch: 'arm64',
+      engineState: 'stopped',
+      instanceId: id,
+      lastError: 'legacy-raw',
+      platform: 'darwin',
+    });
+
+    const model = new NetworkProxyInstanceStatusModel(db);
+    expect(await model.upsert({ ...upsertRow(id), engineState: 'running' })).toBe(true);
+
+    const [row] = await db
+      .select()
+      .from(platformNetworkProxyInstanceStatus)
+      .where(eq(platformNetworkProxyInstanceStatus.instanceId, id));
+    expect(row?.lastError).toBe('legacy-raw');
+    expect(row?.engineState).toBe('running');
   });
 
   it('returns false silently when the heartbeat row is missing', async () => {

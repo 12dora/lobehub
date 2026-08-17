@@ -123,43 +123,61 @@ describe('assertSmartModeGeodata', () => {
     geoip: { commit: 'abc', requestedAt: '2026-08-17T00:00:00.000Z' },
     geosite: { commit: 'abc', requestedAt: '2026-08-17T00:00:00.000Z' },
   };
-
-  it('rejects smart without desired geodata', () => {
+  const simple = createDefaultNetworkProxyConfig();
+  const smart = { ...simple, ruleMode: 'smart' as const };
+  const expectGeodataMissing = (run: () => void) => {
     try {
-      assertSmartModeGeodata({ ...createDefaultNetworkProxyConfig(), ruleMode: 'smart' }, {});
+      run();
       throw new Error('expected throw');
     } catch (error) {
       expect(getEnterpriseErrorBody(error)?.code).toBe(
         PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_GEODATA_MISSING,
       );
     }
+  };
+
+  it('rejects simple→smart without desired geodata', () => {
+    expectGeodataMissing(() =>
+      assertSmartModeGeodata(smart, {}, { currentRuleMode: 'simple', ruleModeTouched: true }),
+    );
   });
 
-  it('rejects smart when only one kind is desired', () => {
-    try {
+  it('rejects simple→smart when only one kind is desired', () => {
+    expectGeodataMissing(() =>
       assertSmartModeGeodata(
-        { ...createDefaultNetworkProxyConfig(), ruleMode: 'smart' },
+        smart,
         { geoip: desiredBoth.geoip },
-      );
-      throw new Error('expected throw');
-    } catch (error) {
-      expect(getEnterpriseErrorBody(error)?.code).toBe(
-        PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_GEODATA_MISSING,
-      );
-    }
+        { currentRuleMode: 'simple', ruleModeTouched: true },
+      ),
+    );
   });
 
-  it('accepts smart when both desired artifacts are set even if not installed', () => {
+  it('accepts simple→smart when both desired artifacts are set even if not installed', () => {
     expect(() =>
-      assertSmartModeGeodata(
-        { ...createDefaultNetworkProxyConfig(), ruleMode: 'smart' },
-        desiredBoth,
-      ),
+      assertSmartModeGeodata(smart, desiredBoth, {
+        currentRuleMode: 'simple',
+        ruleModeTouched: true,
+      }),
     ).not.toThrow();
   });
 
   it('accepts simple mode without desired geodata', () => {
-    expect(() => assertSmartModeGeodata(createDefaultNetworkProxyConfig(), {})).not.toThrow();
+    expect(() =>
+      assertSmartModeGeodata(simple, {}, { currentRuleMode: 'simple', ruleModeTouched: true }),
+    ).not.toThrow();
+  });
+
+  it('lets an already-smart row accept a selectNode-style patch without geodata', () => {
+    const next = { ...smart, outlet: { ...smart.outlet, manualNodeName: 'node-a' } };
+    expect(() =>
+      assertSmartModeGeodata(next, {}, { currentRuleMode: 'smart', ruleModeTouched: false }),
+    ).not.toThrow();
+  });
+
+  it('rejects a smart→smart patch that explicitly touches ruleMode without geodata', () => {
+    expectGeodataMissing(() =>
+      assertSmartModeGeodata(smart, {}, { currentRuleMode: 'smart', ruleModeTouched: true }),
+    );
   });
 });
 
