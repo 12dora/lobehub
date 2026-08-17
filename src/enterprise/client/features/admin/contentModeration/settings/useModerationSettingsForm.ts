@@ -285,7 +285,6 @@ export const useModerationSettingsForm = ({
   };
 
   return {
-    baseRevision,
     classifierMessage,
     clearingCache,
     configDirty,

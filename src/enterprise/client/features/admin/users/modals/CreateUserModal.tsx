@@ -24,7 +24,7 @@ import type {
   AdminUsersCreateOutput,
 } from '@/enterprise/client/services/adminUsers';
 
-import { CREATE_USER_AUTO_REASON } from '../auditReasonCodes';
+import { CREATE_USER_AUTO_REASON } from '../../audit/shared/auditReasonCodes';
 import { getAdminUsersCreateErrorKey } from '../utils';
 import { CreateUserCredentialsPanel } from './createUser/CreateUserCredentialsPanel';
 import { CreateUserForm } from './createUser/CreateUserForm';

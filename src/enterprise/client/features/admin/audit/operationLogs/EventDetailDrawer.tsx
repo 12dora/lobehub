@@ -10,7 +10,12 @@ import { useNavigate } from 'react-router';
 
 import { useFetchAuditEventDetail } from '../hooks/useAdminAudit';
 import AuditStatusTag from '../shared/AuditStatusTag';
-import { auditActionLabel, auditTargetTypeLabel, formatAdminDateTime } from '../shared/format';
+import {
+  auditActionLabel,
+  auditReasonLabel,
+  auditTargetTypeLabel,
+  formatAdminDateTime,
+} from '../shared/format';
 import JsonDiffView from '../shared/JsonDiffView';
 import { toIsoOrUndefined } from '../shared/timeWindow';
 
@@ -107,7 +112,9 @@ const EventDetailDrawer = memo<EventDetailDrawerProps>(
               <Field label={t('audit.logs.columns.target')}>
                 {auditTargetTypeLabel(t, data.targetType)}
               </Field>
-              <Field label={t('audit.logs.columns.reason')}>{data.reason ?? '—'}</Field>
+              <Field label={t('audit.logs.columns.reason')}>
+                {auditReasonLabel(t, data.reason) ?? '—'}
+              </Field>
             </div>
             <div className={styles.section}>
               <Text style={{ fontWeight: 600 }}>{t('audit.logs.diff.title')}</Text>

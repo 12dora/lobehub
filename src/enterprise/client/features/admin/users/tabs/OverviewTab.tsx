@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { AdminUsersGetOutput } from '@/enterprise/client/services/adminUsers';
 
+import { formatAuditReason } from '../../audit/shared/auditReasonCodes';
 import StatusBadge from '../../primitives/StatusBadge';
 import UserSourceTags from '../UserSourceTags';
 import { formatAdminDateTime } from '../utils';
@@ -80,7 +81,11 @@ const OverviewTab = memo<OverviewTabProps>(
           {user.banned ? (
             <>
               <dt>{t('users.overview.banReason')}</dt>
-              <dd>{user.banReason ?? '—'}</dd>
+              <dd>
+                {formatAuditReason(user.banReason, (key, options) =>
+                  String(t(key as never, options as never)),
+                ) ?? '—'}
+              </dd>
               <dt>{t('users.overview.banExpires')}</dt>
               <dd>{formatAdminDateTime(user.banExpires)}</dd>
             </>

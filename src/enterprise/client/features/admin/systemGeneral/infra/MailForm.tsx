@@ -51,7 +51,7 @@ export const MailForm = memo<MailFormProps>(({ disabled, draft, errors, onPatch 
                 <Input
                   {...field.control}
                   disabled={disabled}
-                  placeholder="smtp.example.com"
+                  placeholder={t('systemGeneral.mail.placeholders.host')}
                   value={draft.host}
                   onChange={(event) => onPatch({ host: event.target.value })}
                 />
@@ -127,7 +127,7 @@ export const MailForm = memo<MailFormProps>(({ disabled, draft, errors, onPatch 
             <Input
               {...field.control}
               disabled={disabled}
-              placeholder="noreply@example.com"
+              placeholder={t('systemGeneral.mail.placeholders.fromAddress')}
               value={draft.fromAddress}
               onChange={(event) => onPatch({ fromAddress: event.target.value })}
             />

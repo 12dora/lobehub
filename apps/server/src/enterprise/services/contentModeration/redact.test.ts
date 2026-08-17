@@ -23,7 +23,7 @@ describe('redactSensitive', () => {
     expect(redacted).not.toContain('Bearer abcdef');
     expect(redacted).not.toContain('sk-abcdefgh');
     expect(redacted).not.toContain('13800138000');
-    expect(redacted).toContain('[已脱敏]');
+    expect(redacted).toContain('[REDACTED]');
   });
 
   it('does not redact a long alphabetic English identifier', () => {
@@ -34,8 +34,8 @@ describe('redactSensitive', () => {
   it('redacts mixed-class base64 and long hex, not letters-only', () => {
     const b64 = 'QWxhZGRpbjpvcGVuIHNlc2FtZQ0123456789+/ABCDEFghijklmnop==';
     const hex = '0123456789abcdef0123456789abcdef';
-    expect(redactSensitive(b64)).toBe('[已脱敏]');
-    expect(redactSensitive(hex)).toBe('[已脱敏]');
+    expect(redactSensitive(b64)).toBe('[REDACTED]');
+    expect(redactSensitive(hex)).toBe('[REDACTED]');
     expect(redactSensitive('z'.repeat(48))).toBe('z'.repeat(48));
   });
 });

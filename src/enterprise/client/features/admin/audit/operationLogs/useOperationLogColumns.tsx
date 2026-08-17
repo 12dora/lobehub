@@ -11,6 +11,7 @@ import { enumColumnFilter, searchColumnFilter } from '../../primitives/columnFil
 import AuditStatusTag from '../shared/AuditStatusTag';
 import {
   auditActionLabel,
+  auditReasonLabel,
   auditTargetTypeLabel,
   formatAdminDateTime,
   truncateText,
@@ -144,7 +145,7 @@ export const useOperationLogColumns = ({
         dataIndex: 'reason',
         key: 'reason',
         title: t('audit.logs.columns.reason'),
-        render: (value: string | null) => truncateText(value, 48),
+        render: (value: string | null) => truncateText(auditReasonLabel(t, value), 48),
       },
     ],
     [

@@ -46,7 +46,7 @@ export const BasicStep = memo<BasicStepProps>(
         <label className={styles.field}>
           <Text>{t('identityProviders.fields.icon')}</Text>
           <Input
-            placeholder="https://…"
+            placeholder={t('identityProviders.fields.iconPlaceholder')}
             value={draft.icon ?? ''}
             onChange={(e) => patch('icon', e.target.value || null)}
           />

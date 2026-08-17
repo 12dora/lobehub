@@ -71,17 +71,11 @@ export const deriveToolScopeCapabilities = (
   };
 };
 
-/** Audit reasons for one-click org actions taken from the parity settings UI. */
-export const REASONS = {
-  connectorCreate: 'Create platform connector from admin settings',
-  connectorDelete: 'Remove platform connector from admin settings',
-  connectorDiscover: 'Discover connector tools from admin settings',
-  builtinToolPolicy: 'Update org builtin tool policy from admin settings',
-  connectorPolicy: 'Update connector tool policy from admin settings',
-  skillDelete: 'Remove organization skill from admin settings',
-  skillDistribution: 'Set organization skill default from admin settings',
-  skillImport: 'Import organization skill from admin settings',
-} as const;
+/**
+ * Stable audit reason codes for one-click org actions taken from the parity settings UI.
+ * Localized at render time — see `audit/shared/auditReasonCodes`.
+ */
+export { TOOL_SCOPE_AUTO_REASON as REASONS } from '../../audit/shared/auditReasonCodes';
 
 /** Synthetic row-id prefix for builtin in-process tools shown in the connector view. */
 export const BUILTIN_ROW_PREFIX = 'admin-builtin:';

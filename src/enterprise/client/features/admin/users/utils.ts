@@ -35,13 +35,9 @@ export const getAdminUsersMutationErrorKey = (error: unknown): string => {
   }
   // Shared CAS / optimistic-lock conflict (settings, branding, audit policy, …).
   if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') return 'errors.revisionConflict';
-  // Prefer domain-specific i18nKey from the mapper (e.g. legal-hold purge contention)
-  // over the generic enterprise.error.* fallback / users.errors.generic.
-  if (
-    mapped?.i18nKey &&
-    !mapped.i18nKey.startsWith('enterprise.error.') &&
-    mapped.i18nKey !== 'errors.generic'
-  ) {
+  // Prefer a domain-specific i18nKey from the mapper (e.g. legal-hold purge contention)
+  // over the generic enterprise.error.* fallback.
+  if (mapped?.i18nKey && !mapped.i18nKey.startsWith('enterprise.error.')) {
     return mapped.i18nKey;
   }
   return 'users.errors.generic';

@@ -34,7 +34,7 @@ export const ObjectStorageForm = memo<ObjectStorageFormProps>(
               <Input
                 {...field.control}
                 disabled={disabled}
-                placeholder="https://s3.example.com"
+                placeholder={t('systemGeneral.objectStorage.placeholders.endpoint')}
                 value={draft.endpoint}
                 onChange={(event) => onPatch({ endpoint: event.target.value })}
               />
@@ -49,7 +49,7 @@ export const ObjectStorageForm = memo<ObjectStorageFormProps>(
               <Input
                 {...field.control}
                 disabled={disabled}
-                placeholder="us-east-1"
+                placeholder={t('systemGeneral.objectStorage.placeholders.region')}
                 value={draft.region}
                 onChange={(event) => onPatch({ region: event.target.value })}
               />
@@ -102,7 +102,7 @@ export const ObjectStorageForm = memo<ObjectStorageFormProps>(
               <Input
                 {...field.control}
                 disabled={disabled}
-                placeholder="https://files.example.com"
+                placeholder={t('systemGeneral.objectStorage.placeholders.publicDomain')}
                 value={draft.publicDomain}
                 onChange={(event) => onPatch({ publicDomain: event.target.value })}
               />

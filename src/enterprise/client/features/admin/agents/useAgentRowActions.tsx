@@ -5,6 +5,7 @@ import { Input, Select, toast } from '@lobehub/ui/base-ui';
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { AGENT_ARCHIVE_AUTO_REASON } from '@/enterprise/client/features/admin/audit/shared/auditReasonCodes';
 import { openDangerConfirm } from '@/enterprise/client/features/admin/primitives/DangerConfirm';
 import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
@@ -80,10 +81,11 @@ const ArchiveReplacementField = ({
 };
 
 /**
- * Stable, non-localized audit reason for archive. Archive keeps a confirmation because it also
- * collects the replacement Agent, but the operator no longer types a reason (mirrors delete).
+ * Stable machine audit reason for archive, localized at render time. Archive keeps a confirmation
+ * because it also collects the replacement Agent, but the operator no longer types a reason
+ * (mirrors delete).
  */
-const ARCHIVE_REASON = 'Platform assistant archived from admin console';
+const ARCHIVE_REASON = AGENT_ARCHIVE_AUTO_REASON;
 
 export interface UseAgentRowActionsParams {
   authMethod: AdminReauthAuthMethod | null;

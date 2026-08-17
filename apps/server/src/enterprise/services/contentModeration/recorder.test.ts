@@ -123,6 +123,14 @@ describe('recordDecision', () => {
     countUserViolations.mockResolvedValue(2);
     await recordDecision(db, ctx({ config }), decision());
     expect(systemBan).toHaveBeenCalledTimes(1);
+    expect(systemBan).toHaveBeenCalledWith({
+      input: {
+        expiresAt: undefined,
+        reason: 'content_moderation.auto_ban:2',
+        userId: 'user-1',
+      },
+      recordId: 'rec-1',
+    });
   });
 
   it('never auto-bans a user who holds super_admin', async () => {

@@ -89,3 +89,60 @@ describe('AdminPageTemplate divider', () => {
     expect(on.body.querySelectorAll('hr')).toHaveLength(1);
   });
 });
+
+/**
+ * The header element carries its own bottom margin on top of the body's 16px gap, so an empty
+ * one is a visible blank band. Embedded tab sub-pages (settings policy / managed resources)
+ * hide the title and supply no description, notice or actions — they must get no header box.
+ */
+describe('AdminPageTemplate header', () => {
+  const renderBody = (ui: React.ReactElement) => {
+    const { container } = render(ui);
+    return container.firstElementChild as HTMLElement;
+  };
+
+  const roles = (body: HTMLElement) =>
+    [...body.children].map((node) => {
+      if (node.tagName === 'HR') return 'divider';
+      if (node.querySelector('[data-testid="toolbar"]')) return 'toolbar';
+      if (node.matches('[data-testid="children"]')) return 'children';
+      return 'header';
+    });
+
+  it('renders no header box for an embedded sub-page with nothing to show', () => {
+    const body = renderBody(
+      <AdminPageTemplate hideTitle title="Title" toolbar={<div data-testid="toolbar" />}>
+        <div data-testid="children" />
+      </AdminPageTemplate>,
+    );
+
+    expect(roles(body)).toEqual(['toolbar', 'children']);
+  });
+
+  it('keeps the header for an embedded sub-page that still has a notice or actions', () => {
+    const withNotice = renderBody(
+      <AdminPageTemplate hideTitle notice={<span>read only</span>} title="Title">
+        <div data-testid="children" />
+      </AdminPageTemplate>,
+    );
+    expect(roles(withNotice)).toEqual(['header', 'children']);
+
+    const withActions = renderBody(
+      <AdminPageTemplate hideTitle actions={<button type="button">Save</button>} title="Title">
+        <div data-testid="children" />
+      </AdminPageTemplate>,
+    );
+    expect(roles(withActions)).toEqual(['header', 'children']);
+  });
+
+  it('always renders the header while the page title is shown', () => {
+    const body = renderBody(
+      <AdminPageTemplate title="Title">
+        <div data-testid="children" />
+      </AdminPageTemplate>,
+    );
+
+    expect(roles(body)).toEqual(['header', 'divider', 'children']);
+    expect(body.querySelector('h1')?.textContent).toBe('Title');
+  });
+});

@@ -18,7 +18,7 @@ import type {
   AdminUsersUnbanInput,
 } from '@/enterprise/client/services/adminUsers';
 
-import { AUTO_REASON } from '../auditReasonCodes';
+import { AUTO_REASON } from '../../audit/shared/auditReasonCodes';
 import { validateHardDeleteConfirm } from './deleteConfirm';
 import { type BanMode, createBanExtra, createTypeToConfirmExtra, validateBanExtra } from './extras';
 import { openReasonModal } from './openReasonModal';

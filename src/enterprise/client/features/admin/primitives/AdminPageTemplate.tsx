@@ -126,6 +126,10 @@ const AdminPageTemplate = memo<AdminPageTemplateProps>(
     // Embedded sub-pages (hideTitle) sit under an outer page header + tab strip that already
     // drew the one rule this page gets; their own description stays rule-less.
     const showDivider = divider ?? !hideTitle;
+    // Embedded sub-pages (hideTitle) that also drop description / notice / actions have nothing
+    // to put in the header — rendering it anyway leaves its margin plus the page gap as a blank
+    // band above the toolbar.
+    const showHeader = !hideTitle || Boolean(description) || Boolean(notice) || Boolean(actions);
 
     return (
       <Flexbox
@@ -135,18 +139,20 @@ const AdminPageTemplate = memo<AdminPageTemplateProps>(
           maxWidth === undefined ? undefined : { marginInline: 'auto', maxWidth, width: '100%' }
         }
       >
-        <div className={styles.header}>
-          <div className={styles.titleBlock}>
-            {hideTitle ? null : (
-              <Text as="h1" style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>
-                {title}
-              </Text>
-            )}
-            {description ? <Text type="secondary">{description}</Text> : null}
-            {notice ? <div className={styles.notice}>{notice}</div> : null}
+        {showHeader ? (
+          <div className={styles.header}>
+            <div className={styles.titleBlock}>
+              {hideTitle ? null : (
+                <Text as="h1" style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>
+                  {title}
+                </Text>
+              )}
+              {description ? <Text type="secondary">{description}</Text> : null}
+              {notice ? <div className={styles.notice}>{notice}</div> : null}
+            </div>
+            {actions ? <div className={styles.actions}>{actions}</div> : null}
           </div>
-          {actions ? <div className={styles.actions}>{actions}</div> : null}
-        </div>
+        ) : null}
         {showDivider ? <hr className={styles.divider} /> : null}
         {banner}
         {toolbar ? <div className={styles.toolbar}>{toolbar}</div> : null}

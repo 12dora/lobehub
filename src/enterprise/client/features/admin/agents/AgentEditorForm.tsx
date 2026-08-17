@@ -298,7 +298,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
               disabled={readOnly || !form.isCreate}
               id={KEY_ID}
               maxLength={AGENT_KEY_MAX_LENGTH}
-              placeholder={'research-assistant'}
+              placeholder={t('agentCatalog.editor.keyPlaceholder')}
               required={form.isCreate}
               value={form.agentKey}
               onChange={(event) => form.changeAgentKey(event.target.value)}

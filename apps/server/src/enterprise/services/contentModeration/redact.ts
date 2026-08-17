@@ -1,6 +1,6 @@
 import { MODERATION_LIMITS } from '@/const/platform/contentModeration';
 
-const REDACTED = '[已脱敏]';
+const REDACTED = '[REDACTED]';
 
 /**
  * Order matters: more specific patterns (Bearer, JWT, sk-*, assignments) run

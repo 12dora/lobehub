@@ -9,7 +9,7 @@ import type { EmailService } from '@/server/services/email';
 
 import { AdminUserLifecycleService } from '../adminUser/lifecycleService';
 import {
-  AUTO_BAN_REASON_PREFIX,
+  AUTO_BAN_REASON_CODE,
   MODERATION_NOTIFY_THROTTLE_MS,
   MODERATION_PURGE_INTERVAL_MS,
 } from './constants';
@@ -102,7 +102,7 @@ const maybeAutoBan = async (
   await new AdminUserLifecycleService(db).systemBan({
     input: {
       expiresAt: expiresAt ?? undefined,
-      reason: `${AUTO_BAN_REASON_PREFIX} ${violations} 次`,
+      reason: `${AUTO_BAN_REASON_CODE}:${violations}`,
       userId: ctx.userId,
     },
     recordId,

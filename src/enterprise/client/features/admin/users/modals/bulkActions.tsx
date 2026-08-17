@@ -17,7 +17,7 @@ import type {
   AdminUsersUnbanInput,
 } from '@/enterprise/client/services/adminUsers';
 
-import { AUTO_REASON } from '../auditReasonCodes';
+import { AUTO_REASON } from '../../audit/shared/auditReasonCodes';
 import { getAdminUsersMutationErrorKey } from '../utils';
 import {
   type BanMode,

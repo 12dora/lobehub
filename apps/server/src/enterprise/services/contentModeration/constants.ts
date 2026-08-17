@@ -39,4 +39,5 @@ export const MODERATION_KEY_FREEZE_MS = {
 } as const;
 export const MODERATION_RETRY_BACKOFF_MS = [100, 200, 300] as const;
 export const KEYWORD_REGEX_CHUNK_SIZE = 500;
-export const AUTO_BAN_REASON_PREFIX = '内容审计：窗口内违规';
+/** Machine code written to `users.banReason` / audit `reason`; the client localizes it. */
+export const AUTO_BAN_REASON_CODE = 'content_moderation.auto_ban';

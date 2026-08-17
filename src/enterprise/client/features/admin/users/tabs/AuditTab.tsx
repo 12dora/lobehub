@@ -7,7 +7,7 @@ import { useReducedMotion } from 'motion/react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { formatAuditReason } from '../auditReasonCodes';
+import { formatAuditReason } from '../../audit/shared/auditReasonCodes';
 import { useFetchAdminUserAuditTrail } from '../hooks/useAdminUsers';
 import { formatAdminDateTime } from '../utils';
 
@@ -60,9 +60,7 @@ const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
 
   const formatReason = useCallback(
     (reason: string | null | undefined) =>
-      formatAuditReason(reason, (key, options) =>
-        String(t(key as never, { defaultValue: options?.defaultValue })),
-      ),
+      formatAuditReason(reason, (key, options) => String(t(key as never, options as never))),
     [t],
   );
 

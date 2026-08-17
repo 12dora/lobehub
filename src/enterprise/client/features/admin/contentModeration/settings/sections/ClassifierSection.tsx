@@ -174,7 +174,7 @@ const ClassifierSection = memo<ClassifierSectionProps>(
             >
               <Input
                 disabled={disabled}
-                placeholder="https://api.openai.com"
+                placeholder={t('contentModeration.settings.classifier.baseUrlPlaceholder')}
                 value={classifier.moderationsApi?.baseUrl ?? ''}
                 onChange={(event) =>
                   patchClassifier({
@@ -190,7 +190,7 @@ const ClassifierSection = memo<ClassifierSectionProps>(
             <Field label={t('contentModeration.settings.classifier.apiModel')}>
               <Input
                 disabled={disabled}
-                placeholder="omni-moderation-latest"
+                placeholder={t('contentModeration.settings.classifier.apiModelPlaceholder')}
                 value={classifier.moderationsApi?.model ?? ''}
                 onChange={(event) =>
                   patchClassifier({

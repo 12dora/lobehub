@@ -12,7 +12,7 @@ import { adminConnectorsService } from '@/enterprise/client/services/adminConnec
 import { useClientDataSWR } from '@/libs/swr';
 import { useUserStore } from '@/store/user';
 
-import { SHARED_OAUTH_AUTO_REASON } from './auditReasonCodes';
+import { SHARED_OAUTH_AUTO_REASON } from '../audit/shared/auditReasonCodes';
 
 const log = debug('lobe-client:admin:connectors');
 
@@ -107,7 +107,9 @@ const SharedOAuthAuthorizationControl = memo<SharedOAuthAuthorizationControlProp
               defaultValue:
                 'Users will go back to their own OAuth authorizations. No user data is deleted. Continue?',
             }),
+        cancelText: t('primitives.dangerConfirm.cancel'),
         okButtonProps: next ? undefined : { danger: true },
+        okText: t('primitives.dangerConfirm.confirm'),
         onOk: async () => {
           setBusy(true);
           try {

@@ -270,11 +270,15 @@ describe('SettingsPolicyPage', () => {
       'disabled',
       !canSave,
     );
+    // Disabled controls alone read as a broken page: a role that cannot save must be told why.
+    const notice = screen.getByTestId('page-notice');
     if (canSave) {
+      expect(notice).toBeEmptyDOMElement();
       expect(saveButton()).toBeDisabled();
       fireEvent.change(editor(), { target: { value: 'local' } });
       await waitFor(() => expect(saveButton()).toBeEnabled());
     } else {
+      expect(notice).toHaveTextContent('settingsPolicy.readOnlyHint');
       expect(screen.queryByRole('button', { name: 'settingsPolicy.save' })).toBeNull();
       expect(screen.queryByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeNull();
     }

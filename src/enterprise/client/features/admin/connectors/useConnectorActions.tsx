@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import { CONNECTOR_ROLLBACK_AUTO_REASON } from '@/enterprise/client/features/admin/audit/shared/auditReasonCodes';
 import { openDangerConfirm } from '@/enterprise/client/features/admin/primitives/DangerConfirm';
 import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
@@ -37,10 +38,10 @@ interface UseConnectorActionsParams {
 }
 
 /**
- * Stable, non-localized audit reason for rollback. The confirmation stays because it also
- * collects the target revision, but the operator no longer types a reason.
+ * Stable machine audit reason for rollback, localized at render time. The confirmation stays
+ * because it also collects the target revision, but the operator no longer types a reason.
  */
-const ROLLBACK_REASON = 'Connector rolled back from admin console';
+const ROLLBACK_REASON = CONNECTOR_ROLLBACK_AUTO_REASON;
 
 const RollbackRevisionField = ({
   currentRevision,

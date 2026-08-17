@@ -2,13 +2,13 @@ export default {
   'agentCatalog.action.assign': 'Assignments',
   'agentCatalog.action.edit': 'Edit',
   'agentCatalog.archive.description':
-    'Archiving removes this Agent from new assignments. Existing history remains available.',
+    'Archiving removes this assistant from new assignments. Existing history remains available.',
   'agentCatalog.archive.noReplacement':
-    'Publish another Agent before archiving the default Inbox Agent.',
-  'agentCatalog.archive.replacement': 'Replacement default Inbox Agent',
-  'agentCatalog.archive.replacementPlaceholder': 'Select a published Agent',
-  'agentCatalog.archive.submit': 'Archive Agent',
-  'agentCatalog.archive.title': 'Archive Agent',
+    'Publish another assistant before archiving the default one.',
+  'agentCatalog.archive.replacement': 'New default assistant',
+  'agentCatalog.archive.replacementPlaceholder': 'Select a published assistant',
+  'agentCatalog.archive.submit': 'Archive assistant',
+  'agentCatalog.archive.title': 'Archive assistant',
   'agentCatalog.assignment.add': 'Add assignment',
   'agentCatalog.assignment.defaultInboxHint':
     'The default assistant already reaches every member; assignments here only add mandatory or role-specific delivery.',
@@ -45,51 +45,49 @@ export default {
   'agentCatalog.dependency.model.providerSearch': 'Search providers',
   'agentCatalog.dependency.model.providerSearchPlaceholder': 'Search more providers…',
   'agentCatalog.dependency.connector.search': 'Search connectors',
-  'agentCatalog.dependency.connector.searchPlaceholder': 'Search published connectors',
+  'agentCatalog.dependency.connector.searchPlaceholder': 'Search platform connectors',
   'agentCatalog.conflict.description':
-    'Someone else changed this assistant first. Reopen it to load the latest version, then reapply your change.',
+    'Another administrator changed this assistant. Reopen it to load the latest version, then reapply your change.',
   'agentCatalog.create.submit': 'New assistant',
-  'agentCatalog.defaultInbox': 'Default Inbox',
+  'agentCatalog.defaultInbox': 'Default',
   'agentCatalog.delete.action': 'Delete',
   'agentCatalog.delete.description':
-    'Permanently delete this platform assistant along with every version, assignment, and user materialization it owns. This cannot be undone.',
+    'Permanently delete this assistant, including all its versions, assignments, and members’ copies. This cannot be undone.',
   'agentCatalog.delete.impact':
-    'The default Inbox and system assistants cannot be hard-deleted — reassign the default first.',
+    'The default and system assistants cannot be deleted. Switch the default first.',
   'agentCatalog.delete.submit': 'Delete permanently',
   'agentCatalog.delete.title': 'Delete assistant',
-  'agentCatalog.dependency.connector.add': 'Search or select published Connectors',
-  'agentCatalog.dependency.connector.loadError': 'Could not load the published Connector catalog.',
+  'agentCatalog.dependency.connector.add': 'Search or select platform connectors',
+  'agentCatalog.dependency.connector.loadError': 'Could not load platform connectors.',
   'agentCatalog.dependency.connector.remove': 'Remove',
   'agentCatalog.dependency.connector.title': 'Connectors',
-  'agentCatalog.dependency.connector.validateError':
-    'Could not verify the referenced Connectors against the current catalog.',
-  'agentCatalog.dependency.connector.validating': 'Verifying referenced Connectors…',
+  'agentCatalog.dependency.connector.validateError': 'Could not verify the referenced connectors.',
+  'agentCatalog.dependency.connector.validating': 'Verifying referenced connectors…',
   'agentCatalog.dependency.connector.unresolvable':
-    'This connector has not been published yet. Publish it before referencing it.',
+    'This connector is not live yet. Finish its setup on the Connectors page first.',
   'agentCatalog.dependency.connector.update': 'Update',
   'agentCatalog.dependency.issues.connectorStale':
-    'A referenced Connector is no longer published — remove or update it before saving.',
+    'A referenced connector is no longer available. Remove or update it before saving.',
   'agentCatalog.dependency.issues.modelStale':
-    'The selected model no longer matches the current published catalog — re-pick it before saving.',
+    'The selected model is no longer available. Pick another before saving.',
   'agentCatalog.dependency.issues.skillStale':
-    'A referenced Skill version is no longer published — remove or update it before saving.',
-  'agentCatalog.dependency.loading': 'Loading catalog…',
-  'agentCatalog.dependency.model.empty': 'No published providers are available yet.',
-  'agentCatalog.dependency.model.emptyAction': 'Publish a provider',
-  'agentCatalog.dependency.model.loadError': 'Could not load the published catalog.',
+    'A referenced skill is no longer available. Remove or update it before saving.',
+  'agentCatalog.dependency.loading': 'Loading…',
+  'agentCatalog.dependency.model.empty': 'No providers are available yet.',
+  'agentCatalog.dependency.model.emptyAction': 'Set up a provider',
+  'agentCatalog.dependency.model.loadError': 'Could not load providers.',
   'agentCatalog.dependency.model.model': 'Model',
-  'agentCatalog.dependency.model.modelPlaceholder': 'Select a published model',
+  'agentCatalog.dependency.model.modelPlaceholder': 'Select a model',
   'agentCatalog.dependency.model.provider': 'Provider',
-  'agentCatalog.dependency.model.providerPlaceholder': 'Select a published provider',
-  'agentCatalog.dependency.model.required':
-    'Choose an exact published provider and model before saving.',
+  'agentCatalog.dependency.model.providerPlaceholder': 'Select a provider',
+  'agentCatalog.dependency.model.required': 'Choose a provider and model before saving.',
   'agentCatalog.dependency.model.title': 'Model',
   'agentCatalog.dependency.model.unresolvable':
-    'This provider has not been published yet. Publish it before referencing it.',
+    'This provider is not set up yet. Configure it on the Providers page first.',
   'agentCatalog.dependency.retry': 'Retry',
-  'agentCatalog.dependency.revalidating': 'Re-checking the current published catalog…',
-  'agentCatalog.dependency.skill.add': 'Search or select published Skills',
-  'agentCatalog.dependency.skill.loadError': 'Could not load the published Skill catalog.',
+  'agentCatalog.dependency.revalidating': 'Re-checking…',
+  'agentCatalog.dependency.skill.add': 'Search or select platform skills',
+  'agentCatalog.dependency.skill.loadError': 'Could not load platform skills.',
   'agentCatalog.dependency.skill.remove': 'Remove',
   'agentCatalog.dependency.skill.title': 'Skills',
   'agentCatalog.dependency.stale': 'Outdated',
@@ -125,6 +123,7 @@ export default {
   'agentCatalog.editor.helpFor': 'Help for {{field}}',
   'agentCatalog.editor.identity': 'Identity',
   'agentCatalog.editor.key': 'Identifier',
+  'agentCatalog.editor.keyPlaceholder': 'research-assistant',
   'agentCatalog.editor.keyDesc':
     'Permanent identifier: lowercase letters, digits and . _ -. Generated from the name; editable.',
   'agentCatalog.editor.keyInvalid':
@@ -288,7 +287,7 @@ export default {
     'When off, the sign-up entry is hidden and new self-service sign-ups are rejected.',
   'generalSettings.emailAllowlist.title': 'Email domain allowlist',
   'generalSettings.emailAllowlist.desc':
-    'When on, only emails from the listed domains may register.',
+    'When on, only email addresses from the listed domains can register.',
   'generalSettings.emailAllowlist.placeholder': 'example.com\n*.acme.io',
   'generalSettings.emailAllowlist.hint':
     'Leave empty for no restriction. Use *.xxx to match xxx and its subdomains; one per line.',
@@ -1035,13 +1034,27 @@ export default {
   'users.audit.result.success': 'Success',
   'users.audit.result.failure': 'Failure',
   'users.audit.result.denied': 'Denied',
-  'users.audit.autoReason.create': 'User created from admin console',
-  'users.audit.autoReason.delete': 'User hard-deleted from admin console',
-  'users.audit.autoReason.revokeAll': 'All sessions revoked from admin console',
-  'users.audit.autoReason.revokeOne': 'Session revoked from admin console',
-  'users.audit.autoReason.roleRevoke': 'Global role revoked from admin console',
-  'users.audit.autoReason.roles': 'Global roles updated from admin console',
-  'users.audit.autoReason.sharedOAuth': 'Set org shared OAuth authorization from managed resources',
+  'audit.autoReason.agentArchive': 'Platform assistant archived from admin console',
+  'audit.autoReason.connectorRollback': 'Connector rolled back from admin console',
+  'audit.autoReason.create': 'User created from admin console',
+  'audit.autoReason.delete': 'User hard-deleted from admin console',
+  'audit.autoReason.moderationAutoBan':
+    'Auto-banned by content moderation ({{count}} violations in window)',
+  'audit.autoReason.revokeAll': 'All sessions revoked from admin console',
+  'audit.autoReason.revokeOne': 'Session revoked from admin console',
+  'audit.autoReason.roleRevoke': 'Global role revoked from admin console',
+  'audit.autoReason.roles': 'Global roles updated from admin console',
+  'audit.autoReason.sharedOAuth': 'Set org shared OAuth authorization from managed resources',
+  'audit.autoReason.toolScope.builtinToolPolicy':
+    'Update org builtin tool policy from admin settings',
+  'audit.autoReason.toolScope.connectorCreate': 'Create platform connector from admin settings',
+  'audit.autoReason.toolScope.connectorDelete': 'Remove platform connector from admin settings',
+  'audit.autoReason.toolScope.connectorDiscover': 'Discover connector tools from admin settings',
+  'audit.autoReason.toolScope.connectorPolicy': 'Update connector tool policy from admin settings',
+  'audit.autoReason.toolScope.skillDelete': 'Remove organization skill from admin settings',
+  'audit.autoReason.toolScope.skillDistribution':
+    'Set organization skill default from admin settings',
+  'audit.autoReason.toolScope.skillImport': 'Import organization skill from admin settings',
   'users.modals.target': 'Target:',
   'users.modals.reasonLabel': 'Reason (required)',
   'users.modals.reasonPlaceholder': 'Explain why this change is needed…',
@@ -1239,7 +1252,7 @@ export default {
   'settingsPolicy.unsavedStay': 'Keep editing',
   'settingsPolicy.unsavedConfirm': 'Leave without saving',
   'settingsPolicy.changePreview': 'Change preview',
-  'settingsPolicy.searchPlaceholder': 'Search settings by name or path…',
+  'settingsPolicy.searchPlaceholder': 'Search settings…',
   'settingsPolicy.save': 'Save',
   'settingsPolicy.resetDefaults': 'Restore defaults',
   'settingsPolicy.resetDefaultsDesc':
@@ -1523,8 +1536,7 @@ export default {
   'connectorCatalog.editor.secretKeepAction': 'Keep stored credential',
   'connectorCatalog.editor.secretKeepPlaceholder': 'Leave empty to keep the stored secret',
   'connectorCatalog.editor.secretMissingPlaceholder': 'Enter a secret before publishing',
-  'connectorCatalog.editor.secretNeverReturned':
-    'Secrets are write-only. The saved value is never returned to this page.',
+  'connectorCatalog.editor.secretNeverReturned': 'Secrets are never shown again after saving.',
   'connectorCatalog.editor.secretOperation.clear': 'The stored credential will be cleared.',
   'connectorCatalog.editor.secretOperation.keep': 'The stored credential will be kept.',
   'connectorCatalog.editor.secretOperation.replace':
@@ -1816,6 +1828,8 @@ export default {
     'Command-based Connectors are not supported in this app.',
   'enterprise.error.PLATFORM_CONNECTOR_TOOL_DENIED':
     'This tool is not allowed by your organization or Agent policy.',
+  'enterprise.error.PLATFORM_CONTENT_MODERATION_BLOCKED':
+    'This message was blocked by content moderation. Revise it and try again.',
   'enterprise.error.PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED':
     'This Connector transport is not supported.',
   'identityProviders.actions.create': 'New',
@@ -1942,73 +1956,38 @@ export default {
   'identityProviders.fields.clientSecret': 'Client secret',
   'identityProviders.fields.displayName': 'Display name',
   'identityProviders.fields.domains': 'Allowed email domains (one per line)',
-  'identityProviders.fields.groupRoles': 'Group-to-role mapping (JSON)',
   'identityProviders.fields.icon': 'Public icon URL',
+  'identityProviders.fields.iconPlaceholder': 'https://…',
   'identityProviders.fields.issuer': 'Sign-in URL (issuer)',
   'identityProviders.fields.providerKey': 'Provider key',
-  'identityProviders.fields.type': 'Provider type',
+  'identityProviders.fields.type': 'Type',
   'identityProviders.fields.typeLocked':
     'Type is set by the template you chose. Create a new sign-in method to switch types.',
-  'identityProviders.list.activationRevision': 'Active version {{revision}}',
-  'identityProviders.list.currentRevision': 'Version {{revision}}',
-  'identityProviders.loading': 'Loading identity providers…',
-  'identityProviders.newProvider': 'New provider',
+  'identityProviders.newProvider': 'New sign-in method',
   'identityProviders.publish.description':
-    'Publish the current configuration. It may require a service restart to take effect.',
-  'identityProviders.publish.impact':
-    'The published configuration becomes the next runtime target.',
-  'identityProviders.publish.success': 'Identity provider published.',
-  'identityProviders.publish.title': 'Publish identity provider',
+    'Publish the current configuration. It takes effect after a service restart.',
+  'identityProviders.publish.impact': 'Takes effect after the service is restarted.',
+  'identityProviders.publish.success': 'Sign-in method published.',
+  'identityProviders.publish.title': 'Publish sign-in method',
   'identityProviders.restart.accepted':
-    'Restart accepted. Waiting for instances to load the published configuration.',
+    'Restart started. Waiting for the service to load the published configuration.',
   'identityProviders.restart.acceptedRefreshFailed':
-    'Restart accepted, but runtime status could not be refreshed. Retry status — do not restart again.',
+    'Restart started, but the runtime status could not be refreshed. Retry the status check — do not restart again.',
   'identityProviders.restart.activated':
-    'Activation complete. Every fresh instance is running the target configuration.',
-  'identityProviders.restart.cancel': 'Keep current runtime',
-  'identityProviders.restart.confirm': 'Restart safely',
+    'Activation complete. The published configuration is now live.',
+  'identityProviders.restart.cancel': 'Not now',
+  'identityProviders.restart.confirm': 'Restart now',
   'identityProviders.restart.impact':
-    'This instance will terminate after the request commits so its supervisor can replace it. Active requests may reconnect.',
+    'The service restarts to load the published configuration; in-flight requests may briefly reconnect.',
   'identityProviders.restart.reasonTitle': 'Record restart reason',
-  'identityProviders.restart.reauthFailed': 'Recent authentication is required before restart.',
+  'identityProviders.restart.reauthFailed': 'Verify your identity again before restarting.',
   'identityProviders.restart.reconnecting':
-    'Restart accepted. The server is reconnecting; status checks will resume automatically.',
+    'The service is restarting; status checks resume automatically.',
   'identityProviders.restart.monitoring': 'Monitoring restart progress',
-  'identityProviders.restart.failed':
-    'The controlled restart was not accepted. Review the runtime status and retry the restart.',
-  'identityProviders.restart.failedAccepted':
-    'Restart request {{requestId}} did not converge to version {{revision}} before its deadline. Retry starts a new controlled restart.',
+  'identityProviders.restart.failed': 'The restart failed. Check the runtime status and try again.',
   'identityProviders.restart.failedWithCategory': 'Restart failed ({{category}})',
-  'identityProviders.restart.target': 'Identity provider runtime',
-  'identityProviders.restart.title': 'Activate published identity configuration?',
-  'identityProviders.restart.unsupported':
-    'Automatic restart is unavailable ({{reason}}). Ask an operator to restart each supervised instance, then verify all are active.',
-  'identityProviders.rollback.impact':
-    'Restore the previous published configuration. A restart may still be required.',
-  'identityProviders.rollback.success': 'Previous sign-in configuration restored.',
-  'identityProviders.rollback.historyLoadError':
-    'Published configuration history could not be loaded.',
-  'identityProviders.rollback.target': 'Published rollback target',
-  'identityProviders.rollback.targetRequired':
-    'Choose an existing published configuration to restore.',
-  'identityProviders.rollback.revisionOption': 'version {{revision}} · {{publishedAt}}',
-  'identityProviders.rollback.title': 'Rollback identity provider',
-  'identityProviders.runtime.degraded':
-    'This instance is using last-known-good or break-glass configuration ({{category}}).',
-  'identityProviders.runtime.environmentShadowed':
-    'Database provider {{provider}} is blocked by the authoritative environment provider ({{categoryLabel}}). Restarting cannot activate this database configuration.',
-  'identityProviders.runtime.fresh': 'Fresh',
-  'identityProviders.runtime.healthSummary': 'Runtime health: {{health}}',
-  'identityProviders.runtime.loadError': 'Runtime activation status could not be loaded.',
-  'identityProviders.runtime.noInstances': 'No instance heartbeats are available yet.',
-  'identityProviders.runtime.partial':
-    'Only some fresh instances have activated the target configuration.',
-  'identityProviders.runtime.pending': '{{count}} published configuration(s) await activation.',
-  'identityProviders.runtime.instanceRevision': 'Active version: {{revision}}',
-  'identityProviders.runtime.source': 'Startup source: {{source}}',
-  'identityProviders.runtime.stale': 'Stale',
-  'identityProviders.runtime.targetRevision': 'Target published version: {{revision}}',
-  'identityProviders.runtime.title': 'Runtime activation',
+  'identityProviders.restart.target': 'Application service',
+  'identityProviders.restart.title': 'Restart to activate the published configuration?',
   'identityProviders.setup.appUrl':
     'public application URL used to build callback addresses (for example https://app.example.com)',
   'identityProviders.setup.description':
@@ -2074,6 +2053,10 @@ export default {
     "The provider's discovery document could not be used for this test.",
   'identityProviders.test.errors.generic':
     'The sign-in test failed. Check the credentials and the registered redirect URL, then try again.',
+  'identityProviders.test.errors.expired': 'The test expired. Start a new one.',
+  'identityProviders.test.errors.failed': 'The test did not pass. Open the details to see why.',
+  'identityProviders.test.errors.invalidState':
+    'Callback verification failed. Start the test again.',
   'identityProviders.test.errors.idTokenInvalid':
     "The provider's ID token failed verification (signature, audience or nonce).",
   'identityProviders.test.errors.issuerInvalid':
@@ -2382,17 +2365,22 @@ export default {
   'systemGeneral.test.reason.unauthorized': 'Authentication failed',
   'systemGeneral.test.reason.unreachable': 'Could not reach the service',
   'systemGeneral.howToChange.title': 'How to change',
-  'systemGeneral.howToChange.restart': 'Changes take effect after a restart.',
+  'systemGeneral.howToChange.restart': 'Restart the service after changing these variables.',
   'systemGeneral.objectStorage.title': 'Object storage',
   'systemGeneral.objectStorage.fields.endpoint': 'Endpoint',
+  'systemGeneral.objectStorage.placeholders.endpoint': 'https://s3.example.com',
+  'systemGeneral.objectStorage.placeholders.publicDomain': 'https://files.example.com',
+  'systemGeneral.objectStorage.placeholders.region': 'us-east-1',
   'systemGeneral.objectStorage.fields.region': 'Region',
   'systemGeneral.objectStorage.fields.bucket': 'Bucket',
   'systemGeneral.objectStorage.fields.accessKeyId': 'Access key ID',
   'systemGeneral.objectStorage.fields.publicDomain': 'Public domain',
   'systemGeneral.objectStorage.fields.pathStyle': 'Path-style access',
-  'systemGeneral.mail.title': 'Email',
+  'systemGeneral.mail.title': 'Mail service',
   'systemGeneral.mail.fields.provider': 'Provider',
   'systemGeneral.mail.fields.host': 'Host',
+  'systemGeneral.mail.placeholders.fromAddress': 'noreply@example.com',
+  'systemGeneral.mail.placeholders.host': 'smtp.example.com',
   'systemGeneral.mail.fields.port': 'Port',
   'systemGeneral.mail.fields.fromAddress': 'From address',
   'systemGeneral.mail.fields.senderName': 'Sender name',
@@ -2432,15 +2420,16 @@ export default {
   'systemGeneral.edit.applyHint': 'Saved changes take effect immediately; no restart is needed.',
   'systemGeneral.conflict.title': 'Configuration changed elsewhere',
   'systemGeneral.conflict.description':
-    'Another administrator saved this dependency. Reload the current version, then apply your change again.',
+    'Another administrator saved this configuration. Reload, then apply your change again.',
   'systemGeneral.conflict.reload': 'Reload',
-  'systemGeneral.stale.title': 'A newer version is available',
+  'systemGeneral.stale.title': 'Configuration was updated',
   'systemGeneral.stale.description':
-    'The stored configuration changed while you were editing. Reload before saving.',
-  'systemGeneral.unsaved.title': 'Leave without saving?',
-  'systemGeneral.unsaved.description': 'The configuration you edited has not been saved.',
-  'systemGeneral.unsaved.leave': 'Leave',
-  'systemGeneral.unsaved.stay': 'Stay',
+    'The configuration changed while you were editing. Reload before saving.',
+  'systemGeneral.unsaved.title': 'Unsaved changes',
+  'systemGeneral.unsaved.description':
+    'Your unsaved changes will be lost if you leave. Leave anyway?',
+  'systemGeneral.unsaved.leave': 'Leave without saving',
+  'systemGeneral.unsaved.stay': 'Keep editing',
   'systemGeneral.secret.storedPlaceholder': 'Stored — leave blank to keep',
   'systemGeneral.secret.enterPlaceholder': 'Enter the value',
   'systemGeneral.secret.clear': 'Clear',
@@ -2502,8 +2491,7 @@ export default {
   'nav.auditLegalHolds': 'Data retention',
   'nav.auditRetention': 'General settings',
   'audit.noPermission': 'You do not have permission to use any audit tools on this account.',
-  'audit.toast.savedRefreshFailed':
-    'Saved, but the latest view could not be refreshed. Reload if it looks stale.',
+  'audit.toast.savedRefreshFailed': 'Saved, but the view could not be refreshed. Reload the page.',
   'audit.shared.userSearchPlaceholder': 'Search users by email or username',
   'audit.shared.clearFilters': 'Clear filters',
   'audit.shared.yes': 'Yes',
@@ -2584,7 +2572,6 @@ export default {
   'audit.logs.action.admin.aiProviders.createDraft': 'Create provider draft',
   'audit.logs.action.admin.aiProviders.delete': 'Delete provider',
   'audit.logs.action.admin.aiProviders.publish': 'Publish provider',
-  'audit.logs.action.admin.aiProviders.publishNow': 'Publish provider now',
   'audit.logs.action.admin.aiProviders.rollback': 'Roll back provider',
   'audit.logs.action.admin.aiProviders.test': 'Test provider',
   'audit.logs.action.admin.aiProviders.updateDraft': 'Update provider draft',
@@ -2791,7 +2778,7 @@ export default {
   'audit.conversations.page.desc':
     'Review conversations and messages by user. Access is governed by the audit policy.',
   'audit.conversations.search.heading': 'Find a user',
-  'audit.conversations.search.hint': 'Search by email or username. Every view is fully audited.',
+  'audit.conversations.search.hint': 'Search by email or username.',
   'audit.conversations.search.placeholder': 'Search users…',
   'audit.conversations.search.lastActive': 'Last active',
   'audit.conversations.search.policyNote':
@@ -3521,6 +3508,8 @@ export default {
   'contentModeration.settings.classifier.extraGuidanceHint':
     'Your organization’s judging criteria, appended to the built-in judge prompt.',
   'contentModeration.settings.classifier.baseUrl': 'Endpoint',
+  'contentModeration.settings.classifier.apiModelPlaceholder': 'omni-moderation-latest',
+  'contentModeration.settings.classifier.baseUrlPlaceholder': 'https://api.openai.com',
   'contentModeration.settings.classifier.baseUrlHint': '/v1/moderations is appended automatically.',
   'contentModeration.settings.classifier.apiModel': 'Moderation model',
   'contentModeration.settings.classifier.apiKeys': 'API keys',

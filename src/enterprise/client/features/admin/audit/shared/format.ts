@@ -2,6 +2,8 @@ import type { TFunction } from 'i18next';
 
 import { formatAdminDateTime } from '@/enterprise/client/features/admin/users/utils';
 
+import { formatAuditReason } from './auditReasonCodes';
+
 export { formatAdminDateTime };
 
 /**
@@ -25,6 +27,16 @@ export const auditActionLabel = (t: TFunction<'admin'>, value: string): string =
   value
     ? t(`audit.logs.action.${value}` as never, { defaultValue: humanizeAuditToken(value) })
     : '—';
+
+/**
+ * Localized label for a persisted audit `reason`. Machine reason codes written by confirm-only
+ * admin actions become copy; free-form reasons an administrator typed pass through verbatim.
+ */
+export const auditReasonLabel = (
+  t: TFunction<'admin'>,
+  value: string | null | undefined,
+): string | null =>
+  formatAuditReason(value, (key, options) => String(t(key as never, options as never)));
 
 /** Localized label for an audit `targetType` value with a humanized fallback. */
 export const auditTargetTypeLabel = (t: TFunction<'admin'>, value: string): string =>

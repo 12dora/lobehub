@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AUTO_REASON } from '../auditReasonCodes';
+import { AUTO_REASON } from '../../audit/shared/auditReasonCodes';
 import {
   formatBulkTargetLabel,
   openBulkBanModal,
