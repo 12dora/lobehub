@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 
 import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
+import { useVisiblePoll } from '@/enterprise/client/shared/useVisiblePoll';
 import { mutate, useClientDataSWR } from '@/libs/swr';
 import {
   DISABLED_PLATFORM_CAPABILITIES,
@@ -23,9 +24,22 @@ export const PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL = ADMIN_POLL_INTERVALS.pu
  * Capabilities carry managed-resource enforcement, which decides whether whole settings trees
  * are blocked and whose credentials the chat runtime uses. `revalidateOnFocus` alone leaves a
  * user sitting on an open page on a stale answer indefinitely after an admin flips 平台托管,
- * so poll at a modest cadence (half the public-snapshot cadence's sibling — cheap, one query).
+ * so poll at a modest cadence (identical to the public snapshot's, so the two batch into one
+ * request — see the table in `shared/pollIntervals.ts`).
  */
 export const PLATFORM_CAPABILITIES_REFRESH_INTERVAL = ADMIN_POLL_INTERVALS.capabilities;
+
+/**
+ * How often coming back to the tab may cost a request.
+ *
+ * These are the only two polls every visitor runs, so they are the ones that must feel fresh the
+ * moment a tab is looked at again: the poll timer alone would leave a returning tab up to a full
+ * cadence stale. `useClientDataSWR` throttles focus revalidation to 5 minutes, which is longer
+ * than the cadence itself and would make `revalidateOnFocus` mostly decorative here — so bring
+ * the throttle under the cadence. It doubles as the public snapshot's mount-burst dedupe window,
+ * which must stay *at most* this long or the focus refresh would be swallowed by its own dedupe.
+ */
+export const PLATFORM_POLL_FOCUS_THROTTLE_INTERVAL = 60_000;
 
 /**
  * Second AI-cache revalidation after a managed-resource transition.
@@ -112,12 +126,18 @@ export const useEnterprisePlatformData = ({
     : null;
   const capabilitiesFetcher = useCallback(() => fetchCapabilities(), [fetchCapabilities]);
   const publicSnapshotFetcher = useCallback(() => fetchPublicSnapshot(), [fetchPublicSnapshot]);
+  // Both polls run for every visitor, so they are gated on the tab being visible and online: a
+  // background tab must cost nothing. `revalidateOnFocus` (below) brings a returning tab back up
+  // to date without waiting out a cadence.
+  const capabilitiesRefreshInterval = useVisiblePoll(PLATFORM_CAPABILITIES_REFRESH_INTERVAL);
+  const publicSnapshotRefreshInterval = useVisiblePoll(PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL);
   const capabilitiesSWR = useClientDataSWR<PlatformCapabilities>(
     capabilitiesEnabled ? PLATFORM_CAPABILITIES_SWR_KEY : null,
     capabilitiesFetcher,
     {
       fallbackData: DISABLED_PLATFORM_CAPABILITIES,
-      refreshInterval: PLATFORM_CAPABILITIES_REFRESH_INTERVAL,
+      focusThrottleInterval: PLATFORM_POLL_FOCUS_THROTTLE_INTERVAL,
+      refreshInterval: capabilitiesRefreshInterval,
       revalidateOnFocus: true,
     },
   );
@@ -125,9 +145,10 @@ export const useEnterprisePlatformData = ({
     publicSnapshotKey,
     publicSnapshotFetcher,
     {
-      dedupingInterval: PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
+      dedupingInterval: PLATFORM_POLL_FOCUS_THROTTLE_INTERVAL,
       fallbackData: safeInitialPublicSnapshot,
-      refreshInterval: PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
+      focusThrottleInterval: PLATFORM_POLL_FOCUS_THROTTLE_INTERVAL,
+      refreshInterval: publicSnapshotRefreshInterval,
       revalidateOnFocus: true,
     },
   );

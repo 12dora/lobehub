@@ -17,8 +17,9 @@ import { useEnterprisePlatform } from '../providers/enterprisePlatformContext';
  * Live module state for the client.
  *
  * Two sources, in order:
- *  1. `platform.getCapabilities().modules` — polled (60s) and therefore the freshest view an
- *     open tab can have after an admin flips a switch;
+ *  1. `platform.getCapabilities().modules` — polled (120s while the tab is visible, plus a refresh
+ *     on refocus) and therefore the freshest view an open tab can have after an admin flips a
+ *     switch;
  *  2. `window.__SERVER_CONFIG__.config.enterprise.modules` — the synchronous boot payload,
  *     available before the first capability response and for anonymous/partial trees.
  *

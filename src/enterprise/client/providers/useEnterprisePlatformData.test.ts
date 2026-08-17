@@ -16,6 +16,7 @@ import {
   isAiInfraPlatformSensitiveSwrKey,
   PLATFORM_CAPABILITIES_REFRESH_INTERVAL,
   PLATFORM_CAPABILITIES_SWR_KEY,
+  PLATFORM_POLL_FOCUS_THROTTLE_INTERVAL,
   PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
   PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY,
   useEnterprisePlatformData,
@@ -146,7 +147,9 @@ describe('useEnterprisePlatformData', () => {
       expect.any(Function),
       expect.objectContaining({
         fallbackData: DISABLED_PLATFORM_CAPABILITIES,
+        focusThrottleInterval: PLATFORM_POLL_FOCUS_THROTTLE_INTERVAL,
         refreshInterval: PLATFORM_CAPABILITIES_REFRESH_INTERVAL,
+        revalidateOnFocus: true,
       }),
     );
     expect(vi.mocked(useClientDataSWR)).toHaveBeenNthCalledWith(
@@ -154,11 +157,41 @@ describe('useEnterprisePlatformData', () => {
       [PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY, '0', null],
       expect.any(Function),
       expect.objectContaining({
-        dedupingInterval: PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
+        // Must stay ≤ the focus throttle, or a refocus refresh would be swallowed by dedupe.
+        dedupingInterval: PLATFORM_POLL_FOCUS_THROTTLE_INTERVAL,
         fallbackData: DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
+        focusThrottleInterval: PLATFORM_POLL_FOCUS_THROTTLE_INTERVAL,
         refreshInterval: PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
+        revalidateOnFocus: true,
       }),
     );
+    expect(PLATFORM_POLL_FOCUS_THROTTLE_INTERVAL).toBeLessThan(
+      PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
+    );
+  });
+
+  it('stops both platform-wide polls while the tab is hidden', () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    try {
+      renderHook(() =>
+        useEnterprisePlatformData({
+          disableFetch: false,
+          enterpriseEnabled: true,
+          serverConfigInit: true,
+        }),
+      );
+
+      // A background tab must cost nothing — but focus revalidation stays on, so coming back
+      // refreshes without waiting out a cadence.
+      for (const call of vi.mocked(useClientDataSWR).mock.calls) {
+        expect(call[2]).toMatchObject({ refreshInterval: 0, revalidateOnFocus: true });
+      }
+    } finally {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'visible',
+      });
+    }
   });
 
   it('uses the strict injected snapshot synchronously before background revalidation', () => {

@@ -39,6 +39,8 @@ const createSnapshot = (
   platformName: name,
 });
 
+const FIVE_MINUTES = 5 * 60 * 1000;
+
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((resolver) => {
@@ -111,5 +113,72 @@ describe('useEnterprisePlatformData with real SWR cache', () => {
 
     await act(async () => remote.resolve(revalidatedB));
     await waitFor(() => expect(second.result.current.publicSnapshot).toEqual(revalidatedB));
+  });
+
+  /**
+   * The whole point of the 120s cadence: an idle tab must be nearly free. Measured with fake
+   * timers instead of a browser so the number is asserted, not eyeballed.
+   *
+   * Budget (HANDOFF P6): ≤3 requests per poll in 5 idle minutes for a visible tab, 0 for a
+   * hidden one. Both polls share a cadence, so in the real app the tRPC batch link folds each
+   * pair of ticks into a single HTTP request.
+   */
+  it('costs at most three requests per poll in five idle minutes, and nothing while hidden', async () => {
+    const wrapper = ({ children }: PropsWithChildren) => (
+      <SWRConfig value={{ provider: () => new Map(), shouldRetryOnError: false }}>
+        {children}
+      </SWRConfig>
+    );
+    const snapshot = createSnapshot('A', 'Brand A');
+    const fetchCapabilities = vi.fn().mockResolvedValue(DISABLED_PLATFORM_CAPABILITIES);
+    const fetchPublicSnapshot = vi.fn().mockResolvedValue(snapshot);
+
+    vi.useFakeTimers();
+    try {
+      const { unmount } = renderHook(
+        () =>
+          useEnterprisePlatformData({
+            disableFetch: false,
+            enterpriseEnabled: true,
+            fetchCapabilities,
+            fetchPublicSnapshot,
+            initialPublicSnapshot: snapshot,
+            serverConfigInit: true,
+          }),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
+      });
+
+      // 1 initial + 2 ticks at 120s / 240s.
+      expect(fetchCapabilities.mock.calls.length).toBeLessThanOrEqual(3);
+      expect(fetchPublicSnapshot.mock.calls.length).toBeLessThanOrEqual(3);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(3);
+      expect(fetchPublicSnapshot).toHaveBeenCalledTimes(3);
+
+      // Now send the tab to the background: five more idle minutes must cost nothing.
+      const before = fetchCapabilities.mock.calls.length + fetchPublicSnapshot.mock.calls.length;
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'hidden',
+      });
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
+      });
+
+      expect(fetchCapabilities.mock.calls.length + fetchPublicSnapshot.mock.calls.length).toBe(
+        before,
+      );
+      unmount();
+    } finally {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'visible',
+      });
+      vi.useRealTimers();
+    }
   });
 });

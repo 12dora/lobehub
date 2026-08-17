@@ -2,6 +2,7 @@
 
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
+import { useVisiblePoll } from '@/enterprise/client/shared/useVisiblePoll';
 import { useClientDataSWR } from '@/libs/swr';
 
 import { isIdentityProviderTestTerminal } from './controller';
@@ -30,25 +31,31 @@ export const useIdentityProviderTestResult = (
   attemptId: string | null,
   poll: boolean,
   onTerminal: () => void,
-) =>
-  useClientDataSWR(
+) => {
+  // Nobody is reading a test result in a background tab; the poll resumes (and the terminal
+  // callback fires) within one cadence of the tab coming back.
+  const refreshInterval = useVisiblePoll(ADMIN_POLL_INTERVALS.identityProviderRestart, poll);
+  return useClientDataSWR(
     attemptId ? ['admin.identityProviders.testResult', attemptId] : null,
     () => adminIdentityProvidersService.testResult(attemptId!),
     {
-      refreshInterval: poll ? ADMIN_POLL_INTERVALS.identityProviderRestart : 0,
+      refreshInterval,
       revalidateOnFocus: false,
       onSuccess: (data) => {
         if (isIdentityProviderTestTerminal(data.status)) onTerminal();
       },
     },
   );
+};
 
-export const useAuthSnapshotStatus = (enabled: boolean, poll: boolean) =>
-  useClientDataSWR(
+export const useAuthSnapshotStatus = (enabled: boolean, poll: boolean) => {
+  const refreshInterval = useVisiblePoll(ADMIN_POLL_INTERVALS.identityProviderSnapshot, poll);
+  return useClientDataSWR(
     enabled ? ['admin.system.authSnapshotStatus'] : null,
     () => adminIdentityProvidersService.getAuthSnapshotStatus(),
     {
-      refreshInterval: poll ? ADMIN_POLL_INTERVALS.identityProviderSnapshot : 0,
+      refreshInterval,
       revalidateOnFocus: false,
     },
   );
+};

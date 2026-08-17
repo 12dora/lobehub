@@ -14,6 +14,7 @@ import type {
   AdminAuditConversationMessage,
 } from '@/enterprise/client/services/adminAudit';
 import { adminAuditService } from '@/enterprise/client/services/adminAudit';
+import { useIsPollGateOpen } from '@/enterprise/client/shared/useVisiblePoll';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import ContentAccessDisabledState from '../conversations/ContentAccessDisabledState';
@@ -157,9 +158,9 @@ const LivePage = memo(() => {
     () => searchParams.get('topicId') || undefined,
   );
   const [live, setLive] = useState(true);
-  const [pageVisible, setPageVisible] = useState(
-    () => typeof document === 'undefined' || document.visibilityState === 'visible',
-  );
+  // Shared with every other admin poll (visible + online), so the live dot and the 4s poll stop
+  // together the moment this tab goes to the background.
+  const pageVisible = useIsPollGateOpen();
 
   // Topics: always poll head (no cursor); accumulate older pages for "load more".
   const [topicOlderPages, setTopicOlderPages] = useState<AdminAuditConversationListItem[][]>([]);
@@ -180,12 +181,6 @@ const LivePage = memo(() => {
   const messagesValidatingRef = useRef(false);
 
   const poll = live && pageVisible && canConversationRead;
-
-  useEffect(() => {
-    const onVis = () => setPageVisible(document.visibilityState === 'visible');
-    document.addEventListener('visibilitychange', onVis);
-    return () => document.removeEventListener('visibilitychange', onVis);
-  }, []);
 
   // Prefill from query when URL changes (e.g. evidence → live deep link).
   // Always sync both params so removing userId/topicId clears stale state.

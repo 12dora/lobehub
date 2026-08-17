@@ -133,6 +133,28 @@ describe('useAdminSystemJobs polling authority', () => {
     expect(stoppedCall.config.refreshInterval).toBe(0);
   });
 
+  it('stops the active-job poll while the tab is hidden', () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    try {
+      renderHook(() =>
+        useAdminSystemJobs(true, service(), {
+          authoritativeActiveCount: 2,
+          refreshAuthority: vi.fn().mockResolvedValue(undefined),
+        }),
+      );
+
+      // The key stays live (the list still renders); only the 3s cadence — and the authority
+      // refresh it drags along — goes quiet until the operator comes back.
+      expect(mocks.pollCalls.at(-1)?.key).toEqual(['admin.system.getJobs.poll', 50]);
+      expect(mocks.pollCalls.at(-1)?.config.refreshInterval).toBe(0);
+    } finally {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'visible',
+      });
+    }
+  });
+
   it('uses visible active rows only while the aggregate is unavailable', () => {
     mocks.infinite.data = [page([job({ status: 'running' })])];
     renderHook(() =>

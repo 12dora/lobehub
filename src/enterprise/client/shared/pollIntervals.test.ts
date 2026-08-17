@@ -30,6 +30,23 @@ describe('ADMIN_POLL_INTERVALS', () => {
     );
   });
 
+  /**
+   * Both polls are started by the same hook in the same render, so equal cadences keep their
+   * timers in lockstep and the tRPC batch link folds the pair into ONE request per tick. Splitting
+   * them doubles the idle request count of every open tab.
+   */
+  it('keeps the two platform-wide polls in lockstep so they batch into one request', () => {
+    expect(ADMIN_POLL_INTERVALS.capabilities).toBe(ADMIN_POLL_INTERVALS.publicSnapshot);
+  });
+
+  /** HANDOFF P6 budget: an idle tab spends ≤3 requests per poll in five minutes. */
+  it('keeps an idle five-minute window under three ticks per platform-wide poll', () => {
+    const fiveMinutes = 5 * 60 * 1000;
+    for (const key of ['capabilities', 'publicSnapshot'] as const) {
+      expect(Math.floor(fiveMinutes / ADMIN_POLL_INTERVALS[key]) + 1, key).toBeLessThanOrEqual(3);
+    }
+  });
+
   it('never polls faster than once a second', () => {
     for (const [name, value] of Object.entries(ADMIN_POLL_INTERVALS)) {
       expect(value, name).toBeGreaterThanOrEqual(1000);

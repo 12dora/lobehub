@@ -12,6 +12,7 @@ import type {
   AdminAuditRetentionCreateInput,
   AdminAuditRetentionRunItem,
 } from '@/enterprise/client/services/adminAudit';
+import { useVisiblePoll } from '@/enterprise/client/shared/useVisiblePoll';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import { openDangerConfirm } from '../../primitives/DangerConfirm';
@@ -24,7 +25,11 @@ import {
 } from '../hooks/useAdminAudit';
 import { hasPermission } from '../shared/format';
 import { openAuditReasonModal } from '../shared/openAuditReasonModal';
-import { pollWhileInFlight, useCursorPagination } from '../shared/useCursorPagination';
+import {
+  AUDIT_LIST_POLL_MS,
+  pollWhileInFlight,
+  useCursorPagination,
+} from '../shared/useCursorPagination';
 import { isRetentionRunInFlight, SCOPES } from './policyBounds';
 import PolicyEditModal from './PolicyEditModal';
 import PolicySummaryCard from './PolicySummaryCard';
@@ -83,8 +88,10 @@ const RetentionPage = memo(() => {
   const runsRef = useRef<HTMLDivElement>(null);
   const runStatusesRef = useRef(new Map<string, AdminAuditRetentionRunItem['status']>());
 
+  // Poll only while a run is in flight, and only while the tab is visible.
+  const inFlightPollMs = useVisiblePoll(AUDIT_LIST_POLL_MS);
   const runs = useFetchAuditRetentionRuns({ cursor: currentCursor, limit }, canOperate, {
-    refreshInterval: pollWhileInFlight(),
+    refreshInterval: pollWhileInFlight(inFlightPollMs),
   });
   const data = runs.data;
   const rows = data?.items ?? [];

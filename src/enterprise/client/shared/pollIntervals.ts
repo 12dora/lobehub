@@ -17,25 +17,40 @@
  * Rules of thumb:
  *  - anything polled for an anonymous visitor must be the slowest (public snapshot);
  *  - a poll that only makes sense while a job is in flight must be gated on that, not on time;
- *  - a poll that drives a page the deployment can switch off must also be gated on the module.
+ *  - a poll that drives a page the deployment can switch off must also be gated on the module;
+ *  - **every** entry is additionally gated on the tab being visible and online, through
+ *    `useVisiblePoll` (see `./useVisiblePoll.ts`) — a background tab costs nothing.
  */
 export const ADMIN_POLL_INTERVALS = {
-  /** `admin.audit.*` lists, only while an item is pending/running. */
+  /** `admin.audit.*` lists, only while an item is pending/running (+ visible). */
   auditList: 4000,
-  /** `platform.getCapabilities` — managed-resource enforcement + module state (authed). */
-  capabilities: 60_000,
-  /** Identity-provider status while a restart is converging. */
+  /**
+   * `platform.getCapabilities` — managed-resource enforcement + module state (authed).
+   *
+   * Deliberately the SAME cadence as `publicSnapshot`: both polls are started by the same hook in
+   * the same render, so their timers stay in lockstep and the tRPC batch link folds the two
+   * procedure calls into ONE HTTP request per tick. Changing one without the other doubles the
+   * idle request count of every open tab.
+   */
+  capabilities: 120_000,
+  /** Identity-provider test/restart status while a restart is converging (+ visible). */
   identityProviderRestart: 1500,
-  /** Identity-provider auth snapshot while a change is pending. */
+  /** Identity-provider auth snapshot while a change is pending (+ visible). */
   identityProviderSnapshot: 2000,
-  /** `admin.system.getJobs`, only while a job is active. */
+  /** `admin.system.getJobs`, only while a job is active (+ visible). */
   jobs: 3000,
-  /** Module restart convergence, only while a restart is in flight. */
+  /**
+   * Module restart convergence, only while a restart is in flight (+ visible). The loop pauses
+   * while the tab is hidden — including its convergence budget — and resumes on refocus.
+   */
   moduleRestart: 3000,
   /** 网络代理 live status — gated on page visibility AND the `networkProxy` module. */
   networkProxyStatus: 15_000,
-  /** `platform.getPublicSnapshot` — branding / login options, polled for anonymous visitors too. */
-  publicSnapshot: 30_000,
+  /**
+   * `platform.getPublicSnapshot` — branding / login options, polled for anonymous visitors too,
+   * i.e. on the sign-in page of every deployment. Kept in lockstep with `capabilities` (see there).
+   */
+  publicSnapshot: 120_000,
 } as const;
 
 export type AdminPollInterval = keyof typeof ADMIN_POLL_INTERVALS;

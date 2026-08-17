@@ -9,7 +9,12 @@ export const AUDIT_LIST_POLL_MS = ADMIN_POLL_INTERVALS.auditList;
 
 export type AuditInFlightStatus = string | null | undefined;
 
-/** SWR `refreshInterval` helper: poll while any item is pending/running. */
+/**
+ * SWR `refreshInterval` helper: poll while any item is pending/running.
+ *
+ * Call sites pass the cadence through `useVisiblePoll`, so a hidden tab passes `0` here and the
+ * list stops asking until the operator comes back.
+ */
 export const pollWhileInFlight =
   <Item extends { status?: AuditInFlightStatus }>(pollMs: number = AUDIT_LIST_POLL_MS) =>
   (latest: { items?: Item[] } | undefined): number =>

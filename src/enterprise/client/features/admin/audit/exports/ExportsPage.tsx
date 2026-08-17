@@ -13,6 +13,7 @@ import { useSearchParams } from 'react-router';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import type { AdminAuditExportItem } from '@/enterprise/client/services/adminAudit';
+import { useVisiblePoll } from '@/enterprise/client/shared/useVisiblePoll';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import { enumColumnFilter } from '../../primitives/columnFilters';
@@ -22,7 +23,11 @@ import AuditStatusTag from '../shared/AuditStatusTag';
 import { formatAdminDateTime, hasPermission, humanizeAuditToken } from '../shared/format';
 import { openAuditReasonModal } from '../shared/openAuditReasonModal';
 import { formatAuditBytes } from '../shared/timeWindow';
-import { pollWhileInFlight, useCursorPagination } from '../shared/useCursorPagination';
+import {
+  AUDIT_LIST_POLL_MS,
+  pollWhileInFlight,
+  useCursorPagination,
+} from '../shared/useCursorPagination';
 import CreateExportModal from './CreateExportModal';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -107,9 +112,11 @@ const ExportsPage = memo(() => {
     setCreateHandoffParams(null);
   }, []);
 
+  // Single SWR key: poll only while any row is still in flight — and only while the tab is
+  // visible, since an export nobody is watching can be picked up on refocus.
+  const inFlightPollMs = useVisiblePoll(AUDIT_LIST_POLL_MS);
   const list = useFetchAuditExportsList({ cursor: currentCursor, limit, mine }, canExport, {
-    // Single SWR key: poll only while any row is still in flight.
-    refreshInterval: pollWhileInFlight(),
+    refreshInterval: pollWhileInFlight(inFlightPollMs),
   });
 
   const handleTableChange = useCallback(

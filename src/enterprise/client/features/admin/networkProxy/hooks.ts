@@ -1,7 +1,5 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-
 import { useModuleEnabled } from '@/enterprise/client/hooks/useModuleEnabled';
 import { adminAiProviderService } from '@/enterprise/client/services/adminAiInfraAdapter';
 import {
@@ -9,6 +7,7 @@ import {
   adminNetworkProxyService,
 } from '@/enterprise/client/services/adminNetworkProxy';
 import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
+import { useVisiblePoll } from '@/enterprise/client/shared/useVisiblePoll';
 import { mutate, useClientDataSWR } from '@/libs/swr';
 
 import {
@@ -29,24 +28,6 @@ import {
 /** Live status is the page's only auto-refreshing query — everything else is event driven. */
 export const NETWORK_PROXY_STATUS_REFRESH_MS = ADMIN_POLL_INTERVALS.networkProxyStatus;
 
-/**
- * A background tab, or a deployment with 网络代理 switched off, must not keep a 15s poll alive:
- * it is pure idle cost that buys nothing anyone can see. `document.visibilityState` is read
- * through a subscription so the poll resumes the moment the tab comes back.
- */
-const useIsPageVisible = (): boolean => {
-  const [visible, setVisible] = useState(
-    () => typeof document === 'undefined' || document.visibilityState !== 'hidden',
-  );
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const onChange = () => setVisible(document.visibilityState !== 'hidden');
-    document.addEventListener('visibilitychange', onChange);
-    return () => document.removeEventListener('visibilitychange', onChange);
-  }, []);
-  return visible;
-};
-
 export const useNetworkProxySettings = (
   enabled: boolean,
   service: AdminNetworkProxyService = adminNetworkProxyService,
@@ -60,11 +41,13 @@ export const useNetworkProxyStatus = (
   enabled: boolean,
   service: AdminNetworkProxyService = adminNetworkProxyService,
 ) => {
-  const visible = useIsPageVisible();
   const moduleEnabled = useModuleEnabled('networkProxy');
+  // A background tab, or a deployment with 网络代理 switched off, must not keep a 15s poll alive:
+  // it is pure idle cost that buys nothing anyone can see.
+  const refreshInterval = useVisiblePoll(NETWORK_PROXY_STATUS_REFRESH_MS, moduleEnabled);
   return useClientDataSWR(buildNetworkProxyStatusKey(enabled), () => service.getStatus(), {
     keepPreviousData: true,
-    refreshInterval: visible && moduleEnabled ? NETWORK_PROXY_STATUS_REFRESH_MS : 0,
+    refreshInterval,
     revalidateOnFocus: false,
   });
 };

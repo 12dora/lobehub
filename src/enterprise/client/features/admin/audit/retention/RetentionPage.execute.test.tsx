@@ -206,6 +206,7 @@ vi.mock('../../primitives/DataTable', () => ({
 }));
 
 vi.mock('../shared/useCursorPagination', () => ({
+  AUDIT_LIST_POLL_MS: 4000,
   pollWhileInFlight: () => 0,
   useCursorPagination: () => ({
     cursor: null,

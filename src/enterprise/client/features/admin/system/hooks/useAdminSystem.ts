@@ -30,6 +30,7 @@ import type {
   AdminSystemService,
 } from '@/enterprise/client/services/adminSystem';
 import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
+import { useVisiblePoll } from '@/enterprise/client/shared/useVisiblePoll';
 import { useClientDataSWR } from '@/libs/swr';
 
 import {
@@ -194,11 +195,14 @@ export const useAdminSystemJobs = (
   const authoritativeActiveCount = options.authoritativeActiveCount;
   const shouldPoll =
     enabled && shouldPollAdminSystemJobs({ authoritativeActiveCount, visibleHasActiveJobs });
+  // An active job only needs watching while somebody is watching: the poll (and the authority
+  // refresh it drags along) stops for a background tab and resumes on refocus.
+  const jobsRefreshInterval = useVisiblePoll(ACTIVE_JOB_POLL_INTERVAL_MS, shouldPoll);
   const poll = useClientDataSWR(
     buildAdminSystemJobsPollKey(shouldPoll, limit),
     () => service.getJobs({ limit }),
     {
-      refreshInterval: shouldPoll ? ACTIVE_JOB_POLL_INTERVAL_MS : 0,
+      refreshInterval: jobsRefreshInterval,
       revalidateOnFocus: false,
       shouldRetryOnError: false,
       onSuccess: (incoming) => {

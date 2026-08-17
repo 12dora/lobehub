@@ -11,12 +11,14 @@ import {
   type AdminModulesState,
   type AdminModulesUpdateInput,
 } from '@/enterprise/client/services/adminModules';
+import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
+import { isTabVisible, onceVisible } from '@/enterprise/client/shared/useVisiblePoll';
 import { mutate, useClientDataSWR } from '@/libs/swr';
 
 /** Restart convergence budget — a container restart plus migrations, with slack. */
 export const MODULE_RESTART_TIMEOUT_MS = 120_000;
-/** How often the page re-asks whether the instance is back. */
-export const MODULE_RESTART_POLL_MS = 3000;
+/** How often the page re-asks whether the instance is back (visible tabs only). */
+export const MODULE_RESTART_POLL_MS = ADMIN_POLL_INTERVALS.moduleRestart;
 
 export type ModuleRestartPhase = 'accepted' | 'activated' | 'failed' | 'idle';
 
@@ -60,10 +62,13 @@ export const useModuleRestart = (
 ): UseModuleRestartResult => {
   const [phase, setPhase] = useState<ModuleRestartPhase>('idle');
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const visibilityWaits = useRef<(() => void)[]>([]);
 
   const clearTimers = useCallback(() => {
     for (const timer of timers.current) clearTimeout(timer);
     timers.current = [];
+    for (const stop of visibilityWaits.current) stop();
+    visibilityWaits.current = [];
   }, []);
 
   useEffect(() => clearTimers, [clearTimers]);
@@ -83,24 +88,54 @@ export const useModuleRestart = (
       return;
     }
 
-    const deadline = Date.now() + MODULE_RESTART_TIMEOUT_MS;
-    const poll = async () => {
+    let deadline = Date.now() + MODULE_RESTART_TIMEOUT_MS;
+
+    /**
+     * A hidden tab cannot show the outcome, so the loop parks instead of asking every 3s — and
+     * the convergence budget parks with it: a tab that spent the restart in the background must
+     * not come back to a spurious "failed". Resuming is immediate on the visibility event, so the
+     * converged state is picked up the moment the operator looks again.
+     */
+    function parkUntilVisible() {
+      const hiddenAt = Date.now();
+      const stop = onceVisible(() => {
+        visibilityWaits.current = visibilityWaits.current.filter((entry) => entry !== stop);
+        deadline += Date.now() - hiddenAt;
+        void poll();
+      });
+      visibilityWaits.current.push(stop);
+    }
+
+    async function poll() {
+      if (!isTabVisible()) {
+        parkUntilVisible();
+        return;
+      }
       if (Date.now() >= deadline) {
         setPhase('failed');
         return;
       }
+      let converged = false;
       try {
         const next = await service.get();
-        if (next.pendingRestart.length === 0) {
-          setPhase('activated');
-          await refreshAdminModules();
-          return;
-        }
+        converged = next.pendingRestart.length === 0;
       } catch {
         // The instance is expected to be unreachable while it comes back — keep waiting.
       }
+      // The tab can go to the background *while the request is in flight*. Re-check before doing
+      // anything with the answer: neither the follow-up cache refresh nor another tick belongs to
+      // a tab nobody is looking at. The answer is re-asked for on refocus.
+      if (!isTabVisible()) {
+        parkUntilVisible();
+        return;
+      }
+      if (converged) {
+        setPhase('activated');
+        await refreshAdminModules();
+        return;
+      }
       timers.current.push(setTimeout(() => void poll(), MODULE_RESTART_POLL_MS));
-    };
+    }
 
     timers.current.push(setTimeout(() => void poll(), MODULE_RESTART_POLL_MS));
   }, [clearTimers, service]);
