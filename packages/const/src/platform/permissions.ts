@@ -90,6 +90,11 @@ export const PLATFORM_PERMISSIONS = {
   /** 内容审计: update settings, test classifier, reveal full prompt, delete records, clear cache. */
   MODERATION_MANAGE: 'platform_moderation:manage:all',
 
+  /** 网络代理: read settings / status / subscriptions / nodes / engine logs. */
+  NETWORK_PROXY_READ: 'platform_network_proxy:read:all',
+  /** 网络代理: change outlet / scopes / subscriptions, install + restart the engine. super_admin only by default. */
+  NETWORK_PROXY_MANAGE: 'platform_network_proxy:manage:all',
+
   OIDC_PUBLISH: 'platform_oidc:publish:all',
 
   /** Global platform data statistics (admin stats dashboard). */

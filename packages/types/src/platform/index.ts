@@ -4,6 +4,7 @@ export * from './branding';
 export * from './capabilities';
 export * from './connectorGovernance';
 export * from './contentModeration';
+export * from './networkProxy';
 export * from './errors';
 export * from './featureFlags';
 export * from './identityProvider';
