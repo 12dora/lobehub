@@ -11,6 +11,12 @@ import {
   adminConnectorDraftSchema,
   adminConnectorUpdateDraftInputSchema,
 } from './draft';
+import {
+  expectedSlotLeaves,
+  projectPatchSlots,
+  resolveSlotState,
+  resolveTargetOauthConfig,
+} from './normalizeUpdateSlots';
 import type { TrustedConnectorSecretContext } from './secrets';
 import {
   applySecretMutationState,
@@ -21,7 +27,6 @@ import {
   assertNoKnownSecret,
   assertReplacementLeavesComplete,
   clearOnlySecretMutationSchema,
-  clearSecretMutation,
   emptySecretState,
   getSecretLeaves,
   resolveTrustedSecretLeaves,
@@ -155,14 +160,7 @@ export const normalizeAdminConnectorUpdateInput = (
     adminConnectorOAuthConfigInputSchema.parse(patch.oauthConfig);
   }
 
-  const oauthConfig =
-    targetMode === 'per_user_oauth'
-      ? patch.oauthConfig
-        ? { ...patch.oauthConfig, redirectUri }
-        : current.credentialMode === 'per_user_oauth'
-          ? current.oauthConfig
-          : null
-      : null;
+  const oauthConfig = resolveTargetOauthConfig(current, patch, targetMode, redirectUri);
   const currentOauthInput =
     current.credentialMode === 'per_user_oauth'
       ? {
@@ -184,46 +182,20 @@ export const normalizeAdminConnectorUpdateInput = (
     ...(patch.tools !== undefined && { tools: patch.tools }),
     ...(patch.transport !== undefined && { transport: patch.transport }),
     credentialMode: targetMode,
-    oauthClientSecret:
-      targetMode === 'per_user_oauth'
-        ? applySecretMutationState(
-            current.credentialMode === 'per_user_oauth'
-              ? current.oauthClientSecret
-              : emptySecretState,
-            patch.oauthClientSecret,
-            switchingMode,
-          )
-        : emptySecretState,
+    oauthClientSecret: resolveSlotState(
+      'oauthClientSecret',
+      current,
+      patch,
+      targetMode,
+      switchingMode,
+    ),
     oauthConfig,
-    sharedSecret:
-      targetMode === 'shared_service_account'
-        ? applySecretMutationState(
-            current.credentialMode === 'shared_service_account'
-              ? current.sharedSecret
-              : emptySecretState,
-            patch.sharedSecret,
-            switchingMode,
-          )
-        : emptySecretState,
+    sharedSecret: resolveSlotState('sharedSecret', current, patch, targetMode, switchingMode),
   });
   const trusted = resolveTrustedSecretLeaves(secretContext);
   assertDraftMatchesSecretSlots(candidate, {
-    oauthClientSecret:
-      targetMode !== 'per_user_oauth' || patch.oauthClientSecret?.operation === 'clear'
-        ? []
-        : patch.oauthClientSecret?.operation === 'replace'
-          ? trusted.replacement.oauthClientSecret
-          : current.credentialMode === 'per_user_oauth'
-            ? trusted.current.oauthClientSecret
-            : [],
-    sharedSecret:
-      targetMode !== 'shared_service_account' || patch.sharedSecret?.operation === 'clear'
-        ? []
-        : patch.sharedSecret?.operation === 'replace'
-          ? trusted.replacement.sharedSecret
-          : current.credentialMode === 'shared_service_account'
-            ? trusted.current.sharedSecret
-            : [],
+    oauthClientSecret: expectedSlotLeaves('oauthClientSecret', current, patch, targetMode, trusted),
+    sharedSecret: expectedSlotLeaves('sharedSecret', current, patch, targetMode, trusted),
   });
   assertConnectorPersistentFieldsSafe(candidate, patch.reason, secretContext);
 
@@ -232,17 +204,7 @@ export const normalizeAdminConnectorUpdateInput = (
     patch: {
       ...patch,
       credentialMode: targetMode,
-      oauthClientSecret:
-        targetMode === 'per_user_oauth' ? patch.oauthClientSecret : clearSecretMutation,
-      oauthConfig:
-        targetMode === 'per_user_oauth'
-          ? (patch.oauthConfig ??
-            (currentOauthInput
-              ? adminConnectorOAuthConfigInputSchema.parse(currentOauthInput)
-              : undefined))
-          : null,
-      sharedSecret:
-        targetMode === 'shared_service_account' ? patch.sharedSecret : clearSecretMutation,
+      ...projectPatchSlots(patch, targetMode, currentOauthInput),
     },
   };
 };

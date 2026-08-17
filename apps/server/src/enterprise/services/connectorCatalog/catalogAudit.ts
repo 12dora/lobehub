@@ -110,3 +110,28 @@ export const appendConnectorFailureAudit = async (
     });
   }
 };
+
+export const withConnectorFailureAudit = async <T>(
+  db: LobeChatDatabase,
+  params: ConnectorFailureAuditParams & {
+    mapError?: (error: unknown) => unknown;
+    writer?: ConnectorFailureAuditWriter;
+  },
+  run: () => Promise<T>,
+): Promise<T> => {
+  try {
+    return await run();
+  } catch (error) {
+    await appendConnectorFailureAudit(
+      db,
+      {
+        action: params.action,
+        actorUserId: params.actorUserId,
+        reason: params.reason,
+        targetId: params.targetId,
+      },
+      params.writer,
+    );
+    throw params.mapError ? params.mapError(error) : error;
+  }
+};

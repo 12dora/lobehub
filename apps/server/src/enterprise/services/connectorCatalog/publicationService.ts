@@ -1,13 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
-import { isPlainRecord } from '@lobechat/utils/object';
 import { and, eq } from 'drizzle-orm';
 import type { z } from 'zod';
 
 import {
   checksumPayload,
   PlatformRevisionConflictError,
-  PlatformRevisionImmutableError,
   type ResourcePointerAdapter,
 } from '@/database/models/platform';
 import {
@@ -27,7 +25,6 @@ import {
   adminConnectorRevokeAllBindingsInputSchema,
   adminConnectorRollbackInputSchema,
   collectConnectorSecretLeaves,
-  containsConnectorCredentialMaterial,
 } from '../../contracts/platformConnectors';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
@@ -35,10 +32,10 @@ import { acquirePlatformDependencyPublicationLock } from '../platformDependencyL
 import { PlatformPublisherService } from '../platformPublisher';
 import type { ConnectorFailureAuditWriter } from './catalogAudit';
 import {
-  appendConnectorFailureAudit,
   connectorAuditSummary,
   loadConnectorSecretSourcesSafe,
   sanitizeConnectorReason,
+  withConnectorFailureAudit,
 } from './catalogAudit';
 import { parseConnectorRevisionPayload, resolveConnectorSecretVersion } from './catalogSnapshot';
 import type {
@@ -51,6 +48,13 @@ import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { connectorToolInsertValues, loadConnectorDraft } from './draftService';
 import { PlatformConnectorContractError } from './errors';
 import { invalidateConnectorPublishedIndex } from './publishedIndex';
+import { mapRevisionBoundaryError } from './revisionErrors';
+import {
+  assertNoRevisionCredentialMaterial,
+  revisionPayload,
+  revisionSecretFingerprint,
+  sanitizeConnectorRevisionPayload,
+} from './revisionPayload';
 import { cleanupConnectorSecretRefs, type ConnectorSecretCleanupRef } from './secretCleanup';
 import {
   parseConnectorToolsForWrite,
@@ -82,16 +86,6 @@ const MAX_REVOKE_BINDINGS = 10_000;
 const MAX_REVOKE_PAGES = 100;
 const REVOKE_PAGE_SIZE = 100;
 const EMERGENCY_STOP_AUDIT_REASON = 'emergency_connector_stop';
-const PG_ERROR_SEVERITIES = new Set(['ERROR', 'FATAL', 'PANIC']);
-const PG_OBJECT_NOT_IN_PREREQUISITE_STATE = '55000';
-const MAX_PG_CAUSE_DEPTH = 5;
-
-const revisionSecretFingerprint = (payload: PlatformConnectorRevisionPayload): string | null =>
-  payload.connector.credentialMode === 'shared_service_account'
-    ? payload.connector.sharedSecretFingerprint
-    : payload.connector.credentialMode === 'per_user_oauth'
-      ? payload.connector.oauthClientSecretFingerprint
-      : null;
 
 const sanitizeEmergencyReason = async (
   secrets: ConnectorCatalogSecretStore,
@@ -107,157 +101,6 @@ const sanitizeEmergencyReason = async (
     });
     return EMERGENCY_STOP_AUDIT_REASON;
   }
-};
-
-/**
- * Revisions are append-only (migration 0145). Any attempt to UPDATE/DELETE a
- * revision row, or a CAS race that surfaces as a PG immutability error, is a
- * revision conflict at the service boundary — never leak raw driver errors.
- */
-const mapRevisionBoundaryError = (error: unknown): unknown => {
-  if (error instanceof PlatformRevisionConflictError) return error;
-  if (error instanceof PlatformRevisionImmutableError) {
-    return new PlatformRevisionConflictError();
-  }
-
-  let current: unknown = error;
-  for (let depth = 0; depth < MAX_PG_CAUSE_DEPTH && current; depth += 1) {
-    if (current instanceof PlatformRevisionConflictError) return current;
-    if (current instanceof PlatformRevisionImmutableError) {
-      return new PlatformRevisionConflictError();
-    }
-
-    const candidate = current as {
-      cause?: unknown;
-      code?: unknown;
-      message?: unknown;
-      severity?: unknown;
-    };
-    const message = typeof candidate.message === 'string' ? candidate.message : '';
-    const code = typeof candidate.code === 'string' ? candidate.code : undefined;
-    const severity = typeof candidate.severity === 'string' ? candidate.severity : undefined;
-    const isPg =
-      typeof severity === 'string' && PG_ERROR_SEVERITIES.has(severity) && typeof code === 'string';
-    if (
-      (isPg && code === PG_OBJECT_NOT_IN_PREREQUISITE_STATE) ||
-      /platform_resource_revisions are immutable/i.test(message)
-    ) {
-      return new PlatformRevisionConflictError();
-    }
-    current = candidate.cause;
-  }
-
-  return error;
-};
-
-const assertNoRevisionCredentialMaterial = (
-  value: unknown,
-  secretLeaves: ReadonlySet<string>,
-): void => {
-  if (typeof value === 'string') {
-    if (
-      containsConnectorCredentialMaterial(value) ||
-      [...secretLeaves].some((secret) => value.includes(secret))
-    ) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item) => assertNoRevisionCredentialMaterial(item, secretLeaves));
-    return;
-  }
-  if (!isPlainRecord(value)) return;
-  Object.entries(value).forEach(([key, child]) => {
-    assertNoRevisionCredentialMaterial(key, secretLeaves);
-    assertNoRevisionCredentialMaterial(child, secretLeaves);
-  });
-};
-
-const revisionPayload = (draft: ConnectorDraft): PlatformConnectorRevisionPayload =>
-  parseConnectorRevisionPayload({
-    connector: {
-      credentialMode: draft.credentialMode,
-      description: draft.description,
-      displayName: draft.displayName,
-      enabled: draft.enabled,
-      endpoint: draft.endpoint,
-      id: draft.id,
-      key: draft.key,
-      // Draft slot views already project ref-presence + fingerprints from the connector row.
-      oauthClientSecretConfigured: draft.oauthClientSecret.configured,
-      oauthClientSecretFingerprint: draft.oauthClientSecret.fingerprint,
-      oauthConfig: draft.oauthConfig,
-      sharedSecretConfigured: draft.sharedSecret.configured,
-      sharedSecretFingerprint: draft.sharedSecret.fingerprint,
-      sort: draft.sort,
-      transport: 'http',
-    },
-    schemaVersion: 'm09-v1',
-    tools: draft.tools
-      .filter((tool) => tool.enabled)
-      .map((tool) => ({
-        description: tool.description,
-        displayName: tool.displayName,
-        inputSchema: tool.inputSchema,
-        outputSchema: tool.outputSchema,
-        platformPolicy: tool.platformPolicy,
-        requiresConfirmation: tool.requiresConfirmation,
-        riskLevel: tool.riskLevel,
-        sort: tool.sort,
-        toolKey: tool.toolKey,
-      })),
-  });
-
-/**
- * Strict persisted projection. Do not use the generic key-name redactor here:
- * OAuth and JSON Schema deliberately contain semantic names such as
- * `authorizationEndpoint`, `apiKey`, and `password`.
- */
-const sanitizeConnectorRevisionPayload = (
-  rawPayload: Record<string, unknown>,
-): PlatformConnectorRevisionPayload => {
-  const payload = parseConnectorRevisionPayload(rawPayload);
-  const connector = payload.connector;
-  return {
-    connector: {
-      credentialMode: connector.credentialMode,
-      description: connector.description,
-      displayName: connector.displayName,
-      enabled: connector.enabled,
-      endpoint: connector.endpoint,
-      id: connector.id,
-      key: connector.key,
-      oauthClientSecretConfigured: connector.oauthClientSecretConfigured,
-      oauthClientSecretFingerprint: connector.oauthClientSecretFingerprint,
-      oauthConfig: connector.oauthConfig
-        ? {
-            authorizationEndpoint: connector.oauthConfig.authorizationEndpoint,
-            clientId: connector.oauthConfig.clientId,
-            issuer: connector.oauthConfig.issuer,
-            redirectUri: connector.oauthConfig.redirectUri,
-            scopes: [...connector.oauthConfig.scopes],
-            tokenEndpoint: connector.oauthConfig.tokenEndpoint,
-          }
-        : null,
-      sharedSecretConfigured: connector.sharedSecretConfigured,
-      sharedSecretFingerprint: connector.sharedSecretFingerprint,
-      sort: connector.sort,
-      transport: connector.transport,
-    },
-    schemaVersion: 'm09-v1',
-    tools: payload.tools.map((tool) => ({
-      description: tool.description,
-      displayName: tool.displayName,
-      inputSchema: structuredClone(tool.inputSchema),
-      outputSchema: structuredClone(tool.outputSchema),
-      platformPolicy: tool.platformPolicy,
-      requiresConfirmation: tool.requiresConfirmation,
-      riskLevel: tool.riskLevel,
-      sort: tool.sort,
-      toolKey: tool.toolKey,
-    })),
-  };
 };
 
 /** Shared by the production pointer and the real-PostgreSQL lock probe. */
@@ -647,169 +490,164 @@ export class ConnectorCatalogPublicationService {
   publish = async (actorUserId: string, input: PublishInput) => {
     const command = adminConnectorPublishInputSchema.parse(input);
     const reason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
-    try {
-      const proof = await this.preflightPublish(command.id, command.expectedDraftToken);
-      await this.lifecycle.afterPublicationPreflight?.(command.id);
-      const result = await this.publisher.publish({
+    return withConnectorFailureAudit(
+      this.db,
+      {
+        action: 'admin.connectors.publish',
         actorUserId,
-        expectedRevision: command.expectedRevision,
-        invalidationScopes: ['connector-catalog', 'connector-runtime'],
-        payload: {},
-        pointer: this.pointer(command.id, actorUserId, proof),
+        mapError: mapRevisionBoundaryError,
         reason,
-        resourceId: command.id,
-        resourceType: 'connector',
-        sanitizePayload: sanitizeConnectorRevisionPayload,
-        secretFingerprint: proof.secretFingerprint,
-      });
-      invalidateConnectorPublishedIndex(this.db, command.id);
-      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs, { db: this.db });
-      return { auditId: result.auditId, revision: result.revision.revision };
-    } catch (error) {
-      await appendConnectorFailureAudit(
-        this.db,
-        {
-          action: 'admin.connectors.publish',
+        targetId: command.id,
+        writer: this.failureAuditWriter,
+      },
+      async () => {
+        const proof = await this.preflightPublish(command.id, command.expectedDraftToken);
+        await this.lifecycle.afterPublicationPreflight?.(command.id);
+        const result = await this.publisher.publish({
           actorUserId,
+          expectedRevision: command.expectedRevision,
+          invalidationScopes: ['connector-catalog', 'connector-runtime'],
+          payload: {},
+          pointer: this.pointer(command.id, actorUserId, proof),
           reason,
-          targetId: command.id,
-        },
-        this.failureAuditWriter,
-      );
-      throw mapRevisionBoundaryError(error);
-    }
+          resourceId: command.id,
+          resourceType: 'connector',
+          sanitizePayload: sanitizeConnectorRevisionPayload,
+          secretFingerprint: proof.secretFingerprint,
+        });
+        invalidateConnectorPublishedIndex(this.db, command.id);
+        await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs, { db: this.db });
+        return { auditId: result.auditId, revision: result.revision.revision };
+      },
+    );
   };
 
   rollback = async (actorUserId: string, input: RollbackInput) => {
     const command = adminConnectorRollbackInputSchema.parse(input);
     const reason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
-    try {
-      const proof = await this.preflightRevision(
-        command.id,
-        command.expectedDraftToken,
-        command.targetRevision,
-        'rollback',
-      );
-      await this.lifecycle.afterPublicationPreflight?.(command.id);
-      const result = await this.publisher.rollback({
+    return withConnectorFailureAudit(
+      this.db,
+      {
+        action: 'admin.connectors.rollback',
         actorUserId,
-        expectedRevision: command.expectedRevision,
-        invalidationScopes: ['connector-catalog', 'connector-runtime'],
-        pointer: this.pointer(command.id, actorUserId, proof),
+        mapError: mapRevisionBoundaryError,
         reason,
-        resourceId: command.id,
-        resourceType: 'connector',
-        targetRevision: command.targetRevision,
-      });
-      invalidateConnectorPublishedIndex(this.db, command.id);
-      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs, { db: this.db });
-      return { auditId: result.auditId, revision: result.revision.revision };
-    } catch (error) {
-      await appendConnectorFailureAudit(
-        this.db,
-        {
-          action: 'admin.connectors.rollback',
+        targetId: command.id,
+        writer: this.failureAuditWriter,
+      },
+      async () => {
+        const proof = await this.preflightRevision(
+          command.id,
+          command.expectedDraftToken,
+          command.targetRevision,
+          'rollback',
+        );
+        await this.lifecycle.afterPublicationPreflight?.(command.id);
+        const result = await this.publisher.rollback({
           actorUserId,
+          expectedRevision: command.expectedRevision,
+          invalidationScopes: ['connector-catalog', 'connector-runtime'],
+          pointer: this.pointer(command.id, actorUserId, proof),
           reason,
-          targetId: command.id,
-        },
-        this.failureAuditWriter,
-      );
-      throw mapRevisionBoundaryError(error);
-    }
+          resourceId: command.id,
+          resourceType: 'connector',
+          targetRevision: command.targetRevision,
+        });
+        invalidateConnectorPublishedIndex(this.db, command.id);
+        await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs, { db: this.db });
+        return { auditId: result.auditId, revision: result.revision.revision };
+      },
+    );
   };
 
   archive = async (actorUserId: string, input: ArchiveInput) => {
     const command = adminConnectorArchiveInputSchema.parse(input);
     const reason = await sanitizeEmergencyReason(this.secrets, command.id, command.reason);
-    try {
-      const connector = await new PlatformConnectorCatalogRepository(this.db).getConnector(
-        command.id,
-      );
-      if (!connector?.publishedRevision) {
-        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-      }
-      const proof = await this.preflightRevision(
-        command.id,
-        command.expectedDraftToken,
-        connector.publishedRevision,
-        'archive',
-      );
-      await this.lifecycle.afterPublicationPreflight?.(command.id);
-      const result = await this.publisher.publish({
+    return withConnectorFailureAudit(
+      this.db,
+      {
+        action: 'admin.connectors.archive',
         actorUserId,
-        expectedRevision: command.expectedRevision,
-        invalidationScopes: ['connector-catalog', 'connector-runtime'],
-        payload: {},
-        pointer: this.pointer(command.id, actorUserId, proof),
+        mapError: mapRevisionBoundaryError,
         reason,
-        resourceId: command.id,
-        resourceType: 'connector',
-        sanitizePayload: sanitizeConnectorRevisionPayload,
-        secretFingerprint: proof.secretFingerprint,
-        status: 'archived',
-      });
-      invalidateConnectorPublishedIndex(this.db, command.id);
-      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs, { db: this.db });
-      return { auditId: result.auditId, revision: result.revision.revision };
-    } catch (error) {
-      await appendConnectorFailureAudit(
-        this.db,
-        {
-          action: 'admin.connectors.archive',
+        targetId: command.id,
+        writer: this.failureAuditWriter,
+      },
+      async () => {
+        const connector = await new PlatformConnectorCatalogRepository(this.db).getConnector(
+          command.id,
+        );
+        if (!connector?.publishedRevision) {
+          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+        }
+        const proof = await this.preflightRevision(
+          command.id,
+          command.expectedDraftToken,
+          connector.publishedRevision,
+          'archive',
+        );
+        await this.lifecycle.afterPublicationPreflight?.(command.id);
+        const result = await this.publisher.publish({
           actorUserId,
+          expectedRevision: command.expectedRevision,
+          invalidationScopes: ['connector-catalog', 'connector-runtime'],
+          payload: {},
+          pointer: this.pointer(command.id, actorUserId, proof),
           reason,
-          targetId: command.id,
-        },
-        this.failureAuditWriter,
-      );
-      throw mapRevisionBoundaryError(error);
-    }
+          resourceId: command.id,
+          resourceType: 'connector',
+          sanitizePayload: sanitizeConnectorRevisionPayload,
+          secretFingerprint: proof.secretFingerprint,
+          status: 'archived',
+        });
+        invalidateConnectorPublishedIndex(this.db, command.id);
+        await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs, { db: this.db });
+        return { auditId: result.auditId, revision: result.revision.revision };
+      },
+    );
   };
 
   revokeAllBindings = async (actorUserId: string, input: RevokeAllInput) => {
     const command = adminConnectorRevokeAllBindingsInputSchema.parse(input);
     const reason = await sanitizeEmergencyReason(this.secrets, command.id, command.reason);
-    try {
-      const result = await this.db.transaction(async (tx) => {
-        const [connector] = await tx
-          .select()
-          .from(platformConnectors)
-          .where(eq(platformConnectors.id, command.id))
-          .limit(1)
-          .for('update');
-        if (!connector) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
-        if (connector.publishedRevision !== command.expectedRevision) {
-          throw new PlatformRevisionConflictError();
-        }
-        const revoked = await this.revokeBindings(tx, command.id);
-        const audit = await new PlatformAuditService(tx).append({
-          action: 'admin.connectors.revokeAllBindings',
-          actorUserId,
-          afterDiff: { revoked: revoked.revoked },
-          configRevision: command.expectedRevision,
-          reason,
-          result: 'success',
-          targetId: command.id,
-          targetType: 'connector',
+    return withConnectorFailureAudit(
+      this.db,
+      {
+        action: 'admin.connectors.revokeAllBindings',
+        actorUserId,
+        reason,
+        targetId: command.id,
+        writer: this.failureAuditWriter,
+      },
+      async () => {
+        const result = await this.db.transaction(async (tx) => {
+          const [connector] = await tx
+            .select()
+            .from(platformConnectors)
+            .where(eq(platformConnectors.id, command.id))
+            .limit(1)
+            .for('update');
+          if (!connector) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
+          if (connector.publishedRevision !== command.expectedRevision) {
+            throw new PlatformRevisionConflictError();
+          }
+          const revoked = await this.revokeBindings(tx, command.id);
+          const audit = await new PlatformAuditService(tx).append({
+            action: 'admin.connectors.revokeAllBindings',
+            actorUserId,
+            afterDiff: { revoked: revoked.revoked },
+            configRevision: command.expectedRevision,
+            reason,
+            result: 'success',
+            targetId: command.id,
+            targetType: 'connector',
+          });
+          return { auditId: audit.id, ...revoked };
         });
-        return { auditId: audit.id, ...revoked };
-      });
-      await cleanupConnectorSecretRefs(this.secrets, result.cleanupRefs, { db: this.db });
-      await this.publishInvalidation(command.id, command.expectedRevision);
-      return { auditId: result.auditId, revoked: result.revoked };
-    } catch (error) {
-      await appendConnectorFailureAudit(
-        this.db,
-        {
-          action: 'admin.connectors.revokeAllBindings',
-          actorUserId,
-          reason,
-          targetId: command.id,
-        },
-        this.failureAuditWriter,
-      );
-      throw error;
-    }
+        await cleanupConnectorSecretRefs(this.secrets, result.cleanupRefs, { db: this.db });
+        await this.publishInvalidation(command.id, command.expectedRevision);
+        return { auditId: result.auditId, revoked: result.revoked };
+      },
+    );
   };
 }

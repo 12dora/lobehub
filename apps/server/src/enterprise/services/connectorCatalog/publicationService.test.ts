@@ -836,4 +836,54 @@ describe('ConnectorCatalogService publish secret boundary', () => {
       return true;
     });
   });
+
+  it('appends a publish failure audit when the draft token mismatches', async () => {
+    const failureAuditWriter = vi.fn(async () => {});
+    const secrets = new MemoryConnectorSecretStore(db);
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const outbound = {
+      assertAllowed: vi.fn(async () => {}),
+      getPolicyVersion: vi.fn(() => 1),
+      preflight: vi.fn(async () => ({ policyVersion: 1 })),
+    } as unknown as ConnectorOutboundClient;
+    const drafts = new ConnectorCatalogDraftService(
+      db,
+      secrets,
+      'https://aihub.example.test/oauth/callback',
+    );
+    const publication = new ConnectorCatalogPublicationService(
+      db,
+      outbound,
+      secrets,
+      {},
+      invalidation,
+      failureAuditWriter,
+    );
+    const draft = await drafts.createDraft('admin-user', {
+      credentialMode: 'shared_service_account',
+      displayName: 'Published Connector',
+      enabled: true,
+      endpoint: 'https://connector-v1.example.test/mcp',
+      key: 'mismatched-token-connector',
+      reason: 'create connector',
+      sharedSecret: { operation: 'replace', value: { apiKey: 'mismatch-secret' } },
+      tools: [connectorToolFixture()],
+      transport: 'http',
+    });
+
+    await expect(
+      publication.publish('admin-user', {
+        expectedDraftToken: '0'.repeat(64),
+        expectedRevision: 0,
+        id: draft.draft.id,
+        reason: 'publish with mismatched token',
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+
+    expect(failureAuditWriter).toHaveBeenCalledTimes(1);
+    expect(failureAuditWriter).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'admin.connectors.publish' }),
+    );
+  });
 });
