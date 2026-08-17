@@ -9,7 +9,7 @@ interface IdentityProviderRestartBannerProps {
   onRetry: () => void;
   phase: IdentityProviderRestartPhase;
   resultCategory?: string | null;
-  t: TFunction;
+  t: TFunction<'admin'>;
 }
 
 export const IdentityProviderRestartBanner = ({

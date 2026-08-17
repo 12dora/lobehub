@@ -23,7 +23,7 @@ interface UseIdentityProviderRowActionsInput {
   isDisableable: (provider: PlatformIdentityProviderDraft) => boolean;
   refreshProviders: () => unknown;
   runtime: { mutate: () => Promise<unknown> };
-  t: TFunction;
+  t: TFunction<'admin'>;
 }
 
 export const useIdentityProviderRowActions = ({

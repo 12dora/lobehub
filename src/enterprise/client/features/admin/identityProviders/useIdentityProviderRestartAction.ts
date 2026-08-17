@@ -23,7 +23,7 @@ interface UseIdentityProviderRestartActionInput {
     };
     mutate: () => Promise<unknown>;
   };
-  t: TFunction;
+  t: TFunction<'admin'>;
 }
 
 export const useIdentityProviderRestartAction = ({

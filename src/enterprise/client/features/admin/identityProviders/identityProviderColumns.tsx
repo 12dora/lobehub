@@ -7,7 +7,7 @@ import type { TFunction } from 'i18next';
 import IdentityProviderStatusBadge from './IdentityProviderStatusBadge';
 
 export const buildIdentityProviderColumns = (
-  t: TFunction,
+  t: TFunction<'admin'>,
 ): TableColumnsType<PlatformIdentityProviderDraft> => [
   {
     key: 'name',
@@ -59,7 +59,7 @@ export const buildIdentityProviderActionsColumn = ({
   isDisableable: (provider: PlatformIdentityProviderDraft) => boolean;
   requestDelete: (provider: PlatformIdentityProviderDraft) => void;
   requestDisable: (provider: PlatformIdentityProviderDraft) => void;
-  t: TFunction;
+  t: TFunction<'admin'>;
 }): TableColumnsType<PlatformIdentityProviderDraft>[number] =>
   ({
     key: 'actions',
