@@ -1,6 +1,7 @@
 import createDebug from 'debug';
 
-import { randomUuid } from './binary';
+import { assertAllowedAssetUrl, checkedAssetUrl } from './assetUrls';
+import { abortableSleep, MAX_DOWNLOAD_BYTES, readBoundedBody } from './boundedBody';
 import {
   CHATGPT_BASE_URL,
   DEFAULT_USER_AGENT,
@@ -31,6 +32,8 @@ import {
 } from './http';
 import type { PowResources } from './pow';
 import { buildFileCreateBody } from './requestBuilders';
+import type { LegRequest, LegState } from './resumeLeg';
+import { buildResumeLeg, isRetryableLegError, RESUME_BACKOFF_MS } from './resumeLeg';
 import {
   buildRequirementsToken,
   parseClientBuildInfo,
@@ -53,9 +56,6 @@ const log = createDebug('lobe-chatgptweb:client');
 
 /** Chained `/f/conversation/resume` legs allowed for a single turn. */
 const MAX_CHAINED_RESUMES = 3;
-/** Backoff between resume attempts (network / 5xx only). */
-const RESUME_BACKOFF_MS = [300, 700, 1500];
-const RESUME_RETRIES = RESUME_BACKOFF_MS.length;
 
 /** Event types that mean the leg actually produced something for the consumer. */
 const OUTPUT_EVENT_TYPES = new Set<ConversationEvent['type']>([
@@ -98,99 +98,6 @@ export interface ResumeConversationOptions {
   resumeToken: string;
   signal?: AbortSignal;
 }
-
-interface LegRequest {
-  body: string;
-  context: string;
-  headers: Record<string, string>;
-  path: string;
-  /** Retries allowed while ESTABLISHING this leg (network / 5xx). */
-  retries?: number;
-}
-
-interface LegState {
-  conversationId?: string;
-  handoff?: Extract<ConversationEvent, { type: 'handoff' }>;
-  resumeToken?: string;
-  sawOutput: boolean;
-}
-
-/**
- * Hosts an upstream-supplied URL may point at.
- *
- * Every one of these URLs (`upload_url`, `download_url`, asset pointers) is read
- * out of a response body, i.e. it is attacker-influenced input to a server-side
- * fetch. The server transport enforces its own SSRF policy; this is the second
- * line of defence, so a compromised/spoofed response cannot make the runtime
- * fetch `http://169.254.169.254/…` or an internal service with the account's
- * bearer token attached.
- */
-const ASSET_HOST_SUFFIXES = [
-  'chatgpt.com',
-  'openai.com',
-  'oaiusercontent.com',
-  'oaistatic.com',
-  'blob.core.windows.net',
-];
-
-export const isAllowedAssetUrl = (url: string): boolean => {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  if (parsed.protocol !== 'https:') return false;
-  const host = parsed.hostname.toLowerCase();
-  return ASSET_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
-};
-
-/**
- * @returns the parsed URL, so the caller can decide same-origin questions on the
- *   PARSED host rather than on a string prefix.
- */
-export const assertAllowedAssetUrl = (url: string, context: string): URL => {
-  if (!isAllowedAssetUrl(url))
-    // the URL itself is never interpolated: its query string is the credential
-    throw new ChatGPTWebError(
-      'upstream',
-      `${context}: refusing to fetch an asset from an unexpected host or scheme`,
-    );
-  return new URL(url);
-};
-
-/** `''` (nothing to download) or an allowlisted URL — never anything else. */
-const checkedAssetUrl = (url: string | undefined, context: string): string => {
-  if (!url) return '';
-  assertAllowedAssetUrl(url, context);
-  return url;
-};
-
-const isRetryableLegError = (error: unknown): boolean => {
-  if (!isChatGPTWebError(error)) return false;
-  return error.kind === 'network' || (error.status ?? 0) >= 500;
-};
-
-const buildResumeLeg = ({
-  conversationId,
-  offset = 0,
-  resumeToken,
-}: {
-  conversationId: string;
-  offset?: number;
-  resumeToken: string;
-}): LegRequest => ({
-  body: JSON.stringify({ conversation_id: conversationId, offset }),
-  context: 'conversation_resume',
-  headers: {
-    'Accept': 'text/event-stream',
-    'Content-Type': 'application/json',
-    'X-Conduit-Token': sanitizeHeaderValue(resumeToken),
-    'X-Oai-Turn-Trace-Id': randomUuid(),
-  },
-  path: PATHS.fConversationResume,
-  retries: RESUME_RETRIES,
-});
 
 /**
  * Protocol client for chatgpt.com's private web API.
@@ -1023,76 +930,8 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
   }
 }
 
-/** 32 MiB — comfortably above any generated image, far below "OOM the server". */
-export const MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
-
-/**
- * Stream a response body into memory with a hard ceiling.
- *
- * `arrayBuffer()` has no limit at all: an upstream (or a redirected blob host)
- * that answers with a huge or endlessly-chunked body would otherwise be able to
- * exhaust the process.
- */
-export const readBoundedBody = async (
-  response: Response,
-  maxBytes: number,
-  fail: (error: unknown) => Error = (error) => error as Error,
-): Promise<Uint8Array> => {
-  if (!response.body) {
-    const buffer = await response.arrayBuffer().catch((error: unknown) => {
-      throw fail(error);
-    });
-    if (buffer.byteLength > maxBytes)
-      throw new ChatGPTWebError('upstream', `asset exceeds the ${maxBytes} byte limit`);
-    return new Uint8Array(buffer);
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.length;
-      if (total > maxBytes) {
-        void reader.cancel().catch(() => {});
-        throw new ChatGPTWebError('upstream', `asset exceeds the ${maxBytes} byte limit`);
-      }
-      chunks.push(value);
-    }
-  } catch (error) {
-    throw isChatGPTWebError(error) ? error : fail(error);
-  }
-
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-};
-
-/** `setTimeout` that rejects with the caller's own abort reason. */
-export const abortableSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
-  new Promise((resolve, reject) => {
-    const reason = callerAbortReason(signal);
-    if (reason !== undefined) {
-      reject(reason);
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(callerAbortReason(signal));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+export { abortableSleep, assertAllowedAssetUrl, MAX_DOWNLOAD_BYTES, readBoundedBody };
+export { isAllowedAssetUrl } from './assetUrls';
 
 // The protocol core's public surface. `index.ts` is intentionally left to the
 // runtime layer (`LobeChatGPTWebAI`), so consumers import from here.

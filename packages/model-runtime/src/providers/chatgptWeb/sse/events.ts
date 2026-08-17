@@ -3,9 +3,20 @@ import createDebug from 'debug';
 import { citationsFromMessage, isAnswerMessage, isVisibleAssistantMessage } from '../citations';
 import { ASSET_POINTER_PREFIXES } from '../constants';
 import { extractSandboxFiles } from '../interpreterFiles';
-import type { AssetPointerKind, Citation, ConversationEvent, StreamHandoffOption } from '../types';
+import type { Citation, ConversationEvent } from '../types';
 import { sanitizeAnnotations } from './annotations';
+import {
+  asRecord,
+  isImageToolMessage,
+  messageText,
+  pointerKind,
+  reasoningText,
+  stripHistory,
+  toHandoffOptions,
+} from './messageFields';
 import { applyPatchEvent, createPatchState, type PatchState } from './patch';
+
+export { stripHistory };
 
 const log = createDebug('lobe-chatgptweb:events');
 
@@ -38,84 +49,6 @@ export interface EventRouterOptions {
    */
   echoHistory?: string[];
 }
-
-const asRecord = (value: unknown): Record<string, any> | undefined =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, any>)
-    : undefined;
-
-/**
- * Port of the reference `strip_history`: the upstream replays the assistant
- * turns we sent, so a full message can arrive as `<history><new text>`. Strip
- * the concatenated history prefix repeatedly (a repeated echo strips twice).
- */
-export const stripHistory = (text: string, historyText: string): string => {
-  if (!historyText) return text;
-  let out = text;
-  while (out.startsWith(historyText)) out = out.slice(historyText.length);
-  return out;
-};
-
-const messageText = (message: Record<string, any>): string => {
-  const content = asRecord(message.content);
-  if (!content) return '';
-  const parts = Array.isArray(content.parts) ? content.parts : [];
-  const joined = parts.filter((part: unknown) => typeof part === 'string').join('');
-  if (joined) return joined;
-  // content_type "code" keeps its payload in `text` rather than `parts`
-  return typeof content.text === 'string' ? content.text : '';
-};
-
-const reasoningText = (message: Record<string, any>): { summary?: string; text: string } => {
-  const content = asRecord(message.content);
-  const thoughts = Array.isArray(content?.thoughts) ? content!.thoughts : [];
-  const chunks: string[] = [];
-  let summary: string | undefined;
-  for (const rawThought of thoughts) {
-    const thought = asRecord(rawThought);
-    if (!thought) continue;
-    if (typeof thought.summary === 'string' && thought.summary) summary = thought.summary;
-    const body = [thought.summary, thought.content]
-      .filter((value): value is string => typeof value === 'string' && value.length > 0)
-      .join('\n');
-    if (body) chunks.push(body);
-  }
-  return { summary, text: chunks.join('\n\n') };
-};
-
-const toHandoffOptions = (value: unknown): StreamHandoffOption[] | undefined => {
-  if (!Array.isArray(value)) return undefined;
-  const options = value
-    .map((raw) => asRecord(raw))
-    .filter((option): option is Record<string, any> => !!option)
-    .map((option) => ({
-      topicId: typeof option.topic_id === 'string' ? option.topic_id : undefined,
-      type: typeof option.type === 'string' ? option.type : undefined,
-    }));
-  return options.length > 0 ? options : undefined;
-};
-
-const pointerKind = (pointer: string): AssetPointerKind | undefined => {
-  if (pointer.startsWith(ASSET_POINTER_PREFIXES.fileService)) return 'file-service';
-  if (pointer.startsWith(ASSET_POINTER_PREFIXES.sediment)) return 'sediment';
-  return undefined;
-};
-
-const isImageToolMessage = (message: Record<string, any>): boolean => {
-  if (String(asRecord(message.author)?.role ?? '').toLowerCase() !== 'tool') return false;
-  if (asRecord(message.metadata)?.async_task_type === 'image_gen') return true;
-
-  const content = asRecord(message.content);
-  if (content?.content_type !== 'multimodal_text') return false;
-  const parts = Array.isArray(content.parts) ? content.parts : [];
-  return parts.some((rawPart: unknown) => {
-    const part = asRecord(rawPart);
-    if (!part) return false;
-    return (
-      part.content_type === 'image_asset_pointer' || !!pointerKind(String(part.asset_pointer ?? ''))
-    );
-  });
-};
 
 /**
  * Turns the raw SSE payload strings into the provider-agnostic
@@ -276,7 +209,6 @@ export class ConversationEventRouter {
 
     const content = asRecord(message.content);
     const contentType = content?.content_type;
-    const metadata = asRecord(message.metadata) ?? {};
 
     if (isImageToolMessage(message)) this.emitPointers(message, messageId, state, events);
 
@@ -289,17 +221,53 @@ export class ConversationEventRouter {
       return;
     }
 
-    if (contentType === 'thoughts') {
-      const { summary, text } = reasoningText(message);
-      // Same additive high-water contract as the answer text — see `emitText`.
-      if (text.length > state.reasoning.length && text.startsWith(state.reasoning)) {
-        const delta = text.slice(state.reasoning.length);
-        state.reasoning = text;
-        events.push({ delta, messageId, summary, type: 'reasoning.delta' });
-      } else if (text && !state.reasoning.startsWith(text)) {
-        this.logDivergence(state, messageId, 'reasoning');
-      }
+    this.emitReasoningDelta(message, messageId, state, events);
+    this.emitReasoningDone(message, messageId, state, events);
+
+    if (isVisibleAssistantMessage(message)) {
+      if (isAnswerMessage(message)) state.isAnswer = true;
+      this.emitText(message, messageId, state, events);
+      this.emitCitations(message, state, events);
     }
+
+    this.emitStatus(message, messageId, state, events);
+
+    const status = typeof message.status === 'string' ? message.status : undefined;
+    const endTurn = typeof message.end_turn === 'boolean' ? message.end_turn : undefined;
+    // A finished answer can be scanned for interpreter files: its text will not
+    // grow any further, so a `sandbox:` link in it is complete.
+    if (endTurn === true || (status !== undefined && status !== 'in_progress'))
+      this.emitSandboxFiles(messageId, state, events);
+  }
+
+  private emitReasoningDelta(
+    message: Record<string, any>,
+    messageId: string,
+    state: MessageState,
+    events: ConversationEvent[],
+  ) {
+    if (asRecord(message.content)?.content_type !== 'thoughts') return;
+
+    const { summary, text } = reasoningText(message);
+    // Same additive high-water contract as the answer text — see `emitText`.
+    if (text.length > state.reasoning.length && text.startsWith(state.reasoning)) {
+      const delta = text.slice(state.reasoning.length);
+      state.reasoning = text;
+      events.push({ delta, messageId, summary, type: 'reasoning.delta' });
+    } else if (text && !state.reasoning.startsWith(text)) {
+      this.logDivergence(state, messageId, 'reasoning');
+    }
+  }
+
+  private emitReasoningDone(
+    message: Record<string, any>,
+    messageId: string,
+    state: MessageState,
+    events: ConversationEvent[],
+  ) {
+    const content = asRecord(message.content);
+    const contentType = content?.content_type;
+    const metadata = asRecord(message.metadata) ?? {};
 
     if (contentType === 'reasoning_recap' && !state.reasoningDone) {
       state.reasoningDone = true;
@@ -327,13 +295,14 @@ export class ConversationEventRouter {
         type: 'reasoning.done',
       });
     }
+  }
 
-    if (isVisibleAssistantMessage(message)) {
-      if (isAnswerMessage(message)) state.isAnswer = true;
-      this.emitText(message, messageId, state, events);
-      this.emitCitations(message, state, events);
-    }
-
+  private emitStatus(
+    message: Record<string, any>,
+    messageId: string,
+    state: MessageState,
+    events: ConversationEvent[],
+  ) {
     const status = typeof message.status === 'string' ? message.status : undefined;
     const endTurn = typeof message.end_turn === 'boolean' ? message.end_turn : undefined;
     // ONLY the current user-visible final answer may complete the turn. The
@@ -349,11 +318,6 @@ export class ConversationEventRouter {
       if (status || endTurn !== undefined)
         events.push({ endTurn, messageId, status, type: 'message.status' });
     }
-
-    // A finished answer can be scanned for interpreter files: its text will not
-    // grow any further, so a `sandbox:` link in it is complete.
-    if (endTurn === true || (status !== undefined && status !== 'in_progress'))
-      this.emitSandboxFiles(messageId, state, events);
   }
 
   /**

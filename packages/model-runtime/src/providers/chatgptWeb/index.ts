@@ -26,13 +26,8 @@ import { AgentRuntimeError } from '../../utils/createError';
 import { debugStream } from '../../utils/debugStream';
 import { StreamingResponse } from '../../utils/response';
 import { parseDataUri } from '../../utils/uriParser';
-import type {
-  AttachmentRef,
-  ChatGPTWebMessage,
-  Citation,
-  ConversationEvent,
-  UploadedFileRef,
-} from './client';
+import { assertBoundedBase64, extensionFor, fetchBytes } from './assetDownload';
+import type { AttachmentRef, ChatGPTWebMessage, Citation, ConversationEvent } from './client';
 import {
   abortableSleep,
   base64ToBytes,
@@ -49,16 +44,32 @@ import {
   isChatGPTWebError,
   MAX_DOWNLOAD_BYTES,
   normalizeThinkingEffort,
-  readBoundedBody,
   RETRYABLE_POLL_STATUSES,
   sanitizeAnnotations,
   toAgentRuntimeErrorType,
   turnAnswerMessage,
 } from './client';
 import { createChatGPTWebImage } from './createImage';
+import { createDebugRedactor } from './debugRedactor';
 import { readImageDimensions, readImageMimeType } from './imageDimensions';
 import { extractSandboxFiles, resolveFileMimeType, sandboxFileName } from './interpreterFiles';
+import type { TurnState } from './turnHelpers';
+import {
+  describeRequestBody,
+  isAbortError,
+  isRecoverablePrepareError,
+  lastUserMessageId,
+  lastUserText,
+  messageParts,
+  replayIterator,
+  throwingEvents,
+  toAttachmentRef,
+  toGroundingCitation,
+  undeliveredSuffix,
+} from './turnHelpers';
 import { getCachedUpload, setCachedUpload, uploadCacheKey, uploadNamespace } from './uploadCache';
+
+export { describeRequestBody, undeliveredSuffix };
 
 const log = createDebug('lobe-chatgptweb:runtime');
 
@@ -106,164 +117,11 @@ const timeoutSignalHandle = (ms: number): { cleanup: () => void; signal: AbortSi
 const resolveThinkingEffort = (payload: ChatStreamPayload): string | undefined =>
   normalizeThinkingEffort(payload.reasoning_effort ?? payload.reasoning?.effort);
 
-const extensionFor = (mimeType: string): string => {
-  const subtype = mimeType.split('/')[1] ?? 'bin';
-  return subtype === 'jpeg' ? 'jpg' : subtype.split('+')[0];
-};
-
-const toGroundingCitation = (citation: Citation) => ({ title: citation.title, url: citation.url });
-
-/** Joined string parts of a conversation-document message. */
-const messageParts = (message: Record<string, any>): string => {
-  const parts = Array.isArray(message?.content?.parts) ? message.content.parts : [];
-  return parts.filter((part: unknown) => typeof part === 'string').join('');
-};
-
-const toAttachmentRef = (ref: UploadedFileRef, name?: string): AttachmentRef => ({
-  fileTokenSize: ref.fileTokenSize,
-  height: ref.height,
-  id: ref.fileId,
-  kind: ref.kind,
-  libraryFileId: ref.libraryFileId,
-  mimeType: ref.mimeType,
-  name: name ?? ref.name,
-  size: ref.size,
-  width: ref.width,
-});
-
-/** Never log a signed asset URL: the query string carries the credential. */
-const urlHost = (url: string): string => {
-  try {
-    return new URL(url).host;
-  } catch {
-    return '<unparseable url>';
-  }
-};
-
-/**
- * Structural metadata about an outgoing conversation body — message count, roles
- * and switches. Deliberately NOT the body: `messages[].content.parts` is the
- * user's whole prompt (and, on the document-fallback path, whole file contents),
- * which must never reach a log line.
- */
-export const describeRequestBody = (
-  body: Record<string, any>,
-  extra: { flow: string; model?: string; thinkingEffort?: string },
-): Record<string, unknown> => {
-  const messages: any[] = Array.isArray(body?.messages) ? body.messages : [];
-  return {
-    ...extra,
-    hasAttachments: messages.some(
-      (message) => (message?.metadata?.attachments as unknown[] | undefined)?.length,
-    ),
-    messageCount: messages.length,
-    roles: messages.map((message) => message?.author?.role),
-    systemHints: body?.system_hints,
-    thinkingEffortSent: body?.thinking_effort,
-  };
-};
-
-/**
- * The part of a recovered answer the stream has NOT already delivered.
- *
- * The chunk contract is additive — a consumer concatenates every `text` chunk
- * and cannot take one back — so a partially streamed turn whose remainder is
- * read from the conversation document must be de-duplicated here.
- */
-export const undeliveredSuffix = (recovered: string, streamed: string): string => {
-  if (!streamed) return recovered;
-  if (recovered.startsWith(streamed)) return recovered.slice(streamed.length);
-  const index = recovered.indexOf(streamed);
-  if (index >= 0) return recovered.slice(index + streamed.length);
-  // the document and the stream disagree: appending would show the answer twice
-  log('recovered answer diverges from the streamed text; appending nothing');
-  return '';
-};
-
 /** Shared settings for a live slug the catalogue does not carry yet. */
 const LIVE_MODEL_SETTINGS: NonNullable<ChatModelCard['settings']> = {
   searchImpl: 'params',
   searchProvider: DEFAULT_PROVIDER,
 };
-
-/**
- * Download an attachment referenced by URL. SSRF-safe on the server, plain fetch
- * in the browser bundle.
- *
- * Bounded in both directions: an announced `Content-Length` over the ceiling is
- * refused before a byte is read, and the body itself is streamed through
- * {@link readBoundedBody} so a chunked/endless response cannot exhaust the
- * process either.
- */
-const fetchBytes = async (
-  url: string,
-  signal?: AbortSignal,
-): Promise<{ bytes: Uint8Array; mimeType?: string }> => {
-  const isServer = typeof window === 'undefined';
-
-  // `maxContentLength` soft-truncates one byte past the ceiling, which is what
-  // lets `readBoundedBody` below tell "at the limit" from "over it".
-  // TODO: `ssrfSafeFetch` console.errors its own caught fetch errors verbatim
-  // (shared package). Nothing here can suppress that; fix it at the source.
-  let response: Response;
-  try {
-    response = isServer
-      ? await import('@lobechat/ssrf-safe-fetch').then((module) =>
-          module.ssrfSafeFetch(url, { signal }, { maxContentLength: MAX_DOWNLOAD_BYTES + 1 }),
-        )
-      : await globalThis.fetch(url, { signal });
-  } catch (error) {
-    // the caller pressing stop keeps its own AbortError semantics
-    if (isAbortError(error) || isCallerAbort(signal)) throw error;
-    // host + error class only — a signed URL's query string IS the credential
-    log('asset fetch failed: host=%s error=%s', urlHost(url), (error as Error)?.name ?? 'Error');
-    // the MESSAGE carries the host only; the original stays on `cause`, which is
-    // non-enumerable and therefore never lands in a serialized payload
-    throw new Error(`failed to download attachment from ${urlHost(url)}`, { cause: error });
-  }
-
-  if (!response.ok)
-    throw new Error(
-      `failed to download attachment from ${urlHost(url)}: status=${response.status}`,
-    );
-
-  const declared = Number(response.headers.get('content-length') ?? Number.NaN);
-  if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES)
-    throw new Error(
-      `attachment from ${urlHost(url)} is ${declared} bytes, over the ${MAX_DOWNLOAD_BYTES} byte limit`,
-    );
-
-  return {
-    bytes: await readBoundedBody(response, MAX_DOWNLOAD_BYTES),
-    mimeType: response.headers.get('content-type') ?? undefined,
-  };
-};
-
-/** A data URI's decoded size, bounded before it is ever materialised. */
-const assertBoundedBase64 = (base64: string, what: string): void => {
-  // 4 base64 chars ⇒ 3 bytes; compare on the ENCODED length so nothing is decoded first
-  if (base64.length / 4 > MAX_DOWNLOAD_BYTES / 3)
-    throw new Error(`inline ${what} exceeds the ${MAX_DOWNLOAD_BYTES} byte limit`);
-};
-
-/** Re-yield an iterator whose first result has already been pulled. */
-async function* replayIterator<T>(
-  first: IteratorResult<T>,
-  iterator: AsyncIterator<T>,
-): AsyncGenerator<T, void, undefined> {
-  try {
-    if (first.done) return;
-    yield first.value;
-    while (true) {
-      const next = await iterator.next();
-      if (next.done) return;
-      yield next.value;
-    }
-  } finally {
-    // propagate cancellation (client abort) into the underlying SSE reader
-    await iterator.return?.(undefined);
-  }
-}
 
 export interface LobeChatGPTWebParams {
   /** ChatGPT Web access token (OAuth or pasted). */
@@ -277,103 +135,6 @@ export interface LobeChatGPTWebParams {
   id?: string;
   userId?: string;
 }
-
-interface TurnState {
-  conversationId?: string;
-  /** the cleanup hook already fired — hiding twice is a wasted round trip */
-  hidden?: boolean;
-  /** Epoch SECONDS (the document's own unit) at which this request was sent. */
-  startedAtSec?: number;
-  /** The id we generated for this turn's last user message. */
-  userMessageId?: string;
-}
-
-/** The id the body builder generated for the last user message of the turn. */
-const lastUserMessageId = (body: Record<string, any>): string | undefined => {
-  const messages: any[] = Array.isArray(body?.messages) ? body.messages : [];
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.author?.role === 'user' && typeof message.id === 'string') return message.id;
-  }
-  return undefined;
-};
-
-const isAbortError = (error: unknown): boolean =>
-  (error as { name?: unknown } | undefined)?.name === 'AbortError';
-
-/**
- * Prepare failures the plain path may still be able to serve — an ALLOWLIST, so
- * a kind nobody classified here never silently degrades a turn:
- *
- * - `network` / `timeout`: the conduit endpoint (or the hop to it) hiccuped;
- * - `upstream`: an unusable 5xx / malformed prepare body (a blank conduit token
- *   included) — the legacy endpoint does not need one at all;
- * - `not_found`: this account does not have `/f/conversation/prepare`, which is
- *   exactly what the legacy endpoint is for.
- *
- * Everything else stays fatal: `auth` / `permission` / `rate_limit` are about
- * the account, `cloudflare` blocks every path equally, `model_cap` is refused by
- * the plain path too, `transport_unavailable` has no transport to retry on, a
- * caller abort is the user leaving, and an UNTYPED error is a bug of ours that
- * must surface rather than hide behind a degraded turn.
- */
-const RECOVERABLE_PREPARE_KINDS = new Set(['network', 'not_found', 'timeout', 'upstream']);
-
-const isRecoverablePrepareError = (error: unknown): boolean =>
-  !isAbortError(error) && isChatGPTWebError(error) && RECOVERABLE_PREPARE_KINDS.has(error.kind);
-
-/** A one-shot event stream that only ever throws — used to replay a caller abort. */
-// eslint-disable-next-line require-yield -- intentionally yields nothing: it exists to throw
-async function* throwingEvents(error: unknown): AsyncGenerator<ConversationEvent, void, undefined> {
-  throw error;
-}
-
-/**
- * Redacting pass for the debug tee. The converted stream carries whole base64
- * images and grounding URLs whose query strings are credentials — neither
- * belongs in a log line.
- */
-const createDebugRedactor = (): TransformStream<Uint8Array, Uint8Array> => {
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let buffer = '';
-
-  const redactFrame = (frame: string): string => {
-    const dataIndex = frame.indexOf('data: ');
-    if (dataIndex === -1) return frame;
-    const head = frame.slice(0, dataIndex + 'data: '.length);
-    const data = frame.slice(dataIndex + 'data: '.length);
-
-    if (/^event: base64_image$/m.test(frame)) {
-      const mime = /^"data:([^;]+);base64,/.exec(data)?.[1] ?? 'unknown';
-      // the encoded length is a fine proxy; nothing is decoded to measure it
-      return `${head}"<base64_image ${mime} ~${Math.floor((data.length * 3) / 4)} bytes>"`;
-    }
-
-    if (/^event: file$/m.test(frame)) {
-      const mime = /"mimeType":"([^"]+)"/.exec(data)?.[1] ?? 'unknown';
-      const size = /"size":(\d+)/.exec(data)?.[1] ?? '?';
-      return `${head}"<file ${mime} ${size} bytes>"`;
-    }
-
-    return head + data.replaceAll(/(https?:\/\/[^"\s\\]+?)\?[^"\s\\]*/g, '$1?<redacted>');
-  };
-
-  return new TransformStream<Uint8Array, Uint8Array>({
-    flush(controller) {
-      if (buffer) controller.enqueue(encoder.encode(redactFrame(buffer)));
-    },
-    transform(chunk, controller) {
-      buffer += decoder.decode(chunk, { stream: true });
-      let index = buffer.indexOf('\n\n');
-      while (index !== -1) {
-        controller.enqueue(encoder.encode(`${redactFrame(buffer.slice(0, index))}\n\n`));
-        buffer = buffer.slice(index + 2);
-        index = buffer.indexOf('\n\n');
-      }
-    },
-  });
-};
 
 export class LobeChatGPTWebAI implements LobeRuntimeAI {
   baseURL = 'https://chatgpt.com/backend-api';
@@ -463,7 +224,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         // Only a failure the plain path can actually correct falls back: a
         // credential / cap / bot-protection failure is about the account, and
         // retrying it on the legacy endpoint only hides it behind a degraded
-        // turn (see {@link RECOVERABLE_PREPARE_KINDS}).
+        // turn (see {@link isRecoverablePrepareError}).
         if (!mayFallBack || isCallerAbort(signal) || !isRecoverablePrepareError(error)) throw error;
         log('conduit prepare failed (%s); falling back to the plain path', String(error));
         useFPath = false;
@@ -1103,10 +864,3 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     });
   }
 }
-
-const lastUserText = (messages: ChatGPTWebMessage[]): string => {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'user') return messages[index].content;
-  }
-  return messages.at(-1)?.content ?? '';
-};
