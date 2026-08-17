@@ -61,7 +61,18 @@ export const GET = checkAuth(async (req, { params, userId, serverDB }) => {
       if (useAuth && apiKey) {
         currentHeaders.Authorization = `Bearer ${apiKey}`;
       }
-      return ssrfSafeFetch(pricingUrl, { headers: currentHeaders });
+      const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+      const hook = (
+        globalThis as typeof globalThis & {
+          [EGRESS_BINDING]?: {
+            runWithEgressScope?: <T>(scope: string, fn: () => Promise<T>) => Promise<T>;
+          };
+        }
+      )[EGRESS_BINDING];
+      const fetchPricing = () => ssrfSafeFetch(pricingUrl, { headers: currentHeaders });
+      return hook?.runWithEgressScope
+        ? hook.runWithEgressScope('feature:import_fetch', fetchPricing)
+        : fetchPricing();
     };
 
     let res: Response;

@@ -16,6 +16,8 @@ interface ContextWithMarketUserInfo {
  * - ctx.marketSDK: MarketSDK instance for backward compatibility
  * - ctx.marketService: MarketService instance (recommended)
  */
+const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+
 export const marketSDK = trpc.middleware(async (opts) => {
   const ctx = opts.ctx as ContextWithMarketUserInfo;
 
@@ -25,12 +27,22 @@ export const marketSDK = trpc.middleware(async (opts) => {
     userInfo: ctx.marketUserInfo,
   });
 
-  return opts.next({
-    ctx: {
-      marketSDK: marketService.market, // Backward compatibility
-      marketService, // New recommended way
-    },
-  });
+  const next = () =>
+    opts.next({
+      ctx: {
+        marketSDK: marketService.market, // Backward compatibility
+        marketService, // New recommended way
+      },
+    });
+
+  const hook = (
+    globalThis as typeof globalThis & {
+      [EGRESS_BINDING]?: {
+        runWithEgressScope?: <T>(scope: string, fn: () => Promise<T>) => Promise<T>;
+      };
+    }
+  )[EGRESS_BINDING];
+  return hook?.runWithEgressScope ? hook.runWithEgressScope('feature:market', next) : next();
 });
 
 /**

@@ -167,7 +167,13 @@ export type StaticProxyUpdate = z.infer<typeof staticProxyUpdateSchema>;
 const scopesSchema = z
   .object({
     /** key = feature key; every feature key must be present (createDefault fills them). */
-    features: z.record(networkProxyFeatureKeySchema, egressScopeStateSchema),
+    features: z
+      .object(
+        Object.fromEntries(
+          NETWORK_PROXY_FEATURE_KEYS.map((key) => [key, egressScopeStateSchema]),
+        ) as Record<NetworkProxyFeatureKey, typeof egressScopeStateSchema>,
+      )
+      .strict(),
     /** key = runtime provider id; absent = off. */
     providers: z.record(z.string().min(1).max(100), egressScopeStateSchema),
   })
