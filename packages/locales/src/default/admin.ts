@@ -3978,8 +3978,6 @@ export default {
   'modules.wizard.step2': 'Check infrastructure',
   'modules.wizard.step3': 'Done',
   'nav.modules': 'Modules',
-  'enterprise.error.PLATFORM_CONTENT_MODERATION_BLOCKED':
-    'Content moderation blocked this message before it reached the model.',
   'modules.errors.conflict':
     'Someone else changed the module settings while you were editing. Reloaded — check the switches and try again.',
   'modules.restart.envHint': 'Set {{variable}} to restart from here instead.',
