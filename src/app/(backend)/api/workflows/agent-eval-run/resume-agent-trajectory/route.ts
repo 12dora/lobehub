@@ -4,13 +4,14 @@ import debug from 'debug';
 
 import { getServerDB } from '@/database/server';
 import { qstashClient } from '@/libs/qstash';
+import { withWorkflowsModule } from '@/server/enterprise/guards/webapiModuleGate';
 import { AgentEvalRunService } from '@/server/services/agentEvalRun';
 import type { ResumeAgentTrajectoryPayload } from '@/server/workflows/agentEvalRun';
 import { resolveAgentEvalRunWorkspace } from '@/server/workflows/agentEvalRun/utils';
 
 const log = debug('lobe-server:workflows:resume-agent-trajectory');
 
-export const { POST } = serve<ResumeAgentTrajectoryPayload>(
+const { POST: handler } = serve<ResumeAgentTrajectoryPayload>(
   withOtelMetricsForUpstashWorkflows(async (context) => {
     const payload = context.requestPayload ?? {};
     const { runId, testCaseId, topicId, userId } = payload;
@@ -54,3 +55,4 @@ export const { POST } = serve<ResumeAgentTrajectoryPayload>(
     qstashClient,
   },
 );
+export const POST = withWorkflowsModule(handler);

@@ -3,9 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { gatewayStart } from '../gatewayStart';
 
-const { mockEnsureRunning, mockStop } = vi.hoisted(() => ({
+const { mockEnsureRunning, mockIsBootModuleEnabled, mockStop } = vi.hoisted(() => ({
   mockEnsureRunning: vi.fn(),
+  mockIsBootModuleEnabled: vi.fn((_id: string) => true),
   mockStop: vi.fn(),
+}));
+
+vi.mock('@/server/enterprise/services/moduleSettings', () => ({
+  isBootModuleEnabled: (id: string) => mockIsBootModuleEnabled(id),
 }));
 
 vi.mock('@/server/services/gateway', () => ({
@@ -37,6 +42,7 @@ describe('gatewayStart handler', () => {
   beforeEach(() => {
     mockEnsureRunning.mockReset().mockResolvedValue(undefined);
     mockStop.mockReset().mockResolvedValue(undefined);
+    mockIsBootModuleEnabled.mockReset().mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -74,6 +80,17 @@ describe('gatewayStart handler', () => {
     expect(mockStop.mock.invocationCallOrder[0]).toBeLessThan(
       mockEnsureRunning.mock.invocationCallOrder[0],
     );
+  });
+
+  it('returns HTTP 200 { ok:false, disabled:true } when bots is off', async () => {
+    mockIsBootModuleEnabled.mockReturnValue(false);
+    const { ctx, getCaptures } = buildContext({ body: {} });
+    const res = await gatewayStart(ctx);
+
+    expect(res.status).toBe(200);
+    expect(getCaptures()[0].body).toEqual({ disabled: true, ok: false });
+    expect(mockEnsureRunning).not.toHaveBeenCalled();
+    expect(mockIsBootModuleEnabled).toHaveBeenCalledWith('bots');
   });
 
   it('returns 500 when ensureRunning throws', async () => {

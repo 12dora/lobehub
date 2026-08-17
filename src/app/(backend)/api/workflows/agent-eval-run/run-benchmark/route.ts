@@ -5,6 +5,7 @@ import debug from 'debug';
 import { AgentEvalRunModel, AgentEvalTestCaseModel } from '@/database/models/agentEval';
 import { getServerDB } from '@/database/server';
 import { qstashClient } from '@/libs/qstash';
+import { withWorkflowsModule } from '@/server/enterprise/guards/webapiModuleGate';
 import { AgentEvalRunWorkflow, type RunBenchmarkPayload } from '@/server/workflows/agentEvalRun';
 import { resolveAgentEvalRunWorkspace } from '@/server/workflows/agentEvalRun/utils';
 
@@ -19,7 +20,7 @@ const log = debug('lobe-server:workflows:run-benchmark');
  * 5. Update run status to 'running'
  * 6. Trigger paginate-test-cases workflow
  */
-export const { POST } = serve<RunBenchmarkPayload>(
+const { POST: handler } = serve<RunBenchmarkPayload>(
   withOtelMetricsForUpstashWorkflows(async (context) => {
     const { runId, dryRun, force, userId } = context.requestPayload ?? {};
 
@@ -133,3 +134,4 @@ export const { POST } = serve<RunBenchmarkPayload>(
     qstashClient,
   },
 );
+export const POST = withWorkflowsModule(handler);

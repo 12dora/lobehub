@@ -5,6 +5,14 @@ export async function register() {
   }
 
   if (process.env.NEXT_RUNTIME === 'nodejs') {
+    try {
+      await (await import('@/server/enterprise/services/moduleSettings')).initBootModules();
+    } catch (error) {
+      console.error('[Instrumentation] module settings boot init failed (non-blocking)', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
+
     // Seeds platform RBAC (new permission codes on existing DBs) and, when the
     // BOOTSTRAP_SUPER_ADMIN_* env vars are set, provisions the first super admin
     // so a Docker-only deployment never needs a repo checkout.
@@ -44,24 +52,16 @@ export async function register() {
         errorClass: error instanceof Error ? error.name : 'UnknownError',
       });
     }
-  }
 
-  // Auto-start GatewayManager on server start for non-Vercel environments (Docker, local).
-  // Persistent bots need reconnection after restart.
-  // On Vercel, the cron job at /api/agent/gateway handles this reliably instead.
-  // In local dev, opt-in via ENABLE_BOT_IN_DEV to avoid clobbering a shared bot binding.
-  const isDev = process.env.NODE_ENV !== 'production';
-  if (
-    process.env.NEXT_RUNTIME === 'nodejs' &&
-    process.env.DATABASE_URL &&
-    !process.env.VERCEL_ENV &&
-    (!isDev || process.env.ENABLE_BOT_IN_DEV === '1')
-  ) {
-    const { GatewayService } = await import('@/server/services/gateway');
-    const service = new GatewayService();
-    service.ensureRunning().catch((err) => {
-      console.error('[Instrumentation] Failed to auto-start GatewayManager:', err);
-    });
+    try {
+      await (
+        await import('@/server/enterprise/bootstrap/workersBootstrap')
+      ).startEnterpriseWorkers();
+    } catch (error) {
+      console.error('[Instrumentation] enterprise workers bootstrap failed (non-blocking)', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
   }
 
   // Note: messenger system bot connections (Discord/Telegram) are managed

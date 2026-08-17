@@ -302,7 +302,7 @@ export const agentEvalRouter = router({
         : await ctx.fileService.getFileContent(input.pathname);
 
       try {
-        const result = parseDataset(content, {
+        const result = await parseDataset(content, {
           filename: resolvedFilename,
           format: format === 'auto' ? undefined : format,
           preview: 50,
@@ -351,7 +351,7 @@ export const agentEvalRouter = router({
 
       let parsed;
       try {
-        parsed = parseDataset(content, {
+        parsed = await parseDataset(content, {
           filename: resolvedFilename,
           format: format === 'auto' ? undefined : format,
         });

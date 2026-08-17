@@ -1,6 +1,5 @@
 import debug from 'debug';
 import mime from 'mime';
-import sharp from 'sharp';
 
 import type { FileService } from '@/server/services/file';
 
@@ -53,6 +52,7 @@ async function compressImage(
   mimeType: string,
 ): Promise<{ buffer: Buffer; mimeType: string }> {
   try {
+    const { default: sharp } = await import('sharp');
     const metadata = await sharp(buffer).metadata();
     const { width = 0, height = 0 } = metadata;
 

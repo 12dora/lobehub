@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { AgentEvalRunModel } from '@/database/models/agentEval';
 import { getServerDB } from '@/database/server';
+import { withWorkflowsModule } from '@/server/enterprise/guards/webapiModuleGate';
 import { AgentEvalRunService } from '@/server/services/agentEvalRun';
 import {
   AgentEvalRunWorkflow,
@@ -22,7 +23,7 @@ const log = debug('lobe-server:workflows:on-thread-complete');
  *
  * This is a plain Next.js route handler (NOT an Upstash workflow / serve()).
  */
-export async function POST(req: Request) {
+async function handler(req: Request) {
   try {
     const body = (await req.json()) as OnThreadCompletePayload;
     const {
@@ -112,3 +113,5 @@ export async function POST(req: Request) {
     );
   }
 }
+
+export const POST = withWorkflowsModule(handler);

@@ -8,6 +8,7 @@ import {
   getServerFeatureFlagsValue,
   mapFeatureFlagsEnvToState,
 } from '@/config/featureFlags';
+import { applyDisabledModuleFeatureFlagOverrides } from '@/server/enterprise/services/moduleSettings/featureFlagOverrides';
 import type {
   RuntimeConfigDomain,
   RuntimeConfigProvider,
@@ -88,7 +89,7 @@ const getMergedFeatureFlags = async (userId?: string) => {
  * @param userId - Optional user ID for user-specific feature flag evaluation
  */
 export const getServerFeatureFlagsFromRuntimeConfig = async (userId?: string) => {
-  const flags = await getMergedFeatureFlags(userId);
+  const flags = await applyDisabledModuleFeatureFlagOverrides(await getMergedFeatureFlags(userId));
 
   debug('Using runtime feature flags for user: %s', userId || 'anonymous');
 

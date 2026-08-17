@@ -6,6 +6,7 @@ import { chunk } from 'es-toolkit/compat';
 import { AgentEvalRunModel, AgentEvalTestCaseModel } from '@/database/models/agentEval';
 import { getServerDB } from '@/database/server';
 import { qstashClient } from '@/libs/qstash';
+import { withWorkflowsModule } from '@/server/enterprise/guards/webapiModuleGate';
 import {
   AgentEvalRunWorkflow,
   type PaginateTestCasesPayload,
@@ -20,7 +21,7 @@ const log = debug('lobe-server:workflows:paginate-test-cases');
 /**
  * Paginate test cases workflow - handles pagination, filtering, and fanout
  */
-export const { POST } = serve<PaginateTestCasesPayload>(
+const { POST: handler } = serve<PaginateTestCasesPayload>(
   withOtelMetricsForUpstashWorkflows(async (context) => {
     const { runId, cursor, testCaseIds: payloadTestCaseIds, userId } = context.requestPayload ?? {};
 
@@ -171,3 +172,4 @@ export const { POST } = serve<PaginateTestCasesPayload>(
     qstashClient,
   },
 );
+export const POST = withWorkflowsModule(handler);

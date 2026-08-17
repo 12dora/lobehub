@@ -6,6 +6,10 @@
  * - Pre-instantiated runtimes (e.g., WebBrowsing - no per-request context needed)
  * - Per-request runtimes (e.g., CloudSandbox - needs topicId, userId)
  */
+import { MessageToolIdentifier } from '@lobechat/builtin-tool-message';
+
+import { assertToolModuleEnabled } from '@/server/enterprise/guards/toolModuleGate';
+
 import type { ToolExecutionContext } from '../types';
 import { activatorRuntime } from './activator';
 import { agentBuilderRuntime } from './agentBuilder';
@@ -25,7 +29,6 @@ import { lobeAgentRuntime } from './lobeAgent';
 import { lobeDeliveryCheckerRuntime } from './lobeDeliveryChecker';
 import { localSystemRuntime } from './localSystem';
 import { memoryRuntime } from './memory';
-import { messageRuntime } from './message';
 import { notebookRuntime } from './notebook';
 import { pageAgentRuntime } from './pageAgent';
 import { remoteDeviceRuntime } from './remoteDevice';
@@ -40,6 +43,12 @@ import { userInteractionRuntime } from './userInteraction';
 import { verifyResultRuntime } from './verifyResult';
 import { webBrowsingRuntime } from './webBrowsing';
 import { webOnboardingRuntime } from './webOnboarding';
+
+/** Lazy: `./message` pulls discord.js / telegram / slack. Do not static-import it. */
+const messageRuntime: ServerRuntimeRegistration = {
+  factory: async (context) => (await import('./message')).messageRuntime.factory(context),
+  identifier: MessageToolIdentifier,
+};
 
 /**
  * Registry of server runtime factories by identifier
@@ -99,10 +108,11 @@ registerRuntimes([
  * @param context - Execution context (required for per-request runtimes)
  * @returns Runtime instance (may be a Promise for async factories)
  */
-export const getServerRuntime = (
+export const getServerRuntime = async (
   identifier: string,
   context: ToolExecutionContext,
-): any | Promise<any> => {
+): Promise<any> => {
+  await assertToolModuleEnabled(identifier);
   const factory = serverRuntimeFactories.get(identifier);
   return factory?.(context);
 };

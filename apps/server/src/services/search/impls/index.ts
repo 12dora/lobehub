@@ -1,14 +1,5 @@
-import { AnspireImpl } from './anspire';
-import { BochaImpl } from './bocha';
-import { BraveImpl } from './brave';
-import { ExaImpl } from './exa';
-import { FirecrawlImpl } from './firecrawl';
-import { GoogleImpl } from './google';
-import { JinaImpl } from './jina';
-import { KagiImpl } from './kagi';
-import { Search1APIImpl } from './search1api';
-import { SearXNGImpl } from './searxng';
-import { TavilyImpl } from './tavily';
+import { lazySearchImpl } from '@/server/enterprise/services/search/lazySearchImpl';
+
 import { type SearchServiceImpl } from './type';
 
 /**
@@ -36,47 +27,47 @@ export const createSearchServiceImpl = (
 ): SearchServiceImpl => {
   switch (type) {
     case SearchImplType.Anspire: {
-      return new AnspireImpl();
+      return lazySearchImpl(() => import('./anspire'));
     }
 
     case SearchImplType.Bocha: {
-      return new BochaImpl();
+      return lazySearchImpl(() => import('./bocha'));
     }
 
     case SearchImplType.Brave: {
-      return new BraveImpl();
+      return lazySearchImpl(() => import('./brave'));
     }
 
     case SearchImplType.Exa: {
-      return new ExaImpl();
+      return lazySearchImpl(() => import('./exa'));
     }
 
     case SearchImplType.Firecrawl: {
-      return new FirecrawlImpl();
+      return lazySearchImpl(() => import('./firecrawl'));
     }
 
     case SearchImplType.Google: {
-      return new GoogleImpl();
+      return lazySearchImpl(() => import('./google'));
     }
 
     case SearchImplType.Jina: {
-      return new JinaImpl();
+      return lazySearchImpl(() => import('./jina'));
     }
 
     case SearchImplType.Kagi: {
-      return new KagiImpl();
+      return lazySearchImpl(() => import('./kagi'));
     }
 
     case SearchImplType.SearXNG: {
-      return new SearXNGImpl();
+      return lazySearchImpl(() => import('./searxng'));
     }
 
     case SearchImplType.Tavily: {
-      return new TavilyImpl();
+      return lazySearchImpl(() => import('./tavily'));
     }
 
     default: {
-      return new Search1APIImpl();
+      return lazySearchImpl(() => import('./search1api'), { useAutoSearchEngineSelection: true });
     }
   }
 };

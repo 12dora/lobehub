@@ -59,7 +59,7 @@ describe('S3', () => {
   });
 
   describe('constructor', () => {
-    it('should initialize S3 client with correct configuration', () => {
+    it('should initialize S3 client with correct configuration', async () => {
       const testFileEnv = {
         S3_ACCESS_KEY_ID: 'test-access-key',
         S3_BUCKET: 'test-bucket',
@@ -71,7 +71,7 @@ describe('S3', () => {
         S3_SET_ACL: true,
       };
 
-      new S3(
+      const s3 = new S3(
         testFileEnv.S3_ACCESS_KEY_ID,
         testFileEnv.S3_SECRET_ACCESS_KEY,
         testFileEnv.S3_ENDPOINT,
@@ -82,6 +82,8 @@ describe('S3', () => {
           setAcl: testFileEnv.S3_SET_ACL,
         },
       );
+      expect(S3Client).not.toHaveBeenCalled();
+      await s3.deleteFile('probe');
 
       expect(S3Client).toHaveBeenCalledWith({
         credentials: {
@@ -96,7 +98,7 @@ describe('S3', () => {
       });
     });
 
-    it('should use default region when S3_REGION is not set', () => {
+    it('should use default region when S3_REGION is not set', async () => {
       const testEnvWithoutRegion = {
         S3_ACCESS_KEY_ID: 'test-access-key',
         S3_BUCKET: 'test-bucket',
@@ -108,7 +110,7 @@ describe('S3', () => {
         S3_SET_ACL: true,
       };
 
-      new S3(
+      const s3 = new S3(
         testEnvWithoutRegion.S3_ACCESS_KEY_ID,
         testEnvWithoutRegion.S3_SECRET_ACCESS_KEY,
         testEnvWithoutRegion.S3_ENDPOINT,
@@ -119,6 +121,7 @@ describe('S3', () => {
           setAcl: testEnvWithoutRegion.S3_SET_ACL,
         },
       );
+      await s3.deleteFile('probe');
 
       expect(S3Client).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -148,8 +151,10 @@ describe('FileS3', () => {
   });
 
   describe('constructor', () => {
-    it('should initialize S3 client with correct configuration', () => {
-      new FileS3();
+    it('should initialize S3 client with correct configuration', async () => {
+      const s3 = new FileS3();
+      expect(S3Client).not.toHaveBeenCalled();
+      await s3.deleteFile('probe');
 
       expect(S3Client).toHaveBeenCalledWith({
         credentials: {
@@ -164,7 +169,7 @@ describe('FileS3', () => {
       });
     });
 
-    it('should use default region when S3_REGION is not set', () => {
+    it('should use default region when S3_REGION is not set', async () => {
       vi.doMock('@/envs/file', () => ({
         fileEnv: {
           S3_ACCESS_KEY_ID: 'test-access-key',
@@ -178,7 +183,8 @@ describe('FileS3', () => {
         },
       }));
 
-      new FileS3();
+      const s3 = new FileS3();
+      await s3.deleteFile('probe');
 
       expect(S3Client).toHaveBeenCalledWith(
         expect.objectContaining({

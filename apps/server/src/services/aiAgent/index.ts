@@ -123,8 +123,10 @@ import {
 } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { resolveConnectorGovernance } from '@/server/enterprise/services/connectorGovernance/resolve';
 import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
+import type { UserSettingsReadMemo } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import {
   getEffectiveMemorySettings,
+  getRawUserSettings,
   resolveEffectiveUserInterventionConfig,
 } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import {
@@ -2438,9 +2440,12 @@ export class AiAgentService {
     // forwarded into op metadata for the per-step context engine.
     let operationAgentGroup: AgentGroupConfig | undefined;
     try {
+      // One-message memo: memory + timezone share a single getUserSettings().
+      const settingsMemo: UserSettingsReadMemo = {};
       // M05: memory.enabled through effective resolver (platform lock/default honored)
       const memorySettings = await getEffectiveMemorySettings({
         db: this.db,
+        memo: settingsMemo,
         scope: this.workspaceId ? 'workspace' : 'personal',
         userId: this.userId,
       });
@@ -2448,8 +2453,11 @@ export class AiAgentService {
       globalMemoryEnabled = agentMemoryEnabled ?? memorySettings?.enabled !== false;
 
       // Timezone is not platform-policy managed — keep sparse legacy general.timezone
-      const userModel = new UserModel(this.db, this.userId);
-      const settings = await userModel.getUserSettings();
+      const settings = await getRawUserSettings({
+        db: this.db,
+        memo: settingsMemo,
+        userId: this.userId,
+      });
       const generalSettings = settings?.general as { timezone?: string } | undefined;
       userTimezone = generalSettings?.timezone;
     } catch (error) {

@@ -4,6 +4,7 @@ import debug from 'debug';
 
 import { getServerDB } from '@/database/server';
 import { qstashClient } from '@/libs/qstash';
+import { withWorkflowsModule } from '@/server/enterprise/guards/webapiModuleGate';
 import { AgentEvalRunService } from '@/server/services/agentEvalRun';
 import {
   AgentEvalRunWorkflow,
@@ -18,7 +19,7 @@ const log = debug('lobe-server:workflows:run-agent-trajectory');
  * For k=1: directly executes agent via completionWebhook
  * For k>1: creates K threads and triggers K run-thread-trajectory sub-workflows
  */
-export const { POST } = serve<RunAgentTrajectoryPayload>(
+const { POST: handler } = serve<RunAgentTrajectoryPayload>(
   withOtelMetricsForUpstashWorkflows(async (context) => {
     const { runId, testCaseId, userId } = context.requestPayload ?? {};
 
@@ -120,3 +121,4 @@ export const { POST } = serve<RunAgentTrajectoryPayload>(
     qstashClient,
   },
 );
+export const POST = withWorkflowsModule(handler);

@@ -1,15 +1,22 @@
 import type { Context } from 'hono';
 
-import { GatewayService } from '@/server/services/gateway';
+import { isBootModuleEnabled } from '@/server/enterprise/services/moduleSettings';
 
 /**
  * Non-Vercel `ensureRunning` entry point — used by the standalone server
  * launcher (`scripts/serverLauncher/startServer.js`). Body: `{ restart?: boolean }`.
  *
  * Auth: `bearerSecretAuth(KEY_VAULTS_SECRET)` on the route.
+ * When the `bots` module is off we return HTTP 200 `{ ok:false, disabled:true }`
+ * so startServer.js's 10× poller treats it as a cheap success, not a retry.
  */
 export async function gatewayStart(c: Context): Promise<Response> {
+  if (!isBootModuleEnabled('bots')) {
+    return c.json({ disabled: true, ok: false });
+  }
+
   const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const { GatewayService } = await import('@/server/services/gateway');
   const service = new GatewayService();
 
   try {

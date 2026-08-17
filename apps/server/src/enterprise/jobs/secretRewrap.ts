@@ -50,8 +50,9 @@ export const ensurePlatformSecretRewrapWorkerStarted = (): void => {
     namespace: 'secret-rewrap',
     run: async () => {
       const secrets = PlatformSecretService.tryFromEnv(process.env);
-      if (!secrets || secrets.keyProviderId !== 'vault') return;
-      await runPlatformSecretRewrapBatches(await getServerDB(), secrets);
+      if (!secrets || secrets.keyProviderId !== 'vault') return { didWork: false };
+      const processed = await runPlatformSecretRewrapBatches(await getServerDB(), secrets);
+      return { didWork: processed > 0 };
     },
   });
 };

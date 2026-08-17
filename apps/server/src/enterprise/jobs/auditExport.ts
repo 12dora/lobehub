@@ -56,10 +56,13 @@ export const ensurePlatformAuditExportWorkerStarted = (): void => {
     namespace: 'audit-export',
     run: async () => {
       // Re-check flag each batch so closing the flag stops work without restart.
-      if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_ADMIN) return;
+      if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_ADMIN) {
+        return { didWork: false };
+      }
       // Lazy DB adaptor: never acquire a connection while the feature is closed.
       const { getServerDB } = await import('@/database/core/db-adaptor');
-      await runPlatformAuditExportBatches(await getServerDB());
+      const processed = await runPlatformAuditExportBatches(await getServerDB());
+      return { didWork: processed > 0 };
     },
   });
 };

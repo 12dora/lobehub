@@ -2,10 +2,10 @@ import { detectFormat } from './detect';
 import { parseCSV, parseJSON, parseJSONL, parseXLSX } from './parsers';
 import type { ParseOptions, ParseResult } from './types';
 
-export function parseDataset(
+export async function parseDataset(
   input: Buffer | string | Uint8Array,
   options?: ParseOptions & { filename?: string },
-): ParseResult {
+): Promise<ParseResult> {
   const format =
     options?.format && options.format !== 'auto'
       ? options.format
@@ -22,7 +22,7 @@ export function parseDataset(
         throw new Error('XLSX format requires binary input (Buffer or Uint8Array)');
       }
       const data = input instanceof Uint8Array ? input : new Uint8Array(input);
-      return parseXLSX(data, options);
+      return await parseXLSX(data, options);
     }
 
     case 'json': {

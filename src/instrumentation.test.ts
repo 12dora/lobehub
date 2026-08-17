@@ -11,11 +11,21 @@ const mocks = vi.hoisted(() => ({
   ensurePlatformInstanceHeartbeatStarted: vi.fn().mockResolvedValue(true),
   ensureOperationalMetricsRuntimeStarted: vi.fn().mockResolvedValue(true),
   gatewayEnsureRunning: vi.fn().mockResolvedValue(undefined),
+  initBootModules: vi.fn().mockResolvedValue({}),
+  isBootModuleEnabled: vi.fn().mockReturnValue(true),
   registerTelemetry: vi.fn(),
+  startEnterpriseWorkers: vi.fn().mockResolvedValue(undefined),
   /** Set to simulate the startup-bootstrap module failing to evaluate at import time. */
   startupModuleLoadError: { value: null as Error | null },
 }));
 
+vi.mock('@/server/enterprise/services/moduleSettings', () => ({
+  initBootModules: mocks.initBootModules,
+  isBootModuleEnabled: (id: string) => mocks.isBootModuleEnabled(id),
+}));
+vi.mock('@/server/enterprise/bootstrap/workersBootstrap', () => ({
+  startEnterpriseWorkers: mocks.startEnterpriseWorkers,
+}));
 vi.mock('@/server/enterprise/bootstrap/startupBootstrap', () => ({
   // A getter so a test can make the import/destructure boundary itself fail, the way
   // a module-evaluation error in `startupBootstrap` (or its env-backed imports) would.
@@ -52,6 +62,7 @@ beforeEach(() => {
   vi.stubEnv('DATABASE_URL', '');
   vi.stubEnv('VERCEL_ENV', '');
   vi.stubEnv('ENABLE_BOT_IN_DEV', '');
+  mocks.isBootModuleEnabled.mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -67,14 +78,21 @@ describe('instrumentation platform instance bootstrap', () => {
 
     await register();
 
+    expect(mocks.initBootModules).toHaveBeenCalledTimes(1);
     expect(mocks.bootstrapPlatformAdminRuntime).toHaveBeenCalledTimes(1);
     expect(mocks.bootstrapIdentityProviderRuntime).toHaveBeenCalledTimes(1);
     expect(mocks.ensurePlatformInstanceHeartbeatStarted).toHaveBeenCalledTimes(1);
-    // No DATABASE_URL → the gateway branch must stay untouched.
+    expect(mocks.startEnterpriseWorkers).toHaveBeenCalledTimes(1);
+    expect(mocks.initBootModules.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.bootstrapPlatformAdminRuntime.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.ensurePlatformInstanceHeartbeatStarted.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.startEnterpriseWorkers.mock.invocationCallOrder[0]!,
+    );
     expect(mocks.gatewayEnsureRunning).not.toHaveBeenCalled();
   });
 
-  it('auto-starts the agent gateway when a database is configured', async () => {
+  it('does not start GatewayService itself — the worker registry owns that seam', async () => {
     vi.stubEnv('NEXT_RUNTIME', 'nodejs');
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('ENABLE_TELEMETRY', '');
@@ -82,7 +100,8 @@ describe('instrumentation platform instance bootstrap', () => {
 
     await register();
 
-    expect(mocks.gatewayEnsureRunning).toHaveBeenCalledTimes(1);
+    expect(mocks.startEnterpriseWorkers).toHaveBeenCalledTimes(1);
+    expect(mocks.gatewayEnsureRunning).not.toHaveBeenCalled();
   });
 
   it('keeps booting when the platform admin bootstrap rejects', async () => {

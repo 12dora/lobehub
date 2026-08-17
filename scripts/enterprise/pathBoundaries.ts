@@ -658,6 +658,42 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
       'Single runtime-construction seam injects the ChatGPT Web impersonated transport (chatgpt.com 403s any plain-Node TLS fingerprint); server-only, never bundled into model-runtime',
   },
   {
+    file: 'apps/server/src/modules/ModelRuntime/index.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'G2',
+    reason: 'Boot-module gate for network-proxy egress binding at runtime construction',
+  },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.ts',
+    importSpecifier: '@/server/enterprise/services/networkProxy/engine/bindEgress',
+    owner: 'G2',
+    reason: 'Binds G4 egress ALS only when the networkProxy module is on',
+  },
+  {
+    file: 'src/server/agent-hono/index.ts',
+    importSpecifier: '@/server/enterprise/guards/webapiModuleGate',
+    owner: 'G2',
+    reason: 'Hot path-prefix gate for optional platform modules on /api/agent/*',
+  },
+  {
+    file: 'src/server/agent-hono/handlers/gatewayStart.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'G2',
+    reason: 'Cheap bots-off reply for startServer.js gateway poller',
+  },
+  {
+    file: 'src/server/workflows-hono/index.ts',
+    importSpecifier: '@/server/enterprise/guards/webapiModuleGate',
+    owner: 'G2',
+    reason: 'Hot path-prefix gate for agentSignal / memory / workflows mounts',
+  },
+  {
+    file: 'src/app/(backend)/api/workflows/[[...route]]/route.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'G2',
+    reason: 'Early-exit when the workflows module is disabled',
+  },
+  {
     file: 'apps/server/src/services/oauthDeviceFlow/providers/githubCopilot.ts',
     importSpecifier: '@/server/enterprise/services/chatgptWeb/oauthService',
     owner: 'M13',
@@ -1125,6 +1161,30 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     importSpecifier: '@/server/enterprise/services/platformObservability/operationalMetricsRuntime',
     owner: 'M11',
     reason: 'Mocks identity/observability bootstrap seam for instrumentation/auth tests',
+  },
+  {
+    file: 'src/instrumentation.test.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'G2',
+    reason: 'Mocks boot-module init / bots gate for instrumentation register()',
+  },
+  {
+    file: 'src/instrumentation.test.ts',
+    importSpecifier: '@/server/enterprise/bootstrap/workersBootstrap',
+    owner: 'G2',
+    reason: 'Mocks the enterprise worker registry so register() stays cheap',
+  },
+  {
+    file: 'src/server/agent-hono/handlers/__tests__/gatewayStart.test.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'G2',
+    reason: 'Mocks the bots module gate on the gateway start handler',
+  },
+  {
+    file: 'src/server/agent-hono/__tests__/gatewayStart.app.test.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'G2',
+    reason: 'Full Hono-app test of the bots-off gateway/start 200 reply',
   },
   {
     file: 'src/libs/better-auth/sso/platformDingTalkProvider.route.test.ts',

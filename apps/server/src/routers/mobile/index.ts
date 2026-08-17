@@ -2,63 +2,47 @@
  * This file contains the root router of Lobe Chat tRPC-backend for Mobile App
  * Only includes routers that are actually used by the mobile client
  */
-import { mobileSubscriptionRouter } from '@/business/server/mobile-routers/mobileSubscription';
 import { publicProcedure, router } from '@/libs/trpc/lambda';
-
-import { agentRouter } from '../lambda/agent';
-import { agentSkillsRouter } from '../lambda/agentSkills';
-import { aiAgentRouter } from '../lambda/aiAgent';
-import { aiChatRouter } from '../lambda/aiChat';
-import { aiModelRouter } from '../lambda/aiModel';
-import { aiProviderRouter } from '../lambda/aiProvider';
-import { briefRouter } from '../lambda/brief';
-import { chunkRouter } from '../lambda/chunk';
-import { composioRouter } from '../lambda/composio';
-import { configRouter } from '../lambda/config';
-import { deviceRouter } from '../lambda/device';
-import { documentRouter } from '../lambda/document';
-import { fileRouter } from '../lambda/file';
-import { homeRouter } from '../lambda/home';
-import { knowledgeBaseRouter } from '../lambda/knowledgeBase';
-import { marketRouter } from '../lambda/market';
-import { messageRouter } from '../lambda/message';
-import { pluginRouter } from '../lambda/plugin';
-import { pushTokenRouter } from '../lambda/pushToken';
-import { sessionRouter } from '../lambda/session';
-import { sessionGroupRouter } from '../lambda/sessionGroup';
-import { taskRouter } from '../lambda/task';
-import { taskTemplateRouter } from '../lambda/taskTemplate';
-import { topicRouter } from '../lambda/topic';
-import { uploadRouter } from '../lambda/upload';
-import { userRouter } from '../lambda/user';
+import { lazyRouter } from '@/server/enterprise/routers/lazyRouter';
+import { moduleRouter } from '@/server/enterprise/routers/moduleRouter';
 
 export const mobileRouter = router({
-  agent: agentRouter,
-  agentSkills: agentSkillsRouter,
-  aiAgent: aiAgentRouter,
-  aiChat: aiChatRouter,
-  brief: briefRouter,
-  aiModel: aiModelRouter,
-  aiProvider: aiProviderRouter,
-  chunk: chunkRouter,
-  composio: composioRouter,
-  config: configRouter,
-  device: deviceRouter,
-  document: documentRouter,
-  file: fileRouter,
+  agent: lazyRouter(() => import('../lambda/agent').then((m) => m.agentRouter)),
+  agentSkills: lazyRouter(() => import('../lambda/agentSkills').then((m) => m.agentSkillsRouter)),
+  aiAgent: lazyRouter(() => import('../lambda/aiAgent').then((m) => m.aiAgentRouter)),
+  aiChat: lazyRouter(() => import('../lambda/aiChat').then((m) => m.aiChatRouter)),
+  brief: lazyRouter(() => import('../lambda/brief').then((m) => m.briefRouter)),
+  aiModel: lazyRouter(() => import('../lambda/aiModel').then((m) => m.aiModelRouter)),
+  aiProvider: lazyRouter(() => import('../lambda/aiProvider').then((m) => m.aiProviderRouter)),
+  chunk: moduleRouter('knowledgeBase', () => import('../lambda/chunk').then((m) => m.chunkRouter)),
+  composio: lazyRouter(() => import('../lambda/composio').then((m) => m.composioRouter)),
+  config: lazyRouter(() => import('../lambda/config').then((m) => m.configRouter)),
+  device: lazyRouter(() => import('../lambda/device').then((m) => m.deviceRouter)),
+  document: lazyRouter(() => import('../lambda/document').then((m) => m.documentRouter)),
+  file: lazyRouter(() => import('../lambda/file').then((m) => m.fileRouter)),
   healthcheck: publicProcedure.query(() => "i'm live!"),
-  home: homeRouter,
-  knowledgeBase: knowledgeBaseRouter,
-  market: marketRouter,
-  message: messageRouter,
-  plugin: pluginRouter,
-  pushToken: pushTokenRouter,
-  session: sessionRouter,
-  sessionGroup: sessionGroupRouter,
-  subscription: mobileSubscriptionRouter,
-  task: taskRouter,
-  taskTemplate: taskTemplateRouter,
-  topic: topicRouter,
-  upload: uploadRouter,
-  user: userRouter,
+  home: lazyRouter(() => import('../lambda/home').then((m) => m.homeRouter)),
+  knowledgeBase: moduleRouter('knowledgeBase', () =>
+    import('../lambda/knowledgeBase').then((m) => m.knowledgeBaseRouter),
+  ),
+  market: moduleRouter('market', () => import('../lambda/market').then((m) => m.marketRouter)),
+  message: lazyRouter(() => import('../lambda/message').then((m) => m.messageRouter)),
+  plugin: lazyRouter(() => import('../lambda/plugin').then((m) => m.pluginRouter)),
+  pushToken: lazyRouter(() => import('../lambda/pushToken').then((m) => m.pushTokenRouter)),
+  session: lazyRouter(() => import('../lambda/session').then((m) => m.sessionRouter)),
+  sessionGroup: lazyRouter(() =>
+    import('../lambda/sessionGroup').then((m) => m.sessionGroupRouter),
+  ),
+  subscription: lazyRouter(() =>
+    import('@/business/server/mobile-routers/mobileSubscription').then(
+      (m) => m.mobileSubscriptionRouter,
+    ),
+  ),
+  task: lazyRouter(() => import('../lambda/task').then((m) => m.taskRouter)),
+  taskTemplate: moduleRouter('taskTemplates', () =>
+    import('../lambda/taskTemplate').then((m) => m.taskTemplateRouter),
+  ),
+  topic: lazyRouter(() => import('../lambda/topic').then((m) => m.topicRouter)),
+  upload: lazyRouter(() => import('../lambda/upload').then((m) => m.uploadRouter)),
+  user: lazyRouter(() => import('../lambda/user').then((m) => m.userRouter)),
 });

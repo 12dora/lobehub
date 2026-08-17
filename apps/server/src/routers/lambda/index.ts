@@ -1,172 +1,154 @@
 /**
  * This file contains the root router of Lobe Chat tRPC-backend
  */
-import { accountDeletionRouter } from '@/business/server/lambda-routers/accountDeletion';
-import { pageShareRouter } from '@/business/server/lambda-routers/pageShare';
-import { referralRouter } from '@/business/server/lambda-routers/referral';
-import { spendRouter } from '@/business/server/lambda-routers/spend';
-import { storageOverageRouter } from '@/business/server/lambda-routers/storageOverage';
-import { subscriptionRouter } from '@/business/server/lambda-routers/subscription';
-import { taskTemplateRouter } from '@/business/server/lambda-routers/taskTemplate';
-import { topUpRouter } from '@/business/server/lambda-routers/topUp';
-import { workspaceRouter } from '@/business/server/lambda-routers/workspace';
-import { workspaceAuditLogRouter } from '@/business/server/lambda-routers/workspaceAuditLog';
-import { workspaceCreditsRouter } from '@/business/server/lambda-routers/workspaceCredits';
-import { workspaceCredsRouter } from '@/business/server/lambda-routers/workspaceCreds';
-import { workspaceDataRouter } from '@/business/server/lambda-routers/workspaceData';
-import { workspaceMemberRouter } from '@/business/server/lambda-routers/workspaceMember';
-import { workspaceUsageRouter } from '@/business/server/lambda-routers/workspaceUsage';
 import { publicProcedure, router } from '@/libs/trpc/lambda';
 import { adminRouter } from '@/server/enterprise/routers/admin';
+import { lazyRouter } from '@/server/enterprise/routers/lazyRouter';
+import { moduleRouter } from '@/server/enterprise/routers/moduleRouter';
 import { platformRouter } from '@/server/enterprise/routers/platform';
 
-import { agentRouter } from './agent';
-import { agentBotProviderRouter } from './agentBotProvider';
-import { agentDocumentRouter } from './agentDocument';
-import { agentEvalRouter } from './agentEval';
-import { agentEvalExternalRouter } from './agentEvalExternal';
-import { agentGroupRouter } from './agentGroup';
-import { agentNotifyRouter } from './agentNotify';
-import { agentSignalRouter } from './agentSignal';
-import { agentSkillsRouter } from './agentSkills';
-import { aiAgentRouter } from './aiAgent';
-import { aiChatRouter } from './aiChat';
-import { aiModelRouter } from './aiModel';
-import { aiProviderRouter } from './aiProvider';
-import { apiKeyRouter } from './apiKey';
-import { asrRouter } from './asr';
-import { botMessageRouter } from './botMessage';
-import { briefRouter } from './brief';
-import { changelogRouter } from './changelog';
-import { chunkRouter } from './chunk';
-import { comfyuiRouter } from './comfyui';
-import { composioRouter } from './composio';
 import { configRouter } from './config';
-import { connectorRouter } from './connector';
-import { deviceRouter } from './device';
-import { documentRouter } from './document';
-import { exporterRouter } from './exporter';
-import { fileRouter } from './file';
-import { followUpActionRouter } from './followUpAction';
-import { generationRouter } from './generation';
-import { generationBatchRouter } from './generationBatch';
-import { generationTopicRouter } from './generationTopic';
-import { homeRouter } from './home';
-import { imageRouter } from './image';
-import { importerRouter } from './importer';
-import { klavisRouter } from './klavis';
-import { knowledgeRouter } from './knowledge';
-import { knowledgeBaseRouter } from './knowledgeBase';
-import { llmGenerationTracingRouter } from './llmGenerationTracing';
-import { marketRouter } from './market';
-import { messageRouter } from './message';
-import { messengerRouter } from './messenger';
-import { notebookRouter } from './notebook';
-import { notificationRouter } from './notification';
-import { oauthDeviceFlowRouter } from './oauthDeviceFlow';
-import { pluginRouter } from './plugin';
-import { pushTokenRouter } from './pushToken';
-import { ragEvalRouter } from './ragEval';
-import { recentRouter } from './recent';
-import { searchRouter } from './search';
-import { sessionRouter } from './session';
-import { sessionGroupRouter } from './sessionGroup';
-import { shareRouter } from './share';
-import { taskRouter } from './task';
-import { threadRouter } from './thread';
-import { topicRouter } from './topic';
-import { uploadRouter } from './upload';
-import { usageRouter } from './usage';
 import { userRouter } from './user';
-import { userMemoriesRouter } from './userMemories';
-import { userMemoryRouter } from './userMemory';
-import { verifyRouter } from './verify';
-import { videoRouter } from './video';
-import { webBrowsingRouter } from './webBrowsing';
 
 export const lambdaRouter = router({
   admin: adminRouter,
-  agent: agentRouter,
-  agentBotProvider: agentBotProviderRouter,
-  agentNotify: agentNotifyRouter,
-  botMessage: botMessageRouter,
-  agentDocument: agentDocumentRouter,
-  agentEval: agentEvalRouter,
-  agentEvalExternal: agentEvalExternalRouter,
-  agentSkills: agentSkillsRouter,
-  agentSignal: agentSignalRouter,
-  task: taskRouter,
-  changelog: changelogRouter,
-  brief: briefRouter,
-  aiAgent: aiAgentRouter,
-  aiChat: aiChatRouter,
-  aiModel: aiModelRouter,
-  aiProvider: aiProviderRouter,
-  apiKey: apiKeyRouter,
-  asr: asrRouter,
-  chunk: chunkRouter,
-  comfyui: comfyuiRouter,
+  agent: lazyRouter(() => import('./agent').then((m) => m.agentRouter)),
+  agentBotProvider: moduleRouter('bots', () =>
+    import('./agentBotProvider').then((m) => m.agentBotProviderRouter),
+  ),
+  agentNotify: lazyRouter(() => import('./agentNotify').then((m) => m.agentNotifyRouter)),
+  botMessage: moduleRouter('bots', () => import('./botMessage').then((m) => m.botMessageRouter)),
+  agentDocument: lazyRouter(() => import('./agentDocument').then((m) => m.agentDocumentRouter)),
+  agentEval: lazyRouter(() => import('./agentEval').then((m) => m.agentEvalRouter)),
+  agentEvalExternal: lazyRouter(() =>
+    import('./agentEvalExternal').then((m) => m.agentEvalExternalRouter),
+  ),
+  agentSkills: lazyRouter(() => import('./agentSkills').then((m) => m.agentSkillsRouter)),
+  agentSignal: moduleRouter('agentSignal', () =>
+    import('./agentSignal').then((m) => m.agentSignalRouter),
+  ),
+  task: lazyRouter(() => import('./task').then((m) => m.taskRouter)),
+  changelog: lazyRouter(() => import('./changelog').then((m) => m.changelogRouter)),
+  brief: lazyRouter(() => import('./brief').then((m) => m.briefRouter)),
+  aiAgent: lazyRouter(() => import('./aiAgent').then((m) => m.aiAgentRouter)),
+  aiChat: lazyRouter(() => import('./aiChat').then((m) => m.aiChatRouter)),
+  aiModel: lazyRouter(() => import('./aiModel').then((m) => m.aiModelRouter)),
+  aiProvider: lazyRouter(() => import('./aiProvider').then((m) => m.aiProviderRouter)),
+  apiKey: lazyRouter(() => import('./apiKey').then((m) => m.apiKeyRouter)),
+  asr: moduleRouter('speech', () => import('./asr').then((m) => m.asrRouter)),
+  chunk: moduleRouter('knowledgeBase', () => import('./chunk').then((m) => m.chunkRouter)),
+  comfyui: moduleRouter('imageGen', () => import('./comfyui').then((m) => m.comfyuiRouter)),
   config: configRouter,
-  connector: connectorRouter,
-  device: deviceRouter,
-  document: documentRouter,
-  exporter: exporterRouter,
-  file: fileRouter,
-  followUpAction: followUpActionRouter,
-  generation: generationRouter,
-  generationBatch: generationBatchRouter,
-  generationTopic: generationTopicRouter,
-  group: agentGroupRouter,
+  connector: lazyRouter(() => import('./connector').then((m) => m.connectorRouter)),
+  device: lazyRouter(() => import('./device').then((m) => m.deviceRouter)),
+  document: lazyRouter(() => import('./document').then((m) => m.documentRouter)),
+  exporter: lazyRouter(() => import('./exporter').then((m) => m.exporterRouter)),
+  file: lazyRouter(() => import('./file').then((m) => m.fileRouter)),
+  followUpAction: lazyRouter(() => import('./followUpAction').then((m) => m.followUpActionRouter)),
+  generation: moduleRouter('imageGen', () =>
+    import('./generation').then((m) => m.generationRouter),
+  ),
+  generationBatch: moduleRouter('imageGen', () =>
+    import('./generationBatch').then((m) => m.generationBatchRouter),
+  ),
+  generationTopic: moduleRouter('imageGen', () =>
+    import('./generationTopic').then((m) => m.generationTopicRouter),
+  ),
+  group: lazyRouter(() => import('./agentGroup').then((m) => m.agentGroupRouter)),
   healthcheck: publicProcedure.query(() => "i'm live!"),
-  home: homeRouter,
-  image: imageRouter,
-  importer: importerRouter,
-  composio: composioRouter,
+  home: lazyRouter(() => import('./home').then((m) => m.homeRouter)),
+  image: moduleRouter('imageGen', () => import('./image').then((m) => m.imageRouter)),
+  importer: lazyRouter(() => import('./importer').then((m) => m.importerRouter)),
+  composio: lazyRouter(() => import('./composio').then((m) => m.composioRouter)),
 
-  klavis: klavisRouter,
-  knowledge: knowledgeRouter,
-  knowledgeBase: knowledgeBaseRouter,
-  llmGenerationTracing: llmGenerationTracingRouter,
-  market: marketRouter,
-  message: messageRouter,
-  messenger: messengerRouter,
-  notebook: notebookRouter,
-  notification: notificationRouter,
-  oauthDeviceFlow: oauthDeviceFlowRouter,
+  klavis: lazyRouter(() => import('./klavis').then((m) => m.klavisRouter)),
+  knowledge: lazyRouter(() => import('./knowledge').then((m) => m.knowledgeRouter)),
+  knowledgeBase: moduleRouter('knowledgeBase', () =>
+    import('./knowledgeBase').then((m) => m.knowledgeBaseRouter),
+  ),
+  llmGenerationTracing: lazyRouter(() =>
+    import('./llmGenerationTracing').then((m) => m.llmGenerationTracingRouter),
+  ),
+  market: moduleRouter('market', () => import('./market').then((m) => m.marketRouter)),
+  message: lazyRouter(() => import('./message').then((m) => m.messageRouter)),
+  messenger: moduleRouter('bots', () => import('./messenger').then((m) => m.messengerRouter)),
+  notebook: lazyRouter(() => import('./notebook').then((m) => m.notebookRouter)),
+  notification: lazyRouter(() => import('./notification').then((m) => m.notificationRouter)),
+  oauthDeviceFlow: lazyRouter(() =>
+    import('./oauthDeviceFlow').then((m) => m.oauthDeviceFlowRouter),
+  ),
   platform: platformRouter,
-  plugin: pluginRouter,
-  pushToken: pushTokenRouter,
-  ragEval: ragEvalRouter,
-  recent: recentRouter,
-  search: searchRouter,
-  session: sessionRouter,
-  sessionGroup: sessionGroupRouter,
-  share: shareRouter,
-  thread: threadRouter,
-  topic: topicRouter,
-  upload: uploadRouter,
-  usage: usageRouter,
+  plugin: lazyRouter(() => import('./plugin').then((m) => m.pluginRouter)),
+  pushToken: lazyRouter(() => import('./pushToken').then((m) => m.pushTokenRouter)),
+  ragEval: moduleRouter('knowledgeBase', () => import('./ragEval').then((m) => m.ragEvalRouter)),
+  recent: lazyRouter(() => import('./recent').then((m) => m.recentRouter)),
+  search: lazyRouter(() => import('./search').then((m) => m.searchRouter)),
+  session: lazyRouter(() => import('./session').then((m) => m.sessionRouter)),
+  sessionGroup: lazyRouter(() => import('./sessionGroup').then((m) => m.sessionGroupRouter)),
+  share: lazyRouter(() => import('./share').then((m) => m.shareRouter)),
+  thread: lazyRouter(() => import('./thread').then((m) => m.threadRouter)),
+  topic: lazyRouter(() => import('./topic').then((m) => m.topicRouter)),
+  upload: lazyRouter(() => import('./upload').then((m) => m.uploadRouter)),
+  usage: lazyRouter(() => import('./usage').then((m) => m.usageRouter)),
   user: userRouter,
-  userMemories: userMemoriesRouter,
-  userMemory: userMemoryRouter,
-  verify: verifyRouter,
-  video: videoRouter,
-  webBrowsing: webBrowsingRouter,
-  workspace: workspaceRouter,
-  workspaceAuditLog: workspaceAuditLogRouter,
-  workspaceCreds: workspaceCredsRouter,
-  workspaceCredits: workspaceCreditsRouter,
-  workspaceData: workspaceDataRouter,
-  workspaceMember: workspaceMemberRouter,
-  workspaceUsage: workspaceUsageRouter,
-  accountDeletion: accountDeletionRouter,
-  pageShare: pageShareRouter,
-  referral: referralRouter,
-  spend: spendRouter,
-  storageOverage: storageOverageRouter,
-  subscription: subscriptionRouter,
-  taskTemplate: taskTemplateRouter,
-  topUp: topUpRouter,
+  userMemories: moduleRouter('memory', () =>
+    import('./userMemories').then((m) => m.userMemoriesRouter),
+  ),
+  userMemory: moduleRouter('memory', () => import('./userMemory').then((m) => m.userMemoryRouter)),
+  verify: lazyRouter(() => import('./verify').then((m) => m.verifyRouter)),
+  video: moduleRouter('imageGen', () => import('./video').then((m) => m.videoRouter)),
+  webBrowsing: moduleRouter('webSearch', () =>
+    import('./webBrowsing').then((m) => m.webBrowsingRouter),
+  ),
+  workspace: lazyRouter(() =>
+    import('@/business/server/lambda-routers/workspace').then((m) => m.workspaceRouter),
+  ),
+  workspaceAuditLog: lazyRouter(() =>
+    import('@/business/server/lambda-routers/workspaceAuditLog').then(
+      (m) => m.workspaceAuditLogRouter,
+    ),
+  ),
+  workspaceCreds: lazyRouter(() =>
+    import('@/business/server/lambda-routers/workspaceCreds').then((m) => m.workspaceCredsRouter),
+  ),
+  workspaceCredits: lazyRouter(() =>
+    import('@/business/server/lambda-routers/workspaceCredits').then(
+      (m) => m.workspaceCreditsRouter,
+    ),
+  ),
+  workspaceData: lazyRouter(() =>
+    import('@/business/server/lambda-routers/workspaceData').then((m) => m.workspaceDataRouter),
+  ),
+  workspaceMember: lazyRouter(() =>
+    import('@/business/server/lambda-routers/workspaceMember').then((m) => m.workspaceMemberRouter),
+  ),
+  workspaceUsage: lazyRouter(() =>
+    import('@/business/server/lambda-routers/workspaceUsage').then((m) => m.workspaceUsageRouter),
+  ),
+  accountDeletion: lazyRouter(() =>
+    import('@/business/server/lambda-routers/accountDeletion').then((m) => m.accountDeletionRouter),
+  ),
+  pageShare: lazyRouter(() =>
+    import('@/business/server/lambda-routers/pageShare').then((m) => m.pageShareRouter),
+  ),
+  referral: lazyRouter(() =>
+    import('@/business/server/lambda-routers/referral').then((m) => m.referralRouter),
+  ),
+  spend: lazyRouter(() =>
+    import('@/business/server/lambda-routers/spend').then((m) => m.spendRouter),
+  ),
+  storageOverage: lazyRouter(() =>
+    import('@/business/server/lambda-routers/storageOverage').then((m) => m.storageOverageRouter),
+  ),
+  subscription: lazyRouter(() =>
+    import('@/business/server/lambda-routers/subscription').then((m) => m.subscriptionRouter),
+  ),
+  taskTemplate: moduleRouter('taskTemplates', () =>
+    import('./taskTemplate').then((m) => m.taskTemplateRouter),
+  ),
+  topUp: lazyRouter(() =>
+    import('@/business/server/lambda-routers/topUp').then((m) => m.topUpRouter),
+  ),
 });
 
 export type LambdaRouter = typeof lambdaRouter;

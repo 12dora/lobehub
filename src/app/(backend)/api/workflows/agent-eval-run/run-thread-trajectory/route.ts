@@ -4,6 +4,7 @@ import debug from 'debug';
 
 import { getServerDB } from '@/database/server';
 import { qstashClient } from '@/libs/qstash';
+import { withWorkflowsModule } from '@/server/enterprise/guards/webapiModuleGate';
 import { AgentEvalRunService } from '@/server/services/agentEvalRun';
 import {
   AgentEvalRunWorkflow,
@@ -17,7 +18,7 @@ const log = debug('lobe-server:workflows:run-thread-trajectory');
  * Run thread trajectory workflow - executes a single agent runtime call within a thread (for pass@k).
  * Each thread is an independent execution of the same test case.
  */
-export const { POST } = serve<RunThreadTrajectoryPayload>(
+const { POST: handler } = serve<RunThreadTrajectoryPayload>(
   withOtelMetricsForUpstashWorkflows(async (context) => {
     const { runId, testCaseId, threadId, topicId, userId } = context.requestPayload ?? {};
 
@@ -106,3 +107,4 @@ export const { POST } = serve<RunThreadTrajectoryPayload>(
     qstashClient,
   },
 );
+export const POST = withWorkflowsModule(handler);

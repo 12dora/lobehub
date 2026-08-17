@@ -10,8 +10,9 @@ import { getServerDB } from '@/database/core/db-adaptor';
 import { ApiKeyModel } from '@/database/models/apiKey';
 import { authEnv, LOBE_CHAT_OIDC_AUTH_HEADER } from '@/envs/auth';
 import { extractTraceContext } from '@/libs/observability/traceparent';
-import { assertUserActive, isOIDCUserInactiveError } from '@/libs/oidc-provider/access-control';
+import { isOIDCUserInactiveError } from '@/libs/oidc-provider/access-control';
 import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
+import { assertUserActiveCached } from '@/libs/oidc-provider/userActiveCache';
 import { isApiKeyExpired, validateApiKeyFormat } from '@/utils/apiKey';
 
 // Create context logger namespace
@@ -94,7 +95,7 @@ const validateApiKeyAuth = async (
 
     if (isPlatformAdminSecurityOn()) {
       try {
-        await assertUserActive(db, apiKeyRecord.userId, { credentialIssuedAt });
+        await assertUserActiveCached(db, apiKeyRecord.userId, { credentialIssuedAt });
       } catch (error) {
         if (isOIDCUserInactiveError(error)) {
           log('API key user is banned/inactive; rejecting');
@@ -297,7 +298,7 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
         // allow a banned, deleted, or invalidated OIDC subject to keep using an
         // already-issued token.
         const db = await getServerDB();
-        await assertUserActive(db, userId, { credentialIssuedAt });
+        await assertUserActiveCached(db, userId, { credentialIssuedAt });
         log('OIDC authentication successful, userId: %s', userId);
 
         const authenticatedAt = extractOidcAuthenticatedAt(
@@ -355,7 +356,7 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
       if (securityOn) {
         const db = await getServerDB();
         try {
-          await assertUserActive(db, userId, {
+          await assertUserActiveCached(db, userId, {
             credentialIssuedAt: issuedAt,
             sessionId,
           });

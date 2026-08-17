@@ -5,6 +5,7 @@ import debug from 'debug';
 import { AgentEvalRunModel, AgentEvalRunTopicModel } from '@/database/models/agentEval';
 import { getServerDB } from '@/database/server';
 import { qstashClient } from '@/libs/qstash';
+import { withWorkflowsModule } from '@/server/enterprise/guards/webapiModuleGate';
 import { AgentEvalRunService } from '@/server/services/agentEvalRun';
 import { type FinalizeRunPayload } from '@/server/workflows/agentEvalRun';
 import { resolveAgentEvalRunWorkspace } from '@/server/workflows/agentEvalRun/utils';
@@ -22,7 +23,7 @@ const log = debug('lobe-server:workflows:finalize-run');
  * 3. Aggregate metrics across all RunTopics
  * 4. Update run status to 'completed'
  */
-export const { POST } = serve<FinalizeRunPayload>(
+const { POST: handler } = serve<FinalizeRunPayload>(
   withOtelMetricsForUpstashWorkflows(async (context) => {
     const { runId, userId } = context.requestPayload ?? {};
 
@@ -102,3 +103,4 @@ export const { POST } = serve<FinalizeRunPayload>(
     qstashClient,
   },
 );
+export const POST = withWorkflowsModule(handler);

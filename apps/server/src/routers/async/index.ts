@@ -1,18 +1,14 @@
 import { asyncRouter as router, publicProcedure } from '@/libs/trpc/async';
-
-import { documentRouter } from './document';
-import { fileRouter } from './file';
-import { imageRouter } from './image';
-import { ragEvalRouter } from './ragEval';
-import { videoRouter } from './video';
+import { lazyRouter } from '@/server/enterprise/routers/lazyRouter';
+import { moduleRouter } from '@/server/enterprise/routers/moduleRouter';
 
 export const asyncRouter = router({
-  document: documentRouter,
-  file: fileRouter,
+  document: lazyRouter(() => import('./document').then((m) => m.documentRouter)),
+  file: lazyRouter(() => import('./file').then((m) => m.fileRouter)),
   healthcheck: publicProcedure.query(() => "i'm live!"),
-  image: imageRouter,
-  ragEval: ragEvalRouter,
-  video: videoRouter,
+  image: moduleRouter('imageGen', () => import('./image').then((m) => m.imageRouter)),
+  ragEval: moduleRouter('knowledgeBase', () => import('./ragEval').then((m) => m.ragEvalRouter)),
+  video: moduleRouter('imageGen', () => import('./video').then((m) => m.videoRouter)),
 });
 
 export type AsyncRouter = typeof asyncRouter;

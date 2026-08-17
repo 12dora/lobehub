@@ -1,12 +1,4 @@
-import {
-  DeleteObjectCommand,
-  DeleteObjectsCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-  PutObjectCommand,
-  S3Client,
-} from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import type { S3Client } from '@aws-sdk/client-s3';
 import mime from 'mime';
 import { z } from 'zod';
 
@@ -35,13 +27,22 @@ export interface PreSignedUpload {
 }
 
 export class S3 {
-  private readonly client: S3Client;
+  private client?: S3Client;
 
   private readonly bucket: string;
 
   private readonly setAcl: boolean;
 
   private readonly previewUrlExpireIn: number;
+
+  private readonly clientOptions: {
+    credentials: { accessKeyId: string; secretAccessKey: string };
+    endpoint: string;
+    forcePathStyle?: boolean;
+    region: string;
+    requestChecksumCalculation: 'WHEN_REQUIRED';
+    responseChecksumValidation: 'WHEN_REQUIRED';
+  };
 
   constructor(
     accessKeyId: string | undefined,
@@ -63,7 +64,7 @@ export class S3 {
     this.setAcl = options?.setAcl || false;
     this.previewUrlExpireIn = options?.previewUrlExpireIn ?? fileEnv.S3_PREVIEW_URL_EXPIRE_IN;
 
-    this.client = new S3Client({
+    this.clientOptions = {
       credentials: {
         accessKeyId,
         secretAccessKey,
@@ -74,34 +75,44 @@ export class S3 {
       // refs: https://github.com/lobehub/lobe-chat/pull/5479
       requestChecksumCalculation: 'WHEN_REQUIRED',
       responseChecksumValidation: 'WHEN_REQUIRED',
-    });
+    };
+  }
+
+  private async ensureClient(): Promise<S3Client> {
+    if (this.client) return this.client;
+    const { S3Client } = await import('@aws-sdk/client-s3');
+    this.client = new S3Client(this.clientOptions);
+    return this.client;
   }
 
   public async deleteFile(key: string) {
+    const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
     const command = new DeleteObjectCommand({
       Bucket: this.bucket,
       Key: key,
     });
 
-    return this.client.send(command);
+    return (await this.ensureClient()).send(command);
   }
 
   public async deleteFiles(keys: string[]) {
+    const { DeleteObjectsCommand } = await import('@aws-sdk/client-s3');
     const command = new DeleteObjectsCommand({
       Bucket: this.bucket,
       Delete: { Objects: keys.map((key) => ({ Key: key })) },
     });
 
-    return this.client.send(command);
+    return (await this.ensureClient()).send(command);
   }
 
   public async getFileContent(key: string): Promise<string> {
+    const { GetObjectCommand } = await import('@aws-sdk/client-s3');
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
     });
 
-    const response = await this.client.send(command);
+    const response = await (await this.ensureClient()).send(command);
 
     if (!response.Body) {
       throw new Error(`No body in response with ${key}`);
@@ -111,12 +122,13 @@ export class S3 {
   }
 
   public async getFileByteArray(key: string): Promise<Uint8Array> {
+    const { GetObjectCommand } = await import('@aws-sdk/client-s3');
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
     });
 
-    const response = await this.client.send(command);
+    const response = await (await this.ensureClient()).send(command);
 
     if (!response.Body) {
       throw new Error(`No body in response with ${key}`);
@@ -132,12 +144,13 @@ export class S3 {
   public async getFileMetadata(
     key: string,
   ): Promise<{ contentLength: number; contentType?: string }> {
+    const { HeadObjectCommand } = await import('@aws-sdk/client-s3');
     const command = new HeadObjectCommand({
       Bucket: this.bucket,
       Key: key,
     });
 
-    const response = await this.client.send(command);
+    const response = await (await this.ensureClient()).send(command);
 
     return {
       contentLength: response.ContentLength ?? 0,
@@ -151,13 +164,15 @@ export class S3 {
   }
 
   public async createPreSignedUpload(key: string): Promise<PreSignedUpload> {
+    const { PutObjectCommand } = await import('@aws-sdk/client-s3');
+    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
     const command = new PutObjectCommand({
       ACL: this.setAcl ? PUBLIC_READ_ACL_HEADER : undefined,
       Bucket: this.bucket,
       Key: key,
     });
 
-    const url = await getSignedUrl(this.client, command, { expiresIn: 3600 });
+    const url = await getSignedUrl(await this.ensureClient(), command, { expiresIn: 3600 });
 
     return {
       headers: this.setAcl ? { 'x-amz-acl': PUBLIC_READ_ACL_HEADER } : undefined,
@@ -166,12 +181,14 @@ export class S3 {
   }
 
   public async createPreSignedUrlForPreview(key: string, expiresIn?: number): Promise<string> {
+    const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
     });
 
-    return getSignedUrl(this.client, command, {
+    return getSignedUrl(await this.ensureClient(), command, {
       expiresIn: expiresIn ?? this.previewUrlExpireIn,
     });
   }
@@ -185,6 +202,7 @@ export class S3 {
     contentType?: string,
     cacheControl?: string,
   ) {
+    const { PutObjectCommand } = await import('@aws-sdk/client-s3');
     const command = new PutObjectCommand({
       ACL: this.setAcl ? 'public-read' : undefined,
       Body: buffer,
@@ -194,10 +212,11 @@ export class S3 {
       Key: path,
     });
 
-    return this.client.send(command);
+    return (await this.ensureClient()).send(command);
   }
 
   public async uploadContent(path: string, content: string) {
+    const { PutObjectCommand } = await import('@aws-sdk/client-s3');
     const command = new PutObjectCommand({
       ACL: this.setAcl ? 'public-read' : undefined,
       Body: content,
@@ -205,13 +224,14 @@ export class S3 {
       Key: path,
     });
 
-    return this.client.send(command);
+    return (await this.ensureClient()).send(command);
   }
 
   /**
    * Upload media file (images only) with long-term cache
    */
   public async uploadMedia(key: string, buffer: Buffer) {
+    const { PutObjectCommand } = await import('@aws-sdk/client-s3');
     const contentType = mime.getType(key) || 'application/octet-stream';
     const command = new PutObjectCommand({
       ACL: this.setAcl ? 'public-read' : undefined,
@@ -222,7 +242,7 @@ export class S3 {
       Key: key,
     });
 
-    await this.client.send(command);
+    await (await this.ensureClient()).send(command);
   }
 }
 

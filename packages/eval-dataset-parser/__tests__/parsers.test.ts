@@ -168,9 +168,9 @@ describe('parseXLSX', () => {
     { name: 'Carol', score: 72 },
   ];
 
-  it('should parse XLSX data from Uint8Array', () => {
+  it('should parse XLSX data from Uint8Array', async () => {
     const data = makeXLSXBuffer(sampleRows);
-    const result = parseXLSX(data);
+    const result = await parseXLSX(data);
     expect(result.format).toBe('xlsx');
     expect(result.headers).toEqual(['name', 'score']);
     expect(result.totalCount).toBe(3);
@@ -179,48 +179,48 @@ describe('parseXLSX', () => {
     expect(result.metadata?.sheetName).toBe('Sheet1');
   });
 
-  it('should apply preview limit', () => {
+  it('should apply preview limit', async () => {
     const data = makeXLSXBuffer(sampleRows);
-    const result = parseXLSX(data, { preview: 2 });
+    const result = await parseXLSX(data, { preview: 2 });
     expect(result.rows).toHaveLength(2);
     expect(result.totalCount).toBe(3);
   });
 
-  it('should select sheet by name', () => {
+  it('should select sheet by name', async () => {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ x: 1 }]), 'First');
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ y: 2 }]), 'Second');
     const data = new Uint8Array(XLSX.write(workbook, { bookType: 'xlsx', type: 'array' }));
 
-    const result = parseXLSX(data, { sheet: 'Second' });
+    const result = await parseXLSX(data, { sheet: 'Second' });
     expect(result.metadata?.sheetName).toBe('Second');
     expect(result.headers).toEqual(['y']);
     expect(result.rows[0].y).toBe('2');
   });
 
-  it('should select sheet by index', () => {
+  it('should select sheet by index', async () => {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ x: 1 }]), 'First');
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ y: 2 }]), 'Second');
     const data = new Uint8Array(XLSX.write(workbook, { bookType: 'xlsx', type: 'array' }));
 
-    const result = parseXLSX(data, { sheet: 1 });
+    const result = await parseXLSX(data, { sheet: 1 });
     expect(result.metadata?.sheetName).toBe('Second');
     expect(result.headers).toEqual(['y']);
   });
 
-  it('should return empty result for nonexistent sheet name', () => {
+  it('should return empty result for nonexistent sheet name', async () => {
     const data = makeXLSXBuffer(sampleRows, 'Data');
-    const result = parseXLSX(data, { sheet: 'NonExistent' });
+    const result = await parseXLSX(data, { sheet: 'NonExistent' });
     expect(result.rows).toHaveLength(0);
     expect(result.headers).toEqual([]);
     expect(result.totalCount).toBe(0);
     expect(result.metadata?.sheetName).toBe('NonExistent');
   });
 
-  it('should default to first sheet when no sheet option provided', () => {
+  it('should default to first sheet when no sheet option provided', async () => {
     const data = makeXLSXBuffer(sampleRows, 'MySheet');
-    const result = parseXLSX(data);
+    const result = await parseXLSX(data);
     expect(result.metadata?.sheetName).toBe('MySheet');
     expect(result.totalCount).toBe(3);
   });

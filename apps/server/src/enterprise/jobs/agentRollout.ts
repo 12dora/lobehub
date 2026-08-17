@@ -48,8 +48,11 @@ export const ensurePlatformAgentRolloutWorkerStarted = (): void => {
     baseIntervalMs: DEFAULT_INTERVAL_MS,
     namespace: 'agent-rollout',
     run: async () => {
-      if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return;
-      await runPlatformAgentRolloutBatches(await getServerDB());
+      if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) {
+        return { didWork: false };
+      }
+      const processed = await runPlatformAgentRolloutBatches(await getServerDB());
+      return { didWork: processed > 0 };
     },
   });
 };

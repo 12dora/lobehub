@@ -68,6 +68,10 @@ vi.mock('@/libs/oidc-provider/access-control', () => ({
   isOIDCUserInactiveError: mockIsOIDCUserInactiveError,
 }));
 
+vi.mock('@/libs/oidc-provider/userActiveCache', () => ({
+  assertUserActiveCached: mockAssertOIDCUserActive,
+}));
+
 vi.mock('@/utils/apiKey', async (importOriginal) => {
   const actual = await importOriginal<Record<string, any>>();
   return {

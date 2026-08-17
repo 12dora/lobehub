@@ -5,6 +5,7 @@ import debug from 'debug';
 import { AgentEvalRunModel } from '@/database/models/agentEval';
 import { getServerDB } from '@/database/server';
 import { qstashClient } from '@/libs/qstash';
+import { withWorkflowsModule } from '@/server/enterprise/guards/webapiModuleGate';
 import { AgentEvalRunWorkflow, type ExecuteTestCasePayload } from '@/server/workflows/agentEvalRun';
 import { resolveAgentEvalRunWorkspace } from '@/server/workflows/agentEvalRun/utils';
 
@@ -16,7 +17,7 @@ const log = debug('lobe-server:workflows:execute-test-case');
  * 2. Trigger K parallel run-agent-trajectory workflows
  * 3. Each trajectory executes the agent once and stores results
  */
-export const { POST } = serve<ExecuteTestCasePayload>(
+const { POST: handler } = serve<ExecuteTestCasePayload>(
   withOtelMetricsForUpstashWorkflows(async (context) => {
     const { runId, testCaseId, userId } = context.requestPayload ?? {};
 
@@ -68,3 +69,4 @@ export const { POST } = serve<ExecuteTestCasePayload>(
     qstashClient,
   },
 );
+export const POST = withWorkflowsModule(handler);

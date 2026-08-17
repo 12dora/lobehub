@@ -29,7 +29,8 @@ import { providerEgressScope } from '@/const/platform/networkProxy';
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
-import { getChatGPTWebFetch } from '@/server/enterprise/services/chatgptWeb/transport';
+import { isBootModuleEnabled } from '@/server/enterprise/services/moduleSettings';
+import { bindNetworkProxyEgressIfEnabled } from '@/server/enterprise/services/networkProxy/engine/bindEgress';
 import {
   createPlatformAiAuthFailureHooks,
   createPlatformAiModelAllowlistHooks,
@@ -553,6 +554,8 @@ const resolveChatGPTWebTransport = (
       ? await hook.getEgressProxyUrlForCurl(scope, extractFetchUrl(input))
       : null;
     try {
+      const { getChatGPTWebFetch } =
+        await import('@/server/enterprise/services/chatgptWeb/transport');
       const response = await getChatGPTWebFetch(proxyUrl)(input, init);
       // Proxied 2xx / 3xx / 4xx (≠ 407) clear prior connect-phase failures.
       // 407 is a CONNECT / proxy-auth failure, not a successful hop.
@@ -588,6 +591,9 @@ export const initModelRuntimeWithUserPayload = (
 ) => {
   const runtimeProvider = payload.runtimeProvider ?? provider;
   const { fetch: paramsFetch, requestHandler, ...restParams } = params;
+  if (isBootModuleEnabled('networkProxy')) {
+    bindNetworkProxyEgressIfEnabled();
+  }
   /**
    * Egress scope key is the *catalog / caller provider id*, not the SDK
    * `runtimeProvider`. Platform custom providers use their directory id;
