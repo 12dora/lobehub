@@ -85,29 +85,51 @@ const useCountdown = (at: string | null | undefined): number => {
 /** Engine states that mean the process is up and serving, whatever it reported before. */
 const LIVE_STATES = new Set(['degraded', 'running']);
 
+const ID_SEPARATOR = '\u0000';
+
+const splitIds = (key: string): string[] => (key ? key.split(ID_SEPARATOR) : []);
+
 /**
  * `true` for one moment after an engine the supervisor was *automatically* retrying comes back
  * up, so the admin who saw the recovery banner learns it worked instead of just finding it gone.
  *
- * Both halves are load-bearing. Without `healingObserved` this would congratulate itself on a
- * stop the admin asked for or a restart they performed by hand; without `recovered` it would fire
- * the moment the row leaves `error`, while the engine is still only `starting`.
+ * Tracked **per instance id**, because a fleet recovers one machine at a time: counting healthy
+ * instances instead would let a neighbour that was up all along stand in for the one that was
+ * actually being retried. An id only earns the confirmation by being seen healing and then
+ * turning up live itself; an id that leaves the list was not repaired, it just stopped answering.
+ *
+ * `suppressed` keeps the green line off the page while another instance still needs a human —
+ * "recovered" next to "not running" reads as a contradiction.
  */
-const useSelfHealed = (healingObserved: boolean, recovered: boolean): boolean => {
-  const sawHealing = useRef(false);
+const useSelfHealed = (
+  healingIds: string[],
+  liveIds: string[],
+  knownIds: string[],
+  suppressed: boolean,
+): boolean => {
+  const pending = useRef(new Set<string>());
   const [healedAt, setHealedAt] = useState<number | null>(null);
+  // Arrays are rebuilt every render; the joined form is what the effect can actually depend on.
+  const healingKey = healingIds.join(ID_SEPARATOR);
+  const liveKey = liveIds.join(ID_SEPARATOR);
+  const knownKey = knownIds.join(ID_SEPARATOR);
 
   useEffect(() => {
-    if (healingObserved) {
-      sawHealing.current = true;
+    const known = new Set(splitIds(knownKey));
+    for (const id of pending.current) if (!known.has(id)) pending.current.delete(id);
+
+    const healingNow = splitIds(healingKey);
+    if (healingNow.length > 0) {
+      for (const id of healingNow) pending.current.add(id);
+      // A retry still in flight supersedes any earlier confirmation.
       setHealedAt(null);
       return;
     }
-    if (sawHealing.current && recovered) {
-      sawHealing.current = false;
-      setHealedAt(Date.now());
-    }
-  }, [healingObserved, recovered]);
+
+    // `delete` answers whether this id was one we were waiting on, and clears it in one step.
+    const recovered = splitIds(liveKey).filter((id) => pending.current.delete(id));
+    if (recovered.length > 0 && !suppressed) setHealedAt(Date.now());
+  }, [healingKey, knownKey, liveKey, suppressed]);
 
   useEffect(() => {
     if (healedAt === null) return;
@@ -185,8 +207,12 @@ const NetworkProxyBanners = memo<NetworkProxyBannersProps>(
     const terminal = actionable.filter((instance) => !healing.includes(instance));
     const healingSeconds = useCountdown(healing[0] ? healingOf(healing[0])?.nextAttemptAt : null);
     const selfHealed = useSelfHealed(
-      healing.length > 0,
-      terminal.length === 0 && instances.some((instance) => LIVE_STATES.has(instance.engineState)),
+      healing.map((instance) => instance.instanceId),
+      instances
+        .filter((instance) => LIVE_STATES.has(instance.engineState))
+        .map((instance) => instance.instanceId),
+      instances.map((instance) => instance.instanceId),
+      terminal.length > 0,
     );
     const fallbackScopes = status?.fallbackScopes ?? [];
     const conflictCount = actions.conflicts.length;

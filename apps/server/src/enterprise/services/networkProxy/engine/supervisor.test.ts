@@ -25,7 +25,11 @@ import {
 import type * as B1 from './b1';
 import type { NetworkProxyRuntimeSnapshot } from './b1';
 import { enginePaths } from './platform';
-import { setAfterWriteGeneratedConfigForTest } from './supervisor';
+import {
+  setAfterWriteGeneratedConfigForTest,
+  setFailFinalStartSnapshotForTest,
+  setStartEnginePreflightForTest,
+} from './supervisor';
 import { idleEngineRuntimeState } from './types';
 
 const { snapshotHolder } = vi.hoisted(() => ({
@@ -99,6 +103,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   setAfterWriteGeneratedConfigForTest(null);
+  setStartEnginePreflightForTest(null);
+  setFailFinalStartSnapshotForTest(false);
   snapshotHolder.current = makeSnapshot({ masterEnabled: false });
   await Promise.all(
     live.splice(0).map((supervisor) => supervisor.restart().catch(() => undefined)),
@@ -491,4 +497,70 @@ describe('EngineSupervisor child process', () => {
     snapshotHolder.current = makeSnapshot({ masterEnabled: false });
     await supervisor.restart();
   }, 25_000);
+
+  it('enters heal state when runtime-dir prep throws (no 15s hot loop)', async () => {
+    let remainingFails = 1;
+    setStartEnginePreflightForTest(() => {
+      if (remainingFails > 0) {
+        remainingFails -= 1;
+        throw new Error('runtime dir prep failed');
+      }
+    });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      healBackoffBaseMs: 250,
+      healBackoffMaxMs: 250,
+      startWaitMs: 1500,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    expect(supervisor.getState().state).toBe('error');
+    expect(supervisor.getState().lastIssue?.code).toBe('unknown');
+    expect(supervisor.getState().nextHealAt).toBeGreaterThan(Date.now());
+    expect(readFileSync(startsFile, 'utf8').length).toBe(0);
+
+    await supervisor.reconcile();
+    expect(readFileSync(startsFile, 'utf8').length).toBe(0);
+    expect(supervisor.getState().state).toBe('error');
+
+    await new Promise((resolve) => setTimeout(resolve, 280));
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    expect(readFileSync(startsFile, 'utf8').length).toBe(1);
+
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 15_000);
+
+  it('enters heal state when the final snapshot read fails', async () => {
+    writeWrapper({ FAKE_ENGINE_SKIP_LISTEN: '99' });
+    setFailFinalStartSnapshotForTest(true);
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      healBackoffBaseMs: 250,
+      healBackoffMaxMs: 250,
+      startWaitMs: 400,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    expect(supervisor.getState().state).toBe('error');
+    expect(supervisor.getState().nextHealAt).toBeGreaterThan(Date.now());
+    const startsAfterFirst = readFileSync(startsFile, 'utf8').length;
+    expect(startsAfterFirst).toBeGreaterThan(0);
+
+    await supervisor.reconcile();
+    expect(readFileSync(startsFile, 'utf8').length).toBe(startsAfterFirst);
+
+    await new Promise((resolve) => setTimeout(resolve, 280));
+    await supervisor.reconcile();
+    expect(readFileSync(startsFile, 'utf8').length).toBeGreaterThan(startsAfterFirst);
+    const startsAfterHeal = readFileSync(startsFile, 'utf8').length;
+    await supervisor.reconcile();
+    expect(readFileSync(startsFile, 'utf8').length).toBe(startsAfterHeal);
+
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 15_000);
 });

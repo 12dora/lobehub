@@ -52,10 +52,22 @@ const DEFAULT_START_WAIT_MS = 8_000;
 const HEALTH_POLL_MS = 400;
 
 let afterWriteGeneratedConfigForTest: (() => void) | null = null;
+let startEnginePreflightForTest: (() => Promise<void> | void) | null = null;
+let failFinalStartSnapshotForTest = false;
 
 /** Test-only: run after YAML is written so a newer snapshot can land before spawn. */
 export const setAfterWriteGeneratedConfigForTest = (hook: (() => void) | null): void => {
   afterWriteGeneratedConfigForTest = hook;
+};
+
+/** Test-only: throw from runtime-dir prep before the per-attempt retry loop. */
+export const setStartEnginePreflightForTest = (hook: (() => Promise<void> | void) | null): void => {
+  startEnginePreflightForTest = hook;
+};
+
+/** Test-only: make the post-attempts snapshot read throw once. */
+export const setFailFinalStartSnapshotForTest = (fail: boolean): void => {
+  failFinalStartSnapshotForTest = fail;
 };
 
 export interface EngineSupervisorOptions {
@@ -571,12 +583,41 @@ export class EngineSupervisor implements EngineRuntime {
     this.patchState({ state: 'starting' });
     try {
       return await this.startEngineAttempts();
+    } catch (error) {
+      await this.abortStartup(error, Boolean(this.child));
+      return false;
     } finally {
       this.starting = false;
     }
   };
 
+  private abortStartup = async (error: unknown, spawned: boolean): Promise<void> => {
+    if (!this.state.lastIssue) {
+      this.setIssue(this.issueCodeForStartFailure(error, spawned), error);
+    }
+    await this.stopEngineNow().catch(() => undefined);
+    let generation = this.lastAttemptedEngineGeneration;
+    if (generation === null) {
+      const snapshot = await getNetworkProxySnapshot().catch(() => null);
+      if (snapshot) {
+        this.markAttemptedGeneration(snapshot.engineGeneration);
+        generation = snapshot.engineGeneration;
+      }
+    }
+    this.enterErrorState(generation);
+  };
+
   private startEngineAttempts = async (): Promise<boolean> => {
+    try {
+      return await this.startEngineAttemptsBody();
+    } catch (error) {
+      await this.abortStartup(error, Boolean(this.child));
+      return false;
+    }
+  };
+
+  private startEngineAttemptsBody = async (): Promise<boolean> => {
+    await startEnginePreflightForTest?.();
     const dataDir = resolveDataDir();
     const paths = this.paths();
     await removeStaleRuntimeDirs(dataDir, paths.instanceId);
@@ -691,8 +732,18 @@ export class EngineSupervisor implements EngineRuntime {
     if (!this.state.lastIssue && lastError !== undefined) {
       this.setIssue(this.issueCodeForStartFailure(lastError, false), lastError);
     }
-    const latest = await getNetworkProxySnapshot();
-    this.enterErrorState(latest.engineGeneration);
+    let generation = this.lastAttemptedEngineGeneration;
+    try {
+      if (failFinalStartSnapshotForTest) {
+        failFinalStartSnapshotForTest = false;
+        throw new Error('snapshot failed');
+      }
+      const latest = await getNetworkProxySnapshot();
+      generation = latest.engineGeneration;
+    } catch (error) {
+      if (!this.state.lastIssue) this.setIssueFromUnknown(error);
+    }
+    this.enterErrorState(generation);
     return false;
   };
 

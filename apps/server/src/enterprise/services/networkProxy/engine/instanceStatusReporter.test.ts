@@ -88,4 +88,28 @@ describe('startInstanceStatusReporter', () => {
     expect(report).toHaveBeenCalledTimes(2);
     stop();
   });
+
+  it('does not start a dirty re-run after stop()', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = 0;
+    const report = vi.fn(async () => {
+      started += 1;
+      if (started === 1) await gate;
+      return true;
+    });
+    const runtime = makeRuntime();
+    const stop = startInstanceStatusReporter(runtime, 30_000, report, 40);
+    await waitMs(0);
+    expect(started).toBe(1);
+
+    runtime.emit();
+    expect(started).toBe(1);
+    stop();
+    release();
+    await waitMs(20);
+    expect(report).toHaveBeenCalledTimes(1);
+  });
 });

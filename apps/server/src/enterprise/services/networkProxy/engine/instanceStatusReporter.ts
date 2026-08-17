@@ -91,10 +91,12 @@ export const startInstanceStatusReporter = (
 ): (() => void) => {
   let inFlight = false;
   let dirty = false;
+  let stopped = false;
   let lastWriteAt = 0;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   const write = () => {
+    if (stopped) return;
     if (inFlight) {
       dirty = true;
       return;
@@ -112,15 +114,21 @@ export const startInstanceStatusReporter = (
       })
       .finally(() => {
         inFlight = false;
+        if (stopped) {
+          dirty = false;
+          return;
+        }
         if (dirty) write();
       });
   };
 
   const tickFromTimer = () => {
+    if (stopped) return;
     write();
   };
 
   const tickFromStateChange = () => {
+    if (stopped) return;
     if (inFlight) {
       dirty = true;
       return;
@@ -143,8 +151,13 @@ export const startInstanceStatusReporter = (
   const unsubscribe = runtime.onStateChange(() => tickFromStateChange());
   write();
   return () => {
+    stopped = true;
+    dirty = false;
     clearInterval(timer);
-    if (debounceTimer) clearTimeout(debounceTimer);
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
     unsubscribe();
   };
 };

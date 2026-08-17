@@ -781,6 +781,71 @@ describe('NetworkProxyTab', () => {
     expect(screen.getByText('networkProxy.banners.selfHealed')).toBeTruthy();
   });
 
+  it('waits for the instance that was actually being retried, not for a healthy neighbour', async () => {
+    const base = statusFixture();
+    const first = base.instances[0]!;
+    const fleet = (a: Partial<NetworkProxyStatusView['instances'][number]>) => ({
+      ...base,
+      instances: [
+        { ...first, instanceId: 'pinst_a', isCurrent: true, ...a },
+        // B has been up the whole time and must never stand in for A's recovery.
+        { ...first, engineState: 'running' as const, instanceId: 'pinst_b', isCurrent: false },
+      ],
+    });
+
+    mocks.status = fleet({
+      engineState: 'error',
+      healing: { attempt: 1, nextAttemptAt: new Date(Date.now() + 5000).toISOString() },
+      lastIssue: engineIssue('exited'),
+    });
+    const view = render(<NetworkProxyTab canManage enabled service={stubService()} />);
+    expect(screen.getByText('networkProxy.banners.selfHealing')).toBeTruthy();
+
+    // A left `error` but is only starting; B is live, which used to be enough to fire.
+    mocks.status = fleet({ engineState: 'starting', lastIssue: null });
+    await act(async () => {
+      view.rerender(<NetworkProxyTab canManage enabled service={stubService()} />);
+    });
+    expect(screen.queryByText('networkProxy.banners.selfHealed')).toBeNull();
+
+    // A itself comes up.
+    mocks.status = fleet({ engineState: 'running', lastIssue: null });
+    await act(async () => {
+      view.rerender(<NetworkProxyTab canManage enabled service={stubService()} />);
+    });
+    expect(screen.getByText('networkProxy.banners.selfHealed')).toBeTruthy();
+  });
+
+  it('does not treat a healing instance dropping off the list as a recovery', async () => {
+    const base = statusFixture();
+    const first = base.instances[0]!;
+    mocks.status = {
+      ...base,
+      instances: [
+        {
+          ...first,
+          engineState: 'error',
+          healing: { attempt: 1, nextAttemptAt: new Date(Date.now() + 5000).toISOString() },
+          instanceId: 'pinst_a',
+          isCurrent: true,
+          lastIssue: engineIssue('exited'),
+        },
+        { ...first, engineState: 'running', instanceId: 'pinst_b', isCurrent: false },
+      ],
+    };
+    const view = render(<NetworkProxyTab canManage enabled service={stubService()} />);
+
+    // A stops sending heartbeats — a machine we can no longer see, not one that was repaired.
+    mocks.status = {
+      ...base,
+      instances: [{ ...first, engineState: 'running', instanceId: 'pinst_b', isCurrent: true }],
+    };
+    await act(async () => {
+      view.rerender(<NetworkProxyTab canManage enabled service={stubService()} />);
+    });
+    expect(screen.queryByText('networkProxy.banners.selfHealed')).toBeNull();
+  });
+
   it('never lets a recovering instance hide one that still needs a human', () => {
     const base = statusFixture();
     const first = base.instances[0]!;
