@@ -6,6 +6,15 @@ import { bindNetworkProxyEgressIfEnabled } from '../../networkProxy/engine/bindE
 bindNetworkProxyEgressIfEnabled();
 
 export {
+  COOKIE_JAR_HEADER,
+  deleteCookieJar,
+  getCookieJarPath,
+  resetCookieJars,
+  seedCookieJar,
+  seedSessionJar,
+  withCookieJarHeader,
+} from './cookieJar';
+export {
   createCurlImpersonateFetch,
   type CurlImpersonateFetchOptions,
   DEFAULT_IMPERSONATE_PROFILE,

@@ -1,11 +1,11 @@
+import type { RuntimeBrowserDeviceProfile } from '../../browserProfile';
+import { DEFAULT_BROWSER_DEVICE_PROFILE, resolveProfileTimezone } from '../../browserProfile';
 import { randomUuid } from './binary';
 import {
   ASSET_POINTER_PREFIXES,
-  CLIENT_CONTEXTUAL_INFO,
+  buildClientContextualInfo,
+  buildFlowClientContextualInfo,
   CLIENT_CREATED_ROOT,
-  DEFAULT_TIMEZONE,
-  DEFAULT_TIMEZONE_OFFSET_MIN,
-  FLOW_CLIENT_CONTEXTUAL_INFO,
   FLOW_CLIENT_PREPARE_STATE,
   SEARCH_SOURCE,
 } from './constants';
@@ -72,15 +72,26 @@ export const normalizeThinkingEffort = (
   return THINKING_EFFORT_ALIASES[normalized];
 };
 
-export interface TimezoneOptions {
-  timezone?: string;
-  timezoneOffsetMin?: number;
+export interface BrowserEnvironmentOptions {
+  browserProfile?: RuntimeBrowserDeviceProfile;
 }
 
-const timezoneFields = ({ timezone, timezoneOffsetMin }: TimezoneOptions) => ({
-  timezone: timezone ?? DEFAULT_TIMEZONE,
-  timezone_offset_min: timezoneOffsetMin ?? DEFAULT_TIMEZONE_OFFSET_MIN,
-});
+const resolveProfile = ({
+  browserProfile = DEFAULT_BROWSER_DEVICE_PROFILE,
+}: BrowserEnvironmentOptions): RuntimeBrowserDeviceProfile => browserProfile;
+
+/**
+ * `timezone` and `timezone_offset_min` travel in the same body, so the offset must be
+ * the LIVE (DST-aware) one for that zone — a payload that says "America/New_York" and
+ * "-300" in August contradicts itself.
+ */
+const timezoneFields = (options: BrowserEnvironmentOptions) => {
+  const profile = resolveProfile(options);
+  return {
+    timezone: profile.timezone.iana,
+    timezone_offset_min: resolveProfileTimezone(profile).offsetMinutes,
+  };
+};
 
 /**
  * Attachment serialization. The reference implementation is inconsistent
@@ -160,7 +171,7 @@ export const toConversationMessages = (
     };
   });
 
-export interface ConversationBodyOptions extends TimezoneOptions {
+export interface ConversationBodyOptions extends BrowserEnvironmentOptions {
   messages: ChatGPTWebMessage[];
   model: string;
   parentMessageId?: string;
@@ -177,12 +188,12 @@ export const buildConversationBody = ({
   model,
   parentMessageId,
   thinkingEffort,
-  ...timezone
+  ...browserEnvironment
 }: ConversationBodyOptions): Record<string, any> => {
   const effort = normalizeThinkingEffort(thinkingEffort);
   return {
     action: 'next',
-    client_contextual_info: { ...CLIENT_CONTEXTUAL_INFO },
+    client_contextual_info: buildClientContextualInfo(resolveProfile(browserEnvironment)),
     conversation_mode: { kind: 'primary_assistant' },
     conversation_origin: null,
     force_paragen: false,
@@ -197,14 +208,14 @@ export const buildConversationBody = ({
     suggestions: [],
     supported_encodings: [],
     system_hints: [],
-    ...timezoneFields(timezone),
+    ...timezoneFields(browserEnvironment),
     variant_purpose: 'comparison_implicit',
     websocket_request_id: randomUuid(),
     ...(effort ? { thinking_effort: effort } : {}),
   };
 };
 
-export interface PrepareBodyOptions extends TimezoneOptions {
+export interface PrepareBodyOptions extends BrowserEnvironmentOptions {
   /**
    * Document-attachment flow only. The image flow must NOT send this (E3 §1.3);
    * it is ignored there.
@@ -229,7 +240,7 @@ export const buildPrepareBody = ({
   prompt,
   systemHints = [],
   thinkingEffort,
-  ...timezone
+  ...browserEnvironment
 }: PrepareBodyOptions): Record<string, any> => {
   const effort = normalizeThinkingEffort(thinkingEffort);
   const resolvedFlow = flow ?? inferFlow({ systemHints });
@@ -257,7 +268,7 @@ export const buildPrepareBody = ({
     supported_encodings: ['v1'],
     supports_buffering: true,
     system_hints: hints,
-    ...timezoneFields(timezone),
+    ...timezoneFields(browserEnvironment),
     // `attachment_mime_types` belongs to the DOCUMENT-attachment flow only
     // (E3 §1.3). The image flow ignores it, and the search flow must not carry
     // it at all — a search prepare that advertises mime types is not a body the
@@ -269,7 +280,7 @@ export const buildPrepareBody = ({
   };
 };
 
-export interface FConversationBodyOptions extends TimezoneOptions {
+export interface FConversationBodyOptions extends BrowserEnvironmentOptions {
   /** Defaults to the flow implied by `search` / `systemHints`. */
   flow?: ConduitFlow;
   messages: ChatGPTWebMessage[];
@@ -294,7 +305,7 @@ export const buildFConversationBody = ({
   search,
   systemHints = [],
   thinkingEffort,
-  ...timezone
+  ...browserEnvironment
 }: FConversationBodyOptions): Record<string, any> => {
   const effort = normalizeThinkingEffort(thinkingEffort);
   const resolvedFlow = flow ?? inferFlow({ search, systemHints });
@@ -309,7 +320,9 @@ export const buildFConversationBody = ({
 
   return {
     action: 'next',
-    client_contextual_info: { ...FLOW_CLIENT_CONTEXTUAL_INFO[resolvedFlow] },
+    client_contextual_info: {
+      ...buildFlowClientContextualInfo(resolveProfile(browserEnvironment))[resolvedFlow],
+    },
     client_prepare_state: FLOW_CLIENT_PREPARE_STATE[resolvedFlow],
     conversation_mode: { kind: 'primary_assistant' },
     enable_message_followups: true,
@@ -324,13 +337,13 @@ export const buildFConversationBody = ({
     supported_encodings: ['v1'],
     supports_buffering: true,
     system_hints: topLevelHints,
-    ...timezoneFields(timezone),
+    ...timezoneFields(browserEnvironment),
     ...(isSearch ? { client_reported_search_source: SEARCH_SOURCE, force_use_search: true } : {}),
     ...(effort ? { thinking_effort: effort } : {}),
   };
 };
 
-export interface ImageConversationOptions extends TimezoneOptions {
+export interface ImageConversationOptions extends BrowserEnvironmentOptions {
   model: string;
   prompt: string;
   /** Reference images for an edit; empty for text-to-image. */
@@ -347,7 +360,7 @@ export const buildImageConversationBodies = ({
   prompt,
   references = [],
   thinkingEffort,
-  ...timezone
+  ...browserEnvironment
 }: ImageConversationOptions): {
   conversation: Record<string, any>;
   prepare: Record<string, any>;
@@ -360,7 +373,7 @@ export const buildImageConversationBodies = ({
       model,
       systemHints: hints,
       thinkingEffort,
-      ...timezone,
+      ...browserEnvironment,
     }),
     // NOTE: the image prepare deliberately carries neither the references nor
     // `attachment_mime_types` — that field belongs to the document-attachment
@@ -371,22 +384,24 @@ export const buildImageConversationBodies = ({
       prompt,
       systemHints: hints,
       thinkingEffort,
-      ...timezone,
+      ...browserEnvironment,
     }),
   };
 };
 
 /** File-record creation body for `POST /backend-api/files`. */
 export const buildFileCreateBody = (meta: {
+  browserProfile?: RuntimeBrowserDeviceProfile;
   height?: number;
   kind: 'image' | 'document';
   mimeType: string;
   name: string;
   size: number;
-  timezoneOffsetMin?: number;
   width?: number;
 }): Record<string, any> => {
-  const timezoneOffsetMin = meta.timezoneOffsetMin ?? DEFAULT_TIMEZONE_OFFSET_MIN;
+  const timezoneOffsetMin = resolveProfileTimezone(
+    meta.browserProfile ?? DEFAULT_BROWSER_DEVICE_PROFILE,
+  ).offsetMinutes;
   if (meta.kind === 'image')
     return {
       file_name: meta.name,

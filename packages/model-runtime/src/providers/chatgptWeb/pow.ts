@@ -1,5 +1,7 @@
 import { sha3_512 } from '@noble/hashes/sha3.js';
 
+import type { RuntimeBrowserDeviceProfile } from '../../browserProfile';
+import { DEFAULT_BROWSER_DEVICE_PROFILE, resolveProfileTimezone } from '../../browserProfile';
 import {
   bytesToBase64,
   compareBytes,
@@ -10,14 +12,12 @@ import {
   utf8Encode,
 } from './binary';
 import {
+  buildPowNavigatorKeys,
   DEFAULT_POW_SCRIPT,
   POW_CONFIG_PREFIX,
-  POW_CORES,
   POW_DOCUMENT_KEYS,
   POW_ITERATION_LIMIT,
-  POW_NAVIGATOR_KEYS,
   POW_PROOF_PREFIX,
-  POW_SCREEN_RESOLUTIONS,
   POW_WINDOW_KEYS,
   POW_YIELD_EVERY,
 } from './constants';
@@ -61,11 +61,13 @@ export const parsePowResources = (html: string): PowResources => {
 const pick = <T>(values: readonly T[]): T => values[Math.floor(Math.random() * values.length)];
 
 /**
- * `new Date()` rendered the way the browser's `Date.prototype.toString` does in
- * the US/Eastern timezone — the shape the upstream sniffer expects.
+ * `Date.prototype.toString()` in the profile's timezone. The offset and the long zone
+ * name are the LIVE ones for `now` (DST-aware), not the stored standard-time pair, so
+ * the wall clock and the zone label agree all year. V8 zero-pads the day.
  */
-const legacyParseTime = (now = Date.now()): string => {
-  const shifted = new Date(now - 5 * 60 * 60 * 1000);
+const legacyParseTime = (profile: RuntimeBrowserDeviceProfile, now = Date.now()): string => {
+  const { jsDateSuffix, offsetMinutes: offsetMin } = resolveProfileTimezone(profile, new Date(now));
+  const shifted = new Date(now - offsetMin * 60 * 1000);
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const months = [
     'Jan',
@@ -85,7 +87,7 @@ const legacyParseTime = (now = Date.now()): string => {
   return (
     `${days[shifted.getUTCDay()]} ${months[shifted.getUTCMonth()]} ${pad(shifted.getUTCDate())} ` +
     `${shifted.getUTCFullYear()} ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:` +
-    `${pad(shifted.getUTCSeconds())} GMT-0500 (Eastern Standard Time)`
+    `${pad(shifted.getUTCSeconds())} ${jsDateSuffix}`
   );
 };
 
@@ -95,6 +97,7 @@ const round3 = (value: number) => Math.round(value * 1000) / 1000;
 export type PowConfig = (string | number)[];
 
 export interface BuildPowConfigOptions {
+  browserProfile?: RuntimeBrowserDeviceProfile;
   dataBuild?: string;
   scriptSources?: string[];
   userAgent: string;
@@ -102,32 +105,33 @@ export interface BuildPowConfigOptions {
 
 /** The 25-element browser-fingerprint array the sentinel PoW hashes. */
 export const buildPowConfig = ({
+  browserProfile = DEFAULT_BROWSER_DEVICE_PROFILE,
   dataBuild = '',
   scriptSources,
   userAgent,
 }: BuildPowConfigOptions): PowConfig => {
-  const resolution = pick(POW_SCREEN_RESOLUTIONS);
+  const resolution = [browserProfile.screen.width, browserProfile.screen.height];
   const perfNow = typeof performance === 'undefined' ? 0 : performance.now();
   const sources = scriptSources && scriptSources.length > 0 ? scriptSources : [DEFAULT_POW_SCRIPT];
 
   return [
     resolution[0] + resolution[1],
-    legacyParseTime(),
+    legacyParseTime(browserProfile),
     4_294_705_152,
     1, // overwritten with the iteration counter
     userAgent,
     pick(sources),
     dataBuild,
-    'en-US',
-    'en-US,es-US,en,es',
+    browserProfile.languages[0] ?? browserProfile.oaiLanguage,
+    browserProfile.languages.join(','),
     Math.random(), // overwritten with (iteration >> 1)
-    pick(POW_NAVIGATOR_KEYS),
+    pick(buildPowNavigatorKeys(browserProfile)),
     pick(POW_DOCUMENT_KEYS),
     pick(POW_WINDOW_KEYS),
     round3(perfNow),
     randomUuid(),
     '',
-    pick(POW_CORES),
+    browserProfile.hardwareConcurrency,
     round3(Date.now() - perfNow),
     0,
     0,

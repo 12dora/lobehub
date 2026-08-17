@@ -1,5 +1,19 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 
+import {
+  type BrowserDeviceProfile,
+  buildClientHintHeaders,
+  buildFetchMetadataHeaders,
+  DEFAULT_BROWSER_DEVICE_PROFILE,
+  isFallbackBrowserProfile,
+  PRIORITY_XHR,
+  resolveProfileTimezone,
+  userAgentHeaders,
+} from '@lobechat/model-runtime/browserProfile';
+import {
+  buildChatGptWebXhrHeaders,
+  deriveSessionId,
+} from '@lobechat/model-runtime/chatgptWebIdentity';
 import { isChatGPTWebSessionToken } from '@lobechat/utils/chatgptWebPaste';
 import debug from 'debug';
 
@@ -41,11 +55,15 @@ import {
   assertSessionTokenShape,
   CHATGPT_BASE,
   isUsableSessionToken,
-  SEC_CH_UA,
-  USER_AGENT,
   webSessionHeaders,
 } from './sessionToken';
-import { getChatGPTWebFetch, isChatGPTWebTransportUnavailableError } from './transport';
+import {
+  deleteCookieJar,
+  getChatGPTWebFetch,
+  isChatGPTWebTransportUnavailableError,
+  seedSessionJar,
+  withCookieJarHeader,
+} from './transport';
 
 export { ChatGPTWebOAuthError, type ChatGPTWebOAuthErrorCode } from './oauthErrors';
 export {
@@ -56,6 +74,19 @@ export {
   type ParsedCallbackInput,
   parsePasteEnvelope,
 } from './pasteEnvelope';
+
+/**
+ * Drop the process-local Netscape jar for a ChatGPT Web connection.
+ * Best-effort: disconnect / revoke must not fail because the file is already gone.
+ */
+export const wipeChatGPTWebCookieJar = (deviceId: string | undefined): void => {
+  if (!deviceId) return;
+  try {
+    deleteCookieJar(deviceId);
+  } catch {
+    // unlink already swallows ENOENT; this covers unexpected fs errors.
+  }
+};
 
 /**
  * ChatGPT Web connect flow: OAuth authorization code + PKCE where the user signs in in
@@ -71,7 +102,8 @@ export {
 const log = debug('lobe-server:chatgpt-web-oauth');
 
 const AUTH0_CLIENT = 'eyJuYW1lIjoiYXV0aDAtc3BhLWpzIiwidmVyc2lvbiI6IjEuMjEuMCJ9';
-const ACCOUNTS_CHECK_PATH = '/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=0';
+const accountsCheckPath = (profile: BrowserDeviceProfile) =>
+  `/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=${resolveProfileTimezone(profile).offsetMinutes}`;
 const ME_PATH = '/backend-api/me';
 /**
  * The endpoint the chatgpt.com web app itself calls to mint an access token from the
@@ -190,6 +222,8 @@ const assertWebCapableAccessToken = (accessToken: string): void => {
 export interface ChatGPTWebOAuthServiceOptions {
   /** auth.openai.com is reachable from Node directly — no impersonation needed. */
   authFetch?: typeof fetch;
+  /** Installation-wide synthetic browser identity shared with runtime traffic. */
+  browserProfile?: BrowserDeviceProfile;
   /** chatgpt.com requires the browser-fingerprinted transport. */
   transportFetch?: typeof fetch;
 }
@@ -232,39 +266,34 @@ export const extractChatGPTWebEmail = (
  * endpoint to the platform SPA only, and an incomplete fetch-metadata set is exactly what
  * a bot filter looks at — so it is reproduced rather than trimmed to "what matters".
  */
-const authHeaders = (): Record<string, string> => ({
+const lowercaseHeaders = (headers: Record<string, string>): Record<string, string> =>
+  Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
+
+const authHeaders = (browserProfile: BrowserDeviceProfile): Record<string, string> => ({
   'accept': 'application/json',
-  'accept-encoding': 'gzip, deflate, br',
-  'accept-language': 'en-US,en;q=0.9',
+  ...lowercaseHeaders(userAgentHeaders(browserProfile)),
   'auth0-client': AUTH0_CLIENT,
   'cache-control': 'no-cache',
-  'connection': 'keep-alive',
   'content-type': 'application/json',
-  'dnt': '1',
   'origin': 'https://platform.openai.com',
-  'priority': 'u=1, i',
+  'priority': PRIORITY_XHR,
   'referer': 'https://platform.openai.com/',
-  'sec-ch-ua': SEC_CH_UA,
-  'sec-ch-ua-mobile': '?0',
-  'sec-ch-ua-platform': '"Windows"',
-  'sec-fetch-dest': 'empty',
-  'sec-fetch-mode': 'cors',
-  'sec-fetch-site': 'same-origin',
-  'sec-gpc': '1',
-  'user-agent': USER_AGENT,
+  ...lowercaseHeaders(buildClientHintHeaders(browserProfile, { entropy: 'low' })),
+  ...lowercaseHeaders(buildFetchMetadataHeaders('xhr')),
 });
 
-const sessionHeaders = (accessToken: string, deviceId: string): Record<string, string> => ({
-  'accept': '*/*',
-  'accept-language': 'en-US,en;q=0.9',
-  'authorization': `Bearer ${accessToken}`,
-  'oai-device-id': deviceId,
-  'oai-language': 'en-US',
-  'referer': `${CHATGPT_BASE}/`,
-  'sec-ch-ua': SEC_CH_UA,
-  'sec-ch-ua-mobile': '?0',
-  'user-agent': USER_AGENT,
-});
+export const sessionHeaders = (
+  accessToken: string,
+  deviceId: string,
+  sessionId?: string,
+  browserProfile: BrowserDeviceProfile = DEFAULT_BROWSER_DEVICE_PROFILE,
+): Record<string, string> =>
+  buildChatGptWebXhrHeaders({
+    accessToken,
+    browserProfile,
+    deviceId,
+    sessionId: sessionId ?? deriveSessionId(deviceId, browserProfile),
+  });
 
 interface WebSessionMint {
   accessToken: string;
@@ -277,17 +306,36 @@ interface WebSessionMint {
 
 export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
   private readonly authFetch: typeof fetch;
+  private readonly browserProfile: BrowserDeviceProfile;
   private readonly transportFetchOverride?: typeof fetch;
 
   constructor(options: ChatGPTWebOAuthServiceOptions = {}) {
     super();
     this.authFetch = options.authFetch ?? ((...args) => globalThis.fetch(...args));
+    this.browserProfile = options.browserProfile ?? DEFAULT_BROWSER_DEVICE_PROFILE;
     this.transportFetchOverride = options.transportFetch;
   }
 
   /** Resolved lazily so a deployment without the binary still boots. */
   private get transportFetch(): typeof fetch {
-    return this.transportFetchOverride ?? getChatGPTWebFetch();
+    return (
+      this.transportFetchOverride ??
+      getChatGPTWebFetch(undefined, { impersonate: this.browserProfile.impersonateProfile })
+    );
+  }
+
+  private buildSessionHeaders(accessToken: string, deviceId: string): Record<string, string> {
+    return sessionHeaders(accessToken, deviceId, undefined, this.browserProfile);
+  }
+
+  /**
+   * The jar's `cf_clearance` / `__cf_bm` were minted under the PERSISTED identity. While
+   * running on the degraded fallback identity (database unavailable) the User-Agent and
+   * the TLS profile differ, so replaying them provokes the very Cloudflare challenge the
+   * profile exists to avoid — go jarless and leave the jar intact.
+   */
+  private cookieJarKeyFor(deviceId?: string): string | undefined {
+    return isFallbackBrowserProfile(this.browserProfile) ? undefined : deviceId;
   }
 
   /**
@@ -384,7 +432,7 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
           grant_type: 'authorization_code',
           redirect_uri: redirectUri,
         }),
-        headers: authHeaders(),
+        headers: authHeaders(this.browserProfile),
         method: 'POST',
         signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
       });
@@ -496,7 +544,12 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
   }): Promise<WebSessionMint> {
     // Built OUTSIDE the try: a malformed credential is a terminal input problem, and the
     // catch below would otherwise reclassify it as a retryable network failure.
-    const headers = webSessionHeaders(params.sessionToken, params.deviceId);
+    const cookieJarKey = this.cookieJarKeyFor(params.deviceId);
+    const headers = withCookieJarHeader(
+      webSessionHeaders(params.sessionToken, params.deviceId, this.browserProfile),
+      cookieJarKey,
+    );
+    if (cookieJarKey) seedSessionJar(cookieJarKey, params.sessionToken);
 
     let response: Response;
     try {
@@ -571,12 +624,16 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
         ? body.user.email
         : undefined;
     const expires = typeof body?.expires === 'string' ? Date.parse(body.expires) : Number.NaN;
+    const sessionToken = rotated ?? params.sessionToken;
+    // Vault wins: the jar is a cache. Re-seed so a curl-written session cookie
+    // cannot disagree with the value we are about to persist.
+    if (params.deviceId) seedSessionJar(params.deviceId, sessionToken);
 
     return {
       accessToken,
       ...(email ? { email } : {}),
       ...(Number.isFinite(expires) ? { sessionExpiresAt: expires } : {}),
-      sessionToken: rotated ?? params.sessionToken,
+      sessionToken,
     };
   }
 
@@ -594,6 +651,9 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
     assertSessionTokenShape(token);
 
     const resolvedDeviceId = deviceId ?? randomUUID();
+    // Reconnect / a reused paste-envelope device id must not inherit the previous
+    // connection's Cloudflare cookies or a rotated-away session token.
+    deleteCookieJar(resolvedDeviceId);
     /**
      * ONE deadline for the WHOLE connect, not just the mint.
      *
@@ -738,9 +798,8 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
           refresh_token: refreshToken,
         }).toString(),
         headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': USER_AGENT,
+          ...authHeaders(this.browserProfile),
+          'content-type': 'application/x-www-form-urlencoded',
         },
         method: 'POST',
         signal,
@@ -803,11 +862,15 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
     assertWebCapableAccessToken(token);
 
     const resolvedDeviceId = deviceId ?? randomUUID();
+    deleteCookieJar(resolvedDeviceId);
 
     let response: Response;
     try {
       response = await this.transportFetch(`${CHATGPT_BASE}${ME_PATH}`, {
-        headers: sessionHeaders(token, resolvedDeviceId),
+        headers: withCookieJarHeader(
+          this.buildSessionHeaders(token, resolvedDeviceId),
+          this.cookieJarKeyFor(resolvedDeviceId),
+        ),
         method: 'GET',
         signal: AbortSignal.timeout(IDENTITY_REQUEST_TIMEOUT_MS),
       });
@@ -888,7 +951,10 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
   ): Promise<string | undefined> {
     try {
       const response = await this.transportFetch(`${CHATGPT_BASE}${ME_PATH}`, {
-        headers: sessionHeaders(accessToken, deviceId),
+        headers: withCookieJarHeader(
+          this.buildSessionHeaders(accessToken, deviceId),
+          this.cookieJarKeyFor(deviceId),
+        ),
         method: 'GET',
         signal: ChatGPTWebOAuthService.probeSignal(EMAIL_FALLBACK_TIMEOUT_MS, budget),
       });
@@ -909,11 +975,17 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
     budget?: AbortSignal,
   ): Promise<string | undefined> {
     try {
-      const response = await this.transportFetch(`${CHATGPT_BASE}${ACCOUNTS_CHECK_PATH}`, {
-        headers: sessionHeaders(accessToken, deviceId),
-        method: 'GET',
-        signal: ChatGPTWebOAuthService.probeSignal(IDENTITY_REQUEST_TIMEOUT_MS, budget),
-      });
+      const response = await this.transportFetch(
+        `${CHATGPT_BASE}${accountsCheckPath(this.browserProfile)}`,
+        {
+          headers: withCookieJarHeader(
+            this.buildSessionHeaders(accessToken, deviceId),
+            this.cookieJarKeyFor(deviceId),
+          ),
+          method: 'GET',
+          signal: ChatGPTWebOAuthService.probeSignal(IDENTITY_REQUEST_TIMEOUT_MS, budget),
+        },
+      );
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
         return undefined;

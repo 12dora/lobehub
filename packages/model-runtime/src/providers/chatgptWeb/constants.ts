@@ -6,6 +6,8 @@
  * rot over time are flagged with a ROTS comment.
  */
 
+import type { RuntimeBrowserDeviceProfile } from '../../browserProfile';
+
 export const CHATGPT_BASE_URL = 'https://chatgpt.com';
 
 export const PATHS = {
@@ -43,24 +45,6 @@ export const DEFAULT_POW_SCRIPT = 'https://chatgpt.com/backend-api/sentinel/sdk.
 export const OAI_CLIENT_VERSION = 'prod-ee87f098e2f639d6379472eb197d55ab7018cdff';
 export const OAI_CLIENT_BUILD_NUMBER = '9395725';
 
-/**
- * Browser fingerprint. Kept coherent with the TLS impersonation profile used by
- * the server-side transport (curl-impersonate `chrome136`): a Chrome 136 on
- * Windows. Do NOT mix Edge UA with a Chrome TLS fingerprint.
- */
-export const CHROME_MAJOR = '136';
-export const CHROME_FULL_VERSION = '136.0.7103.114';
-export const DEFAULT_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_MAJOR}.0.0.0 Safari/537.36`;
-export const SEC_CH_UA = `"Chromium";v="${CHROME_MAJOR}", "Google Chrome";v="${CHROME_MAJOR}", "Not.A/Brand";v="99"`;
-export const SEC_CH_UA_FULL_VERSION_LIST = `"Chromium";v="${CHROME_FULL_VERSION}", "Google Chrome";v="${CHROME_FULL_VERSION}", "Not.A/Brand";v="99.0.0.0"`;
-export const SEC_CH_UA_PLATFORM = '"Windows"';
-export const SEC_CH_UA_PLATFORM_VERSION = '"19.0.0"';
-
-export const DEFAULT_LOCALE = 'en-US';
-export const DEFAULT_ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
-export const DEFAULT_TIMEZONE = 'UTC';
-export const DEFAULT_TIMEZONE_OFFSET_MIN = 0;
-
 /** Proof-of-work token prefixes. */
 export const POW_CONFIG_PREFIX = 'gAAAAAC';
 export const POW_PROOF_PREFIX = 'gAAAAAB';
@@ -69,24 +53,17 @@ export const POW_ITERATION_LIMIT = 500_000;
 /** Yield to the event loop every N iterations so a long solve cannot freeze it. */
 export const POW_YIELD_EVERY = 2000;
 
-export const POW_CORES = [8, 16, 24, 32];
 /** ROTS: React internal property names observed on chatgpt.com's document. */
 export const POW_DOCUMENT_KEYS = [
   '__reactContainer$fzelfjyxej8',
   '_reactListening5dehydibo78',
   'location',
 ];
-export const POW_SCREEN_RESOLUTIONS = [
-  [1920, 1080],
-  [1440, 900],
-  [2560, 1440],
-  [3840, 2160],
-];
-
 /**
  * NOTE: the separator below is U+2212 MINUS SIGN, not an ASCII hyphen. Keep it.
+ * Locale and core-count keys are appended from the persisted browser profile.
  */
-export const POW_NAVIGATOR_KEYS = [
+const POW_NAVIGATOR_KEYS_BASE = [
   'registerProtocolHandler−function registerProtocolHandler() { [native code] }',
   'storage−[object StorageManager]',
   'locks−[object LockManager]',
@@ -114,13 +91,17 @@ export const POW_NAVIGATOR_KEYS = [
   'doNotTrack',
   'serial−[object Serial]',
   'pdfViewerEnabled−true',
-  'language−en-US',
   'geolocation−[object Geolocation]',
   'userAgentData−[object NavigatorUAData]',
   'getUserMedia−function getUserMedia() { [native code] }',
   'sendBeacon−function sendBeacon() { [native code] }',
-  'hardwareConcurrency−32',
   'windowControlsOverlay−[object WindowControlsOverlay]',
+] as const;
+
+export const buildPowNavigatorKeys = (profile: RuntimeBrowserDeviceProfile): string[] => [
+  ...POW_NAVIGATOR_KEYS_BASE,
+  `language\u2212${profile.languages[0] ?? profile.oaiLanguage}`,
+  `hardwareConcurrency\u2212${profile.hardwareConcurrency}`,
 ];
 
 export const POW_WINDOW_KEYS = [
@@ -214,15 +195,15 @@ export const TIMEOUTS = {
   streamIdle: 60_000,
 } as const;
 
-export const CLIENT_CONTEXTUAL_INFO = {
-  is_dark_mode: false,
-  page_height: 900,
-  page_width: 1400,
-  pixel_ratio: 2,
-  screen_height: 1440,
-  screen_width: 2560,
+export const buildClientContextualInfo = (profile: RuntimeBrowserDeviceProfile) => ({
+  is_dark_mode: profile.prefersColorScheme === 'dark',
+  page_height: Math.min(900, profile.screen.availHeight),
+  page_width: Math.min(1400, profile.screen.availWidth),
+  pixel_ratio: profile.screen.dpr,
+  screen_height: profile.screen.height,
+  screen_width: profile.screen.width,
   time_since_loaded: 120,
-} as const;
+});
 
 /**
  * `/backend-api/f/conversation` sends a viewport fingerprint that differs per
@@ -234,38 +215,38 @@ export const CLIENT_CONTEXTUAL_INFO = {
  * no attachment at all sends exactly this block (verified live 2026-08-15), and
  * every plain chat turn now takes the conduit path.
  */
-export const FLOW_CLIENT_CONTEXTUAL_INFO = {
+export const buildFlowClientContextualInfo = (profile: RuntimeBrowserDeviceProfile) => ({
   attachments: {
     app_name: 'chatgpt.com',
-    is_dark_mode: false,
-    page_height: 1138,
-    page_width: 803,
-    pixel_ratio: 2,
-    screen_height: 1440,
-    screen_width: 2560,
+    is_dark_mode: profile.prefersColorScheme === 'dark',
+    page_height: Math.min(1138, profile.screen.availHeight),
+    page_width: Math.min(803, profile.screen.availWidth),
+    pixel_ratio: profile.screen.dpr,
+    screen_height: profile.screen.height,
+    screen_width: profile.screen.width,
     time_since_loaded: 401,
   },
   picture: {
     app_name: 'chatgpt.com',
-    is_dark_mode: false,
-    page_height: 1072,
-    page_width: 1724,
-    pixel_ratio: 1.2,
-    screen_height: 1440,
-    screen_width: 2560,
+    is_dark_mode: profile.prefersColorScheme === 'dark',
+    page_height: Math.min(1072, profile.screen.availHeight),
+    page_width: Math.min(1724, profile.screen.availWidth),
+    pixel_ratio: profile.screen.dpr,
+    screen_height: profile.screen.height,
+    screen_width: profile.screen.width,
     time_since_loaded: 1200,
   },
   search: {
     app_name: 'chatgpt.com',
-    is_dark_mode: false,
-    page_height: 925,
-    page_width: 886,
-    pixel_ratio: 2,
-    screen_height: 1440,
-    screen_width: 2560,
+    is_dark_mode: profile.prefersColorScheme === 'dark',
+    page_height: Math.min(925, profile.screen.availHeight),
+    page_width: Math.min(886, profile.screen.availWidth),
+    pixel_ratio: profile.screen.dpr,
+    screen_height: profile.screen.height,
+    screen_width: profile.screen.width,
     time_since_loaded: 36,
   },
-} as const;
+});
 
 /**
  * `client_prepare_state` on the `/f/conversation` call. Search reports

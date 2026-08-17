@@ -1,3 +1,12 @@
+import {
+  type BrowserDeviceProfile,
+  buildClientHintHeaders,
+  buildFetchMetadataHeaders,
+  DEFAULT_BROWSER_DEVICE_PROFILE,
+  NAVIGATION_ONLY_HEADERS,
+  PRIORITY_XHR,
+  userAgentHeaders,
+} from '@lobechat/model-runtime/browserProfile';
 import { isChatGPTWebSessionTokenSafe } from '@lobechat/utils/chatgptWebPaste';
 
 import { ChatGPTWebOAuthError } from './oauthErrors';
@@ -5,11 +14,6 @@ import { ChatGPTWebOAuthError } from './oauthErrors';
 export const CHATGPT_BASE = 'https://chatgpt.com';
 /** next-auth session cookie; the renewal credential of the web-session connect path. */
 const SESSION_COOKIE_NAME = '__Secure-next-auth.session-token';
-
-/** Coherent with the transport's `chrome136` impersonation profile. */
-export const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
-export const SEC_CH_UA = '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"';
 
 /**
  * Upper bound on a session token we are willing to hold. next-auth chunks a large session
@@ -60,20 +64,38 @@ export const assertSessionTokenShape = (value: string): void => {
 export const webSessionHeaders = (
   sessionToken: string,
   deviceId?: string,
+  browserProfile: BrowserDeviceProfile = DEFAULT_BROWSER_DEVICE_PROFILE,
 ): Record<string, string> => {
   assertSessionTokenShape(sessionToken);
   const safeDeviceId = deviceId && DEVICE_ID_CHARSET.test(deviceId) ? deviceId : undefined;
 
-  return {
-    'accept': 'application/json',
-    'accept-language': 'en-US,en;q=0.9',
-    'cookie': [
+  const headers: Record<string, string> = {
+    accept: 'application/json',
+    ...Object.fromEntries(
+      Object.entries(userAgentHeaders(browserProfile)).map(([name, value]) => [
+        name.toLowerCase(),
+        value,
+      ]),
+    ),
+    cookie: [
       ...(safeDeviceId ? [`oai-did=${safeDeviceId}`] : []),
       `${SESSION_COOKIE_NAME}=${sessionToken}`,
     ].join('; '),
-    'referer': `${CHATGPT_BASE}/`,
-    'sec-ch-ua': SEC_CH_UA,
-    'sec-ch-ua-mobile': '?0',
-    'user-agent': USER_AGENT,
+    origin: CHATGPT_BASE,
+    priority: PRIORITY_XHR,
+    referer: `${CHATGPT_BASE}/`,
+    ...Object.fromEntries(
+      Object.entries(buildClientHintHeaders(browserProfile, { entropy: 'low' })).map(
+        ([name, value]) => [name.toLowerCase(), value],
+      ),
+    ),
+    ...Object.fromEntries(
+      Object.entries(buildFetchMetadataHeaders('xhr')).map(([name, value]) => [
+        name.toLowerCase(),
+        value,
+      ]),
+    ),
   };
+  for (const name of NAVIGATION_ONLY_HEADERS) headers[name] = '';
+  return headers;
 };

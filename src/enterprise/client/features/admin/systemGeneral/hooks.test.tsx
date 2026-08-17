@@ -3,11 +3,12 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
+  AdminBrowserProfileService,
   AdminInfraSettingsService,
   AdminSystemInfraSettings,
 } from '@/enterprise/client/services/adminSystem';
 
-import { useAdminInfraSettings, useInfraDependencyProbe } from './hooks';
+import { useAdminBrowserProfile, useAdminInfraSettings, useInfraDependencyProbe } from './hooks';
 
 const mocks = vi.hoisted(() => ({
   swr: {
@@ -35,6 +36,11 @@ const service = (
   ...overrides,
 });
 
+const browserProfileService = (): AdminBrowserProfileService => ({
+  getBrowserProfile: vi.fn(),
+  regenerateBrowserProfile: vi.fn(),
+});
+
 describe('useAdminInfraSettings', () => {
   beforeEach(() => {
     mocks.swrCalls.length = 0;
@@ -48,6 +54,14 @@ describe('useAdminInfraSettings', () => {
   it('requests the overview when allowed', () => {
     renderHook(() => useAdminInfraSettings(true, service()));
     expect(mocks.swrCalls.at(-1)).toEqual(['admin.system.getInfraSettings']);
+  });
+
+  it('gates the browser profile query with the same infrastructure read permission', () => {
+    renderHook(() => useAdminBrowserProfile(false, browserProfileService()));
+    expect(mocks.swrCalls.at(-1)).toBeNull();
+
+    renderHook(() => useAdminBrowserProfile(true, browserProfileService()));
+    expect(mocks.swrCalls.at(-1)).toEqual(['admin.browserProfile.get']);
   });
 });
 

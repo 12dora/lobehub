@@ -246,6 +246,7 @@ export async function createChatGPTWebImage(
     ensureBudget('handshake');
     const requirements = await getRequirementsWithRetry(client, budget.signal);
     const bodies = buildImageConversationBodies({
+      browserProfile: client.browserProfile,
       model: IMAGE_UPSTREAM_MODEL,
       prompt,
       references,

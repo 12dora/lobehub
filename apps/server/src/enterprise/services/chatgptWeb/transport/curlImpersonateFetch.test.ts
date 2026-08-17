@@ -1,11 +1,24 @@
 import { getEventListeners } from 'node:events';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { createCurlImpersonateFetch } from './curlImpersonateFetch';
+import { COOKIE_JAR_HEADER, resetCookieJars } from './cookieJar';
+import {
+  createCurlImpersonateFetch,
+  getChatGPTWebFetch,
+  resetChatGPTWebFetch,
+} from './curlImpersonateFetch';
 import { ChatGPTWebTransportUnavailableError } from './errors';
 
 /**
@@ -58,6 +71,8 @@ const main = async () => {
     const entry = config.find(([key]) => key === name);
     return entry ? entry[1] : undefined;
   };
+  const cookie = first('cookie');
+  const cookieJar = first('cookie-jar');
   const headers = config.filter(([key]) => key === 'header').map(([, value]) => value);
   const url = first('url') || '';
   const method = first('request') || 'GET';
@@ -121,7 +136,7 @@ const main = async () => {
 
   if (path === '/echo') {
     dump('HTTP/2 200 \r\ncontent-type: application/json\r\n\r\n');
-    out(JSON.stringify({ argv, body, bodyMode, bodyPath, cacert, headers, method, proxy, url }));
+    out(JSON.stringify({ argv, body, bodyMode, bodyPath, cacert, cookie, cookieJar, headers, method, proxy, url }));
     return;
   }
 
@@ -180,7 +195,7 @@ let impersonateFetch: typeof fetch;
 const readAll = async (response: Response) => await response.text();
 
 /** Where the transport stages request bodies; used to prove nothing is left behind. */
-const TEMP_BODY_DIR = join(tmpdir(), 'aihub-chatgptweb');
+const TEMP_BODY_DIR = path.join(tmpdir(), 'aihub-chatgptweb');
 
 const listTempBodies = (): string[] => {
   try {
@@ -200,8 +215,8 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 3000): Promise<void
 };
 
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'curl-impersonate-test-'));
-  bin = join(dir, 'curl-impersonate');
+  dir = mkdtempSync(path.join(tmpdir(), 'curl-impersonate-test-'));
+  bin = path.join(dir, 'curl-impersonate');
   writeFileSync(bin, FAKE_BIN_SOURCE);
   chmodSync(bin, 0o755);
   impersonateFetch = createCurlImpersonateFetch({ binaryPath: bin });
@@ -209,6 +224,7 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(dir, { force: true, recursive: true });
+  resetCookieJars();
 });
 
 describe('createCurlImpersonateFetch', () => {
@@ -304,6 +320,54 @@ describe('createCurlImpersonateFetch', () => {
     expect(echoed.headers).toContain('content-type: application/json');
   });
 
+  it('renders empty header values as curl delete markers (Name:)', async () => {
+    const response = await impersonateFetch('https://chatgpt.com/echo', {
+      headers: {
+        'Accept': '*/*',
+        'Sec-Fetch-User': '',
+        'Upgrade-Insecure-Requests': '',
+      },
+    });
+    const echoed = (await response.json()) as { headers: string[] };
+
+    expect(echoed.headers).toContain('sec-fetch-user:');
+    expect(echoed.headers).toContain('upgrade-insecure-requests:');
+    expect(echoed.headers).not.toContain('sec-fetch-user;');
+    expect(echoed.headers).not.toContain('upgrade-insecure-requests;');
+  });
+
+  it('strips X-AIHub-Cookie-Jar, never forwards it, and wires cookie + cookie-jar', async () => {
+    const deviceId = '00000000-0000-4000-8000-00000000000a';
+    const response = await impersonateFetch('https://chatgpt.com/echo', {
+      headers: { Accept: '*/*', [COOKIE_JAR_HEADER]: deviceId },
+    });
+    const echoed = (await response.json()) as {
+      cookie?: string;
+      cookieJar?: string;
+      headers: string[];
+    };
+
+    expect(
+      echoed.headers.some((header) => header.toLowerCase().startsWith('x-aihub-cookie-jar')),
+    ).toBe(false);
+    expect(echoed.cookie).toBeTruthy();
+    expect(echoed.cookieJar).toBe(echoed.cookie);
+    expect(echoed.cookie).toContain('aihub-chatgptweb-jars');
+    const jarText = readFileSync(echoed.cookie!, 'utf8');
+    expect(jarText).toContain('oai-did');
+    expect(jarText).toContain(deviceId);
+  });
+
+  it('omits cookie / cookie-jar when the private header is absent', async () => {
+    const response = await impersonateFetch('https://chatgpt.com/echo', {
+      headers: { Accept: '*/*' },
+    });
+    const echoed = (await response.json()) as { cookie?: string; cookieJar?: string };
+
+    expect(echoed.cookie).toBeUndefined();
+    expect(echoed.cookieJar).toBeUndefined();
+  });
+
   it('accepts Uint8Array and URLSearchParams bodies', async () => {
     const bytes = await impersonateFetch('https://chatgpt.com/echo', {
       body: new TextEncoder().encode('raw-bytes'),
@@ -377,7 +441,7 @@ describe('createCurlImpersonateFetch', () => {
   });
 
   it('throws an actionable error when the binary is missing', async () => {
-    const missing = createCurlImpersonateFetch({ binaryPath: join(dir, 'does-not-exist') });
+    const missing = createCurlImpersonateFetch({ binaryPath: path.join(dir, 'does-not-exist') });
 
     await expect(missing('https://chatgpt.com/json200')).rejects.toBeInstanceOf(
       ChatGPTWebTransportUnavailableError,
@@ -403,6 +467,20 @@ describe('createCurlImpersonateFetch', () => {
 
     await expect(reader.read()).rejects.toThrow(/was not consumed/);
   }, 10_000);
+});
+
+describe('getChatGPTWebFetch profile cache', () => {
+  it('includes the impersonate profile in the memoization key', () => {
+    resetChatGPTWebFetch();
+
+    const chrome136 = getChatGPTWebFetch(null, { impersonate: 'chrome136' });
+    const sameChrome136 = getChatGPTWebFetch(null, { impersonate: 'chrome136' });
+    const chrome150 = getChatGPTWebFetch(null, { impersonate: 'chrome150' });
+
+    expect(sameChrome136).toBe(chrome136);
+    expect(chrome150).not.toBe(chrome136);
+    resetChatGPTWebFetch();
+  });
 });
 
 /**
@@ -624,10 +702,10 @@ describe.skipIf(!process.env.CHATGPT_WEB_CURL_IMPERSONATE_BIN)('real curl-impers
    * stdout entirely — the file's absence is the crisp signal that none of it applied.
    */
   it('ignores a poisoned .curlrc', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'curl-impersonate-curlrc-'));
-    const stolenBody = join(home, 'stolen-body.bin');
+    const home = mkdtempSync(path.join(tmpdir(), 'curl-impersonate-curlrc-'));
+    const stolenBody = path.join(home, 'stolen-body.bin');
     writeFileSync(
-      join(home, '.curlrc'),
+      path.join(home, '.curlrc'),
       ['location', 'url = "https://example.com/"', `output = "${stolenBody}"`, ''].join('\n'),
     );
     const previousCurlHome = process.env.CURL_HOME;

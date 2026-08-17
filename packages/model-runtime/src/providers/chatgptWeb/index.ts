@@ -1,6 +1,7 @@
 import type { ChatModelCard } from '@lobechat/types';
 import createDebug from 'debug';
 
+import type { RuntimeBrowserDeviceProfile } from '../../browserProfile';
 import type { LobeRuntimeAI } from '../../core/BaseAI';
 import type {
   ChatGPTWebDoneContext,
@@ -127,6 +128,7 @@ export interface LobeChatGPTWebParams {
   /** ChatGPT Web access token (OAuth or pasted). */
   apiKey?: string;
   baseURL?: string;
+  browserProfile?: RuntimeBrowserDeviceProfile;
   chatgptAccountId?: string;
   chatgptDeviceId?: string;
   /** Test seam — inject a pre-built (or fake) protocol client. */
@@ -151,6 +153,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
   constructor({
     apiKey,
     baseURL,
+    browserProfile,
     chatgptAccountId,
     chatgptDeviceId,
     client,
@@ -168,6 +171,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       new ChatGPTWebClient({
         accessToken: apiKey!,
         accountId: chatgptAccountId,
+        browserProfile,
         deviceId: chatgptDeviceId,
         fetch: customFetch,
       });
@@ -211,6 +215,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       try {
         const prepare = buildPrepareBody({
           attachmentMimeTypes: hasAttachments ? mimeTypes : undefined,
+          browserProfile: this.client.browserProfile,
           model,
           prompt: lastUserText(messages),
           systemHints: search ? ['search'] : [],
@@ -232,8 +237,19 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       }
 
       const body = useFPath
-        ? buildFConversationBody({ messages, model, search, thinkingEffort })
-        : buildConversationBody({ messages, model, thinkingEffort });
+        ? buildFConversationBody({
+            browserProfile: this.client.browserProfile,
+            messages,
+            model,
+            search,
+            thinkingEffort,
+          })
+        : buildConversationBody({
+            browserProfile: this.client.browserProfile,
+            messages,
+            model,
+            thinkingEffort,
+          });
 
       if (process.env[DEBUG_FLAG] === '1')
         log(

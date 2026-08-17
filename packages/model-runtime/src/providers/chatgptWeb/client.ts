@@ -4,7 +4,6 @@ import { assertAllowedAssetUrl, checkedAssetUrl } from './assetUrls';
 import { abortableSleep, MAX_DOWNLOAD_BYTES, readBoundedBody } from './boundedBody';
 import {
   CHATGPT_BASE_URL,
-  DEFAULT_USER_AGENT,
   PATHS,
   RETRYABLE_POLL_STATUSES,
   TEMPLATED_ROUTES,
@@ -17,11 +16,10 @@ import {
   isChatGPTWebError,
 } from './errors';
 import {
+  buildAssetDownloadHeaders,
   buildBlobUploadHeaders,
   buildBootstrapHeaders,
   buildSentinelHeaders,
-  rejectCrlf,
-  sanitizeHeaderValue,
 } from './headers';
 import {
   ChatGPTWebHttp,
@@ -251,8 +249,8 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
   } = {}): Promise<ChatRequirements> {
     onProgress?.('bootstrap');
     const resources = await this.bootstrapPowResources(signal);
-    const userAgent = this.userAgent || DEFAULT_USER_AGENT;
-    const requirementsToken = buildRequirementsToken(resources, userAgent);
+    const userAgent = this.userAgent;
+    const requirementsToken = buildRequirementsToken(resources, userAgent, this.browserProfile);
 
     onProgress?.('prepare');
     const prepare = await this.retryOnCloudflare(
@@ -271,6 +269,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     const challenges = await solveSentinelChallenges({
       powLimit,
       prepare,
+      browserProfile: this.browserProfile,
       requirementsToken,
       resources,
       signal,
@@ -656,7 +655,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
           mimeType: meta.mimeType,
           name: meta.name,
           size: bytes.length,
-          timezoneOffsetMin: this.timezoneOffsetMin,
+          browserProfile: this.browserProfile,
           width: meta.width,
         }),
       ),
@@ -883,20 +882,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     const managed = await this.rawFetch(
       url,
       {
-        headers: {
-          'Accept': 'application/json, text/plain, */*',
-          'Accept-Language': 'en-US,en;q=0.8',
-          // the token is user input; a CR/LF in it is request splitting in the
-          // curl-backed transport, so it is REJECTED rather than mangled
-          ...(sameOrigin
-            ? {
-                Authorization: `Bearer ${rejectCrlf('Authorization', this.fingerprint.accessToken)}`,
-              }
-            : {}),
-          'Origin': CHATGPT_BASE_URL,
-          'Referer': `${CHATGPT_BASE_URL}/`,
-          'User-Agent': sanitizeHeaderValue(this.userAgent),
-        },
+        headers: buildAssetDownloadHeaders(this.fingerprint, { sameOrigin }),
       },
       { context: 'asset_download', signal, timeoutMs },
     );

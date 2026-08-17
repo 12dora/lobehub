@@ -3,7 +3,20 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { redactSecrets } from '../../networkProxy/redact';
 import { removeQuietly, writeRequestBodyFile } from './bodyFile';
 import { createBodyStream } from './bodyStream';
-import { buildInvocation, fetchFailed, MAX_STDERR_BYTES, readEnv } from './curlConfig';
+import {
+  COOKIE_JAR_HEADER,
+  ensureCookieJarFile,
+  getCookieJarPath,
+  seedCookieJar,
+  stripCookieJarHeader,
+} from './cookieJar';
+import {
+  buildInvocation,
+  DEFAULT_IMPERSONATE_PROFILE,
+  fetchFailed,
+  MAX_STDERR_BYTES,
+  readEnv,
+} from './curlConfig';
 import { buildResponse } from './curlResponse';
 import { ChatGPTWebTransportUnavailableError } from './errors';
 import { HeaderDumpReader, type HeaderDumpSplit } from './headerDump';
@@ -22,7 +35,7 @@ import { resolveCurlImpersonateBinary, resolveCurlImpersonateBinaryCached } from
  * body, `AbortSignal` support, no redirect following, and undici-shaped network errors.
  */
 
-export { DEFAULT_IMPERSONATE_PROFILE } from './curlConfig';
+export { DEFAULT_IMPERSONATE_PROFILE };
 
 const KILL_GRACE_MS = 2000;
 /**
@@ -39,6 +52,13 @@ export interface CurlImpersonateFetchOptions {
   bodyStallTimeoutMs?: number;
   /** CA bundle passed as `--cacert`; falls back to SSL_CERT_FILE / NODE_EXTRA_CA_CERTS. */
   caBundle?: string;
+  /**
+   * Factory-level Netscape jar (`cookie` / `cookie-jar`). Per-request
+   * `X-AIHub-Cookie-Jar` (the connection deviceId) overrides this: the
+   * transport maps it to `$TMPDIR/aihub-chatgptweb-jars/<sha256(deviceId)>.txt`,
+   * seeds `oai-did`, and strips the header before spawn. Never forwarded.
+   */
+  cookieJarPath?: string;
   /** `--max-time` budget for a whole request/response. */
   defaultTimeoutMs?: number;
   /** curl-impersonate browser profile. */
@@ -67,6 +87,19 @@ export const createCurlImpersonateFetch = (
 
     if (request.signal?.aborted) throw createAbortError();
 
+    // `X-AIHub-Cookie-Jar` is a private hop-by-hop header: map it to a jar and
+    // drop it so curl never sends it upstream.
+    const stripped = stripCookieJarHeader(request.headers);
+    let cookieJarPath = options.cookieJarPath;
+    if (stripped.cookieJarKey) {
+      cookieJarPath = getCookieJarPath(stripped.cookieJarKey);
+      seedCookieJar(cookieJarPath, [
+        { domain: '.chatgpt.com', name: 'oai-did', value: stripped.cookieJarKey },
+      ]);
+    } else if (cookieJarPath) {
+      ensureCookieJarFile(cookieJarPath);
+    }
+
     let tempBodyPath: string | undefined;
     let tempBodyRemoved = false;
     const removeTempBody = () => {
@@ -88,7 +121,11 @@ export const createCurlImpersonateFetch = (
     const invocation = buildInvocation({
       ...(tempBodyPath ? { bodyFilePath: tempBodyPath } : {}),
       caBundle: settings.caBundle,
-      headers: request.headers,
+      ...(cookieJarPath ? { cookieJarPath } : {}),
+      dropHeaders: request.dropHeaders.filter(
+        (name) => name.toLowerCase() !== COOKIE_JAR_HEADER.toLowerCase(),
+      ),
+      headers: stripped.headers,
       impersonate: settings.impersonate,
       method: request.method,
       proxyUrl: settings.proxyUrl,
@@ -250,7 +287,11 @@ export const createCurlImpersonateFetch = (
 };
 
 const CURL_CACHE_MAX = 4;
-const keyed = new Map<string, { fetch: typeof fetch; lastUsed: number }>();
+const keyed = new Map<string, { fetch: typeof fetch; lastUsed: number; proxyUrl: string }>();
+
+export interface ChatGPTWebFetchOptions {
+  impersonate?: string;
+}
 
 /**
  * Impersonated fetch keyed by outlet `proxyUrl` (LRU 4). Binary resolution
@@ -261,8 +302,12 @@ const keyed = new Map<string, { fetch: typeof fetch; lastUsed: number }>();
  * Pass `proxyUrl` to emit `proxy = "<url>"` in the stdin curl config. Callers
  * that do not need an egress proxy may omit it.
  */
-export const getChatGPTWebFetch = (proxyUrl?: string | null): typeof fetch => {
-  const key = proxyUrl ?? '';
+export const getChatGPTWebFetch = (
+  proxyUrl?: string | null,
+  { impersonate = DEFAULT_IMPERSONATE_PROFILE }: ChatGPTWebFetchOptions = {},
+): typeof fetch => {
+  const resolvedProxyUrl = proxyUrl ?? '';
+  const key = `${impersonate}\n${resolvedProxyUrl}`;
   const existing = keyed.get(key);
   if (existing) {
     existing.lastUsed = Date.now();
@@ -280,15 +325,18 @@ export const getChatGPTWebFetch = (proxyUrl?: string | null): typeof fetch => {
     if (oldestKey !== undefined) keyed.delete(oldestKey);
     else break;
   }
-  const impl = createCurlImpersonateFetch(proxyUrl ? { proxyUrl } : {});
-  keyed.set(key, { fetch: impl, lastUsed: Date.now() });
+  const impl = createCurlImpersonateFetch({
+    impersonate,
+    ...(resolvedProxyUrl ? { proxyUrl: resolvedProxyUrl } : {}),
+  });
+  keyed.set(key, { fetch: impl, lastUsed: Date.now(), proxyUrl: resolvedProxyUrl });
   return impl;
 };
 
 /** Drop cached transports whose key is not in `keep` (empty string = no-proxy transport). */
 export const evictChatGPTWebFetchExcept = (keep: ReadonlySet<string>): void => {
-  for (const key of keyed.keys()) {
-    if (key && !keep.has(key)) keyed.delete(key);
+  for (const [key, value] of keyed) {
+    if (value.proxyUrl && !keep.has(value.proxyUrl)) keyed.delete(key);
   }
 };
 

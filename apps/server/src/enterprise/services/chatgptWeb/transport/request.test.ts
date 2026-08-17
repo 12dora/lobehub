@@ -218,12 +218,28 @@ describe('normalizeRequest', () => {
     });
 
     expect(request).toMatchObject({
+      dropHeaders: [],
       headers: [['oai-language', 'en-US']],
       method: 'GET',
       url: 'https://chatgpt.com/backend-api/me',
     });
     expect(request.body).toBeUndefined();
     expect(request.signal).toBe(controller.signal);
+  });
+
+  it('collects empty header values into dropHeaders so curl can delete them', async () => {
+    const request = await normalizeRequest('https://chatgpt.com/backend-api/me', {
+      headers: {
+        'Accept': '*/*',
+        'Sec-Fetch-User': '',
+        'Upgrade-Insecure-Requests': '',
+      },
+    });
+
+    expect(request.headers).toEqual([['accept', '*/*']]);
+    expect(request.dropHeaders).toEqual(
+      expect.arrayContaining(['sec-fetch-user', 'upgrade-insecure-requests']),
+    );
   });
 
   it('accepts a URL instance', async () => {

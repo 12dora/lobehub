@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_BROWSER_DEVICE_PROFILE, resolveProfileTimezone } from '../../browserProfile';
 import {
   buildConversationBody,
   buildFConversationBody,
@@ -10,6 +11,8 @@ import {
   toConversationMessages,
 } from './requestBuilders';
 import type { AttachmentRef } from './types';
+
+const PROFILE = DEFAULT_BROWSER_DEVICE_PROFILE;
 
 const imageRef: AttachmentRef = {
   height: 512,
@@ -69,8 +72,15 @@ describe('buildConversationBody', () => {
     expect(body.history_and_training_disabled).toBe(true);
     expect(body.force_use_sse).toBe(true);
     expect(body.system_hints).toEqual([]);
-    expect(body.timezone).toBe('UTC');
-    expect(body.timezone_offset_min).toBe(0);
+    expect(body.timezone).toBe(PROFILE.timezone.iana);
+    // The offset must be the live (DST-aware) one for that zone, not the stored standard
+    // offset — the two travel in the same body and would otherwise contradict each other.
+    expect(body.timezone_offset_min).toBe(resolveProfileTimezone(PROFILE).offsetMinutes);
+    expect(body.client_contextual_info).toMatchObject({
+      pixel_ratio: PROFILE.screen.dpr,
+      screen_height: PROFILE.screen.height,
+      screen_width: PROFILE.screen.width,
+    });
     expect(body).not.toHaveProperty('thinking_effort');
     expect(body.messages[0]).toMatchObject({
       author: { role: 'user' },
@@ -286,9 +296,9 @@ describe('buildFConversationBody', () => {
       is_dark_mode: false,
       page_height: 925,
       page_width: 886,
-      pixel_ratio: 2,
-      screen_height: 1440,
-      screen_width: 2560,
+      pixel_ratio: PROFILE.screen.dpr,
+      screen_height: PROFILE.screen.height,
+      screen_width: PROFILE.screen.width,
       time_since_loaded: 36,
     });
   });
@@ -305,11 +315,11 @@ describe('buildFConversationBody', () => {
     expect(body.client_contextual_info).toEqual({
       app_name: 'chatgpt.com',
       is_dark_mode: false,
-      page_height: 1072,
+      page_height: Math.min(1072, PROFILE.screen.availHeight),
       page_width: 1724,
-      pixel_ratio: 1.2,
-      screen_height: 1440,
-      screen_width: 2560,
+      pixel_ratio: PROFILE.screen.dpr,
+      screen_height: PROFILE.screen.height,
+      screen_width: PROFILE.screen.width,
       time_since_loaded: 1200,
     });
     expect(body.parent_message_id).toMatch(UUID_RE);
@@ -326,11 +336,11 @@ describe('buildFConversationBody', () => {
     expect(body.client_contextual_info).toEqual({
       app_name: 'chatgpt.com',
       is_dark_mode: false,
-      page_height: 1138,
+      page_height: Math.min(1138, PROFILE.screen.availHeight),
       page_width: 803,
-      pixel_ratio: 2,
-      screen_height: 1440,
-      screen_width: 2560,
+      pixel_ratio: PROFILE.screen.dpr,
+      screen_height: PROFILE.screen.height,
+      screen_width: PROFILE.screen.width,
       time_since_loaded: 401,
     });
     expect(body.parent_message_id).toBe('client-created-root');
@@ -405,7 +415,7 @@ describe('buildFileCreateBody', () => {
       library_persistence_mode: 'opportunistic',
       reset_rate_limits: false,
       store_in_library: true,
-      timezone_offset_min: 0,
+      timezone_offset_min: resolveProfileTimezone(PROFILE).offsetMinutes,
       use_case: 'multimodal',
       width: 512,
     });
@@ -423,7 +433,7 @@ describe('buildFileCreateBody', () => {
       file_name: 'report.pdf',
       file_size: 20,
       reset_rate_limits: false,
-      timezone_offset_min: 0,
+      timezone_offset_min: resolveProfileTimezone(PROFILE).offsetMinutes,
       use_case: 'my_files',
     });
   });

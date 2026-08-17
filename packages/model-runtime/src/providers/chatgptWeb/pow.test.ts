@@ -1,7 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_BROWSER_DEVICE_PROFILE, resolveProfileTimezone } from '../../browserProfile';
 import { decodeBase64Utf8 } from './binary';
-import { DEFAULT_POW_SCRIPT, POW_CONFIG_PREFIX, POW_PROOF_PREFIX } from './constants';
+import {
+  buildPowNavigatorKeys,
+  DEFAULT_POW_SCRIPT,
+  POW_CONFIG_PREFIX,
+  POW_PROOF_PREFIX,
+} from './constants';
 import { ChatGPTWebError } from './errors';
 import {
   buildLegacyRequirementsToken,
@@ -10,7 +16,8 @@ import {
   solveProofToken,
 } from './pow';
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/136.0.0.0 Safari/537.36';
+const PROFILE = DEFAULT_BROWSER_DEVICE_PROFILE;
+const USER_AGENT = PROFILE.userAgent;
 
 describe('parsePowResources', () => {
   it('collects script sources and the build marker from a src', () => {
@@ -48,6 +55,7 @@ describe('parsePowResources', () => {
 describe('buildPowConfig', () => {
   it('produces the 25-slot fingerprint array', () => {
     const config = buildPowConfig({
+      browserProfile: PROFILE,
       dataBuild: 'c/abc/_',
       scriptSources: ['https://example.com/a.js'],
       userAgent: USER_AGENT,
@@ -59,17 +67,59 @@ describe('buildPowConfig', () => {
     expect(config[4]).toBe(USER_AGENT);
     expect(config[5]).toBe('https://example.com/a.js');
     expect(config[6]).toBe('c/abc/_');
-    expect(config[7]).toBe('en-US');
-    expect(config[8]).toBe('en-US,es-US,en,es');
+    expect(config[7]).toBe(PROFILE.languages[0]);
+    expect(config[8]).toBe(PROFILE.languages.join(','));
     expect(config[15]).toBe('');
     expect(config.slice(18)).toEqual([0, 0, 0, 0, 0, 0, 0]);
-    expect(String(config[1])).toMatch(/GMT-0500 \(Eastern Standard Time\)$/);
+    expect(String(config[1]).endsWith(resolveProfileTimezone(PROFILE).jsDateSuffix)).toBe(true);
+    expect(config[16]).toBe(PROFILE.hardwareConcurrency);
+    expect(config[0]).toBe(PROFILE.screen.width + PROFILE.screen.height);
+    const navigatorKeys = buildPowNavigatorKeys(PROFILE);
+    expect(
+      navigatorKeys.some((key) =>
+        key.endsWith(`hardwareConcurrency\u2212${PROFILE.hardwareConcurrency}`),
+      ),
+    ).toBe(true);
+    expect(navigatorKeys.some((key) => key.endsWith(`language\u2212${PROFILE.languages[0]}`))).toBe(
+      true,
+    );
   });
+});
+
+describe('buildPowConfig timezone', () => {
+  it.each([
+    ['2026-08-01T12:00:00Z', 'GMT-0400 (Eastern Daylight Time)', 8],
+    ['2026-01-15T12:00:00Z', 'GMT-0500 (Eastern Standard Time)', 7],
+  ])(
+    'writes the live DST offset and zone name of the profile at %s',
+    (now, expectedSuffix, expectedHour) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(now));
+      try {
+        const easternProfile = {
+          ...PROFILE,
+          timezone: {
+            iana: 'America/New_York',
+            jsDateSuffix: 'GMT-0500 (Eastern Standard Time)',
+            offsetKind: 'standard' as const,
+            offsetMinutes: 300,
+          },
+        };
+        const config = buildPowConfig({ browserProfile: easternProfile, userAgent: USER_AGENT });
+
+        // The wall clock and the zone label must agree: 12:00 UTC is 08:00 EDT / 07:00 EST.
+        expect(String(config[1])).toContain(` ${String(expectedHour).padStart(2, '0')}:00:00 `);
+        expect(String(config[1]).endsWith(expectedSuffix)).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 describe('buildLegacyRequirementsToken', () => {
   it('is the base64 config array behind the gAAAAAC prefix', () => {
-    const token = buildLegacyRequirementsToken({ userAgent: USER_AGENT });
+    const token = buildLegacyRequirementsToken({ browserProfile: PROFILE, userAgent: USER_AGENT });
 
     expect(token.startsWith(POW_CONFIG_PREFIX)).toBe(true);
     const decoded = JSON.parse(decodeBase64Utf8(token.slice(POW_CONFIG_PREFIX.length)));
@@ -79,7 +129,7 @@ describe('buildLegacyRequirementsToken', () => {
 });
 
 describe('solveProofToken', () => {
-  const config = buildPowConfig({ userAgent: USER_AGENT });
+  const config = buildPowConfig({ browserProfile: PROFILE, userAgent: USER_AGENT });
 
   it('solves a trivial difficulty and returns the gAAAAAB token', async () => {
     const token = await solveProofToken({ config, difficulty: 'ffff', seed: 'seed-1' });

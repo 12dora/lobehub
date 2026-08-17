@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  DEFAULT_BROWSER_DEVICE_PROFILE,
+  generateBrowserDeviceProfile,
+} from '@lobechat/model-runtime/browserProfile';
+import {
+  buildChatGptWebXhrHeaders,
+  COOKIE_JAR_HEADER,
+  deriveSessionId,
+} from '@lobechat/model-runtime/chatgptWebIdentity';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
@@ -10,7 +19,13 @@ import {
   type ChatGPTWebPasteEnvelope,
   parseCallbackInput,
   parsePasteEnvelope,
+  sessionHeaders,
 } from './oauthService';
+import { resetCookieJars } from './transport';
+
+const PROFILE = DEFAULT_BROWSER_DEVICE_PROFILE;
+/** Stands in for the installation's persisted profile (never the bundled fallback). */
+const PERSISTED_PROFILE = generateBrowserDeviceProfile({ seed: 'oauth-service-installation' });
 
 const config: OAuthDeviceFlowConfig = {
   allowAccessTokenPaste: true,
@@ -99,6 +114,10 @@ const withFakeTimers = async <T>(run: () => Promise<T>): Promise<T> => {
 };
 
 const futureExp = Math.floor(Date.now() / 1000) + 86_400;
+
+afterEach(() => {
+  resetCookieJars();
+});
 
 describe('ChatGPTWebOAuthService.initiateDeviceCode', () => {
   it('builds the authorize URL with the full PKCE parameter set', async () => {
@@ -317,22 +336,22 @@ describe('ChatGPTWebOAuthService.exchangeCallback', () => {
     const headers = authFetch.mock.calls[0][1].headers as Record<string, string>;
     expect(headers).toMatchObject({
       'accept': 'application/json',
-      'accept-encoding': 'gzip, deflate, br',
-      'accept-language': 'en-US,en;q=0.9',
+      'accept-language': PROFILE.acceptLanguage,
       'cache-control': 'no-cache',
-      'connection': 'keep-alive',
-      'dnt': '1',
       'origin': 'https://platform.openai.com',
       'priority': 'u=1, i',
       'referer': 'https://platform.openai.com/',
       'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
+      'sec-ch-ua-platform': `"${PROFILE.platform}"`,
       'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors',
       'sec-fetch-site': 'same-origin',
-      'sec-gpc': '1',
     });
-    expect(headers['user-agent']).toContain('Chrome/136');
+    expect(headers.dnt).toBe(PROFILE.dnt ? '1' : undefined);
+    expect(headers).not.toHaveProperty('connection');
+    expect(headers).not.toHaveProperty('accept-encoding');
+    expect(headers).not.toHaveProperty('sec-gpc');
+    expect(headers['user-agent']).toBe(PROFILE.userAgent);
   });
 
   /**
@@ -477,6 +496,7 @@ describe('ChatGPTWebOAuthService.verifyAccessToken', () => {
   const build = (transportFetch: ReturnType<typeof vi.fn>) =>
     new ChatGPTWebOAuthService({
       authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
       transportFetch: transportFetch as unknown as typeof fetch,
     });
 
@@ -496,11 +516,25 @@ describe('ChatGPTWebOAuthService.verifyAccessToken', () => {
     expect(connection.refreshToken).toBeUndefined();
     expect(connection.deviceId).toMatch(/^[\da-f-]{36}$/);
 
-    const headers = transportFetch.mock.calls[0][1].headers;
-    expect(headers.authorization).toBe(`Bearer ${jwt({ exp: futureExp })}`);
-    expect(headers['oai-device-id']).toBe(connection.deviceId);
-    expect(headers['oai-language']).toBe('en-US');
-    expect(headers['user-agent']).toContain('Chrome/136');
+    const headers = transportFetch.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Bearer ${jwt({ exp: futureExp })}`);
+    expect(headers['OAI-Device-Id']).toBe(connection.deviceId);
+    expect(headers['OAI-Language']).toBe(PERSISTED_PROFILE.oaiLanguage);
+    expect(headers['user-agent'] ?? headers['User-Agent']).toBe(PERSISTED_PROFILE.userAgent);
+    expect(headers['Sec-Ch-Ua-Platform']).toBe(`"${PERSISTED_PROFILE.platform}"`);
+    expect(headers['Sec-Fetch-User']).toBe('');
+    expect(headers['Upgrade-Insecure-Requests']).toBe('');
+    expect(headers[COOKIE_JAR_HEADER]).toBe(connection.deviceId);
+    expect(headers['OAI-Session-Id']).toBe(deriveSessionId(connection.deviceId, PERSISTED_PROFILE));
+    expect(headers).toEqual({
+      ...buildChatGptWebXhrHeaders({
+        accessToken: jwt({ exp: futureExp }),
+        browserProfile: PERSISTED_PROFILE,
+        deviceId: connection.deviceId,
+        sessionId: headers['OAI-Session-Id'],
+      }),
+      [COOKIE_JAR_HEADER]: connection.deviceId,
+    });
   });
 
   it('reuses a provided device id', async () => {
@@ -532,6 +566,68 @@ describe('ChatGPTWebOAuthService.verifyAccessToken', () => {
   });
 });
 
+describe('sessionHeaders / webSessionHeaders identity', () => {
+  it('sessionHeaders deep-equals the runtime XHR builder for the same inputs', () => {
+    expect(sessionHeaders('tok', 'dev-1', 'sess-1')).toEqual(
+      buildChatGptWebXhrHeaders({
+        accessToken: 'tok',
+        deviceId: 'dev-1',
+        sessionId: 'sess-1',
+      }),
+    );
+  });
+
+  it('sends no cookie jar while degraded onto the bundled fallback identity', async () => {
+    // cf_clearance is UA-bound: replaying the persisted identity's jar behind the
+    // fallback UA/TLS profile is what provokes the Cloudflare challenge.
+    const transportFetch = vi.fn();
+    transportFetch
+      .mockResolvedValueOnce(jsonResponse({ email: 'me@example.com' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ accounts: { default: { account: { id: 'acct-9' } } } }),
+      );
+
+    await new ChatGPTWebOAuthService({
+      authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: DEFAULT_BROWSER_DEVICE_PROFILE,
+      transportFetch: transportFetch as unknown as typeof fetch,
+    }).verifyAccessToken(jwt({ exp: futureExp }), 'device-stable');
+
+    for (const call of transportFetch.mock.calls) {
+      const init = call[1] as { headers: Record<string, string> };
+      expect(init.headers[COOKIE_JAR_HEADER]).toBeUndefined();
+    }
+  });
+
+  it('defaults OAI-Session-Id to the device-derived uuid', () => {
+    expect(sessionHeaders('tok', 'dev-1')['OAI-Session-Id']).toBe(deriveSessionId('dev-1'));
+  });
+
+  it('consecutive /me and accounts-check probes for one device share OAI-Session-Id', async () => {
+    const deviceId = 'device-stable';
+    const transportFetch = vi.fn();
+    transportFetch
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(jsonResponse({ email: 'me@example.com' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ accounts: { default: { account: { id: 'acct-9' } } } }),
+      );
+
+    await new ChatGPTWebOAuthService({
+      authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
+      transportFetch: transportFetch as unknown as typeof fetch,
+    }).verifyAccessToken(jwt({ exp: futureExp }), deviceId);
+
+    const sessionIds = transportFetch.mock.calls.map((call) => {
+      const init = call[1] as { headers: Record<string, string> };
+      return init.headers['OAI-Session-Id'];
+    });
+    expect(sessionIds.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(sessionIds)).toEqual(new Set([deriveSessionId(deviceId, PERSISTED_PROFILE)]));
+  });
+});
+
 describe('ChatGPTWebOAuthService.refreshAccessToken', () => {
   const build = (authFetch: ReturnType<typeof vi.fn>) =>
     new ChatGPTWebOAuthService({ authFetch: authFetch as unknown as typeof fetch });
@@ -548,8 +644,13 @@ describe('ChatGPTWebOAuthService.refreshAccessToken', () => {
 
     const [url, init] = authFetch.mock.calls[0];
     expect(url).toBe('https://auth.openai.com/oauth/token');
-    expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
-    expect(init.headers['User-Agent']).toContain('Chrome/136');
+    expect(init.headers['content-type']).toBe('application/x-www-form-urlencoded');
+    expect(init.headers['user-agent']).toBe(PROFILE.userAgent);
+    expect(init.headers['sec-ch-ua-platform']).toBe(`"${PROFILE.platform}"`);
+    expect(init.headers['accept-language']).toBe(PROFILE.acceptLanguage);
+    expect(init.headers).not.toHaveProperty('connection');
+    expect(init.headers).not.toHaveProperty('sec-gpc');
+    expect(init.headers).not.toHaveProperty('accept-encoding');
     // A hung token endpoint must not pin the shared refresh lease indefinitely.
     expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(Object.fromEntries(new URLSearchParams(init.body))).toEqual({
@@ -896,6 +997,7 @@ describe('unreadable session response', () => {
   const build = (transportFetch: ReturnType<typeof vi.fn>) =>
     new ChatGPTWebOAuthService({
       authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
       transportFetch: transportFetch as unknown as typeof fetch,
     });
 
@@ -952,6 +1054,7 @@ describe('ChatGPTWebOAuthService.connectWithSession', () => {
   const build = (transportFetch: ReturnType<typeof vi.fn>) =>
     new ChatGPTWebOAuthService({
       authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
       transportFetch: transportFetch as unknown as typeof fetch,
     });
 
@@ -987,6 +1090,24 @@ describe('ChatGPTWebOAuthService.connectWithSession', () => {
     expect(connection.expiresAt).toBe(futureExp * 1000);
     expect(connection.sessionExpiresAt).toBe(Date.parse('2026-12-01T00:00:00.000Z'));
     expect(connection.deviceId).toBe('device-fixed');
+
+    const sessionCall = transportFetch.mock.calls.find((call) =>
+      String(call[0]).endsWith('/api/auth/session'),
+    );
+    expect(sessionCall).toBeDefined();
+    const sessionHdrs = sessionCall![1].headers as Record<string, string>;
+    expect(sessionHdrs.origin).toBe('https://chatgpt.com');
+    expect(sessionHdrs['sec-fetch-site']).toBe('same-origin');
+    expect(sessionHdrs['sec-fetch-mode']).toBe('cors');
+    expect(sessionHdrs['sec-fetch-dest']).toBe('empty');
+    expect(sessionHdrs['sec-ch-ua-platform']).toBe(`"${PERSISTED_PROFILE.platform}"`);
+    expect(sessionHdrs.priority).toBe('u=1, i');
+    expect(sessionHdrs.dnt).toBe(PERSISTED_PROFILE.dnt ? '1' : undefined);
+    expect(sessionHdrs['Sec-Fetch-User']).toBe('');
+    expect(sessionHdrs['Upgrade-Insecure-Requests']).toBe('');
+    expect(sessionHdrs['user-agent']).toBe(PERSISTED_PROFILE.userAgent);
+    expect(sessionHdrs['accept-language']).toBe(PERSISTED_PROFILE.acceptLanguage);
+    expect(sessionHdrs[COOKIE_JAR_HEADER]).toBe('device-fixed');
 
     const [url, init] = transportFetch.mock.calls[0];
     expect(String(url)).toBe('https://chatgpt.com/api/auth/session');
@@ -1138,6 +1259,7 @@ describe('web-capable token provenance', () => {
   const build = (transportFetch: ReturnType<typeof vi.fn>) =>
     new ChatGPTWebOAuthService({
       authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
       transportFetch: transportFetch as unknown as typeof fetch,
     });
 

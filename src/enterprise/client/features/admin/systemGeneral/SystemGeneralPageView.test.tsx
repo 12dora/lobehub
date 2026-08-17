@@ -3,7 +3,10 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AdminSystemInfraSettings } from '@/enterprise/client/services/adminSystem';
+import type {
+  AdminBrowserProfileSummary,
+  AdminSystemInfraSettings,
+} from '@/enterprise/client/services/adminSystem';
 
 import { SystemGeneralPageView } from './SystemGeneralPageView';
 
@@ -23,8 +26,15 @@ vi.mock('@lobehub/ui', () => ({
       {action}
     </div>
   ),
+  // The fingerprint card renders one next to the installation id whenever it HAS a profile.
+  CopyButton: ({ content }: { content: string }) => (
+    <button data-copy={content} type="button">
+      copy
+    </button>
+  ),
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Icon: () => <span />,
+  Skeleton: () => <div data-testid="skeleton" />,
   Tag: ({ children }: { children?: ReactNode }) => <span data-testid="status-tag">{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Tooltip: ({ children }: { children?: ReactNode }) => <>{children}</>,
@@ -122,7 +132,111 @@ const managedHere = (): AdminSystemInfraSettings => {
   };
 };
 
+const browserProfile = (): AdminBrowserProfileSummary => ({
+  arch: 'arm',
+  chromeVersion: '150.0.7871.95',
+  cores: 12,
+  createdAt: new Date('2026-08-18T00:00:00.000Z'),
+  impersonateProfile: 'chrome150',
+  installationId: '123e4567-e89b-42d3-a456-426614174000',
+  locale: 'en-US',
+  memoryGiB: 36,
+  platform: 'macOS',
+  platformVersion: '15.6.1',
+  revision: 3,
+  screen: { dpr: 2, height: 982, width: 1512 },
+  timezone: 'America/New_York',
+  updatedAt: new Date('2026-08-18T01:00:00.000Z'),
+});
+
 describe('SystemGeneralPageView', () => {
+  it('shows ONE page state while the infrastructure settings are still loading', () => {
+    // The grid used to render unconditionally, which put the fingerprint card — with an enabled
+    // destructive action — underneath a full-viewport "checking permissions" surface.
+    render(
+      <SystemGeneralPageView
+        canOperate
+        isLoading
+        profileIsLoading
+        data={undefined}
+        error={undefined}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('loading')).toBeTruthy();
+    expect(screen.queryByText('browserProfile.title')).toBeNull();
+    expect(screen.queryByText('systemGeneral.objectStorage.title')).toBeNull();
+  });
+
+  it('speaks with one voice when the page fails to load', () => {
+    // Two alerts for the same failure, each with its own 重试 of a different weight, left the
+    // operator guessing which one to press.
+    render(
+      <SystemGeneralPageView
+        canOperate
+        error={new Error('denied')}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        profileError={new Error('denied')}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('systemGeneral.loadFailed')).toBeTruthy();
+    expect(screen.queryByText('browserProfile.states.error')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'systemGeneral.retry' })).toHaveLength(1);
+  });
+
+  it('keeps the fingerprint card when only the settings request failed', () => {
+    // The two requests are independent: an object-storage/mail outage used to delete a
+    // fingerprint that had loaded perfectly well, along with the only way to regenerate it.
+    render(
+      <SystemGeneralPageView
+        canOperate
+        error={new Error('denied')}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        profileData={browserProfile()}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('systemGeneral.loadFailed')).toBeTruthy();
+    expect(screen.getByText('browserProfile.title')).toBeTruthy();
+    expect(screen.getByText('browserProfile.actions.regenerate')).toBeTruthy();
+    // Still one page state for the request that actually failed.
+    expect(screen.getAllByRole('button', { name: 'systemGeneral.retry' })).toHaveLength(1);
+    expect(screen.queryByText('systemGeneral.objectStorage.title')).toBeNull();
+    expect(screen.queryByText('systemGeneral.mail.title')).toBeNull();
+  });
+
+  it('keeps the fingerprint card owning its own failure while the settings load fine', () => {
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={settings()}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        profileError={new Error('offline')}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText('systemGeneral.loadFailed')).toBeNull();
+    expect(screen.getByText('browserProfile.states.error')).toBeTruthy();
+  });
+
   it('renders masked configuration and hides the probe when the operator cannot test', () => {
     render(
       <SystemGeneralPageView

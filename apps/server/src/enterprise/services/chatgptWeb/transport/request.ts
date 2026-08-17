@@ -43,6 +43,8 @@ export interface TransportRequestEnvironment {
 
 export interface NormalizedRequest {
   body?: Uint8Array;
+  /** Header names rendered as curl `Name:` (delete the impersonate-profile leftover). */
+  dropHeaders: string[];
   headers: [string, string][];
   method: string;
   signal?: AbortSignal;
@@ -279,10 +281,14 @@ export const normalizeRequest = async (
   const rawBody = init && 'body' in init ? init.body : source?.body;
 
   const body = await readRequestBody(rawBody, headers, signal);
+  const sanitized = sanitizeRequestHeaders(headers);
+  const dropHeaders = sanitized.filter(([, value]) => value.length === 0).map(([name]) => name);
+  const kept = sanitized.filter(([, value]) => value.length > 0);
 
   return {
     ...(body ? { body } : {}),
-    headers: sanitizeRequestHeaders(headers),
+    dropHeaders,
+    headers: kept,
     method,
     ...(signal ? { signal } : {}),
     url,

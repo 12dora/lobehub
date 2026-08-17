@@ -35,7 +35,7 @@ export interface InfraSettingsCardProps {
   onTest: () => void;
   probe?: AdminSystemTestDependencyResult;
   probing: boolean;
-  status: string;
+  status?: string;
   /** Disables 测试连接 (e.g. the draft cannot be probed until a credential is re-entered). */
   testDisabled?: boolean;
   title: string;
@@ -100,7 +100,7 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
           </div>
           <div className={styles.headerTags}>
             {headerExtra}
-            <InfraStatusTag status={status} />
+            {status ? <InfraStatusTag status={status} /> : null}
           </div>
         </div>
 

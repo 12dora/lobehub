@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_BROWSER_DEVICE_PROFILE, resolveProfileTimezone } from '../../browserProfile';
 import { ChatGPTWebClient } from './client';
 import type { ChatRequirements } from './types';
 
@@ -83,9 +84,9 @@ describe('ChatGPTWebClient headers', () => {
     expect(headers['OAI-Session-Id']).toBe('session-1');
     expect(headers['X-OpenAI-Target-Path']).toBe('/backend-api/me');
     expect(headers['X-OpenAI-Target-Route']).toBe('/backend-api/me');
-    expect(headers['User-Agent']).toContain('Chrome/136.0.0.0');
-    expect(headers['Sec-Ch-Ua']).toContain('"Google Chrome";v="136"');
-    expect(headers['OAI-Language']).toBe('en-US');
+    expect(headers['User-Agent']).toBe(DEFAULT_BROWSER_DEVICE_PROFILE.userAgent);
+    expect(headers['Sec-Ch-Ua']).toBe(DEFAULT_BROWSER_DEVICE_PROFILE.secChUa);
+    expect(headers['OAI-Language']).toBe(DEFAULT_BROWSER_DEVICE_PROFILE.oaiLanguage);
   });
 
   it('keeps the query string out of the target path headers', async () => {
@@ -100,7 +101,7 @@ describe('ChatGPTWebClient headers', () => {
     expect(result).toMatchObject({ accountId: 'acc-1', planType: 'plus' });
     const { headers, url } = callAt(0);
     expect(url).toBe(
-      'https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=0',
+      `https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=${resolveProfileTimezone(DEFAULT_BROWSER_DEVICE_PROFILE).offsetMinutes}`,
     );
     expect(headers['X-OpenAI-Target-Path']).toBe('/backend-api/accounts/check/v4-2023-04-27');
   });
@@ -799,6 +800,15 @@ describe('ChatGPTWebClient assets', () => {
     expect([...result.bytes]).toEqual([1, 2, 3]);
     expect(result.mimeType).toBe('image/png');
     expect(callAt(0).headers['Authorization']).toBeUndefined();
+    expect(callAt(0).headers.Origin).toBeUndefined();
+    expect(callAt(0).headers['Sec-Fetch-Dest']).toBe('image');
+    expect(callAt(0).headers['Sec-Fetch-Mode']).toBe('no-cors');
+    expect(callAt(0).headers['Sec-Fetch-Site']).toBe('cross-site');
+    expect(
+      Object.keys(callAt(0).headers).filter((key) =>
+        /^(?:authorization|oai-|x-openai-|x-aihub-)/i.test(key),
+      ),
+    ).toEqual([]);
   });
 
   it('authenticates asset downloads served by chatgpt.com itself', async () => {
@@ -813,6 +823,9 @@ describe('ChatGPTWebClient assets', () => {
     await createClient().downloadBytes('https://chatgpt.com/backend-api/estuary/content?id=file_1');
 
     expect(callAt(0).headers['Authorization']).toBe('Bearer access-token');
+    expect(callAt(0).headers.Origin).toBeUndefined();
+    expect(callAt(0).headers['Sec-Fetch-Dest']).toBe('image');
+    expect(callAt(0).headers['Sec-Fetch-Site']).toBe('same-origin');
   });
 
   it('filters tasks by conversation client side', async () => {

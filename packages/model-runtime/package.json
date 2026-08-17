@@ -4,6 +4,8 @@
   "private": true,
   "exports": {
     ".": "./src/index.ts",
+    "./browserProfile": "./src/browserProfile/index.ts",
+    "./chatgptWebIdentity": "./src/providers/chatgptWeb/chatgptWebIdentity.ts",
     "./vertexai": "./src/providers/vertexai/index.ts"
   },
   "scripts": {

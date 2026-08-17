@@ -77,6 +77,12 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
 }));
 
 vi.mock('./hooks', () => ({
+  useAdminBrowserProfile: () => ({
+    data: undefined,
+    error: undefined,
+    isLoading: false,
+    mutate: vi.fn(),
+  }),
   useAdminInfraSettings: () => ({
     data: undefined,
     error: undefined,

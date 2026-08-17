@@ -1,10 +1,12 @@
+import { DEFAULT_BROWSER_DEVICE_PROFILE } from '@lobechat/model-runtime/browserProfile';
+
 import type { CurlImpersonateFetchOptions } from './curlImpersonateFetch';
 import { ChatGPTWebTransportPolicyError } from './errors';
 import { hasControlCharacters } from './request';
 import type { TransportEnvironment } from './resolveBinary';
 
-/** Verified against chatgpt.com: `chrome145` is challenged, `chrome136` is not. */
-export const DEFAULT_IMPERSONATE_PROFILE = 'chrome136';
+/** Degraded-mode TLS/H2 profile; normal callers pass their persisted profile explicitly. */
+export const DEFAULT_IMPERSONATE_PROFILE = DEFAULT_BROWSER_DEVICE_PROFILE.impersonateProfile;
 
 /** Chat streams run long; the per-request cap only guards a wedged connection. */
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -58,6 +60,9 @@ const assertConfigSafe = (label: string, value: string): string => {
 export const buildInvocation = (params: {
   bodyFilePath?: string;
   caBundle?: string;
+  /** Netscape cookie jar (`cookie` + `cookie-jar`). Omitted when unset. */
+  cookieJarPath?: string;
+  dropHeaders?: string[];
   headers: [string, string][];
   impersonate: string;
   method: string;
@@ -113,10 +118,21 @@ export const buildInvocation = (params: {
       `data-binary = ${quoteConfigValue(assertConfigSafe('body file', `@${params.bodyFilePath}`))}`,
     );
   }
+  if (params.cookieJarPath) {
+    const quoted = quoteConfigValue(assertConfigSafe('cookie jar', params.cookieJarPath));
+    lines.push(`cookie = ${quoted}`);
+    lines.push(`cookie-jar = ${quoted}`);
+  }
+  const dropped = new Set<string>(params.dropHeaders ?? []);
   for (const [name, value] of params.headers) {
-    // curl reads `Name:` as "drop this header"; `Name;` sends it with an empty value.
-    const header = value.length === 0 ? `${name};` : `${name}: ${value}`;
-    lines.push(`header = ${quoteConfigValue(assertConfigSafe('header', header))}`);
+    if (value.length === 0) {
+      dropped.add(name);
+      continue;
+    }
+    lines.push(`header = ${quoteConfigValue(assertConfigSafe('header', `${name}: ${value}`))}`);
+  }
+  for (const name of dropped) {
+    lines.push(`header = ${quoteConfigValue(assertConfigSafe('header', `${name}:`))}`);
   }
 
   return { args, config: `${lines.join('\n')}\n` };

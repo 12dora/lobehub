@@ -11,6 +11,7 @@ export * from './auditAdmin';
 export * from './auditLogs';
 export * from './authSettings';
 export * from './branding';
+export * from './browserProfile';
 export * from './catalogAuthority';
 export * from './common';
 export * from './connectorGovernance';

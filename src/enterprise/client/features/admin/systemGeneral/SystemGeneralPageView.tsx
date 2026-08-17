@@ -7,11 +7,13 @@ import { useTranslation } from 'react-i18next';
 
 import { AdminLoadingSurface } from '@/enterprise/client/features/admin/pages/AdminStateSurfaces';
 import type {
+  AdminBrowserProfileSummary,
   AdminSystemInfraSettings,
   AdminSystemTestDependencyResult,
 } from '@/enterprise/client/services/adminSystem';
 import type { AdminSystemInfraDependency } from '@/server/enterprise/contracts/adminSystem';
 
+import { BrowserProfileCard } from './infra/BrowserProfileCard';
 import { MailCard } from './infra/MailCard';
 import { ObjectStorageCard } from './infra/ObjectStorageCard';
 import { infraSettingsStyles as styles } from './styles';
@@ -21,10 +23,15 @@ export interface SystemGeneralPageViewProps {
   data?: AdminSystemInfraSettings;
   error: unknown;
   isLoading: boolean;
+  onProfileRegenerate?: () => Promise<void>;
+  onProfileRetry?: () => void;
   onRetry: () => void;
   onTest: (dependency: AdminSystemInfraDependency) => void;
   probeBusy: Partial<Record<AdminSystemInfraDependency, boolean>>;
   probeResults: Partial<Record<AdminSystemInfraDependency, AdminSystemTestDependencyResult>>;
+  profileData?: AdminBrowserProfileSummary;
+  profileError?: unknown;
+  profileIsLoading?: boolean;
 }
 
 /**
@@ -39,8 +46,36 @@ export interface SystemGeneralPageViewProps {
  * one tab so the 网络代理 tab can share the same shell.
  */
 export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
-  ({ canOperate, data, error, isLoading, onRetry, onTest, probeBusy, probeResults }) => {
+  ({
+    canOperate,
+    data,
+    error,
+    isLoading,
+    onProfileRegenerate = async () => undefined,
+    onProfileRetry = () => undefined,
+    onRetry,
+    onTest,
+    probeBusy,
+    probeResults,
+    profileData,
+    profileError,
+    profileIsLoading = false,
+  }) => {
     const { t } = useTranslation('admin');
+
+    /** The settings request owns the page-level state — the fingerprint request never does. */
+    const pageFailed = Boolean(error) && !data;
+    const pageLoading = !pageFailed && isLoading && !data;
+    /** Whether the fingerprint request itself has anything to say yet. */
+    const profileActive = Boolean(profileData) || Boolean(profileError) || profileIsLoading;
+    /**
+     * The fingerprint card is fed by its OWN request, so an object-storage/mail outage must not
+     * take a profile that loaded fine — and its 重新生成 action — off the page with it. It only
+     * steps aside while the page itself is painting a state and there is no profile to show.
+     */
+    const showProfileCard =
+      pageFailed || pageLoading ? Boolean(profileData) : Boolean(data) || profileActive;
+    const showGrid = Boolean(data) || showProfileCard;
 
     return (
       <>
@@ -58,22 +93,49 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
           />
         ) : isLoading && !data ? (
           <AdminLoadingSurface />
-        ) : data ? (
+        ) : null}
+
+        {/*
+          One page state at a time, per REQUEST. The two settings cards are the settings
+          request: without their data there is nothing to render, and painting them next to the
+          page-level alert reported the same failure in two voices. The fingerprint card is a
+          different request and keeps its own loading/empty/error states — gating it on the
+          settings response deleted a perfectly good profile, and the only way to regenerate
+          one, whenever object storage or mail failed to load.
+        */}
+        {showGrid ? (
           <div className={styles.grid}>
-            <ObjectStorageCard
-              canOperate={canOperate}
-              probe={probeResults.objectStorage}
-              probing={Boolean(probeBusy.objectStorage)}
-              view={data.objectStorage}
-              onTest={() => onTest('objectStorage')}
-            />
-            <MailCard
-              canOperate={canOperate}
-              probe={probeResults.mail}
-              probing={Boolean(probeBusy.mail)}
-              view={data.mail}
-              onTest={() => onTest('mail')}
-            />
+            {data ? (
+              <>
+                <ObjectStorageCard
+                  canOperate={canOperate}
+                  probe={probeResults.objectStorage}
+                  probing={Boolean(probeBusy.objectStorage)}
+                  view={data.objectStorage}
+                  onTest={() => onTest('objectStorage')}
+                />
+                <MailCard
+                  canOperate={canOperate}
+                  probe={probeResults.mail}
+                  probing={Boolean(probeBusy.mail)}
+                  view={data.mail}
+                  onTest={() => onTest('mail')}
+                />
+              </>
+            ) : null}
+            {showProfileCard ? (
+              <BrowserProfileCard
+                canOperate={canOperate}
+                data={profileData}
+                // Suppressed only where the page-level alert above already owns the failure:
+                // two alerts for one outage, with two 重试 of different weight, is the state
+                // this page was fixed out of.
+                error={pageFailed ? undefined : profileError}
+                isLoading={profileIsLoading}
+                onRegenerate={onProfileRegenerate}
+                onRetry={onProfileRetry}
+              />
+            ) : null}
           </div>
         ) : null}
       </>

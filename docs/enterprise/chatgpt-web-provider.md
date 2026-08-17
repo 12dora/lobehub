@@ -6,7 +6,7 @@
 
 ## 0. 为什么需要一个额外的二进制
 
-`chatgpt.com` 与 `chatgpt.com/backend-api/*` 在 Cloudflare bot-fight 之后，校验的是 **TLS / HTTP2 指纹**而不是请求头：Node 自带的 `fetch` 无论带什么 header、带不带 `Authorization`，都会拿到 `403` + `cf-mitigated: challenge`。所以服务端用 [`lexiforest/curl-impersonate`](https://github.com/lexiforest/curl-impersonate) 起子进程发请求，浏览器画像固定为 **`chrome136`**（实测 `chrome145` 会被挑战；UA 也同步钉在 Chrome 136 / Windows，不要只改一边）。
+`chatgpt.com` 与 `chatgpt.com/backend-api/*` 在 Cloudflare bot-fight 之后，校验的是 **TLS / HTTP2 指纹**而不是请求头：Node 自带的 `fetch` 无论带什么 header、带不带 `Authorization`，都会拿到 `403` + `cf-mitigated: challenge`。所以服务端用 [`lexiforest/curl-impersonate`](https://github.com/lexiforest/curl-impersonate) 起子进程发请求，并从平台的[共享浏览器设备画像](./browser-device-profile.md)取得匹配的 impersonate 目标、UA、UA-CH、语言、时区、屏幕与硬件特征。画像由安装 seed 生成、不会读取管理员电脑，并在管理员主动刷新前保持稳定。实测画像池中的 chrome136–150 今天都能过 Cloudflare；「异常登录」（unusual login）警告来自 OpenAI 的**应用层风控**，出网 IP / 地理是最大剩余信号，不是 CF bot filter。每条连接还有一份进程内 Netscape Cookie 罐（按 `oauthDeviceId` 分桶，画像刷新时一并清空）和由 device id + 画像 id 稳定派生的 `OAI-Session-Id`。
 
 - 传输层代码：`apps/server/src/enterprise/services/chatgptWeb/transport/`（仅服务端；`packages/model-runtime` 必须保持同构，运行时通过构造参数注入 `fetch`）。
 - 注入点：`apps/server/src/modules/ModelRuntime/index.ts`（用户路径）、企业 `runtimeAdapter.ts`（平台托管路径）、`connectionTestService.ts`（管理端连通性检查）。
@@ -116,7 +116,7 @@ bun run curl-impersonate:install
 - **`oauthRenewalKind`**：`'oauth' | 'web_session'`（闭合枚举，定义在 `services/oauthDeviceFlow/index.ts` 的 `OAUTH_RENEWAL_KINDS`），说明 `oauthRefreshToken` 里装的是**哪种**续期凭据 ——OAuth refresh token，还是 chatgpt.com 的 next-auth 会话 Cookie。非机密（和续期簿记一样，只是标签），**连接时写入、续期时按实际消费的那份凭据带过**（轮转换的是凭据本身，不是种类），重连时与 `oauthRefreshToken` **成对移动**（换一种方式重连必须把旧标签一起换掉，否则下一次续期会去错的端点）。
   - **写入侧校验**：管理端凭据写入（`validateAiCatalogCredentialShape`）会拒绝不认识的取值，也会拒绝**只写标签不写凭据**的组合。
   - **读取侧容错**：持久化里读到不认识的取值一律**按缺失处理**（`parseOAuthRenewalKind`），继续走形状兜底 —— 旧代码写下的标签不能把一个还在工作的连接判死。缺叶子 / 取值不认识时按**凭据形状**兜底：五段、头部 `alg: 'dir'` 的紧凑 JWE 就是网页会话（`isChatGPTWebSessionToken`）。
-- **`oauthDeviceId`** 不只在连接时用：`refresh.ts` 会把它随 `OAuthRefreshOptions` 一起交给服务商，网页会话续期时作为 `oai-did` Cookie 一并送出（平台侧的租约内重读同样带上它）。少了它，每次续期在上游看来都是一台新设备 —— 而这条路径本来就是靠指纹传输层过风控的。
+- **`oauthDeviceId`** 不只在连接时用：`refresh.ts` 会把它随 `OAuthRefreshOptions` 一起交给服务商，网页会话续期时作为 `oai-did` Cookie 一并送出（平台侧的租约内重读同样带上它）。少了它，每次续期在上游看来都是一台新设备 —— 而这条路径本来就是靠指纹传输层过风控的。运行时还用它做两件事：派生稳定的 `OAI-Session-Id`，以及给 curl-impersonate 选一份进程内 Netscape Cookie 罐（`$TMPDIR/aihub-chatgptweb-jars/`，按 device id 分桶；连接 / 重连 / 断开时清空，进程重启也会丢）。跨源资源下载（blob / CDN）不会带上这份罐子，也不会带 `Authorization` / `OAI-*`。
 - **会话值的边界规则**：会话 token 最终会被拼进 `Cookie:` 请求头，所以它在 **tRPC 输入契约**（`chatgptWebSessionTokenSchema`）和**服务边界**上都只接受 base64url + `.` 的字符集（`CHATGPT_WEB_SESSION_TOKEN_PATTERN`，≤16 KiB）—— 带 `;` `,` `=`、空白或控制字符的粘贴一律拒（`session_invalid`），上游轮转回来的新值同样过这条规则。
 
 ### 4.3 首次连接与模型开启
@@ -193,27 +193,28 @@ bun run curl-impersonate:install
 - **带显式思考档位的回合几乎必然走 handoff/resume**：上游先回一个空流 + `stream_handoff`，答案在 `/f/conversation/resume` 上重放（最多链 3 次）。预算耗尽时回合标 `recoveryRequired`，运行时改为轮询会话文档最多 240 s 补齐后缀。表现为「首字慢」，不是故障。
 - **限流来自共享账号本身**：所有成员共用一个 ChatGPT 账号的配额，429 是终态错误（不重试、不回落）。图片生成配额虽然协议里能读（`limits_progress`），当前**没有做任何预检**。
 - **`model_cap_exceeded`** 映射为 `ModelNotFound`，是为了让界面建议切到 `auto`；它不属于可回落错误。
-- **Cloudflare 挑战会一刀切**：一旦被判为 bot，所有路径同时不可用，没有降级方案；此时优先确认 curl-impersonate 版本 / 画像（`chrome136`）与出网 IP。
+- **Cloudflare 挑战会一刀切**：一旦被判为 bot，所有路径同时不可用，没有降级方案。chrome136–150 今天都能过 Cloudflare；若仍看到 `cf-mitigated: challenge`，先确认持久化画像通过一致性校验、impersonate 目标与 UA / `sec-ch-ua*` 的主版本相同，并确认没有绕过传输层使用 Node `fetch`。账号侧的「异常登录」是 OpenAI 应用层风控（出网 IP / 地理是最大剩余信号），不是 CF。
 - **协议常量会腐坏（ROTS）**：`OAI_CLIENT_VERSION` / `OAI_CLIENT_BUILD_NUMBER`、PoW /turnstile 用的一批浏览器内部键名写死在 `constants.ts`。它们只是 bootstrap HTML 抓取失败时的兜底，但上游改版后可能需要刷新。
 - **合规提醒**：把一个 ChatGPT 个人 / Plus 账号共享给全平台成员使用，属于 OpenAI 服务条款的灰区（账号共享、非官方 API 访问）。是否以「平台托管」形式对全员开放，需要业务侧自行评估并承担风险；出问题时的典型后果是账号被限流或封禁，届时所有成员同时不可用。
 
 ## 7. 排障速查
 
-| 现象                                                 | 先看                                                                                     |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| 检查报「组件未安装」/ 运行时报 transport unavailable | 服务器上有没有 `curl-impersonate`；`CHATGPT_WEB_CURL_IMPERSONATE_BIN` 指的文件是否可执行 |
-| 403 / Cloudflare                                     | 画像是否仍为 `chrome136`；出网 IP 是否被风控；有没有绕过传输层用了 Node fetch            |
-| TLS 握手失败（内网 TLS 拦截）                        | `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`                                                  |
-| 代理不生效                                           | `PROXY_URL` / `HTTPS_PROXY`（代理串只进 stdin config，`ps` 里看不到是正常的）            |
-| 目的主机被拒（`destination host … is not allowed`）  | `CHATGPT_WEB_ALLOWED_HOSTS` 是否需要追加后缀                                             |
-| 生成文件保存失败                                     | §5.1：`S3_ENDPOINT` 浏览器可达性 + 桶 CORS（客户端模式的预签名 PUT）                     |
-| 生成文件根本没出现                                   | §5.2：服务端 `DEBUG=lobe-*` 里 `[file]` 的丢弃原因（超 32 MiB / 上传失败 / 无 userId）   |
-| 共享账号突然全员失效                                 | §4.4：面板 `expired` 是否为真（需重连）；是否用的是无法续期的「访问令牌」连接            |
+| 现象                                                 | 先看                                                                                                                     |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 检查报「组件未安装」/ 运行时报 transport unavailable | 服务器上有没有 `curl-impersonate`；`CHATGPT_WEB_CURL_IMPERSONATE_BIN` 指的文件是否可执行                                 |
+| 403 / Cloudflare                                     | 画像的 impersonate 目标、UA 与 UA-CH 是否同主版本；出网 IP / 地理是否漂移（应用层风控）；有没有绕过传输层用了 Node fetch |
+| TLS 握手失败（内网 TLS 拦截）                        | `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`                                                                                  |
+| 代理不生效                                           | `PROXY_URL` / `HTTPS_PROXY`（代理串只进 stdin config，`ps` 里看不到是正常的）                                            |
+| 目的主机被拒（`destination host … is not allowed`）  | `CHATGPT_WEB_ALLOWED_HOSTS` 是否需要追加后缀                                                                             |
+| 生成文件保存失败                                     | §5.1：`S3_ENDPOINT` 浏览器可达性 + 桶 CORS（客户端模式的预签名 PUT）                                                     |
+| 生成文件根本没出现                                   | §5.2：服务端 `DEBUG=lobe-*` 里 `[file]` 的丢弃原因（超 32 MiB / 上传失败 / 无 userId）                                   |
+| 共享账号突然全员失效                                 | §4.4：面板 `expired` 是否为真（需重连）；是否用的是无法续期的「访问令牌」连接                                            |
 
 服务端调试：`DEBUG=lobe-chatgptweb:*`（子命名空间 `runtime` / `client` / `stream` / `image` / `image-resolve`）；`DEBUG_CHATGPTWEB_CHAT_COMPLETION=1` 打印对话请求体。日志里不会出现令牌、签名 URL 的 query 与路径。
 
 ## 相关文档
 
+- [browser-device-profile.md](./browser-device-profile.md) — 共享合成画像的生成、存储、刷新与复用接口。
 - [reference/trpc-api.md](./reference/trpc-api.md) — `aiProviders` / `aiModels` 接口与权限。
 - [reference/admin-routes.md](./reference/admin-routes.md) — `/admin/ai/providers` 等管理端路由。
 - [../self-hosting/advanced/s3/](../self-hosting/advanced/s3/) — S3 存储桶与跨域配置。

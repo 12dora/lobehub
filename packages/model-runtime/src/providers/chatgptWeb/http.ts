@@ -1,13 +1,14 @@
 import createDebug from 'debug';
 
-import { randomUuid } from './binary';
+import type { RuntimeBrowserDeviceProfile } from '../../browserProfile';
 import {
-  CHATGPT_BASE_URL,
-  DEFAULT_TIMEZONE,
-  DEFAULT_TIMEZONE_OFFSET_MIN,
-  DEFAULT_USER_AGENT,
-  TIMEOUTS,
-} from './constants';
+  DEFAULT_BROWSER_DEVICE_PROFILE,
+  isFallbackBrowserProfile,
+  resolveProfileTimezone,
+  validateBrowserDeviceProfileShape,
+} from '../../browserProfile';
+import { randomUuid } from './binary';
+import { CHATGPT_BASE_URL, TIMEOUTS } from './constants';
 import {
   callerAbortReason,
   ChatGPTWebError,
@@ -16,21 +17,32 @@ import {
   isChatGPTWebError,
 } from './errors';
 import { buildRequestHeaders, type SessionFingerprint } from './headers';
+import { COOKIE_JAR_HEADER, deriveSessionId } from './sessionId';
 
 const log = createDebug('lobe-chatgptweb:http');
+
+export { COOKIE_JAR_HEADER, deriveSessionId } from './sessionId';
+
+/** Cookie-jar hop-by-hop header rides only on chatgpt.com, never on blob/CDN hosts. */
+const isChatGPTWebOrigin = (url: string): boolean => {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === 'chatgpt.com' || hostname.endsWith('.chatgpt.com');
+  } catch {
+    return false;
+  }
+};
 
 export interface ChatGPTWebClientOptions {
   accessToken: string;
   /** ChatGPT account id — kept for callers/telemetry; not sent as a header. */
   accountId?: string;
+  /** Installation-wide synthetic browser identity. */
+  browserProfile?: RuntimeBrowserDeviceProfile;
   /** Stable `OAI-Device-Id`; generated when absent (persist it per account). */
   deviceId?: string;
   fetch?: typeof fetch;
-  locale?: string;
   sessionId?: string;
-  timezone?: string;
-  timezoneOffsetMin?: number;
-  userAgent?: string;
 }
 
 export interface RequestOptions {
@@ -163,34 +175,57 @@ export const readBodySafely = async (
 export abstract class ChatGPTWebHttp {
   protected readonly fetchImpl: typeof fetch;
   protected readonly fingerprint: SessionFingerprint;
+  /**
+   * Vault-supplied device id, when present. Legacy connections that never stored
+   * `oauthDeviceId` mint a random `deviceId` for the `OAI-Device-Id` header but
+   * do not attach a cookie jar (today's behaviour).
+   */
+  private readonly cookieJarKey?: string;
 
   readonly accountId?: string;
+  readonly browserProfile: RuntimeBrowserDeviceProfile;
   readonly deviceId: string;
   readonly sessionId: string;
-  /** K5: defaults to `UTC` / offset `0` when the caller gives us nothing. */
   readonly timezone: string;
-  readonly timezoneOffsetMin: number;
 
   constructor(options: ChatGPTWebClientOptions) {
     if (!options.accessToken) throw new ChatGPTWebError('auth', 'missing ChatGPT Web access token');
 
     this.accountId = options.accountId;
+    // Shape-only: a persisted profile that predates a pool edit keeps working (the
+    // installation must not silently change device because a Chrome build was retired).
+    this.browserProfile = validateBrowserDeviceProfileShape(
+      options.browserProfile ?? DEFAULT_BROWSER_DEVICE_PROFILE,
+    );
+    /**
+     * The jar holds `cf_clearance` / `__cf_bm` / `oai-sc` minted under the PERSISTED
+     * identity. On the degraded fallback identity the UA and the TLS profile are
+     * different, so replaying them is the UA/cookie mismatch that provokes a Cloudflare
+     * challenge — go jarless instead (and leave the jar intact for when the database
+     * comes back).
+     */
+    this.cookieJarKey = isFallbackBrowserProfile(this.browserProfile)
+      ? undefined
+      : options.deviceId;
     this.deviceId = options.deviceId || randomUuid();
-    this.sessionId = options.sessionId || randomUuid();
-    this.timezone = options.timezone || DEFAULT_TIMEZONE;
-    this.timezoneOffsetMin = options.timezoneOffsetMin ?? DEFAULT_TIMEZONE_OFFSET_MIN;
+    this.sessionId = options.sessionId || deriveSessionId(this.deviceId, this.browserProfile);
+    this.timezone = this.browserProfile.timezone.iana;
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.fingerprint = {
       accessToken: options.accessToken,
+      browserProfile: this.browserProfile,
       deviceId: this.deviceId,
-      locale: options.locale,
       sessionId: this.sessionId,
-      userAgent: options.userAgent || DEFAULT_USER_AGENT,
     };
   }
 
   protected get userAgent(): string {
-    return this.fingerprint.userAgent || DEFAULT_USER_AGENT;
+    return this.browserProfile.userAgent;
+  }
+
+  /** Live (DST-aware) offset for the profile's zone — recomputed per read. */
+  get timezoneOffsetMin(): number {
+    return resolveProfileTimezone(this.browserProfile).offsetMinutes;
   }
 
   /**
@@ -233,6 +268,7 @@ export abstract class ChatGPTWebHttp {
     try {
       const response = await this.fetchImpl(url, {
         ...init,
+        headers: this.withCookieJarHeader(url, init.headers),
         redirect: 'manual',
         signal: composed.signal,
       });
@@ -241,6 +277,23 @@ export abstract class ChatGPTWebHttp {
       release();
       throw fail(error);
     }
+  }
+
+  /**
+   * Tell the curl-impersonate transport which Netscape jar to use. Stripped
+   * before spawn; never forwarded upstream. Only attached to chatgpt.com —
+   * blob storage and other asset hosts must not see the hop-by-hop key.
+   * See `COOKIE_JAR_HEADER`.
+   */
+  private withCookieJarHeader(url: string, headers: HeadersInit | undefined): HeadersInit {
+    if (!this.cookieJarKey || !isChatGPTWebOrigin(url)) return headers ?? {};
+    if (headers instanceof Headers) {
+      const copy = new Headers(headers);
+      copy.set(COOKIE_JAR_HEADER, this.cookieJarKey);
+      return copy;
+    }
+    if (Array.isArray(headers)) return [...headers, [COOKIE_JAR_HEADER, this.cookieJarKey]];
+    return { ...headers, [COOKIE_JAR_HEADER]: this.cookieJarKey };
   }
 
   protected async request({

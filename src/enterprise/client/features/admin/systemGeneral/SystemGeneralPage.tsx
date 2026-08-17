@@ -14,7 +14,7 @@ import { adminSystemService } from '@/enterprise/client/services/adminSystem';
 import NetworkProxyTab from '../networkProxy/NetworkProxyTab';
 import { deriveNetworkProxyPermissions } from '../networkProxy/permissions';
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
-import { useAdminInfraSettings, useInfraDependencyProbe } from './hooks';
+import { useAdminBrowserProfile, useAdminInfraSettings, useInfraDependencyProbe } from './hooks';
 import { SystemGeneralPageView } from './SystemGeneralPageView';
 
 export const SYSTEM_GENERAL_TABS = ['infrastructure', 'network-proxy'] as const;
@@ -59,7 +59,13 @@ const SystemGeneralPage = memo(() => {
 
   const infraEnabled = allowed && canRead && tab === 'infrastructure';
   const settings = useAdminInfraSettings(infraEnabled, adminSystemService);
+  const browserProfile = useAdminBrowserProfile(infraEnabled, adminSystemService);
   const probe = useInfraDependencyProbe(adminSystemService);
+
+  const regenerateBrowserProfile = useCallback(async () => {
+    await adminSystemService.regenerateBrowserProfile({});
+    await browserProfile.mutate().catch(() => undefined);
+  }, [browserProfile]);
 
   const tabs = useMemo(
     () =>
@@ -109,6 +115,11 @@ const SystemGeneralPage = memo(() => {
           isLoading={settings.isLoading}
           probeBusy={probe.busy}
           probeResults={probe.results}
+          profileData={browserProfile.data}
+          profileError={browserProfile.error}
+          profileIsLoading={browserProfile.isLoading}
+          onProfileRegenerate={regenerateBrowserProfile}
+          onProfileRetry={() => void browserProfile.mutate()}
           onRetry={() => void settings.mutate()}
           onTest={(dependency) => void probe.run(dependency)}
         />

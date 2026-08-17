@@ -1,6 +1,7 @@
 export * from './agents';
 export * from './authSettings';
 export * from './branding';
+export * from './browserProfile';
 export * from './capabilities';
 export * from './connectorGovernance';
 export * from './contentModeration';

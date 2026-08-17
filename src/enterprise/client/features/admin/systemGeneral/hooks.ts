@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from 'react';
 
 import type {
+  AdminBrowserProfileService,
   AdminInfraSettingsService,
   AdminSystemInfraSettings,
   AdminSystemTestDependencyResult,
@@ -10,7 +11,13 @@ import type {
 import { useClientDataSWR } from '@/libs/swr';
 import type { AdminSystemInfraDependency } from '@/server/enterprise/contracts/adminSystem';
 
-import { buildAdminInfraSettingsKey } from './swrKeys';
+import { buildAdminBrowserProfileKey, buildAdminInfraSettingsKey } from './swrKeys';
+
+export const useAdminBrowserProfile = (enabled: boolean, service: AdminBrowserProfileService) =>
+  useClientDataSWR(buildAdminBrowserProfileKey(enabled), () => service.getBrowserProfile(), {
+    keepPreviousData: true,
+    revalidateOnFocus: false,
+  });
 
 export const useAdminInfraSettings = (enabled: boolean, service: AdminInfraSettingsService) =>
   useClientDataSWR(buildAdminInfraSettingsKey(enabled), () => service.getInfraSettings(), {

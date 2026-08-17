@@ -1,31 +1,37 @@
+import type { RuntimeBrowserDeviceProfile } from '../../browserProfile';
+import {
+  ACCEPT_IMAGE,
+  ACCEPT_JSON,
+  ACCEPT_NAVIGATE,
+  buildClientHintHeaders,
+  buildFetchMetadataHeaders,
+  DEFAULT_BROWSER_DEVICE_PROFILE,
+  NAVIGATION_ONLY_HEADERS,
+  PRIORITY_CORS_PUT,
+  PRIORITY_IMAGE,
+  PRIORITY_NAVIGATE,
+  PRIORITY_XHR,
+  userAgentHeaders,
+} from '../../browserProfile';
 import { randomUuid } from './binary';
 import {
   AZURE_BLOB_HEADERS,
   CHATGPT_BASE_URL,
-  CHROME_FULL_VERSION,
-  DEFAULT_ACCEPT_LANGUAGE,
-  DEFAULT_LOCALE,
-  DEFAULT_USER_AGENT,
   OAI_CLIENT_BUILD_NUMBER,
   OAI_CLIENT_VERSION,
-  SEC_CH_UA,
-  SEC_CH_UA_FULL_VERSION_LIST,
-  SEC_CH_UA_PLATFORM,
-  SEC_CH_UA_PLATFORM_VERSION,
 } from './constants';
 import { ChatGPTWebError } from './errors';
 import type { ChatRequirements } from './types';
 
 export interface SessionFingerprint {
   accessToken: string;
+  browserProfile: RuntimeBrowserDeviceProfile;
   /** Live `OAI-Client-Build-Number` scraped from the bootstrap HTML. */
   clientBuildNumber?: string;
   /** Live `OAI-Client-Version` scraped from the bootstrap HTML. */
   clientVersion?: string;
   deviceId: string;
-  locale?: string;
   sessionId: string;
-  userAgent?: string;
 }
 
 const CRLF_RE = /[\n\r]/;
@@ -47,41 +53,67 @@ export const rejectCrlf = (name: string, value: string): string => {
 export const sanitizeHeaderValue = (value: string): string =>
   value.replaceAll(/[\n\r]/g, ' ').trim();
 
+const sanitizeHeaderRecord = (headers: Record<string, string>): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name, sanitizeHeaderValue(value)]),
+  );
+
+/** Empty value ⇒ curl-impersonate `-H 'Name:'` deletes the profile leftover. */
+const dropNavigationOnly = (headers: Record<string, string>): Record<string, string> => {
+  for (const name of NAVIGATION_ONLY_HEADERS) headers[name] = '';
+  return headers;
+};
+
 /**
  * Headers attached to every chatgpt.com call. `X-OpenAI-Target-Path` /
  * `-Route` are added per request by {@link buildRequestHeaders}.
  */
 export const buildSessionHeaders = (fp: SessionFingerprint): Record<string, string> => {
-  const locale = sanitizeHeaderValue(fp.locale || DEFAULT_LOCALE);
-  return {
-    'Accept-Language': locale === DEFAULT_LOCALE ? DEFAULT_ACCEPT_LANGUAGE : `${locale},en;q=0.9`,
+  const profile = fp.browserProfile;
+  return dropNavigationOnly({
+    'Accept': '*/*',
+    ...sanitizeHeaderRecord(userAgentHeaders(profile)),
     // a pasted access token is user input; a mangled bearer must never be sent
     'Authorization': `Bearer ${rejectCrlf('Authorization', fp.accessToken)}`,
     'Cache-Control': 'no-cache',
     'OAI-Client-Build-Number': sanitizeHeaderValue(fp.clientBuildNumber || OAI_CLIENT_BUILD_NUMBER),
     'OAI-Client-Version': sanitizeHeaderValue(fp.clientVersion || OAI_CLIENT_VERSION),
     'OAI-Device-Id': sanitizeHeaderValue(fp.deviceId),
-    'OAI-Language': locale,
+    'OAI-Language': sanitizeHeaderValue(profile.oaiLanguage),
     'OAI-Session-Id': sanitizeHeaderValue(fp.sessionId),
     'Origin': CHATGPT_BASE_URL,
     'Pragma': 'no-cache',
-    'Priority': 'u=1, i',
+    'Priority': PRIORITY_XHR,
     'Referer': `${CHATGPT_BASE_URL}/`,
-    'Sec-Ch-Ua': SEC_CH_UA,
-    'Sec-Ch-Ua-Arch': '"x86"',
-    'Sec-Ch-Ua-Bitness': '"64"',
-    'Sec-Ch-Ua-Full-Version': `"${CHROME_FULL_VERSION}"`,
-    'Sec-Ch-Ua-Full-Version-List': SEC_CH_UA_FULL_VERSION_LIST,
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Model': '""',
-    'Sec-Ch-Ua-Platform': SEC_CH_UA_PLATFORM,
-    'Sec-Ch-Ua-Platform-Version': SEC_CH_UA_PLATFORM_VERSION,
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-origin',
-    'User-Agent': sanitizeHeaderValue(fp.userAgent || DEFAULT_USER_AGENT),
-  };
+    /**
+     * chatgpt.com sends no `Accept-CH` / `Critical-CH` (live capture 2026-08-18: the
+     * landing page, `/backend-api/me` and `/api/auth/session` all delegate nothing), so
+     * a real Chrome only ever presents the low-entropy trio here. Sending
+     * `Sec-Ch-Ua-Arch` / `-Platform-Version` / `Device-Memory` / `Dpr` / `Viewport-Width`
+     * / `Sec-Ch-Prefers-*` to an origin that never asked is a positive tell — and the
+     * pinned curl-impersonate template does not send them natively either.
+     */
+    ...sanitizeHeaderRecord(buildClientHintHeaders(profile, { entropy: 'low' })),
+    ...buildFetchMetadataHeaders('xhr'),
+  });
 };
+
+/**
+ * Same profile-driven Chrome XHR set the runtime presents. Server-side `/backend-api/me`
+ * and `/accounts/check` must call this rather than a trimmed copy.
+ */
+export const buildChatGptWebXhrHeaders = ({
+  accessToken,
+  browserProfile = DEFAULT_BROWSER_DEVICE_PROFILE,
+  deviceId,
+  sessionId,
+}: {
+  accessToken: string;
+  browserProfile?: RuntimeBrowserDeviceProfile;
+  deviceId: string;
+  sessionId: string;
+}): Record<string, string> =>
+  buildSessionHeaders({ accessToken, browserProfile, deviceId, sessionId });
 
 export interface RequestHeaderOptions {
   extra?: Record<string, string | undefined>;
@@ -116,25 +148,16 @@ export const buildRequestHeaders = (
  * Deliberately an explicit allowlist rather than the session headers: the
  * bootstrap is a plain HTML navigation, and the reference client presents
  * neither the bearer token nor any `OAI-*` session identifier to it.
+ * First navigation: low-entropy `sec-ch-ua*` trio only.
  */
-export const buildBootstrapHeaders = (fp: SessionFingerprint): Record<string, string> => {
-  const locale = sanitizeHeaderValue(fp.locale || DEFAULT_LOCALE);
-  return {
-    'Accept':
-      'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': locale === DEFAULT_LOCALE ? DEFAULT_ACCEPT_LANGUAGE : `${locale},en;q=0.9`,
-    'Cache-Control': 'no-cache',
-    'Sec-Ch-Ua': SEC_CH_UA,
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': SEC_CH_UA_PLATFORM,
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1',
-    'Upgrade-Insecure-Requests': '1',
-    'User-Agent': sanitizeHeaderValue(fp.userAgent || DEFAULT_USER_AGENT),
-  };
-};
+export const buildBootstrapHeaders = (fp: SessionFingerprint): Record<string, string> => ({
+  'Accept': ACCEPT_NAVIGATE,
+  ...sanitizeHeaderRecord(userAgentHeaders(fp.browserProfile)),
+  'Cache-Control': 'no-cache',
+  'Priority': PRIORITY_NAVIGATE,
+  ...sanitizeHeaderRecord(buildClientHintHeaders(fp.browserProfile, { entropy: 'low' })),
+  ...buildFetchMetadataHeaders('navigate'),
+});
 
 export interface SentinelHeaderOptions {
   /** `*\/*` for prepare calls, `text/event-stream` for the SSE call. */
@@ -155,11 +178,11 @@ export const buildSentinelHeaders = ({
   requirements,
   variant,
 }: SentinelHeaderOptions): Record<string, string> => {
-  const headers: Record<string, string> = {
+  const headers: Record<string, string> = dropNavigationOnly({
     'Accept': sanitizeHeaderValue(accept),
     'Content-Type': 'application/json',
     'OpenAI-Sentinel-Chat-Requirements-Token': sanitizeHeaderValue(requirements.token),
-  };
+  });
 
   if (requirements.proofToken)
     headers['OpenAI-Sentinel-Proof-Token'] = sanitizeHeaderValue(requirements.proofToken);
@@ -181,12 +204,48 @@ export const buildSentinelHeaders = ({
 export const buildBlobUploadHeaders = (
   fp: SessionFingerprint,
   mimeType: string,
-): Record<string, string> => ({
-  ...AZURE_BLOB_HEADERS,
-  'Accept': 'application/json, text/plain, */*',
-  'Accept-Language': 'en-US,en;q=0.8',
-  'Content-Type': sanitizeHeaderValue(mimeType),
-  'Origin': CHATGPT_BASE_URL,
-  'Referer': `${CHATGPT_BASE_URL}/`,
-  'User-Agent': sanitizeHeaderValue(fp.userAgent || DEFAULT_USER_AGENT),
-});
+): Record<string, string> =>
+  dropNavigationOnly({
+    ...AZURE_BLOB_HEADERS,
+    'Accept': ACCEPT_JSON,
+    ...sanitizeHeaderRecord(userAgentHeaders(fp.browserProfile)),
+    'Content-Type': sanitizeHeaderValue(mimeType),
+    'Origin': CHATGPT_BASE_URL,
+    'Priority': PRIORITY_CORS_PUT,
+    'Referer': `${CHATGPT_BASE_URL}/`,
+    ...sanitizeHeaderRecord(buildClientHintHeaders(fp.browserProfile, { entropy: 'low' })),
+    ...buildFetchMetadataHeaders('cors-put'),
+  });
+
+/**
+ * `<img>`-shaped asset download.
+ *
+ * Same-origin (chatgpt.com estuary, etc.): session XHR set minus Origin, with
+ * image/no-cors sec-fetch. The bearer stays — those URLs are not pre-signed.
+ *
+ * Cross-origin (blob storage, third-party CDNs): an explicit allowlist. A real
+ * `<img>` load never sends Authorization, OAI-*, or X-OpenAI-Target-*.
+ */
+export const buildAssetDownloadHeaders = (
+  fp: SessionFingerprint,
+  { sameOrigin }: { sameOrigin: boolean },
+): Record<string, string> => {
+  if (!sameOrigin) {
+    return dropNavigationOnly({
+      Accept: ACCEPT_IMAGE,
+      ...sanitizeHeaderRecord(userAgentHeaders(fp.browserProfile)),
+      Priority: PRIORITY_IMAGE,
+      Referer: `${CHATGPT_BASE_URL}/`,
+      ...sanitizeHeaderRecord(buildClientHintHeaders(fp.browserProfile, { entropy: 'low' })),
+      ...buildFetchMetadataHeaders('image'),
+    });
+  }
+
+  const headers = buildSessionHeaders(fp);
+  delete headers.Origin;
+  headers.Accept = ACCEPT_IMAGE;
+  headers['Sec-Fetch-Dest'] = 'image';
+  headers['Sec-Fetch-Mode'] = 'no-cors';
+  headers['Sec-Fetch-Site'] = 'same-origin';
+  return headers;
+};

@@ -1,3 +1,5 @@
+import type { RuntimeBrowserDeviceProfile } from '../../browserProfile';
+import { DEFAULT_BROWSER_DEVICE_PROFILE } from '../../browserProfile';
 import { DEFAULT_POW_SCRIPT } from './constants';
 import { callerAbortReason, ChatGPTWebError, isChatGPTWebError } from './errors';
 import {
@@ -56,14 +58,20 @@ export const parseClientBuildInfo = (html: string | undefined): ClientBuildInfo 
 };
 
 /** The `p` token posted to `…/chat-requirements/prepare`. */
-export const buildRequirementsToken = (resources: PowResources, userAgent: string): string =>
+export const buildRequirementsToken = (
+  resources: PowResources,
+  userAgent: string,
+  browserProfile: RuntimeBrowserDeviceProfile = DEFAULT_BROWSER_DEVICE_PROFILE,
+): string =>
   buildLegacyRequirementsToken({
+    browserProfile,
     dataBuild: resources.dataBuild,
     scriptSources: resources.scriptSources,
     userAgent,
   });
 
 export interface SolveChallengesOptions {
+  browserProfile?: RuntimeBrowserDeviceProfile;
   powLimit?: number;
   prepare: SentinelPrepareResponse;
   requirementsToken: string;
@@ -78,6 +86,7 @@ export interface SolveChallengesOptions {
  * retry from a real browser session.
  */
 export const solveSentinelChallenges = async ({
+  browserProfile = DEFAULT_BROWSER_DEVICE_PROFILE,
   powLimit,
   prepare,
   requirementsToken,
@@ -99,6 +108,7 @@ export const solveSentinelChallenges = async ({
         // a fresh randomized fingerprint each attempt: the iteration cap is a
         // property of THIS config, so retrying with the same one is pointless
         config: buildPowConfig({
+          browserProfile,
           dataBuild: resources.dataBuild,
           scriptSources: resources.scriptSources,
           userAgent,
