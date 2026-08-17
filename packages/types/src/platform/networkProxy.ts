@@ -393,6 +393,12 @@ export const artifactStateSchema = z
   .object({
     installed: z.boolean(),
     kind: networkProxyArtifactKindSchema,
+    /**
+     * false when the installed file's digest differs from the pinned manifest digest and an
+     * administrator accepted it at upload time. Absent on rows written before this field existed
+     * and on uninstalled kinds.
+     */
+    pinnedDigestMatch: z.boolean().optional(),
     source: networkProxyArtifactSourceSchema.nullable(),
     version: z.string().nullable(),
   })

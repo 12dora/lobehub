@@ -10,6 +10,49 @@ export const networkProxyStyles = createStaticStyles(({ css }) => ({
 
     min-width: 0;
   `,
+  /** Engine block: instance facts on the left, the dependency panel on the right. */
+  splitRow: css`
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 20px;
+    align-items: start;
+  `,
+  depsPanel: css`
+    display: flex;
+    flex-direction: column;
+
+    min-width: 0;
+    padding-block: 12px;
+    padding-inline: 16px;
+    border: 1px solid ${cssVar.colorBorderSecondary};
+    border-radius: ${cssVar.borderRadiusLG};
+
+    background: ${cssVar.colorFillQuaternary};
+  `,
+  depRow: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-start;
+    justify-content: space-between;
+
+    padding-block: 10px;
+    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
+  `,
+  depMeta: css`
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  `,
+  depTitleRow: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: baseline;
+
+    min-width: 0;
+  `,
   code: css`
     font-family: ${cssVar.fontFamilyCode};
     font-size: ${cssVar.fontSizeSM};

@@ -3415,7 +3415,7 @@ export default {
     'You can view the network proxy configuration but not change it. Ask a platform administrator for the manage permission.',
   'networkProxy.master': 'Enable network proxy',
   'networkProxy.masterOnHint':
-    'Only the providers and site features enabled below are routed. Everything else stays direct.',
+    'Only the providers and site features enabled below use the proxy. Everything else stays direct.',
   'networkProxy.masterOffHint': 'All server-side outbound traffic goes direct.',
   'networkProxy.masterLockedByEnv':
     'PROXY_URL already proxies the whole process, so this switch is unavailable.',
@@ -3436,12 +3436,12 @@ export default {
   'networkProxy.badges.noNode': 'none',
   'networkProxy.badges.applied': '{{applied}}/{{total}} instances on the current configuration',
   'networkProxy.more.title': 'More actions',
-  'networkProxy.more.providersOn': 'Route all AI providers',
-  'networkProxy.more.providersOff': 'Stop routing all AI providers',
-  'networkProxy.more.featuresOn': 'Route all site features',
-  'networkProxy.more.featuresOff': 'Stop routing all site features',
-  'networkProxy.more.fallbackDirect': 'When the outlet is down: go direct (everywhere)',
-  'networkProxy.more.fallbackFail': 'When the outlet is down: fail the request (everywhere)',
+  'networkProxy.more.providersOn': 'Proxy for all AI providers',
+  'networkProxy.more.providersOff': 'Direct for all AI providers',
+  'networkProxy.more.featuresOn': 'Proxy for all site features',
+  'networkProxy.more.featuresOff': 'Direct for all site features',
+  'networkProxy.more.fallbackDirect': 'Fallback for all scopes: go direct',
+  'networkProxy.more.fallbackFail': 'Fallback for all scopes: fail the request',
   'networkProxy.more.groupLatency': 'Test all node latencies',
   'networkProxy.more.restartEngine': 'Restart the engine',
   'networkProxy.banners.globalProxy': 'A global proxy is set by environment variable',
@@ -3460,7 +3460,7 @@ export default {
   'networkProxy.banners.selfHealed': 'The engine recovered on its own',
   'networkProxy.banners.fallback': 'Some traffic has fallen back to a direct connection',
   'networkProxy.banners.fallbackDesc':
-    'The outlet is unavailable, so these scopes are going direct right now: {{scopes}}. Users see no error. Fix the outlet, or set a scope\'s "If the outlet is down" to "Fail the request" if going direct is unacceptable.',
+    'The outlet is unavailable, so these scopes have fallen back to direct: {{scopes}}. Users see no error. Fix the outlet, or set the scope\'s fallback to "Fail the request" if going direct is unacceptable.',
   'networkProxy.banners.geodata': 'Smart routing is missing its rule data',
   'networkProxy.banners.geodataDesc':
     'Smart routing needs a one-time install of the routing rule data (about 13 MB).',
@@ -3502,11 +3502,28 @@ export default {
   'networkProxy.artifactSource.operator_override': 'operator-provided',
   'networkProxy.engine.title': 'Engine',
   'networkProxy.engine.desc':
-    'The proxy engine is installed separately on each instance. For safety, only the exact official build is accepted.',
+    'The proxy engine and the rule data are installed on each instance. By default only files identical to the official release are accepted.',
   'networkProxy.engine.pinnedVersion': 'Engine version',
   'networkProxy.engine.pinnedVersionHint':
     'Fixed by the platform release; it cannot be changed here.',
   'networkProxy.engine.platform': 'Platform',
+  'networkProxy.engine.currentState': 'Engine on this instance',
+  'networkProxy.engine.deps.title': 'Dependencies',
+  'networkProxy.engine.deps.desc':
+    'The proxy engine and the smart-routing rule data, installed once per instance. Without internet access, download the official file and upload it here.',
+  'networkProxy.engine.deps.installAll': 'Install all',
+  'networkProxy.engine.deps.allInstalled': 'All installed',
+  'networkProxy.engine.downloadFile': 'Download file',
+  'networkProxy.engine.hashing': 'Checking the file…',
+  'networkProxy.engine.digestMismatch.title': 'File checksum does not match',
+  'networkProxy.engine.digestMismatch.desc':
+    "This file's SHA-256 ({{actual}}) differs from the official release ({{expected}}). It may not be the expected version or may have been modified. Install it anyway?",
+  'networkProxy.engine.digestMismatch.confirm': 'Install anyway',
+  'networkProxy.engine.digestMismatch.cancel': 'Cancel',
+  'networkProxy.engine.digestMismatch.installed':
+    "Checksum differs from the official release; installed on an administrator's confirmation.",
+  'networkProxy.engine.uploadAccepted':
+    'Installed {{version}} ({{sha}}, checksum mismatch accepted)',
   'networkProxy.engine.installedAs': 'Installed · {{version}} · {{source}}',
   'networkProxy.engine.notInstalled': 'Not installed on this instance',
   'networkProxy.engine.operatorOverride':
@@ -3514,11 +3531,8 @@ export default {
   'networkProxy.engine.installing': 'Downloading and verifying…',
   'networkProxy.engine.installRequested':
     'Install started. Each live instance downloads and verifies it; the table below shows progress.',
-  'networkProxy.engine.download': 'Download and install',
+  'networkProxy.engine.download': 'Install',
   'networkProxy.engine.reinstall': 'Reinstall',
-  'networkProxy.engine.geodata.title': 'Smart-routing rule data',
-  'networkProxy.engine.geodata.desc':
-    'Smart routing needs the routing rule data (about 13 MB). Each instance installs its own copy.',
   'networkProxy.engine.geodata.install': 'Install',
   'networkProxy.engine.geodata.installing': 'Downloading and verifying…',
   'networkProxy.engine.geodata.installRequested':
@@ -3569,7 +3583,7 @@ export default {
   'networkProxy.outletMode.fallback': 'Failover in order',
   'networkProxy.outlet.ruleMode': 'Routing',
   'networkProxy.outlet.ruleModeHint':
-    'Simple sends everything in a routed scope through the outlet; smart keeps mainland-China destinations direct.',
+    'Simple sends everything in an enabled scope through the proxy; smart keeps mainland-China destinations direct.',
   'networkProxy.ruleMode.simple': 'Simple',
   'networkProxy.ruleMode.smart': 'Smart',
   'networkProxy.outlet.geodataInstallHint':
@@ -3700,17 +3714,17 @@ export default {
     'The Moderations-compatible endpoint. The LLM judge follows its own provider switch.',
   'networkProxy.scopes.title': 'What gets routed',
   'networkProxy.scopes.desc':
-    "Traffic is routed per scope. Anything not switched on here stays direct, and so do the platform's own dependencies.",
+    "Decide per scope whether traffic uses the proxy. Anything not enabled goes direct; the platform's own dependencies always go direct.",
   'networkProxy.scopes.providersTitle': 'AI providers',
   'networkProxy.scopes.featuresTitle': 'Site features',
-  'networkProxy.scopes.enableAll': 'Route all',
-  'networkProxy.scopes.disableAll': 'Route none',
+  'networkProxy.scopes.enableAll': 'Proxy for all',
+  'networkProxy.scopes.disableAll': 'Direct for all',
   'networkProxy.scopes.searchPlaceholder': 'Search providers',
   'networkProxy.scopes.providersEmpty': 'No providers to show.',
   'networkProxy.scopes.columns.provider': 'Provider',
   'networkProxy.scopes.columns.feature': 'Feature',
-  'networkProxy.scopes.columns.enabled': 'Route',
-  'networkProxy.scopes.columns.onUnavailable': 'If the outlet is down',
+  'networkProxy.scopes.columns.enabled': 'Use proxy',
+  'networkProxy.scopes.columns.onUnavailable': 'Fallback',
   'networkProxy.scopes.columns.status': 'Status',
   'networkProxy.scopes.status.enabled': 'Enabled',
   'networkProxy.scopes.status.disabled': 'Not enabled',
@@ -3750,8 +3764,6 @@ export default {
   'networkProxy.engine.restarting': 'Restarting the engine on every live instance…',
   'networkProxy.engine.restartRequested': 'Restart started. Each instance restarts its own engine.',
   'networkProxy.engine.installStateUnknown': 'Install state could not be confirmed. Retry.',
-  'networkProxy.engine.expectedDigestLine':
-    'Expected SHA-256 {{sha}} — check it against the release before uploading.',
   'networkProxy.engine.instancesUnknown':
     'Instance status could not be loaded. Retry to see the instances.',
   'networkProxy.engine.artifactCatalogUnknown':
@@ -3761,7 +3773,7 @@ export default {
   'networkProxy.nodes.selecting': 'Switching to this node…',
   'networkProxy.scopes.bulkSaving': 'Applying to every scope…',
   'networkProxy.scopes.notes.providerDelisted':
-    'No longer in the AI catalogue but still routed. Turn it off here.',
+    'No longer in the AI catalogue but still using the proxy. Turn it off here.',
   'networkProxy.subscriptions.refreshing': 'Fetching the latest node list…',
   'networkProxy.subscriptions.refreshRequested': 'Updated.',
   'networkProxy.subscriptions.saving': 'Saving…',

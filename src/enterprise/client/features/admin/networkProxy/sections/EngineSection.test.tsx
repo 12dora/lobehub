@@ -46,8 +46,21 @@ vi.mock('./EngineLogsDrawer', () => ({ default: () => <div data-testid="logs" />
 
 // The upload affordance is the only place the expected digest belongs — assert what it was given.
 vi.mock('./ArtifactUploadButton', () => ({
-  default: ({ expectedDigest, kind }: { expectedDigest?: string | null; kind: string }) => (
-    <button data-digest={expectedDigest ?? ''} data-testid={`upload-${kind}`} type="button">
+  default: ({
+    disabled,
+    expectedDigest,
+    kind,
+  }: {
+    disabled?: boolean;
+    expectedDigest?: string | null;
+    kind: string;
+  }) => (
+    <button
+      data-digest={expectedDigest ?? ''}
+      data-disabled={String(Boolean(disabled))}
+      data-testid={`upload-${kind}`}
+      type="button"
+    >
       upload
     </button>
   ),
@@ -159,31 +172,54 @@ const renderSection = (
     />,
   );
 
-describe('EngineSection smart-routing rule data', () => {
-  it('offers the rule data on a fresh deployment, before smart routing is on', () => {
+describe('EngineSection dependency panel', () => {
+  it('lists the engine and both rule files on a fresh deployment, before smart routing is on', () => {
     renderSection();
 
-    // The old gate only rendered these once smart mode was on — which needed them installed.
-    expect(screen.getByText('networkProxy.engine.geodata.title')).toBeTruthy();
-    expect(screen.getByText('networkProxy.artifactKind.geoip')).toBeTruthy();
-    expect(screen.getByText('networkProxy.artifactKind.geosite')).toBeTruthy();
+    // The old gate only rendered the rule files once smart mode was on — which needed them installed.
+    expect(screen.getByTestId('engine-dependencies')).toBeTruthy();
+    expect(screen.getByTestId('dependency-engine')).toBeTruthy();
+    expect(screen.getByTestId('dependency-geoip')).toBeTruthy();
+    expect(screen.getByTestId('dependency-geosite')).toBeTruthy();
     expect(screen.getAllByText('networkProxy.engine.geodata.stateMissing')).toHaveLength(2);
   });
 
-  it('installs both files with one action', () => {
+  it('installs everything missing with one action — engine already installed, so only the rule data', () => {
     const actions = stubActions();
     renderSection(actions);
 
-    fireEvent.click(screen.getByText('networkProxy.engine.geodata.install'));
+    fireEvent.click(screen.getByText('networkProxy.engine.deps.installAll'));
+    expect(actions.installGeodata).toHaveBeenCalledTimes(1);
+    expect(actions.installArtifact).not.toHaveBeenCalled();
+  });
+
+  it('installs the engine first when it is missing too', async () => {
+    const actions = stubActions();
+    renderSection(actions, [
+      instance({
+        artifacts: [
+          artifact('engine', false),
+          artifact('geoip', false),
+          artifact('geosite', false),
+        ],
+        engineState: 'not_installed',
+      }),
+    ]);
+
+    fireEvent.click(screen.getByText('networkProxy.engine.deps.installAll'));
+    await Promise.resolve();
+    expect(actions.installArtifact).toHaveBeenCalledWith('engine');
     expect(actions.installGeodata).toHaveBeenCalledTimes(1);
   });
 
-  it('reports each file as installed once it is on this node', () => {
+  it('turns the one-click button into a plain "all installed" state once nothing is missing', () => {
     renderSection(stubActions(), [
       instance({
         artifacts: [artifact('engine', true), artifact('geoip', true), artifact('geosite', true)],
       }),
     ]);
+    const done = screen.getByText('networkProxy.engine.deps.allInstalled') as HTMLButtonElement;
+    expect(done.disabled).toBe(true);
     expect(screen.getAllByText('networkProxy.engine.geodata.stateInstalled')).toHaveLength(2);
   });
 
@@ -203,18 +239,38 @@ describe('EngineSection smart-routing rule data', () => {
     expect(screen.getAllByText('networkProxy.engine.geodata.installedOn')).toHaveLength(2);
   });
 
-  it('keeps the manual upload path for a deployment with no way out to the network', () => {
+  it('keeps the manual upload path but greys it out once the file is installed here', () => {
     renderSection();
-    expect(screen.getByTestId('upload-geoip')).toBeTruthy();
-    expect(screen.getByTestId('upload-geosite')).toBeTruthy();
+    expect(screen.getByTestId('upload-geoip').getAttribute('data-disabled')).toBe('false');
+    expect(screen.getByTestId('upload-geosite').getAttribute('data-disabled')).toBe('false');
+    // The engine is already installed on this instance — nothing left to upload.
+    expect(screen.getByTestId('upload-engine').getAttribute('data-disabled')).toBe('true');
   });
 
-  it('shows the expected digest inside the upload affordance, not on the row', () => {
+  it('shows the checksum as a small code next to the title and hands it to the upload check', () => {
     renderSection();
-    // Every row's checksum used to sit in the description, where it means nothing to anyone who
-    // is not about to upload a file.
     expect(screen.queryByText(/networkProxy\.engine\.expectedDigestLine/)).toBeNull();
+    expect(screen.getAllByText(/^SHA-256 /).length).toBeGreaterThanOrEqual(2);
     expect(screen.getByTestId('upload-geoip').getAttribute('data-digest')).toBeTruthy();
+  });
+
+  it('offers a direct download of the official file for every dependency', () => {
+    renderSection();
+    // No artifact catalogue was passed, so the engine asset is unknown; the two rule files always have one.
+    expect(screen.getAllByText('networkProxy.engine.downloadFile')).toHaveLength(2);
+  });
+
+  it('flags a file the administrator installed despite a checksum mismatch', () => {
+    renderSection(stubActions(), [
+      instance({
+        artifacts: [
+          { ...artifact('engine', true), pinnedDigestMatch: false, source: 'upload' },
+          artifact('geoip', false),
+          artifact('geosite', false),
+        ],
+      }),
+    ]);
+    expect(screen.getByText('networkProxy.engine.digestMismatch.installed')).toBeTruthy();
   });
 
   it('disables installing for a read-only admin', () => {
@@ -229,7 +285,7 @@ describe('EngineSection smart-routing rule data', () => {
         onReloadStatus={vi.fn()}
       />,
     );
-    const install = screen.getByText('networkProxy.engine.geodata.install') as HTMLButtonElement;
+    const install = screen.getByText('networkProxy.engine.deps.installAll') as HTMLButtonElement;
     expect(install.disabled).toBe(true);
   });
 });

@@ -235,7 +235,7 @@ interface NetworkProxyConfig {
 | `user_agent`                               | 可选覆盖                                                             |
 | `filter` / `exclude_filter`                | 可选正则（保存时用与内容审计相同的正则安全扫描，拒绝灾难性回溯模式） |
 | `sort_order`                               | 列表顺序                                                             |
-| `last_update_at` / `last_error`            | Node 拉取结果（成功时间 / 最近错误，错误文本经 `redactSecrets()`）   |
+| `last_update_at` / `last_issue` / `last_error` | Node 拉取结果（成功时间 / `{ at, code, detail }` 结构化问题 / 本版保留、新写入不再使用） |
 | `node_count`                               | 引擎 REST `GET /providers/proxies/sub_<id>` 回读                     |
 | `traffic_upload/download/total/expire_at`  | Node 解析 `subscription-userinfo` 响应头，可空                       |
 | `created_by` / `created_at` / `updated_at` |                                                                      |
@@ -341,6 +341,7 @@ B1–B5 五个 commit 已上线，以下是**实现与本设计正文不一致�
 - **§8「不做」项的落地形态**：MCP **stdio** 子进程不注入代理 env（HTTP 型 MCP 已接入，`httpFetch = createEgressFetch`，fail 模式贯穿为 `PLATFORM_NETWORK_PROXY_UNAVAILABLE`）；用户私有自定义服务商的作用域一律关闭 —— 作用域 key 取目录 provider id，未列出的私有 id 走 `scope_off` 直连。
 - **重定向链只认首跳出口**：`ssrfSafeFetch` 走代理时，首跳选定的代理贯穿整条重定向链，后续跳只再校主机 / 元数据策略，不会中途切直连（避免半程改变信任边界）。
 - **静态出口健康**：从 `unknown` 起步，启动与快照变更各探一次、之后每 60 s 一次；熔断只统计**代理连接阶段**失败（407 计失败；目标证书过期 / 目标 DNS 失败不计）。
+- **摘要不符可由管理员显式接受（仅上传路径）**（2026-08-17 追加）：管理端在上传前用 WebCrypto 算 sha256（gzip 资产比对 `gzSha256`，裸文件比对 `binSha256` / 规则文件 sha256），不一致时弹警告，管理员可取消或「仍然安装」；后者以 `?acceptMismatch=1` 上传，服务端把实际摘要写入产物旁的 `<file>.accepted` 侧文件（`0400`，`O_EXCL|O_NOFOLLOW`），`verifyPinnedFile` 在 manifest 摘要不符时读取该侧文件、相等才放行；`artifactState.pinnedDigestMatch=false` 与审计 `afterDiff.pinnedDigestMatch=false` 记录该状态，面板标注「校验值与官方发布不一致，已由管理员确认安装」；自动下载路径永不接受不符（`acceptMismatch` 对 `source=download` 无效），匹配文件重新落地时删除侧文件。面板「引擎」区改为左（版本 / 平台 / 当前实例引擎状态）右（依赖面板：每个依赖一行，标题旁小字 SHA-256、状态、「下载文件」直达官方 URL、「上传文件」已安装即置灰、「安装 / 重新安装」，顶部「一键安装」装齐所有缺失项）分栏，实例表在下方通栏。
 - **spawn 前重校验有身份缓存**：每次 `startEngine` 都重新校验产物 sha256，但状态 /reconcile/ 上报路径按 `(dev, ino, size, mtime)` 缓存，不会在热路径上重算～50 MB。
 - **可观测性缺口**：`ENTERPRISE_CACHE_DOMAINS` 还没有 `network_proxy` 成员，设置快照缓存目前靠 cast，指标里会归为 unknown。
 - **i18n 未补齐**：`admin` 命名空间的 264 个 `networkProxy.*` 键（外加 `enterprise.error.PLATFORM_NETWORK_PROXY_*`）只手写了 en-US /zh-CN，其余 14 语言的 `bun run i18n` **未运行**，这些语言下回退英文。

@@ -73,11 +73,15 @@ export interface AdminNetworkProxyConnectivity {
 
 export interface AdminNetworkProxyUploadResult {
   ok: true;
+  /** false when the admin accepted a file whose digest differs from the pinned manifest. */
+  pinnedDigestMatch?: boolean;
   sha256: string;
   version: string;
 }
 
 export interface AdminNetworkProxyUploadInput {
+  /** The admin saw the digest-mismatch warning and chose to install the file anyway. */
+  acceptMismatch?: boolean;
   file: File;
   kind: NetworkProxyArtifactKind;
   /** 0–1 transfer progress; only fires while the browser reports a computable length. */
@@ -173,6 +177,7 @@ export const buildAdminUploadHeaders = async (): Promise<Record<string, string>>
 };
 
 const uploadArtifactViaXhr = async ({
+  acceptMismatch,
   file,
   kind,
   onProgress,
@@ -190,7 +195,9 @@ const uploadArtifactViaXhr = async ({
     // XHR (not fetch) because upload progress is the only honest way to show a three-state
     // long task for a 45 MB artifact — `fetch` has no upload progress event.
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${NETWORK_PROXY_ARTIFACT_UPLOAD_PATH}?kind=${encodeURIComponent(kind)}`);
+    const query = new URLSearchParams({ kind });
+    if (acceptMismatch) query.set('acceptMismatch', '1');
+    xhr.open('POST', `${NETWORK_PROXY_ARTIFACT_UPLOAD_PATH}?${query.toString()}`);
     // Cookies carry the Better Auth session (and its reauth freshness) for cookie-auth admins.
     xhr.withCredentials = true;
     xhr.responseType = 'text';

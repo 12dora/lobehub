@@ -39,6 +39,12 @@ const SMOKE_TIMEOUT_MS = 10_000;
 export interface InstalledArtifact {
   kind: NetworkProxyArtifactKind;
   path: string;
+  /**
+   * false when the file's sha256 differs from the pinned manifest digest and an operator
+   * explicitly accepted it at upload time (design §3.2 escape hatch). Never true by accident:
+   * the acceptance is a side-file next to the artifact, written only by the upload path.
+   */
+  pinnedDigestMatch: boolean;
   sha256: string;
   smokeOutput?: string | null;
   source: NetworkProxyArtifactSource;
@@ -193,11 +199,64 @@ const hashNoFollow = async (path: string): Promise<{ digest: string; identity: F
   }
 };
 
+/** Side-file that records a digest an operator explicitly accepted despite the manifest mismatch. */
+export const acceptedDigestPath = (artifactPath: string): string => `${artifactPath}.accepted`;
+
+const readAcceptedDigest = async (artifactPath: string): Promise<string | null> => {
+  try {
+    const handle = await open(
+      acceptedDigestPath(artifactPath),
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > 128) return null;
+      const text = (await handle.readFile({ encoding: 'utf8' })).trim().toLowerCase();
+      return /^[\da-f]{64}$/u.test(text) ? text : null;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+};
+
+const writeAcceptedDigest = async (artifactPath: string, digest: string): Promise<void> => {
+  const target = acceptedDigestPath(artifactPath);
+  await removeIfPresent(target);
+  const handle = await open(
+    target,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+    0o400,
+  );
+  try {
+    await handle.writeFile(`${digest}\n`, { encoding: 'utf8' });
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+};
+
+/**
+ * A digest is acceptable when it equals the pinned manifest digest, or when it equals the
+ * operator-accepted digest recorded next to the file. The second path exists only for a manual
+ * upload where the administrator saw the mismatch warning and chose to proceed.
+ */
+const isAcceptableDigest = async (
+  path: string,
+  digest: string,
+  expectedSha256: string,
+): Promise<{ matched: boolean; ok: boolean }> => {
+  if (digest === expectedSha256) return { matched: true, ok: true };
+  const accepted = await readAcceptedDigest(path);
+  return { matched: false, ok: accepted !== null && accepted === digest };
+};
+
 export const verifyPinnedFile = async (
   path: string,
   expectedSha256: string,
   opts?: { reverify?: boolean },
-): Promise<{ digest: string; identity: FileIdentity }> => {
+): Promise<{ digest: string; identity: FileIdentity; pinnedDigestMatch: boolean }> => {
   const stat = await lstat(path);
   if (stat.isSymbolicLink() || !stat.isFile()) {
     return throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH);
@@ -205,21 +264,23 @@ export const verifyPinnedFile = async (
   const identity = identityOf(path, stat);
   const cached = digestCache.get(path);
   if (!opts?.reverify && cached && sameIdentity(cached.identity, identity)) {
-    if (cached.digest !== expectedSha256) {
+    const verdict = await isAcceptableDigest(path, cached.digest, expectedSha256);
+    if (!verdict.ok) {
       digestCache.delete(path);
       return throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH);
     }
-    return { digest: cached.digest, identity };
+    return { digest: cached.digest, identity, pinnedDigestMatch: verdict.matched };
   }
   if (opts?.reverify) spawnDigestVerifyCount += 1;
   const hashed = await hashNoFollow(path);
-  if (hashed.digest !== expectedSha256) {
+  const verdict = await isAcceptableDigest(path, hashed.digest, expectedSha256);
+  if (!verdict.ok) {
     digestCache.delete(path);
     return throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH);
   }
   digestCache.set(path, { digest: hashed.digest, identity: hashed.identity });
   if (opts?.reverify) await afterReverifyHook?.();
-  return hashed;
+  return { ...hashed, pinnedDigestMatch: verdict.matched };
 };
 
 /** Test seam: run after a successful forced re-verify (used to mutate the file between spawn attempts). */
@@ -294,6 +355,8 @@ const toNodeReadable = (stream: NodeJS.ReadableStream): Readable =>
   stream instanceof Readable ? stream : Readable.from(stream as AsyncIterable<Buffer>);
 
 const writeStreamToVerifiedFile = async (input: {
+  /** Keep the file even when the digest differs from `expectedSha256` (operator-accepted upload). */
+  acceptMismatch?: boolean;
   compressed: 'auto' | 'gzip' | 'none';
   expectedSha256: string;
   maxCompressed: number;
@@ -301,7 +364,7 @@ const writeStreamToVerifiedFile = async (input: {
   mode: number;
   stream: NodeJS.ReadableStream;
   tmpPath: string;
-}): Promise<string> => {
+}): Promise<{ digest: string; matched: boolean }> => {
   const handle = await open(
     input.tmpPath,
     constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
@@ -376,7 +439,8 @@ const writeStreamToVerifiedFile = async (input: {
     }
 
     const digest = hash.digest('hex');
-    if (digest !== input.expectedSha256) {
+    const matched = digest === input.expectedSha256;
+    if (!matched && !input.acceptMismatch) {
       await handle.close().catch(() => undefined);
       await removeIfPresent(input.tmpPath);
       throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH);
@@ -384,16 +448,23 @@ const writeStreamToVerifiedFile = async (input: {
     await handle.sync();
     await handle.chmod(input.mode);
     await handle.close();
-    return digest;
+    return { digest, matched };
   } catch (error) {
     return fail(error);
   }
 };
 
+export interface InstallStreamOptions {
+  /** Operator saw the digest-mismatch warning and chose to install the file anyway (upload only). */
+  acceptMismatch?: boolean;
+  compressed: 'auto' | 'gzip' | 'none';
+  source: NetworkProxyArtifactSource;
+}
+
 const installVerifiedStream = async (
   spec: ArtifactSpec,
   stream: NodeJS.ReadableStream,
-  opts: { compressed: 'auto' | 'gzip' | 'none'; source: NetworkProxyArtifactSource },
+  opts: InstallStreamOptions,
 ): Promise<InstalledArtifact> => {
   const dataDir = resolveDataDir();
   const paths = enginePaths(dataDir);
@@ -403,7 +474,8 @@ const installVerifiedStream = async (
       await ensureSecureDirectory(spec.destParent, { create: true, root: dataDir });
       const dest = path.join(spec.destParent, spec.destName);
       const tmpPath = `${dest}.${process.pid}.${randomUUID()}.tmp`;
-      const digest = await writeStreamToVerifiedFile({
+      const { digest, matched } = await writeStreamToVerifiedFile({
+        acceptMismatch: opts.acceptMismatch === true && opts.source === 'upload',
         compressed: opts.compressed,
         expectedSha256: spec.sha256,
         maxCompressed: NETWORK_PROXY_LIMITS.UPLOAD_MAX_COMPRESSED_BYTES,
@@ -414,6 +486,10 @@ const installVerifiedStream = async (
       });
       await rename(tmpPath, dest);
       await chmod(dest, spec.mode);
+      // The acceptance side-file must describe exactly the file now at `dest`: write it for an
+      // accepted mismatch, drop any stale one when a matching file replaces an accepted one.
+      if (matched) await removeIfPresent(acceptedDigestPath(dest));
+      else await writeAcceptedDigest(dest, digest);
       await rememberPinnedDigest(dest, digest);
       let smokeOutput: string | null = null;
       if (spec.kind === 'engine') {
@@ -424,6 +500,7 @@ const installVerifiedStream = async (
       return {
         kind: spec.kind,
         path: dest,
+        pinnedDigestMatch: matched,
         sha256: digest,
         smokeOutput,
         source: opts.source,
@@ -472,6 +549,7 @@ const resolveInstalledEngine = async (
       return {
         kind: 'engine',
         path: override,
+        pinnedDigestMatch: true,
         sha256: '',
         smokeOutput: overrideSmoke.smokeOutput,
         source: 'operator_override',
@@ -484,6 +562,7 @@ const resolveInstalledEngine = async (
     return {
       kind: 'engine',
       path: override,
+      pinnedDigestMatch: true,
       sha256: '',
       smokeOutput: smoked.smokeOutput,
       source: 'operator_override',
@@ -502,9 +581,11 @@ const resolveInstalledEngine = async (
   return {
     kind: 'engine',
     path: dest,
+    pinnedDigestMatch: verified.pinnedDigestMatch,
     sha256: verified.digest,
     smokeOutput: lastSmokeOutput,
-    source: 'download',
+    // An accepted mismatch can only come from a manual upload; a matching file may be either.
+    source: verified.pinnedDigestMatch ? 'download' : 'upload',
     version: spec.version,
   };
 };
@@ -520,8 +601,9 @@ const resolveInstalledGeodata = async (
   return {
     kind,
     path: dest,
+    pinnedDigestMatch: verified.pinnedDigestMatch,
     sha256: verified.digest,
-    source: 'download',
+    source: verified.pinnedDigestMatch ? 'download' : 'upload',
     version: spec.version,
   };
 };
@@ -532,6 +614,7 @@ const toState = (
 ): ArtifactState => ({
   installed: Boolean(installed),
   kind,
+  ...(installed ? { pinnedDigestMatch: installed.pinnedDigestMatch } : {}),
   source: installed?.source ?? null,
   version: installed?.version ?? null,
 });
@@ -568,7 +651,7 @@ export const artifactManager = {
   installFromStream: async (
     kind: NetworkProxyArtifactKind,
     stream: NodeJS.ReadableStream,
-    opts: { compressed: 'auto' | 'gzip' | 'none'; source: NetworkProxyArtifactSource },
+    opts: InstallStreamOptions,
   ): Promise<InstalledArtifact> => {
     const spec = resolveArtifactSpec(kind);
     return installVerifiedStream(spec, stream, opts);

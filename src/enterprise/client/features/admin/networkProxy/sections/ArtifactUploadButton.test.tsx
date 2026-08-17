@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { createHash } from 'node:crypto';
+
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -19,6 +21,8 @@ vi.mock('@lobehub/ui', () => ({
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 
+const confirmModal = vi.fn();
+
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({
     children,
@@ -33,6 +37,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {children}
     </button>
   ),
+  confirmModal: (options: unknown) => confirmModal(options),
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
@@ -147,5 +152,72 @@ describe('ArtifactUploadButton', () => {
 
     expect(onInstalled).toHaveBeenCalledTimes(1);
     expect(screen.getByText('networkProxy.engine.uploadVerified')).toBeTruthy();
+  });
+
+  it('uploads straight away when the file hashes to the pinned digest', async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    (globalThis as { __pickedFile?: unknown }).__pickedFile = new File([bytes], 'geoip.metadb');
+    const uploadArtifact = vi.fn(async () => ({
+      ok: true as const,
+      sha256: digest,
+      version: 'commit',
+    }));
+
+    render(
+      <ArtifactUploadButton
+        expectedDigest={digest}
+        kind="geoip"
+        service={service({ uploadArtifact })}
+        onInstalled={vi.fn()}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pick'));
+    });
+
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalled());
+    expect(confirmModal).not.toHaveBeenCalled();
+    expect(uploadArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({ acceptMismatch: false, kind: 'geoip' }),
+    );
+  });
+
+  it('warns on a checksum mismatch and only uploads (flagged) when the admin insists', async () => {
+    const bytes = new Uint8Array([9, 9, 9]);
+    (globalThis as { __pickedFile?: unknown }).__pickedFile = new File([bytes], 'geoip.metadb');
+    const uploadArtifact = vi.fn(async () => ({
+      ok: true as const,
+      pinnedDigestMatch: false,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      version: 'commit',
+    }));
+    confirmModal.mockReset();
+
+    render(
+      <ArtifactUploadButton
+        expectedDigest={'0'.repeat(64)}
+        kind="geoip"
+        service={service({ uploadArtifact })}
+        onInstalled={vi.fn()}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pick'));
+    });
+
+    await waitFor(() => expect(confirmModal).toHaveBeenCalledTimes(1));
+    // Nothing was sent before the admin answered the warning.
+    expect(uploadArtifact).not.toHaveBeenCalled();
+    const options = confirmModal.mock.calls[0][0] as { onOk: () => Promise<void>; title: string };
+    expect(options.title).toBe('networkProxy.engine.digestMismatch.title');
+
+    await act(async () => {
+      await options.onOk();
+    });
+    expect(uploadArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({ acceptMismatch: true, kind: 'geoip' }),
+    );
+    expect(screen.getByText('networkProxy.engine.uploadAccepted')).toBeTruthy();
   });
 });

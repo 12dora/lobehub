@@ -375,7 +375,11 @@ describe('handleNetworkProxyArtifactUpload', () => {
   });
 
   it('installs from the uploaded stream and audits sha256/version', async () => {
-    const installFromStream = vi.fn(async () => ({ sha256: 'abc123', version: 'v1.19.30' }));
+    const installFromStream = vi.fn(async () => ({
+      pinnedDigestMatch: true,
+      sha256: 'abc123',
+      version: 'v1.19.30',
+    }));
     setNetworkProxyRuntimeForTests({
       artifactManager: {
         getStatus: vi.fn(async () => []),
@@ -395,8 +399,18 @@ describe('handleNetworkProxyArtifactUpload', () => {
       ctx,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, sha256: 'abc123', version: 'v1.19.30' });
+    expect(await res.json()).toEqual({
+      ok: true,
+      pinnedDigestMatch: true,
+      sha256: 'abc123',
+      version: 'v1.19.30',
+    });
     expect(installFromStream).toHaveBeenCalledOnce();
+    expect(installFromStream).toHaveBeenCalledWith(
+      'engine',
+      expect.anything(),
+      expect.objectContaining({ acceptMismatch: false, source: 'upload' }),
+    );
     expect(appendSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         afterDiff: expect.objectContaining({
@@ -404,6 +418,44 @@ describe('handleNetworkProxyArtifactUpload', () => {
           source: 'upload',
           version: 'v1.19.30',
         }),
+        result: 'success',
+      }),
+    );
+  });
+
+  it("forwards the operator's acceptance of a checksum mismatch and audits it as unverified", async () => {
+    const installFromStream = vi.fn(async () => ({
+      pinnedDigestMatch: false,
+      sha256: 'deadbeef',
+      version: 'v1.19.30',
+    }));
+    setNetworkProxyRuntimeForTests({
+      artifactManager: {
+        getStatus: vi.fn(async () => []),
+        installFromDownload: vi.fn(),
+        installFromStream,
+      },
+      redactSecrets: (text: string) => text,
+    });
+    const form = new FormData();
+    form.set('file', new File([new Uint8Array([9, 9, 9])], 'mihomo.bin'));
+    const res = await handleNetworkProxyArtifactUpload(
+      new Request(
+        'https://example.com/webapi/admin/network-proxy/artifact?kind=engine&acceptMismatch=1',
+        { body: form, headers: { 'content-length': '128' }, method: 'POST' },
+      ),
+      ctx,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, pinnedDigestMatch: false });
+    expect(installFromStream).toHaveBeenCalledWith(
+      'engine',
+      expect.anything(),
+      expect.objectContaining({ acceptMismatch: true, source: 'upload' }),
+    );
+    expect(appendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterDiff: expect.objectContaining({ pinnedDigestMatch: false, sha256: 'deadbeef' }),
         result: 'success',
       }),
     );

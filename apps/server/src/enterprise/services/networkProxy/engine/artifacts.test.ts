@@ -79,6 +79,49 @@ describe('artifactManager.installFromStream', () => {
     }
   });
 
+  it('keeps a mismatching upload only when the operator accepted it, and remembers the acceptance', async () => {
+    const body = Buffer.from('not-the-pinned-bytes');
+    stubSpec(body.length, '0'.repeat(64));
+    const installed = await artifactManager.installFromStream('geoip', Readable.from(body), {
+      acceptMismatch: true,
+      compressed: 'none',
+      source: 'upload',
+    });
+    expect(installed.pinnedDigestMatch).toBe(false);
+    expect(installed.sha256).toBe(sha256(body));
+    // Later reads (status, spawn-time re-verify, runtime materialisation) honour the acceptance…
+    const status = await artifactManager.getStatus();
+    expect(status.find((s) => s.kind === 'geoip')).toMatchObject({
+      installed: true,
+      pinnedDigestMatch: false,
+      source: 'upload',
+    });
+    // …and a matching download afterwards clears it again.
+    const good = Buffer.from('geodata-fixture');
+    stubSpec(good.length, sha256(good));
+    const replaced = await artifactManager.installFromStream('geoip', Readable.from(good), {
+      compressed: 'none',
+      source: 'upload',
+    });
+    expect(replaced.pinnedDigestMatch).toBe(true);
+    expect((await artifactManager.getStatus()).find((s) => s.kind === 'geoip')).toMatchObject({
+      installed: true,
+      pinnedDigestMatch: true,
+    });
+  });
+
+  it('never accepts a mismatch for a download, even when asked', async () => {
+    const body = Buffer.from('not-the-pinned-bytes');
+    stubSpec(body.length, '0'.repeat(64));
+    await expect(
+      artifactManager.installFromStream('geoip', Readable.from(body), {
+        acceptMismatch: true,
+        compressed: 'none',
+        source: 'download',
+      }),
+    ).rejects.toBeTruthy();
+  });
+
   it('aborts a gzip bomb that exceeds the pinned decompressed size', async () => {
     const zeros = Buffer.alloc(64 * 1024, 0);
     const gz = gzipSync(zeros);

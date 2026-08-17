@@ -129,8 +129,13 @@ export interface ArtifactManagerLike {
   installFromStream: (
     kind: NetworkProxyArtifactKind,
     stream: NodeJS.ReadableStream,
-    opts: { compressed: 'auto' | 'gzip' | 'none'; source: 'download' | 'upload' },
-  ) => Promise<{ sha256: string; version: string }>;
+    opts: {
+      /** Operator accepted the digest-mismatch warning (upload only). */
+      acceptMismatch?: boolean;
+      compressed: 'auto' | 'gzip' | 'none';
+      source: 'download' | 'upload';
+    },
+  ) => Promise<{ pinnedDigestMatch: boolean; sha256: string; version: string }>;
 }
 
 export interface NetworkProxyRuntime {
@@ -692,8 +697,11 @@ export const handleNetworkProxyArtifactUpload = async (
   request: Request,
   ctx: { serverDB: LobeChatDatabase; userId: string },
 ): Promise<Response> => {
-  const rawKind = new URL(request.url).searchParams.get('kind');
+  const url = new URL(request.url);
+  const rawKind = url.searchParams.get('kind');
   const kind = parseArtifactKind(rawKind);
+  // The admin saw the client-side digest warning and chose to install the file anyway.
+  const acceptMismatch = url.searchParams.get('acceptMismatch') === '1';
   const action = installAuditActionFor(kind ?? 'engine');
   // Never persist a raw `kind` query value — it is operator-controlled.
   const auditKind = kind ?? 'invalid';
@@ -761,6 +769,7 @@ export const handleNetworkProxyArtifactUpload = async (
       kind,
       fileToNodeStream(file),
       {
+        acceptMismatch,
         compressed: 'auto',
         source: 'upload',
       },
@@ -770,12 +779,23 @@ export const handleNetworkProxyArtifactUpload = async (
 
     await appendUploadAudit(ctx, {
       action,
-      afterDiff: { kind, sha256: installed.sha256, source: 'upload', version: installed.version },
+      afterDiff: {
+        kind,
+        pinnedDigestMatch: installed.pinnedDigestMatch,
+        sha256: installed.sha256,
+        source: 'upload',
+        version: installed.version,
+      },
       result: 'success',
     });
 
     return Response.json(
-      { ok: true, sha256: installed.sha256, version: installed.version },
+      {
+        ok: true,
+        pinnedDigestMatch: installed.pinnedDigestMatch,
+        sha256: installed.sha256,
+        version: installed.version,
+      },
       { status: 200 },
     );
   } catch (error) {
