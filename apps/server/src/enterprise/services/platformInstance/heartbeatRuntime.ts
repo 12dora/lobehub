@@ -66,7 +66,13 @@ export const shouldStartPlatformInstanceHeartbeat = (
   env: Record<string, string | undefined>,
 ): boolean =>
   env.NODE_ENV === 'production' &&
-  env.NEXT_RUNTIME === 'nodejs' &&
+  // `NEXT_RUNTIME` is inlined by the Next compiler only where the literal
+  // `process.env.NEXT_RUNTIME` appears in source; the standalone server does not
+  // export it as a real environment variable, so requiring `=== 'nodejs'` here
+  // silently disabled heartbeats (and everything keyed on them) in Docker.
+  // The caller (`src/instrumentation.ts`) already runs only in the Node runtime;
+  // we just refuse the edge runtime.
+  env.NEXT_RUNTIME !== 'edge' &&
   Boolean(env.DATABASE_URL) &&
   !isBuildRuntime(env) &&
   !isEphemeralRuntime(env) &&

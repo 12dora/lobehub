@@ -78,6 +78,11 @@ describe('platform instance heartbeat runtime', () => {
       }),
     ).toBe(true);
 
+    // The standalone production server does not export NEXT_RUNTIME as a real env var.
+    expect(
+      shouldStartPlatformInstanceHeartbeat({ ...productionEnv(), NEXT_RUNTIME: undefined }),
+    ).toBe(true);
+
     for (const unsupported of [
       { NODE_ENV: 'development' },
       { NEXT_RUNTIME: 'edge' },

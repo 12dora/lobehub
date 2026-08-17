@@ -56,6 +56,7 @@ import {
   testOutletConnectivity,
   toSettingsMutationOutput,
   toSettingsOutput,
+  withLocalInstanceStatus,
 } from './networkProxySupport';
 
 const adminBase = preAccessAuthedProcedure
@@ -206,10 +207,12 @@ export const adminNetworkProxyRouter = router({
     .query(async ({ ctx }) => {
       try {
         const runtime = await getNetworkProxyRuntime();
-        const [row, instances] = await Promise.all([
+        const instanceId = currentInstanceId();
+        const [row, freshInstances] = await Promise.all([
           runtime.getNetworkProxySettings(ctx.serverDB),
-          runtime.listFreshInstanceStatuses(ctx.serverDB, currentInstanceId()),
+          runtime.listFreshInstanceStatuses(ctx.serverDB, instanceId),
         ]);
+        const instances = await withLocalInstanceStatus(runtime, freshInstances, instanceId);
         return {
           fallbackScopes: runtime.getEgressCounters().fallbackScopes,
           globalProxyActive: runtime.isLegacyGlobalProxyActive(),
@@ -290,9 +293,12 @@ export const adminNetworkProxyRouter = router({
     try {
       const runtime = await getNetworkProxyRuntime();
       const engine = runtime.getEngineRuntime();
-      const nodes = await engine.listNodes();
+      const engineState = engine.getState().state;
+      // No engine process → nothing to list; that is a normal state, not an error.
+      const nodes =
+        engineState === 'running' || engineState === 'degraded' ? await engine.listNodes() : [];
       return {
-        engineState: engine.getState().state,
+        engineState,
         instanceId: currentInstanceId(),
         nodes,
       };

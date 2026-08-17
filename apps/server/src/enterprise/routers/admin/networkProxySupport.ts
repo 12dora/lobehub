@@ -52,9 +52,13 @@ import { getEgressCounters } from '../../services/networkProxy/egress/counters';
 import { getDispatcher } from '../../services/networkProxy/egress/dispatchers';
 import { getOutletHealth } from '../../services/networkProxy/egress/router';
 import { artifactManager } from '../../services/networkProxy/engine/artifacts';
+import { buildLocalInstanceStatus } from '../../services/networkProxy/engine/instanceStatusReporter';
 import { detectEnginePlatform } from '../../services/networkProxy/engine/platform';
 import { getEngineRuntime } from '../../services/networkProxy/engine/runtime';
-import { listFreshInstanceStatuses } from '../../services/networkProxy/instanceStatusService';
+import {
+  type InstanceStatusUpsert,
+  listFreshInstanceStatuses,
+} from '../../services/networkProxy/instanceStatusService';
 import { redactSecrets } from '../../services/networkProxy/redact';
 import {
   applyScopeOps,
@@ -135,6 +139,8 @@ export interface NetworkProxyRuntime {
   ) => Promise<StaticProxyPersisted | undefined>;
   artifactManager: ArtifactManagerLike;
   assertCanEnable: (config: NetworkProxyConfig) => void;
+  /** Live status of the answering instance (shown even when its heartbeat row is missing). */
+  buildLocalInstanceStatus: () => Promise<InstanceStatusUpsert>;
   bumpEngineGeneration: (
     db: LobeChatDatabase | Transaction,
     input: { expectedRevision: number; updatedBy: string },
@@ -228,6 +234,7 @@ const loadNetworkProxyRuntime = async (): Promise<NetworkProxyRuntime> => ({
   createSubscriptionRecord: (db, input, userId) =>
     createSubscriptionRecord(asDb(db), input, userId),
   deleteSubscriptionRecord: (db, id) => deleteSubscriptionRecord(asDb(db), id),
+  buildLocalInstanceStatus: () => buildLocalInstanceStatus(getEngineRuntime()),
   detectEnginePlatform,
   getDispatcherFor: getDispatcher,
   getEgressCounters,
@@ -803,4 +810,43 @@ const appendUploadAudit = async (
     targetId: input.action === NETWORK_PROXY_AUDIT_ACTIONS.ENGINE_INSTALL ? 'engine' : 'geodata',
     targetType: NETWORK_PROXY_AUDIT_TARGET_TYPES.ENGINE,
   });
+};
+
+/**
+ * The answering instance always appears in status output — even before its heartbeat row
+ * exists (or when heartbeats are disabled), so the admin never sees "no instances" while
+ * talking to a live server. DB rows win when present (they carry the real heartbeat time).
+ */
+export const withLocalInstanceStatus = async (
+  runtime: Pick<NetworkProxyRuntime, 'buildLocalInstanceStatus'>,
+  instances: InstanceStatusView[],
+  instanceId: string,
+): Promise<InstanceStatusView[]> => {
+  if (instances.some((instance) => instance.instanceId === instanceId)) return instances;
+  try {
+    const local = await runtime.buildLocalInstanceStatus();
+    const now = new Date().toISOString();
+    return [
+      {
+        activeNode: local.activeNode,
+        aliveNodeCount: local.aliveNodeCount,
+        appliedRevision: local.appliedRevision,
+        arch: local.arch,
+        artifacts: local.artifacts,
+        engineState: local.engineState,
+        engineVersion: local.engineVersion,
+        fallbackCount: local.fallbackCount,
+        instanceId,
+        isCurrent: true,
+        lastError: local.lastError,
+        lastHeartbeatAt: now,
+        platform: local.platform,
+        proxiedCount: local.proxiedCount,
+        updatedAt: now,
+      },
+      ...instances,
+    ];
+  } catch {
+    return instances;
+  }
 };

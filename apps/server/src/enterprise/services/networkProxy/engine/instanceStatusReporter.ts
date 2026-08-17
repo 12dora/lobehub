@@ -4,6 +4,7 @@ import { getPlatformInstanceId } from '@/server/enterprise/services/platformInst
 
 import { getEgressCounters } from '../egress/counters';
 import { artifactManager } from './artifacts';
+import type { InstanceStatusUpsert } from './b1';
 import { redactSecrets, upsertInstanceStatus } from './b1';
 import { detectEnginePlatform } from './platform';
 import type { EngineRuntime } from './types';
@@ -27,29 +28,36 @@ const loadEgressCounters = (): { fallback: number; proxied: number } => {
   };
 };
 
-export const reportInstanceStatus = async (runtime: EngineRuntime): Promise<boolean> => {
-  const db = await loadDb();
-  if (!db) return false;
+/** The answering instance's live status row (what the reporter would upsert). */
+export const buildLocalInstanceStatus = async (
+  runtime: EngineRuntime,
+): Promise<InstanceStatusUpsert> => {
   const state = runtime.getState();
   const artifacts = await artifactManager.getStatus();
   const { arch, platform } = detectEnginePlatform();
   const counters = loadEgressCounters();
+  return {
+    activeNode: state.activeNode,
+    aliveNodeCount: state.aliveNodeCount,
+    appliedEngineGeneration: state.appliedEngineGeneration,
+    appliedRevision: state.appliedRevision,
+    arch,
+    artifacts,
+    engineState: state.state,
+    engineVersion: state.version,
+    fallbackCount: counters.fallback,
+    instanceId: getPlatformInstanceId(),
+    lastError: state.lastError ? redactSecrets(state.lastError) : null,
+    platform,
+    proxiedCount: counters.proxied,
+  };
+};
+
+export const reportInstanceStatus = async (runtime: EngineRuntime): Promise<boolean> => {
+  const db = await loadDb();
+  if (!db) return false;
   try {
-    return await upsertInstanceStatus(db, {
-      activeNode: state.activeNode,
-      aliveNodeCount: state.aliveNodeCount,
-      appliedEngineGeneration: state.appliedEngineGeneration,
-      appliedRevision: state.appliedRevision,
-      arch,
-      artifacts,
-      engineState: state.state,
-      engineVersion: state.version,
-      fallbackCount: counters.fallback,
-      instanceId: getPlatformInstanceId(),
-      lastError: state.lastError ? redactSecrets(state.lastError) : null,
-      platform,
-      proxiedCount: counters.proxied,
-    });
+    return await upsertInstanceStatus(db, await buildLocalInstanceStatus(runtime));
   } catch (error) {
     // Heartbeat row may not exist yet — B1 already swallows the FK miss.
     if (error instanceof Error && /foreign key/i.test(error.message)) return false;

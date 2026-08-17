@@ -261,7 +261,9 @@ describe('admin.skills.parseImportSource', () => {
     expect(vi.mocked(ssrfSafeFetch)).toHaveBeenCalledWith(
       'https://example.com/skills/demo/SKILL.md',
       expect.objectContaining({ signal: expect.anything() }),
-      { maxContentLength: 1_048_576 },
+      // Fetch-layer cap is the ZIP ceiling (extensionless URLs may serve application/zip);
+      // markdown bodies are still enforced at MAX_CONTENT_BYTES after classification.
+      { maxContentLength: MAX_IMPORT_ZIP_BYTES },
     );
 
     // Parse-only: no skills / versions persisted.
