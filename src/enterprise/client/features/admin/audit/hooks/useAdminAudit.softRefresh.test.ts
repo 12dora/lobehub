@@ -31,11 +31,8 @@ vi.mock('i18next', () => ({
   },
 }));
 
-vi.mock('swr', () => ({
-  mutate: (...args: unknown[]) => mutateMock(...args),
-}));
-
 vi.mock('@/libs/swr', () => ({
+  mutate: (...args: unknown[]) => mutateMock(...args),
   useClientDataSWR: vi.fn(),
 }));
 

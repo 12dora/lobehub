@@ -4,7 +4,6 @@ import { toast } from '@lobehub/ui/base-ui';
 import debug from 'debug';
 import i18n from 'i18next';
 import { useCallback } from 'react';
-import { mutate } from 'swr';
 
 import {
   type AdminUsersBanInput,
@@ -17,7 +16,7 @@ import {
   adminUsersService,
   type AdminUsersUnbanInput,
 } from '@/enterprise/client/services/adminUsers';
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 
 import {
   ADMIN_USERS_AUDIT_KEY,

@@ -2864,6 +2864,7 @@
   "systemGeneral.edit.saveRejected": "服务端拒绝了该配置。",
   "systemGeneral.edit.saved": "配置已保存。",
   "systemGeneral.edit.seededFromEnv": "已按环境变量预填。访问密钥 ID 与密钥无法读取，请重新输入。",
+  "systemGeneral.edit.seededFromEnvMail": "已按环境变量预填。密码或 API 密钥无法读取，请重新输入。",
   "systemGeneral.edit.switchToDb": "改为在管理端配置",
   "systemGeneral.empty": "通用设置将在后续版本提供。",
   "systemGeneral.errors.email": "请输入合法的邮箱地址。",

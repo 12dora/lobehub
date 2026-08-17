@@ -4,7 +4,6 @@ import { toast } from '@lobehub/ui/base-ui';
 import debug from 'debug';
 import i18n from 'i18next';
 import { useCallback } from 'react';
-import { mutate } from 'swr';
 
 import {
   type AdminAuditEventsListInput,
@@ -21,7 +20,7 @@ import {
   type AdminAuditRetentionRunItem,
   adminAuditService,
 } from '@/enterprise/client/services/adminAudit';
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 
 import {
   ADMIN_AUDIT_EXPORTS_LIST_KEY,

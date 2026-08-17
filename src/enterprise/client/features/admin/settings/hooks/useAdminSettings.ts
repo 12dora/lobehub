@@ -1,10 +1,8 @@
 'use client';
 
-import { mutate } from 'swr';
-
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { adminSettingsService } from '@/enterprise/client/services/adminSettings';
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 
 import { ADMIN_SETTINGS_DRAFT_KEY, buildAdminSettingsDraftKey } from '../swrKeys';
 

@@ -387,10 +387,14 @@ export class InfraSettingsService {
             ? Boolean(mailRow.config.smtp?.passCiphertext)
             : Boolean(this.env.SMTP_PASS),
         revision: mailRow.revision,
+        // Per-card all-or-nothing: the read view never mixes stored (db) values into an
+        // env-sourced card, otherwise a reverted override would keep showing its old user.
         smtpUser:
           snapshot.mail.kind === 'smtp'
             ? snapshot.mail.user
-            : (mailRow.config.smtp?.user ?? this.env.SMTP_USER?.trim()) || null,
+            : (snapshot.mail.source === 'db'
+                ? mailRow.config.smtp?.user
+                : this.env.SMTP_USER?.trim()) || null,
         source: snapshot.mail.source,
       },
       objectStorage: {

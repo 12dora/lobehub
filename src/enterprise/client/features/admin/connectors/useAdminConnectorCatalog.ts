@@ -1,9 +1,7 @@
 'use client';
 
-import { mutate } from 'swr';
-
 import { adminConnectorsService } from '@/enterprise/client/services/adminConnectors';
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 
 import {
   ADMIN_CONNECTOR_LIST_KEY,

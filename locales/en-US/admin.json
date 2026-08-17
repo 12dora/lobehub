@@ -2864,6 +2864,7 @@
   "systemGeneral.edit.saveRejected": "The server rejected this value.",
   "systemGeneral.edit.saved": "Configuration saved.",
   "systemGeneral.edit.seededFromEnv": "Values are prefilled from the environment. Enter the access key and the secret again — they cannot be read back.",
+  "systemGeneral.edit.seededFromEnvMail": "Values are prefilled from the environment. Enter the password or API key again — it cannot be read back.",
   "systemGeneral.edit.switchToDb": "Configure here",
   "systemGeneral.empty": "General settings will appear here in an upcoming release.",
   "systemGeneral.errors.email": "Enter a valid email address.",

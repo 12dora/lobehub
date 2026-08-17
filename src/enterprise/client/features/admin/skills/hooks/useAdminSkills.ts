@@ -1,10 +1,9 @@
 'use client';
 
 import { useRef } from 'react';
-import { mutate } from 'swr';
 
 import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 
 import {
   ADMIN_SKILL_DEPENDENTS_KEY,

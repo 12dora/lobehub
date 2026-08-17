@@ -1,8 +1,6 @@
 'use client';
 
-import { mutate } from 'swr';
-
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 import type {
   ContentModerationRecordListInput,
   ContentModerationStatsInput,

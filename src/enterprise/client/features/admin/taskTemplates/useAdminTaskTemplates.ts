@@ -1,9 +1,7 @@
 'use client';
 
-import { mutate } from 'swr';
-
 import { adminTaskTemplatesService } from '@/enterprise/client/services/adminTaskTemplates';
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 
 import { ADMIN_TASK_TEMPLATE_LIST_KEY, buildAdminTaskTemplateListKey } from './swrKeys';
 import type {

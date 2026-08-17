@@ -101,7 +101,7 @@ export const MailCard = memo<MailCardProps>(
                 onReload={() => void editor.reload()}
               />
               {view.source !== 'db' && !failOpen ? (
-                <span className={formStyles.hint}>{t('systemGeneral.edit.seededFromEnv')}</span>
+                <span className={formStyles.hint}>{t('systemGeneral.edit.seededFromEnvMail')}</span>
               ) : null}
               <MailForm
                 disabled={editor.saving || locked}

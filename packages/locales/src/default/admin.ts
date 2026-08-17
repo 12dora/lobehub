@@ -2441,6 +2441,8 @@ export default {
   'systemGeneral.edit.reverted': 'Reverted to the environment variables.',
   'systemGeneral.edit.seededFromEnv':
     'Values are prefilled from the environment. Enter the access key and the secret again — they cannot be read back.',
+  'systemGeneral.edit.seededFromEnvMail':
+    'Values are prefilled from the environment. Enter the password or API key again — it cannot be read back.',
   'systemGeneral.edit.applyHint': 'Saved changes take effect immediately; no restart is needed.',
   'systemGeneral.conflict.title': 'Configuration changed elsewhere',
   'systemGeneral.conflict.description':

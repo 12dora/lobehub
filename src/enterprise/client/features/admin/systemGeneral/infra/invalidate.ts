@@ -1,6 +1,6 @@
 'use client';
 
-import { mutate } from 'swr';
+import { mutate } from '@/libs/swr';
 
 import { ADMIN_SYSTEM_INFRA_SETTINGS_KEY } from '../swrKeys';
 
