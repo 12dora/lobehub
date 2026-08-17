@@ -4,6 +4,8 @@ import { bigint, boolean, check, index, integer, jsonb, pgTable, text } from 'dr
 import type {
   ArtifactState,
   DesiredArtifacts,
+  EngineIssue,
+  InstanceHealing,
   NetworkProxyConfig,
   NetworkProxyEngineState,
   NetworkProxySubscriptionKind,
@@ -137,7 +139,8 @@ export const platformNetworkProxyInstanceStatus = pgTable(
     aliveNodeCount: integer('alive_node_count'),
     proxiedCount: integer('proxied_count').notNull().default(0),
     fallbackCount: integer('fallback_count').notNull().default(0),
-    lastError: text('last_error'),
+    lastIssue: jsonb('last_issue').$type<EngineIssue | null>(),
+    healing: jsonb('healing').$type<InstanceHealing | null>(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
 );

@@ -7,13 +7,17 @@ import type {
   AdminNetworkProxyService,
   AdminNetworkProxySettings,
 } from '@/enterprise/client/services/adminNetworkProxy';
-import type { NetworkProxyStatusView } from '@/types/platform/networkProxy';
+import type {
+  NetworkProxyEngineIssueCode,
+  NetworkProxyStatusView,
+} from '@/types/platform/networkProxy';
 
 import type { NetworkProxyProviderOption } from './hooks';
 import NetworkProxyTab from './NetworkProxyTab';
 
 const mocks = vi.hoisted(() => ({
   providers: [] as { enabled: boolean; id: string; name: string }[],
+  t: vi.fn((key: string, _params?: Record<string, unknown>) => key),
   providersError: undefined as unknown,
   artifactsStaleError: undefined as unknown,
   providersStaleError: undefined as unknown,
@@ -25,7 +29,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: mocks.t }),
 }));
 
 vi.mock('antd-style', () => ({
@@ -130,6 +134,7 @@ const swr = <T,>(data: T | undefined, error?: unknown) => ({
 vi.mock('./hooks', () => ({
   invalidateNetworkProxyEngine: vi.fn(async () => undefined),
   invalidateNetworkProxyNodes: vi.fn(async () => undefined),
+  invalidateNetworkProxyStatus: vi.fn(async () => undefined),
   invalidateNetworkProxySubscriptions: vi.fn(async () => undefined),
   useNetworkProxyArtifacts: () =>
     swr(
@@ -279,9 +284,10 @@ const statusFixture = (
       engineVersion: 'v1.19.30',
       fallbackCount: 0,
       instanceId: 'pinst_1',
+      healing: null,
       isCurrent: true,
-      lastError: null,
       lastHeartbeatAt: '2026-08-17T00:00:00.000Z',
+      lastIssue: null,
       platform: 'linux',
       proxiedCount: 12,
       updatedAt: '2026-08-17T00:00:00.000Z',
@@ -300,6 +306,12 @@ const statusFixture = (
   ...overrides,
 });
 
+const engineIssue = (code: NetworkProxyEngineIssueCode, detail: string | null = null) => ({
+  at: '2026-08-17T00:00:00.000Z',
+  code,
+  detail,
+});
+
 const stubService = (overrides: Partial<AdminNetworkProxyService> = {}) =>
   ({
     createSubscription: vi.fn(),
@@ -309,6 +321,7 @@ const stubService = (overrides: Partial<AdminNetworkProxyService> = {}) =>
     getSettings: vi.fn(),
     getStatus: vi.fn(),
     installArtifact: vi.fn(),
+    installGeodata: vi.fn(),
     listNodes: vi.fn(),
     listSubscriptions: vi.fn(),
     refreshSubscription: vi.fn(),
@@ -336,6 +349,7 @@ const revisionConflict = () =>
 const masterSwitch = () => screen.getByTestId('master-switch') as HTMLInputElement;
 
 beforeEach(() => {
+  mocks.t.mockClear();
   mocks.settings = settingsFixture();
   mocks.status = statusFixture();
   mocks.providers = [{ enabled: true, id: 'openai', name: 'OpenAI' }];
@@ -380,7 +394,7 @@ describe('NetworkProxyTab', () => {
   });
 
   it('disables every write when the admin only has read access', () => {
-    mocks.status = statusFixture({}, { engineState: 'error', lastError: 'engine crashed' });
+    mocks.status = statusFixture({}, { engineState: 'error', lastIssue: engineIssue('exited') });
     render(<NetworkProxyTab enabled canManage={false} service={stubService()} />);
 
     expect(masterSwitch().disabled).toBe(true);
@@ -502,7 +516,7 @@ describe('NetworkProxyTab', () => {
   it('reports a restart that the instance could not carry out as a failure, not a success', async () => {
     const restartEngine = vi.fn(async () => ({
       ...settingsFixture({ revision: 5 }),
-      local: { error: 'spawn failed: mihomo exited 1', ok: false },
+      local: { error: 'spawn_failed', ok: false },
     }));
     render(<NetworkProxyTab canManage enabled service={stubService({ restartEngine })} />);
 
@@ -510,8 +524,9 @@ describe('NetworkProxyTab', () => {
       fireEvent.click(screen.getByTestId('more-restart-engine'));
     });
 
-    // The desired state committed, so the server's own reason has to reach the rendered status...
-    expect(screen.getByText('spawn failed: mihomo exited 1')).toBeTruthy();
+    // The desired state committed, so the engine's own reason has to reach the rendered status —
+    // translated from the code it reported, never as raw text.
+    expect(screen.getByText(/networkProxy\.engineIssue\.spawn_failed/)).toBeTruthy();
     // ...the task must never be reported as succeeded...
     expect(screen.queryByText('networkProxy.engine.restartRequested')).toBeNull();
     // ...and a retry has to be offered next to it.
@@ -527,13 +542,13 @@ describe('NetworkProxyTab', () => {
     });
 
     expect(screen.getByText('networkProxy.engine.restartRequested')).toBeTruthy();
-    expect(screen.queryByText(/spawn failed/)).toBeNull();
+    expect(screen.queryByText(/networkProxy\.engineIssue\./)).toBeNull();
   });
 
   it('reports an install the instance could not perform as a failure', async () => {
     const installArtifact = vi.fn(async () => ({
       ...settingsFixture({ revision: 5 }),
-      local: { error: 'digest mismatch, nothing installed', ok: false },
+      local: { error: 'artifact_mismatch', ok: false },
     }));
     render(<NetworkProxyTab canManage enabled service={stubService({ installArtifact })} />);
 
@@ -541,14 +556,14 @@ describe('NetworkProxyTab', () => {
       fireEvent.click(screen.getByTestId('install-engine'));
     });
 
-    expect(screen.getByText('digest mismatch, nothing installed')).toBeTruthy();
+    expect(screen.getByText(/networkProxy\.engineIssue\.artifact_mismatch/)).toBeTruthy();
     expect(screen.queryByText('networkProxy.engine.installRequested')).toBeNull();
   });
 
   it('reports a node selection the engine refused as a failure', async () => {
     const selectNode = vi.fn(async () => ({
       ...settingsFixture({ revision: 5 }),
-      local: { error: 'engine rejected the selection', ok: false },
+      local: { error: 'node_select_failed', ok: false },
     }));
     render(<NetworkProxyTab canManage enabled service={stubService({ selectNode })} />);
 
@@ -556,7 +571,7 @@ describe('NetworkProxyTab', () => {
       fireEvent.click(screen.getByTestId('select-node'));
     });
 
-    expect(screen.getByText('engine rejected the selection')).toBeTruthy();
+    expect(screen.getByText(/networkProxy\.engineIssue\.node_select_failed/)).toBeTruthy();
   });
 
   it('offers a retry for a failing artifact refresh while keeping the cached install state', () => {
@@ -616,5 +631,142 @@ describe('NetworkProxyTab', () => {
     expect(screen.getByText('networkProxy.badges.unknown')).toBeTruthy();
     expect(screen.queryByText('networkProxy.badges.outletDown')).toBeNull();
     expect(screen.queryByText(/networkProxy\.badges\.applied/)).toBeNull();
+  });
+
+  it('names the engine problem without an instance id, and keeps the detail out of the banner', () => {
+    mocks.status = statusFixture(
+      {},
+      { engineState: 'error', lastIssue: engineIssue('health_timeout', 'TimeoutError') },
+    );
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+
+    expect(screen.getByText('networkProxy.banners.engineIssue')).toBeTruthy();
+    expect(screen.getByText('networkProxy.engineIssue.health_timeout')).toBeTruthy();
+    // `pinst_…` means nothing to the person reading this, and the raw reason is not copy.
+    expect(screen.queryByText(/pinst_/)).toBeNull();
+    expect(screen.queryByText('TimeoutError')).toBeNull();
+  });
+
+  it('reveals the technical detail only when the admin asks for it', () => {
+    mocks.status = statusFixture(
+      {},
+      { engineState: 'error', lastIssue: engineIssue('exited', 'code=2 signal=null') },
+    );
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+
+    fireEvent.click(screen.getByText('networkProxy.engineIssue.detailToggle'));
+    expect(screen.getByText('code=2 signal=null')).toBeTruthy();
+  });
+
+  it('leaves a live engine alone even when its row still carries the last issue', () => {
+    mocks.status = statusFixture(
+      {},
+      { engineState: 'running', lastIssue: engineIssue('geodata_invalid') },
+    );
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+
+    expect(screen.queryByText('networkProxy.banners.engineIssue')).toBeNull();
+  });
+
+  it('counts the affected nodes instead of naming one of them', () => {
+    const base = statusFixture();
+    const first = base.instances[0]!;
+    mocks.status = {
+      ...base,
+      instances: [
+        { ...first, engineState: 'error', lastIssue: engineIssue('exited') },
+        {
+          ...first,
+          engineState: 'error',
+          instanceId: 'pinst_2',
+          isCurrent: false,
+          lastIssue: engineIssue('exited'),
+        },
+      ],
+    };
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+
+    expect(screen.getByText('networkProxy.banners.engineIssueMulti')).toBeTruthy();
+    expect(screen.queryByText('networkProxy.banners.engineIssue')).toBeNull();
+  });
+
+  it('says recovery is under way, with a countdown, instead of demanding a restart', () => {
+    mocks.status = statusFixture(
+      {},
+      {
+        engineState: 'error',
+        healing: { attempt: 2, nextAttemptAt: new Date(Date.now() + 30_000).toISOString() },
+        lastIssue: engineIssue('start_timeout'),
+      },
+    );
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+
+    expect(screen.getByText('networkProxy.banners.selfHealing')).toBeTruthy();
+    // One banner about one engine — not "it is down" next to "it is coming back".
+    expect(screen.queryByText('networkProxy.banners.engineIssue')).toBeNull();
+    // The reason survives, and so does the manual escape hatch.
+    expect(screen.getByText('networkProxy.engineIssue.start_timeout')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'networkProxy.engine.restart' })).toBeTruthy();
+    expect(
+      mocks.t.mock.calls.some(
+        ([key, params]) =>
+          key === 'networkProxy.banners.selfHealingDesc' &&
+          (params as { seconds?: number } | undefined)?.seconds === 30,
+      ),
+    ).toBe(true);
+  });
+
+  it('confirms an engine that came back on its own', async () => {
+    mocks.status = statusFixture({}, { engineState: 'error', lastIssue: engineIssue('exited') });
+    const view = render(<NetworkProxyTab canManage enabled service={stubService()} />);
+    expect(screen.getByText('networkProxy.banners.engineIssue')).toBeTruthy();
+
+    mocks.status = statusFixture();
+    await act(async () => {
+      view.rerender(<NetworkProxyTab canManage enabled service={stubService()} />);
+    });
+
+    expect(screen.getByText('networkProxy.banners.selfHealed')).toBeTruthy();
+    expect(screen.queryByText('networkProxy.banners.engineIssue')).toBeNull();
+  });
+
+  it('does not congratulate itself on an engine that was healthy all along', () => {
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+    expect(screen.queryByText('networkProxy.banners.selfHealed')).toBeNull();
+  });
+
+  it('hides the applied-configuration ratio when there is only one node', () => {
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+    expect(screen.queryByText('networkProxy.badges.applied')).toBeNull();
+  });
+
+  it('shows the applied-configuration ratio once there is a fleet', () => {
+    const base = statusFixture();
+    const first = base.instances[0]!;
+    mocks.status = {
+      ...base,
+      instances: [first, { ...first, appliedRevision: 3, instanceId: 'pinst_2', isCurrent: false }],
+    };
+    render(<NetworkProxyTab canManage enabled service={stubService()} />);
+    expect(screen.getByText('networkProxy.badges.applied')).toBeTruthy();
+  });
+
+  it('offers the rule-data install from the banner when smart routing has nothing to route with', async () => {
+    mocks.settings = settingsFixture();
+    mocks.settings.config.ruleMode = 'smart';
+    const installGeodata = vi.fn(async () => ({
+      ...localOk(settingsFixture({ revision: 5 })),
+      results: [
+        { error: null, kind: 'geoip' as const, ok: true },
+        { error: null, kind: 'geosite' as const, ok: true },
+      ],
+    }));
+    render(<NetworkProxyTab canManage enabled service={stubService({ installGeodata })} />);
+
+    expect(screen.getByText('networkProxy.banners.geodata')).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByText('networkProxy.engine.geodata.install'));
+    });
+    expect(installGeodata).toHaveBeenCalledWith({ expectedRevision: 4 });
   });
 });

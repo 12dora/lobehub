@@ -1,7 +1,7 @@
 'use client';
 
 import { ProviderIcon } from '@lobehub/icons';
-import { Alert, Text } from '@lobehub/ui';
+import { Alert, Tag, Text } from '@lobehub/ui';
 import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { memo, useCallback, useMemo, useState } from 'react';
@@ -20,7 +20,11 @@ import type {
   NetworkProxyOnUnavailable,
 } from '@/types/platform/networkProxy';
 
-import { searchColumnFilter } from '../../primitives/columnFilters';
+import {
+  enumColumnFilter,
+  firstColumnFilterValue,
+  searchColumnFilter,
+} from '../../primitives/columnFilters';
 import DataTable from '../../primitives/DataTable';
 import FieldStatus from '../FieldStatus';
 import type { NetworkProxyProviderOption } from '../hooks';
@@ -49,6 +53,12 @@ interface ProviderScopeRow {
   id: string;
   name: string;
   scope: EgressScopeState;
+}
+
+interface ProviderFilters {
+  name?: string;
+  /** `enabled` / `disabled`, matched against `catalogEnabled`. */
+  status?: string;
 }
 
 interface FeatureScopeRow {
@@ -85,7 +95,7 @@ const ScopesSection = memo<ScopesSectionProps>(
     providersLoading,
   }) => {
     const { t } = useTranslation('admin');
-    const [search, setSearch] = useState<string | undefined>();
+    const [filters, setFilters] = useState<ProviderFilters>({});
     const bulkBusy = actions.isBusy(NETWORK_PROXY_FIELDS.scopesBulk);
     const disabled = !canManage || bulkBusy;
     // Without the full catalog a bulk write would burn a revision while leaving providers we
@@ -107,14 +117,23 @@ const ScopesSection = memo<ScopesSectionProps>(
         if (known.has(id)) continue;
         rows.push({ catalogEnabled: false, delisted: true, id, name: id, scope });
       }
-      const needle = search?.trim().toLowerCase();
-      return needle
-        ? rows.filter(
-            (row) =>
-              row.name.toLowerCase().includes(needle) || row.id.toLowerCase().includes(needle),
-          )
-        : rows;
-    }, [config.scopes.providers, providers, search]);
+      const needle = filters.name?.trim().toLowerCase();
+      const visible = rows.filter((row) => {
+        if (
+          needle &&
+          !row.name.toLowerCase().includes(needle) &&
+          !row.id.toLowerCase().includes(needle)
+        )
+          return false;
+        if (filters.status === 'enabled' && !row.catalogEnabled) return false;
+        if (filters.status === 'disabled' && row.catalogEnabled) return false;
+        return true;
+      });
+      // Providers the platform actually serves come first; the long tail of catalogue entries
+      // nobody enabled would otherwise bury them. Sort on the catalogue flag, never on the
+      // routing switch — rows must not jump the moment an admin flips one.
+      return visible.sort((a, b) => Number(b.catalogEnabled) - Number(a.catalogEnabled));
+    }, [config.scopes.providers, filters, providers]);
 
     const featureRows = useMemo<FeatureScopeRow[]>(
       () =>
@@ -173,20 +192,51 @@ const ScopesSection = memo<ScopesSectionProps>(
         {
           dataIndex: 'name',
           key: 'name',
-          render: (_: unknown, row) => (
-            <div style={{ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 }}>
-              <ProviderIcon provider={row.id} size={20} type="avatar" />
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                <Text strong>{row.name}</Text>
-                <span className={styles.code}>{row.id}</span>
+          render: (_: unknown, row) => {
+            // The two caveats that survive the 状态 column: neither is a status, both change what
+            // switching this row on actually does.
+            const caveat = row.delisted
+              ? t('networkProxy.scopes.notes.providerDelisted')
+              : BROWSER_DIRECT_PROVIDERS.has(row.id)
+                ? t('networkProxy.scopes.notes.browserDirect')
+                : null;
+            return (
+              <div style={{ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 }}>
+                <ProviderIcon provider={row.id} size={20} type="avatar" />
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                  <Text strong>{row.name}</Text>
+                  <span className={styles.code}>{row.id}</span>
+                  {caveat ? <span className={styles.hintText}>{caveat}</span> : null}
+                </div>
               </div>
-            </div>
-          ),
+            );
+          },
           title: t('networkProxy.scopes.columns.provider'),
           ...searchColumnFilter({
-            onSearch: setSearch,
+            onSearch: (value) => setFilters((current) => ({ ...current, name: value })),
             placeholder: t('networkProxy.scopes.searchPlaceholder'),
-            value: search,
+            value: filters.name,
+          }),
+        },
+        {
+          key: 'status',
+          render: (_: unknown, row) => (
+            <Tag color={row.catalogEnabled ? 'success' : 'default'} size="small">
+              {t(
+                row.catalogEnabled
+                  ? 'networkProxy.scopes.status.enabled'
+                  : 'networkProxy.scopes.status.disabled',
+              )}
+            </Tag>
+          ),
+          title: t('networkProxy.scopes.columns.status'),
+          width: 110,
+          ...enumColumnFilter({
+            options: [
+              { label: t('networkProxy.scopes.status.enabled'), value: 'enabled' },
+              { label: t('networkProxy.scopes.status.disabled'), value: 'disabled' },
+            ],
+            value: filters.status,
           }),
         },
         {
@@ -222,27 +272,8 @@ const ScopesSection = memo<ScopesSectionProps>(
           title: t('networkProxy.scopes.columns.onUnavailable'),
           width: 200,
         },
-        {
-          key: 'note',
-          render: (_: unknown, row) => {
-            const notes: string[] = [];
-            if (BROWSER_DIRECT_PROVIDERS.has(row.id)) {
-              notes.push(t('networkProxy.scopes.notes.browserDirect'));
-            }
-            if (row.delisted) notes.push(t('networkProxy.scopes.notes.providerDelisted'));
-            else if (!row.catalogEnabled) {
-              notes.push(t('networkProxy.scopes.notes.providerDisabled'));
-            }
-            return notes.length > 0 ? (
-              <span className={styles.hintText}>{notes.join(' · ')}</span>
-            ) : (
-              '—'
-            );
-          },
-          title: t('networkProxy.scopes.columns.note'),
-        },
       ],
-      [actions, scopeSwitch, search, t, unavailableSelect],
+      [actions, filters, scopeSwitch, t, unavailableSelect],
     );
 
     const featureColumns = useMemo<TableColumnsType<FeatureScopeRow>>(
@@ -355,6 +386,13 @@ const ScopesSection = memo<ScopesSectionProps>(
             rowKey="id"
             scroll={{ y: 420 }}
             size="small"
+            onChange={({ filters: next }) => {
+              // `next.name` also arrives here; the search dropdown already owns that half.
+              setFilters((current) => ({
+                ...current,
+                status: firstColumnFilterValue(next.status),
+              }));
+            }}
           />
         </div>
 

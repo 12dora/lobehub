@@ -1,5 +1,5 @@
 import type { NetworkProxyEngineState } from '@/const/platform/networkProxy';
-import type { ProxyNodeView } from '@/types/platform/networkProxy';
+import type { EngineIssue, ProxyNodeView } from '@/types/platform/networkProxy';
 
 export interface EngineRuntimeState {
   activeNode: string | null;
@@ -7,7 +7,9 @@ export interface EngineRuntimeState {
   appliedEngineGeneration: number | null;
   appliedRevision: number | null;
   controller: { secret: string; url: string } | null;
-  lastError: string | null;
+  healAttempts: number;
+  lastIssue: EngineIssue | null;
+  nextHealAt: number | null;
   proxyUrl: string | null;
   startedAt: number | null;
   state: NetworkProxyEngineState;
@@ -35,7 +37,9 @@ export const idleEngineRuntimeState = (
   appliedEngineGeneration: null,
   appliedRevision: null,
   controller: null,
-  lastError: null,
+  healAttempts: 0,
+  lastIssue: null,
+  nextHealAt: null,
   proxyUrl: null,
   startedAt: null,
   state,

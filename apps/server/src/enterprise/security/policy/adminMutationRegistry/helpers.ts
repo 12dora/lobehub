@@ -121,7 +121,7 @@ export const dangerousMutation = (
     /**
      * Prefer `reasonInput` / `optionalReasonInput`. `noReason` is allowed when
      * the procedure DTO has no reason field (e.g. network-proxy create/update
-     * subscription and installArtifact).
+     * subscription, installArtifact, and installGeodata).
      */
     reason?: AdminMutationControl;
     reauth: RequiredAdminMutationControl;

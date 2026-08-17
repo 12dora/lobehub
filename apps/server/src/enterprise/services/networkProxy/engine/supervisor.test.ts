@@ -125,7 +125,9 @@ describe('EngineSupervisor idle / stop conditions', () => {
     const idle = idleEngineRuntimeState('stopped');
     expect(idle.proxyUrl).toBeNull();
     expect(idle.controller).toBeNull();
-    expect(idle.lastError).toBeNull();
+    expect(idle.lastIssue).toBeNull();
+    expect(idle.healAttempts).toBe(0);
+    expect(idle.nextHealAt).toBeNull();
   });
 });
 
@@ -202,8 +204,9 @@ describe('EngineSupervisor child process', () => {
     live.push(supervisor);
     await supervisor.reconcile();
     await waitFor(() => supervisor.getState().state === 'error', 10_000);
-    expect(supervisor.getState().lastError).toBeTruthy();
+    expect(supervisor.getState().lastIssue?.code).toBe('crash_loop');
     expect(supervisor.getState().appliedRevision).toBe(1);
+    expect(supervisor.getState().nextHealAt).toBeGreaterThan(Date.now());
   }, 15_000);
 
   it('does not advance applied state when start fails', async () => {
@@ -214,8 +217,11 @@ describe('EngineSupervisor child process', () => {
     await supervisor.reconcile();
     expect(supervisor.getState().state).toBe('error');
     expect(supervisor.getState().appliedRevision).toBeNull();
-    expect(supervisor.getState().appliedEngineGeneration).toBeNull();
-    expect(supervisor.getState().lastError).toBeTruthy();
+    // Pinned to the current generation so reconcile does not treat this as a bump
+    // and hot-loop restartNow() (which would reset crash/heal backoff).
+    expect(supervisor.getState().appliedEngineGeneration).toBe(1);
+    expect(supervisor.getState().lastIssue?.code).toBe('start_timeout');
+    expect(supervisor.getState().nextHealAt).toBeGreaterThan(Date.now());
   });
 
   it('does not materialize geodata in simple mode even if files exist', async () => {
@@ -234,12 +240,12 @@ describe('EngineSupervisor child process', () => {
     );
     const runtimeGeo = path.join(enginePaths(dataDir).runtimeDir, 'geoip.metadb');
     expect(existsSync(runtimeGeo)).toBe(false);
-    expect(supervisor.getState().lastError ?? '').not.toContain('geodata invalid');
+    expect(supervisor.getState().lastIssue).toBeNull();
     snapshotHolder.current = makeSnapshot({ masterEnabled: false });
     await supervisor.restart();
   }, 12_000);
 
-  it('starts in smart mode when geodata is invalid and notes lastError', async () => {
+  it('starts in smart mode when geodata is invalid and notes geodata_invalid', async () => {
     const commit = NETWORK_PROXY_ENGINE_MANIFEST.geodata.commit;
     const destParent = path.join(dataDir, 'geodata', commit);
     mkdirSync(destParent, { recursive: true, mode: 0o700 });
@@ -253,7 +259,8 @@ describe('EngineSupervisor child process', () => {
     await waitFor(
       () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
     );
-    expect(supervisor.getState().lastError).toContain('geodata invalid');
+    expect(supervisor.getState().lastIssue?.code).toBe('geodata_invalid');
+    expect(['running', 'degraded']).toContain(supervisor.getState().state);
     const config = readFileSync(enginePaths(dataDir).configPath, 'utf8');
     expect(config).not.toContain('GEOSITE,cn,DIRECT');
     snapshotHolder.current = makeSnapshot({ masterEnabled: false });
@@ -292,7 +299,11 @@ describe('EngineSupervisor child process', () => {
     await supervisor.reconcile();
     expect(supervisor.getState().state).toBe('error');
     expect(supervisor.getState().appliedRevision).toBeNull();
-    expect(supervisor.getState().lastError).toBeTruthy();
+    // First attempt spawns the just-mutated file (start_timeout). Later retries
+    // re-verify and map to artifact_mismatch when the digest check fires first.
+    expect(['start_timeout', 'artifact_mismatch', 'spawn_failed']).toContain(
+      supervisor.getState().lastIssue?.code,
+    );
   });
 
   it('reloads when the snapshot changes between config generation and spawn', async () => {
@@ -320,4 +331,97 @@ describe('EngineSupervisor child process', () => {
     snapshotHolder.current = makeSnapshot({ masterEnabled: false });
     await supervisor.restart();
   }, 12_000);
+
+  it('does not hot-loop when the engine has never started (heal cooldown)', async () => {
+    writeWrapper({ FAKE_ENGINE_SKIP_LISTEN: '99' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      healBackoffBaseMs: 60_000,
+      healBackoffMaxMs: 60_000,
+      startWaitMs: 400,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    expect(supervisor.getState().state).toBe('error');
+    const startsAfterFirst = readFileSync(startsFile, 'utf8').length;
+    expect(startsAfterFirst).toBeGreaterThan(0);
+    await supervisor.reconcile();
+    await supervisor.reconcile();
+    expect(readFileSync(startsFile, 'utf8').length).toBe(startsAfterFirst);
+    expect(supervisor.getState().state).toBe('error');
+    expect(supervisor.getState().nextHealAt).toBeGreaterThan(Date.now());
+  });
+
+  it('heals from error after the cooldown without resetting crash counters', async () => {
+    writeWrapper({ FAKE_ENGINE_SKIP_LISTEN: '3' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      healBackoffBaseMs: 1,
+      healBackoffMaxMs: 1,
+      startWaitMs: 1500,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    expect(supervisor.getState().state).toBe('error');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    expect(supervisor.getState().lastIssue).toBeNull();
+    expect(supervisor.getState().healAttempts).toBe(0);
+    expect(supervisor.getState().nextHealAt).toBeNull();
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 20_000);
+
+  it('clears lastIssue on a desired stop', async () => {
+    writeWrapper({ FAKE_ENGINE_SKIP_LISTEN: '99' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      healBackoffBaseMs: 60_000,
+      startWaitMs: 400,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    expect(supervisor.getState().lastIssue).toBeTruthy();
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.reconcile();
+    expect(['stopped', 'not_installed', 'unsupported']).toContain(supervisor.getState().state);
+    expect(supervisor.getState().lastIssue).toBeNull();
+    expect(supervisor.getState().healAttempts).toBe(0);
+  });
+
+  it('records geodata_missing as informational while staying running', async () => {
+    snapshotHolder.current = makeSnapshot({ ruleMode: 'smart' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({ startWaitMs: 4000 });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    expect(supervisor.getState().lastIssue?.code).toBe('geodata_missing');
+    const config = readFileSync(enginePaths(dataDir).configPath, 'utf8');
+    expect(config).not.toContain('GEOSITE,cn,DIRECT');
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 12_000);
+
+  it('admin restart() clears heal state', async () => {
+    writeWrapper({ FAKE_ENGINE_SKIP_LISTEN: '99' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      healBackoffBaseMs: 60_000,
+      startWaitMs: 400,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    expect(supervisor.getState().healAttempts).toBeGreaterThan(0);
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+    expect(supervisor.getState().lastIssue).toBeNull();
+    expect(supervisor.getState().healAttempts).toBe(0);
+    expect(supervisor.getState().nextHealAt).toBeNull();
+  });
 });

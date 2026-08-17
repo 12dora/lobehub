@@ -32,8 +32,9 @@ const upsertRow = (id: string) => ({
   engineState: 'running' as const,
   engineVersion: 'v1.19.30',
   fallbackCount: 1,
+  healing: null,
   instanceId: id,
-  lastError: null,
+  lastIssue: null,
   platform: 'darwin',
   proxiedCount: 4,
 });
@@ -59,6 +60,40 @@ describe('NetworkProxyInstanceStatusModel', () => {
     expect(fresh[0]?.proxiedCount).toBe(9);
     expect(fresh[0]?.engineState).toBe('degraded');
     expect(fresh[0]?.lastHeartbeatAt).toBeInstanceOf(Date);
+    expect(fresh[0]?.lastIssue).toBeNull();
+    expect(fresh[0]?.healing).toBeNull();
+  });
+
+  it('round-trips lastIssue and healing jsonb columns', async () => {
+    const now = new Date();
+    const id = instanceId('e');
+    await db.insert(platformInstanceHeartbeats).values({
+      instanceId: id,
+      lastHeartbeatAt: now,
+      startedAt: new Date(now.getTime() - 60_000),
+    });
+
+    const lastIssue = {
+      at: '2026-08-17T00:00:00.000Z',
+      code: 'health_timeout' as const,
+      detail: 'The operation was aborted due to timeout',
+    };
+    const healing = { attempt: 2, nextAttemptAt: '2026-08-17T00:00:30.000Z' };
+
+    const model = new NetworkProxyInstanceStatusModel(db);
+    expect(
+      await model.upsert({
+        ...upsertRow(id),
+        engineState: 'error',
+        healing,
+        lastIssue,
+      }),
+    ).toBe(true);
+
+    const fresh = await model.listFresh(90_000);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]?.lastIssue).toEqual(lastIssue);
+    expect(fresh[0]?.healing).toEqual(healing);
   });
 
   it('returns false silently when the heartbeat row is missing', async () => {

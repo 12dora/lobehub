@@ -8,6 +8,7 @@ import {
   applyScopeOps,
   applyStaticProxyUpdate,
   assertCanEnable,
+  assertSmartModeGeodata,
   isLegacyGlobalProxyActive,
   toNetworkProxyConfigView,
 } from './settingsService';
@@ -114,6 +115,51 @@ describe('assertCanEnable / isLegacyGlobalProxyActive', () => {
       );
     }
     expect(() => assertCanEnable(createDefaultNetworkProxyConfig())).not.toThrow();
+  });
+});
+
+describe('assertSmartModeGeodata', () => {
+  const desiredBoth = {
+    geoip: { commit: 'abc', requestedAt: '2026-08-17T00:00:00.000Z' },
+    geosite: { commit: 'abc', requestedAt: '2026-08-17T00:00:00.000Z' },
+  };
+
+  it('rejects smart without desired geodata', () => {
+    try {
+      assertSmartModeGeodata({ ...createDefaultNetworkProxyConfig(), ruleMode: 'smart' }, {});
+      throw new Error('expected throw');
+    } catch (error) {
+      expect(getEnterpriseErrorBody(error)?.code).toBe(
+        PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_GEODATA_MISSING,
+      );
+    }
+  });
+
+  it('rejects smart when only one kind is desired', () => {
+    try {
+      assertSmartModeGeodata(
+        { ...createDefaultNetworkProxyConfig(), ruleMode: 'smart' },
+        { geoip: desiredBoth.geoip },
+      );
+      throw new Error('expected throw');
+    } catch (error) {
+      expect(getEnterpriseErrorBody(error)?.code).toBe(
+        PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_GEODATA_MISSING,
+      );
+    }
+  });
+
+  it('accepts smart when both desired artifacts are set even if not installed', () => {
+    expect(() =>
+      assertSmartModeGeodata(
+        { ...createDefaultNetworkProxyConfig(), ruleMode: 'smart' },
+        desiredBoth,
+      ),
+    ).not.toThrow();
+  });
+
+  it('accepts simple mode without desired geodata', () => {
+    expect(() => assertSmartModeGeodata(createDefaultNetworkProxyConfig(), {})).not.toThrow();
   });
 });
 

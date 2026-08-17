@@ -1,6 +1,6 @@
 'use client';
 
-import { Tag, Text } from '@lobehub/ui';
+import { Tag, Text, Tooltip } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { memo, useMemo, useState } from 'react';
@@ -11,14 +11,15 @@ import type { AdminNetworkProxyService } from '@/enterprise/client/services/admi
 import type {
   ArtifactState,
   ArtifactStatusView,
+  EngineIssue,
   InstanceStatusView,
   NetworkProxyArtifactKind,
-  NetworkProxyConfigView,
 } from '@/types/platform/networkProxy';
 
 import DataTable from '../../primitives/DataTable';
+import { networkProxyIssueKey } from '../errors';
 import FieldStatus from '../FieldStatus';
-import { formatDateTime, shortDigest, shortInstanceId } from '../format';
+import { formatDateTime, shortInstanceId } from '../format';
 import { Field, Section } from '../Section';
 import { networkProxyStyles as styles } from '../styles';
 import { NETWORK_PROXY_FIELDS, type NetworkProxyActions } from '../useNetworkProxyActions';
@@ -31,10 +32,11 @@ export interface EngineSectionProps {
   /** The artifact query failed with nothing cached — do not claim anything about install state. */
   artifactsUnknown?: boolean;
   canManage: boolean;
-  config: NetworkProxyConfigView;
   instances: InstanceStatusView[];
   onReloadArtifacts: () => void;
   onReloadStatus: () => void;
+  /** Settings revision every instance is expected to converge on. */
+  revision: number;
   service: AdminNetworkProxyService;
   /** The status query failed with nothing cached — the instances table is unknown, not empty. */
   statusUnknown?: boolean;
@@ -51,10 +53,16 @@ const ENGINE_STATE_TAG_COLOR: Record<string, 'default' | 'success' | 'warning' |
   unsupported: 'error',
 };
 
+/** The two files smart routing needs; they are installed and shown as one thing. */
+const GEODATA_KINDS = ['geoip', 'geosite'] as const;
+
 const findArtifact = (
   artifacts: ArtifactState[] | undefined,
   kind: NetworkProxyArtifactKind,
 ): ArtifactState | undefined => artifacts?.find((item) => item.kind === kind);
+
+/** A server that predates the engine-issue model has no `lastIssue` on the row. */
+const issueOf = (instance: InstanceStatusView): EngineIssue | null => instance.lastIssue ?? null;
 
 /**
  * 引擎（插件）(design §6.1).
@@ -62,6 +70,10 @@ const findArtifact = (
  * The engine is installed after the fact, per instance. This block answers, in order: which
  * build are we allowed to run, is this platform supported, what does *this* instance have, and
  * what do the other live instances have.
+ *
+ * The smart-routing rule data is always offered here, whatever the current routing mode: it used
+ * to appear only once smart mode was on, and smart mode could not be turned on until it was
+ * installed — a fresh deployment had no way in at all.
  */
 const EngineSection = memo<EngineSectionProps>(
   ({
@@ -69,10 +81,10 @@ const EngineSection = memo<EngineSectionProps>(
     artifacts,
     artifactsUnknown,
     canManage,
-    config,
     instances,
     onReloadArtifacts,
     onReloadStatus,
+    revision,
     service,
     statusUnknown,
   }) => {
@@ -80,25 +92,40 @@ const EngineSection = memo<EngineSectionProps>(
     const [logsOpen, setLogsOpen] = useState(false);
 
     const current = instances.find((instance) => instance.isCurrent) ?? instances[0];
+    const engineArtifact = findArtifact(current?.artifacts, 'engine');
+    const engineField = NETWORK_PROXY_FIELDS.install('engine');
     const supported = artifacts?.engine.supported ?? true;
-    const smart = config.ruleMode === 'smart';
-
-    const artifactKinds = useMemo<NetworkProxyArtifactKind[]>(() => {
-      const kinds: NetworkProxyArtifactKind[] = ['engine'];
-      const geodataInstalled = (['geoip', 'geosite'] as const).some(
-        (kind) => findArtifact(current?.artifacts, kind)?.installed,
-      );
-      // Geodata only matters in smart mode — but keep it visible once installed so an admin can
-      // see (and repair) what is on disk after switching back to simple.
-      if (smart || geodataInstalled) kinds.push('geoip', 'geosite');
-      return kinds;
-    }, [current?.artifacts, smart]);
+    const geodataField = NETWORK_PROXY_FIELDS.installGeodata;
+    const geodataBusy = actions.isBusy(geodataField);
+    const geodataFailed = actions.entryOf(geodataField)?.status === 'error';
 
     /** The digest an operator can eyeball before uploading, for every artifact kind. */
     const expectedDigest = (kind: NetworkProxyArtifactKind): string | null =>
       kind === 'engine'
         ? (artifacts?.engine.binSha256 ?? null)
         : NETWORK_PROXY_ENGINE_MANIFEST.geodata.files[kind].sha256;
+
+    /** Install state of one rule file on this instance, in the four words that matter. */
+    const geodataState = (kind: NetworkProxyArtifactKind): string => {
+      if (statusUnknown) return t('networkProxy.engine.installStateUnknown');
+      if (geodataBusy) return t('networkProxy.engine.geodata.stateInstalling');
+      if (findArtifact(current?.artifacts, kind)?.installed)
+        return t('networkProxy.engine.geodata.stateInstalled');
+      if (geodataFailed) return t('networkProxy.engine.geodata.stateFailed');
+      return t('networkProxy.engine.geodata.stateMissing');
+    };
+
+    /** How far the fleet has got — only worth saying when there is more than one node. */
+    const geodataCoverage = (kind: NetworkProxyArtifactKind): string | null => {
+      if (instances.length <= 1 || statusUnknown) return null;
+      const installed = instances.filter(
+        (instance) => findArtifact(instance.artifacts, kind)?.installed,
+      ).length;
+      return t('networkProxy.engine.geodata.installedOn', {
+        installed,
+        total: instances.length,
+      });
+    };
 
     const columns = useMemo<TableColumnsType<InstanceStatusView>>(
       () => [
@@ -108,7 +135,7 @@ const EngineSection = memo<EngineSectionProps>(
           render: (_: unknown, row) => (
             <span className={styles.code}>
               {shortInstanceId(row.instanceId)}
-              {row.isCurrent ? ` (${t('networkProxy.engine.thisInstance')})` : ''}
+              {row.isCurrent ? t('networkProxy.engine.thisInstance') : ''}
             </span>
           ),
           title: t('networkProxy.engine.columns.instance'),
@@ -131,22 +158,37 @@ const EngineSection = memo<EngineSectionProps>(
         },
         {
           dataIndex: 'appliedRevision',
+          // A revision number tells an admin nothing; whether this instance is on the current
+          // configuration is the only thing the column is asked.
           key: 'appliedRevision',
-          render: (_: unknown, row) => row.appliedRevision ?? '—',
+          render: (_: unknown, row) => {
+            if (row.appliedRevision === null) return '—';
+            const synced = row.appliedRevision === revision;
+            return (
+              <Tag color={synced ? 'success' : 'warning'} size="small">
+                {t(
+                  synced ? 'networkProxy.engine.configSynced' : 'networkProxy.engine.configPending',
+                )}
+              </Tag>
+            );
+          },
           title: t('networkProxy.engine.columns.appliedRevision'),
         },
         {
-          dataIndex: 'lastError',
-          key: 'lastError',
-          render: (_: unknown, row) =>
-            row.lastError ? (
+          dataIndex: 'lastIssue',
+          key: 'lastIssue',
+          // The engine reports a code; the raw text behind it is technical detail, not copy.
+          render: (_: unknown, row) => {
+            const issue = issueOf(row);
+            if (!issue) return '—';
+            const label = (
               <Text style={{ fontSize: 12 }} type="danger">
-                {row.lastError}
+                {t(networkProxyIssueKey(issue.code) as never)}
               </Text>
-            ) : (
-              '—'
-            ),
-          title: t('networkProxy.engine.columns.lastError'),
+            );
+            return issue.detail ? <Tooltip title={issue.detail}>{label}</Tooltip> : label;
+          },
+          title: t('networkProxy.engine.columns.lastIssue'),
         },
         {
           dataIndex: 'updatedAt',
@@ -155,7 +197,7 @@ const EngineSection = memo<EngineSectionProps>(
           title: t('networkProxy.engine.columns.updatedAt'),
         },
       ],
-      [t],
+      [revision, t],
     );
 
     return (
@@ -209,63 +251,102 @@ const EngineSection = memo<EngineSectionProps>(
           </Field>
         </div>
 
+        <div className={styles.toolbarRow}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+            <Text strong style={{ fontSize: 13 }}>
+              {t('networkProxy.artifactKind.engine')}
+            </Text>
+            <span className={styles.hintText}>
+              {statusUnknown
+                ? t('networkProxy.engine.installStateUnknown')
+                : engineArtifact?.installed
+                  ? t('networkProxy.engine.installedAs', {
+                      source: t(
+                        `networkProxy.artifactSource.${engineArtifact.source ?? 'download'}`,
+                      ),
+                      version: engineArtifact.version ?? '—',
+                    })
+                  : t('networkProxy.engine.notInstalled')}
+            </span>
+            {engineArtifact?.source === 'operator_override' ? (
+              <Text style={{ fontSize: 12 }} type="warning">
+                {t('networkProxy.engine.operatorOverride')}
+              </Text>
+            ) : null}
+            <FieldStatus
+              actions={actions}
+              field={engineField}
+              pendingLabel={t('networkProxy.engine.installing')}
+              successLabel={t('networkProxy.engine.installRequested')}
+            />
+          </div>
+          <div className={styles.inlineActions}>
+            <Button
+              disabled={!canManage || !supported || actions.isBusy(engineField)}
+              loading={actions.isBusy(engineField)}
+              size="small"
+              onClick={() => void actions.installArtifact('engine')}
+            >
+              {engineArtifact?.installed
+                ? t('networkProxy.engine.reinstall')
+                : t('networkProxy.engine.download')}
+            </Button>
+            <ArtifactUploadButton
+              disabled={!canManage || !supported}
+              expectedDigest={expectedDigest('engine')}
+              kind="engine"
+              service={service}
+              onInstalled={onReloadArtifacts}
+            />
+          </div>
+        </div>
+
         <div className={styles.stack}>
-          {artifactKinds.map((kind) => {
-            const state = findArtifact(current?.artifacts, kind);
-            const field = NETWORK_PROXY_FIELDS.install(kind);
-            const digest = expectedDigest(kind);
-            return (
-              <div className={styles.toolbarRow} key={kind}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
-                  <Text strong style={{ fontSize: 13 }}>
-                    {t(`networkProxy.artifactKind.${kind}` as never)}
-                  </Text>
-                  <span className={styles.hintText}>
-                    {statusUnknown
-                      ? t('networkProxy.engine.installStateUnknown')
-                      : state?.installed
-                        ? t('networkProxy.engine.installedAs', {
-                            source: t(`networkProxy.artifactSource.${state.source ?? 'download'}`),
-                            version: state.version ?? '—',
-                          })
-                        : t('networkProxy.engine.notInstalled')}
-                  </span>
-                  <span className={styles.hintText}>
-                    {t('networkProxy.engine.expectedDigestLine', { sha: shortDigest(digest) })}
-                  </span>
-                  {state?.source === 'operator_override' ? (
-                    <Text style={{ fontSize: 12 }} type="warning">
-                      {t('networkProxy.engine.operatorOverride')}
-                    </Text>
-                  ) : null}
-                  <FieldStatus
-                    actions={actions}
-                    field={field}
-                    pendingLabel={t('networkProxy.engine.installing')}
-                    successLabel={t('networkProxy.engine.installRequested')}
-                  />
-                </div>
-                <div className={styles.inlineActions}>
-                  <Button
-                    disabled={!canManage || !supported || actions.isBusy(field)}
-                    loading={actions.isBusy(field)}
-                    size="small"
-                    onClick={() => void actions.installArtifact(kind)}
-                  >
-                    {state?.installed
-                      ? t('networkProxy.engine.reinstall')
-                      : t('networkProxy.engine.download')}
-                  </Button>
-                  <ArtifactUploadButton
-                    disabled={!canManage || !supported}
-                    kind={kind}
-                    service={service}
-                    onInstalled={onReloadArtifacts}
-                  />
-                </div>
+          <div className={styles.toolbarRow}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+              <Text strong style={{ fontSize: 13 }}>
+                {t('networkProxy.engine.geodata.title')}
+              </Text>
+              <span className={styles.hintText}>{t('networkProxy.engine.geodata.desc')}</span>
+              <FieldStatus
+                actions={actions}
+                field={geodataField}
+                pendingLabel={t('networkProxy.engine.geodata.installing')}
+                successLabel={t('networkProxy.engine.geodata.installRequested')}
+              />
+            </div>
+            <Button
+              disabled={!canManage || !supported || geodataBusy}
+              loading={geodataBusy}
+              size="small"
+              type="primary"
+              onClick={() => void actions.installGeodata()}
+            >
+              {t('networkProxy.engine.geodata.install')}
+            </Button>
+          </div>
+
+          {GEODATA_KINDS.map((kind) => (
+            <div className={styles.toolbarRow} key={kind}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                <Text strong style={{ fontSize: 13 }}>
+                  {t(`networkProxy.artifactKind.${kind}` as never)}
+                </Text>
+                <span className={styles.hintText}>{geodataState(kind)}</span>
+                {geodataCoverage(kind) ? (
+                  <span className={styles.hintText}>{geodataCoverage(kind)}</span>
+                ) : null}
               </div>
-            );
-          })}
+              {/* The upload path stays for a deployment that cannot reach the download host. */}
+              <ArtifactUploadButton
+                disabled={!canManage || !supported}
+                expectedDigest={expectedDigest(kind)}
+                kind={kind}
+                service={service}
+                onInstalled={onReloadArtifacts}
+              />
+            </div>
+          ))}
         </div>
 
         <div className={styles.stack}>

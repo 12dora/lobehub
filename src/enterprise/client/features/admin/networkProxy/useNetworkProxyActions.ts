@@ -22,10 +22,16 @@ import type {
 } from '@/types/platform/networkProxy';
 
 import { runAdminMutation } from '../primitives/runAdminMutation';
-import { isRevisionConflict, networkProxyErrorKey, NetworkProxyLocalError } from './errors';
+import {
+  isRevisionConflict,
+  networkProxyErrorKey,
+  networkProxyIssueKey,
+  NetworkProxyLocalError,
+} from './errors';
 import {
   invalidateNetworkProxyEngine,
   invalidateNetworkProxyNodes,
+  invalidateNetworkProxyStatus,
   invalidateNetworkProxySubscriptions,
 } from './hooks';
 
@@ -39,6 +45,7 @@ export const NETWORK_PROXY_FIELDS = {
   connectivity: 'connectivity',
   downloadViaStaticProxy: 'downloadViaStaticProxy',
   install: (kind: NetworkProxyArtifactKind) => `install:${kind}`,
+  installGeodata: 'install:geodata',
   latency: 'latency',
   master: 'master',
   nodeLatency: (nodeName: string) => `latency:${nodeName}`,
@@ -65,6 +72,11 @@ export type NetworkProxyEntryStatus = 'conflict' | 'error' | 'pending' | 'succes
 
 export interface NetworkProxyEntry {
   /**
+   * `admin` namespace key naming the engine issue behind the failure, when the server classified
+   * one (contract I2). Rendered under `errorKey` — never a raw server message.
+   */
+  detailKey?: string;
+  /**
    * The value the admin chose, kept while the write is in flight and after it fails, so a
    * failure never silently snaps the control back to the server value (design §6).
    * Absent once the write commits — the server bundle is then the truth.
@@ -72,11 +84,6 @@ export interface NetworkProxyEntry {
   draft?: unknown;
   /** `admin` namespace key describing the failure. Set for `error` and `conflict`. */
   errorKey?: string;
-  /**
-   * Server-provided, already-redacted failure text (B4 redacts `local.error` before returning
-   * it). Rendered in preference to `errorKey` because it names the actual cause.
-   */
-  errorText?: string;
   /** Re-run the exact same write against whatever revision is current now. */
   retry?: () => Promise<void>;
   status: NetworkProxyEntryStatus;
@@ -113,6 +120,8 @@ export interface NetworkProxyActions {
   dismissAll: () => void;
   entryOf: (field: NetworkProxyFieldId) => NetworkProxyEntry | undefined;
   installArtifact: (kind: NetworkProxyArtifactKind) => Promise<void>;
+  /** One action for both smart-routing rule files (contract I3). */
+  installGeodata: () => Promise<void>;
   isBusy: (field: NetworkProxyFieldId) => boolean;
   lastConnectivity: AdminNetworkProxyConnectivity | null;
   latestNodes: AdminNetworkProxyNodeList | null;
@@ -259,10 +268,13 @@ export const useNetworkProxyActions = ({
             return;
           }
           const errorKey = networkProxyErrorKey(error);
-          const errorText =
-            error instanceof NetworkProxyLocalError ? (error.localError ?? undefined) : undefined;
-          setEntry(field, withDraft({ errorKey, errorText, retry, status: 'error' }));
-          toast.error(errorText ?? t(errorKey as never));
+          // The engine answers with a code; the panel never renders the raw text behind it.
+          const detailKey =
+            error instanceof NetworkProxyLocalError
+              ? networkProxyIssueKey(error.issueCode)
+              : undefined;
+          setEntry(field, withDraft({ detailKey, errorKey, retry, status: 'error' }));
+          toast.error(t(errorKey as never));
         },
         run,
       });
@@ -304,6 +316,7 @@ export const useNetworkProxyActions = ({
         const next = await write(base);
         latestRef.current = next;
         settings.apply(next);
+        // `local.error` is an engine issue code (contract I2), not a message.
         if (!next.local.ok) throw new NetworkProxyLocalError(next.local.error);
       });
     },
@@ -334,7 +347,20 @@ export const useNetworkProxyActions = ({
     (kind: NetworkProxyArtifactKind) =>
       runLocalSettingsWrite(NETWORK_PROXY_FIELDS.install(kind), undefined, async (base) => {
         const next = await service.installArtifact({ expectedRevision: base.revision, kind });
-        await invalidateNetworkProxyEngine();
+        await Promise.all([invalidateNetworkProxyEngine(), invalidateNetworkProxyStatus()]);
+        return next;
+      }),
+    [runLocalSettingsWrite, service],
+  );
+
+  const installGeodata = useCallback(
+    () =>
+      runLocalSettingsWrite(NETWORK_PROXY_FIELDS.installGeodata, undefined, async (base) => {
+        const next = await service.installGeodata({ expectedRevision: base.revision });
+        // Both the artifact catalogue and the per-instance status carry install state, and the
+        // smart-routing option unlocks off the latter — refresh both, or the option stays greyed
+        // out until the next 15 s poll.
+        await Promise.all([invalidateNetworkProxyEngine(), invalidateNetworkProxyStatus()]);
         return next;
       }),
     [runLocalSettingsWrite, service],
@@ -447,6 +473,7 @@ export const useNetworkProxyActions = ({
     dismissAll,
     entryOf,
     installArtifact,
+    installGeodata,
     isBusy,
     lastConnectivity,
     latestNodes,

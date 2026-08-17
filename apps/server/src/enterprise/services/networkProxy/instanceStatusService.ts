@@ -3,6 +3,8 @@ import { NetworkProxyInstanceStatusModel } from '@/database/models/platform/netw
 import type { LobeChatDatabase } from '@/database/type';
 import type {
   ArtifactState,
+  EngineIssue,
+  InstanceHealing,
   InstanceStatusView,
   NetworkProxyEngineState,
 } from '@/types/platform/networkProxy';
@@ -19,11 +21,18 @@ export interface InstanceStatusUpsert {
   engineState: NetworkProxyEngineState;
   engineVersion: string | null;
   fallbackCount: number;
+  healing: InstanceHealing | null;
   instanceId: string;
-  lastError: string | null;
+  lastIssue: EngineIssue | null;
   platform: string;
   proxiedCount: number;
 }
+
+const sanitizeIssue = (issue: EngineIssue | null): EngineIssue | null => {
+  if (!issue) return null;
+  const detail = issue.detail ? redactSecrets(issue.detail).slice(0, 200) : null;
+  return { ...issue, detail: detail || null };
+};
 
 export const upsertInstanceStatus = async (
   db: LobeChatDatabase,
@@ -31,7 +40,7 @@ export const upsertInstanceStatus = async (
 ): Promise<boolean> =>
   new NetworkProxyInstanceStatusModel(db).upsert({
     ...row,
-    lastError: row.lastError ? redactSecrets(row.lastError) : row.lastError,
+    lastIssue: sanitizeIssue(row.lastIssue),
   });
 
 export const listFreshInstanceStatuses = async (
@@ -50,10 +59,11 @@ export const listFreshInstanceStatuses = async (
     engineState: row.engineState,
     engineVersion: row.engineVersion,
     fallbackCount: row.fallbackCount,
+    healing: row.healing,
     instanceId: row.instanceId,
     isCurrent: row.instanceId === currentInstanceId,
-    lastError: row.lastError ? redactSecrets(row.lastError) : row.lastError,
     lastHeartbeatAt: row.lastHeartbeatAt.toISOString(),
+    lastIssue: sanitizeIssue(row.lastIssue),
     platform: row.platform,
     proxiedCount: row.proxiedCount,
     updatedAt: row.updatedAt.toISOString(),

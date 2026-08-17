@@ -76,6 +76,12 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'Set desired engine or geodata artifacts so every instance downloads the pinned build.',
     { reason: noReason, reauth: recentReauth },
   ),
+  'admin.networkProxy.installGeodata': dangerousMutation(
+    'admin.networkProxy.installGeodata',
+    'high',
+    'Set desired geoip and geosite artifacts so every instance downloads the pinned rule data.',
+    { reason: noReason, reauth: recentReauth },
+  ),
   'admin.networkProxy.refreshSubscription': regularMutation(
     'admin.networkProxy.refreshSubscription',
     'medium',

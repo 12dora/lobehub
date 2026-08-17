@@ -16,11 +16,13 @@ import type { NetworkProxyArtifactKind } from '@/types/platform/networkProxy';
 
 import { runAdminMutation } from '../../primitives/runAdminMutation';
 import { networkProxyErrorKey } from '../errors';
-import { formatBytes } from '../format';
+import { formatBytes, shortDigest } from '../format';
 import { networkProxyStyles as styles } from '../styles';
 
 export interface ArtifactUploadButtonProps {
   disabled?: boolean;
+  /** sha256 the file must match. Shown here — the only place it is of any use — never on the row. */
+  expectedDigest?: string | null;
   kind: NetworkProxyArtifactKind;
   /** Refresh artifact status once a file has been verified and installed. */
   onInstalled: () => void;
@@ -46,7 +48,7 @@ type UploadPhase =
  * platform needs upload progress for a ~45 MB artifact.
  */
 const ArtifactUploadButton = memo<ArtifactUploadButtonProps>(
-  ({ disabled, kind, onInstalled, service }) => {
+  ({ disabled, expectedDigest, kind, onInstalled, service }) => {
     const { t } = useTranslation('admin');
     const { authMethod } = useAdminAccess();
     const [state, setState] = useState<UploadPhase>({ phase: 'idle' });
@@ -130,6 +132,12 @@ const ArtifactUploadButton = memo<ArtifactUploadButtonProps>(
             </Button>
           ) : null}
         </div>
+
+        {expectedDigest ? (
+          <span className={styles.hintText}>
+            {t('networkProxy.engine.expectedDigestLine', { sha: shortDigest(expectedDigest) })}
+          </span>
+        ) : null}
 
         {uploading ? (
           <div

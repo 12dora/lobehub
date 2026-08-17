@@ -151,11 +151,12 @@ describe('enterprise admin mutation policy registry', () => {
         continue;
       }
       expect(['critical', 'high']).toContain(definition.risk);
-      // B0 DTOs for these three have no reason field — `noReason` is the matching control.
+      // B0 DTOs for these have no reason field — `noReason` is the matching control.
       const dtoHasNoReason =
         procedure === 'admin.networkProxy.createSubscription' ||
         procedure === 'admin.networkProxy.updateSubscription' ||
-        procedure === 'admin.networkProxy.installArtifact';
+        procedure === 'admin.networkProxy.installArtifact' ||
+        procedure === 'admin.networkProxy.installGeodata';
       if (dtoHasNoReason) {
         expect(definition.controls.reason.status).toBe('not-applicable');
       } else {

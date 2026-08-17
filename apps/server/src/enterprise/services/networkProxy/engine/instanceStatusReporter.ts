@@ -1,13 +1,30 @@
 import debug from 'debug';
 
 import { getPlatformInstanceId } from '@/server/enterprise/services/platformInstance/heartbeatRuntime';
+import type { EngineIssue, InstanceHealing } from '@/types/platform/networkProxy';
 
 import { getEgressCounters } from '../egress/counters';
 import { artifactManager } from './artifacts';
 import type { InstanceStatusUpsert } from './b1';
 import { redactSecrets, upsertInstanceStatus } from './b1';
 import { detectEnginePlatform } from './platform';
-import type { EngineRuntime } from './types';
+import type { EngineRuntime, EngineRuntimeState } from './types';
+
+const STATE_CHANGE_DEBOUNCE_MS = 2000;
+
+const sanitizeIssue = (issue: EngineIssue | null): EngineIssue | null => {
+  if (!issue) return null;
+  const detail = issue.detail ? redactSecrets(issue.detail).slice(0, 200) : null;
+  return { ...issue, detail: detail || null };
+};
+
+const projectHealing = (state: EngineRuntimeState): InstanceHealing | null => {
+  if (state.state !== 'error' || state.nextHealAt === null) return null;
+  return {
+    attempt: Math.max(state.healAttempts, 1),
+    nextAttemptAt: new Date(state.nextHealAt).toISOString(),
+  };
+};
 
 const log = debug('lobe-server:network-proxy-status');
 
@@ -46,8 +63,9 @@ export const buildLocalInstanceStatus = async (
     engineState: state.state,
     engineVersion: state.version,
     fallbackCount: counters.fallback,
+    healing: projectHealing(state),
     instanceId: getPlatformInstanceId(),
-    lastError: state.lastError ? redactSecrets(state.lastError) : null,
+    lastIssue: sanitizeIssue(state.lastIssue),
     platform,
     proxiedCount: counters.proxied,
   };
@@ -70,7 +88,10 @@ export const startInstanceStatusReporter = (
   intervalMs = 30_000,
 ): (() => void) => {
   let inFlight = false;
-  const tick = () => {
+  let lastStateChangeWrite = 0;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const write = () => {
     if (inFlight) return;
     inFlight = true;
     void reportInstanceStatus(runtime)
@@ -85,12 +106,35 @@ export const startInstanceStatusReporter = (
         inFlight = false;
       });
   };
-  const timer = setInterval(tick, intervalMs);
+
+  const tickFromTimer = () => {
+    write();
+  };
+
+  const tickFromStateChange = () => {
+    const now = Date.now();
+    const elapsed = now - lastStateChangeWrite;
+    if (elapsed < STATE_CHANGE_DEBOUNCE_MS) {
+      if (debounceTimer) return;
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        lastStateChangeWrite = Date.now();
+        write();
+      }, STATE_CHANGE_DEBOUNCE_MS - elapsed);
+      debounceTimer.unref();
+      return;
+    }
+    lastStateChangeWrite = now;
+    write();
+  };
+
+  const timer = setInterval(tickFromTimer, intervalMs);
   timer.unref();
-  const unsubscribe = runtime.onStateChange(() => tick());
-  tick();
+  const unsubscribe = runtime.onStateChange(() => tickFromStateChange());
+  write();
   return () => {
     clearInterval(timer);
+    if (debounceTimer) clearTimeout(debounceTimer);
     unsubscribe();
   };
 };

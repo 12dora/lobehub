@@ -7,7 +7,17 @@ import {
   NETWORK_PROXY_ARTIFACT_UPLOAD_PATH,
 } from './adminNetworkProxy';
 
-vi.mock('@/libs/trpc/client', () => ({ lambdaClient: {} }));
+const installGeodataMutate = vi.hoisted(() => vi.fn());
+
+vi.mock('@/libs/trpc/client', () => ({
+  lambdaClient: {
+    admin: {
+      networkProxy: {
+        installGeodata: { mutate: installGeodataMutate },
+      },
+    },
+  },
+}));
 
 vi.mock('@/services/_auth', () => ({
   createHeaderWithAuth: vi.fn(async () => ({
@@ -106,6 +116,7 @@ const file = (size = 1024) => {
 
 beforeEach(() => {
   FakeXhr.last = null;
+  installGeodataMutate.mockReset();
   vi.stubGlobal('XMLHttpRequest', FakeXhr as unknown as typeof XMLHttpRequest);
 });
 
@@ -202,5 +213,28 @@ describe('adminNetworkProxyService.uploadArtifact', () => {
       }),
     ).rejects.toMatchObject({ message: 'ADMIN_UPLOAD_ABORTED' });
     expect(FakeXhr.last?.record.body ?? null).toBeNull();
+  });
+});
+
+describe('adminNetworkProxyService.installGeodata', () => {
+  it('forwards expectedRevision to admin.networkProxy.installGeodata', async () => {
+    const payload = {
+      config: {},
+      desiredArtifacts: {},
+      engineGeneration: 0,
+      globalProxyActive: false,
+      local: { error: null, ok: true },
+      results: [
+        { error: null, kind: 'geoip', ok: true },
+        { error: null, kind: 'geosite', ok: true },
+      ],
+      revision: 2,
+    };
+    installGeodataMutate.mockResolvedValueOnce(payload);
+
+    await expect(adminNetworkProxyService.installGeodata({ expectedRevision: 3 })).resolves.toEqual(
+      payload,
+    );
+    expect(installGeodataMutate).toHaveBeenCalledWith({ expectedRevision: 3 });
   });
 });

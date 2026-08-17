@@ -41,7 +41,8 @@ interface NodeFilters {
 
 /**
  * 节点表 (design §6.2). The rows come from the engine REST API of the instance that answered the
- * request, so the caption always names that instance — a node list is never platform-wide truth.
+ * request, so the caption says so — a node list is never platform-wide truth. The instance id
+ * itself is deliberately not shown: it is opaque to the admin and means nothing on its own.
  */
 const NodesTable = memo<NodesTableProps>(
   ({
@@ -63,7 +64,6 @@ const NodesTable = memo<NodesTableProps>(
       actions.latestNodes && actions.latestNodes.instanceId === data?.instanceId
         ? actions.latestNodes
         : null;
-    const instanceId = data?.instanceId ?? actions.latestNodes?.instanceId ?? null;
     const rows = useMemo(() => fresh?.nodes ?? data?.nodes ?? [], [data?.nodes, fresh?.nodes]);
 
     const subscriptionName = useMemo(() => {
@@ -161,11 +161,7 @@ const NodesTable = memo<NodesTableProps>(
 
     return (
       <div className={styles.stack}>
-        <Text className={styles.tableCaption}>
-          {instanceId
-            ? t('networkProxy.nodes.caption', { instance: instanceId })
-            : t('networkProxy.nodes.captionUnknown')}
-        </Text>
+        <Text className={styles.tableCaption}>{t('networkProxy.nodes.caption')}</Text>
         <DataTable<ProxyNodeView>
           columns={columns}
           dataSource={filtered}

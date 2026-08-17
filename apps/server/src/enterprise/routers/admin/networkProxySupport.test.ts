@@ -14,7 +14,9 @@ import {
   isDangerousSettingsUpdate,
   redactSecretsFallback,
   rejectOversizedUpload,
+  sanitizeLocalError,
   setNetworkProxyRuntimeForTests,
+  withLocalInstanceStatus,
 } from './networkProxySupport';
 
 const appendSpy = vi.hoisted(() => vi.fn());
@@ -101,6 +103,87 @@ describe('hashNameForAudit', () => {
     expect(hashNameForAudit('node-a')).toMatch(/^[a-f0-9]{12}$/);
     expect(hashNameForAudit('node-a')).toBe(hashNameForAudit('node-a'));
     expect(hashNameForAudit('node-a')).not.toBe(hashNameForAudit('node-b'));
+  });
+});
+
+describe('sanitizeLocalError', () => {
+  const redact = (text: string) => `redacted:${text}`;
+
+  it('maps TimeoutError to health_timeout', () => {
+    const error = new Error('The operation was aborted due to timeout');
+    error.name = 'TimeoutError';
+    expect(sanitizeLocalError(error, redact)).toBe('health_timeout');
+  });
+
+  it('maps NetworkProxyEngineError / enterprise codes to issue codes', async () => {
+    const { NetworkProxyEngineError } = await import('../../services/networkProxy/engine/errors');
+    expect(
+      sanitizeLocalError(
+        new NetworkProxyEngineError(PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_ARTIFACT_MISMATCH),
+        redact,
+      ),
+    ).toBe('artifact_mismatch');
+    expect(
+      sanitizeLocalError(
+        new NetworkProxyEngineError(
+          PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_ENGINE_NOT_INSTALLED,
+        ),
+        redact,
+      ),
+    ).toBe('artifact_missing');
+    expect(
+      sanitizeLocalError(
+        new NetworkProxyEngineError(
+          PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_UNSUPPORTED_PLATFORM,
+        ),
+        redact,
+      ),
+    ).toBe('unsupported_platform');
+  });
+
+  it('returns unknown for unstructured errors and never a raw message', () => {
+    expect(sanitizeLocalError(new Error('The operation was aborted due to timeout'), redact)).toBe(
+      'unknown',
+    );
+    expect(sanitizeLocalError('nope', redact)).toBe('unknown');
+  });
+});
+
+describe('withLocalInstanceStatus', () => {
+  it('synthesizes lastIssue and healing when the heartbeat row is missing', async () => {
+    const lastIssue = {
+      at: '2026-08-17T00:00:00.000Z',
+      code: 'health_timeout' as const,
+      detail: 'aborted',
+    };
+    const healing = { attempt: 1, nextAttemptAt: '2026-08-17T00:00:30.000Z' };
+    const rows = await withLocalInstanceStatus(
+      {
+        buildLocalInstanceStatus: async () => ({
+          activeNode: null,
+          aliveNodeCount: null,
+          appliedEngineGeneration: null,
+          appliedRevision: null,
+          arch: 'arm64',
+          artifacts: [],
+          engineState: 'error',
+          engineVersion: null,
+          fallbackCount: 0,
+          healing,
+          instanceId: 'pinst_local',
+          lastIssue,
+          platform: 'darwin',
+          proxiedCount: 0,
+        }),
+      },
+      [],
+      'pinst_local',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.lastIssue).toEqual(lastIssue);
+    expect(rows[0]?.healing).toEqual(healing);
+    expect(rows[0]?.isCurrent).toBe(true);
+    expect(rows[0]).not.toHaveProperty('lastError');
   });
 });
 

@@ -52,8 +52,11 @@ export const updateNetworkProxySettings = async (
   input: { config: NetworkProxyConfig; expectedRevision: number; updatedBy: string },
 ): Promise<NetworkProxySettingsRow> => {
   const config = normalizeNetworkProxyConfig(input.config);
+  const model = new NetworkProxySettingsModel(db);
+  const current = await model.ensureDefault();
   assertCanEnable(config);
-  const row = await new NetworkProxySettingsModel(db).update({
+  assertSmartModeGeodata(config, current.desiredArtifacts);
+  const row = await model.update({
     config,
     expectedRevision: input.expectedRevision,
     updatedBy: input.updatedBy,
@@ -158,4 +161,20 @@ export const assertCanEnable = (config: NetworkProxyConfig): void => {
         'A process-wide PROXY_URL is already active; disable it before enabling network proxy.',
     });
   }
+};
+
+/**
+ * Smart routing needs both geoip and geosite requested (desired), not necessarily
+ * installed on this instance yet — other nodes converge from desired state.
+ */
+export const assertSmartModeGeodata = (
+  config: NetworkProxyConfig,
+  desiredArtifacts: DesiredArtifacts,
+): void => {
+  if (config.ruleMode !== 'smart') return;
+  if (desiredArtifacts.geoip && desiredArtifacts.geosite) return;
+  throwEnterpriseError({
+    code: PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_GEODATA_MISSING,
+    message: 'Install the smart-routing rule data before enabling smart routing.',
+  });
 };

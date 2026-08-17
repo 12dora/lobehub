@@ -167,6 +167,36 @@ export const adminNetworkProxyInstallArtifactInputSchema = z
   })
   .strict();
 
+export const adminNetworkProxyInstallGeodataInputSchema = z
+  .object({
+    expectedRevision: expectedRevisionSchema,
+  })
+  .strict();
+export type AdminNetworkProxyInstallGeodataInput = z.infer<
+  typeof adminNetworkProxyInstallGeodataInputSchema
+>;
+
+export const adminNetworkProxyInstallGeodataResultSchema = z
+  .object({
+    error: z.string().nullable(),
+    kind: networkProxyArtifactKindSchema,
+    ok: z.boolean(),
+  })
+  .strict();
+export type AdminNetworkProxyInstallGeodataResult = z.infer<
+  typeof adminNetworkProxyInstallGeodataResultSchema
+>;
+
+export const adminNetworkProxyInstallGeodataOutputSchema =
+  adminNetworkProxySettingsMutationOutputSchema
+    .extend({
+      results: z.array(adminNetworkProxyInstallGeodataResultSchema),
+    })
+    .strict();
+export type AdminNetworkProxyInstallGeodataOutput = z.infer<
+  typeof adminNetworkProxyInstallGeodataOutputSchema
+>;
+
 export const adminNetworkProxyRestartEngineInputSchema = z
   .object({
     expectedRevision: expectedRevisionSchema,

@@ -5,6 +5,7 @@ import type {
   NetworkProxyArtifactKind,
   NetworkProxyArtifactSource,
   NetworkProxyDirectReason,
+  NetworkProxyEngineIssueCode,
   NetworkProxyEngineLogLevel,
   NetworkProxyEngineState,
   NetworkProxyFeatureKey,
@@ -22,6 +23,7 @@ import {
   NETWORK_PROXY_ARTIFACT_SOURCES,
   NETWORK_PROXY_DEFAULTS,
   NETWORK_PROXY_DIRECT_REASONS,
+  NETWORK_PROXY_ENGINE_ISSUE_CODES,
   NETWORK_PROXY_ENGINE_LOG_LEVELS,
   NETWORK_PROXY_ENGINE_STATES,
   NETWORK_PROXY_FEATURE_KEYS,
@@ -39,6 +41,7 @@ export type {
   NetworkProxyArtifactKind,
   NetworkProxyArtifactSource,
   NetworkProxyDirectReason,
+  NetworkProxyEngineIssueCode,
   NetworkProxyEngineLogLevel,
   NetworkProxyEngineState,
   NetworkProxyFeatureKey,
@@ -66,6 +69,7 @@ export const networkProxyArtifactSourceSchema = z.enum(NETWORK_PROXY_ARTIFACT_SO
 export const networkProxySubscriptionKindSchema = z.enum(NETWORK_PROXY_SUBSCRIPTION_KINDS);
 export const networkProxyEngineLogLevelSchema = z.enum(NETWORK_PROXY_ENGINE_LOG_LEVELS);
 export const networkProxyDirectReasonSchema = z.enum(NETWORK_PROXY_DIRECT_REASONS);
+export const networkProxyEngineIssueCodeSchema = z.enum(NETWORK_PROXY_ENGINE_ISSUE_CODES);
 
 /** `provider:<id>` | `feature:<key>` */
 export const egressScopeIdSchema = z
@@ -395,6 +399,24 @@ export const artifactStateSchema = z
   .strict();
 export type ArtifactState = z.infer<typeof artifactStateSchema>;
 
+export const engineIssueSchema = z
+  .object({
+    at: z.string().datetime(),
+    code: networkProxyEngineIssueCodeSchema,
+    /** already redacted, ≤200 chars — UI shows it only behind a technical-detail toggle */
+    detail: z.string().max(200).nullable(),
+  })
+  .strict();
+export type EngineIssue = z.infer<typeof engineIssueSchema>;
+
+export const instanceHealingSchema = z
+  .object({
+    attempt: z.number().int().positive(),
+    nextAttemptAt: z.string().datetime(),
+  })
+  .strict();
+export type InstanceHealing = z.infer<typeof instanceHealingSchema>;
+
 export const instanceStatusViewSchema = z
   .object({
     activeNode: z.string().nullable(),
@@ -405,11 +427,13 @@ export const instanceStatusViewSchema = z
     engineState: networkProxyEngineStateSchema,
     engineVersion: z.string().nullable(),
     fallbackCount: z.number().int().nonnegative(),
+    /** non-null only while the supervisor is in automatic recovery (`error` + scheduled retry) */
+    healing: instanceHealingSchema.nullable(),
     instanceId: z.string(),
     /** true when this row is the instance answering the current request. */
     isCurrent: z.boolean(),
-    lastError: z.string().nullable(),
     lastHeartbeatAt: z.string().datetime(),
+    lastIssue: engineIssueSchema.nullable(),
     platform: z.string(),
     proxiedCount: z.number().int().nonnegative(),
     updatedAt: z.string().datetime(),

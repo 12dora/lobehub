@@ -81,6 +81,7 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
 
     const actions = useNetworkProxyActions({ authMethod, service, settings: settingsStore });
 
+    const installGeodata = useCallback(() => void actions.installGeodata(), [actions]);
     const reloadArtifacts = useCallback(() => void artifactsQuery.mutate(), [artifactsQuery]);
     const reloadNodes = useCallback(() => void nodesQuery.mutate(), [nodesQuery]);
     const reloadProviders = useCallback(() => void providersQuery.mutate(), [providersQuery]);
@@ -124,7 +125,7 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
       // revision while leaving unknown providers untouched.
       const bulkDisabled = !canManage || providerCatalogFailed;
       const bulkLabel = (label: string) =>
-        providerCatalogFailed ? `${label} · ${t('networkProxy.scopes.bulkUnavailable')}` : label;
+        providerCatalogFailed ? t('networkProxy.scopes.bulkUnavailableLabel', { label }) : label;
       return [
         {
           disabled: bulkDisabled,
@@ -234,6 +235,7 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
           status={statusQuery.data}
           statusError={statusQuery.error}
           statusStale={statusStale}
+          onInstallGeodata={installGeodata}
           onReloadArtifacts={reloadArtifacts}
           onReloadStatus={reloadStatus}
         />
@@ -291,12 +293,16 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
                     node: outlet?.activeNode ?? t('networkProxy.badges.noNode'),
                   })}
                 </Tag>
-                <Tag color={appliedCount === instances.length ? 'default' : 'warning'}>
-                  {t('networkProxy.badges.applied', {
-                    applied: appliedCount,
-                    total: instances.length,
-                  })}
-                </Tag>
+                {/* One node is either on the current configuration or it is not — the ratio only
+                    means something once there is a fleet to be out of step with. */}
+                {instances.length > 1 ? (
+                  <Tag color={appliedCount === instances.length ? 'default' : 'warning'}>
+                    {t('networkProxy.badges.applied', {
+                      applied: appliedCount,
+                      total: instances.length,
+                    })}
+                  </Tag>
+                ) : null}
               </>
             )}
             <DropdownMenu items={moreActions} placement="bottomRight">
@@ -310,8 +316,8 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
           artifacts={artifactsQuery.data}
           artifactsUnknown={artifactsUnknown}
           canManage={canManage}
-          config={config}
           instances={instances}
+          revision={settings.revision}
           service={service}
           statusUnknown={statusUnknown}
           onReloadArtifacts={reloadArtifacts}
@@ -327,6 +333,7 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
           nodesError={nodesQuery.error}
           nodesLoading={nodesQuery.isLoading}
           subscriptions={subscriptionsQuery.data?.items ?? []}
+          onInstallGeodata={installGeodata}
           onReloadNodes={reloadNodes}
         />
 

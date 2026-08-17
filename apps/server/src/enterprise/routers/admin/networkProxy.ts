@@ -14,6 +14,8 @@ import {
   adminNetworkProxyGetSettingsOutputSchema,
   adminNetworkProxyGetStatusOutputSchema,
   adminNetworkProxyInstallArtifactInputSchema,
+  adminNetworkProxyInstallGeodataInputSchema,
+  adminNetworkProxyInstallGeodataOutputSchema,
   adminNetworkProxyListNodesOutputSchema,
   adminNetworkProxyListSubscriptionsOutputSchema,
   adminNetworkProxyRefreshSubscriptionInputSchema,
@@ -33,7 +35,13 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
+import { assertSmartModeGeodata } from '../../services/networkProxy/settingsService';
 import { PlatformAuditService } from '../../services/platformAudit';
+import {
+  geodataInstallAfterDiff,
+  mergeDesiredGeodataPatch,
+  runLocalGeodataInstalls,
+} from './networkProxyGeodata';
 import {
   appendInstallCompletionAudit,
   appendPostCommitAudit,
@@ -284,6 +292,61 @@ export const adminNetworkProxyRouter = router({
           error: local.error,
           ok: local.ok,
         });
+      } catch (error) {
+        return mapNetworkProxyError(error);
+      }
+    }),
+
+  installGeodata: networkProxyManage
+    .input(adminNetworkProxyInstallGeodataInputSchema)
+    .output(adminNetworkProxyInstallGeodataOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        await assertNetworkProxyReauth(
+          {
+            authMethod: ctx.authMethod,
+            authenticatedAt: ctx.authenticatedAt,
+            serverDB: ctx.serverDB,
+            userId: ctx.userId!,
+          },
+          {
+            action: NETWORK_PROXY_AUDIT_ACTIONS.GEODATA_INSTALL,
+            targetId: 'geodata',
+            targetType: NETWORK_PROXY_AUDIT_TARGET_TYPES.ENGINE,
+          },
+        );
+
+        const runtime = await getNetworkProxyRuntime();
+        const patch = mergeDesiredGeodataPatch(new Date().toISOString());
+        const next = await ctx.serverDB.transaction(async (tx) => {
+          const row = await runtime.setDesiredArtifacts(tx, patch, {
+            expectedRevision: input.expectedRevision,
+            updatedBy: ctx.userId!,
+          });
+          await new PlatformAuditService(tx).append({
+            action: NETWORK_PROXY_AUDIT_ACTIONS.GEODATA_INSTALL,
+            actorUserId: ctx.userId!,
+            afterDiff: geodataInstallAfterDiff(row.revision),
+            configRevision: row.revision,
+            result: 'success',
+            targetId: 'geodata',
+            targetType: NETWORK_PROXY_AUDIT_TARGET_TYPES.ENGINE,
+          });
+          return row;
+        });
+
+        await runtime.publishNetworkProxyInvalidation(next.revision);
+        const snapshot = runtime.peekNetworkProxySnapshot();
+        const proxyUrl = next.config.downloadViaStaticProxy
+          ? (snapshot?.staticProxyUrl ?? null)
+          : null;
+        const { local, results } = await runLocalGeodataInstalls(runtime, {
+          proxyUrl,
+          revision: next.revision,
+          serverDB: ctx.serverDB,
+          userId: ctx.userId!,
+        });
+        return { ...toSettingsMutationOutput(next, runtime, local), results };
       } catch (error) {
         return mapNetworkProxyError(error);
       }
@@ -560,6 +623,7 @@ export const adminNetworkProxyRouter = router({
             subscriptionUpdateViaOutlet: input.config.subscriptionUpdateViaOutlet,
           };
           runtime.assertCanEnable(nextConfig);
+          assertSmartModeGeodata(nextConfig, current.desiredArtifacts);
           const row = await runtime.updateNetworkProxySettings(tx, {
             config: nextConfig,
             expectedRevision: input.expectedRevision,

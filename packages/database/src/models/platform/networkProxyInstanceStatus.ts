@@ -1,6 +1,11 @@
 import { eq, gte } from 'drizzle-orm';
 
-import type { ArtifactState, NetworkProxyEngineState } from '@/types/platform/networkProxy';
+import type {
+  ArtifactState,
+  EngineIssue,
+  InstanceHealing,
+  NetworkProxyEngineState,
+} from '@/types/platform/networkProxy';
 
 import {
   platformInstanceHeartbeats,
@@ -18,8 +23,9 @@ export interface NetworkProxyInstanceStatusUpsertRow {
   engineState: NetworkProxyEngineState;
   engineVersion: string | null;
   fallbackCount: number;
+  healing: InstanceHealing | null;
   instanceId: string;
-  lastError: string | null;
+  lastIssue: EngineIssue | null;
   platform: string;
   proxiedCount: number;
 }
@@ -34,9 +40,10 @@ export interface NetworkProxyInstanceStatusFreshRow {
   engineState: NetworkProxyEngineState;
   engineVersion: string | null;
   fallbackCount: number;
+  healing: InstanceHealing | null;
   instanceId: string;
-  lastError: string | null;
   lastHeartbeatAt: Date;
+  lastIssue: EngineIssue | null;
   platform: string;
   proxiedCount: number;
   updatedAt: Date;
@@ -97,8 +104,9 @@ export class NetworkProxyInstanceStatusModel {
           engineState: row.engineState,
           engineVersion: row.engineVersion,
           fallbackCount: row.fallbackCount,
+          healing: row.healing,
           instanceId: row.instanceId,
-          lastError: row.lastError,
+          lastIssue: row.lastIssue,
           platform: row.platform,
           proxiedCount: row.proxiedCount,
           updatedAt: new Date(),
@@ -114,7 +122,8 @@ export class NetworkProxyInstanceStatusModel {
             engineState: row.engineState,
             engineVersion: row.engineVersion,
             fallbackCount: row.fallbackCount,
-            lastError: row.lastError,
+            healing: row.healing,
+            lastIssue: row.lastIssue,
             platform: row.platform,
             proxiedCount: row.proxiedCount,
             updatedAt: new Date(),
@@ -152,9 +161,10 @@ export class NetworkProxyInstanceStatusModel {
       engineState: status.engineState,
       engineVersion: status.engineVersion ?? null,
       fallbackCount: status.fallbackCount,
+      healing: status.healing ?? null,
       instanceId: status.instanceId,
-      lastError: status.lastError ?? null,
       lastHeartbeatAt,
+      lastIssue: status.lastIssue ?? null,
       platform: status.platform,
       proxiedCount: status.proxiedCount,
       updatedAt: status.updatedAt,

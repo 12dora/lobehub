@@ -18,6 +18,7 @@ import {
   NETWORK_PROXY_ARTIFACTS_KEY,
   NETWORK_PROXY_LOGS_KEY,
   NETWORK_PROXY_NODES_KEY,
+  NETWORK_PROXY_STATUS_KEY,
   NETWORK_PROXY_SUBSCRIPTIONS_KEY,
 } from './swrKeys';
 
@@ -111,6 +112,13 @@ export const invalidateNetworkProxySubscriptions = () =>
 
 export const invalidateNetworkProxyNodes = () =>
   mutate((key) => Array.isArray(key) && key[0] === NETWORK_PROXY_NODES_KEY);
+
+/**
+ * Per-instance install and engine state come from `getStatus`, which otherwise only refreshes on
+ * its 15 s poll — an install has to make its own result visible.
+ */
+export const invalidateNetworkProxyStatus = () =>
+  mutate((key) => Array.isArray(key) && key[0] === NETWORK_PROXY_STATUS_KEY);
 
 export const invalidateNetworkProxyEngine = () =>
   mutate(

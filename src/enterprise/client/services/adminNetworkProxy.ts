@@ -39,6 +39,16 @@ export interface AdminNetworkProxySettingsMutation extends AdminNetworkProxySett
   local: AdminNetworkProxyLocalOutcome;
 }
 
+export interface AdminNetworkProxyGeodataInstallResult {
+  error: string | null;
+  kind: NetworkProxyArtifactKind;
+  ok: boolean;
+}
+
+export interface AdminNetworkProxyGeodataInstall extends AdminNetworkProxySettingsMutation {
+  results: AdminNetworkProxyGeodataInstallResult[];
+}
+
 export interface AdminNetworkProxyNodeList {
   /** Which application instance answered — node lists are per-instance. */
   instanceId: string;
@@ -93,6 +103,7 @@ export interface AdminNetworkProxyService {
     expectedRevision: number;
     kind: NetworkProxyArtifactKind;
   }) => Promise<AdminNetworkProxySettingsMutation>;
+  installGeodata: (input: { expectedRevision: number }) => Promise<AdminNetworkProxyGeodataInstall>;
   listNodes: () => Promise<AdminNetworkProxyNodes>;
   listSubscriptions: () => Promise<{ items: SubscriptionView[] }>;
   refreshSubscription: (input: { id: string }) => Promise<SubscriptionView>;
@@ -246,6 +257,9 @@ class AdminNetworkProxyServiceImpl implements AdminNetworkProxyService {
 
   installArtifact = (input: { expectedRevision: number; kind: NetworkProxyArtifactKind }) =>
     lambdaClient.admin.networkProxy.installArtifact.mutate(input);
+
+  installGeodata = (input: { expectedRevision: number }) =>
+    lambdaClient.admin.networkProxy.installGeodata.mutate(input);
 
   listNodes = () => lambdaClient.admin.networkProxy.listNodes.query();
 

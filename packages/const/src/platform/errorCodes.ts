@@ -60,6 +60,11 @@ export const PLATFORM_ERROR_CODES = {
   PLATFORM_NETWORK_PROXY_SUBSCRIPTION_INVALID: 'PLATFORM_NETWORK_PROXY_SUBSCRIPTION_INVALID',
   /** `PROXY_URL` (legacy proxychains) is active → selective routing cannot be enabled. */
   PLATFORM_NETWORK_PROXY_GLOBAL_PROXY_ACTIVE: 'PLATFORM_NETWORK_PROXY_GLOBAL_PROXY_ACTIVE',
+  /**
+   * `ruleMode: 'smart'` requires both `desiredArtifacts.geoip` and `.geosite`
+   * (desired, not necessarily installed on this instance yet).
+   */
+  PLATFORM_NETWORK_PROXY_GEODATA_MISSING: 'PLATFORM_NETWORK_PROXY_GEODATA_MISSING',
 } as const;
 
 export type PlatformErrorCode = (typeof PLATFORM_ERROR_CODES)[keyof typeof PLATFORM_ERROR_CODES];

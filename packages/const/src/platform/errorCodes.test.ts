@@ -33,6 +33,10 @@ describe('enterprise error codes', () => {
     expect(PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED).toBe(
       'PLATFORM_AI_PROVIDER_DISABLED',
     );
+    expect(PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_GEODATA_MISSING).toBe(
+      'PLATFORM_NETWORK_PROXY_GEODATA_MISSING',
+    );
+    expect(isEnterpriseErrorCode('PLATFORM_NETWORK_PROXY_GEODATA_MISSING')).toBe(true);
   });
 
   it('exposes admin and managed codes', () => {

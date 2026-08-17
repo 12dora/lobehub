@@ -79,6 +79,34 @@ export const NETWORK_PROXY_ENGINE_STATES = [
 ] as const;
 export type NetworkProxyEngineState = (typeof NETWORK_PROXY_ENGINE_STATES)[number];
 
+/** Structured engine issue codes persisted on instance status (never a raw exception message). */
+export const NETWORK_PROXY_ENGINE_ISSUE_CODES = [
+  'start_timeout',
+  'health_timeout',
+  'health_unreachable',
+  'spawn_failed',
+  'exited',
+  'crash_loop',
+  'ports_unavailable',
+  'artifact_missing',
+  'artifact_mismatch',
+  'artifact_download_failed',
+  'geodata_missing',
+  'geodata_invalid',
+  'config_reload_failed',
+  'subscription_sync_failed',
+  'node_select_failed',
+  'unsupported_platform',
+  'global_proxy_active',
+  'unknown',
+] as const;
+export type NetworkProxyEngineIssueCode = (typeof NETWORK_PROXY_ENGINE_ISSUE_CODES)[number];
+
+export const isNetworkProxyEngineIssueCode = (
+  value: string,
+): value is NetworkProxyEngineIssueCode =>
+  (NETWORK_PROXY_ENGINE_ISSUE_CODES as readonly string[]).includes(value);
+
 export const NETWORK_PROXY_ARTIFACT_KINDS = ['engine', 'geoip', 'geosite'] as const;
 export type NetworkProxyArtifactKind = (typeof NETWORK_PROXY_ARTIFACT_KINDS)[number];
 
@@ -136,6 +164,8 @@ export const NETWORK_PROXY_LIMITS = {
   CIRCUIT_WINDOW_MS: 60_000,
   ENGINE_CRASH_LIMIT: 5,
   ENGINE_CRASH_WINDOW_MS: 10 * 60_000,
+  ENGINE_HEAL_BACKOFF_BASE_MS: 30_000,
+  ENGINE_HEAL_BACKOFF_MAX_MS: 15 * 60_000,
   ENGINE_HEALTH_FAILURES_BEFORE_RESTART: 3,
   ENGINE_HEALTH_INTERVAL_MS: 15_000,
   ENGINE_LOG_LINES: 200,

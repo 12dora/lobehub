@@ -38,6 +38,8 @@ export interface OutletSectionProps {
   nodes?: AdminNetworkProxyNodes;
   nodesError?: unknown;
   nodesLoading?: boolean;
+  /** Install the smart-routing rule data without leaving this block. */
+  onInstallGeodata?: () => void;
   onReloadNodes: () => void;
   subscriptions: SubscriptionView[];
 }
@@ -116,6 +118,7 @@ const OutletSection = memo<OutletSectionProps>(
     nodes,
     nodesError,
     nodesLoading,
+    onInstallGeodata,
     onReloadNodes,
     subscriptions,
   }) => {
@@ -285,8 +288,29 @@ const OutletSection = memo<OutletSectionProps>(
           ) : null}
         </div>
 
+        {/* Smart routing stays disabled until the rule data is there — but the way to get it is
+            right here, rather than a dead end pointing at another block. */}
         {!geodataReady ? (
-          <Text className={styles.hintText}>{t('networkProxy.outlet.geodataNotReady')}</Text>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+            <div className={styles.inlineActions}>
+              <Text className={styles.hintText}>{t('networkProxy.outlet.geodataInstallHint')}</Text>
+              {onInstallGeodata ? (
+                <Button
+                  disabled={lock(F.installGeodata)}
+                  loading={actions.isBusy(F.installGeodata)}
+                  size="small"
+                  onClick={onInstallGeodata}
+                >
+                  {t('networkProxy.outlet.geodataInstallAction')}
+                </Button>
+              ) : null}
+            </div>
+            <FieldStatus
+              actions={actions}
+              field={F.installGeodata}
+              pendingLabel={t('networkProxy.engine.geodata.installing')}
+            />
+          </div>
         ) : null}
 
         <Field

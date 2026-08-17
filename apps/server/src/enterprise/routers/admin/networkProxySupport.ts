@@ -52,6 +52,7 @@ import { getEgressCounters } from '../../services/networkProxy/egress/counters';
 import { getDispatcher } from '../../services/networkProxy/egress/dispatchers';
 import { getOutletHealth } from '../../services/networkProxy/egress/router';
 import { artifactManager } from '../../services/networkProxy/engine/artifacts';
+import { resolveEngineIssueCode } from '../../services/networkProxy/engine/errors';
 import { buildLocalInstanceStatus } from '../../services/networkProxy/engine/instanceStatusReporter';
 import { detectEnginePlatform } from '../../services/networkProxy/engine/platform';
 import { getEngineRuntime } from '../../services/networkProxy/engine/runtime';
@@ -290,17 +291,8 @@ export const toSettingsMutationOutput = (
 export const hashNameForAudit = (value: string): string =>
   createHash('sha256').update(value).digest('hex').slice(0, 12);
 
-export const sanitizeLocalError = (error: unknown, redact: (text: string) => string): string => {
-  if (error && typeof error === 'object' && 'code' in error) {
-    const code = (error as { code?: unknown }).code;
-    if (typeof code === 'string' && code.length > 0) return redact(code);
-  }
-  if (error instanceof Error) {
-    if (error.message in PLATFORM_ERROR_CODES) return error.message;
-    return redact(error.name || 'Error');
-  }
-  return 'UnknownError';
-};
+export const sanitizeLocalError = (error: unknown, _redact: (text: string) => string): string =>
+  resolveEngineIssueCode(error);
 
 const sameStringArray = (left: readonly string[], right: readonly string[]): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index]);
@@ -836,10 +828,11 @@ export const withLocalInstanceStatus = async (
         engineState: local.engineState,
         engineVersion: local.engineVersion,
         fallbackCount: local.fallbackCount,
+        healing: local.healing,
         instanceId,
         isCurrent: true,
-        lastError: local.lastError,
         lastHeartbeatAt: now,
+        lastIssue: local.lastIssue,
         platform: local.platform,
         proxiedCount: local.proxiedCount,
         updatedAt: now,

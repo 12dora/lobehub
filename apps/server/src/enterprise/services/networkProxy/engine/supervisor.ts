@@ -5,13 +5,14 @@ import { readlinkSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import type { NetworkProxyEngineIssueCode } from '@/const/platform/networkProxy';
 import {
   NETWORK_PROXY_ENGINE_GROUP_NAME,
   NETWORK_PROXY_ENGINE_LISTENER_USER,
   NETWORK_PROXY_LIMITS,
 } from '@/const/platform/networkProxy';
 import { startPersistentWorkerScheduler } from '@/server/enterprise/jobs/persistentWorkerScheduler';
-import type { ProxyNodeView } from '@/types/platform/networkProxy';
+import type { EngineIssue, ProxyNodeView } from '@/types/platform/networkProxy';
 
 import type { InstalledArtifact } from './artifacts';
 import { artifactManager, materializeGeodataIntoRuntime } from './artifacts';
@@ -23,7 +24,11 @@ import {
   redactSecrets,
 } from './b1';
 import { generateEngineConfig } from './configGenerator';
-import { NETWORK_PROXY_ENGINE_ERROR_CODES, throwNetworkProxyError } from './errors';
+import {
+  NETWORK_PROXY_ENGINE_ERROR_CODES,
+  resolveEngineIssueCode,
+  throwNetworkProxyError,
+} from './errors';
 import { ensureSecureDirectory, removeIfPresent, writeFileAtomically } from './fsSecure';
 import { createEngineLogRing } from './logs';
 import {
@@ -56,10 +61,25 @@ export const setAfterWriteGeneratedConfigForTest = (hook: (() => void) | null): 
 export interface EngineSupervisorOptions {
   crashLimit?: number;
   crashWindowMs?: number;
+  healBackoffBaseMs?: number;
+  healBackoffMaxMs?: number;
   healthFailuresBeforeRestart?: number;
   healthIntervalMs?: number;
   startWaitMs?: number;
 }
+
+const INFORMATIONAL_ISSUE_CODES: ReadonlySet<NetworkProxyEngineIssueCode> = new Set([
+  'geodata_missing',
+  'geodata_invalid',
+]);
+
+const isTimeoutError = (error: unknown): boolean =>
+  error instanceof Error && error.name === 'TimeoutError';
+
+const isPortsError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
+  return /port|EADDRINUSE|EADDRNOTAVAIL/i.test(error.message);
+};
 
 const isPidAlive = (pid: number): boolean => {
   try {
@@ -103,6 +123,8 @@ export class EngineSupervisor implements EngineRuntime {
   private healthFailures = 0;
   private readonly healthIntervalMs: number;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly healBackoffBaseMs: number;
+  private readonly healBackoffMaxMs: number;
   private hooksInstalled = false;
   private listenerPassword: string | null = null;
   private readonly listeners = new Set<(state: EngineRuntimeState) => void>();
@@ -128,6 +150,10 @@ export class EngineSupervisor implements EngineRuntime {
       NETWORK_PROXY_LIMITS.ENGINE_HEALTH_FAILURES_BEFORE_RESTART;
     this.healthIntervalMs =
       options.healthIntervalMs ?? NETWORK_PROXY_LIMITS.ENGINE_HEALTH_INTERVAL_MS;
+    this.healBackoffBaseMs =
+      options.healBackoffBaseMs ?? NETWORK_PROXY_LIMITS.ENGINE_HEAL_BACKOFF_BASE_MS;
+    this.healBackoffMaxMs =
+      options.healBackoffMaxMs ?? NETWORK_PROXY_LIMITS.ENGINE_HEAL_BACKOFF_MAX_MS;
     this.startWaitMs = options.startWaitMs ?? DEFAULT_START_WAIT_MS;
   }
 
@@ -142,6 +168,8 @@ export class EngineSupervisor implements EngineRuntime {
 
   restart = async (): Promise<void> => {
     this.pendingRestart = true;
+    this.clearHealState();
+    this.patchState({ lastIssue: null });
     await this.runExclusive(async () => {
       if (!this.pendingRestart) return;
       this.pendingRestart = false;
@@ -190,7 +218,9 @@ export class EngineSupervisor implements EngineRuntime {
       snapshot,
     });
     if (this.rest) {
-      await this.rest.providerUpdate(`sub_${id}`).catch((error) => this.setLastError(error));
+      await this.rest
+        .providerUpdate(`sub_${id}`)
+        .catch((error) => this.setIssue('subscription_sync_failed', error));
     }
   };
 
@@ -199,7 +229,7 @@ export class EngineSupervisor implements EngineRuntime {
     this.loopsStarted = true;
     this.installProcessHooks();
     onNetworkProxySnapshotChange(() => {
-      void this.reconcile().catch((error) => this.setLastError(error));
+      void this.reconcile().catch((error) => this.setIssueFromUnknown(error));
     });
     startPersistentWorkerScheduler({
       baseIntervalMs: this.healthIntervalMs,
@@ -221,12 +251,12 @@ export class EngineSupervisor implements EngineRuntime {
           for (const sub of snapshot.subscriptions.filter((item) => item.enabled)) {
             await this.rest
               .providerUpdate(`sub_${sub.id}`)
-              .catch((error) => this.setLastError(error));
+              .catch((error) => this.setIssue('subscription_sync_failed', error));
           }
         }
       },
     });
-    void this.reconcile().catch((error) => this.setLastError(error));
+    void this.reconcile().catch((error) => this.setIssueFromUnknown(error));
   };
 
   reconcile = async (): Promise<void> =>
@@ -237,14 +267,25 @@ export class EngineSupervisor implements EngineRuntime {
       const binary = await artifactManager.resolveEngineBinary().catch(() => null);
       if (!this.desiredRun(snapshot, binary)) {
         await this.stopEngineNow();
-        this.patchStopped(binary);
+        this.patchStopped(binary, 'desired');
         return;
       }
 
-      if (
-        this.state.state === 'error' &&
-        snapshot.engineGeneration <= (this.appliedEngineGeneration ?? -1)
-      ) {
+      if (this.state.state === 'error') {
+        if (snapshot.engineGeneration > (this.appliedEngineGeneration ?? -1)) {
+          this.pendingRestart = false;
+          this.clearHealState();
+          this.patchState({ lastIssue: null });
+          await this.restartNow();
+          return;
+        }
+        if (Date.now() < (this.state.nextHealAt ?? Number.POSITIVE_INFINITY)) return;
+        this.patchState({ healAttempts: this.state.healAttempts + 1 });
+        const ok = await this.healNow();
+        if (!ok && this.state.state === 'error') {
+          const nextHealAt = Date.now() + this.healBackoffMs(this.state.healAttempts);
+          this.patchState({ nextHealAt });
+        }
         return;
       }
 
@@ -273,7 +314,7 @@ export class EngineSupervisor implements EngineRuntime {
     try {
       return await next;
     } catch (error) {
-      this.setLastError(error);
+      if (!this.state.lastIssue) this.setIssueFromUnknown(error);
       throw error;
     }
   };
@@ -305,18 +346,69 @@ export class EngineSupervisor implements EngineRuntime {
     for (const listener of this.listeners) listener(this.getState());
   };
 
-  private setLastError = (error: unknown): void => {
-    const message = redactSecrets(error instanceof Error ? error.message : 'engine error');
-    this.patchState({ lastError: message });
+  private makeIssue = (code: NetworkProxyEngineIssueCode, error?: unknown): EngineIssue => {
+    const raw = error instanceof Error ? error.message : error !== undefined ? String(error) : null;
+    const detail = raw ? redactSecrets(raw).slice(0, 200) : null;
+    return {
+      at: new Date().toISOString(),
+      code,
+      detail: detail || null,
+    };
   };
 
-  private patchStopped = (binary: InstalledArtifact | null): void => {
-    const { key } = detectEnginePlatform();
+  private setIssue = (code: NetworkProxyEngineIssueCode, error?: unknown): void => {
+    this.patchState({ lastIssue: this.makeIssue(code, error) });
+  };
+
+  private setIssueFromUnknown = (error: unknown): void => {
+    this.setIssue(resolveEngineIssueCode(error), error);
+  };
+
+  private healBackoffMs = (attempts: number): number => {
+    const n = Math.max(attempts, 1);
+    return Math.min(this.healBackoffBaseMs * 2 ** (n - 1), this.healBackoffMaxMs);
+  };
+
+  private clearHealState = (): void => {
+    this.patchState({ healAttempts: 0, nextHealAt: null });
+  };
+
+  private enterErrorState = (generation: number | null = this.appliedEngineGeneration): void => {
+    if (this.appliedEngineGeneration === null && generation !== null) {
+      this.appliedEngineGeneration = generation;
+    }
+    let { healAttempts, nextHealAt } = this.state;
+    if (nextHealAt === null) {
+      healAttempts = Math.max(healAttempts, 1);
+      nextHealAt = Date.now() + this.healBackoffMs(healAttempts);
+    }
     this.patchState({
-      ...idleEngineRuntimeState(key ? (binary ? 'stopped' : 'not_installed') : 'unsupported'),
+      ...idleEngineRuntimeState('error'),
       appliedEngineGeneration: this.appliedEngineGeneration,
       appliedRevision: this.appliedRevision,
-      lastError: this.state.lastError,
+      healAttempts,
+      lastIssue: this.state.lastIssue,
+      nextHealAt,
+    });
+  };
+
+  private patchStopped = (
+    binary: InstalledArtifact | null,
+    reason: 'desired' | 'failure',
+  ): void => {
+    const { key } = detectEnginePlatform();
+    const nextState = key ? (binary ? 'stopped' : 'not_installed') : 'unsupported';
+    const lastIssue =
+      reason === 'desired'
+        ? nextState === 'unsupported'
+          ? this.makeIssue('unsupported_platform')
+          : null
+        : this.state.lastIssue;
+    this.patchState({
+      ...idleEngineRuntimeState(nextState),
+      appliedEngineGeneration: this.appliedEngineGeneration,
+      appliedRevision: this.appliedRevision,
+      lastIssue,
     });
   };
 
@@ -349,18 +441,19 @@ export class EngineSupervisor implements EngineRuntime {
       const current = byKind.get(kind);
       return !current?.installed || current.version !== version;
     };
-    if (need('engine', desired.engine?.version)) {
+    const install = async (kind: 'engine' | 'geoip' | 'geosite') => {
       this.patchState({ state: 'installing' });
-      await artifactManager.installFromDownload('engine', { proxyUrl });
-    }
-    if (need('geoip', desired.geoip?.commit)) {
-      this.patchState({ state: 'installing' });
-      await artifactManager.installFromDownload('geoip', { proxyUrl });
-    }
-    if (need('geosite', desired.geosite?.commit)) {
-      this.patchState({ state: 'installing' });
-      await artifactManager.installFromDownload('geosite', { proxyUrl });
-    }
+      try {
+        await artifactManager.installFromDownload(kind, { proxyUrl });
+      } catch (error) {
+        const mapped = resolveEngineIssueCode(error);
+        this.setIssue(mapped === 'unknown' ? 'artifact_download_failed' : mapped, error);
+        throw error;
+      }
+    };
+    if (need('engine', desired.engine?.version)) await install('engine');
+    if (need('geoip', desired.geoip?.commit)) await install('geoip');
+    if (need('geosite', desired.geosite?.commit)) await install('geosite');
   };
 
   private writeGeneratedConfig = async (snapshot: NetworkProxyRuntimeSnapshot): Promise<void> => {
@@ -378,10 +471,10 @@ export class EngineSupervisor implements EngineRuntime {
     if (snapshot.config.ruleMode === 'smart') {
       try {
         geodataReady = await materializeGeodataIntoRuntime(paths.runtimeDir);
-        if (!geodataReady) this.setLastError(new Error('geodata invalid'));
-      } catch {
+        if (!geodataReady) this.setIssue('geodata_missing');
+      } catch (error) {
         geodataReady = false;
-        this.setLastError(new Error('geodata invalid'));
+        this.setIssue('geodata_invalid', error);
       }
     }
     const { providerFiles } = await syncSubscriptionsFromSnapshot({
@@ -456,6 +549,13 @@ export class EngineSupervisor implements EngineRuntime {
     return this.startEngineNow();
   };
 
+  /** Automatic recovery — does not reset crashTimes / backoffMs. */
+  private healNow = async (): Promise<boolean> => {
+    this.healthFailures = 0;
+    await this.stopEngineNow();
+    return this.startEngineNow();
+  };
+
   private startEngineNow = async (): Promise<boolean> => {
     this.desiredStop = false;
     this.starting = true;
@@ -475,16 +575,17 @@ export class EngineSupervisor implements EngineRuntime {
 
     let lastError: unknown;
     for (let attempt = 0; attempt < PORT_RETRY; attempt += 1) {
+      let spawned = false;
       try {
         const snapshot = await getNetworkProxySnapshot();
         const artifact = await artifactManager.resolveEngineBinary({ reverify: true });
         if (!this.desiredRun(snapshot, artifact)) {
           await this.stopEngineNow();
-          this.patchStopped(artifact);
+          this.patchStopped(artifact, 'desired');
           return false;
         }
         if (!artifact) {
-          this.patchStopped(null);
+          this.patchStopped(null, 'desired');
           return false;
         }
         await this.killStalePid(artifact.path);
@@ -503,7 +604,7 @@ export class EngineSupervisor implements EngineRuntime {
         const latest = await getNetworkProxySnapshot();
         if (!this.desiredRun(latest, artifact)) {
           await this.stopEngineNow();
-          this.patchStopped(artifact);
+          this.patchStopped(artifact, 'desired');
           return false;
         }
 
@@ -523,14 +624,15 @@ export class EngineSupervisor implements EngineRuntime {
           },
         );
         child.on('error', (error) => {
-          this.setLastError(error);
+          this.setIssue('spawn_failed', error);
         });
         this.child = child;
+        spawned = true;
         if (child.pid) await this.writePidFile(child.pid);
         child.stdout?.on('data', (chunk: Buffer) => this.logs.append(chunk.toString('utf8')));
         child.stderr?.on('data', (chunk: Buffer) => this.logs.append(chunk.toString('utf8')));
         child.once('exit', (code, signal) => {
-          void this.onChildExit(code, signal).catch((error) => this.setLastError(error));
+          void this.onChildExit(code, signal).catch((error) => this.setIssueFromUnknown(error));
         });
 
         await this.waitUntilHealthy();
@@ -543,14 +645,17 @@ export class EngineSupervisor implements EngineRuntime {
         this.appliedRevision = snapshot.revision;
         this.appliedEngineGeneration = snapshot.engineGeneration;
         const proxyUrl = `http://${NETWORK_PROXY_ENGINE_LISTENER_USER}:${this.listenerPassword}@127.0.0.1:${mixedPort}`;
-        const geodataNote = this.state.lastError?.includes('geodata invalid')
-          ? this.state.lastError
-          : null;
+        const geodataIssue =
+          this.state.lastIssue && INFORMATIONAL_ISSUE_CODES.has(this.state.lastIssue.code)
+            ? this.state.lastIssue
+            : null;
         this.patchState({
           appliedEngineGeneration: snapshot.engineGeneration,
           appliedRevision: snapshot.revision,
           controller: { secret: this.controllerSecret, url: `http://127.0.0.1:${controllerPort}` },
-          lastError: geodataNote,
+          healAttempts: 0,
+          lastIssue: geodataIssue,
+          nextHealAt: null,
           proxyUrl,
           startedAt: this.startedAt,
           state: 'running',
@@ -559,19 +664,33 @@ export class EngineSupervisor implements EngineRuntime {
         if (snapshot.config.outlet.mode === 'manual' && snapshot.config.outlet.manualNodeName) {
           await this.rest
             .selectProxy(NETWORK_PROXY_ENGINE_GROUP_NAME, snapshot.config.outlet.manualNodeName)
-            .catch((error) => this.setLastError(error));
+            .catch((error) => this.setIssue('node_select_failed', error));
         }
         this.startHealthLoop();
         return true;
       } catch (error) {
         lastError = error;
-        this.setLastError(error);
+        this.setIssue(this.issueCodeForStartFailure(error, spawned), error);
         await this.stopEngineNow();
       }
     }
-    this.setLastError(lastError);
-    this.patchState({ state: 'error' });
+    if (!this.state.lastIssue && lastError !== undefined) {
+      this.setIssue(this.issueCodeForStartFailure(lastError, false), lastError);
+    }
+    const latest = await getNetworkProxySnapshot();
+    this.enterErrorState(latest.engineGeneration);
     return false;
+  };
+
+  private issueCodeForStartFailure = (
+    error: unknown,
+    afterSpawn: boolean,
+  ): NetworkProxyEngineIssueCode => {
+    if (afterSpawn) return 'start_timeout';
+    if (isPortsError(error)) return 'ports_unavailable';
+    const mapped = resolveEngineIssueCode(error);
+    if (mapped === 'health_timeout' || isTimeoutError(error)) return 'start_timeout';
+    return mapped;
   };
 
   private waitUntilHealthy = async (): Promise<void> => {
@@ -593,7 +712,7 @@ export class EngineSupervisor implements EngineRuntime {
   private startHealthLoop = (): void => {
     this.stopHealthLoop();
     this.healthTimer = setInterval(() => {
-      void this.healthTick().catch((error) => this.setLastError(error));
+      void this.healthTick().catch((error) => this.setIssueFromUnknown(error));
     }, this.healthIntervalMs);
     this.healthTimer.unref();
   };
@@ -613,16 +732,23 @@ export class EngineSupervisor implements EngineRuntime {
       const group = await this.rest.getGroup(NETWORK_PROXY_ENGINE_GROUP_NAME);
       const { proxies } = await this.collectProxyDetails(this.rest);
       const alive = group.all.filter((name) => memberAlive(proxies[name])).length;
+      const geodataIssue =
+        this.state.lastIssue && INFORMATIONAL_ISSUE_CODES.has(this.state.lastIssue.code)
+          ? this.state.lastIssue
+          : null;
       this.patchState({
         activeNode: group.now || null,
         aliveNodeCount: alive,
+        healAttempts: 0,
+        lastIssue: geodataIssue,
+        nextHealAt: null,
         state: alive > 0 ? 'running' : 'degraded',
       });
     } catch (error) {
       this.healthFailures += 1;
-      this.setLastError(error);
+      this.setIssue(isTimeoutError(error) ? 'health_timeout' : 'health_unreachable', error);
       if (this.healthFailures >= this.healthFailuresBeforeRestart) {
-        await this.restart().catch((restartError) => this.setLastError(restartError));
+        await this.restart().catch((restartError) => this.setIssueFromUnknown(restartError));
       }
     }
   };
@@ -651,18 +777,15 @@ export class EngineSupervisor implements EngineRuntime {
       const now = Date.now();
       this.crashTimes = this.crashTimes.filter((at) => now - at <= this.crashWindowMs);
       this.crashTimes.push(now);
-      this.setLastError(
-        new Error(`engine exited code=${code ?? 'null'} signal=${signal ?? 'null'}`),
+      const exitError = new Error(
+        `engine exited code=${code ?? 'null'} signal=${signal ?? 'null'}`,
       );
       if (this.crashTimes.length >= this.crashLimit) {
-        this.patchState({
-          ...idleEngineRuntimeState('error'),
-          appliedEngineGeneration: this.appliedEngineGeneration,
-          appliedRevision: this.appliedRevision,
-          lastError: this.state.lastError,
-        });
+        this.setIssue('crash_loop', exitError);
+        this.enterErrorState();
         return;
       }
+      this.setIssue('exited', exitError);
       this.backoffMs = Math.min(
         this.backoffMs * 2,
         NETWORK_PROXY_LIMITS.ENGINE_RESTART_BACKOFF_MAX_MS,
@@ -710,7 +833,7 @@ export class EngineSupervisor implements EngineRuntime {
         return;
       }
     } catch (error) {
-      this.setLastError(error);
+      this.setIssue('config_reload_failed', error);
     }
     await this.restartNow();
   };

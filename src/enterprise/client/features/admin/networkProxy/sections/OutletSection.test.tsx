@@ -111,6 +111,7 @@ const stubActions = (entries: Record<string, NetworkProxyEntry>): NetworkProxyAc
     dismissAll: vi.fn(),
     entryOf: (field: string) => entries[field],
     installArtifact: vi.fn(),
+    installGeodata: vi.fn(),
     isBusy: (field: string) => entries[field]?.status === 'pending',
     lastConnectivity: null,
     latestNodes: null,
@@ -130,14 +131,19 @@ const stubActions = (entries: Record<string, NetworkProxyEntry>): NetworkProxyAc
     },
   }) as unknown as NetworkProxyActions;
 
-const renderSection = (actions: NetworkProxyActions, view: NetworkProxyConfigView) =>
+const renderSection = (
+  actions: NetworkProxyActions,
+  view: NetworkProxyConfigView,
+  extra: { geodataReady?: boolean; onInstallGeodata?: () => void } = {},
+) =>
   render(
     <OutletSection
       canManage
-      geodataReady
       actions={actions}
       config={view}
+      geodataReady={extra.geodataReady ?? true}
       subscriptions={[]}
+      onInstallGeodata={extra.onInstallGeodata}
       onReloadNodes={vi.fn()}
     />,
   );
@@ -205,5 +211,40 @@ describe('OutletSection static proxy', () => {
     const actions = stubActions({ staticProxy: { status: 'success' } });
     renderSection(actions, config());
     expect(screen.queryByTestId('networkProxy.outlet.staticServerPlaceholder')).toBeNull();
+  });
+});
+
+describe('OutletSection smart routing', () => {
+  it('offers the install instead of a dead-end explanation when the rule data is missing', () => {
+    const onInstallGeodata = vi.fn();
+    renderSection(stubActions({}), config(), { geodataReady: false, onInstallGeodata });
+
+    expect(screen.getByText('networkProxy.outlet.geodataInstallHint')).toBeTruthy();
+    fireEvent.click(screen.getByText('networkProxy.outlet.geodataInstallAction'));
+    expect(onInstallGeodata).toHaveBeenCalledTimes(1);
+  });
+
+  it('says nothing about the rule data once smart routing can be chosen', () => {
+    renderSection(stubActions({}), config(), { onInstallGeodata: vi.fn() });
+    expect(screen.queryByText('networkProxy.outlet.geodataInstallHint')).toBeNull();
+    expect(screen.queryByText('networkProxy.outlet.geodataInstallAction')).toBeNull();
+  });
+
+  it('keeps a failed install visible next to the control it blocks', () => {
+    renderSection(
+      stubActions({
+        'install:geodata': {
+          detailKey: 'networkProxy.engineIssue.artifact_download_failed',
+          errorKey: 'networkProxy.errors.localFailed',
+          retry: vi.fn(),
+          status: 'error',
+        },
+      }),
+      config(),
+      { geodataReady: false, onInstallGeodata: vi.fn() },
+    );
+
+    expect(screen.getByText(/networkProxy\.engineIssue\.artifact_download_failed/)).toBeTruthy();
+    expect(screen.getByText('networkProxy.actions.retry')).toBeTruthy();
   });
 });

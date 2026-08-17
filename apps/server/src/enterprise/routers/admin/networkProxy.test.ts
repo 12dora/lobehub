@@ -84,8 +84,9 @@ const createRuntime = (overrides: Partial<NetworkProxyRuntime> = {}): NetworkPro
       engineState: 'running' as const,
       engineVersion: 'v1.19.30',
       fallbackCount: 0,
+      healing: null,
       instanceId: 'pinst_test',
-      lastError: null,
+      lastIssue: null,
       platform: 'linux',
       proxiedCount: 0,
     })),
@@ -467,7 +468,7 @@ describe('admin.networkProxy mutations', () => {
     const result = await caller.restartEngine({ expectedRevision: 1 });
     expect(runtime.bumpEngineGeneration).toHaveBeenCalled();
     expect(result.revision).toBe(2);
-    expect(result.local).toEqual({ error: 'Error', ok: false });
+    expect(result.local).toEqual({ error: 'unknown', ok: false });
   });
 
   it('does not 500 a committed restart when the follow-up audit insert fails', async () => {
@@ -537,5 +538,106 @@ describe('admin.networkProxy mutations', () => {
         PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
       );
     }
+  });
+});
+
+describe('admin.networkProxy.installGeodata', () => {
+  it('writes both desired artifacts once, then installs geoip then geosite', async () => {
+    const runtime = createRuntime();
+    setNetworkProxyRuntimeForTests(runtime);
+    const caller = await callerFor();
+    const result = await caller.installGeodata({ expectedRevision: 1 });
+
+    expect(runtime.setDesiredArtifacts).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        geoip: expect.objectContaining({ commit: expect.any(String) }),
+        geosite: expect.objectContaining({ commit: expect.any(String) }),
+      }),
+      expect.objectContaining({ expectedRevision: 1 }),
+    );
+    expect(runtime.publishNetworkProxyInvalidation).toHaveBeenCalledWith(2);
+    expect(runtime.artifactManager.installFromDownload).toHaveBeenNthCalledWith(1, 'geoip', {
+      proxyUrl: null,
+    });
+    expect(runtime.artifactManager.installFromDownload).toHaveBeenNthCalledWith(2, 'geosite', {
+      proxyUrl: null,
+    });
+    expect(result.local).toEqual({ error: null, ok: true });
+    expect(result.results).toEqual([
+      { error: null, kind: 'geoip', ok: true },
+      { error: null, kind: 'geosite', ok: true },
+    ]);
+    expect(appendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'network_proxy.geodata.install',
+        afterDiff: expect.objectContaining({
+          kinds: ['geoip', 'geosite'],
+          source: 'download',
+        }),
+        result: 'success',
+        targetId: 'geodata',
+      }),
+    );
+  });
+
+  it('maps a CAS conflict on the merged desired-artifacts write', async () => {
+    setNetworkProxyRuntimeForTests(
+      createRuntime({
+        setDesiredArtifacts: vi.fn(async () => {
+          throw new PlatformRevisionConflictError('conflict', {
+            currentRevision: 9,
+            expectedRevision: 1,
+          });
+        }),
+      }),
+    );
+    const caller = await callerFor();
+    try {
+      await caller.installGeodata({ expectedRevision: 1 });
+      expect.fail('should throw');
+    } catch (error) {
+      expect(getEnterpriseErrorBody(error)?.code).toBe(
+        PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+      );
+    }
+  });
+
+  it('keeps the write and aggregates a partial local failure', async () => {
+    const runtime = createRuntime();
+    runtime.artifactManager.installFromDownload = vi.fn(async (kind) => {
+      if (kind === 'geoip') throw Object.assign(new Error('geoip failed'), { name: 'Error' });
+      return { sha256: 'def', version: 'c1' };
+    });
+    setNetworkProxyRuntimeForTests(runtime);
+    const caller = await callerFor();
+    const result = await caller.installGeodata({ expectedRevision: 1 });
+
+    expect(runtime.setDesiredArtifacts).toHaveBeenCalled();
+    expect(runtime.artifactManager.installFromDownload).toHaveBeenCalledTimes(2);
+    expect(result.revision).toBe(2);
+    expect(result.local.ok).toBe(false);
+    expect(result.local.error).toEqual(expect.any(String));
+    expect(result.results).toEqual([
+      { error: expect.any(String), kind: 'geoip', ok: false },
+      { error: null, kind: 'geosite', ok: true },
+    ]);
+    expect(result.local.error).toBe(result.results[0]?.error);
+  });
+
+  it('requires recent reauth and audits the denial', async () => {
+    const caller = await callerFor('staleReauthSuper');
+    try {
+      await caller.installGeodata({ expectedRevision: 1 });
+      expect.fail('should throw');
+    } catch (error) {
+      expect(getEnterpriseErrorBody(error)?.code).toBe('ADMIN_REAUTH_REQUIRED');
+    }
+    expect(appendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'network_proxy.geodata.install',
+        result: 'denied',
+      }),
+    );
   });
 });

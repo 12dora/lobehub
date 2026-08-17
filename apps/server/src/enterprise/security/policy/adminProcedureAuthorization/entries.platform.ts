@@ -123,6 +123,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.networkProxy.installGeodata',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
     kind: 'query',
     path: 'admin.networkProxy.listNodes',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_READ] },

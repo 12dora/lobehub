@@ -46,9 +46,10 @@ const FieldStatus = memo<FieldStatusProps>(({ actions, field, pendingLabel, succ
   return (
     <div className={styles.inlineActions} role="alert">
       <Text style={{ fontSize: 12 }} type={conflict ? 'warning' : 'danger'}>
-        {/* Prefer the server's own (already redacted) reason — it names the real cause;
-            `errorKey` is the fallback when the failure has no message of its own. */}
-        {entry.errorText ?? t((entry.errorKey ?? 'networkProxy.errors.generic') as never)}
+        {t((entry.errorKey ?? 'networkProxy.errors.generic') as never)}
+        {/* The engine's own reason, translated from the issue code it reported — the raw text
+            behind that code never reaches the panel. */}
+        {entry.detailKey ? ` ${t(entry.detailKey as never)}` : ''}
       </Text>
       {entry.retry ? (
         <Button size="small" onClick={() => void actions.retry(field)}>

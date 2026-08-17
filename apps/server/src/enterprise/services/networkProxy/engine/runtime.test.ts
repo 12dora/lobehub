@@ -12,6 +12,9 @@ describe('getEngineRuntime', () => {
     const runtime = getEngineRuntime();
     const state = runtime.getState();
     expect(['unsupported', 'not_installed', 'stopped']).toContain(state.state);
+    expect(state.lastIssue).toBeNull();
+    expect(state.healAttempts).toBe(0);
+    expect(state.nextHealAt).toBeNull();
     expect(runtime.getLogs()).toEqual([]);
   });
 });

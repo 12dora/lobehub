@@ -4,6 +4,8 @@ import {
   createDefaultNetworkProxyConfig,
   egressScopeIdSchema,
   egressScopeOpSchema,
+  engineIssueSchema,
+  instanceStatusViewSchema,
   networkProxyConfigSchema,
   networkProxyConfigUpdateSchema,
   normalizeNetworkProxyConfig,
@@ -112,5 +114,41 @@ describe('networkProxy types', () => {
         payload: 'ss://abc',
       }).success,
     ).toBe(true);
+  });
+
+  it('engineIssueSchema is strict and instance status uses lastIssue + healing', () => {
+    const issue = {
+      at: '2026-08-17T00:00:00.000Z',
+      code: 'health_timeout' as const,
+      detail: 'aborted',
+    };
+    expect(engineIssueSchema.parse(issue)).toEqual(issue);
+    expect(engineIssueSchema.safeParse({ ...issue, extra: 1 }).success).toBe(false);
+    expect(engineIssueSchema.safeParse({ ...issue, code: 'TimeoutError' }).success).toBe(false);
+    expect(engineIssueSchema.safeParse({ ...issue, detail: 'x'.repeat(201) }).success).toBe(false);
+
+    const view = {
+      activeNode: null,
+      aliveNodeCount: 0,
+      appliedRevision: 1,
+      arch: 'arm64',
+      artifacts: [],
+      engineState: 'error' as const,
+      engineVersion: null,
+      fallbackCount: 0,
+      healing: { attempt: 1, nextAttemptAt: '2026-08-17T00:00:30.000Z' },
+      instanceId: 'pinst_a',
+      isCurrent: true,
+      lastHeartbeatAt: '2026-08-17T00:00:00.000Z',
+      lastIssue: issue,
+      platform: 'darwin',
+      proxiedCount: 0,
+      updatedAt: '2026-08-17T00:00:00.000Z',
+    };
+    expect(instanceStatusViewSchema.parse(view)).toEqual(view);
+    expect(instanceStatusViewSchema.safeParse({ ...view, lastError: 'x' }).success).toBe(false);
+    expect(instanceStatusViewSchema.safeParse({ ...view, lastIssue: undefined }).success).toBe(
+      false,
+    );
   });
 });

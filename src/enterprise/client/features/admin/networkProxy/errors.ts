@@ -1,3 +1,4 @@
+import { NETWORK_PROXY_ENGINE_ISSUE_CODES } from '@/const/platform/networkProxy';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 
 export const NETWORK_PROXY_GENERIC_ERROR_KEY = 'networkProxy.errors.generic';
@@ -9,14 +10,29 @@ export const NETWORK_PROXY_GENERIC_ERROR_KEY = 'networkProxy.errors.generic';
  * pretending the whole operation failed would be as wrong as pretending it succeeded.
  */
 export class NetworkProxyLocalError extends Error {
-  readonly localError: string | null;
+  /** An engine issue code (contract I2), never a raw server message. */
+  readonly issueCode: string | null;
 
-  constructor(localError: string | null) {
-    super(localError ?? 'NETWORK_PROXY_LOCAL_FAILED');
-    this.localError = localError;
+  constructor(issueCode: string | null) {
+    super(issueCode ?? 'NETWORK_PROXY_LOCAL_FAILED');
+    this.issueCode = issueCode;
     this.name = 'NetworkProxyLocalError';
   }
 }
+
+const ISSUE_CODES: readonly string[] = NETWORK_PROXY_ENGINE_ISSUE_CODES;
+
+/**
+ * `admin`-namespace key for one engine issue code.
+ *
+ * The engine reports a code, never prose: anything the server could not classify — and anything
+ * this build does not know yet — reads as the generic "check the logs" line rather than leaking
+ * a raw exception into the panel.
+ */
+export const networkProxyIssueKey = (code: string | null | undefined): string =>
+  code && ISSUE_CODES.includes(code)
+    ? `networkProxy.engineIssue.${code}`
+    : 'networkProxy.engineIssue.unknown';
 
 /** Losing a CAS race is a normal outcome here — two admins on one settings row. */
 export const isRevisionConflict = (error: unknown): boolean =>

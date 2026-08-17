@@ -45,19 +45,21 @@ describe('FieldStatus', () => {
     expect(container.textContent).toBe('');
   });
 
-  it("shows the server's own reason in preference to the generic key", () => {
+  it("names the engine's own reason under the failure, translated from its issue code", () => {
     setup({
+      detailKey: 'networkProxy.engineIssue.spawn_failed',
       errorKey: 'networkProxy.errors.localFailed',
-      errorText: 'spawn failed: exit 1',
       status: 'error',
     });
-    expect(screen.getByText('spawn failed: exit 1')).toBeTruthy();
-    expect(screen.queryByText('networkProxy.errors.localFailed')).toBeNull();
+    // Both lines, and no raw server text anywhere.
+    expect(screen.getByText(/networkProxy\.errors\.localFailed/)).toBeTruthy();
+    expect(screen.getByText(/networkProxy\.engineIssue\.spawn_failed/)).toBeTruthy();
   });
 
-  it('falls back to the translated key when the failure carries no message', () => {
+  it('says only what it knows when the failure carries no issue code', () => {
     setup({ errorKey: 'networkProxy.errors.localFailed', status: 'error' });
     expect(screen.getByText('networkProxy.errors.localFailed')).toBeTruthy();
+    expect(screen.queryByText(/networkProxy\.engineIssue\./)).toBeNull();
   });
 
   it('offers Retry and Discard, and calls them for this field', () => {

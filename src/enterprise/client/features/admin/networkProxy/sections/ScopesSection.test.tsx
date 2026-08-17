@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { TableColumnsType } from 'antd';
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -24,6 +25,7 @@ vi.mock('@lobehub/ui', () => ({
       {action}
     </div>
   ),
+  Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 
@@ -46,13 +48,56 @@ vi.mock('@lobehub/ui/base-ui', () => ({
   Switch: () => <span />,
 }));
 
+/**
+ * The provider table's columns and `onChange` are the contract under test, so the mock exposes
+ * both: column keys as a data attribute, and a button that replays an antd filter payload.
+ */
 vi.mock('../../primitives/DataTable', () => ({
-  default: ({ dataSource }: { dataSource?: { id?: string; key?: string }[] }) => (
-    <div data-testid="table">{(dataSource ?? []).map((row) => row.id ?? row.key).join(',')}</div>
+  default: ({
+    columns,
+    dataSource,
+    onChange,
+  }: {
+    columns?: TableColumnsType<{ id?: string; key?: string }>;
+    dataSource?: { id?: string; key?: string }[];
+    onChange?: (meta: { filters: Record<string, string[] | null> }) => void;
+  }) => (
+    <div data-testid="table">
+      <span data-testid="columns">
+        {(columns ?? []).map((column) => String(column.key ?? '')).join(',')}
+      </span>
+      <span data-testid="rows">{(dataSource ?? []).map((row) => row.id ?? row.key).join(',')}</span>
+      {(dataSource ?? []).map((row, index) => (
+        <div data-testid="cells" key={row.id ?? row.key}>
+          {(columns ?? []).map((column) => (
+            <span key={String(column.key ?? '')}>
+              {'render' in column && column.render
+                ? (column.render(undefined, row, index) as ReactNode)
+                : null}
+            </span>
+          ))}
+        </div>
+      ))}
+      <button
+        data-testid="filter-enabled"
+        type="button"
+        onClick={() => onChange?.({ filters: { status: ['enabled'] } })}
+      />
+      <button
+        data-testid="filter-clear"
+        type="button"
+        onClick={() => onChange?.({ filters: { status: null } })}
+      />
+    </div>
   ),
 }));
 
-vi.mock('../../primitives/columnFilters', () => ({ searchColumnFilter: () => ({}) }));
+vi.mock('../../primitives/columnFilters', () => ({
+  enumColumnFilter: () => ({}),
+  firstColumnFilterValue: (value: string[] | null | undefined) =>
+    Array.isArray(value) ? (value[0] ?? undefined) : undefined,
+  searchColumnFilter: () => ({}),
+}));
 vi.mock('../FieldStatus', () => ({ default: () => null }));
 
 const config = (
@@ -147,7 +192,7 @@ describe('ScopesSection', () => {
       config: config({ legacy: { enabled: true, onUnavailable: 'direct' } }),
       providerIds: ['openai', 'legacy'],
     });
-    expect(screen.getAllByTestId('table')[0]!.textContent).toBe('openai,legacy');
+    expect(screen.getAllByTestId('rows')[0]!.textContent).toBe('openai,legacy');
   });
 
   it('disables provider bulk operations and says why when the catalog failed to load', () => {
@@ -160,5 +205,51 @@ describe('ScopesSection', () => {
   it('disables every bulk control for a read-only admin', () => {
     renderSection({ canManage: false });
     expect((screen.getByTestId('providers-enable-all') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('lists providers enabled in the AI catalogue before the ones that are not', () => {
+    renderSection({
+      providerIds: ['off', 'on'],
+      providers: [
+        { enabled: false, id: 'off', name: 'Off' },
+        { enabled: true, id: 'on', name: 'On' },
+      ],
+    });
+    expect(screen.getAllByTestId('rows')[0]!.textContent).toBe('on,off');
+  });
+
+  it('filters the provider table by catalogue status, and clearing the filter restores it', () => {
+    renderSection({
+      providerIds: ['off', 'on'],
+      providers: [
+        { enabled: false, id: 'off', name: 'Off' },
+        { enabled: true, id: 'on', name: 'On' },
+      ],
+    });
+
+    fireEvent.click(screen.getAllByTestId('filter-enabled')[0]!);
+    expect(screen.getAllByTestId('rows')[0]!.textContent).toBe('on');
+
+    fireEvent.click(screen.getAllByTestId('filter-clear')[0]!);
+    expect(screen.getAllByTestId('rows')[0]!.textContent).toBe('on,off');
+  });
+
+  it('replaces the note column with a status column', () => {
+    renderSection();
+    const columns = screen.getAllByTestId('columns')[0]!.textContent;
+    expect(columns).toContain('status');
+    expect(columns).not.toContain('note');
+  });
+
+  it('keeps the delisted caveat next to the provider name and tags it as not enabled', () => {
+    renderSection({
+      config: config({ legacy: { enabled: true, onUnavailable: 'direct' } }),
+      providerIds: ['openai', 'legacy'],
+    });
+    const legacyRow = screen.getAllByTestId('cells')[1]!.textContent ?? '';
+    expect(legacyRow).toContain('networkProxy.scopes.notes.providerDelisted');
+    expect(legacyRow).toContain('networkProxy.scopes.status.disabled');
+    // The 状态 column replaced this note; a disabled tag already says it.
+    expect(legacyRow).not.toContain('networkProxy.scopes.notes.providerDisabled');
   });
 });
