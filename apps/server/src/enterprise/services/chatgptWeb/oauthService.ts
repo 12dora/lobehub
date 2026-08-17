@@ -1,9 +1,6 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
-import {
-  isChatGPTWebSessionToken,
-  isChatGPTWebSessionTokenSafe,
-} from '@lobechat/utils/chatgptWebPaste';
+import { isChatGPTWebSessionToken } from '@lobechat/utils/chatgptWebPaste';
 import debug from 'debug';
 
 import {
@@ -21,7 +18,44 @@ import {
 } from '@/server/services/oauthDeviceFlow/providers/chatGPT';
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
+import { ChatGPTWebOAuthError } from './oauthErrors';
+import {
+  base64url,
+  CHATGPT_WEB_ENVELOPE_TTL_MS,
+  type ChatGPTWebPasteEnvelope,
+  createDottedState,
+  createPkcePair,
+  parseCallbackInput,
+  parsePasteEnvelope,
+} from './pasteEnvelope';
+import { readRotatedSessionToken } from './sessionCookie';
+import {
+  ChatGPTWebSessionRetryableError,
+  classifySessionStatus,
+  isRetryableSessionStatus,
+  SESSION_RETRY_DELAYS_MS,
+  SESSION_RETRY_JITTER,
+  sleepWithinBudget,
+} from './sessionRetry';
+import {
+  assertSessionTokenShape,
+  CHATGPT_BASE,
+  isUsableSessionToken,
+  SEC_CH_UA,
+  USER_AGENT,
+  webSessionHeaders,
+} from './sessionToken';
 import { getChatGPTWebFetch, isChatGPTWebTransportUnavailableError } from './transport';
+
+export { ChatGPTWebOAuthError, type ChatGPTWebOAuthErrorCode } from './oauthErrors';
+export {
+  CHATGPT_WEB_ENVELOPE_TTL_MS,
+  type ChatGPTWebPasteEnvelope,
+  createPkcePair,
+  parseCallbackInput,
+  type ParsedCallbackInput,
+  parsePasteEnvelope,
+} from './pasteEnvelope';
 
 /**
  * ChatGPT Web connect flow: OAuth authorization code + PKCE where the user signs in in
@@ -37,7 +71,6 @@ import { getChatGPTWebFetch, isChatGPTWebTransportUnavailableError } from './tra
 const log = debug('lobe-server:chatgpt-web-oauth');
 
 const AUTH0_CLIENT = 'eyJuYW1lIjoiYXV0aDAtc3BhLWpzIiwidmVyc2lvbiI6IjEuMjEuMCJ9';
-const CHATGPT_BASE = 'https://chatgpt.com';
 const ACCOUNTS_CHECK_PATH = '/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=0';
 const ME_PATH = '/backend-api/me';
 /**
@@ -45,17 +78,7 @@ const ME_PATH = '/backend-api/me';
  * browser session — the reason the web app never asks anyone to sign in twice.
  */
 const SESSION_PATH = '/api/auth/session';
-/** next-auth session cookie; the renewal credential of the web-session connect path. */
-const SESSION_COOKIE_NAME = '__Secure-next-auth.session-token';
 
-/** Coherent with the transport's `chrome136` impersonation profile. */
-const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
-const SEC_CH_UA = '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"';
-
-/** The pasted authorization code is single-use and short-lived; so is the envelope. */
-export const CHATGPT_WEB_ENVELOPE_TTL_MS = 10 * 60 * 1000;
-const MAX_CALLBACK_LENGTH = 4096;
 const TOKEN_REQUEST_TIMEOUT_MS = 60_000;
 /**
  * Refresh deadline. MUST stay below the shared refresh lease (`LEASE_SECONDS = 30` in
@@ -93,104 +116,6 @@ const SESSION_ATTEMPT_TIMEOUT_MS = 8000;
 /** Total attempts (not retries). Connect is user-visible; refresh gets another chance later. */
 const SESSION_CONNECT_ATTEMPTS = 4;
 const SESSION_REFRESH_ATTEMPTS = 3;
-/** Backoff before attempts 2, 3, 4. Short: the challenge clears on the next call, not in a minute. */
-const SESSION_RETRY_DELAYS_MS = [400, 900, 1600];
-/** Up to +30 %, so a fleet of instances retrying at once does not resonate. */
-const SESSION_RETRY_JITTER = 0.3;
-
-/** Why an attempt failed — for the debug log only. Never carries response content. */
-type SessionFailureClass = 'challenge' | 'forbidden' | 'network' | 'rate_limit' | 'server_error';
-
-/**
- * An attempt that failed in a way the NEXT attempt could plausibly survive. Deliberately a
- * distinct class rather than a flag: the retry loop must not swallow a terminal outcome
- * (a dead session) or an operator problem (missing transport binary) by mistake.
- *
- * The message is composed locally from the status/error class only — provider prose never
- * crosses this boundary — so it stays safe to surface and to log.
- */
-class ChatGPTWebSessionRetryableError extends Error {
-  /**
-   * A rotation the failed attempt had ALREADY received. next-auth invalidates the presented
-   * value the moment it rotates, so a later attempt must present this one instead — retrying
-   * the value the upstream just replaced would turn a transient failure into a dead session.
-   */
-  readonly rotatedSessionToken?: string;
-
-  constructor(
-    readonly classification: SessionFailureClass,
-    message: string,
-    options?: { cause?: unknown; rotatedSessionToken?: string },
-  ) {
-    super(message, options);
-    this.name = 'ChatGPTWebSessionRetryableError';
-    this.rotatedSessionToken = options?.rotatedSessionToken;
-  }
-}
-
-/**
- * Statuses worth another call: the Cloudflare challenge, an explicit rate limit, the
- * "retry this request" 4xx pair, and every server-side failure. Anything else is still
- * transient for the caller (it never marks the session dead) but retrying it is pointless.
- */
-const isRetryableSessionStatus = (status: number): boolean =>
-  status === 403 || status === 408 || status === 425 || status === 429 || status >= 500;
-
-const classifySessionStatus = (response: Response): SessionFailureClass => {
-  if (response.status === 429) return 'rate_limit';
-  if (response.status >= 500) return 'server_error';
-  // Cloudflare marks its own interception; a bare 403 is something else entirely.
-  return response.headers.get('cf-mitigated') === 'challenge' ? 'challenge' : 'forbidden';
-};
-
-/** Backoff that gives up the moment the overall budget is spent, instead of overrunning it. */
-const sleepWithinBudget = (ms: number, signal: AbortSignal): Promise<void> =>
-  new Promise<void>((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-
-export type ChatGPTWebOAuthErrorCode =
-  | 'access_token_invalid'
-  | 'exchange_failed'
-  | 'expired'
-  | 'invalid_callback'
-  /** The pasted web session is expired/revoked — chatgpt.com mints no token for it. */
-  | 'session_invalid'
-  | 'state_mismatch'
-  /** The token works, but belongs to a client without chatgpt.com web permission. */
-  | 'token_not_web';
-
-/** Stable machine-readable outcome; the message is never shown to a client. */
-export class ChatGPTWebOAuthError extends Error {
-  constructor(
-    readonly code: ChatGPTWebOAuthErrorCode,
-    message?: string,
-  ) {
-    super(message ?? code);
-    this.name = 'ChatGPTWebOAuthError';
-  }
-}
-
-/** Client-held pending-authorization state. Never persisted, never logged. */
-export interface ChatGPTWebPasteEnvelope {
-  createdAt: number;
-  deviceId: string;
-  state: string;
-  v: 1;
-  verifier: string;
-}
 
 /**
  * Which credential the stored connection renews itself WITH — the provider-local name of the
@@ -269,17 +194,6 @@ export interface ChatGPTWebOAuthServiceOptions {
   transportFetch?: typeof fetch;
 }
 
-const base64url = (bytes: Buffer): string => bytes.toString('base64url');
-
-/**
- * `<a>.<b>` — the shape the real client uses (E2 §1.3), where the first half identifies
- * the pending session. We hold no server-side session (the envelope does), so BOTH halves
- * are random: the value stays opaque and unguessable, and it is still recognisable to
- * OpenAI's own request logging as a well-formed state.
- */
-const createDottedState = (): string =>
-  `${randomBytes(16).toString('hex')}.${base64url(randomBytes(16))}`;
-
 /**
  * Email claim, in the order the provider actually populates it:
  * the OIDC `email` on the id_token, then the namespaced profile claim the ACCESS token
@@ -310,110 +224,6 @@ export const extractChatGPTWebEmail = (
   }
 
   return undefined;
-};
-
-export const createPkcePair = (): { challenge: string; verifier: string } => {
-  const verifier = base64url(randomBytes(64));
-  const challenge = base64url(createHash('sha256').update(verifier, 'ascii').digest());
-  return { challenge, verifier };
-};
-
-/** `randomUUID()` output, which is what {@link ChatGPTWebOAuthService.initiateDeviceCode} mints. */
-const UUID_V4 = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
-/** RFC 7636 §4.1 code_verifier charset; ours is a 64-byte base64url string (86 chars). */
-const PKCE_VERIFIER = /^[\w.~-]{43,128}$/;
-/** `<a>.<b>`, both halves non-empty — the dotted shape `createDottedState` produces. */
-const DOTTED_STATE = /^[\w-]+\.[\w-]+$/;
-/**
- * A client clock running ahead is normal; an envelope minted in the FUTURE beyond this is
- * not something this server ever issued.
- */
-const ENVELOPE_FUTURE_SKEW_MS = 60_000;
-
-/**
- * Parse and VALIDATE the client-held envelope.
- *
- * Shape checks are not enough: the envelope comes back from the client, and every field is
- * used for something load-bearing — the verifier IS the PKCE proof, the state is the CSRF
- * binding, and the device id is persisted and then sent as `oai-device-id` on every later
- * request (an empty or foreign one silently breaks the sentinel handshake). So each field
- * is checked against exactly the shape this service generates; anything else is a
- * fabricated envelope, not a usable one.
- */
-export const parsePasteEnvelope = (deviceCode: string): ChatGPTWebPasteEnvelope => {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(deviceCode);
-  } catch {
-    throw new ChatGPTWebOAuthError('invalid_callback', 'malformed authorization envelope');
-  }
-
-  const envelope = parsed as Partial<ChatGPTWebPasteEnvelope>;
-  if (
-    envelope?.v !== 1 ||
-    typeof envelope.verifier !== 'string' ||
-    typeof envelope.state !== 'string' ||
-    typeof envelope.deviceId !== 'string' ||
-    typeof envelope.createdAt !== 'number' ||
-    !Number.isFinite(envelope.createdAt) ||
-    !PKCE_VERIFIER.test(envelope.verifier) ||
-    !DOTTED_STATE.test(envelope.state) ||
-    !UUID_V4.test(envelope.deviceId)
-  ) {
-    throw new ChatGPTWebOAuthError('invalid_callback', 'malformed authorization envelope');
-  }
-
-  // A far-future timestamp would make the TTL below unbounded — it is a malformed envelope,
-  // not an expired one.
-  if (envelope.createdAt - Date.now() > ENVELOPE_FUTURE_SKEW_MS) {
-    throw new ChatGPTWebOAuthError('invalid_callback', 'malformed authorization envelope');
-  }
-
-  if (Date.now() - envelope.createdAt > CHATGPT_WEB_ENVELOPE_TTL_MS) {
-    throw new ChatGPTWebOAuthError('expired');
-  }
-
-  return envelope as ChatGPTWebPasteEnvelope;
-};
-
-export interface ParsedCallbackInput {
-  code: string;
-  /** True when the user pasted the redirect URL rather than a bare code. */
-  fromUrl: boolean;
-  state?: string;
-}
-
-/**
- * The user may paste the whole redirect URL or just the `code` query value.
- *
- * A pasted URL ALWAYS carries the state the authorization server echoed back, so a URL
- * without one is not a CSRF-safe input — it is a hand-edited or forged callback and is
- * rejected by {@link ChatGPTWebOAuthService.exchangeCallback}. A bare code carries no
- * state by construction and is bound instead by the single-use PKCE verifier + the
- * envelope's 10-minute TTL.
- */
-export const parseCallbackInput = (input: string): ParsedCallbackInput => {
-  const trimmed = input.trim();
-  if (!trimmed || trimmed.length > MAX_CALLBACK_LENGTH) {
-    throw new ChatGPTWebOAuthError('invalid_callback');
-  }
-
-  if (/^https?:\/\//i.test(trimmed)) {
-    let url: URL;
-    try {
-      url = new URL(trimmed);
-    } catch {
-      throw new ChatGPTWebOAuthError('invalid_callback');
-    }
-    const code = url.searchParams.get('code');
-    if (!code) throw new ChatGPTWebOAuthError('invalid_callback');
-    const state = url.searchParams.get('state');
-    return { code, fromUrl: true, ...(state ? { state } : {}) };
-  }
-
-  // A bare code never contains whitespace or a query separator.
-  if (/[\s&?#]/.test(trimmed)) throw new ChatGPTWebOAuthError('invalid_callback');
-  return { code: trimmed, fromUrl: false };
 };
 
 /**
@@ -455,170 +265,6 @@ const sessionHeaders = (accessToken: string, deviceId: string): Record<string, s
   'sec-ch-ua-mobile': '?0',
   'user-agent': USER_AGENT,
 });
-
-/**
- * Upper bound on a session token we are willing to hold. next-auth chunks a large session
- * across several cookies, so the assembled value is legitimately long — but it is stored in
- * the credential vault and re-sent on every renewal, so an upstream (or a hostile response)
- * must not be able to grow it without limit. Matches the routers' input bound.
- */
-const MAX_SESSION_TOKEN_LENGTH = 16_384;
-
-/**
- * The device id charset. It is interpolated into the same `Cookie` header as the session, and
- * unlike the connect paths (which mint a uuid v4 or validate the envelope's) a REFRESH reads
- * it from durable state — which an admin credential edit can write. `oai-did` values are
- * uuids; anything outside this charset is dropped rather than sent, because the device id is
- * a best-effort nicety and failing a renewal over it would be worse.
- */
-const DEVICE_ID_CHARSET = /^[\w-]{1,128}$/;
-
-/**
- * The one place a session token is admitted into this service.
- *
- * It ends up interpolated into a `Cookie:` request header, so a value carrying `;`, `,`, `=`,
- * whitespace or a control character would let whoever supplied it append or overwrite
- * cookies. Enforced on EVERY entry point — the pasted connect value, the credential a refresh
- * spends, and any rotated value the upstream hands back — because each of them is data from
- * outside this process.
- */
-const isUsableSessionToken = (value: string): boolean =>
-  Boolean(value) &&
-  value.length <= MAX_SESSION_TOKEN_LENGTH &&
-  isChatGPTWebSessionTokenSafe(value) &&
-  // A value consisting only of separators is well-formed for the charset and useless here.
-  /[\w-]/.test(value);
-
-const assertSessionTokenShape = (value: string): void => {
-  if (!isUsableSessionToken(value)) {
-    throw new ChatGPTWebOAuthError('session_invalid', 'malformed web session token');
-  }
-};
-
-/**
- * The web app's own request to `/api/auth/session`: the session travels as a COOKIE (which
- * is what it is in a browser), alongside the stable device id when we have one.
- *
- * Both values are validated before they reach this string: a cookie header is a delimiter
- * format, and everything interpolated into it comes from outside this process.
- */
-const webSessionHeaders = (sessionToken: string, deviceId?: string): Record<string, string> => {
-  assertSessionTokenShape(sessionToken);
-  const safeDeviceId = deviceId && DEVICE_ID_CHARSET.test(deviceId) ? deviceId : undefined;
-
-  return {
-    'accept': 'application/json',
-    'accept-language': 'en-US,en;q=0.9',
-    'cookie': [
-      ...(safeDeviceId ? [`oai-did=${safeDeviceId}`] : []),
-      `${SESSION_COOKIE_NAME}=${sessionToken}`,
-    ].join('; '),
-    'referer': `${CHATGPT_BASE}/`,
-    'sec-ch-ua': SEC_CH_UA,
-    'sec-ch-ua-mobile': '?0',
-    'user-agent': USER_AGENT,
-  };
-};
-
-/**
- * `__Secure-next-auth.session-token=<value>`, or its chunked form `…session-token.<n>=<value>`.
- * Global: ONE `Set-Cookie` entry can only carry one cookie, but the combined-header fallback
- * carries several, and next-auth emits every chunk of a rotation at once.
- */
-const SESSION_SET_COOKIE = /__Secure-next-auth\.session-token(?:\.(\d+))?=([^\s,;]*)/g;
-
-/** next-auth deletes a stale chunk with an empty value and/or an immediate expiry. */
-const COOKIE_DELETION = /(?:^|;)\s*(?:max-age\s*=\s*0|expires\s*=\s*Thu,\s*01\s*Jan\s*1970)/i;
-
-/** Some copy/serve paths percent-encode the cookie value; a next-auth JWE never contains `%`. */
-const decodeCookieValue = (value: string): string => {
-  if (!value.includes('%')) return value;
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-};
-
-/**
- * next-auth rotates the session cookie as it is used, and a rotation invalidates the value we
- * presented — so a missed (or half-read) `Set-Cookie` strands the connection at the next
- * renewal.
- *
- * The load-bearing case is CHUNKING. A session that outgrows one cookie is emitted as
- * `…session-token.0`, `.1`, … and reading only the first chunk would persist a truncated
- * value that is not a session at all, while the value we presented has already been consumed
- * upstream — an unrecoverable connection with no error to see it by. So every entry is read,
- * the chunks are re-assembled in index order, and a set that is not CONTIGUOUS FROM 0 is
- * discarded outright: keeping the presented token merely risks a 401 that the reconnect path
- * already handles, whereas persisting a partial join guarantees a dead credential.
- *
- * `getSetCookie()` is the correct source (several `Set-Cookie` headers are not joinable),
- * with the combined header as a fallback for runtimes that lack it — hence the name-anchored
- * sweep rather than splitting on commas, which is unsafe (`Expires=Wed, 01 Jan`).
- *
- * The value is returned to the caller and NEVER logged.
- */
-const readRotatedSessionToken = (response: Response): string | undefined => {
-  const raw =
-    typeof response.headers.getSetCookie === 'function'
-      ? response.headers.getSetCookie()
-      : [response.headers.get('set-cookie') ?? ''];
-
-  const chunks = new Map<number, string>();
-  let plain: string | undefined;
-
-  for (const entry of raw) {
-    if (!entry) continue;
-    // A cleanup header carries the OLD name with no value — it says "this chunk is gone",
-    // which must not be mistaken for a rotation to an empty (or truncated) value.
-    const deleting = COOKIE_DELETION.test(entry);
-    SESSION_SET_COOKIE.lastIndex = 0;
-    for (
-      let match = SESSION_SET_COOKIE.exec(entry);
-      match;
-      match = SESSION_SET_COOKIE.exec(entry)
-    ) {
-      const [, chunkIndex, rawValue] = match;
-      const value = decodeCookieValue(rawValue);
-      if (chunkIndex === undefined) {
-        // next-auth clears the plain cookie by setting it empty; that is a rotation to
-        // NOTHING, and keeping the presented token is the only usable answer.
-        if (!deleting && value) plain = value;
-        continue;
-      }
-      // A chunked rotation supersedes the plain cookie in the same response (next-auth
-      // clears the one it is not using), so the assembled chunks win below.
-      if (deleting || !value) chunks.delete(Number(chunkIndex));
-      else chunks.set(Number(chunkIndex), value);
-    }
-  }
-
-  if (chunks.size > 0) {
-    // Contiguous from 0 by construction: a gap stops the walk short of `chunks.size`.
-    const parts: string[] = [];
-    for (let index = 0; index < chunks.size; index += 1) {
-      const part = chunks.get(index);
-      if (part === undefined) break;
-      parts.push(part);
-    }
-    const joined = parts.join('');
-    // A rotated value is about to be PERSISTED and later interpolated into a Cookie header,
-    // so it is held to the same boundary rule as a pasted one: the upstream is no more
-    // trusted than the operator here.
-    if (parts.length === chunks.size && isUsableSessionToken(joined)) return joined;
-    // Count only — never the values, not even a fragment of one.
-    log('discarding an unusable rotated session cookie (%d chunk(s))', chunks.size);
-    return undefined;
-  }
-
-  if (!plain) return undefined;
-  if (!isUsableSessionToken(plain)) {
-    log('discarding a rotated session cookie that is not a usable cookie value');
-    return undefined;
-  }
-  return plain;
-};
 
 interface WebSessionMint {
   accessToken: string;
@@ -1020,53 +666,69 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
       (isChatGPTWebSessionToken(refreshToken) ? 'web_session' : ('oauth' as const));
 
     if (renewalKind === 'web_session') {
-      /**
-       * The stored credential is durable state that reaches a Cookie header, so it is held to
-       * the same boundary rule as a pasted one. `invalid_grant` (not a transient error) is the
-       * right outcome: it makes the pipeline re-read durable state — a concurrent reconnect
-       * may have replaced this leaf — and otherwise ends in the actionable "reconnect this
-       * provider", which is exactly what an unusable stored credential needs.
-       */
-      if (!isUsableSessionToken(refreshToken)) {
-        throw new OAuthInvalidGrantError('stored web session credential is malformed');
-      }
-
-      const minted = await this.mintFromWebSession({
-        /**
-         * One fewer attempt than connect: this whole call has to finish inside the caller's
-         * bound (20 s, below the 30 s shared refresh lease), and an exhausted renewal is not
-         * fatal — the 5-minute backoff retries it long before the 24 h window closes.
-         */
-        attempts: SESSION_REFRESH_ATTEMPTS,
-        /**
-         * The device this connection was made with (`oauthDeviceId`), carried by the refresh
-         * pipeline. Connect presents `oai-did`; a renewal that omitted it looked like a
-         * brand-new device on every call — to a host whose bot filter is the main reason this
-         * path needs an impersonating transport at all.
-         */
-        ...(options?.deviceId ? { deviceId: options.deviceId } : {}),
-        // A dead session is the session-path equivalent of `invalid_grant`: the refresh
-        // pipeline's self-heal (re-read durable state, retry once) and its terminal
-        // "reconnect this provider" outcome are exactly the right handling.
-        onInvalidSession: () => {
-          throw new OAuthInvalidGrantError('web session expired');
-        },
-        sessionToken: refreshToken,
-        // The caller's own deadline IS the budget; the retries live inside it.
-        signal,
-      });
-      const expiresAt = parseJwtExpiry(minted.accessToken);
-      const expiresIn = expiresAt ? Math.floor((expiresAt - Date.now()) / 1000) : undefined;
-
-      return {
-        accessToken: minted.accessToken,
-        ...(expiresIn && expiresIn > 0 ? { expiresIn } : {}),
-        // Rotation is the norm here: presenting a rotated-away session would 401 next time.
-        refreshToken: minted.sessionToken,
-        tokenType: 'bearer',
-      };
+      return this.refreshFromWebSession(refreshToken, signal, options);
     }
 
+    return this.refreshFromOAuthGrant(config, refreshToken, signal);
+  }
+
+  private async refreshFromWebSession(
+    refreshToken: string,
+    signal: AbortSignal,
+    options?: OAuthRefreshOptions,
+  ): Promise<TokenResponse> {
+    /**
+     * The stored credential is durable state that reaches a Cookie header, so it is held to
+     * the same boundary rule as a pasted one. `invalid_grant` (not a transient error) is the
+     * right outcome: it makes the pipeline re-read durable state — a concurrent reconnect
+     * may have replaced this leaf — and otherwise ends in the actionable "reconnect this
+     * provider", which is exactly what an unusable stored credential needs.
+     */
+    if (!isUsableSessionToken(refreshToken)) {
+      throw new OAuthInvalidGrantError('stored web session credential is malformed');
+    }
+
+    const minted = await this.mintFromWebSession({
+      /**
+       * One fewer attempt than connect: this whole call has to finish inside the caller's
+       * bound (20 s, below the 30 s shared refresh lease), and an exhausted renewal is not
+       * fatal — the 5-minute backoff retries it long before the 24 h window closes.
+       */
+      attempts: SESSION_REFRESH_ATTEMPTS,
+      /**
+       * The device this connection was made with (`oauthDeviceId`), carried by the refresh
+       * pipeline. Connect presents `oai-did`; a renewal that omitted it looked like a
+       * brand-new device on every call — to a host whose bot filter is the main reason this
+       * path needs an impersonating transport at all.
+       */
+      ...(options?.deviceId ? { deviceId: options.deviceId } : {}),
+      // A dead session is the session-path equivalent of `invalid_grant`: the refresh
+      // pipeline's self-heal (re-read durable state, retry once) and its terminal
+      // "reconnect this provider" outcome are exactly the right handling.
+      onInvalidSession: () => {
+        throw new OAuthInvalidGrantError('web session expired');
+      },
+      sessionToken: refreshToken,
+      // The caller's own deadline IS the budget; the retries live inside it.
+      signal,
+    });
+    const expiresAt = parseJwtExpiry(minted.accessToken);
+    const expiresIn = expiresAt ? Math.floor((expiresAt - Date.now()) / 1000) : undefined;
+
+    return {
+      accessToken: minted.accessToken,
+      ...(expiresIn && expiresIn > 0 ? { expiresIn } : {}),
+      // Rotation is the norm here: presenting a rotated-away session would 401 next time.
+      refreshToken: minted.sessionToken,
+      tokenType: 'bearer',
+    };
+  }
+
+  private async refreshFromOAuthGrant(
+    config: OAuthDeviceFlowConfig,
+    refreshToken: string,
+    signal: AbortSignal,
+  ): Promise<TokenResponse> {
     let response: Response;
     try {
       response = await this.authFetch(config.tokenEndpoint, {
