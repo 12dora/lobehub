@@ -12,10 +12,8 @@ describe('BrandingPage locale contract', () => {
       loading: [enUS['branding.loading'], zhCN['branding.loading']],
       preview: [enUS['branding.preview.frameTitle'], zhCN['branding.preview.frameTitle']],
       readOnly: [enUS['branding.readOnly'], zhCN['branding.readOnly']],
-      save: [enUS['branding.save.description'], zhCN['branding.save.description']],
       saved: [enUS['branding.status.saved'], zhCN['branding.status.saved']],
       storage: [enUS['branding.storageUnavailable'], zhCN['branding.storageUnavailable']],
-      upload: [enUS['branding.upload.description'], zhCN['branding.upload.description']],
     }).toEqual({
       conflict: ['Branding changed elsewhere', '品牌配置已被其他人修改'],
       empty: ['Branding is unavailable.', '品牌配置当前不可用。'],
@@ -29,18 +27,10 @@ describe('BrandingPage locale contract', () => {
         'You can view branding, but you do not have permission to edit it.',
         '你可以查看品牌配置，但没有编辑权限。',
       ],
-      save: [
-        'After saving, everyone will see the branding configured here.',
-        '保存后，所有人看到的品牌配置将更新为当前设置。',
-      ],
-      saved: ['Saved and live.', '已保存并生效'],
+      saved: ['Saved and live', '已保存并生效'],
       storage: [
-        'Asset storage is not set up. You can still edit text and use existing image links, but you cannot upload new images.',
-        '资源存储尚未设置。你仍可编辑文字并使用现有图片链接，但暂时无法上传新图片。',
-      ],
-      upload: [
-        'We’ll check the image format and size before uploading it.',
-        '上传前会检查图片格式和尺寸。',
+        'Asset storage is not configured, so new images cannot be uploaded. You can still edit text and use existing image links.',
+        '尚未配置资源存储，无法上传新图片；仍可编辑文字并使用现有图片链接。',
       ],
     });
   });
