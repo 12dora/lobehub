@@ -118,8 +118,9 @@ describe('shipped screen locale keys (XC-I18N-003 / CS-02 / XC-I18N-004)', () =>
       'connectorCatalog.list.columns.revision': '草稿版本',
       'connectorCatalog.list.title': '平台连接器',
       'connectorCatalog.tools.description':
-        '平台拒绝规则始终优先。风险等级和确认要求会包含在已发布版本中。',
-      'connectorCatalog.unsaved.description': '存在未保存的连接器公开配置；密钥不会写入恢复草稿。',
+        '平台禁用规则始终优先；风险等级与确认要求随发布一同生效。',
+      'connectorCatalog.unsaved.description':
+        '存在未保存的连接器配置。凭据不会被暂存，离开后需重新填写。',
     });
   });
 });
