@@ -31,6 +31,12 @@ export interface CloudflareModelCard {
  * informative human-readable string available. Returns undefined when nothing
  * useful can be recovered, letting the caller decide on a fallback.
  */
+const isNetworkProxyUnavailable = (error: unknown): boolean =>
+  !!error &&
+  typeof error === 'object' &&
+  ((error as { errorType?: string }).errorType === 'PLATFORM_NETWORK_PROXY_UNAVAILABLE' ||
+    (error as { name?: string }).name === 'NetworkProxyUnavailableError');
+
 function extractProviderErrorMessage(err: unknown): string | undefined {
   if (err === null || err === undefined) return undefined;
   if (typeof err === 'string') return err || undefined;
@@ -50,14 +56,16 @@ function extractProviderErrorMessage(err: unknown): string | undefined {
 export interface LobeCloudflareParams {
   apiKey?: string;
   baseURLOrAccountID?: string;
+  fetch?: typeof fetch;
 }
 
 export class LobeCloudflareAI implements LobeRuntimeAI {
   baseURL: string;
   accountID: string;
   apiKey?: string;
+  private readonly fetchImpl: typeof fetch;
 
-  constructor({ apiKey, baseURLOrAccountID }: LobeCloudflareParams = {}) {
+  constructor({ apiKey, baseURLOrAccountID, fetch: fetchImpl }: LobeCloudflareParams = {}) {
     if (!baseURLOrAccountID) {
       throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey);
     }
@@ -75,6 +83,7 @@ export class LobeCloudflareAI implements LobeRuntimeAI {
       this.baseURL = fillUrl(baseURLOrAccountID);
     }
     this.apiKey = apiKey;
+    this.fetchImpl = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   }
 
   async chat(payload: ChatStreamPayload, options?: ChatMethodOptions): Promise<Response> {
@@ -90,13 +99,14 @@ export class LobeCloudflareAI implements LobeRuntimeAI {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      response = await this.fetchImpl(url, {
         body: JSON.stringify({ tools: functions, ...restPayload }),
         headers: { 'Content-Type': 'application/json', ...headers },
         method: 'POST',
         signal: options?.signal,
       });
     } catch (error) {
+      if (isNetworkProxyUnavailable(error)) throw error;
       throw AgentRuntimeError.chat({
         endpoint: desensitizeCloudflareUrl(this.baseURL),
         error: error as any,
@@ -153,7 +163,7 @@ export class LobeCloudflareAI implements LobeRuntimeAI {
     const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
 
     const url = `${DEFAULT_BASE_URL_PREFIX}/client/v4/accounts/${this.accountID}/ai/models/search`;
-    const response = await fetch(url, {
+    const response = await this.fetchImpl(url, {
       headers: {
         'Authorization': `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',

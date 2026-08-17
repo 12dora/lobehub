@@ -1,6 +1,7 @@
 import { OPENAI_MODERATION_CATEGORY_MAP } from '@/const/platform/contentModeration';
 import { createSafeOutboundHttpClient } from '@/server/enterprise/security/outboundHttp';
 import type { PlatformSecretService } from '@/server/enterprise/security/secret';
+import { createEgressSafeOutboundTransport } from '@/server/enterprise/services/networkProxy/egress/safeOutboundTransport';
 
 import { MODERATION_KEY_FREEZE_MS, MODERATION_RETRY_BACKOFF_MS } from '../constants';
 import { mapOpenAiCategoryScores } from '../policy';
@@ -119,6 +120,7 @@ export const createModerationsApiClassifier = (
 ): Classifier => {
   const client = createSafeOutboundHttpClient({
     timeoutMs: params.timeoutMs,
+    ...createEgressSafeOutboundTransport('feature:content_moderation'),
   });
   const now = params.now ?? Date.now;
   const keyHealth = params.keyHealth ?? sharedKeyHealthPool;

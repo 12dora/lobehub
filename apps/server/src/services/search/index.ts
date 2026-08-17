@@ -4,6 +4,7 @@ import debug from 'debug';
 import pMap from 'p-map';
 
 import { toolsEnv } from '@/envs/tools';
+import { rethrowIfNetworkProxyUnavailable } from '@/server/utils/networkProxyUnavailable';
 
 import { type SearchImplType, type SearchServiceImpl } from './impls';
 import { createSearchServiceImpl } from './impls';
@@ -13,6 +14,21 @@ const DEFAULT_CRAWLER_RETRY = 1;
 const SEARCH_PROVIDERS_FAILED =
   'Web search failed because all configured providers returned errors';
 const log = debug('lobe-oom:web-browsing:search-service');
+
+const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+
+const withWebSearchScope = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const hook = (
+    globalThis as typeof globalThis & {
+      [EGRESS_BINDING]?: {
+        getCurrentScope?: () => string | null;
+        runWithEgressScope?: (scope: string, inner: () => Promise<T>) => Promise<T>;
+      };
+    }
+  )[EGRESS_BINDING];
+  if (!hook?.runWithEgressScope || hook.getCurrentScope?.() === 'feature:web_search') return fn();
+  return hook.runWithEgressScope('feature:web_search', fn);
+};
 
 const parseImplEnv = (envString: string = '') => {
   // Handle full-width commas and extra whitespace
@@ -80,6 +96,10 @@ export class SearchService {
   }
 
   async crawlPages(input: { impls?: CrawlImplType[]; urls: string[] }) {
+    return withWebSearchScope(() => this.crawlPagesUnscoped(input));
+  }
+
+  private async crawlPagesUnscoped(input: { impls?: CrawlImplType[]; urls: string[] }) {
     try {
       if (log.enabled) {
         log(
@@ -128,6 +148,7 @@ export class SearchService {
           return result;
         }
       } catch (error) {
+        rethrowIfNetworkProxyUnavailable(error);
         lastError = error as Error;
       }
     }
@@ -166,6 +187,7 @@ export class SearchService {
     try {
       return await impl.query(query, params);
     } catch (e) {
+      rethrowIfNetworkProxyUnavailable(e);
       console.error('[SearchService] query failed', {
         provider: impl.constructor.name || 'UnknownSearchImpl',
       });
@@ -183,10 +205,21 @@ export class SearchService {
    * Query for search results (uses the first provider)
    */
   async query(query: string, params?: SearchParams) {
-    return this.queryWithImpl(this.searchImpList[0], query, params);
+    return withWebSearchScope(() => this.queryWithImpl(this.searchImpList[0], query, params));
   }
 
   async webSearch({ query, searchCategories, searchEngines, searchTimeRange }: SearchQuery) {
+    return withWebSearchScope(() =>
+      this.webSearchUnscoped({ query, searchCategories, searchEngines, searchTimeRange }),
+    );
+  }
+
+  private async webSearchUnscoped({
+    query,
+    searchCategories,
+    searchEngines,
+    searchTimeRange,
+  }: SearchQuery) {
     try {
       if (log.enabled) {
         log(

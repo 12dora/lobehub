@@ -18,6 +18,7 @@ const DEFAULT_BASE_URL = 'https://api.replicate.com';
 interface ReplicateAIParams {
   apiKey?: string;
   baseURL?: string;
+  fetch?: typeof fetch;
   id?: string;
 }
 
@@ -28,7 +29,7 @@ export class LobeReplicateAI implements LobeRuntimeAI {
   apiKey?: string;
   private id: string;
 
-  constructor({ apiKey, baseURL = DEFAULT_BASE_URL, id }: ReplicateAIParams = {}) {
+  constructor({ apiKey, baseURL = DEFAULT_BASE_URL, fetch, id }: ReplicateAIParams = {}) {
     if (!apiKey) {
       throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey);
     }
@@ -36,6 +37,7 @@ export class LobeReplicateAI implements LobeRuntimeAI {
     this.client = new Replicate({
       auth: apiKey,
       baseUrl: baseURL !== DEFAULT_BASE_URL ? baseURL : undefined,
+      ...(fetch ? { fetch } : {}),
       useFileOutput: false, // Return URLs instead of binary data
     });
 
@@ -373,6 +375,14 @@ export class LobeReplicateAI implements LobeRuntimeAI {
    * Error handling
    */
   private handleError(error: any): ChatCompletionErrorPayload {
+    if (
+      error &&
+      typeof error === 'object' &&
+      (error.errorType === 'PLATFORM_NETWORK_PROXY_UNAVAILABLE' ||
+        error.name === 'NetworkProxyUnavailableError')
+    ) {
+      throw error;
+    }
     let desensitizedEndpoint = this.baseURL;
 
     if (this.baseURL !== DEFAULT_BASE_URL) {

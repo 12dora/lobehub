@@ -1210,7 +1210,29 @@ describe('ChatGPT Web transport injection', () => {
     expect((spy.mock.calls[0][1] as Record<string, unknown>).fetch).toBe(probeFetch);
   });
 
-  it('leaves every other provider on its own default transport', () => {
+  it('scopes egress to the catalog provider id, not the SDK runtimeProvider', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({ chat: vi.fn() } as unknown as ModelRuntime);
+    const wrap = vi.fn((runtime: object) => runtime);
+    const hook = {
+      createEgressFetch: vi.fn(() => vi.fn() as unknown as typeof fetch),
+      getEgressProxyUrlForCurl: vi.fn(async () => null),
+      wrapRuntimeWithEgressScope: wrap,
+    };
+    (globalThis as Record<symbol, unknown>)[Symbol.for('aihub.networkProxy.egressBinding')] = hook;
+
+    initModelRuntimeWithUserPayload('catalog-custom', {
+      apiKey: 'sk-1',
+      runtimeProvider: ModelProvider.OpenAI,
+    });
+
+    expect(hook.createEgressFetch).toHaveBeenCalledWith('provider:catalog-custom');
+    expect(wrap).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('injects an egress fetch for other providers when the network-proxy hook is live', () => {
     const spy = vi
       .spyOn(ModelRuntime, 'initializeWithProvider')
       .mockReturnValue({} as unknown as ModelRuntime);
@@ -1220,7 +1242,11 @@ describe('ChatGPT Web transport injection', () => {
       runtimeProvider: ModelProvider.OpenAI,
     });
 
-    expect((spy.mock.calls[0][1] as Record<string, unknown>).fetch).toBeUndefined();
+    const injected = (spy.mock.calls[0][1] as Record<string, unknown>).fetch;
+    // The ChatGPT Web transport barrel registers the egress hook; every other
+    // provider then receives createEgressFetch('provider:<id>') so bare SDK
+    // fetches follow the admin scope switch. An explicit `params.fetch` still wins.
+    expect(typeof injected).toBe('function');
   });
 });
 

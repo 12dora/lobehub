@@ -86,7 +86,12 @@ export * from './types';
 export * from './types/error';
 export { createAzureFetchHttpClient } from './utils/azureFetchHttpClient';
 export type { FetchLike } from './utils/boundFetch';
-export { getBoundFetch, resetBoundFetchPatchForTests, runWithBoundFetch } from './utils/boundFetch';
+export {
+  getBoundFetch,
+  resetBoundFetchPatchForTests,
+  runWithBoundFetch,
+  runWithBoundFetchSync,
+} from './utils/boundFetch';
 export { consumeStreamUntilDone } from './utils/consumeStream';
 export { AgentRuntimeError } from './utils/createError';
 export { createFetchRequestHandler } from './utils/fetchRequestHandler';

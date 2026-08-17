@@ -27,6 +27,7 @@ import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withActiveUserWhenManaged } from '@/server/enterprise/routers/managedActiveUser';
 import { redactForLog } from '@/server/enterprise/security/redaction';
 import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
+import { runWithEgressScope } from '@/server/enterprise/services/networkProxy';
 import {
   cleanupSandboxSkillWorkspace,
   createSandboxSkillWorkspaceRoot,
@@ -88,21 +89,23 @@ const marketToolProcedure = wsCompatProcedure
     // workspace's Market organization via the workspaceId carried in the trust
     // token (`ctx.marketUserInfo.workspaceId`, set by the marketUserInfo
     // middleware). Falls back to the personal account when there's no workspace.
-    return next({
-      ctx: {
-        discoverService: new DiscoverService({
-          accessToken: ctx.marketAccessToken,
-          userInfo: ctx.marketUserInfo,
-        }),
-        fileService: new FileService(ctx.serverDB, ctx.userId, ctx.workspaceId ?? undefined),
-        marketService: new MarketService({
-          accessToken: ctx.marketAccessToken,
-          userInfo: ctx.marketUserInfo,
-        }),
-        userModel,
-        workspaceId: ctx.workspaceId,
-      },
-    });
+    return runWithEgressScope('feature:market', () =>
+      next({
+        ctx: {
+          discoverService: new DiscoverService({
+            accessToken: ctx.marketAccessToken,
+            userInfo: ctx.marketUserInfo,
+          }),
+          fileService: new FileService(ctx.serverDB, ctx.userId, ctx.workspaceId ?? undefined),
+          marketService: new MarketService({
+            accessToken: ctx.marketAccessToken,
+            userInfo: ctx.marketUserInfo,
+          }),
+          userModel,
+          workspaceId: ctx.workspaceId,
+        },
+      }),
+    );
   });
 
 /**

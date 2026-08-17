@@ -1,10 +1,15 @@
 // @vitest-environment node
 import { MarketSDK } from '@lobehub/market-sdk';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { generateTrustedClientToken, getTrustedClientTokenForSession } from '@/libs/trusted-client';
 
-import { extractAccessToken, LOBEHUB_SKILL_DISCOVERY_TIMEOUT_MS, MarketService } from './index';
+import {
+  bindFeatureEgressScope,
+  extractAccessToken,
+  LOBEHUB_SKILL_DISCOVERY_TIMEOUT_MS,
+  MarketService,
+} from './index';
 
 // Mock dependencies before importing the module under test
 vi.mock('@lobehub/market-sdk', () => {
@@ -367,6 +372,42 @@ describe('MarketService', () => {
       });
     });
 
+    it('rethrows fail-mode instead of returning a fallback payload', async () => {
+      const service = new MarketService();
+      const fail = Object.assign(new Error('PLATFORM_NETWORK_PROXY_UNAVAILABLE'), {
+        errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+        name: 'NetworkProxyUnavailableError',
+      });
+      const mockCallTool = vi.fn().mockRejectedValue(fail);
+      (service as any).market.skills.callTool = mockCallTool;
+
+      await expect(
+        service.executeLobehubSkill({
+          args: {},
+          provider: 'provider',
+          toolName: 'failTool',
+        }),
+      ).rejects.toBe(fail);
+    });
+
+    it('rethrows the converted AgentRuntimeError fail-mode shape', async () => {
+      const service = new MarketService();
+      const converted = {
+        error: { name: 'NetworkProxyUnavailableError' },
+        errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+        provider: 'unknown',
+      };
+      (service as any).market.skills.callTool = vi.fn().mockRejectedValue(converted);
+
+      await expect(
+        service.executeLobehubSkill({
+          args: {},
+          provider: 'provider',
+          toolName: 'failTool',
+        }),
+      ).rejects.toBe(converted);
+    });
+
     it('should use a generic failure message when an unsuccessful response has no detail', async () => {
       const service = new MarketService();
       const mockCallTool = vi.fn().mockResolvedValue({
@@ -677,5 +718,69 @@ describe('MarketService', () => {
       const sdk = service.getSDK();
       expect(sdk).toBe((service as any).market);
     });
+  });
+});
+
+describe('bindFeatureEgressScope sync wrapping', () => {
+  const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+  let previous: unknown;
+
+  beforeEach(() => {
+    previous = (globalThis as Record<symbol, unknown>)[EGRESS_BINDING];
+  });
+
+  afterEach(() => {
+    (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = previous;
+  });
+
+  it('keeps sync methods sync and binds fetch for sync and async calls', async () => {
+    const { getBoundFetch, runWithBoundFetchSync } = await import('@lobechat/model-runtime');
+    const bound = vi.fn(async () => new Response('bound', { status: 200 }));
+    (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = {
+      getCurrentScope: () => null,
+      runWithEgressScopeSync: (_scope: string, fn: () => unknown) =>
+        runWithBoundFetchSync(bound as unknown as typeof fetch, fn),
+    };
+
+    const target = {
+      syncName(): string {
+        expect(getBoundFetch()).toBe(bound);
+        void globalThis.fetch('https://example.test/sync');
+        return 'hello';
+      },
+      async asyncName(): Promise<string> {
+        expect(getBoundFetch()).toBe(bound);
+        const res = await globalThis.fetch('https://example.test/async');
+        return res.text();
+      },
+    };
+    const wrapped = bindFeatureEgressScope(target, 'feature:market');
+
+    const syncResult = wrapped.syncName();
+    expect(syncResult).toBe('hello');
+    expect(syncResult).not.toBeInstanceOf(Promise);
+
+    const asyncResult = wrapped.asyncName();
+    expect(asyncResult).toBeInstanceOf(Promise);
+    expect(await asyncResult).toBe('bound');
+    expect(bound).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps MarketService.getSDK / getSkillDownloadUrl synchronous when the hook is live', async () => {
+    const { runWithBoundFetchSync } = await import('@lobechat/model-runtime');
+    const bound = vi.fn(async () => new Response('bound', { status: 200 }));
+    (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = {
+      getCurrentScope: () => null,
+      runWithEgressScopeSync: (_scope: string, fn: () => unknown) =>
+        runWithBoundFetchSync(bound as unknown as typeof fetch, fn),
+    };
+
+    const service = new MarketService();
+    const sdk = service.getSDK();
+    expect(sdk).toBeDefined();
+    expect((sdk as { plugins?: unknown }).plugins).toBeDefined();
+    expect(sdk).not.toBeInstanceOf(Promise);
+    const url = service.getSkillDownloadUrl('skill-1');
+    expect(url).not.toBeInstanceOf(Promise);
   });
 });

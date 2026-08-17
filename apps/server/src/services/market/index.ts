@@ -5,10 +5,106 @@ import { type NextRequest } from 'next/server';
 
 import { type TrustedClientUserInfo } from '@/libs/trusted-client';
 import { generateTrustedClientToken, getTrustedClientTokenForSession } from '@/libs/trusted-client';
+import { rethrowIfNetworkProxyUnavailable } from '@/server/utils/networkProxyUnavailable';
 
 import { listSkillToolsWithLiveFallback } from './listSkillToolsWithLiveFallback';
 
 const log = debug('lobe-server:market-service');
+
+const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+
+const shouldWrapNested = (value: object): boolean => {
+  if (Array.isArray(value)) return false;
+  if (value instanceof Promise || typeof (value as Promise<unknown>).then === 'function') {
+    return false;
+  }
+  if (
+    value instanceof Date ||
+    value instanceof URL ||
+    value instanceof Map ||
+    value instanceof Set
+  ) {
+    return false;
+  }
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) return false;
+  return true;
+};
+
+/**
+ * Lazy wrap: every function on `target` (and nested namespace objects such as
+ * `market.feedback` / `market.agents` / `market.plugins`) runs inside the
+ * feature egress ALS when the enterprise hook is registered.
+ */
+export const bindFeatureEgressScope = <T extends object>(
+  target: T,
+  scope: 'feature:import_fetch' | 'feature:market' | 'feature:mcp' | 'feature:web_search',
+): T => {
+  const seen = new WeakMap<object, object>();
+  const wrap = (obj: object): object => {
+    const cached = seen.get(obj);
+    if (cached) return cached;
+    const proxy = new Proxy(obj, {
+      get(inner, prop, receiver) {
+        const value = Reflect.get(inner, prop, receiver) as unknown;
+        if (typeof value === 'function') {
+          return new Proxy(value, {
+            apply(fn, thisArg, args) {
+              const self = thisArg === receiver ? inner : thisArg;
+              const hook = (
+                globalThis as typeof globalThis & {
+                  [EGRESS_BINDING]?: {
+                    getCurrentScope?: () => string | null;
+                    runWithEgressScope?: <R>(s: string, fn: () => Promise<R>) => Promise<R>;
+                    runWithEgressScopeSync?: <R>(s: string, fn: () => R) => R;
+                  };
+                }
+              )[EGRESS_BINDING];
+              const invoke = () => Reflect.apply(fn, self, args);
+              if (!hook || hook.getCurrentScope?.() === scope) return invoke();
+              if (hook.runWithEgressScopeSync) return hook.runWithEgressScopeSync(scope, invoke);
+              if (hook.runWithEgressScope)
+                return hook.runWithEgressScope(scope, async () => invoke());
+              return invoke();
+            },
+          });
+        }
+        if (value && typeof value === 'object' && shouldWrapNested(value)) {
+          return wrap(value);
+        }
+        return value;
+      },
+    });
+    seen.set(obj, proxy);
+    return proxy;
+  };
+  return wrap(target) as T;
+};
+
+const wrapMarketServiceMethods = (service: MarketService): void => {
+  const proto = Object.getPrototypeOf(service) as object;
+  for (const key of Object.getOwnPropertyNames(proto)) {
+    if (key === 'constructor') continue;
+    const fn = (service as unknown as Record<string, unknown>)[key];
+    if (typeof fn !== 'function') continue;
+    (service as unknown as Record<string, unknown>)[key] = (...args: unknown[]) => {
+      const hook = (
+        globalThis as typeof globalThis & {
+          [EGRESS_BINDING]?: {
+            getCurrentScope?: () => string | null;
+            runWithEgressScope?: <R>(s: string, fn: () => Promise<R>) => Promise<R>;
+            runWithEgressScopeSync?: <R>(s: string, fn: () => R) => R;
+          };
+        }
+      )[EGRESS_BINDING];
+      const invoke = () => (fn as (...inner: unknown[]) => unknown).apply(service, args);
+      if (!hook || hook.getCurrentScope?.() === 'feature:market') return invoke();
+      if (hook.runWithEgressScopeSync) return hook.runWithEgressScopeSync('feature:market', invoke);
+      if (hook.runWithEgressScope)
+        return hook.runWithEgressScope('feature:market', async () => invoke());
+      return invoke();
+    };
+  }
+};
 
 const MARKET_BASE_URL = process.env.MARKET_BASE_URL || 'https://market.lobehub.com';
 export const LOBEHUB_SKILL_DISCOVERY_TIMEOUT_MS = 3_000;
@@ -100,7 +196,7 @@ export class MarketService {
     const resolvedTrustedClientToken =
       trustedClientToken || (userInfo ? generateTrustedClientToken(userInfo) : undefined);
 
-    this.market = new MarketSDK({
+    const sdk = new MarketSDK({
       accessToken,
       baseURL: MARKET_BASE_URL,
       clientId: clientCredentials?.clientId,
@@ -108,6 +204,8 @@ export class MarketService {
       ownerAccountId,
       trustedClientToken: resolvedTrustedClientToken,
     });
+    this.market = bindFeatureEgressScope(sdk, 'feature:market');
+    wrapMarketServiceMethods(this);
 
     log(
       'MarketService initialized: baseURL=%s, hasAccessToken=%s, hasTrustedToken=%s, hasClientCredentials=%s, ownerAccountId=%s',
@@ -532,6 +630,7 @@ export class MarketService {
         success: true,
       };
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       const err = error as Error;
       console.error('MarketService.executeLobehubSkill error %s/%s: %O', provider, toolName, err);
 
@@ -628,12 +727,14 @@ export class MarketService {
             tools.length,
           );
         } catch (error) {
+          rethrowIfNetworkProxyUnavailable(error);
           log('getLobehubSkillManifests: failed to fetch tools for connection: %O', error);
         }
       }
 
       return manifests;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getLobehubSkillManifests: error fetching skills: %O', error);
       return [];
     }

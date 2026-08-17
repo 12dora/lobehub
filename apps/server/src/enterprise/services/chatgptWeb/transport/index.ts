@@ -1,3 +1,7 @@
+// Register the network-proxy egress ALS / ssrf-safe-fetch binding whenever this
+// transport (pulled in by ModelRuntime) is loaded.
+import '../../networkProxy/egress/scope';
+
 export {
   createCurlImpersonateFetch,
   type CurlImpersonateFetchOptions,

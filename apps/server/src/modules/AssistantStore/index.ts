@@ -5,6 +5,7 @@ import { DEFAULT_LANG, isLocaleNotSupport } from '@/const/locale';
 import { appEnv } from '@/envs/app';
 import { type Locales } from '@/locales/resources';
 import { normalizeLocale } from '@/locales/resources';
+import { rethrowIfNetworkProxyUnavailable } from '@/server/utils/networkProxyUnavailable';
 import { CacheRevalidate, CacheTag } from '@/types/discover';
 
 export class AssistantStore {
@@ -70,6 +71,7 @@ export class AssistantStore {
 
       return data.agents;
     } catch (e) {
+      rethrowIfNetworkProxyUnavailable(e);
       // it means failed to fetch
       if ((e as Error).message.includes('fetch failed')) {
         return [];

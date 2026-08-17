@@ -19,12 +19,14 @@ const log = debug('lobe-image:comfyui');
  */
 export class LobeComfyUI implements LobeRuntimeAI, AuthenticatedImageRuntime {
   private options: ComfyUIKeyVault;
+  private readonly fetchImpl: typeof fetch;
   baseURL: string;
 
-  constructor(options: ComfyUIKeyVault = {}) {
+  constructor(options: ComfyUIKeyVault & { fetch?: typeof fetch } = {}) {
     log('🏗️ ComfyUI Runtime initialized');
 
     this.options = options;
+    this.fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.baseURL = options.baseURL || process.env.COMFYUI_DEFAULT_URL || 'http://localhost:8188';
 
     log('✅ ComfyUI Runtime ready - baseURL: %s', this.baseURL);
@@ -98,7 +100,7 @@ export class LobeComfyUI implements LobeRuntimeAI, AuthenticatedImageRuntime {
         headers['Authorization'] = `Bearer ${keyVaultSecret}`;
       }
 
-      const response = await fetch(`${appUrl}/webapi/create-image/comfyui`, {
+      const response = await this.fetchImpl(`${appUrl}/webapi/create-image/comfyui`, {
         body: JSON.stringify({
           model: payload.model,
           options: this.options,
@@ -150,6 +152,14 @@ export class LobeComfyUI implements LobeRuntimeAI, AuthenticatedImageRuntime {
       log('✅ ComfyUI image created successfully');
       return result;
     } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        ((error as { errorType?: string }).errorType === 'PLATFORM_NETWORK_PROXY_UNAVAILABLE' ||
+          (error as { name?: string }).name === 'NetworkProxyUnavailableError')
+      ) {
+        throw error;
+      }
       log('❌ ComfyUI createImage error: %O', error);
 
       // If it looks like an AgentRuntimeError object structure (already processed), reconstruct it

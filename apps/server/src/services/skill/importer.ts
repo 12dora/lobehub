@@ -16,6 +16,7 @@ import debug from 'debug';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { GitHub, GitHubNotFoundError, GitHubParseError } from '@/server/modules/GitHub';
 import { FileService } from '@/server/services/file';
+import { rethrowIfNetworkProxyUnavailable } from '@/server/utils/networkProxyUnavailable';
 
 import { SkillImportError, SkillManifestError } from './errors';
 import { SkillParser } from './parser';
@@ -164,6 +165,7 @@ export class SkillImporter {
       zipBuffer = await this.github.downloadRepoZip(repoInfo);
       log('importFromGitHub: downloaded ZIP size=%d bytes', zipBuffer.length);
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('importFromGitHub: download failed, error=%s', (error as Error).message);
       if (error instanceof GitHubNotFoundError) {
         throw new SkillImportError(error.message, 'NOT_FOUND');
@@ -328,7 +330,18 @@ export class SkillImporter {
         // internal hosts / cloud metadata (SSRF), and the body is stored and returned to the
         // caller — a full-read SSRF. ssrfSafeFetch blocks private/link-local IPs at connect
         // time and re-checks every redirect hop. See GHSA-53h9-fmjf-frwr / #16536.
-        response = await ssrfSafeFetch(input.url, { signal: controller.signal });
+        const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+        const hook = (
+          globalThis as typeof globalThis & {
+            [EGRESS_BINDING]?: {
+              runWithEgressScope?: <T>(scope: string, fn: () => Promise<T>) => Promise<T>;
+            };
+          }
+        )[EGRESS_BINDING];
+        const fetchUrl = () => ssrfSafeFetch(input.url, { signal: controller.signal });
+        response = hook?.runWithEgressScope
+          ? await hook.runWithEgressScope('feature:import_fetch', fetchUrl)
+          : await fetchUrl();
       } finally {
         clearTimeout(timeoutId);
       }
@@ -372,6 +385,7 @@ export class SkillImporter {
         log('importFromUrl: parsed SKILL.md, manifest=%o', manifest);
       }
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       if (error instanceof SkillImportError || error instanceof SkillManifestError) throw error;
       log('importFromUrl: fetch error: %O', error);
       log('importFromUrl: error type: %s', error?.constructor?.name);

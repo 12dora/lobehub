@@ -2,6 +2,10 @@ import { ssrfSafeFetch } from '@lobechat/ssrf-safe-fetch';
 import type { SkillManifest } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 
+import {
+  getCurrentEgressScope,
+  runWithEgressScope,
+} from '@/server/enterprise/services/networkProxy';
 import { GitHub, GitHubParseError } from '@/server/modules/GitHub';
 import { SkillManifestError, SkillParseError } from '@/server/services/skill/errors';
 
@@ -86,6 +90,9 @@ const downloadGitHubZipWithLimit = async (
   suggestedSkillKey: string;
   zipBuffer: Buffer;
 }> => {
+  if (getCurrentEgressScope() !== 'feature:import_fetch') {
+    return runWithEgressScope('feature:import_fetch', () => downloadGitHubZipWithLimit(repoUrl));
+  }
   let repoInfo;
   try {
     repoInfo = github.parseRepoUrl(repoUrl);
@@ -156,6 +163,9 @@ const parseFromGitHub = async (repoUrl: string): Promise<AdminSkillParseImportSo
 };
 
 const parseFromUrl = async (rawUrl: string): Promise<AdminSkillParseImportSourceOutput> => {
+  if (getCurrentEgressScope() !== 'feature:import_fetch') {
+    return runWithEgressScope('feature:import_fetch', () => parseFromUrl(rawUrl));
+  }
   const url = new URL(rawUrl);
 
   // Mirror user importFromUrl: repo/tree/blob GitHub URLs go through the repo-zip path so

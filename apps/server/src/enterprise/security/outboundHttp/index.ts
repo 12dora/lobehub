@@ -34,6 +34,7 @@ export {
   SafeOutboundHttpClient,
 } from './safeOutboundHttpClient';
 export type {
+  AttachedEgressDecision,
   DnsResolver,
   OutboundPolicySnapshot,
   PinnedStreamingTransport,

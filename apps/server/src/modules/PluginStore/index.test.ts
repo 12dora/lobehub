@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { PluginStore } from './index';
 
@@ -22,5 +22,20 @@ describe('PluginStore', () => {
     const pluginStore = new PluginStore();
     const url = pluginStore.getPluginIndexUrl('fr-FR');
     expect(url).toBe(`${baseURL}/index.fr-FR.json`);
+  });
+
+  it('rethrows fail-mode instead of returning an empty list', async () => {
+    const fail = Object.assign(new Error('PLATFORM_NETWORK_PROXY_UNAVAILABLE'), {
+      errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+      name: 'NetworkProxyUnavailableError',
+    });
+    const previous = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockRejectedValue(fail) as typeof fetch;
+    try {
+      const pluginStore = new PluginStore();
+      await expect(pluginStore.getPluginList()).rejects.toBe(fail);
+    } finally {
+      globalThis.fetch = previous;
+    }
   });
 });

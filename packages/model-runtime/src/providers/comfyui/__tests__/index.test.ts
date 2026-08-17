@@ -17,6 +17,7 @@ describe('LobeComfyUI Runtime', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('KEY_VAULTS_SECRET', '');
 
     // Mock global fetch
     mockFetch = vi.fn();

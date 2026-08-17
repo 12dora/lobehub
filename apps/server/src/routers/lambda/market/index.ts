@@ -31,22 +31,35 @@ const log = debug('lambda-router:market');
 const marketSourceSchema = z.enum(['legacy', 'new']);
 
 // Public procedure with optional user info for trusted client token
+const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+
 const marketProcedure = publicProcedure
   .use(serverDatabase)
   .use(marketUserInfo)
   .use(async ({ ctx, next }) => {
-    return next({
-      ctx: {
-        discoverService: new DiscoverService({
-          accessToken: ctx.marketAccessToken,
-          userInfo: ctx.marketUserInfo,
-        }),
-        marketService: new MarketService({
-          accessToken: ctx.marketAccessToken,
-          userInfo: ctx.marketUserInfo,
-        }),
-      },
-    });
+    const proceed = () =>
+      next({
+        ctx: {
+          discoverService: new DiscoverService({
+            accessToken: ctx.marketAccessToken,
+            userInfo: ctx.marketUserInfo,
+          }),
+          marketService: new MarketService({
+            accessToken: ctx.marketAccessToken,
+            userInfo: ctx.marketUserInfo,
+          }),
+        },
+      });
+    const hook = (
+      globalThis as typeof globalThis & {
+        [EGRESS_BINDING]?: {
+          runWithEgressScope?: <T>(scope: string, fn: () => Promise<T>) => Promise<T>;
+        };
+      }
+    )[EGRESS_BINDING];
+    return hook?.runWithEgressScope
+      ? hook.runWithEgressScope('feature:market', proceed)
+      : proceed();
   });
 
 export const marketRouter = router({

@@ -79,6 +79,48 @@ export const runWithBoundFetch = async <T>(
   return store.run(fetchImpl, fn);
 };
 
+/**
+ * Synchronous ALS enter. `store.run(value, fn)` returns `fn()`'s value as-is
+ * (a string stays a string; a Promise stays a Promise) while still propagating
+ * the store into any promise/async continuation created inside `fn`.
+ *
+ * Used by MarketService wrapping so `getSkillDownloadUrl()` / `getSDK()` do
+ * not become Promises. Server-only: never called from the SPA bundle.
+ */
+const loadAlsCtorSync = (): typeof AsyncLocalStorage => {
+  const proc = globalThis.process as
+    | { getBuiltinModule?: (id: string) => { AsyncLocalStorage?: typeof AsyncLocalStorage } }
+    | undefined;
+  const fromBuiltin =
+    proc?.getBuiltinModule?.('async_hooks') ?? proc?.getBuiltinModule?.('node:async_hooks');
+  if (fromBuiltin?.AsyncLocalStorage) return fromBuiltin.AsyncLocalStorage;
+  try {
+    const req = (
+      globalThis as { require?: (id: string) => { AsyncLocalStorage: typeof AsyncLocalStorage } }
+    ).require;
+    const hooks = req?.('node:async_hooks');
+    if (hooks?.AsyncLocalStorage) return hooks.AsyncLocalStorage;
+  } catch {
+    // fall through
+  }
+  throw new TypeError('runWithBoundFetchSync requires Node.js async_hooks');
+};
+
+const getOrCreateStoreSync = (): AsyncLocalStorage<FetchLike> => {
+  const existing = getStoreIfPresent();
+  if (existing) return existing;
+  const g = globalThis as GlobalBinding;
+  if (!g[STORE_KEY]) {
+    g[STORE_KEY] = new (loadAlsCtorSync())<FetchLike>();
+  }
+  return g[STORE_KEY];
+};
+
+export const runWithBoundFetchSync = <T>(fetchImpl: FetchLike, fn: () => T): T => {
+  ensureGlobalFetchPatch();
+  return getOrCreateStoreSync().run(fetchImpl, fn);
+};
+
 /** Read the currently bound fetch, if any (tests / diagnostics). */
 export const getBoundFetch = (): FetchLike | undefined => getStoreIfPresent()?.getStore();
 

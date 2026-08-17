@@ -16,10 +16,12 @@ import {
   defaultPinnedTransport,
 } from './transport';
 import type {
+  AttachedEgressDecision,
   DnsResolver,
   OutboundPolicySnapshot,
   PinnedStreamingTransport,
   PinnedTransport,
+  RemoteResolveResult,
   ResolvedAddress,
   SafeOutboundHttpClientOptions,
   SafeOutboundRequestInit,
@@ -103,32 +105,60 @@ export class SafeOutboundHttpClient {
     // Fixed for the whole redirect chain — same formula as streamFetch (no per-hop drift).
     const secretBearing = computeSecretBearing(init, baseHeaders, body);
 
+    // One egress decision for the whole request. Per-hop we only re-run
+    // hostname / IP policy. A later bypass host stays on this decision.
+    this.assertUrlPolicy(current, this.getPolicy());
+    const frozenHop = await this.resolveRemoteHop(this.transport, current);
+
     while (true) {
       this.assertUrlPolicy(current, this.getPolicy());
 
-      const hostname = current.hostname;
-      const addresses = await this.resolveHost(hostname, deadlineAt, init.signal);
-      this.assertResolvedAddresses(current, addresses, this.getPolicy());
-
-      // Pin to first allowed address (all were validated)
-      const pinned = addresses[0]!;
       const remainingMs = this.remainingMs(deadlineAt);
+      let response;
+      if (frozenHop.remote) {
+        // Proxied chain: hostname policy already asserted; DNS / IP pin is the
+        // engine (or static proxy) trust boundary. Reuse the frozen decision.
+        response = await this.withDeadline(
+          this.transport({
+            body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
+            egress: frozenHop.egress,
+            family: 4,
+            headers: { ...baseHeaders },
+            maxResponseBytes,
+            method,
+            pinnedAddress: '0.0.0.0',
+            signal: init.signal,
+            timeoutMs: remainingMs,
+            url: current,
+          }),
+          deadlineAt,
+          init.signal,
+        );
+      } else {
+        const hostname = current.hostname;
+        const addresses = await this.resolveHost(hostname, deadlineAt, init.signal);
+        this.assertResolvedAddresses(current, addresses, this.getPolicy());
 
-      const response = await this.withDeadline(
-        this.transport({
-          body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
-          family: pinned.family,
-          headers: { ...baseHeaders },
-          maxResponseBytes,
-          method,
-          pinnedAddress: pinned.address,
-          signal: init.signal,
-          timeoutMs: remainingMs,
-          url: current,
-        }),
-        deadlineAt,
-        init.signal,
-      );
+        // Pin to first allowed address (all were validated)
+        const pinned = addresses[0]!;
+
+        response = await this.withDeadline(
+          this.transport({
+            body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
+            egress: frozenHop.egress ?? { mode: 'direct' },
+            family: pinned.family,
+            headers: { ...baseHeaders },
+            maxResponseBytes,
+            method,
+            pinnedAddress: pinned.address,
+            signal: init.signal,
+            timeoutMs: remainingMs,
+            url: current,
+          }),
+          deadlineAt,
+          init.signal,
+        );
+      }
 
       const hop = this.resolveRedirectHop({
         current,
@@ -171,17 +201,23 @@ export class SafeOutboundHttpClient {
     // Identical secret-bearing policy to fetch — fixed for the whole redirect chain.
     const secretBearing = computeSecretBearing(init, headers, body);
 
+    // One egress decision for the whole request (same rule as fetch).
+    this.assertUrlPolicy(current, this.getPolicy());
+    const frozenHop = await this.resolveRemoteHop(this.streamingTransport, current);
+
     while (true) {
       this.assertUrlPolicy(current, this.getPolicy());
-      const addresses = await this.resolveHost(current.hostname, deadlineAt, init.signal);
-      this.assertResolvedAddresses(current, addresses, this.getPolicy());
+      const pin = frozenHop.remote
+        ? { address: '0.0.0.0', family: 4 as const }
+        : await this.resolveAndPin(current, deadlineAt, init.signal);
       const response = await this.streamingTransport({
         body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
-        family: addresses[0]!.family,
+        egress: frozenHop.egress ?? (frozenHop.remote ? undefined : { mode: 'direct' }),
+        family: pin.family,
         headers,
         maxResponseBytes,
         method,
-        pinnedAddress: addresses[0]!.address,
+        pinnedAddress: pin.address,
         signal: init.signal,
         timeoutMs: this.remainingMs(deadlineAt),
         url: current,
@@ -289,6 +325,36 @@ export class SafeOutboundHttpClient {
 
   /** No DNS or external I/O; safe for a short database lock comparison. */
   getPolicyVersion = (): number | string => this.getPolicySnapshot().version;
+
+  /**
+   * One hop-routing decision for both pinning and dispatch. Egress-aware
+   * transports return `{ remote, egress }`; boolean hints stay compatible.
+   */
+  private resolveRemoteHop = async (
+    transport: {
+      resolvesRemotely?:
+        boolean | ((url: URL) => RemoteResolveResult | Promise<RemoteResolveResult>);
+    },
+    url: URL,
+  ): Promise<{ egress?: AttachedEgressDecision; remote: boolean }> => {
+    const hint = transport.resolvesRemotely;
+    if (typeof hint === 'function') {
+      const result = await hint(url);
+      if (typeof result === 'boolean') return { remote: result };
+      return result;
+    }
+    return { remote: hint === true };
+  };
+
+  private resolveAndPin = async (
+    url: URL,
+    deadlineAt: number,
+    signal?: AbortSignal | null,
+  ): Promise<{ address: string; family: 4 | 6 }> => {
+    const addresses = await this.resolveHost(url.hostname, deadlineAt, signal);
+    this.assertResolvedAddresses(url, addresses, this.getPolicy());
+    return addresses[0]!;
+  };
 
   private parseUrl(input: string | URL): URL {
     let url: URL;

@@ -14,6 +14,8 @@ const mockFetch = fetch as any;
 // Mock console.error to avoid noise in test output
 vi.spyOn(console, 'error').mockImplementation(() => {});
 
+const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+
 describe('ssrfSafeFetch', () => {
   const createMockResponse = (
     options: {
@@ -34,6 +36,7 @@ describe('ssrfSafeFetch', () => {
     // Reset environment variables
     delete process.env.SSRF_ALLOW_IP_ADDRESS_LIST;
     delete process.env.SSRF_ALLOW_PRIVATE_IP_ADDRESS;
+    delete (globalThis as Record<symbol, unknown>)[EGRESS_BINDING];
   });
 
   describe('successful requests to allowed URLs', () => {
@@ -505,6 +508,131 @@ describe('ssrfSafeFetch', () => {
           agent: expect.any(Function),
         }),
       );
+    });
+  });
+
+  describe('egress proxy binding', () => {
+    it('uses a proxy agent when the ALS binding returns a proxy URL', async () => {
+      (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = {
+        getProxyUrlFor: () => 'http://127.0.0.1:18080',
+      };
+      mockFetch.mockResolvedValue(createMockResponse());
+
+      await ssrfSafeFetch('https://example.com/via-proxy');
+
+      const [, init] = mockFetch.mock.calls[0];
+      expect(typeof init.agent).not.toBe('function');
+      expect(init.agent).toBeDefined();
+    });
+
+    it('keeps the filtering agent when no egress binding is set', async () => {
+      mockFetch.mockResolvedValue(createMockResponse());
+      await ssrfSafeFetch('https://example.com/direct');
+      const [, init] = mockFetch.mock.calls[0];
+      expect(typeof init.agent).toBe('function');
+    });
+
+    it('rejects metadata hostnames before dispatching through a proxy', async () => {
+      (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = {
+        getProxyUrlFor: () => 'http://127.0.0.1:18080',
+      };
+      await expect(ssrfSafeFetch('http://169.254.169.254/latest/meta-data')).rejects.toThrow(
+        /SSRF blocked/,
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects link-local, mapped IPv6, IMDS v6, and [::1] before dispatch', async () => {
+      (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = {
+        getProxyUrlFor: () => 'http://127.0.0.1:18080',
+      };
+      await expect(ssrfSafeFetch('http://169.254.169.253/')).rejects.toThrow(/SSRF blocked/);
+      await expect(ssrfSafeFetch('http://[::ffff:169.254.169.254]/')).rejects.toThrow(
+        /SSRF blocked/,
+      );
+      await expect(ssrfSafeFetch('http://[fd00:ec2::254]/')).rejects.toThrow(/SSRF blocked/);
+      await expect(ssrfSafeFetch('http://[::1]/')).rejects.toThrow(/SSRF blocked/);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('re-checks hostname policy on each proxied redirect hop', async () => {
+      (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = {
+        getProxyUrlFor: (target: string) => {
+          if (target.includes('169.254')) throw new Error('should not decide proxy for metadata');
+          return 'http://127.0.0.1:18080';
+        },
+      };
+      mockFetch.mockResolvedValueOnce({
+        arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
+        headers: {
+          get: (name: string) => (name === 'location' ? 'http://169.254.169.253/' : null),
+        },
+        status: 302,
+        statusText: 'Found',
+      });
+      await expect(ssrfSafeFetch('https://example.com/start')).rejects.toThrow(/SSRF blocked/);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the first proxy when a later hop would be a bypass host', async () => {
+      (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = {
+        getProxyUrlFor: (target: string) => {
+          if (target.includes('internal.example')) return null;
+          return 'http://127.0.0.1:18080';
+        },
+        recordProxiedConnectSuccess: vi.fn(),
+      };
+      mockFetch
+        .mockResolvedValueOnce({
+          arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
+          headers: {
+            get: (name: string) => (name === 'location' ? 'https://internal.example/next' : null),
+          },
+          status: 302,
+          statusText: 'Found',
+        })
+        .mockResolvedValueOnce(createMockResponse());
+
+      await ssrfSafeFetch('https://example.com/start');
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(typeof mockFetch.mock.calls[0][1].agent).not.toBe('function');
+      expect(typeof mockFetch.mock.calls[1][1].agent).not.toBe('function');
+      expect(mockFetch.mock.calls[1][0]).toBe('https://internal.example/next');
+    });
+
+    it('records a 407 CONNECT response as a connect-phase failure', async () => {
+      const failure = vi.fn();
+      const success = vi.fn();
+      (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = {
+        getProxyUrlFor: () => 'http://127.0.0.1:18080',
+        recordProxiedConnectFailure: failure,
+        recordProxiedConnectSuccess: success,
+      };
+      mockFetch.mockResolvedValue({
+        arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
+        headers: new Map(),
+        status: 407,
+        statusText: 'Proxy Authentication Required',
+      });
+
+      const response = await ssrfSafeFetch('https://example.com/via-proxy');
+      expect(response.status).toBe(407);
+      expect(failure).toHaveBeenCalledTimes(1);
+      expect(success).not.toHaveBeenCalled();
+    });
+
+    it('rethrows fail-mode proxy unavailable instead of wrapping it', async () => {
+      const fail = Object.assign(new Error('PLATFORM_NETWORK_PROXY_UNAVAILABLE'), {
+        errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+        name: 'NetworkProxyUnavailableError',
+      });
+      (globalThis as Record<symbol, unknown>)[EGRESS_BINDING] = {
+        getProxyUrlFor: () => {
+          throw fail;
+        },
+      };
+      await expect(ssrfSafeFetch('https://example.com/x')).rejects.toBe(fail);
     });
   });
 });

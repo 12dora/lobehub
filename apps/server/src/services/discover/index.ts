@@ -71,7 +71,8 @@ import { type TrustedClientUserInfo } from '@/libs/trusted-client';
 import { normalizeLocale } from '@/locales/resources';
 import { AssistantStore } from '@/server/modules/AssistantStore';
 import { PluginStore } from '@/server/modules/PluginStore';
-import { MarketService } from '@/server/services/market';
+import { bindFeatureEgressScope, MarketService } from '@/server/services/market';
+import { rethrowIfNetworkProxyUnavailable } from '@/server/utils/networkProxyUnavailable';
 
 const log = debug('lobe-server:discover');
 
@@ -88,8 +89,8 @@ export interface DiscoverServiceOptions {
 }
 
 export class DiscoverService {
-  assistantStore = new AssistantStore();
-  pluginStore = new PluginStore();
+  assistantStore = bindFeatureEgressScope(new AssistantStore(), 'feature:market');
+  pluginStore = bindFeatureEgressScope(new PluginStore(), 'feature:market');
   market: MarketSDK;
 
   constructor(options: DiscoverServiceOptions = {}) {
@@ -193,6 +194,7 @@ export class DiscoverService {
       log('callCloudMcpEndpoint: success, result=%O', result);
       return result;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('callCloudMcpEndpoint: error=%O', error);
       throw error;
     }
@@ -540,6 +542,7 @@ export class DiscoverService {
       log('getAssistantCategories: returning %d categories from market SDK', categories.length);
       return categories;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getAssistantCategories: error fetching from market SDK: %O', error);
       return [];
     }
@@ -640,6 +643,7 @@ export class DiscoverService {
       log('getAssistantDetail: returning assistant with %d related items', result.related.length);
       return result;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getAssistantDetail: error fetching from market SDK: %O', error);
       return;
     }
@@ -664,6 +668,7 @@ export class DiscoverService {
       log('getAssistantIdentifiers: returning %d identifiers from market SDK', result.length);
       return result;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getAssistantIdentifiers: error fetching from market SDK: %O', error);
       return [];
     }
@@ -782,6 +787,7 @@ export class DiscoverService {
       );
       return result;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getAssistantList: error fetching from market SDK: %O', error);
       if (options.throwOnError) throw error;
 
@@ -995,6 +1001,7 @@ export class DiscoverService {
       );
       return result;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getAgentsByPlugin: error fetching from market SDK: %O', error);
       return {
         currentPage: page,
@@ -1139,7 +1146,8 @@ export class DiscoverService {
       const plugin = merge(cloneDeep(DEFAULT_DISCOVER_PLUGIN_ITEM), convertedMcp);
       log('getPluginDetail: returning converted MCP plugin');
       return plugin as DiscoverPluginDetail;
-    } catch {
+    } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log(
         'getPluginDetail: MCP plugin not found for identifier=%s, trying builtin tools',
         identifier,
@@ -1371,6 +1379,7 @@ export class DiscoverService {
         readme = content.trimEnd();
         log('getProviderDetail: readme loaded successfully, length=%d', readme.length);
       } catch (error) {
+        rethrowIfNetworkProxyUnavailable(error);
         log(
           'getProviderDetail: failed to load readme for provider=%s, error: %O',
           identifier,
@@ -2062,6 +2071,7 @@ export class DiscoverService {
       );
       return result;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getUserInfo: error fetching user info: %O', error);
       return undefined;
     }
@@ -2075,6 +2085,7 @@ export class DiscoverService {
       const response = await (this.market.agentGroups as any).getAgentGroupCategories?.(params);
       return response || { items: [] };
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getGroupAgentCategories: error: %O', error);
       return { items: [] };
     }
@@ -2103,6 +2114,7 @@ export class DiscoverService {
       const response = await (this.market.agentGroups as any).getAgentGroupIdentifiers?.();
       return response || { identifiers: [] };
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getGroupAgentIdentifiers: error: %O', error);
       return { identifiers: [] };
     }
@@ -2126,6 +2138,7 @@ export class DiscoverService {
       });
       return response;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('getGroupAgentList: error: %O', error);
       return { currentPage: 1, items: [], totalCount: 0, totalPages: 1 };
     }
@@ -2140,6 +2153,7 @@ export class DiscoverService {
       // TODO: SDK method not yet available
       await (this.market.agentGroups as any).createAgentGroupEvent?.(params);
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('createGroupAgentEvent: error: %O', error);
     }
   };
@@ -2149,6 +2163,7 @@ export class DiscoverService {
       // TODO: SDK method not yet available
       await (this.market.agentGroups as any).increaseInstallCount?.(identifier);
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       log('increaseGroupAgentInstallCount: error: %O', error);
     }
   };

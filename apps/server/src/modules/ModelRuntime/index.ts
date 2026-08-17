@@ -24,6 +24,8 @@ import { ModelProvider } from 'model-bank';
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
 import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
+import type { EgressScopeId } from '@/const/platform/networkProxy';
+import { providerEgressScope } from '@/const/platform/networkProxy';
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
@@ -505,8 +507,70 @@ const buildVertexOptions = (
  * Never throws: a deployment without the binary must still build every other runtime,
  * and the ChatGPT Web failure surfaces on the first request instead.
  */
-const resolveChatGPTWebTransport = (runtimeProvider: string): typeof fetch | undefined =>
-  runtimeProvider === ModelProvider.ChatGPTWeb ? getChatGPTWebFetch() : undefined;
+/**
+ * OSS-safe reader for the enterprise egress hook. The binding is installed by
+ * `services/networkProxy/egress/scope.ts` via
+ * `Symbol.for('aihub.networkProxy.egressBinding')` so this file does not import
+ * enterprise code (path-boundary).
+ */
+const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+
+interface ModelRuntimeEgressHook {
+  createEgressFetch: (scope: EgressScopeId) => typeof fetch;
+  getEgressProxyUrlForCurl: (scope: EgressScopeId, target: string) => Promise<string | null>;
+  recordProxiedConnectFailure?: (proxyUrl: string, error?: unknown) => void;
+  recordProxiedConnectSuccess?: (proxyUrl: string) => void;
+  wrapRuntimeWithEgressScope: <T extends object>(runtime: T, scope: EgressScopeId) => T;
+}
+
+const getEgressHook = (): ModelRuntimeEgressHook | undefined =>
+  (globalThis as typeof globalThis & { [EGRESS_BINDING]?: ModelRuntimeEgressHook })[EGRESS_BINDING];
+
+const extractFetchUrl = (input: RequestInfo | URL): string => {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  if (typeof Request !== 'undefined' && input instanceof Request) return input.url;
+  return String(input);
+};
+
+/**
+ * ChatGPT Web is the one runtime whose transport is not optional: chatgpt.com is behind
+ * Cloudflare bot-fight and answers Node's own fetch with a 403 challenge whatever
+ * headers are sent, because the TLS/HTTP2 fingerprint is what gets checked.
+ *
+ * The curl-impersonate factory is keyed by the current outlet `proxyUrl` so a
+ * settings change does not leak credentials across transports. Decision is per call.
+ */
+const resolveChatGPTWebTransport = (
+  runtimeProvider: string,
+  scope: EgressScopeId,
+): typeof fetch | undefined => {
+  if (runtimeProvider !== ModelProvider.ChatGPTWeb) return undefined;
+  return (async (input, init) => {
+    const hook = getEgressHook();
+    // Throws NetworkProxyUnavailableError on fail-mode — do not coerce to direct.
+    const proxyUrl = hook
+      ? await hook.getEgressProxyUrlForCurl(scope, extractFetchUrl(input))
+      : null;
+    try {
+      const response = await getChatGPTWebFetch(proxyUrl)(input, init);
+      // Proxied 2xx / 3xx / 4xx (≠ 407) clear prior connect-phase failures.
+      // 407 is a CONNECT / proxy-auth failure, not a successful hop.
+      if (proxyUrl && response.status !== 407) {
+        hook?.recordProxiedConnectSuccess?.(proxyUrl);
+      } else if (proxyUrl && response.status === 407) {
+        hook?.recordProxiedConnectFailure?.(
+          proxyUrl,
+          Object.assign(new Error('Proxy authentication required'), { status: 407 }),
+        );
+      }
+      return response;
+    } catch (error) {
+      if (proxyUrl) hook?.recordProxiedConnectFailure?.(proxyUrl, error);
+      throw error;
+    }
+  }) as typeof fetch;
+};
 
 export type ModelRuntimeInitParams = {
   fetch?: typeof fetch;
@@ -525,13 +589,25 @@ export const initModelRuntimeWithUserPayload = (
   const runtimeProvider = payload.runtimeProvider ?? provider;
   const { fetch: paramsFetch, requestHandler, ...restParams } = params;
   /**
-   * ChatGPT Web is the one runtime whose transport is not optional: chatgpt.com is behind
-   * Cloudflare bot-fight and answers Node's own fetch with a 403 challenge whatever
-   * headers are sent, because the TLS/HTTP2 fingerprint is what gets checked. Injected at
-   * THIS seam so every server path (user BYOK, platform-managed, exact-revision pins)
-   * gets it; an explicit `fetch` from the caller still wins.
+   * Egress scope key is the *catalog / caller provider id*, not the SDK
+   * `runtimeProvider`. Platform custom providers use their directory id;
+   * user-private custom providers are absent from config → off.
+   *
+   * Composition: `paramsFetch` (when present) stays the constructor-level
+   * SSRF / probe adapter. The runtime is ALWAYS wrapped with
+   * `wrapRuntimeWithEgressScope`, so bare `fetch()` inside methods is
+   * ALS-bound to `createEgressFetch`. Connection probes additionally
+   * compose egress into their SafeOutbound client (see connectionTestService).
    */
-  const customFetch = paramsFetch ?? resolveChatGPTWebTransport(runtimeProvider);
+  const scope = providerEgressScope(provider);
+  const hook = getEgressHook();
+  const customFetch =
+    paramsFetch ??
+    resolveChatGPTWebTransport(runtimeProvider, scope) ??
+    hook?.createEgressFetch(scope);
+
+  const wrap = <T extends object>(runtime: T): T =>
+    hook ? hook.wrapRuntimeWithEgressScope(runtime, scope) : runtime;
 
   if (runtimeProvider === ModelProvider.VertexAI) {
     const vertexOptions = buildVertexOptions(payload, restParams as never);
@@ -540,18 +616,20 @@ export const initModelRuntimeWithUserPayload = (
       ...(customFetch ? { fetch: customFetch } : {}),
     });
 
-    return new ModelRuntime(runtime, hooks);
+    return wrap(new ModelRuntime(runtime, hooks));
   }
 
-  return ModelRuntime.initializeWithProvider(
-    runtimeProvider,
-    {
-      ...getParamsFromPayload(runtimeProvider, payload),
-      ...restParams,
-      ...(customFetch ? { fetch: customFetch } : {}),
-      ...(requestHandler ? { requestHandler: requestHandler as never } : {}),
-    } as never,
-    hooks,
+  return wrap(
+    ModelRuntime.initializeWithProvider(
+      runtimeProvider,
+      {
+        ...getParamsFromPayload(runtimeProvider, payload),
+        ...restParams,
+        ...(customFetch ? { fetch: customFetch } : {}),
+        ...(requestHandler ? { requestHandler: requestHandler as never } : {}),
+      } as never,
+      hooks,
+    ),
   );
 };
 

@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 
+import { redactSecrets } from '../../networkProxy/redact';
 import { removeQuietly, writeRequestBodyFile } from './bodyFile';
 import { createBodyStream } from './bodyStream';
 import { buildInvocation, fetchFailed, MAX_STDERR_BYTES, readEnv } from './curlConfig';
@@ -226,7 +227,7 @@ export const createCurlImpersonateFetch = (
         return;
       }
 
-      const failure = fetchFailed(code, stderr);
+      const failure = fetchFailed(code, redactSecrets(stderr));
       // Before the head: a network-style rejection, exactly like undici.
       // After it: the caller already has a Response, so the failure belongs on the body.
       settleError?.(failure);
@@ -248,19 +249,50 @@ export const createCurlImpersonateFetch = (
   return impersonateFetch as typeof fetch;
 };
 
-let singleton: typeof fetch | undefined;
+const CURL_CACHE_MAX = 4;
+const keyed = new Map<string, { fetch: typeof fetch; lastUsed: number }>();
 
 /**
- * Process-wide impersonated fetch. Binary resolution happens on the FIRST REQUEST, not
- * at import time, so a deployment without the binary still boots and only the ChatGPT
- * Web provider reports itself unavailable.
+ * Impersonated fetch keyed by outlet `proxyUrl` (LRU 4). Binary resolution
+ * happens on the FIRST REQUEST, not at import time, so a deployment without
+ * the binary still boots and only the ChatGPT Web provider reports itself
+ * unavailable.
+ *
+ * Pass `proxyUrl` to emit `proxy = "<url>"` in the stdin curl config. Callers
+ * that do not need an egress proxy may omit it.
  */
-export const getChatGPTWebFetch = (): typeof fetch => {
-  singleton ??= createCurlImpersonateFetch();
-  return singleton;
+export const getChatGPTWebFetch = (proxyUrl?: string | null): typeof fetch => {
+  const key = proxyUrl ?? '';
+  const existing = keyed.get(key);
+  if (existing) {
+    existing.lastUsed = Date.now();
+    return existing.fetch;
+  }
+  while (keyed.size >= CURL_CACHE_MAX) {
+    let oldestKey: string | undefined;
+    let oldestAt = Number.POSITIVE_INFINITY;
+    for (const [entryKey, value] of keyed) {
+      if (value.lastUsed < oldestAt) {
+        oldestAt = value.lastUsed;
+        oldestKey = entryKey;
+      }
+    }
+    if (oldestKey !== undefined) keyed.delete(oldestKey);
+    else break;
+  }
+  const impl = createCurlImpersonateFetch(proxyUrl ? { proxyUrl } : {});
+  keyed.set(key, { fetch: impl, lastUsed: Date.now() });
+  return impl;
+};
+
+/** Drop cached transports whose key is not in `keep` (empty string = no-proxy transport). */
+export const evictChatGPTWebFetchExcept = (keep: ReadonlySet<string>): void => {
+  for (const key of keyed.keys()) {
+    if (key && !keep.has(key)) keyed.delete(key);
+  }
 };
 
 /** Test seam only. */
 export const resetChatGPTWebFetch = (): void => {
-  singleton = undefined;
+  keyed.clear();
 };

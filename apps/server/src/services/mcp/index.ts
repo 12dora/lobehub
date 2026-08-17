@@ -20,6 +20,7 @@ import {
   type StdioMCPParams,
 } from '@/libs/mcp';
 import { MCPClient } from '@/libs/mcp';
+import { rethrowIfNetworkProxyUnavailable } from '@/server/utils/networkProxyUnavailable';
 
 import { type ProcessContentBlocksFn } from './contentProcessor';
 import { contentBlocksToString } from './contentProcessor';
@@ -117,6 +118,7 @@ export class MCPService {
             parameters: item.inputSchema as ToolManifestSettings,
           }));
         } catch (error) {
+          rethrowIfNetworkProxyUnavailable(error);
           // Only retry for NoValidSessionId errors
           if ((error as Error).message !== 'NoValidSessionId') {
             console.error(`Error listing tools for params %O:`, loggableParams, error);
@@ -151,6 +153,7 @@ export class MCPService {
       );
       return result;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       console.error(`Error listing tools for params %O:`, loggableParams, error);
       // Propagate a TRPCError for better handling upstream
       throw new TRPCError({
@@ -176,6 +179,7 @@ export class MCPService {
       );
       return result;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       console.error(`Error listing resources for params %O:`, loggableParams, error);
       // Propagate a TRPCError for better handling upstream
       throw new TRPCError({
@@ -201,6 +205,7 @@ export class MCPService {
       );
       return result;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       console.error(`Error listing prompts for params %O:`, loggableParams, error);
       // Propagate a TRPCError for better handling upstream
       throw new TRPCError({
@@ -254,6 +259,7 @@ export class MCPService {
 
       return processedResult;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       if (error instanceof McpError) {
         const mcpError = error as McpError;
 
@@ -309,6 +315,7 @@ export class MCPService {
       log(`New client initialized and cached for key: ${key.slice(0, 20)}`);
       return client;
     } catch (error) {
+      rethrowIfNetworkProxyUnavailable(error);
       console.error(`Failed to initialize MCP client:`, error);
 
       // Preserve complete error information, especially detailed stderr output
@@ -505,5 +512,17 @@ export class MCPService {
   };
 }
 
-// Export a singleton instance
-export const mcpService = new MCPService();
+const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+
+const mcpHttpFetch: typeof fetch = (input, init) => {
+  const hook = (
+    globalThis as typeof globalThis & {
+      [EGRESS_BINDING]?: { createEgressFetch?: (scope: string) => typeof fetch };
+    }
+  )[EGRESS_BINDING];
+  const impl = hook?.createEgressFetch?.('feature:mcp') ?? globalThis.fetch.bind(globalThis);
+  return impl(input, init);
+};
+
+// Export a singleton instance — remote MCP hops go through the egress fetch.
+export const mcpService = new MCPService({ httpFetch: mcpHttpFetch });

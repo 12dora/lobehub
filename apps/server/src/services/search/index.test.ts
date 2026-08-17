@@ -693,6 +693,22 @@ describe('SearchService', () => {
       expect(result.results[0]).toBe(failedResult);
     });
 
+    it('rethrows fail-mode instead of turning it into a crawl result', async () => {
+      vi.mocked(toolsEnv).CRAWLER_RETRY = 1;
+      const fail = Object.assign(new Error('PLATFORM_NETWORK_PROXY_UNAVAILABLE'), {
+        errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+        name: 'NetworkProxyUnavailableError',
+      });
+      const mockCrawler = {
+        crawl: vi.fn().mockRejectedValue(fail),
+      };
+      vi.mocked(Crawler).mockImplementation(() => mockCrawler as any);
+
+      searchService = new SearchService();
+      await expect(searchService.crawlPages({ urls: ['https://example.com'] })).rejects.toBe(fail);
+      expect(mockCrawler.crawl).toHaveBeenCalledTimes(1);
+    });
+
     it('should handle crawl exceptions during retry', async () => {
       vi.mocked(toolsEnv).CRAWLER_RETRY = 1;
 

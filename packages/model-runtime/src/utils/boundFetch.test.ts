@@ -2,10 +2,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  type FetchLike,
   getBoundFetch,
   resetBoundFetchPatchForTests,
   runWithBoundFetch,
-  type FetchLike,
+  runWithBoundFetchSync,
 } from './boundFetch';
 
 const okResponse = () => new Response('ok', { status: 200 });
@@ -95,5 +96,34 @@ describe('runWithBoundFetch sequential binding', () => {
     expect(getBoundFetch()).toBeUndefined();
     expect(await (await globalThis.fetch('https://example.test/out')).text()).toBe('ok');
     expect(originalFetch).toHaveBeenCalledOnce();
+  });
+});
+
+describe('runWithBoundFetchSync', () => {
+  it('keeps sync returns sync, async returns as promises, and binds fetch in both', async () => {
+    coldStart();
+    const originalFetch = vi.fn(async () => okResponse()) as unknown as FetchLike;
+    globalThis.fetch = originalFetch;
+    const bound = vi.fn(async () => new Response('bound', { status: 200 })) as unknown as FetchLike;
+
+    const syncValue = runWithBoundFetchSync(bound, () => {
+      expect(getBoundFetch()).toBe(bound);
+      void globalThis.fetch('https://example.test/sync');
+      return 'hello';
+    });
+    expect(syncValue).toBe('hello');
+    expect(syncValue).not.toBeInstanceOf(Promise);
+
+    const asyncValue = runWithBoundFetchSync(bound, async () => {
+      expect(getBoundFetch()).toBe(bound);
+      const res = await globalThis.fetch('https://example.test/async');
+      return res.text();
+    });
+    expect(asyncValue).toBeInstanceOf(Promise);
+    expect(await asyncValue).toBe('bound');
+
+    expect(bound).toHaveBeenCalledTimes(2);
+    expect(originalFetch).not.toHaveBeenCalled();
+    expect(getBoundFetch()).toBeUndefined();
   });
 });

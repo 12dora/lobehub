@@ -9,6 +9,7 @@ import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
 import { resolveConnectorGovernance } from '../connectorGovernance/resolve';
 import { CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER } from '../connectorGovernance/types';
+import { createEgressSafeOutboundTransport } from '../networkProxy/egress/safeOutboundTransport';
 import { PlatformAuditService } from '../platformAudit';
 import { ConnectorOutboundClient } from './connectorOutboundClient';
 import { connectorOutboundPolicyProvider } from './connectorOutboundPolicy';
@@ -279,7 +280,10 @@ export const executeManagedConnectorTool = async (params: {
     if (!secretService) return stableFailure('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
     const secrets = new PlatformConnectorSecretStore(params.db, secretService);
     const outbound = new ConnectorOutboundClient(
-      new SafeOutboundHttpClient({ policyProvider: connectorOutboundPolicyProvider }),
+      new SafeOutboundHttpClient({
+        policyProvider: connectorOutboundPolicyProvider,
+        ...createEgressSafeOutboundTransport('feature:mcp'),
+      }),
     );
     const adapter = buildConnectorRuntimeAdapter(
       { db: params.db, env: params.env, workspaceId: params.workspaceId },

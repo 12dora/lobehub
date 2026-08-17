@@ -22,6 +22,8 @@ import {
   type SafeOutboundHttpClient,
 } from '../../security/outboundHttp';
 import { getChatGPTWebFetch } from '../chatgptWeb/transport';
+import { getEgressProxyUrlForCurl } from '../networkProxy/egress/router';
+import { createEgressSafeOutboundTransport } from '../networkProxy/egress/safeOutboundTransport';
 import { resolveAiCatalogOutboundMode } from './outboundMode';
 import type { PlatformProviderKeyVaults } from './secretManager';
 
@@ -324,33 +326,39 @@ const withProbeDeadline = (impersonatedFetch: typeof fetch, deadline: AbortSigna
 export const createSafeAiConnectionProbe = (
   // G-07: platform provider endpoints are admin-authored, so the probe follows the same
   // private-network switch as connectors and identity providers (see ./outboundMode).
-  outbound: SafeOutboundHttpClient = createSafeOutboundHttpClient({
-    mode: resolveAiCatalogOutboundMode(),
-  }),
+  // Tests may inject a client; production builds a per-provider egress-aware client.
+  outbound?: SafeOutboundHttpClient,
 ): AiConnectionProbe => {
-  const bufferedFetchAdapter = createSafeOutboundFetchAdapter(outbound, {
-    maxRedirects: AI_CONNECTION_TEST_MAX_REDIRECTS,
-    maxResponseBytes: AI_CONNECTION_TEST_MAX_RESPONSE_BYTES,
-    secretBearing: true,
-    timeoutMs: AI_CONNECTION_TEST_TIMEOUT_MS,
-  });
-
-  /**
-   * A streaming probe on a buffering transport is not a streaming probe: the SDK's
-   * `stream: true` call could not return until the WHOLE completion had been received, so the
-   * 15s round-trip budget was spent on the model's full answer and the probe timed out.
-   */
-  const streamingFetchAdapter = createSafeOutboundFetchAdapter(outbound, {
-    maxRedirects: AI_CONNECTION_TEST_MAX_REDIRECTS,
-    maxResponseBytes: AI_CONNECTION_TEST_MAX_RESPONSE_BYTES,
-    secretBearing: true,
-    streaming: true,
-    timeoutMs: AI_CONNECTION_TEST_STREAM_TIMEOUT_MS,
-  });
-
   return async ({ keyVaults, model, provider, runtimeProvider }) => {
     if (!model) throw new Error('check model is required');
     const payload = buildPayloadFromKeyVaults(keyVaults, runtimeProvider);
+    const scope = `provider:${provider.providerKey}` as const;
+    const client =
+      outbound ??
+      createSafeOutboundHttpClient({
+        mode: resolveAiCatalogOutboundMode(),
+        ...createEgressSafeOutboundTransport(scope),
+      });
+
+    const bufferedFetchAdapter = createSafeOutboundFetchAdapter(client, {
+      maxRedirects: AI_CONNECTION_TEST_MAX_REDIRECTS,
+      maxResponseBytes: AI_CONNECTION_TEST_MAX_RESPONSE_BYTES,
+      secretBearing: true,
+      timeoutMs: AI_CONNECTION_TEST_TIMEOUT_MS,
+    });
+
+    /**
+     * A streaming probe on a buffering transport is not a streaming probe: the SDK's
+     * `stream: true` call could not return until the WHOLE completion had been received, so the
+     * 15s round-trip budget was spent on the model's full answer and the probe timed out.
+     */
+    const streamingFetchAdapter = createSafeOutboundFetchAdapter(client, {
+      maxRedirects: AI_CONNECTION_TEST_MAX_REDIRECTS,
+      maxResponseBytes: AI_CONNECTION_TEST_MAX_RESPONSE_BYTES,
+      secretBearing: true,
+      streaming: true,
+      timeoutMs: AI_CONNECTION_TEST_STREAM_TIMEOUT_MS,
+    });
 
     // Honor managed OpenAI request-format setting so probes match production traffic.
     const apiMode = resolveAiConnectionProbeApiMode(provider.config?.enableResponseApi);
@@ -366,8 +374,18 @@ export const createSafeAiConnectionProbe = (
       ? AbortSignal.timeout(AI_CONNECTION_TEST_STREAM_TIMEOUT_MS)
       : undefined;
 
+    const extractUrl = (input: RequestInfo | URL): string => {
+      if (typeof input === 'string') return input;
+      if (input instanceof URL) return input.href;
+      if (typeof Request !== 'undefined' && input instanceof Request) return input.url;
+      return String(input);
+    };
+
     const fetchAdapter = probeDeadline
-      ? withProbeDeadline(getChatGPTWebFetch(), probeDeadline)
+      ? withProbeDeadline(async (input, init) => {
+          const proxyUrl = await getEgressProxyUrlForCurl(scope, extractUrl(input));
+          return getChatGPTWebFetch(proxyUrl)(input, init);
+        }, probeDeadline)
       : stream
         ? streamingFetchAdapter
         : bufferedFetchAdapter;

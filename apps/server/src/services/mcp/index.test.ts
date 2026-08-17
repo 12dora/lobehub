@@ -385,5 +385,61 @@ describe('MCPService', () => {
         code: 'INTERNAL_SERVER_ERROR',
       });
     });
+
+    it('rethrows fail-mode instead of remapping to INTERNAL_SERVER_ERROR', async () => {
+      const fail = Object.assign(new Error('PLATFORM_NETWORK_PROXY_UNAVAILABLE'), {
+        errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+        name: 'NetworkProxyUnavailableError',
+      });
+      mockClient.listTools.mockRejectedValue(fail);
+
+      await expect(mcpService.listTools(mockParams)).rejects.toMatchObject({
+        errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+        name: 'NetworkProxyUnavailableError',
+      });
+    });
+
+    it('detects fail-mode through err.cause and does not remap', async () => {
+      const fail = Object.assign(new Error('PLATFORM_NETWORK_PROXY_UNAVAILABLE'), {
+        errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+        name: 'NetworkProxyUnavailableError',
+      });
+      mockClient.listTools.mockRejectedValue(new Error('fetch failed', { cause: fail }));
+
+      await expect(mcpService.listTools(mockParams)).rejects.toMatchObject({
+        message: 'fetch failed',
+        cause: expect.objectContaining({
+          errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+        }),
+      });
+    });
+  });
+
+  it('surfaces PLATFORM_NETWORK_PROXY_UNAVAILABLE from getClient initialize', async () => {
+    const { MCPClient } = await import('@/libs/mcp');
+    const { MCPService } = await import('./index');
+    const fail = Object.assign(new Error('PLATFORM_NETWORK_PROXY_UNAVAILABLE'), {
+      errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+      name: 'NetworkProxyUnavailableError',
+    });
+    vi.mocked(MCPClient).mockImplementationOnce(
+      () =>
+        ({
+          initialize: vi.fn(async () => {
+            throw fail;
+          }),
+        }) as any,
+    );
+    const service = new MCPService();
+    await expect(
+      (service as any).getClient({
+        name: 'x',
+        type: 'http',
+        url: 'https://mcp.example.test',
+      }),
+    ).rejects.toMatchObject({
+      errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+      name: 'NetworkProxyUnavailableError',
+    });
   });
 });

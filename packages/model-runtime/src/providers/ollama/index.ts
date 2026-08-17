@@ -41,14 +41,16 @@ export class LobeOllamaAI implements LobeRuntimeAI {
 
   baseURL?: string;
 
-  constructor({ baseURL }: ClientOptions = {}) {
+  constructor({ baseURL, fetch }: ClientOptions = {}) {
     try {
       if (baseURL) new URL(baseURL);
     } catch (e) {
       throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidOllamaArgs, e);
     }
 
-    this.client = new Ollama(!baseURL ? undefined : { host: baseURL });
+    this.client = new Ollama(
+      !baseURL && !fetch ? undefined : { ...(baseURL ? { host: baseURL } : {}), fetch },
+    );
 
     if (baseURL) this.baseURL = baseURL;
   }
@@ -86,6 +88,14 @@ export class LobeOllamaAI implements LobeRuntimeAI {
         headers: options?.headers,
       });
     } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        ((error as { errorType?: string }).errorType === 'PLATFORM_NETWORK_PROXY_UNAVAILABLE' ||
+          (error as { name?: string }).name === 'NetworkProxyUnavailableError')
+      ) {
+        throw error;
+      }
       const e = error as {
         error: any;
         message: string;

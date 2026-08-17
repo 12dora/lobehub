@@ -2,6 +2,21 @@ import debug from 'debug';
 
 const log = debug('lobe-chat:module:github');
 
+const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
+
+const withImportFetchScope = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const hook = (
+    globalThis as typeof globalThis & {
+      [EGRESS_BINDING]?: {
+        getCurrentScope?: () => string | null;
+        runWithEgressScope?: (scope: string, inner: () => Promise<T>) => Promise<T>;
+      };
+    }
+  )[EGRESS_BINDING];
+  if (!hook?.runWithEgressScope || hook.getCurrentScope?.() === 'feature:import_fetch') return fn();
+  return hook.runWithEgressScope('feature:import_fetch', fn);
+};
+
 export interface GitHubRepoInfo {
   branch: string;
   owner: string;
@@ -145,6 +160,10 @@ export class GitHub {
    * Download repository as ZIP buffer
    */
   async downloadRepoZip(info: GitHubRepoInfo): Promise<Buffer> {
+    return withImportFetchScope(() => this.downloadRepoZipUnscoped(info));
+  }
+
+  private async downloadRepoZipUnscoped(info: GitHubRepoInfo): Promise<Buffer> {
     const zipUrl = this.buildRepoZipUrl(info);
     log('downloadRepoZip: fetching url=%s', zipUrl);
 
@@ -179,6 +198,10 @@ export class GitHub {
    * Download a single raw file from GitHub
    */
   async downloadRawFile(info: GitHubRawFileInfo): Promise<string> {
+    return withImportFetchScope(() => this.downloadRawFileUnscoped(info));
+  }
+
+  private async downloadRawFileUnscoped(info: GitHubRawFileInfo): Promise<string> {
     const rawUrl = this.buildRawFileUrl(info);
 
     const response = await fetch(rawUrl, {
@@ -205,6 +228,10 @@ export class GitHub {
    * Download a single raw file as buffer from GitHub
    */
   async downloadRawFileBuffer(info: GitHubRawFileInfo): Promise<Buffer> {
+    return withImportFetchScope(() => this.downloadRawFileBufferUnscoped(info));
+  }
+
+  private async downloadRawFileBufferUnscoped(info: GitHubRawFileInfo): Promise<Buffer> {
     const rawUrl = this.buildRawFileUrl(info);
 
     const response = await fetch(rawUrl, {

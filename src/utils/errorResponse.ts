@@ -21,6 +21,10 @@ const PLATFORM_FORBIDDEN_ERROR_CODES = new Set<string>([
   PLATFORM_ERROR_CODES.PLATFORM_CONTENT_MODERATION_BLOCKED,
 ]);
 
+const PLATFORM_UNAVAILABLE_ERROR_CODES = new Set<string>([
+  PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_UNAVAILABLE,
+]);
+
 const isValidHttpStatus = (status: unknown): status is number =>
   typeof status === 'number' && Number.isInteger(status) && status >= 200 && status <= 599;
 
@@ -102,6 +106,7 @@ const getStatus = (errorType: ILobeAgentRuntimeErrorType | ErrorType) => {
   // Compared outside the switch above: these codes are raised by the enterprise catalog layer
   // and are deliberately not members of the shared `ErrorType` union.
   if (PLATFORM_FORBIDDEN_ERROR_CODES.has(errorType as string)) return 403;
+  if (PLATFORM_UNAVAILABLE_ERROR_CODES.has(errorType as string)) return 503;
 
   return errorType as number;
 };

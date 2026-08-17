@@ -1,9 +1,11 @@
 import { MCPService } from '../../../services/mcp';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
+import { createEgressSafeOutboundTransport } from '../networkProxy/egress/safeOutboundTransport';
 import { connectorOutboundPolicyProvider } from './connectorOutboundPolicy';
 
 const safeOutbound = new SafeOutboundHttpClient({
   policyProvider: connectorOutboundPolicyProvider,
+  ...createEgressSafeOutboundTransport('feature:mcp'),
 });
 
 const safeMcpFetch: typeof fetch = async (input, init) => {

@@ -77,6 +77,16 @@ describe('AssistantStore', () => {
     expect(result).toEqual([]);
   });
 
+  it('rethrows fail-mode instead of returning an empty agent index', async () => {
+    const fail = Object.assign(new Error('PLATFORM_NETWORK_PROXY_UNAVAILABLE'), {
+      errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+      name: 'NetworkProxyUnavailableError',
+    });
+    global.fetch = vi.fn().mockRejectedValue(fail);
+    const store = new AssistantStore();
+    await expect(store.getAgentIndex()).rejects.toBe(fail);
+  });
+
   it('should handle fetch error and return empty agents with schema version when error.ok is false', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: false,

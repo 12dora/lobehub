@@ -122,6 +122,7 @@ export interface AnthropicCompatibleFactoryOptions<T extends Record<string, any>
     apiKey?: string;
     baseURL: string;
     client: Anthropic;
+    fetch?: typeof fetch;
   }) => Promise<ChatModelCard[]>;
   provider: string;
 }
@@ -369,16 +370,24 @@ export const handleDefaultAnthropicError = <T extends Record<string, any> = any>
 export const createDefaultAnthropicModels = async ({
   apiKey,
   baseURL,
+  client,
+  fetch: fetchImpl,
 }: {
   apiKey?: string;
   baseURL: string;
   client?: Anthropic;
+  fetch?: typeof fetch;
 }): Promise<ChatModelCard[]> => {
   if (!apiKey) {
     throw new Error('Missing Anthropic API key for model listing');
   }
 
-  const response = await fetch(`${baseURL}/v1/models`, {
+  const injectedFetch =
+    fetchImpl ??
+    (client as { fetch?: typeof fetch } | undefined)?.fetch ??
+    globalThis.fetch.bind(globalThis);
+
+  const response = await injectedFetch(`${baseURL}/v1/models`, {
     headers: {
       'anthropic-version': '2023-06-01',
       'x-api-key': `${apiKey}`,
@@ -708,6 +717,7 @@ export const createAnthropicCompatibleRuntime = <T extends Record<string, any> =
         apiKey: (this._options.apiKey as string) ?? undefined,
         baseURL: this.baseURL,
         client: this.client,
+        fetch: (this._options as { fetch?: typeof fetch }).fetch,
       });
     }
 

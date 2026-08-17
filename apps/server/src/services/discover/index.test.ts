@@ -593,7 +593,20 @@ describe('DiscoverService', () => {
         );
       });
 
-      it('should return undefined for non-existent plugin', async () => {
+      // The fall-through path dynamically imports `@lobechat/builtin-tools` (~1 s cold transform);
+      // under a fully parallel run that exceeds the default 5 s budget.
+      it('rethrows fail-mode instead of treating the plugin as not found', async () => {
+        mockPluginStore.getPluginList.mockResolvedValue([]);
+        const fail = Object.assign(new Error('PLATFORM_NETWORK_PROXY_UNAVAILABLE'), {
+          errorType: 'PLATFORM_NETWORK_PROXY_UNAVAILABLE',
+          name: 'NetworkProxyUnavailableError',
+        });
+        mockMarket.plugins.getPluginDetail.mockRejectedValue(fail);
+
+        await expect(service.getPluginDetail({ identifier: 'missing-plugin' })).rejects.toBe(fail);
+      });
+
+      it('should return undefined for non-existent plugin', { timeout: 20_000 }, async () => {
         const result = await service.getPluginDetail({
           identifier: 'non-existent',
         });
