@@ -74,6 +74,21 @@ const createRuntime = (overrides: Partial<NetworkProxyRuntime> = {}): NetworkPro
   return {
     applyScopeOps: vi.fn((config) => config),
     applyStaticProxyUpdate: vi.fn(async (current) => current),
+    buildLocalInstanceStatus: vi.fn(async () => ({
+      activeNode: 'node-a',
+      aliveNodeCount: 1,
+      appliedEngineGeneration: 1,
+      appliedRevision: 1,
+      arch: 'arm64',
+      artifacts: [],
+      engineState: 'running' as const,
+      engineVersion: 'v1.19.30',
+      fallbackCount: 0,
+      instanceId: 'pinst_test',
+      lastError: null,
+      platform: 'linux',
+      proxiedCount: 0,
+    })),
     artifactManager: {
       getStatus: vi.fn(async () => []),
       installFromDownload: vi.fn(async () => ({ sha256: 'abc', version: 'v1.19.30' })),

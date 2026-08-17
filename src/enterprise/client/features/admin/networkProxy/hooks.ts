@@ -1,13 +1,11 @@
 'use client';
 
-import { mutate } from 'swr';
-
 import { adminAiProviderService } from '@/enterprise/client/services/adminAiInfraAdapter';
 import {
   type AdminNetworkProxyService,
   adminNetworkProxyService,
 } from '@/enterprise/client/services/adminNetworkProxy';
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 
 import {
   buildNetworkProxyArtifactsKey,
