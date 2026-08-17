@@ -10,6 +10,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 import ManagedResourcesPolicyPage from '../managedResources/ManagedResourcesPolicyPage';
+import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import SettingsPolicyPage from '../settings/SettingsPolicyPage';
 
 type UnifiedTab = 'managed' | 'settings';
@@ -56,22 +57,28 @@ const UnifiedManagementPage = memo(() => {
   const tab: UnifiedTab = tabs.some((item) => item.key === requested) ? requested : tabs[0].key;
 
   return (
-    <Flexbox gap={12} height={'100%'}>
-      <Tabs
-        activeKey={tab}
-        items={tabs}
-        onChange={(key) => {
-          const next = new URLSearchParams(params);
-          next.set('tab', key);
-          setParams(next, { replace: true });
-        }}
-      />
+    <AdminPageTemplate
+      fullHeight
+      description={t('page.unifiedManagement.desc')}
+      title={t('nav.unifiedManagement')}
+      toolbar={
+        <Tabs
+          activeKey={tab}
+          items={tabs}
+          onChange={(key) => {
+            const next = new URLSearchParams(params);
+            next.set('tab', key);
+            setParams(next, { replace: true });
+          }}
+        />
+      }
+    >
       {tab === 'settings' ? (
         <SettingsPolicyPage embedded />
       ) : (
         <ManagedResourcesPolicyPage embedded />
       )}
-    </Flexbox>
+    </AdminPageTemplate>
   );
 });
 

@@ -1,12 +1,12 @@
 'use client';
 
-import { Text } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 
 import AdminAiRuntimeLoadAlert from '@/enterprise/client/features/admin/ai/shared/AdminAiRuntimeLoadAlert';
+import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/AdminPageTemplate';
 import SettingContainer from '@/features/Setting/SettingContainer';
 import SettingsContextProvider from '@/routes/(main)/settings/_layout/ContextProvider';
 import ProviderGrid from '@/routes/(main)/settings/provider/(list)/ProviderGrid';
@@ -24,21 +24,6 @@ const styles = createStaticStyles(({ css }) => ({
     display: flex;
     flex: 1;
     min-height: 0;
-  `,
-  shell: css`
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    min-height: 0;
-  `,
-  toolbar: css`
-    display: flex;
-    flex-shrink: 0;
-    gap: 12px;
-    align-items: center;
-
-    padding-block: 8px 12px;
-    padding-inline: 4px;
   `,
 }));
 
@@ -99,19 +84,11 @@ const AdminProviderSettingsLayout = memo(() => {
   };
 
   return (
-    <div className={styles.shell}>
-      <div className={styles.toolbar}>
-        <div>
-          <Text as="h1" style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>
-            {t('nav.aiProviders')}
-          </Text>
-          <Text style={{ fontSize: 12 }} type="secondary">
-            {t('aiProviderSettings.description', {
-              defaultValue: 'Manage global platform AI providers. Changes apply immediately.',
-            })}
-          </Text>
-        </div>
-      </div>
+    <AdminPageTemplate
+      fullHeight
+      description={t('aiProviderSettings.description')}
+      title={t('nav.aiProviders')}
+    >
       <div className={styles.body}>
         <ProviderMenu mobile={false} onProviderSelect={onProviderSelect} />
         <SettingContainer flex={1} maxWidth={1024} padding={24} style={{ minHeight: 0 }}>
@@ -125,7 +102,7 @@ const AdminProviderSettingsLayout = memo(() => {
           )}
         </SettingContainer>
       </div>
-    </div>
+    </AdminPageTemplate>
   );
 });
 

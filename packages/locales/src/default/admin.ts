@@ -670,9 +670,17 @@ export default {
   'aiConnectorSettings.actions.published': 'Connector listed for all users',
   'aiConnectorSettings.actions.republish': 'Apply changes',
   'aiConnectorSettings.actions.test': 'Test connection',
+  'page.aiConnectors.desc':
+    'Manage the connectors and tool permissions available to every member. Changes apply immediately.',
+  'page.aiSkills.desc':
+    'Install and configure skills for everyone on this platform. Changes apply immediately.',
   'aiConnectorSettings.actions.testFail': 'Connection test failed',
   'aiConnectorSettings.actions.testOk': 'Connection OK',
   'aiConnectorSettings.detail.noDescription': 'No description',
+  'page.securityAuth.desc':
+    'Configure how members sign in and which accounts are allowed to register.',
+  'page.unifiedManagement.desc':
+    'Decide which settings members can change themselves, and which resources the platform manages centrally.',
   'aiConnectorSettings.detail.notFound': 'Connector not found',
   'aiConnectorSettings.detail.publishedRevision': 'Published revision',
   'aiConnectorSettings.detail.tools': 'Tools',

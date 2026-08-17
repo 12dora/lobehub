@@ -18,6 +18,24 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 16px;
 
     min-width: 0;
+    min-height: 0;
+  `,
+  /**
+   * Closes the page header (title + description + notice). One rule per page —
+   * everything below it (banner, toolbar/tabs, content) belongs to the body.
+   */
+  divider: css`
+    flex-shrink: 0;
+
+    width: 100%;
+    height: 1px;
+    margin: 0;
+    border: none;
+
+    background: ${cssVar.colorBorderSecondary};
+  `,
+  fullHeight: css`
+    height: 100%;
   `,
   header: css`
     display: flex;
@@ -42,9 +60,6 @@ const styles = createStaticStyles(({ css }) => ({
     display: flex;
     flex-direction: column;
     gap: 8px;
-
-    padding-block-end: 8px;
-    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
   `,
 }));
 
@@ -55,6 +70,19 @@ export interface AdminPageTemplateProps {
   banner?: ReactNode;
   children: ReactNode;
   description?: ReactNode;
+  /**
+   * Escape hatch for the rule that closes the page header. Defaults to `true`
+   * whenever the page title is rendered (embedded `hideTitle` sub-pages get none —
+   * the outer page already drew it) — pass `false` for surfaces that supply their
+   * own separation.
+   */
+  divider?: boolean;
+  /**
+   * Stretch the page to the shell height so a master-detail / sticky-footer body
+   * can fill the remaining space and scroll internally instead of growing the
+   * whole admin shell.
+   */
+  fullHeight?: boolean;
   /** Suppress the page `<h1>` when embedded under an outer surface (e.g. a tab whose label already names it). */
   hideTitle?: boolean;
   /**
@@ -81,10 +109,27 @@ export interface AdminPageTemplateProps {
  * settings-page refactor in M03.
  */
 const AdminPageTemplate = memo<AdminPageTemplateProps>(
-  ({ title, description, actions, toolbar, banner, children, hideTitle, maxWidth, notice }) => {
+  ({
+    title,
+    description,
+    actions,
+    toolbar,
+    banner,
+    children,
+    divider,
+    fullHeight,
+    hideTitle,
+    maxWidth,
+    notice,
+  }) => {
+    // The rule belongs to the header, so it only exists when a header does.
+    // Embedded sub-pages (hideTitle) sit under an outer page header + tab strip that already
+    // drew the one rule this page gets; their own description stays rule-less.
+    const showDivider = divider ?? !hideTitle;
+
     return (
       <Flexbox
-        className={styles.body}
+        className={fullHeight ? `${styles.body} ${styles.fullHeight}` : styles.body}
         gap={16}
         style={
           maxWidth === undefined ? undefined : { marginInline: 'auto', maxWidth, width: '100%' }
@@ -102,6 +147,7 @@ const AdminPageTemplate = memo<AdminPageTemplateProps>(
           </div>
           {actions ? <div className={styles.actions}>{actions}</div> : null}
         </div>
+        {showDivider ? <hr className={styles.divider} /> : null}
         {banner}
         {toolbar ? <div className={styles.toolbar}>{toolbar}</div> : null}
         {children}

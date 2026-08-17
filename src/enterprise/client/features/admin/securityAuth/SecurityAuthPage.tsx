@@ -1,6 +1,5 @@
 'use client';
 
-import { Flexbox } from '@lobehub/ui';
 import { Tabs } from '@lobehub/ui/base-ui';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +7,7 @@ import { useSearchParams } from 'react-router';
 
 import GeneralSettingsPage from '../generalSettings/GeneralSettingsPage';
 import IdentityProviderPage from '../identityProviders/IdentityProviderPage';
+import AdminPageTemplate from '../primitives/AdminPageTemplate';
 
 type SecurityAuthTab = 'general' | 'login';
 
@@ -32,18 +32,24 @@ const SecurityAuthPage = memo(() => {
   const tab: SecurityAuthTab = params.get('tab') === 'general' ? 'general' : 'login';
 
   return (
-    <Flexbox gap={12} height={'100%'}>
-      <Tabs
-        activeKey={tab}
-        items={tabs}
-        onChange={(key) => {
-          const next = new URLSearchParams(params);
-          next.set('tab', key);
-          setParams(next, { replace: true });
-        }}
-      />
+    <AdminPageTemplate
+      fullHeight
+      description={t('page.securityAuth.desc')}
+      title={t('nav.securityAuth')}
+      toolbar={
+        <Tabs
+          activeKey={tab}
+          items={tabs}
+          onChange={(key) => {
+            const next = new URLSearchParams(params);
+            next.set('tab', key);
+            setParams(next, { replace: true });
+          }}
+        />
+      }
+    >
       {tab === 'general' ? <GeneralSettingsPage embedded /> : <IdentityProviderPage embedded />}
-    </Flexbox>
+    </AdminPageTemplate>
   );
 });
 
