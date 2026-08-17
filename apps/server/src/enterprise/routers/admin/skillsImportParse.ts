@@ -1,340 +1,45 @@
 import { ssrfSafeFetch } from '@lobechat/ssrf-safe-fetch';
 import type { SkillManifest } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
-import { unzip as fflateUnzip } from 'fflate';
-import { sha256 } from 'js-sha256';
 
-import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { GitHub, GitHubParseError } from '@/server/modules/GitHub';
 import { SkillManifestError, SkillParseError } from '@/server/services/skill/errors';
-import { SkillParser } from '@/server/services/skill/parser';
 
-import { isStrictSemVer } from '../../contracts/shared';
 import type {
   AdminSkillParseImportSourceInput,
   AdminSkillParseImportSourceOutput,
-  SkillManifest as EnterpriseSkillManifest,
-  SkillResource,
 } from '../../contracts/skillCatalog';
-import { throwEnterpriseError } from '../../guards/enterpriseErrors';
+import { importError, SKILL_IMPORT_ERROR_REASONS } from './skillImport/errors';
+import {
+  FETCH_TIMEOUT_MS,
+  MAX_CONTENT_BYTES,
+  MAX_IMPORT_ZIP_BYTES,
+  parseZipBuffer,
+  readResponseBodyWithLimit,
+} from './skillImport/fetch';
+import {
+  deriveDescription,
+  deriveDisplayName,
+  derivePackageVersion,
+  parser,
+  sanitizeSkillKey,
+  toContractResources,
+  toEnterpriseSkillManifest,
+} from './skillImport/manifest';
 
-/** Decoded upload / remote ZIP compressed-byte cap. */
-export const MAX_IMPORT_ZIP_BYTES = 20 * 1024 * 1024;
-/** Total uncompressed entry-byte cap (ZIP bomb guard). */
-export const MAX_IMPORT_ZIP_EXPANDED_BYTES = 50 * 1024 * 1024;
-/** Mirrors skillResourcesSchema max. */
-const MAX_RESOURCES = 100;
-/** Mirrors skillResourceSchema content/sizeBytes cap. */
-const MAX_RESOURCE_BYTES = 1_048_576;
-const MAX_CONTENT_BYTES = 1_048_576;
-const FETCH_TIMEOUT_MS = 30_000;
-
-/** Stable machine-readable import failure reasons (client maps to i18n). */
-export const SKILL_IMPORT_ERROR_REASONS = {
-  CONTENT_TOO_LARGE: 'skill_import_content_too_large',
-  FETCH_FAILED: 'skill_import_fetch_failed',
-  INVALID_ZIP: 'skill_import_invalid_zip',
-  NOT_FOUND: 'skill_import_not_found',
-  PARSE_FAILED: 'skill_import_parse_failed',
-  TIMEOUT: 'skill_import_timeout',
-  ZIP_TOO_LARGE: 'skill_import_zip_too_large',
-} as const;
-
-export type SkillImportErrorReason =
-  (typeof SKILL_IMPORT_ERROR_REASONS)[keyof typeof SKILL_IMPORT_ERROR_REASONS];
-
-const MEDIA_TYPES: Record<string, string> = {
-  css: 'text/css',
-  csv: 'text/csv',
-  html: 'text/html',
-  js: 'text/javascript',
-  json: 'application/json',
-  md: 'text/markdown',
-  mjs: 'text/javascript',
-  py: 'text/x-python',
-  sh: 'text/x-shellscript',
-  svg: 'image/svg+xml',
-  toml: 'application/toml',
-  ts: 'text/typescript',
-  txt: 'text/plain',
-  xml: 'application/xml',
-  yaml: 'application/yaml',
-  yml: 'application/yaml',
-};
-
-const mediaTypeFor = (path: string): string => {
-  const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  return MEDIA_TYPES[ext] ?? 'text/plain';
-};
-
-/**
- * Conform an arbitrary derived identifier to the skillKey contract charset
- * (/^[a-z0-9][a-z0-9._-]*$/, max 128).
- */
-export const sanitizeSkillKey = (raw: string): string => {
-  const sanitized = raw
-    .toLowerCase()
-    .replaceAll(/[^\d.a-z_-]+/g, '-')
-    .replaceAll(/-{2,}/g, '-')
-    .replace(/^[._-]+/, '')
-    .slice(0, 128)
-    .replace(/[._-]+$/, '');
-  return sanitized || 'imported-skill';
-};
-
-const isSafeResourcePath = (path: string): boolean =>
-  path.length > 0 &&
-  path.length <= 512 &&
-  !path.startsWith('/') &&
-  !path.includes('\\') &&
-  path.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
-
-/**
- * Convert parser resources (Map<path, Buffer>) into the skillCatalog contract shape.
- * Only UTF-8 text resources within the per-file cap survive; anything dropped flips `truncated`.
- */
-const toContractResources = (
-  resources: Map<string, Buffer> | undefined,
-): { items: SkillResource[]; truncated: boolean } => {
-  const items: SkillResource[] = [];
-  let truncated = false;
-  if (!resources || resources.size === 0) return { items, truncated };
-
-  for (const path of [...resources.keys()].sort()) {
-    const buffer = resources.get(path)!;
-    if (items.length >= MAX_RESOURCES) {
-      truncated = true;
-      break;
-    }
-    if (!isSafeResourcePath(path) || buffer.length > MAX_RESOURCE_BYTES) {
-      truncated = true;
-      continue;
-    }
-    const content = buffer.toString('utf8');
-    // Round-trip check rejects binary payloads that cannot survive the text contract.
-    if (!Buffer.from(content, 'utf8').equals(buffer)) {
-      truncated = true;
-      continue;
-    }
-    items.push({
-      checksum: sha256(content),
-      content,
-      mediaType: mediaTypeFor(path),
-      path,
-      sizeBytes: buffer.length,
-    });
-  }
-  return { items, truncated };
-};
-
-const deriveDisplayName = (manifest: SkillManifest, content: string): string => {
-  const fromManifest = manifest.name?.trim();
-  if (fromManifest) return fromManifest.slice(0, 200);
-  const heading = content.match(/^#{1,6}[ \t]+(\S.*)$/m)?.[1]?.trim();
-  if (heading) return heading.slice(0, 200);
-  return 'Imported Skill';
-};
-
-const deriveDescription = (manifest: SkillManifest): string | null => {
-  const description = manifest.description?.trim();
-  return description ? description.slice(0, 4000) : null;
-};
-
-/** Hostname shape accepted by enterprise skillPermissionsSchema.network.allowedHosts. */
-const ALLOWED_HOST_RE =
-  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
-const TOOL_KEY_RE = /^[a-z0-9][\w.-]{0,127}$/i;
-const SKILL_KEY_RE = /^[a-z0-9][\w.-]*$/i;
-
-const uniquePreserveOrder = (values: string[]): string[] => {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const value of values) {
-    if (seen.has(value)) continue;
-    seen.add(value);
-    out.push(value);
-  }
-  return out;
-};
-
-/**
- * Map free-form package permission tokens into enterprise grants.
- * Unknown / non-compatible tokens are ignored (fail closed — no silent over-grant).
- *
- * Compatible tokens:
- * - `filesystem` | `filesystem:read` | `fs:read` → filesystem:read
- * - `network:<hostname>` → network host allowlist (+ enabled when non-empty)
- * - bare `network` is ignored (requires explicit hosts to stay validator-consistent)
- * - `tool:<key>` → tools.allow (+ matching optional toolDependencies)
- * Bare unknown tokens are ignored (fail closed — no silent over-grant).
- */
-export const mapPackagePermissionTokens = (
-  tokens: readonly string[] | undefined,
-): Pick<EnterpriseSkillManifest, 'permissions' | 'toolDependencies'> => {
-  let filesystem: 'none' | 'read' = 'none';
-  const allowedHosts: string[] = [];
-  const toolKeys: string[] = [];
-
-  for (const raw of tokens ?? []) {
-    if (typeof raw !== 'string') continue;
-    const token = raw.trim();
-    if (!token) continue;
-    const lower = token.toLowerCase();
-
-    if (lower === 'filesystem' || lower === 'filesystem:read' || lower === 'fs:read') {
-      filesystem = 'read';
-      continue;
-    }
-
-    if (lower === 'network' || lower === 'filesystem:none' || lower === 'none') {
-      // Bare network cannot enable without hosts; explicit none stays closed.
-      continue;
-    }
-
-    const networkHost = token.match(/^network:(.+)$/i)?.[1]?.trim();
-    if (networkHost) {
-      if (networkHost.length <= 253 && ALLOWED_HOST_RE.test(networkHost)) {
-        allowedHosts.push(networkHost.toLowerCase());
-      }
-      continue;
-    }
-
-    // Only explicit tool: prefixes become Tool grants (bare free-form strings stay ignored).
-    const toolKey = token.match(/^tool:(.+)$/i)?.[1]?.trim();
-    if (toolKey && TOOL_KEY_RE.test(toolKey)) {
-      toolKeys.push(toolKey);
-    }
-  }
-
-  const allow = uniquePreserveOrder(toolKeys).slice(0, 100);
-  const hosts = uniquePreserveOrder(allowedHosts).slice(0, 50);
-  return {
-    permissions: {
-      filesystem,
-      network: { allowedHosts: hosts, enabled: hosts.length > 0 },
-      tools: { allow },
-    },
-    // Optional so unknown/unavailable tools surface as warnings, not hard publish blockers.
-    toolDependencies: allow.map((toolKey) => ({ optional: true, toolKey })),
-  };
-};
-
-const mapPackageSkillDependencies = (
-  raw: unknown,
-): EnterpriseSkillManifest['skillDependencies'] => {
-  if (!Array.isArray(raw)) return [];
-  const deps: EnterpriseSkillManifest['skillDependencies'] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const record = item as Record<string, unknown>;
-    const skillKey = typeof record.skillKey === 'string' ? record.skillKey.trim() : '';
-    const version = typeof record.version === 'string' ? record.version.trim() : '';
-    if (!skillKey || !SKILL_KEY_RE.test(skillKey) || skillKey.length > 128) continue;
-    if (!version || !isStrictSemVer(version)) continue;
-    deps.push({
-      optional: record.optional === true,
-      skillKey,
-      version,
-    });
-    if (deps.length >= 100) break;
-  }
-  return deps;
-};
-
-const mapPackageToolDependencies = (raw: unknown): EnterpriseSkillManifest['toolDependencies'] => {
-  if (!Array.isArray(raw)) return [];
-  const deps: EnterpriseSkillManifest['toolDependencies'] = [];
-  const seen = new Set<string>();
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const record = item as Record<string, unknown>;
-    const toolKey = typeof record.toolKey === 'string' ? record.toolKey.trim() : '';
-    if (!toolKey || !TOOL_KEY_RE.test(toolKey) || seen.has(toolKey)) continue;
-    seen.add(toolKey);
-    deps.push({ optional: record.optional === true, toolKey });
-    if (deps.length >= 100) break;
-  }
-  return deps;
-};
-
-/**
- * Convert a package SkillManifest into the enterprise platform Skill manifest.
- * Compatible permission tokens and optional package dependency declarations are preserved;
- * unrecognized metadata is dropped (fail closed).
- */
-export const toEnterpriseSkillManifest = (params: {
-  description: string | null;
-  displayName: string;
-  /** Full package manifest (permissions + optional passthrough dependency fields). */
-  packageManifest?: SkillManifest;
-}): EnterpriseSkillManifest => {
-  const packageManifest = params.packageManifest;
-  const fromTokens = mapPackagePermissionTokens(packageManifest?.permissions);
-
-  // Optional package-level dependency declarations (passthrough fields).
-  const packageRecord = packageManifest as (SkillManifest & Record<string, unknown>) | undefined;
-  const skillDependencies = mapPackageSkillDependencies(packageRecord?.skillDependencies);
-  const declaredToolDeps = mapPackageToolDependencies(packageRecord?.toolDependencies);
-
-  // Merge tool deps from tokens + explicit declarations; required allowlist tools stay required.
-  const toolDepByKey = new Map<string, { optional: boolean; toolKey: string }>();
-  for (const dep of [...fromTokens.toolDependencies, ...declaredToolDeps]) {
-    const existing = toolDepByKey.get(dep.toolKey);
-    if (!existing) {
-      toolDepByKey.set(dep.toolKey, dep);
-      continue;
-    }
-    // Prefer required (optional:false) when either declaration is required.
-    if (!dep.optional) toolDepByKey.set(dep.toolKey, { optional: false, toolKey: dep.toolKey });
-  }
-  const toolDependencies = [...toolDepByKey.values()].slice(0, 100);
-  const allow = uniquePreserveOrder([
-    ...fromTokens.permissions.tools.allow,
-    ...toolDependencies.map((d) => d.toolKey),
-  ]).slice(0, 100);
-
-  return {
-    description: params.description?.trim() || params.displayName,
-    displayName: params.displayName,
-    localizedDescriptions: {},
-    localizedDisplayNames: {},
-    permissions: {
-      filesystem: fromTokens.permissions.filesystem,
-      network: fromTokens.permissions.network,
-      tools: { allow },
-    },
-    skillDependencies,
-    toolDependencies,
-  };
-};
-
-const derivePackageVersion = (manifest: SkillManifest): string | undefined => {
-  const version = manifest.version?.trim();
-  if (!version || !isStrictSemVer(version)) return undefined;
-  return version;
-};
-
-const importError = (
-  reason: SkillImportErrorReason,
-  options?: { httpCode?: 'BAD_REQUEST' | 'NOT_FOUND'; status?: number },
-): never => {
-  const httpCode =
-    options?.httpCode ??
-    (reason === SKILL_IMPORT_ERROR_REASONS.NOT_FOUND ? 'NOT_FOUND' : 'BAD_REQUEST');
-  const code =
-    reason === SKILL_IMPORT_ERROR_REASONS.NOT_FOUND
-      ? PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND
-      : PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;
-  return throwEnterpriseError({
-    code,
-    details: {
-      reason,
-      ...(typeof options?.status === 'number' ? { status: options.status } : {}),
-    },
-    httpCode,
-    message: reason,
-  });
-};
+export type { SkillImportErrorReason } from './skillImport/errors';
+export { SKILL_IMPORT_ERROR_REASONS } from './skillImport/errors';
+export {
+  assertZipExpandedWithinLimit,
+  MAX_IMPORT_ZIP_BYTES,
+  MAX_IMPORT_ZIP_EXPANDED_BYTES,
+  readResponseBodyWithLimit,
+} from './skillImport/fetch';
+export {
+  mapPackagePermissionTokens,
+  sanitizeSkillKey,
+  toEnterpriseSkillManifest,
+} from './skillImport/manifest';
 
 const buildOutput = (params: {
   content: string;
@@ -368,147 +73,7 @@ const buildOutput = (params: {
   };
 };
 
-const parser = new SkillParser();
 const github = new GitHub();
-
-/**
- * Consume a response body with an active abort deadline and a hard byte cap.
- * Rejects oversized Content-Length before reading; aborts on chunked oversize.
- */
-export const readResponseBodyWithLimit = async (
-  response: Response,
-  maxBytes: number,
-  signal: AbortSignal,
-): Promise<Buffer> => {
-  const contentLengthHeader = response.headers?.get?.('content-length');
-  if (contentLengthHeader) {
-    const declared = Number(contentLengthHeader);
-    if (Number.isFinite(declared) && declared > maxBytes) {
-      try {
-        await response.body?.cancel();
-      } catch {
-        // ignore cancel errors
-      }
-      return importError(
-        maxBytes >= MAX_IMPORT_ZIP_BYTES
-          ? SKILL_IMPORT_ERROR_REASONS.ZIP_TOO_LARGE
-          : SKILL_IMPORT_ERROR_REASONS.CONTENT_TOO_LARGE,
-      );
-    }
-  }
-
-  if (signal.aborted) {
-    return importError(SKILL_IMPORT_ERROR_REASONS.TIMEOUT);
-  }
-
-  // Prefer streaming when available so we can abort mid-body.
-  const body = response.body;
-  if (body && typeof body.getReader === 'function') {
-    const reader = body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    try {
-      while (true) {
-        if (signal.aborted) {
-          await reader.cancel().catch(() => undefined);
-          return importError(SKILL_IMPORT_ERROR_REASONS.TIMEOUT);
-        }
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        total += value.byteLength;
-        if (total > maxBytes) {
-          await reader.cancel().catch(() => undefined);
-          return importError(
-            maxBytes >= MAX_IMPORT_ZIP_BYTES
-              ? SKILL_IMPORT_ERROR_REASONS.ZIP_TOO_LARGE
-              : SKILL_IMPORT_ERROR_REASONS.CONTENT_TOO_LARGE,
-          );
-        }
-        chunks.push(value);
-      }
-    } catch (error) {
-      if (signal.aborted || (error as Error).name === 'AbortError') {
-        return importError(SKILL_IMPORT_ERROR_REASONS.TIMEOUT);
-      }
-      throw error;
-    }
-    return Buffer.concat(chunks.map((c) => Buffer.from(c)));
-  }
-
-  // Fallback when body is not a stream (e.g. undici Response polyfills in tests).
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length > maxBytes) {
-    return importError(
-      maxBytes >= MAX_IMPORT_ZIP_BYTES
-        ? SKILL_IMPORT_ERROR_REASONS.ZIP_TOO_LARGE
-        : SKILL_IMPORT_ERROR_REASONS.CONTENT_TOO_LARGE,
-    );
-  }
-  return buffer;
-};
-
-/**
- * Expand a ZIP and reject when total uncompressed bytes exceed the hard cap.
- * Uses declared originalSize when present and re-checks actual decoded lengths.
- */
-export const assertZipExpandedWithinLimit = async (buffer: Buffer): Promise<void> => {
-  await new Promise<void>((resolve, reject) => {
-    let declaredTotal = 0;
-    fflateUnzip(
-      new Uint8Array(buffer),
-      {
-        filter(file) {
-          const size =
-            typeof file.originalSize === 'number' && Number.isFinite(file.originalSize)
-              ? file.originalSize
-              : 0;
-          declaredTotal += size;
-          if (declaredTotal > MAX_IMPORT_ZIP_EXPANDED_BYTES) {
-            return false;
-          }
-          return true;
-        },
-      },
-      (error, files) => {
-        const fail = (reason: SkillImportErrorReason) => {
-          try {
-            importError(reason);
-          } catch (err) {
-            reject(err);
-          }
-        };
-
-        if (declaredTotal > MAX_IMPORT_ZIP_EXPANDED_BYTES) {
-          fail(SKILL_IMPORT_ERROR_REASONS.ZIP_TOO_LARGE);
-          return;
-        }
-        if (error) {
-          fail(SKILL_IMPORT_ERROR_REASONS.INVALID_ZIP);
-          return;
-        }
-
-        let actual = 0;
-        for (const data of Object.values(files)) {
-          actual += data.byteLength;
-          if (actual > MAX_IMPORT_ZIP_EXPANDED_BYTES) {
-            fail(SKILL_IMPORT_ERROR_REASONS.ZIP_TOO_LARGE);
-            return;
-          }
-        }
-        resolve();
-      },
-    );
-  });
-};
-
-const parseZipBuffer = async (
-  buffer: Buffer,
-  options?: { basePath?: string },
-): Promise<Awaited<ReturnType<SkillParser['parseZipPackage']>>> => {
-  await assertZipExpandedWithinLimit(buffer);
-  return parser.parseZipPackage(buffer, options);
-};
 
 /**
  * Deadline-aware, byte-capped GitHub archive download (does not use unbounded
