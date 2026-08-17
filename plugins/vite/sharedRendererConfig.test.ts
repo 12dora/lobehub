@@ -31,13 +31,80 @@ describe('sharedManualChunks', () => {
     expect(__testing.sharedManualChunks('/repo/packages/locales/src/default/oauth.ts')).toBe(
       'i18n-default-oauth',
     );
-    expect(__testing.sharedManualChunks('/repo/packages/locales/src/default/chat.ts')).toBe(
-      'i18n-src',
-    );
-    expect(__testing.sharedManualChunks('/repo/locales/zh-CN/chat.json')).toBe('i18n-zh-CN');
     expect(__testing.sharedManualChunks('/repo/locales/zh-CN/models.json')).toBe(
       'i18n-zh-CN-models',
     );
+  });
+
+  it('gives every default namespace its own chunk', () => {
+    // create.ts imports these four statically; a shared `i18n-src` chunk would
+    // drag all 53 default namespaces (~2.4MB) into the first-screen graph.
+    expect(__testing.sharedManualChunks('/repo/packages/locales/src/default/chat.ts')).toBe(
+      'i18n-default-chat',
+    );
+    expect(__testing.sharedManualChunks('/repo/packages/locales/src/default/home.ts')).toBe(
+      'i18n-default-home',
+    );
+    expect(__testing.sharedManualChunks('/repo/packages/locales/src/default/plugin.ts')).toBe(
+      'i18n-default-plugin',
+    );
+  });
+
+  it('splits the statically bundled namespaces out of the merged locale chunk', () => {
+    expect(__testing.sharedManualChunks('/repo/locales/zh-CN/chat.json')).toBe('i18n-zh-CN-chat');
+    expect(__testing.sharedManualChunks('/repo/locales/zh-CN/home.json')).toBe('i18n-zh-CN-home');
+    expect(__testing.sharedManualChunks('/repo/locales/zh-CN/plugin.json')).toBe('i18n-zh-CN');
+  });
+
+  it('keeps antd / dayjs locale data out of the app locale bundle', () => {
+    // dayjs' CJS core is pulled into whichever chunk holds a dayjs locale; when
+    // that chunk was `i18n-ar` the entry statically imported 0.91MB of Arabic
+    // app translations on every page load.
+    expect(
+      __testing.sharedManualChunks(
+        '/repo/node_modules/.pnpm/antd@5/node_modules/antd/es/locale/ar_EG.js',
+      ),
+    ).toBe('i18n-vendor-ar');
+    expect(
+      __testing.sharedManualChunks(
+        '/repo/node_modules/.pnpm/dayjs@1/node_modules/dayjs/locale/zh-cn.js',
+      ),
+    ).toBe('i18n-vendor-zh-CN');
+  });
+
+  it('isolates the diff viewer / syntax highlighting vendors', () => {
+    expect(
+      __testing.sharedManualChunks(
+        '/repo/node_modules/.pnpm/@pierre+diffs@1/node_modules/@pierre/diffs/dist/react/index.js',
+      ),
+    ).toBe('vendor-diff');
+    // shiki itself stays ungrouped: grouping its dist modules duplicates the
+    // 1.28MB language/theme info tables into a second eager chunk (measured).
+    expect(
+      __testing.sharedManualChunks(
+        '/repo/node_modules/.pnpm/shiki@3/node_modules/shiki/dist/langs.mjs',
+      ),
+    ).toBeUndefined();
+    expect(
+      __testing.sharedManualChunks(
+        '/repo/node_modules/.pnpm/shiki@3/node_modules/shiki/dist/langs/cpp.mjs',
+      ),
+    ).toBeUndefined();
+    expect(
+      __testing.sharedManualChunks(
+        '/repo/node_modules/.pnpm/shiki@3/node_modules/@shikijs/langs/dist/cpp.mjs',
+      ),
+    ).toBeUndefined();
+    expect(
+      __testing.sharedManualChunks(
+        '/repo/node_modules/.pnpm/three@0/node_modules/three/build/three.module.js',
+      ),
+    ).toBe('vendor-three');
+    expect(
+      __testing.sharedManualChunks(
+        '/repo/node_modules/.pnpm/recharts@2/node_modules/recharts/es6/index.js',
+      ),
+    ).toBe('vendor-charts');
   });
 
   it('keeps locale runtime helpers out of the default locale chunk', () => {

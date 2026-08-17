@@ -10,6 +10,22 @@ export { augmentKey };
 const CLIENT_POLLING_SWR_DEDUPING_INTERVAL = 30_000;
 
 /**
+ * Short mount-time dedupe window.
+ *
+ * SWR's stock 2000ms was once dropped to 0 (lobe-chat#532) because a fast
+ * session switch has to re-fetch. Zero, however, also means that every
+ * component mounting the same key in the same tick fires its own request —
+ * measured on one cold chat-home load: `config.getGlobalConfig` ×2,
+ * `aiProvider.getAiProviderRuntimeState` ×3, `user.getUserState` ×2.
+ *
+ * Restoring SWR's default 2000ms collapses that burst. Switching data sets
+ * still re-fetches, because a switch changes the SWR key (and `augmentKey`
+ * scopes it by workspace); the window only suppresses a *repeat* of the very
+ * same key within two seconds.
+ */
+const CLIENT_DATA_SWR_DEDUPING_INTERVAL = 2000;
+
+/**
  * This type of request method is for relatively flexible data, which will be triggered on the first time.
  *
  * Refresh rules have two types:
@@ -22,10 +38,10 @@ const CLIENT_POLLING_SWR_DEDUPING_INTERVAL = 30_000;
 export const useClientDataSWR: SWRHook = (key, fetch, config) => {
   const workspaceId = useActiveWorkspaceId();
   return useSWR(augmentKey(key, workspaceId) as any, fetch, {
-    // default is 2000ms ,it makes the user's quick switch don't work correctly.
-    // Cause issue like this: https://github.com/lobehub/lobe-chat/issues/532
-    // we need to set it to 0.
-    dedupingInterval: 0,
+    // Historically 0 (see https://github.com/lobehub/lobe-chat/issues/532), which
+    // made every concurrent mount of the same key issue its own request.
+    // See CLIENT_DATA_SWR_DEDUPING_INTERVAL above.
+    dedupingInterval: CLIENT_DATA_SWR_DEDUPING_INTERVAL,
     focusThrottleInterval: 5 * 60 * 1000,
     // Custom error retry logic: don't retry on 401 errors
     onErrorRetry: (error: any, ...args: any[]) => {

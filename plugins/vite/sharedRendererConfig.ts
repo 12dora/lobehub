@@ -22,6 +22,16 @@ const HEAVY_NS = new Set(['models', 'modelProvider']);
  */
 const AUTH_NS = new Set(['auth', 'authError', 'common', 'error', 'marketAuth', 'oauth']);
 
+/**
+ * Namespaces `packages/locales/src/create.ts` imports statically so the first
+ * render has synchronous fallback copy. Without a dedicated chunk they drag the
+ * whole merged locale bundle (~0.9MB per language) into the entry's static
+ * graph, which every visitor then downloads before first paint.
+ */
+const BUNDLED_NS = new Set(['chat', 'home']);
+
+const isSplitNamespace = (ns: string) => AUTH_NS.has(ns) || BUNDLED_NS.has(ns) || HEAVY_NS.has(ns);
+
 /** antd locale filename → app locale */
 const ANTD_LOCALE: Record<string, string> = {
   ar_EG: 'ar',
@@ -73,14 +83,11 @@ const isNodePackage = (id: string, packageName: string) => {
 };
 
 function sharedManualChunks(id: string): string | undefined {
-  // default locale sources live in packages/locales/src/default — their chunk
-  // has historically been named i18n-src by the generic locale match below
+  // default locale sources live in packages/locales/src/default — one chunk per
+  // namespace, so the four namespaces create.ts imports statically no longer
+  // pull all 53 default namespaces (2.4MB) into the first-screen graph
   const defaultLocaleMatch = id.match(/\/locales\/src\/default\/([^/.]+)/);
-  if (defaultLocaleMatch) {
-    const ns = defaultLocaleMatch[1];
-    if (AUTH_NS.has(ns)) return `i18n-default-${ns}`;
-    return 'i18n-src';
-  }
+  if (defaultLocaleMatch) return `i18n-default-${defaultLocaleMatch[1]}`;
 
   // runtime helpers (resources/create/utils) in packages/locales/src must not
   // share a chunk with the default locale data, or every consumer would
@@ -91,9 +98,8 @@ function sharedManualChunks(id: string): string | undefined {
   const localeMatch = id.match(/\/locales\/([^/]+)\/([^/.]+)/);
   if (localeMatch) {
     const [, locale, ns] = localeMatch;
-    if (AUTH_NS.has(ns)) return `i18n-${locale}-${ns}`;
+    if (isSplitNamespace(ns)) return `i18n-${locale}-${ns}`;
     if (locale === 'default') return 'i18n-default';
-    if (HEAVY_NS.has(ns)) return `i18n-${locale}-${ns}`;
     return `i18n-${locale}`;
   }
 
@@ -109,19 +115,42 @@ function sharedManualChunks(id: string): string | undefined {
 
   if (!id.includes('node_modules')) return;
 
-  // antd locale → merge into i18n-{locale}
+  // antd / dayjs locale data lives in its own per-locale chunk. It must NOT be
+  // merged into the app's `i18n-{locale}` bundle: dayjs' CJS core gets pulled
+  // into whichever chunk holds a dayjs locale, and because the core is on the
+  // entry's static graph that made every visitor download a full foreign
+  // language bundle (measured: `i18n-ar` 0.91MB eagerly imported by the entry).
   const antdMatch = id.match(/antd\/es\/locale\/([^/.]+)\.js/);
   if (antdMatch) {
     const locale = ANTD_LOCALE[antdMatch[1]];
-    if (locale) return `i18n-${locale}`;
+    if (locale) return `i18n-vendor-${locale}`;
   }
 
-  // dayjs locale → merge into i18n-{locale}
   const dayjsMatch = id.match(/dayjs\/locale\/([^/.]+)\.js/);
   if (dayjsMatch) {
     const locale = DAYJS_LOCALE[dayjsMatch[1]];
-    if (locale) return `i18n-${locale}`;
+    if (locale) return `i18n-vendor-${locale}`;
   }
+
+  // The diff viewer ships its own shiki copy with every bundled grammar and
+  // theme. Pin it to a dedicated chunk so it can never be merged back into a
+  // shared first-screen chunk (it was, and cost 7.9MB); the call sites load it
+  // through `@/components/LazyDiff`.
+  //
+  // The chunk is still pulled eagerly, but only because the bundler co-locates
+  // shiki's language/theme *metadata* with it and `@lobehub/ui`'s
+  // `Highlighter/const.mjs` imports `bundledLanguagesInfo` / `bundledThemesInfo`
+  // statically. Do NOT try to peel that metadata into its own group: measured,
+  // a `shiki/dist/*.mjs` group emits a second 1.28MB copy of the info tables
+  // (the first stays in the shared chunk) and costs +1.19MB eager. Removing the
+  // edge needs an upstream `@lobehub/ui` change.
+  if (isNodePackage(id, '@pierre/diffs')) return 'vendor-diff';
+
+  // three.js (memory role tag cloud) and recharts (stats charts) are never part
+  // of a first paint — keep them out of shared chunks so they stay on-demand.
+  if (isNodePackage(id, 'three')) return 'vendor-three';
+  if (isNodePackage(id, 'recharts') || id.includes('/node_modules/victory-vendor/'))
+    return 'vendor-charts';
 
   if (
     isNodePackage(id, 'react') ||

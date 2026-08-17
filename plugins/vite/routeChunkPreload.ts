@@ -249,6 +249,7 @@ const isI18nChunkFileName = (fileName: string) => {
 };
 
 const syntaxHighlightModulePatterns = [
+  '/node_modules/@pierre/diffs/',
   '/node_modules/@shikijs/',
   '/node_modules/shiki/',
   '/node_modules/oniguruma-to-es/',
@@ -258,12 +259,19 @@ const syntaxHighlightModulePatterns = [
 
 const deferredRendererModulePatterns = [
   ...syntaxHighlightModulePatterns,
+  // Admin console screens are never part of a normal user's first screen, and
+  // only a handful of accounts can open them at all (measured: 54 chunks /
+  // ~1MB of modulepreload on every chat page load).
+  '/src/enterprise/client/features/admin/',
   '/node_modules/@mermaid-js/',
   '/node_modules/cytoscape/',
   '/node_modules/dagre/',
   '/node_modules/graphlib/',
   '/node_modules/mermaid/',
+  '/node_modules/pdfjs-dist/',
+  '/node_modules/recharts/',
   '/node_modules/roughjs/',
+  '/node_modules/three/',
 ];
 
 const deferredRendererFileNamePatterns = [

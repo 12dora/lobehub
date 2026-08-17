@@ -158,14 +158,19 @@ const ProcessingState = memo<ProcessingStateProps>(
       return () => clearInterval(timer);
     }, [startedAt]);
 
-    // Progress timer - increment every 30 seconds
+    // Progress timer - increment every 30 seconds.
+    // Only tick while the task is actually running and the bar can still move:
+    // without these guards the interval kept firing for tasks that never
+    // started and for tasks already pinned at MAX_PROGRESS.
     useEffect(() => {
+      if (!startedAt || progress >= MAX_PROGRESS) return;
+
       const timer = setInterval(() => {
         setProgress((prev) => Math.min(prev + PROGRESS_INCREMENT, MAX_PROGRESS));
       }, PROGRESS_INTERVAL);
 
       return () => clearInterval(timer);
-    }, []);
+    }, [startedAt, progress]);
 
     // Render current activity text
     const renderActivityText = () => {

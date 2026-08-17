@@ -62,6 +62,43 @@ describe('routeChunkPreload', () => {
     ]);
   });
 
+  it('excludes admin console and heavy on-demand vendor chunks from the preload manifest', () => {
+    const bundle = {
+      'assets/agent-CJm8x.js': createChunk({
+        dynamicImports: [
+          'assets/AdminBrandingPage-a.js',
+          'assets/TagCloudCanvas-b.js',
+          'assets/vendor-syntax-c.js',
+          'assets/MainChatInput-d.js',
+        ],
+        facadeModuleId: '/repo/src/routes/(main)/agent/index.desktop.tsx',
+        fileName: 'assets/agent-CJm8x.js',
+        moduleIds: ['/repo/src/routes/(main)/agent/index.desktop.tsx'],
+      }),
+      'assets/AdminBrandingPage-a.js': createChunk({
+        fileName: 'assets/AdminBrandingPage-a.js',
+        moduleIds: ['/repo/src/enterprise/client/features/admin/branding/BrandingPage.tsx'],
+      }),
+      'assets/TagCloudCanvas-b.js': createChunk({
+        fileName: 'assets/TagCloudCanvas-b.js',
+        moduleIds: ['/repo/node_modules/three/build/three.module.js'],
+      }),
+      'assets/vendor-syntax-c.js': createChunk({
+        fileName: 'assets/vendor-syntax-c.js',
+        moduleIds: ['/repo/node_modules/@pierre/diffs/dist/react/index.js'],
+      }),
+      'assets/MainChatInput-d.js': createChunk({
+        fileName: 'assets/MainChatInput-d.js',
+        moduleIds: ['/repo/src/routes/(main)/agent/features/Conversation/MainChatInput/index.tsx'],
+      }),
+    } satisfies TestOutputBundle;
+
+    const manifest = __testing.createRoutePreloadManifest(bundle, '/repo');
+    const agentEntry = manifest.find((entry) => entry.id === 'desktop-chat-launch');
+
+    expect(agentEntry?.preload).toEqual(['assets/agent-CJm8x.js', 'assets/MainChatInput-d.js']);
+  });
+
   it('matches route modules when built from the cloud repository root', () => {
     const bundle = {
       'assets/agent-CJm8x.js': createChunk({

@@ -2,7 +2,7 @@
 
 import type { GitFileDiffStatus } from '@lobechat/electron-client-ipc';
 import { nanoid } from '@lobechat/utils';
-import { ActionIcon, copyToClipboard, Flexbox, PatchDiff } from '@lobehub/ui';
+import { ActionIcon, copyToClipboard, Flexbox } from '@lobehub/ui';
 import { confirmModal } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar as themeCssVar } from 'antd-style';
 import { CopyIcon, LocateFixedIcon, Undo2Icon } from 'lucide-react';
@@ -11,6 +11,7 @@ import { memo, type MouseEvent, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { message } from '@/components/AntdStaticMethods';
+import { PatchDiff } from '@/components/LazyDiff';
 import { gitService } from '@/services/git';
 import { useFileStore } from '@/store/file';
 import { useGlobalStore } from '@/store/global';

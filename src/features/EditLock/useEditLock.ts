@@ -77,6 +77,14 @@ const LOCK_RETRY_BACKOFF_MS = 500;
  * stranded viewer recovers in under a minute.
  */
 const VIEWER_FALLBACK_POLL_MS = 60_000;
+/**
+ * Peek interval for a read-only viewer on a surface without realtime pushes.
+ * A viewer never holds the lease, so it does not need the holder's 10s
+ * heartbeat cadence — it only needs to notice that someone else started or
+ * stopped editing, which a once-a-minute peek covers. (Editors keep the
+ * lease-aware `nextRefreshDelay` schedule below, untouched.)
+ */
+const VIEWER_POLL_MS = 60_000;
 
 const nextRefreshDelay = (expiresAt: EditLockState['expiresAt']) => {
   if (!expiresAt) return DOCUMENT_LOCK_HEARTBEAT_MS;
@@ -163,7 +171,7 @@ export const useEditLock = ({
     // net: SSE may drop events on reconnect, and the holder's release request
     // can be aborted by navigation — without this poll, a viewer could be
     // stranded on a stale holder until the lease expires (up to 30 s).
-    const interval = pollWhileViewing ? DOCUMENT_LOCK_HEARTBEAT_MS : VIEWER_FALLBACK_POLL_MS;
+    const interval = pollWhileViewing ? VIEWER_POLL_MS : VIEWER_FALLBACK_POLL_MS;
     const timer = setInterval(tick, interval);
     return () => {
       cancelled = true;

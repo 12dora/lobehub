@@ -1,5 +1,4 @@
 import { AsyncTaskStatus } from '@lobechat/types';
-import { useEffect } from 'react';
 
 import { useClientDataSWR } from '@/libs/swr';
 import { userMemoryKeys } from '@/libs/swr/keys';
@@ -11,27 +10,15 @@ export const useMemoryAnalysisAsyncTask = (taskId?: string) => {
     taskId ? userMemoryKeys.analysisTask(taskId) : userMemoryKeys.analysisTask(),
     () => memoryExtractionService.getTask(taskId),
     {
+      // Single source of polling. There used to be a second 5s `setInterval`
+      // calling `mutate()` on top of this, which doubled up on every 30s tick;
+      // the SWR refresh now owns the whole cadence at the faster interval.
       refreshInterval: (data) =>
         data && [AsyncTaskStatus.Pending, AsyncTaskStatus.Processing].includes(data.status)
-          ? 30_000
+          ? 5000
           : 0,
     },
   );
-
-  useEffect(() => {
-    if (!swr.data) return;
-
-    const isRunning = [AsyncTaskStatus.Pending, AsyncTaskStatus.Processing].includes(
-      swr.data.status,
-    );
-    if (!isRunning) return;
-
-    const timer = setInterval(() => {
-      swr.mutate();
-    }, 5000);
-
-    return () => clearInterval(timer);
-  }, [swr.data?.id, swr.data?.status, swr.mutate]);
 
   return {
     ...swr,

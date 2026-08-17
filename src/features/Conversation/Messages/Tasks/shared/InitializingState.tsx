@@ -61,6 +61,9 @@ const InitializingState = memo(() => {
     const startTime = Date.now();
 
     const timer = setInterval(() => {
+      // Only tick while the counter is actually on screen: a hidden tab would
+      // just re-render this label into nothing.
+      if (document.hidden) return;
       setElapsedTime(Date.now() - startTime);
     }, 1000);
 

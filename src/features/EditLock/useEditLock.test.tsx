@@ -155,6 +155,27 @@ describe('useEditLock — health state machine', () => {
     expect(client.release).toHaveBeenCalledWith('doc-1', undefined);
   });
 
+  it('a read-only viewer peeks once a minute, not on the holder heartbeat cadence', async () => {
+    renderHook(() => useEditLock({ client, enabled: true, isDirty: false, resourceId: 'doc-1' }));
+    await flushMicrotasks();
+    expect(client.peek).toHaveBeenCalledTimes(1);
+
+    // The old 10s cadence would have peeked ~3 more times by now.
+    await act(async () => {
+      vi.advanceTimersByTime(35_000);
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
+    expect(client.peek).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
+    expect(client.peek).toHaveBeenCalledTimes(2);
+  });
+
   it('viewers fall back to a slow safety-net poll even when pollWhileViewing is false', async () => {
     renderHook(() =>
       useEditLock({
