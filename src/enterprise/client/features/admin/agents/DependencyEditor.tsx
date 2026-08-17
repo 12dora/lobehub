@@ -10,61 +10,23 @@ import {
   buildConnectorDependency,
   buildModelDependency,
   buildSkillDependency,
-  isModelCurrent,
-  staleConnectorKeys,
-  staleSkillKeys,
   withConnectorAdded,
   withConnectorRemoved,
   withModel,
   withSkillAdded,
   withSkillRemoved,
 } from './dependencyCatalog';
-import { usable } from './dependencyEditorShared';
+import type { DependencyValidity } from './dependencyEditorTypes';
 import { ModelDependencyField } from './ModelDependencyField';
 import { SkillDependencyField } from './SkillDependencyField';
 import type { AdminAgentDraftDependencies } from './types';
-import {
-  useAdminConnectorDetail,
-  useAdminConnectorDetails,
-  useAdminProviderModelSource,
-  useAdminPublishedConnectors,
-  useAdminPublishedProviders,
-  useAdminPublishedSkills,
-} from './useDependencyCatalog';
+import { useDependencyCatalogs } from './useDependencyCatalogs';
+import { useDependencyReadiness } from './useDependencyReadiness';
 
-const CATALOG_SEARCH_DEBOUNCE_MS = 250;
+export type { DependencyBlocker, DependencyValidity } from './dependencyEditorTypes';
 
 /** Shared identity for "nothing queued", so an unchanged queue never re-renders the field. */
 const NO_PENDING_CONNECTORS: string[] = [];
-
-/** Debounce a string for server-side catalog search keys without embedding timers in fields. */
-const useDebouncedQuery = (value: string, delay = CATALOG_SEARCH_DEBOUNCE_MS) => {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const handle = setTimeout(() => setDebounced(value), delay);
-    return () => clearTimeout(handle);
-  }, [delay, value]);
-  return debounced;
-};
-
-/**
- * A catalog state that blocks Save. Unlike `issues` (staleness, rendered next to the field it
- * belongs to), a blocker can originate from a field the host hides — Skills and Connectors live in
- * a collapsed group — so the host MUST render it where the Save button is.
- */
-export interface DependencyBlocker {
-  /** i18n key describing what is blocking Save. */
-  message: string;
-  /** Present when the underlying catalog exposes a retry. */
-  retry?: () => Promise<unknown>;
-}
-
-export interface DependencyValidity {
-  /** Save-blocking catalog loading/error states, including ones from hidden fields. */
-  blockers: DependencyBlocker[];
-  issues: string[];
-  ready: boolean;
-}
 
 /** The three authorable dependency fields, so a caller can place them in different form sections. */
 export interface DependencyEditorSlots {
@@ -97,27 +59,6 @@ export const DependencyEditor = ({
   onChange,
   onValidityChange,
 }: DependencyEditorProps) => {
-  const [providerSearch, setProviderSearch] = useState('');
-  const [connectorSearch, setConnectorSearch] = useState('');
-  const debouncedProviderQuery = useDebouncedQuery(providerSearch);
-  const debouncedConnectorQuery = useDebouncedQuery(connectorSearch);
-  // Hydration search: when an existing model ref's provider is not on the first unfiltered page,
-  // re-key once with the providerKey so the exact option resolves via server search.
-  const [providerHydrateQuery, setProviderHydrateQuery] = useState('');
-
-  // The picker's own filter only sees the loaded page, so the typed query must reach the server —
-  // a provider beyond the first page would otherwise be unreachable.
-  const providers = useAdminPublishedProviders(
-    enabled,
-    providerHydrateQuery || debouncedProviderQuery,
-  );
-  const skills = useAdminPublishedSkills(enabled);
-  const connectors = useAdminPublishedConnectors(enabled, debouncedConnectorQuery);
-
-  const providerItems = providers.data?.items;
-  const connectorItems = connectors.data?.items;
-
-  const [providerId, setProviderId] = useState<string | undefined>();
   /**
    * Every connector the admin has picked whose exact detail has not been authored yet, in pick
    * order — tagged with the Agent that picked them. A second pick made while the first is still
@@ -136,6 +77,34 @@ export const DependencyEditor = ({
     pendingConnectors.agentId === agentId ? pendingConnectors.ids : NO_PENDING_CONNECTORS;
   // Details are resolved one at a time: the head of the queue is the only id being fetched.
   const connectorId = pendingConnectorIds[0];
+
+  const {
+    connectorDetail,
+    connectorDetailUsable,
+    connectorItems,
+    connectorRefDetails,
+    connectorSearch,
+    connectors,
+    connectorsListUsable,
+    connectorsSettled,
+    connectorsSlice,
+    model,
+    providerHydrateQuery,
+    providerId,
+    providerItems,
+    providerSearch,
+    providers,
+    providersSlice,
+    providersUsable,
+    setConnectorSearch,
+    setProviderHydrateQuery,
+    setProviderId,
+    setProviderSearch,
+    skills,
+    skillsSettled,
+    source,
+    sourceSettled,
+  } = useDependencyCatalogs({ connectorId, dependencies, enabled });
 
   /** Queue writes always re-stamp the owning Agent, so a write can never adopt a foreign queue. */
   const updatePendingConnectorIds = useCallback(
@@ -160,6 +129,7 @@ export const DependencyEditor = ({
     setProviderSearch('');
     setConnectorSearch('');
     setProviderHydrateQuery('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selection reset is keyed only on Agent identity
   }, [agentId]);
 
   // Initialise the provider selection from an existing model ref (edit / recovery).
@@ -175,152 +145,28 @@ export const DependencyEditor = ({
     }
     // Not on the current search page — ask the server for this providerKey once.
     if (!providerHydrateQuery) setProviderHydrateQuery(dependencies.model.providerKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters are stable; deps match HEAD
   }, [dependencies.model, providerHydrateQuery, providerId, providerItems]);
 
-  const source = useAdminProviderModelSource(providerId);
-  const connectorDetail = useAdminConnectorDetail(connectorId);
-
-  const model = dependencies.model;
-
-  // Fetch the exact detail for every referenced connector so existing refs can be exact-validated.
-  const referencedConnectorIds = useMemo(
-    () => dependencies.connectors.map((connector) => connector.connectorId),
-    [dependencies.connectors],
-  );
-  const connectorRefDetails = useAdminConnectorDetails(enabled ? referencedConnectorIds : []);
-
-  const sourceSettled = usable(source);
-  const skillsSettled = usable(skills);
-  const connectorsSettled = usable(connectorRefDetails);
-  // The provider list, connector list and currently-selected connector detail ALSO fail closed:
-  // a revalidating/errored list is not trustworthy for authoring or for gating save readiness.
-  const providersUsable = usable(providers);
-  const connectorsListUsable = usable(connectors);
-  const connectorDetailUsable = usable(connectorDetail);
-
-  // Display staleness only once the relevant source has a settled success (no spurious "Outdated").
-  const displayModelStale = Boolean(model) && sourceSettled && !isModelCurrent(model, source.data);
-  const staleSkills = useMemo(
-    () => (skillsSettled ? staleSkillKeys(dependencies.skills, skills.data) : []),
-    [dependencies.skills, skills.data, skillsSettled],
-  );
-  const staleConnectors = useMemo(
-    () =>
-      connectorsSettled
-        ? staleConnectorKeys(dependencies.connectors, connectorRefDetails.data)
-        : [],
-    [connectorRefDetails.data, connectorsSettled, dependencies.connectors],
-  );
-
-  // Readiness FAILS CLOSED. EVERY authorable dependency catalog must be freshly settled
-  // (non-error, non-validating) — not just the ones the current draft already references — because
-  // the operator can author from any of them. So an errored/revalidating provider list, model
-  // source, skill catalog OR connector list blocks save even when the skill/connector ref arrays
-  // are EMPTY. When refs are present, the referenced batch must also be settled and match exactly.
-  const modelReady =
-    Boolean(model) && providersUsable && sourceSettled && isModelCurrent(model, source.data);
-  const skillsReady =
-    skillsSettled && (dependencies.skills.length === 0 || staleSkills.length === 0);
-  // The head's detail must be a settled, RESOLVED success (not undefined/loading, not
-  // retained-data+error, not retained-data+isValidating, and not a null/unresolvable projection)
-  // AND must describe the queue head rather than a previously fetched connector before anything is
-  // authored from it. This gates AUTHORING only — see `connectorsReady` for what gates Save.
-  const connectorDetailUsableForHead =
-    Boolean(connectorId) &&
-    connectorDetailUsable &&
-    connectorDetail.data?.connectorId === connectorId;
-  // Save FAILS CLOSED for as long as ANYTHING is queued — a usable head detail says only that the
-  // head can be authored now, not that the picks behind it have landed, so gating on it would open
-  // Save for the render between the head settling and the next pick becoming the head, letting a
-  // snapshot commit without the later picks. Once the queue drains, the freshly authored refs still
-  // have to pass the referenced batch below (its SWR key changed, so it is unsettled again).
-  const connectorsReady =
-    connectorsListUsable &&
-    pendingConnectorIds.length === 0 &&
-    (dependencies.connectors.length === 0 || (connectorsSettled && staleConnectors.length === 0));
-  const ready = modelReady && skillsReady && connectorsReady;
-
-  const issues = useMemo(() => {
-    const list: string[] = [];
-    if (displayModelStale) list.push('agentCatalog.dependency.issues.modelStale');
-    if (staleSkills.length > 0) list.push('agentCatalog.dependency.issues.skillStale');
-    if (staleConnectors.length > 0) list.push('agentCatalog.dependency.issues.connectorStale');
-    return list;
-  }, [displayModelStale, staleConnectors.length, staleSkills.length]);
-
-  /**
-   * Everything that is blocking Save, stated in full: the model that has not been chosen yet, plus
-   * the catalog states the caller cannot see (Skills and Connectors are authored inside a collapsed
-   * group, so an errored or still-loading catalog would otherwise disable Save silently). Each
-   * entry carries the catalog's own retry when it has one.
-   */
-  const blockers = useMemo<DependencyBlocker[]>(() => {
-    const list: DependencyBlocker[] = [];
-    const add = (message: string, retry?: () => Promise<unknown>) => {
-      if (list.some((blocker) => blocker.message === message)) return;
-      list.push(retry ? { message, retry } : { message });
-    };
-
-    if (providers.error) add('agentCatalog.dependency.model.loadError', providers.mutate);
-    else if (!providersUsable) add('agentCatalog.editor.blocked.providerCatalog');
-    // The model is a required member of the dependency snapshot, so an unset one blocks Save just
-    // as hard as an unhealthy catalog — and used to do it without a word anywhere in the modal.
-    if (!model) add('agentCatalog.editor.blocked.model');
-
-    if (skills.error) add('agentCatalog.dependency.skill.loadError', skills.mutate);
-    else if (!skillsSettled) add('agentCatalog.editor.blocked.skillCatalog');
-
-    if (connectors.error) add('agentCatalog.dependency.connector.loadError', connectors.mutate);
-    else if (!connectorsListUsable) add('agentCatalog.editor.blocked.connectorCatalog');
-
-    if (connectorRefDetails.error) {
-      add('agentCatalog.dependency.connector.validateError', connectorRefDetails.mutate);
-    } else if (dependencies.connectors.length > 0 && !connectorsSettled) {
-      add('agentCatalog.editor.blocked.connectorCatalog');
-    }
-
-    // Anything still queued blocks Save, so it must be stated — including the render in which the
-    // head is already authorable but the picks behind it are not.
-    if (pendingConnectorIds.length > 0) {
-      if (connectorDetail.error) {
-        add('agentCatalog.dependency.connector.loadError', connectorDetail.mutate);
-      } else add('agentCatalog.editor.blocked.connectorCatalog');
-    }
-    return list;
-  }, [
-    connectorDetail.error,
-    connectorDetail.mutate,
-    connectorRefDetails.error,
-    connectorRefDetails.mutate,
-    connectors.error,
-    connectors.mutate,
-    connectorsListUsable,
-    connectorsSettled,
-    dependencies.connectors.length,
-    model,
-    pendingConnectorIds.length,
-    providers.error,
-    providers.mutate,
-    providersUsable,
-    skills.error,
-    skills.mutate,
-    skillsSettled,
-  ]);
-
-  // Retry callbacks are not stable identities, so the publish effect keys off the message list and
-  // reads the current blockers through a ref instead of re-firing on every catalog render.
-  const blockersRef = useRef(blockers);
-  blockersRef.current = blockers;
-  const blockersKey = blockers.map((blocker) => blocker.message).join('|');
-
-  const issuesKey = issues.join('|');
-  useEffect(() => {
-    onValidityChange?.({
-      blockers: blockersRef.current,
-      issues: issuesKey ? issuesKey.split('|') : [],
-      ready,
+  const { connectorDetailUsableForHead, displayModelStale, staleConnectors, staleSkills } =
+    useDependencyReadiness({
+      connectorDetail,
+      connectorDetailUsable,
+      connectorId,
+      connectorRefDetails,
+      connectors,
+      connectorsListUsable,
+      connectorsSettled,
+      dependencies,
+      onValidityChange,
+      pendingConnectorIds,
+      providers,
+      providersUsable,
+      skills,
+      skillsSettled,
+      source,
+      sourceSettled,
     });
-  }, [blockersKey, issuesKey, onValidityChange, ready]);
 
   const chooseProvider = (nextId: string | undefined) => {
     if (!providersUsable) return; // never select against a loading/revalidating/errored provider list
@@ -460,24 +306,6 @@ export const DependencyEditor = ({
     updatePendingConnectorIds((current) =>
       current.includes(match.id) ? current : [...current, match.id],
     );
-  };
-
-  // Adapter slices so field components keep a simple items[] shape while SWR holds CatalogSearchPage.
-  const providersSlice = {
-    data: providerItems,
-    error: providers.error,
-    isLoading: providers.isLoading,
-    isValidating: providers.isValidating,
-    mutate: providers.mutate,
-    truncated: Boolean(providers.data?.truncated),
-  };
-  const connectorsSlice = {
-    data: connectorItems,
-    error: connectors.error,
-    isLoading: connectors.isLoading,
-    isValidating: connectors.isValidating,
-    mutate: connectors.mutate,
-    truncated: Boolean(connectors.data?.truncated),
   };
 
   const slots: DependencyEditorSlots = {
