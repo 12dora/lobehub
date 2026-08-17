@@ -2,10 +2,12 @@
 
 import { FilePathDisplay } from '@lobechat/shared-tool-ui/components';
 import type { BuiltinRenderProps } from '@lobechat/types';
-import { Flexbox, PatchDiff, Text } from '@lobehub/ui';
+import { Flexbox, Text } from '@lobehub/ui';
 import { createStaticStyles, cx } from 'antd-style';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { PatchDiff } from '@/components/LazyDiff';
 
 import {
   type CodexFileChangeArgs,

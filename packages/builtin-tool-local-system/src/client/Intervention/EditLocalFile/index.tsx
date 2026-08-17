@@ -1,12 +1,13 @@
 import type { EditLocalFileParams } from '@lobechat/electron-client-ipc';
 import type { BuiltinInterventionProps } from '@lobechat/types';
-import { CodeDiff, Flexbox, Icon, Skeleton, Text } from '@lobehub/ui';
+import { Flexbox, Icon, Skeleton, Text } from '@lobehub/ui';
 import { ChevronRight } from 'lucide-react';
 import path from 'path-browserify-esm';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
+import { CodeDiff } from '@/components/LazyDiff';
 import { LocalFile, LocalFolder } from '@/features/LocalFile';
 import { localFileService } from '@/services/electron/localFileService';
 

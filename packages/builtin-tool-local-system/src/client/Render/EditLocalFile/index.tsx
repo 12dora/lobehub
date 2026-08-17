@@ -1,7 +1,9 @@
 import type { EditLocalFileState } from '@lobechat/builtin-tool-local-system';
 import type { BuiltinRenderProps } from '@lobechat/types';
-import { Alert, Flexbox, PatchDiff, Skeleton } from '@lobehub/ui';
+import { Alert, Flexbox, Skeleton } from '@lobehub/ui';
 import React, { memo } from 'react';
+
+import { PatchDiff } from '@/components/LazyDiff';
 
 const EditLocalFile = memo<BuiltinRenderProps<any, EditLocalFileState>>(
   ({ args, pluginState, pluginError }) => {

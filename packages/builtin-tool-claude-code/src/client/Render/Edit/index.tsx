@@ -1,9 +1,11 @@
 'use client';
 
 import type { BuiltinRenderProps } from '@lobechat/types';
-import { CodeDiff, Flexbox, Skeleton } from '@lobehub/ui';
+import { Flexbox, Skeleton } from '@lobehub/ui';
 import path from 'path-browserify-esm';
 import { memo } from 'react';
+
+import { CodeDiff } from '@/components/LazyDiff';
 
 interface EditArgs {
   file_path?: string;

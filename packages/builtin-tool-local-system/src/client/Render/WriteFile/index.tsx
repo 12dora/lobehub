@@ -1,12 +1,13 @@
 import type { WriteLocalFileParams } from '@lobechat/electron-client-ipc';
 import type { BuiltinRenderProps } from '@lobechat/types';
-import { Flexbox, Icon, Markdown, PatchDiff, Skeleton } from '@lobehub/ui';
+import { Flexbox, Icon, Markdown, Skeleton } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { ChevronRight } from 'lucide-react';
 import path from 'path-browserify-esm';
 import { memo } from 'react';
 
 import { InlineHtmlPreview, isHtmlFile } from '@/components/HtmlPreview';
+import { PatchDiff } from '@/components/LazyDiff';
 import { LocalFile, LocalFolder } from '@/features/LocalFile';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
