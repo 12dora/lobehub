@@ -2,12 +2,12 @@
  * Maps builtin server-runtime tool identifiers to the platform module that owns
  * them. Unlisted identifiers are core and always allowed.
  */
-import { CloudSandboxIdentifier } from '@lobechat/builtin-tool-cloud-sandbox';
-import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base';
-import { MemoryIdentifier } from '@lobechat/builtin-tool-memory';
-import { RemoteDeviceIdentifier } from '@lobechat/builtin-tool-remote-device';
-import { SkillStoreIdentifier } from '@lobechat/builtin-tool-skill-store';
-import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
+import { CloudSandboxIdentifier } from '@lobechat/builtin-tool-cloud-sandbox/manifest';
+import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base/manifest';
+import { MemoryIdentifier } from '@lobechat/builtin-tool-memory/manifest';
+import { RemoteDeviceIdentifier } from '@lobechat/builtin-tool-remote-device/manifest';
+import { SkillStoreIdentifier } from '@lobechat/builtin-tool-skill-store/manifest';
+import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing/manifest';
 
 import type { PlatformModuleId } from '@/const/platform/modules';
 

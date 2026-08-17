@@ -28,7 +28,6 @@ import { AgentRuntimeService } from '@/server/services/agentRuntime';
 import { AiAgentService } from '@/server/services/aiAgent';
 import { AiChatService } from '@/server/services/aiChat';
 import { getFileProxyUrl } from '@/server/services/file';
-import { HeterogeneousAgentService } from '@/server/services/heterogeneousAgent';
 
 import { workingDirConfigSchema } from './workingDirSchema';
 
@@ -519,9 +518,6 @@ const aiAgentProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) 
       }),
       aiAgentService: new AiAgentService(ctx.serverDB, ctx.userId, { workspaceId: wsId }),
       aiChatService: new AiChatService(ctx.serverDB, ctx.userId, wsId),
-      heterogeneousAgentService: new HeterogeneousAgentService(ctx.serverDB, ctx.userId, {
-        workspaceId: wsId,
-      }),
       messageModel: new MessageModel(ctx.serverDB, ctx.userId, wsId),
       threadModel: new ThreadModel(ctx.serverDB, ctx.userId, wsId),
       topicModel: new TopicModel(ctx.serverDB, ctx.userId, wsId),
@@ -1342,6 +1338,7 @@ export const aiAgentRouter = router({
       }
 
       const wsId = topicRow?.workspaceId ?? undefined;
+      const { HeterogeneousAgentService } = await import('@/server/services/heterogeneousAgent');
       const heteroService = new HeterogeneousAgentService(ctx.serverDB, ctx.userId, {
         workspaceId: wsId,
       });
@@ -1399,6 +1396,7 @@ export const aiAgentRouter = router({
       }
 
       const wsId = topicRow?.workspaceId ?? undefined;
+      const { HeterogeneousAgentService } = await import('@/server/services/heterogeneousAgent');
       const heteroService = new HeterogeneousAgentService(ctx.serverDB, ctx.userId, {
         workspaceId: wsId,
       });

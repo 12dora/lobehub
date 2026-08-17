@@ -2,6 +2,8 @@ import { type BuiltinToolManifest } from '@lobechat/types';
 
 import { TopicReferenceApiName, TopicReferenceIdentifier } from './types';
 
+export { TopicReferenceIdentifier } from './types';
+
 export const TopicReferenceManifest: BuiltinToolManifest = {
   api: [
     {

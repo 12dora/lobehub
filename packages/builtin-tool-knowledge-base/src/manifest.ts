@@ -3,6 +3,8 @@ import type { BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { KnowledgeBaseApiName, KnowledgeBaseIdentifier } from './types';
 
+export { KnowledgeBaseIdentifier } from './types';
+
 export const KnowledgeBaseManifest: BuiltinToolManifest = {
   api: [
     // ---- Resource Library Files (highest priority — most user files live here) ----

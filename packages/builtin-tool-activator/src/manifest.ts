@@ -3,6 +3,8 @@ import type { BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { ActivatorApiName, LobeActivatorIdentifier } from './types';
 
+export { LobeActivatorIdentifier } from './types';
+
 export const LobeActivatorManifest: BuiltinToolManifest = {
   api: [
     {

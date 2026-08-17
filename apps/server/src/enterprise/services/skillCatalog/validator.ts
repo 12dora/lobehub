@@ -1,4 +1,4 @@
-import { validateInlineSkillResourcePaths } from '@lobechat/device-control';
+import { validateInlineSkillResourcePaths } from '@lobechat/device-control/inlineSkillResources';
 
 import {
   canonicalizePlatformSkillManifest,

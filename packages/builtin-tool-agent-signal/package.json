@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./executionRuntime": "./src/shared/ExecutionRuntime.ts"
+    "./executionRuntime": "./src/shared/ExecutionRuntime.ts",
+    "./manifest": "./src/manifest.ts"
   },
   "main": "./src/index.ts",
   "devDependencies": {

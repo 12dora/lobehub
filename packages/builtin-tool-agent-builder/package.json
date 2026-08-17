@@ -5,7 +5,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./client": "./src/client/index.ts",
-    "./executor": "./src/executor.ts"
+    "./executor": "./src/executor.ts",
+    "./manifest": "./src/manifest.ts"
   },
   "main": "./src/index.ts",
   "dependencies": {

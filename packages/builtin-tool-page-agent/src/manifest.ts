@@ -3,6 +3,8 @@ import type { BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { DocumentApiName, PageAgentIdentifier } from './types';
 
+export { PageAgentIdentifier } from './types';
+
 export const PageAgentManifest: BuiltinToolManifest = {
   api: [
     // ============ Initialize ============

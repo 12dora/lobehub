@@ -3,6 +3,8 @@ import type { BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { SkillStoreApiName, SkillStoreIdentifier } from './types';
 
+export { SkillStoreIdentifier } from './types';
+
 export const SkillStoreManifest: BuiltinToolManifest = {
   api: [
     {

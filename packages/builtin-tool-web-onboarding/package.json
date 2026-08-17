@@ -8,7 +8,8 @@
     "./agentMarketplace/client": "./src/agentMarketplace/client/index.ts",
     "./client": "./src/client/index.ts",
     "./executionRuntime": "./src/ExecutionRuntime/index.ts",
-    "./utils": "./src/ExecutionRuntime/utils.ts"
+    "./utils": "./src/ExecutionRuntime/utils.ts",
+    "./manifest": "./src/manifest.ts"
   },
   "main": "./src/index.ts",
   "dependencies": {

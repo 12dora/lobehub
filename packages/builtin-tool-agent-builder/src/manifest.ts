@@ -3,6 +3,8 @@ import type { BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { AgentBuilderApiName, AgentBuilderIdentifier } from './types';
 
+export { AgentBuilderIdentifier } from './types';
+
 export const AgentBuilderManifest: BuiltinToolManifest = {
   api: [
     // ==================== Read Operations ====================

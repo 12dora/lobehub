@@ -3,6 +3,8 @@ import type { BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { UserInteractionApiName, UserInteractionIdentifier } from './types';
 
+export { UserInteractionIdentifier } from './types';
+
 export const UserInteractionManifest: BuiltinToolManifest = {
   api: [
     {

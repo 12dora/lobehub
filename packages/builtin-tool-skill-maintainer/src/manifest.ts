@@ -2,6 +2,8 @@ import type { BuiltinToolManifest } from '@lobechat/types';
 
 import { SkillMaintainerApiName, SkillMaintainerIdentifier } from './types';
 
+export { SkillMaintainerIdentifier } from './types';
+
 const skillTargetProperties = {
   agentDocumentId: {
     description: 'Managed skill bundle id from agent_documents.id.',

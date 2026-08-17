@@ -4,7 +4,9 @@
   "private": true,
   "exports": {
     ".": "./src/index.ts",
-    "./client": "./src/client/index.ts"
+    "./client": "./src/client/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./systemRole": "./src/systemRole.ts"
   },
   "main": "./src/index.ts",
   "dependencies": {

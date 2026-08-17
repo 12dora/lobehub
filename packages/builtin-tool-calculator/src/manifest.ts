@@ -3,6 +3,8 @@ import { type BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { CalculatorApiName, CalculatorIdentifier } from './types';
 
+export { CalculatorIdentifier } from './types';
+
 export const CalculatorManifest: BuiltinToolManifest = {
   api: [
     {

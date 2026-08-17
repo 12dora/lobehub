@@ -3,6 +3,8 @@ import { type BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { RemoteDeviceApiName, RemoteDeviceIdentifier } from './types';
 
+export { RemoteDeviceIdentifier } from './types';
+
 export const RemoteDeviceManifest: BuiltinToolManifest = {
   api: [
     {

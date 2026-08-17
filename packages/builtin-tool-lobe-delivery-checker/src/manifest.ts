@@ -3,6 +3,8 @@ import type { BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { LobeDeliveryCheckerApiName, LobeDeliveryCheckerIdentifier } from './types';
 
+export { LobeDeliveryCheckerIdentifier } from './types';
+
 export const LobeDeliveryCheckerManifest: BuiltinToolManifest = {
   api: [
     {

@@ -5,7 +5,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./store": "./src/store/types.ts",
-    "./recorder": "./src/recorder/index.ts"
+    "./recorder": "./src/recorder/index.ts",
+    "./viewer": "./src/viewer/index.ts"
   },
   "main": "./src/index.ts",
   "bin": {

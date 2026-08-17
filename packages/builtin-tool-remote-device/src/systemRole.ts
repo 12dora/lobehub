@@ -1,6 +1,6 @@
 import { onlineDevicesPrompt } from '@lobechat/prompts';
 
-import { type DeviceAttachment } from './ExecutionRuntime/types';
+import type { DeviceAttachment } from './ExecutionRuntime/types';
 
 export const generateSystemPrompt = (devices?: DeviceAttachment[]): string => {
   const onlineDevices = devices?.filter((d) => d.online) ?? [];

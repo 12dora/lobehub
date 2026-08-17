@@ -9,6 +9,8 @@ import {
   SelfFeedbackIntentApiName,
 } from './types';
 
+export { SELF_FEEDBACK_INTENT_IDENTIFIER } from './types';
+
 /**
  * Self-iteration intent builtin tool manifest.
  *

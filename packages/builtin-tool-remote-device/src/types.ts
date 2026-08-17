@@ -1,4 +1,4 @@
-import { type DeviceAttachment } from './ExecutionRuntime/types';
+import type { DeviceAttachment } from './ExecutionRuntime/types';
 
 export const RemoteDeviceIdentifier = 'lobe-remote-device';
 

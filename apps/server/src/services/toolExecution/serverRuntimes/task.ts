@@ -1,4 +1,5 @@
-import { normalizeListTasksParams, TaskIdentifier } from '@lobechat/builtin-tool-task';
+import { normalizeListTasksParams } from '@lobechat/builtin-tool-task';
+import { TaskIdentifier } from '@lobechat/builtin-tool-task/manifest';
 import type { LobeChatDatabase } from '@lobechat/database';
 import type { TaskCreatedItem } from '@lobechat/prompts';
 import {
@@ -20,10 +21,12 @@ import { TaskModel } from '@/database/models/task';
 import { WorkspaceModel } from '@/database/models/workspace';
 import { tasks } from '@/database/schemas';
 import { appEnv } from '@/envs/app';
-import { taskRouter } from '@/server/routers/lambda/task';
+import type { taskRouter } from '@/server/routers/lambda/task';
 import { TaskService } from '@/server/services/task';
 
 import { type ServerRuntimeRegistration } from './types';
+
+type TaskCaller = ReturnType<typeof taskRouter.createCaller>;
 
 // Row-level workspace resolution: the agent runtime hasn't threaded
 // `workspaceId` into `ToolExecutionContext` yet. When the tool fires inside a
@@ -59,7 +62,7 @@ export interface TaskRuntimeDeps {
   // app origin.
   resolveLinkBaseUrl?: () => Promise<string>;
   scope?: string | null;
-  taskCaller: ReturnType<typeof taskRouter.createCaller>;
+  taskCaller: TaskCaller;
   taskId?: string;
   taskModel: TaskModel;
   taskService: TaskService;
@@ -691,10 +694,12 @@ export const createTaskRuntime = (deps: TaskRuntimeDeps) => {
 };
 
 export const taskRuntime: ServerRuntimeRegistration = {
-  factory: (context) => {
+  factory: async (context) => {
     if (!context.userId || !context.serverDB) {
       throw new Error('userId and serverDB are required for Task tool execution');
     }
+
+    const { taskRouter } = await import('@/server/routers/lambda/task');
 
     const db = context.serverDB;
     const userId = context.userId;

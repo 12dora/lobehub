@@ -4,6 +4,8 @@ import { isDesktop } from './const';
 import { systemPrompt } from './systemRole';
 import { LobeAgentApiName, LobeAgentIdentifier } from './types';
 
+export { LobeAgentIdentifier } from './types';
+
 export const LobeAgentManifest: BuiltinToolManifest = {
   api: [
     {

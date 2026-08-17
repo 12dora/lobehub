@@ -11,6 +11,8 @@ import {
 import { systemPrompt } from './systemRole';
 import { SkillsApiName, SkillsIdentifier } from './types';
 
+export { SkillsIdentifier } from './types';
+
 export const SkillsManifest: BuiltinToolManifest = {
   api: [
     activateSkillApi,

@@ -5,6 +5,8 @@ import { MARKETPLACE_CATEGORY_VALUES } from './agentMarketplace/types';
 import { toolSystemPrompt } from './toolSystemRole';
 import { WebOnboardingApiName, WebOnboardingIdentifier } from './types';
 
+export { WebOnboardingIdentifier } from './types';
+
 // Agent identity (name/emoji) surface a confirmation card;
 // user profile fields (fullName) and interest saves bypass intervention.
 const saveUserQuestionConfirmationRules: HumanInterventionRule[] = [

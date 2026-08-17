@@ -19,8 +19,8 @@
  *      because the manifest was still resolvable in the engine even when
  *      the rule-layer gate denied it).
  */
-import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
-import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
+import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system/manifest';
+import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device/manifest';
 import { builtinTools } from '@lobechat/builtin-tools';
 
 export const DEVICE_TOOL_MANIFESTS = [LocalSystemManifest, RemoteDeviceManifest] as const;
