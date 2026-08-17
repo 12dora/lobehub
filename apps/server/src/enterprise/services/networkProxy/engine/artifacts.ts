@@ -23,6 +23,7 @@ import {
   NETWORK_PROXY_ENV,
   NETWORK_PROXY_LIMITS,
 } from '@/const/platform/networkProxy';
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import type { ArtifactState } from '@/types/platform/networkProxy';
 
 import { redactUrlForDisplay } from './b1';
@@ -202,26 +203,77 @@ const hashNoFollow = async (path: string): Promise<{ digest: string; identity: F
 /** Side-file that records a digest an operator explicitly accepted despite the manifest mismatch. */
 export const acceptedDigestPath = (artifactPath: string): string => `${artifactPath}.accepted`;
 
-const readAcceptedDigest = async (artifactPath: string): Promise<string | null> => {
+interface AcceptedDigestClaim {
+  digest: string;
+  kind: NetworkProxyArtifactKind;
+  version: string;
+}
+
+/**
+ * The acceptance marker is sealed with the platform KEK (`PlatformSecretService`), so a writer
+ * with nothing but access to the data volume cannot mint one: replacing the artifact still fails
+ * verification unless the marker was produced by the authenticated upload path of this platform.
+ * Without a configured master key the escape hatch is simply unavailable.
+ */
+let acceptedDigestSecretsOverride: PlatformSecretService | null | undefined;
+const acceptedDigestSecrets = (): PlatformSecretService | null =>
+  acceptedDigestSecretsOverride === undefined
+    ? PlatformSecretService.tryFromEnv()
+    : acceptedDigestSecretsOverride;
+
+/** Test seam: inject the sealing service (or `null` to simulate a deployment without a KEK). */
+export const setAcceptedDigestSecretsForTest = (
+  service: PlatformSecretService | null | undefined,
+): void => {
+  acceptedDigestSecretsOverride = service;
+};
+
+const readAcceptedDigest = async (
+  artifactPath: string,
+  claim: Omit<AcceptedDigestClaim, 'digest'>,
+): Promise<string | null> => {
+  const secrets = acceptedDigestSecrets();
+  if (!secrets) return null;
   try {
     const handle = await open(
       acceptedDigestPath(artifactPath),
       constants.O_RDONLY | constants.O_NOFOLLOW,
     );
+    let sealed: string;
     try {
       const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > 128) return null;
-      const text = (await handle.readFile({ encoding: 'utf8' })).trim().toLowerCase();
-      return /^[\da-f]{64}$/u.test(text) ? text : null;
+      if (!stat.isFile() || stat.size > 4096) return null;
+      sealed = (await handle.readFile({ encoding: 'utf8' })).trim();
     } finally {
       await handle.close();
     }
+    const parsed = JSON.parse(await secrets.decrypt(sealed)) as Partial<AcceptedDigestClaim>;
+    if (
+      parsed.kind !== claim.kind ||
+      parsed.version !== claim.version ||
+      typeof parsed.digest !== 'string' ||
+      !/^[\da-f]{64}$/u.test(parsed.digest)
+    ) {
+      return null;
+    }
+    return parsed.digest;
   } catch {
     return null;
   }
 };
 
-const writeAcceptedDigest = async (artifactPath: string, digest: string): Promise<void> => {
+const writeAcceptedDigest = async (
+  artifactPath: string,
+  claim: AcceptedDigestClaim,
+): Promise<void> => {
+  const secrets = acceptedDigestSecrets();
+  if (!secrets) {
+    return throwNetworkProxyError(
+      NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH,
+      'accepting a checksum mismatch requires a configured platform master key',
+    );
+  }
+  const sealed = await secrets.encrypt(JSON.stringify(claim));
   const target = acceptedDigestPath(artifactPath);
   await removeIfPresent(target);
   const handle = await open(
@@ -230,7 +282,7 @@ const writeAcceptedDigest = async (artifactPath: string, digest: string): Promis
     0o400,
   );
   try {
-    await handle.writeFile(`${digest}\n`, { encoding: 'utf8' });
+    await handle.writeFile(`${sealed}\n`, { encoding: 'utf8' });
     await handle.sync();
   } finally {
     await handle.close();
@@ -246,16 +298,22 @@ const isAcceptableDigest = async (
   path: string,
   digest: string,
   expectedSha256: string,
+  claim: Omit<AcceptedDigestClaim, 'digest'> | undefined,
 ): Promise<{ matched: boolean; ok: boolean }> => {
   if (digest === expectedSha256) return { matched: true, ok: true };
-  const accepted = await readAcceptedDigest(path);
+  if (!claim) return { matched: false, ok: false };
+  const accepted = await readAcceptedDigest(path, claim);
   return { matched: false, ok: accepted !== null && accepted === digest };
 };
 
 export const verifyPinnedFile = async (
   path: string,
   expectedSha256: string,
-  opts?: { reverify?: boolean },
+  opts?: {
+    /** Identifies the artifact so an operator-accepted digest marker can be honoured. */
+    accept?: Omit<AcceptedDigestClaim, 'digest'>;
+    reverify?: boolean;
+  },
 ): Promise<{ digest: string; identity: FileIdentity; pinnedDigestMatch: boolean }> => {
   const stat = await lstat(path);
   if (stat.isSymbolicLink() || !stat.isFile()) {
@@ -264,7 +322,7 @@ export const verifyPinnedFile = async (
   const identity = identityOf(path, stat);
   const cached = digestCache.get(path);
   if (!opts?.reverify && cached && sameIdentity(cached.identity, identity)) {
-    const verdict = await isAcceptableDigest(path, cached.digest, expectedSha256);
+    const verdict = await isAcceptableDigest(path, cached.digest, expectedSha256, opts?.accept);
     if (!verdict.ok) {
       digestCache.delete(path);
       return throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH);
@@ -273,7 +331,7 @@ export const verifyPinnedFile = async (
   }
   if (opts?.reverify) spawnDigestVerifyCount += 1;
   const hashed = await hashNoFollow(path);
-  const verdict = await isAcceptableDigest(path, hashed.digest, expectedSha256);
+  const verdict = await isAcceptableDigest(path, hashed.digest, expectedSha256, opts?.accept);
   if (!verdict.ok) {
     digestCache.delete(path);
     return throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH);
@@ -484,19 +542,37 @@ const installVerifiedStream = async (
         stream,
         tmpPath,
       });
+      // Smoke-test the temporary file BEFORE it replaces the working copy: an accepted-but-broken
+      // binary must not destroy a good install (and must not end up marked as accepted).
+      let smokeOutput: string | null = null;
+      let version = spec.version;
+      if (spec.kind === 'engine') {
+        try {
+          const smoked = await smokeTestEngineBinary(tmpPath);
+          smokeOutput = smoked.smokeOutput;
+          // A verified file IS the pinned version; an accepted mismatch reports what it really is.
+          if (!matched) version = smoked.version;
+          log('engine smoke test: %s', smokeOutput);
+        } catch (error) {
+          await removeIfPresent(tmpPath);
+          throw error;
+        }
+      }
+      // The acceptance marker must describe exactly the file about to sit at `dest`. Sealing it
+      // needs the platform KEK — without one the mismatch is rejected before the rename.
+      if (!matched) {
+        try {
+          await writeAcceptedDigest(dest, { digest, kind: spec.kind, version });
+        } catch (error) {
+          await removeIfPresent(tmpPath);
+          throw error;
+        }
+      }
       await rename(tmpPath, dest);
       await chmod(dest, spec.mode);
-      // The acceptance side-file must describe exactly the file now at `dest`: write it for an
-      // accepted mismatch, drop any stale one when a matching file replaces an accepted one.
+      // A matching file replacing an accepted one drops the stale marker.
       if (matched) await removeIfPresent(acceptedDigestPath(dest));
-      else await writeAcceptedDigest(dest, digest);
       await rememberPinnedDigest(dest, digest);
-      let smokeOutput: string | null = null;
-      if (spec.kind === 'engine') {
-        const smoked = await smokeTestEngineBinary(dest);
-        smokeOutput = smoked.smokeOutput;
-        log('engine smoke test: %s', smokeOutput);
-      }
       return {
         kind: spec.kind,
         path: dest,
@@ -504,7 +580,7 @@ const installVerifiedStream = async (
         sha256: digest,
         smokeOutput,
         source: opts.source,
-        version: spec.version,
+        version,
       };
     },
     dataDir,
@@ -577,7 +653,10 @@ const resolveInstalledEngine = async (
   }
   const dest = path.join(spec.destParent, spec.destName);
   if (!(await isRegularFile(dest))) return null;
-  const verified = await verifyPinnedFile(dest, spec.sha256, { reverify: opts?.reverify === true });
+  const verified = await verifyPinnedFile(dest, spec.sha256, {
+    accept: { kind: 'engine', version: spec.version },
+    reverify: opts?.reverify === true,
+  });
   return {
     kind: 'engine',
     path: dest,
@@ -597,7 +676,10 @@ const resolveInstalledGeodata = async (
   const spec = resolveArtifactSpec(kind);
   const dest = path.join(spec.destParent, spec.destName);
   if (!(await isRegularFile(dest))) return null;
-  const verified = await verifyPinnedFile(dest, spec.sha256, { reverify: opts?.reverify === true });
+  const verified = await verifyPinnedFile(dest, spec.sha256, {
+    accept: { kind, version: spec.version },
+    reverify: opts?.reverify === true,
+  });
   return {
     kind,
     path: dest,
@@ -669,8 +751,12 @@ export const materializeGeodataIntoRuntime = async (runtimeDir: string): Promise
   const geoipSrc = path.join(geoipSpec.destParent, geoipSpec.destName);
   const geositeSrc = path.join(geositeSpec.destParent, geositeSpec.destName);
   if (!(await isRegularFile(geoipSrc)) || !(await isRegularFile(geositeSrc))) return false;
-  await verifyPinnedFile(geoipSrc, geoipSpec.sha256);
-  await verifyPinnedFile(geositeSrc, geositeSpec.sha256);
+  await verifyPinnedFile(geoipSrc, geoipSpec.sha256, {
+    accept: { kind: 'geoip', version: geoipSpec.version },
+  });
+  await verifyPinnedFile(geositeSrc, geositeSpec.sha256, {
+    accept: { kind: 'geosite', version: geositeSpec.version },
+  });
   const geoip = { path: geoipSrc };
   const geosite = { path: geositeSrc };
   const dataDir = resolveDataDir();

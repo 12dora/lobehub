@@ -210,6 +210,30 @@ describe('EngineSection dependency panel', () => {
     await Promise.resolve();
     expect(actions.installArtifact).toHaveBeenCalledWith('engine');
     expect(actions.installGeodata).toHaveBeenCalledTimes(1);
+    // The engine goes first — the rule data is useless without something to run it.
+    const engineOrder = (actions.installArtifact as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
+    const geodataOrder = (actions.installGeodata as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
+    expect(engineOrder).toBeLessThan(geodataOrder);
+  });
+
+  it('offers nothing to install while the status is unknown', () => {
+    render(
+      <EngineSection
+        canManage
+        statusUnknown
+        actions={stubActions()}
+        instances={[]}
+        revision={4}
+        service={{} as unknown as AdminNetworkProxyService}
+        onReloadArtifacts={vi.fn()}
+        onReloadStatus={vi.fn()}
+      />,
+    );
+    const button = screen.getByText('networkProxy.engine.deps.installAll') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByTestId('upload-engine').getAttribute('data-disabled')).toBe('true');
   });
 
   it('turns the one-click button into a plain "all installed" state once nothing is missing', () => {

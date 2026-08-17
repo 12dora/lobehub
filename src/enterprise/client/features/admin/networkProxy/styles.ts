@@ -13,7 +13,7 @@ export const networkProxyStyles = createStaticStyles(({ css }) => ({
   /** Engine block: instance facts on the left, the dependency panel on the right. */
   splitRow: css`
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
     gap: 20px;
     align-items: start;
   `,

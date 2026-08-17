@@ -69,10 +69,14 @@ const ArtifactUploadButton = memo<ArtifactUploadButtonProps>(
     const { authMethod } = useAdminAccess();
     const [state, setState] = useState<UploadPhase>({ phase: 'idle' });
     const abortRef = useRef<AbortController | null>(null);
+    // Each pick starts a new generation; a hash that finishes after unmount or after a newer pick
+    // must neither open the warning nor start a transfer.
+    const generationRef = useRef(0);
 
     // Leaving the page mid-upload must not keep the request (or its progress handler) alive.
     useEffect(
       () => () => {
+        generationRef.current += 1;
         abortRef.current?.abort();
         abortRef.current = null;
       },
@@ -132,15 +136,18 @@ const ArtifactUploadButton = memo<ArtifactUploadButtonProps>(
           return;
         }
 
+        const generation = ++generationRef.current;
         setState({ phase: 'hashing' });
         let local: { gzip: boolean; sha256: string };
         try {
           local = await digestFile(file);
         } catch {
           // No WebCrypto (very old browser / insecure context): fall back to the server check.
+          if (generation !== generationRef.current) return;
           await transfer(file, false);
           return;
         }
+        if (generation !== generationRef.current) return;
         const expected = local.gzip && expectedGzDigest ? expectedGzDigest : expectedDigest;
         if (!expected || local.sha256 === expected) {
           await transfer(file, false);
@@ -156,8 +163,10 @@ const ArtifactUploadButton = memo<ArtifactUploadButtonProps>(
           }),
           okButtonProps: { danger: true },
           okText: t('networkProxy.engine.digestMismatch.confirm'),
-          onOk: async () => {
-            await transfer(file, true);
+          // Close the dialog immediately; the transfer shows its own progress and cancel control.
+          onOk: () => {
+            if (generation !== generationRef.current) return;
+            void transfer(file, true);
           },
           title: t('networkProxy.engine.digestMismatch.title'),
         });

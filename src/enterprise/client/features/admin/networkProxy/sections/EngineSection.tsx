@@ -257,9 +257,16 @@ const EngineSection = memo<EngineSectionProps>(
       })),
     ];
 
-    const missingKinds = dependencyRows
-      .filter((row) => !row.installed?.installed)
-      .map((row) => row.kind);
+    // With no status at all we cannot say what is missing — do not offer to (re)install anything.
+    const missingKinds = statusUnknown
+      ? []
+      : dependencyRows.filter((row) => !row.installed?.installed).map((row) => row.kind);
+    const actionsLocked = !canManage || !supported || Boolean(statusUnknown);
+    /** Both artifact catalogue and instance status describe an install; refresh both. */
+    const onArtifactInstalled = () => {
+      onReloadArtifacts();
+      onReloadStatus();
+    };
     const installAllBusy = geodataBusy || dependencyRows.some((row) => actions.isBusy(row.field));
 
     /** One click installs whatever is missing: the engine first, then both rule files. */
@@ -348,18 +355,18 @@ const EngineSection = memo<EngineSectionProps>(
           {/* Right: dependencies and how to install them. */}
           <div className={styles.depsPanel} data-testid="engine-dependencies">
             <div className={styles.depMeta} style={{ paddingBlock: 4 }}>
-              <div className={styles.toolbarRow} style={{ flexWrap: 'nowrap' }}>
+              <div className={styles.toolbarRow}>
                 <Text strong style={{ fontSize: 13 }}>
                   {t('networkProxy.engine.deps.title')}
                 </Text>
                 <Button
-                  disabled={!canManage || !supported || installAllBusy || missingKinds.length === 0}
+                  disabled={actionsLocked || installAllBusy || missingKinds.length === 0}
                   loading={installAllBusy}
                   size="small"
                   type="primary"
                   onClick={() => void installAll()}
                 >
-                  {missingKinds.length === 0
+                  {missingKinds.length === 0 && !statusUnknown
                     ? t('networkProxy.engine.deps.allInstalled')
                     : t('networkProxy.engine.deps.installAll')}
                 </Button>
@@ -407,14 +414,12 @@ const EngineSection = memo<EngineSectionProps>(
                         {t('networkProxy.engine.digestMismatch.installed')}
                       </Text>
                     ) : null}
-                    {row.kind === 'engine' ? (
-                      <FieldStatus
-                        actions={actions}
-                        field={row.field}
-                        pendingLabel={t('networkProxy.engine.installing')}
-                        successLabel={t('networkProxy.engine.installRequested')}
-                      />
-                    ) : null}
+                    <FieldStatus
+                      actions={actions}
+                      field={row.field}
+                      pendingLabel={t('networkProxy.engine.installing')}
+                      successLabel={t('networkProxy.engine.installRequested')}
+                    />
                   </div>
                   <div className={styles.inlineActions}>
                     {url ? (
@@ -429,15 +434,15 @@ const EngineSection = memo<EngineSectionProps>(
                     ) : null}
                     {/* Manual upload is the no-network path; once installed there is nothing to upload. */}
                     <ArtifactUploadButton
-                      disabled={!canManage || !supported || isInstalled}
+                      disabled={actionsLocked || isInstalled}
                       expectedDigest={digest}
                       expectedGzDigest={expectedGzDigest(row.kind)}
                       kind={row.kind}
                       service={service}
-                      onInstalled={onReloadArtifacts}
+                      onInstalled={onArtifactInstalled}
                     />
                     <Button
-                      disabled={!canManage || !supported || busy || installAllBusy}
+                      disabled={actionsLocked || busy || installAllBusy}
                       loading={busy}
                       size="small"
                       onClick={() => void actions.installArtifact(row.kind)}

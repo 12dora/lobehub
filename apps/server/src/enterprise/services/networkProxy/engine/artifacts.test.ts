@@ -10,24 +10,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { NETWORK_PROXY_ENV } from '@/const/platform/networkProxy';
 import { getEnterpriseErrorBody } from '@/server/enterprise/guards/enterpriseErrors';
+import { EnvKeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import type { ArtifactSpec } from './artifacts';
 import {
+  acceptedDigestPath,
   artifactManager,
   getDigestHashCount,
   materializeGeodataIntoRuntime,
   resetArtifactCachesForTest,
+  setAcceptedDigestSecretsForTest,
   setResolveArtifactSpecForTest,
 } from './artifacts';
+
+const testSecrets = new PlatformSecretService({
+  keyProvider: new EnvKeyProvider({ masterKeyBase64: Buffer.alloc(32, 7).toString('base64') }),
+});
 
 let dataDir: string;
 
 beforeEach(() => {
   dataDir = mkdtempSync(path.join(tmpdir(), 'np-art-'));
   process.env[NETWORK_PROXY_ENV.DATA_DIR] = dataDir;
+  setAcceptedDigestSecretsForTest(testSecrets);
 });
 
 afterEach(() => {
+  setAcceptedDigestSecretsForTest(undefined);
   setResolveArtifactSpecForTest(null);
   resetArtifactCachesForTest();
   vi.restoreAllMocks();
@@ -108,6 +117,53 @@ describe('artifactManager.installFromStream', () => {
       installed: true,
       pinnedDigestMatch: true,
     });
+  });
+
+  it('refuses a planted or foreign acceptance marker', async () => {
+    const body = Buffer.from('not-the-pinned-bytes');
+    stubSpec(body.length, '0'.repeat(64));
+    // Legit accepted install first, so the file and a genuine marker exist.
+    await artifactManager.installFromStream('geoip', Readable.from(body), {
+      acceptMismatch: true,
+      compressed: 'none',
+      source: 'upload',
+    });
+    const dest = path.join(dataDir, 'geodata', 'test', 'geoip.metadb');
+    // 1. Somebody with volume access swaps the artifact for other bytes: the marker no longer
+    //    describes it → refused.
+    chmodSync(dest, 0o600);
+    writeFileSync(dest, Buffer.from('swapped-bytes'));
+    resetArtifactCachesForTest();
+    expect((await artifactManager.getStatus()).find((s) => s.kind === 'geoip')?.installed).toBe(
+      false,
+    );
+    // 2. They also write a plaintext / self-made marker with the swapped digest → still refused,
+    //    because the marker must be sealed with the platform KEK.
+    chmodSync(acceptedDigestPath(dest), 0o600);
+    writeFileSync(
+      acceptedDigestPath(dest),
+      JSON.stringify({ digest: sha256('swapped-bytes'), kind: 'geoip', version: 'test-commit' }),
+    );
+    resetArtifactCachesForTest();
+    expect((await artifactManager.getStatus()).find((s) => s.kind === 'geoip')?.installed).toBe(
+      false,
+    );
+  });
+
+  it('cannot accept a mismatch when no platform master key is configured', async () => {
+    setAcceptedDigestSecretsForTest(null);
+    const body = Buffer.from('not-the-pinned-bytes');
+    stubSpec(body.length, '0'.repeat(64));
+    await expect(
+      artifactManager.installFromStream('geoip', Readable.from(body), {
+        acceptMismatch: true,
+        compressed: 'none',
+        source: 'upload',
+      }),
+    ).rejects.toBeTruthy();
+    expect((await artifactManager.getStatus()).find((s) => s.kind === 'geoip')?.installed).toBe(
+      false,
+    );
   });
 
   it('never accepts a mismatch for a download, even when asked', async () => {
