@@ -56,7 +56,7 @@ describe('NetworkProxySubscriptionModel', () => {
     expect(refreshed?.refreshRequestedAt?.toISOString()).toBe(at.toISOString());
   });
 
-  it('recordFetchResult is idempotent on stale success and always writes last_error', async () => {
+  it('recordFetchResult is idempotent on stale success and always writes last_issue', async () => {
     const model = new NetworkProxySubscriptionModel(db);
     const created = await createUrl(model);
     const earlier = new Date('2026-08-17T10:00:00.000Z');
@@ -86,12 +86,33 @@ describe('NetworkProxySubscriptionModel', () => {
     expect(afterStale?.nodeCount).toBe(8);
     expect(afterStale?.lastUpdateAt?.toISOString()).toBe(later.toISOString());
 
+    const timeoutIssue = {
+      at: '2026-08-17T12:00:00.000Z',
+      code: 'timeout' as const,
+      detail: 'The operation was aborted',
+    };
     await model.recordFetchResult(created.id, {
-      error: 'timeout',
       fetchedAt: new Date('2026-08-17T12:00:00.000Z'),
+      lastIssue: timeoutIssue,
     });
     const afterError = await model.getById(created.id);
-    expect(afterError?.lastError).toBe('timeout');
+    expect(afterError?.lastIssue).toEqual(timeoutIssue);
     expect(afterError?.lastUpdateAt?.toISOString()).toBe(later.toISOString());
+
+    const infoIssue = {
+      at: '2026-08-17T12:30:00.000Z',
+      code: 'outlet_unavailable_fetched_direct' as const,
+      detail: 'outlet unavailable, fetched direct',
+    };
+    const infoAt = new Date('2026-08-17T12:30:00.000Z');
+    await model.recordFetchResult(created.id, {
+      fetchedAt: infoAt,
+      lastIssue: infoIssue,
+      nodeCount: 3,
+    });
+    const afterInfo = await model.getById(created.id);
+    expect(afterInfo?.lastIssue).toEqual(infoIssue);
+    expect(afterInfo?.nodeCount).toBe(3);
+    expect(afterInfo?.lastUpdateAt?.toISOString()).toBe(infoAt.toISOString());
   });
 });

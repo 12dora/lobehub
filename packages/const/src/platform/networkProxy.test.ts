@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   featureEgressScope,
   isNetworkProxyEngineIssueCode,
+  isNetworkProxySubscriptionIssueCode,
   NETWORK_PROXY_ENGINE_ISSUE_CODES,
   NETWORK_PROXY_ENGINE_MANIFEST,
   NETWORK_PROXY_ENGINE_PLATFORM_KEYS,
   NETWORK_PROXY_LIMITS,
+  NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES,
   parseEgressScopeId,
   providerEgressScope,
   resolveEnginePlatformKey,
@@ -56,5 +58,13 @@ describe('networkProxy const', () => {
     expect(isNetworkProxyEngineIssueCode('TimeoutError')).toBe(false);
     expect(NETWORK_PROXY_LIMITS.ENGINE_HEAL_BACKOFF_BASE_MS).toBe(30_000);
     expect(NETWORK_PROXY_LIMITS.ENGINE_HEAL_BACKOFF_MAX_MS).toBe(15 * 60_000);
+  });
+
+  it('exports the subscription issue code set', () => {
+    expect(NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES).toContain('timeout');
+    expect(NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES).toContain('outlet_unavailable_fetched_direct');
+    expect(NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES).toHaveLength(9);
+    expect(isNetworkProxySubscriptionIssueCode('http_status')).toBe(true);
+    expect(isNetworkProxySubscriptionIssueCode('TimeoutError')).toBe(false);
   });
 });

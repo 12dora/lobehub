@@ -12,14 +12,22 @@ import path from 'node:path';
 
 import { fetch as undiciFetch, ProxyAgent } from 'undici';
 
-import type { NetworkProxyEngineState } from '@/const/platform/networkProxy';
-import { NETWORK_PROXY_DEFAULTS, NETWORK_PROXY_LIMITS } from '@/const/platform/networkProxy';
+import type {
+  NetworkProxyEngineState,
+  NetworkProxySubscriptionIssueCode,
+} from '@/const/platform/networkProxy';
+import {
+  isNetworkProxySubscriptionIssueCode,
+  NETWORK_PROXY_DEFAULTS,
+  NETWORK_PROXY_LIMITS,
+} from '@/const/platform/networkProxy';
 import {
   assertHostnamePolicy,
   assertIpPolicy,
   createSafeOutboundHttpClient,
   type OutboundPolicy,
 } from '@/server/enterprise/security/outboundHttp';
+import type { SubscriptionIssue } from '@/types/platform/networkProxy';
 
 import type { NetworkProxyRuntimeSnapshot, SubscriptionRuntime } from './b1';
 import {
@@ -40,6 +48,63 @@ const SUBSCRIPTION_HOST_POLICY: OutboundPolicy = {
 };
 
 export const OUTLET_UNAVAILABLE_FETCH_NOTE = 'outlet unavailable, fetched direct';
+
+const HTTP_STATUS_RE = /subscription fetch failed \((\d{3})\)/;
+const SHARE_LINK_RE = /^(?:ss|ssr|vmess|vless|trojan|hysteria2|hy2|tuic|anytls):\/\//mu;
+const CLASH_YAML_RE = /^\s*proxies\s*:/mu;
+
+export const makeSubscriptionIssue = (
+  code: NetworkProxySubscriptionIssueCode,
+  error?: unknown,
+): SubscriptionIssue => {
+  const raw =
+    typeof error === 'string'
+      ? error
+      : error instanceof Error
+        ? error.message
+        : error !== undefined
+          ? String(error)
+          : null;
+  const detail = raw ? redactSecrets(raw).slice(0, 200) : null;
+  return { at: new Date().toISOString(), code, detail: detail || null };
+};
+
+const errorName = (error: unknown): string => (error instanceof Error ? error.name : '');
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+
+/** Map a thrown fetch/parse failure to a persisted subscription issue code. */
+export const resolveSubscriptionIssueCode = (error: unknown): NetworkProxySubscriptionIssueCode => {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string' && isNetworkProxySubscriptionIssueCode(code)) return code;
+  }
+  const name = errorName(error);
+  if (name === 'TimeoutError' || name === 'AbortError') return 'timeout';
+
+  const message = errorMessage(error);
+  if (/payload exceeds|8 MiB cap|maxResponseBytes/i.test(message)) return 'payload_too_large';
+  if (/redirect limit|too many redirects|redirect_limit/i.test(message)) return 'redirect_limit';
+  if (/deadline exceeded|timed out|timeout/i.test(message)) return 'timeout';
+  if (HTTP_STATUS_RE.test(message)) return 'http_status';
+  if (message === OUTLET_UNAVAILABLE_FETCH_NOTE || /outlet unavailable/i.test(message)) {
+    return 'outlet_unavailable_fetched_direct';
+  }
+  if (/no nodes|no available node/i.test(message)) return 'no_nodes';
+  if (/parse|YAML|invalid subscription/i.test(message)) return 'parse_failed';
+  if (/subscription fetch failed|fetch failed/i.test(message)) return 'fetch_failed';
+  return 'unknown';
+};
+
+const issueFromError = (error: unknown): SubscriptionIssue => {
+  const code = resolveSubscriptionIssueCode(error);
+  if (code === 'http_status') {
+    const status = errorMessage(error).match(HTTP_STATUS_RE)?.[1] ?? null;
+    return makeSubscriptionIssue(code, status);
+  }
+  return makeSubscriptionIssue(code, error);
+};
 
 const providerPath = (providersDir: string, id: string): string => {
   if (!SAFE_ID.test(id)) {
@@ -198,6 +263,9 @@ const fetchViaSafeOutbound = async (
   const response = await client.fetch(url, {
     headers: { 'User-Agent': userAgent },
   });
+  if (response.truncated) {
+    throw new Error('subscription payload exceeds the 8 MiB cap');
+  }
   if (!response.ok) {
     throw new Error(
       `subscription fetch failed (${response.status}) from ${redactUrlForDisplay(url)}`,
@@ -227,6 +295,32 @@ const countNodesInPayload = (body: string): number | null => {
       /^(?:ss|ssr|vmess|vless|trojan|hysteria2|hy2|tuic|anytls):\/\//u.test(line.trim()),
     );
   return links.length > 0 ? links.length : null;
+};
+
+/** After a successful HTTP fetch: empty / unparseable bodies become lastIssue failures. */
+export const classifySubscriptionPayload = (
+  body: string,
+): { code: 'no_nodes' | 'parse_failed' | null; nodeCount: number | null } => {
+  const nodeCount = countNodesInPayload(body);
+  if (nodeCount && nodeCount > 0) return { code: null, nodeCount };
+  if (!body.trim()) return { code: 'no_nodes', nodeCount: 0 };
+  if (SHARE_LINK_RE.test(body) || CLASH_YAML_RE.test(body) || /^\s{0,2}-\s+name:/mu.test(body)) {
+    return { code: 'no_nodes', nodeCount: 0 };
+  }
+  return { code: 'parse_failed', nodeCount: null };
+};
+
+const issueForFetchedSubscription = (fetched: {
+  body: string;
+  fallbackNote: string | null;
+  nodeCount: number | null;
+}): SubscriptionIssue | null => {
+  const classified = classifySubscriptionPayload(fetched.body);
+  if (classified.code) return makeSubscriptionIssue(classified.code);
+  if (fetched.fallbackNote) {
+    return makeSubscriptionIssue('outlet_unavailable_fetched_direct', fetched.fallbackNote);
+  }
+  return null;
 };
 
 export const writeManualSubscriptionFile = async (
@@ -327,8 +421,8 @@ export const syncSubscriptionsFromSnapshot = async (input: {
         });
         if (db) {
           await recordSubscriptionFetchResult(db, sub.id, {
-            error: fetched.fallbackNote,
             fetchedAt: new Date(now),
+            lastIssue: issueForFetchedSubscription(fetched),
             nodeCount: fetched.nodeCount,
             traffic: fetched.traffic,
           });
@@ -336,13 +430,10 @@ export const syncSubscriptionsFromSnapshot = async (input: {
       }
       providerFiles.push({ path, subscriptionId: sub.id });
     } catch (error) {
-      const message = redactSecrets(
-        error instanceof Error ? error.message : 'subscription fetch failed',
-      );
       if (db) {
         await recordSubscriptionFetchResult(db, sub.id, {
-          error: message,
           fetchedAt: new Date(now),
+          lastIssue: issueFromError(error),
         });
       }
     }
@@ -379,19 +470,19 @@ export const refreshSubscriptionNow = async (input: {
       });
       if (db) {
         await recordSubscriptionFetchResult(db, sub.id, {
-          error: fetched.fallbackNote,
           fetchedAt: now,
+          lastIssue: issueForFetchedSubscription(fetched),
           nodeCount: fetched.nodeCount,
           traffic: fetched.traffic,
         });
       }
     }
   } catch (error) {
-    const message = redactSecrets(
-      error instanceof Error ? error.message : 'subscription fetch failed',
-    );
     if (db) {
-      await recordSubscriptionFetchResult(db, sub.id, { error: message, fetchedAt: now });
+      await recordSubscriptionFetchResult(db, sub.id, {
+        fetchedAt: now,
+        lastIssue: issueFromError(error),
+      });
     }
     throw error;
   }

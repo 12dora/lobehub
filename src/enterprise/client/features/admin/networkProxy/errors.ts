@@ -1,4 +1,8 @@
-import { NETWORK_PROXY_ENGINE_ISSUE_CODES } from '@/const/platform/networkProxy';
+import {
+  isNetworkProxySubscriptionInformationalIssue,
+  NETWORK_PROXY_ENGINE_ISSUE_CODES,
+  NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES,
+} from '@/const/platform/networkProxy';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 
 export const NETWORK_PROXY_GENERIC_ERROR_KEY = 'networkProxy.errors.generic';
@@ -33,6 +37,22 @@ export const networkProxyIssueKey = (code: string | null | undefined): string =>
   code && ISSUE_CODES.includes(code)
     ? `networkProxy.engineIssue.${code}`
     : 'networkProxy.engineIssue.unknown';
+
+const SUBSCRIPTION_ISSUE_CODES: readonly string[] = NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES;
+
+/**
+ * `admin`-namespace key for one subscription-fetch issue code.
+ *
+ * Same contract as the engine: unknown / future codes fall back to the generic line so a raw
+ * exception never reaches the panel.
+ */
+export const networkProxySubscriptionIssueKey = (code: string | null | undefined): string =>
+  code && SUBSCRIPTION_ISSUE_CODES.includes(code)
+    ? `networkProxy.subscriptionIssue.${code}`
+    : 'networkProxy.subscriptionIssue.unknown';
+
+export const isInformationalSubscriptionIssue = (code: string | null | undefined): boolean =>
+  Boolean(code && isNetworkProxySubscriptionInformationalIssue(code));
 
 /** Losing a CAS race is a normal outcome here — two admins on one settings row. */
 export const isRevisionConflict = (error: unknown): boolean =>

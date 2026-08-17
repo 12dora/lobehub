@@ -9,6 +9,7 @@ import type {
   NetworkProxyConfig,
   NetworkProxyEngineState,
   NetworkProxySubscriptionKind,
+  SubscriptionIssue,
 } from '@/types/platform/networkProxy';
 
 import { idGenerator } from '../../utils/idGenerator';
@@ -90,6 +91,11 @@ export const platformNetworkProxySubscriptions = pgTable(
      */
     refreshRequestedAt: timestamptz('refresh_requested_at'),
     lastUpdateAt: timestamptz('last_update_at'),
+    lastIssue: jsonb('last_issue').$type<SubscriptionIssue | null>(),
+    /**
+     * @deprecated Kept for rolling upgrade; old processes still select this
+     * column. New writers leave it untouched. Drop in a later migration.
+     */
     lastError: text('last_error'),
     nodeCount: integer('node_count'),
 

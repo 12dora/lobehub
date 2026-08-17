@@ -14,6 +14,7 @@ import type {
   NetworkProxyOutletMode,
   NetworkProxyRuleMode,
   NetworkProxyStaticProxyType,
+  NetworkProxySubscriptionIssueCode,
   NetworkProxySubscriptionKind,
 } from '@/const/platform/networkProxy';
 
@@ -33,6 +34,7 @@ import {
   NETWORK_PROXY_OUTLET_MODES,
   NETWORK_PROXY_RULE_MODES,
   NETWORK_PROXY_STATIC_PROXY_TYPES,
+  NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES,
   NETWORK_PROXY_SUBSCRIPTION_KINDS,
 } from '../../../const/src/platform/networkProxy';
 
@@ -50,6 +52,7 @@ export type {
   NetworkProxyOutletMode,
   NetworkProxyRuleMode,
   NetworkProxyStaticProxyType,
+  NetworkProxySubscriptionIssueCode,
   NetworkProxySubscriptionKind,
 };
 
@@ -67,6 +70,9 @@ export const networkProxyEngineStateSchema = z.enum(NETWORK_PROXY_ENGINE_STATES)
 export const networkProxyArtifactKindSchema = z.enum(NETWORK_PROXY_ARTIFACT_KINDS);
 export const networkProxyArtifactSourceSchema = z.enum(NETWORK_PROXY_ARTIFACT_SOURCES);
 export const networkProxySubscriptionKindSchema = z.enum(NETWORK_PROXY_SUBSCRIPTION_KINDS);
+export const networkProxySubscriptionIssueCodeSchema = z.enum(
+  NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES,
+);
 export const networkProxyEngineLogLevelSchema = z.enum(NETWORK_PROXY_ENGINE_LOG_LEVELS);
 export const networkProxyDirectReasonSchema = z.enum(NETWORK_PROXY_DIRECT_REASONS);
 export const networkProxyEngineIssueCodeSchema = z.enum(NETWORK_PROXY_ENGINE_ISSUE_CODES);
@@ -311,6 +317,16 @@ export const subscriptionTrafficSchema = z
   .strict();
 export type SubscriptionTraffic = z.infer<typeof subscriptionTrafficSchema>;
 
+export const subscriptionIssueSchema = z
+  .object({
+    at: z.string().datetime(),
+    code: networkProxySubscriptionIssueCodeSchema,
+    /** already redacted, ≤200 chars — UI shows it only in a tooltip */
+    detail: z.string().max(200).nullable(),
+  })
+  .strict();
+export type SubscriptionIssue = z.infer<typeof subscriptionIssueSchema>;
+
 const subscriptionCommonSchema = z.object({
   enabled: z.boolean(),
   excludeFilter: z.string().max(500).optional(),
@@ -324,7 +340,7 @@ export const subscriptionViewSchema = subscriptionCommonSchema
     createdAt: z.string().datetime(),
     id: z.string(),
     kind: networkProxySubscriptionKindSchema,
-    lastError: z.string().nullable(),
+    lastIssue: subscriptionIssueSchema.nullable(),
     lastUpdateAt: z.string().datetime().nullable(),
     nodeCount: z.number().int().nonnegative().nullable(),
     traffic: subscriptionTrafficSchema.nullable(),

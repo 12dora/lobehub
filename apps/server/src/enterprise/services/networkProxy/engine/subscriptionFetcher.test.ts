@@ -10,8 +10,10 @@ import { createDefaultNetworkProxyConfig } from '@/types/platform/networkProxy';
 import type { NetworkProxyRuntimeSnapshot, SubscriptionRuntime } from './b1';
 import { parseSubscriptionUserinfoHeader } from './b1';
 import {
+  classifySubscriptionPayload,
   OUTLET_UNAVAILABLE_FETCH_NOTE,
   removeOrphanProviderFiles,
+  resolveSubscriptionIssueCode,
   resolveSubscriptionOutletProxy,
   writeManualSubscriptionFile,
 } from './subscriptionFetcher';
@@ -117,6 +119,55 @@ describe('resolveSubscriptionOutletProxy', () => {
       fallbackNote: OUTLET_UNAVAILABLE_FETCH_NOTE,
       kind: null,
       proxyUrl: null,
+    });
+  });
+});
+
+describe('resolveSubscriptionIssueCode', () => {
+  it('maps timeout and abort names to timeout', () => {
+    expect(
+      resolveSubscriptionIssueCode(Object.assign(new Error('aborted'), { name: 'TimeoutError' })),
+    ).toBe('timeout');
+    expect(
+      resolveSubscriptionIssueCode(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+    ).toBe('timeout');
+    expect(
+      resolveSubscriptionIssueCode(new Error('Outbound request absolute deadline exceeded')),
+    ).toBe('timeout');
+  });
+
+  it('maps HTTP status, payload, redirect, and generic fetch failures', () => {
+    expect(
+      resolveSubscriptionIssueCode(new Error('subscription fetch failed (502) from https://x')),
+    ).toBe('http_status');
+    expect(
+      resolveSubscriptionIssueCode(new Error('subscription payload exceeds the 8 MiB cap')),
+    ).toBe('payload_too_large');
+    expect(
+      resolveSubscriptionIssueCode(new Error('subscription fetch exceeded the redirect limit')),
+    ).toBe('redirect_limit');
+    expect(resolveSubscriptionIssueCode(new Error('SSRF blocked: too many redirects'))).toBe(
+      'redirect_limit',
+    );
+    expect(resolveSubscriptionIssueCode(new Error('subscription fetch failed'))).toBe(
+      'fetch_failed',
+    );
+    expect(resolveSubscriptionIssueCode(new Error('socket hang up'))).toBe('unknown');
+  });
+
+  it('maps the outlet fallback note and payload classifications', () => {
+    expect(resolveSubscriptionIssueCode(new Error(OUTLET_UNAVAILABLE_FETCH_NOTE))).toBe(
+      'outlet_unavailable_fetched_direct',
+    );
+    expect(classifySubscriptionPayload('')).toEqual({ code: 'no_nodes', nodeCount: 0 });
+    expect(classifySubscriptionPayload('proxies:\n')).toEqual({ code: 'no_nodes', nodeCount: 0 });
+    expect(classifySubscriptionPayload('not a subscription')).toEqual({
+      code: 'parse_failed',
+      nodeCount: null,
+    });
+    expect(classifySubscriptionPayload('- name: hk-1\n  type: ss\n')).toEqual({
+      code: null,
+      nodeCount: 1,
     });
   });
 });

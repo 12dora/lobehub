@@ -3494,6 +3494,20 @@ export default {
   'networkProxy.engineIssue.global_proxy_active': 'An environment-level proxy is active.',
   'networkProxy.engineIssue.unknown': 'The engine reported a problem. Check the logs.',
   'networkProxy.engineIssue.detailToggle': 'Technical detail',
+  'networkProxy.subscriptionIssue.fetch_failed': 'The subscription URL could not be fetched.',
+  'networkProxy.subscriptionIssue.http_status':
+    'The subscription service returned an error ({{detail}}).',
+  'networkProxy.subscriptionIssue.timeout': 'The subscription URL timed out.',
+  'networkProxy.subscriptionIssue.payload_too_large':
+    'The subscription payload exceeds the 8 MB limit.',
+  'networkProxy.subscriptionIssue.redirect_limit':
+    'The subscription URL exceeded the redirect limit.',
+  'networkProxy.subscriptionIssue.parse_failed': 'The subscription content could not be parsed.',
+  'networkProxy.subscriptionIssue.no_nodes': 'The subscription has no usable nodes.',
+  'networkProxy.subscriptionIssue.outlet_unavailable_fetched_direct':
+    'The outlet was unavailable; this fetch went direct.',
+  'networkProxy.subscriptionIssue.unknown':
+    'The subscription could not be fetched. Check the engine log.',
   'networkProxy.artifactKind.engine': 'Proxy engine',
   'networkProxy.artifactKind.geoip': 'IP location rules',
   'networkProxy.artifactKind.geosite': 'Domain routing rules',

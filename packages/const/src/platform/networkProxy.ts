@@ -107,6 +107,34 @@ export const isNetworkProxyEngineIssueCode = (
 ): value is NetworkProxyEngineIssueCode =>
   (NETWORK_PROXY_ENGINE_ISSUE_CODES as readonly string[]).includes(value);
 
+/** Structured subscription-fetch issue codes persisted on the subscription row (never raw English). */
+export const NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES = [
+  'fetch_failed',
+  'http_status',
+  'timeout',
+  'payload_too_large',
+  'redirect_limit',
+  'parse_failed',
+  'no_nodes',
+  'outlet_unavailable_fetched_direct',
+  'unknown',
+] as const;
+export type NetworkProxySubscriptionIssueCode =
+  (typeof NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES)[number];
+
+/** Informational notes that are not a failed fetch — the client renders them as info, not error. */
+export const NETWORK_PROXY_SUBSCRIPTION_INFORMATIONAL_ISSUE_CODES = [
+  'outlet_unavailable_fetched_direct',
+] as const satisfies readonly NetworkProxySubscriptionIssueCode[];
+
+export const isNetworkProxySubscriptionIssueCode = (
+  value: string,
+): value is NetworkProxySubscriptionIssueCode =>
+  (NETWORK_PROXY_SUBSCRIPTION_ISSUE_CODES as readonly string[]).includes(value);
+
+export const isNetworkProxySubscriptionInformationalIssue = (value: string): boolean =>
+  (NETWORK_PROXY_SUBSCRIPTION_INFORMATIONAL_ISSUE_CODES as readonly string[]).includes(value);
+
 export const NETWORK_PROXY_ARTIFACT_KINDS = ['engine', 'geoip', 'geosite'] as const;
 export type NetworkProxyArtifactKind = (typeof NETWORK_PROXY_ARTIFACT_KINDS)[number];
 

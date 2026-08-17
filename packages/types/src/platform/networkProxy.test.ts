@@ -11,6 +11,8 @@ import {
   normalizeNetworkProxyConfig,
   staticProxyUpdateSchema,
   subscriptionCreateSchema,
+  subscriptionIssueSchema,
+  subscriptionViewSchema,
 } from './networkProxy';
 
 describe('networkProxy types', () => {
@@ -150,5 +152,41 @@ describe('networkProxy types', () => {
     expect(instanceStatusViewSchema.safeParse({ ...view, lastIssue: undefined }).success).toBe(
       false,
     );
+  });
+
+  it('subscriptionIssueSchema is strict and subscription view uses lastIssue', () => {
+    const issue = {
+      at: '2026-08-17T00:00:00.000Z',
+      code: 'timeout' as const,
+      detail: 'aborted',
+    };
+    expect(subscriptionIssueSchema.parse(issue)).toEqual(issue);
+    expect(subscriptionIssueSchema.safeParse({ ...issue, extra: 1 }).success).toBe(false);
+    expect(subscriptionIssueSchema.safeParse({ ...issue, code: 'TimeoutError' }).success).toBe(
+      false,
+    );
+    expect(subscriptionIssueSchema.safeParse({ ...issue, detail: 'x'.repeat(201) }).success).toBe(
+      false,
+    );
+
+    const view = {
+      createdAt: '2026-08-17T00:00:00.000Z',
+      enabled: true,
+      id: 'nps_1',
+      kind: 'url' as const,
+      lastIssue: issue,
+      lastUpdateAt: null,
+      name: 'Main',
+      nodeCount: 2,
+      sortOrder: 0,
+      traffic: null,
+      updateIntervalSec: 86_400,
+      updatedAt: '2026-08-17T00:00:00.000Z',
+      urlHost: 'sub.example.com',
+      userAgent: null,
+    };
+    expect(subscriptionViewSchema.parse(view)).toEqual(view);
+    expect(subscriptionViewSchema.safeParse({ ...view, lastError: 'x' }).success).toBe(false);
+    expect(subscriptionViewSchema.safeParse({ ...view, lastIssue: undefined }).success).toBe(false);
   });
 });

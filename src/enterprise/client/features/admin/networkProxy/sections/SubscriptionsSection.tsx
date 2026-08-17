@@ -1,15 +1,16 @@
 'use client';
 
-import { Tag, Text } from '@lobehub/ui';
+import { Tag, Text, Tooltip } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { SubscriptionView } from '@/types/platform/networkProxy';
+import type { SubscriptionIssue, SubscriptionView } from '@/types/platform/networkProxy';
 
 import { openDangerConfirm } from '../../primitives/DangerConfirm';
 import DataTable from '../../primitives/DataTable';
+import { isInformationalSubscriptionIssue, networkProxySubscriptionIssueKey } from '../errors';
 import FieldStatus from '../FieldStatus';
 import { formatDateTime, summarizeTraffic } from '../format';
 import { Section } from '../Section';
@@ -32,6 +33,21 @@ export interface SubscriptionsSectionProps {
   onRetry: () => void;
   subscriptionActions: NetworkProxySubscriptionActions;
 }
+
+const SubscriptionIssueLabel = memo<{ issue: SubscriptionIssue }>(({ issue }) => {
+  const { t } = useTranslation('admin');
+  const informational = isInformationalSubscriptionIssue(issue.code);
+  const label = (
+    <Text
+      className={informational ? styles.hintText : undefined}
+      style={{ fontSize: 12 }}
+      type={informational ? undefined : 'danger'}
+    >
+      {t(networkProxySubscriptionIssueKey(issue.code) as never, { detail: issue.detail ?? '' })}
+    </Text>
+  );
+  return issue.detail ? <Tooltip title={issue.detail}>{label}</Tooltip> : label;
+});
 
 /**
  * 订阅 (design §6.3).
@@ -108,7 +124,7 @@ const SubscriptionsSection = memo<SubscriptionsSectionProps>(
           title: t('networkProxy.subscriptions.columns.lastUpdate'),
         },
         {
-          dataIndex: 'lastError',
+          dataIndex: 'lastIssue',
           key: 'status',
           render: (_: unknown, row) => {
             if (!row.enabled) {
@@ -118,24 +134,29 @@ const SubscriptionsSection = memo<SubscriptionsSectionProps>(
                 </Tag>
               );
             }
-            if (row.lastError) {
+            const issue = row.lastIssue;
+            const issueLabel = issue ? <SubscriptionIssueLabel issue={issue} /> : null;
+            if (issue && !isInformationalSubscriptionIssue(issue.code)) {
               return (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <Tag color="error" size="small">
                     {t('networkProxy.subscriptions.status.failed')}
                   </Tag>
-                  <span className={styles.hintText}>{row.lastError}</span>
+                  {issueLabel}
                 </div>
               );
             }
             return (
-              <Tag color={row.lastUpdateAt ? 'success' : 'warning'} size="small">
-                {t(
-                  row.lastUpdateAt
-                    ? 'networkProxy.subscriptions.status.ok'
-                    : 'networkProxy.subscriptions.status.pending',
-                )}
-              </Tag>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <Tag color={row.lastUpdateAt ? 'success' : 'warning'} size="small">
+                  {t(
+                    row.lastUpdateAt
+                      ? 'networkProxy.subscriptions.status.ok'
+                      : 'networkProxy.subscriptions.status.pending',
+                  )}
+                </Tag>
+                {issueLabel}
+              </div>
             );
           },
           title: t('networkProxy.subscriptions.columns.status'),

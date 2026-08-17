@@ -1,13 +1,18 @@
 'use client';
 
-import { Text } from '@lobehub/ui';
+import { Text, Tooltip } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { Drawer } from 'antd';
 import { memo, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { SubscriptionUpdate, SubscriptionView } from '@/types/platform/networkProxy';
+import type {
+  SubscriptionIssue,
+  SubscriptionUpdate,
+  SubscriptionView,
+} from '@/types/platform/networkProxy';
 
+import { isInformationalSubscriptionIssue, networkProxySubscriptionIssueKey } from '../errors';
 import { formatDateTime } from '../format';
 import { networkProxyStyles as styles } from '../styles';
 import {
@@ -24,6 +29,21 @@ export interface SubscriptionEditDrawerProps {
   onSubmit: (input: SubscriptionUpdate) => Promise<boolean>;
   subscription: SubscriptionView | null;
 }
+
+const SubscriptionIssueAlert = memo<{ issue: SubscriptionIssue }>(({ issue }) => {
+  const { t } = useTranslation('admin');
+  const informational = isInformationalSubscriptionIssue(issue.code);
+  const label = (
+    <Text
+      className={informational ? styles.hintText : undefined}
+      role="alert"
+      type={informational ? undefined : 'danger'}
+    >
+      {t(networkProxySubscriptionIssueKey(issue.code) as never, { detail: issue.detail ?? '' })}
+    </Text>
+  );
+  return issue.detail ? <Tooltip title={issue.detail}>{label}</Tooltip> : label;
+});
 
 /** 编辑订阅 (design §6.3). The stored URL / paste is never returned — blank means "keep". */
 const SubscriptionEditDrawer = memo<SubscriptionEditDrawerProps>(
@@ -84,10 +104,8 @@ const SubscriptionEditDrawer = memo<SubscriptionEditDrawerProps>(
                 time: formatDateTime(subscription.lastUpdateAt),
               })}
             </Text>
-            {subscription.lastError ? (
-              <Text role="alert" type="danger">
-                {subscription.lastError}
-              </Text>
+            {subscription.lastIssue ? (
+              <SubscriptionIssueAlert issue={subscription.lastIssue} />
             ) : null}
             <SubscriptionForm
               disabled={!canManage || busy}

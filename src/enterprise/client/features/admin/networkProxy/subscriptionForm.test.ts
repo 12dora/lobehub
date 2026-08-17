@@ -17,7 +17,7 @@ const stored = (overrides: Partial<SubscriptionView> = {}): SubscriptionView => 
   filter: undefined,
   id: 'nps_1',
   kind: 'url',
-  lastError: null,
+  lastIssue: null,
   lastUpdateAt: '2026-08-17T01:00:00.000Z',
   name: 'Main',
   nodeCount: 12,

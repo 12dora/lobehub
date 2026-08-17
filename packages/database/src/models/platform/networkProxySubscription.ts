@@ -2,6 +2,7 @@ import { and, asc, eq, isNull, lt, or } from 'drizzle-orm';
 
 import type {
   NetworkProxySubscriptionKind,
+  SubscriptionIssue,
   SubscriptionTraffic,
 } from '@/types/platform/networkProxy';
 
@@ -17,6 +18,7 @@ export interface NetworkProxySubscriptionRow {
   id: string;
   kind: NetworkProxySubscriptionKind;
   lastError: string | null;
+  lastIssue: SubscriptionIssue | null;
   lastUpdateAt: Date | null;
   name: string;
   nodeCount: number | null;
@@ -63,8 +65,8 @@ export interface NetworkProxySubscriptionUpdatePatch {
 }
 
 export interface NetworkProxySubscriptionFetchResult {
-  error?: string | null;
   fetchedAt: Date;
+  lastIssue?: SubscriptionIssue | null;
   nodeCount?: number | null;
   traffic?: SubscriptionTraffic | null;
 }
@@ -169,22 +171,26 @@ export class NetworkProxySubscriptionModel {
 
   /**
    * Success writes are gated by `last_update_at IS NULL OR last_update_at < fetchedAt`
-   * so concurrent instance fetchers stay idempotent. Failures always overwrite `last_error`.
+   * so concurrent instance fetchers stay idempotent. Failures always overwrite `last_issue`.
+   * Informational notes (e.g. outlet-unavailable-fetched-direct) travel with the success write.
    */
   recordFetchResult = async (
     id: string,
     result: NetworkProxySubscriptionFetchResult,
   ): Promise<void> => {
-    if (result.error) {
+    const lastIssue = result.lastIssue ?? null;
+    const isFailure = lastIssue !== null && lastIssue.code !== 'outlet_unavailable_fetched_direct';
+
+    if (isFailure) {
       await this.db
         .update(platformNetworkProxySubscriptions)
-        .set({ lastError: result.error, updatedAt: new Date() })
+        .set({ lastIssue, updatedAt: new Date() })
         .where(eq(platformNetworkProxySubscriptions.id, id));
       return;
     }
 
-    const set: Record<string, Date | number | null> = {
-      lastError: null,
+    const set: Record<string, Date | number | SubscriptionIssue | null> = {
+      lastIssue,
       lastUpdateAt: result.fetchedAt,
       updatedAt: new Date(),
     };
@@ -221,6 +227,7 @@ export class NetworkProxySubscriptionModel {
     id: row.id,
     kind: row.kind,
     lastError: row.lastError ?? null,
+    lastIssue: row.lastIssue ?? null,
     lastUpdateAt: row.lastUpdateAt ?? null,
     name: row.name,
     nodeCount: row.nodeCount ?? null,

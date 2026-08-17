@@ -143,6 +143,7 @@ describe('getNetworkProxySnapshot', () => {
       id: 'nps_manual',
       kind: 'manual' as const,
       lastError: null,
+      lastIssue: null,
       lastUpdateAt: null,
       name: 'manual',
       nodeCount: null,

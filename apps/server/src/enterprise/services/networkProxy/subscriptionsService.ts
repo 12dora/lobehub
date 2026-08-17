@@ -6,6 +6,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { assessRegexSafety } from '@/types/platform/contentModeration';
 import type {
   SubscriptionCreate,
+  SubscriptionIssue,
   SubscriptionTraffic,
   SubscriptionUpdate,
   SubscriptionView,
@@ -45,7 +46,7 @@ const toView = (row: NetworkProxySubscriptionRow): SubscriptionView => ({
   enabled: row.enabled,
   id: row.id,
   kind: row.kind,
-  lastError: row.lastError,
+  lastIssue: row.lastIssue,
   lastUpdateAt: row.lastUpdateAt ? row.lastUpdateAt.toISOString() : null,
   name: row.name,
   nodeCount: row.nodeCount,
@@ -228,19 +229,24 @@ export const requestSubscriptionRefresh = async (
   await model.requestRefresh(id, new Date());
 };
 
+const redactIssue = (issue: SubscriptionIssue): SubscriptionIssue => ({
+  ...issue,
+  detail: issue.detail ? redactSecrets(issue.detail).slice(0, 200) : null,
+});
+
 export const recordSubscriptionFetchResult = async (
   db: LobeChatDatabase,
   id: string,
   result: {
-    error?: string | null;
     fetchedAt: Date;
+    lastIssue?: SubscriptionIssue | null;
     nodeCount?: number | null;
     traffic?: SubscriptionTraffic | null;
   },
 ): Promise<void> => {
   await new NetworkProxySubscriptionModel(db).recordFetchResult(id, {
-    error: result.error ? redactSecrets(result.error) : result.error,
     fetchedAt: result.fetchedAt,
+    lastIssue: result.lastIssue ? redactIssue(result.lastIssue) : result.lastIssue,
     nodeCount: result.nodeCount,
     traffic: result.traffic,
   });
