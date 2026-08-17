@@ -44,7 +44,30 @@ const crashAfterMs = process.env.FAKE_ENGINE_CRASH_AFTER_MS
   ? Number(process.env.FAKE_ENGINE_CRASH_AFTER_MS)
   : null;
 
-const emptyGroup = { all: [], alive: false, history: [], now: '', type: 'URLTest' };
+// FAKE_ENGINE_PROVIDER_NODE=1 mirrors real mihomo: a provider-sourced member appears in the
+// group's `all` / `now` and under /providers/proxies, but NOT under GET /proxies.
+const providerNode = process.env.FAKE_ENGINE_PROVIDER_NODE === '1';
+const emptyGroup = providerNode
+  ? { all: ['n1'], alive: true, history: [], now: 'n1', type: 'URLTest' }
+  : { all: [], alive: false, history: [], now: '', type: 'URLTest' };
+const providerPayload = {
+  providers: providerNode
+    ? {
+        sub_abc: {
+          proxies: [
+            {
+              alive: true,
+              history: [{ delay: 75, time: '2026-08-17T00:00:00Z' }],
+              name: 'n1',
+              type: 'Http',
+            },
+          ],
+          updatedAt: '2026-08-17T00:00:00Z',
+          vehicleType: 'File',
+        },
+      }
+    : {},
+};
 
 const server = createServer((req, res) => {
   const url = req.url ?? '';
@@ -66,6 +89,11 @@ const server = createServer((req, res) => {
   if (url.startsWith('/proxies/')) {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify(emptyGroup));
+    return;
+  }
+  if (url === '/providers/proxies' && req.method === 'GET') {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(providerPayload));
     return;
   }
   if (url.startsWith('/configs') || url.startsWith('/providers/')) {

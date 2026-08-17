@@ -72,6 +72,13 @@ const isPidAlive = (pid: number): boolean => {
 
 const sleep = (ms: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms));
 
+type ProxyDetail = {
+  alive?: boolean;
+  history?: { delay: number }[];
+  name?: string;
+  type: string;
+};
+
 const memberAlive = (
   proxy: { alive?: boolean; history?: { delay: number }[] } | undefined,
 ): boolean => {
@@ -604,7 +611,7 @@ export class EngineSupervisor implements EngineRuntime {
       await this.rest.version();
       this.healthFailures = 0;
       const group = await this.rest.getGroup(NETWORK_PROXY_ENGINE_GROUP_NAME);
-      const proxies = await this.rest.getProxies();
+      const { proxies } = await this.collectProxyDetails(this.rest);
       const alive = group.all.filter((name) => memberAlive(proxies[name])).length;
       this.patchState({
         activeNode: group.now || null,
@@ -708,16 +715,38 @@ export class EngineSupervisor implements EngineRuntime {
     await this.restartNow();
   };
 
-  private readNodes = async (): Promise<ProxyNodeView[]> => {
-    const rest = this.requireRest();
-    const group = await rest.getGroup(NETWORK_PROXY_ENGINE_GROUP_NAME);
-    const proxies = await rest.getProxies();
-    const providers = await rest.getProviders().catch(() => ({}));
+  /**
+   * mihomo's `GET /proxies` only lists top-level proxies and groups; nodes that come from a
+   * `proxy-providers` entry (all of ours) are only reported under `GET /providers/proxies`.
+   * Merge both so liveness / delay / type resolve for provider-sourced members.
+   */
+  private collectProxyDetails = async (
+    rest: EngineRestClient,
+  ): Promise<{
+    owner: Map<string, string>;
+    proxies: Record<string, ProxyDetail | undefined>;
+  }> => {
+    const [topLevel, providers] = await Promise.all([
+      rest.getProxies(),
+      rest.getProviders().catch(() => ({})),
+    ]);
+    const proxies: Record<string, ProxyDetail | undefined> = { ...topLevel };
     const owner = new Map<string, string>();
     for (const [providerName, provider] of Object.entries(providers)) {
       const subscriptionId = providerName.startsWith('sub_') ? providerName.slice(4) : null;
-      for (const proxy of provider.proxies) owner.set(proxy.name, subscriptionId ?? providerName);
+      for (const proxy of provider.proxies ?? []) {
+        owner.set(proxy.name, subscriptionId ?? providerName);
+        // provider view is authoritative for its own members (carries alive/history)
+        proxies[proxy.name] = proxy;
+      }
     }
+    return { owner, proxies };
+  };
+
+  private readNodes = async (): Promise<ProxyNodeView[]> => {
+    const rest = this.requireRest();
+    const group = await rest.getGroup(NETWORK_PROXY_ENGINE_GROUP_NAME);
+    const { owner, proxies } = await this.collectProxyDetails(rest);
     return group.all.map((name) => {
       const proxy = proxies[name];
       const last = proxy?.history?.at(-1)?.delay;

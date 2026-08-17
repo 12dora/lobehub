@@ -146,6 +146,25 @@ describe('EngineSupervisor child process', () => {
     expect(supervisor.getState().state).toBe('stopped');
   });
 
+  it('sees provider-sourced members as alive (they are absent from GET /proxies)', async () => {
+    writeWrapper({ FAKE_ENGINE_PROVIDER_NODE: '1' });
+    try {
+      const { EngineSupervisor } = await import('./supervisor');
+      const supervisor = new EngineSupervisor({ healthIntervalMs: 60, startWaitMs: 4000 });
+      live.push(supervisor);
+      await supervisor.reconcile();
+      await waitFor(() => supervisor.getState().aliveNodeCount === 1);
+      expect(supervisor.getState().state).toBe('running');
+      expect(supervisor.getState().activeNode).toBe('n1');
+      const nodes = await supervisor.listNodes();
+      expect(nodes).toEqual([
+        { alive: true, delayMs: 75, name: 'n1', subscriptionId: 'abc', type: 'Http' },
+      ]);
+    } finally {
+      writeWrapper();
+    }
+  });
+
   it('restarts after health failures and serializes concurrent restart()', async () => {
     writeWrapper({ FAKE_ENGINE_FAIL_AFTER: '1' });
     const { EngineSupervisor } = await import('./supervisor');
