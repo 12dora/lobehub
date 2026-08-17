@@ -809,9 +809,13 @@ export const handleNetworkProxyArtifactUpload = async (
 };
 
 const resolveUploadErrorCode = (error: unknown): string => {
+  // Enterprise errors (`throwNetworkProxyError`) carry the platform code in `cause.data`; the
+  // top-level `code` on those is the tRPC code (BAD_REQUEST…), which is not what the client maps.
+  const platform = getEnterpriseErrorBody(error)?.code;
+  if (typeof platform === 'string' && platform in PLATFORM_ERROR_CODES) return platform;
   if (error && typeof error === 'object' && 'code' in error) {
     const code = (error as { code?: string }).code;
-    if (typeof code === 'string' && code.length > 0) return code;
+    if (typeof code === 'string' && code in PLATFORM_ERROR_CODES) return code;
   }
   if (error instanceof Error && error.message in PLATFORM_ERROR_CODES) return error.message;
   return PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_ENGINE_ERROR;

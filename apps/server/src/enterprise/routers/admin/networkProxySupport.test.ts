@@ -423,6 +423,34 @@ describe('handleNetworkProxyArtifactUpload', () => {
     );
   });
 
+  it('maps a rejected checksum mismatch to the platform code with a 400, not the tRPC code', async () => {
+    const { throwNetworkProxyError } = await import('../../services/networkProxy/engine/errors');
+    setNetworkProxyRuntimeForTests({
+      artifactManager: {
+        getStatus: vi.fn(async () => []),
+        installFromDownload: vi.fn(),
+        installFromStream: vi.fn(async () =>
+          throwNetworkProxyError(PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_ARTIFACT_MISMATCH),
+        ),
+      },
+      redactSecrets: (text: string) => text,
+    });
+    const form = new FormData();
+    form.set('file', new File([new Uint8Array([1])], 'geosite.dat'));
+    const res = await handleNetworkProxyArtifactUpload(
+      new Request('https://example.com/webapi/admin/network-proxy/artifact?kind=geosite', {
+        body: form,
+        headers: { 'content-length': '128' },
+        method: 'POST',
+      }),
+      ctx,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      code: PLATFORM_ERROR_CODES.PLATFORM_NETWORK_PROXY_ARTIFACT_MISMATCH,
+    });
+  });
+
   it("forwards the operator's acceptance of a checksum mismatch and audits it as unverified", async () => {
     const installFromStream = vi.fn(async () => ({
       pinnedDigestMatch: false,
