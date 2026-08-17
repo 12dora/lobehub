@@ -151,7 +151,16 @@ describe('enterprise admin mutation policy registry', () => {
         continue;
       }
       expect(['critical', 'high']).toContain(definition.risk);
-      expect(definition.controls.reason.status).not.toBe('not-applicable');
+      // B0 DTOs for these three have no reason field — `noReason` is the matching control.
+      const dtoHasNoReason =
+        procedure === 'admin.networkProxy.createSubscription' ||
+        procedure === 'admin.networkProxy.updateSubscription' ||
+        procedure === 'admin.networkProxy.installArtifact';
+      if (dtoHasNoReason) {
+        expect(definition.controls.reason.status).toBe('not-applicable');
+      } else {
+        expect(definition.controls.reason.status).not.toBe('not-applicable');
+      }
       expect(definition.controls.reauth.status).not.toBe('not-applicable');
       expect(definition.controls.audit.status).not.toBe('not-applicable');
       expect(definition.controls.rateLimit.status).not.toBe('not-applicable');

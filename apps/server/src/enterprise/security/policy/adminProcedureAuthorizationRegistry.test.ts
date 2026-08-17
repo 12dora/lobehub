@@ -84,14 +84,19 @@ describe('admin procedure authorization registry', () => {
     // +5 queries / +5 mutations since: content moderation (admin.contentModeration.{getSettings,
     // getOverview, getStats, listRecords, getRecord, updateSettings, testClassifier,
     // revealRecordPrompt, deleteRecords, clearDecisionCache}).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(197);
+    // +6 queries / +11 mutations since: network proxy (admin.networkProxy.{getSettings,
+    // getStatus, listSubscriptions, listNodes, getEngineLogs, getArtifactStatus,
+    // updateSettings, updateScopes, createSubscription, updateSubscription,
+    // deleteSubscription, refreshSubscription, testLatency, selectNode, installArtifact,
+    // restartEngine, testConnectivity}).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(214);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(95);
+    ).toHaveLength(101);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(102);
-    expect(mutationPaths).toHaveLength(102);
+    ).toHaveLength(113);
+    expect(mutationPaths).toHaveLength(113);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

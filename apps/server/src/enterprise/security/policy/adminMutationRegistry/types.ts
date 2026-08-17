@@ -33,7 +33,8 @@ export interface DangerousAdminMutationDefinition extends AdminMutationDefinitio
   controls: AdminMutationControls & {
     audit: RequiredAdminMutationControl;
     rateLimit: RequiredAdminMutationControl;
-    reason: RequiredAdminMutationControl;
+    /** `noReason` (not-applicable) is allowed when the DTO has no reason field. */
+    reason: AdminMutationControl;
     reauth: RequiredAdminMutationControl;
   };
   dangerous: true;

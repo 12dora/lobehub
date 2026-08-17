@@ -118,7 +118,12 @@ export const dangerousMutation = (
     audit?: RequiredAdminMutationControl;
     lastKnownGood?: AdminMutationControl;
     outbound?: AdminMutationControl;
-    reason?: RequiredAdminMutationControl;
+    /**
+     * Prefer `reasonInput` / `optionalReasonInput`. `noReason` is allowed when
+     * the procedure DTO has no reason field (e.g. network-proxy create/update
+     * subscription and installArtifact).
+     */
+    reason?: AdminMutationControl;
     reauth: RequiredAdminMutationControl;
   },
 ): DangerousAdminMutationDefinition => ({

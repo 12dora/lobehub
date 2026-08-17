@@ -30,6 +30,7 @@ import { adminContentModerationRouter } from './admin/contentModeration';
 import { adminCredsRouter } from './admin/creds';
 import { adminIdentityProvidersRouter } from './admin/identityProviders';
 import { adminManagedResourcesRouter } from './admin/managedResources';
+import { adminNetworkProxyRouter } from './admin/networkProxy';
 import { adminSecurityRouter } from './admin/security';
 import { adminSettingsRouter } from './admin/settings';
 import { adminSidebarLayoutRouter } from './admin/sidebarLayout';
@@ -182,6 +183,7 @@ export const adminRouter = router({
   creds: adminCredsRouter,
   identityProviders: adminIdentityProvidersRouter,
   managedResources: adminManagedResourcesRouter,
+  networkProxy: adminNetworkProxyRouter,
   roles: adminRolesRouter,
   security: adminSecurityRouter,
   settings: adminSettingsRouter,

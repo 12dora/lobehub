@@ -40,6 +40,8 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/app/(backend)/api/cron/identity-provider-test-attempt-cleanup/route.ts',
   // M12: branding asset id contract for public file route
   'src/app/(backend)/f/[id]/route.ts',
+  // Network proxy: admin artifact upload (multipart; shares the enterprise webapi guard)
+  'src/app/(backend)/webapi/admin/network-proxy/artifact/route.ts',
   // M05: effective settings + updateSettings adapter
   'apps/server/src/routers/lambda/user.ts',
   // M05: agent / systemAgent / agentGroup runtime reads through resolver adapter

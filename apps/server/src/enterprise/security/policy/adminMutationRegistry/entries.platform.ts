@@ -58,6 +58,86 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     { reauth: recentReauth },
   ),
   'admin.security.secretRotation.cancel': dangerousMutation(
+  'admin.networkProxy.createSubscription': dangerousMutation(
+    'admin.networkProxy.createSubscription',
+    'high',
+    'Create a URL or manual subscription that can change site-wide egress nodes.',
+    { outbound: safeOutbound, reason: noReason, reauth: recentReauth },
+  ),
+  'admin.networkProxy.deleteSubscription': regularMutation(
+    'admin.networkProxy.deleteSubscription',
+    'medium',
+    'Delete a subscription and broadcast provider-file removal to every instance.',
+    { reason: optionalReasonInput },
+  ),
+  'admin.networkProxy.installArtifact': dangerousMutation(
+    'admin.networkProxy.installArtifact',
+    'high',
+    'Set desired engine or geodata artifacts so every instance downloads the pinned build.',
+    { reason: noReason, reauth: recentReauth },
+  ),
+  'admin.networkProxy.refreshSubscription': regularMutation(
+    'admin.networkProxy.refreshSubscription',
+    'medium',
+    'Request an immediate subscription pull on this instance and broadcast the refresh.',
+    { outbound: safeOutbound, reason: noReason },
+  ),
+  'admin.networkProxy.restartEngine': regularMutation(
+    'admin.networkProxy.restartEngine',
+    'medium',
+    'Bump engine generation so every instance restarts its local mihomo supervisor.',
+    { reason: noReason },
+  ),
+  'admin.networkProxy.selectNode': regularMutation(
+    'admin.networkProxy.selectNode',
+    'medium',
+    'Persist the manual outlet node and apply it on the answering instance.',
+    { reason: noReason },
+  ),
+  'admin.networkProxy.testConnectivity': regularMutation(
+    'admin.networkProxy.testConnectivity',
+    'low',
+    'Probe the current outlet with the configured latency URL without persisting a change.',
+    {
+      audit: notApplicable(
+        'The live outlet probe does not persist configuration or write an audit row.',
+      ),
+      lastKnownGood: remoteProbeNoLkg,
+      outbound: conditional(
+        'The probe uses the current outlet dispatcher (engine mixed listener or static proxy), never a scope-bound egress fetch.',
+        'The request is sent through the outlet rather than the enterprise SafeOutbound client.',
+      ),
+      reason: noReason,
+    },
+  ),
+  'admin.networkProxy.testLatency': regularMutation(
+    'admin.networkProxy.testLatency',
+    'low',
+    'Ask the answering instance engine to measure group or node delay.',
+    {
+      audit: notApplicable('The local engine delay probe does not persist configuration.'),
+      lastKnownGood: remoteProbeNoLkg,
+      reason: noReason,
+    },
+  ),
+  'admin.networkProxy.updateScopes': regularMutation(
+    'admin.networkProxy.updateScopes',
+    'medium',
+    'Apply a bounded batch of egress-scope enablement and fallback-policy changes with CAS.',
+    { reason: noReason },
+  ),
+  'admin.networkProxy.updateSettings': dangerousMutation(
+    'admin.networkProxy.updateSettings',
+    'critical',
+    'Replace network-proxy settings that can change the site-wide egress path, with CAS.',
+    { reason: optionalReasonInput, reauth: conditionalReauth },
+  ),
+  'admin.networkProxy.updateSubscription': dangerousMutation(
+    'admin.networkProxy.updateSubscription',
+    'high',
+    'Update a subscription URL, payload, or filters that can change site-wide egress nodes.',
+    { outbound: safeOutbound, reason: noReason, reauth: recentReauth },
+  ),
     'admin.security.secretRotation.cancel',
     'critical',
     'Stop future batches of an active secret re-wrap job without reverting committed envelopes.',

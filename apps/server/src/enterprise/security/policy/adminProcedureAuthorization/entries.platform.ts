@@ -89,6 +89,91 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'mutation',
+    path: 'admin.networkProxy.createSubscription',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.deleteSubscription',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.networkProxy.getArtifactStatus',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.networkProxy.getEngineLogs',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.networkProxy.getSettings',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.networkProxy.getStatus',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.installArtifact',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.networkProxy.listNodes',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.networkProxy.listSubscriptions',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.refreshSubscription',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.restartEngine',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.selectNode',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.testConnectivity',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.testLatency',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.updateScopes',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.updateSettings',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.networkProxy.updateSubscription',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.security.secretRotation.cancel',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
