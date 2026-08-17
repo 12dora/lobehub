@@ -14,6 +14,8 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import {
   assertBootstrapCredentialPassword,
+  BOOTSTRAP_PASSWORD_MAX_LENGTH,
+  BOOTSTRAP_PASSWORD_MIN_LENGTH,
   bootstrapSuperAdmin,
   ensurePlatformRbacSeeded,
 } from './superAdmin';
@@ -37,6 +39,8 @@ const FIXTURE_EMAILS = [
   'long@localhost',
   'disabled@localhost',
   'generated@localhost',
+  'char-disabled@localhost',
+  'char-generated@localhost',
 ] as const;
 
 /** Minimal Better Auth instance against the test DB — real `/sign-in/email` path. */
@@ -109,6 +113,87 @@ afterEach(async () => {
 });
 
 describe('bootstrapSuperAdmin', () => {
+  it('assigns super_admin to an existing user without inserting a credential account', async () => {
+    const result = await bootstrapSuperAdmin(db, { userId });
+    expect(result.roleAssigned).toBe(true);
+    expect(result.credentialRepaired).toBe(false);
+    expect(result.createdUser).toBe(false);
+
+    const credential = await db.query.account.findFirst({
+      where: (t, { and, eq }) => and(eq(t.userId, userId), eq(t.providerId, 'credential')),
+    });
+    expect(credential).toBeUndefined();
+  });
+
+  it('does not insert a credential when repairCredential is set on a user that already has one', async () => {
+    await bootstrapSuperAdmin(db, {
+      password: STRONG_PASSWORD,
+      repairCredential: true,
+      userId,
+    });
+    const before = await db.query.account.findFirst({
+      where: (t, { and, eq }) => and(eq(t.userId, userId), eq(t.providerId, 'credential')),
+    });
+    expect(before).toBeTruthy();
+
+    const result = await bootstrapSuperAdmin(db, {
+      password: 'different-password-not-applied',
+      repairCredential: true,
+      userId,
+    });
+    expect(result.credentialRepaired).toBe(false);
+
+    const after = await db.query.account.findFirst({
+      where: (t, { and, eq }) => and(eq(t.userId, userId), eq(t.providerId, 'credential')),
+    });
+    expect(after?.id).toBe(before!.id);
+    expect(after?.password).toBe(before!.password);
+  });
+
+  it('throws before any write when allowCreate is set and email/password auth is disabled', async () => {
+    await cleanup();
+    const { authEnv } = await import('@/envs/auth');
+    (authEnv as { AUTH_DISABLE_EMAIL_PASSWORD: boolean }).AUTH_DISABLE_EMAIL_PASSWORD = true;
+
+    await expect(
+      bootstrapSuperAdmin(db, {
+        allowCreate: true,
+        email: 'char-disabled@localhost',
+        password: STRONG_PASSWORD,
+        username: 'char-disabled',
+      }),
+    ).rejects.toThrow(/AUTH_DISABLE_EMAIL_PASSWORD/);
+
+    expect(
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, 'char-disabled@localhost')),
+    ).toHaveLength(0);
+  });
+
+  it('returns a generated password exactly once and within the 8–64 policy', async () => {
+    await cleanup();
+    const first = await bootstrapSuperAdmin(db, {
+      allowCreate: true,
+      email: 'char-generated@localhost',
+      username: 'char-generated',
+    });
+    expect(first.oneTimePassword).toBeTruthy();
+    expect(first.oneTimePassword!.length).toBeGreaterThanOrEqual(BOOTSTRAP_PASSWORD_MIN_LENGTH);
+    expect(first.oneTimePassword!.length).toBeLessThanOrEqual(BOOTSTRAP_PASSWORD_MAX_LENGTH);
+    expect(assertBootstrapCredentialPassword(first.oneTimePassword!)).toBeUndefined();
+
+    const second = await bootstrapSuperAdmin(db, {
+      allowCreate: true,
+      email: 'char-generated@localhost',
+      username: 'char-generated',
+    });
+    expect(second.oneTimePassword).toBeUndefined();
+    expect(second.createdUser).toBe(false);
+    expect(second.userId).toBe(first.userId);
+  });
+
   it('is idempotent and grants super_admin', async () => {
     const first = await bootstrapSuperAdmin(db, { userId });
     expect(first.roleAssigned).toBe(true);

@@ -52,13 +52,12 @@ export class AdminUserReadService extends AdminUserSupport {
   get = async (userId: string, meta?: { actorUserId?: string }) => {
     const detail = await this.users.findDetailById(userId);
     if (!detail) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.get',
         actorUserId: meta?.actorUserId,
-        afterDiff: { error: 'not_found' },
+        error: 'not_found',
         result: 'failure',
         targetId: userId,
-        targetType: 'user',
       });
       throw new AdminUserNotFoundError();
     }
@@ -83,13 +82,12 @@ export class AdminUserReadService extends AdminUserSupport {
   ) => {
     const exists = await this.users.findBanState(input.userId);
     if (!exists) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.getAuditTrail',
         actorUserId: meta?.actorUserId,
-        afterDiff: { error: 'not_found' },
+        error: 'not_found',
         result: 'failure',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new AdminUserNotFoundError();
     }

@@ -2,7 +2,6 @@
  * Admin user lifecycle mutations (create / ban / unban / delete).
  */
 import { hashPassword } from 'better-auth/crypto';
-import { sql } from 'drizzle-orm';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { AdminUserModel } from '@/database/models/adminUser';
@@ -38,44 +37,36 @@ export class AdminUserLifecycleService extends AdminUserSupport {
 
     if (input.userId === actorUserId) {
       // Denied audit outside any mutation txn (R2-03).
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.ban',
         actorUserId,
-        afterDiff: { error: 'self_ban' },
+        error: 'self_ban',
         reason: input.reason,
         result: 'denied',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new AdminUserSelfBanError();
     }
 
     const pre = await this.users.findBanState(input.userId);
     if (!pre) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.ban',
         actorUserId,
-        afterDiff: { error: 'not_found' },
+        error: 'not_found',
         reason: input.reason,
         result: 'failure',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new AdminUserNotFoundError();
     }
 
     try {
       const result = await this.db.transaction(async (tx) => {
-        await tx.execute(
-          sql`SELECT id FROM rbac_roles WHERE name = ${PLATFORM_SYSTEM_ROLES.SUPER_ADMIN} AND workspace_id IS NULL FOR UPDATE`,
-        );
+        await this.lockSuperAdminRoleRow(tx);
 
         const model = new AdminUserModel(tx);
-        const rbac = new RbacModel(tx as LobeChatDatabase, actorUserId);
-        if (await rbac.isGlobalSuperAdmin(input.userId)) {
-          const count = await rbac.countActiveSuperAdmins();
-          if (count <= 1) throw new LastSuperAdminError();
-        }
+        await this.assertNotLastSuperAdmin(tx, actorUserId, input.userId, { mode: 'last' });
 
         const updated = await model.setBanned({
           banExpires: input.expiresAt ?? null,
@@ -119,14 +110,13 @@ export class AdminUserLifecycleService extends AdminUserSupport {
       };
     } catch (error) {
       if (error instanceof LastSuperAdminError || error instanceof LastSuperAdminProtectionError) {
-        await this.appendAuditBestEffort({
+        await this.auditUserFailure({
           action: 'admin.users.ban',
           actorUserId,
-          afterDiff: { error: 'last_super_admin' },
+          error: 'last_super_admin',
           reason: input.reason,
           result: 'denied',
           targetId: input.userId,
-          targetType: 'user',
         });
         throw error instanceof LastSuperAdminError ? error : new LastSuperAdminError();
       }
@@ -150,15 +140,10 @@ export class AdminUserLifecycleService extends AdminUserSupport {
 
     try {
       const result = await this.db.transaction(async (tx) => {
-        await tx.execute(
-          sql`SELECT id FROM rbac_roles WHERE name = ${PLATFORM_SYSTEM_ROLES.SUPER_ADMIN} AND workspace_id IS NULL FOR UPDATE`,
-        );
+        await this.lockSuperAdminRoleRow(tx);
 
         const model = new AdminUserModel(tx);
-        const rbac = new RbacModel(tx as LobeChatDatabase, actorUserId);
-        if (await rbac.isGlobalSuperAdmin(input.userId)) {
-          throw new LastSuperAdminError();
-        }
+        await this.assertNotLastSuperAdmin(tx, actorUserId, input.userId, { mode: 'any' });
 
         const updated = await model.setBanned({
           banExpires: input.expiresAt ?? null,
@@ -203,14 +188,13 @@ export class AdminUserLifecycleService extends AdminUserSupport {
       };
     } catch (error) {
       if (error instanceof LastSuperAdminError || error instanceof LastSuperAdminProtectionError) {
-        await this.appendAuditBestEffort({
+        await this.auditUserFailure({
           action: CONTENT_MODERATION_AUDIT_ACTIONS.USER_AUTO_BAN,
           actorUserId: null,
-          afterDiff: { error: 'last_super_admin' },
+          error: 'last_super_admin',
           reason: input.reason,
           result: 'denied',
           targetId: input.userId,
-          targetType: 'user',
         });
         throw error instanceof LastSuperAdminError ? error : new LastSuperAdminError();
       }
@@ -223,14 +207,13 @@ export class AdminUserLifecycleService extends AdminUserSupport {
 
     const pre = await this.users.findBanState(input.userId);
     if (!pre) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.unban',
         actorUserId,
-        afterDiff: { error: 'not_found' },
+        error: 'not_found',
         reason: input.reason,
         result: 'failure',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new AdminUserNotFoundError();
     }
@@ -265,25 +248,23 @@ export class AdminUserLifecycleService extends AdminUserSupport {
     // Email/password sign-in is disabled instance-wide — a credential user could
     // never log in. Reject before any write (mirrors the email-conflict path).
     if (authEnv.AUTH_DISABLE_EMAIL_PASSWORD) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.create',
         actorUserId,
-        afterDiff: { error: 'password_auth_disabled' },
+        error: 'password_auth_disabled',
         reason: input.reason,
         result: 'failure',
-        targetType: 'user',
       });
       throw new AdminUserPasswordAuthDisabledError();
     }
 
     const conflict = async (reasonCode: 'email_taken' | 'username_taken') => {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.create',
         actorUserId,
-        afterDiff: { error: reasonCode },
+        error: reasonCode,
         reason: input.reason,
         result: 'failure',
-        targetType: 'user',
       });
       return new AdminUserEmailConflictError(reasonCode);
     };
@@ -363,28 +344,26 @@ export class AdminUserLifecycleService extends AdminUserSupport {
     const { actorUserId, input } = params;
 
     if (input.userId === actorUserId) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.delete',
         actorUserId,
-        afterDiff: { error: 'self_delete' },
+        error: 'self_delete',
         reason: input.reason,
         result: 'denied',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new AdminUserSelfDeleteError();
     }
 
     const pre = await this.users.findBanState(input.userId);
     if (!pre) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.delete',
         actorUserId,
-        afterDiff: { error: 'not_found' },
+        error: 'not_found',
         reason: input.reason,
         result: 'failure',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new AdminUserNotFoundError();
     }
@@ -392,16 +371,10 @@ export class AdminUserLifecycleService extends AdminUserSupport {
     try {
       await this.db.transaction(async (tx) => {
         // Serialize with concurrent super-admin mutations (same lock as ban).
-        await tx.execute(
-          sql`SELECT id FROM rbac_roles WHERE name = ${PLATFORM_SYSTEM_ROLES.SUPER_ADMIN} AND workspace_id IS NULL FOR UPDATE`,
-        );
+        await this.lockSuperAdminRoleRow(tx);
 
         const model = new AdminUserModel(tx);
-        const rbac = new RbacModel(tx as LobeChatDatabase, actorUserId);
-        if (await rbac.isGlobalSuperAdmin(input.userId)) {
-          const count = await rbac.countActiveSuperAdmins();
-          if (count <= 1) throw new LastSuperAdminError();
-        }
+        await this.assertNotLastSuperAdmin(tx, actorUserId, input.userId, { mode: 'last' });
 
         // Audit before the cascade so intent is recorded even if delete throws.
         await this.appendAuditInDb(tx, {
@@ -429,14 +402,13 @@ export class AdminUserLifecycleService extends AdminUserSupport {
       return { deleted: true as const, userId: input.userId };
     } catch (error) {
       if (error instanceof LastSuperAdminError || error instanceof LastSuperAdminProtectionError) {
-        await this.appendAuditBestEffort({
+        await this.auditUserFailure({
           action: 'admin.users.delete',
           actorUserId,
-          afterDiff: { error: 'last_super_admin' },
+          error: 'last_super_admin',
           reason: input.reason,
           result: 'denied',
           targetId: input.userId,
-          targetType: 'user',
         });
         throw error instanceof LastSuperAdminError ? error : new LastSuperAdminError();
       }

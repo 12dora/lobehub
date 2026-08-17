@@ -19,42 +19,39 @@ export class AdminUserRoleService extends AdminUserSupport {
     const { actorUserId, input } = params;
 
     if (input.userId === actorUserId) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.replaceGlobalRoles',
         actorUserId,
-        afterDiff: { error: 'self_role_change' },
+        error: 'self_role_change',
         reason: input.reason,
         result: 'denied',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new AdminUserSelfRoleChangeError();
     }
 
     // Permanent super_admin policy — reject any finite expiresAt with super_admin.
     if (input.expiresAt && input.roleNames.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.replaceGlobalRoles',
         actorUserId,
-        afterDiff: { error: 'super_admin_expires_forbidden' },
+        error: 'super_admin_expires_forbidden',
         reason: input.reason,
         result: 'denied',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new Error(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
     }
 
     const target = await this.users.findBanState(input.userId);
     if (!target) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.replaceGlobalRoles',
         actorUserId,
-        afterDiff: { error: 'not_found' },
+        error: 'not_found',
         reason: input.reason,
         result: 'failure',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new AdminUserNotFoundError();
     }
@@ -116,23 +113,20 @@ export class AdminUserRoleService extends AdminUserSupport {
             error.message === PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT ||
             error.message === 'PLATFORM_INVALID_INPUT'))
       ) {
-        await this.appendAuditBestEffort({
+        await this.auditUserFailure({
           action: 'admin.users.replaceGlobalRoles',
           actorUserId,
-          afterDiff: {
-            error:
-              error instanceof Error &&
-              error.message === PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED
-                ? 'permission_denied'
-                : error instanceof LastSuperAdminError ||
-                    error instanceof LastSuperAdminProtectionError
-                  ? 'last_super_admin'
-                  : 'invalid_input',
-          },
+          error:
+            error instanceof Error &&
+            error.message === PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED
+              ? 'permission_denied'
+              : error instanceof LastSuperAdminError ||
+                  error instanceof LastSuperAdminProtectionError
+                ? 'last_super_admin'
+                : 'invalid_input',
           reason: input.reason,
           result: 'denied',
           targetId: input.userId,
-          targetType: 'user',
         });
       }
       if (error instanceof Error && error.message === 'PLATFORM_INVALID_INPUT') {
@@ -141,6 +135,4 @@ export class AdminUserRoleService extends AdminUserSupport {
       throw error;
     }
   };
-
-  /** Record denied reauth for high-risk mutations (router-level). */
 }

@@ -19,14 +19,13 @@ export class AdminUserSessionService extends AdminUserSupport {
     // Not-found audit must persist even when mutation aborts (R2-03).
     const exists = await this.users.findBanState(input.userId);
     if (!exists) {
-      await this.appendAuditBestEffort({
+      await this.auditUserFailure({
         action: 'admin.users.revokeSessions',
         actorUserId,
-        afterDiff: { error: 'not_found' },
+        error: 'not_found',
         reason: input.reason,
         result: 'failure',
         targetId: input.userId,
-        targetType: 'user',
       });
       throw new AdminUserNotFoundError();
     }
@@ -70,14 +69,14 @@ export class AdminUserSessionService extends AdminUserSupport {
         return { revokedCount, userId: input.userId };
       } catch (error) {
         if (error instanceof InvalidRetainedSessionError) {
-          await this.appendAuditBestEffort({
+          await this.auditUserFailure({
             action: 'admin.users.revokeSessions',
             actorUserId,
-            afterDiff: { error: error.reasonCode, mode: 'targeted', retainedSessionAttempt: true },
+            error: error.reasonCode,
+            extra: { mode: 'targeted', retainedSessionAttempt: true },
             reason: input.reason,
             result: 'denied',
             targetId: input.userId,
-            targetType: 'user',
           });
           throw error;
         }
@@ -153,18 +152,17 @@ export class AdminUserSessionService extends AdminUserSupport {
     } catch (error) {
       if (error instanceof InvalidRetainedSessionError) {
         // Mutation rolled back; persist sanitized denial outside the txn (R3-03).
-        await this.appendAuditBestEffort({
+        await this.auditUserFailure({
           action: 'admin.users.revokeSessions',
           actorUserId,
-          afterDiff: {
-            error: error.reasonCode,
+          error: error.reasonCode,
+          extra: {
             // Never log session tokens.
             retainedSessionAttempt: true,
           },
           reason: input.reason,
           result: 'denied',
           targetId: input.userId,
-          targetType: 'user',
         });
         throw error;
       }
