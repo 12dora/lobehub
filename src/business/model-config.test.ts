@@ -9,11 +9,24 @@ vi.mock('model-bank', () => ({
   ModelProvider: { LobeHub: 'lobehub' },
 }));
 
-const { isLobeHubModelAvailable } = await import('@lobechat/business-model-bank/model-config');
+const { isLobeHubModelAvailable, loadModels, resetBusinessLoadModelsMemoForTest } =
+  await import('@lobechat/business-model-bank/model-config');
 
 describe('business model config', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('rebuilds the model bank once for the same LobeHub config version', async () => {
+    resetBusinessLoadModelsMemoForTest();
+    mockLoadModelBankModels.mockResolvedValue([{ id: 'lobehub-fast', providerId: 'lobehub' }]);
+
+    const first = await loadModels();
+    const second = await loadModels();
+
+    expect(second).toBe(first);
+    expect(first).toEqual([{ id: 'lobehub-fast', providerId: 'lobehub' }]);
+    expect(mockLoadModelBankModels).toHaveBeenCalledTimes(1);
   });
 
   it('should disable LobeHub model availability by default', () => {

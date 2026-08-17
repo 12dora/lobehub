@@ -47,10 +47,13 @@ export const resolveDataDir = (): string => {
   const env = process.env[NETWORK_PROXY_ENV.DATA_DIR];
   if (env && env.trim()) return path.resolve(env.trim());
   if (existsSync(DOCKER_LOBE_DIR)) return NETWORK_PROXY_DEFAULT_DATA_DIR_DOCKER;
-  return (
-    lookupRepoDataDir(process.cwd()) ??
-    path.resolve(process.cwd(), NETWORK_PROXY_DEFAULT_DATA_DIR_DEV)
-  );
+  const repoDataDir = lookupRepoDataDir(process.cwd());
+  if (repoDataDir) return repoDataDir;
+  // Literal segments on purpose: `path.resolve(process.cwd(), <imported const>)` is opaque to
+  // Turbopack's file tracing and makes it trace the WHOLE project into the standalone output
+  // (~90 MB of src/ + packages/ in the Docker image). Keep in sync with
+  // NETWORK_PROXY_DEFAULT_DATA_DIR_DEV ('.cache/network-proxy').
+  return path.join(process.cwd(), '.cache', 'network-proxy');
 };
 
 /** Heartbeat instance id, or a process-local fallback when that module is unavailable. */

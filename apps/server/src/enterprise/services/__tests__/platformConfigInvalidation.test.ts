@@ -8,9 +8,11 @@ import {
   setEnterpriseStructuredLoggerForTest,
 } from '../../observability';
 import {
+  getPlatformConfigScopeVersion,
   InMemoryPlatformConfigInvalidationPublisher,
   platformConfigKeys,
   RedisPlatformConfigInvalidationPublisher,
+  resetPlatformConfigScopeVersionMemoForTest,
   setPlatformConfigInvalidationPublisher,
 } from '../platformConfigInvalidation';
 
@@ -65,6 +67,7 @@ describe('platformConfigInvalidation', () => {
     observations = [];
     setEnterprisePlatformObserverForTest({ record: (event) => observations.push(event) });
     setEnterpriseStructuredLoggerForTest(NOOP_ENTERPRISE_STRUCTURED_LOGGER);
+    resetPlatformConfigScopeVersionMemoForTest();
   });
 
   afterEach(() => {
@@ -103,6 +106,62 @@ describe('platformConfigInvalidation', () => {
     expect(publisher.events).toHaveLength(256);
     expect(publisher.events[0]?.revision).toBe(45);
     expect(publisher.versions.get('scope:branding')).toBe(300);
+  });
+
+  it('coalesces in-flight scope-version reads and sees a local publish immediately', async () => {
+    const publisher = new InMemoryPlatformConfigInvalidationPublisher();
+    setPlatformConfigInvalidationPublisher(publisher);
+    await publisher.publish(event(['branding']));
+    const spy = vi.spyOn(publisher, 'getScopeVersion');
+
+    await expect(getPlatformConfigScopeVersion('branding')).resolves.toBe('3');
+    await expect(getPlatformConfigScopeVersion('branding')).resolves.toBe('3');
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    spy.mockRestore();
+    let release!: (value: string) => void;
+    const blocked = vi.spyOn(publisher, 'getScopeVersion').mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const first = getPlatformConfigScopeVersion('branding');
+    const second = getPlatformConfigScopeVersion('branding');
+    release('3');
+    await expect(Promise.all([first, second])).resolves.toEqual(['3', '3']);
+    expect(blocked).toHaveBeenCalledTimes(1);
+    blocked.mockRestore();
+
+    await publisher.publish(event(['branding']));
+    const afterPublish = vi.spyOn(publisher, 'getScopeVersion');
+    await expect(getPlatformConfigScopeVersion('branding')).resolves.toBe('4');
+    expect(afterPublish).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not store a scope-version read that raced with publish', async () => {
+    const publisher = new InMemoryPlatformConfigInvalidationPublisher();
+    setPlatformConfigInvalidationPublisher(publisher);
+    await publisher.publish(event(['branding']));
+
+    let release!: (value: string) => void;
+    const staleRead = vi.spyOn(publisher, 'getScopeVersion').mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    const pending = getPlatformConfigScopeVersion('branding');
+    await publisher.publish(event(['branding']));
+    release('stale');
+    await expect(pending).resolves.toBe('stale');
+    staleRead.mockRestore();
+
+    const nextRead = vi.spyOn(publisher, 'getScopeVersion');
+    await expect(getPlatformConfigScopeVersion('branding')).resolves.toBe('4');
+    expect(nextRead).toHaveBeenCalledTimes(1);
+    nextRead.mockRestore();
   });
 
   it('builds stable redis key names', () => {

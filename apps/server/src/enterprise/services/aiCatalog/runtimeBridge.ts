@@ -1,6 +1,7 @@
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { wrapModelRuntimeWithModeration } from '@/server/enterprise/services/contentModeration/runtime';
+import { isBootModuleEnabled } from '@/server/enterprise/services/moduleSettings';
 import {
   type PlatformAiRuntimeImplementation,
   registerPlatformAiRuntime,
@@ -94,7 +95,8 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
     },
     resolveRuntimeState: ({ db, upstreamState }) =>
       resolveAiCatalogRuntimeState({ db, upstreamState }),
-    wrapModelRuntime: (runtime, ctx) => wrapModelRuntimeWithModeration(runtime, ctx),
+    wrapModelRuntime: (runtime, ctx) =>
+      isBootModuleEnabled('moderation') ? wrapModelRuntimeWithModeration(runtime, ctx) : runtime,
   };
   registerPlatformAiRuntime(implementation);
   registered = true;

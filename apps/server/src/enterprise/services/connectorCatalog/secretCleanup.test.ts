@@ -371,7 +371,7 @@ describe('connector secret cleanup durability', () => {
     // Use mockImplementation once with an untyped callback — `as typeof setTimeout` fails
     // because Node's setTimeout includes `__promisify__` that a plain fn cannot satisfy.
     setTimeoutSpy.mockImplementation((fn: any, ms?: any, ...args: any[]) => {
-      if (ms === 5000) {
+      if (typeof ms === 'number' && ms >= 1000) {
         const unref = vi.fn();
         const handle = realSetTimeout(() => undefined, 1) as ReturnType<typeof setTimeout> & {
           unref?: () => void;
@@ -401,19 +401,22 @@ describe('connector secret cleanup durability', () => {
     await vi.waitFor(() => {
       expect(pollerTimers).toHaveLength(1);
     });
-    const pollerCalls = setTimeoutSpy.mock.calls.filter((call) => call[1] === 5000);
+    const pollerCalls = setTimeoutSpy.mock.calls.filter(
+      (call) => typeof call[1] === 'number' && (call[1] as number) >= 1000,
+    );
     expect(pollerCalls).toHaveLength(1);
     expect(pollerTimers[0]?.unref).toHaveBeenCalledOnce();
   });
 
-  it('platform router module still wires ensureConnectorSecretCleanupWorkerStarted', () => {
-    const platformSource = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../routers/platform.ts'),
+  it('workers bootstrap registry wires ensureConnectorSecretCleanupWorkerStarted', () => {
+    const bootstrapSource = readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../bootstrap/workersBootstrap.ts',
+      ),
       'utf8',
     );
-    expect(platformSource).toContain(
-      "import { ensureConnectorSecretCleanupWorkerStarted } from '../services/connectorCatalog/secretCleanupWorker';",
-    );
-    expect(platformSource).toMatch(/ensureConnectorSecretCleanupWorkerStarted\s*\(\s*\)\s*;/);
+    expect(bootstrapSource).toContain('connectorSecretCleanup');
+    expect(bootstrapSource).toContain('ensureConnectorSecretCleanupWorkerStarted');
   });
 });

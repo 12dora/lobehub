@@ -21,10 +21,8 @@ import { parseSystemAgent } from '@/server/globalConfig/parseSystemAgent';
 import { type GlobalServerConfig } from '@/types/serverConfig';
 import { cleanObject } from '@/utils/object';
 
-import {
-  genServerAiProvidersConfig,
-  type ProviderSpecificConfig,
-} from './genServerAiProviderConfig';
+import { getCachedServerAiProvidersConfig } from './aiProvidersCache';
+import type { ProviderSpecificConfig } from './genServerAiProviderConfig';
 import { parseAgentConfig } from './parseDefaultAgent';
 import { parseFilesConfig } from './parseFilesConfig';
 import { getPublicMemoryExtractionConfig } from './parseMemoryExtractionConfig';
@@ -118,9 +116,11 @@ export const getServerGlobalConfig = async () => {
   // M00 mount #4: minimal enterprise gate on global config (no flag names / secrets / roles).
   const enterpriseEnabled = isAnyEnterpriseFeatureEnabled();
   const platformAdminEnabled = isPlatformAdminFeatureEnabled();
+  const { getModuleSettingsSnapshot } = await import('@/server/enterprise/services/moduleSettings');
+  const modules = (await getModuleSettingsSnapshot()).effective;
 
   const config: GlobalServerConfig = {
-    aiProvider: await genServerAiProvidersConfig(aiProviderSpecificConfig),
+    aiProvider: await getCachedServerAiProvidersConfig(aiProviderSpecificConfig),
     defaultAgent: {
       config: parseAgentConfig(DEFAULT_AGENT_CONFIG),
     },
@@ -130,7 +130,11 @@ export const getServerGlobalConfig = async () => {
     enableComposio: !!composioEnv.COMPOSIO_API_KEY,
     // Always present so clients can gate without optional-field races; false when flags off.
     // `platformAdmin` is feature existence only — never authorization.
-    enterprise: { enabled: enterpriseEnabled, platformAdmin: platformAdminEnabled },
+    enterprise: {
+      enabled: enterpriseEnabled,
+      modules,
+      platformAdmin: platformAdminEnabled,
+    },
     enableGatewayMode:
       ENABLE_BUSINESS_FEATURES || (!!appEnv.ENABLE_AGENT_GATEWAY && !!appEnv.AGENT_GATEWAY_URL),
     enableLobehubSkill: !!(appEnv.MARKET_TRUSTED_CLIENT_SECRET && appEnv.MARKET_TRUSTED_CLIENT_ID),

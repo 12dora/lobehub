@@ -1,6 +1,9 @@
-// Register the network-proxy egress ALS / ssrf-safe-fetch binding whenever this
-// transport (pulled in by ModelRuntime) is loaded.
-import '../../networkProxy/egress/scope';
+// Bind egress only when the networkProxy module is on. A static import of
+// `egress/scope` would pull the engine + snapshot graph on every ChatGPT Web
+// load (and used to run unconditionally via ModelRuntime's static import).
+import { bindNetworkProxyEgressIfEnabled } from '../../networkProxy/engine/bindEgress';
+
+bindNetworkProxyEgressIfEnabled();
 
 export {
   createCurlImpersonateFetch,

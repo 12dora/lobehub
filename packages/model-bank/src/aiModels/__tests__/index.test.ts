@@ -1,9 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ModelProvider } from '../../const/modelProvider';
-import { loadModels, LOBE_DEFAULT_MODEL_LIST } from '../index';
+import { loadModels, LOBE_DEFAULT_MODEL_LIST, resetLoadModelsMemoForTest } from '../index';
 
 describe('loadModels', () => {
+  afterEach(() => {
+    resetLoadModelsMemoForTest();
+  });
+
   it('returns the static model list by default', async () => {
     await expect(loadModels()).resolves.toBe(LOBE_DEFAULT_MODEL_LIST);
   });
@@ -45,6 +49,19 @@ describe('loadModels', () => {
         },
       }),
     ).resolves.toBe(LOBE_DEFAULT_MODEL_LIST);
+  });
+
+  it('rebuilds once for the same loaders identity and loaded arrays', async () => {
+    const models = [{ enabled: true, id: 'stable', type: 'chat' as const }];
+    const loader = vi.fn().mockResolvedValue(models);
+    const providerLoaders = { [ModelProvider.LobeHub]: loader };
+
+    const first = await loadModels({ providerLoaders });
+    const second = await loadModels({ providerLoaders });
+
+    expect(second).toBe(first);
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(first.find((model) => model.id === 'stable')?.providerId).toBe(ModelProvider.LobeHub);
   });
 
   it('propagates injected loader errors without falling back to static models', async () => {

@@ -1,7 +1,6 @@
 import path from 'node:path';
 
 import { fileTypeFromBuffer } from 'file-type';
-import sharp from 'sharp';
 
 import type { LobeChatDatabase } from '@/database/type';
 import { fileEnv } from '@/envs/file';
@@ -114,6 +113,7 @@ export const validateBrandingAsset = async (params: {
   }
 
   try {
+    const { default: sharp } = await import('sharp');
     const image = sharp(bytes, {
       animated: true,
       failOn: 'error',

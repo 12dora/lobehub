@@ -37,6 +37,8 @@ export interface EvaluatePromptInput {
   provider: string;
   requestId?: string;
   requestKind: ModerationRequestKind;
+  /** When the caller already loaded the snapshot, reuse it (one fetch per message). */
+  snapshot?: ModerationSnapshot | null;
   text: string;
   topicId?: string;
   userId: string;
@@ -295,7 +297,7 @@ export const evaluatePrompt = async (
   const getRoles = deps.getRoles ?? getUserPlatformRoleNames;
   const classify = deps.classify ?? defaultClassifierFactory;
 
-  const snapshot = await getSnapshot(db);
+  const snapshot = input.snapshot ?? (await getSnapshot(db));
   const { config } = snapshot;
 
   if (config.mode === 'off') return { reason: 'mode_off', skipped: true };

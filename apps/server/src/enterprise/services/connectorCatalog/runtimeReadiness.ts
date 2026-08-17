@@ -5,6 +5,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { connectorSharedCredentialReadSchema } from '../../contracts/platformConnectors';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { registerManagedResourceReadiness } from '../managedResourceReadiness';
+import { isModuleEnabled } from '../moduleSettings';
 import { ConnectorCatalogReadService, resolveConnectorSecretVersion } from './catalogSnapshot';
 import type { ConnectorOAuthRuntimeDependencies, ConnectorOAuthRuntimeEnv } from './oauthRuntime';
 import { getConnectorOAuthRuntime } from './oauthRuntime';
@@ -37,6 +38,7 @@ export const resolveConnectorCatalogRuntimeReadiness = async (
     runtime?: ConnectorOAuthRuntimeDependencies;
   } = {},
 ): Promise<boolean> => {
+  if (!params.env && !(await isModuleEnabled('managedConnectors'))) return false;
   const env = params.env ?? process.env;
   const flags = parseEnterpriseFeatureFlags(env);
   if (!flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) return false;
@@ -125,4 +127,8 @@ export const ensureConnectorCatalogReadinessRegistered = (): void => {
   if (registered) return;
   registered = true;
   registerManagedResourceReadiness('connectors', () => resolveConnectorCatalogRuntimeReadiness());
+};
+
+export const resetConnectorCatalogReadinessRegistrationForTest = (): void => {
+  registered = false;
 };

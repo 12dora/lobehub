@@ -2,6 +2,10 @@ import { getServerDB } from '@/database/core/db-adaptor';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { isPersistentEnterpriseWorkerRuntime } from '../../jobs/persistentWorkerRuntime';
+import {
+  type PersistentWorkerScheduler,
+  startPersistentWorkerScheduler,
+} from '../../jobs/persistentWorkerScheduler';
 import { appendConnectorRuntimeAudit } from './runtimeAudit';
 import { DatabaseConnectorRuntimeExecutionJournal } from './runtimeExecutionJournal';
 
@@ -52,9 +56,12 @@ export const runConnectorRuntimeAuditBatch = async (
 };
 
 let workerStarted = false;
+let workerScheduler: PersistentWorkerScheduler | undefined;
 
 /** Test-only: reset module timer latch between behavioral cases. */
 export const __resetConnectorRuntimeAuditWorkerForTests = (): void => {
+  workerScheduler?.stop();
+  workerScheduler = undefined;
   workerStarted = false;
 };
 
@@ -64,21 +71,13 @@ export const ensureConnectorRuntimeAuditWorkerStarted = (): void => {
     return;
   }
   workerStarted = true;
-  const schedule = () => {
-    const timer = setTimeout(run, DEFAULT_INTERVAL_MS);
-    timer.unref();
-  };
-  const run = async () => {
-    try {
+  workerScheduler = startPersistentWorkerScheduler({
+    baseIntervalMs: DEFAULT_INTERVAL_MS,
+    namespace: 'connector-runtime-audit',
+    run: async () => {
       const db = await getServerDB();
-      await runConnectorRuntimeAuditBatch(db);
-    } catch (error) {
-      console.error('[connector-runtime-audit-worker] reconciliation failed', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
-    } finally {
-      schedule();
-    }
-  };
-  void run();
+      const processed = await runConnectorRuntimeAuditBatch(db);
+      return { didWork: processed > 0 };
+    },
+  });
 };

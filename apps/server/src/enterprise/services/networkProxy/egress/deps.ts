@@ -5,7 +5,7 @@ import { createDefaultNetworkProxyConfig } from '@/types/platform/networkProxy';
 import { getEngineRuntime } from '../engine/runtime';
 import { redactSecrets as b1RedactSecrets } from '../redact';
 import { isLegacyGlobalProxyActive as b1IsLegacyGlobalProxyActive } from '../settingsService';
-import { getNetworkProxySnapshot, peekNetworkProxySnapshot } from '../snapshot';
+import { getNetworkProxyEgressView, peekNetworkProxyEgressView } from '../snapshot';
 import { localRedactSecrets } from './redactLocal';
 
 export interface EgressSnapshotView {
@@ -46,26 +46,11 @@ const DEFAULT_SNAPSHOT: EgressSnapshotView = {
 
 let override: Partial<EgressDeps> | null = null;
 
-const toView = (snap: {
-  config: NetworkProxyConfig;
-  loadedAt?: number;
-  revision: number;
-  staticProxyUrl: string | null;
-}): EgressSnapshotView => ({
-  config: snap.config,
-  loadedAt: snap.loadedAt ?? Date.now(),
-  revision: snap.revision,
-  staticProxyUrl: snap.staticProxyUrl,
-});
-
-const defaultPeekSnapshot = (): EgressSnapshotView | null => {
-  const snap = peekNetworkProxySnapshot();
-  return snap ? toView(snap) : null;
-};
+const defaultPeekSnapshot = (): EgressSnapshotView | null => peekNetworkProxyEgressView();
 
 const defaultGetSnapshot = async (): Promise<EgressSnapshotView> => {
   try {
-    return toView(await getNetworkProxySnapshot());
+    return await getNetworkProxyEgressView();
   } catch {
     return defaultPeekSnapshot() ?? DEFAULT_SNAPSHOT;
   }

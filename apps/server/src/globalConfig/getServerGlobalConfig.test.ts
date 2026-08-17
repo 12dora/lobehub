@@ -1,6 +1,36 @@
 import { ModelProvider } from 'model-bank';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/server/enterprise/services/moduleSettings', () => ({
+  getModuleSettingsSnapshot: async () => {
+    const disabled = new Set(
+      (process.env.LOBE_MODULES_DISABLED ?? '').split(/[,\s]+/).filter(Boolean),
+    );
+    return {
+      effective: {
+        knowledgeBase: !disabled.has('knowledgeBase'),
+        market: !disabled.has('market'),
+        memory: !disabled.has('memory'),
+      },
+    };
+  },
+  isBootModuleEnabled: () => false,
+  isModuleEnabled: async () => true,
+}));
+
+vi.mock('@/server/enterprise/services/aiCatalog/runtimeBridge', () => ({
+  ensurePlatformAiRuntimeRegistered: () => undefined,
+}));
+
+vi.mock('@/server/enterprise/services/infraSettings/snapshot', () => ({
+  getInfraSnapshot: async () => ({ objectStorage: { kind: 'unconfigured' } }),
+}));
+
+vi.mock('@/server/enterprise/featureFlags', () => ({
+  isAnyEnterpriseFeatureEnabled: () => false,
+  isPlatformAdminFeatureEnabled: () => false,
+}));
+
 interface CapturedProviderConfig {
   enabled?: boolean;
   enabledKey?: string;
@@ -110,6 +140,12 @@ const mockGlobalConfigDependencies = (
   vi.doMock('./parseMemoryExtractionConfig', () => ({
     getPublicMemoryExtractionConfig: vi.fn(() => ({})),
   }));
+
+  vi.doMock('./aiProvidersCache', () => ({
+    getCachedServerAiProvidersConfig: (specificConfig: Record<string, CapturedProviderConfig>) =>
+      mocks.genServerAiProvidersConfig(specificConfig),
+    resetAiProvidersCacheForTest: () => undefined,
+  }));
 };
 
 const loadCapturedProviderConfig = async (enableBusinessFeatures: boolean) => {
@@ -195,5 +231,22 @@ describe('getServerGlobalConfig', () => {
     await expect(loadServerConfig(false, { enableAgentGateway: true })).resolves.toMatchObject({
       enableGatewayMode: false,
     });
+  });
+
+  it('exposes enterprise.modules from LOBE_MODULES_DISABLED', async () => {
+    const previous = process.env.LOBE_MODULES_DISABLED;
+    process.env.LOBE_MODULES_DISABLED = 'market,memory';
+    try {
+      const config = await loadServerConfig(false);
+      expect(config.enterprise?.modules?.market).toBe(false);
+      expect(config.enterprise?.modules?.memory).toBe(false);
+      expect(config.enterprise?.modules?.knowledgeBase).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.LOBE_MODULES_DISABLED;
+      } else {
+        process.env.LOBE_MODULES_DISABLED = previous;
+      }
+    }
   });
 });

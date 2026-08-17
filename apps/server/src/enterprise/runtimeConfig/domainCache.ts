@@ -123,6 +123,12 @@ export class DomainConfigCache<T> {
     this.stateKey = `${options.namespace}\0${options.cacheId}`;
   }
 
+  /**
+   * Scope epoch is an invalidation hint. Production callers pass
+   * `getPlatformConfigScopeVersion`, which coalesces in-flight Redis GETs so a
+   * concurrent DomainConfigCache miss does not stampede, then reads through so
+   * a same-process publish is visible on the next resolve.
+   */
   private readScopeEpoch = async (): Promise<{ epoch: string; failed: boolean }> => {
     try {
       return { epoch: await this.getScopeEpoch(), failed: false };
@@ -239,6 +245,21 @@ export class DomainConfigCache<T> {
         state.inflight = undefined;
       }
     }
+  };
+
+  /**
+   * Warm-path read: returns the stored value **without** `cloneValue`.
+   * `undefined` means miss (caller should `get()`). `null` is a cached negative.
+   */
+  peek = async (): Promise<T | null | undefined> => {
+    const { epoch, failed } = await this.readScopeEpoch();
+    const namespaceGeneration = getNamespaceGeneration(this.namespace);
+    const state = getStoredState(this.cacheKey, this.stateKey) as DomainCacheState<T> | undefined;
+    if (!state || state.namespaceGeneration !== namespaceGeneration) return undefined;
+    if (!failed && state.epoch !== undefined && state.epoch !== epoch) return undefined;
+    const now = this.now();
+    if (state.entry && state.entry.expiresAt > now) return state.entry.value;
+    return undefined;
   };
 
   invalidate = (): void => {

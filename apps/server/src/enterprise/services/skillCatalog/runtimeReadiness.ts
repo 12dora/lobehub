@@ -4,6 +4,7 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { registerManagedResourceReadiness } from '../managedResourceReadiness';
+import { isModuleEnabled } from '../moduleSettings';
 import { getBuiltinSkillDefinitions } from './builtinAdapter';
 import { SkillCatalogReadService } from './readService';
 
@@ -39,6 +40,7 @@ export const resolveSkillCatalogRuntimeReadiness = async (
       Partial<Pick<SkillCatalogReadService, 'isPublishedCatalogExecutionReady'>>;
   } = {},
 ): Promise<boolean> => {
+  if (!params.flags && !(await isModuleEnabled('managedSkills'))) return false;
   const flags = params.flags ?? parseEnterpriseFeatureFlags(process.env);
   if (!flags.ENABLE_PLATFORM_MANAGED_SKILLS) return false;
 

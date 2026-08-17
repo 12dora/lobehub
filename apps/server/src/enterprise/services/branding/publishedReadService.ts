@@ -17,6 +17,7 @@ import {
   reportPlatformRuntimeMaterialization,
   reportPlatformRuntimeMaterializationSafely,
 } from '../platformInstance/runtimeReporter';
+import { invalidatePlatformPublicSnapshot } from './publicSnapshotCache';
 
 const BRANDING_CACHE_SCOPE = 'branding';
 const BRANDING_CACHE_ID = 'published';
@@ -140,4 +141,5 @@ export class BrandingPublishedReadService {
 
 export const resetBrandingPublishedCache = (): void => {
   invalidateDomainConfigCacheNamespace(BRANDING_CACHE_NAMESPACE);
+  invalidatePlatformPublicSnapshot();
 };

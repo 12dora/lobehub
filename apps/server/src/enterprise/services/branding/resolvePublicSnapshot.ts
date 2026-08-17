@@ -8,7 +8,13 @@ import type { PlatformAuthSettings } from '@/types/platform/authSettings';
 import type { PlatformBrandingPublished } from '@/types/platform/branding';
 
 import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
+import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
 import { buildPlatformPublicSnapshot } from '../platformPublicSnapshot';
+import {
+  getPlatformPublicSnapshotEpoch,
+  onPlatformPublicSnapshotInvalidate,
+  resetPlatformPublicSnapshotEpochForTest,
+} from './publicSnapshotCache';
 import { BrandingPublishedReadService } from './publishedReadService';
 
 const log = debug('lobe-server:platform-public-snapshot');
@@ -27,19 +33,90 @@ export interface ResolvePlatformPublicSnapshotOptions {
   getPublishedIdentityTarget?: (db: LobeChatDatabase) => Promise<PublishedIdentityTarget>;
 }
 
+const PUBLIC_SNAPSHOT_TTL_MS = 8000;
+const PUBLIC_SNAPSHOT_EPOCH_SCOPES = ['branding', 'auth_settings'] as const;
+
+type PublicSnapshot = ReturnType<typeof buildPlatformPublicSnapshot>;
+
+interface PublicSnapshotSlot {
+  expiresAt: number;
+  key: string;
+  value: PublicSnapshot;
+}
+
+let publicSnapshotSlot: PublicSnapshotSlot | null = null;
+let publicSnapshotInflight: { key: string; promise: Promise<PublicSnapshot> } | null = null;
+
+onPlatformPublicSnapshotInvalidate(() => {
+  publicSnapshotSlot = null;
+  publicSnapshotInflight = null;
+});
+
+const usesDefaultLoaders = (options: ResolvePlatformPublicSnapshotOptions): boolean =>
+  options.getDatabase === undefined &&
+  options.getPublishedBranding === undefined &&
+  options.getAuthSettings === undefined &&
+  options.getPublishedIdentityTarget === undefined;
+
+const publicSnapshotCacheKey = async (flags: EnterpriseFeatureFlags): Promise<string> => {
+  const epochs = await Promise.all(
+    PUBLIC_SNAPSHOT_EPOCH_SCOPES.map((scope) => getPlatformConfigScopeVersion(scope)),
+  );
+  return `${getPlatformPublicSnapshotEpoch()}:${epochs.join(':')}:${JSON.stringify(flags)}`;
+};
+
+export { invalidatePlatformPublicSnapshot } from './publicSnapshotCache';
+
+/** Test helper. */
+export const resetPlatformPublicSnapshotForTest = (): void => {
+  resetPlatformPublicSnapshotEpochForTest();
+  publicSnapshotSlot = null;
+  publicSnapshotInflight = null;
+};
+
 /**
  * Lazy DB boundary keeps the disabled feature path independent of database availability.
  * Branding is gated behind ENABLE_RUNTIME_BRANDING, but the login/registration projection
  * is always read so the anonymous login page can hide the sign-up link when registration is
  * closed — regardless of the branding flag.
  */
-export const resolvePlatformPublicSnapshot = async ({
+export const resolvePlatformPublicSnapshot = async (
+  options: ResolvePlatformPublicSnapshotOptions,
+): Promise<PublicSnapshot> => {
+  if (!usesDefaultLoaders(options)) {
+    return loadPlatformPublicSnapshot(options);
+  }
+
+  const key = await publicSnapshotCacheKey(options.flags);
+  const now = Date.now();
+  if (publicSnapshotSlot && publicSnapshotSlot.key === key && publicSnapshotSlot.expiresAt > now) {
+    return publicSnapshotSlot.value;
+  }
+  if (publicSnapshotInflight?.key === key) return publicSnapshotInflight.promise;
+
+  const promise = loadPlatformPublicSnapshot(options).then((value) => {
+    publicSnapshotSlot = {
+      expiresAt: Date.now() + PUBLIC_SNAPSHOT_TTL_MS,
+      key,
+      value,
+    };
+    return value;
+  });
+  publicSnapshotInflight = { key, promise };
+  try {
+    return await promise;
+  } finally {
+    if (publicSnapshotInflight?.promise === promise) publicSnapshotInflight = null;
+  }
+};
+
+const loadPlatformPublicSnapshot = async ({
   flags,
   getDatabase = getServerDB,
   getPublishedBranding = (db) => new BrandingPublishedReadService(db).getPublished(),
   getAuthSettings = (db) => new PlatformAuthSettingsModel(db).get(),
   getPublishedIdentityTarget = (db) => loadPublishedIdentityTarget(db),
-}: ResolvePlatformPublicSnapshotOptions) => {
+}: ResolvePlatformPublicSnapshotOptions): Promise<PublicSnapshot> => {
   let db: LobeChatDatabase;
   try {
     db = await getDatabase();

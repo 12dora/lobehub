@@ -3,6 +3,10 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { isPersistentEnterpriseWorkerRuntime } from '../../jobs/persistentWorkerRuntime';
+import {
+  type PersistentWorkerScheduler,
+  startPersistentWorkerScheduler,
+} from '../../jobs/persistentWorkerScheduler';
 import { PlatformSecretService } from '../../security/secret';
 import type { ConnectorCatalogSecretStore } from './catalogTypes';
 import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
@@ -70,9 +74,12 @@ export const runConnectorSecretCleanupBatch = async (
   });
 
 let workerStarted = false;
+let workerScheduler: PersistentWorkerScheduler | undefined;
 
 /** Test-only: reset module timer latch between behavioral cases. */
 export const __resetConnectorSecretCleanupWorkerForTests = (): void => {
+  workerScheduler?.stop();
+  workerScheduler = undefined;
   workerStarted = false;
 };
 
@@ -82,23 +89,15 @@ export const ensureConnectorSecretCleanupWorkerStarted = (): void => {
     return;
   }
   workerStarted = true;
-  const schedule = () => {
-    const timer = setTimeout(run, DEFAULT_INTERVAL_MS);
-    timer.unref();
-  };
-  const run = async () => {
-    try {
+  workerScheduler = startPersistentWorkerScheduler({
+    baseIntervalMs: DEFAULT_INTERVAL_MS,
+    namespace: 'connector-secret-cleanup',
+    run: async () => {
       const db = await getServerDB();
       const secrets = createConnectorSecretCleanupStore(db);
-      if (!secrets) return;
-      await runConnectorSecretCleanupBatch(db, secrets);
-    } catch (error) {
-      console.error('[connector-secret-cleanup-worker] reconciliation failed', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
-    } finally {
-      schedule();
-    }
-  };
-  void run();
+      if (!secrets) return { didWork: false };
+      const result = await runConnectorSecretCleanupBatch(db, secrets);
+      return { didWork: result.completed > 0 || result.failed > 0 };
+    },
+  });
 };

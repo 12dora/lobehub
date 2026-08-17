@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  getCompiledRegexDigestCountForTest,
   getRegexWorkerForTest,
   matchRegexRules,
   probeRegexPattern,
@@ -21,6 +22,38 @@ describe('regexWorker', () => {
       text: 'un CAFÉ s’il vous plaît',
     });
     expect(result).toEqual({ matchedRuleIds: ['r1'] });
+  });
+
+  it('re-sends patterns for the same digest after a worker crash', async () => {
+    const rules = [{ id: 'r1', pattern: 'hello' }];
+    await expect(
+      matchRegexRules({ digest: 'crash', rules, text: 'hello', timeoutMs: 200 }),
+    ).resolves.toEqual({ matchedRuleIds: ['r1'] });
+    expect(getCompiledRegexDigestCountForTest()).toBeGreaterThan(0);
+
+    const live = getRegexWorkerForTest();
+    expect(live).toBeTruthy();
+    live!.emit('error', new Error('boom'));
+    expect(getRegexWorkerForTest()).toBeNull();
+    expect(getCompiledRegexDigestCountForTest()).toBe(0);
+
+    await expect(
+      matchRegexRules({ digest: 'crash', rules, text: 'hello again', timeoutMs: 200 }),
+    ).resolves.toEqual({ matchedRuleIds: ['r1'] });
+    expect(getCompiledRegexDigestCountForTest()).toBeGreaterThan(0);
+  });
+
+  it('sends rules to the worker once per digest', async () => {
+    const rules = [{ id: 'r1', pattern: 'hello' }];
+    await expect(
+      matchRegexRules({ digest: 'once', rules, text: 'hello there', timeoutMs: 200 }),
+    ).resolves.toEqual({ matchedRuleIds: ['r1'] });
+    const afterFirst = getCompiledRegexDigestCountForTest();
+    await expect(
+      matchRegexRules({ digest: 'once', rules, text: 'hello again', timeoutMs: 200 }),
+    ).resolves.toEqual({ matchedRuleIds: ['r1'] });
+    expect(getCompiledRegexDigestCountForTest()).toBe(afterFirst);
+    expect(afterFirst).toBeGreaterThan(0);
   });
 
   it('does not treat a later window start as ^', async () => {
@@ -103,6 +136,7 @@ describe('regexWorker', () => {
       digest: 'second',
       rules: [{ id: 'b', pattern: 'ok' }],
       text: 'ok',
+      timeoutMs: 200,
     });
     const replacement = getRegexWorkerForTest();
     expect(replacement).toBeTruthy();

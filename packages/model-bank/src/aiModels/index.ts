@@ -200,6 +200,24 @@ const staticModelMap: ModelsMap = {
 
 export const LOBE_DEFAULT_MODEL_LIST = buildDefaultModelList(staticModelMap);
 
+interface LoadModelsMemoSlot {
+  entries: readonly (readonly [ModelProvider, AiFullModelCard[]])[];
+  loaders: LoadModelsOptions['providerLoaders'];
+  result: LobeDefaultAiModelListItem[];
+}
+
+let loadModelsMemo: LoadModelsMemoSlot | null = null;
+
+const sameLoadedEntries = (
+  left: LoadModelsMemoSlot['entries'],
+  right: LoadModelsMemoSlot['entries'],
+): boolean =>
+  left.length === right.length &&
+  left.every(([provider, models], index) => {
+    const next = right[index];
+    return next !== undefined && provider === next[0] && models === next[1];
+  });
+
 export const loadModels = async (
   options?: LoadModelsOptions,
 ): Promise<LobeDefaultAiModelListItem[]> => {
@@ -221,11 +239,26 @@ export const loadModels = async (
     validProviderLoaders.map(async ([provider, loader]) => [provider, await loader()] as const),
   );
 
+  if (
+    loadModelsMemo &&
+    loadModelsMemo.loaders === providerLoaders &&
+    sameLoadedEntries(loadModelsMemo.entries, entries)
+  ) {
+    return loadModelsMemo.result;
+  }
+
   for (const [provider, models] of entries) {
     modelMap[provider] = models;
   }
 
-  return buildDefaultModelList(modelMap);
+  const result = buildDefaultModelList(modelMap);
+  loadModelsMemo = { entries, loaders: providerLoaders, result };
+  return result;
+};
+
+/** Test helper. */
+export const resetLoadModelsMemoForTest = (): void => {
+  loadModelsMemo = null;
 };
 
 export { gptImage1Schema, gptImage2Schema } from '../const/imageParameters';

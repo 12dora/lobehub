@@ -189,6 +189,22 @@ const defaultSnapshot = (): NetworkProxyRuntimeSnapshot => ({
 const cloneSnapshot = (snapshot: NetworkProxyRuntimeSnapshot): NetworkProxyRuntimeSnapshot =>
   structuredClone(snapshot);
 
+export interface NetworkProxyEgressView {
+  config: NetworkProxyConfig;
+  loadedAt: number;
+  revision: number;
+  staticProxyUrl: string | null;
+}
+
+const projectEgressView = (snapshot: NetworkProxyRuntimeSnapshot): NetworkProxyEgressView =>
+  Object.freeze({
+    // Clone only the 4 egress fields — never the decrypted subscription YAML.
+    config: structuredClone(snapshot.config),
+    loadedAt: snapshot.loadedAt,
+    revision: snapshot.revision,
+    staticProxyUrl: snapshot.staticProxyUrl,
+  });
+
 type ChangeListener = (snap: NetworkProxyRuntimeSnapshot) => void;
 
 let cache: DomainConfigCache<NetworkProxyRuntimeSnapshot> | null = null;
@@ -283,6 +299,31 @@ export const getNetworkProxySnapshot = async (): Promise<NetworkProxyRuntimeSnap
 
 export const peekNetworkProxySnapshot = (): NetworkProxyRuntimeSnapshot | null =>
   lastLoaded ? cloneSnapshot(lastLoaded) : null;
+
+/**
+ * Egress-only projection. Avoids cloning decrypted subscription YAML on every
+ * outbound fetch. Config is cloned so callers cannot mutate the cache slot.
+ */
+export const getNetworkProxyEgressView = async (): Promise<NetworkProxyEgressView> => {
+  try {
+    const cached = cacheFor();
+    const raw = await cached.peek();
+    if (raw) return projectEgressView(raw);
+
+    const snapshot = await cached.get();
+    const resolved = snapshot ?? lastLoaded ?? defaultSnapshot();
+    lastLoaded = resolved;
+    return projectEgressView(resolved);
+  } catch (error) {
+    console.error('[network-proxy] egress view failed; serving last-known-good or default', {
+      errorClass: error instanceof Error ? error.name : 'UnknownError',
+    });
+    return projectEgressView(lastLoaded ?? defaultSnapshot());
+  }
+};
+
+export const peekNetworkProxyEgressView = (): NetworkProxyEgressView | null =>
+  lastLoaded ? projectEgressView(lastLoaded) : null;
 
 export const invalidateNetworkProxySnapshot = (): void => {
   cache?.invalidate();

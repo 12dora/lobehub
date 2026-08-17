@@ -149,6 +149,17 @@ const WORKER_SOURCE = [
 let worker: Worker | null = null;
 let nextId = 1;
 const pending = new Map<number, PendingJob>();
+/** Digests already compiled into the live worker (cleared on worker death). */
+const compiledDigests = new Set<string>();
+
+const rememberCompiledDigest = (digest: string): void => {
+  if (compiledDigests.has(digest)) compiledDigests.delete(digest);
+  compiledDigests.add(digest);
+  while (compiledDigests.size > REGEX_WORKER_DIGEST_LRU) {
+    const oldest = compiledDigests.keys().next().value;
+    if (typeof oldest === 'string') compiledDigests.delete(oldest);
+  }
+};
 
 const isTimedOut = (value: unknown): value is { timedOut: true } =>
   Boolean(value && typeof value === 'object' && 'timedOut' in value);
@@ -162,11 +173,18 @@ const settleAll = (value: MatchRegexRulesResult | RegexSafetyResult) => {
   }
 };
 
+const forgetCompiledDigests = (): void => {
+  compiledDigests.clear();
+};
+
 const bindDeathHandlers = (instance: Worker) => {
   const onDeath = () => {
     if (worker !== instance) return;
     instance.removeAllListeners();
     worker = null;
+    // Fresh workers start with an empty compiledByDigest — forget parent-side
+    // "already sent" marks so the next match re-sends patterns.
+    forgetCompiledDigests();
     settleAll({ timedOut: true });
   };
   instance.on('error', onDeath);
@@ -176,6 +194,7 @@ const bindDeathHandlers = (instance: Worker) => {
 const killWorker = () => {
   const dying = worker;
   worker = null;
+  forgetCompiledDigests();
   if (!dying) return;
   dying.removeAllListeners();
   void dying.terminate().catch(() => undefined);
@@ -242,17 +261,29 @@ export const matchRegexRules = async (params: {
   timeoutMs?: number;
 }): Promise<MatchRegexRulesResult> => {
   if (params.rules.length === 0) return { matchedRuleIds: [] };
+  const compiled = compiledDigests.has(params.digest);
   const result = await runOnWorker(
     {
       digest: params.digest,
       kind: 'match',
-      patterns: params.rules.map((rule) => ({ flags: 'iu', id: rule.id, source: rule.pattern })),
+      ...(compiled
+        ? {}
+        : {
+            patterns: params.rules.map((rule) => ({
+              flags: 'iu',
+              id: rule.id,
+              source: rule.pattern,
+            })),
+          }),
       text: params.text,
     },
     params.timeoutMs ?? REGEX_MATCH_TIMEOUT_MS,
   );
   if (isTimedOut(result)) return result;
-  if ('matchedRuleIds' in result) return result;
+  if ('matchedRuleIds' in result) {
+    rememberCompiledDigest(params.digest);
+    return result;
+  }
   return { timedOut: true };
 };
 
@@ -285,5 +316,8 @@ export const getRegexWorkerForTest = (): Worker | null => worker;
 export const resetRegexWorkerForTest = async (): Promise<void> => {
   settleAll({ timedOut: true });
   killWorker();
+  forgetCompiledDigests();
   nextId = 1;
 };
+
+export const getCompiledRegexDigestCountForTest = (): number => compiledDigests.size;

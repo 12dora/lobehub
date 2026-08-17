@@ -1,6 +1,7 @@
 import { NETWORK_PROXY_ENV } from '@/const/platform/networkProxy';
 import { isPersistentEnterpriseWorkerRuntime } from '@/server/enterprise/jobs/persistentWorkerRuntime';
 
+import { isBootModuleEnabled } from '../../moduleSettings';
 import { startInstanceStatusReporter } from './instanceStatusReporter';
 import { EngineSupervisor } from './supervisor';
 import type { EngineRuntime } from './types';
@@ -18,6 +19,7 @@ export const getEngineRuntime = (): EngineRuntime => {
 
 export const ensureNetworkProxyEngineSupervisorStarted = (): void => {
   if (loopsStarted) return;
+  if (!isBootModuleEnabled('networkProxy')) return;
   const autostart = process.env[NETWORK_PROXY_ENV.ENGINE_AUTOSTART] === '1';
   if (!isPersistentEnterpriseWorkerRuntime() && !autostart) return;
   loopsStarted = true;

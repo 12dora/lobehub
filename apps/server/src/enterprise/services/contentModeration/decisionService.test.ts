@@ -67,6 +67,30 @@ afterEach(() => {
 });
 
 describe('evaluatePrompt', () => {
+  it('reuses a caller-supplied snapshot instead of fetching again', async () => {
+    const snap = snapshot();
+    const getSnapshot = vi.fn(async () => snap);
+    const first = await evaluatePrompt(
+      {} as never,
+      { ...input, snapshot: snap },
+      {
+        ...baseDeps(snap),
+        getSnapshot,
+      },
+    );
+    const second = await evaluatePrompt(
+      {} as never,
+      { ...input, snapshot: snap },
+      {
+        ...baseDeps(snap),
+        getSnapshot,
+      },
+    );
+    expect(getSnapshot).not.toHaveBeenCalled();
+    expect(first).toMatchObject({ skipped: false });
+    expect(second).toMatchObject({ reused: true });
+  });
+
   it('short-circuits the classifier on a keyword hit', async () => {
     let classified = 0;
     const snap = snapshot({

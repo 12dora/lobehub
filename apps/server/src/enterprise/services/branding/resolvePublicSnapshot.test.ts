@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DISABLED_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import type { LobeChatDatabase } from '@/database/type';
@@ -9,7 +9,10 @@ import {
 } from '@/types/platform/authSettings';
 import type { PlatformBrandingPublished } from '@/types/platform/branding';
 
-import { resolvePlatformPublicSnapshot } from './resolvePublicSnapshot';
+import {
+  resetPlatformPublicSnapshotForTest,
+  resolvePlatformPublicSnapshot,
+} from './resolvePublicSnapshot';
 
 const publishedBranding: PlatformBrandingPublished = {
   defaultAgentDisplayName: null,
@@ -36,6 +39,10 @@ const authSettings =
   async (): Promise<PlatformAuthSettings> => ({ ...DEFAULT_PLATFORM_AUTH_SETTINGS, ...patch });
 
 describe('resolvePlatformPublicSnapshot', () => {
+  afterEach(() => {
+    resetPlatformPublicSnapshotForTest();
+  });
+
   it('reads auth settings (but no branding) while Runtime Branding is disabled', async () => {
     // The login/registration projection is always read so the anonymous login page can hide
     // the sign-up link even when branding is off — only branding itself is flag-gated.

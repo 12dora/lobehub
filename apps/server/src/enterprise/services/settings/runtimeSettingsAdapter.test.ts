@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { LobeChatDatabase } from '@/database/type';
 
-import { loadEffectiveUserSettings } from './runtimeSettingsAdapter';
+import { getRawUserSettings, loadEffectiveUserSettings } from './runtimeSettingsAdapter';
 
 vi.mock('../../featureFlags', async (importOriginal) => {
   const actual = (await importOriginal()) as {
@@ -21,7 +21,44 @@ vi.mock('../../featureFlags', async (importOriginal) => {
   };
 });
 
+const getUserSettings = vi.hoisted(() => vi.fn());
+
+vi.mock('@/database/models/user', () => ({
+  UserModel: class {
+    getUserSettings = getUserSettings;
+  },
+}));
+
 describe('runtimeSettingsAdapter', () => {
+  it('dedupes getUserSettings only inside one execAgent memo slot', async () => {
+    const row = { general: { timezone: 'Asia/Shanghai' }, memory: { enabled: true } };
+    getUserSettings.mockReset().mockResolvedValue(row);
+    const db = {} as LobeChatDatabase;
+    const memo = {};
+
+    const first = await getRawUserSettings({ db, memo, userId: 'u-memo' });
+    const second = await getRawUserSettings({ db, memo, userId: 'u-memo' });
+
+    expect(second).toBe(first);
+    expect(first).toEqual(row);
+    expect(getUserSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('sees an update between two separate calls without a memo', async () => {
+    const db = {} as LobeChatDatabase;
+    getUserSettings
+      .mockReset()
+      .mockResolvedValueOnce({ general: { timezone: 'UTC' } })
+      .mockResolvedValueOnce({ general: { timezone: 'Asia/Shanghai' } });
+
+    const before = await getRawUserSettings({ db, userId: 'u-update' });
+    const after = await getRawUserSettings({ db, userId: 'u-update' });
+
+    expect(before).toEqual({ general: { timezone: 'UTC' } });
+    expect(after).toEqual({ general: { timezone: 'Asia/Shanghai' } });
+    expect(getUserSettings).toHaveBeenCalledTimes(2);
+  });
+
   it('flag OFF preserves sparse legacy settings including keyVaults (exact parity)', async () => {
     const db = new Proxy(
       {},

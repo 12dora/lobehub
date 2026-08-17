@@ -9,9 +9,6 @@ import {
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import type { EgressScopeId, NetworkProxyOutletKind } from '@/const/platform/networkProxy';
 
-import { evictChatGPTWebFetchExcept } from '../../chatgptWeb/transport/curlImpersonateFetch';
-import { getEngineRuntime } from '../engine/runtime';
-import { onNetworkProxySnapshotChange } from '../snapshot';
 import {
   isConnectPhaseFailure,
   recordConnectPhaseFailure,
@@ -132,20 +129,43 @@ const keepActiveProxyUrls = (): Set<string> => {
 const syncCaches = () => {
   const keep = keepActiveProxyUrls();
   closeDispatchersExcept(keep);
-  evictChatGPTWebFetchExcept(keep);
+  void import('../../chatgptWeb/transport/curlImpersonateFetch').then(({ evictChatGPTWebFetchExcept }) => {
+    evictChatGPTWebFetchExcept(keep);
+  });
 };
 
-onNetworkProxySnapshotChange(() => {
-  syncCaches();
-});
+let cacheInvalidationBound = false;
 
-try {
-  getEngineRuntime().onStateChange(() => {
-    syncCaches();
+/**
+ * Subscribe to snapshot / engine changes so dispatcher + curl caches evict.
+ * Must run *after* both `scope` and `snapshot` have finished evaluating —
+ * calling `onNetworkProxySnapshotChange` at module-eval time races a cycle
+ * (`scope` → `snapshot` → … → `scope`) and throws
+ * `onNetworkProxySnapshotChange is not a function`.
+ */
+export const bindEgressCacheInvalidation = (): void => {
+  if (cacheInvalidationBound) return;
+  cacheInvalidationBound = true;
+  void import('../snapshot').then(({ onNetworkProxySnapshotChange }) => {
+    onNetworkProxySnapshotChange(() => {
+      syncCaches();
+    });
   });
-} catch {
-  // Engine runtime may be unavailable in isolated unit tests.
-}
+  void import('../engine/runtime')
+    .then(({ getEngineRuntime }) => {
+      getEngineRuntime().onStateChange(() => {
+        syncCaches();
+      });
+    })
+    .catch(() => {
+      // Engine runtime may be unavailable in isolated unit tests.
+    });
+};
+
+/** Test helper. */
+export const resetEgressCacheInvalidationForTest = (): void => {
+  cacheInvalidationBound = false;
+};
 
 setEgressBinding({
   createEgressFetch,

@@ -30,8 +30,10 @@ export {
   getEffectiveDefaultAgentConfig,
   getEffectiveMemorySettings,
   getEffectiveSystemAgentConfig,
+  getRawUserSettings,
   getSystemAgentSlice,
   getToolSlice,
   loadEffectiveUserSettings,
   resolveEffectiveUserInterventionConfig,
+  type UserSettingsReadMemo,
 } from './runtimeSettingsAdapter';

@@ -12,6 +12,40 @@ const LAST_EVENT_TTL_SECONDS = 86_400;
 const MAX_IN_MEMORY_EVENTS = 256;
 const MAX_INVALIDATION_SCOPES = 32;
 const MAX_INVALIDATION_SCOPE_LENGTH = 128;
+const MAX_SCOPE_VERSION_INFLIGHT = MAX_INVALIDATION_SCOPES;
+
+interface ScopeVersionInflightSlot {
+  generation: number;
+  inflight: Promise<string>;
+}
+
+/** Concurrent-read coalesce only — no TTL. A later publish must be visible on the next read. */
+const scopeVersionInflight = new Map<string, ScopeVersionInflightSlot>();
+const scopeVersionGeneration = new Map<string, number>();
+
+const bumpScopeVersionGeneration = (scope: string): void => {
+  scopeVersionGeneration.set(scope, (scopeVersionGeneration.get(scope) ?? 0) + 1);
+};
+
+export const invalidatePlatformConfigScopeVersionMemo = (scopes?: string[]): void => {
+  if (!scopes) {
+    for (const scope of scopeVersionGeneration.keys()) bumpScopeVersionGeneration(scope);
+    scopeVersionInflight.clear();
+    return;
+  }
+  for (const scope of scopes) {
+    const [normalized] = normalizeScopes([scope]);
+    if (!normalized) continue;
+    bumpScopeVersionGeneration(normalized);
+    scopeVersionInflight.delete(normalized);
+  }
+};
+
+/** Test helper. */
+export const resetPlatformConfigScopeVersionMemoForTest = (): void => {
+  scopeVersionInflight.clear();
+  scopeVersionGeneration.clear();
+};
 
 const getErrorClass = (error: unknown): string =>
   error instanceof Error && error.name ? error.name : 'UnknownError';
@@ -85,6 +119,7 @@ export class InMemoryPlatformConfigInvalidationPublisher
 
   publish = async (event: PlatformConfigInvalidationEvent): Promise<void> => {
     const scopes = normalizeScopes(event.scopes);
+    invalidatePlatformConfigScopeVersionMemo(scopes);
     this.events.push({ ...event, scopes });
     if (this.events.length > MAX_IN_MEMORY_EVENTS) {
       this.events.splice(0, this.events.length - MAX_IN_MEMORY_EVENTS);
@@ -136,6 +171,7 @@ export class RedisPlatformConfigInvalidationPublisher implements PlatformConfigI
       }
 
       const scopes = normalizeScopes(event.scopes);
+      invalidatePlatformConfigScopeVersionMemo(scopes);
       const pipeline = redis.pipeline();
       pipeline.incr(platformConfigKeys.globalVersion());
       pipeline.set(
@@ -258,9 +294,28 @@ export const getPlatformConfigScopeVersion = async (scope: string): Promise<stri
   const [normalizedScope] = normalizeScopes([scope]);
   if (!normalizedScope) return '0';
 
-  const publisher = getPlatformConfigInvalidationPublisher();
-  if ('getScopeVersion' in publisher) {
-    return (publisher as PlatformConfigVersionReader).getScopeVersion(normalizedScope);
+  const generationAtStart = scopeVersionGeneration.get(normalizedScope) ?? 0;
+  const hit = scopeVersionInflight.get(normalizedScope);
+  if (hit && hit.generation === generationAtStart) return hit.inflight;
+
+  const inflight = (async () => {
+    const publisher = getPlatformConfigInvalidationPublisher();
+    return 'getScopeVersion' in publisher
+      ? await (publisher as PlatformConfigVersionReader).getScopeVersion(normalizedScope)
+      : await new RedisPlatformConfigVersionReader().getScopeVersion(normalizedScope);
+  })();
+
+  if (scopeVersionInflight.has(normalizedScope)) scopeVersionInflight.delete(normalizedScope);
+  scopeVersionInflight.set(normalizedScope, { generation: generationAtStart, inflight });
+  while (scopeVersionInflight.size > MAX_SCOPE_VERSION_INFLIGHT) {
+    const oldest = scopeVersionInflight.keys().next().value;
+    if (typeof oldest !== 'string') break;
+    scopeVersionInflight.delete(oldest);
   }
-  return new RedisPlatformConfigVersionReader().getScopeVersion(normalizedScope);
+  try {
+    return await inflight;
+  } finally {
+    const current = scopeVersionInflight.get(normalizedScope);
+    if (current?.inflight === inflight) scopeVersionInflight.delete(normalizedScope);
+  }
 };

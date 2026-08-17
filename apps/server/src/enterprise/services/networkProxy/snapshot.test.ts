@@ -5,8 +5,10 @@ import { createDefaultNetworkProxyConfig } from '@/types/platform/networkProxy';
 import { resetDomainConfigCachesForTest } from '../../runtimeConfig';
 import {
   formatStaticProxyHost,
+  getNetworkProxyEgressView,
   getNetworkProxySnapshot,
   onNetworkProxySnapshotChange,
+  peekNetworkProxyEgressView,
   peekNetworkProxySnapshot,
   resetNetworkProxySnapshotForTest,
 } from './snapshot';
@@ -72,6 +74,66 @@ afterEach(() => {
 });
 
 describe('getNetworkProxySnapshot', () => {
+  it('projects the 4-field egress view without cloning subscription YAML', async () => {
+    list.mockResolvedValue([
+      {
+        createdAt: new Date('2026-08-17T00:00:00.000Z'),
+        createdBy: 'u1',
+        enabled: true,
+        excludeFilter: null,
+        filter: null,
+        id: 'nps_manual',
+        kind: 'manual' as const,
+        lastError: null,
+        lastUpdateAt: null,
+        name: 'manual',
+        nodeCount: null,
+        payloadCiphertext: 'huge-yaml-seal',
+        refreshRequestedAt: null,
+        sortOrder: 0,
+        trafficDownload: null,
+        trafficExpireAt: null,
+        trafficTotal: null,
+        trafficUpload: null,
+        updateIntervalSec: null,
+        updatedAt: new Date('2026-08-17T00:00:00.000Z'),
+        urlCiphertext: null,
+        urlHost: null,
+        userAgent: null,
+      },
+    ]);
+    ensureDefault.mockResolvedValue(settingsRow(2));
+
+    const full = await getNetworkProxySnapshot();
+    expect(full.subscriptions[0]?.payload).toBe('plain:huge-yaml-seal');
+
+    const view = await getNetworkProxyEgressView();
+    expect(view).toEqual({
+      config: full.config,
+      loadedAt: expect.any(Number),
+      revision: 2,
+      staticProxyUrl: full.staticProxyUrl,
+    });
+    expect(view).not.toHaveProperty('subscriptions');
+    expect(peekNetworkProxyEgressView()?.revision).toBe(2);
+    expect(ensureDefault).toHaveBeenCalledTimes(1);
+
+    const cloneSpy = vi.spyOn(globalThis, 'structuredClone');
+    cloneSpy.mockClear();
+    const warm = await getNetworkProxyEgressView();
+    const other = await getNetworkProxyEgressView();
+    expect(warm).not.toBe(other);
+    expect(warm).not.toHaveProperty('subscriptions');
+    expect(
+      cloneSpy.mock.calls.every(([value]) => {
+        if (!value || typeof value !== 'object') return true;
+        return !('subscriptions' in value);
+      }),
+    ).toBe(true);
+    expect(ensureDefault).toHaveBeenCalledTimes(1);
+    cloneSpy.mockRestore();
+  });
+
   it('caches a successful load and peeks the last snapshot', async () => {
     ensureDefault.mockResolvedValue(settingsRow(2));
     const first = await getNetworkProxySnapshot();

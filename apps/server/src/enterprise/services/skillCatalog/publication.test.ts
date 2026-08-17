@@ -46,6 +46,7 @@ vi.mock('./readService', () => ({
 
 vi.mock('../platformInstance/catalogTokens', () => ({
   invalidateSkillCatalogAuthorityToken: vi.fn(),
+  onAiCatalogAuthorityInvalidate: vi.fn(() => () => {}),
 }));
 
 const db = {} as LobeChatDatabase;

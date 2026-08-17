@@ -29,6 +29,7 @@ import {
   buildSkillCatalogRevisionToken,
   invalidateAiCatalogAuthorityToken,
   invalidateSkillCatalogAuthorityToken,
+  onAiCatalogAuthorityInvalidate,
   PlatformCatalogTokenInvariantError,
   skillCatalogAuthorityToken,
 } from './catalogTokens';
@@ -44,6 +45,77 @@ const isChecksum = (value: string | null | undefined): value is string =>
 const aiTargetRebuilds = new Map<string, Promise<PlatformRevisionToken>>();
 const skillTargetRebuilds = new Map<string, Promise<PlatformRevisionToken>>();
 
+const CHECKSUM_MEMO_MAX = 128;
+const checksumMemo = new Map<string, string>();
+
+let aiSnapshotSlot:
+  | {
+      generation: number;
+      inflight?: Promise<CurrentAiCatalogSnapshot>;
+      localEpoch: number;
+      pointerKey: string;
+      snapshot?: CurrentAiCatalogSnapshot;
+    }
+  | undefined;
+
+/**
+ * Drizzle `PgTransaction` exposes `rollback`; the committed pool/session does not.
+ * Uncommitted views must never occupy the process slot (rejected publish / rollback).
+ */
+const isOpenTransaction = (db: CatalogDatabase): boolean =>
+  typeof (db as { rollback?: unknown }).rollback === 'function';
+
+const checksumMemoKey = (providerId: string, revision: number, storedChecksum: string): string =>
+  `${providerId}:${revision}:${storedChecksum}`;
+
+const rememberChecksum = (key: string, value: string): string => {
+  if (checksumMemo.has(key)) checksumMemo.delete(key);
+  checksumMemo.set(key, value);
+  while (checksumMemo.size > CHECKSUM_MEMO_MAX) {
+    const oldest = checksumMemo.keys().next().value;
+    if (typeof oldest !== 'string') break;
+    checksumMemo.delete(oldest);
+  }
+  return value;
+};
+
+const checksumPayloadMemoized = (
+  providerId: string,
+  revision: number,
+  storedChecksum: string,
+  payload: unknown,
+): string => {
+  const key = checksumMemoKey(providerId, revision, storedChecksum);
+  const hit = checksumMemo.get(key);
+  if (hit) return hit;
+  return rememberChecksum(key, checksumPayload(payload));
+};
+
+/** Cheap committed-pointer identity. Generation alone misses raw pointer rollbacks and test truncates. */
+const loadAiCatalogPointerIdentity = async (db: CatalogDatabase): Promise<string> => {
+  const rows = await db
+    .select({
+      pointerRevision: platformAiProviders.revision,
+      providerId: platformAiProviders.id,
+    })
+    .from(platformAiProviders)
+    .where(gt(platformAiProviders.revision, 0))
+    .orderBy(asc(platformAiProviders.providerKey), asc(platformAiProviders.id));
+  return rows.map((row) => `${row.providerId}:${row.pointerRevision}`).join('|');
+};
+
+const dropAiCatalogSnapshotCache = (): void => {
+  aiSnapshotSlot = undefined;
+};
+
+onAiCatalogAuthorityInvalidate(dropAiCatalogSnapshotCache);
+
+/** Test helper. */
+export const resetAiCatalogSnapshotCacheForTest = (): void => {
+  dropAiCatalogSnapshotCache();
+  checksumMemo.clear();
+};
+
 export interface CurrentAiCatalogSnapshot {
   revisions: PlatformResourceRevisionItem[];
   token: ReturnType<typeof buildAiCatalogRevisionToken>;
@@ -55,6 +127,78 @@ export interface CurrentAiCatalogSnapshot {
  * fails closed.
  */
 export const loadCurrentAiCatalogSnapshot = async (
+  db: CatalogDatabase,
+): Promise<CurrentAiCatalogSnapshot> => {
+  // Open transactions are always live: a later rollback must not leave the slot
+  // populated, and a rejected publish must not leak into the public snapshot.
+  if (isOpenTransaction(db)) {
+    return loadCurrentAiCatalogSnapshotUncached(db);
+  }
+
+  // Fail-closed: a real DB/permission error must not collapse to generation 0
+  // (that would serve a stale snapshot). Missing rows already return 0.
+  const generation = (await new PlatformCatalogAuthorityModel(db).peekGeneration('ai_catalog'))
+    .generation;
+  const localEpoch = aiCatalogAuthorityToken.epoch;
+  const pointerKey = await loadAiCatalogPointerIdentity(db);
+  const hit = aiSnapshotSlot;
+  if (
+    hit?.snapshot &&
+    !hit.inflight &&
+    hit.generation === generation &&
+    hit.localEpoch === localEpoch &&
+    hit.pointerKey === pointerKey
+  ) {
+    return hit.snapshot;
+  }
+  if (
+    hit?.inflight &&
+    hit.generation === generation &&
+    hit.localEpoch === localEpoch &&
+    hit.pointerKey === pointerKey
+  ) {
+    return hit.inflight;
+  }
+
+  const inflight = loadCurrentAiCatalogSnapshotUncached(db).then(
+    (snapshot) => {
+      if (aiCatalogAuthorityToken.epoch !== localEpoch) return snapshot;
+      const current = aiSnapshotSlot;
+      if (
+        current === undefined ||
+        current.inflight === inflight ||
+        (current.generation === generation &&
+          current.localEpoch === localEpoch &&
+          current.pointerKey === pointerKey)
+      ) {
+        aiSnapshotSlot = { generation, localEpoch, pointerKey, snapshot };
+      }
+      return snapshot;
+    },
+    (error: unknown) => {
+      if (aiSnapshotSlot?.inflight === inflight) aiSnapshotSlot = undefined;
+      throw error;
+    },
+  );
+  // Track in-flight only — never install a placeholder / previous snapshot.
+  aiSnapshotSlot = { generation, inflight, localEpoch, pointerKey };
+  try {
+    return await inflight;
+  } finally {
+    if (aiSnapshotSlot?.inflight === inflight) {
+      aiSnapshotSlot = aiSnapshotSlot.snapshot
+        ? {
+            generation: aiSnapshotSlot.generation,
+            localEpoch: aiSnapshotSlot.localEpoch,
+            pointerKey: aiSnapshotSlot.pointerKey,
+            snapshot: aiSnapshotSlot.snapshot,
+          }
+        : undefined;
+    }
+  }
+};
+
+const loadCurrentAiCatalogSnapshotUncached = async (
   db: CatalogDatabase,
 ): Promise<CurrentAiCatalogSnapshot> => {
   const rows = await db
@@ -88,7 +232,12 @@ export const loadCurrentAiCatalogSnapshot = async (
       revision.revision !== row.pointerRevision ||
       (revision.status !== 'published' && revision.status !== 'archived') ||
       !isChecksum(revision.checksum) ||
-      checksumPayload(revision.payload) !== revision.checksum
+      checksumPayloadMemoized(
+        row.providerId,
+        row.pointerRevision,
+        revision.checksum,
+        revision.payload,
+      ) !== revision.checksum
     ) {
       throw new PlatformCatalogTokenInvariantError();
     }

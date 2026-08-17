@@ -173,9 +173,26 @@ export class IncrementalCatalogAuthorityToken {
 export const aiCatalogAuthorityToken = new IncrementalCatalogAuthorityToken();
 export const skillCatalogAuthorityToken = new IncrementalCatalogAuthorityToken();
 
+const aiCatalogInvalidateListeners = new Set<() => void>();
+
+/** Same-process snapshot caches subscribe here so every writer path is covered. */
+export const onAiCatalogAuthorityInvalidate = (listener: () => void): (() => void) => {
+  aiCatalogInvalidateListeners.add(listener);
+  return () => {
+    aiCatalogInvalidateListeners.delete(listener);
+  };
+};
+
 /** Call after a successful AI-catalog publish / pointer mutation (same process). */
 export const invalidateAiCatalogAuthorityToken = (): void => {
   aiCatalogAuthorityToken.invalidate();
+  for (const listener of aiCatalogInvalidateListeners) {
+    try {
+      listener();
+    } catch {
+      // best-effort
+    }
+  }
 };
 
 /** Call after a successful Skill-catalog publish / pointer mutation (same process). */

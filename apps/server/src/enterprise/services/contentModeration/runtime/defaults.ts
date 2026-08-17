@@ -1,7 +1,7 @@
 import debug from 'debug';
 
 import { toClassifierErrorCode } from '../classifiers/types';
-import type { EvaluatedDecision } from '../decisionService';
+import type { EvaluatedDecision, EvaluatePromptInput } from '../decisionService';
 import { evaluatePrompt } from '../decisionService';
 import {
   extractGenerationPrompt as extractB1GenerationPrompt,
@@ -100,7 +100,10 @@ export const createDefaultModerationRuntimeDeps = (
 ): ModerationRuntimeDeps => {
   return {
     createRecordId: () => crypto.randomUUID(),
-    evaluate: evaluatePrompt,
+    // The runtime layer types the snapshot as `unknown` (its own slim ModerationSnapshot);
+    // this composition root is where the full settings snapshot is handed to the decision service.
+    evaluate: (db, input) =>
+      evaluatePrompt(db, { ...input, snapshot: input.snapshot as EvaluatePromptInput['snapshot'] }),
     extractGenerationPrompt,
     extractPromptText,
     getSnapshot: getModerationSnapshot,

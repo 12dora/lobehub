@@ -12,6 +12,7 @@ import {
 import { RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import { bumpUserActiveCacheEpoch } from '../../guards/userActiveCache';
 import {
   getPlatformConfigInvalidationPublisher,
   type PlatformConfigInvalidationPublisher,
@@ -105,6 +106,10 @@ export class AdminUserSupport {
   };
 
   publishUserSecurityInvalidation = async (userId: string) => {
+    // Same-process: drop the 5s assertUserActive cache immediately.
+    // `auth_invalidated_at` writes live in upstream AdminUserModel; TTL covers
+    // other instances (no Redis epoch for this checker).
+    bumpUserActiveCacheEpoch();
     try {
       await this.invalidation.publish({
         at: new Date().toISOString(),

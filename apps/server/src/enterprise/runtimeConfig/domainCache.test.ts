@@ -56,6 +56,17 @@ afterEach(() => {
 });
 
 describe('DomainConfigCache', () => {
+  it('peeks the stored value without cloning', async () => {
+    const load = vi.fn(async () => ({ revision: 3 }));
+    const cache = createCache({ epoch: async () => '1', load, ttl: 10_000 });
+    await cache.get();
+    const raw = await cache.peek();
+    expect(raw).toEqual({ revision: 3 });
+    expect(load).toHaveBeenCalledTimes(1);
+    await cache.get();
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
   it('uses one loader flight for the same reader and epoch across independent cache instances', async () => {
     const cacheKey = {};
     const pending = deferred<MutableValue | null>();

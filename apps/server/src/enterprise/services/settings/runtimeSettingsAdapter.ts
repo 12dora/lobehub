@@ -32,6 +32,42 @@ export interface LoadEffectiveUserSettingsParams {
 
 const isPolicyEnabled = () => getEnterpriseFeatureFlags().ENABLE_PLATFORM_SETTINGS_POLICY;
 
+type RawUserSettings = Awaited<ReturnType<UserModel['getUserSettings']>>;
+
+/**
+ * Per-invocation slot so `execAgent` can share one `getUserSettings()` between
+ * memory + timezone without a process-wide TTL (settings writes stay visible
+ * on the next message).
+ */
+export interface UserSettingsReadMemo {
+  inflight?: Promise<RawUserSettings>;
+  value?: RawUserSettings;
+}
+
+/**
+ * Raw `user_settings` row. Pass a {@link UserSettingsReadMemo} to dedupe
+ * within one `execAgent` call; omit it to always read the DB.
+ */
+export const getRawUserSettings = async (params: {
+  db: LobeChatDatabase;
+  memo?: UserSettingsReadMemo;
+  userId: string;
+}): Promise<RawUserSettings> => {
+  if (params.memo?.value !== undefined) return params.memo.value;
+  if (params.memo?.inflight) return params.memo.inflight;
+
+  const inflight = new UserModel(params.db, params.userId).getUserSettings();
+  if (params.memo) params.memo.inflight = inflight;
+
+  try {
+    const value = await inflight;
+    if (params.memo) params.memo.value = value;
+    return value;
+  } finally {
+    if (params.memo?.inflight === inflight) params.memo.inflight = undefined;
+  }
+};
+
 /**
  * Resolve settings for runtime / getUserState.
  * Flag OFF: exact sparse legacy pass-through (deep-equal parent shape).
@@ -134,13 +170,13 @@ export const getEffectiveDefaultAgentConfig = async (params: {
  */
 export const getEffectiveMemorySettings = async (params: {
   db: LobeChatDatabase;
+  memo?: UserSettingsReadMemo;
   scope?: 'personal' | 'workspace';
   userId: string;
 }): Promise<{ enabled?: boolean; effort?: string } | undefined> => {
   const scope = params.scope ?? 'personal';
   if (!isPolicyEnabled()) {
-    const userModel = new UserModel(params.db, params.userId);
-    const settings = await userModel.getUserSettings();
+    const settings = await getRawUserSettings(params);
     return settings?.memory as { enabled?: boolean; effort?: string } | undefined;
   }
 
@@ -151,8 +187,7 @@ export const getEffectiveMemorySettings = async (params: {
       { enabled?: boolean; effort?: string } | undefined;
   }
 
-  const userModel = new UserModel(params.db, params.userId);
-  const row = await userModel.getUserSettings();
+  const row = await getRawUserSettings(params);
   const { settings } = await loadEffectiveUserSettings({
     db: params.db,
     legacySettings: { memory: row?.memory } as Record<string, unknown>,

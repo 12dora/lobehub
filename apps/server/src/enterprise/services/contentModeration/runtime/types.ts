@@ -22,6 +22,8 @@ export interface ModerationEvaluateInput {
   provider: string;
   requestId?: string;
   requestKind: ModerationRequestKind;
+  /** Full settings snapshot when the interceptor already loaded it. */
+  snapshot?: unknown;
   text: string;
   topicId?: string;
   userId: string;
