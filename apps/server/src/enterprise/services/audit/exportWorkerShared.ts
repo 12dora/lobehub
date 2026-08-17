@@ -6,6 +6,32 @@ export type ExportTimeWindow = { from: Date; to: Date };
 
 export const jsonlLine = (row: Record<string, unknown>): string => `${JSON.stringify(row)}\n`;
 
+/**
+ * Write a buffer and wait for drain when the stream signals backpressure.
+ * Sibling listener is removed in each handler so a later drain/error cannot
+ * settle an already-finished wait.
+ */
+export const writeWithBackpressure = (
+  stream: NodeJS.WritableStream,
+  buf: Buffer,
+): Promise<void> | null => {
+  if (!stream.write(buf)) {
+    return new Promise<void>((resolve, reject) => {
+      const onDrain = () => {
+        stream.off('error', onError);
+        resolve();
+      };
+      const onError = (err: Error) => {
+        stream.off('drain', onDrain);
+        reject(err);
+      };
+      stream.once('drain', onDrain);
+      stream.once('error', onError);
+    });
+  }
+  return null;
+};
+
 export const toIso = (value: Date | string | null | undefined): string | null => {
   if (value == null) return null;
   if (value instanceof Date) return value.toISOString();

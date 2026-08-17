@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { normalizeEvent } from './normalizeEvent';
 import {
   NOOP_ENTERPRISE_PLATFORM_OBSERVER,
   observeEnterprisePlatformEvent,
@@ -308,5 +309,216 @@ describe('enterprise observability boundary', () => {
         type: 'guard_decision',
       }),
     ).not.toThrow();
+  });
+
+  it('normalizes each event type for a valid payload and drops an out-of-allowlist field', () => {
+    const cases: Array<{
+      expected: EnterpriseObservabilityEvent | null;
+      input: Record<string, unknown>;
+      name: string;
+    }> = [
+      {
+        expected: {
+          domain: 'branding',
+          durationMs: 3,
+          operation: 'publish',
+          outcome: 'success',
+          type: 'config_publish',
+        },
+        input: {
+          domain: 'branding',
+          durationMs: 3,
+          operation: 'publish',
+          outcome: 'success',
+          type: 'config_publish',
+        },
+        name: 'config_publish valid',
+      },
+      {
+        expected: null,
+        input: {
+          domain: 'tenant-id',
+          durationMs: 1,
+          operation: 'publish',
+          outcome: 'success',
+          type: 'config_publish',
+        },
+        name: 'config_publish out-of-allowlist domain',
+      },
+      {
+        expected: { backend: 'memory', outcome: 'success', type: 'invalidation' },
+        input: { backend: 'memory', outcome: 'success', type: 'invalidation' },
+        name: 'invalidation valid',
+      },
+      {
+        expected: null,
+        input: { backend: 's3', outcome: 'success', type: 'invalidation' },
+        name: 'invalidation out-of-allowlist backend',
+      },
+      {
+        expected: {
+          domain: 'branding',
+          operation: 'load',
+          outcome: 'loaded',
+          type: 'cache',
+        },
+        input: { domain: 'branding', operation: 'load', outcome: 'loaded', type: 'cache' },
+        name: 'cache load valid',
+      },
+      {
+        expected: {
+          domain: 'branding',
+          operation: 'epoch',
+          outcome: 'success',
+          type: 'cache',
+        },
+        input: { domain: 'branding', operation: 'epoch', outcome: 'success', type: 'cache' },
+        name: 'cache epoch valid',
+      },
+      {
+        expected: {
+          domain: 'branding',
+          operation: 'request',
+          outcome: 'hit',
+          type: 'cache',
+        },
+        input: { domain: 'branding', operation: 'request', outcome: 'hit', type: 'cache' },
+        name: 'cache request valid',
+      },
+      {
+        expected: null,
+        input: { domain: 'tenant-id', operation: 'request', outcome: 'hit', type: 'cache' },
+        name: 'cache out-of-allowlist domain',
+      },
+      {
+        expected: {
+          classification: 'deny',
+          mode: 'enforced',
+          outcome: 'denied',
+          resource: 'skills',
+          type: 'guard_decision',
+        },
+        input: {
+          classification: 'deny',
+          mode: 'enforced',
+          outcome: 'denied',
+          resource: 'skills',
+          type: 'guard_decision',
+        },
+        name: 'guard_decision valid',
+      },
+      {
+        expected: null,
+        input: {
+          classification: 'allow',
+          mode: 'enforced',
+          outcome: 'denied',
+          resource: 'skills',
+          type: 'guard_decision',
+        },
+        name: 'guard_decision out-of-allowlist classification',
+      },
+      {
+        expected: {
+          durationMs: 1,
+          operation: 'tick',
+          outcome: 'success',
+          type: 'instance_heartbeat',
+        },
+        input: {
+          durationMs: 1,
+          operation: 'tick',
+          outcome: 'success',
+          type: 'instance_heartbeat',
+        },
+        name: 'instance_heartbeat valid',
+      },
+      {
+        expected: null,
+        input: {
+          durationMs: 1,
+          operation: 'probe',
+          outcome: 'success',
+          type: 'instance_heartbeat',
+        },
+        name: 'instance_heartbeat out-of-allowlist operation',
+      },
+      {
+        expected: { category: 'metadata_endpoint', type: 'ssrf_denial' },
+        input: { category: 'metadata_endpoint', type: 'ssrf_denial' },
+        name: 'ssrf_denial valid',
+      },
+      {
+        expected: null,
+        input: { category: 'http://metadata.local', type: 'ssrf_denial' },
+        name: 'ssrf_denial out-of-allowlist category',
+      },
+      {
+        expected: { outcome: 'success', stage: 'authenticated', type: 'oidc_login' },
+        input: { outcome: 'success', stage: 'authenticated', type: 'oidc_login' },
+        name: 'oidc_login success valid',
+      },
+      {
+        expected: {
+          failureCategory: 'subject_mismatch',
+          outcome: 'failure',
+          stage: 'userinfo',
+          type: 'oidc_login',
+        },
+        input: {
+          failureCategory: 'subject_mismatch',
+          outcome: 'failure',
+          stage: 'userinfo',
+          type: 'oidc_login',
+        },
+        name: 'oidc_login failure valid',
+      },
+      {
+        expected: null,
+        input: { outcome: 'success', stage: 'provider-id', type: 'oidc_login' },
+        name: 'oidc_login out-of-allowlist stage',
+      },
+      {
+        expected: { durationMs: 1, outcome: 'created', type: 'agent_materialization' },
+        input: { durationMs: 1, outcome: 'created', type: 'agent_materialization' },
+        name: 'agent_materialization valid',
+      },
+      {
+        expected: null,
+        input: { durationMs: 1, outcome: 'agent-id', type: 'agent_materialization' },
+        name: 'agent_materialization out-of-allowlist outcome',
+      },
+      {
+        expected: {
+          collector: 'job_backlog',
+          durationMs: 1,
+          outcome: 'success',
+          type: 'operational_collection',
+        },
+        input: {
+          collector: 'job_backlog',
+          durationMs: 1,
+          outcome: 'success',
+          type: 'operational_collection',
+        },
+        name: 'operational_collection valid',
+      },
+      {
+        expected: null,
+        input: {
+          collector: 'job-id',
+          durationMs: 1,
+          outcome: 'success',
+          type: 'operational_collection',
+        },
+        name: 'operational_collection out-of-allowlist collector',
+      },
+    ];
+
+    for (const row of cases) {
+      expect(normalizeEvent(row.input as EnterpriseObservabilityEvent), row.name).toEqual(
+        row.expected,
+      );
+    }
   });
 });

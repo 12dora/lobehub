@@ -21,12 +21,10 @@
  * Terminal domain/job outcomes append a required audit event in the same DB transaction.
  */
 
-import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream, type WriteStream } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { finished } from 'node:stream/promises';
 
 import {
   type PlatformAuditExportItem,
@@ -50,27 +48,21 @@ import {
   AuditExportPrivateS3Storage,
   buildAuditExportAttemptStorageKey,
   buildAuditExportAttemptToken,
-  checksumsMatch,
   formatArtifactChecksum,
 } from './exportStorage';
-import {
-  AuditExportArtifactTooLargeError,
-  AuditExportCancelledError,
-  AuditExportInvalidFilterError,
-  AuditExportLeaseLostError,
-  AuditExportMaxRowsError,
-  isTerminalContractError,
-} from './exportWorkerErrors';
-import type { ExportTimeWindow } from './exportWorkerShared';
+import { createArtifactWriter } from './exportWorkerArtifactWriter';
+import { settleNonRunnableExport } from './exportWorkerClaim';
+import { AuditExportCancelledError, AuditExportLeaseLostError } from './exportWorkerErrors';
+import { settleExportJobFailure } from './exportWorkerFailure';
+import { verifyUploadedArtifact } from './exportWorkerIntegrity';
+import { resolveExportExecutionPlan } from './exportWorkerPlan';
 import { jsonlLine, runWithPeriodicLeaseMaintenance, toIso } from './exportWorkerShared';
 import { materializeExportSnapshot, streamStagingIntoArtifact } from './exportWorkerSnapshot';
 import {
   safeDeleteOwned,
-  terminalCancelExport,
   terminalCompleteExport,
   terminalFailExport,
 } from './exportWorkerTerminal';
-import { mapExportFailureCode } from './jobError';
 
 export { AUDIT_EXPORT_MAX_ARTIFACT_BYTES } from './exportConstants';
 export { AuditExportLeaseLostError, isTerminalContractError } from './exportWorkerErrors';
@@ -126,56 +118,6 @@ export interface ProcessNextAuditExportResult {
   outcome?: 'cancelled' | 'completed' | 'failed' | 'retry' | 'skipped';
 }
 
-/** Align with adminAuditPolicyUpdateInputSchema max bounds. */
-const FROZEN_MAX_EXPORT_ROWS_BOUND = 1_000_000;
-const FROZEN_EXPORT_ARTIFACT_RETENTION_DAYS_BOUND = 365;
-
-/**
- * Require a valid ISO timestamp from the frozen snapshot.
- * Missing or invalid values terminal-fail — never silently widen the scan window.
- */
-const parseRequiredIsoDate = (value: string | undefined, field: 'from' | 'to'): Date => {
-  if (value == null || value === '') {
-    throw new AuditExportInvalidFilterError(
-      `${field} required in frozen filter snapshot for export`,
-    );
-  }
-  if (typeof value !== 'string') {
-    throw new AuditExportInvalidFilterError(`Invalid frozen ${field}: must be an ISO-8601 string`);
-  }
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    throw new AuditExportInvalidFilterError(`Invalid frozen ${field}: ${value}`);
-  }
-  return d;
-};
-
-/**
- * Prefer frozen snapshot when present and valid; absent → live policy (legacy rows).
- * Present but non-positive / non-integer / over safe schema bounds → terminal fail.
- * Never silently coerce invalid caps into a fallback that widens the export.
- */
-const resolveFrozenPositiveInt = (
-  snapshot: number | undefined,
-  live: number,
-  bounds: { field: string; max: number },
-): number => {
-  if (snapshot === undefined) {
-    return Math.max(1, Math.min(bounds.max, Math.floor(live)));
-  }
-  if (
-    typeof snapshot !== 'number' ||
-    !Number.isInteger(snapshot) ||
-    snapshot < 1 ||
-    snapshot > bounds.max
-  ) {
-    throw new AuditExportInvalidFilterError(
-      `Invalid frozen ${bounds.field}: ${String(snapshot)} (expected integer 1..${bounds.max})`,
-    );
-  }
-  return snapshot;
-};
-
 export type { ExportTimeWindow } from './exportWorkerShared';
 
 /**
@@ -217,51 +159,19 @@ export const processNextAuditExportJob = async (
 
   try {
     const exportRow = await exportsModel.get(exportId);
+    const nonRunnable = settleNonRunnableExport({
+      db,
+      exportId,
+      exportRow,
+      exportsModel,
+      jobId: claimed.id,
+      jobs,
+      storage,
+      workerId: options.workerId,
+    });
+    if (nonRunnable) return await nonRunnable;
     if (!exportRow) {
-      await jobs.fail({
-        error: { code: 'NOT_FOUND' },
-        jobId: claimed.id,
-        terminal: true,
-        workerId: options.workerId,
-      });
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
-    }
-
-    if (exportRow.status === 'cancelled') {
-      await terminalCancelExport(db, {
-        exportId,
-        jobId: claimed.id,
-        requestedBy: exportRow.requestedBy,
-        workerId: options.workerId,
-      });
-      // Only purge keys we know about from the cancelled row — never a winner's key.
-      const knownKey =
-        exportRow.storageKey ||
-        (exportRow.error as { purgeStorageKey?: string } | null)?.purgeStorageKey ||
-        null;
-      if (knownKey) {
-        await safeDeleteOwned(storage, knownKey, exportsModel, exportId);
-      }
-      return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
-    }
-
-    if (exportRow.status === 'completed') {
-      await jobs.complete({
-        jobId: claimed.id,
-        resultSummary: { exportId, rowCount: exportRow.rowCount ?? 0 },
-        workerId: options.workerId,
-      });
-      return { claimed: true, exportId, jobId: claimed.id, outcome: 'skipped' };
-    }
-
-    if (exportRow.status === 'failed' || exportRow.status === 'expired') {
-      await jobs.fail({
-        error: { code: 'EXPORT_TERMINAL' },
-        jobId: claimed.id,
-        terminal: true,
-        workerId: options.workerId,
-      });
-      return { claimed: true, exportId, jobId: claimed.id, outcome: 'skipped' };
     }
 
     // pending → running (or re-enter running after lease recovery / retry)
@@ -299,80 +209,22 @@ export const processNextAuditExportJob = async (
         return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
       }
     }
-    const filter = exportRow.filterSnapshot ?? {};
-    // Time window is mandatory: invalid/missing from|to must never widen to full-table scan.
-    const timeWindow: ExportTimeWindow = {
-      from: parseRequiredIsoDate(filter.from, 'from'),
-      to: parseRequiredIsoDate(filter.to, 'to'),
-    };
-    const maxExportRows = resolveFrozenPositiveInt(filter.maxExportRows, livePolicy.maxExportRows, {
-      field: 'maxExportRows',
-      max: FROZEN_MAX_EXPORT_ROWS_BOUND,
-    });
-    const exportArtifactRetentionDays = resolveFrozenPositiveInt(
-      filter.exportArtifactRetentionDays,
-      livePolicy.exportArtifactRetentionDays,
-      {
-        field: 'exportArtifactRetentionDays',
-        max: FROZEN_EXPORT_ARTIFACT_RETENTION_DAYS_BOUND,
-      },
-    );
-    // Point-in-time watermark: never include rows created after export execution starts.
-    const snapshotAt = new Date();
-    const snapshotWindow: ExportTimeWindow = {
-      from: timeWindow.from,
-      to: timeWindow.to.getTime() < snapshotAt.getTime() ? timeWindow.to : snapshotAt,
-    };
+    const { exportArtifactRetentionDays, filter, maxExportRows, snapshotAt, snapshotWindow } =
+      resolveExportExecutionPlan({
+        filterSnapshot: exportRow.filterSnapshot,
+        livePolicy,
+      });
 
     // Stream NDJSON to a temp file (bounded memory: one line / batch, not 1M rows).
     const tmpDir = await mkdtemp(path.join(tmpdir(), 'audit-export-'));
     const tmpPath = path.join(tmpDir, 'evidence.ndjson');
     const stagingPath = path.join(tmpDir, 'snapshot.ndjson');
-    let lineCount = 0;
-    let totalBytes = 0;
     let evidenceCount = 0;
-    const hasher = createHash('sha256');
-    const fileStream = (
-      options.createArtifactWriteStream
-        ? options.createArtifactWriteStream(tmpPath)
-        : createWriteStream(tmpPath, { flags: 'w' })
-    ) as WriteStream;
-    // SAO-006: record stream errors immediately — never rethrow into an unhandled
-    // rejection while the worker awaits materialization / other macrotasks.
-    // Premature close from intentional destroy() in finally is expected.
-    let fileClosedIntentionally = false;
-    let streamError: Error | null = null;
-    const fileFinished = finished(fileStream).catch((err: NodeJS.ErrnoException) => {
-      if (fileClosedIntentionally && err?.code === 'ERR_STREAM_PREMATURE_CLOSE') return;
-      streamError = err instanceof Error ? err : new Error(String(err));
+    const artifact = createArtifactWriter({
+      createArtifactWriteStream: options.createArtifactWriteStream,
+      maxArtifactBytes,
+      tmpPath,
     });
-
-    const writeLine = async (line: string) => {
-      if (streamError) throw streamError;
-      const buf = Buffer.from(line, 'utf8');
-      hasher.update(buf);
-      totalBytes += buf.byteLength;
-      if (totalBytes > maxArtifactBytes) {
-        throw new AuditExportArtifactTooLargeError();
-      }
-      lineCount += 1;
-      const ok = fileStream.write(buf);
-      if (!ok) {
-        await new Promise<void>((resolve, reject) => {
-          const onDrain = () => {
-            fileStream.off('error', onError);
-            resolve();
-          };
-          const onError = (err: Error) => {
-            fileStream.off('drain', onDrain);
-            reject(err);
-          };
-          fileStream.once('drain', onDrain);
-          fileStream.once('error', onError);
-        });
-      }
-      if (streamError) throw streamError;
-    };
 
     const assertNotCancelled = async () => {
       const current = await exportsModel.get(exportId);
@@ -392,7 +244,7 @@ export const processNextAuditExportJob = async (
       const cp = await jobs.checkpoint({
         jobId: claimed.id,
         leaseMs,
-        progressDone: Math.max(0, lineCount - 1),
+        progressDone: Math.max(0, artifact.lineCount - 1),
         workerId: options.workerId,
       });
       if (!cp) {
@@ -406,7 +258,7 @@ export const processNextAuditExportJob = async (
     try {
       await assertNotCancelled();
 
-      await writeLine(
+      await artifact.writeLine(
         jsonlLine({
           createdAt: toIso(exportRow.createdAt),
           exportArtifactRetentionDays,
@@ -432,7 +284,7 @@ export const processNextAuditExportJob = async (
             includeBodies: exportRow.includesMessageBodies,
             kind: exportRow.kind,
             maxExportRows,
-            maxStagingBytes: Math.max(0, maxArtifactBytes - totalBytes),
+            maxStagingBytes: Math.max(0, maxArtifactBytes - artifact.totalBytes),
             onModelCall: options.onSnapshotModelCall,
             onPageFetch: options.onSnapshotPageFetch,
             stagingPath,
@@ -447,16 +299,13 @@ export const processNextAuditExportJob = async (
 
       // Phase 2: stream frozen staging lines into the artifact with heartbeats
       // and batched copy (SAO-005 — no live N+1 re-reads).
-      await streamStagingIntoArtifact(stagingPath, writeLine, assertNotCancelled);
+      await streamStagingIntoArtifact(stagingPath, artifact.writeLine, assertNotCancelled);
 
       await assertNotCancelled();
-      if (streamError) throw streamError;
-      fileStream.end();
-      await fileFinished;
-      if (streamError) throw streamError;
+      await artifact.end();
 
       // Incremental digest from the write path — never re-buffer the temp file (F10).
-      const localChecksum = formatArtifactChecksum(hasher.digest('hex'));
+      const localChecksum = formatArtifactChecksum(artifact.digestHex());
 
       // Renew lease before long remote I/O (upload / metadata / hash) — SAO-002.
       await assertNotCancelled();
@@ -473,36 +322,20 @@ export const processNextAuditExportJob = async (
       const uploaded = await storage.uploadArtifact({
         artifactChecksum: localChecksum,
         body: createReadStream(tmpPath),
-        contentLength: totalBytes,
+        contentLength: artifact.totalBytes,
         contentType: AUDIT_EXPORT_CONTENT_TYPE,
         storageKey,
       });
       await assertNotCancelled();
 
-      // Integrity: size + streaming SHA-256 — same-length corruption must fail closed.
-      if (!checksumsMatch(uploaded.artifactChecksum, localChecksum)) {
-        await safeDeleteOwned(storage, storageKey);
-        throw new Error('AUDIT_EXPORT_CHECKSUM_MISMATCH');
-      }
-      if (uploaded.artifactBytes !== totalBytes) {
-        await safeDeleteOwned(storage, storageKey);
-        throw new Error('AUDIT_EXPORT_SIZE_MISMATCH');
-      }
-      await assertNotCancelled();
-      const meta = await storage.getObjectMetadata(storageKey);
-      if (meta.contentLength !== uploaded.artifactBytes || meta.contentLength !== totalBytes) {
-        await safeDeleteOwned(storage, storageKey);
-        throw new Error('AUDIT_EXPORT_SIZE_MISMATCH');
-      }
-      await assertNotCancelled();
-      const storedHash = await storage.hashObject(storageKey);
-      if (
-        storedHash.artifactBytes !== totalBytes ||
-        !checksumsMatch(storedHash.artifactChecksum, uploaded.artifactChecksum)
-      ) {
-        await safeDeleteOwned(storage, storageKey);
-        throw new Error('AUDIT_EXPORT_CHECKSUM_MISMATCH');
-      }
+      await verifyUploadedArtifact({
+        assertNotCancelled,
+        localChecksum,
+        storage,
+        storageKey,
+        totalBytes: artifact.totalBytes,
+        uploaded,
+      });
 
       if (options.afterArtifactUpload) {
         await options.afterArtifactUpload({
@@ -537,12 +370,7 @@ export const processNextAuditExportJob = async (
         workerId: options.workerId,
       });
     } finally {
-      fileClosedIntentionally = true;
-      if (!fileStream.destroyed) {
-        fileStream.destroy();
-      }
-      await fileFinished.catch(() => undefined);
-      await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+      await artifact.dispose();
     }
 
     if (!completedRow) {
@@ -563,74 +391,19 @@ export const processNextAuditExportJob = async (
 
     return { claimed: true, exportId, jobId: claimed.id, outcome: 'completed' };
   } catch (error) {
-    if (error instanceof AuditExportLeaseLostError) {
-      // Lease loss is NOT user cancellation — leave domain + platform job as-is for reclaim.
-      // Best-effort delete of our attempt key only (never the published winner).
-      await safeDeleteOwned(storage, storageKey);
-      return { claimed: true, exportId, jobId: claimed.id, outcome: 'skipped' };
-    }
-
-    if (error instanceof AuditExportCancelledError) {
-      const exportRow = await exportsModel.get(exportId);
-      await terminalCancelExport(db, {
-        exportId,
-        jobId: claimed.id,
-        requestedBy: exportRow?.requestedBy ?? 'system',
-        workerId: options.workerId,
-      });
-      await safeDeleteOwned(storage, storageKey, exportsModel, exportId);
-      return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
-    }
-
-    // Bounded enum only — never Error.name / free-form message as public code (F3).
-    const code = isTerminalContractError(error)
-      ? error instanceof AuditExportMaxRowsError
-        ? 'MAX_EXPORT_ROWS_EXCEEDED'
-        : error instanceof AuditExportInvalidFilterError
-          ? 'INVALID_FILTER_SNAPSHOT'
-          : error instanceof AuditExportArtifactTooLargeError
-            ? 'ARTIFACT_TOO_LARGE'
-            : mapExportFailureCode(error)
-      : mapExportFailureCode(error);
-
-    const exportRow = await exportsModel.get(exportId);
-    const requestedBy = exportRow?.requestedBy ?? 'system';
-
-    if (isTerminalContractError(error)) {
-      await terminalFailExport(db, {
-        code,
-        exportId,
-        jobId: claimed.id,
-        requestedBy,
-        terminal: true,
-        workerId: options.workerId,
-      });
-      await safeDeleteOwned(storage, storageKey, exportsModel, exportId);
-      return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
-    }
-
-    // Transient / unknown: atomically requeue, or terminalize domain/job/audit
-    // together when this attempt exhausts the budget.
-    await safeDeleteOwned(storage, storageKey);
-    const terminal = await terminalFailExport(db, {
-      code,
+    return settleExportJobFailure({
+      db,
+      error,
       exportId,
+      exportsModel,
       jobId: claimed.id,
-      requestedBy,
-      terminal: false,
+      storage,
+      storageKey,
       workerId: options.workerId,
     });
-
-    if (terminal) {
-      await safeDeleteOwned(storage, storageKey, exportsModel, exportId);
-      return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
-    }
-
-    return { claimed: true, exportId, jobId: claimed.id, outcome: 'retry' };
   }
 };
 
-/** Required append-only worker outcome (SAO-004). Fail closed when required. */
 export const runAuditExportBatches = async (
   db: LobeChatDatabase,
   params: {
