@@ -77,6 +77,15 @@ describe('AdminOverviewUsageTrendCard', () => {
     expect(screen.queryByTestId('area-chart')).toBeNull();
   });
 
+  it('showsSkeletonWhileRetryingAnInitialFailure', () => {
+    mocks.error = new Error('denied');
+    mocks.isLoading = true;
+    render(<UsageTrendCard />);
+    expect(screen.getByTestId('skeleton')).toBeTruthy();
+    expect(screen.queryByTestId('alert-error')).toBeNull();
+    expect(screen.queryByTestId('area-chart')).toBeNull();
+  });
+
   it('preservesEmptyStateWithRefreshWarningOnStaleEmptyRefreshFailure', () => {
     // Stale empty series + revalidation error must not force a blank AreaChart.
     mocks.data = [

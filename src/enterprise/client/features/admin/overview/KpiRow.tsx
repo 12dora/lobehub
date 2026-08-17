@@ -1,7 +1,6 @@
 'use client';
 
-import { Alert, Skeleton } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Skeleton } from '@lobehub/ui';
 import { useReducedMotion } from 'motion/react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -9,8 +8,10 @@ import { useTranslation } from 'react-i18next';
 import { formatIntergerNumber } from '@/utils/format';
 
 import type { AdminTimeRange } from '../primitives/timeRange.utils';
+import { OverviewLoadErrorAlert, OverviewRefreshWarningAlert } from './OverviewAlerts';
 import OverviewCardState from './OverviewCardState';
 import { overviewStyles as styles } from './styles';
+import { overviewCardState } from './useOverviewCardState';
 import { useOverviewKpis } from './useOverviewStats';
 
 interface KpiTileProps {
@@ -46,60 +47,40 @@ interface KpiRowProps {
 const KpiRow = memo<KpiRowProps>(({ range }) => {
   const { t } = useTranslation('admin');
   const { data, error, isLoading, mutate } = useOverviewKpis(range);
-  const loading = isLoading && !data;
+  const state = overviewCardState({ data, empty: false, error, isLoading });
   const scope = range?.label ?? '';
 
-  if (error && !data) {
-    return (
-      <Alert
-        showIcon
-        description={t('overview.error.loadFailedDescription')}
-        message={t('overview.error.loadFailed')}
-        type="error"
-        action={
-          <Button size="small" onClick={() => void mutate()}>
-            {t('overview.error.retry')}
-          </Button>
-        }
-      />
-    );
+  if (state.firstError) {
+    return <OverviewLoadErrorAlert onRetry={() => void mutate()} />;
   }
 
   return (
     <div className={styles.stack}>
-      {error && data ? (
-        <Alert
-          showIcon
-          description={t('overview.error.refreshFailedDescription')}
-          message={t('overview.error.refreshFailed')}
-          type="warning"
-          action={
-            <Button size="small" onClick={() => void mutate()}>
-              {t('overview.error.retry')}
-            </Button>
-          }
-        />
-      ) : null}
+      {state.staleError ? <OverviewRefreshWarningAlert onRetry={() => void mutate()} /> : null}
       <div className={styles.kpiGrid}>
-        <KpiTile label={t('overview.kpi.usersTotal')} loading={loading} value={data?.usersTotal} />
+        <KpiTile
+          label={t('overview.kpi.usersTotal')}
+          loading={state.loading}
+          value={data?.usersTotal}
+        />
         <KpiTile
           label={t('overview.kpi.usersActive', { scope })}
-          loading={loading}
+          loading={state.loading}
           value={data?.usersActive}
         />
         <KpiTile
           label={t('overview.kpi.messages', { scope })}
-          loading={loading}
+          loading={state.loading}
           value={data?.messages}
         />
         <KpiTile
           label={t('overview.kpi.topics', { scope })}
-          loading={loading}
+          loading={state.loading}
           value={data?.topics}
         />
         <KpiTile
           label={t('overview.kpi.agents', { scope })}
-          loading={loading}
+          loading={state.loading}
           value={data?.agents}
         />
       </div>

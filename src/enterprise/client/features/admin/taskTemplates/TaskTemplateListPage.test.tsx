@@ -262,7 +262,10 @@ describe('TaskTemplateListPage', () => {
     ) as HTMLInputElement;
     fireEvent.click(toggle);
 
-    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith('taskTemplateCatalog.toast.error'),
+    );
+    // Generic toggle failures keep the current page: only a revision conflict reloads.
     expect(mocks.refreshLists).not.toHaveBeenCalled();
     expect(
       (screen.getByLabelText('taskTemplateCatalog.list.columns.enabled') as HTMLInputElement)

@@ -1,8 +1,8 @@
 'use client';
 
 import { BarList } from '@lobehub/charts';
-import { Alert, Avatar } from '@lobehub/ui';
-import { Button, Segmented } from '@lobehub/ui/base-ui';
+import { Avatar } from '@lobehub/ui';
+import { Segmented } from '@lobehub/ui/base-ui';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -14,8 +14,9 @@ import type {
 import { formatPrice, formatUsageValue } from '@/utils/format';
 
 import type { AdminTimeRangeBounds } from '../primitives/timeRange.utils';
-import OverviewCardState from './OverviewCardState';
+import OverviewRankSection from './OverviewRankSection';
 import { overviewStyles as styles } from './styles';
+import { overviewCardState } from './useOverviewCardState';
 import { useOverviewUserRank } from './useOverviewStats';
 
 /** Which figure the bars are ranked by. The server orders and truncates by it. */
@@ -48,9 +49,6 @@ const UserRankCard = memo<UserRankCardProps>(({ range }) => {
   const [metric, setMetric] = useState<UserRankMetric>('totalTokens');
   const { data, error, isLoading, mutate } = useOverviewUserRank(range, metric);
 
-  const loading = isLoading && !data;
-  const firstError = Boolean(error && !data);
-  const staleError = Boolean(error && data);
   const rows = useMemo(() => {
     if (!data?.length) return [];
     // BarList renders one figure per row, so the two metrics that are not being
@@ -74,22 +72,23 @@ const UserRankCard = memo<UserRankCardProps>(({ range }) => {
     }));
   }, [data, metric, t]);
 
-  const empty = !loading && !firstError && rows.every((row) => !row.value);
+  const state = overviewCardState({
+    data,
+    empty: rows.every((row) => !row.value),
+    error,
+    isLoading,
+  });
   const noData = {
     desc: t('overview.rank.usersEmptyDesc'),
     title: t('overview.rank.emptyTitle'),
   };
 
-  const retry = (
-    <Button size="small" onClick={() => void mutate()}>
-      {t('overview.error.retry')}
-    </Button>
-  );
-
   return (
-    <section className={styles.card}>
-      <div className={styles.cardHead}>
-        <h2 className={styles.sectionTitle}>{t('overview.rank.usersTitle')}</h2>
+    <OverviewRankSection
+      empty={noData}
+      state={state}
+      title={t('overview.rank.usersTitle')}
+      headerExtra={
         <Segmented
           size="small"
           value={metric}
@@ -99,45 +98,19 @@ const UserRankCard = memo<UserRankCardProps>(({ range }) => {
           }))}
           onChange={(value) => setMetric(value as UserRankMetric)}
         />
-      </div>
-      {staleError ? (
-        <Alert
-          showIcon
-          action={retry}
-          description={t('overview.error.refreshFailedDescription')}
-          message={t('overview.error.refreshFailed')}
-          type="warning"
-        />
-      ) : null}
-      <OverviewCardState
-        stateKey={loading ? 'loading' : firstError ? 'error' : empty ? 'empty' : 'data'}
-      >
-        {firstError ? (
-          <Alert
-            showIcon
-            action={retry}
-            description={t('overview.error.loadFailedDescription')}
-            message={t('overview.error.loadFailed')}
-            type="error"
-          />
-        ) : empty ? (
-          <div className={styles.empty}>
-            <p className={styles.emptyTitle}>{noData.title}</p>
-            <p className={styles.emptyDesc}>{noData.desc}</p>
-          </div>
-        ) : (
-          <BarList
-            data={rows}
-            height={220}
-            leftLabel={t('overview.rank.usersLeft')}
-            loading={loading}
-            noDataText={noData}
-            rightLabel={t(METRIC_LABEL_KEY[metric])}
-            valueFormatter={(value) => formatMetric(Number(value), metric)}
-          />
-        )}
-      </OverviewCardState>
-    </section>
+      }
+      onRetry={() => void mutate()}
+    >
+      <BarList
+        data={rows}
+        height={220}
+        leftLabel={t('overview.rank.usersLeft')}
+        loading={state.loading}
+        noDataText={noData}
+        rightLabel={t(METRIC_LABEL_KEY[metric])}
+        valueFormatter={(value) => formatMetric(Number(value), metric)}
+      />
+    </OverviewRankSection>
   );
 });
 
