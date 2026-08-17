@@ -7,6 +7,7 @@ import { checksumPayload } from '@/database/models/platform';
 import {
   platformAiModels,
   platformAiProviders,
+  platformModuleSettings,
   platformResourceRevisions,
   users,
 } from '@/database/schemas';
@@ -15,6 +16,8 @@ import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
 import { getEnterpriseErrorBody } from '../guards/enterpriseErrors';
+import { getEmptyPublishedAiCatalog } from '../services/aiCatalog';
+import { resetModuleSettingsForTest } from '../services/moduleSettings';
 import { deletePlatformResourceRevisionsForTest } from '../testing/deletePlatformResourceRevisions';
 import { platformRouter } from './platform';
 
@@ -39,7 +42,9 @@ const cleanup = async () => {
   });
   await db.delete(platformAiModels);
   await db.delete(platformAiProviders);
+  await db.delete(platformModuleSettings);
   await db.delete(users);
+  resetModuleSettingsForTest();
 };
 
 beforeEach(async () => {
@@ -61,43 +66,29 @@ afterEach(async () => {
 });
 
 describe('platform.aiCatalog.getPublished flag gate', () => {
-  it('returns a stable empty catalog when managed AI is off despite residual revisions', async () => {
-    const [provider] = await db
-      .insert(platformAiProviders)
-      .values({
-        displayName: 'Residual',
-        providerKey: 'residual',
-        revision: 1,
-        status: 'published',
-      })
-      .returning();
-    const payload = {
-      models: [{ enabled: true, modelKey: 'secret-residual-model', type: 'chat' }],
-      provider: {
-        displayName: 'Residual',
-        enabled: true,
-        providerKey: 'residual',
-      },
-    };
-    await db.insert(platformResourceRevisions).values({
-      checksum: checksumPayload(payload),
-      payload,
-      resourceId: provider.id,
-      resourceType: 'provider',
-      revision: 1,
-      status: 'published',
-    });
-
+  // User-facing catalog reads keep the "stable empty" contract when the feature/module is
+  // off: the client treats an empty catalog as "not managed" (no error toast).
+  it('returns the stable empty catalog when managedAi is env-forced off', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AI', '0');
     const caller = createCaller({
       ...(await createContextInner({ userId })),
       serverDB: db,
     } as never);
-    const first = await caller.aiCatalog.getPublished();
-    const second = await caller.aiCatalog.getPublished();
-    expect(first).toEqual(second);
-    expect(first.providers).toEqual([]);
-    expect(JSON.stringify(first)).not.toContain('residual');
+    await expect(caller.aiCatalog.getPublished()).resolves.toEqual(getEmptyPublishedAiCatalog());
+  });
+
+  it('returns the stable empty catalog when managedAi is off in the DB row', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AI', '1');
+    await db.insert(platformModuleSettings).values({
+      id: 'global',
+      modules: { managedAi: false },
+      revision: 1,
+    });
+    const caller = createCaller({
+      ...(await createContextInner({ userId })),
+      serverDB: db,
+    } as never);
+    await expect(caller.aiCatalog.getPublished()).resolves.toEqual(getEmptyPublishedAiCatalog());
   });
 
   it('returns published picker metadata when managed AI is on', async () => {

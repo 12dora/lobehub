@@ -88,6 +88,21 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
     },
   },
   {
+    kind: 'query',
+    path: 'admin.modules.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.modules.requestRestart',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.modules.update',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
     kind: 'mutation',
     path: 'admin.networkProxy.createSubscription',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.NETWORK_PROXY_MANAGE] },

@@ -58,6 +58,18 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'Apply the global managed-resource enforcement policy site-wide immediately.',
     { reauth: recentReauth },
   ),
+  'admin.modules.requestRestart': regularMutation(
+    'admin.modules.requestRestart',
+    'medium',
+    'Request a process restart so restart-kind module changes can release boot-time resources.',
+    { reason: noReason },
+  ),
+  'admin.modules.update': regularMutation(
+    'admin.modules.update',
+    'medium',
+    'Replace the platform module on/off map with CAS and a sanitized before/after audit.',
+    { reason: noReason, reauth: conditionalReauth },
+  ),
   'admin.networkProxy.createSubscription': dangerousMutation(
     'admin.networkProxy.createSubscription',
     'high',

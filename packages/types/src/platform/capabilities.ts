@@ -6,6 +6,10 @@
  * - `adminAccess` is a boolean only; permission detail stays on admin.auth APIs (M02).
  * - Clients must not infer authorization from NEXT_PUBLIC_* env vars.
  */
+import type { PlatformModuleStateMap } from '@/const/platform/modules';
+
+// Value imports must be relative: packages/types vitest does not resolve `@/const/*`.
+import { ALL_MODULES_ENABLED } from '../../../const/src/platform/modules';
 
 export interface ManagedResourcesCapabilities {
   agents: boolean;
@@ -49,6 +53,11 @@ export interface PlatformCapabilities {
   configRevision: string;
   features: PlatformFeatureCapabilities;
   managedResources: ManagedResourcesCapabilities;
+  /**
+   * Deployment-level module on/off map. A disabled snapshot must stay fail-open
+   * (`ALL_MODULES_ENABLED`) so a missing field never hides surfaces.
+   */
+  modules: PlatformModuleStateMap;
   settingsRevision: string | null;
   userSettingsPolicyEnabled: boolean;
 }
@@ -71,6 +80,7 @@ export const DISABLED_PLATFORM_CAPABILITIES: PlatformCapabilities = {
     connectors: false,
     skills: false,
   },
+  modules: ALL_MODULES_ENABLED,
   settingsRevision: null,
   userSettingsPolicyEnabled: false,
 };

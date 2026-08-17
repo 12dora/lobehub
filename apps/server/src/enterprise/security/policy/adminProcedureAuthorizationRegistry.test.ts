@@ -90,14 +90,15 @@ describe('admin procedure authorization registry', () => {
     // deleteSubscription, refreshSubscription, testLatency, selectNode, installArtifact,
     // restartEngine, testConnectivity}).
     // +1 mutation since: admin.networkProxy.installGeodata (one-click geoip+geosite).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(216);
+    // +3 since: admin.modules.{get,update,requestRestart} (deployment module switches).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(219);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(101);
+    ).toHaveLength(102);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(115);
-    expect(mutationPaths).toHaveLength(115);
+    ).toHaveLength(117);
+    expect(mutationPaths).toHaveLength(117);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

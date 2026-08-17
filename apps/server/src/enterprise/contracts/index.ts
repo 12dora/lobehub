@@ -1,5 +1,6 @@
 export * from './adminAudit';
 export * from './adminManagedResources';
+export * from './adminModules';
 export * from './adminSettings';
 export * from './adminUsers';
 export * from './aiCatalog';

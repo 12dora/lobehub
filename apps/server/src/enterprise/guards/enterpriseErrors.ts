@@ -41,7 +41,9 @@ export const mapEnterpriseCodeToTrpc = (code: EnterpriseErrorCode): TRPC_ERROR_C
   if (code === 'PLATFORM_NETWORK_PROXY_GEODATA_MISSING') return 'PRECONDITION_FAILED';
   if (code === 'PLATFORM_NOT_FOUND') return 'NOT_FOUND';
   if (code === 'PLATFORM_AI_PROVIDER_DISABLED') return 'FORBIDDEN';
-  if (code === 'PLATFORM_FEATURE_DISABLED') return 'FORBIDDEN';
+  if (code === 'PLATFORM_FEATURE_DISABLED' || code === 'PLATFORM_MODULE_DISABLED') {
+    return 'FORBIDDEN';
+  }
   if (code === 'PLATFORM_LAST_SUPER_ADMIN') return 'PRECONDITION_FAILED';
   if (code === 'PLATFORM_INVALID_INPUT' || code === 'ADMIN_REASON_REQUIRED') {
     return 'BAD_REQUEST';

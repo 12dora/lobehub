@@ -15,7 +15,9 @@ import {
 } from '../contracts/skillCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { throwEnterpriseError } from '../guards/enterpriseErrors';
+import { withModule } from '../guards/moduleGuard';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
+import { isModuleEnabled } from '../services/moduleSettings';
 import {
   getBuiltinSkillDefinitions,
   getEmptyPublishedSkillCatalog,
@@ -26,14 +28,18 @@ import {
 import { withActiveUserWhenManaged } from './managedActiveUser';
 
 const managedSkillsActive = withActiveUserWhenManaged('ENABLE_PLATFORM_MANAGED_SKILLS');
+const managedSkillsModule = withModule('managedSkills');
 
+// User-facing catalog reads keep the "stable empty" contract when the feature/module is off
+// (the client treats an empty catalog as "not managed"); only user *operations* hard-fail.
 const getPublishedCatalog = authedProcedure
   .use(serverDatabase)
   .use(managedSkillsActive)
   .output(publishedSkillCatalogSchema)
   .query(async ({ ctx }) => {
     const flags = parseEnterpriseFeatureFlags(process.env);
-    if (!flags.ENABLE_PLATFORM_MANAGED_SKILLS) return getEmptyPublishedSkillCatalog();
+    if (!flags.ENABLE_PLATFORM_MANAGED_SKILLS || !(await isModuleEnabled('managedSkills')))
+      return getEmptyPublishedSkillCatalog();
     try {
       return await new SkillCatalogReadService(ctx.serverDB, {
         builtinSkills: getBuiltinSkillDefinitions(),
@@ -52,6 +58,7 @@ export const platformSkillsRouter = router({
   beginOperation: wsCompatProcedure
     .use(serverDatabase)
     .use(managedSkillsActive)
+    .use(managedSkillsModule)
     .input(beginPlatformSkillOperationInputSchema)
     .output(platformSkillOperationProofSchema)
     .mutation(async ({ ctx, input }) => {

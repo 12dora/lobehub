@@ -22,7 +22,9 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
+import { invalidatePlatformPublicSnapshot } from '../../services/branding/publicSnapshotCache';
 import { PlatformAuditService } from '../../services/platformAudit';
+import { getPlatformConfigInvalidationPublisher } from '../../services/platformConfigInvalidation';
 
 const authSettingsBase = authedProcedure
   .use(serverDatabase)
@@ -51,7 +53,7 @@ export const adminAuthSettingsRouter = router({
     .output(adminAuthSettingsUpdateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       try {
-        return await ctx.serverDB.transaction(async (tx) => {
+        const next = await ctx.serverDB.transaction(async (tx) => {
           const { expectedRevision, ...settingsPatch } = input;
           const parsed = platformAuthSettingsSchema.parse({
             emailDomainAllowlist: normalizeEmailDomainAllowlist(settingsPatch.emailDomainAllowlist),
@@ -59,7 +61,7 @@ export const adminAuthSettingsRouter = router({
             openRegistration: settingsPatch.openRegistration,
           });
 
-          const next = await new PlatformAuthSettingsModel(
+          const updated = await new PlatformAuthSettingsModel(
             tx as unknown as LobeChatDatabase,
           ).update(ctx.userId!, { ...parsed, expectedRevision });
 
@@ -67,19 +69,34 @@ export const adminAuthSettingsRouter = router({
             action: 'admin.authSettings.update',
             actorUserId: ctx.userId!,
             afterDiff: {
-              emailDomainAllowlistEnabled: next.emailDomainAllowlistEnabled,
-              emailDomainCount: next.emailDomainAllowlist.length,
-              openRegistration: next.openRegistration,
-              revision: next.revision,
+              emailDomainAllowlistEnabled: updated.emailDomainAllowlistEnabled,
+              emailDomainCount: updated.emailDomainAllowlist.length,
+              openRegistration: updated.openRegistration,
+              revision: updated.revision,
             },
-            configRevision: next.revision,
+            configRevision: updated.revision,
             result: 'success',
             targetId: 'global',
             targetType: 'authSettings',
           });
 
-          return next;
+          return updated;
         });
+
+        invalidatePlatformPublicSnapshot();
+        try {
+          await getPlatformConfigInvalidationPublisher().publish({
+            at: new Date().toISOString(),
+            resourceId: 'global',
+            resourceType: 'auth_settings',
+            revision: next.revision,
+            scopes: ['auth_settings'],
+          });
+        } catch {
+          // Best-effort: local public-snapshot cache is already dropped.
+        }
+
+        return next;
       } catch (error) {
         if (error instanceof TRPCError) throw error;
         if (error instanceof PlatformRevisionConflictError) {

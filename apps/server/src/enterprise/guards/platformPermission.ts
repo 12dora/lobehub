@@ -3,6 +3,7 @@ import {
   type EnterpriseErrorCode,
   PLATFORM_ERROR_CODES,
 } from '@/const/platform/errorCodes';
+import { MODULE_BY_ADMIN_ROUTER_KEY } from '@/const/platform/modules';
 import { type PlatformPermission } from '@/const/platform/permissions';
 import { RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase } from '@/database/type';
@@ -10,6 +11,7 @@ import { trpc } from '@/libs/trpc/lambda/init';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import { isPlatformAdminFeatureEnabled } from '../featureFlags';
+import { assertModuleEnabled } from '../services/moduleSettings';
 import { throwEnterpriseError } from './enterpriseErrors';
 
 export interface PlatformAuthContext {
@@ -94,11 +96,21 @@ const resolveServerDb = (ctx: { serverDB?: LobeChatDatabase }): LobeChatDatabase
   return ctx.serverDB as LobeChatDatabase;
 };
 
+const platformAuthContextByScope = new WeakMap<object, Promise<PlatformAuthContext>>();
+
 /**
- * Load global platform permissions for the authenticated principal.
- * Empty when enterprise admin flag is off (callers should feature-gate).
+ * tRPC middleware `next({ ctx })` spreads a new object per hop. The request
+ * `resHeaders` Headers instance is created once in createContextInner and
+ * survives the spread, so it is a stable per-HTTP-request identity.
  */
-export const loadPlatformAuthContext = async (params: {
+const requestScopeOf = (scope: object): object => {
+  if ('resHeaders' in scope && scope.resHeaders && typeof scope.resHeaders === 'object') {
+    return scope.resHeaders;
+  }
+  return scope;
+};
+
+const loadPlatformAuthContextUncached = async (params: {
   db: LobeChatDatabase;
   requestId?: string;
   userId: string;
@@ -110,6 +122,42 @@ export const loadPlatformAuthContext = async (params: {
     permissions,
     requestId: params.requestId,
   };
+};
+
+/**
+ * Load global platform permissions for the authenticated principal.
+ * Empty when enterprise admin flag is off (callers should feature-gate).
+ *
+ * Pass `scope` (typically the tRPC `ctx` object) to memoize the 4-table RBAC
+ * join for the rest of the HTTP request — admin overview batches the same
+ * join ~10× otherwise.
+ */
+export const loadPlatformAuthContext = async (params: {
+  db: LobeChatDatabase;
+  requestId?: string;
+  scope?: object;
+  userId: string;
+}): Promise<PlatformAuthContext> => {
+  if (!params.scope) return loadPlatformAuthContextUncached(params);
+
+  const key = requestScopeOf(params.scope);
+  const cached = platformAuthContextByScope.get(key);
+  if (cached) return cached;
+
+  const pending = loadPlatformAuthContextUncached(params);
+  platformAuthContextByScope.set(key, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    platformAuthContextByScope.delete(key);
+    throw error;
+  }
+};
+
+/** Resolve `admin.audit.list` → `audit` (or `audit.list` → `audit`). */
+export const adminRouterKeyFromPath = (path: string): string => {
+  const parts = path.split('.');
+  return parts[1] ?? parts[0] ?? path;
 };
 
 export const assertPlatformPermission = (
@@ -199,9 +247,13 @@ const withPlatformPermissions = (params: {
       });
     }
 
+    const moduleId = MODULE_BY_ADMIN_ROUTER_KEY[adminRouterKeyFromPath(path)];
+    if (moduleId) await assertModuleEnabled(moduleId);
+
     const db = resolveServerDb(ctx as { serverDB?: LobeChatDatabase });
     const platformAuth = await loadPlatformAuthContext({
       db,
+      scope: ctx,
       userId: rawUserId,
     });
 

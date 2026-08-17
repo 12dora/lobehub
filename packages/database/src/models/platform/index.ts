@@ -28,6 +28,7 @@ export * from './identityProvider';
 export * from './identityProviderPublishedRevisionLock';
 export * from './job';
 export * from './managedResourcePolicy';
+export * from './moduleSettings';
 export * from './networkProxyInstanceStatus';
 export * from './networkProxySettings';
 export * from './networkProxySubscription';

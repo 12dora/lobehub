@@ -1,58 +1,27 @@
 // @vitest-environment node
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const mocks = vi.hoisted(() => ({
-  warnIfPlatformMasterKeyMissing: vi.fn(),
-  ensureBrandingAssetCleanupWorkerStarted: vi.fn(),
-  ensurePlatformAuditExportWorkerStarted: vi.fn(),
-  ensurePlatformAuditRetentionWorkerStarted: vi.fn(),
-  ensurePlatformSecretRewrapWorkerStarted: vi.fn(),
-}));
+import { describe, expect, it } from 'vitest';
 
-vi.mock('../security/secret', () => ({
-  warnIfPlatformMasterKeyMissing: mocks.warnIfPlatformMasterKeyMissing,
-}));
+const here = path.dirname(fileURLToPath(import.meta.url));
+const platformSource = readFileSync(path.join(here, 'platform.ts'), 'utf8');
+const adminSource = readFileSync(path.join(here, 'admin.ts'), 'utf8');
 
-vi.mock('../jobs/brandingAssetCleanup', () => ({
-  ensureBrandingAssetCleanupWorkerStarted: mocks.ensureBrandingAssetCleanupWorkerStarted,
-}));
-
-vi.mock('../jobs/secretRewrap', () => ({
-  ensurePlatformSecretRewrapWorkerStarted: mocks.ensurePlatformSecretRewrapWorkerStarted,
-}));
-
-vi.mock('../jobs/auditExport', () => ({
-  ensurePlatformAuditExportWorkerStarted: mocks.ensurePlatformAuditExportWorkerStarted,
-}));
-
-vi.mock('../jobs/auditRetention', () => ({
-  ensurePlatformAuditRetentionWorkerStarted: mocks.ensurePlatformAuditRetentionWorkerStarted,
-}));
-
-describe('platform persistent worker bootstrap', () => {
-  beforeAll(async () => {
-    await import('./platform');
-  }, 30_000);
-
-  it('registers the secret rewrap worker from the production platform bootstrap module', () => {
-    expect(mocks.ensurePlatformSecretRewrapWorkerStarted).toHaveBeenCalledOnce();
+describe('platform / admin import-time workers', () => {
+  it('does not start workers or readiness probes at platform.ts module load (G2 re-homes)', () => {
+    expect(platformSource).not.toMatch(/ensurePlatformSecretRewrapWorkerStarted\s*\(/);
+    expect(platformSource).not.toMatch(/ensureBrandingAssetCleanupWorkerStarted\s*\(/);
+    expect(platformSource).not.toMatch(/ensurePlatformAuditExportWorkerStarted\s*\(/);
+    expect(platformSource).not.toMatch(/ensurePlatformAuditRetentionWorkerStarted\s*\(/);
+    expect(platformSource).not.toMatch(/ensureNetworkProxyEngineSupervisorStarted\s*\(/);
+    expect(platformSource).not.toMatch(/warnIfPlatformMasterKeyMissing\s*\(/);
   });
 
-  it('reports the enterprise key provider status before production bootstrap completes', () => {
-    // Warns instead of throwing: enterprise features are on by default, so a deployment
-    // without PLATFORM_MASTER_KEY must still boot.
-    expect(mocks.warnIfPlatformMasterKeyMissing).toHaveBeenCalledOnce();
-  });
-
-  it('registers the branding asset cleanup worker from the production platform bootstrap module', () => {
-    expect(mocks.ensureBrandingAssetCleanupWorkerStarted).toHaveBeenCalledOnce();
-  });
-
-  it('registers the audit export worker from the production platform bootstrap module', () => {
-    expect(mocks.ensurePlatformAuditExportWorkerStarted).toHaveBeenCalledOnce();
-  });
-
-  it('registers the audit retention worker from the production platform bootstrap module', () => {
-    expect(mocks.ensurePlatformAuditRetentionWorkerStarted).toHaveBeenCalledOnce();
+  it('does not register catalog readiness at admin.ts module load (G2 re-homes)', () => {
+    expect(adminSource).not.toMatch(/ensureAiCatalogReadinessRegistered\s*\(/);
+    expect(adminSource).not.toMatch(/ensureConnectorCatalogReadinessRegistered\s*\(/);
+    expect(adminSource).not.toMatch(/ensureSkillCatalogReadinessRegistered\s*\(/);
   });
 });

@@ -122,6 +122,7 @@ export const AUDIT_ACTIONS = [
   'admin.managedResources.publish',
   'admin.managedResources.save',
   'admin.managedResources.saveDraft',
+  'admin.modules.update',
   'admin.permission.denied',
   'admin.roles.replaceUserGlobalRoles',
   'admin.security.secretRotation.cancel',

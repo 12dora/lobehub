@@ -10,9 +10,10 @@ import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, createCallerFactory, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
+import { resetModuleSettingsForTest } from '../services/moduleSettings';
 import { createAdminAuthorizationFixture } from '../testing/adminAuthorizationFixture';
 import { getEnterpriseErrorBody } from './enterpriseErrors';
-import { withPlatformPermission } from './platformPermission';
+import { loadPlatformAuthContext, withPlatformPermission } from './platformPermission';
 
 const db: LobeChatDatabase = await getTestDB();
 
@@ -25,6 +26,18 @@ const testRouter = router({
     .use(serverDatabase)
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.USER_BAN))
     .query(() => ({ ok: true })),
+  alsoNeedsUserBan: authedProcedure
+    .use(serverDatabase)
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.USER_BAN))
+    .query(() => ({ ok: true })),
+  admin: router({
+    audit: router({
+      list: authedProcedure
+        .use(serverDatabase)
+        .use(withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_READ))
+        .query(() => ({ ok: true })),
+    }),
+  }),
 });
 
 const createCaller = createCallerFactory(testRouter);
@@ -38,6 +51,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await fixture.cleanup(db);
+  resetModuleSettingsForTest();
   vi.unstubAllEnvs();
 });
 
@@ -79,5 +93,38 @@ describe('withPlatformPermission', () => {
     const contexts = await fixture.createContexts(db);
     const caller = createCaller(contexts.superAdmin as never);
     await expect(caller.needsUserBan()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('disabled module → PLATFORM_MODULE_DISABLED (FORBIDDEN, data.moduleId)', async () => {
+    vi.stubEnv('LOBE_MODULES_DISABLED', 'audit');
+    const contexts = await fixture.createContexts(db);
+    const caller = createCaller(contexts.superAdmin as never);
+    try {
+      await caller.admin.audit.list();
+      expect.fail('should throw');
+    } catch (error) {
+      expect((error as { code: string }).code).toBe('FORBIDDEN');
+      expect(getEnterpriseErrorBody(error)?.code).toBe(
+        PLATFORM_ERROR_CODES.PLATFORM_MODULE_DISABLED,
+      );
+      expect(getEnterpriseErrorBody(error)?.details).toEqual({ moduleId: 'audit' });
+    }
+  });
+
+  it('memoizes loadPlatformAuthContext per request ctx (one RBAC join)', async () => {
+    const userId = fixture.actors.userAdmin;
+    const scope = { resHeaders: new Headers() };
+
+    const first = await loadPlatformAuthContext({ db, scope, userId });
+    const second = await loadPlatformAuthContext({ db, scope, userId });
+    expect(second).toBe(first);
+
+    const other = await loadPlatformAuthContext({
+      db,
+      scope: { resHeaders: new Headers() },
+      userId,
+    });
+    expect(other).not.toBe(first);
+    expect(other).toEqual(first);
   });
 });

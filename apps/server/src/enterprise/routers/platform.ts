@@ -18,67 +18,22 @@ import {
 import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
-import { ensurePlatformAgentRolloutWorkerStarted } from '../jobs/agentRollout';
-import { ensurePlatformAuditExportWorkerStarted } from '../jobs/auditExport';
-import { ensurePlatformAuditRetentionWorkerStarted } from '../jobs/auditRetention';
-import { ensureBrandingAssetCleanupWorkerStarted } from '../jobs/brandingAssetCleanup';
-import { ensureIdentityProviderTestAttemptCleanupStarted } from '../jobs/identityProviderTestAttemptCleanup';
-import { ensurePlatformInstanceRegistryCleanupStarted } from '../jobs/platformInstanceRegistryCleanup';
-import { ensurePlatformSecretRewrapWorkerStarted } from '../jobs/secretRewrap';
-import { ensureSharedOAuthKeepaliveWorkerStarted } from '../jobs/sharedOAuthKeepalive';
-import { warnIfPlatformMasterKeyMissing } from '../security/secret';
 import {
   AiCatalogReadService,
   getEmptyPublishedAiCatalog,
   isPlatformAiTakeoverActive,
 } from '../services/aiCatalog';
 import { resolvePlatformPublicSnapshot } from '../services/branding';
-import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
-import { ensureConnectorRuntimeCapabilityStateBootstrapped } from '../services/connectorCatalog/runtimeEffectiveStateBootstrap';
-import { ensureConnectorSecretCleanupWorkerStarted } from '../services/connectorCatalog/secretCleanupWorker';
 import {
   resolveManagedResourceReadinessCached,
   resolvePublishedManagedResourcePolicies,
 } from '../services/managedResourceCapabilities';
-import { ensureNetworkProxyEngineSupervisorStarted } from '../services/networkProxy';
+import { getModuleSettingsSnapshot, isModuleEnabled } from '../services/moduleSettings';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
-import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { isRenderableTaskTemplate, toPlatformTaskTemplate } from './admin/taskTemplatesSupport';
 import { withActiveUserWhenManaged } from './managedActiveUser';
 import { platformAgentsRouter } from './platformAgents';
 import { platformSkillsRouter } from './platformSkills';
-
-ensureSkillCatalogReadinessRegistered();
-
-// Enterprise features are on by default, so a deployment that has not configured a key
-// provider yet must still boot: warn loudly here instead of throwing at module load.
-// Storing or reading a platform secret still fails hard in the key provider.
-warnIfPlatformMasterKeyMissing(process.env, parseEnterpriseFeatureFlags(process.env));
-
-ensureConnectorRuntimeAuditWorkerStarted();
-
-/** Process bootstrap only — never from user capability reads (SR-003). */
-ensureConnectorRuntimeCapabilityStateBootstrapped();
-
-ensureConnectorSecretCleanupWorkerStarted();
-
-ensurePlatformAgentRolloutWorkerStarted();
-
-ensureIdentityProviderTestAttemptCleanupStarted();
-
-ensurePlatformInstanceRegistryCleanupStarted();
-
-ensurePlatformSecretRewrapWorkerStarted();
-
-ensurePlatformAuditExportWorkerStarted();
-
-ensurePlatformAuditRetentionWorkerStarted();
-
-ensureBrandingAssetCleanupWorkerStarted();
-
-ensureSharedOAuthKeepaliveWorkerStarted();
-
-ensureNetworkProxyEngineSupervisorStarted();
 
 /**
  * Platform router (M00 read-only + access status).
@@ -95,8 +50,10 @@ export const platformRouter = router({
       .use(withActiveUserWhenManaged('ENABLE_PLATFORM_MANAGED_AI'))
       .output(publishedAiCatalogSchema)
       .query(async ({ ctx }) => {
+        // Stable-empty contract when the feature/module is off (client reads empty as "not managed").
         const flags = parseEnterpriseFeatureFlags(process.env);
-        if (!flags.ENABLE_PLATFORM_MANAGED_AI) return getEmptyPublishedAiCatalog();
+        if (!flags.ENABLE_PLATFORM_MANAGED_AI || !(await isModuleEnabled('managedAi')))
+          return getEmptyPublishedAiCatalog();
         return new AiCatalogReadService(ctx.serverDB).getPublished();
       }),
   }),
@@ -116,7 +73,8 @@ export const platformRouter = router({
       .output(platformTaskTemplateListOutputSchema)
       .query(async ({ ctx }) => {
         const flags = parseEnterpriseFeatureFlags(process.env);
-        if (!flags.ENABLE_PLATFORM_ADMIN) return { ...EMPTY_PLATFORM_TASK_TEMPLATE_LIST };
+        if (!flags.ENABLE_PLATFORM_ADMIN || !(await isModuleEnabled('taskTemplates')))
+          return { ...EMPTY_PLATFORM_TASK_TEMPLATE_LIST };
 
         const model = new PlatformTaskTemplateModel(ctx.serverDB);
         const total = await model.count();
@@ -159,6 +117,8 @@ export const platformRouter = router({
       readiness: resolveManagedResourceReadinessCached,
     });
 
+    const modules = (await getModuleSettingsSnapshot()).effective;
+
     return buildPlatformCapabilities({
       adminAccess,
       // Explicit runtime-takeover signal: `managedResources.aiProviders` is also true for
@@ -166,6 +126,7 @@ export const platformRouter = router({
       aiTakeover: await isPlatformAiTakeoverActive(ctx.serverDB, flags),
       flags,
       managedResources: managed.publicCapabilities,
+      modules,
       revisions: { configRevision: String(managed.revision) },
     });
   }),

@@ -3,6 +3,7 @@ export * from './errorCodes';
 export * from './featureFlags';
 export * from './infraSettings';
 export * from './managedResources';
+export * from './modules';
 export * from './networkProxy';
 export * from './permissions';
 export * from './roles';

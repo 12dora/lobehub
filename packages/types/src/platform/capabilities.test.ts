@@ -29,6 +29,8 @@ describe('PlatformCapabilities', () => {
       true,
     );
     expect(Object.values(DISABLED_PLATFORM_CAPABILITIES.features).every((v) => !v)).toBe(true);
+    // Disabled snapshot must stay fail-open on modules so nothing hides accidentally.
+    expect(Object.values(DISABLED_PLATFORM_CAPABILITIES.modules).every(Boolean)).toBe(true);
   });
 
   it('does not expose role lists, secrets, or permission arrays on the disabled snapshot', () => {

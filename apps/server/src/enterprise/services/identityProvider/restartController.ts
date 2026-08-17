@@ -28,7 +28,10 @@ export const resolveRestartCapability = (
   ) {
     return { reason: 'serverless_runtime', supported: false };
   }
-  if (env.PLATFORM_OIDC_RESTART_MODE !== 'supervisor') {
+  if (
+    env.PLATFORM_RESTART_MODE !== 'supervisor' &&
+    env.PLATFORM_OIDC_RESTART_MODE !== 'supervisor'
+  ) {
     return { reason: 'supervisor_not_configured', supported: false };
   }
   return { reason: null, supported: true };

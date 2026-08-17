@@ -92,6 +92,13 @@
       "when": 1787450000000,
       "tag": "0020_platform_network_proxy_subscription_issue",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1787500000000,
+      "tag": "0021_platform_module_settings",
+      "breakpoints": true
     }
   ]
 }

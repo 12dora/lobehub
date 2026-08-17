@@ -3,13 +3,9 @@ import { getServerDB } from '@/database/core/db-adaptor';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
-import { PlatformSecretService } from '../../security/secret';
+import type { PlatformSecretService } from '../../security/secret';
 import { registerManagedResourceReadiness } from '../managedResourceReadiness';
-import {
-  AiCatalogExecutionResolver,
-  AiCatalogRuntimeAdapter,
-  getEmptyAiProviderRuntimeState,
-} from './runtimeAdapter';
+import { isModuleEnabled } from '../moduleSettings';
 
 let registered = false;
 
@@ -22,19 +18,27 @@ export const resolveAiCatalogRuntimeReadiness = async (
 ): Promise<boolean> => {
   const flags = params.flags ?? parseEnterpriseFeatureFlags(process.env);
   if (!flags.ENABLE_PLATFORM_MANAGED_AI) return false;
+  // Hot view: registration always happens (G2); the probe no-ops when the module is off.
+  if (!params.flags && !(await isModuleEnabled('managedAi'))) return false;
+  // Lazy: a static import of runtimeAdapter pulled catalogAuthority / model-bank
+  // at worker-spec start() and raced a TDZ (ReferenceError) on boot.
+  const [{ PlatformSecretService }, adapter] = await Promise.all([
+    import('../../security/secret'),
+    import('./runtimeAdapter'),
+  ]);
   const secrets =
     params.secretService ?? PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);
   if (!secrets) return false;
   const db = params.db ?? (await getServerDB());
-  const state = await new AiCatalogRuntimeAdapter(db).resolve({
+  const state = await new adapter.AiCatalogRuntimeAdapter(db).resolve({
     flags,
-    upstreamState: getEmptyAiProviderRuntimeState(),
+    upstreamState: adapter.getEmptyAiProviderRuntimeState(),
   });
   const hasExecutableChatModel = state.enabledAiModels.some(
     (model) => model.enabled && model.type === 'chat',
   );
   if (!hasExecutableChatModel) return false;
-  const resolver = new AiCatalogExecutionResolver(db, secrets);
+  const resolver = new adapter.AiCatalogExecutionResolver(db, secrets);
   await Promise.all(
     state.enabledAiProviders.map((provider) =>
       // Health probe: never make outbound token calls or wait on refresh leases here —

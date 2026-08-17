@@ -22,6 +22,7 @@ export * from './infraSettings';
 export * from './instances';
 export * from './jobs';
 export * from './managedPolicy';
+export * from './moduleSettings';
 export * from './networkProxy';
 export * from './revisions';
 export * from './settings';

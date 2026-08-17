@@ -1,4 +1,5 @@
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
+import { ALL_MODULES_ENABLED, type PlatformModuleStateMap } from '@/const/platform/modules';
 import type {
   ManagedResourcesCapabilities,
   PlatformCapabilities,
@@ -22,6 +23,8 @@ export interface BuildPlatformCapabilitiesInput {
   flags?: EnterpriseFeatureFlags;
   /** Published, policy-resolved booleans. Draft/mode/readiness are never exposed. */
   managedResources?: ManagedResourcesCapabilities;
+  /** Hot module map. Defaults to all-on so a missing producer never hides surfaces. */
+  modules?: PlatformModuleStateMap;
   /**
    * Optional published revisions from platform stores.
    * When absent, revisions stay null / '0'.
@@ -64,6 +67,7 @@ export const buildPlatformCapabilities = (
       connectors: false,
       skills: false,
     },
+    modules: input.modules ?? ALL_MODULES_ENABLED,
     settingsRevision: input.revisions?.settingsRevision ?? null,
     userSettingsPolicyEnabled: flags.ENABLE_PLATFORM_SETTINGS_POLICY,
   };

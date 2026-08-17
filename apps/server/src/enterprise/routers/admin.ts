@@ -15,10 +15,7 @@ import { throwEnterpriseError } from '../guards/enterpriseErrors';
 import { withPlatformPermission } from '../guards/platformPermission';
 import { assertRecentReauth } from '../guards/reauth';
 import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserService';
-import { ensureAiCatalogReadinessRegistered } from '../services/aiCatalog';
-import { ensureConnectorCatalogReadinessRegistered } from '../services/connectorCatalog/runtimeReadiness';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
-import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { adminAgentsRouter } from './admin/agents';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
 import { adminAiProviderOAuthRouter } from './admin/aiProviderOAuth';
@@ -30,6 +27,7 @@ import { adminContentModerationRouter } from './admin/contentModeration';
 import { adminCredsRouter } from './admin/creds';
 import { adminIdentityProvidersRouter } from './admin/identityProviders';
 import { adminManagedResourcesRouter } from './admin/managedResources';
+import { adminModulesRouter } from './admin/modules';
 import { adminNetworkProxyRouter } from './admin/networkProxy';
 import { adminSecurityRouter } from './admin/security';
 import { adminSettingsRouter } from './admin/settings';
@@ -45,9 +43,8 @@ const adminBase = authedProcedure
   .use(withActiveUser())
   .use(withAdminMutationRateLimit());
 
-ensureAiCatalogReadinessRegistered();
-ensureConnectorCatalogReadinessRegistered();
-ensureSkillCatalogReadinessRegistered();
+// Readiness side-effects previously ran at import time here.
+// G2 re-homes them in bootstrap/workersBootstrap.ts.
 
 export const adminAuthRouter = router({
   /**
@@ -183,6 +180,7 @@ export const adminRouter = router({
   creds: adminCredsRouter,
   identityProviders: adminIdentityProvidersRouter,
   managedResources: adminManagedResourcesRouter,
+  modules: adminModulesRouter,
   networkProxy: adminNetworkProxyRouter,
   roles: adminRolesRouter,
   security: adminSecurityRouter,

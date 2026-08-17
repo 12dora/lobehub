@@ -9,6 +9,7 @@ import {
   platformAgentSetHiddenOutputSchema,
 } from '../contracts/platformAgents';
 import { withActiveUser } from '../guards/activeUser';
+import { withModule } from '../guards/moduleGuard';
 import { PlatformAgentEffectiveResolver } from '../services/agentCatalog';
 import { mapAgentServiceError } from './admin/agentsSupport';
 
@@ -18,7 +19,8 @@ import { mapAgentServiceError } from './admin/agentsSupport';
 // resolver/DB access.
 const platformAgentBase = authedProcedure
   .use(serverDatabase)
-  .use(withActiveUser({ enforceWhenAdminDisabled: true }));
+  .use(withActiveUser({ enforceWhenAdminDisabled: true }))
+  .use(withModule('managedAgents'));
 
 export const platformAgentsRouter = router({
   getEffectiveAgent: platformAgentBase

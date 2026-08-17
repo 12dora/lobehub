@@ -63,6 +63,11 @@ export interface EnterprisePublicServerConfig {
    */
   enabled: boolean;
   /**
+   * Effective on/off map of platform modules (`LOBE_MODULES_DISABLED` + DB).
+   * Injected into `window.__SERVER_CONFIG__.config.enterprise.modules`.
+   */
+  modules?: Record<string, boolean>;
+  /**
    * True when the platform admin shell feature is enabled (ENABLE_PLATFORM_ADMIN).
    * Feature existence only — never authorization. Gates whether `/admin` may mount;
    * real access still requires `admin.auth.getMyAccess` + server RBAC.
