@@ -2371,6 +2371,8 @@ export default {
   'system.oidc.title': 'Single sign-on',
   'system.publishFailures.count': '{{count}} recent publish failure(s)',
   'system.publishFailures.empty': 'No recent publish failures were observed.',
+  'systemGeneral.tabs.infrastructure': 'Infrastructure',
+  'systemGeneral.tabs.networkProxy': 'Network proxy',
   'system.publishFailures.title': 'Recent publish failures',
   'system.publishFailures.unavailable': 'Publish history is temporarily unavailable. Try Refresh.',
   'system.snapshotAt': 'Last updated',
@@ -3695,4 +3697,341 @@ export default {
   'contentModeration.errors.reason.regexSlow': 'Regex rule #{{n}} runs too slowly — simplify it.',
   'contentModeration.errors.reason.tooManyRegexChanges':
     'At most 100 new or edited regex rules can be checked per save (5 s total) — save them in batches.',
+  // --- 网络代理 (network proxy) — 系统 → 通用设置 → 网络代理 ---
+  'networkProxy.loadFailed': 'Could not load the network proxy configuration',
+  'networkProxy.loadFailedDesc':
+    'Nothing has changed. Retry, or reload the page if it keeps failing.',
+  'networkProxy.readOnly':
+    'You can view the network proxy configuration but not change it. Ask a platform administrator for the manage permission.',
+  'networkProxy.master': 'Route selected traffic through the outlet',
+  'networkProxy.masterOnHint':
+    'Only the providers and site features enabled below are routed. Everything else stays direct.',
+  'networkProxy.masterOffHint': 'All server-side outbound traffic goes direct.',
+  'networkProxy.masterLockedByEnv':
+    'PROXY_URL already proxies this whole process, so this switch is locked. Use one or the other.',
+  'networkProxy.actions.cancel': 'Cancel',
+  'networkProxy.actions.delete': 'Delete',
+  'networkProxy.actions.edit': 'Edit',
+  'networkProxy.actions.refresh': 'Refresh',
+  'networkProxy.actions.retry': 'Retry',
+  'networkProxy.actions.save': 'Save',
+  'networkProxy.errors.generic': 'The operation failed. Nothing was changed — try again.',
+  'networkProxy.conflict.title': 'Someone else saved first',
+  'networkProxy.conflict.retry': 'Retry',
+  'networkProxy.conflict.dismiss': 'Discard my change',
+  'networkProxy.badges.engine': 'Engine: {{state}}',
+  'networkProxy.badges.outletUp': 'Outlet available',
+  'networkProxy.badges.outletDown': 'Outlet unavailable',
+  'networkProxy.badges.node': 'Node: {{node}} · {{delay}}',
+  'networkProxy.badges.noNode': 'none',
+  'networkProxy.badges.applied': '{{applied}}/{{total}} instances applied',
+  'networkProxy.more.title': 'More actions',
+  'networkProxy.more.providersOn': 'Route all AI providers',
+  'networkProxy.more.providersOff': 'Stop routing all AI providers',
+  'networkProxy.more.featuresOn': 'Route all site features',
+  'networkProxy.more.featuresOff': 'Stop routing all site features',
+  'networkProxy.more.fallbackDirect': 'When the outlet is down: go direct (everywhere)',
+  'networkProxy.more.fallbackFail': 'When the outlet is down: fail the request (everywhere)',
+  'networkProxy.more.groupLatency': 'Test all node latencies',
+  'networkProxy.more.restartEngine': 'Restart the engine',
+  'networkProxy.banners.globalProxy': 'An environment-level proxy is already active',
+  'networkProxy.banners.globalProxyDesc':
+    'PROXY_URL routes the entire process through proxychains, so per-scope routing cannot be honoured. Remove PROXY_URL and restart to use this page instead.',
+  'networkProxy.banners.unsupported': 'This platform has no engine build',
+  'networkProxy.banners.unsupportedDesc':
+    'The pinned engine only ships for linux/x64, linux/arm64 and darwin/arm64. On this platform, use a static upstream proxy as the outlet.',
+  'networkProxy.banners.engineError': 'The engine on {{instance}} stopped',
+  'networkProxy.banners.engineErrorDescFallback':
+    'It crashed repeatedly and will not restart on its own. Check the logs, then restart it.',
+  'networkProxy.banners.fallback': 'Some traffic is falling back to a direct connection',
+  'networkProxy.banners.fallbackDesc':
+    'The outlet is unavailable, so these scopes are going direct right now: {{scopes}}. Users see no error. Fix the outlet, or switch a scope to "fail the request" if going direct is unacceptable.',
+  'networkProxy.banners.geodata': 'Smart routing needs its rule data',
+  'networkProxy.banners.geodataDesc':
+    'Smart mode sends mainland-China domains and IPs direct, which requires the geoip / geosite files. Install them in the engine block below.',
+  'networkProxy.engineState.unsupported': 'Unsupported platform',
+  'networkProxy.engineState.not_installed': 'Not installed',
+  'networkProxy.engineState.installing': 'Installing',
+  'networkProxy.engineState.stopped': 'Stopped',
+  'networkProxy.engineState.starting': 'Starting',
+  'networkProxy.engineState.running': 'Running',
+  'networkProxy.engineState.degraded': 'No live node',
+  'networkProxy.engineState.error': 'Error',
+  'networkProxy.artifactKind.engine': 'Proxy engine',
+  'networkProxy.artifactKind.geoip': 'GeoIP data',
+  'networkProxy.artifactKind.geosite': 'GeoSite data',
+  'networkProxy.artifactSource.download': 'downloaded',
+  'networkProxy.artifactSource.upload': 'uploaded',
+  'networkProxy.artifactSource.operator_override': 'operator-provided',
+  'networkProxy.engine.title': 'Engine',
+  'networkProxy.engine.desc':
+    'The engine is installed after deployment, once per instance. Only the build pinned below can run — an uploaded file must match its digest.',
+  'networkProxy.engine.pinnedVersion': 'Pinned version',
+  'networkProxy.engine.pinnedVersionHint': 'Changing versions is a code change, not a setting.',
+  'networkProxy.engine.platform': 'Platform',
+  'networkProxy.engine.installedAs': 'Installed · {{version}} · {{source}}',
+  'networkProxy.engine.notInstalled': 'Not installed on this instance',
+  'networkProxy.engine.operatorOverride':
+    'Provided through NETWORK_PROXY_ENGINE_BIN — its digest was not verified.',
+  'networkProxy.engine.installing': 'Downloading and verifying…',
+  'networkProxy.engine.installRequested':
+    'Requested. Every live instance downloads and verifies it; the table below shows when each one is done.',
+  'networkProxy.engine.download': 'Download and install',
+  'networkProxy.engine.reinstall': 'Reinstall',
+  'networkProxy.engine.upload': 'Upload file',
+  'networkProxy.engine.uploading': 'Uploading',
+  'networkProxy.engine.uploadVerified': 'Verified · {{version}} · {{sha}}',
+  'networkProxy.engine.unsupportedHint':
+    'No engine build exists for this platform, so installing is disabled.',
+  'networkProxy.engine.restart': 'Restart engine',
+  'networkProxy.engine.viewLogs': 'Logs',
+  'networkProxy.engine.thisInstance': 'this instance',
+  'networkProxy.engine.instancesCaption':
+    'Instances that sent a heartbeat in the last 90 seconds. "Applied revision" tells you which ones already run the current configuration.',
+  'networkProxy.engine.instancesEmpty':
+    'No instance has reported yet. Status appears within a minute of a deployment starting.',
+  'networkProxy.engine.columns.instance': 'Instance',
+  'networkProxy.engine.columns.state': 'Engine',
+  'networkProxy.engine.columns.version': 'Version',
+  'networkProxy.engine.columns.appliedRevision': 'Applied revision',
+  'networkProxy.engine.columns.lastError': 'Last error',
+  'networkProxy.engine.columns.updatedAt': 'Updated',
+  'networkProxy.engine.logs.title': 'Engine logs',
+  'networkProxy.engine.logs.fromInstance': 'Last 200 lines from instance {{instance}}.',
+  'networkProxy.engine.logs.empty': 'The engine has not logged anything since it started.',
+  'networkProxy.engine.logs.loadFailed': 'Could not load the logs',
+  'networkProxy.engine.logs.loadFailedDesc': 'The instance may be restarting. Try again.',
+  'networkProxy.outlet.title': 'Outlet and nodes',
+  'networkProxy.outlet.desc':
+    'Where routed traffic leaves from. There is one outlet for the whole platform.',
+  'networkProxy.outlet.kind': 'Outlet',
+  'networkProxy.outlet.kindHint':
+    'The engine gives you subscriptions and node selection; a static upstream proxy needs no engine.',
+  'networkProxy.outlet.kindEngine': 'Proxy engine',
+  'networkProxy.outlet.kindStatic': 'Static upstream proxy',
+  'networkProxy.outlet.mode': 'Node selection',
+  'networkProxy.outlet.modeHint': 'How the engine picks which node to use.',
+  'networkProxy.outletMode.auto': 'Fastest (latency test)',
+  'networkProxy.outletMode.manual': 'Pinned node',
+  'networkProxy.outletMode.fallback': 'Failover in order',
+  'networkProxy.outlet.ruleMode': 'Routing',
+  'networkProxy.outlet.ruleModeHint':
+    'Simple sends everything in a routed scope through the outlet; smart keeps mainland-China destinations direct.',
+  'networkProxy.ruleMode.simple': 'Simple',
+  'networkProxy.ruleMode.smart': 'Smart',
+  'networkProxy.outlet.geodataNotReady':
+    'Smart routing stays unavailable until the geoip and geosite files are installed on this instance.',
+  'networkProxy.outlet.latencyUrl': 'Latency test URL',
+  'networkProxy.outlet.latencyUrlHint': 'Also used by "test connectivity".',
+  'networkProxy.outlet.latencyInterval': 'Latency test interval (seconds)',
+  'networkProxy.outlet.tolerance': 'Switch tolerance (ms)',
+  'networkProxy.outlet.toleranceHint':
+    'A new node must be at least this much faster before the engine switches to it.',
+  'networkProxy.outlet.bypassHosts': 'Always direct',
+  'networkProxy.outlet.bypassHostsHint':
+    "Hostnames, .suffixes or CIDR ranges that never go through the outlet. Loopback, private ranges and the platform's own dependencies are always direct already.",
+  'networkProxy.outlet.bypassHostsPlaceholder': 'example.com, .internal, 10.20.0.0/16',
+  'networkProxy.outlet.subscriptionViaOutlet': 'Update subscriptions through the outlet',
+  'networkProxy.outlet.subscriptionViaOutletHint':
+    'Use when the subscription host itself is only reachable through the proxy.',
+  'networkProxy.outlet.testConnectivity': 'Test connectivity',
+  'networkProxy.outlet.connectivityOk': 'Reachable in {{delay}} · exit IP {{ip}}',
+  'networkProxy.outlet.egressIpUnknown': 'unknown',
+  'networkProxy.outlet.connectivityFailed': 'The outlet did not answer',
+  'networkProxy.outlet.connectivityFailedDesc':
+    'Nothing changed. Check the node list and the engine logs, then try again.',
+  'networkProxy.outlet.staticTitle': 'Static upstream proxy',
+  'networkProxy.outlet.staticType': 'Protocol',
+  'networkProxy.outlet.staticServer': 'Server',
+  'networkProxy.outlet.staticPort': 'Port',
+  'networkProxy.outlet.staticUsername': 'Username',
+  'networkProxy.outlet.staticPassword': 'Password',
+  'networkProxy.outlet.staticPasswordHint':
+    'The stored password is never shown again. Saving keeps it unless you replace or clear it.',
+  'networkProxy.outlet.passwordKeep': 'Keep stored password',
+  'networkProxy.outlet.passwordReplace': 'Replace password',
+  'networkProxy.outlet.passwordClear': 'Remove password',
+  'networkProxy.outlet.saveStatic': 'Save proxy',
+  'networkProxy.outlet.removeStatic': 'Remove proxy',
+  'networkProxy.outlet.staticIncomplete': 'A server and a valid port are required.',
+  'networkProxy.outlet.downloadViaStatic': 'Download engine files through this proxy',
+  'networkProxy.outlet.downloadViaStaticHint':
+    'Use when the release host is unreachable without a proxy.',
+  'networkProxy.outlet.staticNoNodes':
+    'A static proxy has no node list — traffic goes straight to the server above.',
+  'networkProxy.nodes.columns.name': 'Node',
+  'networkProxy.nodes.columns.type': 'Protocol',
+  'networkProxy.nodes.columns.source': 'From subscription',
+  'networkProxy.nodes.columns.delay': 'Latency',
+  'networkProxy.nodes.columns.alive': 'Reachable',
+  'networkProxy.nodes.columns.actions': 'Actions',
+  'networkProxy.nodes.searchPlaceholder': 'Search node names',
+  'networkProxy.nodes.alive': 'Yes',
+  'networkProxy.nodes.dead': 'No',
+  'networkProxy.nodes.test': 'Test',
+  'networkProxy.nodes.caption':
+    'Read live from the engine on instance {{instance}}; other instances may differ.',
+  'networkProxy.nodes.captionUnknown': 'Read live from the engine on the instance serving you.',
+  'networkProxy.nodes.empty':
+    'No nodes yet. Add a subscription below, or paste node links manually.',
+  'networkProxy.subscriptionKind.url': 'Subscription URL',
+  'networkProxy.subscriptionKind.manual': 'Pasted nodes',
+  'networkProxy.subscriptions.title': 'Subscriptions',
+  'networkProxy.subscriptions.desc':
+    'Where nodes come from. Subscription URLs usually carry a token, so only the hostname is ever shown.',
+  'networkProxy.subscriptions.create': 'Add subscription',
+  'networkProxy.subscriptions.edit': 'Edit subscription',
+  'networkProxy.subscriptions.refresh': 'Update now',
+  'networkProxy.subscriptions.empty':
+    'No subscriptions yet. Add one to give the engine something to route through.',
+  'networkProxy.subscriptions.columns.name': 'Name',
+  'networkProxy.subscriptions.columns.kind': 'Type',
+  'networkProxy.subscriptions.columns.nodeCount': 'Nodes',
+  'networkProxy.subscriptions.columns.traffic': 'Traffic',
+  'networkProxy.subscriptions.columns.interval': 'Interval',
+  'networkProxy.subscriptions.columns.lastUpdate': 'Last update',
+  'networkProxy.subscriptions.columns.status': 'Status',
+  'networkProxy.subscriptions.columns.actions': 'Actions',
+  'networkProxy.subscriptions.expiresAt': 'Expires {{time}}',
+  'networkProxy.subscriptions.lastUpdateLine': 'Last updated {{time}}',
+  'networkProxy.subscriptions.status.ok': 'Up to date',
+  'networkProxy.subscriptions.status.pending': 'Never fetched',
+  'networkProxy.subscriptions.status.failed': 'Last fetch failed',
+  'networkProxy.subscriptions.status.disabled': 'Not in use',
+  'networkProxy.subscriptions.deleteConfirmTitle': 'Delete this subscription?',
+  'networkProxy.subscriptions.deleteConfirmDesc':
+    'Its nodes leave the outlet immediately. If one of them is the node in use, traffic moves to another node or falls back to a direct connection. Delete "{{name}}"?',
+  'networkProxy.subscriptions.form.name': 'Name',
+  'networkProxy.subscriptions.form.namePlaceholder': 'How this appears in the node list',
+  'networkProxy.subscriptions.form.kind': 'Type',
+  'networkProxy.subscriptions.form.kindHint':
+    'This cannot be changed later — the two types are stored differently.',
+  'networkProxy.subscriptions.form.url': 'Subscription URL',
+  'networkProxy.subscriptions.form.urlHint':
+    'Stored encrypted. Only its hostname is shown afterwards.',
+  'networkProxy.subscriptions.form.urlKeepHint': 'Leave blank to keep the stored URL.',
+  'networkProxy.subscriptions.form.interval': 'Update interval (seconds)',
+  'networkProxy.subscriptions.form.intervalHint':
+    'How often each instance re-fetches the node list.',
+  'networkProxy.subscriptions.form.userAgent': 'User-Agent',
+  'networkProxy.subscriptions.form.userAgentHint':
+    'Some providers return a different format per client. Defaults to clash.meta.',
+  'networkProxy.subscriptions.form.payload': 'Node links or Clash snippet',
+  'networkProxy.subscriptions.form.payloadHint':
+    'One share link per line, or a Clash `proxies:` block. Stored encrypted.',
+  'networkProxy.subscriptions.form.payloadKeepHint': 'Leave blank to keep what is stored.',
+  'networkProxy.subscriptions.form.filter': 'Keep nodes matching',
+  'networkProxy.subscriptions.form.filterHint':
+    'Optional regular expression. Leave empty to use every node.',
+  'networkProxy.subscriptions.form.excludeFilter': 'Drop nodes matching',
+  'networkProxy.subscriptions.form.enabled': 'Use these nodes',
+  'networkProxy.subscriptions.form.enabledHint':
+    'Turn off to keep the subscription without routing through its nodes.',
+  'networkProxy.subscriptions.errors.nameRequired': 'Give the subscription a name.',
+  'networkProxy.subscriptions.errors.urlRequired': 'A subscription URL is required.',
+  'networkProxy.subscriptions.errors.urlInvalid': 'The URL must start with http:// or https://.',
+  'networkProxy.subscriptions.errors.intervalRange':
+    'The update interval is outside the allowed range.',
+  'networkProxy.subscriptions.errors.payloadRequired': 'Paste at least one node.',
+  'networkProxy.subscriptions.errors.payloadTooLong': 'That paste is too large.',
+  'networkProxy.feature.market': 'Marketplace and discovery',
+  'networkProxy.feature.web_search': 'Web search and page fetching',
+  'networkProxy.feature.mcp': 'Remote MCP connectors',
+  'networkProxy.feature.import_fetch': 'Imports and downloads',
+  'networkProxy.feature.content_moderation': 'Content moderation endpoint',
+  'networkProxy.featureDesc.market': 'Assistant, plugin and model catalogues.',
+  'networkProxy.featureDesc.web_search': 'Search providers and the page crawler.',
+  'networkProxy.featureDesc.mcp': 'HTTP and SSE connectors. Local subprocesses are never proxied.',
+  'networkProxy.featureDesc.import_fetch':
+    'Skill / URL / GitHub imports, media downloads, pricing data.',
+  'networkProxy.featureDesc.content_moderation':
+    'The Moderations-compatible endpoint. The LLM judge follows its own provider switch.',
+  'networkProxy.scopes.title': 'What gets routed',
+  'networkProxy.scopes.desc':
+    "Traffic is routed per scope. Anything not switched on here stays direct, and so do the platform's own dependencies.",
+  'networkProxy.scopes.providersTitle': 'AI providers',
+  'networkProxy.scopes.featuresTitle': 'Site features',
+  'networkProxy.scopes.enableAll': 'Route all',
+  'networkProxy.scopes.disableAll': 'Route none',
+  'networkProxy.scopes.searchPlaceholder': 'Search providers',
+  'networkProxy.scopes.providersEmpty': 'No providers to show.',
+  'networkProxy.scopes.columns.provider': 'Provider',
+  'networkProxy.scopes.columns.feature': 'Feature',
+  'networkProxy.scopes.columns.enabled': 'Route',
+  'networkProxy.scopes.columns.onUnavailable': 'If the outlet is down',
+  'networkProxy.scopes.columns.note': 'Note',
+  'networkProxy.scopes.onUnavailable.direct': 'Go direct',
+  'networkProxy.scopes.onUnavailable.fail': 'Fail the request',
+  'networkProxy.scopes.notes.browserDirect':
+    'Called from the browser when client fetching is on — the server proxy does not apply.',
+  'networkProxy.scopes.notes.providerDisabled': 'Not enabled in the AI catalogue yet.',
+  'networkProxy.scopes.providerLoadFailed': 'Could not load the provider list',
+  'networkProxy.scopes.providerLoadFailedDesc':
+    'Providers already routed are still shown below. Retry to see the full catalogue.',
+  'enterprise.error.PLATFORM_NETWORK_PROXY_UNAVAILABLE':
+    'The network proxy outlet is unavailable, and this scope is set to fail rather than go direct.',
+  'enterprise.error.PLATFORM_NETWORK_PROXY_ENGINE_NOT_INSTALLED':
+    'The proxy engine is not installed on this instance yet.',
+  'enterprise.error.PLATFORM_NETWORK_PROXY_ARTIFACT_MISMATCH':
+    'That file does not match the pinned build and was rejected. Nothing was installed.',
+  'enterprise.error.PLATFORM_NETWORK_PROXY_UNSUPPORTED_PLATFORM':
+    'There is no engine build for this platform. Use a static upstream proxy instead.',
+  'enterprise.error.PLATFORM_NETWORK_PROXY_ENGINE_ERROR':
+    'The proxy engine could not start. Check its logs.',
+  'enterprise.error.PLATFORM_NETWORK_PROXY_SUBSCRIPTION_INVALID':
+    'The subscription was rejected. Check the URL or the pasted nodes.',
+  'enterprise.error.PLATFORM_NETWORK_PROXY_GLOBAL_PROXY_ACTIVE':
+    'PROXY_URL already proxies this whole process, so the network proxy cannot be enabled.',
+  'networkProxy.actions.dismiss': 'Discard',
+  'networkProxy.conflict.retryAll': 'Retry all',
+  'networkProxy.conflict.dismissAll': 'Discard all',
+  'networkProxy.badges.unknown': 'Status unavailable',
+  'networkProxy.banners.statusUnknown': 'Could not read the current status',
+  'networkProxy.banners.statusUnknownDesc':
+    'Engine state, node and instance information could not be loaded, so nothing below reflects reality yet. Your configuration is unchanged.',
+  'networkProxy.banners.artifactsUnknown': 'Could not read what is installed',
+  'networkProxy.banners.artifactsUnknownDesc':
+    'The pinned build and per-instance install state could not be loaded. Nothing was changed — retry before installing anything.',
+  'networkProxy.engine.restarting': 'Restarting the engine on every live instance…',
+  'networkProxy.engine.restartRequested':
+    'Restart requested. Each instance restarts its own engine.',
+  'networkProxy.engine.installStateUnknown': 'Install state unknown — the status query failed.',
+  'networkProxy.engine.expectedDigestLine':
+    'Expected SHA-256 {{sha}} — check it against the release before uploading.',
+  'networkProxy.engine.instancesUnknown':
+    'Instance status could not be loaded. Retry to see which instances are running.',
+  'networkProxy.engine.artifactCatalogUnknown':
+    'The pinned build could not be loaded, so the expected digest above may be out of date.',
+  'networkProxy.engine.uploadTooLarge':
+    'That file is {{size}}; the limit is {{limit}}. Nothing was uploaded.',
+  'networkProxy.nodes.selecting': 'Pinning the outlet to this node…',
+  'networkProxy.scopes.bulkSaving': 'Applying to every scope…',
+  'networkProxy.scopes.notes.providerDelisted':
+    'No longer in the AI catalogue — still routed until you turn it off.',
+  'networkProxy.subscriptions.refreshing': 'Fetching the latest node list…',
+  'networkProxy.subscriptions.refreshRequested': 'Updated.',
+  'networkProxy.subscriptions.saving': 'Saving…',
+  'networkProxy.units.minute': '{{count}} min',
+  'networkProxy.units.hour': '{{count}} h',
+  'networkProxy.units.day': '{{count}} d',
+  'networkProxy.outlet.staticServerPlaceholder': 'proxy.example.com',
+  'networkProxy.subscriptions.form.urlPlaceholder': 'https://example.com/subscribe?token=…',
+  'networkProxy.subscriptions.form.userAgentPlaceholder': 'clash.meta',
+  'networkProxy.subscriptions.form.payloadPlaceholder': 'vless://…\nss://…',
+  'networkProxy.conflict.desc':
+    '{{count}} change(s) were not written because another administrator saved a newer version. The values you set are still on screen and the latest configuration has been loaded — retry to apply them.',
+  'networkProxy.conflict.field':
+    'Not saved — another administrator saved first. Your value is still here.',
+  'networkProxy.errors.localFailed':
+    'The setting was saved, but this instance could not carry it out. Retry, or check the engine logs.',
+  'networkProxy.conflict.reloadFailed':
+    'Not saved, and the latest configuration could not be loaded either. Your value is still here — retry once the connection is back.',
+  'networkProxy.badges.stale': 'Last known state',
+  'networkProxy.banners.statusStale': 'Showing the last known status — refresh failed',
+  'networkProxy.banners.statusStaleDesc':
+    'Engine, outlet and instance information could not be refreshed, so what you see below may be out of date. Your configuration is unchanged.',
+  'networkProxy.banners.artifactsStale': 'Showing the last known install state — refresh failed',
+  'networkProxy.banners.artifactsStaleDesc':
+    'The pinned build and per-instance install state could not be refreshed. Retry before installing anything.',
+  'networkProxy.scopes.bulkUnavailable': 'unavailable until the provider list loads successfully',
 };

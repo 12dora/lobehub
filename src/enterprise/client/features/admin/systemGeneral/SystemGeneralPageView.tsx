@@ -7,7 +7,6 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { AdminLoadingSurface } from '@/enterprise/client/features/admin/pages/AdminStateSurfaces';
-import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/AdminPageTemplate';
 import type {
   AdminSystemInfraSettings,
   AdminSystemTestDependencyResult,
@@ -74,10 +73,7 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
         : t(value ? 'systemGeneral.values.yes' : 'systemGeneral.values.no');
 
     return (
-      <AdminPageTemplate
-        description={t('systemGeneral.description')}
-        title={t('systemGeneral.title')}
-      >
+      <>
         {error && !data ? (
           <Alert
             showIcon
@@ -196,7 +192,7 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
             />
           </div>
         ) : null}
-      </AdminPageTemplate>
+      </>
     );
   },
 );
