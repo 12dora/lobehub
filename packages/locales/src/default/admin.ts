@@ -595,17 +595,9 @@ export default {
   'aiConnectorSettings.actions.published': 'Connector listed for all users',
   'aiConnectorSettings.actions.republish': 'Apply changes',
   'aiConnectorSettings.actions.test': 'Test connection',
-  'page.aiConnectors.desc':
-    'Manage the connectors and tool permissions available to every member. Changes apply immediately.',
-  'page.aiSkills.desc':
-    'Install and configure skills for everyone on this platform. Changes apply immediately.',
   'aiConnectorSettings.actions.testFail': 'Connection test failed',
   'aiConnectorSettings.actions.testOk': 'Connection OK',
   'aiConnectorSettings.detail.noDescription': 'No description',
-  'page.securityAuth.desc':
-    'Configure how members sign in and which accounts are allowed to register.',
-  'page.unifiedManagement.desc':
-    'Decide which settings members can change themselves, and which resources the platform manages centrally.',
   'aiConnectorSettings.detail.notFound': 'Connector not found',
   'aiConnectorSettings.detail.publishedRevision': 'Published revision',
   'aiConnectorSettings.detail.tools': 'Tools',
@@ -631,7 +623,6 @@ export default {
   'nav.skills': 'Skills',
   'nav.skillDetail': 'Skill detail',
   'nav.system': 'System',
-  'primitives.datePicker.placeholder': 'Select date',
   'nav.systemGeneral': 'General settings',
   'nav.systemStatus': 'Status monitoring',
   'nav.unifiedManagement': 'Unified management',
@@ -706,9 +697,17 @@ export default {
   'overview.usage.emptyTitle': 'No token usage in this range',
   'overview.usage.title': 'Token usage · {{scope}}',
   'overview.usageTrend.series': 'Tokens',
+  'page.aiConnectors.desc':
+    'Manage the connectors and tool permissions available to every member. Changes apply immediately.',
+  'page.aiSkills.desc':
+    'Install and configure skills for everyone on this platform. Changes apply immediately.',
   'page.backHome': 'Back to app',
   'page.forbidden.desc': 'You do not have permission to open this page.',
   'page.forbidden.title': 'Forbidden',
+  'page.securityAuth.desc':
+    'Configure how members sign in and which accounts are allowed to register.',
+  'page.unifiedManagement.desc':
+    'Decide which settings members can change themselves, and which resources the platform manages centrally.',
   'primitives.columnFilter.apply': 'Apply',
   'primitives.columnFilter.placeholder': 'Search',
   'primitives.columnFilter.reset': 'Reset',
@@ -726,6 +725,7 @@ export default {
   'primitives.dataTable.prevPage': 'Previous page',
   'primitives.dataTable.retry': 'Retry',
   'primitives.dataTable.showTotal': '{{total}} items',
+  'primitives.datePicker.placeholder': 'Select date',
   'primitives.filterBar.clear': 'Clear filters',
   'primitives.filterBar.searchPlaceholder': 'Search…',
   'primitives.revision.conflict': 'This item was modified by someone else. Refresh and try again.',
@@ -1823,8 +1823,6 @@ export default {
   'enterprise.error.PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED':
     'This Connector transport is not supported.',
   'identityProviders.actions.create': 'New',
-  'identityProviders.dingtalk.allowedCorps.nameUnavailable':
-    'Could not fetch the organization name from DingTalk; you can enter it in the list.',
   'identityProviders.actions.createNeedsUpdate':
     'Creating a sign-in method also requires permission to update it.',
   'identityProviders.actions.delete': 'Delete',
@@ -1909,6 +1907,8 @@ export default {
   'identityProviders.dingtalk.allowedCorps.unnamed': 'Organization name unavailable',
   'identityProviders.dingtalk.allowedCorps.nameNeedsScope':
     'Grant the {{scope}} permission (企业信息读权限) to the DingTalk app to show organization names automatically; the id was added anyway.',
+  'identityProviders.dingtalk.allowedCorps.nameUnavailable':
+    'Could not fetch the organization name from DingTalk; you can enter it in the list.',
   'identityProviders.dingtalk.appKey': 'Client ID (AppKey)',
   'identityProviders.dingtalk.appSecret': 'Client Secret (AppSecret)',
   'identityProviders.dingtalk.callbackNotice':
@@ -2020,7 +2020,6 @@ export default {
   'identityProviders.setup.flag': 'enable the Database OIDC feature',
   'identityProviders.setup.masterKey': 'platform secret master key for encrypting client secrets',
   'identityProviders.setup.masterKeyHint': 'Generate with',
-  'identityProviders.test.windowClosed': 'The login window was closed before sign-in completed.',
   'identityProviders.setup.restart': 'Restart the server after changing these values.',
   'identityProviders.setup.title': 'Enable identity providers',
   'identityProviders.templates.authentik.description':
@@ -2114,6 +2113,7 @@ export default {
   'identityProviders.test.timeout':
     'The test timed out. Close the old popup and start a new attempt.',
   'identityProviders.test.title': 'Test identity provider login',
+  'identityProviders.test.windowClosed': 'The login window was closed before sign-in completed.',
   'identityProviders.title': 'Identity providers',
   'identityProviders.unsaved': 'Unsaved local changes',
   'identityProviders.unsaved.description':
@@ -2726,20 +2726,6 @@ export default {
   'audit.logs.action.content_moderation.settings.update': 'Update content moderation settings',
   'audit.logs.action.content_moderation.user.auto_ban': 'Auto-ban user for content moderation',
   'audit.logs.action.managedResource.legacyMutation': 'Managed resource change',
-  'audit.logs.action.system.email.send': 'Send platform email',
-  'audit.logs.action.platform.managed_policy.publish': 'Publish managed policy',
-  'audit.logs.action.platform.provider.publish': 'Publish provider',
-  'audit.logs.action.platform.roles.replace': 'Replace roles',
-  'audit.logs.action.platform.settings.publish': 'Publish settings',
-  'audit.logs.action.platform.skill.publish': 'Publish skill',
-  'audit.logs.action.user.connectors.disconnect': 'Disconnect connector',
-  'audit.logs.action.user.connectors.oauthCallback': 'Complete connector OAuth callback',
-  'audit.logs.targetType.agent': 'Agent',
-  'audit.logs.targetType.agent_dependency_validation': 'Agent dependency validation',
-  'audit.logs.targetType.audit_event': 'Audit entry',
-  'audit.logs.action.system.infra.mail.update': 'Update mail service',
-  'audit.logs.action.system.infra.object_storage.update': 'Update object storage',
-  'audit.logs.targetType.audit_export': 'Audit export',
   'audit.logs.action.network_proxy.engine.install': 'Install network proxy engine',
   'audit.logs.action.network_proxy.engine.restart': 'Restart network proxy engine',
   'audit.logs.action.network_proxy.geodata.install': 'Install network proxy geodata',
@@ -2750,6 +2736,20 @@ export default {
   'audit.logs.action.network_proxy.subscription.delete': 'Delete network proxy subscription',
   'audit.logs.action.network_proxy.subscription.refresh': 'Refresh network proxy subscription',
   'audit.logs.action.network_proxy.subscription.update': 'Update network proxy subscription',
+  'audit.logs.action.system.email.send': 'Send platform email',
+  'audit.logs.action.system.infra.mail.update': 'Update mail service',
+  'audit.logs.action.system.infra.object_storage.update': 'Update object storage',
+  'audit.logs.action.platform.managed_policy.publish': 'Publish managed policy',
+  'audit.logs.action.platform.provider.publish': 'Publish provider',
+  'audit.logs.action.platform.roles.replace': 'Replace roles',
+  'audit.logs.action.platform.settings.publish': 'Publish settings',
+  'audit.logs.action.platform.skill.publish': 'Publish skill',
+  'audit.logs.action.user.connectors.disconnect': 'Disconnect connector',
+  'audit.logs.action.user.connectors.oauthCallback': 'Complete connector OAuth callback',
+  'audit.logs.targetType.agent': 'Agent',
+  'audit.logs.targetType.agent_dependency_validation': 'Agent dependency validation',
+  'audit.logs.targetType.audit_event': 'Audit entry',
+  'audit.logs.targetType.audit_export': 'Audit export',
   'audit.logs.targetType.audit_policy': 'Audit settings',
   'audit.logs.targetType.audit_retention_run': 'Retention run',
   'audit.logs.targetType.authSettings': 'Sign-in settings',
@@ -2767,6 +2767,9 @@ export default {
   'audit.logs.targetType.legal_hold': 'Data hold',
   'audit.logs.targetType.managed_policy': 'Managed policy',
   'audit.logs.targetType.model': 'Model',
+  'audit.logs.targetType.network_proxy_engine': 'Network proxy engine',
+  'audit.logs.targetType.network_proxy_settings': 'Network proxy settings',
+  'audit.logs.targetType.network_proxy_subscription': 'Network proxy subscription',
   'audit.logs.targetType.permission': 'Permission',
   'audit.logs.targetType.platform_global_credential': 'Platform global credential',
   'audit.logs.targetType.platform_global_credential_upload': 'Platform global credential upload',
@@ -2782,9 +2785,6 @@ export default {
   'audit.logs.targetType.user': 'User',
   'audit.logs.targetType.user_list': 'User list',
   'audit.logs.empty': 'No operation events in this window.',
-  'audit.logs.targetType.network_proxy_engine': 'Network proxy engine',
-  'audit.logs.targetType.network_proxy_settings': 'Network proxy settings',
-  'audit.logs.targetType.network_proxy_subscription': 'Network proxy subscription',
   'audit.logs.loadError': 'Could not load operation logs.',
   'audit.logs.detail.title': 'Event detail',
   'audit.logs.detail.createExport': 'Export with these filters',
@@ -3285,7 +3285,7 @@ export default {
   'nav.contentModeration': 'Content moderation',
   'contentModeration.page.title': 'Content moderation',
   'contentModeration.page.desc':
-    'Screen prompts before they reach a model: keyword rules, a cached decision, then a classifier — then allow, log, downgrade or block.',
+    'Screens requests before they reach the model: keyword rules, then the decision cache, then the classifier — and allows, logs, downgrades, or blocks.',
   'contentModeration.tabs.overview': 'Overview',
   'contentModeration.tabs.records': 'Violations',
   'contentModeration.tabs.settings': 'Settings',
@@ -3296,9 +3296,9 @@ export default {
   'contentModeration.mode.enforce': 'Enforce',
   'contentModeration.mode.offDesc': 'No requests are screened or recorded.',
   'contentModeration.mode.observeDesc':
-    'Every prompt is judged and recorded, but users are never blocked or downgraded.',
+    'Requests are scored and recorded, but never blocked or downgraded; users notice nothing.',
   'contentModeration.mode.enforceDesc':
-    'Decisions take effect: matching prompts are downgraded or blocked.',
+    'Verdicts take effect: flagged requests are downgraded or blocked.',
   'contentModeration.action.allow': 'Allowed',
   'contentModeration.action.log': 'Logged',
   'contentModeration.action.downgrade': 'Downgraded',
@@ -3337,13 +3337,13 @@ export default {
   'contentModeration.warning.client_fetch_bypass.title':
     'Some published providers call the model straight from the browser',
   'contentModeration.warning.client_fetch_bypass.desc':
-    'Requests that never reach the server cannot be screened. Turn off browser-side requests for those providers if the numbers below must be complete.',
+    'Requests sent directly from the browser bypass the server and cannot be screened. Turn off browser direct-connect for those providers for complete statistics.',
   'contentModeration.warning.downgrade_not_configured.title': 'No downgrade model configured',
   'contentModeration.warning.downgrade_not_configured.desc':
-    'Categories set to "downgrade" fall back to blocking until a target model is chosen.',
+    'Until a downgrade model is chosen, categories set to “downgrade” are blocked instead.',
   'contentModeration.warning.classifier_not_configured.title': 'No classifier configured',
   'contentModeration.warning.classifier_not_configured.desc':
-    'Only keyword rules run. Category scores stay empty until a classifier is set up.',
+    'Only keyword rules are active; category scores appear once a classifier is configured.',
   'contentModeration.overview.modeTitle': 'Mode',
   'contentModeration.overview.modeField': 'What happens now',
   'contentModeration.overview.openSettings': 'Open settings',
@@ -3367,7 +3367,7 @@ export default {
   'contentModeration.overview.clearCache': 'Clear cache',
   'contentModeration.overview.clearCacheTitle': 'Clear the decision cache?',
   'contentModeration.overview.clearCacheConfirm':
-    'Cached judgements are dropped, so the next matching prompt is screened again. Nothing else changes.',
+    'Cached verdicts are discarded; identical content is scored again next time.',
   'contentModeration.overview.downgradeTitle': 'Downgrade model',
   'contentModeration.overview.downgradeTarget': 'Target',
   'contentModeration.overview.downgradeMissing': 'Not set — downgrades are blocked',
@@ -3458,10 +3458,10 @@ export default {
   'contentModeration.records.unbanUser': 'Unban user',
   'contentModeration.records.deleteRecord': 'Delete record',
   'contentModeration.settings.save': 'Save',
+  'contentModeration.settings.helpFor': 'Help for {{field}}',
   'contentModeration.settings.saved': 'Saved · revision {{revision}}',
   'contentModeration.settings.dirty': 'Unsaved changes',
   'contentModeration.settings.readOnly': 'You can read these settings but not change them.',
-  'contentModeration.settings.helpFor': 'Help for {{field}}',
   'contentModeration.settings.loadFailed': 'Could not load the moderation settings.',
   'contentModeration.settings.reload': 'Reload latest',
   'contentModeration.settings.conflictTitle': 'Someone else saved first',
@@ -3469,7 +3469,7 @@ export default {
     'Your changes were not written. Reload the latest configuration and reapply them.',
   'contentModeration.settings.enforceConfirmTitle': 'Switch to enforce?',
   'contentModeration.settings.enforceConfirm':
-    'From now on matching prompts are really downgraded or blocked for users. Check the observe-mode numbers first.',
+    'After switching, flagged requests will really be downgraded or blocked. Review the observe-mode data first.',
   'contentModeration.settings.enforceConfirmOk': 'Switch to enforce',
   'contentModeration.settings.unsaved.title': 'Leave without saving?',
   'contentModeration.settings.unsaved.desc': 'Your moderation settings changes will be lost.',
@@ -3479,35 +3479,35 @@ export default {
   'contentModeration.settings.modelPlaceholder': 'Model',
   'contentModeration.settings.basic.title': 'Basics',
   'contentModeration.settings.basic.desc':
-    'What runs, what users see when a prompt is stopped, and where downgrades go.',
+    'Controls whether screening runs, what users see when a request is stopped, and the downgrade target model.',
   'contentModeration.settings.basic.mode': 'Mode',
   'contentModeration.settings.basic.requestKinds': 'Request types',
   'contentModeration.settings.basic.requestKindsHint':
-    'Downgrade is not possible for image and video requests — those are blocked instead.',
+    'Image and video requests cannot be downgraded; hits are blocked.',
   'contentModeration.settings.basic.blockMessage': 'Block message',
   'contentModeration.settings.basic.blockMessageHint':
-    'Shown in place of the assistant reply when a prompt is blocked.',
+    'Shown to the user in place of the reply when a request is blocked.',
   'contentModeration.settings.basic.downgradeMessage': 'Downgrade notice',
   'contentModeration.settings.basic.downgradeMessageHint':
-    'Shown above the reply after a downgrade. Use {{model}} for the model that answered — it travels on a response header, so keep it short.',
+    'Shown above the reply after a downgrade; {{model}} stands for the model that actually answered.',
   'contentModeration.settings.basic.showCategory': 'Show the category to users',
   'contentModeration.settings.basic.showCategoryHint':
-    'Adds the matched category name under the block message.',
+    'Show the matched category name under the block message.',
   'contentModeration.settings.basic.downgradeModel': 'Downgrade model',
   'contentModeration.settings.basic.downgradeModelHint':
-    'Cross-provider downgrades are supported; the model must be published on the platform.',
+    'Any published platform model, including one from another provider.',
   'contentModeration.settings.basic.downgradeMissingHint':
-    'Without a target model, every downgrade becomes a block.',
+    'Without a target model, downgrades are handled as blocks.',
   'contentModeration.settings.scope.title': 'Scope',
   'contentModeration.settings.scope.desc':
     'Defines who and what gets screened. Whitelisted users are never screened or auto-banned.',
   'contentModeration.settings.scope.exemptRoles': 'Whitelisted roles',
   'contentModeration.settings.scope.exemptRolesHint':
-    'Members of these roles bypass moderation entirely.',
+    'Members of these roles bypass content screening.',
   'contentModeration.settings.scope.exemptRolesPlaceholder': 'Pick roles',
   'contentModeration.settings.scope.exemptUsers': 'Whitelisted users',
   'contentModeration.settings.scope.exemptUsersHint':
-    'Individual exemptions on top of the roles above.',
+    'Individual users allowed through in addition to the roles above.',
   'contentModeration.settings.scope.userSearchPlaceholder': 'Search by email, username or name',
   'contentModeration.settings.scope.addUser': 'Add',
   'contentModeration.settings.scope.noExemptUsers': 'No whitelisted users yet.',
@@ -3517,29 +3517,29 @@ export default {
     'You cannot search users; paste a user ID instead.',
   'contentModeration.settings.scope.modelFilter': 'Model scope',
   'contentModeration.settings.scope.modelFilterHint':
-    'Limit moderation to a set of models, or exclude some from it.',
+    'Limit screening to some models, or exclude some.',
   'contentModeration.settings.scope.modelFilterType.all': 'All models',
   'contentModeration.settings.scope.modelFilterType.include': 'Only these models',
   'contentModeration.settings.scope.modelFilterType.exclude': 'All except these',
   'contentModeration.settings.scope.modelsPlaceholder': 'Pick models',
   'contentModeration.settings.scope.sampleRate': 'Sample rate (%)',
   'contentModeration.settings.scope.sampleRateHint':
-    'Deterministic by prompt hash — the same text is always sampled the same way.',
+    'Screens this share of requests; identical content is always sampled the same way.',
   'contentModeration.settings.classifier.title': 'Classifier',
   'contentModeration.settings.classifier.desc':
-    'What scores a prompt after keyword rules and the decision cache miss.',
+    'Scores a request when neither the keyword rules nor the decision cache matched.',
   'contentModeration.settings.classifier.kind': 'Type',
   'contentModeration.settings.classifier.judgeModel': 'Judge model',
   'contentModeration.settings.classifier.judgeModelHint': 'Called with platform credentials.',
   'contentModeration.settings.classifier.extraGuidance': 'Extra guidance',
   'contentModeration.settings.classifier.extraGuidanceHint':
-    'Appended to the built-in judging prompt — use it for house rules.',
+    'Your organization’s judging criteria, appended to the built-in judge prompt.',
   'contentModeration.settings.classifier.baseUrl': 'Endpoint',
   'contentModeration.settings.classifier.baseUrlHint': '/v1/moderations is appended automatically.',
   'contentModeration.settings.classifier.apiModel': 'Moderation model',
   'contentModeration.settings.classifier.apiKeys': 'API keys',
   'contentModeration.settings.classifier.apiKeysHint':
-    'Stored encrypted and never shown again. Keys are rotated round-robin.',
+    'Stored encrypted and never shown again; multiple keys are used in rotation.',
   'contentModeration.settings.classifier.noStoredKeys': 'No key stored yet.',
   'contentModeration.settings.classifier.newKeyPlaceholder': 'New key',
   'contentModeration.settings.classifier.addKey': 'Add key',
@@ -3548,20 +3548,20 @@ export default {
   'contentModeration.settings.classifier.retry': 'Retries',
   'contentModeration.settings.classifier.onError': 'When the classifier is unavailable',
   'contentModeration.settings.classifier.onErrorHint':
-    'Allowing keeps chat working during an outage; blocking is stricter but takes chat down with the classifier.',
+    'Allow keeps conversations available; Block is stricter but stops conversations while the classifier is down.',
   'contentModeration.settings.classifier.onErrorValue.allow': 'Allow and record the error',
   'contentModeration.settings.classifier.onErrorValue.block': 'Block the request',
   'contentModeration.settings.classifier.test': 'Run test',
   'contentModeration.settings.classifier.testPlaceholder':
-    'Paste a sample prompt to see how the current form would judge it',
+    'Enter sample text to see how the current settings would handle it',
   'contentModeration.settings.classifier.testHint':
-    'Uses the settings on screen, saved or not. Nothing is written.',
+    'Runs with the settings currently in the form; nothing is saved.',
   'contentModeration.settings.classifier.testError': 'The classifier reported: {{error}}',
   'contentModeration.settings.classifier.wouldBe': 'Would {{action}}',
   'contentModeration.settings.classifier.matchedRule': 'Matched keyword rule: {{pattern}}',
   'contentModeration.settings.categories.title': 'Categories and actions',
   'contentModeration.settings.categories.desc':
-    'When several categories match, the strictest action wins.',
+    'A category is hit when its score reaches the threshold; when several hit, the strictest action wins.',
   'contentModeration.settings.categories.restoreDefaults': 'Restore defaults',
   'contentModeration.settings.categories.threshold': 'Threshold',
   'contentModeration.settings.keywords.title': 'Keyword rules',
@@ -3586,22 +3586,22 @@ export default {
   'contentModeration.settings.keywords.remove': 'Remove',
   'contentModeration.settings.keywords.emptyTitle': 'No keyword rules',
   'contentModeration.settings.keywords.emptyDesc':
-    'Add rules for the terms you always want caught, regardless of the classifier.',
+    'Add the words or patterns that must always be caught.',
   'contentModeration.settings.cache.title': 'Decision cache',
   'contentModeration.settings.cache.desc':
-    'Repeats of an already-judged prompt reuse the stored categories and are re-evaluated against the current policy.',
+    'Reuses the stored verdict for identical content and applies the current policy to it.',
   'contentModeration.settings.cache.enabled': 'Enabled',
   'contentModeration.settings.cache.enabledHint': 'Only hits are cached.',
   'contentModeration.settings.cache.ttl': 'TTL (hours)',
   'contentModeration.settings.cache.ttlHint': '0 disables caching.',
   'contentModeration.settings.autoBan.title': 'Auto ban',
   'contentModeration.settings.autoBan.desc':
-    'Counts downgraded and blocked requests per user since their last unban.',
+    'Counts each user’s downgrades and blocks within the window and bans automatically at the threshold.',
   'contentModeration.settings.autoBan.enabled': 'Enabled',
   'contentModeration.settings.autoBan.enabledHint': 'Whitelisted roles are never auto-banned.',
   'contentModeration.settings.autoBan.confirmTitle': 'Turn on auto ban?',
   'contentModeration.settings.autoBan.confirm':
-    'Users who cross the threshold are banned without review. They cannot sign in until an admin unbans them.',
+    'Users who reach the threshold are banned automatically and must be unbanned by an administrator.',
   'contentModeration.settings.autoBan.confirmOk': 'Turn on',
   'contentModeration.settings.autoBan.threshold': 'Violations',
   'contentModeration.settings.autoBan.window': 'Window (days)',
@@ -3613,10 +3613,10 @@ export default {
   'contentModeration.settings.records.desc': 'What screening records keep, and for how long.',
   'contentModeration.settings.records.recordNonHits': 'Record allowed requests',
   'contentModeration.settings.records.recordNonHitsHint':
-    'Every screened prompt gets a row — useful for tuning, heavy on disk.',
+    'Records every screened request, including allowed ones — useful for tuning, but storage-heavy.',
   'contentModeration.settings.records.storeFullPrompt': 'Store the full prompt',
   'contentModeration.settings.records.storeFullPromptHint':
-    'Keeps the original text (still redacted for secrets). Reading it requires a confirmation and is logged.',
+    'Keeps the original text (secrets are still redacted). Viewing it requires confirmation and is written to the operation log.',
   'contentModeration.settings.records.hitRetention': 'Keep violations (days)',
   'contentModeration.settings.records.nonHitRetention': 'Keep allowed records (days)',
   'contentModeration.settings.records.nonHitRetentionHint': 'Capped at {{max}} days.',
@@ -3673,7 +3673,7 @@ export default {
   'contentModeration.settings.keywords.importFull':
     'The rule limit of {{max}} is already reached — remove some rules first.',
   'contentModeration.settings.classifier.endpointChanged':
-    'The endpoint changed, so the stored keys have to be entered again — they will be removed on save.',
+    'The endpoint changed; stored keys will be removed on save — enter them again.',
   'contentModeration.settings.classifier.keyWillBeRemoved': '{{masked}} (will be removed)',
   'contentModeration.settings.classifier.testStale':
     'The text or the settings changed — this result is out of date.',
@@ -3702,14 +3702,14 @@ export default {
   'contentModeration.errors.downgradeMessageTooLong':
     'The downgrade notice must be at most {{max}} characters.',
   'contentModeration.errors.downgradeMessageTooHeavy':
-    'Too long once encoded for the response header ({{max}} bytes max) — shorten it.',
+    'Exceeds {{max}} bytes once encoded; please shorten it.',
   'contentModeration.settings.keywordsValidating': 'Checking keyword rules…',
   'contentModeration.errors.field.keywords': 'A keyword rule was rejected.',
   'contentModeration.errors.reason.regexUnsafe':
-    'Regex rule #{{n}} risks catastrophic backtracking — simplify it.',
+    'Regex #{{n}} may cause performance problems; simplify it.',
   'contentModeration.errors.reason.regexSlow': 'Regex rule #{{n}} runs too slowly — simplify it.',
   'contentModeration.errors.reason.tooManyRegexChanges':
-    'At most 100 new or edited regex rules can be checked per save (5 s total) — save them in batches.',
+    'At most 100 new or changed regexes can be validated per save; save in batches.',
   // --- 网络代理 (network proxy) — 系统 → 通用设置 → 网络代理 ---
   'networkProxy.loadFailed': 'Could not load the network proxy configuration',
   'networkProxy.loadFailedDesc':
