@@ -15,7 +15,9 @@ const mocks = vi.hoisted(() => ({
   areaCharts: [] as { categories: string[]; data: Record<string, unknown>[] }[],
   donuts: [] as {
     data: { category: string; count: number; name: string }[];
-    onValueChange?: (event: { categoryClicked: string; eventType: 'slice' } | null) => void;
+    onValueChange?: (
+      event: { category: string; count: number; eventType: 'slice'; name: string } | null,
+    ) => void;
   }[],
 }));
 
@@ -31,7 +33,9 @@ vi.mock('@lobehub/charts', () => ({
   },
   DonutChart: (props: {
     data: { category: string; count: number; name: string }[];
-    onValueChange?: (event: { categoryClicked: string; eventType: 'slice' } | null) => void;
+    onValueChange?: (
+      event: { category: string; count: number; eventType: 'slice'; name: string } | null,
+    ) => void;
   }) => {
     mocks.donuts.push(props);
     return (
@@ -40,9 +44,7 @@ vi.mock('@lobehub/charts', () => ({
           <button
             key={slice.category}
             type="button"
-            onClick={() =>
-              props.onValueChange?.({ categoryClicked: slice.name, eventType: 'slice' })
-            }
+            onClick={() => props.onValueChange?.({ ...slice, eventType: 'slice' })}
           >
             slice:{slice.name}
           </button>
@@ -184,6 +186,9 @@ describe('ModerationCharts', () => {
     expect(mocks.donuts[0].data.map((row) => row.category)).toEqual(['sexual']);
     fireEvent.click(screen.getByText('slice:moderation.category.sexual'));
     expect(onSelectCategory).toHaveBeenCalledWith('sexual');
+    // Deselecting a slice emits null and must not navigate.
+    mocks.donuts.at(-1)?.onValueChange?.(null);
+    expect(onSelectCategory).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByText('4 · 100%'));
     expect(onSelectCategory).toHaveBeenCalledTimes(2);
   });

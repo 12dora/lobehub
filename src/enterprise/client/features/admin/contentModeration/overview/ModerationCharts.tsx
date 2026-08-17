@@ -152,7 +152,12 @@ const ModerationCharts = memo<ModerationChartsProps>(
                 style={{ height: 200 }}
                 variant="donut"
                 onValueChange={(event) => {
-                  const clicked = categoryRows.find((row) => row.name === event?.categoryClicked);
+                  // DonutChart hands back the clicked row's own payload (+ eventType), or null on
+                  // deselect — so the category id rides along without a name lookup.
+                  const category = typeof event?.category === 'string' ? event.category : undefined;
+                  const clicked = category
+                    ? categoryRows.find((row) => row.category === category)
+                    : undefined;
                   setActiveCategory(clicked?.category);
                   if (clicked) onSelectCategory(clicked.category);
                 }}
