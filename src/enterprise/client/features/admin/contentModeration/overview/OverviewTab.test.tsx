@@ -99,7 +99,15 @@ const overview = (patch: Partial<ContentModerationOverview> = {}): ContentModera
   }) as ContentModerationOverview;
 
 const renderTab = () =>
-  render(<OverviewTab canManage enabled onOpenRecordsForUser={vi.fn()} onOpenSettings={vi.fn()} />);
+  render(
+    <OverviewTab
+      canManage
+      enabled
+      onOpenRecordsForCategory={vi.fn()}
+      onOpenRecordsForUser={vi.fn()}
+      onOpenSettings={vi.fn()}
+    />,
+  );
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -140,7 +148,13 @@ describe('OverviewTab', () => {
     mocks.overview.isLoading = false;
     mocks.overview.error = new Error('boom');
     rerender(
-      <OverviewTab canManage enabled onOpenRecordsForUser={vi.fn()} onOpenSettings={vi.fn()} />,
+      <OverviewTab
+        canManage
+        enabled
+        onOpenRecordsForCategory={vi.fn()}
+        onOpenRecordsForUser={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
     );
     expect(screen.getByText('contentModeration.overview.loadFailed')).toBeTruthy();
   });
@@ -152,7 +166,13 @@ describe('OverviewTab', () => {
     mocks.overview.data = overview({ mode: 'observe' });
     const { rerender } = renderTab();
     rerender(
-      <OverviewTab canManage enabled onOpenRecordsForUser={vi.fn()} onOpenSettings={vi.fn()} />,
+      <OverviewTab
+        canManage
+        enabled
+        onOpenRecordsForCategory={vi.fn()}
+        onOpenRecordsForUser={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
     );
     expect(screen.getAllByTestId('kpi-row')[1].dataset.mode).toBe('observe');
   });

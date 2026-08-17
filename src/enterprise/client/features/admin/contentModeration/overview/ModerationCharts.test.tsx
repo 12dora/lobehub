@@ -219,7 +219,13 @@ describe('ModerationCharts', () => {
 
   it('reports empty while there is no payload at all', () => {
     render(
-      <ModerationCharts error={false} loading={false} onRetry={vi.fn()} onSelectUser={vi.fn()} />,
+      <ModerationCharts
+        error={false}
+        loading={false}
+        onRetry={vi.fn()}
+        onSelectCategory={vi.fn()}
+        onSelectUser={vi.fn()}
+      />,
     );
     expect(screen.getByTestId('card-contentModeration.charts.categories').dataset.empty).toBe(
       'true',
