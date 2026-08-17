@@ -107,6 +107,27 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/app/spa-auth/[locale]/[[...path]]/seoMeta.ts',
   'src/app/manifest.ts',
   'src/app/[variants]/metadata.ts',
+  // slim (deployment slimming): tRPC root routers mount enterprise lazyRouter/moduleRouter one line per key
+  'apps/server/src/routers/async/index.ts',
+  'apps/server/src/routers/mobile/index.ts',
+  'apps/server/src/routers/tools/index.ts',
+  // slim: FEATURE_FLAGS derived from the module view (one-line wrapper)
+  'apps/server/src/featureFlags/index.ts',
+  // slim: search providers loaded on demand through the enterprise lazy impl map
+  'apps/server/src/services/search/impls/index.ts',
+  // slim: server tool-runtime registry gates a disabled module before importing its runtime
+  'apps/server/src/services/toolExecution/serverRuntimes/index.ts',
+  // slim: workflows routes answer PLATFORM_MODULE_DISABLED when the workflows module is off (one-line gate each)
+  'src/app/(backend)/api/workflows/agent-eval-run/execute-test-case/route.ts',
+  'src/app/(backend)/api/workflows/agent-eval-run/finalize-run/route.ts',
+  'src/app/(backend)/api/workflows/agent-eval-run/on-thread-complete/route.ts',
+  'src/app/(backend)/api/workflows/agent-eval-run/on-trajectory-complete/route.ts',
+  'src/app/(backend)/api/workflows/agent-eval-run/paginate-test-cases/route.ts',
+  'src/app/(backend)/api/workflows/agent-eval-run/resume-agent-trajectory/route.ts',
+  'src/app/(backend)/api/workflows/agent-eval-run/resume-thread-trajectory/route.ts',
+  'src/app/(backend)/api/workflows/agent-eval-run/run-agent-trajectory/route.ts',
+  'src/app/(backend)/api/workflows/agent-eval-run/run-benchmark/route.ts',
+  'src/app/(backend)/api/workflows/agent-eval-run/run-thread-trajectory/route.ts',
   // script entry only
   'package.json',
 ] as const;
@@ -732,6 +753,20 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
     owner: 'infra-settings',
     reason: 'Public URL / preview-expiry building uses the effective object-storage snapshot',
+  },
+  {
+    file: 'apps/server/src/services/generation/video.ts',
+    importSpecifier: '@/server/enterprise/guards/ffmpegStatic',
+    owner: 'slim',
+    reason:
+      'ffmpeg-static resolved lazily behind the imageGen module gate (one-line await import swap)',
+  },
+  {
+    file: 'apps/server/src/modules/AgentRuntime/adapters/serverCallLlmContextBuilder.ts',
+    importSpecifier: '@/server/enterprise/services/user/userInfoReadMemo',
+    owner: 'slim',
+    reason:
+      'Per-user short-TTL memo replacing one SELECT per LLM step (one-line await import swap)',
   },
 ] as const satisfies readonly EnterpriseImportAllowance[];
 
@@ -1409,6 +1444,42 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
     owner: 'infra-settings',
     reason: 'Stubs the infra snapshot so Better Auth config tests do not open a DB on import',
+  },
+  {
+    file: 'apps/server/src/globalConfig/getServerGlobalConfig.test.ts',
+    importSpecifier: '@/server/enterprise/featureFlags',
+    owner: 'slim',
+    reason: 'vi.mock target for the module-derived feature flags in the global config tests',
+  },
+  {
+    file: 'apps/server/src/globalConfig/getServerGlobalConfig.test.ts',
+    importSpecifier: '@/server/enterprise/services/aiCatalog/runtimeBridge',
+    owner: 'slim',
+    reason: 'vi.mock target for the AI catalog bridge in the global config tests',
+  },
+  {
+    file: 'apps/server/src/globalConfig/getServerGlobalConfig.test.ts',
+    importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
+    owner: 'slim',
+    reason: 'vi.mock target for the infra settings snapshot in the global config tests',
+  },
+  {
+    file: 'apps/server/src/globalConfig/getServerGlobalConfig.test.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'slim',
+    reason: 'vi.mock target for the module settings snapshot in the global config tests',
+  },
+  {
+    file: 'apps/server/src/routers/lambda/__tests__/user.test.ts',
+    importSpecifier: '@/server/enterprise/services/user/getUserStateBundle',
+    owner: 'slim',
+    reason: 'vi.mock target for the one-roundtrip user state bundle',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/serverRuntimes/__tests__/registry.test.ts',
+    importSpecifier: '@/server/enterprise/guards/toolModuleGate',
+    owner: 'slim',
+    reason: 'vi.mock target proving the module gate runs before the runtime import',
   },
 ] as const satisfies readonly EnterpriseTestImportAllowance[];
 

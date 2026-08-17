@@ -319,7 +319,7 @@ export const updateModuleSettings = async (
 // evaluated more than once per process. A module-level slot set by instrumentation would be
 // invisible to the tRPC handlers (measured: `pendingRestart` always empty, gateway/start
 // answering as if bots were on). One process = one boot view.
-const BOOT_MODULES_GLOBAL_KEY = Symbol.for('lobehub.enterprise.bootModules');
+const BOOT_MODULES_GLOBAL_KEY = Symbol.for('enterprise.moduleSettings.bootModules');
 type BootModulesGlobal = { [BOOT_MODULES_GLOBAL_KEY]?: PlatformModuleStateMap | null };
 const bootGlobal = globalThis as unknown as BootModulesGlobal;
 
