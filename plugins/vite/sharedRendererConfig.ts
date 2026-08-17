@@ -132,6 +132,34 @@ function sharedManualChunks(id: string): string | undefined {
     if (locale) return `i18n-vendor-${locale}`;
   }
 
+  // ── Dead ends, measured 2026-08-18 (F4). Do not retry without new evidence. ──
+  //
+  // 1. Grouping anything on the entry's *static* closure does nothing. With
+  //    `strictExecutionOrder: true`, rolldown will not split a statically executed
+  //    module out of the shared chunk that already executes it, so the group only
+  //    renames the eager mega-chunk. A `@lobehub/icons` group even swallowed the
+  //    separate antd chunk (7.40 + 1.29 MB → one 9.81 MB chunk) with blocking
+  //    first-screen JS unchanged at 25.7 MB. Same mechanism as F2's `vendor-syntax`
+  //    duplication. Groups only pay off for code that is already dynamic-only
+  //    (`vendor-diff` / `vendor-three` / `vendor-charts`).
+  //
+  // 2. `@lobehub/icons`' 4.27 MB of provider/model marks (44.8 % of the 7.40 MB
+  //    eager `es-*` chunk, by sourcemap attribution) cannot be moved from the app.
+  //    Making every call site lazy — all 53 of them, a single dynamic boundary
+  //    module, plus a slim-barrel alias so `es/features/index.js` left the graph
+  //    entirely — got `features/providerConfig` down to *zero* static importers
+  //    outside the package and the eager chunk still came out byte-identical
+  //    (7,626,371 B across three consecutive builds; `AlephAlpha`, an icon reachable
+  //    only through the registry, stayed in it). Naming just those six modules as a
+  //    group instead hung `rendering chunks` for >9 min. This needs a rolldown
+  //    chunking fix or an upstream `@lobehub/icons` change, not an app change.
+  //
+  // 3. `elkjs` (16.1 %) + `beautiful-mermaid` (3.4 %) and `katex` (6.0 %) are pulled
+  //    by `@lobehub/ui`'s own `Markdown/components/CodeBlock.mjs` → `Mermaid` →
+  //    `hooks/useMermaid.mjs`. Marking both packages side-effect-free via a
+  //    `resolveId` plugin changed nothing (the module is needed eagerly for `THEMES`
+  //    and lazily for the renderer, so it stays in the eager chunk). Upstream item.
+  //
   // The diff viewer ships its own shiki copy with every bundled grammar and
   // theme. Pin it to a dedicated chunk so it can never be merged back into a
   // shared first-screen chunk (it was, and cost 7.9MB); the call sites load it

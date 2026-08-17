@@ -267,6 +267,11 @@ const deferredRendererModulePatterns = [
   '/node_modules/cytoscape/',
   '/node_modules/dagre/',
   '/node_modules/graphlib/',
+  // The calculator builtin-tool's symbolic math engines. They became dynamic chunks in
+  // `builtin-tool-calculator/src/executor` (they used to sit in the eager `chat-*` chunk); without
+  // this they would simply be preloaded instead, since `desktop-chat-launch` walks dynamic imports.
+  '/node_modules/mathjs/',
+  '/node_modules/nerdamer-prime/',
   '/node_modules/mermaid/',
   '/node_modules/pdfjs-dist/',
   '/node_modules/recharts/',

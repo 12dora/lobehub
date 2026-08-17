@@ -1,8 +1,6 @@
 import { BaseExecutor, type BuiltinToolResult, type IBuiltinToolExecutor } from '@lobechat/types';
 import { defBase } from '@thi.ng/base-n/base';
-import { all, create } from 'mathjs';
-// @ts-ignore - nerdamer doesn't have TypeScript definitions
-import nerdamer from 'nerdamer-prime/all';
+import type { MathJsInstance } from 'mathjs';
 
 import {
   type BaseParams,
@@ -19,8 +17,42 @@ import {
   type SortParams,
 } from '../types';
 
-// Create a mathjs instance with all functions
-const math = create(all);
+/**
+ * `mathjs` (numeric evaluation) and `nerdamer-prime/all` (symbolic algebra) are loaded on first use
+ * instead of at module scope.
+ *
+ * `src/store/tool/slices/builtin/executors/index.ts` registers this executor statically, and that
+ * registry is on the chat first-screen graph — measured 2026-08-18, the two libraries plus
+ * `decimal.js` were **half of the eager `chat-*` chunk (2.23MB → 1.12MB)**, downloaded by every
+ * visitor for a tool that only runs when the model actually calls it. Every public method is already
+ * `async`, so the only cost is one `await` before the first calculation.
+ *
+ * They are two independent single-flight loaders, not one: they build into two separate chunks
+ * (0.77MB / 0.47MB), the numeric and the symbolic APIs are disjoint, and `sort` / `base` need
+ * neither. Coupling them would download both for every operation and let one library's load failure
+ * break the other's API.
+ */
+let math!: MathJsInstance;
+let mathJsLoad: Promise<void> | undefined;
+
+const ensureMathJs = async () => {
+  mathJsLoad ??= import('mathjs').then((mathjs) => {
+    math = mathjs.create(mathjs.all);
+  });
+
+  return mathJsLoad;
+};
+
+let nerdamer!: any;
+let nerdamerLoad: Promise<void> | undefined;
+
+const ensureNerdamer = async () => {
+  nerdamerLoad ??= import('nerdamer-prime/all').then((nerdamerModule) => {
+    nerdamer = (nerdamerModule as any).default ?? nerdamerModule;
+  });
+
+  return nerdamerLoad;
+};
 
 /**
  * Calculator Tool Executor
@@ -50,6 +82,7 @@ class CalculatorExecutor
     } catch (error) {
       throw new Error(
         `Failed to evaluate expression: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        { cause: error },
       );
     }
   }
@@ -110,6 +143,8 @@ class CalculatorExecutor
    */
   calculate = async (params: CalculateParams): Promise<BuiltinToolResult> => {
     try {
+      await ensureMathJs();
+
       const result = this.evaluateMathExpression(params.expression);
 
       if (result === undefined) {
@@ -152,6 +187,8 @@ class CalculatorExecutor
    */
   evaluate = async (params: EvaluateParams): Promise<BuiltinToolResult> => {
     try {
+      await ensureMathJs();
+
       const variables = params.variables || {};
       const result = this.evaluateMathExpression(params.expression, variables);
 
@@ -330,6 +367,8 @@ class CalculatorExecutor
    */
   solve = async (params: SolveParams): Promise<BuiltinToolResult> => {
     try {
+      await ensureNerdamer();
+
       const { equation, variable } = params;
 
       let resultText: string;
@@ -424,6 +463,8 @@ class CalculatorExecutor
    */
   differentiate = async (params: DifferentiateParams): Promise<BuiltinToolResult> => {
     try {
+      await ensureNerdamer();
+
       const { expression, variable } = params;
       const result = nerdamer(`diff(${expression}, ${variable})`);
       const resultText = result.toString();
@@ -455,6 +496,8 @@ class CalculatorExecutor
    */
   integrate = async (params: IntegrateParams): Promise<BuiltinToolResult> => {
     try {
+      await ensureNerdamer();
+
       const { expression, variable } = params;
       const result = nerdamer(`integrate(${expression}, ${variable})`);
       const resultText = result.toString();
@@ -486,6 +529,8 @@ class CalculatorExecutor
    */
   defintegrate = async (params: DefintegrateParams): Promise<BuiltinToolResult> => {
     try {
+      await ensureNerdamer();
+
       const { expression, variable, lowerBound, upperBound } = params;
 
       // First compute the indefinite integral
@@ -528,6 +573,8 @@ class CalculatorExecutor
    */
   execute = async (params: ExecuteParams): Promise<BuiltinToolResult> => {
     try {
+      await ensureNerdamer();
+
       const { expression } = params;
       const result = nerdamer(expression);
       const resultText = result.toString();
@@ -558,6 +605,8 @@ class CalculatorExecutor
    */
   limit = async (params: LimitParams): Promise<BuiltinToolResult> => {
     try {
+      await ensureNerdamer();
+
       const { expression, variable, point } = params;
       let limitExpr: string;
 
