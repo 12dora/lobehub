@@ -2,6 +2,7 @@ export * from './accessGrant';
 export * from './activeUser';
 export * from './adminMutationRateLimit';
 export * from './enterpriseErrors';
+export * from './ffmpegStatic';
 export * from './managedResource';
 export * from './managedResourceMutationRegistry';
 export * from './moduleGuard';

@@ -22,4 +22,10 @@ export const dockerTracingExcludes = (): string[] => [
   'packages/database/migrations/**',
   'changelog/**',
   'docker-compose/**',
+  // Extra canvas natives: require('@napi-rs/canvas') + js-binding.js resolve
+  // the hoisted /app/node_modules/@napi-rs/canvas-linux-* copy. The two
+  // .pnpm trees are byte-identical 26 MiB files (do not exclude the hoisted
+  // path). Busybox prune in the Dockerfile is the belt if includes win.
+  'node_modules/.pnpm/@napi-rs+canvas@*/node_modules/@napi-rs/canvas-*/*.node',
+  'node_modules/.pnpm/@napi-rs+canvas-linux-*@*/node_modules/@napi-rs/canvas-*/*.node',
 ];

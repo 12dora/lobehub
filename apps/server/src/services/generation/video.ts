@@ -12,6 +12,7 @@ import debug from 'debug';
 import { nanoid } from 'nanoid';
 import sharp from 'sharp';
 
+import { resolveFfmpegStatic } from '@/server/enterprise/guards/ffmpegStatic';
 import { FileService } from '@/server/services/file';
 import { calculateThumbnailDimensions } from '@/utils/number';
 import { getYYYYmmddHHMMss } from '@/utils/time';
@@ -21,9 +22,9 @@ const execFileAsync = promisify(execFile);
 
 let _ffmpegPath: string | null = null;
 
-function getFfmpegPath(): string {
+async function getFfmpegPath(): Promise<string> {
   if (_ffmpegPath) return _ffmpegPath;
-  _ffmpegPath = require('ffmpeg-static') as string;
+  _ffmpegPath = await resolveFfmpegStatic();
   return _ffmpegPath;
 }
 
@@ -221,7 +222,7 @@ export class VideoGenerationService {
   }
 
   private async getVideoMetadata(videoPath: string): Promise<VideoMetadata> {
-    const ffmpegPath = getFfmpegPath();
+    const ffmpegPath = await getFfmpegPath();
 
     // ffmpeg -i exits with code 1 when no output is specified, but stderr contains metadata
     let stderr: string;
@@ -263,7 +264,7 @@ export class VideoGenerationService {
     width: number,
     height: number,
   ): Promise<string> {
-    const ffmpegPath = getFfmpegPath();
+    const ffmpegPath = await getFfmpegPath();
     const outputPath = path.join(os.tmpdir(), `lobe-cover-${nanoid()}.jpg`);
 
     log('Generating screenshot from video');

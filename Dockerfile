@@ -204,18 +204,47 @@ COPY --from=builder /app/scripts/serverLauncher/startServer.js /app/startServer.
 COPY --from=builder /app/scripts/_shared /app/scripts/_shared
 
 # @vitejs/devtools is a build-time leak (require.resolve fails at runtime).
-RUN find /app/node_modules/.pnpm -maxdepth 1 -name '@vitejs+devtools*' -exec rm -rf {} + || true
+# Extra @napi-rs/canvas skia.node copies under .pnpm are byte-identical to the
+# hoisted /app/node_modules/@napi-rs/canvas-linux-* that require() resolves.
+RUN find /app/node_modules/.pnpm -maxdepth 1 -name '@vitejs+devtools*' -exec rm -rf {} + || true && \
+    find /app/node_modules/.pnpm -name 'skia*.node' -type f -delete || true
 
 RUN set -e && \
     addgroup -S -g 1001 nodejs && \
     adduser -D -G nodejs -H -S -h /app -u 1001 nextjs && \
-    chown -R nextjs:nodejs /app /etc/proxychains4.conf
+    chown -R nextjs:nodejs /app /etc/proxychains4.conf && \
+    mkdir -p /layer-a/bin /layer-a/app /layer-b/app && \
+    for p in /* /.[!.]*; do \
+      case "$p" in \
+        /app|/bin|/proc|/sys|/dev|/layer-a|/layer-b) continue ;; \
+      esac; \
+      [ -e "$p" ] || [ -L "$p" ] || continue; \
+      cp -a "$p" /layer-a/; \
+    done && \
+    cp -a /bin/node /bin/proxychains /bin/busybox /layer-a/bin/ && \
+    for a in $(/bin/busybox --list); do \
+      [ -e "/layer-a/bin/$a" ] || ln -s busybox "/layer-a/bin/$a"; \
+    done && \
+    if [ -f /bin/getconf ] && [ ! -e /layer-a/bin/getconf ]; then \
+      cp -a /bin/getconf /layer-a/bin/getconf; \
+    fi && \
+    mkdir -m 1777 -p /layer-a/tmp && \
+    chmod 1777 /layer-a/tmp && \
+    cp -al /app/node_modules /layer-a/app/node_modules && \
+    for p in /app/* /app/.[!.]*; do \
+      [ -e "$p" ] || continue; \
+      [ "$(basename "$p")" = "node_modules" ] && continue; \
+      cp -al "$p" /layer-b/app/; \
+    done && \
+    chown nextjs:nodejs /layer-a/app /layer-b/app
 
 ## Production image, copy all the files and run next
 FROM scratch
 
-# Copy all the files from app, set the correct permission for prerender cache
-COPY --from=app / /
+# Two cacheable layers: (a) OS + node_modules, (b) app payload.
+# A source-only rebuild should reuse layer (a).
+COPY --from=app /layer-a /
+COPY --from=app /layer-b /
 
 ENV NODE_ENV="production" \
     NODE_OPTIONS="--dns-result-order=ipv4first --use-openssl-ca" \

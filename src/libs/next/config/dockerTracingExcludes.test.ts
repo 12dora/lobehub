@@ -27,8 +27,20 @@ describe('dockerTracingExcludes', () => {
       path.join(root, 'dist/auth/index.html'),
       path.join(root, 'apps/desktop/package.json'),
       path.join(root, 'apps/cli/src/index.ts'),
+      path.join(
+        root,
+        'node_modules/.pnpm/@napi-rs+canvas@0.1.100/node_modules/@napi-rs/canvas-linux-arm64-gnu/skia.linux-arm64-gnu.node',
+      ),
+      path.join(
+        root,
+        'node_modules/.pnpm/@napi-rs+canvas-linux-arm64-gnu@0.1.100/node_modules/@napi-rs/canvas-linux-arm64-gnu/skia.linux-arm64-gnu.node',
+      ),
     ];
-    for (const file of mustKeep) {
+    const mustKeepNative = [
+      path.join(root, 'node_modules/@napi-rs/canvas-linux-arm64-gnu/skia.linux-arm64-gnu.node'),
+      path.join(root, 'node_modules/@napi-rs/canvas/index.js'),
+    ];
+    for (const file of [...mustKeep, ...mustKeepNative]) {
       expect(isMatch(file), file).toBe(false);
     }
     for (const file of mustDrop) {
