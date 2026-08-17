@@ -671,6 +671,18 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     reason:
       'Bot reply copy interpolates the published brand name instead of the compile-time constant',
   },
+  {
+    file: 'apps/server/src/modules/S3/index.ts',
+    importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
+    owner: 'infra-settings',
+    reason: 'FileS3.create / createFileS3 resolve the DB-effective object-storage bag at runtime',
+  },
+  {
+    file: 'apps/server/src/services/file/impls/s3.ts',
+    importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
+    owner: 'infra-settings',
+    reason: 'Public URL / preview-expiry building uses the effective object-storage snapshot',
+  },
 ] as const satisfies readonly EnterpriseImportAllowance[];
 
 /**
@@ -1305,6 +1317,24 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     owner: 'content-moderation',
     reason:
       'Route-level proof that a moderation-aware runtime block/downgrade maps to HTTP 403 / x-lobe-moderation* headers',
+  },
+  {
+    file: 'apps/server/src/services/file/impls/s3.test.ts',
+    importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
+    owner: 'infra-settings',
+    reason: 'Mocks the infra snapshot so URL characterization stays on the fileEnv fixture',
+  },
+  {
+    file: 'apps/server/src/modules/S3/createFileS3.memo.test.ts',
+    importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
+    owner: 'infra-settings',
+    reason: 'Keys createFileS3 memo tests on a fake infra snapshot fingerprint',
+  },
+  {
+    file: 'src/libs/better-auth/define-config.test.ts',
+    importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
+    owner: 'infra-settings',
+    reason: 'Stubs the infra snapshot so Better Auth config tests do not open a DB on import',
   },
 ] as const satisfies readonly EnterpriseTestImportAllowance[];
 

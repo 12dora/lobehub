@@ -10,6 +10,7 @@ import {
   platformAuditLogs,
   platformIdentityProviderInstances,
   platformIdentityProviderRestartRequests,
+  platformInfraSettings,
   platformJobs,
   rolePermissions,
   roles,
@@ -31,11 +32,21 @@ const roleName = 'm11_oidc_restart_operator';
 const readerRoleName = 'm11_system_unrelated_reader';
 
 vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(async () => db) }));
+vi.mock('../../services/infraSettings/destinationPolicy', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...(actual as Record<string, unknown>),
+    assertInfraDestinationAllowed: vi.fn(async () => undefined),
+    assertMailDestinationsAllowed: vi.fn(async () => undefined),
+    assertObjectStorageDestinationsAllowed: vi.fn(async () => undefined),
+  };
+});
 
 const cleanup = async () => {
   await db.delete(platformIdentityProviderRestartRequests);
   await db.delete(platformIdentityProviderInstances);
   await db.delete(platformJobs);
+  await db.delete(platformInfraSettings);
   await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
   const ownedRoles = await db
     .select({ id: roles.id })
@@ -210,5 +221,179 @@ describe('admin.system operations gate', () => {
       .from(platformJobs)
       .where(eq(platformJobs.id, 'pjob_0000000000000099'));
     expect(job?.status).toBe('pending');
+  });
+
+  it('rejects enabling object storage without a stored secret', async () => {
+    const operator = await callerFor(ids.operator);
+    await expect(
+      operator.updateInfraSettings({
+        config: {
+          accessKeyId: 'AKIAEXAMPLEKEY',
+          bucket: 'files',
+          enabled: true,
+          endpoint: 'https://s3.example.com',
+          forcePathStyle: false,
+          secretAccessKey: { action: 'keep' },
+          setAcl: false,
+        },
+        dependency: 'objectStorage',
+        expectedRevision: 0,
+      }),
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(/secretAccessKey required|PLATFORM_INVALID_INPUT/),
+    });
+  });
+
+  it('persists object storage via CAS and redacts the audit afterDiff', async () => {
+    vi.stubEnv('PLATFORM_MASTER_KEY', Buffer.alloc(32, 7).toString('base64'));
+    vi.stubEnv('PLATFORM_KEY_PROVIDER', 'env');
+    const operator = await callerFor(ids.operator);
+    const result = await operator.updateInfraSettings({
+      config: {
+        accessKeyId: 'AKIAEXAMPLEKEY',
+        bucket: 'files',
+        enabled: true,
+        endpoint: 'https://s3.example.com',
+        forcePathStyle: false,
+        secretAccessKey: { action: 'replace', value: 'super-secret-key' },
+        setAcl: false,
+      },
+      dependency: 'objectStorage',
+      expectedRevision: 0,
+    });
+    expect(result).toMatchObject({ revision: 1, source: 'db' });
+    expect(result.appliedAt).toBeInstanceOf(Date);
+
+    const logs = await db.select().from(platformAuditLogs);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        action: 'system.infra.object_storage.update',
+        result: 'success',
+        targetType: 'infra_settings',
+      }),
+    );
+    expect(JSON.stringify(logs)).not.toContain('super-secret-key');
+  });
+
+  it('rejects keep when the object-storage destination tuple changes', async () => {
+    vi.stubEnv('PLATFORM_MASTER_KEY', Buffer.alloc(32, 7).toString('base64'));
+    vi.stubEnv('PLATFORM_KEY_PROVIDER', 'env');
+    const operator = await callerFor(ids.operator);
+    await operator.updateInfraSettings({
+      config: {
+        accessKeyId: 'AKIAEXAMPLEKEY',
+        bucket: 'files',
+        enabled: true,
+        endpoint: 'https://s3.example.com',
+        forcePathStyle: false,
+        secretAccessKey: { action: 'replace', value: 'super-secret-key' },
+        setAcl: false,
+      },
+      dependency: 'objectStorage',
+      expectedRevision: 0,
+    });
+
+    await expect(
+      operator.updateInfraSettings({
+        config: {
+          accessKeyId: 'AKIAEXAMPLEKEY',
+          bucket: 'files',
+          enabled: true,
+          endpoint: 'https://attacker.example',
+          forcePathStyle: false,
+          secretAccessKey: { action: 'keep' },
+          setAcl: false,
+        },
+        dependency: 'objectStorage',
+        expectedRevision: 1,
+      }),
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(
+        /re-entered after changing the destination|PLATFORM_INVALID_INPUT/,
+      ),
+    });
+  });
+
+  it('disables object storage with a minimal payload and keeps stored non-secret fields', async () => {
+    await db.insert(platformInfraSettings).values({
+      config: {
+        accessKeyId: 'AKIASTOREDKEY',
+        bucket: 'kept-bucket',
+        enabled: true,
+        endpoint: 'https://s3.example.com',
+        forcePathStyle: true,
+        region: 'us-west-2',
+        secretAccessKeyCiphertext: 'garbage-undecryptable-ciphertext',
+        setAcl: true,
+      },
+      id: 'object_storage',
+      revision: 0,
+    });
+    const operator = await callerFor(ids.operator);
+    const result = await operator.updateInfraSettings({
+      config: { enabled: false },
+      dependency: 'objectStorage',
+      expectedRevision: 0,
+    });
+    expect(result).toMatchObject({ source: 'env' });
+    const [row] = await db
+      .select()
+      .from(platformInfraSettings)
+      .where(eq(platformInfraSettings.id, 'object_storage'));
+    expect(row?.config).toMatchObject({
+      accessKeyId: 'AKIASTOREDKEY',
+      bucket: 'kept-bucket',
+      enabled: false,
+      endpoint: 'https://s3.example.com',
+      forcePathStyle: true,
+      region: 'us-west-2',
+      secretAccessKeyCiphertext: 'garbage-undecryptable-ciphertext',
+      setAcl: true,
+    });
+  });
+
+  it('disables object storage even when the stored ciphertext cannot be decrypted', async () => {
+    vi.stubEnv('PLATFORM_MASTER_KEY', Buffer.alloc(32, 3).toString('base64'));
+    vi.stubEnv('PLATFORM_KEY_PROVIDER', 'env');
+    await db.insert(platformInfraSettings).values({
+      config: {
+        accessKeyId: 'AKIASTOREDKEY',
+        bucket: 'kept-bucket',
+        enabled: true,
+        endpoint: 'https://s3.example.com',
+        forcePathStyle: false,
+        secretAccessKeyCiphertext: 'not-a-valid-sealed-secret',
+        setAcl: false,
+      },
+      id: 'object_storage',
+      revision: 0,
+    });
+    const operator = await callerFor(ids.operator);
+    await expect(
+      operator.updateInfraSettings({
+        config: { enabled: false },
+        dependency: 'objectStorage',
+        expectedRevision: 0,
+      }),
+    ).resolves.toMatchObject({ source: 'env' });
+  });
+
+  it('requires recent reauth for updateInfraSettings', async () => {
+    const operator = await callerFor(ids.operator, new Date(Date.now() - 60 * 60 * 1000));
+    await expect(
+      operator.updateInfraSettings({
+        config: {
+          accessKeyId: 'AKIAEXAMPLEKEY',
+          bucket: 'files',
+          enabled: false,
+          endpoint: 'https://s3.example.com',
+          forcePathStyle: false,
+          secretAccessKey: { action: 'keep' },
+          setAcl: false,
+        },
+        dependency: 'objectStorage',
+        expectedRevision: 0,
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED', message: 'ADMIN_REAUTH_REQUIRED' });
   });
 });

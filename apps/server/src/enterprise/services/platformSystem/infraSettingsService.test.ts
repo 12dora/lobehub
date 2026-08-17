@@ -42,9 +42,9 @@ describe('infra settings masking helpers', () => {
 });
 
 describe('InfraSettingsService.getInfraSettings', () => {
-  it('returns the effective masked configuration and never leaks raw secrets', () => {
+  it('returns the effective masked configuration and never leaks raw secrets', async () => {
     const now = new Date('2026-08-17T12:00:00.000Z');
-    const settings = new InfraSettingsService({
+    const settings = await new InfraSettingsService({
       env: {
         EMAIL_SERVICE_PROVIDER: 'nodemailer',
         PLATFORM_KEY_PROVIDER: 'vault',
@@ -105,8 +105,8 @@ describe('InfraSettingsService.getInfraSettings', () => {
     expect(serialized).not.toContain('vault:active');
   });
 
-  it('exposes FileS3 and EmailService defaults for complete env-only configs', () => {
-    const settings = new InfraSettingsService({
+  it('exposes FileS3 and EmailService defaults for complete env-only configs', async () => {
+    const settings = await new InfraSettingsService({
       env: {
         ...completeS3Env,
         SMTP_PASS: 'smtp-super-secret-pass',
@@ -124,8 +124,8 @@ describe('InfraSettingsService.getInfraSettings', () => {
     });
   });
 
-  it('reports unconfigured dependencies without inventing values', () => {
-    const settings = new InfraSettingsService({ env: {} }).getInfraSettings();
+  it('reports unconfigured dependencies without inventing values', async () => {
+    const settings = await new InfraSettingsService({ env: {} }).getInfraSettings();
     expect(settings.objectStorage).toMatchObject({
       accessId: null,
       bucket: null,
@@ -276,5 +276,70 @@ describe('InfraSettingsService.testDependency factories', () => {
     }).testDependency({ dependency: 'keyManagement' });
 
     expect(result).toMatchObject({ message: 'not_configured', ok: false });
+  });
+
+  it('reuses the env secret for draft keep only when the destination tuple matches', async () => {
+    const send = vi.fn().mockResolvedValue({});
+    const destroy = vi.fn();
+    const service = new InfraSettingsService({
+      assertObjectStorageDestinations: async () => undefined,
+      createS3Client: () => ({ destroy, send }),
+      env: completeS3Env,
+    });
+
+    const matching = await service.testDependency({
+      dependency: 'objectStorage',
+      draft: {
+        accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+        bucket: 'platform-files',
+        enabled: true,
+        endpoint: 'https://s3.internal.example',
+        forcePathStyle: false,
+        secretAccessKey: { action: 'keep' },
+        setAcl: false,
+      },
+    });
+    expect(matching.ok).toBe(true);
+
+    await expect(
+      service.testDependency({
+        dependency: 'objectStorage',
+        draft: {
+          accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+          bucket: 'platform-files',
+          enabled: true,
+          endpoint: 'https://attacker.example',
+          forcePathStyle: false,
+          secretAccessKey: { action: 'keep' },
+          setAcl: false,
+        },
+      }),
+    ).rejects.toMatchObject({ field: 'secretAccessKey' });
+  });
+
+  it('rejects SMTP draft keep when the host changes', async () => {
+    const service = new InfraSettingsService({
+      assertMailDestinations: async () => undefined,
+      createMailTransport: () => ({ close: vi.fn(), verify: vi.fn() }),
+      env: { SMTP_HOST: 'smtp.example.com', SMTP_PASS: 'smtp-super-secret-pass', SMTP_USER: 'ops' },
+    });
+
+    await expect(
+      service.testDependency({
+        dependency: 'mail',
+        draft: {
+          enabled: true,
+          fromAddress: 'ops@example.com',
+          provider: 'smtp',
+          smtp: {
+            host: 'attacker.example',
+            pass: { action: 'keep' },
+            port: 587,
+            secure: false,
+            user: 'ops',
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ field: 'pass' });
   });
 });

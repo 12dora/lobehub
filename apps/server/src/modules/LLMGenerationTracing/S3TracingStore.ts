@@ -9,7 +9,7 @@ import type {
 } from '@lobechat/llm-generation-tracing';
 import debug from 'debug';
 
-import { FileS3 } from '@/server/modules/S3';
+import { createFileS3 } from '@/server/modules/S3';
 
 const compressZstd = promisify(zstdCompress);
 const decompressZstd = promisify(zstdDecompress);
@@ -58,23 +58,21 @@ export const buildTracingKey = (record: {
  * against the DB row; the S3 blob is the cold artefact for offline review.
  */
 export class S3TracingStore implements ITracingStore {
-  private readonly s3: FileS3;
-
-  constructor() {
-    this.s3 = new FileS3();
+  private getS3() {
+    return createFileS3();
   }
 
   async save(record: TracingPayload): Promise<SaveResult> {
     const key = buildTracingKey(record);
     log('Saving tracing payload to S3: %s', key);
     const compressed = await compressZstd(Buffer.from(JSON.stringify(record)));
-    await this.s3.uploadBuffer(key, compressed, ZSTD_CONTENT_TYPE);
+    await (await this.getS3()).uploadBuffer(key, compressed, ZSTD_CONTENT_TYPE);
     return { key };
   }
 
   async get(key: string): Promise<TracingPayload | null> {
     try {
-      const bytes = await this.s3.getFileByteArray(key);
+      const bytes = await (await this.getS3()).getFileByteArray(key);
       const buf = await decompressZstd(Buffer.from(bytes));
       return JSON.parse(buf.toString('utf8')) as TracingPayload;
     } catch {

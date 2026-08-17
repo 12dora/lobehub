@@ -39,7 +39,13 @@ vi.mock('@/database/models/message');
 vi.mock('@/database/models/session');
 vi.mock('@/database/models/user');
 vi.mock('@/server/modules/KeyVaultsEncrypt');
-vi.mock('@/server/modules/S3');
+vi.mock('@/server/modules/S3', () => ({
+  FileS3: vi.fn(),
+  createFileS3: vi.fn(async () => ({
+    getFileByteArray: vi.fn(),
+    uploadBuffer: vi.fn(),
+  })),
+}));
 vi.mock('@/server/services/user');
 vi.mock('@/server/enterprise/guards/managedPlatformAgent', async (importOriginal) => ({
   ...(await importOriginal()),

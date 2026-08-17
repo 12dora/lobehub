@@ -1,6 +1,12 @@
 import { createStaticStyles, cssVar } from 'antd-style';
 
 export const infraSettingsStyles = createStaticStyles(({ css }) => ({
+  actionsRow: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  `,
   card: css`
     display: flex;
     flex-direction: column;
@@ -91,6 +97,12 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
     gap: 8px;
     align-items: center;
     justify-content: space-between;
+  `,
+  headerTags: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
   `,
   hint: css`
     display: flex;

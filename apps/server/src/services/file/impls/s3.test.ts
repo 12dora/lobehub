@@ -14,6 +14,13 @@ const redisMocks = vi.hoisted(() => ({
   },
 }));
 
+const infraMocks = vi.hoisted(() => ({
+  createFileS3: vi.fn(),
+  fingerprint: 'fp-1',
+  getInfraSnapshot: vi.fn(),
+  stub: null as null | Record<string, ReturnType<typeof vi.fn>>,
+}));
+
 const config = {
   S3_ENABLE_PATH_STYLE: false,
   S3_PUBLIC_DOMAIN: 'https://example.com',
@@ -29,6 +36,10 @@ vi.mock('@/envs/file', () => ({
   },
 }));
 
+vi.mock('@/server/enterprise/services/infraSettings/snapshot', () => ({
+  getInfraSnapshot: infraMocks.getInfraSnapshot,
+}));
+
 vi.mock('@/envs/redis', () => ({
   getRedisConfig: redisMocks.getRedisConfig,
 }));
@@ -38,25 +49,25 @@ vi.mock('@/libs/redis', () => ({
   isRedisEnabled: redisMocks.isRedisEnabled,
 }));
 
-// 模拟 S3 类
+const createS3Stub = () => ({
+  createPreSignedUrlForPreview: vi.fn().mockResolvedValue('https://presigned.example.com/test.jpg'),
+  createPreSignedUpload: vi.fn().mockResolvedValue({
+    headers: { 'x-amz-acl': 'public-read' },
+    url: 'https://upload.example.com/test.jpg',
+  }),
+  createPreSignedUrl: vi.fn().mockResolvedValue('https://upload.example.com/test.jpg'),
+  deleteFile: vi.fn().mockResolvedValue({}),
+  deleteFiles: vi.fn().mockResolvedValue({}),
+  getFileByteArray: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
+  getFileContent: vi.fn().mockResolvedValue('file content'),
+  getFileMetadata: vi.fn().mockResolvedValue({ contentLength: 1024, contentType: 'image/png' }),
+  uploadContent: vi.fn().mockResolvedValue({}),
+  uploadMedia: vi.fn().mockResolvedValue({}),
+});
+
 vi.mock('@/server/modules/S3', () => ({
-  FileS3: vi.fn().mockImplementation(() => ({
-    createPreSignedUrlForPreview: vi
-      .fn()
-      .mockResolvedValue('https://presigned.example.com/test.jpg'),
-    getFileContent: vi.fn().mockResolvedValue('file content'),
-    getFileByteArray: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
-    getFileMetadata: vi.fn().mockResolvedValue({ contentLength: 1024, contentType: 'image/png' }),
-    deleteFile: vi.fn().mockResolvedValue({}),
-    deleteFiles: vi.fn().mockResolvedValue({}),
-    createPreSignedUpload: vi.fn().mockResolvedValue({
-      headers: { 'x-amz-acl': 'public-read' },
-      url: 'https://upload.example.com/test.jpg',
-    }),
-    createPreSignedUrl: vi.fn().mockResolvedValue('https://upload.example.com/test.jpg'),
-    uploadContent: vi.fn().mockResolvedValue({}),
-    uploadMedia: vi.fn().mockResolvedValue({}),
-  })),
+  FileS3: vi.fn().mockImplementation(() => infraMocks.stub ?? createS3Stub()),
+  createFileS3: infraMocks.createFileS3,
 }));
 
 // Mock db
@@ -67,6 +78,29 @@ describe('S3StaticFileImpl', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    infraMocks.fingerprint = 'fp-1';
+    infraMocks.getInfraSnapshot.mockImplementation(async () => ({
+      fingerprint: infraMocks.fingerprint,
+      loadedAt: Date.now(),
+      mail: { kind: 'unconfigured', source: 'env' },
+      mailRevision: 0,
+      objectStorage: {
+        accessKeyId: 'AKIA',
+        bucket: config.S3_BUCKET,
+        endpoint: 'https://s3.example',
+        forcePathStyle: config.S3_ENABLE_PATH_STYLE,
+        kind: 'complete',
+        previewUrlExpireIn: config.S3_PREVIEW_URL_EXPIRE_IN,
+        publicDomain: config.S3_PUBLIC_DOMAIN,
+        region: 'us-east-1',
+        secretAccessKey: 'secret',
+        setAcl: config.S3_SET_ACL,
+        source: 'env',
+      },
+      objectStorageRevision: 0,
+    }));
+    infraMocks.stub = createS3Stub();
+    infraMocks.createFileS3.mockImplementation(async () => infraMocks.stub!);
     config.S3_ENABLE_PATH_STYLE = false;
     config.S3_PUBLIC_DOMAIN = 'https://example.com';
     config.S3_SET_ACL = true;
@@ -145,7 +179,7 @@ describe('S3StaticFileImpl', () => {
       );
 
       expect(redisMocks.redis.set).toHaveBeenCalledWith(
-        'file:presigned-preview:7200:path/to/redis-write-file.jpg',
+        'file:presigned-preview:fp-1:7200:path/to/redis-write-file.jpg',
         'https://presigned.example.com/test.jpg',
         { ex: 3600 },
       );
@@ -435,6 +469,29 @@ describe('S3StaticFileImpl', () => {
         'S3 upload failed',
       );
       expect(fileService['s3'].uploadMedia).toHaveBeenCalledWith(testKey, testBuffer);
+    });
+  });
+
+  describe('snapshot rotation', () => {
+    it('recreates the S3 client after the infra fingerprint changes', async () => {
+      await fileService.deleteFile('a.jpg');
+      expect(infraMocks.createFileS3).toHaveBeenCalledTimes(1);
+
+      await fileService.deleteFile('b.jpg');
+      expect(infraMocks.createFileS3).toHaveBeenCalledTimes(1);
+
+      infraMocks.fingerprint = 'fp-2';
+      await fileService.deleteFile('c.jpg');
+      expect(infraMocks.createFileS3).toHaveBeenCalledTimes(2);
+    });
+
+    it('recovers after a rejected createFileS3 promise', async () => {
+      infraMocks.createFileS3.mockRejectedValueOnce(new Error('s3 down'));
+      await expect(fileService.deleteFile('fail.jpg')).rejects.toThrow('s3 down');
+
+      infraMocks.createFileS3.mockImplementation(async () => infraMocks.stub!);
+      await expect(fileService.deleteFile('ok.jpg')).resolves.toBeDefined();
+      expect(infraMocks.createFileS3).toHaveBeenCalledTimes(2);
     });
   });
 });

@@ -15,7 +15,7 @@ export const runBrandingAssetCleanupBatch = async (
     'isStorageConfigured' | 'sweep'
   > = new AdminBrandingAssetService(db),
 ): Promise<{ deleted: number; failed: number; scanned: number }> => {
-  if (!service.isStorageConfigured()) return { deleted: 0, failed: 0, scanned: 0 };
+  if (!(await service.isStorageConfigured())) return { deleted: 0, failed: 0, scanned: 0 };
   const result = await service.sweep({ limit: BATCH_LIMIT });
   if (result.failed > 0) throw new Error('Branding asset cleanup batch failed');
   return result;

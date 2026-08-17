@@ -89,14 +89,14 @@ describe('admin procedure authorization registry', () => {
     // updateSettings, updateScopes, createSubscription, updateSubscription,
     // deleteSubscription, refreshSubscription, testLatency, selectNode, installArtifact,
     // restartEngine, testConnectivity}).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(214);
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(215);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(101);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(113);
-    expect(mutationPaths).toHaveLength(113);
+    ).toHaveLength(114);
+    expect(mutationPaths).toHaveLength(114);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -224,7 +224,7 @@ describe('admin procedure authorization registry', () => {
     const systemEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ path }) =>
       path.startsWith('admin.system.'),
     );
-    expect(systemEntries).toHaveLength(10);
+    expect(systemEntries).toHaveLength(11);
     expect(
       systemEntries.map((entry) =>
         'permission' in entry ? [entry.path, entry.permission.permissions[0]] : [entry.path, null],
@@ -240,6 +240,7 @@ describe('admin procedure authorization registry', () => {
       ['admin.system.requestRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
       ['admin.system.retryJob', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
       ['admin.system.testDependency', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
+      ['admin.system.updateInfraSettings', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
     ]);
     // A3: exactly five admin.audit.exports.* procedures, all gated by AUDIT_EXPORT.
     const auditExportEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(

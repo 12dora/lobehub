@@ -14,13 +14,16 @@ const getFileByteArray = vi.fn();
 const getFileContent = vi.fn();
 const deleteFile = vi.fn();
 
+const s3Stub = {
+  deleteFile,
+  getFileByteArray,
+  getFileContent,
+  uploadBuffer,
+};
+
 vi.mock('@/server/modules/S3', () => ({
-  FileS3: vi.fn(() => ({
-    deleteFile,
-    getFileByteArray,
-    getFileContent,
-    uploadBuffer,
-  })),
+  FileS3: vi.fn(() => s3Stub),
+  createFileS3: vi.fn(async () => s3Stub),
 }));
 
 // Imported after the mock so the constructor pulls in the stub.

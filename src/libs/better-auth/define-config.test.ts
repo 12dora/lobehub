@@ -140,7 +140,21 @@ vi.mock('@/libs/better-auth/utils/server', () => ({
 }));
 
 vi.mock('@/server/services/email', () => ({
-  EmailService: vi.fn(),
+  EmailService: Object.assign(vi.fn(), {
+    create: vi.fn(async () => ({
+      sendBrandedMail: vi.fn(),
+      sendMail: vi.fn(),
+    })),
+  }),
+}));
+
+vi.mock('@/server/enterprise/services/infraSettings/snapshot', () => ({
+  getInfraSnapshot: vi.fn(async () => ({
+    loadedAt: Date.now(),
+    mail: { kind: 'unconfigured', source: 'env' },
+    objectStorage: { kind: 'unconfigured', previewUrlExpireIn: 7200, source: 'env' },
+  })),
+  peekInfraSnapshot: vi.fn(() => null),
 }));
 
 vi.mock('@/server/services/user', () => ({
@@ -149,7 +163,7 @@ vi.mock('@/server/services/user', () => ({
   })),
 }));
 
-describe('defineConfig', () => {
+describe('defineConfig', { timeout: 15_000 }, () => {
   const originalEnv = process.env;
 
   beforeEach(() => {

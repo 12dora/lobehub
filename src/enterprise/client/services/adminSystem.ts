@@ -12,6 +12,8 @@ import type {
   AdminSystemRetryJobInput,
   AdminSystemTestDependencyInput,
   adminSystemTestDependencyOutputSchema,
+  AdminSystemUpdateInfraSettingsInput,
+  AdminSystemUpdateInfraSettingsOutput,
 } from '@/server/enterprise/contracts/adminSystem';
 
 export type AdminSystemStatus = z.infer<typeof adminSystemGetStatusOutputSchema>;
@@ -42,6 +44,9 @@ export interface AdminInfraSettingsService {
   testDependency: (
     input: AdminSystemTestDependencyInput,
   ) => Promise<AdminSystemTestDependencyResult>;
+  updateInfraSettings: (
+    input: AdminSystemUpdateInfraSettingsInput,
+  ) => Promise<AdminSystemUpdateInfraSettingsOutput>;
 }
 
 class AdminSystemServiceImpl implements AdminSystemService, AdminInfraSettingsService {
@@ -61,6 +66,9 @@ class AdminSystemServiceImpl implements AdminSystemService, AdminInfraSettingsSe
 
   testDependency = (input: AdminSystemTestDependencyInput) =>
     lambdaClient.admin.system.testDependency.mutate(input);
+
+  updateInfraSettings = (input: AdminSystemUpdateInfraSettingsInput) =>
+    lambdaClient.admin.system.updateInfraSettings.mutate(input);
 }
 
 export const adminSystemService: AdminSystemService & AdminInfraSettingsService =
@@ -72,4 +80,6 @@ export type {
   AdminSystemGetJobsInput,
   AdminSystemRetryJobInput,
   AdminSystemTestDependencyInput,
+  AdminSystemUpdateInfraSettingsInput,
+  AdminSystemUpdateInfraSettingsOutput,
 };

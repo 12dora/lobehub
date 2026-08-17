@@ -325,7 +325,7 @@ export class AdminBrandingService {
     return {
       branding,
       revision,
-      storageConfigured: this.assets.isStorageConfigured(),
+      storageConfigured: await this.assets.isStorageConfigured(),
       token: brandingToken(branding, revision),
       updatedAt: rows.published?.updatedAt?.toISOString() ?? null,
       updatedBy: rows.published?.updatedBy ?? null,
@@ -443,7 +443,7 @@ export class AdminBrandingService {
       const { kind: _kind, ...result } = assertOperationKind(operation.result, 'save');
       return adminBrandingSaveOutputSchema.parse({
         ...result,
-        storageConfigured: this.assets.isStorageConfigured(),
+        storageConfigured: await this.assets.isStorageConfigured(),
       });
     }
     const { claim } = operation;
@@ -508,7 +508,7 @@ export class AdminBrandingService {
       if (!committed.current) throw new BrandingPersistenceInvariantError();
       return adminBrandingSaveOutputSchema.parse({
         ...committed.current,
-        storageConfigured: this.assets.isStorageConfigured(),
+        storageConfigured: await this.assets.isStorageConfigured(),
       });
     } catch (error) {
       await this.recordOperationFailure(claim, error, 'admin.branding.save', actorUserId, input);

@@ -52,7 +52,7 @@ import { settingsRegistry } from '@/server/enterprise/services/settings/registry
 import { loadEffectiveUserSettings } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { assertWorkspaceSettingsWritePermission } from '@/server/enterprise/services/settings/workspaceSettingsPermission';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
-import { FileS3 } from '@/server/modules/S3';
+import { createFileS3 } from '@/server/modules/S3';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { FileService } from '@/server/services/file';
 import { OnboardingService } from '@/server/services/onboarding';
@@ -356,7 +356,7 @@ export const userRouter = router({
         const base64Data = input.slice(commaIndex + 1);
 
         // Create S3 client
-        const s3 = new FileS3();
+        const s3 = await createFileS3();
 
         // Use UUID to generate unique filename to prevent caching issues
         // Get old avatar URL for later deletion

@@ -17,14 +17,27 @@ interface Field {
 }
 
 export interface InfraSettingsCardProps {
+  /** Alert above the body — shown in both the read-only and the editing state. */
+  banner?: ReactNode;
   canTest: boolean;
-  envVars: readonly string[];
-  fields: readonly Field[];
+  /** Editable body; replaces the read-only rows when present. */
+  editor?: ReactNode;
+  /** Environment variables that drive this dependency. Omitted while it is configured here. */
+  envVars?: readonly string[];
+  /** Buttons shown next to 测试连接 (edit / save / revert). */
+  extraActions?: ReactNode;
+  fields?: readonly Field[];
+  /** Rendered next to the status tag — e.g. where the configuration comes from. */
+  headerExtra?: ReactNode;
   icon: LucideIcon;
+  /** Replaces the "how to change" guidance with a plain statement of the constraint. */
+  notice?: ReactNode;
   onTest: () => void;
   probe?: AdminSystemTestDependencyResult;
   probing: boolean;
   status: string;
+  /** Disables 测试连接 (e.g. the draft cannot be probed until a credential is re-entered). */
+  testDisabled?: boolean;
   title: string;
 }
 
@@ -56,8 +69,26 @@ const InfraStatusTag = memo<{ status: string }>(({ status }) => {
   );
 });
 
+InfraStatusTag.displayName = 'AdminInfraStatusTag';
+
 export const InfraSettingsCard = memo<InfraSettingsCardProps>(
-  ({ canTest, envVars, fields, icon, onTest, probe, probing, status, title }) => {
+  ({
+    banner,
+    canTest,
+    editor,
+    envVars,
+    extraActions,
+    fields,
+    headerExtra,
+    icon,
+    notice,
+    onTest,
+    probe,
+    probing,
+    status,
+    testDisabled,
+    title,
+  }) => {
     const { t } = useTranslation('admin');
 
     return (
@@ -67,20 +98,26 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
             <Icon icon={icon} size={16} />
             <Text strong>{title}</Text>
           </div>
-          <InfraStatusTag status={status} />
+          <div className={styles.headerTags}>
+            {headerExtra}
+            <InfraStatusTag status={status} />
+          </div>
         </div>
 
         <div className={styles.cardBody}>
-          <div className={styles.fields}>
-            {fields.map((field) => (
-              <div className={styles.fieldRow} key={field.label}>
-                <Text className={styles.fieldLabel} type="secondary">
-                  {field.label}
-                </Text>
-                <Text className={styles.fieldValue}>{display(field.value)}</Text>
-              </div>
-            ))}
-          </div>
+          {banner}
+          {editor ?? (
+            <div className={styles.fields}>
+              {(fields ?? []).map((field) => (
+                <div className={styles.fieldRow} key={field.label}>
+                  <Text className={styles.fieldLabel} type="secondary">
+                    {field.label}
+                  </Text>
+                  <Text className={styles.fieldValue}>{display(field.value)}</Text>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className={styles.footer}>
             {probe ? (
@@ -111,25 +148,34 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
               </Flexbox>
             ) : null}
 
-            {canTest ? (
-              <div>
-                <Button loading={probing} size="small" onClick={onTest}>
-                  {t('systemGeneral.testConnection')}
-                </Button>
+            {canTest || extraActions ? (
+              <div className={styles.actionsRow}>
+                {canTest ? (
+                  <Button disabled={testDisabled} loading={probing} size="small" onClick={onTest}>
+                    {t('systemGeneral.testConnection')}
+                  </Button>
+                ) : null}
+                {extraActions}
               </div>
             ) : null}
 
-            <div className={styles.hint}>
-              <Text type="secondary">{t('systemGeneral.howToChange.title')}</Text>
-              <div className={styles.envList}>
-                {envVars.map((name) => (
-                  <span className={styles.envChip} key={name}>
-                    {name}
-                  </span>
-                ))}
+            {notice || envVars?.length ? (
+              <div className={styles.hint}>
+                <Text type="secondary">{notice ?? t('systemGeneral.howToChange.title')}</Text>
+                {envVars?.length ? (
+                  <div className={styles.envList}>
+                    {envVars.map((name) => (
+                      <span className={styles.envChip} key={name}>
+                        {name}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {notice ? null : (
+                  <Text type="secondary">{t('systemGeneral.howToChange.restart')}</Text>
+                )}
               </div>
-              <Text type="secondary">{t('systemGeneral.howToChange.restart')}</Text>
-            </div>
+            ) : null}
           </div>
         </div>
       </section>

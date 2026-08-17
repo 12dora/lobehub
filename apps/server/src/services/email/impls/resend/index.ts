@@ -12,23 +12,31 @@ const log = debug('lobe-email:Resend');
 /**
  * Resend implementation of the email service
  */
+export interface ResendInjectedConfig {
+  apiKey: string;
+  from?: string;
+}
+
 export class ResendImpl implements EmailServiceImpl {
   private client: Resend;
+  private readonly fromFallback?: string;
 
-  constructor() {
-    if (!emailEnv.RESEND_API_KEY) {
+  constructor(config?: ResendInjectedConfig) {
+    const apiKey = config?.apiKey ?? emailEnv.RESEND_API_KEY;
+    if (!apiKey) {
       throw new Error(
         'RESEND_API_KEY environment variable is required to use Resend email service. Please configure it in your .env file.',
       );
     }
 
-    this.client = new Resend(emailEnv.RESEND_API_KEY);
+    this.client = new Resend(apiKey);
+    this.fromFallback = config?.from ?? emailEnv.RESEND_FROM;
     log('Initialized Resend client');
   }
 
   async sendMail(payload: EmailPayload): Promise<EmailResponse> {
     // Note: Use || to handle empty string from Dockerfile defaults
-    const from = payload.from || emailEnv.RESEND_FROM;
+    const from = payload.from || this.fromFallback;
     const html = payload.html;
     const text = payload.text;
 

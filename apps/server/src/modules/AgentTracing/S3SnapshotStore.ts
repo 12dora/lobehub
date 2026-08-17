@@ -9,7 +9,7 @@ import {
 } from '@lobechat/agent-tracing';
 import debug from 'debug';
 
-import { FileS3 } from '@/server/modules/S3';
+import { createFileS3 } from '@/server/modules/S3';
 
 const compressZstd = promisify(zstdCompress);
 const decompressZstd = promisify(zstdDecompress);
@@ -53,10 +53,8 @@ export const buildFinalSnapshotKey = (
  * The overhead (~100ms per step) is negligible vs LLM call time.
  */
 export class S3SnapshotStore implements ISnapshotStore {
-  private readonly s3: FileS3;
-
-  constructor() {
-    this.s3 = new FileS3();
+  private getS3() {
+    return createFileS3();
   }
 
   private partialKey(operationId: string): string {
@@ -87,7 +85,7 @@ export class S3SnapshotStore implements ISnapshotStore {
 
     log('Saving snapshot to S3: %s', key);
     const compressed = await this.encodeSnapshot(snapshot);
-    await this.s3.uploadBuffer(key, compressed, ZSTD_CONTENT_TYPE);
+    await (await this.getS3()).uploadBuffer(key, compressed, ZSTD_CONTENT_TYPE);
   }
 
   // === Query methods — not supported, use OTEL backend ===
@@ -113,7 +111,7 @@ export class S3SnapshotStore implements ISnapshotStore {
   async loadPartial(operationId: string): Promise<Partial<ExecutionSnapshot> | null> {
     // Current format: .json.zst (zstd-compressed)
     try {
-      const bytes = await this.s3.getFileByteArray(this.partialKey(operationId));
+      const bytes = await (await this.getS3()).getFileByteArray(this.partialKey(operationId));
       return await this.decodeSnapshot<Partial<ExecutionSnapshot>>(bytes);
     } catch {
       // fall through to legacy
@@ -122,7 +120,7 @@ export class S3SnapshotStore implements ISnapshotStore {
     // deploy window — partials are deleted on finalization so this branch dies off
     // naturally once the longest-running operation completes.
     try {
-      const content = await this.s3.getFileContent(this.legacyPartialKey(operationId));
+      const content = await (await this.getS3()).getFileContent(this.legacyPartialKey(operationId));
       return JSON.parse(content) as Partial<ExecutionSnapshot>;
     } catch {
       return null;
@@ -131,15 +129,18 @@ export class S3SnapshotStore implements ISnapshotStore {
 
   async savePartial(operationId: string, partial: Partial<ExecutionSnapshot>): Promise<void> {
     const compressed = await this.encodeSnapshot(partial);
-    await this.s3.uploadBuffer(this.partialKey(operationId), compressed, ZSTD_CONTENT_TYPE);
+    await (
+      await this.getS3()
+    ).uploadBuffer(this.partialKey(operationId), compressed, ZSTD_CONTENT_TYPE);
   }
 
   async removePartial(operationId: string): Promise<void> {
     // Clean up both the current key and any legacy uncompressed sibling that may
     // exist if the operation was started before the zstd rollout.
+    const s3 = await this.getS3();
     await Promise.allSettled([
-      this.s3.deleteFile(this.partialKey(operationId)),
-      this.s3.deleteFile(this.legacyPartialKey(operationId)),
+      s3.deleteFile(this.partialKey(operationId)),
+      s3.deleteFile(this.legacyPartialKey(operationId)),
     ]);
   }
 }

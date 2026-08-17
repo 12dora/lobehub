@@ -31,6 +31,7 @@ const service = (
 ): AdminInfraSettingsService => ({
   getInfraSettings: vi.fn(),
   testDependency: vi.fn(),
+  updateInfraSettings: vi.fn(),
   ...overrides,
 });
 

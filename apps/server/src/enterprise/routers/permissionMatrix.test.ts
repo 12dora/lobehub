@@ -56,6 +56,7 @@ const o04SystemProcedurePaths = [
   'admin.system.getStatus',
   'admin.system.retryJob',
   'admin.system.testDependency',
+  'admin.system.updateInfraSettings',
 ] as const;
 const o04SystemProcedurePathSet = new Set<string>(o04SystemProcedurePaths);
 const o04SystemReadProcedurePaths = [
@@ -115,6 +116,8 @@ const MATRIX_ROLE_PERMISSIONS = {
     PLATFORM_PERMISSIONS.CRED_UPDATE,
     PLATFORM_PERMISSIONS.CRED_DELETE,
     PLATFORM_PERMISSIONS.AUDIT_READ,
+    PLATFORM_PERMISSIONS.MODERATION_READ,
+    PLATFORM_PERMISSIONS.MODERATION_MANAGE,
   ],
   // Hand-written pin — do NOT derive from :read:/:export: filters. A derived pin would
   // equal production by construction and miss the drift class that made auditor stale
@@ -138,6 +141,8 @@ const MATRIX_ROLE_PERMISSIONS = {
     PLATFORM_PERMISSIONS.STATS_READ,
     PLATFORM_PERMISSIONS.CRED_READ,
     PLATFORM_PERMISSIONS.ROLE_READ,
+    PLATFORM_PERMISSIONS.MODERATION_READ,
+    PLATFORM_PERMISSIONS.NETWORK_PROXY_READ,
   ],
   [PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN]: [
     PLATFORM_PERMISSIONS.ADMIN_ACCESS,

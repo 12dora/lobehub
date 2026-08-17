@@ -26,6 +26,7 @@ export interface EmailBrandingAuditEvent {
 }
 
 export interface EmailServiceOptions {
+  impl?: EmailServiceImpl;
   onBrandedSend?: (context: EmailBrandingContext) => void;
   recordBrandingAudit?: (event: EmailBrandingAuditEvent) => Promise<void>;
   resolveBrandingSnapshot?: () => Promise<ServerRuntimeBrandingSnapshot>;
@@ -69,11 +70,49 @@ export class EmailService {
         : undefined;
     const resolvedImplType = implType ?? envImplType ?? EmailImplType.Nodemailer;
 
-    this.emailImpl = createEmailServiceImpl(resolvedImplType);
+    this.emailImpl = options.impl ?? createEmailServiceImpl(resolvedImplType);
     this.resolveBrandingSnapshot =
       options.resolveBrandingSnapshot ?? resolveServerRuntimeBrandingSnapshot;
     this.recordBrandingAudit = options.recordBrandingAudit ?? recordBrandingAudit;
     this.onBrandedSend = options.onBrandedSend;
+  }
+
+  /** DB-effective mail config when configured, otherwise env. */
+  static async create(options: EmailServiceOptions = {}): Promise<EmailService> {
+    try {
+      const { getInfraSnapshot } =
+        await import('@/server/enterprise/services/infraSettings/snapshot');
+      const snapshot = await getInfraSnapshot();
+      if (snapshot.mail.kind === 'smtp') {
+        return new EmailService(EmailImplType.Nodemailer, {
+          ...options,
+          impl: createEmailServiceImpl(EmailImplType.Nodemailer, {
+            from: snapshot.mail.senderName
+              ? `"${snapshot.mail.senderName}" <${snapshot.mail.from}>`
+              : snapshot.mail.from,
+            host: snapshot.mail.host,
+            pass: snapshot.mail.pass,
+            port: snapshot.mail.port,
+            secure: snapshot.mail.secure,
+            user: snapshot.mail.user,
+          }),
+        });
+      }
+      if (snapshot.mail.kind === 'resend') {
+        return new EmailService(EmailImplType.Resend, {
+          ...options,
+          impl: createEmailServiceImpl(EmailImplType.Resend, {
+            apiKey: snapshot.mail.apiKey,
+            from: snapshot.mail.senderName
+              ? `"${snapshot.mail.senderName}" <${snapshot.mail.from}>`
+              : snapshot.mail.from,
+          }),
+        });
+      }
+    } catch {
+      // Fail open to env.
+    }
+    return new EmailService(undefined, options);
   }
 
   /**

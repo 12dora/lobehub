@@ -11,8 +11,11 @@ const decompressZstd = promisify(zstdDecompress);
 const uploadBuffer = vi.fn();
 const getFileByteArray = vi.fn();
 
+const s3Stub = { getFileByteArray, uploadBuffer };
+
 vi.mock('@/server/modules/S3', () => ({
-  FileS3: vi.fn(() => ({ getFileByteArray, uploadBuffer })),
+  FileS3: vi.fn(() => s3Stub),
+  createFileS3: vi.fn(async () => s3Stub),
 }));
 
 const { S3TracingStore, buildTracingKey } = await import('./S3TracingStore');

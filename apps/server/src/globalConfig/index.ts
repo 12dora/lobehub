@@ -16,6 +16,7 @@ import {
   isPlatformAdminFeatureEnabled,
 } from '@/server/enterprise/featureFlags';
 import { ensurePlatformAiRuntimeRegistered } from '@/server/enterprise/services/aiCatalog/runtimeBridge';
+import { getInfraSnapshot } from '@/server/enterprise/services/infraSettings/snapshot';
 import { parseSystemAgent } from '@/server/globalConfig/parseSystemAgent';
 import { type GlobalServerConfig } from '@/types/serverConfig';
 import { cleanObject } from '@/utils/object';
@@ -29,6 +30,17 @@ import { parseFilesConfig } from './parseFilesConfig';
 import { getPublicMemoryExtractionConfig } from './parseMemoryExtractionConfig';
 
 ensurePlatformAiRuntimeRegistered();
+
+const resolveEnableUploadFileToServer = async (): Promise<boolean> => {
+  try {
+    const snapshot = await getInfraSnapshot();
+    if (snapshot.objectStorage.kind === 'complete') return true;
+    if (snapshot.objectStorage.kind === 'unconfigured') return false;
+  } catch {
+    // fall through to env
+  }
+  return !!fileEnv.S3_SECRET_ACCESS_KEY;
+};
 
 /**
  * Get Better-Auth SSO providers list
@@ -126,7 +138,7 @@ export const getServerGlobalConfig = async () => {
     enableMarketTrustedClient: !!(
       appEnv.MARKET_TRUSTED_CLIENT_SECRET && appEnv.MARKET_TRUSTED_CLIENT_ID
     ),
-    enableUploadFileToServer: !!fileEnv.S3_SECRET_ACCESS_KEY,
+    enableUploadFileToServer: await resolveEnableUploadFileToServer(),
     enableVisualUnderstanding: !!(
       toolsEnv.VISUAL_UNDERSTANDING_PROVIDER && toolsEnv.VISUAL_UNDERSTANDING_MODEL
     ),

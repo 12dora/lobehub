@@ -27,6 +27,7 @@ vi.mock('@lobehub/ui', () => ({
   Icon: () => <span />,
   Tag: ({ children }: { children?: ReactNode }) => <span data-testid="status-tag">{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  Tooltip: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
@@ -35,6 +36,26 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {children}
     </button>
   ),
+  Input: (props: Record<string, unknown>) => <input {...props} />,
+  InputPassword: (props: Record<string, unknown>) => <input type="password" {...props} />,
+  Segmented: () => <span />,
+  Switch: () => <span />,
+  toast: { error: vi.fn(), success: vi.fn() },
+}));
+
+// The editable cards reach for admin plumbing the page view itself does not need.
+vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
+  useAdminAccess: () => ({ authMethod: 'password', permissions: [] }),
+}));
+
+vi.mock('./infra/service', () => ({ infraSettingsMutationService: {} }));
+
+vi.mock('./infra/invalidate', () => ({
+  invalidateAdminInfraSettings: () => Promise.resolve(),
+}));
+
+vi.mock('@/enterprise/client/features/admin/primitives/useUnsavedChangesGuard', () => ({
+  useUnsavedChangesGuard: () => undefined,
 }));
 
 vi.mock('@/enterprise/client/features/admin/pages/AdminStateSurfaces', () => ({
@@ -60,27 +81,54 @@ const settings = (): AdminSystemInfraSettings => ({
     vaultAddress: null,
   },
   mail: {
+    enabled: false,
     errorCategory: null,
     fromAddress: 'noreply@example.com',
+    hasResendApiKey: false,
+    hasSmtpPass: true,
     host: 'smtp.example.com',
     port: 587,
     provider: 'smtp',
+    revision: 0,
     secure: true,
     senderName: 'Platform',
+    smtpUser: 'mailer',
+    source: 'env',
     status: 'unknown',
   },
   objectStorage: {
     accessId: 'AKIA****MPLE',
     bucket: 'files',
+    enabled: false,
     endpoint: 'https://s3.example.com',
     errorCategory: null,
+    hasSecretAccessKey: true,
     pathStyle: true,
+    previewUrlExpireIn: null,
     publicDomain: null,
     region: 'us-east-1',
+    revision: 0,
+    setAcl: false,
+    source: 'env',
     status: 'unknown',
   },
   snapshotAt: new Date('2026-08-17T00:00:00.000Z'),
 });
+
+/** Object storage taken over from the environment; mail still environment-sourced. */
+const managedHere = (): AdminSystemInfraSettings => {
+  const base = settings();
+  return {
+    ...base,
+    objectStorage: {
+      ...base.objectStorage,
+      accessId: 'AKIAFULLVALUE',
+      enabled: true,
+      revision: 2,
+      source: 'db',
+    },
+  };
+};
 
 describe('SystemGeneralPageView', () => {
   it('renders masked configuration and hides the probe when the operator cannot test', () => {
@@ -137,5 +185,90 @@ describe('SystemGeneralPageView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'systemGeneral.retry' }));
     expect(onRetry).toHaveBeenCalled();
+  });
+
+  it('offers to take an environment-sourced dependency over', () => {
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={settings()}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByText('systemGeneral.source.env')).toHaveLength(2);
+    expect(screen.getAllByText('systemGeneral.edit.switchToDb')).toHaveLength(2);
+    // Read-only rows, not a form.
+    expect(screen.queryByDisplayValue('files')).toBeNull();
+  });
+
+  it('shows the editable form for a dependency that is already managed here', () => {
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={managedHere()}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('systemGeneral.source.db')).toBeTruthy();
+    expect(screen.getByDisplayValue('files')).toBeTruthy();
+    expect(screen.getByText('systemGeneral.edit.save')).toBeTruthy();
+    expect(screen.getByText('systemGeneral.edit.revert')).toBeTruthy();
+  });
+
+  it('warns when a saved override exists but is not the configuration in effect', () => {
+    const base = settings();
+    const failOpen: AdminSystemInfraSettings = {
+      ...base,
+      // The server could not decrypt/load the saved override and fell open to the environment.
+      objectStorage: { ...base.objectStorage, enabled: true, revision: 3, source: 'env' },
+    };
+
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={failOpen}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('systemGeneral.failOpen.title')).toBeTruthy();
+    // Mail is a normal environment card, so exactly one warning is shown.
+    expect(screen.queryAllByText('systemGeneral.failOpen.title')).toHaveLength(1);
+  });
+
+  it('states plainly that the encryption key cannot be changed here', () => {
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={settings()}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('systemGeneral.keyManagement.readOnlyNotice')).toBeTruthy();
+    // Only the two environment-sourced cards still explain how to change the variables.
+    expect(screen.getAllByText('systemGeneral.howToChange.title')).toHaveLength(2);
   });
 });

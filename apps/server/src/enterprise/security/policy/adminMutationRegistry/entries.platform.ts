@@ -1,5 +1,6 @@
 import {
   conditional,
+  conditionalReauth,
   dangerousMutation,
   identityLkg,
   noReason,
@@ -57,7 +58,6 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'Apply the global managed-resource enforcement policy site-wide immediately.',
     { reauth: recentReauth },
   ),
-  'admin.security.secretRotation.cancel': dangerousMutation(
   'admin.networkProxy.createSubscription': dangerousMutation(
     'admin.networkProxy.createSubscription',
     'high',
@@ -138,6 +138,7 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'Update a subscription URL, payload, or filters that can change site-wide egress nodes.',
     { outbound: safeOutbound, reason: noReason, reauth: recentReauth },
   ),
+  'admin.security.secretRotation.cancel': dangerousMutation(
     'admin.security.secretRotation.cancel',
     'critical',
     'Stop future batches of an active secret re-wrap job without reverting committed envelopes.',
@@ -226,10 +227,23 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
       ),
       lastKnownGood: remoteProbeNoLkg,
       outbound: conditional(
-        'Resend probes use the enterprise outbound policy client with a bounded timeout. S3 and SMTP probes use native SDK clients.',
-        'S3 and SMTP destinations come only from the process environment, not operator input, and are not routed through the outbound policy client.',
+        'Draft and saved destinations are checked with assertInfraDestinationAllowed (DNS + deployer SSRF policy; metadata always denied). Resend probes use the enterprise outbound policy client. S3/SMTP SDKs then talk to the already-checked destination.',
+        'The live S3/SMTP SDK call is not pinned per-request; destination policy is enforced at probe/save time, not on every subsequent upload.',
       ),
       reason: noReason,
+    },
+  ),
+  'admin.system.updateInfraSettings': dangerousMutation(
+    'admin.system.updateInfraSettings',
+    'high',
+    'Replace platform object-storage / mail configuration.',
+    {
+      outbound: conditional(
+        'S3 endpoint/publicDomain and SMTP host are checked with assertInfraDestinationAllowed before the CAS write (DNS + deployer SSRF policy; metadata always denied).',
+        'Runtime FileS3/Nodemailer clients are not re-checked per request after the saved destination has passed the save-time policy.',
+      ),
+      reason: optionalReasonInput,
+      reauth: recentReauth,
     },
   ),
 } as const satisfies Record<`admin.${string}`, AdminMutationDefinition>;

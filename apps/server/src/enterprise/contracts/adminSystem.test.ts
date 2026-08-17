@@ -10,6 +10,7 @@ import {
   adminSystemRequestRestartOutputSchema,
   adminSystemTestDependencyInputSchema,
   adminSystemTestDependencyOutputSchema,
+  adminSystemUpdateInfraSettingsInputSchema,
 } from './adminSystem';
 
 describe('admin system restart acceptance output', () => {
@@ -208,23 +209,35 @@ describe('admin system infrastructure settings contracts', () => {
       vaultAddress: null,
     },
     mail: {
+      enabled: false,
       errorCategory: null,
       fromAddress: 'noreply@example.com',
+      hasResendApiKey: false,
+      hasSmtpPass: true,
       host: 'smtp.example.com',
       port: 587,
       provider: 'smtp',
+      revision: 0,
       secure: true,
       senderName: 'Platform',
+      smtpUser: 'smtp-user',
+      source: 'env',
       status: 'disabled',
     },
     objectStorage: {
       accessId: 'AKIA****MPLE',
       bucket: 'files',
+      enabled: false,
       endpoint: 'https://s3.example.com',
       errorCategory: 'passive_check_only',
+      hasSecretAccessKey: true,
       pathStyle: true,
+      previewUrlExpireIn: 7200,
       publicDomain: 'https://cdn.example.com',
       region: 'us-east-1',
+      revision: 0,
+      setAcl: false,
+      source: 'env',
       status: 'unknown',
     },
     snapshotAt: new Date('2026-08-17T00:00:00.000Z'),
@@ -275,5 +288,76 @@ describe('admin system infrastructure settings contracts', () => {
         ok: false,
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts a minimal enabled:false update and still requires the full tuple on enable', () => {
+    expect(
+      adminSystemUpdateInfraSettingsInputSchema.parse({
+        config: { enabled: false },
+        dependency: 'objectStorage',
+        expectedRevision: 0,
+      }),
+    ).toMatchObject({
+      config: { enabled: false, secretAccessKey: { action: 'keep' } },
+    });
+    expect(
+      adminSystemUpdateInfraSettingsInputSchema.parse({
+        config: { enabled: false },
+        dependency: 'mail',
+        expectedRevision: 0,
+      }),
+    ).toMatchObject({
+      config: { enabled: false },
+    });
+    expect(
+      adminSystemUpdateInfraSettingsInputSchema.safeParse({
+        config: { enabled: false, accessKeyId: '' },
+        dependency: 'objectStorage',
+        expectedRevision: 0,
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSystemUpdateInfraSettingsInputSchema.safeParse({
+        config: { enabled: true, secretAccessKey: { action: 'keep' } },
+        dependency: 'objectStorage',
+        expectedRevision: 0,
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSystemUpdateInfraSettingsInputSchema.safeParse({
+        config: { enabled: true, provider: 'smtp' },
+        dependency: 'mail',
+        expectedRevision: 0,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a keep/replace/clear secret action on updateInfraSettings', () => {
+    const input = {
+      config: {
+        accessKeyId: 'AKIAEXAMPLE',
+        bucket: 'files',
+        enabled: true,
+        endpoint: 'https://s3.example.com',
+        forcePathStyle: false,
+        secretAccessKey: { action: 'replace' as const, value: 'super-secret' },
+        setAcl: false,
+      },
+      dependency: 'objectStorage' as const,
+      expectedRevision: 0,
+    };
+    expect(adminSystemUpdateInfraSettingsInputSchema.parse(input)).toEqual(input);
+    expect(
+      adminSystemUpdateInfraSettingsInputSchema.safeParse({
+        ...input,
+        config: { ...input.config, secretAccessKey: { action: 'keep' } },
+      }).success,
+    ).toBe(true);
+    expect(
+      adminSystemTestDependencyInputSchema.parse({
+        dependency: 'objectStorage',
+        draft: input.config,
+      }).draft,
+    ).toEqual(input.config);
   });
 });

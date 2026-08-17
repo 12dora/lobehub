@@ -158,7 +158,7 @@ export class AdminBrandingAssetService {
     this.storage = options.storage ?? new FileBrandingAssetStorage(db);
   }
 
-  isStorageConfigured = (): boolean => this.storage.isConfigured();
+  isStorageConfigured = async (): Promise<boolean> => this.storage.isConfigured();
 
   private finalizeReplaySuccess = async (
     asset: PlatformBrandingAssetItem,
@@ -340,7 +340,7 @@ export class AdminBrandingAssetService {
     rawInput: AdminBrandingUploadAssetInput,
     options: AdminBrandingAssetUploadOptions = {},
   ) => {
-    if (!this.storage.isConfigured()) throw new BrandingAssetStorageUnavailableError();
+    if (!(await this.storage.isConfigured())) throw new BrandingAssetStorageUnavailableError();
     const input = adminBrandingUploadAssetInputSchema.parse(rawInput);
     const asset = await validateBrandingAsset(input);
     const fingerprint = requestFingerprint(input);

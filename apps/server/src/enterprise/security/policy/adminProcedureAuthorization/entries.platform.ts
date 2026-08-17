@@ -369,4 +369,9 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
     path: 'admin.system.testDependency',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
+  {
+    kind: 'mutation',
+    path: 'admin.system.updateInfraSettings',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
 ] as const satisfies readonly AdminProcedureAuthorization[];

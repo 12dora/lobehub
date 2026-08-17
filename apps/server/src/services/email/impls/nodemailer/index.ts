@@ -13,27 +13,45 @@ const log = debug('lobe-email:Nodemailer');
 /**
  * Nodemailer implementation of the email service
  */
+export interface NodemailerInjectedConfig {
+  from?: string;
+  host?: string;
+  pass: string;
+  port?: number;
+  secure?: boolean;
+  user: string;
+}
+
 export class NodemailerImpl implements EmailServiceImpl {
+  private readonly fromFallback: string;
   private transporter: Transporter;
 
-  constructor() {
-    log('Initializing Nodemailer from environment variables');
+  constructor(config?: NodemailerInjectedConfig) {
+    const user = config?.user ?? emailEnv.SMTP_USER;
+    const pass = config?.pass ?? emailEnv.SMTP_PASS;
+    log(
+      config
+        ? 'Initializing Nodemailer from injected config'
+        : 'Initializing Nodemailer from environment variables',
+    );
 
-    if (!emailEnv.SMTP_USER || !emailEnv.SMTP_PASS) {
+    if (!user || !pass) {
       throw new Error(
         'SMTP_USER and SMTP_PASS environment variables are required to use email service. Please configure SMTP settings in your .env file.',
       );
     }
 
+    this.fromFallback = config?.from ?? emailEnv.SMTP_FROM ?? user;
+
     // Note: Use || to handle empty string from Dockerfile defaults
     const transportConfig: NodemailerConfig = {
       auth: {
-        pass: emailEnv.SMTP_PASS,
-        user: emailEnv.SMTP_USER,
+        pass,
+        user,
       },
-      host: emailEnv.SMTP_HOST || 'localhost',
-      port: emailEnv.SMTP_PORT || 587,
-      secure: emailEnv.SMTP_SECURE || false,
+      host: (config?.host ?? emailEnv.SMTP_HOST) || 'localhost',
+      port: (config?.port ?? emailEnv.SMTP_PORT) || 587,
+      secure: (config?.secure ?? emailEnv.SMTP_SECURE) || false,
     };
 
     try {
@@ -51,7 +69,7 @@ export class NodemailerImpl implements EmailServiceImpl {
 
   async sendMail(payload: EmailPayload): Promise<EmailResponse> {
     // Use SMTP_FROM as default sender, fallback to SMTP_USER for backward compatibility
-    const from = payload.from || emailEnv.SMTP_FROM || emailEnv.SMTP_USER!;
+    const from = payload.from || this.fromFallback;
 
     log('Sending email with payload: %o', {
       from,

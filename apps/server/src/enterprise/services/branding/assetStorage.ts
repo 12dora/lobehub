@@ -5,6 +5,7 @@ import sharp from 'sharp';
 
 import type { LobeChatDatabase } from '@/database/type';
 import { fileEnv } from '@/envs/file';
+import { getInfraSnapshot } from '@/server/enterprise/services/infraSettings/snapshot';
 import { createFileServiceModule } from '@/server/services/file/impls';
 
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
@@ -46,7 +47,7 @@ export interface ValidatedBrandingAsset {
 
 export interface BrandingAssetStorage {
   delete: (objectKey: string) => Promise<void>;
-  isConfigured: () => boolean;
+  isConfigured: () => boolean | Promise<boolean>;
   upload: (params: { asset: ValidatedBrandingAsset; objectKey: string }) => Promise<void>;
 }
 
@@ -153,15 +154,21 @@ export const validateBrandingAsset = async (params: {
 export class FileBrandingAssetStorage implements BrandingAssetStorage {
   constructor(private readonly db: LobeChatDatabase) {}
 
-  isConfigured = (): boolean =>
-    Boolean(fileEnv.S3_BUCKET && (fileEnv.S3_ENDPOINT || fileEnv.S3_REGION));
+  isConfigured = async (): Promise<boolean> => {
+    try {
+      const snapshot = await getInfraSnapshot();
+      return snapshot.objectStorage.kind === 'complete';
+    } catch {
+      return Boolean(fileEnv.S3_BUCKET && (fileEnv.S3_ENDPOINT || fileEnv.S3_REGION));
+    }
+  };
 
   delete = async (objectKey: string): Promise<void> => {
     await createFileServiceModule(this.db).deleteFile(objectKey);
   };
 
   upload = async (params: { asset: ValidatedBrandingAsset; objectKey: string }): Promise<void> => {
-    if (!this.isConfigured()) throw new BrandingAssetStorageUnavailableError();
+    if (!(await this.isConfigured())) throw new BrandingAssetStorageUnavailableError();
 
     await createFileServiceModule(this.db).uploadBuffer(
       params.objectKey,

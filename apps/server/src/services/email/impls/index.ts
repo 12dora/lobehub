@@ -1,5 +1,5 @@
-import { NodemailerImpl } from './nodemailer';
-import { ResendImpl } from './resend';
+import { NodemailerImpl, type NodemailerInjectedConfig } from './nodemailer';
+import { ResendImpl, type ResendInjectedConfig } from './resend';
 import { type EmailServiceImpl } from './type';
 
 /**
@@ -17,17 +17,18 @@ export enum EmailImplType {
  */
 export const createEmailServiceImpl = (
   type: EmailImplType = EmailImplType.Nodemailer,
+  config?: NodemailerInjectedConfig | ResendInjectedConfig,
 ): EmailServiceImpl => {
   switch (type) {
     case EmailImplType.Nodemailer: {
-      return new NodemailerImpl();
+      return new NodemailerImpl(config as NodemailerInjectedConfig | undefined);
     }
     case EmailImplType.Resend: {
-      return new ResendImpl();
+      return new ResendImpl(config as ResendInjectedConfig | undefined);
     }
 
     default: {
-      return new NodemailerImpl();
+      return new NodemailerImpl(config as NodemailerInjectedConfig | undefined);
     }
   }
 };

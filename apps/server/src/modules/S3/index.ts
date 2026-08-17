@@ -11,8 +11,10 @@ import mime from 'mime';
 import { z } from 'zod';
 
 import { fileEnv } from '@/envs/file';
+import { getInfraSnapshot } from '@/server/enterprise/services/infraSettings/snapshot';
 import { YEAR } from '@/utils/units';
 
+import type { ResolvedFileS3Config } from './resolveFileS3Config';
 import { DEFAULT_S3_REGION, resolveFileS3Config } from './resolveFileS3Config';
 
 export const fileSchema = z.object({
@@ -39,6 +41,8 @@ export class S3 {
 
   private readonly setAcl: boolean;
 
+  private readonly previewUrlExpireIn: number;
+
   constructor(
     accessKeyId: string | undefined,
     secretAccessKey: string | undefined,
@@ -46,6 +50,7 @@ export class S3 {
     options?: {
       bucket?: string;
       forcePathStyle?: boolean;
+      previewUrlExpireIn?: number;
       region?: string;
       setAcl?: boolean;
     },
@@ -56,6 +61,7 @@ export class S3 {
 
     this.bucket = options?.bucket;
     this.setAcl = options?.setAcl || false;
+    this.previewUrlExpireIn = options?.previewUrlExpireIn ?? fileEnv.S3_PREVIEW_URL_EXPIRE_IN;
 
     this.client = new S3Client({
       credentials: {
@@ -166,7 +172,7 @@ export class S3 {
     });
 
     return getSignedUrl(this.client, command, {
-      expiresIn: expiresIn ?? fileEnv.S3_PREVIEW_URL_EXPIRE_IN,
+      expiresIn: expiresIn ?? this.previewUrlExpireIn,
     });
   }
 
@@ -220,8 +226,24 @@ export class S3 {
   }
 }
 
+type CompleteFileS3Config = Extract<ResolvedFileS3Config, { kind: 'complete' }> & {
+  previewUrlExpireIn?: number;
+};
+
 export class FileS3 extends S3 {
-  constructor() {
+  /** Env-only constructor. Prefer {@link FileS3.create} / {@link createFileS3} for DB-effective config. */
+  constructor(resolved?: CompleteFileS3Config) {
+    const config = resolved ?? FileS3.resolveEnv();
+    super(config.accessKeyId, config.secretAccessKey, config.endpoint, {
+      bucket: config.bucket,
+      forcePathStyle: config.forcePathStyle,
+      previewUrlExpireIn: resolved?.previewUrlExpireIn,
+      region: config.region,
+      setAcl: config.setAcl,
+    });
+  }
+
+  private static resolveEnv(): Extract<ResolvedFileS3Config, { kind: 'complete' }> {
     const config = resolveFileS3Config(fileEnv);
     if (config.kind !== 'complete') {
       if (!fileEnv.S3_ACCESS_KEY_ID || !fileEnv.S3_SECRET_ACCESS_KEY || !fileEnv.S3_ENDPOINT) {
@@ -229,11 +251,46 @@ export class FileS3 extends S3 {
       }
       throw new Error('S3 bucket is not set, please check your env');
     }
-    super(config.accessKeyId, config.secretAccessKey, config.endpoint, {
-      bucket: config.bucket,
-      forcePathStyle: config.forcePathStyle,
-      region: config.region,
-      setAcl: config.setAcl,
-    });
+    return config;
+  }
+
+  static async create(): Promise<FileS3> {
+    return createFileS3();
   }
 }
+
+let createFileS3Memo: { fingerprint: string; promise: Promise<FileS3> } | null = null;
+
+const buildFileS3FromSnapshot = async (): Promise<FileS3> => {
+  try {
+    const snapshot = await getInfraSnapshot();
+    if (snapshot.objectStorage.kind === 'complete') {
+      return new FileS3({
+        ...snapshot.objectStorage,
+        previewUrlExpireIn: snapshot.objectStorage.previewUrlExpireIn,
+      });
+    }
+  } catch {
+    // Fail open to env — FileS3 ctor throws the same errors as before.
+  }
+  return new FileS3();
+};
+
+/** Async factory: DB-effective object storage when configured, otherwise env. */
+export const createFileS3 = async (): Promise<FileS3> => {
+  const fingerprint = await getInfraSnapshot()
+    .then((snapshot) => snapshot.fingerprint)
+    .catch(() => 'env');
+  if (createFileS3Memo?.fingerprint === fingerprint) return createFileS3Memo.promise;
+
+  const promise = buildFileS3FromSnapshot().catch((error) => {
+    if (createFileS3Memo?.promise === promise) createFileS3Memo = null;
+    throw error;
+  });
+  createFileS3Memo = { fingerprint, promise };
+  return promise;
+};
+
+export const resetCreateFileS3ForTest = (): void => {
+  createFileS3Memo = null;
+};

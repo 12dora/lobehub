@@ -3,6 +3,7 @@ import { after } from 'next/server';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { PlatformRevisionConflictError } from '@/database/models/platform/errors';
 import { preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
@@ -24,6 +25,8 @@ import {
   adminSystemRetryJobOutputSchema,
   adminSystemTestDependencyInputSchema,
   adminSystemTestDependencyOutputSchema,
+  adminSystemUpdateInfraSettingsInputSchema,
+  adminSystemUpdateInfraSettingsOutputSchema,
 } from '../../contracts/adminSystem';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
@@ -35,7 +38,22 @@ import {
   IdentityProviderSystemError,
   IdentityProviderSystemService,
 } from '../../services/identityProvider/systemService';
-import type { PlatformAuditService } from '../../services/platformAudit';
+import {
+  getMailSettings,
+  getObjectStorageSettings,
+  INFRA_SETTINGS_AUDIT_TARGET_TYPE,
+  InfraSettingsSecretRequiredError,
+  mailSecretChanged,
+  objectStorageSecretChanged,
+  publishInfraInvalidation,
+  summarizeMailAfterDiff,
+  summarizeObjectStorageAfterDiff,
+  updateMailSettings,
+  updateObjectStorageSettings,
+} from '../../services/infraSettings';
+import { InfraSettingsDestinationError } from '../../services/infraSettings/destinationPolicy';
+import { InfraSettingsSecretReuseError } from '../../services/infraSettings/errors';
+import { PlatformAuditService } from '../../services/platformAudit';
 import { PlatformSystemAdminService } from '../../services/platformSystem/adminService';
 import {
   PlatformSystemJobConflictError,
@@ -128,6 +146,36 @@ const executePlatformSystem = async <T>(operation: () => Promise<T>): Promise<T>
       return throwEnterpriseError({
         code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
         httpCode: 'BAD_REQUEST',
+      });
+    }
+    if (error instanceof PlatformRevisionConflictError) {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+        details: {
+          currentRevision: error.details?.currentRevision ?? null,
+          expectedRevision: error.details?.expectedRevision ?? null,
+          resourceId: error.details?.resourceId ?? null,
+        },
+        httpCode: 'CONFLICT',
+      });
+    }
+    if (
+      error instanceof InfraSettingsSecretRequiredError ||
+      error instanceof InfraSettingsSecretReuseError
+    ) {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+        details: { field: error.field },
+        httpCode: 'BAD_REQUEST',
+        message: error.message,
+      });
+    }
+    if (error instanceof InfraSettingsDestinationError) {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+        details: { field: error.field },
+        httpCode: 'BAD_REQUEST',
+        message: error.message,
       });
     }
     console.error('[admin.system] operation unavailable', {
@@ -304,4 +352,85 @@ export const adminSystemRouter = router({
     .mutation(({ input }) =>
       executePlatformSystem(() => new InfraSettingsService().testDependency(input)),
     ),
+
+  updateInfraSettings: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
+    .input(adminSystemUpdateInfraSettingsInputSchema)
+    .output(adminSystemUpdateInfraSettingsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const targetId = input.dependency === 'objectStorage' ? 'object_storage' : 'mail';
+      const action =
+        input.dependency === 'objectStorage'
+          ? AUDIT_ACTION.SYSTEM_INFRA_OBJECT_STORAGE_UPDATE
+          : AUDIT_ACTION.SYSTEM_INFRA_MAIL_UPDATE;
+      await assertDangerousReauthWithAudit({
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        serverDB: ctx.serverDB,
+        denied: {
+          action,
+          actorUserId: ctx.userId!,
+          reason: input.reason,
+          targetId,
+          targetType: INFRA_SETTINGS_AUDIT_TARGET_TYPE,
+        },
+      });
+
+      return executePlatformSystem(async () => {
+        const applied = await ctx.serverDB.transaction(async (tx) => {
+          if (input.dependency === 'objectStorage') {
+            const previous = await getObjectStorageSettings(tx);
+            const row = await updateObjectStorageSettings(tx, {
+              config: input.config,
+              expectedRevision: input.expectedRevision,
+              updatedBy: ctx.userId!,
+            });
+            await new PlatformAuditService(tx).append({
+              action: AUDIT_ACTION.SYSTEM_INFRA_OBJECT_STORAGE_UPDATE,
+              actorUserId: ctx.userId!,
+              afterDiff: summarizeObjectStorageAfterDiff(
+                row.config,
+                objectStorageSecretChanged(previous.config, row.config),
+              ),
+              configRevision: row.revision,
+              reason: input.reason,
+              result: 'success',
+              targetId,
+              targetType: INFRA_SETTINGS_AUDIT_TARGET_TYPE,
+            });
+            return {
+              revision: row.revision,
+              source: row.config.enabled ? ('db' as const) : ('env' as const),
+            };
+          }
+
+          const previous = await getMailSettings(tx);
+          const row = await updateMailSettings(tx, {
+            config: input.config,
+            expectedRevision: input.expectedRevision,
+            updatedBy: ctx.userId!,
+          });
+          await new PlatformAuditService(tx).append({
+            action: AUDIT_ACTION.SYSTEM_INFRA_MAIL_UPDATE,
+            actorUserId: ctx.userId!,
+            afterDiff: summarizeMailAfterDiff(
+              row.config,
+              mailSecretChanged(previous.config, row.config),
+            ),
+            configRevision: row.revision,
+            reason: input.reason,
+            result: 'success',
+            targetId,
+            targetType: INFRA_SETTINGS_AUDIT_TARGET_TYPE,
+          });
+          return {
+            revision: row.revision,
+            source: row.config.enabled ? ('db' as const) : ('env' as const),
+          };
+        });
+
+        await publishInfraInvalidation(applied.revision);
+        return { appliedAt: new Date(), revision: applied.revision, source: applied.source };
+      });
+    }),
 });

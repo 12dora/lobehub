@@ -1,18 +1,46 @@
 import { HeadBucketCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import nodemailer from 'nodemailer';
 
-import { emailEnv } from '@/envs/email';
-import { fileEnv } from '@/envs/file';
+import { getServerDB } from '@/database/core/db-adaptor';
 import type {
   AdminSystemGetInfraSettings,
   AdminSystemInfraDependency,
+  AdminSystemMailConfig,
+  AdminSystemObjectStorageConfig,
   AdminSystemTestDependencyReason,
 } from '@/server/enterprise/contracts/adminSystem';
 import { resolveFileS3Config } from '@/server/modules/S3/resolveFileS3Config';
+import type { MailUpdate, ObjectStorageUpdate } from '@/types/platform/infraSettings';
 
 import { createSafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
-import type { ResolvedEmailConfig } from './infraDependencyConfig';
+import {
+  envPreviewUrlExpireIn,
+  getInfraSnapshot,
+  getMailSettings,
+  getObjectStorageSettings,
+  mailSnapshotToEnvBag,
+  objectStorageSnapshotToEnvBag,
+  openInfraSecret,
+  resolveInfraEnvBag,
+} from '../infraSettings';
+import {
+  assertMailDestinationsAllowed,
+  assertObjectStorageDestinationsAllowed,
+  InfraSettingsDestinationError,
+} from '../infraSettings/destinationPolicy';
+import {
+  INFRA_SECRET_REUSE_MESSAGE,
+  mailDestinationTuple,
+  mailTuplesEqual,
+  objectStorageDestinationTuple,
+  objectStorageTuplesEqual,
+} from '../infraSettings/destinationTuple';
+import {
+  InfraSettingsSecretRequiredError,
+  InfraSettingsSecretReuseError,
+} from '../infraSettings/errors';
+import type { InfraEnvBag, ResolvedEmailConfig } from './infraDependencyConfig';
 import {
   mailHealth,
   maskAccessId,
@@ -25,7 +53,7 @@ import {
 const PROBE_TIMEOUT_MS = 8000;
 const RESEND_DOMAINS_URL = 'https://api.resend.com/domains';
 
-type EnvBag = Record<string, string | undefined>;
+type EnvBag = InfraEnvBag;
 
 export type InfraProbeReason = AdminSystemTestDependencyReason;
 
@@ -69,6 +97,8 @@ export interface InfraOutboundFetch {
 }
 
 export interface InfraSettingsServiceOptions {
+  assertMailDestinations?: typeof assertMailDestinationsAllowed;
+  assertObjectStorageDestinations?: typeof assertObjectStorageDestinationsAllowed;
   createMailTransport?: (
     config: Extract<ResolvedEmailConfig, { kind: 'smtp' }>,
   ) => InfraMailTransport;
@@ -81,37 +111,7 @@ export interface InfraSettingsServiceOptions {
   secretServiceFromEnv?: (env: EnvBag) => InfraSecretService | null;
 }
 
-const resolveEnv = (override?: EnvBag): EnvBag => {
-  if (override) return override;
-  return {
-    EMAIL_SERVICE_PROVIDER: emailEnv.EMAIL_SERVICE_PROVIDER,
-    PLATFORM_KEY_PROVIDER: process.env.PLATFORM_KEY_PROVIDER,
-    PLATFORM_MASTER_KEY: process.env.PLATFORM_MASTER_KEY,
-    PLATFORM_MASTER_KEY_ID: process.env.PLATFORM_MASTER_KEY_ID,
-    RESEND_API_KEY: emailEnv.RESEND_API_KEY,
-    RESEND_FROM: emailEnv.RESEND_FROM,
-    S3_ACCESS_KEY_ID: fileEnv.S3_ACCESS_KEY_ID,
-    S3_BUCKET: fileEnv.S3_BUCKET,
-    S3_ENABLE_PATH_STYLE: fileEnv.S3_ENABLE_PATH_STYLE ? '1' : undefined,
-    S3_ENDPOINT: fileEnv.S3_ENDPOINT,
-    S3_PUBLIC_DOMAIN: fileEnv.S3_PUBLIC_DOMAIN,
-    S3_REGION: fileEnv.S3_REGION,
-    S3_SECRET_ACCESS_KEY: fileEnv.S3_SECRET_ACCESS_KEY,
-    SMTP_FROM: emailEnv.SMTP_FROM,
-    SMTP_HOST: emailEnv.SMTP_HOST,
-    SMTP_PASS: emailEnv.SMTP_PASS,
-    SMTP_PORT: emailEnv.SMTP_PORT === undefined ? undefined : String(emailEnv.SMTP_PORT),
-    SMTP_SECURE: emailEnv.SMTP_SECURE ? 'true' : undefined,
-    SMTP_USER: emailEnv.SMTP_USER,
-    VAULT_ADDR: process.env.VAULT_ADDR,
-    VAULT_APPROLE_MOUNT_PATH: process.env.VAULT_APPROLE_MOUNT_PATH,
-    VAULT_APPROLE_ROLE_ID: process.env.VAULT_APPROLE_ROLE_ID,
-    VAULT_APPROLE_SECRET_ID: process.env.VAULT_APPROLE_SECRET_ID,
-    VAULT_KV_MOUNT_PATH: process.env.VAULT_KV_MOUNT_PATH,
-    VAULT_KV_SECRET_PATH: process.env.VAULT_KV_SECRET_PATH,
-    VAULT_TOKEN: process.env.VAULT_TOKEN,
-  };
-};
+const resolveEnv = (override?: EnvBag): EnvBag => resolveInfraEnvBag(override);
 
 const isTimeoutError = (error: unknown): boolean => {
   if (!error || typeof error !== 'object') return false;
@@ -320,65 +320,100 @@ export class InfraSettingsService {
   private readonly createMailTransport: NonNullable<
     InfraSettingsServiceOptions['createMailTransport']
   >;
+  private readonly assertMailDestinations: typeof assertMailDestinationsAllowed;
+  private readonly assertObjectStorageDestinations: typeof assertObjectStorageDestinationsAllowed;
   private readonly createS3Client: NonNullable<InfraSettingsServiceOptions['createS3Client']>;
   private readonly env: EnvBag;
+  private readonly envOverride: boolean;
   private readonly now: () => Date;
   private readonly outboundFetch: InfraOutboundFetch;
   private readonly secretServiceFromEnv: (env: EnvBag) => InfraSecretService | null;
 
   constructor(options: InfraSettingsServiceOptions = {}) {
+    this.envOverride = options.env !== undefined;
     this.env = resolveEnv(options.env);
     this.now = options.now ?? (() => new Date());
     this.createS3Client = options.createS3Client ?? defaultCreateS3Client;
     this.createMailTransport = options.createMailTransport ?? defaultCreateMailTransport;
     this.outboundFetch = options.outboundFetch ?? defaultOutboundFetch;
     this.secretServiceFromEnv = options.secretServiceFromEnv ?? defaultSecretServiceFromEnv;
+    this.assertObjectStorageDestinations =
+      options.assertObjectStorageDestinations ?? assertObjectStorageDestinationsAllowed;
+    this.assertMailDestinations = options.assertMailDestinations ?? assertMailDestinationsAllowed;
   }
 
-  getInfraSettings = (): AdminSystemGetInfraSettings => {
-    const objectStorage = objectStorageHealth(this.env);
-    const mail = mailHealth(this.env);
-    const s3 = resolveFileS3Config(this.env);
-    const email = resolveEmailConfig(this.env);
-    const keyManagement = resolveKeyManagementOverview(this.env);
+  getInfraSettings = async (): Promise<AdminSystemGetInfraSettings> => {
+    if (this.envOverride) {
+      return this.projectFromEnv(this.env, {
+        mail: {
+          enabled: false,
+          hasResendApiKey: Boolean(this.env.RESEND_API_KEY),
+          hasSmtpPass: Boolean(this.env.SMTP_PASS),
+          revision: 0,
+          smtpUser: this.env.SMTP_USER?.trim() || null,
+          source: 'env',
+        },
+        objectStorage: {
+          accessIdMode: 'mask',
+          enabled: false,
+          hasSecretAccessKey: Boolean(this.env.S3_SECRET_ACCESS_KEY),
+          previewUrlExpireIn: envPreviewUrlExpireIn(this.env),
+          revision: 0,
+          setAcl: this.env.S3_SET_ACL === '1',
+          source: 'env',
+        },
+      });
+    }
 
-    return {
-      keyManagement,
+    const db = await getServerDB();
+    const [snapshot, storageRow, mailRow] = await Promise.all([
+      getInfraSnapshot(),
+      getObjectStorageSettings(db),
+      getMailSettings(db),
+    ]);
+    const storageBag = objectStorageSnapshotToEnvBag(snapshot.objectStorage);
+    const mailBag = mailSnapshotToEnvBag(snapshot.mail);
+    const merged: EnvBag = { ...this.env, ...storageBag, ...mailBag };
+
+    return this.projectFromEnv(merged, {
       mail: {
-        errorCategory: mail.errorCategory,
-        fromAddress: email.kind === 'smtp' || email.kind === 'resend' ? email.from : null,
-        host: email.kind === 'smtp' ? email.host : null,
-        port: email.kind === 'smtp' ? email.port : null,
-        provider:
-          email.kind === 'resend' || (email.kind === 'incomplete' && email.provider === 'resend')
-            ? 'resend'
-            : email.kind === 'unconfigured'
-              ? 'unconfigured'
-              : 'smtp',
-        secure: email.kind === 'smtp' ? email.secure : null,
-        senderName: email.kind === 'smtp' || email.kind === 'resend' ? email.senderName : null,
-        status: mail.status,
+        enabled: mailRow.config.enabled,
+        hasResendApiKey:
+          snapshot.mail.source === 'db'
+            ? Boolean(mailRow.config.resend?.apiKeyCiphertext)
+            : Boolean(this.env.RESEND_API_KEY),
+        hasSmtpPass:
+          snapshot.mail.source === 'db'
+            ? Boolean(mailRow.config.smtp?.passCiphertext)
+            : Boolean(this.env.SMTP_PASS),
+        revision: mailRow.revision,
+        smtpUser:
+          snapshot.mail.kind === 'smtp'
+            ? snapshot.mail.user
+            : (mailRow.config.smtp?.user ?? this.env.SMTP_USER?.trim()) || null,
+        source: snapshot.mail.source,
       },
       objectStorage: {
-        accessId: maskAccessId(this.env.S3_ACCESS_KEY_ID),
-        bucket: s3.kind === 'complete' ? s3.bucket : this.env.S3_BUCKET?.trim() || null,
-        endpoint: s3.kind === 'complete' ? s3.endpoint : this.env.S3_ENDPOINT?.trim() || null,
-        errorCategory: objectStorage.errorCategory,
-        pathStyle:
-          s3.kind === 'complete' ? s3.forcePathStyle : this.env.S3_ENABLE_PATH_STYLE === '1',
-        publicDomain:
-          s3.kind === 'complete'
-            ? (s3.publicDomain ?? null)
-            : this.env.S3_PUBLIC_DOMAIN?.trim() || null,
-        region: s3.kind === 'complete' ? s3.region : null,
-        status: objectStorage.status,
+        accessIdMode: snapshot.objectStorage.source === 'db' ? 'full' : 'mask',
+        enabled: storageRow.config.enabled,
+        hasSecretAccessKey:
+          snapshot.objectStorage.source === 'db'
+            ? Boolean(storageRow.config.secretAccessKeyCiphertext)
+            : Boolean(this.env.S3_SECRET_ACCESS_KEY),
+        previewUrlExpireIn: snapshot.objectStorage.previewUrlExpireIn,
+        revision: storageRow.revision,
+        setAcl:
+          snapshot.objectStorage.kind === 'complete'
+            ? snapshot.objectStorage.setAcl
+            : storageRow.config.setAcl,
+        source: snapshot.objectStorage.source,
       },
-      snapshotAt: this.now(),
-    };
+    });
   };
 
   testDependency = async (input: {
     dependency: AdminSystemInfraDependency;
+    draft?: AdminSystemMailConfig | AdminSystemObjectStorageConfig;
   }): Promise<{
     checkedAt: Date;
     latencyMs: number;
@@ -388,18 +423,42 @@ export class InfraSettingsService {
     const started = Date.now();
     const checkedAt = this.now();
     try {
+      if (input.dependency === 'keyManagement') {
+        await probeKeyManagement(this.env, this.secretServiceFromEnv);
+        return { checkedAt, latencyMs: Date.now() - started, ok: true };
+      }
+
+      const draftBag = input.draft
+        ? await this.envBagFromDraft(input.dependency, input.draft)
+        : null;
+      if (draftBag === 'configuration_incomplete') {
+        throw new InfraProbeError('configuration_incomplete');
+      }
+      const env = draftBag ?? (await this.effectiveEnvFor(input.dependency));
+
       if (input.dependency === 'objectStorage') {
-        await probeObjectStorage(this.env, this.createS3Client);
-      } else if (input.dependency === 'mail') {
-        await probeMail(this.env, {
+        if (input.draft) {
+          await this.assertObjectStorageDestinations(input.draft as AdminSystemObjectStorageConfig);
+        }
+        await probeObjectStorage(env, this.createS3Client);
+      } else {
+        if (input.draft) {
+          await this.assertMailDestinations(input.draft as AdminSystemMailConfig);
+        }
+        await probeMail(env, {
           createMailTransport: this.createMailTransport,
           outboundFetch: this.outboundFetch,
         });
-      } else {
-        await probeKeyManagement(this.env, this.secretServiceFromEnv);
       }
       return { checkedAt, latencyMs: Date.now() - started, ok: true };
     } catch (error) {
+      if (
+        error instanceof InfraSettingsSecretReuseError ||
+        error instanceof InfraSettingsSecretRequiredError ||
+        error instanceof InfraSettingsDestinationError
+      ) {
+        throw error;
+      }
       const reason = error instanceof InfraProbeError ? error.reason : 'unreachable';
       return {
         checkedAt,
@@ -407,6 +466,271 @@ export class InfraSettingsService {
         message: reason,
         ok: false,
       };
+    }
+  };
+
+  private projectFromEnv = (
+    env: EnvBag,
+    extras: {
+      mail: {
+        enabled: boolean;
+        hasResendApiKey: boolean;
+        hasSmtpPass: boolean;
+        revision: number;
+        smtpUser: string | null;
+        source: 'db' | 'env';
+      };
+      objectStorage: {
+        accessIdMode: 'full' | 'mask';
+        enabled: boolean;
+        hasSecretAccessKey: boolean;
+        previewUrlExpireIn: number | null;
+        revision: number;
+        setAcl: boolean;
+        source: 'db' | 'env';
+      };
+    },
+  ): AdminSystemGetInfraSettings => {
+    const objectStorage = objectStorageHealth(env);
+    const mail = mailHealth(env);
+    const s3 = resolveFileS3Config(env);
+    const email = resolveEmailConfig(env);
+    const keyManagement = resolveKeyManagementOverview(env);
+    const rawAccessId =
+      s3.kind === 'complete' ? s3.accessKeyId : env.S3_ACCESS_KEY_ID?.trim() || undefined;
+
+    return {
+      keyManagement,
+      mail: {
+        enabled: extras.mail.enabled,
+        errorCategory: mail.errorCategory,
+        fromAddress: email.kind === 'smtp' || email.kind === 'resend' ? email.from : null,
+        hasResendApiKey: extras.mail.hasResendApiKey,
+        hasSmtpPass: extras.mail.hasSmtpPass,
+        host: email.kind === 'smtp' ? email.host : null,
+        port: email.kind === 'smtp' ? email.port : null,
+        provider:
+          email.kind === 'resend' || (email.kind === 'incomplete' && email.provider === 'resend')
+            ? 'resend'
+            : email.kind === 'unconfigured'
+              ? 'unconfigured'
+              : 'smtp',
+        revision: extras.mail.revision,
+        secure: email.kind === 'smtp' ? email.secure : null,
+        senderName: email.kind === 'smtp' || email.kind === 'resend' ? email.senderName : null,
+        smtpUser: extras.mail.smtpUser,
+        source: extras.mail.source,
+        status: mail.status,
+      },
+      objectStorage: {
+        accessId:
+          extras.objectStorage.accessIdMode === 'full'
+            ? (rawAccessId ?? null)
+            : maskAccessId(rawAccessId),
+        bucket: s3.kind === 'complete' ? s3.bucket : env.S3_BUCKET?.trim() || null,
+        enabled: extras.objectStorage.enabled,
+        endpoint: s3.kind === 'complete' ? s3.endpoint : env.S3_ENDPOINT?.trim() || null,
+        errorCategory: objectStorage.errorCategory,
+        hasSecretAccessKey: extras.objectStorage.hasSecretAccessKey,
+        pathStyle: s3.kind === 'complete' ? s3.forcePathStyle : env.S3_ENABLE_PATH_STYLE === '1',
+        previewUrlExpireIn: extras.objectStorage.previewUrlExpireIn,
+        publicDomain:
+          s3.kind === 'complete' ? (s3.publicDomain ?? null) : env.S3_PUBLIC_DOMAIN?.trim() || null,
+        region: s3.kind === 'complete' ? s3.region : env.S3_REGION?.trim() || null,
+        revision: extras.objectStorage.revision,
+        setAcl: extras.objectStorage.setAcl,
+        source: extras.objectStorage.source,
+        status: objectStorage.status,
+      },
+      snapshotAt: this.now(),
+    };
+  };
+
+  private effectiveEnvFor = async (dependency: 'mail' | 'objectStorage'): Promise<EnvBag> => {
+    if (this.envOverride) return this.env;
+    const snapshot = await getInfraSnapshot();
+    if (dependency === 'objectStorage') {
+      return { ...this.env, ...objectStorageSnapshotToEnvBag(snapshot.objectStorage) };
+    }
+    return { ...this.env, ...mailSnapshotToEnvBag(snapshot.mail) };
+  };
+
+  private envBagFromDraft = async (
+    dependency: 'mail' | 'objectStorage',
+    draft: AdminSystemMailConfig | AdminSystemObjectStorageConfig,
+  ): Promise<EnvBag | 'configuration_incomplete'> => {
+    if (dependency === 'objectStorage') {
+      const config = draft as ObjectStorageUpdate;
+      const secretAction = config.secretAccessKey ?? { action: 'keep' as const };
+      if (secretAction.action === 'clear') return 'configuration_incomplete';
+      const secret =
+        secretAction.action === 'replace'
+          ? secretAction.value
+          : await this.resolveKeepSecret('objectStorage', objectStorageDestinationTuple(config));
+      if (!secret) return 'configuration_incomplete';
+      return {
+        ...this.env,
+        S3_ACCESS_KEY_ID: config.accessKeyId,
+        S3_BUCKET: config.bucket,
+        S3_ENABLE_PATH_STYLE: config.forcePathStyle ? '1' : undefined,
+        S3_ENDPOINT:
+          config.endpoint ??
+          (config.region ? `https://s3.${config.region}.amazonaws.com` : undefined),
+        S3_PREVIEW_URL_EXPIRE_IN:
+          config.previewUrlExpireIn === undefined ? undefined : String(config.previewUrlExpireIn),
+        S3_PUBLIC_DOMAIN: config.publicDomain,
+        S3_REGION: config.region,
+        S3_SECRET_ACCESS_KEY: secret,
+        S3_SET_ACL: config.setAcl ? '1' : undefined,
+      };
+    }
+
+    const config = draft as MailUpdate;
+    if (config.provider === 'smtp') {
+      const passAction = config.smtp?.pass ?? { action: 'keep' as const };
+      if (passAction.action === 'clear') return 'configuration_incomplete';
+      const pass =
+        passAction.action === 'replace'
+          ? passAction.value
+          : await this.resolveKeepSecret(
+              'mail-smtp',
+              mailDestinationTuple({ provider: 'smtp', smtp: config.smtp }),
+            );
+      if (!pass) return 'configuration_incomplete';
+      const from = config.senderName
+        ? `"${config.senderName}" <${config.fromAddress}>`
+        : config.fromAddress;
+      return {
+        ...this.env,
+        EMAIL_SERVICE_PROVIDER: 'nodemailer',
+        SMTP_FROM: from,
+        SMTP_HOST: config.smtp!.host,
+        SMTP_PASS: pass,
+        SMTP_PORT: String(config.smtp!.port),
+        SMTP_SECURE: config.smtp!.secure ? 'true' : undefined,
+        SMTP_USER: config.smtp!.user,
+      };
+    }
+
+    const keyAction = config.resend?.apiKey ?? { action: 'keep' as const };
+    if (keyAction.action === 'clear') return 'configuration_incomplete';
+    const apiKey =
+      keyAction.action === 'replace'
+        ? keyAction.value
+        : await this.resolveKeepSecret('mail-resend', mailDestinationTuple({ provider: 'resend' }));
+    if (!apiKey) return 'configuration_incomplete';
+    const from = config.senderName
+      ? `"${config.senderName}" <${config.fromAddress}>`
+      : config.fromAddress;
+    return {
+      ...this.env,
+      EMAIL_SERVICE_PROVIDER: 'resend',
+      RESEND_API_KEY: apiKey,
+      RESEND_FROM: from,
+    };
+  };
+
+  /**
+   * Reuse a stored or env secret for draft `keep` only when the destination
+   * tuple is unchanged versus the source the secret belongs to.
+   */
+  private resolveKeepSecret = async (
+    kind: 'mail-resend' | 'mail-smtp' | 'objectStorage',
+    draftTuple:
+      ReturnType<typeof mailDestinationTuple> | ReturnType<typeof objectStorageDestinationTuple>,
+  ): Promise<string | undefined> => {
+    const field =
+      kind === 'objectStorage' ? 'secretAccessKey' : kind === 'mail-smtp' ? 'pass' : 'apiKey';
+
+    const stored = this.envOverride ? null : await this.loadStoredSecret(kind);
+    if (stored?.secret) {
+      const matches =
+        kind === 'objectStorage'
+          ? objectStorageTuplesEqual(
+              draftTuple as ReturnType<typeof objectStorageDestinationTuple>,
+              stored.tuple as ReturnType<typeof objectStorageDestinationTuple>,
+            )
+          : mailTuplesEqual(
+              draftTuple as ReturnType<typeof mailDestinationTuple>,
+              stored.tuple as ReturnType<typeof mailDestinationTuple>,
+            );
+      if (!matches) throw new InfraSettingsSecretReuseError(field, INFRA_SECRET_REUSE_MESSAGE);
+      return stored.secret;
+    }
+
+    const envSecret =
+      kind === 'objectStorage'
+        ? this.env.S3_SECRET_ACCESS_KEY
+        : kind === 'mail-smtp'
+          ? this.env.SMTP_PASS
+          : this.env.RESEND_API_KEY;
+    if (!envSecret) return undefined;
+
+    const envTuple =
+      kind === 'objectStorage'
+        ? objectStorageDestinationTuple({
+            bucket: this.env.S3_BUCKET,
+            endpoint: this.env.S3_ENDPOINT,
+            region: this.env.S3_REGION,
+          })
+        : mailDestinationTuple({
+            provider: kind === 'mail-resend' ? 'resend' : 'smtp',
+            smtp:
+              kind === 'mail-smtp'
+                ? {
+                    host: this.env.SMTP_HOST,
+                    port: this.env.SMTP_PORT ? Number(this.env.SMTP_PORT) : undefined,
+                    secure: this.env.SMTP_SECURE === 'true',
+                    user: this.env.SMTP_USER,
+                  }
+                : undefined,
+          });
+    const matchesEnv =
+      kind === 'objectStorage'
+        ? objectStorageTuplesEqual(
+            draftTuple as ReturnType<typeof objectStorageDestinationTuple>,
+            envTuple as ReturnType<typeof objectStorageDestinationTuple>,
+          )
+        : mailTuplesEqual(
+            draftTuple as ReturnType<typeof mailDestinationTuple>,
+            envTuple as ReturnType<typeof mailDestinationTuple>,
+          );
+    if (!matchesEnv) throw new InfraSettingsSecretReuseError(field, INFRA_SECRET_REUSE_MESSAGE);
+    return envSecret;
+  };
+
+  private loadStoredSecret = async (
+    kind: 'mail-resend' | 'mail-smtp' | 'objectStorage',
+  ): Promise<{
+    secret: string;
+    tuple:
+      ReturnType<typeof mailDestinationTuple> | ReturnType<typeof objectStorageDestinationTuple>;
+  } | null> => {
+    try {
+      const db = await getServerDB();
+      if (kind === 'objectStorage') {
+        const row = await getObjectStorageSettings(db);
+        if (!row.config.secretAccessKeyCiphertext) return null;
+        return {
+          secret: await openInfraSecret(row.config.secretAccessKeyCiphertext),
+          tuple: objectStorageDestinationTuple(row.config),
+        };
+      }
+      const row = await getMailSettings(db);
+      if (kind === 'mail-smtp') {
+        if (!row.config.smtp?.passCiphertext) return null;
+        return {
+          secret: await openInfraSecret(row.config.smtp.passCiphertext),
+          tuple: mailDestinationTuple(row.config),
+        };
+      }
+      if (!row.config.resend?.apiKeyCiphertext) return null;
+      return {
+        secret: await openInfraSecret(row.config.resend.apiKeyCiphertext),
+        tuple: mailDestinationTuple(row.config),
+      };
+    } catch {
+      return null;
     }
   };
 }

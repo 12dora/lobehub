@@ -202,7 +202,7 @@ export function defineConfig(
       },
 
       sendResetPassword: async ({ user, url }) => {
-        const emailService = new EmailService();
+        const emailService = await EmailService.create();
         await emailService.sendBrandedMail(({ branding }) => ({
           to: user.email,
           ...getResetPasswordEmailTemplate({
@@ -227,7 +227,7 @@ export function defineConfig(
 
         // Use different template for change-email vs signup verification
         const isChangeEmail = request?.url?.includes('/change-email');
-        const emailService = new EmailService();
+        const emailService = await EmailService.create();
         await emailService.sendBrandedMail(({ branding }) => ({
           to: user.email,
           ...(isChangeEmail
@@ -423,7 +423,7 @@ export function defineConfig(
         // Don't automatically send OTP on sign up - let mobile client manually trigger it
         sendVerificationOnSignUp: false,
         async sendVerificationOTP({ email, otp }) {
-          const emailService = new EmailService();
+          const emailService = await EmailService.create();
 
           // For all OTP types, use the same template
           // userName is optional and will be null since we don't have user context here
@@ -467,7 +467,7 @@ export function defineConfig(
             magicLink({
               expiresIn: MAGIC_LINK_EXPIRES_IN,
               sendMagicLink: async ({ email, url }) => {
-                const emailService = new EmailService();
+                const emailService = await EmailService.create();
                 await emailService.sendBrandedMail(({ branding }) => ({
                   to: email,
                   ...getMagicLinkEmailTemplate({

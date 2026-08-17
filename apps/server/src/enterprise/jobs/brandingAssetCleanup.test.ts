@@ -11,7 +11,7 @@ describe('runBrandingAssetCleanupBatch', () => {
 
     await expect(
       runBrandingAssetCleanupBatch({} as LobeChatDatabase, {
-        isStorageConfigured: () => true,
+        isStorageConfigured: async () => true,
         sweep,
       }),
     ).resolves.toEqual({ deleted: 2, failed: 0, scanned: 2 });
@@ -23,7 +23,7 @@ describe('runBrandingAssetCleanupBatch', () => {
 
     await expect(
       runBrandingAssetCleanupBatch({} as LobeChatDatabase, {
-        isStorageConfigured: () => true,
+        isStorageConfigured: async () => true,
         sweep,
       }),
     ).rejects.toThrow('Branding asset cleanup batch failed');

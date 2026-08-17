@@ -1,13 +1,14 @@
 import { type LobeChatDatabase } from '@lobechat/database';
 import debug from 'debug';
-import urlJoin from 'url-join';
 
 import { FileModel } from '@/database/models/file';
 import { fileEnv } from '@/envs/file';
 import { getRedisConfig } from '@/envs/redis';
 import { initializeRedis, isRedisEnabled } from '@/libs/redis';
-import { FileS3 } from '@/server/modules/S3';
+import { getInfraSnapshot } from '@/server/enterprise/services/infraSettings/snapshot';
+import { createFileS3, FileS3 } from '@/server/modules/S3';
 
+import { buildPublicFileUrl, extractKeyFromS3Pathname, type S3PublicUrlConfig } from './s3Url';
 import type { FileServiceImpl, PreSignedUpload } from './type';
 
 const log = debug('lobe-file:s3');
@@ -23,8 +24,8 @@ interface PresignedPreviewCacheEntry {
 
 const presignedPreviewUrlCache = new Map<string, PresignedPreviewCacheEntry>();
 
-const createPresignedPreviewCacheKey = (key: string, expiresIn: number) =>
-  `${PRESIGNED_PREVIEW_CACHE_KEY_PREFIX}${expiresIn}:${key}`;
+const createPresignedPreviewCacheKey = (key: string, expiresIn: number, fingerprint: string) =>
+  `${PRESIGNED_PREVIEW_CACHE_KEY_PREFIX}${fingerprint}:${expiresIn}:${key}`;
 
 const getPresignedPreviewCacheTtlSeconds = (expiresInSeconds: number) =>
   Math.min(
@@ -36,44 +37,107 @@ const getPresignedPreviewCacheTtlSeconds = (expiresInSeconds: number) =>
  * S3-based file service implementation
  */
 export class S3StaticFileImpl implements FileServiceImpl {
-  private readonly s3: FileS3;
+  private _s3?: FileS3;
+  private s3Fingerprint?: string;
   private readonly db: LobeChatDatabase;
 
   constructor(db: LobeChatDatabase) {
     this.db = db;
-    this.s3 = new FileS3();
+  }
+
+  /** Sync accessor for tests / env fallback. Production methods go through {@link getS3}. */
+  private get s3(): FileS3 {
+    this._s3 ??= new FileS3();
+    return this._s3;
+  }
+
+  private async getS3(): Promise<FileS3> {
+    const fingerprint = await this.getFingerprint();
+    if (this._s3 && this.s3Fingerprint === fingerprint) return this._s3;
+    try {
+      this._s3 = await createFileS3();
+      this.s3Fingerprint = fingerprint;
+    } catch (error) {
+      this._s3 = undefined;
+      this.s3Fingerprint = undefined;
+      throw error;
+    }
+    return this._s3;
+  }
+
+  private async getFingerprint(): Promise<string> {
+    try {
+      return (await getInfraSnapshot()).fingerprint;
+    } catch {
+      return 'env';
+    }
+  }
+
+  private async getUrlConfig(): Promise<
+    S3PublicUrlConfig & { fingerprint: string; previewUrlExpireIn: number }
+  > {
+    try {
+      const snapshot = await getInfraSnapshot();
+      if (snapshot.objectStorage.kind === 'complete') {
+        return {
+          bucket: snapshot.objectStorage.bucket,
+          fingerprint: snapshot.fingerprint,
+          forcePathStyle: snapshot.objectStorage.forcePathStyle,
+          previewUrlExpireIn: snapshot.objectStorage.previewUrlExpireIn,
+          publicDomain: snapshot.objectStorage.publicDomain,
+          setAcl: snapshot.objectStorage.setAcl,
+        };
+      }
+      return {
+        bucket: fileEnv.S3_BUCKET,
+        fingerprint: snapshot.fingerprint,
+        forcePathStyle: fileEnv.S3_ENABLE_PATH_STYLE,
+        previewUrlExpireIn: fileEnv.S3_PREVIEW_URL_EXPIRE_IN,
+        publicDomain: fileEnv.S3_PUBLIC_DOMAIN,
+        setAcl: fileEnv.S3_SET_ACL,
+      };
+    } catch {
+      return {
+        bucket: fileEnv.S3_BUCKET,
+        fingerprint: 'env',
+        forcePathStyle: fileEnv.S3_ENABLE_PATH_STYLE,
+        previewUrlExpireIn: fileEnv.S3_PREVIEW_URL_EXPIRE_IN,
+        publicDomain: fileEnv.S3_PUBLIC_DOMAIN,
+        setAcl: fileEnv.S3_SET_ACL,
+      };
+    }
   }
 
   async deleteFile(key: string) {
-    return this.s3.deleteFile(key);
+    return (await this.getS3()).deleteFile(key);
   }
 
   async deleteFiles(keys: string[]) {
-    return this.s3.deleteFiles(keys);
+    return (await this.getS3()).deleteFiles(keys);
   }
 
   async getFileContent(key: string): Promise<string> {
-    return this.s3.getFileContent(key);
+    return (await this.getS3()).getFileContent(key);
   }
 
   async getFileByteArray(key: string): Promise<Uint8Array> {
-    return this.s3.getFileByteArray(key);
+    return (await this.getS3()).getFileByteArray(key);
   }
 
   async createPreSignedUrl(key: string): Promise<string> {
-    return this.s3.createPreSignedUrl(key);
+    return (await this.getS3()).createPreSignedUrl(key);
   }
 
   async createPreSignedUpload(key: string): Promise<PreSignedUpload> {
-    return this.s3.createPreSignedUpload(key);
+    return (await this.getS3()).createPreSignedUpload(key);
   }
 
   async getFileMetadata(key: string): Promise<{ contentLength: number; contentType?: string }> {
-    return this.s3.getFileMetadata(key);
+    return (await this.getS3()).getFileMetadata(key);
   }
 
   async createPreSignedUrlForPreview(key: string, expiresIn?: number): Promise<string> {
-    return this.s3.createPreSignedUrlForPreview(key, expiresIn);
+    return (await this.getS3()).createPreSignedUrlForPreview(key, expiresIn);
   }
 
   private async getStorageKeyFromUrl(url: string): Promise<string> {
@@ -88,8 +152,9 @@ export class S3StaticFileImpl implements FileServiceImpl {
   }
 
   private async getCachedPreSignedUrlForPreview(key: string, expiresIn?: number): Promise<string> {
-    const expiresInSeconds = expiresIn ?? fileEnv.S3_PREVIEW_URL_EXPIRE_IN;
-    const cacheKey = createPresignedPreviewCacheKey(key, expiresInSeconds);
+    const urlConfig = await this.getUrlConfig();
+    const expiresInSeconds = expiresIn ?? urlConfig.previewUrlExpireIn;
+    const cacheKey = createPresignedPreviewCacheKey(key, expiresInSeconds, urlConfig.fingerprint);
     const ttlSeconds = getPresignedPreviewCacheTtlSeconds(expiresInSeconds);
     const now = Date.now();
     const cached = presignedPreviewUrlCache.get(cacheKey);
@@ -149,7 +214,7 @@ export class S3StaticFileImpl implements FileServiceImpl {
   }
 
   async uploadContent(path: string, content: string) {
-    return this.s3.uploadContent(path, content);
+    return (await this.getS3()).uploadContent(path, content);
   }
 
   async getFullFileUrl(url?: string | null, expiresIn?: number): Promise<string> {
@@ -160,16 +225,12 @@ export class S3StaticFileImpl implements FileServiceImpl {
     // If bucket is not set public read, or S3_PUBLIC_DOMAIN is not configured,
     // reuse the same presigned preview URL briefly so repeated chat turns keep
     // stable media URLs and can reuse provider-side prefix caches.
-    const publicUrlBase = fileEnv.S3_SET_ACL ? fileEnv.S3_PUBLIC_DOMAIN : undefined;
-    if (!publicUrlBase) {
+    const publicUrl = buildPublicFileUrl(key, await this.getUrlConfig());
+    if (!publicUrl) {
       return await this.getCachedPreSignedUrlForPreview(key, expiresIn);
     }
 
-    if (fileEnv.S3_ENABLE_PATH_STYLE) {
-      return urlJoin(publicUrlBase, fileEnv.S3_BUCKET!, key);
-    }
-
-    return urlJoin(publicUrlBase, key);
+    return publicUrl;
   }
 
   async getKeyFromFullUrl(url: string): Promise<string | null> {
@@ -185,19 +246,8 @@ export class S3StaticFileImpl implements FileServiceImpl {
       }
 
       // Case 2: Legacy S3 URL - extract key from pathname
-      if (fileEnv.S3_ENABLE_PATH_STYLE) {
-        if (!fileEnv.S3_BUCKET) {
-          return pathname.startsWith('/') ? pathname.slice(1) : pathname;
-        }
-        const bucketPrefix = `/${fileEnv.S3_BUCKET}/`;
-        if (pathname.startsWith(bucketPrefix)) {
-          return pathname.slice(bucketPrefix.length);
-        }
-        return pathname.startsWith('/') ? pathname.slice(1) : pathname;
-      }
-
-      // Virtual-hosted-style: path is /<key>
-      return pathname.slice(1);
+      const urlConfig = await this.getUrlConfig();
+      return extractKeyFromS3Pathname(pathname, urlConfig);
     } catch {
       // If url is not a valid URL, return null
       return null;
@@ -205,7 +255,7 @@ export class S3StaticFileImpl implements FileServiceImpl {
   }
 
   async uploadMedia(key: string, buffer: Buffer): Promise<{ key: string }> {
-    await this.s3.uploadMedia(key, buffer);
+    await (await this.getS3()).uploadMedia(key, buffer);
     return { key };
   }
 
@@ -215,8 +265,9 @@ export class S3StaticFileImpl implements FileServiceImpl {
     contentType: string,
     cacheControl?: string,
   ): Promise<{ key: string }> {
-    if (cacheControl) await this.s3.uploadBuffer(key, buffer, contentType, cacheControl);
-    else await this.s3.uploadBuffer(key, buffer, contentType);
+    const s3 = await this.getS3();
+    if (cacheControl) await s3.uploadBuffer(key, buffer, contentType, cacheControl);
+    else await s3.uploadBuffer(key, buffer, contentType);
     return { key };
   }
 }
