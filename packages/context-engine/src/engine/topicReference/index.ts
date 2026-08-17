@@ -4,3 +4,5 @@ export type {
   TopicMessageItem,
 } from './resolveTopicReferences';
 export { parseReferTopicTags, resolveTopicReferences } from './resolveTopicReferences';
+export type { TopicReferenceBatchLookups } from './resolveTopicReferencesBatch';
+export { resolveTopicReferencesBatch } from './resolveTopicReferencesBatch';

@@ -7,19 +7,18 @@ import type {
 import { GeneralChatAgent, GraphAgent } from '@lobechat/agent-runtime';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { builtinSkills } from '@lobechat/builtin-skills';
-import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
-import { LobeAgentIdentifier, LobeAgentManifest } from '@lobechat/builtin-tool-lobe-agent';
-import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
-import { MessageToolIdentifier } from '@lobechat/builtin-tool-message';
-import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
+import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox/manifest';
+import { LobeAgentIdentifier, LobeAgentManifest } from '@lobechat/builtin-tool-lobe-agent/manifest';
+import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system/manifest';
+import { MessageToolIdentifier } from '@lobechat/builtin-tool-message/manifest';
+import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent/manifest';
 import type { DeviceAttachment } from '@lobechat/builtin-tool-remote-device';
-import { generateSystemPrompt, RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
+import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device/manifest';
 import {
   injectSelfFeedbackIntentTool,
   shouldExposeSelfFeedbackIntentTool,
-} from '@lobechat/builtin-tool-self-iteration';
-import { TaskIdentifier } from '@lobechat/builtin-tool-task';
-import { builtinTools, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
+} from '@lobechat/builtin-tool-self-iteration/inject';
+import { TaskIdentifier } from '@lobechat/builtin-tool-task/manifest';
 import { LOADING_FLAT } from '@lobechat/const';
 import type {
   AgentGroupConfig,
@@ -31,8 +30,6 @@ import type {
 } from '@lobechat/context-engine';
 import { SkillEngine } from '@lobechat/context-engine';
 import type { LobeChatDatabase } from '@lobechat/database';
-import { isRemoteHeterogeneousType } from '@lobechat/heterogeneous-agents';
-import { buildTaskManagerDefaultsPrompt } from '@lobechat/prompts';
 import type {
   AgentPluginEntry,
   ChatAudioItem,
@@ -89,7 +86,6 @@ import { TaskModel } from '@/database/models/task';
 import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
-import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { toolsEnv } from '@/envs/tools';
 import {
   type ExecutionPlan,
@@ -104,13 +100,9 @@ import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionChec
 import { patchBuiltinManifestWithGovernance } from '@/libs/mcp/patchManifestGovernance';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
-import {
-  PlatformAgentEffectiveResolver,
-  type PlatformAgentExecutionPlan,
-  PlatformAgentExecutionResolver,
-  PlatformAgentMaterializationService,
-  type PlatformAgentOperationHandle,
-  validateExactPlatformAgentDependencies,
+import type {
+  PlatformAgentExecutionPlan,
+  PlatformAgentOperationHandle,
 } from '@/server/enterprise/services/agentCatalog';
 import {
   type ConnectorApprovalReceipt,
@@ -123,6 +115,7 @@ import {
 } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { resolveConnectorGovernance } from '@/server/enterprise/services/connectorGovernance/resolve';
 import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
+import { getLatestPersonaDocumentMemo } from '@/server/enterprise/services/memory/personaReadMemo';
 import type { UserSettingsReadMemo } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import {
   getEffectiveMemorySettings,
@@ -174,10 +167,7 @@ import { getScopedOnlineDevices } from '@/server/services/deviceGateway/scopedDe
 import { DocumentService } from '@/server/services/document';
 import { FileService } from '@/server/services/file';
 import { resolveAttachmentsByFileIds } from '@/server/services/file/resolveAttachments';
-import { HeterogeneousAgentService } from '@/server/services/heterogeneousAgent';
 import type { ConversationHistoryEntry } from '@/server/services/heterogeneousAgent/cloudHeteroContext';
-import { buildCloudHeteroContext } from '@/server/services/heterogeneousAgent/cloudHeteroContext';
-import { buildRemoteDeviceHeteroContext } from '@/server/services/heterogeneousAgent/remoteDeviceHeteroContext';
 import { MarketService } from '@/server/services/market';
 import { markdownToTxt } from '@/utils/markdownToTxt';
 
@@ -1007,11 +997,17 @@ export class AiAgentService {
    * runtime policy live under enterprise/services/agentCatalog — keep this service as
    * the upstream exec seam only.
    */
-  private createPlatformExecutionResolver() {
+  private async createPlatformExecutionResolver() {
+    const {
+      PlatformAgentEffectiveResolver,
+      PlatformAgentExecutionResolver,
+      PlatformAgentMaterializationService,
+      validateExactPlatformAgentDependencies,
+    } = await import('@/server/enterprise/services/agentCatalog');
     return new PlatformAgentExecutionResolver({
       agentModel: this.agentModel,
       agentOperationModel: this.agentOperationModel,
-      // Barrel-imported constructors / functions so vi.mock('@/server/enterprise/services/agentCatalog') applies.
+      // Dynamic import still hits vi.mock('@/server/enterprise/services/agentCatalog').
       createEffectiveResolver: (db) => new PlatformAgentEffectiveResolver(db),
       createMaterializationService: (db, userId) =>
         new PlatformAgentMaterializationService(db, userId),
@@ -1033,7 +1029,7 @@ export class AiAgentService {
       topicId: string | null;
     },
   ) {
-    return this.createPlatformExecutionResolver().resolveIdentity(
+    return (await this.createPlatformExecutionResolver()).resolveIdentity(
       identifier,
       agentId,
       pausedResume,
@@ -1054,7 +1050,7 @@ export class AiAgentService {
       topicId: string | null;
     },
   ): Promise<PlatformAgentExecutionPlan> {
-    return this.createPlatformExecutionResolver().resolveExecutionPlan(
+    return (await this.createPlatformExecutionResolver()).resolveExecutionPlan(
       platformAgentId,
       identifier,
       resumeContext,
@@ -1888,6 +1884,7 @@ export class AiAgentService {
     }
 
     if (isHeteroAgent) {
+      const { isRemoteHeterogeneousType } = await import('@lobechat/heterogeneous-agents');
       const isRemoteHetero = isRemoteHeterogeneousType(heteroType);
       // Same structured shape as the built-in path (`op_{ts}_{agentId}_{topicId}_{rand}`)
       // so hetero ops aren't visually distinct bare nanoids in the trace/op tables.
@@ -1935,6 +1932,7 @@ export class AiAgentService {
       }
 
       // Read resume session id for next-turn continuity.
+      const { HeterogeneousAgentService } = await import('@/server/services/heterogeneousAgent');
       const heteroService = new HeterogeneousAgentService(this.db, this.userId, {
         workspaceId: this.workspaceId,
       });
@@ -2006,6 +2004,8 @@ export class AiAgentService {
       }
 
       // Build cloud-specific system context (repo list + workspace info + optional agent-level static context).
+      const { buildCloudHeteroContext } =
+        await import('@/server/services/heterogeneousAgent/cloudHeteroContext');
       const systemContext = buildCloudHeteroContext({
         agentSystemContext: agentConfig.agencyConfig?.heterogeneousProvider?.systemContext,
         conversationHistory,
@@ -2323,6 +2323,8 @@ export class AiAgentService {
           // device-specific context instead of reusing the cloud-sandbox one
           // (which describes an ephemeral /workspace + pre-cloned repos and
           // would mislead the agent).
+          const { buildRemoteDeviceHeteroContext } =
+            await import('@/server/services/heterogeneousAgent/remoteDeviceHeteroContext');
           const deviceSystemContext = buildRemoteDeviceHeteroContext({
             agentSystemContext: agentConfig.agencyConfig?.heterogeneousProvider?.systemContext,
             conversationHistory,
@@ -3141,7 +3143,9 @@ export class AiAgentService {
       const isManualMode = agentConfig.chatConfig?.skillActivateMode === 'manual';
 
       toolsResult = toolsEngine.generateToolsDetailed({
-        excludeDefaultToolIds: isManualMode ? manualModeExcludeToolIds : undefined,
+        excludeDefaultToolIds: isManualMode
+          ? (await import('@lobechat/builtin-tools')).manualModeExcludeToolIds
+          : undefined,
         model,
         provider,
         toolIds: pluginIds,
@@ -3397,6 +3401,8 @@ export class AiAgentService {
     // `toolManifestMap`. Without this guard, the device list leaks into the
     // context regardless of whether the tool was actually enabled.
     if (canUseDevice && toolManifestMap[RemoteDeviceManifest.identifier]) {
+      const { generateSystemPrompt } =
+        await import('@lobechat/builtin-tool-remote-device/systemRole');
       toolManifestMap[RemoteDeviceManifest.identifier] = {
         ...toolManifestMap[RemoteDeviceManifest.identifier],
         systemRole: generateSystemPrompt(onlineDevices),
@@ -3544,7 +3550,7 @@ export class AiAgentService {
 
       const availablePlugins = [
         // All builtin tools (including hidden ones like web-browsing, cloud-sandbox)
-        ...builtinTools
+        ...(await import('@lobechat/builtin-tools')).builtinTools
           .filter((tool) => !INTERNAL_TOOLS.has(tool.identifier))
           .map((tool) => ({
             description: tool.manifest.meta?.description,
@@ -3605,8 +3611,7 @@ export class AiAgentService {
 
     if (globalMemoryEnabled) {
       try {
-        const personaModel = new UserPersonaModel(this.db, this.userId);
-        const persona = await personaModel.getLatestPersonaDocument();
+        const persona = await getLatestPersonaDocumentMemo({ db: this.db, userId: this.userId });
 
         if (persona?.persona) {
           userMemory = {
@@ -3737,7 +3742,7 @@ export class AiAgentService {
         initialContext: {
           ...initialContext.initialContext,
           taskManager: {
-            contextPrompt: buildTaskManagerDefaultsPrompt({
+            contextPrompt: (await import('@lobechat/prompts')).buildTaskManagerDefaultsPrompt({
               defaultAssigneeAgentId: appContext.defaultTaskAssigneeAgentId,
             }),
           },
@@ -5090,7 +5095,9 @@ export class AiAgentService {
       if (
         runningOp?.deviceId &&
         runningOp.heteroType &&
-        isRemoteHeterogeneousType(runningOp.heteroType)
+        (await import('@lobechat/heterogeneous-agents')).isRemoteHeterogeneousType(
+          runningOp.heteroType,
+        )
       ) {
         const taskId = runningOp.operationId ?? resolvedOperationId;
         log(

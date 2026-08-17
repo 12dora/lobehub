@@ -8,14 +8,14 @@ import type {
 } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import dayjs from 'dayjs';
-import { and, asc, eq, gt, inArray, max, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, max, or, sql } from 'drizzle-orm';
 import type { PartialDeep } from 'type-fest';
 
 import { merge } from '@/utils/merge';
 import { today } from '@/utils/time';
 
 import type { NewUser, UserItem, UserSettingsItem } from '../schemas';
-import { messages, nextauthAccounts, topics, users, userSettings } from '../schemas';
+import { messages, nextauthAccounts, sessions, topics, users, userSettings } from '../schemas';
 import type { LobeChatDatabase } from '../type';
 
 type DecryptUserKeyVaults = (
@@ -178,6 +178,104 @@ export class UserModel {
       settings,
       userId: this.userId,
       username: state.username || undefined,
+    };
+  };
+
+  /**
+   * One-roundtrip user init payload: user+settings plus the two onboarding
+   * probes (`countUpTo(5)` / `hasMoreThanN(1)`). Personal-mode predicates
+   * match those models: `user_id = ? AND workspace_id IS NULL`.
+   * `state` is identical to {@link getUserState}. Router-only call site.
+   */
+  getUserStateBundle = async (decryptor: DecryptUserKeyVaults) => {
+    const result = await this.db
+      .select({
+        avatar: users.avatar,
+        agentOnboarding: users.agentOnboarding,
+        email: users.email,
+        extraSessionCount:
+          sql<number>`(select count(*)::int from (select ${sessions.id} from ${sessions} where ${sessions.userId} = ${this.userId} and ${isNull(sessions.workspaceId)} limit 2) as _sess_cap)`.mapWith(
+            Number,
+          ),
+        firstName: users.firstName,
+        fullName: users.fullName,
+        interests: users.interests,
+        isOnboarded: users.isOnboarded,
+        lastName: users.lastName,
+        messageCount:
+          sql<number>`(select count(*)::int from (select ${messages.id} from ${messages} where ${messages.userId} = ${this.userId} and ${isNull(messages.workspaceId)} limit 5) as _msg_cap)`.mapWith(
+            Number,
+          ),
+        onboarding: users.onboarding,
+        preference: users.preference,
+        settingsDefaultAgent: userSettings.defaultAgent,
+
+        settingsGeneral: userSettings.general,
+        settingsHotkey: userSettings.hotkey,
+        settingsImage: userSettings.image,
+        settingsKeyVaults: userSettings.keyVaults,
+        settingsLanguageModel: userSettings.languageModel,
+        settingsMarket: userSettings.market,
+        settingsMemory: userSettings.memory,
+        settingsNotification: userSettings.notification,
+        settingsSystemAgent: userSettings.systemAgent,
+        settingsTTS: userSettings.tts,
+        settingsTool: userSettings.tool,
+        username: users.username,
+      })
+      .from(users)
+      .where(eq(users.id, this.userId))
+      .leftJoin(userSettings, eq(users.id, userSettings.id))
+      .limit(1);
+
+    if (!result || !result[0]) {
+      throw new UserNotFoundError();
+    }
+
+    const row = result[0];
+
+    // Decrypt keyVaults
+    let decryptKeyVaults = {};
+
+    try {
+      decryptKeyVaults = await decryptor(row.settingsKeyVaults, this.userId);
+    } catch {
+      /* empty */
+    }
+
+    const settings: PartialDeep<UserSettings> = {
+      defaultAgent: row.settingsDefaultAgent || {},
+      general: row.settingsGeneral || {},
+      hotkey: row.settingsHotkey || {},
+      image: row.settingsImage || {},
+      keyVaults: decryptKeyVaults,
+      languageModel: row.settingsLanguageModel || {},
+      market: row.settingsMarket || undefined,
+      memory: row.settingsMemory || {},
+      notification: row.settingsNotification || {},
+      systemAgent: row.settingsSystemAgent || {},
+      tool: row.settingsTool || {},
+      tts: row.settingsTTS || {},
+    };
+
+    return {
+      hasExtraSession: (row.extraSessionCount ?? 0) > 1,
+      messageCount: row.messageCount ?? 0,
+      state: {
+        avatar: row.avatar || undefined,
+        agentOnboarding: row.agentOnboarding || undefined,
+        email: row.email || undefined,
+        firstName: row.firstName || undefined,
+        fullName: row.fullName || undefined,
+        interests: row.interests || undefined,
+        isOnboarded: row.isOnboarded,
+        lastName: row.lastName || undefined,
+        onboarding: row.onboarding || undefined,
+        preference: row.preference as UserPreference,
+        settings,
+        userId: this.userId,
+        username: row.username || undefined,
+      },
     };
   };
 

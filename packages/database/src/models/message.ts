@@ -466,6 +466,67 @@ export class MessageModel {
   };
 
   /**
+   * Slim `WHERE topic_id IN (...)` for topic-reference fallback.
+   * SQL applies the same filters as `resolveTopicReferences` (user/assistant,
+   * non-empty string content) and keeps the last 5 per topic
+   * (`ROW_NUMBER() … DESC`), then returns them chronological.
+   */
+  queryRoleContentByTopicIds = async (
+    topicIds: string[],
+  ): Promise<Map<string, { content?: string | null; role: string }[]>> => {
+    if (topicIds.length === 0) return new Map();
+
+    const ranked = this.db
+      .select({
+        content: messages.content,
+        createdAt: messages.createdAt,
+        id: messages.id,
+        rn: sql<number>`row_number() over (partition by ${messages.topicId} order by ${messages.createdAt} desc, ${messages.id} desc)`.as(
+          'rn',
+        ),
+        role: messages.role,
+        topicId: messages.topicId,
+      })
+      .from(messages)
+      .where(
+        and(
+          this.ownership(),
+          isNull(messages.messageGroupId),
+          isNull(messages.threadId),
+          inArray(messages.topicId, topicIds),
+          inArray(messages.role, ['user', 'assistant']),
+          isNotNull(messages.content),
+          // JS `content.trim() !== ''`. ECMAScript WhiteSpace + LineTerminator
+          // (not POSIX `\S`): U+0009–U+000D, U+0020, U+00A0, U+1680,
+          // U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF.
+          sql`btrim(${messages.content}, U&'\\0009\\000A\\000B\\000C\\000D\\0020\\00A0\\1680\\2000\\2001\\2002\\2003\\2004\\2005\\2006\\2007\\2008\\2009\\200A\\2028\\2029\\202F\\205F\\3000\\FEFF') <> ''`,
+        ),
+      )
+      .as('topic_ref_ranked');
+
+    const rows = await this.db
+      .select({
+        content: ranked.content,
+        createdAt: ranked.createdAt,
+        id: ranked.id,
+        role: ranked.role,
+        topicId: ranked.topicId,
+      })
+      .from(ranked)
+      .where(lte(ranked.rn, 5))
+      .orderBy(asc(ranked.createdAt), asc(ranked.id));
+
+    const grouped = new Map<string, { content?: string | null; role: string }[]>();
+    for (const row of rows) {
+      if (!row.topicId) continue;
+      const list = grouped.get(row.topicId) ?? [];
+      list.push({ content: row.content, role: row.role });
+      grouped.set(row.topicId, list);
+    }
+    return grouped;
+  };
+
+  /**
    * Lightweight parent/group links for the FULL message tree of a topic,
    * INCLUDING messages hidden inside MessageGroups (compression / parallel).
    *

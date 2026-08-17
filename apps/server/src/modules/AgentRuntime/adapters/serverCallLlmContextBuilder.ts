@@ -16,7 +16,7 @@ import type {
   OfficialToolItem,
   OnboardingContext,
 } from '@lobechat/context-engine';
-import { resolveTopicReferences } from '@lobechat/context-engine';
+import { resolveTopicReferencesBatch } from '@lobechat/context-engine';
 import type { ChatStreamPayload } from '@lobechat/model-runtime';
 import { SpanStatusCode } from '@lobechat/observability-otel/api';
 import {
@@ -32,7 +32,6 @@ import { FileModel } from '@/database/models/file';
 import { MessageModel as MessageModelClass } from '@/database/models/message';
 import { PluginModel } from '@/database/models/plugin';
 import { TopicModel } from '@/database/models/topic';
-import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -41,7 +40,7 @@ import { OnboardingService } from '@/server/services/onboarding';
 import { toAgentContextDocuments } from '@/utils/agentDocumentContextMapping';
 
 import type { RuntimeExecutorContext } from '../context';
-import { buildPostProcessUrl, log, resolveRuntimeHistoryCount } from '../executorHelpers';
+import { log, resolveRuntimeHistoryCount } from '../executorHelpers';
 import {
   resolveServerCallLlmContextHints,
   type ServerCallLlmContextHints,
@@ -114,19 +113,11 @@ export const buildServerCallLlmContext = async ({
   if (!isManagedPlatformOperation && !alreadyHasTopicRefs && ctx.serverDB && ctx.userId) {
     const topicModel = new TopicModel(ctx.serverDB, ctx.userId, ctx.workspaceId);
     const messageModel = new MessageModelClass(ctx.serverDB, ctx.userId, ctx.workspaceId);
-    topicReferences = await resolveTopicReferences(
+    topicReferences = await resolveTopicReferencesBatch(
       messagesForContext as Array<{ content: string | unknown }>,
-      async (topicId) => topicModel.findById(topicId),
-      async (topicId) => {
-        const topic = await topicModel.findById(topicId);
-        return messageModel.query(
-          {
-            agentId: topic?.agentId ?? undefined,
-            groupId: topic?.groupId ?? undefined,
-            topicId,
-          },
-          { postProcessUrl: buildPostProcessUrl(ctx) },
-        );
+      {
+        lookupMessages: (ids) => messageModel.queryRoleContentByTopicIds(ids),
+        lookupTopics: (ids) => topicModel.findByIds(ids),
       },
     );
   }
@@ -259,7 +250,9 @@ export const buildServerCallLlmContext = async ({
   let serverLanguage = '';
   if (!isManagedPlatformOperation && ctx.serverDB && ctx.userId) {
     try {
-      const userInfo = await UserModel.getInfoForAIGeneration(ctx.serverDB, ctx.userId);
+      const { getInfoForAIGenerationMemo } =
+        await import('@/server/enterprise/services/user/userInfoReadMemo');
+      const userInfo = await getInfoForAIGenerationMemo(ctx.serverDB, ctx.userId);
       serverUsername = userInfo.userName;
       serverLanguage = userInfo.responseLanguage;
     } catch (error) {

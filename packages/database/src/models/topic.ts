@@ -479,6 +479,18 @@ export class TopicModel {
   };
 
   /**
+   * Ownership-scoped `WHERE id IN (...)`. Missing / other-user ids are omitted.
+   */
+  findByIds = async (ids: string[]): Promise<Map<string, TopicItem>> => {
+    if (ids.length === 0) return new Map();
+    const rows = await this.db
+      .select()
+      .from(topics)
+      .where(and(inArray(topics.id, ids), this.ownership()));
+    return new Map(rows.map((row) => [row.id, row]));
+  };
+
+  /**
    * Find the unique topic an agent shares with a document for a given trigger
    * (e.g. the doc-anchored chat topic provisioned by
    * `agentDocument.getOrCreateChatTopic`). Joins through `topic_documents`.

@@ -23,11 +23,7 @@ import { after } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 
-import {
-  getReferralStatus,
-  getSubscriptionPlan,
-  onUserActivityForBusiness,
-} from '@/business/server/user';
+import { onUserActivityForBusiness } from '@/business/server/user';
 import { MessageModel } from '@/database/models/message';
 import { SessionModel } from '@/database/models/session';
 import { UserModel } from '@/database/models/user';
@@ -51,6 +47,7 @@ import {
 import { settingsRegistry } from '@/server/enterprise/services/settings/registry';
 import { loadEffectiveUserSettings } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { assertWorkspaceSettingsWritePermission } from '@/server/enterprise/services/settings/workspaceSettingsPermission';
+import { loadGetUserStateBundle } from '@/server/enterprise/services/user/getUserStateBundle';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { createFileS3 } from '@/server/modules/S3';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -151,15 +148,8 @@ export const userRouter = router({
       await UserModel.makeSureUserExist(ctx.serverDB, ctx.userId);
     }
 
-    // Run user state fetch and count queries in parallel
-    const [state, messageCount, hasExtraSession, referralStatus, subscriptionPlan] =
-      await Promise.all([
-        ctx.userModel.getUserState(KeyVaultsGateKeeper.getUserKeyVaults),
-        ctx.messageModel.countUpTo(5),
-        ctx.sessionModel.hasMoreThanN(1),
-        getReferralStatus(ctx.userId),
-        getSubscriptionPlan(ctx.userId),
-      ]);
+    const { state, messageCount, hasExtraSession, referralStatus, subscriptionPlan } =
+      await loadGetUserStateBundle({ userId: ctx.userId, userModel: ctx.userModel });
 
     const hasMoreThan4Messages = messageCount > 4;
     const hasAnyMessages = messageCount > 0;

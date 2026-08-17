@@ -2,16 +2,11 @@
 import { Plans } from '@lobechat/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  getReferralStatus,
-  getSubscriptionPlan,
-  onUserActivityForBusiness,
-} from '@/business/server/user';
-import { MessageModel } from '@/database/models/message';
-import { SessionModel } from '@/database/models/session';
+import { onUserActivityForBusiness } from '@/business/server/user';
 import { UserModel } from '@/database/models/user';
 import { serverDB } from '@/database/server';
 import { assertDefaultInboxNotPlatformManaged } from '@/server/enterprise/guards/managedPlatformAgent';
+import { loadGetUserStateBundle } from '@/server/enterprise/services/user/getUserStateBundle';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 
 import { userRouter } from '../user';
@@ -26,9 +21,11 @@ vi.mock('next/server', () => ({
 }));
 
 vi.mock('@/business/server/user', () => ({
-  getReferralStatus: vi.fn(),
-  getSubscriptionPlan: vi.fn(),
   onUserActivityForBusiness: vi.fn(),
+}));
+
+vi.mock('@/server/enterprise/services/user/getUserStateBundle', () => ({
+  loadGetUserStateBundle: vi.fn(),
 }));
 
 vi.mock('@/database/server', () => ({
@@ -65,9 +62,19 @@ describe('userRouter', () => {
   beforeEach(() => {
     mockAfterTasks.length = 0;
     vi.clearAllMocks();
-    vi.mocked(getReferralStatus).mockResolvedValue(undefined);
-    vi.mocked(getSubscriptionPlan).mockResolvedValue(Plans.Free);
     vi.mocked(onUserActivityForBusiness).mockResolvedValue(undefined);
+    vi.mocked(loadGetUserStateBundle).mockResolvedValue({
+      hasExtraSession: false,
+      messageCount: 0,
+      referralStatus: undefined,
+      state: {
+        isOnboarded: true,
+        preference: {},
+        settings: {},
+        userId: mockUserId,
+      },
+      subscriptionPlan: Plans.Free,
+    } as never);
     vi.mocked(assertDefaultInboxNotPlatformManaged).mockResolvedValue(undefined);
   });
 
@@ -145,35 +152,39 @@ describe('userRouter', () => {
         () =>
           ({
             advanceLastActiveAt: vi.fn().mockResolvedValue(undefined),
-            getUserState: vi.fn().mockResolvedValue(mockState),
             updateUser: vi.fn().mockResolvedValue({ rowCount: 1 }),
           }) as any,
       );
-
-      vi.mocked(MessageModel).mockImplementation(
-        () =>
-          ({
-            countUpTo: vi.fn().mockResolvedValue(5),
-          }) as any,
-      );
-
-      vi.mocked(SessionModel).mockImplementation(
-        () =>
-          ({
-            hasMoreThanN: vi.fn().mockResolvedValue(true),
-          }) as any,
-      );
+      vi.mocked(loadGetUserStateBundle).mockResolvedValue({
+        hasExtraSession: true,
+        messageCount: 5,
+        referralStatus: undefined,
+        state: mockState,
+        subscriptionPlan: Plans.Free,
+      } as never);
 
       const result = await userRouter.createCaller({ ...mockCtx }).getUserState();
 
-      expect(result).toMatchObject({
-        isOnboard: true,
-        preference: { telemetry: true },
-        settings: {},
-        hasConversation: true,
+      expect(result).toEqual({
+        avatar: undefined,
         canEnablePWAGuide: true,
         canEnableTrace: true,
+        email: undefined,
+        firstName: undefined,
+        fullName: undefined,
+        hasConversation: true,
+        agentOnboarding: undefined,
+        interests: undefined,
+        isOnboard: true,
+        lastName: undefined,
+        onboarding: undefined,
+        preference: { telemetry: true },
+        settings: {},
         userId: mockUserId,
+        username: undefined,
+        referralStatus: undefined,
+        subscriptionPlan: Plans.Free,
+        isFreePlan: true,
       });
     });
 
@@ -195,21 +206,15 @@ describe('userRouter', () => {
         () =>
           ({
             advanceLastActiveAt,
-            getUserState: vi.fn().mockResolvedValue(mockState),
           }) as any,
       );
-      vi.mocked(MessageModel).mockImplementation(
-        () =>
-          ({
-            countUpTo: vi.fn().mockResolvedValue(0),
-          }) as any,
-      );
-      vi.mocked(SessionModel).mockImplementation(
-        () =>
-          ({
-            hasMoreThanN: vi.fn().mockResolvedValue(false),
-          }) as any,
-      );
+      vi.mocked(loadGetUserStateBundle).mockResolvedValue({
+        hasExtraSession: false,
+        messageCount: 0,
+        referralStatus: undefined,
+        state: mockState,
+        subscriptionPlan: Plans.Free,
+      } as never);
 
       await userRouter.createCaller({ ...mockCtx }).getUserState();
       await flushAfterTasks();
@@ -236,21 +241,15 @@ describe('userRouter', () => {
         () =>
           ({
             advanceLastActiveAt,
-            getUserState: vi.fn().mockResolvedValue(mockState),
           }) as any,
       );
-      vi.mocked(MessageModel).mockImplementation(
-        () =>
-          ({
-            countUpTo: vi.fn().mockResolvedValue(0),
-          }) as any,
-      );
-      vi.mocked(SessionModel).mockImplementation(
-        () =>
-          ({
-            hasMoreThanN: vi.fn().mockResolvedValue(false),
-          }) as any,
-      );
+      vi.mocked(loadGetUserStateBundle).mockResolvedValue({
+        hasExtraSession: false,
+        messageCount: 0,
+        referralStatus: undefined,
+        state: mockState,
+        subscriptionPlan: Plans.Free,
+      } as never);
 
       await userRouter.createCaller({ ...mockCtx }).getUserState();
       await flushAfterTasks();

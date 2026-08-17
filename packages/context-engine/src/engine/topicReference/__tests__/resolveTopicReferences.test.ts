@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { parseReferTopicTags, resolveTopicReferences } from '../resolveTopicReferences';
+import { resolveTopicReferencesBatch } from '../resolveTopicReferencesBatch';
 
 // ============ parseReferTopicTags ============
 
@@ -274,5 +275,86 @@ describe('resolveTopicReferences', () => {
 
     expect(result![0].summary).toBeUndefined();
     expect(result![0].recentMessages).toBeUndefined();
+  });
+});
+
+describe('resolveTopicReferences batch lookups', () => {
+  it('resolves N topics with one topics call and one messages call', async () => {
+    const lookupTopics = vi.fn(async () => {
+      const map = new Map([
+        ['t1', { historySummary: 'Has summary', title: 'Topic 1' }],
+        ['t2', { historySummary: null, title: 'Topic 2' }],
+      ]);
+      return map;
+    });
+    const lookupMessages = vi.fn(async () => {
+      const map = new Map([
+        [
+          't2',
+          [
+            { content: 'Hello', role: 'user' },
+            { content: 'Hi', role: 'assistant' },
+          ],
+        ],
+      ]);
+      return map;
+    });
+
+    const result = await resolveTopicReferencesBatch(
+      [{ content: '<refer_topic name="A" id="t1" />\n<refer_topic name="B" id="t2" />' }],
+      { lookupMessages, lookupTopics },
+    );
+
+    expect(lookupTopics).toHaveBeenCalledTimes(1);
+    expect(lookupTopics).toHaveBeenCalledWith(['t1', 't2']);
+    expect(lookupMessages).toHaveBeenCalledTimes(1);
+    expect(lookupMessages).toHaveBeenCalledWith(['t2']);
+    expect(result).toEqual([
+      { summary: 'Has summary', topicId: 't1', topicTitle: 'Topic 1' },
+      {
+        recentMessages: [
+          { content: 'Hello', role: 'user' },
+          { content: 'Hi', role: 'assistant' },
+        ],
+        topicId: 't2',
+        topicTitle: 'Topic 2',
+      },
+    ]);
+  });
+
+  it('treats omitted ids as missing / forbidden topics', async () => {
+    const result = await resolveTopicReferencesBatch(
+      [{ content: '<refer_topic name="Parsed" id="forbidden" />' }],
+      { lookupTopics: async () => new Map() },
+    );
+
+    expect(result).toEqual([{ topicId: 'forbidden', topicTitle: 'Parsed' }]);
+  });
+
+  it('does not call lookupMessages when every topic has a summary', async () => {
+    const lookupMessages = vi.fn();
+    const result = await resolveTopicReferencesBatch(
+      [{ content: '<refer_topic name="T" id="t1" />' }],
+      {
+        lookupMessages,
+        lookupTopics: async () => new Map([['t1', { historySummary: 'S', title: 'T' }]]),
+      },
+    );
+
+    expect(lookupMessages).not.toHaveBeenCalled();
+    expect(result![0].summary).toBe('S');
+  });
+
+  it('falls back to parsed titles when the topics batch throws', async () => {
+    const result = await resolveTopicReferencesBatch(
+      [{ content: '<refer_topic name="Err" id="t-err" />' }],
+      {
+        lookupTopics: async () => {
+          throw new Error('DB error');
+        },
+      },
+    );
+
+    expect(result).toEqual([{ topicId: 't-err', topicTitle: 'Err' }]);
   });
 });
