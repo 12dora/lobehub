@@ -54,6 +54,7 @@ const prefixes = {
   platformIdentityProviderTestAttempts: 'pita',
   platformJobs: 'pjob',
   platformManagedResourcePolicies: 'pmrp',
+  networkProxySubscriptions: 'nps',
   platformResourceRevisions: 'prev',
   platformSkills: 'pskl',
   platformSkillVersions: 'pskv',

@@ -64,6 +64,13 @@
       "when": 1787100000000,
       "tag": "0016_content_moderation",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1787200000000,
+      "tag": "0017_platform_network_proxy",
+      "breakpoints": true
     }
   ]
 }

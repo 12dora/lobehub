@@ -22,6 +22,7 @@ export * from './instances';
 export * from './jobs';
 export * from './managedPolicy';
 export * from './revisions';
+export * from './networkProxy';
 export * from './settings';
 export * from './sidebarLayout';
 export * from './skills';
