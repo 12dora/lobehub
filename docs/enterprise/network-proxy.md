@@ -94,14 +94,14 @@ type EgressDecision =
 
 ### 3.2 引擎交付（后装插件）
 
-- **固定版本**：`scripts/networkProxy/manifest.json` 钉 mihomo 一个 release（首发取 `v1.19.30`，2026-08-16 发布），逐平台登记 `{ asset, gzSha256, binSha256, binSize }`：`linux/x64 → mihomo-linux-amd64-compatible`（GOAMD64=v1，覆盖无 AVX2 的老 CPU），`linux/arm64`，`linux/arm(v7)`，`darwin/arm64`、`darwin/x64`（开发机）。改版本 = 改 manifest 一处 + 跑 `manifest.test.ts`（字段齐全、摘要格式、Dockerfile 无重复登记）；REST / 配置键 / JSON 形状只对这一版本负责，B2 必须为该版本写下 `now / alive / delay / updatedAt` 的契约测试（fixture 取自真实响应）。
+- **固定版本**：`scripts/networkProxy/manifest.json` 钉 mihomo 一个 release（首发取 `v1.19.30`，2026-08-16 发布），逐平台登记 `{ asset, gzSha256, binSha256, binSize }`：**只登记三个平台**：`linux/x64 → mihomo-linux-amd64-compatible`（GOAMD64=v1，覆盖无 AVX2 的老 CPU）、`linux/arm64 → mihomo-linux-arm64`、`darwin/arm64 → mihomo-darwin-arm64`（开发机）；armv7 / darwin x64 / Windows 一律不支持。改版本 = 改 manifest 一处 + 跑 `manifest.test.ts`（字段齐全、摘要格式、Dockerfile 无重复登记）；REST / 配置键 / JSON 形状只对这一版本负责，B2 必须为该版本写下 `now / alive / delay / updatedAt` 的契约测试（fixture 取自真实响应）。
 - **两条安装路径，同一校验**：
   1. **自动下载**：`GET <base>/<version>/<asset>`；`base` 取 `NETWORK_PROXY_ENGINE_DOWNLOAD_BASE`，缺省按 `USE_CN_MIRROR` 在 GitHub Releases / `ghfast.top` 前缀间选（与 curl-impersonate 同款逻辑）。若已配置**静态出口**且勾选「通过静态代理下载」，下载本身经该代理（解决"没代理就下不到代理"的死锁）。
   2. **手动上传**：面板 Upload → `POST /webapi/admin/network-proxy/artifact`（multipart；接受 `.gz` 或裸二进制），见 §5 对该路由的鉴权栈要求。
   - **校验与落地（两条路径共用 `EngineArtifactManager.install(stream)`）**：流式解压，压缩体 ≤ 64 MiB、解压体 ≤ `manifest.binSize`（超出即中止，防 gzip 炸弹）；边写边算 sha256，`sha256(解压后二进制) === manifest.binSha256[平台]` 否则删除临时文件并报 `PLATFORM_NETWORK_PROXY_ARTIFACT_MISMATCH`——**能被执行的只有 manifest 钉住的那一个构建**，上传接口不构成任意二进制执行面。临时文件用 `O_CREAT|O_EXCL|O_NOFOLLOW` 打开、fsync 后 `rename` 到不可变的版本化路径 `<dataDir>/engine/<version>/mihomo-<binSha256前16位>`，`chmod 0500`；目录 `0700`、拒绝符号链接与非常规文件（沿用 `identityProvider/lkg.ts` 的目录 / 权限校验）；**每次 spawn 前重新对将执行的 inode 做 sha256 校验**（≈40 MB，百毫秒级）后再执行，安装后跑一次 `mihomo -v` 记录输出。跨实例并发安装用同目录锁文件互斥。
   - `dataDir = NETWORK_PROXY_DATA_DIR ?? /app/.lobe/network-proxy`（`/app/.lobe` 是 enhanced compose 已挂载并 chown 给 `nextjs` 的命名卷；Dockerfile 本身没有 `VOLUME` 声明，**其它部署清单必须自行提供同样的挂载与属主**，demo compose 也要补挂）；开发机 `.cache/network-proxy/`。`NETWORK_PROXY_ENGINE_BIN` 可显式指向运维自带的二进制（跳过安装、仍做 `-v` 自检、**不**校验摘要，状态页明确标为「运维覆盖，未校验」）。
 - **geodata（仅智能模式）**：`geoip.metadb`（`geodata-mode: false` 的默认 loader）与 `geosite.dat` 同样在 manifest 钉版本 + sha256（来源 `MetaCubeX/meta-rules-dat`），同一 `EngineArtifactManager` 下载 / 上传 / 校验，落到 mihomo 家目录（`runtimeDir/geoip.metadb`、`runtimeDir/geosite.dat`），`geo-auto-update: false`；未就绪时智能模式不可切换（Switch 置灰 + 说明）。
-- **不支持的架构**（如 `linux/ia32`、`win32`）：引擎状态 `unsupported`，页面提示只能使用「免引擎静态代理」。
+- **不支持的平台**（manifest 三个之外的一切，如 `linux/arm`(v7)、`linux/ia32`、`darwin/x64`、`win32`）：引擎状态 `unsupported`，页面提示只能使用「免引擎静态代理」。
 - **多实例约束（v1 明示）**：安装是**实例本地**动作——自动下载可由每个实例各自执行（`installArtifact` 经失效广播让所有在线实例各自下载）；**手动上传只落在接收请求的那个实例**（共享 `/app/.lobe` 卷时天然全体可见；未共享卷的多副本需逐实例上传或改用共享卷）。面板「实例」列表逐实例显示 已安装 / 版本 / 引擎状态 / 最近错误，只展示心跳新鲜（≤ 90 s）的实例。
 
 ### 3.3 引擎监督（`EngineSupervisor`，每进程一个）
