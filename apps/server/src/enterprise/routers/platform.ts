@@ -40,6 +40,7 @@ import {
   resolveManagedResourceReadinessCached,
   resolvePublishedManagedResourcePolicies,
 } from '../services/managedResourceCapabilities';
+import { ensureNetworkProxyEngineSupervisorStarted } from '../services/networkProxy';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { isRenderableTaskTemplate, toPlatformTaskTemplate } from './admin/taskTemplatesSupport';
@@ -76,6 +77,8 @@ ensurePlatformAuditRetentionWorkerStarted();
 ensureBrandingAssetCleanupWorkerStarted();
 
 ensureSharedOAuthKeepaliveWorkerStarted();
+
+ensureNetworkProxyEngineSupervisorStarted();
 
 /**
  * Platform router (M00 read-only + access status).

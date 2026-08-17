@@ -51,6 +51,12 @@ services:
       - 'PLATFORM_OIDC_RESTART_MODE=${PLATFORM_OIDC_RESTART_MODE:-supervisor}'
       - 'PLATFORM_OIDC_LKG_PATH=${PLATFORM_OIDC_LKG_PATH:-/app/.lobe/platform-oidc-lkg.v1.json}'
 
+      # --- network proxy engine (not baked; optional overrides) ---
+      # Leave blank. The engine is downloaded or uploaded at runtime into /app/.lobe.
+      - 'NETWORK_PROXY_DATA_DIR=${NETWORK_PROXY_DATA_DIR:-}'
+      - 'NETWORK_PROXY_ENGINE_BIN=${NETWORK_PROXY_ENGINE_BIN:-}'
+      - 'NETWORK_PROXY_ENGINE_DOWNLOAD_BASE=${NETWORK_PROXY_ENGINE_DOWNLOAD_BASE:-}'
+
       # --- first-run super admin bootstrap (idempotent, safe to leave set) ---
       - 'BOOTSTRAP_SUPER_ADMIN_EMAIL=${BOOTSTRAP_SUPER_ADMIN_EMAIL:-}'
       - 'BOOTSTRAP_ALLOW_CREATE=${BOOTSTRAP_ALLOW_CREATE:-1}'

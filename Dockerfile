@@ -204,6 +204,11 @@ ENV APP_URL="" \
 ENV CHATGPT_WEB_CURL_IMPERSONATE_BIN="/usr/local/bin/curl-impersonate" \
     CHATGPT_WEB_ALLOWED_HOSTS=""
 
+# Network proxy engine (downloaded / uploaded at runtime — not baked into the image)
+ENV NETWORK_PROXY_DATA_DIR="" \
+    NETWORK_PROXY_ENGINE_BIN="" \
+    NETWORK_PROXY_ENGINE_DOWNLOAD_BASE=""
+
 # Database
 ENV KEY_VAULTS_SECRET="" \
     DATABASE_DRIVER="node" \

@@ -1,0 +1,304 @@
+// @vitest-environment node
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { NETWORK_PROXY_ENGINE_MANIFEST, NETWORK_PROXY_ENV } from '@/const/platform/networkProxy';
+import { createDefaultNetworkProxyConfig } from '@/types/platform/networkProxy';
+
+import {
+  resetArtifactCachesForTest,
+  setAfterReverifyForTest,
+  setResolveArtifactSpecForTest,
+} from './artifacts';
+import type * as B1 from './b1';
+import type { NetworkProxyRuntimeSnapshot } from './b1';
+import { enginePaths } from './platform';
+import { setAfterWriteGeneratedConfigForTest } from './supervisor';
+import { idleEngineRuntimeState } from './types';
+
+const { snapshotHolder } = vi.hoisted(() => ({
+  snapshotHolder: {
+    current: null as NetworkProxyRuntimeSnapshot | null,
+  },
+}));
+
+vi.mock('./b1', async () => {
+  const actual = await vi.importActual<typeof B1>('./b1');
+  return {
+    ...actual,
+    getNetworkProxySnapshot: vi.fn(async () => snapshotHolder.current!),
+    isLegacyGlobalProxyActive: vi.fn(() => false),
+    onNetworkProxySnapshotChange: vi.fn(() => () => undefined),
+  };
+});
+
+const fixture = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '__fixtures__/fakeMihomo.mjs',
+);
+
+const makeSnapshot = (
+  patch: Partial<NetworkProxyRuntimeSnapshot['config']> = {},
+): NetworkProxyRuntimeSnapshot => ({
+  config: { ...createDefaultNetworkProxyConfig(), masterEnabled: true, ...patch },
+  desiredArtifacts: {},
+  engineGeneration: 1,
+  loadedAt: Date.now(),
+  revision: 1,
+  staticProxyUrl: null,
+  subscriptions: [],
+});
+
+const waitFor = async (predicate: () => boolean, timeoutMs = 8_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  throw new Error('timed out waiting for supervisor state');
+};
+
+let dataDir: string;
+let startsFile: string;
+let wrapper: string;
+const live: Array<{ restart: () => Promise<void> }> = [];
+
+const writeWrapper = (extra: Record<string, string> = {}) => {
+  const exports = Object.entries({ FAKE_ENGINE_STARTS_FILE: startsFile, ...extra })
+    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
+    .join('\n');
+  writeFileSync(
+    wrapper,
+    `#!/bin/sh\n${exports}\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)} "$@"\n`,
+  );
+  chmodSync(wrapper, 0o755);
+};
+
+beforeEach(() => {
+  dataDir = mkdtempSync(path.join(tmpdir(), 'np-sup-'));
+  startsFile = path.join(dataDir, 'starts');
+  writeFileSync(startsFile, '');
+  wrapper = path.join(dataDir, 'fake-engine');
+  writeWrapper();
+  process.env[NETWORK_PROXY_ENV.DATA_DIR] = dataDir;
+  process.env[NETWORK_PROXY_ENV.ENGINE_BIN] = wrapper;
+  snapshotHolder.current = makeSnapshot();
+});
+
+afterEach(async () => {
+  setAfterWriteGeneratedConfigForTest(null);
+  snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+  await Promise.all(
+    live.splice(0).map((supervisor) => supervisor.restart().catch(() => undefined)),
+  );
+  delete process.env[NETWORK_PROXY_ENV.ENGINE_BIN];
+  setResolveArtifactSpecForTest(null);
+  resetArtifactCachesForTest();
+  rmSync(dataDir, { force: true, recursive: true });
+});
+
+describe('EngineSupervisor idle / stop conditions', () => {
+  it('stays stopped when masterEnabled is false', async () => {
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({ startWaitMs: 500 });
+    await supervisor.reconcile();
+    expect(['not_installed', 'stopped', 'unsupported']).toContain(supervisor.getState().state);
+    expect(supervisor.getState().proxyUrl).toBeNull();
+    expect(supervisor.getState().controller).toBeNull();
+    expect(supervisor.getState().appliedRevision).toBeNull();
+  });
+
+  it('exposes an idle state without leaking credentials', () => {
+    const idle = idleEngineRuntimeState('stopped');
+    expect(idle.proxyUrl).toBeNull();
+    expect(idle.controller).toBeNull();
+    expect(idle.lastError).toBeNull();
+  });
+});
+
+describe('EngineSupervisor child process', () => {
+  it('starts and reports running', async () => {
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({ startWaitMs: 4000 });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    expect(supervisor.getState().appliedRevision).toBe(1);
+    expect(supervisor.getState().appliedEngineGeneration).toBe(1);
+    expect(supervisor.getState().proxyUrl).toContain('127.0.0.1');
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+    expect(supervisor.getState().state).toBe('stopped');
+  });
+
+  it('restarts after health failures and serializes concurrent restart()', async () => {
+    writeWrapper({ FAKE_ENGINE_FAIL_AFTER: '1' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      healthFailuresBeforeRestart: 2,
+      healthIntervalMs: 60,
+      startWaitMs: 4000,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    await waitFor(() => readFileSync(startsFile, 'utf8').length >= 2, 10_000);
+    writeWrapper({ FAKE_ENGINE_FAIL_AFTER: '9999' });
+    const before = readFileSync(startsFile, 'utf8').length;
+    await Promise.all([supervisor.restart(), supervisor.restart()]);
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    const after = readFileSync(startsFile, 'utf8').length;
+    expect(after - before).toBe(1);
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 15_000);
+
+  it('enters error after the crash limit', async () => {
+    writeWrapper({ FAKE_ENGINE_CRASH_AFTER_MS: '800' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({
+      crashLimit: 2,
+      crashWindowMs: 60_000,
+      startWaitMs: 4000,
+    });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    await waitFor(() => supervisor.getState().state === 'error', 10_000);
+    expect(supervisor.getState().lastError).toBeTruthy();
+    expect(supervisor.getState().appliedRevision).toBe(1);
+  }, 15_000);
+
+  it('does not advance applied state when start fails', async () => {
+    writeWrapper({ FAKE_ENGINE_SKIP_LISTEN: '3' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({ startWaitMs: 400 });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    expect(supervisor.getState().state).toBe('error');
+    expect(supervisor.getState().appliedRevision).toBeNull();
+    expect(supervisor.getState().appliedEngineGeneration).toBeNull();
+    expect(supervisor.getState().lastError).toBeTruthy();
+  });
+
+  it('does not materialize geodata in simple mode even if files exist', async () => {
+    const commit = NETWORK_PROXY_ENGINE_MANIFEST.geodata.commit;
+    const destParent = path.join(dataDir, 'geodata', commit);
+    mkdirSync(destParent, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(destParent, 'geoip.metadb'), 'junk');
+    writeFileSync(path.join(destParent, 'geosite.dat'), 'junk');
+    snapshotHolder.current = makeSnapshot({ ruleMode: 'simple' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({ startWaitMs: 4000 });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    const runtimeGeo = path.join(enginePaths(dataDir).runtimeDir, 'geoip.metadb');
+    expect(existsSync(runtimeGeo)).toBe(false);
+    expect(supervisor.getState().lastError ?? '').not.toContain('geodata invalid');
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 12_000);
+
+  it('starts in smart mode when geodata is invalid and notes lastError', async () => {
+    const commit = NETWORK_PROXY_ENGINE_MANIFEST.geodata.commit;
+    const destParent = path.join(dataDir, 'geodata', commit);
+    mkdirSync(destParent, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(destParent, 'geoip.metadb'), 'junk');
+    writeFileSync(path.join(destParent, 'geosite.dat'), 'junk');
+    snapshotHolder.current = makeSnapshot({ ruleMode: 'smart' });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({ startWaitMs: 4000 });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    expect(supervisor.getState().lastError).toContain('geodata invalid');
+    const config = readFileSync(enginePaths(dataDir).configPath, 'utf8');
+    expect(config).not.toContain('GEOSITE,cn,DIRECT');
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 12_000);
+
+  it('refuses a mutated engine file on the next spawn attempt', async () => {
+    const destParent = path.join(dataDir, 'engine', NETWORK_PROXY_ENGINE_MANIFEST.version);
+    mkdirSync(destParent, { recursive: true, mode: 0o700 });
+    const dest = path.join(destParent, 'mihomo-testbin');
+    writeFileSync(dest, readFileSync(wrapper));
+    chmodSync(dest, 0o500);
+    const { createHash } = await import('node:crypto');
+    const digest = createHash('sha256').update(readFileSync(dest)).digest('hex');
+    setResolveArtifactSpecForTest(() => ({
+      compressed: 'none',
+      destName: 'mihomo-testbin',
+      destParent,
+      downloadUrl: 'https://example.com/x',
+      kind: 'engine',
+      mode: 0o500,
+      sha256: digest,
+      size: readFileSync(dest).length,
+      version: NETWORK_PROXY_ENGINE_MANIFEST.version,
+    }));
+    delete process.env[NETWORK_PROXY_ENV.ENGINE_BIN];
+    let first = true;
+    setAfterReverifyForTest(() => {
+      if (!first) return;
+      first = false;
+      writeFileSync(dest, 'mutated-bytes-that-do-not-match');
+    });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({ startWaitMs: 400 });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    expect(supervisor.getState().state).toBe('error');
+    expect(supervisor.getState().appliedRevision).toBeNull();
+    expect(supervisor.getState().lastError).toBeTruthy();
+  });
+
+  it('reloads when the snapshot changes between config generation and spawn', async () => {
+    setAfterWriteGeneratedConfigForTest(() => {
+      const current = snapshotHolder.current;
+      if (!current || current.revision !== 1) return;
+      snapshotHolder.current = { ...current, revision: 2 };
+    });
+    const { EngineSupervisor } = await import('./supervisor');
+    const supervisor = new EngineSupervisor({ startWaitMs: 4000 });
+    live.push(supervisor);
+    await supervisor.reconcile();
+    await waitFor(
+      () => supervisor.getState().state === 'running' || supervisor.getState().state === 'degraded',
+    );
+    // YAML was generated from revision 1; a newer snapshot must not be marked applied.
+    expect(supervisor.getState().appliedRevision).toBe(1);
+    const starts = readFileSync(startsFile, 'utf8').length;
+
+    await supervisor.reconcile();
+    await waitFor(() => supervisor.getState().appliedRevision === 2);
+    expect(supervisor.getState().appliedRevision).toBe(2);
+    expect(readFileSync(startsFile, 'utf8').length).toBe(starts);
+
+    snapshotHolder.current = makeSnapshot({ masterEnabled: false });
+    await supervisor.restart();
+  }, 12_000);
+});
