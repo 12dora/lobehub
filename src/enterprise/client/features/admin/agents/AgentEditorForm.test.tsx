@@ -58,12 +58,22 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       required={props.required}
     />
   ),
-  InputNumber: (props: any) => <input id={props.id} type="number" />,
+  InputNumber: (props: any) => <input disabled={props.disabled} id={props.id} type="number" />,
   Select: (props: any) => (
-    <select aria-label={props['aria-label']} id={props.id} required={props.required} />
+    <select
+      aria-label={props['aria-label']}
+      disabled={props.disabled}
+      id={props.id}
+      required={props.required}
+    />
   ),
   TextArea: (props: any) => (
-    <textarea aria-label={props['aria-label']} id={props.id} required={props.required} />
+    <textarea
+      aria-label={props['aria-label']}
+      disabled={props.disabled}
+      id={props.id}
+      required={props.required}
+    />
   ),
 }));
 vi.mock('@/components/EmojiPicker', () => ({ default: () => <div>emoji-picker</div> }));
@@ -71,12 +81,26 @@ vi.mock('@/features/AgentSetting/AgentMeta/BackgroundSwatches', () => ({
   default: () => <div>background-swatches</div>,
 }));
 vi.mock('./DependencyEditor', () => ({
-  DependencyEditor: ({ children }: { children: (slots: Record<string, ReactNode>) => ReactNode }) =>
-    children({
-      connectors: <div>connectors-field</div>,
-      model: <div>model-field</div>,
-      skills: <div>skills-field</div>,
-    }),
+  DependencyEditor: ({
+    children,
+    editable,
+  }: {
+    children: (slots: Record<string, ReactNode>) => ReactNode;
+    editable?: boolean;
+  }) => (
+    <div data-dependency-editable={String(Boolean(editable))}>
+      {children({
+        connectors: <div>connectors-field</div>,
+        model: <div>model-field</div>,
+        skills: <div>skills-field</div>,
+      })}
+    </div>
+  ),
+}));
+vi.mock('./AssignmentPolicySection', () => ({
+  AssignmentPolicySection: ({ isDefaultInbox }: { isDefaultInbox?: boolean }) => (
+    <div data-default-inbox={String(Boolean(isDefaultInbox))}>assignment-policy</div>
+  ),
 }));
 vi.mock('./useAgentEditorForm', () => ({
   AGENT_KEY_MAX_LENGTH: 128,
@@ -85,7 +109,11 @@ vi.mock('./useAgentEditorForm', () => ({
 
 const baseForm = () => ({
   agentKey: '',
+  assignments: {} as Record<string, unknown>,
+  canAssign: false,
   canSubmit: false,
+  configEditable: true,
+  currentVersionMissing: false,
   changeAgentKey: vi.fn(),
   conflict: false,
   depValidity: {
@@ -102,8 +130,10 @@ const baseForm = () => ({
   saving: false,
   setDependencies: vi.fn(),
   setDepValidity: vi.fn(),
+  resumeBlocked: false,
   setDisplayName: vi.fn(),
   submit: vi.fn(),
+  systemKey: null as string | null,
   value: {
     config: {
       avatar: null,
@@ -147,6 +177,87 @@ describe('AgentEditorForm layout', () => {
     expect([...document.querySelectorAll('section')].map((node) => node.dataset.collapsed)).toEqual(
       ['false', 'false', 'true', 'true'],
     );
+  });
+
+  it('locks every config control for an assignment-only operator and says why', () => {
+    formMock.value = { ...baseForm(), canAssign: true, configEditable: false, isCreate: false };
+    render(<AgentEditorForm />);
+
+    for (const label of [
+      'agentCatalog.editor.name',
+      'agentCatalog.editor.key',
+      'agentCatalog.editor.description',
+      'agentCatalog.editor.systemRole',
+      'agentCatalog.editor.tags',
+      'agentCatalog.editor.openingMessage',
+      'agentCatalog.editor.openingQuestions',
+    ]) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+    // The dependency pickers are config too — read-only, not merely visually quiet.
+    expect(
+      document
+        .querySelector('[data-dependency-editable]')
+        ?.getAttribute('data-dependency-editable'),
+    ).toBe('false');
+    expect(screen.getByText('agentCatalog.editor.readOnlyConfig')).toBeTruthy();
+    // …and 分配策略 is still theirs to edit — that is the whole point of opening the modal.
+    expect(screen.getByText('assignment-policy')).toBeTruthy();
+  });
+
+  it('blocks the config with a distinct error when the live version could not be loaded', () => {
+    formMock.value = {
+      ...baseForm(),
+      configEditable: false,
+      currentVersionMissing: true,
+      isCreate: false,
+    };
+    render(<AgentEditorForm />);
+    expect(screen.getByText('agentCatalog.editor.versionUnavailable')).toBeTruthy();
+    expect(screen.queryByText('agentCatalog.editor.readOnlyConfig')).toBeNull();
+    expect(screen.getByLabelText('agentCatalog.editor.systemRole')).toBeDisabled();
+  });
+
+  it('leaves every config control editable for a full editor', () => {
+    render(<AgentEditorForm />);
+    expect(screen.getByLabelText('agentCatalog.editor.name')).not.toBeDisabled();
+    expect(
+      document
+        .querySelector('[data-dependency-editable]')
+        ?.getAttribute('data-dependency-editable'),
+    ).toBe('true');
+    expect(screen.queryByText('agentCatalog.editor.readOnlyConfig')).toBeNull();
+  });
+
+  it('hides 分配策略 from an operator without the assign grant', () => {
+    render(<AgentEditorForm />);
+    expect(screen.queryByText('assignment-policy')).toBeNull();
+    expect(
+      [...document.querySelectorAll('section')].map((node) => node.dataset.group),
+    ).not.toContain('agentCatalog.editor.section.assignment');
+  });
+
+  it('puts 分配策略 right after the role, before the advanced groups', () => {
+    formMock.value = { ...baseForm(), canAssign: true };
+    render(<AgentEditorForm />);
+    expect([...document.querySelectorAll('section')].map((node) => node.dataset.group)).toEqual([
+      'agentCatalog.editor.section.basic',
+      'agentCatalog.editor.section.prompt',
+      'agentCatalog.editor.section.assignment',
+      'agentCatalog.editor.section.params',
+      'agentCatalog.editor.section.more',
+    ]);
+    // Who receives the assistant is everyday information, so the group never starts folded.
+    expect(groupOf(screen.getByText('assignment-policy'))).toBe(
+      'agentCatalog.editor.section.assignment',
+    );
+    expect(helpFor('agentCatalog.editor.section.assignmentDesc')).toBeTruthy();
+  });
+
+  it('tells the assignment editor when it is looking at the default assistant', () => {
+    formMock.value = { ...baseForm(), canAssign: true, systemKey: 'default-inbox' };
+    render(<AgentEditorForm />);
+    expect(screen.getByText('assignment-policy').dataset.defaultInbox).toBe('true');
   });
 
   it('keeps the mandatory model picker with the basics, above the fold', () => {

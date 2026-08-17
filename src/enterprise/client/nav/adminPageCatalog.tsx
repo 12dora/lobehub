@@ -52,9 +52,6 @@ const ConnectorDetailPage = lazy(
   () => import('@/enterprise/client/features/admin/connectors/ConnectorDetailPage'),
 );
 const AgentListPage = lazy(() => import('@/enterprise/client/features/admin/agents/AgentListPage'));
-const AgentDetailPage = lazy(
-  () => import('@/enterprise/client/features/admin/agents/AgentDetailPage'),
-);
 const BrandingPage = lazy(() => import('@/enterprise/client/features/admin/branding/BrandingPage'));
 const SecurityAuthPage = lazy(
   () => import('@/enterprise/client/features/admin/securityAuth/SecurityAuthPage'),
@@ -175,7 +172,6 @@ export const ADMIN_PAGE_BY_ID: Readonly<
     element: withLazy(<ConnectorDetailPage />),
   },
   'agents': { componentId: 'AgentListPage', element: withLazy(<AgentListPage />) },
-  'agents-detail': { componentId: 'AgentDetailPage', element: withLazy(<AgentDetailPage />) },
   'branding': { componentId: 'BrandingPage', element: withLazy(<BrandingPage />) },
   'identity-providers': {
     componentId: 'SecurityAuthPage',

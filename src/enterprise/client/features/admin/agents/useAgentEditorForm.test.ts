@@ -7,9 +7,14 @@ import { seedAgentEditorValue, suggestAgentKey, useAgentEditorForm } from './use
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
+  fetchDetail: vi.fn(),
+  list: vi.fn(),
+  order: [] as string[],
+  removeAssignment: vi.fn(),
   save: vi.fn(),
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
+  upsertAssignment: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -17,7 +22,17 @@ vi.mock('@lobehub/ui/base-ui', () => ({
   toast: { error: vi.fn(), success: mocks.toastSuccess, warning: mocks.toastWarning },
 }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
-  adminAgentsService: { create: mocks.create, save: mocks.save },
+  adminAgentsService: {
+    create: mocks.create,
+    list: mocks.list,
+    removeAssignment: mocks.removeAssignment,
+    save: mocks.save,
+    upsertAssignment: mocks.upsertAssignment,
+  },
+}));
+// The post-failure reconcile reads the authoritative aggregate through this helper.
+vi.mock('./useAdminAgents', () => ({
+  fetchAdminAgentDetail: (...args: unknown[]) => mocks.fetchDetail(...args),
 }));
 vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', () => ({
   // The reauth retry wrapper is exercised by its own tests; here it must stay transparent.
@@ -74,16 +89,71 @@ const agent = {
 
 const READY = { blockers: [], issues: [], ready: true };
 
+const ASSIGNMENT = {
+  agentId: 'agent-1',
+  enabled: true,
+  id: 'assignment-1',
+  mode: 'optional' as const,
+  pinnedVersionId: null,
+  targetId: 'user-1',
+  targetType: 'user' as const,
+  versionPolicy: 'latest_published' as const,
+};
+
+/** An aggregate that already carries one assignment, as the list page loads it. */
+const assignedAgent = { ...agent, assignments: [ASSIGNMENT] } as unknown as AdminAgentDetailOutput;
+
 /** Only the fields the editor itself reads; the full contract shape is covered by the mock client. */
-const createdOutput = { identity: { id: 'agent-new' }, invalidationStatus: 'delivered' };
-const savedOutput = { identity: { id: 'agent-1' }, invalidationStatus: 'delivered' };
+const createdOutput = {
+  draftToken: 'c'.repeat(64),
+  identity: { id: 'agent-new', revision: 1 },
+  invalidationStatus: 'delivered',
+};
+const savedOutput = {
+  draftToken: 'd'.repeat(64),
+  identity: { id: 'agent-1', revision: 8 },
+  invalidationStatus: 'delivered',
+};
 
 beforeEach(() => {
-  mocks.create.mockReset().mockResolvedValue(createdOutput);
-  mocks.save.mockReset().mockResolvedValue(savedOutput);
+  mocks.order = [];
+  mocks.create.mockReset().mockImplementation(async () => {
+    mocks.order.push('create');
+    return createdOutput;
+  });
+  mocks.save.mockReset().mockImplementation(async () => {
+    mocks.order.push('save');
+    return savedOutput;
+  });
+  mocks.removeAssignment.mockReset().mockImplementation(async ({ assignmentId }) => {
+    mocks.order.push(`remove:${assignmentId}`);
+    return { draftToken: 'r'.repeat(64), identity: { revision: 20 }, removed: true };
+  });
+  mocks.upsertAssignment.mockReset().mockImplementation(async ({ targetId }) => {
+    mocks.order.push(`upsert:${targetId}`);
+    return {
+      assignment: { ...ASSIGNMENT, id: `assignment-${targetId}`, targetId },
+      draftToken: 'u'.repeat(64),
+      identity: { revision: 21 },
+    };
+  });
   mocks.toastSuccess.mockReset();
   mocks.toastWarning.mockReset();
+  // What a reconcile read would find. Tests set this to whatever actually committed before the
+  // transport gave up, which is the entire point of reconciling instead of assuming.
+  server.assignments = [];
+  server.config = config;
+  mocks.fetchDetail.mockReset().mockImplementation(async (id: string) => ({
+    ...agent,
+    assignments: server.assignments,
+    identity: { ...agent.identity, id, revision: 20 },
+    versions: [{ ...agent.versions[0], config: server.config }],
+  }));
+  mocks.list.mockReset().mockResolvedValue({ items: [], nextCursor: null });
 });
+
+/** The authoritative state a reconcile read returns; mutated per test. */
+const server: { assignments: unknown[]; config: unknown } = { assignments: [], config };
 
 describe('suggestAgentKey', () => {
   it.each([
@@ -224,7 +294,10 @@ describe('useAgentEditorForm create', () => {
     expect(mocks.create.mock.calls[0]![0]).not.toHaveProperty('reason');
     expect(mocks.save).not.toHaveBeenCalled();
     expect(mocks.toastSuccess).toHaveBeenCalledWith('agentCatalog.toast.created');
-    expect(onSaved).toHaveBeenCalledWith(createdOutput, true);
+    expect(onSaved).toHaveBeenCalledWith(createdOutput, {
+      assignmentsChanged: false,
+      created: true,
+    });
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -317,7 +390,10 @@ describe('useAgentEditorForm edit', () => {
     expect(mocks.save.mock.calls[0]![0]).not.toHaveProperty('version');
     expect(mocks.create).not.toHaveBeenCalled();
     expect(mocks.toastSuccess).toHaveBeenCalledWith('agentCatalog.toast.saved');
-    expect(onSaved).toHaveBeenCalledWith(savedOutput, false);
+    expect(onSaved).toHaveBeenCalledWith(savedOutput, {
+      assignmentsChanged: false,
+      created: false,
+    });
     expect(onClose).toHaveBeenCalledOnce();
     expect(dirtyRef.current).toBe(false);
   });
@@ -439,5 +515,319 @@ describe('useAgentEditorForm edit', () => {
     expect(onClose).toHaveBeenCalledOnce();
     expect(mocks.toastWarning).toHaveBeenCalledWith('agentCatalog.recovery.refreshFailed');
     expect(result.current.conflict).toBe(false);
+  });
+});
+
+describe('useAgentEditorForm assignment chain', () => {
+  const withAssignment = () =>
+    renderHook(() => useAgentEditorForm({ agent: assignedAgent, canAssign: true }));
+
+  it('writes nothing about assignments when the operator has no assign grant', async () => {
+    const { result } = renderHook(() => useAgentEditorForm({ agent: assignedAgent }));
+    act(() => result.current.setDepValidity(READY));
+    act(() => result.current.setDisplayName('Research Assistant v2'));
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(mocks.upsertAssignment).not.toHaveBeenCalled();
+    expect(mocks.removeAssignment).not.toHaveBeenCalled();
+    // The section is not even rendered, so its state must stay empty.
+    expect(result.current.assignments.entries).toEqual([]);
+  });
+
+  it('opens Save for an assignment-only change and skips the version write entirely', async () => {
+    const onSaved = vi.fn();
+    const { result } = renderHook(() =>
+      useAgentEditorForm({ agent: assignedAgent, canAssign: true, onSaved }),
+    );
+    act(() => result.current.setDepValidity(READY));
+    expect(result.current.canSubmit).toBe(false);
+
+    act(() => result.current.assignments.patchDraft('targetType', 'global_role'));
+    act(() => result.current.assignments.patchDraft('targetId', 'role-a'));
+    act(() => result.current.assignments.add());
+    expect(result.current.dirty).toBe(true);
+    expect(result.current.canSubmit).toBe(true);
+
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    // Nothing about the assistant changed, so no new immutable version is appended.
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(mocks.upsertAssignment).toHaveBeenCalledOnce();
+    expect(onSaved).toHaveBeenCalledWith(null, { assignmentsChanged: true, created: false });
+  });
+
+  it('removes before it upserts, chaining the CAS each write hands back', async () => {
+    const { result } = withAssignment();
+    act(() => result.current.setDepValidity(READY));
+    act(() => result.current.assignments.remove(result.current.assignments.entries[0]!));
+    act(() => result.current.assignments.patchDraft('targetType', 'user'));
+    act(() => result.current.assignments.patchDraft('targetId', 'user-2'));
+    act(() => result.current.assignments.add());
+    act(() => result.current.setDisplayName('Research Assistant v2'));
+
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    // A dropped-then-re-added target would collide with the unique index in the other order.
+    expect(mocks.order).toEqual(['save', 'remove:assignment-1', 'upsert:user-2']);
+    // The save's CAS feeds the removal, and the removal's CAS feeds the upsert — no re-GET.
+    expect(mocks.removeAssignment.mock.calls[0]![0]).toMatchObject({
+      expectedDraftToken: savedOutput.draftToken,
+      expectedRevision: savedOutput.identity.revision,
+    });
+    expect(mocks.upsertAssignment.mock.calls[0]![0]).toMatchObject({
+      expectedDraftToken: 'r'.repeat(64),
+      expectedRevision: 20,
+      pinnedVersionId: null,
+      versionPolicy: 'latest_published',
+    });
+  });
+
+  it('keeps the modal open and names the partial state when a chained write fails', async () => {
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    mocks.upsertAssignment.mockRejectedValueOnce(new Error('offline'));
+    const { result } = renderHook(() =>
+      useAgentEditorForm({ agent: assignedAgent, canAssign: true, onClose, onSaved }),
+    );
+    act(() => result.current.setDepValidity(READY));
+    act(() => result.current.setDisplayName('Research Assistant v2'));
+    act(() => result.current.assignments.patchDraft('targetType', 'user'));
+    act(() => result.current.assignments.patchDraft('targetId', 'user-2'));
+    act(() => result.current.assignments.add());
+
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(result.current.conflict).toBe(false);
+    expect(result.current.error).toContain('agentCatalog.assignment.partialFailure');
+    // The version DID commit, so the caller is told — its list row would otherwise stay stale.
+    expect(onSaved).toHaveBeenCalledWith(savedOutput, {
+      assignmentsChanged: true,
+      created: false,
+    });
+  });
+
+  it('retries only what is left after a partial failure, against the advanced CAS', async () => {
+    mocks.upsertAssignment.mockRejectedValueOnce(new Error('offline'));
+    // The save and the removal DID land; only the upsert never reached the server.
+    server.config = { ...config, displayName: 'Research Assistant v2' };
+    server.assignments = [];
+    const { result } = withAssignment();
+    act(() => result.current.setDepValidity(READY));
+    act(() => result.current.setDisplayName('Research Assistant v2'));
+    act(() => result.current.assignments.remove(result.current.assignments.entries[0]!));
+    act(() => result.current.assignments.patchDraft('targetType', 'user'));
+    act(() => result.current.assignments.patchDraft('targetId', 'user-2'));
+    act(() => result.current.assignments.add());
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    // The upsert rejected before it could record itself — save and the removal did land.
+    expect(mocks.order).toEqual(['save', 'remove:assignment-1']);
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    // No second version, no replayed removal — only the write that never landed.
+    expect(mocks.order).toEqual(['save', 'remove:assignment-1', 'upsert:user-2']);
+    // The retry writes against the CAS the RECONCILE read returned — not the stale in-flight one.
+    expect(mocks.upsertAssignment.mock.calls.at(-1)![0]).toMatchObject({
+      expectedDraftToken: 'b'.repeat(64),
+      expectedRevision: 20,
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.dirty).toBe(false);
+  });
+
+  it('resumes a create whose assignment chain failed without creating a second assistant', async () => {
+    mocks.upsertAssignment.mockRejectedValueOnce(new Error('offline'));
+    // The create landed; the reconcile read must recognise the config as already live.
+    server.config = {
+      avatar: null,
+      backgroundColor: null,
+      description: null,
+      displayName: 'Support Agent',
+      modelParameters: {},
+      openingMessage: null,
+      openingQuestions: [],
+      systemRole: 'Help members with support.',
+      tags: [],
+    };
+    const { result } = renderHook(() => useAgentEditorForm({ canAssign: true }));
+    act(() => result.current.setDisplayName('Support Agent'));
+    act(() => result.current.patchConfig('systemRole', 'Help members with support.'));
+    act(() => result.current.setDependencies({ connectors: [], model, skills: [] }));
+    act(() => result.current.setDepValidity(READY));
+    act(() => result.current.assignments.add());
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(mocks.create).toHaveBeenCalledOnce();
+    expect(result.current.error).toContain('agentCatalog.assignment.partialFailure');
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(mocks.create).toHaveBeenCalledOnce();
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(mocks.upsertAssignment).toHaveBeenCalledTimes(2);
+    expect(mocks.upsertAssignment.mock.calls.at(-1)![0]).toMatchObject({
+      agentId: 'agent-new',
+      expectedDraftToken: 'b'.repeat(64),
+    });
+  });
+});
+
+describe('useAgentEditorForm ambiguous failure (server side effect, then transport rejection)', () => {
+  const filledCreate = (hook: { current: ReturnType<typeof useAgentEditorForm> }) => {
+    act(() => hook.current.setDisplayName('Support Agent'));
+    act(() => hook.current.patchConfig('systemRole', 'Help members with support.'));
+    act(() => hook.current.setDependencies({ connectors: [], model, skills: [] }));
+    act(() => hook.current.setDepValidity(READY));
+  };
+
+  it('never creates a second assistant when the CREATE committed but its response was lost', async () => {
+    mocks.create.mockRejectedValueOnce(new Error('socket hang up'));
+    // The row IS on the server — a blind retry would author a duplicate assistant.
+    mocks.list.mockResolvedValue({
+      items: [{ identity: { agentKey: 'support-agent', id: 'agent-new' } }],
+      nextCursor: null,
+    });
+    server.config = {
+      avatar: null,
+      backgroundColor: null,
+      description: null,
+      displayName: 'Support Agent',
+      modelParameters: {},
+      openingMessage: null,
+      openingQuestions: [],
+      systemRole: 'Help members with support.',
+      tags: [],
+    };
+
+    const { result } = renderHook(() => useAgentEditorForm({ canAssign: true }));
+    filledCreate(result);
+    act(() => result.current.assignments.add());
+
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    // The reconcile looked the assistant up by its unique key rather than assuming.
+    expect(mocks.list).toHaveBeenCalledWith({ limit: 100, query: 'support-agent' });
+    expect(result.current.resumeBlocked).toBe(false);
+    expect(result.current.error).toContain('agentCatalog.assignment.partialFailure');
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    // One create, ever. The resume writes the assignment against the reconciled CAS.
+    expect(mocks.create).toHaveBeenCalledOnce();
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(mocks.upsertAssignment.mock.calls.at(-1)![0]).toMatchObject({ agentId: 'agent-new' });
+  });
+
+  it('treats a CREATE the key lookup cannot find as never having happened', async () => {
+    mocks.create.mockRejectedValueOnce(new Error('socket hang up'));
+    mocks.list.mockResolvedValue({ items: [], nextCursor: null });
+
+    const { result } = renderHook(() => useAgentEditorForm({}));
+    filledCreate(result);
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(result.current.resumeBlocked).toBe(false);
+    expect(result.current.error).toBeTruthy();
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    // Nothing was committed, so the retry legitimately creates.
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('blocks the resume when it cannot tell whether the create landed', async () => {
+    mocks.create.mockRejectedValueOnce(new Error('socket hang up'));
+    mocks.list.mockRejectedValue(new Error('still offline'));
+
+    const { result } = renderHook(() => useAgentEditorForm({}));
+    filledCreate(result);
+
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    expect(result.current.resumeBlocked).toBe(true);
+    expect(result.current.error).toBe('agentCatalog.editor.resumeBlocked');
+    expect(result.current.canSubmit).toBe(false);
+
+    // Save is closed: a blind retry here is exactly how a duplicate assistant gets created.
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(mocks.create).toHaveBeenCalledOnce();
+  });
+
+  it('does not replay an UPSERT whose response was lost but whose row already exists', async () => {
+    mocks.upsertAssignment.mockRejectedValueOnce(new Error('socket hang up'));
+    server.config = config;
+    // The assignment IS on the server; only the acknowledgement was lost.
+    server.assignments = [
+      {
+        agentId: 'agent-1',
+        enabled: true,
+        id: 'assignment-landed',
+        mode: 'optional',
+        pinnedVersionId: null,
+        targetId: 'user-2',
+        targetType: 'user',
+        versionPolicy: 'latest_published',
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useAgentEditorForm({ agent: assignedAgent, canAssign: true }),
+    );
+    act(() => result.current.setDepValidity(READY));
+    act(() => result.current.assignments.remove(result.current.assignments.entries[0]!));
+    act(() => result.current.assignments.patchDraft('targetType', 'user'));
+    act(() => result.current.assignments.patchDraft('targetId', 'user-2'));
+    act(() => result.current.assignments.add());
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(mocks.upsertAssignment).toHaveBeenCalledOnce();
+
+    // The reconcile adopted the committed row's id, so there is nothing left to write.
+    expect(result.current.assignments.entries.map(({ id }) => id)).toEqual(['assignment-landed']);
+    expect(result.current.assignments.dirty).toBe(false);
+    expect(result.current.canSubmit).toBe(false);
+  });
+
+  it('leaves a REVISION CONFLICT alone — the server already said it refused the write', async () => {
+    mocks.save.mockRejectedValue(new Error('PLATFORM_REVISION_CONFLICT'));
+    const { result } = renderHook(() => useAgentEditorForm({ agent: assignedAgent }));
+    act(() => result.current.setDepValidity(READY));
+    act(() => result.current.setDisplayName('Research Assistant v2'));
+
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    expect(result.current.conflict).toBe(true);
+    expect(result.current.resumeBlocked).toBe(false);
+    // No reconcile read: a conflict is a definitive "did not commit", not an ambiguous failure.
+    expect(mocks.fetchDetail).not.toHaveBeenCalled();
   });
 });

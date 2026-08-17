@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyAgentSaveOutputToDetail, applyAgentSaveOutputToListItem } from './applySaveOutput';
+import { applyAgentSaveOutputToListItem } from './applySaveOutput';
 import type {
   AdminAgentDetailOutput,
   AdminAgentListItem,
@@ -64,27 +64,6 @@ const output = {
     config: { ...config, displayName: 'Research v2' },
   },
 } as unknown as AdminPlatformAgentSaveOutput;
-
-describe('applyAgentSaveOutputToDetail', () => {
-  it('puts the committed CAS and the new version on the cached aggregate, newest first', () => {
-    const applied = applyAgentSaveOutputToDetail(output)(detail)!;
-    expect(applied.draftToken).toBe('e'.repeat(64));
-    expect(applied.identity.revision).toBe(3);
-    expect(applied.versions.map(({ version: label }) => label)).toEqual(['1.0.1', '1.0.0']);
-    // The cached aggregate is replaced, never mutated in place.
-    expect(detail.versions).toHaveLength(1);
-  });
-
-  it('never duplicates a version when the same output is applied twice', () => {
-    const apply = applyAgentSaveOutputToDetail(output);
-    const applied = apply(apply(detail));
-    expect(applied!.versions.filter(({ id }) => id === 'version-2')).toHaveLength(1);
-  });
-
-  it('leaves an empty cache empty — there is nothing to patch onto', () => {
-    expect(applyAgentSaveOutputToDetail(output)(undefined)).toBeUndefined();
-  });
-});
 
 describe('applyAgentSaveOutputToListItem', () => {
   it('projects the committed name, published version and identity onto the row', () => {

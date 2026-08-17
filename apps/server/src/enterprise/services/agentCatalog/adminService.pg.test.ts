@@ -323,7 +323,12 @@ run('PlatformAgentAdminService (PostgreSQL) — list / archive / queries', () =>
           expectedRevision: before.revision,
           reason: 'remove assignment',
         }),
-      ).resolves.toEqual({ removed: true });
+        // The advanced CAS rides back with the removal so a chained write needs no re-GET.
+      ).resolves.toMatchObject({
+        draftToken: expect.stringMatching(/^[\da-f]{64}$/),
+        identity: { draftSequence: before.draftSequence + 1, id: 'rm-a' },
+        removed: true,
+      });
 
       const remaining = await db
         .select()

@@ -174,7 +174,13 @@ describe('PlatformAgentAdminService', () => {
         targetType: 'global',
         versionPolicy: 'latest_published',
       }),
-    ).resolves.toMatchObject({ id: 'assignment-id' });
+      // The write bumped the draft sequence, so the refreshed CAS rides back with the row and a
+      // chained assignment write needs no re-GET.
+    ).resolves.toMatchObject({
+      assignment: { id: 'assignment-id' },
+      draftToken: expect.stringMatching(/^[\da-f]{64}$/),
+      identity: { id: locked.id },
+    });
     expect(mocks.createAssignment).toHaveBeenCalledBefore(mocks.updateDraftCas);
     // ADM-02 lock order: reference lock (2) before the identity row lock (3).
     expect(mocks.acquireReferenceLock).toHaveBeenCalledBefore(mocks.lockIdentity);

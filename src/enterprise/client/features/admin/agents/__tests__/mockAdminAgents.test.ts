@@ -70,7 +70,7 @@ describe('mock Admin Agents contract adapter', () => {
     let detail = await client.get({ id: created.identity.id });
     const publishedRevision = detail.identity.revision;
     const publishedDraftSequence = detail.identity.draftSequence;
-    const assignment = await client.upsertAssignment({
+    const upserted = await client.upsertAssignment({
       agentId: created.identity.id,
       enabled: true,
       expectedDraftToken: detail.draftToken,
@@ -89,10 +89,13 @@ describe('mock Admin Agents contract adapter', () => {
     expect(detail.identity.revision).toBe(publishedRevision);
     expect(detail.identity.draftSequence).toBe(publishedDraftSequence + 1);
     expect(detail.draftToken).not.toBe(saved.draftToken);
+    // The write already handed back that same advanced CAS — a chained write needs no re-GET.
+    expect(upserted.draftToken).toBe(detail.draftToken);
+    expect(upserted.identity.draftSequence).toBe(detail.identity.draftSequence);
 
-    await client.removeAssignment({
+    const removed = await client.removeAssignment({
       agentId: created.identity.id,
-      assignmentId: assignment.id,
+      assignmentId: upserted.assignment.id,
       expectedDraftToken: detail.draftToken,
       expectedRevision: detail.identity.revision,
       reason: 'end pilot',
@@ -102,6 +105,7 @@ describe('mock Admin Agents contract adapter', () => {
     detail = await client.get({ id: created.identity.id });
     expect(detail.identity.revision).toBe(publishedRevision);
     expect(detail.identity.draftSequence).toBe(publishedDraftSequence + 2);
+    expect(removed.draftToken).toBe(detail.draftToken);
 
     const rolledBack = await client.rollback({
       agentId: created.identity.id,

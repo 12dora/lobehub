@@ -342,9 +342,11 @@ export class PlatformAgentAdminService {
           patch: { updatedBy: actorUserId },
         });
         if (!updated) throw new PlatformAgentRevisionConflictError();
-        return assignmentView(assignment);
+        // Return the refreshed CAS alongside the row: the write bumped `draftSequence`, so any
+        // follow-up assignment write in the same submit would otherwise need a re-GET first.
+        return { assignment: assignmentView(assignment), ...mutationView(updated) };
       },
-      summarize: (assignment) => ({ assignmentId: assignment.id }),
+      summarize: ({ assignment }) => ({ assignmentId: assignment.id }),
       targetId: input.agentId,
     });
 
@@ -371,7 +373,8 @@ export class PlatformAgentAdminService {
           patch: { updatedBy: actorUserId },
         });
         if (!updated) throw new PlatformAgentRevisionConflictError();
-        return { removed: true as const };
+        // Same reason as upsert: hand back the advanced CAS so a chained write needs no re-GET.
+        return { removed: true as const, ...mutationView(updated) };
       },
       summarize: () => ({ assignmentId: input.assignmentId }),
       targetId: input.agentId,

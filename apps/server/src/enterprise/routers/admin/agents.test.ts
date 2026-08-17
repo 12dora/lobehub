@@ -412,34 +412,35 @@ describe('adminAgentsRouter security gates', () => {
     insert.mockRestore();
 
     const assigner = await callerFor({ authenticatedAt: new Date(), userId: ids.assigner });
-    const assignment = await assigner.assignments.upsert(createInput);
+    const created1 = await assigner.assignments.upsert(createInput);
+    const assignment = created1.assignment;
     expect(await db.select().from(platformAgentAssignments)).toMatchObject([
       { enabled: true, id: assignment.id },
     ]);
+    // The write echoes back the advanced CAS, so the next assignment write chains without a re-GET.
     const afterCreate = await (
       await callerFor({ authenticatedAt: new Date(), userId: ids.reader })
     ).get({ id: created.identity.id });
+    expect(created1.draftToken).toBe(afterCreate.draftToken);
+    expect(created1.identity.revision).toBe(afterCreate.identity.revision);
     const updated = await assigner.assignments.upsert({
       ...createInput,
       assignmentId: assignment.id,
       enabled: false,
-      expectedDraftToken: afterCreate.draftToken,
-      expectedRevision: afterCreate.identity.revision,
+      expectedDraftToken: created1.draftToken,
+      expectedRevision: created1.identity.revision,
       reason: 'update guarded assignment',
     });
-    expect(updated).toMatchObject({ enabled: false, id: assignment.id });
+    expect(updated.assignment).toMatchObject({ enabled: false, id: assignment.id });
     expect(await db.select().from(platformAgentAssignments)).toMatchObject([
       { enabled: false, id: assignment.id },
     ]);
 
-    const afterUpdate = await (
-      await callerFor({ authenticatedAt: new Date(), userId: ids.reader })
-    ).get({ id: created.identity.id });
     const removeInput = {
       agentId: created.identity.id,
       assignmentId: assignment.id,
-      expectedDraftToken: afterUpdate.draftToken,
-      expectedRevision: afterUpdate.identity.revision,
+      expectedDraftToken: updated.draftToken,
+      expectedRevision: updated.identity.revision,
       reason: 'remove guarded assignment',
     };
     for (const auth of [
@@ -485,7 +486,10 @@ describe('adminAgentsRouter security gates', () => {
     ]);
     removeInsert.mockRestore();
 
-    await expect(assigner.assignments.remove(removeInput)).resolves.toEqual({ removed: true });
+    await expect(assigner.assignments.remove(removeInput)).resolves.toMatchObject({
+      identity: { id: created.identity.id },
+      removed: true,
+    });
     expect(await db.select().from(platformAgentAssignments)).toEqual([]);
   });
 

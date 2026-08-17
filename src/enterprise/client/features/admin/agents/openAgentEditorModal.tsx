@@ -7,13 +7,30 @@ import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/r
 
 import { AgentEditorForm } from './AgentEditorForm';
 import type { AdminAgentDetailOutput, AdminPlatformAgentSaveOutput } from './types';
+import type { AgentEditorSaveMeta } from './useAgentEditorForm';
 
 export interface AgentEditorModalProps {
   /** Present → edit the assistant; absent → create a new one. */
   agent?: AdminAgentDetailOutput;
   authMethod?: AdminReauthAuthMethod | null;
-  /** Called after the assistant is saved and live; the output carries the published version. */
-  onSaved?: (output: AdminPlatformAgentSaveOutput, created: boolean) => Promise<void> | void;
+  /**
+   * AGENT_ASSIGN. Derived by the caller from the admin access snapshot, because the modal renders
+   * in a portal that is not guaranteed to sit under the admin access provider.
+   */
+  canAssign?: boolean;
+  /**
+   * AGENT_UPDATE + AGENT_PUBLISH. Defaults to true (create is only reachable with it); an
+   * assignment-only operator opens the same modal with a read-only config.
+   */
+  canEditConfig?: boolean;
+  /**
+   * Called after the assistant is saved and live; `output` carries the published version, or is
+   * null when the submit only wrote assignments.
+   */
+  onSaved?: (
+    output: AdminPlatformAgentSaveOutput | null,
+    meta: AgentEditorSaveMeta,
+  ) => Promise<void> | void;
 }
 
 /**
@@ -24,6 +41,8 @@ export interface AgentEditorModalProps {
 export const openAgentEditorModal = ({
   agent,
   authMethod,
+  canAssign,
+  canEditConfig,
   onSaved,
 }: AgentEditorModalProps): ModalInstance => {
   // Tracks unsaved input so any dismissal (Escape / X / Cancel) can confirm before discarding.
@@ -58,6 +77,8 @@ export const openAgentEditorModal = ({
       <AgentEditorForm
         agent={agent}
         authMethod={authMethod}
+        canAssign={canAssign}
+        canEditConfig={canEditConfig}
         dirtyRef={dirtyRef}
         pendingRef={pendingRef}
         onClose={forceClose}

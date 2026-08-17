@@ -1,13 +1,13 @@
 'use client';
 
 import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, toast } from '@lobehub/ui/base-ui';
+import { Button, type DropdownItem, DropdownMenu, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import type { FilterValue } from 'antd/es/table/interface';
-import { createStaticStyles } from 'antd-style';
+import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
@@ -21,18 +21,42 @@ import StatusBadge from '../primitives/StatusBadge';
 import { applyAgentSaveOutputToListItem } from './applySaveOutput';
 import { deriveAdminAgentActionAvailability, deriveAdminAgentPermissions } from './controller';
 import { getAdminAgentErrorMessage } from './errorPresentation';
+import type { AgentEditorModalProps } from './openAgentEditorModal';
 import { openAgentEditorModal } from './openAgentEditorModal';
 import { openDeleteAgentModal } from './openDeleteAgentModal';
 import { usePruneLegacyAdminAgentDrafts } from './pruneLegacyAgentDrafts';
 import type { AdminAgentListItem } from './types';
 import { fetchAdminAgentDetail, useAdminAgentListPagination } from './useAdminAgents';
+import { useAgentRowActions } from './useAgentRowActions';
 
 const styles = createStaticStyles(({ css }) => ({
+  /**
+   * Name and identifier on ONE line: the identifier is secondary context for the name, and a
+   * two-line cell is what made every row 70px tall.
+   */
   identity: css`
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    gap: 8px;
+    align-items: baseline;
     min-width: 0;
+  `,
+  identityKey: css`
+    overflow: hidden;
+    flex: 0 1 auto;
+
+    font-family: ${cssVar.fontFamilyCode};
+    font-size: ${cssVar.fontSizeSM};
+    color: ${cssVar.colorTextTertiary};
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  `,
+  identityName: css`
+    overflow: hidden;
+    flex: 0 1 auto;
+
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   `,
   toolbar: css`
     width: 100%;
@@ -59,7 +83,6 @@ const readStatus = (value: string | null): AdminAgentListItem['identity']['statu
 
 const AgentListPage = memo(() => {
   const { t } = useTranslation('admin');
-  const navigate = useNavigate();
   const { authMethod, permissions } = useAdminAccess();
   const agentPermissions = deriveAdminAgentPermissions(permissions);
   const availability = deriveAdminAgentActionAvailability({ permissions: agentPermissions });
@@ -77,6 +100,34 @@ const AgentListPage = memo(() => {
   const removeListItem = list.removeItem;
   const updateListItem = list.updateItem;
   const filtered = Boolean(input.query || input.status);
+  // 设为默认助理 / 归档助理 moved here from the removed assistant detail page.
+  const rowActions = useAgentRowActions({ authMethod: authMethod ?? null, onChanged: refreshList });
+  // AGENT_ASSIGN is independently grantable: it must open the editor even without AGENT_UPDATE.
+  const canOpenEditor = availability.canEdit || agentPermissions.canAssign;
+  const hasRowActions = canOpenEditor || agentPermissions.canDelete || agentPermissions.canPublish;
+
+  /**
+   * The committed submit lands on the list. A pure config save can be applied to the one row it
+   * changed; a create, or anything that wrote an assignment, changes counters the output does not
+   * carry — those revalidate instead of patching a row into a half-truth.
+   */
+  const handleSaved = useCallback<NonNullable<AgentEditorModalProps['onSaved']>>(
+    async (output, meta) => {
+      try {
+        if (output && !meta.created && !meta.assignmentsChanged) {
+          await updateListItem(output.identity.id, (row) =>
+            applyAgentSaveOutputToListItem(output, row),
+          );
+        } else {
+          await refreshList();
+        }
+      } catch {
+        // A failed revalidation is reported, never swallowed into a stale row.
+        toast.warning(t('agentCatalog.recovery.refreshFailed'));
+      }
+    },
+    [refreshList, t, updateListItem],
+  );
 
   // List rows carry no draftToken or version config; both row actions load the authoritative
   // aggregate first so a stale row can never author a write against an outdated CAS.
@@ -87,23 +138,15 @@ const AgentListPage = memo(() => {
         openAgentEditorModal({
           agent: detail,
           authMethod,
-          onSaved: async (output) => {
-            // The save committed: put the authoritative name / version / CAS on the row first, then
-            // revalidate. A failed revalidation is reported, never swallowed into a stale row.
-            try {
-              await updateListItem(output.identity.id, (row) =>
-                applyAgentSaveOutputToListItem(output, row),
-              );
-            } catch {
-              toast.warning(t('agentCatalog.recovery.refreshFailed'));
-            }
-          },
+          canAssign: agentPermissions.canAssign,
+          canEditConfig: availability.canEdit,
+          onSaved: handleSaved,
         });
       } catch (cause) {
         toast.error(getAdminAgentErrorMessage(cause, t));
       }
     },
-    [authMethod, t, updateListItem],
+    [agentPermissions.canAssign, authMethod, availability.canEdit, handleSaved, t],
   );
 
   const openDelete = useCallback(
@@ -130,25 +173,26 @@ const AgentListPage = memo(() => {
     [authMethod, removeListItem, t],
   );
 
+  // Every column carries an explicit width so the table runs `tableLayout: fixed` (see `scroll.x`
+  // below): under `auto`, a CJK header collapses to one character per line.
   const columns = useMemo<TableColumnsType<AdminAgentListItem>>(
     () => [
       {
+        ellipsis: true,
         key: 'agent',
         title: t('agentCatalog.list.columns.agent'),
+        width: 340,
         render: (_, item) => (
           <div className={styles.identity}>
-            <Text ellipsis strong>
-              {item.displayName}
-            </Text>
-            <Text code ellipsis type="secondary">
-              {item.identity.agentKey}
-            </Text>
+            <span className={styles.identityName}>{item.displayName}</span>
+            <span className={styles.identityKey}>{item.identity.agentKey}</span>
           </div>
         ),
       },
       {
         key: 'status',
         title: t('agentCatalog.list.columns.status'),
+        width: 140,
         render: (_, item) => <StatusBadge status={item.identity.status} />,
         ...enumColumnFilter({
           options: (['published', 'archived'] as const).map((value) => ({
@@ -159,61 +203,88 @@ const AgentListPage = memo(() => {
         }),
       },
       {
-        dataIndex: 'publishedVersion',
-        key: 'publishedVersion',
-        title: t('agentCatalog.list.columns.version'),
-        render: (value: string | null) => value ?? '—',
-      },
-      {
         dataIndex: 'assignmentCount',
         key: 'assignmentCount',
         title: t('agentCatalog.list.columns.assignments'),
+        width: 100,
       },
       {
         key: 'isDefault',
         title: t('agentCatalog.list.columns.scope'),
+        width: 120,
         render: (_, item) => (
-          <Tag>
+          <Tag size="small">
             {item.identity.isDefault ? t('agentCatalog.defaultInbox') : t('agentCatalog.standard')}
           </Tag>
         ),
       },
-      ...(availability.canEdit || agentPermissions.canDelete
+      ...(hasRowActions
         ? [
             {
               key: 'actions',
               title: t('agentCatalog.list.columns.actions'),
-              width: 140,
+              width: 200,
               render: (_: unknown, item: AdminAgentListItem) => {
                 // Default / system assistants cannot be hard-deleted (server refuses too).
                 const deletable = !item.identity.isDefault && item.identity.systemKey === null;
+                // Archiving an already-archived assistant is a no-op the server rejects.
+                const archivable = item.identity.status === 'published';
+                // A published row always has a current version (the DB pointer check guarantees
+                // it), which is exactly what the detail page's `canSetDefaultNow` required.
+                const promotable =
+                  agentPermissions.canPublish && archivable && !item.identity.isDefault;
+                // Both destructive lifecycle actions live behind 更多 so the row keeps three
+                // controls at most; the everyday ones stay one click away.
+                const moreActions: DropdownItem[] = [
+                  ...(availability.canArchiveNow && archivable
+                    ? [
+                        {
+                          danger: true,
+                          key: 'archive',
+                          label: t('agentCatalog.archive.submit'),
+                          onClick: () => void rowActions.archive(item),
+                        },
+                      ]
+                    : []),
+                  ...(agentPermissions.canDelete && deletable
+                    ? [
+                        {
+                          danger: true,
+                          key: 'delete',
+                          label: t('agentCatalog.delete.action'),
+                          onClick: () => void openDelete(item),
+                        },
+                      ]
+                    : []),
+                ];
                 return (
-                  <Flexbox horizontal gap={4}>
-                    {availability.canEdit ? (
-                      <Button
-                        size="small"
-                        type="text"
-                        onClick={(event) => {
-                          // Row is clickable (navigates to detail) — keep the edit click local.
-                          event.stopPropagation();
-                          void openEditor(item);
-                        }}
-                      >
-                        {t('agentCatalog.action.edit')}
+                  <Flexbox horizontal gap={4} onClick={(event) => event.stopPropagation()}>
+                    {canOpenEditor ? (
+                      <Button size="small" type="text" onClick={() => void openEditor(item)}>
+                        {/* An assignment-only operator opens the SAME modal, config read-only. */}
+                        {t(
+                          availability.canEdit
+                            ? 'agentCatalog.action.edit'
+                            : 'agentCatalog.action.assign',
+                        )}
                       </Button>
                     ) : null}
-                    {agentPermissions.canDelete && deletable ? (
+                    {/* Promoting an assistant that already IS the default says nothing — hide it. */}
+                    {promotable ? (
                       <Button
-                        danger
                         size="small"
                         type="text"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void openDelete(item);
-                        }}
+                        onClick={() => void rowActions.setDefaultInbox(item)}
                       >
-                        {t('agentCatalog.delete.action')}
+                        {t('agentCatalog.defaultSwitch.action')}
                       </Button>
+                    ) : null}
+                    {moreActions.length > 0 ? (
+                      <DropdownMenu items={moreActions} placement="bottomRight">
+                        <Button aria-label={t('agentCatalog.list.more')} size="small" type="text">
+                          {t('agentCatalog.list.more')}
+                        </Button>
+                      </DropdownMenu>
                     ) : null}
                   </Flexbox>
                 );
@@ -222,7 +293,19 @@ const AgentListPage = memo(() => {
           ]
         : []),
     ],
-    [status, t, agentPermissions.canDelete, availability.canEdit, openDelete, openEditor],
+    [
+      status,
+      t,
+      agentPermissions.canDelete,
+      agentPermissions.canPublish,
+      availability.canArchiveNow,
+      availability.canEdit,
+      canOpenEditor,
+      hasRowActions,
+      openDelete,
+      openEditor,
+      rowActions,
+    ],
   );
   const patch = useCallback(
     (key: 'q' | 'status', value?: string) => {
@@ -245,17 +328,10 @@ const AgentListPage = memo(() => {
   const createAgent = () =>
     openAgentEditorModal({
       authMethod,
-      onSaved: async (output) => {
-        // Coherent with delete: revalidate the infinite list via the bound mutate, then navigate
-        // into the assistant that is now live. Refresh failure must not block that navigation —
-        // but it is reported, because the list the admin comes back to is then incomplete.
-        try {
-          await refreshList();
-        } catch {
-          toast.warning(t('agentCatalog.recovery.refreshFailed'));
-        }
-        navigate(`/admin/agents/${encodeURIComponent(output.identity.id)}`);
-      },
+      canAssign: agentPermissions.canAssign,
+      // Coherent with delete: revalidate the infinite list via the bound mutate so the assistant
+      // that is now live appears in place. There is no detail page to navigate into any more.
+      onSaved: handleSaved,
     });
   const clearFilters = () => {
     setQueryDraft('');
@@ -287,6 +363,10 @@ const AgentListPage = memo(() => {
             columns={columns}
             dataSource={list.items}
             rowKey={(item) => item.identity.id}
+            // Fixed layout + horizontal scroll: honour the column widths instead of letting the
+            // browser crush a CJK header to one character.
+            scroll={{ x: 900 }}
+            size="small"
             emptyDescription={t(
               filtered ? 'agentCatalog.list.empty.filtered' : 'agentCatalog.list.empty.default',
             )}
@@ -316,9 +396,7 @@ const AgentListPage = memo(() => {
               </Flexbox>
             }
             onChange={handleTableChange}
-            onRowActivate={(item) =>
-              navigate(`/admin/agents/${encodeURIComponent(item.identity.id)}`)
-            }
+            onRowActivate={canOpenEditor ? (item) => void openEditor(item) : undefined}
           />
           <Flexbox horizontal align="center" gap={8} justify="center">
             {list.loadMoreError ? (

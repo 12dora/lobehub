@@ -6,7 +6,7 @@ import {
   refinePlatformAgentAssignmentInvariants,
 } from './assignmentCore';
 import { draftTokenSchema, idSchema, optionalReasonSchema, revisionSchema } from './common';
-import { platformAgentAssignmentSchema } from './domain';
+import { platformAgentAssignmentSchema, platformAgentIdentityDraftSchema } from './domain';
 
 export {
   type PlatformAgentAssignmentCore,
@@ -52,11 +52,26 @@ export const adminPlatformAgentAssignmentRemoveInputSchema = z
   })
   .strict();
 
+/**
+ * Assignment writes bump the agent's draft sequence, so the CAS token every follow-up write must
+ * echo changes on each call. Both outputs therefore carry the refreshed `{ draftToken, identity }`
+ * pair: a client writing several assignments in one submit chains them without a re-GET in between.
+ */
 export const adminPlatformAgentAssignmentRemoveOutputSchema = z
-  .object({ removed: z.literal(true) })
+  .object({
+    draftToken: draftTokenSchema,
+    identity: platformAgentIdentityDraftSchema,
+    removed: z.literal(true),
+  })
   .strict();
 
-export const adminPlatformAgentAssignmentUpsertOutputSchema = platformAgentAssignmentSchema;
+export const adminPlatformAgentAssignmentUpsertOutputSchema = z
+  .object({
+    assignment: platformAgentAssignmentSchema,
+    draftToken: draftTokenSchema,
+    identity: platformAgentIdentityDraftSchema,
+  })
+  .strict();
 
 /** Stable i18n warning codes returned by assignment preview (client key: agentCatalog.assignment.warning.*). */
 export const PLATFORM_AGENT_ASSIGNMENT_WARNING_CODES = [

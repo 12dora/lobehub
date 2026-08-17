@@ -12,9 +12,11 @@ import { DEFAULT_AVATAR } from '@/const/meta';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import BackgroundSwatches from '@/features/AgentSetting/AgentMeta/BackgroundSwatches';
 
+import { AssignmentPolicySection } from './AssignmentPolicySection';
 import { DependencyEditor } from './DependencyEditor';
 import { FieldLabel, HelpTooltip } from './dependencyEditorShared';
 import type { AdminAgentDetailOutput, AdminPlatformAgentSaveOutput } from './types';
+import type { AgentEditorSaveMeta } from './useAgentEditorForm';
 import { AGENT_KEY_MAX_LENGTH, useAgentEditorForm } from './useAgentEditorForm';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -172,22 +174,41 @@ export interface AgentEditorFormProps {
   /** Present → edit mode; absent → create mode. */
   agent?: AdminAgentDetailOutput;
   authMethod?: AdminReauthAuthMethod | null;
+  /** AGENT_ASSIGN: without it 分配策略 is hidden and no assignment is ever written. */
+  canAssign?: boolean;
+  /** AGENT_UPDATE + AGENT_PUBLISH. Without it every config field is read-only. */
+  canEditConfig?: boolean;
   dirtyRef?: { current: boolean };
   /** Explicit dismissal — guarded by the host when input is unsaved. Defaults to `onClose`. */
   onCancel?: () => void;
   /** Unconditional close, used once the write has committed. */
   onClose?: () => void;
-  onSaved?: (output: AdminPlatformAgentSaveOutput, created: boolean) => Promise<void> | void;
+  onSaved?: (
+    output: AdminPlatformAgentSaveOutput | null,
+    meta: AgentEditorSaveMeta,
+  ) => Promise<void> | void;
   /** Set by the hook while a write is in flight so the host can veto dismissal. */
   pendingRef?: { current: boolean };
 }
 
 export const AgentEditorForm = memo<AgentEditorFormProps>(
-  ({ agent, authMethod, dirtyRef, onCancel, onClose, onSaved, pendingRef }) => {
+  ({
+    agent,
+    authMethod,
+    canAssign,
+    canEditConfig,
+    dirtyRef,
+    onCancel,
+    onClose,
+    onSaved,
+    pendingRef,
+  }) => {
     const { t } = useTranslation('admin');
     const form = useAgentEditorForm({
       agent,
       authMethod,
+      canAssign,
+      canEditConfig,
       dirtyRef,
       onClose,
       onSaved,
@@ -198,13 +219,16 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
     // Saving republishes an archived assistant, so say so instead of letting it happen silently.
     const archived = agent?.identity.status === 'archived';
 
+    // One flag for every config control: an assignment-only operator (or an assistant whose live
+    // version could not be loaded) reads the configuration but never authors it.
+    const readOnly = !form.configEditable;
     const keyInvalid = form.isCreate && form.agentKey.length > 0 && !form.keyValid;
     // An empty identifier is only worth raising once the admin has named the assistant — before
     // that the whole form is empty and there is nothing to correct yet.
     const keyMissing =
       form.isCreate && form.agentKey.length === 0 && config.displayName.trim().length > 0;
     // Requirements are guidance until the admin starts, then the honest reason Save stays closed.
-    const showMissing = form.dirty && form.missingRequirements.length > 0;
+    const showMissing = !readOnly && form.dirty && form.missingRequirements.length > 0;
     const blockers = form.depValidity.blockers.filter(
       (blocker) => blocker.message !== MODEL_BLOCKER,
     );
@@ -237,6 +261,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
               <Input
                 required
                 aria-label={t('agentCatalog.editor.name')}
+                disabled={readOnly}
                 id={NAME_ID}
                 placeholder={t('agentCatalog.editor.namePlaceholder')}
                 value={config.displayName}
@@ -270,7 +295,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
             </FieldLabel>
             <Input
               aria-label={t('agentCatalog.editor.key')}
-              disabled={!form.isCreate}
+              disabled={readOnly || !form.isCreate}
               id={KEY_ID}
               maxLength={AGENT_KEY_MAX_LENGTH}
               placeholder={'research-assistant'}
@@ -293,6 +318,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
           <TextArea
             aria-label={t('agentCatalog.editor.description')}
             autoSize={{ maxRows: 3, minRows: 1 }}
+            disabled={readOnly}
             id={DESCRIPTION_ID}
             placeholder={t('agentCatalog.editor.descriptionPlaceholder')}
             value={config.description ?? ''}
@@ -318,6 +344,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
           required
           aria-label={t('agentCatalog.editor.systemRole')}
           autoSize={{ maxRows: 18, minRows: 6 }}
+          disabled={readOnly}
           id={SYSTEM_ROLE_ID}
           placeholder={t('agentCatalog.editor.systemRolePlaceholder')}
           value={config.systemRole}
@@ -335,6 +362,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
                 {t(`agentCatalog.editor.param.${key}` as never)}
               </FieldLabel>
               <InputNumber
+                disabled={readOnly}
                 id={`admin-agent-editor-param-${key}`}
                 max={max}
                 min={min}
@@ -361,6 +389,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
           <Select
             allowClear
             aria-label={t('agentCatalog.editor.tags')}
+            disabled={readOnly}
             id={TAGS_ID}
             mode={'tags'}
             options={config.tags.map((tag) => ({ label: tag, value: tag }))}
@@ -379,6 +408,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
           <TextArea
             aria-label={t('agentCatalog.editor.openingMessage')}
             autoSize={{ maxRows: 6, minRows: 2 }}
+            disabled={readOnly}
             id={OPENING_MESSAGE_ID}
             placeholder={t('agentCatalog.editor.openingMessagePlaceholder')}
             value={config.openingMessage ?? ''}
@@ -395,6 +425,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
           <TextArea
             aria-label={t('agentCatalog.editor.openingQuestions')}
             autoSize={{ maxRows: 8, minRows: 3 }}
+            disabled={readOnly}
             id={OPENING_QUESTIONS_ID}
             placeholder={t('agentCatalog.editor.openingQuestionsPlaceholder')}
             value={config.openingQuestions.join('\n')}
@@ -412,10 +443,10 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
       <div className={styles.root}>
         <div className={styles.body}>
           <DependencyEditor
-            editable
             enabled
             agentId={agent?.identity.id ?? 'new-platform-agent'}
             dependencies={form.value.dependencies}
+            editable={!readOnly}
             onChange={form.setDependencies}
             onValidityChange={form.setDepValidity}
           >
@@ -427,6 +458,19 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
                   variant={'borderless'}
                 >
                   <div className={cx(styles.stack, styles.groupBody)}>
+                    {/* Say WHY the fields are locked, once, where the fields are. */}
+                    {readOnly ? (
+                      <Alert
+                        showIcon
+                        role={'status'}
+                        type={form.currentVersionMissing ? 'error' : 'info'}
+                        message={t(
+                          form.currentVersionMissing
+                            ? 'agentCatalog.editor.versionUnavailable'
+                            : 'agentCatalog.editor.readOnlyConfig',
+                        )}
+                      />
+                    ) : null}
                     {basics(slots.model)}
                     {form.depValidity.issues.length > 0 ? (
                       <Alert
@@ -447,6 +491,27 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
                 >
                   <div className={styles.groupBody}>{prompt}</div>
                 </FormGroup>
+
+                {form.canAssign ? (
+                  <FormGroup
+                    className={styles.group}
+                    title={t('agentCatalog.editor.section.assignment')}
+                    variant={'borderless'}
+                    extra={
+                      <HelpTooltip
+                        field={t('agentCatalog.editor.section.assignment')}
+                        title={t('agentCatalog.editor.section.assignmentDesc')}
+                      />
+                    }
+                  >
+                    <div className={styles.groupBody}>
+                      <AssignmentPolicySection
+                        assignments={form.assignments}
+                        isDefaultInbox={form.systemKey === 'default-inbox'}
+                      />
+                    </div>
+                  </FormGroup>
+                ) : null}
 
                 <FormGroup
                   collapsible

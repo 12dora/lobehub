@@ -46,10 +46,8 @@ describe('adminNavMeta', () => {
       PLATFORM_PERMISSIONS.AGENT_READ,
     ]);
     expect(findAdminNavItemByPath('/admin/agents')?.id).toBe('agents');
-    expect(findAdminNavItemByPath('/admin/agents/a1')?.id).toBe('agents-detail');
-    expect(findAdminNavItemByPath('/admin/agents/a1')?.requiredPermissions).toEqual([
-      PLATFORM_PERMISSIONS.AGENT_READ,
-    ]);
+    // Assistants are authored entirely in a modal — there is no detail route to fall back to.
+    expect(findAdminNavItemByPath('/admin/agents/a1')).toBeUndefined();
     // `/admin/system` is now the group index (shell-only); the status page moved one level down.
     expect(findAdminNavItemByPath('/admin/system')?.id).toBe('system');
     expect(findAdminNavItemByPath('/admin/system')?.requiredPermissions).toEqual([]);
@@ -160,9 +158,6 @@ describe('adminNavMeta', () => {
     );
     expect(getAdminBreadcrumbs('/admin/skills/s1').map((c) => c.id)).toEqual(
       expect.arrayContaining(['overview', 'skills', 'skills-detail']),
-    );
-    expect(getAdminBreadcrumbs('/admin/agents/a1').map((c) => c.id)).toEqual(
-      expect.arrayContaining(['overview', 'agents', 'agents-detail']),
     );
   });
 

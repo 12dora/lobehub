@@ -1,8 +1,6 @@
 export default {
+  'agentCatalog.action.assign': 'Assignments',
   'agentCatalog.action.edit': 'Edit',
-  'agentCatalog.action.running': 'Working…',
-  'agentCatalog.archive.defaultBlocked':
-    'The default Inbox Agent must have a replacement before it can be archived.',
   'agentCatalog.archive.description':
     'Archiving removes this Agent from new assignments. Existing history remains available.',
   'agentCatalog.archive.noReplacement':
@@ -11,56 +9,37 @@ export default {
   'agentCatalog.archive.replacementPlaceholder': 'Select a published Agent',
   'agentCatalog.archive.submit': 'Archive Agent',
   'agentCatalog.archive.title': 'Archive Agent',
-  'agentCatalog.assignment.cancelEdit': 'Cancel edit',
-  'agentCatalog.assignment.create': 'Create assignment',
-  'agentCatalog.assignment.createNew': 'New assignment',
-  'agentCatalog.assignment.createTitle': 'Create assignment',
+  'agentCatalog.assignment.add': 'Add assignment',
+  'agentCatalog.assignment.defaultInboxHint':
+    'The default assistant already reaches every member; assignments here only add mandatory or role-specific delivery.',
   'agentCatalog.assignment.disabledTag': 'Disabled',
-  'agentCatalog.assignment.edit': 'Edit',
-  'agentCatalog.assignment.editingExisting': 'Editing assignment',
   'agentCatalog.assignment.empty': 'No assignments yet.',
   'agentCatalog.assignment.enabled': 'Enabled',
+  'agentCatalog.assignment.enabledOff': 'Kept, but not delivered',
+  'agentCatalog.assignment.enabledOn': 'Delivered once you save',
   'agentCatalog.assignment.errors.targetRequired': 'Enter the role or user ID for this target.',
-  'agentCatalog.assignment.errors.versionRequired': 'Choose a version to pin.',
   'agentCatalog.assignment.mode': 'Distribution',
   'agentCatalog.assignment.mode.default': 'Default',
   'agentCatalog.assignment.mode.mandatory': 'Mandatory',
   'agentCatalog.assignment.mode.optional': 'Optional',
-  'agentCatalog.assignment.pinnedVersion': 'Pinned version',
-  'agentCatalog.assignment.preview': 'Preview assignment',
-  'agentCatalog.assignment.previewResult': 'Estimated reach: {{count}} users',
+  'agentCatalog.assignment.partialFailure':
+    'The assistant was saved, but some assignments were not written. Fix the problem and save again — only the remaining changes are retried.',
   'agentCatalog.assignment.remove': 'Remove assignment',
-  'agentCatalog.assignment.removeDescription':
-    'Remove this target from the Agent distribution plan. Existing user history is unchanged.',
-  'agentCatalog.assignment.removed': 'Assignment removed.',
-  'agentCatalog.assignment.saved': 'Assignment saved.',
+  'agentCatalog.assignment.removeTarget': 'Remove the assignment for {{target}}',
   'agentCatalog.assignment.target.global': 'All users',
   'agentCatalog.assignment.target.global_role': 'Platform role',
   'agentCatalog.assignment.target.user': 'One user',
   'agentCatalog.assignment.targetId': 'Role or user ID',
+  'agentCatalog.assignment.targetIdGlobal': 'Applies to every member',
   'agentCatalog.assignment.targetType': 'Target type',
-  'agentCatalog.assignment.update': 'Save changes',
-  'agentCatalog.assignment.updateTitle': 'Update assignment',
-  'agentCatalog.assignment.upsertDescription':
-    'Describe why this assignment change is being made. It applies on the next resolution.',
-  'agentCatalog.assignment.versionPolicy': 'Version policy',
-  'agentCatalog.assignment.title': 'Assignments',
-  'agentCatalog.assignment.versionPolicy.latest_published': 'Follow latest published',
-  'agentCatalog.assignment.versionPolicy.pinned': 'Pinned version',
-  'agentCatalog.assignment.warning.ASSIGNMENT_DISABLED':
-    'Assignment is disabled and will not take effect.',
-  'agentCatalog.assignment.warning.MANDATORY_AGENT_CANNOT_BE_HIDDEN':
-    'Mandatory Agents cannot be hidden by users.',
-  'agentCatalog.collection.truncated': 'List is incomplete',
-  'agentCatalog.collection.truncatedAssignments':
-    'Only the first pages of assignments were loaded. Load more to see the rest, or treat this list as partial.',
-  'agentCatalog.collection.truncatedRollouts':
-    'Only the first pages of rollout jobs were loaded. Load more to see the rest, or treat this list as partial.',
-  'agentCatalog.collection.truncatedVersions':
-    'Only the first pages of versions were loaded. Load more to see the rest, or treat this list as partial.',
-  'agentCatalog.collection.loadMore': 'Load more',
-  'agentCatalog.collection.loadFailed': 'Couldn’t load more items. Try again.',
-  'agentCatalog.collection.retry': 'Retry',
+  'agentCatalog.assignment.tooManyToEdit':
+    'This assistant has more assignments than can be loaded here, so they cannot be edited in this dialog.',
+  'agentCatalog.defaultSwitch.action': 'Set as default',
+  'agentCatalog.defaultSwitch.description':
+    'Make this the organization default assistant. Only new conversations are affected; existing ones are unchanged.',
+  'agentCatalog.defaultSwitch.submit': 'Set as default Inbox',
+  'agentCatalog.defaultSwitch.success': 'Default Inbox switched.',
+  'agentCatalog.defaultSwitch.title': 'Switch default Inbox',
   'agentCatalog.dependency.catalogTruncated':
     'More published catalog entries match this search. Refine the query to find a specific item.',
   'agentCatalog.dependency.model.providerSearch': 'Search providers',
@@ -71,11 +50,6 @@ export default {
     'Someone else changed this assistant first. Reopen it to load the latest version, then reapply your change.',
   'agentCatalog.create.submit': 'New assistant',
   'agentCatalog.defaultInbox': 'Default Inbox',
-  'agentCatalog.defaultSwitch.description':
-    'Make this the organization default assistant. Only new conversations are affected; existing ones are unchanged.',
-  'agentCatalog.defaultSwitch.submit': 'Set as default Inbox',
-  'agentCatalog.defaultSwitch.success': 'Default Inbox switched.',
-  'agentCatalog.defaultSwitch.title': 'Switch default Inbox',
   'agentCatalog.delete.action': 'Delete',
   'agentCatalog.delete.description':
     'Permanently delete this platform assistant along with every version, assignment, and user materialization it owns. This cannot be undone.',
@@ -119,6 +93,15 @@ export default {
   'agentCatalog.dependency.skill.remove': 'Remove',
   'agentCatalog.dependency.skill.title': 'Skills',
   'agentCatalog.dependency.stale': 'Outdated',
+  'agentCatalog.editor.readOnlyConfig':
+    'You can edit distribution for this assistant, but not its configuration.',
+  'agentCatalog.editor.resumeBlocked':
+    'The last write may or may not have been applied, and we could not confirm which. Close this dialog and reopen it to continue from the current state.',
+  'agentCatalog.editor.section.assignment': 'Distribution',
+  'agentCatalog.editor.section.assignmentDesc':
+    'Who receives this assistant. Changes apply when you save.',
+  'agentCatalog.editor.versionUnavailable':
+    'The published version of this assistant could not be loaded, so its configuration cannot be edited here.',
   'agentCatalog.errors.generic':
     'The Agent action failed. Your input is still here; check your connection and retry.',
   'agentCatalog.editor.avatar': 'Avatar',
@@ -187,7 +170,6 @@ export default {
   'agentCatalog.list.columns.assignments': 'Assignments',
   'agentCatalog.list.columns.scope': 'Identity',
   'agentCatalog.list.columns.status': 'Status',
-  'agentCatalog.list.columns.version': 'Published version',
   'agentCatalog.list.description': 'Create and edit the assistants your members use.',
   'agentCatalog.list.empty.default': 'No platform Agents have been created yet.',
   'agentCatalog.list.empty.filtered': 'No Agents match these filters.',
@@ -195,71 +177,21 @@ export default {
   'agentCatalog.list.loadMore': 'Load more',
   'agentCatalog.list.loadMoreError': 'Could not load more Agents.',
   'agentCatalog.list.loadingMore': 'Loading…',
+  'agentCatalog.list.more': 'More',
   'agentCatalog.list.search': 'Search Agents',
   'agentCatalog.list.title': 'Platform Agents',
-  'agentCatalog.migrationRequired': 'Needs attention',
-  'agentCatalog.migrationRequiredDescription':
-    'This assistant was created by an older release. Open the editor and save it to bring it up to date.',
-  'agentCatalog.readOnly.assignment':
-    'You can inspect assignments and rollout status, but you do not have assignment permission.',
-  'agentCatalog.readOnly.badge': 'Read only',
   'agentCatalog.recovery.refreshFailed': 'Saved, but the latest state could not be loaded.',
-  'agentCatalog.recovery.refreshFailedDescription':
-    'Your changes were saved. Retry the refresh before editing further.',
-  'agentCatalog.recovery.refreshRetry': 'Retry refresh',
-  'agentCatalog.rollback.description':
-    'Roll back to this version. Existing user conversations are not affected.',
-  'agentCatalog.rollback.submit': 'Rollback to version',
-  'agentCatalog.rollback.title': 'Rollback Agent',
-  'agentCatalog.rollout.cancel': 'Cancel rollout',
-  'agentCatalog.rollout.cancelDescription':
-    'Explain why this rollout is being stopped. The batch in progress may finish first.',
-  'agentCatalog.rollout.cancelRequested': 'Rollout cancellation requested.',
-  'agentCatalog.rollout.deferred':
-    'Progressive rollout controls become available once the Rollout service is enabled. Assignments still take effect on the next resolution without an explicit rollout.',
-  'agentCatalog.rollout.deferredTitle': 'Rollout service not enabled yet',
-  'agentCatalog.rollout.deadHelp':
-    'A dead rollout requires an explicit retry after its dependency or user-row failure is corrected.',
-  'agentCatalog.rollout.defaultInboxDelegated':
-    'Change the default assistant version with publish or rollback rather than a per-user rollout.',
-  'agentCatalog.rollout.empty': 'No rollout jobs yet.',
-  'agentCatalog.rollout.progress': '{{completed}} completed · {{failed}} failed · {{total}} total',
-  'agentCatalog.rollout.pollFailed': 'Live rollout updates paused. Loaded progress is preserved.',
-  'agentCatalog.rollout.pollRetry': 'Retry live updates',
-  'agentCatalog.rollout.refreshFailed':
-    'The rollout action completed, but refreshed progress could not be loaded.',
-  'agentCatalog.rollout.refreshRetry': 'Retry refresh',
-  'agentCatalog.rollout.retry': 'Retry rollout',
-  'agentCatalog.rollout.retryDescription':
-    'Explain why the failed or cancelled rollout is safe to resume from its checkpoint.',
-  'agentCatalog.rollout.retryRequested': 'Rollout retry requested.',
-  'agentCatalog.rollout.rollback': 'Roll back rollout',
-  'agentCatalog.rollout.rollbackDescription':
-    'Explain why this rollout should return to its exact previous version.',
-  'agentCatalog.rollout.rollbackRequested': 'Reverse rollout queued.',
-  'agentCatalog.rollout.start': 'Start rollout',
-  'agentCatalog.rollout.startDescription':
-    'Explain why this assignment is ready for materialization.',
-  'agentCatalog.rollout.started': 'Rollout queued.',
-  'agentCatalog.rollout.status.cancelled': 'Cancelled',
-  'agentCatalog.rollout.status.completed': 'Completed',
-  'agentCatalog.rollout.status.dead': 'Dead',
-  'agentCatalog.rollout.status.failed': 'Failed',
-  'agentCatalog.rollout.status.pending': 'Pending',
-  'agentCatalog.rollout.status.running': 'Running',
-  'agentCatalog.rollout.title': 'Rollout progress',
   'agentCatalog.save.invalid': 'Fill in the name, role, and model before saving.',
   'agentCatalog.standard': 'Standard',
   'agentCatalog.status.archived': 'Archived',
   'agentCatalog.status.published': 'Published',
-  'agentCatalog.toast.archived': 'Agent archived.',
   'agentCatalog.toast.actionFailed':
     'The Agent action could not start. Check your connection and try again.',
+  'agentCatalog.toast.archived': 'Agent archived.',
   'agentCatalog.toast.created': 'Assistant created and live.',
   'agentCatalog.toast.deleted': 'Assistant deleted.',
   'agentCatalog.toast.refreshDeferred':
     'Agent saved, but some servers are still refreshing. Wait a moment before starting new runs.',
-  'agentCatalog.toast.rolledBack': 'Agent version rolled back.',
   'agentCatalog.toast.saved': 'Assistant saved and live.',
   'globalCredentials.validation.filePayloadInvalid':
     'The file data is invalid. Select the file again and retry.',
@@ -268,12 +200,6 @@ export default {
   'agentCatalog.unsaved.leave': 'Discard changes',
   'agentCatalog.unsaved.stay': 'Keep editing',
   'agentCatalog.unsaved.title': 'Unsaved changes',
-  'agentCatalog.versions.connectors': 'Connectors',
-  'agentCatalog.versions.current': 'Live',
-  'agentCatalog.versions.currentVersion': 'Live version {{version}}',
-  'agentCatalog.versions.empty': 'No version has been saved yet.',
-  'agentCatalog.versions.skills': 'Skills',
-  'agentCatalog.versions.title': 'Version history',
   'access.error.desc':
     'We could not verify your admin access. Check your connection and try again.',
   'access.error.retry': 'Retry',
@@ -418,7 +344,6 @@ export default {
   'managedResources.unsavedStay': 'Keep editing',
   'managedResources.unsavedTitle': 'Unsaved managed resource changes',
   'nav.agents': 'Agents',
-  'nav.agentDetail': 'Agent details',
   'nav.ai': 'Agent',
   'nav.aiProviderDetail': 'Provider detail',
   'nav.aiProviders': 'Providers',

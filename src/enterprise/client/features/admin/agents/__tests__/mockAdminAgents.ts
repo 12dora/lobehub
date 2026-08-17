@@ -409,7 +409,13 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
       record.assignments = record.assignments.filter(({ id }) => id !== input.assignmentId);
       advanceDraft(record);
-      return adminPlatformAgentAssignmentRemoveOutputSchema.parse({ removed: true });
+      return adminPlatformAgentAssignmentRemoveOutputSchema.parse(
+        structuredClone({
+          draftToken: record.draftToken,
+          identity: record.identity,
+          removed: true,
+        }),
+      );
     },
     retryRollout: async (input) => {
       const rollout = requireRolloutCas(
@@ -542,7 +548,13 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       if (index === -1) record.assignments.push(assignment);
       else record.assignments[index] = assignment;
       advanceDraft(record);
-      return adminPlatformAgentAssignmentUpsertOutputSchema.parse(assignment);
+      return adminPlatformAgentAssignmentUpsertOutputSchema.parse(
+        structuredClone({
+          assignment,
+          draftToken: record.draftToken,
+          identity: record.identity,
+        }),
+      );
     },
   };
 };

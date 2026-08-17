@@ -1,17 +1,11 @@
 'use client';
 
-import { useEffect } from 'react';
 import useSWRInfinite from 'swr/infinite';
 
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
-import { useClientDataSWR, useClientPollingSWR } from '@/libs/swr';
 import { adminPlatformAgentDetailAggregateOutputSchema } from '@/server/enterprise/contracts/platformAgents';
 
-import {
-  ADMIN_AGENT_LIST_KEY,
-  buildAdminAgentGetKey,
-  buildAdminAgentRolloutPollKey,
-} from './swrKeys';
+import { ADMIN_AGENT_LIST_KEY } from './swrKeys';
 import type {
   AdminAgentCollectionMeta,
   AdminAgentDetailOutput,
@@ -39,6 +33,37 @@ const toCollectedPage = <T>({ items, nextCursor }: CursorPage<T>): CollectedPage
   nextCursor,
   truncated: nextCursor !== null,
 });
+
+/**
+ * Page ceilings for the aggregate drains. Bounded, because an unbounded loop against a hostile or
+ * broken cursor is a hang; `truncated` stays true when the ceiling is what stopped us, so callers
+ * can say "this list is incomplete" instead of silently editing a partial view.
+ */
+const MAX_ASSIGNMENT_PAGES = 20;
+const MAX_VERSION_PAGES = 20;
+const PAGE_LIMIT = 100;
+
+/**
+ * Drain a cursor collection until it is exhausted, the page ceiling is hit, or `stopWhen` says the
+ * row we actually needed has arrived. Ids are opaque, so "keep paging until found" is the only way
+ * to guarantee a specific row is present.
+ */
+const drainPages = async <T>(
+  fetchPage: (cursor?: string) => Promise<CursorPage<T>>,
+  maxPages: number,
+  stopWhen?: (items: T[]) => boolean,
+): Promise<CollectedPages<T>> => {
+  const items: T[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = await fetchPage(cursor);
+    items.push(...result.items);
+    cursor = result.nextCursor ?? undefined;
+    if (!cursor) return { items, nextCursor: null, truncated: false };
+    if (stopWhen?.(items)) return { items, nextCursor: cursor, truncated: false };
+  }
+  return { items, nextCursor: cursor ?? null, truncated: cursor !== null };
+};
 
 /**
  * Dedicated default-inbox pointer read — single list request with `isDefault: true`.
@@ -74,24 +99,33 @@ export const fetchAdminAgentDetail = async (
   client: AdminAgentsClient,
   rolloutsEnabled = client.capabilities.rollouts,
 ): Promise<AdminAgentDetailOutput> => {
-  const [detail, assignments, rollouts, versions] = await Promise.all([
-    client.get({ id }),
-    client
-      .listAssignments({ agentId: id, limit: 100 })
-      .then(toCollectedPage<AdminAgentDetailOutput['assignments'][number]>),
+  const detail = await client.get({ id });
+  // Versions are paged by OPAQUE id, so the published pointer can sit on any page. The editor
+  // seeds from that exact version, so page until it is loaded rather than settling for whatever
+  // the first page happened to hold.
+  const wanted = detail.identity.currentVersionId;
+  const [assignments, rollouts, versions] = await Promise.all([
+    // Every assignment matters: the editor writes a diff against this list, so an unseen row would
+    // read as "not present" and could be re-created into the unique (agent, target) index.
+    drainPages<AdminAgentDetailOutput['assignments'][number]>(
+      (cursor) => client.listAssignments({ agentId: id, cursor, limit: PAGE_LIMIT }),
+      MAX_ASSIGNMENT_PAGES,
+    ),
     // Skip the read entirely when the server capability is off, rather than touching a gated API.
     rolloutsEnabled
       ? client
-          .listRollouts({ agentId: id, limit: 100 })
+          .listRollouts({ agentId: id, limit: PAGE_LIMIT })
           .then(toCollectedPage<AdminAgentDetailOutput['rollouts'][number]>)
       : Promise.resolve({
           items: [] as AdminAgentDetailOutput['rollouts'],
           nextCursor: null,
           truncated: false,
         }),
-    client
-      .listVersions({ agentId: id, limit: 100 })
-      .then(toCollectedPage<AdminAgentDetailOutput['versions'][number]>),
+    drainPages<AdminAgentDetailOutput['versions'][number]>(
+      (cursor) => client.listVersions({ agentId: id, cursor, limit: PAGE_LIMIT }),
+      MAX_VERSION_PAGES,
+      wanted ? (loaded) => loaded.some(({ id: versionId }) => versionId === wanted) : undefined,
+    ),
   ]);
 
   const collectionMeta: AdminAgentCollectionMeta = {
@@ -116,61 +150,6 @@ export const fetchAdminAgentDetail = async (
     rollouts: rollouts.items,
     versions: sortPlatformAgentVersionsDesc(versions.items),
   }) as AdminAgentDetailOutput;
-};
-
-const isActiveRollout = ({ status }: AdminAgentDetailOutput['rollouts'][number]) =>
-  status === 'pending' || status === 'running';
-
-/**
- * Active rollout job ids present on the loaded detail. No silent slice — every loaded active job
- * participates in the poll key so the UI never freezes a 21st job while updating the first 20.
- */
-export const selectActiveRolloutJobIds = (detail?: AdminAgentDetailOutput): string[] => [
-  ...new Set(detail?.rollouts.filter(isActiveRollout).map(({ jobId }) => jobId) ?? []),
-];
-
-/**
- * One bounded list-status poll for an Agent's active rollouts. Prefer this over N×getRollout
- * for rows returned on the first page; known active jobs omitted by that page are fetched in
- * parallel so polling never serially drains the full rollout history.
- * Server-side `status: ['pending','running']` keeps the walk off completed history.
- * When the list drain truncates, remaining jobIds from the poll key are fetched individually so
- * already-loaded active jobs never go stale silently.
- */
-export const fetchActiveAdminAgentRollouts = async (
-  agentId: string,
-  jobIds: string[],
-  client: AdminAgentsClient,
-): Promise<AdminAgentDetailOutput['rollouts']> => {
-  const listed = await client.listRollouts({
-    agentId,
-    limit: 100,
-    status: ['pending', 'running'],
-  });
-  const byId = new Map(listed.items.map((rollout) => [rollout.jobId, rollout]));
-  // Cover every job the poll key already tracks that the bounded list omitted.
-  const missing = jobIds.filter((jobId) => !byId.has(jobId));
-  if (missing.length > 0) {
-    const extras = await Promise.all(missing.map((jobId) => client.getRollout({ agentId, jobId })));
-    for (const rollout of extras) byId.set(rollout.jobId, rollout);
-  }
-  return [...byId.values()];
-};
-
-export const mergePolledRollouts = (
-  detail: AdminAgentDetailOutput,
-  polled: AdminAgentDetailOutput['rollouts'],
-): AdminAgentDetailOutput => {
-  const byJobId = new Map(polled.map((rollout) => [rollout.jobId, rollout]));
-  const merged = detail.rollouts.map((rollout) => byJobId.get(rollout.jobId) ?? rollout);
-  // Surface jobs the list poll discovered that were not on the original aggregate (e.g. just started).
-  for (const rollout of polled) {
-    if (!detail.rollouts.some((row) => row.jobId === rollout.jobId)) merged.push(rollout);
-  }
-  return {
-    ...detail,
-    rollouts: merged,
-  };
 };
 
 export interface AdminAgentListPagination {
@@ -293,48 +272,5 @@ export const useAdminAgentListPagination = (
         { revalidate: true },
       );
     },
-  };
-};
-
-export const useFetchAdminAgent = (
-  id: string | undefined,
-  enabled: boolean,
-  client: AdminAgentsClient = adminAgentsService,
-  rolloutsEnabled = client.capabilities.rollouts,
-) => {
-  const detail = useClientDataSWR<AdminAgentDetailOutput>(
-    buildAdminAgentGetKey(id, enabled, rolloutsEnabled),
-    () => fetchAdminAgentDetail(id!, client, rolloutsEnabled),
-    {
-      // Identity-changing keys must not retain agent A while agent B loads — the detail page
-      // would render/mutate A under B's URL (including when B fails and A sticks indefinitely).
-      keepPreviousData: false,
-      revalidateOnFocus: false,
-    },
-  );
-  const activeJobIds = rolloutsEnabled ? selectActiveRolloutJobIds(detail.data) : [];
-  const rolloutPoll = useClientPollingSWR<AdminAgentDetailOutput['rollouts']>(
-    buildAdminAgentRolloutPollKey(id, activeJobIds),
-    () => fetchActiveAdminAgentRollouts(id!, activeJobIds, client),
-    {
-      dedupingInterval: 1000,
-      refreshInterval: 2000,
-      revalidateOnFocus: false,
-      shouldRetryOnError: false,
-    },
-  );
-
-  useEffect(() => {
-    if (!rolloutPoll.data) return;
-    void detail.mutate(
-      (current) => (current ? mergePolledRollouts(current, rolloutPoll.data!) : current),
-      { revalidate: false },
-    );
-  }, [detail.mutate, rolloutPoll.data]);
-
-  return {
-    ...detail,
-    retryRolloutPoll: rolloutPoll.mutate,
-    rolloutPollError: rolloutPoll.error,
   };
 };

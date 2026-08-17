@@ -47,7 +47,8 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/connectors');
     expect(paths).toContain('/admin/connectors/:id');
     expect(paths).toContain('/admin/agents');
-    expect(paths).toContain('/admin/agents/:id');
+    // Assistants are authored in a modal — there is no detail route to register.
+    expect(paths).not.toContain('/admin/agents/:id');
     expect(paths).toContain('/admin/branding');
     expect(paths).toContain('/admin/identity-providers');
     expect(paths).toContain('/admin/system');

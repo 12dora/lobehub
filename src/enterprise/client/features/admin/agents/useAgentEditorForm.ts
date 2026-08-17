@@ -27,6 +27,8 @@ import type {
   AdminAgentEditorValue,
   AdminPlatformAgentSaveOutput,
 } from './types';
+import { fetchAdminAgentDetail } from './useAdminAgents';
+import { useAgentAssignmentDraft } from './useAgentAssignmentDraft';
 import {
   selectCurrentPlatformAgentVersion,
   selectLatestPlatformAgentVersion,
@@ -87,15 +89,25 @@ const EMPTY_DEPENDENCIES: AdminAgentDraftDependencies = {
 };
 
 /**
- * Seed the editor from what is LIVE for assigned members: the published pointer version, falling
- * back to the newest version only when no pointer exists (legacy rows created before de-drafting).
+ * True when the assistant HAS a published pointer but that exact version is not in the loaded
+ * page. Seeding from any other version would save the wrong config under the operator's nose, so
+ * the editor refuses to open the config instead of guessing.
+ */
+export const isCurrentAgentVersionMissing = (agent: AdminAgentDetailOutput | undefined): boolean =>
+  Boolean(agent?.identity.currentVersionId) && !selectCurrentPlatformAgentVersion(agent!);
+
+/**
+ * Seed the editor from what is LIVE for assigned members: the published pointer version. The
+ * newest-version fallback applies ONLY when there is no pointer at all (legacy rows created before
+ * de-drafting) — never when the pointer exists but its version was not loaded.
  */
 export const seedAgentEditorValue = (
   agent: AdminAgentDetailOutput | undefined,
 ): AdminAgentEditorValue => {
   if (!agent) return { config: { ...EMPTY_CONFIG }, dependencies: { ...EMPTY_DEPENDENCIES } };
-  const version =
-    selectCurrentPlatformAgentVersion(agent) ?? selectLatestPlatformAgentVersion(agent.versions);
+  const version = agent.identity.currentVersionId
+    ? selectCurrentPlatformAgentVersion(agent)
+    : selectLatestPlatformAgentVersion(agent.versions);
   if (!version) {
     return {
       config: { ...EMPTY_CONFIG, displayName: agent.identity.agentKey },
@@ -141,10 +153,31 @@ const isRevisionConflict = (cause: unknown): boolean => {
   return cause instanceof Error && cause.message.includes('CONFLICT');
 };
 
+/** The compare-and-swap pointer every write must echo back, advanced by each committed write. */
+interface AgentEditorCas {
+  agentId: string;
+  draftToken: string;
+  revision: number;
+}
+
+/** What the submit actually committed, so the caller knows whether a row patch is still enough. */
+export interface AgentEditorSaveMeta {
+  /** At least one assignment was written — list counters are stale, revalidate rather than patch. */
+  assignmentsChanged: boolean;
+  created: boolean;
+}
+
 export interface UseAgentEditorFormParams {
   /** Present → edit an existing assistant; absent → create a new one. */
   agent?: AdminAgentDetailOutput;
   authMethod?: AdminReauthAuthMethod | null;
+  /** AGENT_ASSIGN: without it the assignment section is hidden and never written. */
+  canAssign?: boolean;
+  /**
+   * AGENT_UPDATE + AGENT_PUBLISH. Without it the config is read-only and no version is ever
+   * written — an assignment-only operator still opens this modal to edit 分配策略.
+   */
+  canEditConfig?: boolean;
   /** Shared with the modal opener so a user-initiated close can confirm unsaved input. */
   dirtyRef?: { current: boolean };
   /** Close the hosting modal after a successful save. */
@@ -152,8 +185,12 @@ export interface UseAgentEditorFormParams {
   /**
    * Apply the committed output to the caches the caller owns and revalidate. A rejection means the
    * caller did NOT handle the failure, and the editor surfaces the refresh-failed warning itself.
+   * `output` is null when only assignments changed — there was no new version to apply.
    */
-  onSaved?: (output: AdminPlatformAgentSaveOutput, created: boolean) => Promise<void> | void;
+  onSaved?: (
+    output: AdminPlatformAgentSaveOutput | null,
+    meta: AgentEditorSaveMeta,
+  ) => Promise<void> | void;
   /**
    * Shared with the modal opener: true from the moment the write leaves the client until it
    * commits (or fails). While it is set, EVERY passive dismissal is vetoed — a modal that closes
@@ -165,6 +202,8 @@ export interface UseAgentEditorFormParams {
 export const useAgentEditorForm = ({
   agent,
   authMethod,
+  canAssign = false,
+  canEditConfig = true,
   dirtyRef,
   onClose,
   onSaved,
@@ -185,17 +224,52 @@ export const useAgentEditorForm = ({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
+  // A truncated assignment page cannot be diffed safely — the section renders read-only instead.
+  const assignmentsTruncated = Boolean(agent?.collectionMeta?.assignmentsTruncated);
+  const assignments = useAgentAssignmentDraft(canAssign ? agent?.assignments : undefined, {
+    truncated: assignmentsTruncated,
+  });
+  // The published pointer is not among the loaded versions: nothing here may author a version.
+  const currentVersionMissing = useMemo(() => isCurrentAgentVersionMissing(agent), [agent]);
+  const configEditable = canEditConfig && !currentVersionMissing;
+  /**
+   * Set when a rejected write may still have committed AND the reconcile read could not tell us.
+   * Retrying blind could create a second assistant, so Save stays closed until the modal is
+   * reopened against a fresh read.
+   */
+  const [resumeBlocked, setResumeBlocked] = useState(false);
+
+  /**
+   * The CAS the NEXT write must echo. It starts at the loaded aggregate and advances after every
+   * committed write, so a submit whose assignment chain failed half-way can be retried from the
+   * modal without a conflict — and without replaying the writes that already landed.
+   */
+  const [identity, setIdentity] = useState<AgentEditorCas | null>(() =>
+    agent
+      ? {
+          agentId: agent.identity.id,
+          draftToken: agent.draftToken,
+          revision: agent.identity.revision,
+        }
+      : null,
+  );
+  /** The version output of the last committed save/create, replayed to `onSaved` on a retry. */
+  const [lastOutput, setLastOutput] = useState<AdminPlatformAgentSaveOutput | null>(null);
+  /** Fingerprint of the value at the last committed save — what "already saved" means now. */
+  const [savedFingerprint, setSavedFingerprint] = useState<string | null>(null);
 
   // Set once the write commits: the form value still differs from the seed baseline, but it is no
   // longer unsaved, so the close guard must not challenge it.
   const committedRef = useRef(false);
 
-  const dirty = useMemo(
-    () =>
-      JSON.stringify(value) !== JSON.stringify(baseline) ||
-      (isCreate && agentKey.trim().length > 0),
-    [agentKey, baseline, isCreate, value],
-  );
+  const valueFingerprint = useMemo(() => JSON.stringify(value), [value]);
+  const baselineFingerprint = useMemo(() => JSON.stringify(baseline), [baseline]);
+  // A read-only config can never be dirty, so it can never schedule a version write.
+  const configDirty =
+    configEditable &&
+    (valueFingerprint !== (savedFingerprint ?? baselineFingerprint) ||
+      (isCreate && !identity && agentKey.trim().length > 0));
+  const dirty = configDirty || assignments.dirty;
   // NOT cleared while saving: a write can still fail, and the input would then be unsaved again.
   // The in-flight window is covered by `pendingRef`, which vetoes dismissal outright.
   if (dirtyRef) dirtyRef.current = dirty && !committedRef.current;
@@ -250,8 +324,12 @@ export const useAgentEditorForm = ({
 
   const config = useMemo(() => buildAgentConfig(value), [value]);
   const keyValid = !isCreate || isAgentKeyValid(agentKey);
+  // An assignment-only operator never writes a version, so the config requirements (a valid
+  // config, a resolved model catalog, a legal key) are not theirs to satisfy.
+  const configReady = !configEditable || (Boolean(config) && keyValid && depValidity.ready);
+  // `!identity` covers create before its first commit; once anything committed, Save needs a change.
   const canSubmit =
-    !saving && Boolean(config) && keyValid && depValidity.ready && (isCreate || dirty);
+    !saving && !resumeBlocked && configReady && (dirty || (configEditable && !identity));
 
   /**
    * The required fields that are still empty, as i18n keys. Save is disabled by four independent
@@ -269,15 +347,65 @@ export const useAgentEditorForm = ({
     return list;
   }, [agentKey, isCreate, value]);
 
+  /**
+   * Ask the server what actually landed after an ambiguous failure, and re-base every piece of
+   * resume state on the answer: the CAS, the assignment baseline, and whether the config we tried
+   * to write is already live.
+   *
+   * Returns `'found'` when the assistant exists (state has been re-based), `'absent'` when the
+   * create provably never happened, and `'unknown'` when we could not tell — the one case where
+   * retrying could create a second assistant, so the caller must refuse to resume.
+   */
+  const reconcile = useCallback(
+    async (agentId: string | undefined): Promise<'absent' | 'found' | 'unknown'> => {
+      const key = agentKey.trim();
+      let resolvedId = agentId;
+      if (!resolvedId) {
+        // The create response never arrived. The agent key is unique, so a targeted list read
+        // settles whether the row exists — we must never blind-retry a create.
+        if (!key) return 'absent';
+        try {
+          const page = await adminAgentsService.list({ limit: 100, query: key });
+          resolvedId = page.items.find(({ identity: row }) => row.agentKey === key)?.identity.id;
+        } catch {
+          return 'unknown';
+        }
+        if (!resolvedId) return 'absent';
+      }
+      try {
+        const fresh = await fetchAdminAgentDetail(resolvedId, adminAgentsService, false);
+        setIdentity({
+          agentId: fresh.identity.id,
+          draftToken: fresh.draftToken,
+          revision: fresh.identity.revision,
+        });
+        assignments.reconcile(fresh.assignments);
+        // Only claim the config is saved when the LIVE version really matches what we tried to
+        // write; otherwise the next Save must author it again.
+        const live = JSON.stringify(seedAgentEditorValue(fresh));
+        setSavedFingerprint(live === valueFingerprint ? valueFingerprint : null);
+        return 'found';
+      } catch {
+        // The row exists (or was created) but we cannot re-base on it. Resuming would author
+        // writes against a CAS we no longer trust.
+        return 'unknown';
+      }
+    },
+    [agentKey, assignments, valueFingerprint],
+  );
+
   const submit = useCallback(async () => {
-    if (saving) return;
+    if (saving || resumeBlocked) return;
     const nextConfig = buildAgentConfig(value);
     const dependencySnapshot = toDependencySnapshot(value.dependencies);
+    // Only a submit that will actually author a version has to satisfy the version contract.
+    const willWriteConfig = configEditable && (configDirty || !identity);
     if (
-      !nextConfig ||
-      !keyValid ||
-      !dependencySnapshot ||
-      !platformAgentDependencySnapshotSchema.safeParse(dependencySnapshot).success
+      willWriteConfig &&
+      (!nextConfig ||
+        !keyValid ||
+        !dependencySnapshot ||
+        !platformAgentDependencySnapshotSchema.safeParse(dependencySnapshot).success)
     ) {
       setError(t('agentCatalog.save.invalid'));
       return;
@@ -286,44 +414,115 @@ export const useAgentEditorForm = ({
     if (pendingRef) pendingRef.current = true; // veto every dismissal until this write settles
     setError(null);
     setConflict(false);
+    // Frozen for the whole chain: the plan the operator saw when they pressed Save.
+    const plan = canAssign ? assignments.plan : { removals: [], upserts: [] };
+    const assignmentsChanged = plan.removals.length > 0 || plan.upserts.length > 0;
+    const created = !identity;
+    let output: AdminPlatformAgentSaveOutput | null = lastOutput;
+    let cas: AgentEditorCas | null = identity;
+    // Once the identity write is settled, a later failure is an ASSIGNMENT failure — a different
+    // story for the operator: the assistant is live, the distribution is not (fully) applied.
+    let identityCommitted = false;
     try {
-      const output = agent
-        ? await withAdminReauthRetry(
-            () =>
-              adminAgentsService.save({
-                agentId: agent.identity.id,
-                config: nextConfig,
-                dependencySnapshot,
-                expectedDraftToken: agent.draftToken,
-                expectedRevision: agent.identity.revision,
-              }),
-            { authMethod: authMethod ?? null },
-          )
-        : await withAdminReauthRetry(
-            () =>
-              adminAgentsService.create({
-                agentKey,
-                config: nextConfig,
-                dependencySnapshot,
-                isDefault: false,
-                systemKey: null,
-              }),
-            { authMethod: authMethod ?? null },
-          );
-      // Committed on the server: the input is no longer unsaved and the write can no longer fail,
-      // so both guards are released before the (slower) cache apply + revalidate.
+      if (willWriteConfig) {
+        const target = cas;
+        output = target
+          ? await withAdminReauthRetry(
+              () =>
+                adminAgentsService.save({
+                  agentId: target.agentId,
+                  config: nextConfig!,
+                  dependencySnapshot: dependencySnapshot!,
+                  expectedDraftToken: target.draftToken,
+                  expectedRevision: target.revision,
+                }),
+              { authMethod: authMethod ?? null },
+            )
+          : await withAdminReauthRetry(
+              () =>
+                adminAgentsService.create({
+                  agentKey,
+                  config: nextConfig!,
+                  dependencySnapshot: dependencySnapshot!,
+                  isDefault: false,
+                  systemKey: null,
+                }),
+              { authMethod: authMethod ?? null },
+            );
+        cas = {
+          agentId: output.identity.id,
+          draftToken: output.draftToken,
+          revision: output.identity.revision,
+        };
+        setIdentity(cas);
+        setLastOutput(output);
+        setSavedFingerprint(valueFingerprint);
+      }
+      identityCommitted = true;
+      // Assignment writes are dangerous and each one advances the CAS, so the token from the
+      // previous response feeds the next call — no re-GET in between.
+      for (const assignmentId of plan.removals) {
+        const step: AgentEditorCas = cas!;
+        const result = await withAdminReauthRetry(
+          () =>
+            adminAgentsService.removeAssignment({
+              agentId: step.agentId,
+              assignmentId,
+              expectedDraftToken: step.draftToken,
+              expectedRevision: step.revision,
+            }),
+          { authMethod: authMethod ?? null },
+        );
+        cas = {
+          agentId: step.agentId,
+          draftToken: result.draftToken,
+          revision: result.identity.revision,
+        };
+        setIdentity(cas);
+        assignments.markRemoved(assignmentId);
+      }
+      for (const entry of plan.upserts) {
+        const step: AgentEditorCas = cas!;
+        const result = await withAdminReauthRetry(
+          () =>
+            adminAgentsService.upsertAssignment({
+              agentId: step.agentId,
+              ...(entry.id ? { assignmentId: entry.id } : {}),
+              enabled: entry.enabled,
+              expectedDraftToken: step.draftToken,
+              expectedRevision: step.revision,
+              mode: entry.mode,
+              // Always written as literals: versions left the UI, so every write un-pins a legacy
+              // `pinned` row rather than carrying its policy forward invisibly.
+              pinnedVersionId: null,
+              targetId: entry.targetId,
+              targetType: entry.targetType,
+              versionPolicy: 'latest_published' as const,
+            }),
+          { authMethod: authMethod ?? null },
+        );
+        cas = {
+          agentId: step.agentId,
+          draftToken: result.draftToken,
+          revision: result.identity.revision,
+        };
+        setIdentity(cas);
+        assignments.markUpserted(result.assignment);
+      }
+      // Everything committed: the input is no longer unsaved and no write can still fail, so both
+      // guards are released before the (slower) cache apply + revalidate.
       committedRef.current = true;
       if (dirtyRef) dirtyRef.current = false;
       if (pendingRef) pendingRef.current = false;
       // A deferred invalidation means the new version is live but some servers still serve the old
       // one — say so instead of claiming an unqualified success.
-      if (output.invalidationStatus === 'deferred') {
+      if (output?.invalidationStatus === 'deferred') {
         toast.warning(t('agentCatalog.toast.refreshDeferred'));
       } else {
-        toast.success(t(isCreate ? 'agentCatalog.toast.created' : 'agentCatalog.toast.saved'));
+        toast.success(t(created ? 'agentCatalog.toast.created' : 'agentCatalog.toast.saved'));
       }
       try {
-        await onSaved?.(output, isCreate);
+        await onSaved?.(output, { assignmentsChanged, created });
       } catch {
         // The write already committed, so the modal still closes — but never silently: the caller
         // could not apply/revalidate its cache, and the admin must know the screen is behind.
@@ -331,9 +530,33 @@ export const useAgentEditorForm = ({
       }
       onClose?.();
     } catch (cause) {
-      if (isRevisionConflict(cause)) {
+      // A revision conflict is the SERVER refusing the write — a definitive "did not commit".
+      // Nothing to reconcile, and re-reading would only mask the conflict the operator must see.
+      if (!identityCommitted && isRevisionConflict(cause)) {
         setConflict(true);
         setError(null);
+        return;
+      }
+      // Every other rejection is ambiguous: the transport can fail after the server committed. Ask
+      // the server what is actually there before saying anything, and before the next Save
+      // rebuilds the remaining plan off a guess.
+      const reconciled = await reconcile(cas?.agentId);
+      if (reconciled === 'unknown') {
+        // We could neither confirm nor rule out a commit. Retrying could duplicate the assistant,
+        // so refuse to resume and send the operator back through a fresh read.
+        setResumeBlocked(true);
+        setError(t('agentCatalog.editor.resumeBlocked'));
+      } else if (identityCommitted || (created && reconciled === 'found')) {
+        // The assistant itself is live; only the distribution chain broke. Keep the modal open with
+        // what is still pending, and let the caller refresh its list off the committed save.
+        setError(
+          `${t('agentCatalog.assignment.partialFailure')} ${getAdminAgentErrorMessage(cause, t)}`,
+        );
+        try {
+          await onSaved?.(output, { assignmentsChanged: true, created });
+        } catch {
+          toast.warning(t('agentCatalog.recovery.refreshFailed'));
+        }
       } else {
         setError(getAdminAgentErrorMessage(cause, t));
       }
@@ -342,22 +565,36 @@ export const useAgentEditorForm = ({
       if (pendingRef) pendingRef.current = false;
     }
   }, [
-    agent,
     agentKey,
+    assignments,
     authMethod,
+    canAssign,
+    configDirty,
+    configEditable,
     dirtyRef,
-    isCreate,
+    identity,
+    reconcile,
+    resumeBlocked,
     keyValid,
+    lastOutput,
     onClose,
     onSaved,
     pendingRef,
     saving,
     t,
     value,
+    valueFingerprint,
   ]);
 
   return {
     agentKey,
+    /** The 分配策略 editor state; only meaningful when `canAssign` is true. */
+    assignments,
+    canAssign,
+    /** False for an assignment-only operator, or when the live version could not be loaded. */
+    configEditable,
+    /** The published pointer version is not in the loaded page — the config must not be authored. */
+    currentVersionMissing,
     canSubmit,
     changeAgentKey,
     conflict,
@@ -373,6 +610,10 @@ export const useAgentEditorForm = ({
     setDepValidity,
     setDisplayName,
     submit,
+    /** A rejected write may have committed and we could not tell — Save is closed until reopened. */
+    resumeBlocked,
+    /** `default-inbox` for the platform's built-in assistant, which every member already gets. */
+    systemKey: agent?.identity.systemKey ?? null,
     value,
   };
 };

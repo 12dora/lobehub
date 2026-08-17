@@ -10,6 +10,7 @@ import AgentListPage from './AgentListPage';
 import type { AdminAgentListItem } from './types';
 
 const mocks = vi.hoisted(() => ({
+  archive: vi.fn(),
   fetchDetail: vi.fn(),
   get: vi.fn(),
   list: {} as Record<string, unknown>,
@@ -19,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   permissions: [] as string[],
   refresh: vi.fn(),
   removeItem: vi.fn(),
+  rowActionParams: [] as unknown[],
+  setDefaultInbox: vi.fn(),
   toastError: vi.fn(),
   toastWarning: vi.fn(),
   updateItem: vi.fn(),
@@ -52,6 +55,12 @@ vi.mock('./openAgentEditorModal', () => ({
   openAgentEditorModal: (...args: unknown[]) => mocks.openEditor(...args),
 }));
 vi.mock('./pruneLegacyAgentDrafts', () => ({ usePruneLegacyAdminAgentDrafts: vi.fn() }));
+vi.mock('./useAgentRowActions', () => ({
+  useAgentRowActions: (params: unknown) => {
+    mocks.rowActionParams.push(params);
+    return { archive: mocks.archive, setDefaultInbox: mocks.setDefaultInbox };
+  },
+}));
 vi.mock('./openDeleteAgentModal', () => ({
   openDeleteAgentModal: (...args: unknown[]) => mocks.openDelete(...args),
 }));
@@ -90,6 +99,17 @@ vi.mock('@lobehub/ui', () => ({
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
+  // Items render inline: the menu's own open/close behaviour is base-ui's, not this page's.
+  DropdownMenu: ({ children, items }: any) => (
+    <span data-testid="row-more">
+      {children}
+      {(items ?? []).map((item: any) => (
+        <button data-danger={String(Boolean(item.danger))} key={item.key} onClick={item.onClick}>
+          {item.label}
+        </button>
+      ))}
+    </span>
+  ),
   Select: (props: any) => (
     <select
       aria-label={props['aria-label']}
@@ -125,6 +145,9 @@ vi.mock('../primitives/DataTable', () => ({
     dataSource,
     emptyDescription,
     onChange,
+    onRowActivate,
+    scroll,
+    size,
     toolbar,
   }: {
     columns: Array<{
@@ -133,6 +156,7 @@ vi.mock('../primitives/DataTable', () => ({
       key?: string;
       render?: (v: unknown, item: AdminAgentListItem) => ReactNode;
       title?: ReactNode;
+      width?: number;
     }>;
     dataSource: AdminAgentListItem[];
     emptyDescription?: ReactNode;
@@ -141,9 +165,16 @@ vi.mock('../primitives/DataTable', () => ({
       pagination: false;
       sorter: Record<string, never>;
     }) => void;
+    onRowActivate?: (record: AdminAgentListItem) => void;
+    scroll?: { x?: number };
+    size?: string;
     toolbar?: ReactNode;
   }) => (
-    <div>
+    <div
+      data-row-activate={String(Boolean(onRowActivate))}
+      data-scroll-x={scroll?.x}
+      data-size={size}
+    >
       {toolbar}
       {columns.map((column) =>
         column.filters ? (
@@ -172,11 +203,14 @@ vi.mock('../primitives/DataTable', () => ({
       <div>rows:{dataSource.length}</div>
       {dataSource.map((item) => (
         <div key={item.identity.id}>
+          <button onClick={() => onRowActivate?.(item)}>activate:{item.identity.id}</button>
           {columns.map((column) => (
             <div key={column.key}>{column.render?.(undefined, item)}</div>
           ))}
         </div>
       ))}
+      <div>columns:{columns.map((column) => column.key).join(',')}</div>
+      <div>widths:{columns.map((column) => String(column.width ?? '')).join(',')}</div>
     </div>
   ),
 }));
@@ -197,6 +231,12 @@ const saveOutput = {
   invalidationStatus: 'delivered',
   version: { config: { displayName: 'Research v2' }, id: 'version-2', version: '1.0.1' },
 };
+
+/** The editor modal's committed-save callback, as the list passes it in. */
+type SavedHandler = (
+  output: typeof saveOutput | null,
+  meta: { assignmentsChanged: boolean; created: boolean },
+) => Promise<void>;
 
 const pagination = (over: Record<string, unknown>) => ({
   boundaryData: undefined,
@@ -227,6 +267,9 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ];
     mocks.list = pagination({});
     mocks.listInputs = [];
+    mocks.archive.mockReset();
+    mocks.setDefaultInbox.mockReset();
+    mocks.rowActionParams = [];
     mocks.fetchDetail.mockReset();
     mocks.openEditor.mockReset();
     mocks.openDelete.mockReset();
@@ -406,7 +449,7 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     expect(mocks.removeItem).toHaveBeenCalledWith('agent-1');
   });
 
-  it('refreshes the bound infinite list after create before navigating', async () => {
+  it('refreshes the bound infinite list after create instead of leaving for a detail page', async () => {
     mocks.permissions = [
       PLATFORM_PERMISSIONS.AGENT_READ,
       PLATFORM_PERMISSIONS.AGENT_CREATE,
@@ -420,18 +463,20 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     expect(mocks.openEditor).toHaveBeenCalledOnce();
     const { agent, onSaved } = mocks.openEditor.mock.calls[0]![0] as {
       agent?: unknown;
-      onSaved: (output: { identity: { id: string } }) => Promise<void>;
+      onSaved: SavedHandler;
     };
     // No agent → create mode.
     expect(agent).toBeUndefined();
-    await onSaved({
-      ...saveOutput,
-      identity: { ...saveOutput.identity, id: 'new-agent' },
-    } as never);
+    await onSaved(
+      { ...saveOutput, identity: { ...saveOutput.identity, id: 'new-agent' } } as never,
+      { assignmentsChanged: false, created: true },
+    );
     await waitFor(() => expect(mocks.refresh).toHaveBeenCalledOnce());
+    // Nothing lands on a single row: a created assistant is not in the bound pages yet.
+    expect(mocks.updateItem).not.toHaveBeenCalled();
   });
 
-  it('still navigates after create when the list revalidation fails, but says so', async () => {
+  it('reports a failed post-create revalidation instead of a silently incomplete list', async () => {
     mocks.permissions = [
       PLATFORM_PERMISSIONS.AGENT_READ,
       PLATFORM_PERMISSIONS.AGENT_CREATE,
@@ -442,10 +487,14 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     renderPage();
 
     fireEvent.click(screen.getAllByText('agentCatalog.create.submit')[0]!);
-    const { onSaved } = mocks.openEditor.mock.calls[0]![0] as {
-      onSaved: (output: { identity: { id: string } }) => Promise<void>;
-    };
-    await onSaved({ ...saveOutput, identity: { ...saveOutput.identity, id: 'new-agent' } });
+    const { onSaved } = mocks.openEditor.mock.calls[0]![0] as { onSaved: SavedHandler };
+    await onSaved(
+      { ...saveOutput, identity: { ...saveOutput.identity, id: 'new-agent' } },
+      {
+        assignmentsChanged: false,
+        created: true,
+      },
+    );
     expect(mocks.toastWarning).toHaveBeenCalledWith('agentCatalog.recovery.refreshFailed');
   });
 
@@ -471,12 +520,15 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
     // The row itself carries no draftToken / config — never author from it.
     expect(mocks.fetchDetail).toHaveBeenCalledWith('agent-1', expect.anything(), false);
-    const { agent, onSaved } = mocks.openEditor.mock.calls[0]![0] as {
+    const { agent, canAssign, onSaved } = mocks.openEditor.mock.calls[0]![0] as {
       agent: typeof detail;
-      onSaved: (output: unknown) => Promise<void>;
+      canAssign?: boolean;
+      onSaved: SavedHandler;
     };
     expect(agent).toBe(detail);
-    await onSaved(saveOutput);
+    // No AGENT_ASSIGN in this operator's grant → the modal never offers 分配策略.
+    expect(canAssign).toBe(false);
+    await onSaved(saveOutput as never, { assignmentsChanged: false, created: false });
 
     // The committed name / version / CAS land on the row itself before revalidation.
     expect(mocks.updateItem).toHaveBeenCalledWith('agent-1', expect.any(Function));
@@ -503,10 +555,8 @@ describe('AgentListPage with the real AsyncBoundary', () => {
 
     fireEvent.click(screen.getByText('agentCatalog.action.edit'));
     await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
-    const { onSaved } = mocks.openEditor.mock.calls[0]![0] as {
-      onSaved: (output: unknown) => Promise<void>;
-    };
-    await onSaved(saveOutput);
+    const { onSaved } = mocks.openEditor.mock.calls[0]![0] as { onSaved: SavedHandler };
+    await onSaved(saveOutput as never, { assignmentsChanged: false, created: false });
     expect(mocks.toastWarning).toHaveBeenCalledWith('agentCatalog.recovery.refreshFailed');
   });
 
@@ -523,6 +573,213 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     fireEvent.click(screen.getByText('agentCatalog.action.edit'));
     await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
     expect(mocks.openEditor).not.toHaveBeenCalled();
+  });
+
+  it('drops the version column and sizes every remaining one so CJK headers survive', () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.AGENT_READ,
+      PLATFORM_PERMISSIONS.AGENT_UPDATE,
+      PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+    ];
+    mocks.list = pagination({ boundaryData: [item('a')], items: [item('a')] });
+    const { container } = renderPage();
+
+    // Versions are no longer a concept the operator sees.
+    expect(screen.getByText(/^columns:/).textContent).toBe(
+      'columns:agent,status,assignmentCount,isDefault,actions',
+    );
+    // Every column has an explicit width — that is what puts the table in `fixed` layout.
+    expect(screen.getByText(/^widths:/).textContent).toBe('widths:340,140,100,120,200');
+    expect(container.querySelector('[data-scroll-x]')?.getAttribute('data-scroll-x')).toBe('900');
+    expect(container.querySelector('[data-size]')?.getAttribute('data-size')).toBe('small');
+  });
+
+  it('opens the editor from a row click now that there is no detail page', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.AGENT_READ,
+      PLATFORM_PERMISSIONS.AGENT_UPDATE,
+      PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+    ];
+    const detail = { identity: { id: 'agent-1' }, versions: [] };
+    mocks.fetchDetail.mockResolvedValue(detail);
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    renderPage();
+
+    fireEvent.click(screen.getByText('activate:agent-1'));
+    await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+    expect(mocks.fetchDetail).toHaveBeenCalledWith('agent-1', expect.anything(), false);
+  });
+
+  it('leaves rows inert for an operator with neither edit nor assign rights', () => {
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    const { container } = renderPage();
+    expect(container.querySelector('[data-row-activate]')?.getAttribute('data-row-activate')).toBe(
+      'false',
+    );
+  });
+
+  it('passes the assign grant into the editor modal so it can offer 分配策略', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.AGENT_READ,
+      PLATFORM_PERMISSIONS.AGENT_UPDATE,
+      PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+    ];
+    mocks.fetchDetail.mockResolvedValue({ identity: { id: 'agent-1' }, versions: [] });
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    renderPage();
+
+    fireEvent.click(screen.getByText('agentCatalog.action.edit'));
+    await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+    expect(mocks.openEditor.mock.calls[0]![0]).toMatchObject({ canAssign: true });
+  });
+
+  it('revalidates the whole list when a submit also wrote assignments', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.AGENT_READ,
+      PLATFORM_PERMISSIONS.AGENT_UPDATE,
+      PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+    ];
+    mocks.fetchDetail.mockResolvedValue({ identity: { id: 'agent-1' }, versions: [] });
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    renderPage();
+
+    fireEvent.click(screen.getByText('agentCatalog.action.edit'));
+    await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+    const { onSaved } = mocks.openEditor.mock.calls[0]![0] as { onSaved: SavedHandler };
+
+    // Assignment counts are not in the save output — patching the row would show a half-truth.
+    await onSaved(saveOutput as never, { assignmentsChanged: true, created: false });
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+
+    // An assignments-only submit carries no output at all.
+    await onSaved(null, { assignmentsChanged: true, created: false });
+    expect(mocks.refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers 设为默认 for a published non-default row, gated on the publish grant', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_PUBLISH];
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    renderPage();
+
+    fireEvent.click(screen.getByText('agentCatalog.defaultSwitch.action'));
+    expect(mocks.setDefaultInbox).toHaveBeenCalledWith(
+      expect.objectContaining({ identity: expect.objectContaining({ id: 'agent-1' }) }),
+    );
+  });
+
+  it('hides 设为默认 from the row that already IS the default, and from an archived one', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_PUBLISH];
+    mocks.list = pagination({
+      boundaryData: [item('a', { isDefault: true }), item('b', { status: 'archived' })],
+      items: [item('a', { isDefault: true }), item('b', { status: 'archived' })],
+    });
+    renderPage();
+    expect(screen.queryByText('agentCatalog.defaultSwitch.action')).toBeNull();
+  });
+
+  it('hides 设为默认 entirely from an operator without the publish grant', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    renderPage();
+    expect(screen.queryByText('agentCatalog.defaultSwitch.action')).toBeNull();
+  });
+
+  it('keeps 归档 and 删除 behind 更多, both marked destructive', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    renderPage();
+
+    const more = screen.getByTestId('row-more');
+    expect(more).toContainElement(screen.getByText('agentCatalog.archive.submit'));
+    expect(more).toContainElement(screen.getByText('agentCatalog.delete.action'));
+    for (const label of ['agentCatalog.archive.submit', 'agentCatalog.delete.action']) {
+      expect(screen.getByText(label).getAttribute('data-danger')).toBe('true');
+    }
+
+    fireEvent.click(screen.getByText('agentCatalog.archive.submit'));
+    expect(mocks.archive).toHaveBeenCalledWith(
+      expect.objectContaining({ identity: expect.objectContaining({ id: 'agent-1' }) }),
+    );
+  });
+
+  it('drops 归档 for an already-archived row and 删除 for the default one', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    mocks.list = pagination({
+      boundaryData: [item('a', { status: 'archived' })],
+      items: [item('a', { status: 'archived' })],
+    });
+    const { unmount } = renderPage();
+    expect(screen.queryByText('agentCatalog.archive.submit')).toBeNull();
+    expect(screen.getByText('agentCatalog.delete.action')).toBeTruthy();
+    unmount();
+
+    mocks.list = pagination({
+      boundaryData: [item('a', { isDefault: true })],
+      items: [item('a', { isDefault: true })],
+    });
+    renderPage();
+    expect(screen.getByText('agentCatalog.archive.submit')).toBeTruthy();
+    expect(screen.queryByText('agentCatalog.delete.action')).toBeNull();
+  });
+
+  it('drops the whole actions column for a read-only auditor', () => {
+    mocks.list = pagination({ boundaryData: [item('a')], items: [item('a')] });
+    renderPage();
+    expect(screen.getByText(/^columns:/).textContent).toBe(
+      'columns:agent,status,assignmentCount,isDefault',
+    );
+  });
+
+  it('wires the row actions to revalidate the bound list', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_PUBLISH];
+    mocks.list = pagination({ boundaryData: [item('a')], items: [item('a')] });
+    renderPage();
+    expect(mocks.rowActionParams.at(-1)).toMatchObject({
+      authMethod: 'password',
+      onChanged: mocks.refresh,
+    });
+  });
+
+  it('opens the editor for an assignment-only operator, with the config read-only', async () => {
+    // AGENT_ASSIGN is independently grantable — gating the editor on canEdit alone locked these
+    // operators out of the only surface that edits 分配策略.
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_ASSIGN];
+    mocks.fetchDetail.mockResolvedValue({ identity: { id: 'agent-1' }, versions: [] });
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    const { container } = renderPage();
+
+    // The row itself is still the way in.
+    expect(container.querySelector('[data-row-activate]')?.getAttribute('data-row-activate')).toBe(
+      'true',
+    );
+    fireEvent.click(screen.getByText('agentCatalog.action.assign'));
+    await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+    expect(mocks.openEditor.mock.calls[0]![0]).toMatchObject({
+      canAssign: true,
+      canEditConfig: false,
+    });
+  });
+
+  it('labels the action 编辑 and unlocks the config for a full editor', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.AGENT_READ,
+      PLATFORM_PERMISSIONS.AGENT_UPDATE,
+      PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+    ];
+    mocks.fetchDetail.mockResolvedValue({ identity: { id: 'agent-1' }, versions: [] });
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    renderPage();
+
+    expect(screen.queryByText('agentCatalog.action.assign')).toBeNull();
+    fireEvent.click(screen.getByText('agentCatalog.action.edit'));
+    await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+    expect(mocks.openEditor.mock.calls[0]![0]).toMatchObject({
+      canAssign: true,
+      canEditConfig: true,
+    });
   });
 
   it('drops the removed draft status from the filter options', () => {
