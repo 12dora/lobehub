@@ -661,7 +661,7 @@
   "audit.logs.action.managedResource.legacyMutation": "Managed resource change",
   "audit.logs.action.network_proxy.engine.install": "Install network proxy engine",
   "audit.logs.action.network_proxy.engine.restart": "Restart network proxy engine",
-  "audit.logs.action.network_proxy.geodata.install": "Install network proxy geodata",
+  "audit.logs.action.network_proxy.geodata.install": "Install network proxy routing rule data",
   "audit.logs.action.network_proxy.outlet.select_node": "Select network proxy node",
   "audit.logs.action.network_proxy.scopes.update": "Update network proxy scopes",
   "audit.logs.action.network_proxy.settings.update": "Update network proxy settings",

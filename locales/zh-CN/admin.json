@@ -661,7 +661,7 @@
   "audit.logs.action.managedResource.legacyMutation": "受管资源变更",
   "audit.logs.action.network_proxy.engine.install": "安装网络代理引擎",
   "audit.logs.action.network_proxy.engine.restart": "重启网络代理引擎",
-  "audit.logs.action.network_proxy.geodata.install": "安装网络代理地理数据",
+  "audit.logs.action.network_proxy.geodata.install": "安装网络代理分流规则数据",
   "audit.logs.action.network_proxy.outlet.select_node": "选择网络代理节点",
   "audit.logs.action.network_proxy.scopes.update": "更新网络代理作用域",
   "audit.logs.action.network_proxy.settings.update": "更新网络代理设置",
