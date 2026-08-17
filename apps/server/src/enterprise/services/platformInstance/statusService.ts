@@ -40,6 +40,12 @@ import {
   type IdentityProviderStartupHealth,
 } from '../identityProvider/startupArtifact';
 import type { loadPublishedIdentityTarget } from '../identityProvider/systemService';
+import {
+  projectDomainDiagnostic,
+  resolvePlatformDomainStatus,
+  safeErrorCategory,
+  tokensEqual,
+} from './diagnosticProjection';
 import { PlatformDomainTargetResolver } from './domainTargets';
 
 const ZERO_COUNTS: PlatformInstanceInventoryCounts = {
@@ -115,9 +121,6 @@ const tokenFromState = (state: {
   return null;
 };
 
-const tokensEqual = (left: PlatformRevisionToken | null, right: PlatformRevisionToken | null) =>
-  left?.kind === right?.kind && left?.value === right?.value;
-
 const tokenFitsDomain = (
   domain: PlatformDomainTarget['domain'],
   token: PlatformRevisionToken | null,
@@ -165,25 +168,6 @@ export const projectDomainConvergence = (
     };
   });
 
-const safeErrorCategory = (value: string | null): PlatformConvergenceErrorCategory | null => {
-  switch (value) {
-    case 'cache_unavailable':
-    case 'configuration_invalid':
-    case 'database_unavailable':
-    case 'instance_status_unavailable':
-    case 'lkg_invalid':
-    case 'lkg_unavailable':
-    case 'load_failed':
-    case 'secret_unavailable':
-    case 'startup_unavailable': {
-      return value;
-    }
-    default: {
-      return value ? 'load_failed' : null;
-    }
-  }
-};
-
 const platformDiagnostic = (
   diagnostic: PlatformInstanceInventoryDiagnostic,
   targets: PlatformDomainTarget[],
@@ -195,44 +179,19 @@ const platformDiagnostic = (
       const candidateToken = state ? tokenFromState(state) : null;
       const loadedToken = tokenFitsDomain(target.domain, candidateToken) ? candidateToken : null;
       const invalidFallbackSource = target.domain !== 'identity' && state?.source === 'lkg';
-      let status: PlatformConvergenceStatus;
-      if (target.status === 'disabled') status = 'disabled';
-      else if (target.loadMode === 'request_scoped') status = 'not_applicable';
-      else if (target.status === 'unavailable') status = 'unavailable';
-      else if (!state) status = 'unreported';
-      else if (invalidFallbackSource) status = 'unavailable';
-      else if (state.health === 'unavailable') status = 'unavailable';
-      else if (state.health === 'degraded') status = 'degraded';
-      else status = tokensEqual(loadedToken, target.token) ? 'converged' : 'diverged';
-      return {
-        domain: target.domain,
-        errorCategory:
-          status === 'unavailable' || status === 'degraded'
-            ? invalidFallbackSource
-              ? 'configuration_invalid'
-              : safeErrorCategory(state?.errorCategory ?? target.errorCategory)
-            : null,
-        loadedAt:
-          status === 'disabled' || status === 'not_applicable' || status === 'unreported'
-            ? null
-            : (state?.loadedAt ?? null),
-        loadedToken:
-          status === 'disabled' ||
-          status === 'not_applicable' ||
-          status === 'unreported' ||
-          status === 'unavailable'
-            ? null
-            : loadedToken,
-        loadMode: target.loadMode,
-        source:
-          status === 'disabled' ||
-          status === 'not_applicable' ||
-          status === 'unreported' ||
-          status === 'unavailable'
-            ? 'unavailable'
-            : (state?.source ?? 'unavailable'),
+      const status = resolvePlatformDomainStatus({
+        invalidFallbackSource,
+        loadedToken,
+        state,
+        target,
+      });
+      return projectDomainDiagnostic({
+        invalidFallbackSource,
+        loadedToken,
+        state,
         status,
-      };
+        target,
+      });
     }),
   instanceId: diagnostic.instance.instanceId,
   instanceKind: 'platform',

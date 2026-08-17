@@ -1,5 +1,3 @@
-import { Buffer } from 'node:buffer';
-
 import { CURRENT_VERSION } from '@lobechat/const';
 import { and, desc, eq, gte, inArray, notInArray, sql } from 'drizzle-orm';
 
@@ -11,9 +9,6 @@ import {
   platformJobs,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
-import { getRedisConfig } from '@/envs/redis';
-import { createRedisWithPrefix, isRedisEnabled } from '@/libs/redis/manager';
-import type { BaseRedisProvider, RedisConfig } from '@/libs/redis/types';
 import type {
   AdminSystemCancelJobInput,
   AdminSystemGetInstanceRevisionsInput,
@@ -31,17 +26,9 @@ import {
 } from '../agentCatalog/errors';
 import {
   controlPlatformAgentRolloutJob,
-  parsePlatformAgentRolloutInput,
   PLATFORM_AGENT_ROLLOUT_JOB_TYPE,
 } from '../agentCatalog/rolloutService';
-import { SHARED_OAUTH_KEEPALIVE_JOB_TYPE } from '../aiCatalog/sharedOAuthKeepalive';
-import { SHARED_OAUTH_REFRESH_JOB_TYPE } from '../aiCatalog/sharedOAuthRefresh';
 import { AUDIT_ACTION, type AuditAction } from '../audit/auditActionCatalog';
-import { PLATFORM_AUDIT_EXPORT_JOB_TYPE } from '../audit/exportConstants';
-import { PLATFORM_AUDIT_RETENTION_JOB_TYPE } from '../audit/retentionConstants';
-import { OAUTH_REFRESH_JOB_TYPE } from '../connectorCatalog/connectorOAuthRefreshCoordinator';
-import { CONNECTOR_RUNTIME_JOB_TYPE } from '../connectorCatalog/runtimeExecutionJournal';
-import { CONNECTOR_SECRET_CLEANUP_JOB_TYPE } from '../connectorCatalog/secretCleanup';
 import { getIdentityProviderStartupArtifactHealth } from '../identityProvider/startupArtifact';
 import {
   IdentityProviderSystemService,
@@ -52,32 +39,37 @@ import {
   PlatformInstanceStatusService,
   PlatformInstanceTargetRevisionMismatchError,
 } from '../platformInstance/statusService';
-import {
-  parsePlatformSecretRewrapInput,
-  PLATFORM_SECRET_REWRAP_JOB_TYPE,
-} from '../secretRewrap/contracts';
+import { PLATFORM_SECRET_REWRAP_JOB_TYPE } from '../secretRewrap/contracts';
 import { PlatformSecretRewrapCoordinator } from '../secretRewrap/coordinator';
 import {
   PlatformSecretRewrapConflictError,
   PlatformSecretRewrapInvalidError,
 } from '../secretRewrap/errors';
+import { decodeCursor, encodeCursor, parseJobCursor } from './cursors';
 import {
   PlatformSystemJobConflictError,
   PlatformSystemJobInvalidError,
   PlatformSystemJobNotFoundError,
 } from './errors';
-import { keyManagementHealth, mailHealth, objectStorageHealth } from './infraDependencyConfig';
+import { fullJobProjection, projectJob } from './jobProjection';
+import {
+  defaultRedisHealthDependencies,
+  type DependencyHealth,
+  failureCategory,
+  mutationFailureCategory,
+  probeRedis,
+  projectDependencies,
+  projectOidcStatus,
+  publicationDomains,
+  type RedisHealthDependencies,
+} from './statusProjection';
+
+export { JOB_KIND_BY_TYPE, jobKind } from './jobProjection';
 
 const DEFAULT_PAGE_SIZE = 50;
 const DEFAULT_INSTANCE_STATE: AdminSystemInstanceState = 'live';
 /** Operator health treats publication failures in the last 24 hours as recent. */
 export const RECENT_PUBLISH_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-type DependencyHealth = {
-  errorCategory:
-    'configuration_incomplete' | 'operation_unavailable' | 'passive_check_only' | 'timeout' | null;
-  status: 'degraded' | 'disabled' | 'healthy' | 'unavailable' | 'unknown';
-};
 
 interface PlatformSystemAdminServiceOptions {
   env?: Record<string, string | undefined>;
@@ -97,196 +89,6 @@ interface PlatformSystemAdminServiceOptions {
   redisDependencies?: RedisHealthDependencies;
   redisProbe?: () => Promise<DependencyHealth>;
 }
-
-interface RedisHealthDependencies {
-  createRedisWithPrefix: (config: RedisConfig, prefix: string) => Promise<BaseRedisProvider | null>;
-  getRedisConfig: () => RedisConfig;
-  isRedisEnabled: (config: RedisConfig) => boolean;
-}
-
-const defaultRedisHealthDependencies: RedisHealthDependencies = {
-  createRedisWithPrefix,
-  getRedisConfig,
-  isRedisEnabled,
-};
-
-const disabledHealth = (): DependencyHealth => ({ errorCategory: null, status: 'disabled' });
-
-const probeRedis = async (dependencies: RedisHealthDependencies): Promise<DependencyHealth> => {
-  const config = dependencies.getRedisConfig();
-  if (!dependencies.isRedisEnabled(config)) return disabledHealth();
-  let client: BaseRedisProvider | null = null;
-  try {
-    client = await dependencies.createRedisWithPrefix(config, 'platformSystemHealth');
-    if (!client) return disabledHealth();
-    return { errorCategory: null, status: 'healthy' };
-  } catch (error) {
-    return {
-      errorCategory:
-        error instanceof Error && /timeout/i.test(error.message)
-          ? 'timeout'
-          : 'operation_unavailable',
-      status: 'unavailable',
-    };
-  } finally {
-    if (client) await client.disconnect();
-  }
-};
-
-const encodeCursor = (value: Record<string, string>): string =>
-  Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
-
-const decodeCursor = (cursor: string | undefined): Record<string, unknown> | null => {
-  if (!cursor) return null;
-  try {
-    const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-};
-
-const parseJobCursor = (cursor: string | undefined) => {
-  if (!cursor) return undefined;
-  const value = decodeCursor(cursor);
-  const createdAt = typeof value?.createdAt === 'string' ? new Date(value.createdAt) : null;
-  if (
-    !createdAt ||
-    Number.isNaN(createdAt.getTime()) ||
-    typeof value?.id !== 'string' ||
-    !/^pjob_[0-9A-Za-z]{16}$/.test(value.id)
-  ) {
-    throw new PlatformSystemJobInvalidError();
-  }
-  return { createdAt, id: value.id };
-};
-
-/**
- * Every queue type an operator can see in 近期任务. Missing entries render as
- * `unknown`, so `jobKindCoverage.test.ts` fails when a new queue forgets to register here.
- */
-export const JOB_KIND_BY_TYPE: Readonly<Record<string, AdminSystemJob['kind']>> = {
-  [CONNECTOR_RUNTIME_JOB_TYPE]: 'connector_runtime',
-  [CONNECTOR_SECRET_CLEANUP_JOB_TYPE]: 'connector_secret_cleanup',
-  [OAUTH_REFRESH_JOB_TYPE]: 'connector_oauth_refresh',
-  [PLATFORM_AGENT_ROLLOUT_JOB_TYPE]: 'agent_rollout',
-  [PLATFORM_AUDIT_EXPORT_JOB_TYPE]: 'audit_export',
-  [PLATFORM_AUDIT_RETENTION_JOB_TYPE]: 'audit_retention',
-  [PLATFORM_SECRET_REWRAP_JOB_TYPE]: 'secret_rewrap',
-  [SHARED_OAUTH_KEEPALIVE_JOB_TYPE]: 'ai_oauth_keepalive',
-  [SHARED_OAUTH_REFRESH_JOB_TYPE]: 'ai_oauth_refresh',
-};
-
-export const jobKind = (type: string): AdminSystemJob['kind'] =>
-  JOB_KIND_BY_TYPE[type] ?? 'unknown';
-
-/** Operational metadata only; a malformed stored type degrades to null instead of failing the page. */
-const jobTypeId = (type: string): string | null => (/^[a-z0-9.-]{1,64}$/.test(type) ? type : null);
-
-const projectJob = (job: {
-  attempt: number;
-  createdAt: Date;
-  failedCount: number | null;
-  finishedAt: Date | null;
-  hasError: boolean;
-  id: string;
-  maxAttempts: number | null;
-  progressDone: number;
-  progressTotal: number | null;
-  revision: number | null;
-  startedAt: Date | null;
-  status: PlatformJobItem['status'];
-  type: string;
-  updatedAt: Date;
-}): AdminSystemJob => {
-  const kind = jobKind(job.type);
-  // Security invariant: only these two queues expose cancel / retry / revision. Adding a kind
-  // to JOB_KIND_BY_TYPE must never widen the mutable surface.
-  const supported = kind === 'agent_rollout' || kind === 'secret_rewrap';
-  return {
-    attempt: job.attempt,
-    canCancel: supported && (job.status === 'pending' || job.status === 'running'),
-    canRetry:
-      (kind === 'agent_rollout' && ['cancelled', 'dead', 'failed'].includes(job.status)) ||
-      (kind === 'secret_rewrap' && job.status === 'failed'),
-    createdAt: job.createdAt,
-    errorCategory:
-      job.hasError || job.status === 'failed' || job.status === 'dead' ? 'operation_failed' : null,
-    failedCount: job.failedCount,
-    finishedAt: job.finishedAt,
-    jobId: job.id,
-    kind,
-    maxAttempts: job.maxAttempts,
-    progress: { done: job.progressDone, total: job.progressTotal },
-    revision: supported ? job.revision : null,
-    startedAt: job.startedAt,
-    status: job.status,
-    typeId: jobTypeId(job.type),
-    updatedAt: job.updatedAt,
-  };
-};
-
-const fullJobProjection = (job: PlatformJobItem): AdminSystemJob => {
-  let revision: number | null = null;
-  let failedCount: number | null = null;
-  try {
-    if (job.type === PLATFORM_AGENT_ROLLOUT_JOB_TYPE) {
-      revision = parsePlatformAgentRolloutInput(job).control.revision;
-    } else if (job.type === PLATFORM_SECRET_REWRAP_JOB_TYPE) {
-      revision = parsePlatformSecretRewrapInput(job).control.revision;
-    }
-  } catch {
-    revision = null;
-  }
-  const failed = job.resultSummary?.failed;
-  if (typeof failed === 'number' && Number.isInteger(failed) && failed >= 0) failedCount = failed;
-  return projectJob({
-    ...job,
-    failedCount,
-    hasError: job.lastError !== null,
-    revision,
-  });
-};
-
-const publicationDomains = {
-  // 平台助理 de-drafted: `.save` is the live write, `.publish` is kept so historical
-  // failures still roll up into publish health.
-  'admin.agents.publish': 'agent_catalog',
-  'admin.agents.save': 'agent_catalog',
-  'admin.aiProviders.publish': 'ai_catalog',
-  // 品牌自定义 de-drafted: `.save` is the live write, `.publish` is kept so historical
-  // failures still roll up into publish health.
-  'admin.branding.publish': 'branding',
-  'admin.branding.save': 'branding',
-  'admin.connectors.publish': 'connector_catalog',
-  'admin.identityProviders.publish': 'identity',
-  // 统一管理 de-drafted: `.save` is the live write, `.publish` is kept so historical
-  // failures still roll up into publish health.
-  'admin.managedResources.publish': 'managed_policy',
-  'admin.managedResources.save': 'managed_policy',
-  'admin.settings.publish': 'settings',
-  'admin.settings.save': 'settings',
-  'admin.skills.publish': 'skill_catalog',
-} as const;
-
-const failureCategory = (value: unknown) => {
-  if (typeof value !== 'string') return 'unknown' as const;
-  if (value.includes('conflict')) return 'conflict' as const;
-  if (value.includes('invalid') || value.includes('validation')) return 'validation' as const;
-  if (value.includes('dependency')) return 'dependency_unavailable' as const;
-  if (value.includes('unavailable') || value.includes('failed'))
-    return 'operation_unavailable' as const;
-  return 'unknown' as const;
-};
-
-const mutationFailureCategory = (error: unknown): string => {
-  if (error instanceof PlatformSystemJobNotFoundError) return 'not_found';
-  if (error instanceof PlatformSystemJobConflictError) return 'revision_conflict';
-  if (error instanceof PlatformSystemJobInvalidError) return 'invalid_input';
-  return 'operation_unavailable';
-};
 
 export class PlatformSystemAdminService {
   private readonly env: Record<string, string | undefined>;
@@ -608,10 +410,6 @@ export class PlatformSystemAdminService {
     const artifact = flags.ENABLE_DATABASE_OIDC ? getIdentityProviderStartupArtifactHealth() : null;
     const authSnapshot =
       authSnapshotResult.status === 'fulfilled' ? authSnapshotResult.value : null;
-    // Fail closed: if the canonical ledger is unavailable, do not claim "active".
-    const pendingRestart = authSnapshot
-      ? authSnapshot.pendingRestart
-      : Boolean(flags.ENABLE_DATABASE_OIDC && artifact);
     // Same published-selection as getAuthSnapshotStatus (live, enabled, not env-shadowed).
     let oidcConfiguredWithoutArtifact = false;
     if (flags.ENABLE_DATABASE_OIDC && !artifact) {
@@ -624,19 +422,11 @@ export class PlatformSystemAdminService {
     }
     return {
       build: { gitSha, version: CURRENT_VERSION },
-      dependencies: {
-        database:
-          databaseResult.status === 'fulfilled'
-            ? ({ errorCategory: null, status: 'healthy' } as const)
-            : ({ errorCategory: 'operation_unavailable', status: 'unavailable' } as const),
-        keyManagement: keyManagementHealth(this.env),
-        mail: mailHealth(this.env),
-        objectStorage: objectStorageHealth(this.env),
-        redis:
-          redisResult.status === 'fulfilled'
-            ? redisResult.value
-            : ({ errorCategory: 'operation_unavailable', status: 'unavailable' } as const),
-      },
+      dependencies: projectDependencies({
+        databaseResult,
+        env: this.env,
+        redisResult,
+      }),
       domains: instance?.domains ?? [],
       featureFlags: {
         databaseOidc: flags.ENABLE_DATABASE_OIDC,
@@ -662,31 +452,12 @@ export class PlatformSystemAdminService {
               status: 'unavailable' as const,
               total: 0,
             },
-      oidc: !flags.ENABLE_DATABASE_OIDC
-        ? ({
-            activeRevision: null,
-            configured: false,
-            pendingRestart: false,
-            source: 'disabled',
-            status: 'disabled',
-          } as const)
-        : artifact
-          ? ({
-              activeRevision: artifact.identityRevision,
-              configured: true,
-              pendingRestart,
-              source: artifact.source,
-              // Prefer artifact health when the ledger is available; mark unavailable
-              // when the canonical restart status could not be loaded.
-              status: authSnapshot ? artifact.health : ('unavailable' as const),
-            } as const)
-          : ({
-              activeRevision: null,
-              configured: oidcConfiguredWithoutArtifact,
-              pendingRestart: true,
-              source: 'unknown',
-              status: 'unavailable',
-            } as const),
+      oidc: projectOidcStatus({
+        artifact,
+        authSnapshot,
+        flags,
+        oidcConfiguredWithoutArtifact,
+      }),
       recentPublishFailures:
         publishFailureResult.status === 'fulfilled'
           ? publishFailureResult.value

@@ -10,7 +10,7 @@
  */
 
 import { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import { checksumPayload, PlatformSettingsModel } from '@/database/models/platform';
+import { PlatformSettingsModel } from '@/database/models/platform';
 import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type {
@@ -32,21 +32,24 @@ import {
   reportPlatformRuntimeMaterializationSafely,
 } from '../platformInstance/runtimeReporter';
 import { buildSettingsCacheKey, resolveEffectiveSettings } from './effectiveResolver';
+import {
+  buildResolvedLayerKey,
+  clearAllSettingsCaches,
+  dropUserCache,
+  legacyCacheChecksum,
+  type PublishedPolicyMap,
+  readPublishedPoliciesCache,
+  readResolvedLayerCache,
+  readSoftCache,
+  settingsSoftCacheSize,
+  writePublishedPoliciesCache,
+  writeResolvedLayerCache,
+  writeSoftCache,
+} from './effectiveSettingsCache';
 import { validateLegacySettingsUpdate } from './legacySettingsCatalog';
+import { buildLegacySettingsPartial } from './legacySettingsPartial';
 import { deleteByPath, flattenLeaves, getByPath } from './pathUtils';
 import { settingsRegistry } from './registry';
-
-/** Drop secrets and normalize empty legacy for cache keys. */
-const sanitizeLegacyForCache = (
-  legacy: Record<string, unknown> | null | undefined,
-): Record<string, unknown> => {
-  if (!legacy) return {};
-  const { keyVaults: _keyVaults, ...rest } = legacy;
-  return rest;
-};
-
-const legacyCacheChecksum = (legacy: Record<string, unknown> | null | undefined): string =>
-  checksumPayload(sanitizeLegacyForCache(legacy));
 
 export class SettingsPathError extends Error {
   constructor(
@@ -60,123 +63,6 @@ export class SettingsPathError extends Error {
 
 // Re-export codes for call sites
 export { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES };
-
-/** Soft process-local cache — not a multi-instance guarantee. */
-type SoftCacheEntry = {
-  /** Absolute expiry from insertion/materialization — hits must not renew this. */
-  expiresAt: number;
-  value: EffectiveSettingsResult;
-};
-const softCache = new Map<string, SoftCacheEntry>();
-const SOFT_CACHE_TTL_MS = 5_000;
-/** Bound resident keys so historical user/revision traffic cannot grow unbounded. */
-const SOFT_CACHE_MAX_ENTRIES = 512;
-
-/**
- * Process-local published-policy rows keyed by platform revision.
- * Avoids re-SELECTing the same org policies on every user materialization
- * (soft-cache is per-user; this is shared across users at a revision).
- */
-type PublishedPolicyMap = Record<
-  string,
-  {
-    mode: SettingPolicyMode;
-    schemaVersion: number;
-    value: unknown;
-    visibility: SettingPolicyVisibility;
-  }
->;
-const publishedPoliciesByRevision = new Map<number, PublishedPolicyMap>();
-const PUBLISHED_POLICIES_CACHE_MAX = 16;
-
-const readPublishedPoliciesCache = (platformRevision: number): PublishedPolicyMap | undefined => {
-  const cached = publishedPoliciesByRevision.get(platformRevision);
-  if (!cached) return undefined;
-  // Refresh LRU insertion order.
-  publishedPoliciesByRevision.delete(platformRevision);
-  publishedPoliciesByRevision.set(platformRevision, cached);
-  return cached;
-};
-
-const writePublishedPoliciesCache = (
-  platformRevision: number,
-  policies: PublishedPolicyMap,
-): void => {
-  publishedPoliciesByRevision.delete(platformRevision);
-  publishedPoliciesByRevision.set(platformRevision, policies);
-  while (publishedPoliciesByRevision.size > PUBLISHED_POLICIES_CACHE_MAX) {
-    const oldest = publishedPoliciesByRevision.keys().next().value;
-    if (oldest === undefined) break;
-    publishedPoliciesByRevision.delete(oldest);
-  }
-};
-
-/**
- * Users with the same platform revision, override revision token, and legacy
- * checksum resolve to identical EffectiveSettingsResult payloads. Memoize the
- * pure resolve so multi-user first-fill (soft-cache cold) does not re-walk the
- * full registry for every user.
- */
-const resolvedByLayerKey = new Map<string, EffectiveSettingsResult>();
-const RESOLVED_LAYER_CACHE_MAX = 64;
-
-const buildResolvedLayerKey = (params: {
-  legacyChecksum: string;
-  platformRevision: number;
-  registryVersion: number;
-  userOverrideRevision: number;
-}): string =>
-  `r${params.registryVersion}:p${params.platformRevision}:o${params.userOverrideRevision}:l${params.legacyChecksum}`;
-
-const readResolvedLayerCache = (key: string): EffectiveSettingsResult | undefined => {
-  const cached = resolvedByLayerKey.get(key);
-  if (!cached) return undefined;
-  resolvedByLayerKey.delete(key);
-  resolvedByLayerKey.set(key, cached);
-  return cached;
-};
-
-const writeResolvedLayerCache = (key: string, value: EffectiveSettingsResult): void => {
-  resolvedByLayerKey.delete(key);
-  resolvedByLayerKey.set(key, value);
-  while (resolvedByLayerKey.size > RESOLVED_LAYER_CACHE_MAX) {
-    const oldest = resolvedByLayerKey.keys().next().value;
-    if (oldest === undefined) break;
-    resolvedByLayerKey.delete(oldest);
-  }
-};
-
-const pruneSoftCache = (now: number): void => {
-  for (const [key, entry] of softCache) {
-    if (now >= entry.expiresAt) softCache.delete(key);
-  }
-  while (softCache.size > SOFT_CACHE_MAX_ENTRIES) {
-    const oldest = softCache.keys().next().value;
-    if (oldest === undefined) break;
-    softCache.delete(oldest);
-  }
-};
-
-const readSoftCache = (key: string): EffectiveSettingsResult | undefined => {
-  const now = Date.now();
-  const cached = softCache.get(key);
-  if (!cached) return undefined;
-  if (now >= cached.expiresAt) {
-    softCache.delete(key);
-    return undefined;
-  }
-  // Refresh insertion order for LRU eviction only — keep absolute expiresAt (not sliding TTL).
-  softCache.delete(key);
-  softCache.set(key, cached);
-  return cached.value;
-};
-
-const writeSoftCache = (key: string, value: EffectiveSettingsResult): void => {
-  const now = Date.now();
-  softCache.delete(key);
-  softCache.set(key, { expiresAt: now + SOFT_CACHE_TTL_MS, value });
-  pruneSoftCache(now);
-};
 
 /**
  * Narrow transaction lifecycle seam. Production leaves this empty; causal
@@ -587,9 +473,7 @@ export class EffectiveSettingsService {
   private reportUnavailable = (error: unknown): void => {
     // Force recovery through a new materialization instead of leaving the reporter unavailable
     // while subsequent requests keep serving a pre-failure cache hit at the same revision.
-    softCache.clear();
-    publishedPoliciesByRevision.clear();
-    resolvedByLayerKey.clear();
+    clearAllSettingsCaches();
     reportPlatformRuntimeMaterializationSafely(this.runtimeReporter, this.db, {
       domain: 'settings',
       errorCategory: classifyRuntimeMaterializationError(error),
@@ -641,7 +525,7 @@ export class EffectiveSettingsService {
       });
     });
 
-    this.dropUserCache(params.userId);
+    dropUserCache(params.userId);
     await this.invalidation.publish({
       at: new Date().toISOString(),
       resourceId: params.userId,
@@ -698,7 +582,7 @@ export class EffectiveSettingsService {
       return deleted;
     });
 
-    this.dropUserCache(params.userId);
+    dropUserCache(params.userId);
     await this.invalidation.publish({
       at: new Date().toISOString(),
       resourceId: params.userId,
@@ -735,7 +619,7 @@ export class EffectiveSettingsService {
       return result;
     });
 
-    this.dropUserCache(params.userId);
+    dropUserCache(params.userId);
     await this.invalidation.publish({
       at: new Date().toISOString(),
       resourceId: params.userId,
@@ -797,41 +681,7 @@ export class EffectiveSettingsService {
     }
 
     // Build legacy partial (non-registered known leaves + hotkey etc.)
-    const legacyPartial: Record<string, unknown> = {};
-    for (const [topKey, topVal] of Object.entries(validatedInput)) {
-      if (topKey === 'keyVaults') continue;
-      if (settingsRegistry.isSecretPath(topKey)) continue;
-
-      const topRegistered = settingsRegistry
-        .paths()
-        .some((p) => p === topKey || p.startsWith(`${topKey}.`));
-      if (!topRegistered) {
-        legacyPartial[topKey] = topVal;
-        continue;
-      }
-      const nestedLeaves = flattenLeaves(topVal, topKey);
-      const unregistered = nestedLeaves.filter((l) => !settingsRegistry.has(l.path));
-      if (unregistered.length === 0) continue;
-      let partial: Record<string, unknown> = {};
-      for (const leaf of unregistered) {
-        const rel = leaf.path.startsWith(`${topKey}.`)
-          ? leaf.path.slice(topKey.length + 1)
-          : leaf.path;
-        if (!rel || rel === topKey) {
-          partial = leaf.value as Record<string, unknown>;
-        } else {
-          const parts = rel.split('.');
-          let cur = partial;
-          for (let i = 0; i < parts.length - 1; i++) {
-            const k = parts[i]!;
-            cur[k] = cur[k] && typeof cur[k] === 'object' ? { ...(cur[k] as object) } : {};
-            cur = cur[k] as Record<string, unknown>;
-          }
-          cur[parts.at(-1)!] = leaf.value;
-        }
-      }
-      if (Object.keys(partial).length > 0) legacyPartial[topKey] = partial;
-    }
+    const legacyPartial = buildLegacySettingsPartial(validatedInput, settingsRegistry);
 
     if (params.encryptedKeyVaults !== undefined && params.encryptedKeyVaults !== null) {
       legacyPartial.keyVaults = params.encryptedKeyVaults;
@@ -869,7 +719,7 @@ export class EffectiveSettingsService {
       }
     });
 
-    this.dropUserCache(params.userId);
+    dropUserCache(params.userId);
     if (ops.length > 0 || Object.keys(legacyPartial).length > 0) {
       await this.invalidation.publish({
         at: new Date().toISOString(),
@@ -882,19 +732,11 @@ export class EffectiveSettingsService {
 
     return { appliedPaths: ops.map((o) => o.path) };
   };
-
-  private dropUserCache = (userId: string) => {
-    for (const key of softCache.keys()) {
-      if (key.includes(`:u${userId}:`)) softCache.delete(key);
-    }
-  };
 }
 
 export const resetEffectiveSettingsCacheForTest = (): void => {
-  softCache.clear();
-  publishedPoliciesByRevision.clear();
-  resolvedByLayerKey.clear();
+  clearAllSettingsCaches();
 };
 
 /** Test/observability helper — current soft-cache resident key count. */
-export const getEffectiveSettingsCacheSizeForTest = (): number => softCache.size;
+export const getEffectiveSettingsCacheSizeForTest = (): number => settingsSoftCacheSize();
