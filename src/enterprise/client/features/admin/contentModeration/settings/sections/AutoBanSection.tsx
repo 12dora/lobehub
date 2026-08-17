@@ -1,6 +1,5 @@
 'use client';
 
-import { Text } from '@lobehub/ui';
 import { InputNumber, Select, Switch } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -28,90 +27,92 @@ const AutoBanSection = memo<AutoBanSectionProps>(
         description={t('contentModeration.settings.autoBan.desc')}
         title={t('contentModeration.settings.autoBan.title')}
       >
-        <Field label={t('contentModeration.settings.autoBan.enabled')}>
-          <div className={styles.toolbarRow}>
-            <Switch
-              checked={autoBan.enabled}
-              disabled={disabled}
-              onChange={(checked) => onEnableChange(Boolean(checked))}
-            />
-            <Text className={styles.hintText}>
-              {t('contentModeration.settings.autoBan.enabledHint')}
-            </Text>
-          </div>
-        </Field>
+        <div className={styles.fieldGrid}>
+          <Field
+            hint={t('contentModeration.settings.autoBan.enabledHint')}
+            label={t('contentModeration.settings.autoBan.enabled')}
+          >
+            <div className={styles.inlineSwitch}>
+              <Switch
+                checked={autoBan.enabled}
+                disabled={disabled}
+                onChange={(checked) => onEnableChange(Boolean(checked))}
+              />
+            </div>
+          </Field>
 
-        {autoBan.enabled ? (
-          <div className={styles.formRow}>
-            <Field label={t('contentModeration.settings.autoBan.threshold')}>
-              <InputNumber
-                disabled={disabled}
-                max={10_000}
-                min={1}
-                step={1}
-                style={{ width: 140 }}
-                value={autoBan.threshold}
-                onChange={(next) =>
-                  onPatch({ autoBan: { ...autoBan, threshold: Number(next ?? 1) } })
-                }
-              />
-            </Field>
-            <Field label={t('contentModeration.settings.autoBan.window')}>
-              <InputNumber
-                disabled={disabled}
-                max={3650}
-                min={1}
-                step={1}
-                style={{ width: 140 }}
-                value={autoBan.windowDays}
-                onChange={(next) =>
-                  onPatch({ autoBan: { ...autoBan, windowDays: Number(next ?? 1) } })
-                }
-              />
-            </Field>
-            <Field label={t('contentModeration.settings.autoBan.duration')}>
-              <div className={styles.toolbarRow}>
-                <Select
+          {autoBan.enabled ? (
+            <>
+              <Field label={t('contentModeration.settings.autoBan.threshold')}>
+                <InputNumber
                   disabled={disabled}
-                  style={{ width: 160 }}
-                  value={autoBan.durationDays === null ? 'permanent' : 'temporary'}
-                  options={[
-                    {
-                      label: t('contentModeration.settings.autoBan.permanent'),
-                      value: 'permanent',
-                    },
-                    {
-                      label: t('contentModeration.settings.autoBan.temporary'),
-                      value: 'temporary',
-                    },
-                  ]}
+                  max={10_000}
+                  min={1}
+                  step={1}
+                  style={{ width: 140 }}
+                  value={autoBan.threshold}
                   onChange={(next) =>
-                    onPatch({
-                      autoBan: {
-                        ...autoBan,
-                        durationDays: next === 'temporary' ? (autoBan.durationDays ?? 7) : null,
-                      },
-                    })
+                    onPatch({ autoBan: { ...autoBan, threshold: Number(next ?? 1) } })
                   }
                 />
-                {autoBan.durationDays === null ? null : (
-                  <InputNumber
-                    aria-label={t('contentModeration.settings.autoBan.durationDays')}
+              </Field>
+              <Field label={t('contentModeration.settings.autoBan.window')}>
+                <InputNumber
+                  disabled={disabled}
+                  max={3650}
+                  min={1}
+                  step={1}
+                  style={{ width: 140 }}
+                  value={autoBan.windowDays}
+                  onChange={(next) =>
+                    onPatch({ autoBan: { ...autoBan, windowDays: Number(next ?? 1) } })
+                  }
+                />
+              </Field>
+              <Field label={t('contentModeration.settings.autoBan.duration')}>
+                <div className={styles.toolbarRow}>
+                  <Select
                     disabled={disabled}
-                    max={3650}
-                    min={1}
-                    step={1}
-                    style={{ width: 120 }}
-                    value={autoBan.durationDays}
+                    style={{ width: 160 }}
+                    value={autoBan.durationDays === null ? 'permanent' : 'temporary'}
+                    options={[
+                      {
+                        label: t('contentModeration.settings.autoBan.permanent'),
+                        value: 'permanent',
+                      },
+                      {
+                        label: t('contentModeration.settings.autoBan.temporary'),
+                        value: 'temporary',
+                      },
+                    ]}
                     onChange={(next) =>
-                      onPatch({ autoBan: { ...autoBan, durationDays: Number(next ?? 1) } })
+                      onPatch({
+                        autoBan: {
+                          ...autoBan,
+                          durationDays: next === 'temporary' ? (autoBan.durationDays ?? 7) : null,
+                        },
+                      })
                     }
                   />
-                )}
-              </div>
-            </Field>
-          </div>
-        ) : null}
+                  {autoBan.durationDays === null ? null : (
+                    <InputNumber
+                      aria-label={t('contentModeration.settings.autoBan.durationDays')}
+                      disabled={disabled}
+                      max={3650}
+                      min={1}
+                      step={1}
+                      style={{ width: 120 }}
+                      value={autoBan.durationDays}
+                      onChange={(next) =>
+                        onPatch({ autoBan: { ...autoBan, durationDays: Number(next ?? 1) } })
+                      }
+                    />
+                  )}
+                </div>
+              </Field>
+            </>
+          ) : null}
+        </div>
       </SettingsSection>
     );
   },

@@ -3,7 +3,7 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { Button, Input, Switch, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
@@ -12,6 +12,7 @@ import {
   MODERATION_DECISION_SOURCES,
   MODERATION_EFFECTIVE_ACTIONS,
   MODERATION_REQUEST_KINDS,
+  type ModerationCategory,
 } from '@/const/platform/contentModeration';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import type { ContentModerationRecord } from '@/types/platform/contentModeration';
@@ -52,6 +53,9 @@ export interface RecordsTabProps {
   enabled: boolean;
 }
 
+const isModerationCategory = (value: string | null): value is ModerationCategory =>
+  value !== null && (MODERATION_CATEGORIES as readonly string[]).includes(value);
+
 /**
  * 违规记录 tab (design §6.2). Ignored / allowed rows are excluded by default: the list is an
  * exception log, and mixing in every allowed request would bury the ones that matter.
@@ -61,7 +65,14 @@ const RecordsTab = memo<RecordsTabProps>(({ canBanUsers, canManage, enabled }) =
   const { authMethod } = useAdminAccess();
   const [params, setParams] = useSearchParams();
 
-  const [filters, setFilters] = useState<RecordsFilters>(emptyRecordsFilters);
+  // `?category=` is a one-shot deep link from the 概况 donut: seed the column filter, then drop
+  // the param so the header filter stays the single source of truth.
+  const [filters, setFilters] = useState<RecordsFilters>(() => {
+    const category = params.get('category');
+    return isModerationCategory(category)
+      ? { ...emptyRecordsFilters(), categories: [category] }
+      : emptyRecordsFilters();
+  });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_RECORDS_PAGE_SIZE);
   const [selected, setSelected] = useState<string[]>([]);
@@ -70,6 +81,13 @@ const RecordsTab = memo<RecordsTabProps>(({ canBanUsers, canManage, enabled }) =
 
   const userId = params.get('userId') ?? undefined;
   const recordId = params.get('recordId');
+
+  useEffect(() => {
+    if (!params.has('category')) return;
+    const next = new URLSearchParams(params);
+    next.delete('category');
+    setParams(next, { replace: true });
+  }, [params, setParams]);
 
   const setQueryParam = useCallback(
     (key: string, value?: string) => {

@@ -367,7 +367,7 @@
   "moderation.category.privacy": "隐私与个人信息",
   "moderation.category.self_harm": "自杀自残",
   "moderation.category.sexual": "色情",
-  "moderation.category.sexual_minors": "涉及未成年人的色情内容",
+  "moderation.category.sexual_minors": "未成年人色情内容",
   "moderation.category.violence": "暴力与血腥",
   "moderation.categoryLabel": "命中类别：{{category}}",
   "more": "更多",

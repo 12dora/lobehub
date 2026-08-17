@@ -40,37 +40,37 @@ const RecordsSection = memo<RecordsSectionProps>(({ config, disabled, onPatch })
       description={t('contentModeration.settings.records.desc')}
       title={t('contentModeration.settings.records.title')}
     >
-      <Field label={t('contentModeration.settings.records.recordNonHits')}>
-        <div className={styles.toolbarRow}>
-          <Switch
-            checked={records.recordNonHits}
-            disabled={disabled}
-            onChange={(checked) =>
-              onPatch({ records: { ...records, recordNonHits: Boolean(checked) } })
-            }
-          />
-          <Text className={styles.hintText}>
-            {t('contentModeration.settings.records.recordNonHitsHint')}
-          </Text>
-        </div>
-      </Field>
+      <div className={styles.fieldGrid}>
+        <Field
+          hint={t('contentModeration.settings.records.recordNonHitsHint')}
+          label={t('contentModeration.settings.records.recordNonHits')}
+        >
+          <div className={styles.inlineSwitch}>
+            <Switch
+              checked={records.recordNonHits}
+              disabled={disabled}
+              onChange={(checked) =>
+                onPatch({ records: { ...records, recordNonHits: Boolean(checked) } })
+              }
+            />
+          </div>
+        </Field>
 
-      <Field label={t('contentModeration.settings.records.storeFullPrompt')}>
-        <div className={styles.toolbarRow}>
-          <Switch
-            checked={records.storeFullPrompt}
-            disabled={disabled}
-            onChange={(checked) =>
-              onPatch({ records: { ...records, storeFullPrompt: Boolean(checked) } })
-            }
-          />
-          <Text className={styles.hintText}>
-            {t('contentModeration.settings.records.storeFullPromptHint')}
-          </Text>
-        </div>
-      </Field>
+        <Field
+          hint={t('contentModeration.settings.records.storeFullPromptHint')}
+          label={t('contentModeration.settings.records.storeFullPrompt')}
+        >
+          <div className={styles.inlineSwitch}>
+            <Switch
+              checked={records.storeFullPrompt}
+              disabled={disabled}
+              onChange={(checked) =>
+                onPatch({ records: { ...records, storeFullPrompt: Boolean(checked) } })
+              }
+            />
+          </div>
+        </Field>
 
-      <div className={styles.formRow}>
         <Field label={t('contentModeration.settings.records.hitRetention')}>
           <InputNumber
             disabled={disabled}
@@ -102,68 +102,73 @@ const RecordsSection = memo<RecordsSectionProps>(({ config, disabled, onPatch })
             }
           />
         </Field>
+
+        <Field
+          hint={t('contentModeration.settings.records.notifyHint')}
+          label={t('contentModeration.settings.records.notifyEnabled')}
+        >
+          <div className={styles.inlineSwitch}>
+            <Switch
+              checked={notify.enabled}
+              disabled={disabled}
+              onChange={(checked) => onPatch({ notify: { ...notify, enabled: Boolean(checked) } })}
+            />
+          </div>
+        </Field>
+
+        {notify.enabled ? (
+          <>
+            <Field label={t('contentModeration.settings.records.notifyActions')}>
+              <Select
+                disabled={disabled}
+                mode="multiple"
+                style={{ width: '100%' }}
+                value={notify.onActions}
+                options={MODERATION_EFFECTIVE_ACTIONS.map((value) => ({
+                  label: effectiveActionLabel(t, value),
+                  value,
+                }))}
+                onChange={(next) =>
+                  onPatch({
+                    notify: {
+                      ...notify,
+                      onActions: (Array.isArray(next) ? next : []) as ModerationEffectiveAction[],
+                    },
+                  })
+                }
+              />
+            </Field>
+            <Field
+              wide
+              label={t('contentModeration.settings.records.notifyEmails')}
+              extra={
+                invalidEmails.length > 0 ? (
+                  <Text data-testid="notify-email-error" type="danger">
+                    {t('contentModeration.errors.notifyEmailInvalid', { email: invalidEmails[0] })}
+                  </Text>
+                ) : undefined
+              }
+            >
+              <Select
+                disabled={disabled}
+                mode="tags"
+                options={notify.emails.map((email) => ({ label: email, value: email }))}
+                placeholder={t('contentModeration.settings.records.notifyEmailsPlaceholder')}
+                style={{ width: '100%' }}
+                value={notify.emails}
+                onChange={(next) =>
+                  onPatch({
+                    notify: {
+                      ...notify,
+                      emails: Array.isArray(next) ? next.map((item) => String(item).trim()) : [],
+                    },
+                  })
+                }
+              />
+            </Field>
+          </>
+        ) : null}
       </div>
-
-      <Field label={t('contentModeration.settings.records.notifyEnabled')}>
-        <div className={styles.toolbarRow}>
-          <Switch
-            checked={notify.enabled}
-            disabled={disabled}
-            onChange={(checked) => onPatch({ notify: { ...notify, enabled: Boolean(checked) } })}
-          />
-          <Text className={styles.hintText}>
-            {t('contentModeration.settings.records.notifyHint')}
-          </Text>
-        </div>
-      </Field>
-
-      {notify.enabled ? (
-        <>
-          <Field label={t('contentModeration.settings.records.notifyEmails')}>
-            <Select
-              disabled={disabled}
-              mode="tags"
-              options={notify.emails.map((email) => ({ label: email, value: email }))}
-              placeholder={t('contentModeration.settings.records.notifyEmailsPlaceholder')}
-              style={{ maxWidth: 520, width: '100%' }}
-              value={notify.emails}
-              onChange={(next) =>
-                onPatch({
-                  notify: {
-                    ...notify,
-                    emails: Array.isArray(next) ? next.map((item) => String(item).trim()) : [],
-                  },
-                })
-              }
-            />
-          </Field>
-          {invalidEmails.length > 0 ? (
-            <Text data-testid="notify-email-error" type="danger">
-              {t('contentModeration.errors.notifyEmailInvalid', { email: invalidEmails[0] })}
-            </Text>
-          ) : null}
-          <Field label={t('contentModeration.settings.records.notifyActions')}>
-            <Select
-              disabled={disabled}
-              mode="multiple"
-              style={{ maxWidth: 420, width: '100%' }}
-              value={notify.onActions}
-              options={MODERATION_EFFECTIVE_ACTIONS.map((value) => ({
-                label: effectiveActionLabel(t, value),
-                value,
-              }))}
-              onChange={(next) =>
-                onPatch({
-                  notify: {
-                    ...notify,
-                    onActions: (Array.isArray(next) ? next : []) as ModerationEffectiveAction[],
-                  },
-                })
-              }
-            />
-          </Field>
-        </>
-      ) : null}
     </SettingsSection>
   );
 });

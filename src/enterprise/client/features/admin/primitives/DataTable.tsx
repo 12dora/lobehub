@@ -11,7 +11,7 @@ import type {
   TablePaginationConfig,
   TableRowSelection,
 } from 'antd/es/table/interface';
-import { createStaticStyles, cssVar, cx } from 'antd-style';
+import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, type ReactNode, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -76,10 +76,16 @@ const styles = createStaticStyles(({ css }) => ({
       background: transparent;
     }
 
+    /* Opaque base under the translucent fill so a fixed header cell never lets the columns
+       scrolling beneath it bleed through. */
     .ant-table-thead > tr > th {
       font-weight: 600;
       color: ${cssVar.colorTextSecondary};
-      background: ${cssVar.colorFillQuaternary};
+      background-color: ${cssVar.colorBgContainer};
+      background-image: linear-gradient(
+        ${cssVar.colorFillQuaternary},
+        ${cssVar.colorFillQuaternary}
+      );
     }
 
     /*
@@ -418,9 +424,11 @@ function DataTableInner<T extends object>({
 
   if (!dataSource?.length && !keepNumericPaginationOnEmpty) {
     return (
-      <div className={cx(styles.root, styles.empty)}>
+      <div className={styles.root}>
         {toolbarNode}
-        <Empty description={emptyDescription ?? t('primitives.dataTable.empty')} />
+        <div className={styles.empty}>
+          <Empty description={emptyDescription ?? t('primitives.dataTable.empty')} />
+        </div>
         {cursorNav}
       </div>
     );

@@ -13,7 +13,10 @@ const mocks = vi.hoisted(() => ({
     onValueChange?: (bar: unknown) => void;
   }[],
   areaCharts: [] as { categories: string[]; data: Record<string, unknown>[] }[],
-  barCharts: [] as { data: Record<string, unknown>[] }[],
+  donuts: [] as {
+    data: { category: string; count: number; name: string }[];
+    onValueChange?: (event: { categoryClicked: string; eventType: 'slice' } | null) => void;
+  }[],
 }));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -26,10 +29,28 @@ vi.mock('@lobehub/charts', () => ({
     mocks.areaCharts.push(props);
     return <div data-testid="area-chart" />;
   },
-  BarChart: (props: { data: Record<string, unknown>[] }) => {
-    mocks.barCharts.push(props);
-    return <div data-testid="bar-chart" />;
+  DonutChart: (props: {
+    data: { category: string; count: number; name: string }[];
+    onValueChange?: (event: { categoryClicked: string; eventType: 'slice' } | null) => void;
+  }) => {
+    mocks.donuts.push(props);
+    return (
+      <div data-testid="donut-chart">
+        {props.data.map((slice) => (
+          <button
+            key={slice.category}
+            type="button"
+            onClick={() =>
+              props.onValueChange?.({ categoryClicked: slice.name, eventType: 'slice' })
+            }
+          >
+            slice:{slice.name}
+          </button>
+        ))}
+      </div>
+    );
   },
+  useThemeColorRange: () => ['#111', '#222', '#333'],
   BarList: (props: {
     data: { key?: string; name: ReactNode; value: number }[];
     onValueChange?: (bar: unknown) => void;
@@ -98,7 +119,7 @@ const stats = (patch: Partial<ContentModerationStatsOutput> = {}): ContentModera
 
 beforeEach(() => {
   mocks.areaCharts.length = 0;
-  mocks.barCharts.length = 0;
+  mocks.donuts.length = 0;
   mocks.barLists.length = 0;
 });
 
@@ -110,6 +131,7 @@ describe('ModerationCharts', () => {
         error={false}
         loading={false}
         onRetry={vi.fn()}
+        onSelectCategory={vi.fn()}
         onSelectUser={vi.fn()}
       />,
     );
@@ -133,11 +155,37 @@ describe('ModerationCharts', () => {
         error={false}
         loading={false}
         onRetry={vi.fn()}
+        onSelectCategory={vi.fn()}
         onSelectUser={onSelectUser}
       />,
     );
     fireEvent.click(screen.getByText('alice@example.com'));
     expect(onSelectUser).toHaveBeenCalledWith('user-1');
+  });
+
+  it('drills into the record list when a category slice or legend row is clicked', () => {
+    const onSelectCategory = vi.fn();
+    render(
+      <ModerationCharts
+        error={false}
+        loading={false}
+        data={stats({
+          categories: [
+            { category: 'sexual', count: 4 },
+            { category: 'violence', count: 0 },
+          ],
+        })}
+        onRetry={vi.fn()}
+        onSelectCategory={onSelectCategory}
+        onSelectUser={vi.fn()}
+      />,
+    );
+    // Zero-count categories are dropped from the donut.
+    expect(mocks.donuts[0].data.map((row) => row.category)).toEqual(['sexual']);
+    fireEvent.click(screen.getByText('slice:moderation.category.sexual'));
+    expect(onSelectCategory).toHaveBeenCalledWith('sexual');
+    fireEvent.click(screen.getByText('4 · 100%'));
+    expect(onSelectCategory).toHaveBeenCalledTimes(2);
   });
 
   it('treats an all-zero window as empty rather than drawing a flat chart', () => {
@@ -161,6 +209,7 @@ describe('ModerationCharts', () => {
           topUsers: [],
         })}
         onRetry={vi.fn()}
+        onSelectCategory={vi.fn()}
         onSelectUser={vi.fn()}
       />,
     );

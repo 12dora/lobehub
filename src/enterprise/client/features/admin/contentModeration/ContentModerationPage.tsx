@@ -89,6 +89,9 @@ const ContentModerationPage = memo(() => {
           enabled={enabled}
           onOpenRecordsForUser={(userId) => goToTab('records', { recordId: undefined, userId })}
           onOpenSettings={() => goToTab('settings')}
+          onOpenRecordsForCategory={(category) =>
+            goToTab('records', { category, recordId: undefined, userId: undefined })
+          }
         />
       ) : null}
       {tab === 'records' ? (

@@ -26,6 +26,7 @@ import { resolveBrowserTimezone, useModerationTimeRange } from './useModerationT
 export interface OverviewTabProps {
   canManage: boolean;
   enabled: boolean;
+  onOpenRecordsForCategory: (category: string) => void;
   onOpenRecordsForUser: (userId: string) => void;
   onOpenSettings: () => void;
 }
@@ -36,7 +37,7 @@ export interface OverviewTabProps {
  * missing downgrade target invalidates how the numbers below should be read.
  */
 const OverviewTab = memo<OverviewTabProps>(
-  ({ canManage, enabled, onOpenRecordsForUser, onOpenSettings }) => {
+  ({ canManage, enabled, onOpenRecordsForCategory, onOpenRecordsForUser, onOpenSettings }) => {
     const { t } = useTranslation('admin');
     const { authMethod } = useAdminAccess();
     const timeRange = useModerationTimeRange();
@@ -128,7 +129,9 @@ const OverviewTab = memo<OverviewTabProps>(
           />
         ) : null}
 
-        <div className={styles.toolbarRow}>
+        <hr className={styles.divider} />
+
+        <div className={styles.statsToolbar}>
           <TimeRangeFilter
             customFrom={timeRange.customFrom}
             customTo={timeRange.customTo}
@@ -144,6 +147,7 @@ const OverviewTab = memo<OverviewTabProps>(
           data={stats.data}
           error={statsFailed}
           loading={statsLoading}
+          onSelectCategory={onOpenRecordsForCategory}
           onSelectUser={onOpenRecordsForUser}
           onRetry={() => {
             void stats.mutate();

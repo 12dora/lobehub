@@ -1,6 +1,5 @@
 'use client';
 
-import { Text } from '@lobehub/ui';
 import { Button, InputNumber, Switch } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -45,9 +44,12 @@ const CacheSection = memo<CacheSectionProps>(
         description={t('contentModeration.settings.cache.desc')}
         title={t('contentModeration.settings.cache.title')}
       >
-        <div className={styles.formRow}>
-          <Field label={t('contentModeration.settings.cache.enabled')}>
-            <div className={styles.toolbarRow}>
+        <div className={styles.fieldGrid}>
+          <Field
+            hint={t('contentModeration.settings.cache.enabledHint')}
+            label={t('contentModeration.settings.cache.enabled')}
+          >
+            <div className={styles.inlineSwitch}>
               <Switch
                 checked={cache.enabled}
                 disabled={disabled}
@@ -55,9 +57,6 @@ const CacheSection = memo<CacheSectionProps>(
                   onPatch({ decisionCache: { ...cache, enabled: Boolean(checked) } })
                 }
               />
-              <Text className={styles.hintText}>
-                {t('contentModeration.settings.cache.enabledHint')}
-              </Text>
             </div>
           </Field>
           <Field

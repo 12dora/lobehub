@@ -61,10 +61,19 @@ vi.mock('../SettingsSection', () => ({
   default: ({ children }: { children?: ReactNode }) => <section>{children}</section>,
 }));
 vi.mock('../Field', () => ({
-  default: ({ children, hint }: { children?: ReactNode; hint?: ReactNode }) => (
+  default: ({
+    children,
+    extra,
+    hint,
+  }: {
+    children?: ReactNode;
+    extra?: ReactNode;
+    hint?: ReactNode;
+  }) => (
     <div>
       {children}
       {hint}
+      {extra}
     </div>
   ),
 }));

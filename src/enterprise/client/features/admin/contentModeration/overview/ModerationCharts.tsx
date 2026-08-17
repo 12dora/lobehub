@@ -1,8 +1,8 @@
 'use client';
 
-import { AreaChart, BarChart, BarList } from '@lobehub/charts';
+import { AreaChart, BarList, DonutChart, useThemeColorRange } from '@lobehub/charts';
 import dayjs from 'dayjs';
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { ContentModerationStatsOutput } from '@/types/platform/contentModeration';
@@ -21,6 +21,8 @@ export interface ModerationChartsProps {
   error: boolean;
   loading: boolean;
   onRetry: () => void;
+  /** Clicking a slice of the category donut jumps to 违规记录 filtered by that category. */
+  onSelectCategory: (category: string) => void;
   /** Clicking a user in the Top-10 list jumps to 违规记录 filtered by that user. */
   onSelectUser: (userId: string) => void;
 }
@@ -29,12 +31,14 @@ const hasCounts = (rows: { count: number }[] | undefined): boolean =>
   Boolean(rows?.some((row) => row.count > 0));
 
 /**
- * The five charts of 概况 (design §6.1): stacked action trend, category distribution,
- * top offending users, decision sources, request kinds.
+ * The five charts of 概况 (design §6.1), in two rows: stacked action trend next to the
+ * category donut, then top offending users / decision sources / request kinds.
  */
 const ModerationCharts = memo<ModerationChartsProps>(
-  ({ data, error, loading, onRetry, onSelectUser }) => {
+  ({ data, error, loading, onRetry, onSelectCategory, onSelectUser }) => {
     const { t } = useTranslation('admin');
+    const colorRange = useThemeColorRange();
+    const [activeCategory, setActiveCategory] = useState<string | undefined>();
 
     const seriesNames = useMemo(
       () => ({
@@ -64,14 +68,20 @@ const ModerationCharts = memo<ModerationChartsProps>(
       (point) => point.allow + point.block + point.downgrade + point.error + point.log > 0,
     );
 
-    const categoryData = useMemo(
+    // Only categories with hits make it into the donut; a zero slice is invisible anyway and
+    // would steal a legend colour.
+    const categoryRows = useMemo(
       () =>
-        (data?.categories ?? []).map((row) => ({
-          [t('contentModeration.charts.hitCount')]: row.count,
-          category: categoryLabel(t, row.category),
-        })),
+        (data?.categories ?? [])
+          .filter((row) => row.count > 0)
+          .map((row) => ({
+            category: row.category,
+            count: row.count,
+            name: categoryLabel(t, row.category),
+          })),
       [data?.categories, t],
     );
+    const categoryTotal = categoryRows.reduce((sum, row) => sum + row.count, 0);
 
     const userBars = useMemo(
       () =>
@@ -110,37 +120,73 @@ const ModerationCharts = memo<ModerationChartsProps>(
 
     return (
       <>
-        <ChartCard {...shared} empty={trendEmpty} title={t('contentModeration.charts.trend')}>
-          <AreaChart
-            stack
-            data={trendData}
-            index="bucket"
-            yAxisWidth={48}
-            categories={[
-              seriesNames.allow,
-              seriesNames.log,
-              seriesNames.downgrade,
-              seriesNames.block,
-              seriesNames.error,
-            ]}
-          />
-        </ChartCard>
-
-        <div className={styles.chartGrid}>
-          <ChartCard
-            {...shared}
-            empty={!hasCounts(data?.categories)}
-            title={t('contentModeration.charts.categories')}
-          >
-            <BarChart
-              categories={[t('contentModeration.charts.hitCount')]}
-              data={categoryData}
-              index="category"
-              layout="vertical"
-              yAxisWidth={110}
+        <div className={styles.chartRowPrimary}>
+          <ChartCard {...shared} empty={trendEmpty} title={t('contentModeration.charts.trend')}>
+            <AreaChart
+              stack
+              data={trendData}
+              index="bucket"
+              yAxisWidth={48}
+              categories={[
+                seriesNames.allow,
+                seriesNames.log,
+                seriesNames.downgrade,
+                seriesNames.block,
+                seriesNames.error,
+              ]}
             />
           </ChartCard>
 
+          <ChartCard
+            {...shared}
+            empty={categoryRows.length === 0}
+            title={t('contentModeration.charts.categories')}
+          >
+            <div className={styles.donutLayout}>
+              <DonutChart
+                category="count"
+                colors={colorRange}
+                data={categoryRows}
+                index="name"
+                label={String(categoryTotal)}
+                style={{ height: 200 }}
+                variant="donut"
+                onValueChange={(event) => {
+                  const clicked = categoryRows.find((row) => row.name === event?.categoryClicked);
+                  setActiveCategory(clicked?.category);
+                  if (clicked) onSelectCategory(clicked.category);
+                }}
+              />
+              <ul className={styles.donutLegend}>
+                {categoryRows.map((row, index) => (
+                  <li
+                    className={styles.donutLegendItem}
+                    data-active={activeCategory === row.category ? 'true' : undefined}
+                    key={row.category}
+                  >
+                    <button
+                      className={styles.donutLegendButton}
+                      type="button"
+                      onClick={() => onSelectCategory(row.category)}
+                    >
+                      <span
+                        className={styles.donutSwatch}
+                        style={{ background: colorRange[index % colorRange.length] }}
+                      />
+                      <span className={styles.donutLegendName}>{row.name}</span>
+                      <span className={styles.donutLegendValue}>
+                        {row.count} ·{' '}
+                        {categoryTotal > 0 ? Math.round((row.count / categoryTotal) * 100) : 0}%
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </ChartCard>
+        </div>
+
+        <div className={styles.chartRowSecondary}>
           <ChartCard
             {...shared}
             empty={!hasCounts(data?.topUsers)}

@@ -43,21 +43,23 @@ const CategoriesSection = memo<CategoriesSectionProps>(({ config, disabled, onPa
         </Button>
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className={styles.categoryGrid}>
         {MODERATION_CATEGORIES.map((category) => {
           const policy = config.categories[category];
           return (
             <div
+              className={styles.categoryRow}
               data-testid={`moderation-category-row-${category}`}
               key={category}
-              style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 12 }}
             >
               <Tooltip title={t(`contentModeration.categoryHint.${category}` as never)}>
-                <Text style={{ margin: 0, minWidth: 140 }}>{categoryLabel(t, category)}</Text>
+                <Text ellipsis style={{ margin: 0 }}>
+                  {categoryLabel(t, category)}
+                </Text>
               </Tooltip>
               <Select
                 disabled={disabled}
-                style={{ width: 160 }}
+                style={{ width: '100%' }}
                 value={policy?.action}
                 options={MODERATION_CATEGORY_ACTIONS.map((value) => ({
                   label: policyActionLabel(t, value),
@@ -81,7 +83,7 @@ const CategoriesSection = memo<CategoriesSectionProps>(({ config, disabled, onPa
                 max={1}
                 min={0}
                 step={0.05}
-                style={{ width: 120 }}
+                style={{ width: '100%' }}
                 value={policy?.threshold}
                 onChange={(next) =>
                   onPatch({
@@ -95,9 +97,6 @@ const CategoriesSection = memo<CategoriesSectionProps>(({ config, disabled, onPa
                   })
                 }
               />
-              <span className={styles.hintText}>
-                {t('contentModeration.settings.categories.thresholdHint')}
-              </span>
             </div>
           );
         })}

@@ -3258,7 +3258,7 @@ export default {
   'contentModeration.mode.off': 'Off',
   'contentModeration.mode.observe': 'Observe',
   'contentModeration.mode.enforce': 'Enforce',
-  'contentModeration.mode.offDesc': 'No prompt is screened and nothing is recorded.',
+  'contentModeration.mode.offDesc': 'No requests are screened or recorded.',
   'contentModeration.mode.observeDesc':
     'Every prompt is judged and recorded, but users are never blocked or downgraded.',
   'contentModeration.mode.enforceDesc':
@@ -3334,7 +3334,7 @@ export default {
     'Cached judgements are dropped, so the next matching prompt is screened again. Nothing else changes.',
   'contentModeration.overview.downgradeTitle': 'Downgrade model',
   'contentModeration.overview.downgradeTarget': 'Target',
-  'contentModeration.overview.downgradeMissing': 'Not configured — downgrades become blocks',
+  'contentModeration.overview.downgradeMissing': 'Not set — downgrades are blocked',
   'contentModeration.overview.downgradeMissingTag': 'Not configured',
   'contentModeration.overview.autoBanTitle': 'Auto ban',
   'contentModeration.overview.autoBanRule': 'Rule',
@@ -3362,8 +3362,7 @@ export default {
   'contentModeration.charts.source': 'Source',
   'contentModeration.charts.requestKind': 'Type',
   'contentModeration.charts.emptyTitle': 'No moderation data yet',
-  'contentModeration.charts.emptyDesc':
-    'Nothing was screened in this window. Widen the range, or check the mode above.',
+  'contentModeration.charts.emptyDesc': 'No screening records in the selected range.',
   'contentModeration.charts.loadFailed': 'Could not load this chart.',
   'contentModeration.charts.retry': 'Retry',
   'contentModeration.records.columns.time': 'Time',
@@ -3426,6 +3425,7 @@ export default {
   'contentModeration.settings.saved': 'Saved · revision {{revision}}',
   'contentModeration.settings.dirty': 'Unsaved changes',
   'contentModeration.settings.readOnly': 'You can read these settings but not change them.',
+  'contentModeration.settings.helpFor': 'Help for {{field}}',
   'contentModeration.settings.loadFailed': 'Could not load the moderation settings.',
   'contentModeration.settings.reload': 'Reload latest',
   'contentModeration.settings.conflictTitle': 'Someone else saved first',
@@ -3464,17 +3464,17 @@ export default {
     'Without a target model, every downgrade becomes a block.',
   'contentModeration.settings.scope.title': 'Scope',
   'contentModeration.settings.scope.desc':
-    'Who and what is screened. Exempt users are never recorded and never auto-banned.',
-  'contentModeration.settings.scope.exemptRoles': 'Exempt roles',
+    'Defines who and what gets screened. Whitelisted users are never screened or auto-banned.',
+  'contentModeration.settings.scope.exemptRoles': 'Whitelisted roles',
   'contentModeration.settings.scope.exemptRolesHint':
     'Members of these roles bypass moderation entirely.',
   'contentModeration.settings.scope.exemptRolesPlaceholder': 'Pick roles',
-  'contentModeration.settings.scope.exemptUsers': 'Exempt users',
+  'contentModeration.settings.scope.exemptUsers': 'Whitelisted users',
   'contentModeration.settings.scope.exemptUsersHint':
     'Individual exemptions on top of the roles above.',
   'contentModeration.settings.scope.userSearchPlaceholder': 'Search by email, username or name',
   'contentModeration.settings.scope.addUser': 'Add',
-  'contentModeration.settings.scope.noExemptUsers': 'No exempt users.',
+  'contentModeration.settings.scope.noExemptUsers': 'No whitelisted users yet.',
   'contentModeration.settings.scope.userSearchFailed':
     'User search failed. You can still paste a user ID.',
   'contentModeration.settings.scope.userSearchNoPermission':
@@ -3494,25 +3494,23 @@ export default {
     'What scores a prompt after keyword rules and the decision cache miss.',
   'contentModeration.settings.classifier.kind': 'Type',
   'contentModeration.settings.classifier.judgeModel': 'Judge model',
-  'contentModeration.settings.classifier.judgeModelHint':
-    'Runs on platform credentials, not the user’s.',
+  'contentModeration.settings.classifier.judgeModelHint': 'Called with platform credentials.',
   'contentModeration.settings.classifier.extraGuidance': 'Extra guidance',
   'contentModeration.settings.classifier.extraGuidanceHint':
     'Appended to the built-in judging prompt — use it for house rules.',
   'contentModeration.settings.classifier.baseUrl': 'Endpoint',
-  'contentModeration.settings.classifier.baseUrlHint':
-    'The /v1/moderations path is appended automatically.',
+  'contentModeration.settings.classifier.baseUrlHint': '/v1/moderations is appended automatically.',
   'contentModeration.settings.classifier.apiModel': 'Moderation model',
   'contentModeration.settings.classifier.apiKeys': 'API keys',
   'contentModeration.settings.classifier.apiKeysHint':
     'Stored encrypted and never shown again. Keys are rotated round-robin.',
   'contentModeration.settings.classifier.noStoredKeys': 'No key stored yet.',
-  'contentModeration.settings.classifier.newKeyPlaceholder': 'New key (write-only)',
+  'contentModeration.settings.classifier.newKeyPlaceholder': 'New key',
   'contentModeration.settings.classifier.addKey': 'Add key',
   'contentModeration.settings.classifier.removeKey': 'Remove',
   'contentModeration.settings.classifier.timeout': 'Timeout (ms)',
   'contentModeration.settings.classifier.retry': 'Retries',
-  'contentModeration.settings.classifier.onError': 'On classifier failure',
+  'contentModeration.settings.classifier.onError': 'When the classifier is unavailable',
   'contentModeration.settings.classifier.onErrorHint':
     'Allowing keeps chat working during an outage; blocking is stricter but takes chat down with the classifier.',
   'contentModeration.settings.classifier.onErrorValue.allow': 'Allow and record the error',
@@ -3530,10 +3528,8 @@ export default {
     'When several categories match, the strictest action wins.',
   'contentModeration.settings.categories.restoreDefaults': 'Restore defaults',
   'contentModeration.settings.categories.threshold': 'Threshold',
-  'contentModeration.settings.categories.thresholdHint': 'Fires at or above this score',
   'contentModeration.settings.keywords.title': 'Keyword rules',
-  'contentModeration.settings.keywords.desc':
-    'Matched locally before anything else; a hit skips the classifier entirely.',
+  'contentModeration.settings.keywords.desc': 'Matched first; a hit skips the classifier.',
   'contentModeration.settings.keywords.count': '{{total}} / {{max}} rules',
   'contentModeration.settings.keywords.add': 'Add rule',
   'contentModeration.settings.keywords.import': 'Batch import',
@@ -3559,14 +3555,14 @@ export default {
   'contentModeration.settings.cache.desc':
     'Repeats of an already-judged prompt reuse the stored categories and are re-evaluated against the current policy.',
   'contentModeration.settings.cache.enabled': 'Enabled',
-  'contentModeration.settings.cache.enabledHint': 'Only prompts that actually matched are cached.',
+  'contentModeration.settings.cache.enabledHint': 'Only hits are cached.',
   'contentModeration.settings.cache.ttl': 'TTL (hours)',
-  'contentModeration.settings.cache.ttlHint': '0 keeps the cache off without losing this value.',
+  'contentModeration.settings.cache.ttlHint': '0 disables caching.',
   'contentModeration.settings.autoBan.title': 'Auto ban',
   'contentModeration.settings.autoBan.desc':
     'Counts downgraded and blocked requests per user since their last unban.',
   'contentModeration.settings.autoBan.enabled': 'Enabled',
-  'contentModeration.settings.autoBan.enabledHint': 'Exempt roles are never banned automatically.',
+  'contentModeration.settings.autoBan.enabledHint': 'Whitelisted roles are never auto-banned.',
   'contentModeration.settings.autoBan.confirmTitle': 'Turn on auto ban?',
   'contentModeration.settings.autoBan.confirm':
     'Users who cross the threshold are banned without review. They cannot sign in until an admin unbans them.',
@@ -3578,7 +3574,7 @@ export default {
   'contentModeration.settings.autoBan.permanent': 'Permanent',
   'contentModeration.settings.autoBan.temporary': 'For N days',
   'contentModeration.settings.records.title': 'Records and retention',
-  'contentModeration.settings.records.desc': 'How much evidence is kept, and for how long.',
+  'contentModeration.settings.records.desc': 'What screening records keep, and for how long.',
   'contentModeration.settings.records.recordNonHits': 'Record allowed requests',
   'contentModeration.settings.records.recordNonHitsHint':
     'Every screened prompt gets a row — useful for tuning, heavy on disk.',

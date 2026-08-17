@@ -72,7 +72,7 @@ export const moderationStyles = createStaticStyles(({ css }) => ({
   `,
   cardGrid: css`
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 16px;
     align-items: stretch;
   `,
@@ -88,6 +88,89 @@ export const moderationStyles = createStaticStyles(({ css }) => ({
     grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: 16px;
     align-items: stretch;
+  `,
+  /* Row 1 of 概况: trend takes the wider track, the category donut sits beside it. */
+  chartRowPrimary: css`
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(360px, 2fr);
+    gap: 16px;
+    align-items: stretch;
+
+    @media (width <= 1100px) {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  `,
+  /* Row 2 of 概况: users / sources / request kinds side by side. */
+  chartRowSecondary: css`
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    align-items: stretch;
+
+    @media (width <= 1100px) {
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    }
+  `,
+  donutLayout: css`
+    display: grid;
+    grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+    gap: 16px;
+    align-items: center;
+  `,
+  donutLegend: css`
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+
+    margin: 0;
+    padding: 0;
+
+    list-style: none;
+  `,
+  donutLegendButton: css`
+    cursor: pointer;
+
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+
+    width: 100%;
+    padding-block: 4px;
+    padding-inline: 6px;
+    border: none;
+    border-radius: ${cssVar.borderRadiusSM};
+
+    font-size: ${cssVar.fontSizeSM};
+    color: ${cssVar.colorText};
+    text-align: start;
+
+    background: none;
+
+    &:hover,
+    &:focus-visible {
+      background: ${cssVar.colorFillTertiary};
+    }
+  `,
+  donutLegendItem: css`
+    &[data-active='true'] > button {
+      background: ${cssVar.colorFillSecondary};
+    }
+  `,
+  donutLegendName: css`
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  `,
+  donutLegendValue: css`
+    font-variant-numeric: tabular-nums;
+    color: ${cssVar.colorTextSecondary};
+  `,
+  donutSwatch: css`
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
   `,
   code: css`
     font-family: ${cssVar.fontFamilyCode};
@@ -129,10 +212,82 @@ export const moderationStyles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorFillQuaternary};
   `,
+  field: css`
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  `,
+  /* Two-up form grid inside a settings section; falls back to one column when narrow. */
+  fieldGrid: css`
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 32px;
+    align-items: start;
+
+    @media (width <= 900px) {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  `,
   fieldLabel: css`
     flex: 0 0 40%;
     min-width: 0;
     color: ${cssVar.colorTextSecondary};
+  `,
+  fieldLabelRow: css`
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    min-height: 20px;
+  `,
+  fieldWide: css`
+    grid-column: 1 / -1;
+  `,
+  helpButton: css`
+    cursor: help;
+
+    display: inline-flex;
+    align-items: center;
+
+    padding: 0;
+    border: none;
+
+    color: ${cssVar.colorTextTertiary};
+
+    background: none;
+
+    &:hover,
+    &:focus-visible {
+      color: ${cssVar.colorTextSecondary};
+    }
+  `,
+  /* Category policy row: name | action | threshold — fixed tracks so a long name never squeezes the controls. */
+  categoryGrid: css`
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 32px;
+
+    @media (width <= 900px) {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  `,
+  categoryRow: css`
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 128px 96px;
+    gap: 12px;
+    align-items: center;
+  `,
+  divider: css`
+    height: 1px;
+    margin: 0;
+    border: none;
+    background: ${cssVar.colorBorderSecondary};
+  `,
+  inlineSwitch: css`
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    min-height: 32px;
   `,
   fieldRow: css`
     display: flex;
@@ -214,6 +369,13 @@ export const moderationStyles = createStaticStyles(({ css }) => ({
     flex-direction: column;
     gap: 16px;
     min-width: 0;
+  `,
+  statsToolbar: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
   `,
   tableToolbar: css`
     display: flex;

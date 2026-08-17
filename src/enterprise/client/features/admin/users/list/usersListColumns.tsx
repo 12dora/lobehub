@@ -2,7 +2,7 @@
 
 import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
 import type { TableColumnsType } from 'antd';
-import { createStaticStyles, cssVar } from 'antd-style';
+import { createStaticStyles } from 'antd-style';
 import type { TFunction } from 'i18next';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
@@ -32,16 +32,6 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 const ROLE_OPTIONS = Object.values(PLATFORM_SYSTEM_ROLES);
-
-/**
- * The shared DataTable paints header cells with a translucent fill, which a `fixed` header
- * cell would let the columns scrolling underneath bleed through. Repaint the same fill over
- * an opaque base so the pinned action header stays readable.
- */
-const FIXED_HEADER_CELL_STYLE = {
-  backgroundColor: cssVar.colorBgContainer,
-  backgroundImage: `linear-gradient(${cssVar.colorFillQuaternary}, ${cssVar.colorFillQuaternary})`,
-} as const;
 
 export interface BuildUsersListColumnsParams {
   actorRoles: readonly { name: string }[];
@@ -191,7 +181,6 @@ export const buildUsersListColumns = ({
     key: 'actions',
     title: t('users.list.columns.actions'),
     width: 200,
-    onHeaderCell: () => ({ style: FIXED_HEADER_CELL_STYLE }),
     render: (_, row) => (
       <UsersListRowActions
         actorRoles={actorRoles}

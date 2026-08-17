@@ -70,33 +70,54 @@ const ClassifierSection = memo<ClassifierSectionProps>(
         description={t('contentModeration.settings.classifier.desc')}
         title={t('contentModeration.settings.classifier.title')}
       >
-        <Field label={t('contentModeration.settings.classifier.kind')}>
-          <Select
-            disabled={disabled}
-            style={{ width: 280 }}
-            value={classifier.kind}
-            options={MODERATION_CLASSIFIER_KINDS.map((value) => ({
-              label: classifierKindLabel(t, value),
-              value,
-            }))}
-            onChange={(next) => {
-              const kind = (next as ModerationClassifierKind) ?? 'none';
-              patchClassifier({
-                kind,
-                // Seed the sub-form so the required-field validation has something to bind to.
-                ...(kind === 'llm_judge' && !classifier.llmJudge
-                  ? { llmJudge: { model: '', provider: '' } }
-                  : {}),
-                ...(kind === 'moderations_api' && !classifier.moderationsApi
-                  ? { moderationsApi: { apiKeys: [], baseUrl: '', model: '' } }
-                  : {}),
-              });
-            }}
-          />
-        </Field>
+        <div className={styles.fieldGrid}>
+          <Field label={t('contentModeration.settings.classifier.kind')}>
+            <Select
+              disabled={disabled}
+              style={{ width: '100%' }}
+              value={classifier.kind}
+              options={MODERATION_CLASSIFIER_KINDS.map((value) => ({
+                label: classifierKindLabel(t, value),
+                value,
+              }))}
+              onChange={(next) => {
+                const kind = (next as ModerationClassifierKind) ?? 'none';
+                patchClassifier({
+                  kind,
+                  // Seed the sub-form so the required-field validation has something to bind to.
+                  ...(kind === 'llm_judge' && !classifier.llmJudge
+                    ? { llmJudge: { model: '', provider: '' } }
+                    : {}),
+                  ...(kind === 'moderations_api' && !classifier.moderationsApi
+                    ? { moderationsApi: { apiKeys: [], baseUrl: '', model: '' } }
+                    : {}),
+                });
+              }}
+            />
+          </Field>
+          {classifier.kind === 'none' ? null : (
+            <Field
+              hint={t('contentModeration.settings.classifier.onErrorHint')}
+              label={t('contentModeration.settings.classifier.onError')}
+            >
+              <Select
+                disabled={disabled}
+                style={{ width: '100%' }}
+                value={classifier.onError}
+                options={ON_ERROR_VALUES.map((value) => ({
+                  label: t(`contentModeration.settings.classifier.onErrorValue.${value}` as never),
+                  value,
+                }))}
+                onChange={(next) =>
+                  patchClassifier({ onError: (next as 'allow' | 'block') ?? 'allow' })
+                }
+              />
+            </Field>
+          )}
+        </div>
 
         {classifier.kind === 'llm_judge' ? (
-          <>
+          <div className={styles.fieldGrid}>
             <Field
               hint={t('contentModeration.settings.classifier.judgeModelHint')}
               label={t('contentModeration.settings.classifier.judgeModel')}
@@ -142,11 +163,11 @@ const ClassifierSection = memo<ClassifierSectionProps>(
                 }
               />
             </Field>
-          </>
+          </div>
         ) : null}
 
         {classifier.kind === 'moderations_api' ? (
-          <>
+          <div className={styles.fieldGrid}>
             <Field
               hint={t('contentModeration.settings.classifier.baseUrlHint')}
               label={t('contentModeration.settings.classifier.baseUrl')}
@@ -183,6 +204,7 @@ const ClassifierSection = memo<ClassifierSectionProps>(
               />
             </Field>
             <Field
+              wide
               hint={t('contentModeration.settings.classifier.apiKeysHint')}
               label={t('contentModeration.settings.classifier.apiKeys')}
             >
@@ -266,50 +288,35 @@ const ClassifierSection = memo<ClassifierSectionProps>(
                 </div>
               </div>
             </Field>
-          </>
+          </div>
         ) : null}
 
-        <div className={styles.formRow}>
-          <Field label={t('contentModeration.settings.classifier.timeout')}>
-            <InputNumber
-              disabled={disabled}
-              max={MODERATION_LIMITS.CLASSIFIER_TIMEOUT_MAX_MS}
-              min={500}
-              step={500}
-              style={{ width: 160 }}
-              value={classifier.timeoutMs}
-              onChange={(next) => patchClassifier({ timeoutMs: Number(next ?? 0) })}
-            />
-          </Field>
-          <Field label={t('contentModeration.settings.classifier.retry')}>
-            <InputNumber
-              disabled={disabled}
-              max={MODERATION_LIMITS.CLASSIFIER_RETRY_MAX}
-              min={0}
-              step={1}
-              style={{ width: 120 }}
-              value={classifier.retryCount}
-              onChange={(next) => patchClassifier({ retryCount: Number(next ?? 0) })}
-            />
-          </Field>
-          <Field
-            hint={t('contentModeration.settings.classifier.onErrorHint')}
-            label={t('contentModeration.settings.classifier.onError')}
-          >
-            <Select
-              disabled={disabled}
-              style={{ width: 200 }}
-              value={classifier.onError}
-              options={ON_ERROR_VALUES.map((value) => ({
-                label: t(`contentModeration.settings.classifier.onErrorValue.${value}` as never),
-                value,
-              }))}
-              onChange={(next) =>
-                patchClassifier({ onError: (next as 'allow' | 'block') ?? 'allow' })
-              }
-            />
-          </Field>
-        </div>
+        {classifier.kind === 'none' ? null : (
+          <div className={styles.fieldGrid}>
+            <Field label={t('contentModeration.settings.classifier.timeout')}>
+              <InputNumber
+                disabled={disabled}
+                max={MODERATION_LIMITS.CLASSIFIER_TIMEOUT_MAX_MS}
+                min={500}
+                step={500}
+                style={{ width: 160 }}
+                value={classifier.timeoutMs}
+                onChange={(next) => patchClassifier({ timeoutMs: Number(next ?? 0) })}
+              />
+            </Field>
+            <Field label={t('contentModeration.settings.classifier.retry')}>
+              <InputNumber
+                disabled={disabled}
+                max={MODERATION_LIMITS.CLASSIFIER_RETRY_MAX}
+                min={0}
+                step={1}
+                style={{ width: 120 }}
+                value={classifier.retryCount}
+                onChange={(next) => patchClassifier({ retryCount: Number(next ?? 0) })}
+              />
+            </Field>
+          </div>
+        )}
 
         <TestPanel
           canManage={canManage}
