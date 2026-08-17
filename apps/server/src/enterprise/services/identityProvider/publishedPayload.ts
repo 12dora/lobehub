@@ -70,6 +70,83 @@ const parseStringArray = (value: unknown, maximum: number): string[] | null => {
   return [...value] as string[];
 };
 
+const isBoundedTrimmedString = (value: unknown, max: number): value is string =>
+  typeof value === 'string' &&
+  Boolean(value.trim()) &&
+  value === value.trim() &&
+  value.length <= max;
+
+const isValidDomainAllowlist = (value: unknown): value is string[] =>
+  Array.isArray(value) &&
+  value.length <= 256 &&
+  value.every(
+    (item) =>
+      typeof item === 'string' && item.length > 0 && item.length <= 253 && item === item.trim(),
+  );
+
+const isValidGroupRoleMapping = (value: unknown): value is Record<string, string> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const mapping = value as Record<string, unknown>;
+  return !(
+    Object.keys(mapping).length > 1024 ||
+    Object.entries(mapping).some(
+      ([key, item]) =>
+        !key || key.length > 256 || typeof item !== 'string' || !item || item.length > 128,
+    )
+  );
+};
+
+const isValidSecretUpdatedAt = (value: unknown): boolean =>
+  value === undefined ||
+  (typeof value === 'string' &&
+    !Number.isNaN(Date.parse(value)) &&
+    new Date(value).toISOString() === value);
+
+const isValidPublishedIssuerUrl = (issuer: string): boolean => {
+  try {
+    const parsed = new URL(issuer);
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.username ||
+      parsed.password ||
+      (parsed.port && parsed.port !== '443') ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const matchesFixedProtocolContract = ({
+  claimMapping,
+  dingtalkAllowedCorps,
+  issuer,
+  providerKey,
+  scopes,
+  type,
+}: {
+  claimMapping: NonNullable<ReturnType<typeof parsePlatformIdentityProviderClaimMapping>>;
+  dingtalkAllowedCorps: NonNullable<ReturnType<typeof parseDingTalkAllowedCorps>>;
+  issuer: string;
+  providerKey: string;
+  scopes: string[];
+  type: unknown;
+}): boolean =>
+  !(type === 'dingtalk'
+    ? !isDingTalkIdentityProviderIssuer(issuer) ||
+      // The key is the sub-domain of the synthesized address; a non-DNS-label key would
+      // produce an address the runtime claim validation rejects.
+      !isValidDingTalkProviderKey(providerKey) ||
+      !isCanonicalDingTalkIdentityContract({ claimMapping, scopes }) ||
+      // Fail closed: a live DingTalk provider must name at least one allowed organisation,
+      // otherwise "allowlist empty" would have to be interpreted at login time.
+      dingtalkAllowedCorps.length === 0
+    : dingtalkAllowedCorps.length > 0);
+
 export const parsePublishedIdentityProviderPayload = (
   value: unknown,
 ): PublishedIdentityProviderPayload | null => {
@@ -98,61 +175,34 @@ export const parsePublishedIdentityProviderPayload = (
   const claimMapping = parsePlatformIdentityProviderClaimMapping(row.claimMapping);
   const dingtalkAllowedCorps = parseDingTalkAllowedCorps(row.dingtalkAllowedCorps ?? []);
   const scopes = parseStringArray(row.scopes, 32);
-  const domainAllowlist =
-    Array.isArray(row.domainAllowlist) &&
-    row.domainAllowlist.length <= 256 &&
-    row.domainAllowlist.every(
-      (item) =>
-        typeof item === 'string' && item.length > 0 && item.length <= 253 && item === item.trim(),
-    )
-      ? (row.domainAllowlist as string[])
-      : null;
-  const groupRoleMapping =
-    row.groupRoleMapping &&
-    typeof row.groupRoleMapping === 'object' &&
-    !Array.isArray(row.groupRoleMapping)
-      ? (row.groupRoleMapping as Record<string, unknown>)
-      : null;
+  if (!claimMapping) return null;
+  if (!dingtalkAllowedCorps) return null;
+  if (claimMapping.email.length === 0) return null;
+  if (!scopes?.includes('openid')) return null;
+  if (!isValidDomainAllowlist(row.domainAllowlist)) return null;
+  if (!isValidGroupRoleMapping(row.groupRoleMapping)) return null;
+  if (typeof row.autoProvision !== 'boolean') return null;
+  if (!isBoundedTrimmedString(row.buttonLabel, 200)) return null;
+  if (!isBoundedTrimmedString(row.clientId, 1000)) return null;
+  if (!isBoundedTrimmedString(row.displayName, 200)) return null;
+  if (typeof row.enabled !== 'boolean') return null;
+  if (row.icon !== null && (typeof row.icon !== 'string' || row.icon.length > 4096)) return null;
+  if (typeof row.issuer !== 'string' || !row.issuer || row.issuer.length > 4096) return null;
   if (
-    !claimMapping ||
-    !dingtalkAllowedCorps ||
-    claimMapping.email.length === 0 ||
-    !scopes?.includes('openid') ||
-    !domainAllowlist ||
-    !groupRoleMapping ||
-    Object.keys(groupRoleMapping).length > 1024 ||
-    Object.entries(groupRoleMapping).some(
-      ([key, item]) =>
-        !key || key.length > 256 || typeof item !== 'string' || !item || item.length > 128,
-    ) ||
-    typeof row.autoProvision !== 'boolean' ||
-    typeof row.buttonLabel !== 'string' ||
-    !row.buttonLabel.trim() ||
-    row.buttonLabel !== row.buttonLabel.trim() ||
-    row.buttonLabel.length > 200 ||
-    typeof row.clientId !== 'string' ||
-    !row.clientId.trim() ||
-    row.clientId !== row.clientId.trim() ||
-    row.clientId.length > 1000 ||
-    typeof row.displayName !== 'string' ||
-    !row.displayName.trim() ||
-    row.displayName !== row.displayName.trim() ||
-    row.displayName.length > 200 ||
-    typeof row.enabled !== 'boolean' ||
-    (row.icon !== null && (typeof row.icon !== 'string' || row.icon.length > 4096)) ||
-    typeof row.issuer !== 'string' ||
-    !row.issuer ||
-    row.issuer.length > 4096 ||
     typeof row.providerKey !== 'string' ||
-    !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(row.providerKey) ||
-    typeof row.secretFingerprint !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(row.secretFingerprint) ||
-    (row.secretUpdatedAt !== undefined &&
-      (typeof row.secretUpdatedAt !== 'string' ||
-        Number.isNaN(Date.parse(row.secretUpdatedAt)) ||
-        new Date(row.secretUpdatedAt).toISOString() !== row.secretUpdatedAt)) ||
-    !PLATFORM_IDENTITY_PROVIDER_TYPES.includes(row.type as PlatformIdentityProviderType) ||
-    row.usePkce !== true ||
+    !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(row.providerKey)
+  ) {
+    return null;
+  }
+  if (typeof row.secretFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(row.secretFingerprint)) {
+    return null;
+  }
+  if (!isValidSecretUpdatedAt(row.secretUpdatedAt)) return null;
+  if (!PLATFORM_IDENTITY_PROVIDER_TYPES.includes(row.type as PlatformIdentityProviderType)) {
+    return null;
+  }
+  if (row.usePkce !== true) return null;
+  if (
     containsEnterpriseSecretMaterial({
       ...row,
       secretFingerprint: undefined,
@@ -161,36 +211,20 @@ export const parsePublishedIdentityProviderPayload = (
   ) {
     return null;
   }
-  try {
-    const issuer = new URL(row.issuer);
-    if (
-      issuer.protocol !== 'https:' ||
-      issuer.username ||
-      issuer.password ||
-      (issuer.port && issuer.port !== '443') ||
-      issuer.search ||
-      issuer.hash
-    ) {
-      return null;
-    }
-  } catch {
-    return null;
-  }
+  if (!isValidPublishedIssuerUrl(row.issuer)) return null;
   // Kinds with a protocol-fixed identity contract are re-verified at the read boundary too:
   // a published revision or an LKG file that was hand-edited (or written by an older/looser
   // build) must not be materialized into a runtime provider with a remapped subject or an
   // issuer that silently means "any organisation".
   if (
-    row.type === 'dingtalk'
-      ? !isDingTalkIdentityProviderIssuer(row.issuer) ||
-        // The key is the sub-domain of the synthesized address; a non-DNS-label key would
-        // produce an address the runtime claim validation rejects.
-        !isValidDingTalkProviderKey(row.providerKey) ||
-        !isCanonicalDingTalkIdentityContract({ claimMapping, scopes }) ||
-        // Fail closed: a live DingTalk provider must name at least one allowed organisation,
-        // otherwise "allowlist empty" would have to be interpreted at login time.
-        dingtalkAllowedCorps.length === 0
-      : dingtalkAllowedCorps.length > 0
+    !matchesFixedProtocolContract({
+      claimMapping,
+      dingtalkAllowedCorps,
+      issuer: row.issuer,
+      providerKey: row.providerKey,
+      scopes,
+      type: row.type,
+    })
   ) {
     return null;
   }
@@ -201,9 +235,9 @@ export const parsePublishedIdentityProviderPayload = (
     clientId: row.clientId,
     dingtalkAllowedCorps,
     displayName: row.displayName,
-    domainAllowlist,
+    domainAllowlist: row.domainAllowlist,
     enabled: row.enabled as boolean,
-    groupRoleMapping: groupRoleMapping as Record<string, string>,
+    groupRoleMapping: row.groupRoleMapping,
     icon: row.icon as string | null,
     issuer: row.issuer,
     providerKey: row.providerKey,

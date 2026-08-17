@@ -83,12 +83,7 @@ export const toIdempotentResponse = (
   };
 };
 
-const reconstructIdempotentResponse = async (
-  tx: Transaction,
-  input: IdempotencyRequest,
-  afterDiff: Record<string, unknown>,
-  terminalConfigRevision: number | null,
-): Promise<PlatformIdentityProviderInternalDraft> => {
+const parseReplayResponse = (afterDiff: Record<string, unknown>) => {
   const value = afterDiff.response;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
@@ -111,6 +106,22 @@ const reconstructIdempotentResponse = async (
       updatedAt: fingerprintUpdatedAt,
     },
   });
+  return {
+    legacyFingerprint,
+    legacyFingerprintUpdatedAt,
+    parsed,
+    secretUpdatedAt,
+  };
+};
+
+const assertReplayRevisions = (
+  input: IdempotencyRequest,
+  afterDiff: Record<string, unknown>,
+  terminalConfigRevision: number | null,
+  parsed: ReturnType<typeof identityProviderDraftSchema.safeParse>,
+  secretUpdatedAt: unknown,
+  legacyFingerprintUpdatedAt: unknown,
+) => {
   const isPublish = input.action === AUDIT_ACTION.IDENTITY_PROVIDERS_PUBLISH;
   const isRollback = input.action === AUDIT_ACTION.IDENTITY_PROVIDERS_ROLLBACK;
   const resultRevision = afterDiff.revision;
@@ -131,6 +142,16 @@ const reconstructIdempotentResponse = async (
   ) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
+  return { isPublish, isRollback, parsed: parsed.data, resultRevision, sourceRevision };
+};
+
+const loadReplaySource = async (
+  tx: Transaction,
+  input: IdempotencyRequest,
+  sourceRevision: unknown,
+  isPublish: boolean,
+  legacyFingerprint: unknown,
+) => {
   const [source] = await tx
     .select({
       checksum: platformResourceRevisions.checksum,
@@ -174,7 +195,17 @@ const reconstructIdempotentResponse = async (
   if (!secret) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
+  return { payload, secret, source };
+};
 
+const assertReplayAfterDiff = (
+  afterDiff: Record<string, unknown>,
+  input: IdempotencyRequest,
+  payload: NonNullable<ReturnType<typeof parsePublishedIdentityProviderPayload>>,
+  source: { checksum: string },
+  isPublish: boolean,
+  isRollback: boolean,
+) => {
   if (
     (isPublish &&
       (afterDiff.activation !== 'pending_restart' ||
@@ -186,39 +217,91 @@ const reconstructIdempotentResponse = async (
   ) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
-  const canonical: PlatformIdentityProviderInternalDraft = {
-    activationRevision: isPublish ? Number(resultRevision) : null,
-    autoProvision: payload.autoProvision,
-    buttonLabel: payload.buttonLabel,
-    claimMapping: payload.claimMapping,
-    clientId: payload.clientId,
-    dingtalkAllowedCorps: payload.dingtalkAllowedCorps,
-    displayName: payload.displayName,
-    domainAllowlist: payload.domainAllowlist,
-    enabled: isPublish,
-    groupRoleMapping: payload.groupRoleMapping,
-    icon: payload.icon,
-    id: input.targetId,
-    issuer: payload.issuer,
-    migrationRequired: false,
-    providerKey: payload.providerKey,
-    revision: Number(resultRevision),
-    scopes: payload.scopes,
-    secret: {
-      configured: true,
-      fingerprint: secret.fingerprint,
-      updatedAt:
-        typeof payload.secretUpdatedAt === 'string'
-          ? new Date(payload.secretUpdatedAt)
-          : secret.createdAt,
-    },
-    status: isPublish ? 'pending_restart' : 'draft',
-    type: payload.type,
-    usePkce: true,
-  };
+};
+
+const buildCanonicalReplayDraft = ({
+  input,
+  isPublish,
+  payload,
+  resultRevision,
+  secret,
+}: {
+  input: IdempotencyRequest;
+  isPublish: boolean;
+  payload: NonNullable<ReturnType<typeof parsePublishedIdentityProviderPayload>>;
+  resultRevision: unknown;
+  secret: { createdAt: Date; fingerprint: string };
+}): PlatformIdentityProviderInternalDraft => ({
+  activationRevision: isPublish ? Number(resultRevision) : null,
+  autoProvision: payload.autoProvision,
+  buttonLabel: payload.buttonLabel,
+  claimMapping: payload.claimMapping,
+  clientId: payload.clientId,
+  dingtalkAllowedCorps: payload.dingtalkAllowedCorps,
+  displayName: payload.displayName,
+  domainAllowlist: payload.domainAllowlist,
+  enabled: isPublish,
+  groupRoleMapping: payload.groupRoleMapping,
+  icon: payload.icon,
+  id: input.targetId,
+  issuer: payload.issuer,
+  migrationRequired: false,
+  providerKey: payload.providerKey,
+  revision: Number(resultRevision),
+  scopes: payload.scopes,
+  secret: {
+    configured: true,
+    fingerprint: secret.fingerprint,
+    updatedAt:
+      typeof payload.secretUpdatedAt === 'string'
+        ? new Date(payload.secretUpdatedAt)
+        : secret.createdAt,
+  },
+  status: isPublish ? 'pending_restart' : 'draft',
+  type: payload.type,
+  usePkce: true,
+});
+
+const reconstructIdempotentResponse = async (
+  tx: Transaction,
+  input: IdempotencyRequest,
+  afterDiff: Record<string, unknown>,
+  terminalConfigRevision: number | null,
+): Promise<PlatformIdentityProviderInternalDraft> => {
+  const { legacyFingerprint, legacyFingerprintUpdatedAt, parsed, secretUpdatedAt } =
+    parseReplayResponse(afterDiff);
+  const {
+    isPublish,
+    isRollback,
+    parsed: auditDraft,
+    resultRevision,
+    sourceRevision,
+  } = assertReplayRevisions(
+    input,
+    afterDiff,
+    terminalConfigRevision,
+    parsed,
+    secretUpdatedAt,
+    legacyFingerprintUpdatedAt,
+  );
+  const { payload, secret, source } = await loadReplaySource(
+    tx,
+    input,
+    sourceRevision,
+    isPublish,
+    legacyFingerprint,
+  );
+  assertReplayAfterDiff(afterDiff, input, payload, source, isPublish, isRollback);
+  const canonical = buildCanonicalReplayDraft({
+    input,
+    isPublish,
+    payload,
+    resultRevision,
+    secret,
+  });
   const normalizedAuditResponse: PlatformIdentityProviderInternalDraft = {
-    ...parsed.data,
-    secret: { ...parsed.data.secret, fingerprint: payload.secretFingerprint },
+    ...auditDraft,
+    secret: { ...auditDraft.secret, fingerprint: payload.secretFingerprint },
   };
   if (
     checksumPayload(toIdempotentResponse(normalizedAuditResponse)) !==

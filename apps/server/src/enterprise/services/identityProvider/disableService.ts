@@ -38,6 +38,247 @@ type LockedDraftLoader = (
   id: string,
 ) => Promise<{ draft: PlatformIdentityProviderInternalDraft; secretRef: string | null }>;
 
+const publishIdentityProviderTombstone = async (
+  tx: Transaction,
+  {
+    actorUserId,
+    expectedRevision,
+    id,
+    reason,
+  }: { actorUserId: string; expectedRevision: number; id: string; reason: string },
+  lockedDraft: LockedDraftLoader,
+) => {
+  await acquireIdentityProviderPublishedRevisionLock(tx);
+  const { draft } = await lockedDraft(tx, id);
+  if (draft.revision !== expectedRevision) {
+    throw new PlatformRevisionConflictError('Identity provider revision changed', {
+      currentRevision: draft.revision,
+      expectedRevision,
+      resourceId: id,
+      resourceType: 'oidc',
+    });
+  }
+  if (draft.status === 'disabled' || draft.status === 'archived') {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+  }
+
+  const [latestPublished] = await tx
+    .select({
+      payload: platformResourceRevisions.payload,
+      secretFingerprint: platformResourceRevisions.secretFingerprint,
+    })
+    .from(platformResourceRevisions)
+    .where(
+      and(
+        eq(platformResourceRevisions.resourceType, 'oidc'),
+        eq(platformResourceRevisions.resourceId, id),
+        eq(platformResourceRevisions.status, 'published'),
+      ),
+    )
+    .orderBy(desc(platformResourceRevisions.revision))
+    .limit(1);
+  const basePayload = latestPublished
+    ? parsePublishedIdentityProviderPayload(latestPublished.payload)
+    : null;
+  if (!basePayload) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+  }
+
+  const tombstonePayload = {
+    ...basePayload,
+    enabled: false,
+    secretFingerprint: basePayload.secretFingerprint,
+    ...(basePayload.secretUpdatedAt ? { secretUpdatedAt: basePayload.secretUpdatedAt } : {}),
+  };
+  const parsed = parsePublishedIdentityProviderPayload(tombstonePayload);
+  if (!parsed || parsed.enabled !== false) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+  }
+
+  const nextRevision = draft.revision + 1;
+  const now = new Date();
+  const checksum = checksumPayload(parsed);
+  const [tombstoneRow] = await tx
+    .insert(platformResourceRevisions)
+    .values({
+      checksum,
+      comment: reason,
+      createdBy: actorUserId,
+      payload: parsed as unknown as Record<string, unknown>,
+      publishedAt: now,
+      publishedBy: actorUserId,
+      resourceId: id,
+      resourceType: 'oidc',
+      revision: nextRevision,
+      secretFingerprint: parsed.secretFingerprint,
+      status: 'published',
+    })
+    .returning({
+      id: platformResourceRevisions.id,
+      publishedAt: platformResourceRevisions.publishedAt,
+    });
+  if (!tombstoneRow?.id || !tombstoneRow.publishedAt) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+  }
+  const [updated] = await tx
+    .update(platformIdentityProviders)
+    .set({
+      activationRevision: nextRevision,
+      enabled: false,
+      revision: nextRevision,
+      status: 'pending_restart',
+      updatedAt: now,
+      updatedBy: actorUserId,
+    })
+    .where(
+      and(
+        eq(platformIdentityProviders.id, id),
+        eq(platformIdentityProviders.revision, expectedRevision),
+        eq(platformIdentityProviders.status, draft.status),
+      ),
+    )
+    .returning();
+  if (!updated) throw new PlatformRevisionConflictError();
+
+  const result: PlatformIdentityProviderInternalDraft = {
+    ...draft,
+    activationRevision: nextRevision,
+    enabled: false,
+    revision: nextRevision,
+    status: 'pending_restart',
+  };
+  await new PlatformAuditService(tx).append({
+    action: AUDIT_ACTION.IDENTITY_PROVIDERS_DISABLE,
+    actorUserId,
+    afterDiff: {
+      activation: 'pending_restart',
+      checksum,
+      enabled: false,
+      providerKey: parsed.providerKey,
+      revision: nextRevision,
+      tombstone: true,
+    },
+    beforeDiff: { revision: draft.revision, status: draft.status },
+    configRevision: nextRevision,
+    reason,
+    result: 'success',
+    targetId: id,
+    targetType: AUDIT_TARGET_TYPE.IDENTITY_PROVIDER,
+  });
+  return {
+    result,
+    tombstoneGeneration: `${tombstoneRow.publishedAt.toISOString()}:${tombstoneRow.id}`,
+  };
+};
+
+const classifyLkgAdvance = (
+  advanceResult: Awaited<ReturnType<typeof advanceIdentityProviderLkgAfterTombstone>>,
+  removedProviderId: string,
+): { lkgAdvance: DisableIdentityProviderLkgAdvance; safeToClearJournal: boolean } => {
+  let lkgAdvance: DisableIdentityProviderLkgAdvance;
+  if (
+    advanceResult === 'written' ||
+    advanceResult === 'unchanged' ||
+    advanceResult === 'rejected'
+  ) {
+    lkgAdvance = { outcome: advanceResult };
+  } else if (typeof advanceResult === 'object' && advanceResult.outcome === 'skipped') {
+    lkgAdvance = { outcome: 'skipped', reason: advanceResult.reason };
+  } else {
+    lkgAdvance = { outcome: 'skipped', reason: 'unknown' };
+  }
+  if (
+    advanceResult === 'rejected' ||
+    (typeof advanceResult === 'object' && advanceResult.outcome === 'skipped')
+  ) {
+    console.warn('[admin.identityProviders] LKG advance after disable not applied', {
+      reason: typeof advanceResult === 'object' ? advanceResult.reason : 'rejected',
+      removedProviderId,
+      result: advanceResult,
+    });
+  }
+  const safeToClearJournal =
+    advanceResult === 'written' ||
+    advanceResult === 'unchanged' ||
+    advanceResult === 'rejected' ||
+    (typeof advanceResult === 'object' &&
+      advanceResult.outcome === 'skipped' &&
+      advanceResult.reason === 'stale_tombstone');
+  return { lkgAdvance, safeToClearJournal };
+};
+
+const appendDisableLkgAdvanceAudit = async (
+  db: LobeChatDatabase,
+  {
+    actorUserId,
+    id,
+    lkgAdvance,
+    reason,
+    tombstoneGeneration,
+  }: {
+    actorUserId: string;
+    id: string;
+    lkgAdvance: DisableIdentityProviderLkgAdvance;
+    reason: string;
+    tombstoneGeneration: string;
+  },
+) => {
+  try {
+    await new PlatformAuditService(db).append({
+      action: AUDIT_ACTION.IDENTITY_PROVIDERS_DISABLE_LKG_ADVANCE,
+      actorUserId,
+      afterDiff: {
+        lkgAdvance,
+        removedProviderId: id,
+        tombstoneGeneration,
+      },
+      reason,
+      result:
+        lkgAdvance?.outcome === 'written' || lkgAdvance?.outcome === 'unchanged'
+          ? 'success'
+          : 'failure',
+      targetId: id,
+      targetType: AUDIT_TARGET_TYPE.IDENTITY_PROVIDER,
+    });
+  } catch (auditError) {
+    console.error('[admin.identityProviders] LKG advance audit unavailable', {
+      errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+      removedProviderId: id,
+    });
+  }
+};
+
+const appendDisableFailureAudit = async (
+  db: LobeChatDatabase,
+  {
+    actorUserId,
+    error,
+    id,
+    reason,
+  }: { actorUserId: string; error: unknown; id: string; reason: string },
+) => {
+  try {
+    await new PlatformAuditService(db).append({
+      action: AUDIT_ACTION.IDENTITY_PROVIDERS_DISABLE,
+      actorUserId,
+      afterDiff: {
+        category:
+          error instanceof PlatformRevisionConflictError
+            ? 'revision_conflict'
+            : 'identity_provider_disable_failed',
+      },
+      reason,
+      result: 'failure',
+      targetId: id,
+      targetType: AUDIT_TARGET_TYPE.IDENTITY_PROVIDER,
+    });
+  } catch (auditError) {
+    console.error('[admin.identityProviders] disable failure audit unavailable', {
+      errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+    });
+  }
+};
+
 /**
  * Persist an out-of-database fail-closed denial, publish the signed tombstone,
  * then advance the main LKG. An ordinary success is never returned unless an
@@ -62,129 +303,13 @@ export const disableIdentityProvider = async (
       providerId: input.id,
       secrets,
     });
-    const committed = await db.transaction(async (tx) => {
-      await acquireIdentityProviderPublishedRevisionLock(tx);
-      const { draft } = await lockedDraft(tx, input.id);
-      if (draft.revision !== input.expectedRevision) {
-        throw new PlatformRevisionConflictError('Identity provider revision changed', {
-          currentRevision: draft.revision,
-          expectedRevision: input.expectedRevision,
-          resourceId: input.id,
-          resourceType: 'oidc',
-        });
-      }
-      if (draft.status === 'disabled' || draft.status === 'archived') {
-        throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
-      }
-
-      const [latestPublished] = await tx
-        .select({
-          payload: platformResourceRevisions.payload,
-          secretFingerprint: platformResourceRevisions.secretFingerprint,
-        })
-        .from(platformResourceRevisions)
-        .where(
-          and(
-            eq(platformResourceRevisions.resourceType, 'oidc'),
-            eq(platformResourceRevisions.resourceId, input.id),
-            eq(platformResourceRevisions.status, 'published'),
-          ),
-        )
-        .orderBy(desc(platformResourceRevisions.revision))
-        .limit(1);
-      const basePayload = latestPublished
-        ? parsePublishedIdentityProviderPayload(latestPublished.payload)
-        : null;
-      if (!basePayload) {
-        throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
-      }
-
-      const tombstonePayload = {
-        ...basePayload,
-        enabled: false,
-        secretFingerprint: basePayload.secretFingerprint,
-        ...(basePayload.secretUpdatedAt ? { secretUpdatedAt: basePayload.secretUpdatedAt } : {}),
-      };
-      const parsed = parsePublishedIdentityProviderPayload(tombstonePayload);
-      if (!parsed || parsed.enabled !== false) {
-        throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
-      }
-
-      const nextRevision = draft.revision + 1;
-      const now = new Date();
-      const checksum = checksumPayload(parsed);
-      const [tombstoneRow] = await tx
-        .insert(platformResourceRevisions)
-        .values({
-          checksum,
-          comment: reason,
-          createdBy: actorUserId,
-          payload: parsed as unknown as Record<string, unknown>,
-          publishedAt: now,
-          publishedBy: actorUserId,
-          resourceId: input.id,
-          resourceType: 'oidc',
-          revision: nextRevision,
-          secretFingerprint: parsed.secretFingerprint,
-          status: 'published',
-        })
-        .returning({
-          id: platformResourceRevisions.id,
-          publishedAt: platformResourceRevisions.publishedAt,
-        });
-      if (!tombstoneRow?.id || !tombstoneRow.publishedAt) {
-        throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
-      }
-      const [updated] = await tx
-        .update(platformIdentityProviders)
-        .set({
-          activationRevision: nextRevision,
-          enabled: false,
-          revision: nextRevision,
-          status: 'pending_restart',
-          updatedAt: now,
-          updatedBy: actorUserId,
-        })
-        .where(
-          and(
-            eq(platformIdentityProviders.id, input.id),
-            eq(platformIdentityProviders.revision, input.expectedRevision),
-            eq(platformIdentityProviders.status, draft.status),
-          ),
-        )
-        .returning();
-      if (!updated) throw new PlatformRevisionConflictError();
-
-      const result: PlatformIdentityProviderInternalDraft = {
-        ...draft,
-        activationRevision: nextRevision,
-        enabled: false,
-        revision: nextRevision,
-        status: 'pending_restart',
-      };
-      await new PlatformAuditService(tx).append({
-        action: AUDIT_ACTION.IDENTITY_PROVIDERS_DISABLE,
-        actorUserId,
-        afterDiff: {
-          activation: 'pending_restart',
-          checksum,
-          enabled: false,
-          providerKey: parsed.providerKey,
-          revision: nextRevision,
-          tombstone: true,
-        },
-        beforeDiff: { revision: draft.revision, status: draft.status },
-        configRevision: nextRevision,
-        reason,
-        result: 'success',
-        targetId: input.id,
-        targetType: AUDIT_TARGET_TYPE.IDENTITY_PROVIDER,
-      });
-      return {
-        result,
-        tombstoneGeneration: `${tombstoneRow.publishedAt.toISOString()}:${tombstoneRow.id}`,
-      };
-    });
+    const committed = await db.transaction(async (tx) =>
+      publishIdentityProviderTombstone(
+        tx,
+        { actorUserId, expectedRevision: input.expectedRevision, id: input.id, reason },
+        lockedDraft,
+      ),
+    );
     tombstoneCommitted = true;
 
     try {
@@ -211,35 +336,9 @@ export const disableIdentityProvider = async (
         secrets,
         tombstoneGeneration: committed.tombstoneGeneration,
       });
-      if (
-        advanceResult === 'written' ||
-        advanceResult === 'unchanged' ||
-        advanceResult === 'rejected'
-      ) {
-        lkgAdvance = { outcome: advanceResult };
-      } else if (typeof advanceResult === 'object' && advanceResult.outcome === 'skipped') {
-        lkgAdvance = { outcome: 'skipped', reason: advanceResult.reason };
-      } else {
-        lkgAdvance = { outcome: 'skipped', reason: 'unknown' };
-      }
-      if (
-        advanceResult === 'rejected' ||
-        (typeof advanceResult === 'object' && advanceResult.outcome === 'skipped')
-      ) {
-        console.warn('[admin.identityProviders] LKG advance after disable not applied', {
-          reason: typeof advanceResult === 'object' ? advanceResult.reason : 'rejected',
-          removedProviderId: input.id,
-          result: advanceResult,
-        });
-      }
-      const safeToClearJournal =
-        advanceResult === 'written' ||
-        advanceResult === 'unchanged' ||
-        advanceResult === 'rejected' ||
-        (typeof advanceResult === 'object' &&
-          advanceResult.outcome === 'skipped' &&
-          advanceResult.reason === 'stale_tombstone');
-      if (safeToClearJournal) {
+      const classified = classifyLkgAdvance(advanceResult, input.id);
+      lkgAdvance = classified.lkgAdvance;
+      if (classified.safeToClearJournal) {
         await clearIdentityProviderRevocation({
           env: process.env,
           secrets,
@@ -258,29 +357,13 @@ export const disableIdentityProvider = async (
     }
 
     // Surface LKG outcome on the audit trail so operators can detect silent LKG lag.
-    try {
-      await new PlatformAuditService(db).append({
-        action: AUDIT_ACTION.IDENTITY_PROVIDERS_DISABLE_LKG_ADVANCE,
-        actorUserId,
-        afterDiff: {
-          lkgAdvance,
-          removedProviderId: input.id,
-          tombstoneGeneration: committed.tombstoneGeneration,
-        },
-        reason,
-        result:
-          lkgAdvance?.outcome === 'written' || lkgAdvance?.outcome === 'unchanged'
-            ? 'success'
-            : 'failure',
-        targetId: input.id,
-        targetType: AUDIT_TARGET_TYPE.IDENTITY_PROVIDER,
-      });
-    } catch (auditError) {
-      console.error('[admin.identityProviders] LKG advance audit unavailable', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-        removedProviderId: input.id,
-      });
-    }
+    await appendDisableLkgAdvanceAudit(db, {
+      actorUserId,
+      id: input.id,
+      lkgAdvance,
+      reason,
+      tombstoneGeneration: committed.tombstoneGeneration,
+    });
 
     return { ...committed.result, lkgAdvance };
   } catch (error) {
@@ -298,26 +381,7 @@ export const disableIdentityProvider = async (
         });
       }
     }
-    try {
-      await new PlatformAuditService(db).append({
-        action: AUDIT_ACTION.IDENTITY_PROVIDERS_DISABLE,
-        actorUserId,
-        afterDiff: {
-          category:
-            error instanceof PlatformRevisionConflictError
-              ? 'revision_conflict'
-              : 'identity_provider_disable_failed',
-        },
-        reason,
-        result: 'failure',
-        targetId: input.id,
-        targetType: AUDIT_TARGET_TYPE.IDENTITY_PROVIDER,
-      });
-    } catch (auditError) {
-      console.error('[admin.identityProviders] disable failure audit unavailable', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
+    await appendDisableFailureAudit(db, { actorUserId, error, id: input.id, reason });
     throw error;
   }
 };
