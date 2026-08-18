@@ -26,6 +26,7 @@ import { seedWorkspaceRoles } from '@/database/utils/seedWorkspaceRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import {
   InMemoryPlatformConfigInvalidationPublisher,
@@ -249,7 +250,9 @@ describe('admin.users permission matrix', () => {
 
     const detail = await caller.users.get({ userId: IDS.target });
     expect(detail.id).toBe(IDS.target);
-    expect(JSON.stringify(detail)).not.toMatch(/password|accessToken|refreshToken/i);
+    const detailJson = JSON.stringify(detail);
+    expect(detailJson).not.toMatch(/accessToken|refreshToken/i);
+    expect(detailJson).not.toMatch(/"password"\s*:/);
 
     await expect(caller.users.ban({ reason: 'abuse', userId: IDS.target })).resolves.toMatchObject({
       banned: true,
@@ -293,7 +296,9 @@ describe('admin.users reauth', () => {
   it('stale authenticatedAt is denied with ADMIN_REAUTH_REQUIRED', async () => {
     const caller = createAdminCaller(
       await withDbCtx(IDS.userAdmin, {
-        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        // Derived from the window, not a literal: the window has been widened once
+        // and a literal silently stops exercising staleness when it is.
+        authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
         authMethod: 'better-auth',
       }),
     );

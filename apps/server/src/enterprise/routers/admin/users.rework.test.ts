@@ -13,7 +13,11 @@ import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
-import { adminUsersGetOutputSchema, adminUsersListOutputSchema } from '../../contracts/adminUsers';
+import {
+  ADMIN_REAUTH_MAX_AGE_MS,
+  adminUsersGetOutputSchema,
+  adminUsersListOutputSchema,
+} from '../../contracts/adminUsers';
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
@@ -190,15 +194,18 @@ describe('M04 R1 — output schemas reject secrets', () => {
         createdAt: new Date(),
         email: null,
         fullName: null,
+        hasPassword: false,
         id: 'x',
         isSelf: false,
         lastActiveAt: null,
+        passkeyCount: 0,
         password: 'x',
         providers: [],
         roles: [],
         sessionCount: 0,
         sessions: [],
         status: 'active',
+        twoFactorEnabled: false,
         accessToken: 'tok',
         username: null,
       }),
@@ -233,7 +240,7 @@ describe('M04 R1 — audit on list and reauth denial', () => {
   it('stale reauth writes denied audit', async () => {
     const caller = createAdminCaller(
       await ctx(IDS.userAdmin, {
-        authenticatedAt: new Date(Date.now() - 3600_000),
+        authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
       }),
     );
     await expect(caller.users.ban({ reason: 'stale', userId: IDS.target })).rejects.toBeTruthy();
