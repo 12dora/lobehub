@@ -14,6 +14,15 @@
   RSS 峰值 647 vs 551 MB。
 - **二期目标**：会话后 RSS 再降 30–50 MB、空闲 DB 往返再降 80%、每条消息少 3–6 次查询、首屏 JS 再降 ~7 MB、镜像增量拉取降到百 MB 级。
 
+> **二期已于 2026-08-18 完成并上线**（main `21d077af6f`，demo 镜像 `aihub:p2-final`，回滚 tag `aihub:demo-prev-p2`）。
+> 交付、实测与逐轮复审记录见 [`phase2/`](./phase2/)（`prompts/` 简报与裁决、`reports/` 实施报告、`reviews/` 16 轮 codex 复审）。
+> 真机实测（同一台机、同一 perf 库，对照一期镜像 `aihub:slim-final3`）：启动 RSS 294→**236 MB**、首轮请求后 325→**264–312 MB**、
+> 空闲 0.611→**0.422 xact/s**（−31%）、镜像 1.9→**1.79 GB**（层拆分 + skia 去重，抵消 cursor-agent 增量）、
+> 首屏阻塞 JS 25.67→**24.56 MB**（chat 块 2.23→1.12 MB）；管理端登录 + 7 个页面 0 console error，
+> 可见标签页 150 s 内仅 1 次合批 `getCapabilities+getPublicSnapshot`，隐藏标签页 0 请求。
+> 各项落地与被否决的方案：P1 见 `phase2/reports/G1.md`、P2 `G2.md`、P3 `G3.md`、P4 `F4.md`（`es-*` 7.4 MB 已证明无法在应用层拆，
+> 结论写进 `plugins/vite/sharedRendererConfig.ts` 注释）、P5 `G5.md`、P6 `F6.md`。
+
 ## 1. 二期任务（按优先级；每项给出入口 file:line、依据、验收）
 
 ### P1 builtin-tools 分包 + aiAgent 静态图瘦身（会话内存最大剩余单点）
