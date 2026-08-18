@@ -146,9 +146,13 @@ export const openBulkBanModal = (params: {
 
   openReasonModal({
     authMethod: params.authMethod,
+    // Optional, not required — see openBanUserModal: `banReason` is read back, an empty
+    // submit records the stable code.
+    autoReason: AUTO_REASON.ban,
     danger: true,
     description: t('users.modals.bulk.ban.desc', { count: targets.length }),
     impact: t('users.modals.ban.impact'),
+    optionalReason: true,
     submitLabel: t('users.modals.bulk.ban.confirm'),
     targetLabel: formatBulkTargetLabel(targets),
     title: t('users.modals.bulk.ban.title'),
@@ -188,9 +192,11 @@ export const openBulkUnbanModal = (params: {
 
   openReasonModal({
     authMethod: params.authMethod,
+    autoReason: AUTO_REASON.unban,
     description: t('users.modals.bulk.unban.desc', { count: targets.length }),
     extra: <BulkTargetPreview targets={targets} />,
     impact: t('users.modals.unban.impact'),
+    optionalReason: true,
     submitLabel: t('users.modals.bulk.unban.confirm'),
     targetLabel: formatBulkTargetLabel(targets),
     title: t('users.modals.bulk.unban.title'),

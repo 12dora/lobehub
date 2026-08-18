@@ -88,9 +88,13 @@ export const openBanUserModal = (params: {
 
   openReasonModal({
     authMethod: params.authMethod,
+    // Kept as a field, not a gate: `user.banReason` is surfaced later, so the operator may
+    // explain — but an empty submit records the stable code instead of blocking.
+    autoReason: AUTO_REASON.ban,
     danger: true,
     description: t('users.modals.ban.desc'),
     impact: t('users.modals.ban.impact'),
+    optionalReason: true,
     submitLabel: t('users.modals.ban.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.ban.title'),
@@ -122,8 +126,10 @@ export const openUnbanUserModal = (params: {
 }) => {
   openReasonModal({
     authMethod: params.authMethod,
+    autoReason: AUTO_REASON.unban,
     description: t('users.modals.unban.desc'),
     impact: t('users.modals.unban.impact'),
+    optionalReason: true,
     submitLabel: t('users.modals.unban.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.unban.title'),

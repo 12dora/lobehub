@@ -7,7 +7,10 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
-import { CONNECTOR_ROLLBACK_AUTO_REASON } from '@/enterprise/client/features/admin/audit/shared/auditReasonCodes';
+import {
+  CONNECTOR_AUTO_REASON,
+  CONNECTOR_ROLLBACK_AUTO_REASON,
+} from '@/enterprise/client/features/admin/audit/shared/auditReasonCodes';
 import { openDangerConfirm } from '@/enterprise/client/features/admin/primitives/DangerConfirm';
 import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
@@ -277,8 +280,9 @@ export const useConnectorActions = ({
   }, [busyAction, data, editor.conflict, editor.dirty, permissions.canArchive, runSimple, t]);
 
   /**
-   * Revoking every user's connection is destructive and irreversible for them — this is one of
-   * the few actions that still requires the operator to record an audit reason.
+   * Revoking every user's connection is destructive and irreversible for them, so the modal (and
+   * its impact copy) stays — but the operator confirms rather than justifies; the audit row keeps
+   * a stable machine reason.
    */
   const revokeBindings = useCallback(() => {
     if (
@@ -293,9 +297,11 @@ export const useConnectorActions = ({
     const publishedRevision = data.published.publishedRevision;
     openReasonModal({
       authMethod: authMethod ?? undefined,
+      autoReason: CONNECTOR_AUTO_REASON.revokeAllBindings,
       buildPayload: (reason) => ({ reason }),
       danger: true,
       description: t('connectorCatalog.mutations.revoke.description'),
+      hideReason: true,
       onSubmit: async (input) => {
         await run(
           'revoke',
@@ -380,9 +386,11 @@ export const useConnectorActions = ({
     if (!permissions.canDelete || data.published || editor.dirty || editor.conflict) return;
     openReasonModal({
       authMethod: authMethod ?? undefined,
+      autoReason: CONNECTOR_AUTO_REASON.deleteDraft,
       buildPayload: (reason) => ({ id: data.draft.id, reason }),
       danger: true,
       description: t('connectorCatalog.mutations.delete.description'),
+      hideReason: true,
       onSubmit: async (input) => {
         setBusyAction('delete');
         try {

@@ -5,6 +5,7 @@ import { confirmModal, toast } from '@lobehub/ui/base-ui';
 import type { TFunction } from 'i18next';
 import { useCallback } from 'react';
 
+import { IDENTITY_PROVIDER_AUTO_REASON } from '@/enterprise/client/features/admin/audit/shared/auditReasonCodes';
 import { AdminReauthCancelledError } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type { AdminAccessContextValue } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
@@ -55,8 +56,10 @@ export const useIdentityProviderRowActions = ({
             // asks. Calling it up front made one action cost two popups.
             openReasonModal({
               authMethod,
+              autoReason: IDENTITY_PROVIDER_AUTO_REASON.disable,
               buildPayload: (reason) => ({ reason }),
               danger: true,
+              hideReason: true,
               impact: t('identityProviders.disable.impact', {
                 defaultValue:
                   'Disabling this sign-in method stops new logins after all running instances reload. To restore it later, publish a new configuration.',
@@ -121,8 +124,10 @@ export const useIdentityProviderRowActions = ({
             // asks. Calling it up front made one action cost two popups.
             openReasonModal({
               authMethod,
+              autoReason: IDENTITY_PROVIDER_AUTO_REASON.delete,
               buildPayload: (reason) => ({ reason }),
               danger: true,
+              hideReason: true,
               impact: t('identityProviders.delete.impact'),
               onSubmit: async (payload) => {
                 const { reason } = payload as { reason: string };

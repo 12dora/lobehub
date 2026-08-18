@@ -8,6 +8,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import { IDENTITY_PROVIDER_AUTO_REASON } from '@/enterprise/client/features/admin/audit/shared/auditReasonCodes';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 
@@ -564,7 +565,9 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       }
       openReasonModal({
         authMethod,
+        autoReason: IDENTITY_PROVIDER_AUTO_REASON.publish,
         buildPayload: (reason) => ({ reason }),
+        hideReason: true,
         impact: t('identityProviders.publish.impact'),
         onSubmit: async (payload) =>
           run('publish', async () => {

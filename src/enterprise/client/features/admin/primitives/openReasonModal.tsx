@@ -56,8 +56,9 @@ export interface ReasonModalContentProps {
   abortControllerRef?: React.MutableRefObject<AbortController | null>;
   authMethod?: AdminReauthAuthMethod;
   /**
-   * Fixed reason recorded in the audit trail when the reason input is hidden.
-   * Required (non-empty) whenever `hideReason` is true — the server still bounds it.
+   * Fixed reason recorded in the audit trail when the operator does not type one.
+   * Required (non-empty) whenever `hideReason` or `optionalReason` is true — the server
+   * contract still bounds the field to a non-empty string.
    */
   autoReason?: string;
   buildPayload: (reason: string) => unknown;
@@ -79,6 +80,12 @@ export interface ReasonModalContentProps {
   /** Called when phase changes (tests / parent). */
   onPhaseChange?: (phase: ReasonModalPhase) => void;
   onSubmit: (payload: unknown) => Promise<void>;
+  /**
+   * Optional-reason mode: the textarea stays (the prose is still read back later, e.g.
+   * `user.banReason`) but submitting empty is allowed and falls back to `autoReason`.
+   * Ignored when `hideReason` is set.
+   */
+  optionalReason?: boolean;
   submitLabel: string;
   targetLabel: string;
   title: string;
@@ -96,6 +103,7 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
     impact,
     buildPayload,
     onSubmit,
+    optionalReason,
     submitLabel,
     targetLabel,
     title,
@@ -146,7 +154,10 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
     // extraEpoch forces re-evaluation when nested extra fields notify of changes.
     void extraEpoch;
     const extraValid = !validateExtra || validateExtra() === null;
-    const canSubmit = (hideReason || reason.trim().length > 0) && phase === 'idle' && extraValid;
+    // A typed reason is only a gate when it is the sole record of intent: hidden and optional
+    // modes both resolve to `autoReason`, so neither may block the confirm button.
+    const reasonSatisfied = hideReason || optionalReason || reason.trim().length > 0;
+    const canSubmit = reasonSatisfied && phase === 'idle' && extraValid;
 
     const handleClose = useCallback(() => {
       // Explicit close — mark so onOpenChange does not re-open during exit animation.
@@ -171,7 +182,11 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
 
     const handleSubmit = useCallback(async () => {
       if (phase !== 'idle') return;
-      const trimmed = hideReason ? (autoReason ?? '').trim() : reason.trim();
+      // Hidden mode never reads the textarea; optional mode prefers what was typed and falls
+      // back to the stable code so the server's non-empty contract still holds.
+      const typed = reason.trim();
+      const fallback = (autoReason ?? '').trim();
+      const trimmed = hideReason ? fallback : typed || (optionalReason ? fallback : '');
       if (!trimmed) {
         setErrorKeySafe('users.modals.reasonRequired');
         return;
@@ -208,6 +223,7 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
       hideReason,
       mapReasonModalError,
       onSubmit,
+      optionalReason,
       phase,
       reason,
       runReauthedSubmit,
@@ -230,7 +246,9 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
         {impact ? <Text type="secondary">{impact}</Text> : null}
         {hideReason ? null : (
           <div className={styles.field}>
-            <Text>{t('users.modals.reasonLabel')}</Text>
+            <Text>
+              {optionalReason ? t('users.actions.reasonOptional') : t('users.modals.reasonLabel')}
+            </Text>
             <TextArea
               disabled={locked}
               maxLength={2000}

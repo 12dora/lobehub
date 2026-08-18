@@ -10,13 +10,20 @@
  * pulling in modal UI trees.
  */
 
-/** User admin confirm-only actions. */
+/**
+ * User admin actions that no longer interrogate the operator.
+ *
+ * `ban` / `unban` still render an optional textarea — `user.banReason` is read back later — so
+ * their code is the fallback written when the operator submits without typing anything.
+ */
 export const AUTO_REASON = {
+  ban: 'admin.users.ban',
   delete: 'admin.users.delete',
   revokeAll: 'admin.users.revoke_all_sessions',
   revokeOne: 'admin.users.revoke_session',
   roleRevoke: 'admin.users.revoke_role',
   roles: 'admin.users.replace_roles',
+  unban: 'admin.users.unban',
 } as const;
 
 export const CREATE_USER_AUTO_REASON = 'admin.users.create';
@@ -26,6 +33,22 @@ export const SHARED_OAUTH_AUTO_REASON = 'admin.connectors.shared_oauth';
 
 /** Connector catalog rollback. */
 export const CONNECTOR_ROLLBACK_AUTO_REASON = 'admin.connectors.rollback';
+
+/** Connector catalog confirm-only actions (the confirmation stays; the interrogation does not). */
+export const CONNECTOR_AUTO_REASON = {
+  deleteDraft: 'admin.connectors.delete_draft',
+  revokeAllBindings: 'admin.connectors.revoke_all_bindings',
+} as const;
+
+/** Identity provider (sign-in method) confirm-only actions. */
+export const IDENTITY_PROVIDER_AUTO_REASON = {
+  delete: 'admin.identity_providers.delete',
+  disable: 'admin.identity_providers.disable',
+  publish: 'admin.identity_providers.publish',
+} as const;
+
+/** Runtime restart requested from the admin console. */
+export const SYSTEM_RESTART_AUTO_REASON = 'admin.system.restart';
 
 /** Platform assistant archive. */
 export const AGENT_ARCHIVE_AUTO_REASON = 'admin.agents.archive';
@@ -78,14 +101,22 @@ export const AUTO_REASON_LEGACY = {
 const AUTO_REASON_I18N_KEY = new Map<string, string>(
   Object.entries({
     [AGENT_ARCHIVE_AUTO_REASON]: 'audit.autoReason.agentArchive',
+    [AUTO_REASON.ban]: 'audit.autoReason.ban',
     [AUTO_REASON.delete]: 'audit.autoReason.delete',
     [AUTO_REASON.revokeAll]: 'audit.autoReason.revokeAll',
     [AUTO_REASON.revokeOne]: 'audit.autoReason.revokeOne',
     [AUTO_REASON.roleRevoke]: 'audit.autoReason.roleRevoke',
     [AUTO_REASON.roles]: 'audit.autoReason.roles',
+    [AUTO_REASON.unban]: 'audit.autoReason.unban',
+    [CONNECTOR_AUTO_REASON.deleteDraft]: 'audit.autoReason.connectorDeleteDraft',
+    [CONNECTOR_AUTO_REASON.revokeAllBindings]: 'audit.autoReason.connectorRevokeAllBindings',
     [CONNECTOR_ROLLBACK_AUTO_REASON]: 'audit.autoReason.connectorRollback',
     [CREATE_USER_AUTO_REASON]: 'audit.autoReason.create',
+    [IDENTITY_PROVIDER_AUTO_REASON.delete]: 'audit.autoReason.identityProviderDelete',
+    [IDENTITY_PROVIDER_AUTO_REASON.disable]: 'audit.autoReason.identityProviderDisable',
+    [IDENTITY_PROVIDER_AUTO_REASON.publish]: 'audit.autoReason.identityProviderPublish',
     [SHARED_OAUTH_AUTO_REASON]: 'audit.autoReason.sharedOAuth',
+    [SYSTEM_RESTART_AUTO_REASON]: 'audit.autoReason.systemRestart',
     [TOOL_SCOPE_AUTO_REASON.builtinToolPolicy]: 'audit.autoReason.toolScope.builtinToolPolicy',
     [TOOL_SCOPE_AUTO_REASON.connectorCreate]: 'audit.autoReason.toolScope.connectorCreate',
     [TOOL_SCOPE_AUTO_REASON.connectorDelete]: 'audit.autoReason.toolScope.connectorDelete',

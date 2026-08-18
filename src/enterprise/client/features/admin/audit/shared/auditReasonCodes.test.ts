@@ -4,11 +4,14 @@ import {
   AGENT_ARCHIVE_AUTO_REASON,
   AUTO_REASON,
   AUTO_REASON_LEGACY,
+  CONNECTOR_AUTO_REASON,
   CONNECTOR_ROLLBACK_AUTO_REASON,
   CREATE_USER_AUTO_REASON,
   formatAuditReason,
+  IDENTITY_PROVIDER_AUTO_REASON,
   MODERATION_AUTO_BAN_REASON_CODE,
   SHARED_OAUTH_AUTO_REASON,
+  SYSTEM_RESTART_AUTO_REASON,
   TOOL_SCOPE_AUTO_REASON,
 } from './auditReasonCodes';
 
@@ -33,6 +36,32 @@ describe('formatAuditReason (production mapping)', () => {
     for (const [name, code] of Object.entries(TOOL_SCOPE_AUTO_REASON)) {
       expect(formatAuditReason(code, t)).toBe(`zh:audit.autoReason.toolScope.${name}`);
     }
+  });
+
+  it('maps the ban / unban codes written when the optional reason is left empty', () => {
+    expect(formatAuditReason(AUTO_REASON.ban, t)).toBe('zh:audit.autoReason.ban');
+    expect(formatAuditReason(AUTO_REASON.unban, t)).toBe('zh:audit.autoReason.unban');
+  });
+
+  it('maps the identity-provider, restart and connector confirm-only codes', () => {
+    expect(formatAuditReason(IDENTITY_PROVIDER_AUTO_REASON.publish, t)).toBe(
+      'zh:audit.autoReason.identityProviderPublish',
+    );
+    expect(formatAuditReason(IDENTITY_PROVIDER_AUTO_REASON.disable, t)).toBe(
+      'zh:audit.autoReason.identityProviderDisable',
+    );
+    expect(formatAuditReason(IDENTITY_PROVIDER_AUTO_REASON.delete, t)).toBe(
+      'zh:audit.autoReason.identityProviderDelete',
+    );
+    expect(formatAuditReason(SYSTEM_RESTART_AUTO_REASON, t)).toBe(
+      'zh:audit.autoReason.systemRestart',
+    );
+    expect(formatAuditReason(CONNECTOR_AUTO_REASON.revokeAllBindings, t)).toBe(
+      'zh:audit.autoReason.connectorRevokeAllBindings',
+    );
+    expect(formatAuditReason(CONNECTOR_AUTO_REASON.deleteDraft, t)).toBe(
+      'zh:audit.autoReason.connectorDeleteDraft',
+    );
   });
 
   it('still localizes legacy prose reasons from older clients', () => {

@@ -3,6 +3,7 @@
 import { confirmModal, toast } from '@lobehub/ui/base-ui';
 import type { TFunction } from 'i18next';
 
+import { SYSTEM_RESTART_AUTO_REASON } from '@/enterprise/client/features/admin/audit/shared/auditReasonCodes';
 import { AdminReauthCancelledError } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type { AdminAccessContextValue } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
@@ -42,8 +43,10 @@ export const useIdentityProviderRestartAction = ({
           // `withAdminReauthRetry` only when the server challenges.
           openReasonModal({
             authMethod,
+            autoReason: SYSTEM_RESTART_AUTO_REASON,
             buildPayload: (reason) => ({ reason, requestId: crypto.randomUUID() }),
             danger: true,
+            hideReason: true,
             impact: t('identityProviders.restart.impact'),
             onSubmit: async (payload) => {
               const input = payload as { reason: string; requestId: string };

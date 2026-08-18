@@ -390,6 +390,103 @@ describe('ReasonModalContent lifecycle (R4)', () => {
     }
   });
 
+  it('optionalReason: empty submit is allowed and records the auto reason code', async () => {
+    const received: string[] = [];
+
+    render(
+      <ReasonModalContent
+        optionalReason
+        autoReason="admin.users.ban"
+        buildPayload={(reason) => ({ reason })}
+        submitLabel="Confirm"
+        targetLabel="u"
+        title="T"
+        onSubmit={async (payload) => {
+          received.push((payload as { reason: string }).reason);
+        }}
+      />,
+    );
+
+    // Textarea still offered (banReason is read back later) — just no longer a gate.
+    expect(screen.getByLabelText('reason')).toBeTruthy();
+    expect(screen.getByText('users.actions.reasonOptional')).toBeTruthy();
+    expect(screen.getByText('Confirm').hasAttribute('disabled')).toBe(false);
+
+    fireEvent.click(screen.getByText('Confirm'));
+
+    await waitFor(() => expect(received).toEqual(['admin.users.ban']));
+  });
+
+  it('optionalReason: whitespace-only input still falls back to the auto reason code', async () => {
+    const received: string[] = [];
+
+    render(
+      <ReasonModalContent
+        optionalReason
+        autoReason="admin.users.unban"
+        buildPayload={(reason) => ({ reason })}
+        submitLabel="Confirm"
+        targetLabel="u"
+        title="T"
+        onSubmit={async (payload) => {
+          received.push((payload as { reason: string }).reason);
+        }}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('reason'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByText('Confirm'));
+
+    await waitFor(() => expect(received).toEqual(['admin.users.unban']));
+  });
+
+  it('optionalReason: a typed reason is sent verbatim instead of the auto code', async () => {
+    const received: string[] = [];
+
+    render(
+      <ReasonModalContent
+        optionalReason
+        autoReason="admin.users.ban"
+        buildPayload={(reason) => ({ reason })}
+        submitLabel="Confirm"
+        targetLabel="u"
+        title="T"
+        onSubmit={async (payload) => {
+          received.push((payload as { reason: string }).reason);
+        }}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('reason'), {
+      target: { value: '  repeated policy violation  ' },
+    });
+    fireEvent.click(screen.getByText('Confirm'));
+
+    await waitFor(() => expect(received).toEqual(['repeated policy violation']));
+  });
+
+  it('required reason mode still gates submit on typed prose', async () => {
+    // Pins the negative case: optionalReason must not leak into the default mode.
+    const onSubmit = vi.fn();
+
+    render(
+      <ReasonModalContent
+        autoReason="admin.users.ban"
+        buildPayload={(reason) => ({ reason })}
+        submitLabel="Confirm"
+        targetLabel="u"
+        title="T"
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByText('users.modals.reasonLabel')).toBeTruthy();
+    expect(screen.getByText('Confirm').hasAttribute('disabled')).toBe(true);
+    fireEvent.click(screen.getByText('Confirm'));
+    await flushMicrotasks();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('Escape during mutating re-opens the modal so the in-flight mutation keeps its UI', async () => {
     updateSpy.mockReset();
     let resolveSubmit!: () => void;
