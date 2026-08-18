@@ -45,6 +45,33 @@ describe('LobeVLLMAI - custom features', () => {
       });
     });
 
+    it('should map documented max_model_len onto contextWindowTokens', async () => {
+      // Wire shape from vLLM ModelCard (entrypoints/openai/engine/protocol.py).
+      const mockModelList: VLLMModelCard[] = [
+        {
+          id: 'meta-llama/Llama-3.1-8B-Instruct',
+          max_model_len: 131_072,
+        },
+        {
+          // LoRA adapter cards are built without max_model_len.
+          id: 'llama-3.1-8b-lora',
+        },
+      ];
+
+      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
+        data: mockModelList,
+      } as any);
+
+      const models = await instance.models();
+
+      expect(models[0]).toMatchObject({
+        contextWindowTokens: 131_072,
+        id: 'meta-llama/Llama-3.1-8B-Instruct',
+      });
+      expect(models[1].id).toBe('llama-3.1-8b-lora');
+      expect(models[1].contextWindowTokens).toBeUndefined();
+    });
+
     it('should handle empty model list', async () => {
       vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
         data: [],

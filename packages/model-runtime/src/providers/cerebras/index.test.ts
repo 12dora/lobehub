@@ -1,6 +1,7 @@
 // @vitest-environment node
+import type { PricingUnit } from 'model-bank';
 import { ModelProvider } from 'model-bank';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { testProvider } from '../../providerTestUtils';
 import { LobeCerebrasAI, params } from './index';
@@ -24,6 +25,12 @@ testProvider({
     skipErrorHandle: true,
   },
 });
+
+/** `rate` lives on the fixed-strategy member only; narrowing keeps the assertion honest. */
+const fixedRate = (units: PricingUnit[] | undefined, name: string): number | undefined => {
+  const unit = units?.find((item) => item.name === name);
+  return unit && unit.strategy === 'fixed' ? unit.rate : undefined;
+};
 
 describe('LobeCerebrasAI - custom features', () => {
   let instance: InstanceType<typeof LobeCerebrasAI>;
@@ -207,6 +214,18 @@ describe('LobeCerebrasAI - custom features', () => {
   });
 
   describe('models function', () => {
+    const originalFetch = global.fetch;
+
+    beforeEach(() => {
+      // Public catalog is enrichment-only; default to a failed public request
+      // so existing list-shape tests stay on the /v1/models source of truth.
+      global.fetch = vi.fn().mockRejectedValue(new Error('public catalog unavailable'));
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
     it('should fetch and process models with data property', async () => {
       const mockClient = {
         apiKey: 'test_api_key',
@@ -425,6 +444,96 @@ describe('LobeCerebrasAI - custom features', () => {
       // Verify processMultiProviderModelList was called with correct parameters
       expect(models).toBeDefined();
       expect(Array.isArray(models)).toBe(true);
+    });
+
+    it('should enrich /v1/models from the public catalog, joined on id', async () => {
+      // Default Cerebras format from R3 §2.2 — USD per token as decimal strings.
+      global.fetch = vi.fn().mockResolvedValue({
+        json: async () => ({
+          data: [
+            {
+              capabilities: {
+                function_calling: true,
+                reasoning: false,
+                vision: false,
+              },
+              description: 'Gemma 4 31B',
+              id: 'gemma-4-31b',
+              limits: {
+                max_completion_tokens: 8192,
+                max_context_length: 131_072,
+              },
+              name: 'Gemma 4 31B',
+              pricing: {
+                completion: '0.00000149',
+                prompt: '0.00000099',
+              },
+            },
+          ],
+          object: 'list',
+        }),
+        ok: true,
+        status: 200,
+      });
+
+      const mockClient = {
+        apiKey: 'test_api_key',
+        baseURL: 'https://api.cerebras.ai/v1',
+        models: {
+          list: vi.fn().mockResolvedValue({
+            data: [
+              { created: 0, id: 'gemma-4-31b', object: 'model', owned_by: 'cerebras' },
+              { created: 0, id: 'gpt-oss-120b', object: 'model', owned_by: 'cerebras' },
+            ],
+          }),
+        },
+      } as any;
+
+      const models = await params.models!({ client: mockClient });
+
+      expect(global.fetch).toHaveBeenCalledWith('https://api.cerebras.ai/public/v1/models');
+      expect(models.map((m) => m.id)).toEqual(['gemma-4-31b', 'gpt-oss-120b']);
+
+      const gemma = models.find((m) => m.id === 'gemma-4-31b');
+      expect(gemma).toMatchObject({
+        contextWindowTokens: 131_072,
+        description: 'Gemma 4 31B',
+        displayName: 'Gemma 4 31B',
+        functionCall: true,
+        id: 'gemma-4-31b',
+        maxOutput: 8192,
+        reasoning: false,
+        vision: false,
+      });
+      const input = fixedRate(gemma?.pricing?.units, 'textInput');
+      const output = fixedRate(gemma?.pricing?.units, 'textOutput');
+      expect(input).toBeCloseTo(0.99);
+      expect(output).toBeCloseTo(1.49);
+
+      // Public list is a subset — missing ids come back with no metadata.
+      const oss = models.find((m) => m.id === 'gpt-oss-120b');
+      expect(oss?.id).toBe('gpt-oss-120b');
+      expect(oss?.contextWindowTokens).toBeUndefined();
+      expect(oss?.pricing).toBeUndefined();
+    });
+
+    it('should keep the authenticated list when the public catalog fails', async () => {
+      global.fetch = vi.fn().mockRejectedValue(new Error('public catalog down'));
+
+      const mockClient = {
+        apiKey: 'test_api_key',
+        baseURL: 'https://api.cerebras.ai/v1',
+        models: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ id: 'llama3.1-8b', object: 'model', owned_by: 'cerebras' }],
+          }),
+        },
+      } as any;
+
+      const models = await params.models!({ client: mockClient });
+
+      expect(models).toHaveLength(1);
+      expect(models[0]?.id).toBe('llama3.1-8b');
     });
   });
 });

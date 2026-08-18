@@ -217,6 +217,113 @@ describe('LobeGithubCopilotAI', () => {
       expect(models).toEqual([]);
     });
 
+    it('should map documented CAPI capabilities and drop completion models', async () => {
+      const futureTime = Date.now() + 600_000;
+
+      // Limits arithmetic from microsoft/vscode mock-llm-server.ts (R1):
+      // gpt-5.3-codex 272000 + 128000 = 400000; claude-sonnet-4.5 168000 + 32000 = 200000.
+      mockFetch.mockResolvedValueOnce({
+        json: () =>
+          Promise.resolve({
+            data: [
+              {
+                billing: {
+                  token_prices: { input_price: 175, output_price: 1400 },
+                },
+                capabilities: {
+                  limits: {
+                    max_context_window_tokens: 400_000,
+                    max_output_tokens: 128_000,
+                    max_prompt_tokens: 272_000,
+                  },
+                  supports: {
+                    thinking: true,
+                    tool_calls: true,
+                    vision: true,
+                  },
+                  type: 'chat',
+                },
+                id: 'gpt-5.3-codex',
+                name: 'GPT-5.3 Codex',
+              },
+              {
+                capabilities: {
+                  limits: {
+                    max_context_window_tokens: 200_000,
+                    max_output_tokens: 32_000,
+                    max_prompt_tokens: 168_000,
+                  },
+                  supports: {
+                    reasoning_effort: ['low', 'medium', 'high'],
+                    tool_calls: true,
+                  },
+                  type: 'chat',
+                },
+                id: 'claude-sonnet-4.5',
+                name: 'Claude Sonnet 4.5',
+              },
+              {
+                capabilities: {
+                  type: 'embeddings',
+                },
+                id: 'text-embedding-3-small',
+                name: 'Text Embedding 3 Small',
+              },
+              {
+                capabilities: {
+                  type: 'completion',
+                },
+                id: 'copilot-nes',
+                name: 'Copilot NES',
+              },
+            ],
+          }),
+        ok: true,
+        status: 200,
+      });
+
+      const instance = new LobeGithubCopilotAI({
+        bearerToken: 'cached-bearer-token',
+        bearerTokenExpiresAt: futureTime,
+        oauthAccessToken: 'ghu_oauth',
+      });
+
+      const models = await instance.models();
+
+      expect(models.map((m) => m.id)).toEqual([
+        'gpt-5.3-codex',
+        'claude-sonnet-4.5',
+        'text-embedding-3-small',
+      ]);
+
+      const codex = models.find((m) => m.id === 'gpt-5.3-codex');
+      expect(codex).toMatchObject({
+        contextWindowTokens: 400_000,
+        displayName: 'GPT-5.3 Codex',
+        functionCall: true,
+        id: 'gpt-5.3-codex',
+        maxOutput: 128_000,
+        reasoning: true,
+        type: 'chat',
+        vision: true,
+      });
+      expect(codex?.pricing).toBeUndefined();
+
+      const sonnet = models.find((m) => m.id === 'claude-sonnet-4.5');
+      expect(sonnet).toMatchObject({
+        contextWindowTokens: 200_000,
+        functionCall: true,
+        maxOutput: 32_000,
+        reasoning: true,
+        type: 'chat',
+      });
+
+      expect(models.find((m) => m.id === 'text-embedding-3-small')).toMatchObject({
+        id: 'text-embedding-3-small',
+        type: 'embedding',
+      });
+    });
+
     it('should throw regular Error when models request fails', async () => {
       mockFetch.mockResolvedValueOnce({
         json: () => Promise.resolve({ error: { message: 'Copilot access denied' } }),

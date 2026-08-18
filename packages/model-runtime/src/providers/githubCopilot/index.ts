@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { type ChatModelCard } from '@lobechat/types';
+import type { ChatModelCard } from '@lobechat/types';
 import { ModelProvider } from 'model-bank';
 import OpenAI from 'openai';
 
@@ -17,12 +17,76 @@ import { AgentRuntimeErrorType } from '../../types/error';
 import { AgentRuntimeError } from '../../utils/createError';
 import { debugResponse, debugStream, serializeDebugPayload } from '../../utils/debugStream';
 import { getModelPricing } from '../../utils/getModelPricing';
+import { processMultiProviderModelList } from '../../utils/modelParse';
 import { StreamingResponse } from '../../utils/response';
 import { assertToolLimits } from '../../utils/validateToolLimits';
 import { isResponsesAPIModel } from '../openai/openaiModelId';
 
 const COPILOT_BASE_URL = 'https://api.githubcopilot.com';
 const TOKEN_EXCHANGE_URL = 'https://api.github.com/copilot_internal/v2/token';
+
+/**
+ * CAPI `GET /models` item. Shape is from first-party microsoft/vscode types
+ * (`IModelAPIResponse` in endpointProvider.ts / `CCAModel` in copilot-api.d.ts),
+ * not a vendor-published spec, and is unversioned. Map only fields verified
+ * against that source; treat every capability as optional.
+ */
+export interface GithubCopilotModelCard {
+  capabilities?: {
+    limits?: {
+      max_context_window_tokens?: number;
+      max_output_tokens?: number;
+      max_prompt_tokens?: number;
+    };
+    supports?: {
+      max_thinking_budget?: number;
+      reasoning_effort?: string[];
+      thinking?: boolean;
+      tool_calls?: boolean;
+      vision?: boolean;
+    };
+    type?: 'chat' | 'completion' | 'embeddings';
+  };
+  id: string;
+  name?: string;
+}
+
+const mapCopilotReasoning = (
+  supports: NonNullable<GithubCopilotModelCard['capabilities']>['supports'],
+): true | undefined => {
+  if (supports?.thinking === true) return true;
+  if (Array.isArray(supports?.reasoning_effort) && supports.reasoning_effort.length > 0) {
+    return true;
+  }
+  if (typeof supports?.max_thinking_budget === 'number') return true;
+  return undefined;
+};
+
+const mapGithubCopilotModel = (model: GithubCopilotModelCard) => {
+  if (!model.id) return undefined;
+  // `completion` has no target in AiModelTypeSchema.
+  if (model.capabilities?.type === 'completion') return undefined;
+
+  const limits = model.capabilities?.limits;
+  const supports = model.capabilities?.supports;
+
+  return {
+    contextWindowTokens: limits?.max_context_window_tokens,
+    displayName: model.name || model.id,
+    enabled: true,
+    functionCall: supports?.tool_calls === true ? true : undefined,
+    id: model.id,
+    maxOutput: limits?.max_output_tokens,
+    reasoning: mapCopilotReasoning(supports),
+    type:
+      model.capabilities?.type === 'embeddings'
+        ? ('embedding' as const)
+        : model.capabilities?.type === 'chat'
+          ? ('chat' as const)
+          : undefined,
+    vision: supports?.vision === true ? true : undefined,
+  };
+};
 
 const MAX_TOTAL_ATTEMPTS = 5;
 const MAX_RATE_LIMIT_RETRIES = 3;
@@ -430,15 +494,13 @@ export class LobeGithubCopilotAI implements LobeRuntimeAI {
           );
         }
 
-        const data = await response.json();
+        const data = (await response.json()) as { data?: GithubCopilotModelCard[] };
+        const modelList = Array.isArray(data.data) ? data.data : [];
 
-        // Transform Copilot models to ChatModelCard format
-        return (data.models || data.data || []).map((model: any) => ({
-          displayName: model.name || model.id,
-          enabled: true,
-          id: model.id || model.name,
-          type: 'chat',
-        }));
+        return processMultiProviderModelList(
+          modelList.map(mapGithubCopilotModel).filter((model) => !!model),
+          'githubcopilot',
+        );
       },
       { mapError: false },
     );

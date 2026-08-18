@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { ModelProvider } from 'model-bank';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { testProvider } from '../../providerTestUtils';
 import { LobeLMStudioAI, params } from './index';
@@ -56,8 +56,20 @@ describe('LobeLMStudioAI - custom features', () => {
   });
 
   describe('models function', () => {
+    const originalFetch = global.fetch;
+
     beforeEach(() => {
       vi.clearAllMocks();
+      // Default: older LM Studio (< 0.4.0) 404s the native path.
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+      });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
     });
 
     it('should fetch and process models successfully', async () => {
@@ -190,6 +202,123 @@ describe('LobeLMStudioAI - custom features', () => {
       const models = await params.models!({ client: mockClient as any });
       expect(models).toBeDefined();
       expect(Array.isArray(models)).toBe(true);
+    });
+
+    it('should fall back to OpenAI-compatible /v1/models on native 404', async () => {
+      const mockClient = {
+        apiKey: 'placeholder-to-avoid-error',
+        baseURL: 'http://127.0.0.1:1234/v1',
+        models: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ id: 'legacy-local-model' }],
+          }),
+        },
+      };
+
+      const models = await params.models!({ client: mockClient as any });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:1234/api/v1/models',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(mockClient.models.list).toHaveBeenCalled();
+      expect(models.map((m) => m.id)).toEqual(['legacy-local-model']);
+    });
+
+    it('should map documented native /api/v1/models fields', async () => {
+      // Wire shape from https://lmstudio.ai/docs/developer/rest/list (R4 §4.2).
+      global.fetch = vi.fn().mockResolvedValue({
+        json: async () => ({
+          models: [
+            {
+              capabilities: {
+                reasoning: { allowed_options: ['off', 'on'], default: 'off' },
+                trained_for_tool_use: true,
+                vision: true,
+              },
+              description: 'Local vision instruct checkpoint',
+              display_name: 'Qwen2 VL 7B',
+              key: 'qwen2-vl-7b-instruct',
+              max_context_length: 32_768,
+              type: 'llm',
+            },
+            {
+              description: null,
+              display_name: 'Nomic Embed',
+              key: 'text-embedding-nomic-embed-text-v1.5',
+              max_context_length: 2048,
+              type: 'embedding',
+            },
+          ],
+        }),
+        ok: true,
+        status: 200,
+      });
+
+      const mockClient = {
+        apiKey: 'placeholder-to-avoid-error',
+        baseURL: 'http://127.0.0.1:1234/v1',
+        models: {
+          list: vi.fn(),
+        },
+      };
+
+      const models = await params.models!({ client: mockClient as any });
+
+      expect(mockClient.models.list).not.toHaveBeenCalled();
+      expect(models).toHaveLength(2);
+
+      const chat = models.find((m) => m.id === 'qwen2-vl-7b-instruct');
+      expect(chat).toMatchObject({
+        contextWindowTokens: 32_768,
+        description: 'Local vision instruct checkpoint',
+        displayName: 'Qwen2 VL 7B',
+        functionCall: true,
+        id: 'qwen2-vl-7b-instruct',
+        reasoning: true,
+        type: 'chat',
+        vision: true,
+      });
+
+      const embedding = models.find((m) => m.id === 'text-embedding-nomic-embed-text-v1.5');
+      expect(embedding).toMatchObject({
+        contextWindowTokens: 2048,
+        displayName: 'Nomic Embed',
+        id: 'text-embedding-nomic-embed-text-v1.5',
+        type: 'embedding',
+      });
+    });
+
+    it('should leave reasoning unset when allowed_options is only off', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        json: async () => ({
+          models: [
+            {
+              capabilities: {
+                reasoning: { allowed_options: ['off'], default: 'off' },
+                trained_for_tool_use: false,
+                vision: false,
+              },
+              display_name: 'Plain Local Chat',
+              key: 'plain-local-chat',
+              max_context_length: 4096,
+              type: 'llm',
+            },
+          ],
+        }),
+        ok: true,
+        status: 200,
+      });
+
+      const models = await params.models!({
+        client: { apiKey: 'placeholder-to-avoid-error', models: { list: vi.fn() } } as any,
+      });
+
+      const model = models.find((m) => m.id === 'plain-local-chat');
+      expect(model?.functionCall).toBe(false);
+      expect(model?.vision).toBe(false);
+      // `['off']` is not a groundable "has reasoning" fact — do not emit true.
+      expect(model?.reasoning).not.toBe(true);
     });
   });
 });

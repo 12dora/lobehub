@@ -5,6 +5,8 @@ import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactor
 
 export interface VLLMModelCard {
   id: string;
+  // Present on base models; LoRA adapter cards omit it (null / absent).
+  max_model_len?: number | null;
 }
 
 export const LobeVLLMAI = createOpenAICompatibleRuntime({
@@ -25,7 +27,7 @@ export const LobeVLLMAI = createOpenAICompatibleRuntime({
         );
 
         return {
-          contextWindowTokens: knownModel?.contextWindowTokens ?? undefined,
+          contextWindowTokens: model.max_model_len ?? knownModel?.contextWindowTokens ?? undefined,
           displayName: knownModel?.displayName ?? undefined,
           enabled: knownModel?.enabled || false,
           functionCall: knownModel?.abilities?.functionCall || false,
