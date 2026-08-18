@@ -61,7 +61,7 @@ Every enhancement is **on by default**; each can be toggled live in the admin co
 <td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-task-templates.png" alt="Task templates"><br><sub><b>Task templates</b></sub></td>
 </tr>
 <tr>
-<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-login-methods.png" alt="Login methods"><br><sub><b>Login methods (DingTalk allowlist)</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-modules.png" alt="Module configuration"><br><sub><b>Module configuration (enable on demand)</b></sub></td>
 <td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-audit-logs.png" alt="Audit logs"><br><sub><b>Audit logs</b></sub></td>
 </tr>
 <tr>

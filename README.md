@@ -61,7 +61,7 @@
 <td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-task-templates.png" alt="任务模板"><br><sub><b>任务模板</b></sub></td>
 </tr>
 <tr>
-<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-login-methods.png" alt="登录方式"><br><sub><b>登录方式（钉钉企业白名单）</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-modules.png" alt="模块配置"><br><sub><b>模块配置（按需启停）</b></sub></td>
 <td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-audit-logs.png" alt="操作日志"><br><sub><b>操作日志</b></sub></td>
 </tr>
 <tr>
