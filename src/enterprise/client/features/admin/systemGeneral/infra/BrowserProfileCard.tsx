@@ -179,10 +179,6 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
                   label: t('browserProfile.fields.generatedAt'),
                   value: generatedAt,
                 },
-                {
-                  label: t('browserProfile.fields.revision'),
-                  value: `#${data.revision}`,
-                },
               ]
             : undefined
         }
