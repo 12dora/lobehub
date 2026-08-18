@@ -270,6 +270,8 @@ describe('AI catalog credential adapter', () => {
     expect(() =>
       validateAiCatalogCredentialShape(ModelProvider.SuperGrok, {
         oauthAccessToken: 'at-1',
+        oauthAccountEmail: 'owner@example.test',
+        oauthAccountId: 'xai-sub',
         oauthRefreshToken: 'rt-1',
         oauthTokenExpiresAt: '1750000000000',
       }),
@@ -319,7 +321,7 @@ describe('AI catalog credential adapter', () => {
           settings: {},
           source: 'builtin',
         }),
-      ['Grok shared OAuth connection is incomplete'],
+      ['Grok Build shared OAuth connection is incomplete'],
     );
     expect(() =>
       normalizeAiCatalogExecutionCredentials({
@@ -526,10 +528,14 @@ describe('AI catalog credential adapter', () => {
     // as an unknown key after the first connect wrote it.
     expect(providerCredentialKeys(ModelProvider.ChatGPTWeb).has('oauthRenewalKind')).toBe(true);
     expect(providerCredentialKeys(ModelProvider.ChatGPT).has('oauthDeviceId')).toBe(false);
-    expect(providerCredentialKeys(ModelProvider.SuperGrok).has('oauthAccountEmail')).toBe(false);
-    expect(providerCredentialKeys(ModelProvider.Grok).has('oauthAccountEmail')).toBe(false);
+    expect(providerCredentialKeys(ModelProvider.SuperGrok).has('oauthAccountEmail')).toBe(true);
+    expect(providerCredentialKeys(ModelProvider.SuperGrok).has('oauthAccountId')).toBe(true);
+    expect(providerCredentialKeys(ModelProvider.Grok).has('oauthAccountEmail')).toBe(true);
+    expect(providerCredentialKeys(ModelProvider.Grok).has('oauthAccountId')).toBe(true);
     expect(providerCredentialKeys(ModelProvider.Grok).has('oauthAccessToken')).toBe(true);
     expect(providerCredentialKeys(ModelProvider.Cursor).has('oauthAccessToken')).toBe(true);
+    expect(providerCredentialKeys(ModelProvider.Cursor).has('oauthAccountEmail')).toBe(true);
+    expect(providerCredentialKeys(ModelProvider.Cursor).has('oauthAccountId')).toBe(true);
     expect(providerCredentialKeys(ModelProvider.Cursor).has('oauthRenewalKind')).toBe(true);
     // Unknown providers fall back to the OpenAI-compatible shape.
     expect([...providerCredentialKeys('some-custom-provider')]).toEqual(['apiKey', 'baseURL']);

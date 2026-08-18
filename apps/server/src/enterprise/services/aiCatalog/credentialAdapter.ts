@@ -96,12 +96,18 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
   [ModelProvider.Ollama]: new Set(['baseURL']),
   [ModelProvider.Grok]: new Set([
     'oauthAccessToken',
+    // Display-only account identity — intentionally absent from SECRET_CREDENTIAL_STRING_KEYS.
+    'oauthAccountEmail',
+    'oauthAccountId',
     ...REFRESH_LIFECYCLE_KEYS,
     'oauthRefreshToken',
     'oauthTokenExpiresAt',
   ]),
   [ModelProvider.Cursor]: new Set([
     'oauthAccessToken',
+    // Display-only account identity — intentionally absent from SECRET_CREDENTIAL_STRING_KEYS.
+    'oauthAccountEmail',
+    'oauthAccountId',
     ...REFRESH_LIFECYCLE_KEYS,
     'oauthRefreshToken',
     'oauthRenewalKind',
@@ -109,6 +115,9 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
   ]),
   [ModelProvider.SuperGrok]: new Set([
     'oauthAccessToken',
+    // Display-only account identity — intentionally absent from SECRET_CREDENTIAL_STRING_KEYS.
+    'oauthAccountEmail',
+    'oauthAccountId',
     ...REFRESH_LIFECYCLE_KEYS,
     'oauthRefreshToken',
     'oauthTokenExpiresAt',

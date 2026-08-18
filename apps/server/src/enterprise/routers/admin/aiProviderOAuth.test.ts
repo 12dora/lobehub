@@ -38,6 +38,7 @@ import { digestPlatformAiCredential } from '@/server/modules/ModelRuntime/platfo
 
 import { AiCatalogAdminService } from '../../services/aiCatalog/adminService';
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
+import { resetSharedAccountIdentityBackfillForTests } from '../../services/aiCatalog/sharedOAuthIdentity';
 import { markSharedOAuthGrantInvalidForProvider } from '../../services/aiCatalog/sharedOAuthReauthMarker';
 import { ChatGPTWebOAuthService } from '../../services/chatgptWeb/oauthService';
 import { getCookieJarPath, seedSessionJar } from '../../services/chatgptWeb/transport';
@@ -198,6 +199,7 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   vi.stubEnv('PLATFORM_MASTER_KEY', Buffer.alloc(32, 41).toString('base64'));
+  resetSharedAccountIdentityBackfillForTests();
   oauthService.initiateDeviceCode.mockReset();
   oauthService.pollForToken.mockReset();
   chatgptWeb.authFetch.mockReset();
@@ -485,7 +487,7 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
     expect(secret.value).not.toHaveProperty('oauthLastRefreshErrorAt');
   });
 
-  it('omits the account id for providers whose credential shape rejects it', async () => {
+  it('persists SuperGrok identity leaves once the credential shape allows them', async () => {
     const applyImmediate = vi.fn().mockResolvedValue({
       auditId: 'apply-audit-id',
       draft: { id: 'created-provider-row-id' },
@@ -507,11 +509,12 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
         operation: 'replace',
         value: {
           oauthAccessToken: ACCESS_TOKEN,
+          oauthAccountEmail: ACCOUNT_EMAIL,
+          oauthAccountId: ACCOUNT_ID,
           oauthRefreshToken: REFRESH_TOKEN,
         },
       },
     });
-    expect(applyImmediate.mock.calls[0]?.[1]).not.toHaveProperty('secret.value.oauthAccountId');
   });
 
   /**
@@ -1260,11 +1263,11 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
   });
 
   /**
-   * SuperGrok's credential shape has no `oauthAccountEmail` leaf: it deliberately does not
-   * surface an account identity. Decoding a standard `email` claim out of its access token
-   * would publish exactly what the shape withholds, to every admin with AI_PROVIDER_READ.
+   * SuperGrok (and Grok / Cursor) now allow the display-only email leaf. A connection
+   * whose access token is a JWT with `email` must project it even when the vault was
+   * written before the leaf existed (status re-decodes; it does not persist).
    */
-  it('never projects an email for a provider whose credential shape has no email leaf', async () => {
+  it('projects an email for SuperGrok when the access-token JWT carries one', async () => {
     const claims = Buffer.from(
       JSON.stringify({ email: 'grok-owner@example.test' }),
       'utf8',
@@ -1287,8 +1290,99 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
 
     const status = await caller.aiProviderOAuth.getConnectionStatus({ id: 'supergrok' });
 
-    expect(status).toMatchObject({ accountEmail: null, canRefresh: true, connected: true });
-    expect(JSON.stringify(status)).not.toContain('grok-owner@example.test');
+    expect(status).toMatchObject({
+      accountEmail: 'grok-owner@example.test',
+      canRefresh: true,
+      connected: true,
+    });
+  });
+});
+
+describe('admin.aiProviderOAuth.getConnectionStatus — identity backfill', () => {
+  const xaiJwt = () => {
+    const claims = Buffer.from(
+      JSON.stringify({
+        iss: 'https://auth.x.ai',
+        sub: '81f4abc',
+      }),
+      'utf8',
+    ).toString('base64url');
+    return `eyJhbGciOiJub25lIn0.${claims}.sig`;
+  };
+
+  /** Seed a legacy vault (no email leaf) without going through the rate-limited poll. */
+  const seedSuperGrokWithoutEmail = async () => {
+    const service = new AiCatalogAdminService(
+      db,
+      PlatformSecretService.fromEnvOrThrowIfEnterprise()!,
+    );
+    await service.applyProviderImmediate(ids.aiAdmin, {
+      displayName: 'Grok',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'supergrok',
+      reason: 'seed legacy shared account',
+      secret: {
+        operation: 'replace',
+        value: {
+          oauthAccessToken: xaiJwt(),
+          oauthRefreshToken: REFRESH_TOKEN,
+          oauthTokenExpiresAt: String(Date.now() + 3_600_000),
+        },
+      },
+      source: 'builtin',
+    });
+    return callerFor();
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('persists userinfo identity when the vault has no email leaf', async () => {
+    const caller = await seedSuperGrokWithoutEmail();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      json: async () => ({
+        email: 'user@example.com',
+        email_verified: true,
+        sub: '81f4abc',
+      }),
+      ok: true,
+      status: 200,
+    } as Response);
+
+    const status = await caller.aiProviderOAuth.getConnectionStatus({ id: 'supergrok' });
+    expect(status.accountEmail).toBe('user@example.com');
+    expect(status.accountIdMasked).toBe('81f4…');
+
+    const [row] = await db.select().from(platformAiProviders);
+    const vault = await new AiCatalogSecretManager(
+      PlatformSecretService.fromEnvOrThrowIfEnterprise()!,
+    ).decrypt(row.encryptedKeyVaults!);
+    expect(vault.oauthAccountEmail).toBe('user@example.com');
+    expect(vault.oauthAccountId).toBe('81f4abc');
+  });
+
+  it('returns a disconnected-looking email of null when userinfo fails, without throwing', async () => {
+    const caller = await seedSuperGrokWithoutEmail();
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('userinfo down'));
+
+    await expect(
+      caller.aiProviderOAuth.getConnectionStatus({ id: 'supergrok' }),
+    ).resolves.toMatchObject({
+      accountEmail: null,
+      connected: true,
+    });
+  });
+
+  it('does not re-fetch within 10 minutes', async () => {
+    const caller = await seedSuperGrokWithoutEmail();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('userinfo down'));
+
+    await caller.aiProviderOAuth.getConnectionStatus({ id: 'supergrok' });
+    fetchSpy.mockClear();
+    await caller.aiProviderOAuth.getConnectionStatus({ id: 'supergrok' });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

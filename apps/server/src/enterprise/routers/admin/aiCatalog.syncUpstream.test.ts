@@ -247,7 +247,10 @@ describe('admin.aiModels.syncUpstream', () => {
     await expect(caller.aiModels.syncUpstream({ providerId: 'supergrok' })).rejects.toSatisfy(
       (error: unknown) => {
         const body = getEnterpriseErrorBody(error);
-        return body?.code === 'PLATFORM_CONFIG_VALIDATION_FAILED';
+        return (
+          body?.code === 'PLATFORM_CONFIG_VALIDATION_FAILED' &&
+          body.details?.reason === 'shared_account_not_connected'
+        );
       },
     );
     expect(mockModels).not.toHaveBeenCalled();
@@ -280,6 +283,26 @@ describe('admin.aiModels.syncUpstream', () => {
       .from(platformAiModels)
       .where(eq(platformAiModels.providerId, providerId));
     expect(models).toEqual([]);
+  });
+
+  it('surfaces a classified connection_failed_* message when models() throws', async () => {
+    const { caller, providerKey } = await seedProvider(
+      'sync-upstream-fail',
+      'seed-credential-sync-fail',
+    );
+    mockModels.mockRejectedValue(Object.assign(new Error('HTTP 401'), { status: 401 }));
+
+    await expect(caller.aiModels.syncUpstream({ providerId: providerKey })).rejects.toSatisfy(
+      (error: unknown) => {
+        const body = getEnterpriseErrorBody(error);
+        return (
+          body?.code === 'PLATFORM_CONFIG_VALIDATION_FAILED' &&
+          typeof body.message === 'string' &&
+          body.message.startsWith('connection_failed_') &&
+          typeof body.details?.errorCategory === 'string'
+        );
+      },
+    );
   });
 
   it('still syncs when platform takeover is not published', async () => {

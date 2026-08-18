@@ -5,7 +5,7 @@ import OpenAI from 'openai';
 import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { LobeChatGPTAI } from './index';
+import { CODEX_CLIENT_VERSION, LobeChatGPTAI, UPSTREAM_REPORTED_ABILITIES } from './index';
 
 vi.mock('@lobechat/business-model-bank/model-config', () => ({
   loadModels: vi.fn().mockResolvedValue([]),
@@ -302,14 +302,111 @@ describe('LobeChatGPTAI', () => {
   describe('models', () => {
     const catalogIds = ['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'];
 
+    const mockModelsGet = (payload: unknown) =>
+      vi.spyOn(instance['client'], 'get').mockResolvedValue(payload as never);
+
+    const mockModelsGetReject = (error: unknown) =>
+      vi.spyOn(instance['client'], 'get').mockRejectedValue(error);
+
     it('uses the live Codex list when the endpoint answers', async () => {
-      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
-        data: [{ id: 'gpt-5.5' }, { id: 'codex-only-model' }],
-      } as never);
+      mockModelsGet({
+        models: [
+          {
+            context_window: 272_000,
+            display_name: 'GPT-5.5',
+            input_modalities: ['text', 'image'],
+            priority: 2,
+            slug: 'gpt-5.5',
+            supported_reasoning_levels: [{ effort: 'medium' }],
+          },
+          {
+            context_window: 128_000,
+            display_name: 'Codex Only',
+            priority: 1,
+            slug: 'codex-only-model',
+          },
+        ],
+      });
 
       const models = await instance.models();
 
-      expect(instance['client'].models.list).toHaveBeenCalled();
+      expect(instance['client'].get).toHaveBeenCalledWith('/models', {
+        query: { client_version: CODEX_CLIENT_VERSION },
+      });
+      expect(models.map((model) => model.id)).toEqual(['codex-only-model', 'gpt-5.5']);
+      expect(models).toEqual([
+        expect.objectContaining({
+          displayName: 'Codex Only',
+          functionCall: true,
+          id: 'codex-only-model',
+        }),
+        expect.objectContaining({
+          contextWindowTokens: 272_000,
+          displayName: 'GPT-5.5',
+          functionCall: true,
+          id: 'gpt-5.5',
+          reasoning: true,
+          vision: true,
+        }),
+      ]);
+    });
+
+    it('reports explicit false vision and reasoning when upstream arrays are present', async () => {
+      mockModelsGet({
+        models: [
+          {
+            context_window: 32_000,
+            display_name: 'Text only',
+            input_modalities: ['text'],
+            slug: 'codex-text-only',
+            supported_reasoning_levels: [],
+          },
+        ],
+      });
+
+      const [model] = await instance.models();
+
+      expect(model).toMatchObject({
+        functionCall: true,
+        id: 'codex-text-only',
+        reasoning: false,
+        vision: false,
+      });
+      expect(model).toEqual(
+        expect.objectContaining({
+          [UPSTREAM_REPORTED_ABILITIES]: expect.objectContaining({
+            functionCall: true,
+            reasoning: false,
+            vision: false,
+          }),
+        }),
+      );
+    });
+
+    it('skips hidden Codex models and keeps an empty gated list empty', async () => {
+      mockModelsGet({
+        models: [
+          { slug: 'gpt-5.5', visibility: 'list' },
+          { slug: 'codex-auto-review', visibility: 'hide' },
+        ],
+      });
+
+      const listed = await instance.models();
+      expect(listed.map((model) => model.id)).toEqual(['gpt-5.5']);
+      expect(listed.every((model) => model.id !== 'codex-auto-review')).toBe(true);
+
+      mockModelsGet({ models: [] });
+      await expect(instance.models()).resolves.toEqual([]);
+      expect(instance['client'].get).toHaveBeenLastCalledWith('/models', {
+        query: { client_version: CODEX_CLIENT_VERSION },
+      });
+    });
+
+    it('still accepts the OpenAI { data } list shape', async () => {
+      mockModelsGet({ data: [{ id: 'gpt-5.5' }, { id: 'codex-only-model' }] });
+
+      const models = await instance.models();
+
       expect(models.map((model) => model.id).sort()).toEqual(['codex-only-model', 'gpt-5.5']);
       expect(models).toEqual(
         expect.arrayContaining([
@@ -327,9 +424,7 @@ describe('LobeChatGPTAI', () => {
       { reason: '405s', status: 405 },
       { reason: '501s', status: 501 },
     ])('returns the chatgpt catalog when Codex /models $reason', async ({ status }) => {
-      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(
-        Object.assign(new Error(`HTTP ${status}`), { status }),
-      );
+      mockModelsGetReject(Object.assign(new Error(`HTTP ${status}`), { status }));
 
       const models = await instance.models();
 
@@ -344,9 +439,16 @@ describe('LobeChatGPTAI', () => {
       );
     });
 
+    it('propagates a 400 from Codex /models instead of publishing the curated catalog', async () => {
+      const badRequest = Object.assign(new Error('Field required'), { status: 400 });
+      mockModelsGetReject(badRequest);
+
+      await expect(instance.models()).rejects.toBe(badRequest);
+    });
+
     it('propagates a 401 from Codex /models instead of publishing the curated catalog', async () => {
       const unauthorized = Object.assign(new Error('HTTP 401'), { status: 401 });
-      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(unauthorized);
+      mockModelsGetReject(unauthorized);
 
       await expect(instance.models()).rejects.toBe(unauthorized);
     });
@@ -364,15 +466,13 @@ describe('LobeChatGPTAI', () => {
         'Invalid token',
         new Headers(),
       );
-      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(unauthorized);
+      mockModelsGetReject(unauthorized);
 
       await expect(instance.models()).rejects.toBe(unauthorized);
     });
 
     it('returns the chatgpt catalog when the live payload cannot be parsed', async () => {
-      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
-        data: 'not-a-list',
-      } as never);
+      mockModelsGet({ data: 'not-a-list' });
 
       const models = await instance.models();
 
@@ -381,7 +481,7 @@ describe('LobeChatGPTAI', () => {
 
     it('propagates transport failures from Codex /models', async () => {
       const transport = new Error('socket hang up');
-      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(transport);
+      mockModelsGetReject(transport);
 
       await expect(instance.models()).rejects.toBe(transport);
     });

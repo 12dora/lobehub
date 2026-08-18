@@ -142,7 +142,7 @@ describe('refreshSharedOAuthVault', () => {
 
     const result = await refreshSharedOAuthVault(makeParams());
 
-    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('https://auth.x.ai/oauth2/token');
     const body = String((mockFetch.mock.calls[0]?.[1] as { body?: unknown })?.body ?? '');
     expect(body).toContain('rt-newer');
     // The consumed predecessor must never reach the token endpoint.
@@ -174,9 +174,21 @@ describe('refreshSharedOAuthVault', () => {
   });
 
   it('refreshes with the lease held and CAS-persists the merged vault at the stable fingerprint', async () => {
-    mockFetch.mockResolvedValueOnce(
-      tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
-    );
+    mockFetch
+      .mockResolvedValueOnce(
+        tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+      )
+      .mockResolvedValueOnce({
+        json: () =>
+          Promise.resolve({
+            email: 'user@example.com',
+            email_verified: true,
+            name: 'Ada Lovelace',
+            sub: '81f4abc',
+          }),
+        ok: true,
+        status: 200,
+      });
     mockCas.mockResolvedValueOnce(true);
 
     const params = makeParams();
@@ -184,6 +196,8 @@ describe('refreshSharedOAuthVault', () => {
 
     expect(result.oauthAccessToken).toBe('at-new');
     expect(result.oauthRefreshToken).toBe('rt-new');
+    expect(result.oauthAccountEmail).toBe('user@example.com');
+    expect(result.oauthAccountId).toBe('81f4abc');
     expect(result.baseURL).toBe('https://keep.example.com/v1');
     expect(typeof result.oauthTokenExpiresAt).toBe('string');
 
@@ -194,6 +208,8 @@ describe('refreshSharedOAuthVault', () => {
     expect(casArgs.expectedCiphertext).toBe(params.ciphertext);
     const persisted = decryptVault(casArgs.ciphertext);
     expect(persisted.oauthRefreshToken).toBe('rt-new');
+    expect(persisted.oauthAccountEmail).toBe('user@example.com');
+    expect(persisted.oauthAccountId).toBe('81f4abc');
     expect(persisted.baseURL).toBe('https://keep.example.com/v1');
   });
 
@@ -423,9 +439,15 @@ describe('refreshSharedOAuthVault', () => {
     });
 
     it('force-renews a still-valid shared credential for the keepalive sweep', async () => {
-      mockFetch.mockResolvedValueOnce(
-        tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
-      );
+      mockFetch
+        .mockResolvedValueOnce(
+          tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+        )
+        .mockResolvedValueOnce({
+          json: () => Promise.resolve({}),
+          ok: true,
+          status: 200,
+        });
       mockCas.mockResolvedValueOnce(true);
 
       const vault = {
@@ -439,7 +461,7 @@ describe('refreshSharedOAuthVault', () => {
         makeParams({ ciphertext: encryptVault(vault), force: true, keyVaults: vault }),
       );
 
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://auth.x.ai/oauth2/token');
       expect(result.oauthRefreshToken).toBe('rt-new');
     });
 

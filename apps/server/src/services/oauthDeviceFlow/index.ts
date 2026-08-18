@@ -50,6 +50,130 @@ export class OAuthInvalidGrantError extends Error {
   }
 }
 
+const XAI_AUTH_ORIGIN = 'https://auth.x.ai';
+const XAI_USERINFO_URL = `${XAI_AUTH_ORIGIN}/oauth2/userinfo`;
+
+/** Shared budget for userinfo / GetMe — status backfill and connect/refresh must not hang. */
+export const OAUTH_IDENTITY_FETCH_TIMEOUT_MS = 5000;
+
+/** Cap identity lookup at 5s, and never outlive a caller deadline (the refresh lease). */
+export const identityLookupSignal = (extra?: AbortSignal): AbortSignal => {
+  const timeout = AbortSignal.timeout(OAUTH_IDENTITY_FETCH_TIMEOUT_MS);
+  return extra ? AbortSignal.any([timeout, extra]) : timeout;
+};
+
+const asOidcIdentity = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length > 0 && value.length <= 320 ? value : undefined;
+
+const isXaiAuthEndpoint = (tokenEndpoint: string): boolean => {
+  try {
+    return new URL(tokenEndpoint).origin === XAI_AUTH_ORIGIN;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Decode a JWT payload WITHOUT verifying the signature. Used only to read display
+ * identity (`email` / `preferred_username` / `sub`) and refresh scheduling claims —
+ * never for trust decisions. Returns undefined for opaque / non-JWT tokens.
+ */
+export const parseJwtClaims = (token?: string): Record<string, unknown> | undefined => {
+  if (!token) return undefined;
+
+  const parts = token.split('.');
+  if (parts.length !== 3) return undefined;
+
+  try {
+    const payload: unknown = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Human identity of a connected account. Standard OIDC `email`, else `preferred_username`
+ * (which need not be an email address). Never a credential — the admin panel uses it to
+ * name the shared account.
+ */
+export const extractOidcEmail = (idToken?: string, accessToken?: string): string | undefined => {
+  for (const token of [idToken, accessToken]) {
+    const claims = parseJwtClaims(token);
+    const email = asOidcIdentity(claims?.email) ?? asOidcIdentity(claims?.preferred_username);
+    if (email) return email;
+  }
+
+  return undefined;
+};
+
+/** OIDC `sub` — used as a masked account-id fallback when the provider has no better id. */
+export const extractOidcSubject = (idToken?: string, accessToken?: string): string | undefined => {
+  for (const token of [idToken, accessToken]) {
+    const claims = parseJwtClaims(token);
+    const subject = asOidcIdentity(claims?.sub);
+    if (subject) return subject;
+  }
+
+  return undefined;
+};
+
+const identityFromClaims = (
+  idToken?: string,
+  accessToken?: string,
+): { accountId?: string; email?: string } => {
+  const email = extractOidcEmail(idToken, accessToken);
+  const accountId = extractOidcSubject(idToken, accessToken);
+  return {
+    ...(accountId ? { accountId } : {}),
+    ...(email ? { email } : {}),
+  };
+};
+
+/**
+ * Display identity for a freshly obtained token pair. JWT claims first; x.ai access
+ * tokens are JWTs that carry `sub` but never `email`, so userinfo is the real source
+ * whenever the JWT has no email. Failures are swallowed.
+ */
+export const resolveOAuthAccountIdentity = async (params: {
+  accessToken: string;
+  idToken?: string;
+  signal?: AbortSignal;
+  tokenEndpoint: string;
+}): Promise<{ accountId?: string; email?: string }> => {
+  const fromJwt = identityFromClaims(params.idToken, params.accessToken);
+  if (fromJwt.email || !isXaiAuthEndpoint(params.tokenEndpoint)) return fromJwt;
+
+  try {
+    const response = await fetch(XAI_USERINFO_URL, {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${params.accessToken}`,
+      },
+      method: 'GET',
+      signal: identityLookupSignal(params.signal),
+    });
+    if (!response.ok) return fromJwt;
+
+    const body: unknown = await response.json().catch(() => ({}));
+    const record =
+      body && typeof body === 'object' && !Array.isArray(body)
+        ? (body as Record<string, unknown>)
+        : {};
+    const email = asOidcIdentity(record.email) ?? asOidcIdentity(record.preferred_username);
+    // userinfo is the source of truth; JWT `sub` is the fallback when userinfo omits it.
+    const accountId = asOidcIdentity(record.sub) ?? fromJwt.accountId;
+    return {
+      ...(accountId ? { accountId } : {}),
+      ...(email ? { email } : {}),
+    };
+  } catch {
+    return fromJwt;
+  }
+};
+
 /**
  * Read a numeric claim (seconds) from a JWT access token as a ms timestamp, WITHOUT
  * verifying the signature. Only used to schedule refreshes — never for trust decisions.
@@ -219,10 +343,16 @@ export class OAuthDeviceFlowService {
 
     // Success: access_token received
     if (data.access_token) {
+      const identity = await resolveOAuthAccountIdentity({
+        accessToken: data.access_token,
+        idToken: typeof data.id_token === 'string' ? data.id_token : undefined,
+        tokenEndpoint: config.tokenEndpoint,
+      });
       return {
         status: 'success',
         tokens: {
           accessToken: data.access_token,
+          ...identity,
           expiresIn: data.expires_in,
           refreshToken: data.refresh_token,
           scope: data.scope,
@@ -280,8 +410,15 @@ export class OAuthDeviceFlowService {
 
     if (!data.access_token) throw new Error('Unexpected response from token endpoint');
 
+    const identity = await resolveOAuthAccountIdentity({
+      accessToken: data.access_token,
+      idToken: typeof data.id_token === 'string' ? data.id_token : undefined,
+      signal: options?.signal,
+      tokenEndpoint: config.tokenEndpoint,
+    });
     return {
       accessToken: data.access_token,
+      ...identity,
       expiresIn: data.expires_in,
       // Rotation is optional per RFC 6749 — keep the old token when the
       // provider doesn't rotate.

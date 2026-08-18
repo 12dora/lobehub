@@ -65,6 +65,8 @@ const DEFAULT_TOKEN_TTL_MS = 3600 * 1000;
 
 export interface OAuthTokenKeyVaults {
   oauthAccessToken?: string;
+  /** Display-only identity, written at connect and refresh when the shape allows it. */
+  oauthAccountEmail?: string;
   oauthAccountId?: string;
   /**
    * Stable device id the connection was made with. Written at connect, never rewritten by a
@@ -299,6 +301,7 @@ const persistKeyVaults = async (
   const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
 
   const patch: Record<string, string | undefined> = {};
+  if ('oauthAccountEmail' in keyVaults) patch.oauthAccountEmail = keyVaults.oauthAccountEmail;
   if ('oauthAccountId' in keyVaults) patch.oauthAccountId = keyVaults.oauthAccountId;
   if ('oauthAccessToken' in keyVaults) patch.oauthAccessToken = keyVaults.oauthAccessToken;
   if ('oauthLastRefreshAt' in keyVaults) {
@@ -550,6 +553,9 @@ const refreshAndPersist = async (
     refreshedAt + DEFAULT_TOKEN_TTL_MS;
 
   const nextKeyVaults: OAuthTokenKeyVaults = {
+    ...(tokens.email || consumedKeyVaults.oauthAccountEmail
+      ? { oauthAccountEmail: tokens.email ?? consumedKeyVaults.oauthAccountEmail }
+      : {}),
     oauthAccountId: tokens.accountId ?? consumedKeyVaults.oauthAccountId,
     oauthAccessToken: tokens.accessToken,
     // Identity of the credential that was actually spent, carried forward — never

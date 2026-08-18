@@ -5,6 +5,7 @@ import { OAuthInvalidGrantError } from '../../index';
 import {
   buildCursorDeviceAuthorization,
   CURSOR_API_ORIGIN,
+  CURSOR_GET_ME_PATH,
   CURSOR_LOGIN_TTL_SECONDS,
   CURSOR_OAUTH_CLIENT_ID,
   CURSOR_USER_AGENT,
@@ -40,6 +41,17 @@ const jsonResponse = (body: unknown, status = 200) => ({
   status,
   text: () => Promise.resolve(JSON.stringify(body)),
 });
+
+const GET_ME_BODY = {
+  authId: 'google-oauth2|user_01Kabc',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  email: 'user@example.com',
+  firstName: 'Ada',
+  isEnterpriseUser: false,
+  lastName: '',
+  userId: 362_860_207,
+  workosId: 'user_01Kabc',
+};
 
 const buildJwt = (claims: object) =>
   `${Buffer.from('{"alg":"none"}').toString('base64url')}.${Buffer.from(
@@ -154,21 +166,110 @@ describe('CursorOAuthService', () => {
     });
   });
 
+  it('resolves email from DashboardService/GetMe when the JWT has no email', async () => {
+    const accessToken = buildJwt({
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      sub: 'google-oauth2|user_01Kabc',
+    });
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({ accessToken, refreshToken: 'browser-refresh' }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          authId: 'google-oauth2|user_01Kabc',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          email: 'user@example.com',
+          firstName: 'Ada',
+          isEnterpriseUser: false,
+          lastName: '',
+          userId: 362_860_207,
+          workosId: 'user_01Kabc',
+        }),
+      );
+
+    const result = await new CursorOAuthService().pollForToken(
+      config,
+      encodeCursorDeviceCode(FIXED_UUID, FIXED_VERIFIER),
+    );
+
+    expect(result.tokens).toMatchObject({
+      accountId: 'google-oauth2|user_01Kabc',
+      email: 'user@example.com',
+    });
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      `${CURSOR_API_ORIGIN}${CURSOR_GET_ME_PATH}`,
+      expect.objectContaining({
+        body: '{}',
+        headers: expect.objectContaining({
+          'authorization': `Bearer ${accessToken}`,
+          'connect-protocol-version': '1',
+          'content-type': 'application/json',
+        }),
+        method: 'POST',
+      }),
+    );
+  });
+
+  it('swallows a failed GetMe and leaves email unset', async () => {
+    const accessToken = buildJwt({
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      sub: 'google-oauth2|user_01Kabc',
+    });
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({ accessToken, refreshToken: 'browser-refresh' }))
+      .mockRejectedValueOnce(new Error('GetMe down'));
+
+    const result = await new CursorOAuthService().pollForToken(
+      config,
+      encodeCursorDeviceCode(FIXED_UUID, FIXED_VERIFIER),
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.tokens?.email).toBeUndefined();
+    expect(result.tokens?.accountId).toBe('google-oauth2|user_01Kabc');
+  });
+
+  it('copies email and subject from the poll id_token', async () => {
+    const accessToken = buildJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
+    const idToken = buildJwt({ email: 'cursor-owner@example.test', sub: 'cursor-user' });
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ accessToken, id_token: idToken, refreshToken: 'browser-refresh' }),
+    );
+
+    const result = await new CursorOAuthService().pollForToken(
+      config,
+      encodeCursorDeviceCode(FIXED_UUID, FIXED_VERIFIER),
+    );
+
+    expect(result.tokens).toMatchObject({
+      accountId: 'cursor-user',
+      email: 'cursor-owner@example.test',
+    });
+  });
+
   it('exchanges a pasted API key and stores it as the renewal credential', async () => {
-    const accessToken = buildJwt({ exp: Math.floor(Date.now() / 1000) + 120 });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ accessToken, refreshToken: 'ignored-rt' }));
+    const accessToken = buildJwt({
+      exp: Math.floor(Date.now() / 1000) + 120,
+      sub: 'google-oauth2|user_01Kabc',
+    });
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({ accessToken, refreshToken: 'ignored-rt' }))
+      .mockResolvedValueOnce(jsonResponse(GET_ME_BODY));
 
     const result = await new CursorOAuthService().exchangePastedCredential(config, 'key_live_abc');
 
     expect(result.status).toBe('success');
     expect(result.tokens).toEqual({
       accessToken,
+      accountId: 'google-oauth2|user_01Kabc',
+      email: 'user@example.com',
       expiresIn: 120,
       refreshToken: 'key_live_abc',
       renewalKind: 'cursor_api_key',
       tokenType: 'bearer',
     });
-    expect(mockFetch).toHaveBeenCalledWith(
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
       config.tokenExchangeEndpoint,
       expect.objectContaining({
         body: '{}',
@@ -180,11 +281,28 @@ describe('CursorOAuthService', () => {
         method: 'POST',
       }),
     );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      `${CURSOR_API_ORIGIN}${CURSOR_GET_ME_PATH}`,
+      expect.objectContaining({
+        body: '{}',
+        headers: expect.objectContaining({
+          'authorization': `Bearer ${accessToken}`,
+          'connect-protocol-version': '1',
+        }),
+        method: 'POST',
+      }),
+    );
   });
 
   it('re-exchanges a cursor_api_key refresh and returns the API key unchanged', async () => {
-    const accessToken = buildJwt({ exp: Math.floor(Date.now() / 1000) + 60 });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ accessToken }));
+    const accessToken = buildJwt({
+      exp: Math.floor(Date.now() / 1000) + 60,
+      sub: 'google-oauth2|user_01Kabc',
+    });
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({ accessToken }))
+      .mockResolvedValueOnce(jsonResponse(GET_ME_BODY));
 
     const tokens = await new CursorOAuthService().refreshAccessToken(config, 'key_live_abc', {
       renewalKind: 'cursor_api_key',
@@ -193,6 +311,27 @@ describe('CursorOAuthService', () => {
     expect(tokens.refreshToken).toBe('key_live_abc');
     expect(tokens.renewalKind).toBe('cursor_api_key');
     expect(tokens.accessToken).toBe(accessToken);
+    expect(tokens.email).toBe('user@example.com');
+    expect(tokens.accountId).toBe('google-oauth2|user_01Kabc');
+  });
+
+  it('bounds GetMe with the refresh deadline', async () => {
+    const accessToken = buildJwt({
+      exp: Math.floor(Date.now() / 1000) + 90,
+      sub: 'google-oauth2|user_01Kabc',
+    });
+    const deadline = AbortSignal.abort();
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({ access_token: accessToken, token_type: 'bearer' }))
+      .mockResolvedValueOnce(jsonResponse(GET_ME_BODY));
+
+    await new CursorOAuthService().refreshAccessToken(config, 'browser-refresh-token', {
+      renewalKind: 'oauth',
+      signal: deadline,
+    });
+
+    const getMeInit = mockFetch.mock.calls[1]?.[1] as { signal?: AbortSignal };
+    expect(getMeInit.signal?.aborted).toBe(true);
   });
 
   it('treats a key_-prefixed refresh token as an API key even without the label', async () => {
@@ -209,10 +348,13 @@ describe('CursorOAuthService', () => {
   });
 
   it('uses a working browser-login refresh grant when Cursor honours it', async () => {
-    const accessToken = buildJwt({ exp: Math.floor(Date.now() / 1000) + 90 });
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({ access_token: accessToken, token_type: 'bearer' }),
-    );
+    const accessToken = buildJwt({
+      exp: Math.floor(Date.now() / 1000) + 90,
+      sub: 'google-oauth2|user_01Kabc',
+    });
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({ access_token: accessToken, token_type: 'bearer' }))
+      .mockResolvedValueOnce(jsonResponse(GET_ME_BODY));
 
     const tokens = await new CursorOAuthService().refreshAccessToken(
       config,
@@ -222,11 +364,23 @@ describe('CursorOAuthService', () => {
 
     expect(tokens).toEqual({
       accessToken,
+      accountId: 'google-oauth2|user_01Kabc',
+      email: 'user@example.com',
       expiresIn: 90,
       refreshToken: 'browser-refresh-token',
       renewalKind: 'oauth',
       tokenType: 'bearer',
     });
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      `${CURSOR_API_ORIGIN}${CURSOR_GET_ME_PATH}`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          authorization: `Bearer ${accessToken}`,
+        }),
+        method: 'POST',
+      }),
+    );
     expect(mockFetch).toHaveBeenCalledWith(
       `${CURSOR_API_ORIGIN}/oauth/token`,
       expect.objectContaining({

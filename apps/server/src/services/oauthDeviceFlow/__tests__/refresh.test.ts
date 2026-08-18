@@ -152,6 +152,71 @@ describe('ensureFreshOAuthToken', () => {
     );
   });
 
+  it('persists x.ai userinfo identity on refresh when the JWT has no email', async () => {
+    const encode = (obj: object) => Buffer.from(JSON.stringify(obj)).toString('base64url');
+    const accessJwt = `${encode({ alg: 'none' })}.${encode({
+      iss: 'https://auth.x.ai',
+      sub: '81f4abc',
+    })}.sig`;
+    mockUpdateConfig.mockResolvedValue(undefined);
+    mockFetch
+      .mockResolvedValueOnce(
+        tokenResponse({
+          access_token: accessJwt,
+          expires_in: 3600,
+          refresh_token: 'new-refresh',
+          token_type: 'bearer',
+        }),
+      )
+      .mockResolvedValueOnce({
+        json: () =>
+          Promise.resolve({
+            email: 'user@example.com',
+            email_verified: true,
+            family_name: '',
+            given_name: 'Ada',
+            name: 'Ada Lovelace',
+            picture: 'https://auth.x.ai/picture',
+            sub: '81f4abc',
+          }),
+        ok: true,
+        status: 200,
+      });
+
+    const result = await ensureFreshOAuthToken({
+      config: { ...config, tokenEndpoint: 'https://auth.x.ai/oauth2/token' },
+      db,
+      keyVaults: {
+        oauthAccessToken: 'old-access',
+        oauthRefreshToken: 'old-refresh',
+        oauthTokenExpiresAt: String(Date.now() + 30 * 1000),
+      },
+      providerId: 'supergrok',
+      userId: `user-${++userSeq}`,
+    });
+
+    expect(result.oauthAccountEmail).toBe('user@example.com');
+    expect(result.oauthAccountId).toBe('81f4abc');
+    expect(mockUpdateConfig).toHaveBeenCalledWith(
+      'supergrok',
+      expect.objectContaining({
+        keyVaults: expect.objectContaining({
+          oauthAccessToken: accessJwt,
+          oauthAccountEmail: 'user@example.com',
+          oauthAccountId: '81f4abc',
+          oauthRefreshToken: 'new-refresh',
+        }),
+      }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      'https://auth.x.ai/oauth2/userinfo',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   it('refreshes when only the JWT exp claim says the token is expiring', async () => {
     mockFetch.mockResolvedValueOnce(
       tokenResponse({ access_token: 'new-access', refresh_token: 'new-refresh' }),

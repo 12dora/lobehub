@@ -68,12 +68,16 @@ export class AiCatalogPermissionDeniedError extends Error {
   }
 }
 
+export type AiCatalogValidationReason = 'shared_account_not_connected';
+
 export class AiCatalogValidationError extends Error {
   readonly issues: string[];
+  readonly reason?: AiCatalogValidationReason;
 
-  constructor(issues: string[]) {
+  constructor(issues: string[], reason?: AiCatalogValidationReason) {
     super('PLATFORM_CONFIG_VALIDATION_FAILED');
     this.issues = issues;
+    if (reason) this.reason = reason;
   }
 }
 

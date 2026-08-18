@@ -6,6 +6,7 @@ import { ModelProvider } from 'model-bank';
 import OpenAI from 'openai';
 
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
+import type { ProcessableModelCard } from '../../utils/modelParse';
 import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import { params as openAIParams } from '../openai';
 
@@ -26,6 +27,13 @@ interface ChatGPTAdditionalToolsInput {
 
 const isResponsesLiteModel = (model: string | undefined) =>
   !!model && CHATGPT_RESPONSES_LITE_MODEL_IDS.has(model);
+
+/**
+ * Codex `/models` is gated by `client_version`: older values (e.g. `0.50.0`) return
+ * `{ models: [] }`. Bump this when Codex CLI ships newer models gated by
+ * `minimal_client_version`.
+ */
+export const CODEX_CLIENT_VERSION = '0.146.0';
 
 /** Codex `/models` is undocumented — only "this route is not there" is a catalog fallback. */
 const CODEX_MODELS_MISSING_STATUSES = new Set([404, 405, 501]);
@@ -67,6 +75,48 @@ const isCodexModelsEndpointMissing = (error: unknown): boolean => {
   const signals: string[] = [];
   collectErrorSignals(error, signals);
   return !signals.some((signal) => AUTH_ERROR_TYPE.test(signal) || AUTH_ERROR_CODE.test(signal));
+};
+
+const asFiniteNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+const asNonEmptyString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length > 0 ? value : undefined;
+
+/**
+ * Live Codex payload is `{ models: [...] }` with `slug` / `display_name` /
+ * `context_window` — not the OpenAI `{ data: [{ id }] }` shape.
+ */
+const mapCodexCatalog = (rawModels: unknown[]): ProcessableModelCard[] => {
+  const mapped: Array<ProcessableModelCard & { priority: number }> = [];
+
+  for (const raw of rawModels) {
+    if (!isRecord(raw) || raw.visibility === 'hide') continue;
+    const id = asNonEmptyString(raw.slug);
+    if (!id) continue;
+
+    const inputModalities = Array.isArray(raw.input_modalities) ? raw.input_modalities : undefined;
+    const reasoningLevels = Array.isArray(raw.supported_reasoning_levels)
+      ? raw.supported_reasoning_levels
+      : undefined;
+    const displayName = asNonEmptyString(raw.display_name);
+    const description = asNonEmptyString(raw.description);
+    const contextWindowTokens = asFiniteNumber(raw.context_window);
+
+    mapped.push({
+      id,
+      functionCall: true,
+      priority: asFiniteNumber(raw.priority) ?? Number.POSITIVE_INFINITY,
+      ...(displayName ? { displayName } : {}),
+      ...(description ? { description } : {}),
+      ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+      ...(inputModalities ? { vision: inputModalities.includes('image') } : {}),
+      ...(reasoningLevels ? { reasoning: reasoningLevels.length > 0 } : {}),
+    });
+  }
+
+  mapped.sort((left, right) => left.priority - right.priority);
+  return mapped.map(({ priority: _priority, ...card }) => card);
 };
 
 const attachUpstreamAbilityProvenance = (
@@ -113,20 +163,40 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
     chatCompletion: () => process.env.DEBUG_CHATGPT_CHAT_COMPLETION === '1',
     responses: () => process.env.DEBUG_CHATGPT_RESPONSES === '1',
   },
-  // Codex `/models` is undocumented and may simply not exist. Auth, rate-limit,
-  // and transport failures must surface — those are the errors an operator can act on.
+  // Codex `/models` requires `client_version` and returns `{ models: [...] }`.
+  // 404/405/501 (route missing) fall back to model-bank. Auth, rate-limit, and
+  // transport failures must surface — those are the errors an operator can act on.
   models: async ({ client }) => {
     try {
-      const modelsPage = (await client.models.list()) as { data?: unknown };
-      const modelList = modelsPage.data;
-      if (!Array.isArray(modelList)) {
+      const payload: unknown = await client.get('/models', {
+        query: { client_version: CODEX_CLIENT_VERSION },
+      });
+      if (!isRecord(payload)) {
         throw new TypeError('ChatGPT Codex models payload was not a list');
       }
 
-      return attachUpstreamAbilityProvenance(
-        await processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt'),
-        modelList,
-      );
+      // Live Codex shape. An empty `models` array is a real answer (old client
+      // versions are gated to none) — do not fall back to model-bank.
+      if (Array.isArray(payload.models)) {
+        const modelList = mapCodexCatalog(payload.models);
+        return attachUpstreamAbilityProvenance(
+          await processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt'),
+          modelList,
+        );
+      }
+
+      // Defensive: if the endpoint ever returns the public OpenAI list shape.
+      if (Array.isArray(payload.data)) {
+        const modelList = payload.data.filter(
+          (item): item is ProcessableModelCard => isRecord(item) && typeof item.id === 'string',
+        );
+        return attachUpstreamAbilityProvenance(
+          await processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt'),
+          modelList,
+        );
+      }
+
+      throw new TypeError('ChatGPT Codex models payload was not a list');
     } catch (error) {
       if (!(error instanceof TypeError) && !isCodexModelsEndpointMissing(error)) {
         throw error;

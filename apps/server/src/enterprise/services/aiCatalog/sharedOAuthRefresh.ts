@@ -54,6 +54,7 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 const toOAuthVault = (vault: PlatformProviderKeyVaults): OAuthTokenKeyVaults => ({
   oauthAccessToken: asPlatformVaultString(vault.oauthAccessToken),
+  oauthAccountEmail: asPlatformVaultString(vault.oauthAccountEmail),
   oauthAccountId: asPlatformVaultString(vault.oauthAccountId),
   /**
    * The stable device the connection was made with. Carried for the same reason as the kind
@@ -97,6 +98,7 @@ const mergeTokens = (
   const merged: PlatformProviderKeyVaults = {
     ...base,
     ...(tokens.oauthAccessToken ? { oauthAccessToken: tokens.oauthAccessToken } : {}),
+    ...(tokens.oauthAccountEmail ? { oauthAccountEmail: tokens.oauthAccountEmail } : {}),
     ...(tokens.oauthAccountId ? { oauthAccountId: tokens.oauthAccountId } : {}),
     ...(tokens.oauthRefreshToken ? { oauthRefreshToken: tokens.oauthRefreshToken } : {}),
     // The platform vault only stores string leaves.

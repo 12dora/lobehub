@@ -3,7 +3,11 @@ import { CURRENT_VERSION } from '@lobechat/const';
 
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
-import { type DeviceCodeResponse, OAuthDeviceFlowService, type PollResult } from '../index';
+import type { DeviceCodeResponse, PollResult } from '../index';
+import { extractOidcEmail, OAuthDeviceFlowService, parseJwtClaims } from '../index';
+
+/** @deprecated Use {@link extractOidcEmail}. Kept so ChatGPT Web's namespaced claim path stays a one-line import. */
+export const extractChatGPTAccountEmail = extractOidcEmail;
 
 const DEVICE_CODE_TTL_SECONDS = 15 * 60;
 const POLLING_SAFETY_MARGIN_SECONDS = 3;
@@ -24,18 +28,8 @@ interface ChatGPTTokenClaims {
   'preferred_username'?: string;
 }
 
-const parseTokenClaims = (token?: string): ChatGPTTokenClaims | undefined => {
-  if (!token) return undefined;
-
-  const parts = token.split('.');
-  if (parts.length !== 3) return undefined;
-
-  try {
-    return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-  } catch {
-    return undefined;
-  }
-};
+const parseTokenClaims = (token?: string): ChatGPTTokenClaims | undefined =>
+  parseJwtClaims(token) as ChatGPTTokenClaims | undefined;
 
 export const extractChatGPTAccountId = (
   idToken?: string,
@@ -49,25 +43,6 @@ export const extractChatGPTAccountId = (
       claims?.organizations?.[0]?.id;
 
     if (accountId) return accountId;
-  }
-
-  return undefined;
-};
-
-/**
- * Human identity of the connected Codex account, read from the same JWTs already parsed for
- * the account id. `email` is the standard OIDC claim; `preferred_username` is the fallback
- * (and need not be an email address). Never a credential — it exists only so the admin panel
- * can name the account it is about to share with everyone on the instance.
- */
-export const extractChatGPTAccountEmail = (
-  idToken?: string,
-  accessToken?: string,
-): string | undefined => {
-  for (const token of [idToken, accessToken]) {
-    const claims = parseTokenClaims(token);
-    const email = claims?.email || claims?.preferred_username;
-    if (typeof email === 'string' && email.length > 0 && email.length <= 320) return email;
   }
 
   return undefined;

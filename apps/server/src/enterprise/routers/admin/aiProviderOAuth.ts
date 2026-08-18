@@ -14,7 +14,7 @@ import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiC
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
-import { extractChatGPTAccountEmail } from '@/server/services/oauthDeviceFlow/providers/chatGPT';
+import { extractOidcEmail } from '@/server/services/oauthDeviceFlow';
 import { getOAuthService } from '@/server/services/oauthDeviceFlow/providers/githubCopilot';
 
 import {
@@ -37,6 +37,7 @@ import {
 import { AiCatalogNotFoundError } from '../../services/aiCatalog/adminService';
 import { providerCredentialKeys } from '../../services/aiCatalog/credentialAdapter';
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
+import { tryBackfillSharedAccountIdentity } from '../../services/aiCatalog/sharedOAuthIdentity';
 import { readSharedOAuthReauthMarker } from '../../services/aiCatalog/sharedOAuthReauthMarker';
 import {
   isOAuthAuthorizationExpiredError,
@@ -375,24 +376,38 @@ export const adminAiProviderOAuthRouter = router({
       }
 
       const accessToken = asVaultString(keyVaults.oauthAccessToken);
-      const accountId = asVaultString(keyVaults.oauthAccountId);
+      let accountId = asVaultString(keyVaults.oauthAccountId);
       const expiresAt = asVaultString(keyVaults.oauthTokenExpiresAt);
       // Raw epoch-ms string, exactly like `expiresAt`: both mirror the vault leaf type, and
       // formatting belongs to the panel that renders them in the operator's locale.
       const lastRefreshAt = asVaultString(keyVaults.oauthLastRefreshAt);
       // Connections stored before the email leaf existed keep working: decode the claim from
-      // the access token we already hold, best-effort and WITHOUT persisting it.
+      // the access token we already hold, then (for x.ai / Cursor) one network fetch.
       //
-      // Gated on the credential SHAPE. A provider whose vault has no `oauthAccountEmail`
-      // (SuperGrok) deliberately does not surface an account identity, and decoding a
-      // standard `email` claim out of its token would publish exactly what that shape
-      // withholds — to every admin with AI_PROVIDER_READ.
+      // Gated on the credential SHAPE. Shared-account providers that allow
+      // `oauthAccountEmail` (ChatGPT, ChatGPT Web, SuperGrok, Grok, Cursor) project it.
       const emailProjectable = providerCredentialKeys(input.id).has('oauthAccountEmail');
-      const accountEmail = emailProjectable
+      let accountEmail = emailProjectable
         ? (asVaultString(keyVaults.oauthAccountEmail) ??
-          extractChatGPTAccountEmail(undefined, accessToken) ??
+          extractOidcEmail(undefined, accessToken) ??
           null)
         : null;
+
+      const connected = !expired && Boolean(accessToken);
+      if (connected && emailProjectable && !accountEmail && accessToken) {
+        try {
+          const backfilled = await tryBackfillSharedAccountIdentity({
+            db: ctx.serverDB,
+            providerKey: input.id,
+            providerRowId: provider.id,
+            secrets: secretManager,
+          });
+          if (backfilled?.email) accountEmail = backfilled.email;
+          if (backfilled?.accountId) accountId = backfilled.accountId;
+        } catch {
+          // Identity backfill must never take the status card down.
+        }
+      }
 
       const refreshCredential = asVaultString(keyVaults.oauthRefreshToken);
       /**
@@ -411,7 +426,7 @@ export const adminAiProviderOAuthRouter = router({
         // only a manual reconnect brings it back. A web session counts — it mints fresh
         // access tokens exactly like an OAuth refresh token does.
         canRefresh: Boolean(refreshCredential),
-        connected: !expired && Boolean(accessToken),
+        connected,
         expired,
         expiresAt: expiresAt ?? null,
         flow: getProviderOAuthGrantFlow(input.id),

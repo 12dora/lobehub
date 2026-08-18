@@ -18,7 +18,11 @@ import * as ModelRuntime from '@/server/modules/ModelRuntime';
 
 import type { AiProviderDraft } from '../../contracts/aiCatalog';
 import { PlatformAuditService } from '../platformAudit';
-import { AiCatalogAdminService, AiCatalogUpstreamSyncError } from './adminService';
+import {
+  AiCatalogAdminService,
+  AiCatalogUpstreamSyncError,
+  AiCatalogValidationError,
+} from './adminService';
 import { mapCardsToBatchUpdate } from './adminService.sync';
 import type * as SharedOAuthRefreshModule from './sharedOAuthRefresh';
 
@@ -123,7 +127,7 @@ const seedProvider = async (providerKey: string) => {
 
 const listThroughChatGPT = async (data: Array<Record<string, unknown>>) => {
   const instance = new LobeChatGPTAI({ apiKey: 'sync-ability-fixture' });
-  vi.spyOn(instance['client'].models, 'list').mockResolvedValue({ data } as never);
+  vi.spyOn(instance['client'], 'get').mockResolvedValue({ data } as never);
   return instance.models();
 };
 
@@ -166,6 +170,25 @@ describe('mapCardsToBatchUpdate', () => {
 });
 
 describe('AiCatalogAdminService.syncUpstream', () => {
+  it('rejects a disconnected shared account with a typed reason', async () => {
+    const service = createService();
+    const created = await service.applyProviderImmediate('admin', {
+      displayName: 'Grok',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'supergrok',
+      reason: 'seed empty shared account',
+      source: 'builtin',
+    });
+
+    await expect(service.syncUpstream('admin', { providerId: created.draft.id })).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof AiCatalogValidationError &&
+        error.reason === 'shared_account_not_connected',
+    );
+    expect(mockModels).not.toHaveBeenCalled();
+  });
+
   it('does not sync after a post-exchange refresh persistence failure', async () => {
     const actual = await vi.importActual<typeof SharedOAuthRefreshModule>('./sharedOAuthRefresh');
     mockRefreshSharedOAuthVault.mockImplementation(actual.refreshSharedOAuthVault);

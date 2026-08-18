@@ -1,4 +1,5 @@
 import type { ChatModelCard } from 'model-bank';
+import { isProviderOAuthDeviceFlow } from 'model-bank/modelProviders';
 
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import type { LobeChatDatabase } from '@/database/type';
@@ -17,6 +18,7 @@ import {
   AiCatalogCannotEnumerateError,
   AiCatalogNotFoundError,
   AiCatalogUpstreamSyncError,
+  AiCatalogValidationError,
 } from './errors';
 import { mergeModelUpdateFields } from './modelBatchDml';
 import type { AiCatalogSecretManager } from './secretManager';
@@ -276,6 +278,18 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
           // access token may list models. Persist failures after exchange are terminal.
           refreshed = keyVaults;
         }
+      }
+
+      const isSharedAccountProvider =
+        provider.settings.authType === 'oauthDeviceFlow' ||
+        isProviderOAuthDeviceFlow(provider.providerKey);
+      const accessToken =
+        typeof refreshed.oauthAccessToken === 'string' ? refreshed.oauthAccessToken : undefined;
+      if (isSharedAccountProvider && !accessToken) {
+        throw new AiCatalogValidationError(
+          ['Shared account is not connected'],
+          'shared_account_not_connected',
+        );
       }
 
       const normalized = normalizeAiCatalogExecutionCredentials({

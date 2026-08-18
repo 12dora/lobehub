@@ -92,7 +92,10 @@ export const mapServiceError = (error: unknown): never => {
   if (error instanceof AiCatalogValidationError) {
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
-      details: { issueCount: error.issues.length },
+      details: {
+        issueCount: error.issues.length,
+        ...(error.reason ? { reason: error.reason } : {}),
+      },
       httpCode: 'PRECONDITION_FAILED',
     });
   }
@@ -117,7 +120,10 @@ export const mapServiceError = (error: unknown): never => {
         errorCategory: error.errorCategory,
         ...(error.errorType ? { errorType: error.errorType } : {}),
       },
+      // Stable connection_failed_* code — never provider prose. The client maps it
+      // the same way the connectivity checker does.
       httpCode: 'PRECONDITION_FAILED',
+      message: error.message,
     });
   }
   throw error;

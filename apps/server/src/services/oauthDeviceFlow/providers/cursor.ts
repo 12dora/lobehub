@@ -2,14 +2,14 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
+import type { DeviceCodeResponse, OAuthRefreshOptions, PollResult, TokenResponse } from '../index';
 import {
-  type DeviceCodeResponse,
+  extractOidcEmail,
+  extractOidcSubject,
+  identityLookupSignal,
   OAuthDeviceFlowService,
   OAuthInvalidGrantError,
-  type OAuthRefreshOptions,
   parseJwtExpiry,
-  type PollResult,
-  type TokenResponse,
 } from '../index';
 
 export const CURSOR_USER_AGENT = 'cursor-agent-cli/2026.08.11';
@@ -20,6 +20,8 @@ export const CURSOR_LOGIN_PATH = '/loginDeepControl';
 /** Public Cursor OAuth client used by the CLI for a refresh_token grant. */
 export const CURSOR_OAUTH_CLIENT_ID = 'KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB';
 export const CURSOR_API_ORIGIN = 'https://api2.cursor.sh';
+/** Connect-RPC DashboardService.GetMe — the CLI's email source. */
+export const CURSOR_GET_ME_PATH = '/aiserver.v1.DashboardService/GetMe';
 
 const toBase64Url = (buf: Buffer): string =>
   buf.toString('base64').replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -73,6 +75,76 @@ const readJson = async (response: Response): Promise<Record<string, unknown>> =>
 const asNonEmptyString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.length > 0 ? value : undefined;
 
+const asAccountIdentity = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length > 0 && value.length <= 320 ? value : undefined;
+
+/**
+ * API origin for Cursor dashboard RPCs. Prefers `CURSOR_API_ENDPOINT` (full URL or
+ * origin), then the card's token-exchange host, then the public `api2.cursor.sh`.
+ */
+export const resolveCursorApiOrigin = (
+  config?: Pick<OAuthDeviceFlowConfig, 'tokenExchangeEndpoint'>,
+): string => {
+  for (const raw of [process.env.CURSOR_API_ENDPOINT, config?.tokenExchangeEndpoint]) {
+    const value = raw?.trim();
+    if (!value) continue;
+    try {
+      return new URL(value).origin;
+    } catch {
+      // Fall through to the next candidate.
+    }
+  }
+  return CURSOR_API_ORIGIN;
+};
+
+/**
+ * Live identity for a Cursor access token. The JWT only has a WorkOS `sub`; the CLI
+ * resolves email via DashboardService/GetMe. Failures are swallowed.
+ */
+export const fetchCursorAccountIdentity = async (
+  accessToken: string,
+  config?: Pick<OAuthDeviceFlowConfig, 'tokenExchangeEndpoint'>,
+  signal?: AbortSignal,
+): Promise<{ accountId?: string; email?: string }> => {
+  try {
+    const response = await fetch(`${resolveCursorApiOrigin(config)}${CURSOR_GET_ME_PATH}`, {
+      body: '{}',
+      headers: {
+        'authorization': `Bearer ${accessToken}`,
+        'connect-protocol-version': '1',
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+      signal: identityLookupSignal(signal),
+    });
+    if (!response.ok) return {};
+    const body = await readJson(response);
+    const email = asAccountIdentity(body.email);
+    const accountId = asAccountIdentity(body.authId) ?? asAccountIdentity(body.workosId);
+    return {
+      ...(accountId ? { accountId } : {}),
+      ...(email ? { email } : {}),
+    };
+  } catch {
+    return {};
+  }
+};
+
+const withCursorIdentity = async (
+  tokens: TokenResponse | undefined,
+  config?: Pick<OAuthDeviceFlowConfig, 'tokenExchangeEndpoint'>,
+  signal?: AbortSignal,
+): Promise<TokenResponse | undefined> => {
+  if (!tokens || tokens.email) return tokens;
+  const fetched = await fetchCursorAccountIdentity(tokens.accessToken, config, signal);
+  if (!fetched.email && !fetched.accountId) return tokens;
+  return {
+    ...tokens,
+    ...(fetched.accountId ? { accountId: fetched.accountId } : {}),
+    ...(fetched.email ? { email: fetched.email } : {}),
+  };
+};
+
 const cursorTokensFromBody = (
   body: Record<string, unknown>,
   refreshTokenOverride?: string,
@@ -84,8 +156,13 @@ const cursorTokensFromBody = (
     refreshTokenOverride ??
     asNonEmptyString(body.refreshToken) ??
     asNonEmptyString(body.refresh_token);
+  const idToken = asNonEmptyString(body.idToken) ?? asNonEmptyString(body.id_token);
+  const email = extractOidcEmail(idToken, accessToken);
+  const accountId = extractOidcSubject(idToken, accessToken);
   return {
     accessToken,
+    ...(accountId ? { accountId } : {}),
+    ...(email ? { email } : {}),
     expiresIn: expiresInFromAccessToken(accessToken) ?? asFiniteExpiresIn(body),
     ...(refreshToken ? { refreshToken } : {}),
     ...(renewalKind ? { renewalKind } : {}),
@@ -179,7 +256,7 @@ export class CursorOAuthService extends OAuthDeviceFlowService {
 
     if (!response.ok) return { status: 'pending' };
 
-    const tokens = cursorTokensFromBody(body, undefined, 'oauth');
+    const tokens = await withCursorIdentity(cursorTokensFromBody(body, undefined, 'oauth'), config);
     if (!tokens?.refreshToken) return { status: 'pending' };
     return { status: 'success', tokens };
   }
@@ -240,7 +317,11 @@ export class CursorOAuthService extends OAuthDeviceFlowService {
       throw new Error(`Failed to exchange Cursor API key: ${response.status}`);
     }
 
-    const tokens = cursorTokensFromBody(body, apiKey, 'cursor_api_key');
+    const tokens = await withCursorIdentity(
+      cursorTokensFromBody(body, apiKey, 'cursor_api_key'),
+      config,
+      signal,
+    );
     if (!tokens) throw new Error('Unexpected response from Cursor API key exchange');
     return tokens;
   }
@@ -276,6 +357,6 @@ export class CursorOAuthService extends OAuthDeviceFlowService {
       throw new Error(`Failed to refresh Cursor browser-login token: ${response.status}`);
     }
 
-    return cursorTokensFromBody(body, refreshToken, 'oauth');
+    return withCursorIdentity(cursorTokensFromBody(body, refreshToken, 'oauth'), undefined, signal);
   }
 }
