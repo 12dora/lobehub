@@ -10,10 +10,10 @@ import type {
  *
  * The upstream market recommendations mix work templates with personal-life ones (bedtime
  * gratitude, parenting …). This enterprise build ships its own curated, work-only library
- * covering the functions a company actually runs — R&D, manufacturing, sales, management,
- * marketing, product, operations, HR, finance / legal — so both the home-page recommendations
- * (when the platform catalog is empty) and the admin "import" pull from the same local source
- * and never depend on an outbound market call.
+ * covering the functions a manufacturing company actually runs — manufacturing engineering,
+ * production, sales, management, marketing, product, operations, HR, finance / legal — so both
+ * the home-page recommendations (when the platform catalog is empty) and the admin "import"
+ * pull from the same local source and never depend on an outbound market call.
  *
  * Every entry is a plain scheduled prompt (no connectors required) so it works on any deployment.
  */
@@ -56,105 +56,105 @@ const entry = (
 });
 
 export const TASK_TEMPLATE_LIBRARY: readonly TaskTemplateLibraryEntry[] = [
-  // ───────────────────────────── 研发 / Engineering ─────────────────────────────
+  // ─────────────────────── 工艺工程 / Manufacturing engineering ───────────────────────
   entry(
     1001,
-    'eng-daily-standup-brief',
+    'mfg-process-yield-weekly',
     'engineering',
-    ['coding', 'product'],
-    '30 9 * * 1,2,3,4,5',
+    ['operations', 'business'],
+    '30 9 * * 1',
     {
-      description: '每个工作日早晨，整理昨日进展、今日计划与阻塞项，生成可直接粘贴到站会的简报。',
+      description: '每周一上午，把上周关键工艺参数与良率数据对照起来看，找出参数漂移与调机方向。',
       instruction:
-        '每个工作日 09:30，请根据我提供或近期讨论过的任务，整理一份站会简报：昨日完成、今日计划、当前阻塞与需要的协助。每项一行，控制在 10 行以内，末尾列出需要负责人拍板的事项。',
-      title: '研发站会简报',
+        '每周一 09:30，请根据我提供的上周关键工艺参数记录（温度、压力、转速、扭矩、节拍等）与各机台良率数据，输出工艺追踪报告：1) 各机台、各型号的良率排名与环比变化；2) 超出工艺窗口或 CPK 低于 1.33 的参数，注明发生的班次与机台；3) 参数漂移与良率下滑在时间上的对应关系，给出最可能的关联判断；4) 建议的调机方向与需要安排的验证试验（样本量、判定标准）。良率低于目标的机台单独列出并标注跟进的工程师。',
+      title: '工艺参数与良率追踪',
     },
     {
       description:
-        'Every weekday morning, summarise yesterday, today and blockers into a paste-ready stand-up brief.',
+        'Every Monday morning, line up last week’s process parameters against yield to spot drift and decide what to adjust.',
       instruction:
-        'Every weekday at 09:30, compile a stand-up brief from the tasks I shared or we recently discussed: done yesterday, planned today, current blockers and help needed. One line per item, at most 10 lines, ending with decisions that need an owner.',
-      title: 'Engineering stand-up brief',
+        'Every Monday at 09:30, using last week’s process parameter logs (temperature, pressure, speed, torque, cycle time) and per-machine yield data I provide, produce a process tracking report: 1) yield ranking by machine and part number with the week-over-week change; 2) parameters that ran outside the process window or whose Cpk fell below 1.33, naming the shift and machine; 3) where parameter drift lines up in time with a yield drop, and the most plausible link; 4) which settings to adjust and what verification run to schedule (sample size, pass criteria). List machines below target yield separately with the engineer following up.',
+      title: 'Process parameter & yield tracking',
     },
   ),
   entry(
     1002,
-    'eng-code-review-checklist',
+    'mfg-incoming-quality-weekly',
     'engineering',
-    ['coding'],
-    '0 10 * * 1,2,3,4,5',
+    ['operations', 'business'],
+    '0 10 * * 2',
     {
-      description: '每个工作日上午，提醒并生成当天待评审代码的评审要点清单，避免遗漏安全与性能项。',
+      description: '每周二上午，汇总上周来料检验与供应商表现，列出批退、特采与需要约谈的供应商。',
       instruction:
-        '每个工作日 10:00，请提醒我处理待评审的代码变更，并按以下维度输出评审清单：正确性、边界条件、错误处理、安全（输入校验、权限、敏感信息）、性能与可维护性、测试覆盖。对我粘贴的变更给出具体评审意见与建议的合并结论。',
-      title: '代码评审清单',
+        '每周二 10:00，请根据我提供的上周来料检验（IQC）数据与供应商交付记录，输出来料质量周报：1) 各供应商的批次合格率、批退次数与主要不良现象；2) 让步接收（特采）清单及其对产线的潜在风险；3) 连续两周以上出现同类问题的供应商，列为需要约谈或要求提交 8D 的对象；4) 因来料问题造成的停线与返工工时估算；5) 本周到期的供应商纠正措施及跟进状态。按影响程度排序，需要采购与品质共同处理的项目单独标注。',
+      title: '来料质量与供应商周报',
     },
     {
       description:
-        'Every weekday morning, remind you of pending reviews and generate a review checklist covering security and performance.',
+        'Every Tuesday morning, review last week’s incoming inspection results and supplier performance, and flag who owes an 8D.',
       instruction:
-        'Every weekday at 10:00, remind me to handle pending code reviews and produce a checklist covering correctness, edge cases, error handling, security (input validation, authorisation, secrets), performance / maintainability and test coverage. For any diff I paste, give concrete review comments and a merge recommendation.',
-      title: 'Code review checklist',
+        'Every Tuesday at 10:00, using last week’s incoming inspection (IQC) results and supplier delivery records I provide, write an incoming-quality report: 1) lot acceptance rate, rejected lots and dominant defect modes per supplier; 2) deviations accepted under concession and the risk each carries onto the line; 3) suppliers repeating the same defect for two weeks or more — mark them for a supplier meeting or a formal 8D; 4) estimated line-stop and rework hours caused by incoming material; 5) supplier corrective actions due this week with their status. Order by impact and call out anything purchasing and quality must handle together.',
+      title: 'Incoming & supplier quality report',
     },
   ),
   entry(
     1003,
-    'eng-release-notes-weekly',
+    'mfg-customer-complaint-analysis',
     'engineering',
-    ['coding', 'writing', 'product'],
-    '0 16 * * 5',
+    ['operations', 'sales'],
+    '0 9 * * 3',
     {
-      description: '每周五下午，把本周合并的变更整理成面向业务方可读的发布说明。',
+      description: '每周三早晨，归纳客户投诉与售后返修数据，定位重复失效模式并跟踪 8D 进度。',
       instruction:
-        '每周五 16:00，请根据我提供的本周变更列表（提交、工单或需求编号），整理一份发布说明：新增功能、优化、缺陷修复、已知问题与升级注意事项。使用业务方能看懂的语言，避免内部术语，每条注明影响范围。',
-      title: '每周发布说明',
+        '每周三 09:00，请根据我提供的客户投诉、退换货与售后返修记录，输出客诉质量分析：1) 按客户、机型与失效模式的投诉分布，标出本周新增；2) 与生产批次、生产日期的对应关系，判断是否为批次性问题；3) 重复出现的失效模式，推断可能的失效环节（设计、来料、工艺、包装运输）与需要验证的方向；4) 在办 8D 报告的所处阶段与逾期项，注明责任人；5) 需要立即回复客户或启动围堵措施的事项（含成品库存与在途品的筛选范围）。表述客观，把已确认的事实与推测分开写。',
+      title: '客诉与售后质量分析',
     },
     {
       description:
-        'Every Friday afternoon, turn this week’s merged changes into release notes readable by business stakeholders.',
+        'Every Wednesday morning, analyse customer complaints and field returns, isolate repeat failure modes and track 8D progress.',
       instruction:
-        'Every Friday at 16:00, turn the list of changes I provide (commits, tickets or requirement ids) into release notes: new features, improvements, bug fixes, known issues and upgrade notes. Write for business readers, avoid internal jargon and state the impact scope of each item.',
-      title: 'Weekly release notes',
+        'Every Wednesday at 09:00, using the customer complaints, returns and field repair records I provide, write a field-quality analysis: 1) complaints broken down by customer, model and failure mode, with this week’s new entries marked; 2) how they map onto production lots and build dates, and whether this looks lot-specific; 3) repeat failure modes with the likely point of failure (design, incoming material, process, packaging / transport) and what to verify next; 4) status and overdue items on open 8D reports, with owners; 5) anything needing an immediate customer reply or a containment action, including which finished stock and goods in transit to screen. Stay factual and keep confirmed findings separate from hypotheses.',
+      title: 'Customer complaint & field quality analysis',
     },
   ),
   entry(
     1004,
-    'eng-incident-review-weekly',
+    'mfg-npi-readiness-review',
     'engineering',
-    ['coding', 'operations'],
-    '0 15 * * 1',
+    ['product', 'operations'],
+    '0 15 * * 4',
     {
-      description: '每周一下午，回顾上周线上告警与故障，形成根因、改进项与责任人清单。',
+      description: '每周四下午，检查新品试产进度与量产就绪度，列出转量产前必须关闭的问题。',
       instruction:
-        '每周一 15:00，请根据我提供的上周告警与故障记录，输出一份复盘：按影响程度排序的事件列表、每个事件的时间线、根因、临时措施与长期改进项（含建议负责人与期限）。最后归纳可复用的预防措施。',
-      title: '线上故障周复盘',
+        '每周四 15:00，请根据我提供的新品项目清单（项目、阶段、试产计划、遗留问题），输出量产准备评审：1) 各项目所处阶段与关键节点是否按期；2) 量产就绪度逐项检查——图纸与 BOM 冻结、工艺文件与作业指导书、工装模具、检具与检验标准、设备产能与人员培训、供应商定点与首批物料，每项标注就绪 / 进行中 / 缺失；3) 试产暴露的问题清单，按是否阻塞转量产分级，注明责任人与期限；4) 产能爬坡预估与瓶颈工序；5) 建议本周提交项目会决策的 3 个事项。缺失项加粗。',
+      title: '新品试产与量产准备',
     },
     {
       description:
-        'Every Monday afternoon, review last week’s alerts and incidents into root causes, action items and owners.',
+        'Every Thursday afternoon, review trial-run progress on new products and what must close before mass production.',
       instruction:
-        'Every Monday at 15:00, using the alert and incident records I provide, write a retrospective: incidents ranked by impact, a timeline for each, root cause, mitigation and long-term fixes (with suggested owner and due date). Close with reusable prevention measures.',
-      title: 'Weekly incident review',
+        'Every Thursday at 15:00, using the new-product project list I provide (project, phase, trial-run plan, open issues), produce a mass-production readiness review: 1) the phase each project sits in and whether its milestones are on schedule; 2) a readiness checklist — drawings and BOM frozen, process documents and work instructions, tooling and fixtures, gauges and inspection criteria, equipment capacity and operator training, supplier sourcing and first material lot — each marked ready / in progress / missing; 3) issues found during the trial run, graded by whether they block the transfer to production, with owner and due date; 4) expected ramp-up curve and the bottleneck operation; 5) the 3 items to escalate to this week’s project meeting. Put missing items in bold.',
+      title: 'NPI trial run & production readiness',
     },
   ),
   entry(
     1005,
-    'eng-tech-debt-review',
+    'mfg-engineering-change-tracking',
     'engineering',
-    ['coding', 'product'],
-    '0 14 * * 3',
+    ['operations', 'product'],
+    '0 14 * * 5',
     {
-      description: '每周三下午，梳理技术债清单，评估影响与偿还成本，给出下个迭代的建议。',
+      description: '每周五下午，梳理在办工程变更的执行状态，确认切换节点、旧料处理与文件同步。',
       instruction:
-        '每周三 14:00，请帮我更新技术债清单：对我提供的条目按影响（稳定性 / 安全 / 效率）与偿还成本分级，标出应纳入下个迭代的 3 项，并给出每项的最小可行改进方案。',
-      title: '技术债评审',
+        '每周五 14:00，请根据我提供的工程变更单（ECN）清单，输出变更跟踪报告：1) 在办变更一览——变更内容、发起原因、影响的机型与工序、审批状态；2) 每项变更的切换方式与生效节点（用完即切 / 指定日期 / 指定批次），标出已过节点但未确认执行的；3) 受影响的旧版物料与半成品库存数量及处理方案（继续使用、返工、报废）；4) 需要同步更新的文件与工装：图纸、BOM、工艺卡、检验标准、模具、设备程序、标签；5) 需要客户或供应商确认的变更。对可能造成混料或用错版本的变更单独预警。',
+      title: '工程变更跟踪',
     },
     {
       description:
-        'Every Wednesday afternoon, groom the tech-debt backlog, rate impact vs. cost and propose items for the next sprint.',
+        'Every Friday afternoon, review open engineering change notices: cut-in points, old-stock disposition and document sync.',
       instruction:
-        'Every Wednesday at 14:00, help me groom the tech-debt backlog: grade the items I provide by impact (stability / security / efficiency) and cost to fix, flag the 3 that belong in the next sprint and give a minimal viable fix for each.',
-      title: 'Tech-debt review',
+        'Every Friday at 14:00, using the engineering change notice (ECN) list I provide, write a change-tracking report: 1) open changes — what changes, why it was raised, affected models and operations, approval status; 2) the cut-in method and effective point of each (run out then switch, fixed date, fixed lot), flagging any whose date has passed without confirmation; 3) quantity of old-revision material and WIP on hand and how to handle it (use up, rework, scrap); 4) documents and tooling that must be updated in step: drawings, BOM, process sheets, inspection criteria, tooling, machine programs, labels; 5) changes needing customer or supplier sign-off. Raise a separate warning for any change that could lead to mixed or wrong-revision parts.',
+      title: 'Engineering change tracking',
     },
   ),
   // ───────────────────────────── 制造 / Manufacturing ─────────────────────────────
@@ -526,20 +526,20 @@ export const TASK_TEMPLATE_LIBRARY: readonly TaskTemplateLibraryEntry[] = [
     1502,
     'prod-sprint-planning-prep',
     'product',
-    ['product', 'coding'],
+    ['product', 'business'],
     '0 14 * * 4',
     {
-      description: '每周四下午，为下个迭代规划做准备：需求池排序、就绪度检查与容量建议。',
+      description: '每周四下午，为下一阶段的产品开发计划做准备：需求排序、就绪度检查与资源建议。',
       instruction:
-        '每周四 14:00，请根据我提供的需求池与团队容量，输出迭代规划准备材料：按价值 / 成本排序的候选需求、每项的就绪度（验收标准、设计、依赖是否齐备）、建议纳入的范围与风险提示。',
-      title: '迭代规划准备',
+        '每周四 14:00，请根据我提供的需求清单与团队资源情况，输出下阶段开发计划的准备材料：按客户价值 / 投入成本排序的候选需求、每项的就绪度（需求是否明确、验收标准、设计与样件、外部依赖是否到位）、建议纳入的范围与风险提示。',
+      title: '产品开发计划准备',
     },
     {
       description:
-        'Every Thursday afternoon, prepare sprint planning: backlog ranking, readiness check and capacity advice.',
+        'Every Thursday afternoon, prepare the next development cycle: requirement ranking, readiness check and resource advice.',
       instruction:
-        'Every Thursday at 14:00, using the backlog and team capacity I provide, prepare planning material: candidates ranked by value / cost, readiness of each (acceptance criteria, design, dependencies), recommended scope and risks.',
-      title: 'Sprint planning prep',
+        'Every Thursday at 14:00, using the requirement list and team capacity I provide, prepare the planning material for the next development cycle: candidates ranked by customer value / cost, readiness of each (requirement clarity, acceptance criteria, design and samples, external dependencies), recommended scope and risks.',
+      title: 'Product development planning prep',
     },
   ),
   entry(
