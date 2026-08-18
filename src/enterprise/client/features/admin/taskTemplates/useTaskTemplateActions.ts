@@ -8,6 +8,7 @@ import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseErro
 import { adminTaskTemplatesService } from '@/enterprise/client/services/adminTaskTemplates';
 
 import { openDangerConfirm } from '../primitives/DangerConfirm';
+import { runTaskTemplateBulkDelete, toastTaskTemplateBulkSummary } from './bulkDelete';
 import { openTaskTemplateEditorModal } from './openTaskTemplateEditorModal';
 import type { AdminTaskTemplateItem } from './types';
 import { refreshAdminTaskTemplateLists } from './useAdminTaskTemplates';
@@ -112,6 +113,38 @@ export const useTaskTemplateActions = (items?: AdminTaskTemplateItem[]) => {
     [reportMutationFailure, t],
   );
 
+  /**
+   * Bulk delete: one confirmation for the whole selection, then the single-row mutation per
+   * row. There is no server bulk procedure, so a partial result is possible and reported.
+   */
+  const handleBulkDelete = useCallback(
+    (targets: readonly AdminTaskTemplateItem[], onDone: () => void) => {
+      if (targets.length === 0) return;
+      openDangerConfirm({
+        confirmText: t('taskTemplateCatalog.bulkDelete.confirm'),
+        content: t('taskTemplateCatalog.bulkDelete.content', { count: targets.length }),
+        title: t('taskTemplateCatalog.bulkDelete.title'),
+        onConfirm: async () => {
+          const result = await runTaskTemplateBulkDelete({
+            items: targets,
+            t,
+            mutate: (item) =>
+              adminTaskTemplatesService.delete({
+                expectedRevision: item.revision,
+                id: item.id,
+              }),
+          });
+          toastTaskTemplateBulkSummary(result, t);
+          // The list is authoritative again either way — rows that failed stay, and the
+          // selection is dropped so no stale CAS token can be replayed.
+          await refreshAdminTaskTemplateLists();
+          onDone();
+        },
+      });
+    },
+    [t],
+  );
+
   const openEditor = useCallback(
     (item?: AdminTaskTemplateItem) => {
       openTaskTemplateEditorModal({
@@ -172,6 +205,7 @@ export const useTaskTemplateActions = (items?: AdminTaskTemplateItem[]) => {
   }, [i18n.language, i18n.resolvedLanguage, t]);
 
   return {
+    handleBulkDelete,
     handleDelete,
     handleImport,
     handleReorder,

@@ -1,8 +1,7 @@
 'use client';
 
-import { Alert, Input, Text } from '@lobehub/ui';
+import { Alert, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
-import { createStaticStyles } from 'antd-style';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -13,28 +12,18 @@ import DataTable from '../primitives/DataTable';
 import { deriveTaskTemplatePermissions } from './controller';
 import { createSortableRow, SortableTable } from './SortableRow';
 import { buildTaskTemplateColumns } from './taskTemplateColumns';
+import TaskTemplateListToolbar from './TaskTemplateListToolbar';
 import type { AdminTaskTemplateItem } from './types';
 import { useFetchAdminTaskTemplates } from './useAdminTaskTemplates';
 import { useTaskTemplateActions } from './useTaskTemplateActions';
 import { useTaskTemplateFilters } from './useTaskTemplateFilters';
+import {
+  TASK_TEMPLATE_SELECTION_COLUMN_WIDTH,
+  useTaskTemplateSelection,
+} from './useTaskTemplateSelection';
 
-const styles = createStaticStyles(({ css }) => ({
-  toolbar: css`
-    display: flex;
-    flex: 1;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    justify-content: flex-start;
-
-    width: 100%;
-  `,
-  toolbarSearch: css`
-    flex: 0 1 320px;
-    min-width: 200px;
-    max-width: 320px;
-  `,
-}));
+/** Sum of the fixed column widths, without the optional selection column. */
+const BASE_TABLE_WIDTH = 1126;
 
 const TaskTemplateListPage = memo(() => {
   const { t, i18n } = useTranslation('admin');
@@ -57,6 +46,7 @@ const TaskTemplateListPage = memo(() => {
   } = useTaskTemplateFilters();
   const { data, error, isLoading, mutate } = useFetchAdminTaskTemplates(input, canRead);
   const {
+    handleBulkDelete,
     handleDelete,
     handleImport,
     handleReorder,
@@ -66,6 +56,9 @@ const TaskTemplateListPage = memo(() => {
     pendingEnabled,
     pendingOrder,
   } = useTaskTemplateActions(data?.items);
+  const { clearSelection, rowSelection, selectedRows } = useTaskTemplateSelection();
+  // Bulk delete is the only bulk action, so the checkbox column is dead weight without it.
+  const selectable = canDelete;
 
   // Dragging reassigns the sort slots of the rows on screen. Under a filter the visible rows are
   // not contiguous, so the result would be meaningless — reorder is offered on the plain list only.
@@ -95,6 +88,7 @@ const TaskTemplateListPage = memo(() => {
         openEditor,
         pendingEnabled,
         resolvedLanguage: i18n.resolvedLanguage,
+        selectable,
         t,
       }),
     [
@@ -107,6 +101,7 @@ const TaskTemplateListPage = memo(() => {
       i18n.resolvedLanguage,
       openEditor,
       pendingEnabled,
+      selectable,
       t,
     ],
   );
@@ -143,10 +138,7 @@ const TaskTemplateListPage = memo(() => {
           error={Boolean(error) && !data}
           loading={isLoading && !data}
           rowKey="id"
-          // Sum of the column widths: fixed table layout keeps CJK headers on one line
-          // and scrolls horizontally instead of collapsing to one character per column.
-          // `virtual` stays off — the drag-and-drop row seam needs real `<tr>` elements.
-          scroll={{ x: 1126 }}
+          rowSelection={selectable ? rowSelection : undefined}
           emptyDescription={
             filtered
               ? t('taskTemplateCatalog.list.empty.filtered')
@@ -157,19 +149,23 @@ const TaskTemplateListPage = memo(() => {
             pageSize,
             total: data?.totalFiltered ?? 0,
           }}
+          // Sum of the column widths: fixed table layout keeps CJK headers on one line and
+          // scrolls horizontally instead of collapsing to one character per column, so the
+          // optional checkbox column has to widen the total rather than squeeze its peers.
+          // `virtual` stays off — the drag-and-drop row seam needs real `<tr>` elements.
+          scroll={{
+            x: selectable
+              ? BASE_TABLE_WIDTH + TASK_TEMPLATE_SELECTION_COLUMN_WIDTH
+              : BASE_TABLE_WIDTH,
+          }}
           toolbar={
-            <div className={styles.toolbar}>
-              <div className={styles.toolbarSearch}>
-                <Input
-                  allowClear
-                  aria-label={t('taskTemplateCatalog.list.filters.query')}
-                  placeholder={t('taskTemplateCatalog.list.filters.query')}
-                  style={{ width: '100%' }}
-                  value={queryDraft}
-                  onChange={(event) => setQueryDraft(event.target.value)}
-                />
-              </div>
-            </div>
+            <TaskTemplateListToolbar
+              canDelete={canDelete}
+              query={queryDraft}
+              selectedCount={selectedRows.length}
+              onBulkDelete={() => handleBulkDelete(selectedRows, clearSelection)}
+              onQueryChange={setQueryDraft}
+            />
           }
           onChange={handleTableChange}
           onRetry={() => void mutate()}

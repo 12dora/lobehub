@@ -3071,6 +3071,21 @@ export default {
   'taskTemplateCatalog.list.dragHandle': 'Drag to reorder {{title}}',
   'taskTemplateCatalog.list.reorderHint': 'Clear the filters to reorder by dragging.',
   'taskTemplateCatalog.toast.reordered': 'Order saved.',
+  'taskTemplateCatalog.list.selectedCount': '{{count}} selected',
+  'taskTemplateCatalog.list.bulk.delete': 'Delete',
+  'taskTemplateCatalog.bulkDelete.title': 'Delete selected task templates?',
+  'taskTemplateCatalog.bulkDelete.content_one':
+    '{{count}} task template disappears from every user’s recommendations immediately. This cannot be undone.',
+  'taskTemplateCatalog.bulkDelete.content_other':
+    '{{count}} task templates disappear from every user’s recommendations immediately. This cannot be undone.',
+  'taskTemplateCatalog.bulkDelete.confirm': 'Delete',
+  'taskTemplateCatalog.bulkDelete.reason.conflict': 'Changed by another administrator',
+  'taskTemplateCatalog.bulkDelete.reason.notFound': 'Already deleted',
+  'taskTemplateCatalog.bulkDelete.reason.failed': 'Could not be deleted',
+  'taskTemplateCatalog.toast.bulkDeleted_one': '{{count}} task template deleted.',
+  'taskTemplateCatalog.toast.bulkDeleted_other': '{{count}} task templates deleted.',
+  'taskTemplateCatalog.toast.bulkSummary': '{{succeeded}} deleted, {{failed}} failed',
+  'taskTemplateCatalog.toast.bulkFailureDetail': '{{title}}: {{reason}}',
   'nav.contentModeration': 'Content moderation',
   'contentModeration.page.title': 'Content moderation',
   'contentModeration.page.desc':

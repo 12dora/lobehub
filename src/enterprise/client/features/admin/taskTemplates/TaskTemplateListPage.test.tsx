@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { Table } from 'antd';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,6 +30,8 @@ const item = {
 const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
   data: undefined as unknown,
+  /** Server-side filtering stand-in: the rows the list returns for the current query. */
+  dataFor: undefined as ((input: { query?: string }) => unknown) | undefined,
   deleteTemplate: vi.fn(),
   importRecommendations: vi.fn(),
   mutate: vi.fn(),
@@ -39,8 +42,12 @@ const mocks = vi.hoisted(() => ({
   reorder: vi.fn(),
   reorderProps: undefined as { ids: string[]; onReorder: (ids: string[]) => void } | undefined,
   setEnabled: vi.fn(),
+  tableColumns: undefined as { key?: string }[] | undefined,
   tableOnChange: undefined as ((meta: { filters: Record<string, unknown> }) => void) | undefined,
   tablePagination: undefined as { current?: number; pageSize?: number; total?: number } | undefined,
+  tableRowSelection: undefined as
+    { columnWidth?: number; onChange: (keys: string[], rows: unknown[]) => void } | undefined,
+  tableScroll: undefined as { x?: number } | undefined,
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
@@ -53,7 +60,13 @@ vi.mock('antd-style', () => ({
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     i18n: { language: 'en-US', resolvedLanguage: 'en-US' },
-    t: (key: string) => key,
+    // Interpolation is kept so the assertions below cover what the operator actually
+    // reads — the count and the per-row reason — not just the key that was looked up.
+    t: (key: string, options?: { count?: number; reason?: string }) => {
+      if (options?.count !== undefined) return `${key}:${options.count}`;
+      if (options?.reason !== undefined) return `${key}:${options.reason}`;
+      return key;
+    },
   }),
 }));
 
@@ -74,17 +87,12 @@ vi.mock('./openTaskTemplateEditorModal', () => ({
   openTaskTemplateEditorModal: (...args: unknown[]) => mocks.openEditor(...args),
 }));
 
-vi.mock('@/enterprise/client/errors/mapEnterpriseError', () => ({
-  mapEnterpriseError: (error: unknown) =>
-    (error as { code?: string })?.code ? { code: (error as { code: string }).code } : null,
-}));
-
 vi.mock('./useAdminTaskTemplates', () => ({
   refreshAdminTaskTemplateLists: () => mocks.refreshLists(),
-  useFetchAdminTaskTemplates: (input: unknown) => {
+  useFetchAdminTaskTemplates: (input: { query?: string }) => {
     mocks.listInput = input;
     return {
-      data: mocks.data,
+      data: mocks.dataFor ? mocks.dataFor(input) : mocks.data,
       error: undefined,
       isLoading: false,
       mutate: mocks.mutate,
@@ -166,9 +174,21 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
 }));
 
 vi.mock('../primitives/DataTable', () => ({
-  default: ({ columns, dataSource, emptyDescription, onChange, pagination, toolbar }: any) => {
+  default: ({
+    columns,
+    dataSource,
+    emptyDescription,
+    onChange,
+    pagination,
+    rowSelection,
+    scroll,
+    toolbar,
+  }: any) => {
+    mocks.tableColumns = columns;
     mocks.tableOnChange = onChange;
     mocks.tablePagination = pagination;
+    mocks.tableRowSelection = rowSelection;
+    mocks.tableScroll = scroll;
     if (!dataSource?.length) {
       return (
         <div>
@@ -177,6 +197,32 @@ vi.mock('../primitives/DataTable', () => ({
         </div>
       );
     }
+    const selectedKeys: string[] = rowSelection?.selectedRowKeys ?? [];
+    // Stand-in for antd's own selection column: the real Table swaps the placeholder for a
+    // checkbox cell in place, which is exactly what the column order under test relies on.
+    const renderCell = (column: any, row: any) => {
+      if (column === Table.SELECTION_COLUMN) {
+        return (
+          <input
+            aria-label={`select-${row.id}`}
+            checked={selectedKeys.includes(row.id)}
+            type="checkbox"
+            onChange={(event) => {
+              const next = event.target.checked
+                ? [...selectedKeys, row.id]
+                : selectedKeys.filter((key) => key !== row.id);
+              rowSelection.onChange(
+                next,
+                dataSource.filter((item: any) => next.includes(item.id)),
+              );
+            }}
+          />
+        );
+      }
+      return column.render
+        ? column.render(column.dataIndex ? row[column.dataIndex] : undefined, row)
+        : String(row[column.dataIndex]);
+    };
     return (
       <div>
         {toolbar}
@@ -184,12 +230,8 @@ vi.mock('../primitives/DataTable', () => ({
           <tbody>
             {dataSource.map((row: any) => (
               <tr key={row.id}>
-                {columns.map((column: any) => (
-                  <td key={column.key}>
-                    {column.render
-                      ? column.render(column.dataIndex ? row[column.dataIndex] : undefined, row)
-                      : String(row[column.dataIndex])}
-                  </td>
+                {columns.map((column: any, index: number) => (
+                  <td key={column.key ?? `column-${index}`}>{renderCell(column, row)}</td>
                 ))}
               </tr>
             ))}
@@ -207,14 +249,33 @@ const renderPage = () =>
     </MemoryRouter>,
   );
 
+/**
+ * A rejection shaped the way the tRPC client hands one back, so the production
+ * `mapEnterpriseError` (never a stub) decides whether the UI reports a conflict.
+ */
+const trpcError = (code: string) =>
+  Object.assign(new Error(code), { data: { errorData: { code } } });
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.data = { items: [item], totalAll: 1, totalFiltered: 1 };
+  mocks.dataFor = undefined;
   mocks.listInput = undefined;
   mocks.refreshLists.mockResolvedValue([item]);
   mocks.reorderProps = undefined;
+  mocks.tableColumns = undefined;
   mocks.tableOnChange = undefined;
   mocks.tablePagination = undefined;
+  mocks.tableRowSelection = undefined;
+  mocks.tableScroll = undefined;
   mocks.permissions = [
     PLATFORM_PERMISSIONS.AGENT_READ,
     PLATFORM_PERMISSIONS.AGENT_CREATE,
@@ -308,9 +369,7 @@ describe('TaskTemplateListPage', () => {
   it('rolls the order back and reports a conflict when the drag was stale', async () => {
     const second = { ...item, id: 'tpl-2', revision: 5, title: 'Second' };
     mocks.data = { items: [item, second], totalAll: 2, totalFiltered: 2 };
-    mocks.reorder.mockRejectedValue(
-      Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }),
-    );
+    mocks.reorder.mockRejectedValue(trpcError('PLATFORM_REVISION_CONFLICT'));
     renderPage();
 
     mocks.reorderProps!.onReorder(['tpl-2', 'tpl-1']);
@@ -331,9 +390,7 @@ describe('TaskTemplateListPage', () => {
   });
 
   it('reports a stale toggle as a conflict and refreshes instead of a generic failure', async () => {
-    mocks.setEnabled.mockRejectedValue(
-      Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }),
-    );
+    mocks.setEnabled.mockRejectedValue(trpcError('PLATFORM_REVISION_CONFLICT'));
     renderPage();
 
     fireEvent.click(screen.getByLabelText('taskTemplateCatalog.list.columns.enabled'));
@@ -389,6 +446,185 @@ describe('TaskTemplateListPage', () => {
     await waitFor(() => {
       expect(mocks.listInput).toEqual(expect.objectContaining({ enabled: false, offset: 0 }));
     });
+  });
+
+  it('places the bulk-selection checkbox right after the order column', () => {
+    renderPage();
+
+    expect(mocks.tableColumns?.[0]?.key).toBe('order');
+    // antd would prepend its selection column; the placeholder pins it behind the grip.
+    expect(mocks.tableColumns?.[1]).toBe(Table.SELECTION_COLUMN);
+    expect(mocks.tableColumns?.[2]?.key).toBe('template');
+    expect(mocks.tableRowSelection?.columnWidth).toBe(40);
+    // The checkbox column widens the fixed table layout instead of squeezing the others.
+    expect(mocks.tableScroll?.x).toBe(1166);
+  });
+
+  it('offers no selection column to an operator who cannot delete', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_UPDATE];
+    renderPage();
+
+    expect(mocks.tableColumns?.includes(Table.SELECTION_COLUMN as never)).toBe(false);
+    expect(mocks.tableRowSelection).toBeUndefined();
+  });
+
+  it('shows the selected count and a delete action once rows are picked', () => {
+    const second = { ...item, id: 'tpl-2', revision: 5, title: 'Second' };
+    mocks.data = { items: [item, second], totalAll: 2, totalFiltered: 2 };
+    renderPage();
+
+    expect(screen.queryByText(/taskTemplateCatalog\.list\.selectedCount/)).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('select-tpl-1'));
+    expect(screen.getByText('taskTemplateCatalog.list.selectedCount:1')).toBeTruthy();
+    expect(screen.getByText('taskTemplateCatalog.list.bulk.delete')).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('select-tpl-2'));
+    expect(screen.getByText('taskTemplateCatalog.list.selectedCount:2')).toBeTruthy();
+  });
+
+  it('confirms once, deletes every selected row with its own CAS token, then clears', async () => {
+    const second = { ...item, id: 'tpl-2', revision: 5, title: 'Second' };
+    mocks.data = { items: [item, second], totalAll: 2, totalFiltered: 2 };
+    mocks.deleteTemplate.mockResolvedValue({ id: 'tpl-1' });
+    renderPage();
+
+    fireEvent.click(screen.getByLabelText('select-tpl-1'));
+    fireEvent.click(screen.getByLabelText('select-tpl-2'));
+    fireEvent.click(screen.getByText('taskTemplateCatalog.list.bulk.delete'));
+
+    expect(mocks.confirm).toHaveBeenCalledTimes(1);
+    // The confirmation names the size of the selection, not just its copy key.
+    expect(mocks.confirm.mock.calls[0][0].content).toBe('taskTemplateCatalog.bulkDelete.content:2');
+    expect(mocks.deleteTemplate).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await mocks.confirm.mock.calls[0][0].onConfirm();
+    });
+
+    expect(mocks.deleteTemplate).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteTemplate).toHaveBeenNthCalledWith(1, { expectedRevision: 3, id: 'tpl-1' });
+    expect(mocks.deleteTemplate).toHaveBeenNthCalledWith(2, { expectedRevision: 5, id: 'tpl-2' });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.bulkDeleted:2');
+    expect(mocks.refreshLists).toHaveBeenCalled();
+
+    await waitFor(() =>
+      expect(screen.queryByText(/taskTemplateCatalog\.list\.selectedCount/)).toBeNull(),
+    );
+  });
+
+  it('deletes the selected rows one at a time, not in parallel', async () => {
+    const second = { ...item, id: 'tpl-2', revision: 5, title: 'Second' };
+    mocks.data = { items: [item, second], totalAll: 2, totalFiltered: 2 };
+    const first = deferred<unknown>();
+    const rest = deferred<unknown>();
+    mocks.deleteTemplate.mockReturnValueOnce(first.promise).mockReturnValueOnce(rest.promise);
+    renderPage();
+
+    fireEvent.click(screen.getByLabelText('select-tpl-1'));
+    fireEvent.click(screen.getByLabelText('select-tpl-2'));
+    fireEvent.click(screen.getByText('taskTemplateCatalog.list.bulk.delete'));
+
+    let finished = false;
+    const run = mocks.confirm.mock.calls[0][0].onConfirm().then(() => {
+      finished = true;
+    });
+
+    // The loop awaits each row: while the first delete is in flight the second must not start.
+    await Promise.resolve();
+    expect(mocks.deleteTemplate).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteTemplate).toHaveBeenCalledWith({ expectedRevision: 3, id: 'tpl-1' });
+
+    await act(async () => {
+      first.resolve({ id: 'tpl-1' });
+    });
+    await waitFor(() => expect(mocks.deleteTemplate).toHaveBeenCalledTimes(2));
+    expect(mocks.deleteTemplate).toHaveBeenLastCalledWith({ expectedRevision: 5, id: 'tpl-2' });
+    // No summary toast until the whole run settles.
+    expect(finished).toBe(false);
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+
+    await act(async () => {
+      rest.resolve({ id: 'tpl-2' });
+      await run;
+    });
+    expect(finished).toBe(true);
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.bulkDeleted:2');
+  });
+
+  it('keeps a row selected after a search drops it from the current page', async () => {
+    const second = { ...item, id: 'tpl-2', revision: 5, title: 'Second' };
+    mocks.dataFor = (input) => {
+      const items = [item, second].filter(
+        (row) => !input.query || row.title.toLowerCase().includes(input.query.toLowerCase()),
+      );
+      return { items, totalAll: 2, totalFiltered: items.length };
+    };
+    mocks.deleteTemplate.mockResolvedValue({ id: 'tpl-1' });
+    vi.useFakeTimers();
+    try {
+      renderPage();
+
+      fireEvent.click(screen.getByLabelText('select-tpl-1'));
+      expect(screen.getByText('taskTemplateCatalog.list.selectedCount:1')).toBeTruthy();
+
+      fireEvent.change(screen.getByLabelText('taskTemplateCatalog.list.filters.query'), {
+        target: { value: 'Second' },
+      });
+      // Search is debounced; let it land so the row genuinely leaves the dataSource.
+      await act(async () => {
+        vi.advanceTimersByTime(400);
+      });
+
+      expect(screen.queryByLabelText('select-tpl-1')).toBeNull();
+      expect(screen.getByLabelText('select-tpl-2')).toBeTruthy();
+      // The selection outlives the page it was made on — count and target both survive.
+      expect(screen.getByText('taskTemplateCatalog.list.selectedCount:1')).toBeTruthy();
+
+      // Picking a row on the new result must not drop the off-page row: the table only ever
+      // hands back the rows it can see, so the remembered one has to be merged back in.
+      fireEvent.click(screen.getByLabelText('select-tpl-2'));
+      expect(screen.getByText('taskTemplateCatalog.list.selectedCount:2')).toBeTruthy();
+
+      fireEvent.click(screen.getByText('taskTemplateCatalog.list.bulk.delete'));
+      expect(mocks.confirm.mock.calls[0][0].content).toBe(
+        'taskTemplateCatalog.bulkDelete.content:2',
+      );
+
+      await act(async () => {
+        await mocks.confirm.mock.calls[0][0].onConfirm();
+      });
+      expect(mocks.deleteTemplate).toHaveBeenCalledTimes(2);
+      // Each row keeps its own CAS token, including the one that is no longer rendered.
+      expect(mocks.deleteTemplate).toHaveBeenNthCalledWith(1, { expectedRevision: 3, id: 'tpl-1' });
+      expect(mocks.deleteTemplate).toHaveBeenNthCalledWith(2, { expectedRevision: 5, id: 'tpl-2' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a partial bulk delete instead of claiming success', async () => {
+    const second = { ...item, id: 'tpl-2', revision: 5, title: 'Second' };
+    mocks.data = { items: [item, second], totalAll: 2, totalFiltered: 2 };
+    mocks.deleteTemplate
+      .mockResolvedValueOnce({ id: 'tpl-1' })
+      .mockRejectedValueOnce(trpcError('PLATFORM_REVISION_CONFLICT'));
+    renderPage();
+
+    fireEvent.click(screen.getByLabelText('select-tpl-1'));
+    fireEvent.click(screen.getByLabelText('select-tpl-2'));
+    fireEvent.click(screen.getByText('taskTemplateCatalog.list.bulk.delete'));
+    await act(async () => {
+      await mocks.confirm.mock.calls[0][0].onConfirm();
+    });
+
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    // The failed row is named with the reason the production error mapper derived from the
+    // tRPC payload — a translated string, never a raw error code.
+    expect(mocks.toastWarning).toHaveBeenCalledWith(
+      'taskTemplateCatalog.toast.bulkSummary — taskTemplateCatalog.toast.bulkFailureDetail:taskTemplateCatalog.bulkDelete.reason.conflict',
+    );
+    expect(mocks.refreshLists).toHaveBeenCalled();
   });
 
   it('warns instead of claiming success when upstream rows were discarded', async () => {
