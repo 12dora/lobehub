@@ -15,6 +15,7 @@ import {
   resolveServerRuntimeBrandingFromPublicSnapshot,
 } from '@/server/enterprise/services/branding';
 import { getServerGlobalConfig } from '@/server/globalConfig';
+import { buildLoadingBrandMarkup } from '@/server/loadingBrand';
 import { buildAnalyticsConfig, fetchViteDevTemplate, renderSpaHtml } from '@/server/spaHtml';
 import { translation } from '@/server/translation';
 import { escapeHtml } from '@/server/utils/html';
@@ -114,5 +115,9 @@ export async function GET(
   const template = await getTemplate(isMobile);
   const seoMeta = await buildSeoMeta(locale, branding);
 
-  return renderSpaHtml(template, { seoMeta, serverConfig: spaConfig });
+  return renderSpaHtml(template, {
+    loadingBrand: buildLoadingBrandMarkup(branding),
+    seoMeta,
+    serverConfig: spaConfig,
+  });
 }

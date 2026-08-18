@@ -10,6 +10,12 @@ export const resolveViteDevOrigin = () =>
 const SERVER_CONFIG_PLACEHOLDER =
   /window\.__SERVER_CONFIG__\s*=\s*undefined;\s*\/\*\s*SERVER_CONFIG\s*\*\//;
 
+/**
+ * Boot splash mark slot. The template ships the built-in wordmark between the markers so shells
+ * that never reach `renderSpaHtml` (desktop, static previews) keep rendering it unchanged.
+ */
+const LOADING_BRAND_PLACEHOLDER = /<!--LOADING_BRAND_START-->[\S\s]*?<!--LOADING_BRAND_END-->/;
+
 async function rewriteViteAssetUrls(
   html: string,
   origin = resolveViteDevOrigin(),
@@ -135,12 +141,17 @@ export function buildAnalyticsConfig(options: { desktop?: boolean } = {}): Analy
 
 export function renderSpaHtml(
   template: string,
-  options: { seoMeta: string; serverConfig: unknown },
+  options: { loadingBrand?: string; seoMeta: string; serverConfig: unknown },
 ): Response {
   let html = template.replace(
     SERVER_CONFIG_PLACEHOLDER,
     `window.__SERVER_CONFIG__ = ${serializeForHtml(options.serverConfig)};`,
   );
+
+  const { loadingBrand } = options;
+  if (loadingBrand) {
+    html = html.replace(LOADING_BRAND_PLACEHOLDER, () => loadingBrand);
+  }
 
   html = html.replace('<!--SEO_META-->', options.seoMeta);
   html = html.replace('<!--ANALYTICS_SCRIPTS-->', '');

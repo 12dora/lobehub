@@ -26,6 +26,49 @@ describe('renderSpaHtml', () => {
     expect(res.headers.get('Cache-Control')).toBe('no-cache');
   });
 
+  describe('loading brand slot', () => {
+    const template = [
+      '<body><div id="loading-brand">',
+      '<!--LOADING_BRAND_START-->',
+      '<svg><title>LobeHub</title><path d="M15 240" /></svg>',
+      '<!--LOADING_BRAND_END-->',
+      '</div>window.__SERVER_CONFIG__ = undefined; /* SERVER_CONFIG */</body>',
+    ].join('\n');
+
+    it('replaces the markers and everything between them', async () => {
+      const res = renderSpaHtml(template, {
+        loadingBrand: '<img alt="" class="loading-brand-logo" src="/logo.png" />',
+        seoMeta: '',
+        serverConfig: {},
+      });
+      const html = await res.text();
+
+      expect(html).toContain('<img alt="" class="loading-brand-logo" src="/logo.png" />');
+      expect(html).not.toContain('LOADING_BRAND_START');
+      expect(html).not.toContain('LOADING_BRAND_END');
+      expect(html).not.toContain('LobeHub');
+      expect(html).toContain('<div id="loading-brand">');
+    });
+
+    it('keeps the built-in mark untouched when no loading brand is provided', async () => {
+      const res = renderSpaHtml(template, { seoMeta: '', serverConfig: {} });
+      const html = await res.text();
+
+      expect(html).toContain('<!--LOADING_BRAND_START-->');
+      expect(html).toContain('<title>LobeHub</title>');
+    });
+
+    it('treats `$&`-style sequences in the brand markup as literal text', async () => {
+      const res = renderSpaHtml(template, {
+        loadingBrand: '<div class="loading-brand-name">A$&B$\'C</div>',
+        seoMeta: '',
+        serverConfig: {},
+      });
+
+      expect(await res.text()).toContain('<div class="loading-brand-name">A$&B$\'C</div>');
+    });
+  });
+
   it('escapes script-breaking sequences in the server config', async () => {
     const template = 'window.__SERVER_CONFIG__ = undefined; /* SERVER_CONFIG */';
     const res = renderSpaHtml(template, {
