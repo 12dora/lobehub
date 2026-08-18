@@ -370,7 +370,7 @@ export const ProviderItemRender = memo<ProviderItemRenderProps>(
      */
     const displayName = useProviderName(provider, name);
     /**
-     * Group headers are the only thing separating "xAI" from "SuperGrok" from "Grok", and a
+     * Group headers are the only thing separating "xAI" from "Grok" from "Grok Build", and a
      * brand name alone does not say which is which. The row is a dense single line, so the
      * description hangs off an info affordance instead of taking a second line.
      */

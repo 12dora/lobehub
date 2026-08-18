@@ -1,8 +1,8 @@
 import type { ModelProviderCard } from '../types';
 
 /**
- * SuperGrok / X Premium subscription access to Grok models via xAI OAuth
- * device flow (RFC 8628). Requests hit the same OpenAI-compatible
+ * Displayed as "Grok": SuperGrok / X Premium subscription access to Grok models
+ * via xAI OAuth device flow (RFC 8628). Requests hit the same OpenAI-compatible
  * `https://api.x.ai/v1` endpoint as the `xai` provider, but authenticate
  * with a rotating OAuth token pair instead of an API key.
  *
@@ -17,7 +17,7 @@ const SuperGrok: ModelProviderCard = {
   disableBrowserRequest: true,
   id: 'supergrok',
   modelsUrl: 'https://docs.x.ai/docs/models',
-  name: 'SuperGrok',
+  name: 'Grok',
   settings: {
     authType: 'oauthDeviceFlow',
     // OAuth tokens are refreshed and persisted server-side; browser requests

@@ -112,7 +112,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
    * Follow-up hint source: PERSISTED platform model rows only.
    *
    * `aiProviderModelList` is the merged view — it carries the enabled model-bank defaults even
-   * when this provider has zero rows in the platform catalog, so a first ChatGPT/SuperGrok
+   * when this provider has zero rows in the platform catalog, so a first ChatGPT/Grok
    * connect would claim "live" while the runtime (which reads published rows) sees a model-less
    * provider and drops it. `enabledAiModels` comes from the admin runtime state, which is built
    * from the persisted draft models of enabled providers, so it cannot lie in that direction.

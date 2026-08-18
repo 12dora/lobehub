@@ -186,7 +186,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
     const localizedTitle = useLocalizedProviderTitle(id, name || undefined);
     /**
      * What this provider IS. The grid card the operator arrived from shows it; the detail page
-     * dropped it, which is exactly where the sibling providers (xAI / SuperGrok / Grok) are
+     * dropped it, which is exactly where the sibling providers (xAI / Grok / Grok Build) are
      * hardest to tell apart.
      */
     const description = useProviderDescription(id);

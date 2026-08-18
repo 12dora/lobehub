@@ -7,7 +7,7 @@ import { ProviderItemRender } from './index';
 /**
  * `ProviderItemRender` is the group header behind EVERY grouped model picker (chat model
  * switch, agent/form selects, image & video pickers). Users see groups named "xAI",
- * "SuperGrok", "Grok", "ChatGPT", "ChatGPT Web" and cannot tell them apart, so the header
+ * "Grok", "Grok Build", "ChatGPT", "ChatGPT Web" and cannot tell them apart, so the header
  * carries an info affordance with the provider description — but only when there is one, and
  * never at the cost of the dense single-line layout.
  */

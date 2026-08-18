@@ -86,7 +86,9 @@ const createBrandCombine = (label: string, Mark: ProviderIconComponent) => {
  *   brand lockup with ours.
  * - both — the mark ships in the package but is SHARED with another provider id, so its own
  *   lockup identifies neither: `grok` and upstream's `supergrok` both resolve `Grok.Combine`,
- *   and this is the only thing that tells the two cards apart in an 84-card grid.
+ *   and this is the only thing that tells the two cards apart in an 84-card grid. `supergrok`
+ *   is displayed as plain "Grok", which is exactly what `Grok.Combine` reads, so only `grok`
+ *   ("Grok Build") needs an entry here.
  *
  * Neither `Grok` nor `Cursor` ships a `.Color` variant, and none is needed — `ProviderIcon`'s
  * `color` / `combine-color` branches already fall back to the mono mark when `.Color` is absent.

@@ -9,7 +9,7 @@ import { aiProviderSelectors, useScopedAiInfraStore } from '@/store/aiInfra';
  * differ from the one above it".
  *
  * Pickers group models by provider, and the groups are told apart by nothing but a brand name
- * (xAI / SuperGrok / Grok / ChatGPT / ChatGPT Web). The description is the copy that answers
+ * (xAI / Grok / Grok Build / ChatGPT / ChatGPT Web). The description is the copy that answers
  * that, and it already exists: every builtin card ships one, and
  * `packages/locales/src/default/providers.ts` emits a `<id>.description` key for each of them,
  * so a translation lands automatically once the card does.

@@ -753,7 +753,7 @@ describe('OAuthDeviceFlowAuth code-less browser login', () => {
     mocks.flow.deviceCodeInfo = undefined;
     mocks.flow.state = 'idle';
 
-    render(<OAuthDeviceFlowAuth name="SuperGrok" providerId="supergrok" />);
+    render(<OAuthDeviceFlowAuth name="Grok" providerId="supergrok" />);
 
     expect(screen.queryByText('providerModels.config.oauth.paste.apiKeyToggle')).toBeNull();
   });
@@ -777,11 +777,11 @@ describe('OAuthDeviceFlowAuth code-less browser login', () => {
 });
 
 describe('OAuthDeviceFlowAuth device-code flow', () => {
-  it('still shows the user code and polling hint for SuperGrok', async () => {
+  it('still shows the user code and polling hint for supergrok', async () => {
     mocks.flow.deviceCodeInfo = deviceCode;
     mocks.flow.startAuth = vi.fn().mockResolvedValue(deviceCode);
 
-    render(<OAuthDeviceFlowAuth name="SuperGrok" providerId="supergrok" />);
+    render(<OAuthDeviceFlowAuth name="Grok" providerId="supergrok" />);
     fireEvent.click(screen.getByText('providerModels.config.oauth.connect'));
 
     expect(await screen.findByText('ABCD-EFGH')).toBeTruthy();

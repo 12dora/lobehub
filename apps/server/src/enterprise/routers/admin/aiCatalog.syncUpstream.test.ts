@@ -229,10 +229,10 @@ describe('admin.aiModels.syncUpstream', () => {
   });
 
   it('rejects a missing shared vault with a typed error and writes nothing', async () => {
-    // SuperGrok has no env-key fallback — an empty platform vault is always incomplete.
+    // supergrok has no env-key fallback — an empty platform vault is always incomplete.
     const caller = await callerFor(ids.aiAdmin);
     const created = await caller.aiProviders.applyImmediate({
-      displayName: 'SuperGrok',
+      displayName: 'Grok',
       enabled: true,
       mode: 'create',
       providerKey: 'supergrok',

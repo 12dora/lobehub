@@ -87,7 +87,8 @@ const requireSharedOAuth =
     }
   };
 
-const requireSuperGrok = requireSharedOAuth('SuperGrok');
+// Display names, not ids: the `supergrok` card is shown as "Grok" and `grok` as "Grok Build".
+const requireSuperGrok = requireSharedOAuth('Grok');
 
 const requireVertexAI = (keyVaults: AiCatalogCredentialVault): void => {
   if (!hasText(keyVaults.apiKey)) {
@@ -124,7 +125,7 @@ export const REQUIRED_CREDENTIALS: Partial<Record<string, (kv: AiCatalogCredenti
     [ModelProvider.ChatGPT]: requireChatGPT,
     [ModelProvider.ChatGPTWeb]: requireChatGPTWeb,
     [ModelProvider.GithubCopilot]: requireGithubCopilot,
-    [ModelProvider.Grok]: requireSharedOAuth('Grok'),
+    [ModelProvider.Grok]: requireSharedOAuth('Grok Build'),
     [ModelProvider.Cursor]: requireSharedOAuth('Cursor'),
     [ModelProvider.SuperGrok]: requireSuperGrok,
     [ModelProvider.VertexAI]: requireVertexAI,

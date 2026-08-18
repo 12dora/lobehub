@@ -119,7 +119,7 @@ const ModelDetailPanel: FC<ModelDetailPanelProps> = memo(
     const { t } = useTranslation(['components', 'models']);
     /**
      * Which service these models come from. Groups in the picker are told apart by brand name
-     * alone (xAI / SuperGrok / Grok / ChatGPT / ChatGPT Web), so the detail panel is where that
+     * alone (xAI / Grok / Grok Build / ChatGPT / ChatGPT Web), so the detail panel is where that
      * ambiguity gets resolved.
      */
     const providerName = useProviderDisplayName(provider);

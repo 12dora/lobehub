@@ -194,7 +194,7 @@ const applyLiveGrokReasoningEffort = (
 };
 
 /**
- * Grok Build / SuperGrok subscription access to Grok models.
+ * "Grok Build" card: SuperGrok-subscription access to Grok models.
  *
  * Talks to the Grok Build CLI proxy (`cli-chat-proxy.grok.com`) over the
  * OpenAI Responses API, authenticated with an xAI OAuth access token (the

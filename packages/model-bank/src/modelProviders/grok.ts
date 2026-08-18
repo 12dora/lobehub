@@ -1,24 +1,25 @@
 import type { ModelProviderCard } from '../types';
 
 /**
- * Grok Build / SuperGrok subscription access to Grok models via xAI OAuth
+ * Displayed as "Grok Build": subscription access to Grok models via xAI OAuth
  * device flow (RFC 8628), talking to the Grok Build CLI proxy
  * (`https://cli-chat-proxy.grok.com/v1`) rather than `api.x.ai`.
  *
- * The client_id below is xAI's public Grok-CLI OAuth client — the same one
- * used by the Grok Build CLI and SuperGrok. Requests require the CLI version
- * headers (`x-grok-client-version` / `x-grok-client-identifier`) which the
- * runtime injects; the proxy rejects calls without them.
+ * The client_id below is xAI's public Grok-CLI OAuth client — the same one used
+ * by the Grok Build CLI and by the sibling `supergrok` card (displayed as
+ * "Grok"). Requests require the CLI version headers
+ * (`x-grok-client-version` / `x-grok-client-identifier`) which the runtime
+ * injects; the proxy rejects calls without them.
  */
 const Grok: ModelProviderCard = {
   chatModels: [],
   checkModel: 'grok-4.6',
   description:
-    'Use Grok models with your Grok Build (SuperGrok) subscription — the same access as the Grok Build CLI, no xAI API key required.',
+    'Use Grok models through the Grok Build CLI proxy with your Grok subscription — the same access as the CLI itself, no xAI API key required.',
   disableBrowserRequest: true,
   id: 'grok',
   modelsUrl: 'https://docs.x.ai/docs/models',
-  name: 'Grok',
+  name: 'Grok Build',
   settings: {
     authType: 'oauthDeviceFlow',
     // OAuth tokens are refreshed and persisted server-side; browser requests
