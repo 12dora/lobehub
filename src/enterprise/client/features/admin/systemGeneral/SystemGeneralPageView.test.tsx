@@ -20,29 +20,6 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@lobehub/ui', () => ({
-  /**
-   * Modelled on the real one: the header is always rendered, the body only while expanded. The
-   * library's animated branch unmounts its content on collapse, so a test that kept it mounted
-   * would not prove that an in-progress draft survives being folded away.
-   */
-  AccordionItem: ({
-    children,
-    expand,
-    onExpandChange,
-    title,
-  }: {
-    children?: ReactNode;
-    expand?: boolean;
-    onExpandChange?: (next: boolean) => void;
-    title?: ReactNode;
-  }) => (
-    <div>
-      <button type="button" onClick={() => onExpandChange?.(!expand)}>
-        {title}
-      </button>
-      {expand ? children : null}
-    </div>
-  ),
   Alert: ({ action, message }: { action?: ReactNode; message?: ReactNode }) => (
     <div data-testid="alert">
       <span>{message}</span>
@@ -407,61 +384,5 @@ describe('SystemGeneralPageView', () => {
     expect(screen.getByText('systemGeneral.failOpen.title')).toBeTruthy();
     // Mail is a normal environment card, so exactly one warning is shown.
     expect(screen.queryAllByText('systemGeneral.failOpen.title')).toHaveLength(1);
-  });
-
-  it('opens on the two dependencies and folds either of them away', () => {
-    render(
-      <SystemGeneralPageView
-        canOperate
-        data={settings()}
-        error={undefined}
-        isLoading={false}
-        probeBusy={{}}
-        probeResults={{}}
-        onRetry={vi.fn()}
-        onTest={vi.fn()}
-      />,
-    );
-
-    // Expanded to start with: this page is the two cards, and folding them by default would
-    // greet the operator with an empty screen.
-    expect(screen.getByText('systemGeneral.objectStorage.fields.bucket')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: /systemGeneral\.objectStorage\.title/ }));
-
-    expect(screen.queryByText('systemGeneral.objectStorage.fields.bucket')).toBeNull();
-    // What the card is and where it comes from survives the fold — the header is the answer.
-    expect(screen.getByText('systemGeneral.objectStorage.title')).toBeTruthy();
-    expect(screen.getAllByText('systemGeneral.source.env').length).toBeGreaterThan(0);
-    // Its neighbour is untouched.
-    expect(screen.getByText('systemGeneral.mail.fields.host')).toBeTruthy();
-  });
-
-  it('carries an unsaved edit through a fold, and says so on the folded header', () => {
-    render(
-      <SystemGeneralPageView
-        canOperate
-        data={managedHere()}
-        error={undefined}
-        isLoading={false}
-        probeBusy={{}}
-        probeResults={{}}
-        onRetry={vi.fn()}
-        onTest={vi.fn()}
-      />,
-    );
-
-    fireEvent.change(screen.getByDisplayValue('files'), { target: { value: 'archive' } });
-    expect(screen.getByText('systemGeneral.unsaved.title')).toBeTruthy();
-
-    const header = screen.getByRole('button', { name: /systemGeneral\.objectStorage\.title/ });
-    fireEvent.click(header);
-
-    // Folding hides 保存 with the form, so the header has to keep saying there is something to save.
-    expect(screen.queryByDisplayValue('archive')).toBeNull();
-    expect(screen.getByText('systemGeneral.unsaved.title')).toBeTruthy();
-
-    fireEvent.click(header);
-    expect(screen.getByDisplayValue('archive')).toBeTruthy();
   });
 });

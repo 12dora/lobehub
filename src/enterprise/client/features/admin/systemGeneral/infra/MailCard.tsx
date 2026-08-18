@@ -24,7 +24,6 @@ import {
   InfraEditorAlerts,
   InfraFailOpenAlert,
   InfraSourceTag,
-  InfraUnsavedTag,
   isInfraFailOpen,
 } from './editorChrome';
 import { useInfraValueFormatters } from './format';
@@ -83,10 +82,10 @@ export const MailCard = memo<MailCardProps>(
 
     return (
       <InfraSettingsCard
-        collapsible
         banner={failOpen ? <InfraFailOpenAlert /> : undefined}
         canTest={canOperate}
         envVars={editor.editing ? undefined : MAIL_ENV}
+        headerExtra={<InfraSourceTag source={view.source} />}
         icon={Mail}
         probe={editor.editing ? editor.probe : probe}
         probing={editor.editing ? editor.probing : probing}
@@ -145,12 +144,6 @@ export const MailCard = memo<MailCardProps>(
           { label: t('systemGeneral.mail.fields.senderName'), value: unset(view.senderName) },
           { label: t('systemGeneral.mail.fields.secure'), value: yesNo(view.secure) },
         ]}
-        headerExtra={
-          <>
-            <InfraSourceTag source={view.source} />
-            {editor.dirty ? <InfraUnsavedTag /> : null}
-          </>
-        }
         onTest={editor.editing ? () => void editor.test() : onTest}
       />
     );

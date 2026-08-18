@@ -1,19 +1,10 @@
 'use client';
 
-import { AccordionItem, Flexbox, Icon, Tag, Text } from '@lobehub/ui';
+import { Flexbox, Icon, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import type { LucideIcon } from 'lucide-react';
 import { AlertTriangle, CheckCircle2, CircleDashed, XCircle } from 'lucide-react';
-import {
-  cloneElement,
-  type HTMLAttributes,
-  isValidElement,
-  memo,
-  type ReactElement,
-  type ReactNode,
-  useCallback,
-  useState,
-} from 'react';
+import { memo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { AdminSystemTestDependencyResult } from '@/enterprise/client/services/adminSystem';
@@ -34,7 +25,6 @@ export interface InfraSettingsCardProps {
    * foldable: the header keeps saying where the configuration comes from and whether it works, so
    * a folded card is still an answer rather than a closed door.
    */
-  collapsible?: boolean;
   /** Editable body; replaces the read-only rows when present. */
   editor?: ReactNode;
   /** Environment variables that drive this dependency. Omitted while it is configured here. */
@@ -106,7 +96,6 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
   ({
     banner,
     canTest,
-    collapsible,
     editor,
     envVars,
     extraActions,
@@ -122,29 +111,8 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
     title,
   }) => {
     const { t } = useTranslation('admin');
-    const [expanded, setExpanded] = useState(true);
-
-    /**
-     * The primitive renders a clickable header, binds Enter/Space to it and even styles a focus
-     * ring for it — but never makes it focusable, so folding a section would be mouse-only. Its
-     * keyboard handler is on this very element, so the semantics it already behaves like are the
-     * only thing missing, and `headerWrapper` is the seam it offers for adding them.
-     */
-    const headerWrapper = useCallback(
-      (header: ReactNode) =>
-        isValidElement(header)
-          ? // eslint-disable-next-line @eslint-react/no-clone-element
-            cloneElement(header as ReactElement<HTMLAttributes<HTMLElement>>, {
-              'aria-expanded': expanded,
-              'role': 'button',
-              'tabIndex': 0,
-            })
-          : header,
-      [expanded],
-    );
-
     const header = (
-      <div className={collapsible ? `${styles.header} ${styles.headerInAccordion}` : styles.header}>
+      <div className={styles.header}>
         <div className={styles.title}>
           <Icon icon={icon} size={16} />
           <Text strong>{title}</Text>
@@ -222,30 +190,10 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
       </div>
     );
 
-    if (!collapsible)
-      return (
-        <section className={styles.card}>
-          {header}
-          {body}
-        </section>
-      );
-
     return (
       <section className={styles.card}>
-        <AccordionItem
-          expand={expanded}
-          headerWrapper={headerWrapper}
-          indicatorPlacement="end"
-          itemKey={title}
-          paddingBlock={0}
-          paddingInline={0}
-          // The card already spaces its own header from its body; the accordion does not.
-          styles={{ content: { paddingBlockStart: 16 } }}
-          title={header}
-          onExpandChange={setExpanded}
-        >
-          {body}
-        </AccordionItem>
+        {header}
+        {body}
       </section>
     );
   },

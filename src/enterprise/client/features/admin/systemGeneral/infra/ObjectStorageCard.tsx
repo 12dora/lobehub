@@ -24,7 +24,6 @@ import {
   InfraEditorAlerts,
   InfraFailOpenAlert,
   InfraSourceTag,
-  InfraUnsavedTag,
   isInfraFailOpen,
 } from './editorChrome';
 import { useInfraValueFormatters } from './format';
@@ -81,10 +80,10 @@ export const ObjectStorageCard = memo<ObjectStorageCardProps>(
 
     return (
       <InfraSettingsCard
-        collapsible
         banner={failOpen ? <InfraFailOpenAlert /> : undefined}
         canTest={canOperate}
         envVars={editor.editing ? undefined : OBJECT_STORAGE_ENV}
+        headerExtra={<InfraSourceTag source={view.source} />}
         icon={Box}
         probe={editor.editing ? editor.probe : probe}
         probing={editor.editing ? editor.probing : probing}
@@ -152,12 +151,6 @@ export const ObjectStorageCard = memo<ObjectStorageCardProps>(
             value: yesNo(view.pathStyle),
           },
         ]}
-        headerExtra={
-          <>
-            <InfraSourceTag source={view.source} />
-            {editor.dirty ? <InfraUnsavedTag /> : null}
-          </>
-        }
         onTest={editor.editing ? () => void editor.test() : onTest}
       />
     );
