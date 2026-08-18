@@ -15,6 +15,7 @@ import { useTranslation } from 'react-i18next';
 
 import { changePassword, requestPasswordReset } from '@/libs/better-auth/auth-client';
 
+import { authErrorMessageKey } from './authErrorMessage';
 import PasswordField from './PasswordField';
 import {
   type ChangePasswordErrors,
@@ -30,7 +31,6 @@ import { securityStyles } from './styles';
 
 const styles = createStaticStyles(({ css }) => ({
   emailReset: css`
-    align-self: flex-start;
     padding-inline: 0;
     font-size: ${cssVar.fontSizeSM};
   `,
@@ -46,7 +46,7 @@ interface ChangePasswordContentProps {
   email?: string;
 }
 
-const ChangePasswordContent = memo<ChangePasswordContentProps>(({ email }) => {
+export const ChangePasswordContent = memo<ChangePasswordContentProps>(({ email }) => {
   const { t: tAuth } = useTranslation('auth');
   const { close } = useModalContext();
 
@@ -95,8 +95,10 @@ const ChangePasswordContent = memo<ChangePasswordContentProps>(({ email }) => {
           setErrors(fieldErrors);
           return;
         }
-        // Not attributable to a field (server / network) — a toast is the honest surface.
-        toast.error(error.message || tAuth('profile.resetPasswordError'));
+        // Not attributable to a field (server / network) — a toast is the honest surface,
+        // carrying our copy for the code rather than Better Auth's developer English.
+        const key = authErrorMessageKey(error);
+        toast.error(key ? tAuth(key) : tAuth('profile.resetPasswordError'));
         return;
       }
 
@@ -123,7 +125,8 @@ const ChangePasswordContent = memo<ChangePasswordContentProps>(({ email }) => {
         redirectTo: `/reset-password?email=${encodeURIComponent(email)}`,
       });
       if (error) {
-        toast.error(error.message || tAuth('profile.resetPasswordError'));
+        const key = authErrorMessageKey(error);
+        toast.error(key ? tAuth(key) : tAuth('profile.resetPasswordError'));
         return;
       }
       toast.success(tAuth('profile.resetPasswordSent'));
@@ -147,71 +150,78 @@ const ChangePasswordContent = memo<ChangePasswordContentProps>(({ email }) => {
         {tAuth('profile.security.password.title')}
       </Text>
 
-      <PasswordField
-        autoFocus
-        autoComplete="current-password"
-        disabled={busy}
-        error={errors.currentPassword ? tAuth('profile.security.password.incorrect') : undefined}
-        label={tAuth('profile.security.password.currentLabel')}
-        maxLength={PASSWORD_MAX_LENGTH}
-        value={form.currentPassword}
-        onChange={setField('currentPassword')}
-      />
+      {/* The three inputs are one unit — a tighter stack than the gaps around the block. */}
+      <div className={securityStyles.fields}>
+        <PasswordField
+          autoFocus
+          autoComplete="current-password"
+          disabled={busy}
+          error={errors.currentPassword ? tAuth('profile.security.password.incorrect') : undefined}
+          label={tAuth('profile.security.password.currentLabel')}
+          maxLength={PASSWORD_MAX_LENGTH}
+          value={form.currentPassword}
+          onChange={setField('currentPassword')}
+        />
 
-      <PasswordField
-        autoComplete="new-password"
-        disabled={busy}
-        hint={lengthRule}
-        hintIsError={errors.newPassword === 'rule'}
-        label={tAuth('profile.security.password.newLabel')}
-        maxLength={PASSWORD_MAX_LENGTH}
-        value={form.newPassword}
-        error={
-          errors.newPassword === 'reuse' ? tAuth('profile.security.password.reuse') : undefined
-        }
-        onChange={setField('newPassword')}
-      />
+        <PasswordField
+          autoComplete="new-password"
+          disabled={busy}
+          hint={lengthRule}
+          hintIsError={errors.newPassword === 'rule'}
+          label={tAuth('profile.security.password.newLabel')}
+          maxLength={PASSWORD_MAX_LENGTH}
+          value={form.newPassword}
+          error={
+            errors.newPassword === 'reuse' ? tAuth('profile.security.password.reuse') : undefined
+          }
+          onChange={setField('newPassword')}
+        />
 
-      <PasswordField
-        autoComplete="new-password"
-        disabled={busy}
-        error={errors.confirmPassword ? tAuth('profile.security.password.mismatch') : undefined}
-        label={tAuth('profile.security.password.confirmLabel')}
-        maxLength={PASSWORD_MAX_LENGTH}
-        value={form.confirmPassword}
-        onChange={setField('confirmPassword')}
-        onEnter={() => void handleSubmit()}
-      />
+        <PasswordField
+          autoComplete="new-password"
+          disabled={busy}
+          error={errors.confirmPassword ? tAuth('profile.security.password.mismatch') : undefined}
+          label={tAuth('profile.security.password.confirmLabel')}
+          maxLength={PASSWORD_MAX_LENGTH}
+          value={form.confirmPassword}
+          onChange={setField('confirmPassword')}
+          onEnter={() => void handleSubmit()}
+        />
+      </div>
 
       <Checkbox checked={revokeOthers} disabled={busy} onChange={setRevokeOthers}>
         {tAuth('profile.security.password.revokeOthers')}
       </Checkbox>
 
-      {email && (
-        <Button
-          className={styles.emailReset}
-          disabled={busy}
-          loading={sendingResetEmail}
-          size="small"
-          type="link"
-          onClick={() => void handleEmailReset()}
-        >
-          {tAuth('profile.security.password.useEmailReset')}
-        </Button>
-      )}
-
-      <div className={securityStyles.footer}>
-        <Button disabled={busy} onClick={close}>
-          {tAuth('profile.security.close')}
-        </Button>
-        <Button
-          disabled={!canSubmit}
-          loading={submitting}
-          type="primary"
-          onClick={() => void handleSubmit()}
-        >
-          {tAuth('profile.security.password.submit')}
-        </Button>
+      {/* The escape hatch shares the action row instead of claiming a line of its own. */}
+      <div className={securityStyles.footerSpread}>
+        {email ? (
+          <Button
+            className={styles.emailReset}
+            disabled={busy}
+            loading={sendingResetEmail}
+            size="small"
+            type="link"
+            onClick={() => void handleEmailReset()}
+          >
+            {tAuth('profile.security.password.useEmailReset')}
+          </Button>
+        ) : (
+          <span />
+        )}
+        <div className={securityStyles.footer}>
+          <Button disabled={busy} onClick={close}>
+            {tAuth('profile.security.close')}
+          </Button>
+          <Button
+            disabled={!canSubmit}
+            loading={submitting}
+            type="primary"
+            onClick={() => void handleSubmit()}
+          >
+            {tAuth('profile.security.password.submit')}
+          </Button>
+        </div>
       </div>
     </div>
   );

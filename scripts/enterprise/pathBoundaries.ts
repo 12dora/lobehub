@@ -794,6 +794,12 @@ export type EnterpriseTestImportAllowance = EnterpriseImportAllowance;
 
 export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
   {
+    file: 'src/routes/(main)/settings/profile/features/security/TwoFactor/TotpEnrollFlow.test.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'vi.mock target for runtime branding in the TOTP enrolment a11y test',
+  },
+  {
     file: 'src/features/User/__tests__/UserAvatar.test.tsx',
     importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
     owner: 'M12',

@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import { twoFactor } from '@/libs/better-auth/auth-client';
 
+import { authErrorMessageKey } from '../authErrorMessage';
 import PasswordField from '../PasswordField';
 import { PASSWORD_MAX_LENGTH } from '../passwordValidation';
 import { securityStyles } from '../styles';
@@ -42,7 +43,8 @@ const DisableTotpView = memo<DisableTotpViewProps>(({ onCancel, onDone }) => {
           setError(t('profile.security.password.incorrect'));
           return;
         }
-        toast.error(disableError.message || tCommon('unknownError'));
+        const key = authErrorMessageKey(disableError);
+        toast.error(key ? t(key) : tCommon('unknownError'));
         return;
       }
 

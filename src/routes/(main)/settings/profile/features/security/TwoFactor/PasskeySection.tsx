@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { passkey as passkeyClient, useListPasskeys } from '@/libs/better-auth/auth-client';
 import { isPasskeySupported } from '@/utils/passkeySupport';
 
+import { authErrorMessageKey } from '../authErrorMessage';
 import { securityStyles } from '../styles';
 import PasskeyRow, { type PasskeyItem } from './PasskeyRow';
 
@@ -52,6 +53,9 @@ const PasskeySection = memo(() => {
   const [mutating, setMutating] = useState(false);
 
   const passkeys = (data ?? []) as PasskeyItem[];
+  // Better Auth's `error.message` is developer English; the code behind it is what we speak.
+  const listErrorKey = authErrorMessageKey(error);
+  const listErrorMessage = listErrorKey ? t(listErrorKey) : tCommon('unknownError');
 
   const handleAdd = useCallback(async () => {
     if (adding || !supported) return;
@@ -70,7 +74,9 @@ const PasskeySection = memo(() => {
           toast({ title: t('profile.security.passkey.cancelled') });
           return;
         }
-        toast.error(addError.message || t('profile.security.passkey.error'));
+        // Same rule as everywhere else in this slice: translate the code, never the message.
+        const key = authErrorMessageKey({ code });
+        toast.error(key ? t(key) : t('profile.security.passkey.error'));
         return;
       }
 
@@ -94,7 +100,8 @@ const PasskeySection = memo(() => {
           name: nextName,
         });
         if (renameError) {
-          toast.error(renameError.message || tCommon('unknownError'));
+          const key = authErrorMessageKey(renameError);
+          toast.error(key ? t(key) : tCommon('unknownError'));
           return;
         }
         refetch?.();
@@ -105,7 +112,7 @@ const PasskeySection = memo(() => {
         setMutating(false);
       }
     },
-    [refetch, tCommon],
+    [refetch, t, tCommon],
   );
 
   const handleRemove = useCallback(
@@ -114,7 +121,8 @@ const PasskeySection = memo(() => {
       try {
         const { error: removeError } = await passkeyClient.deletePasskey({ id: item.id });
         if (removeError) {
-          toast.error(removeError.message || tCommon('unknownError'));
+          const key = authErrorMessageKey(removeError);
+          toast.error(key ? t(key) : tCommon('unknownError'));
           return;
         }
         toast.success(t('profile.security.passkey.removed'));
@@ -131,7 +139,7 @@ const PasskeySection = memo(() => {
 
   return (
     <div className={securityStyles.section}>
-      <Text as="h3" className={securityStyles.title}>
+      <Text as="h3" className={securityStyles.sectionTitle}>
         {t('profile.security.passkey.title')}
       </Text>
       <Text className={securityStyles.desc}>{t('profile.security.passkey.desc')}</Text>
@@ -140,7 +148,7 @@ const PasskeySection = memo(() => {
       {error ? (
         <div className={securityStyles.footerSpread}>
           <Text className={securityStyles.danger} role="alert">
-            {error.message || tCommon('unknownError')}
+            {listErrorMessage}
           </Text>
           <Button size="small" onClick={() => refetch?.()}>
             {tCommon('retry')}

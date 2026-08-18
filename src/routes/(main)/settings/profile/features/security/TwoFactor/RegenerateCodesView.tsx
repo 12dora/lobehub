@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { twoFactor } from '@/libs/better-auth/auth-client';
 
+import { authErrorMessageKey } from '../authErrorMessage';
 import PasswordField from '../PasswordField';
 import { PASSWORD_MAX_LENGTH } from '../passwordValidation';
 import { securityStyles } from '../styles';
@@ -54,7 +55,8 @@ const RegenerateCodesView = memo<RegenerateCodesViewProps>(({ onCancel, onDone, 
           setError(t('profile.security.password.incorrect'));
           return;
         }
-        toast.error(generateError.message || tCommon('unknownError'));
+        const key = authErrorMessageKey(generateError);
+        toast.error(key ? t(key) : tCommon('unknownError'));
         return;
       }
 
@@ -74,14 +76,15 @@ const RegenerateCodesView = memo<RegenerateCodesViewProps>(({ onCancel, onDone, 
       </Text>
 
       {codes ? (
-        <>
-          <BackupCodes codes={codes} downloadName={branding.shortName || branding.name} />
-          <div className={securityStyles.footer}>
+        <BackupCodes
+          codes={codes}
+          downloadName={branding.shortName || branding.name}
+          actions={
             <Button type="primary" onClick={onDone}>
               {t('profile.security.twoFactor.backupCodes.done')}
             </Button>
-          </div>
-        </>
+          }
+        />
       ) : (
         <>
           <Text className={securityStyles.desc}>

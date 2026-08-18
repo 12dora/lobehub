@@ -3,7 +3,7 @@
 import { copyToClipboard, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useCallback } from 'react';
+import { memo, type ReactNode, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { securityStyles } from '../styles';
@@ -27,9 +27,17 @@ const styles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorFillQuaternary};
   `,
+  saveActions: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  `,
 }));
 
 interface BackupCodesProps {
+  /** The caller's forward action, placed in this block's own action row. */
+  actions?: ReactNode;
   codes: string[];
   /** Runtime brand, used to name the downloaded file; falls back to a neutral stem. */
   downloadName?: string;
@@ -46,8 +54,11 @@ const toFilenameStem = (name: string | undefined): string =>
  * The recovery codes themselves. Rendered in full (never masked, never re-fetchable) —
  * this is the one moment they exist in the user's hands, so both Copy and Download are
  * offered rather than assuming a clipboard is available where they will keep them.
+ *
+ * Self-contained (a block, not a fragment) and it hosts the caller's forward action, so the
+ * screen ends in one action row rather than two stacked ones.
  */
-const BackupCodes = memo<BackupCodesProps>(({ codes, downloadName }) => {
+const BackupCodes = memo<BackupCodesProps>(({ actions, codes, downloadName }) => {
   const { t } = useTranslation('auth');
 
   const handleCopy = useCallback(async () => {
@@ -68,7 +79,7 @@ const BackupCodes = memo<BackupCodesProps>(({ codes, downloadName }) => {
   }, [codes, downloadName]);
 
   return (
-    <>
+    <div className={securityStyles.section}>
       <Text className={securityStyles.desc}>
         {t('profile.security.twoFactor.backupCodes.desc')}
       </Text>
@@ -79,15 +90,18 @@ const BackupCodes = memo<BackupCodesProps>(({ codes, downloadName }) => {
           </code>
         ))}
       </div>
-      <div className={securityStyles.footer}>
-        <Button onClick={() => void handleCopy()}>
-          {t('profile.security.twoFactor.backupCodes.copy')}
-        </Button>
-        <Button onClick={handleDownload}>
-          {t('profile.security.twoFactor.backupCodes.download')}
-        </Button>
+      <div className={securityStyles.footerSpread}>
+        <div className={styles.saveActions}>
+          <Button size="small" onClick={() => void handleCopy()}>
+            {t('profile.security.twoFactor.backupCodes.copy')}
+          </Button>
+          <Button size="small" onClick={handleDownload}>
+            {t('profile.security.twoFactor.backupCodes.download')}
+          </Button>
+        </div>
+        {actions}
       </div>
-    </>
+    </div>
   );
 });
 

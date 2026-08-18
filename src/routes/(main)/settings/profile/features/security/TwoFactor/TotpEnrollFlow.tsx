@@ -4,12 +4,13 @@ import { copyToClipboard, Text } from '@lobehub/ui';
 import { Button, InputOTP, toast } from '@lobehub/ui/base-ui';
 import { QRCode } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { twoFactor } from '@/libs/better-auth/auth-client';
 
+import { authErrorMessageKey } from '../authErrorMessage';
 import PasswordField from '../PasswordField';
 import { PASSWORD_MAX_LENGTH } from '../passwordValidation';
 import { securityStyles } from '../styles';
@@ -20,6 +21,15 @@ import StepIndicator from './StepIndicator';
 const CODE_LENGTH = 6;
 
 const styles = createStaticStyles(({ css }) => ({
+  codeField: css`
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  `,
+  codeLabel: css`
+    font-size: ${cssVar.fontSizeSM};
+    font-weight: 500;
+  `,
   qr: css`
     display: flex;
     justify-content: center;
@@ -91,6 +101,10 @@ const TotpEnrollFlow = memo<TotpEnrollFlowProps>(({ onCancel, onDone, onLockChan
   const [totpUri, setTotpUri] = useState('');
   const [backupCodes, setBackupCodes] = useState<string[]>([]);
 
+  const codeFieldId = useId();
+  const codeLabelId = useId();
+  const codeErrorId = useId();
+
   const stepLabels = useMemo(
     () => [
       t('profile.security.twoFactor.totp.step.password'),
@@ -128,7 +142,10 @@ const TotpEnrollFlow = memo<TotpEnrollFlowProps>(({ onCancel, onDone, onLockChan
           setPasswordError(t('profile.security.password.incorrect'));
           return;
         }
-        toast.error(error.message || tCommon('unknownError'));
+        // `error.message` is Better Auth's own developer-facing English; the stable code
+        // behind it is what we translate, and anything unmapped falls back to generic copy.
+        const key = authErrorMessageKey(error);
+        toast.error(key ? t(key) : tCommon('unknownError'));
         return;
       }
 
@@ -255,21 +272,38 @@ const TotpEnrollFlow = memo<TotpEnrollFlowProps>(({ onCancel, onDone, onLockChan
           <Text className={securityStyles.desc}>
             {t('profile.security.twoFactor.totp.codeHint')}
           </Text>
-          <Text as="span">{t('profile.security.twoFactor.totp.codeLabel')}</Text>
-          <InputOTP
-            disabled={busy}
-            length={CODE_LENGTH}
-            value={code}
-            onChange={(value: string) => {
-              setCode(value);
-              setCodeError(null);
-            }}
-          />
-          {codeError && (
-            <Text className={securityStyles.danger} role="alert">
-              {codeError}
-            </Text>
-          )}
+          {/* Label, input and message are one field — not three siblings of the body stack. */}
+          <div className={styles.codeField}>
+            {/*
+              `InputOTP` spreads unknown props onto the base-ui `OTPField.Root`, which keeps
+              `id` for itself and hands it to the *first* OTP input — so `htmlFor` makes a
+              real native label association with that input. The root itself renders as a
+              `div role="group"` that the `id` never lands on, which is why the group is named
+              separately through `aria-labelledby` and carries the validation wiring
+              (`aria-describedby` / `aria-invalid`) for the field as a whole.
+            */}
+            <label className={styles.codeLabel} htmlFor={codeFieldId} id={codeLabelId}>
+              {t('profile.security.twoFactor.totp.codeLabel')}
+            </label>
+            <InputOTP
+              aria-describedby={codeError ? codeErrorId : undefined}
+              aria-invalid={codeError ? true : undefined}
+              aria-labelledby={codeLabelId}
+              disabled={busy}
+              id={codeFieldId}
+              length={CODE_LENGTH}
+              value={code}
+              onChange={(value: string) => {
+                setCode(value);
+                setCodeError(null);
+              }}
+            />
+            {codeError && (
+              <Text className={securityStyles.danger} id={codeErrorId} role="alert">
+                {codeError}
+              </Text>
+            )}
+          </div>
           <div className={securityStyles.footerSpread}>
             {/* Back, not cancel: the QR is one tap away if the app never got the secret. */}
             <Button disabled={busy} type="text" onClick={() => setStep('scan')}>
@@ -292,12 +326,15 @@ const TotpEnrollFlow = memo<TotpEnrollFlowProps>(({ onCancel, onDone, onLockChan
           <Text as="h3" className={securityStyles.title}>
             {t('profile.security.twoFactor.backupCodes.title')}
           </Text>
-          <BackupCodes codes={backupCodes} downloadName={branding.shortName || branding.name} />
-          <div className={securityStyles.footer}>
-            <Button type="primary" onClick={handleDone}>
-              {t('profile.security.twoFactor.backupCodes.done')}
-            </Button>
-          </div>
+          <BackupCodes
+            codes={backupCodes}
+            downloadName={branding.shortName || branding.name}
+            actions={
+              <Button type="primary" onClick={handleDone}>
+                {t('profile.security.twoFactor.backupCodes.done')}
+              </Button>
+            }
+          />
         </>
       )}
     </>

@@ -124,14 +124,17 @@ const TwoFactorContent = memo<TwoFactorContentProps>(({ dismissGuardRef }) => {
 
   return (
     <div className={securityStyles.body}>
+      {/*
+        No subtitle: the modal title names the surface and each block below carries its own
+        one-line explanation, so a paragraph here would only repeat them and add air.
+      */}
       <Text as="h2" className={securityStyles.title}>
         {t('profile.security.twoFactor.title')}
       </Text>
-      <Text className={securityStyles.desc}>{t('profile.security.twoFactor.subtitle')}</Text>
 
       <div className={securityStyles.section}>
         <div className={securityStyles.sectionHead}>
-          <Text as="h3" className={securityStyles.title}>
+          <Text as="h3" className={securityStyles.sectionTitle}>
             {t('profile.security.twoFactor.totp.title')}
           </Text>
           {!sessionUnknown && (
