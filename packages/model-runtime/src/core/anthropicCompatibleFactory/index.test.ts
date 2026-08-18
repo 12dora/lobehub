@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createAnthropicCompatibleRuntime,
   createDefaultAnthropicClient,
+  createDefaultAnthropicModels,
   DEFAULT_ANTHROPIC_TIMEOUT,
 } from './index';
 
@@ -255,5 +256,182 @@ describe('createAnthropicCompatibleRuntime', () => {
       expect.objectContaining({ requestModel: 'upstream-model' }),
     );
     expect(result).toEqual({ ok: true });
+  });
+});
+
+const jsonResponse = (body: unknown) =>
+  ({
+    json: async () => body,
+    ok: true,
+  }) as Response;
+
+describe('createDefaultAnthropicModels', () => {
+  it('maps documented ModelInfo fields and keeps created_at on the generic releasedAt path', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            capabilities: {
+              code_execution: { supported: true },
+              image_input: { supported: true },
+              pdf_input: { supported: true },
+              structured_outputs: { supported: true },
+              thinking: { supported: true },
+            },
+            created_at: '2025-09-29T00:00:00Z',
+            display_name: 'Claude Sonnet 4.5',
+            id: 'claude-sonnet-4-5-20250929',
+            max_input_tokens: 200_000,
+            max_tokens: 64_000,
+            type: 'model',
+          },
+        ],
+        first_id: 'claude-sonnet-4-5-20250929',
+        has_more: false,
+        last_id: 'claude-sonnet-4-5-20250929',
+      }),
+    );
+
+    const models = await createDefaultAnthropicModels({
+      apiKey: 'test-key',
+      baseURL: 'https://api.anthropic.com',
+      fetch: fetchImpl,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.anthropic.com/v1/models?limit=1000',
+      expect.objectContaining({
+        headers: {
+          'anthropic-version': '2023-06-01',
+          'x-api-key': 'test-key',
+        },
+        method: 'GET',
+      }),
+    );
+    expect(models).toEqual([
+      expect.objectContaining({
+        contextWindowTokens: 200_000,
+        displayName: 'Claude Sonnet 4.5',
+        id: 'claude-sonnet-4-5-20250929',
+        maxOutput: 64_000,
+        reasoning: true,
+        releasedAt: '2025-09-29',
+        vision: true,
+      }),
+    ]);
+    // code_execution is the server tool, not generic tool_use.
+    expect(models[0]).not.toHaveProperty('code_execution');
+  });
+
+  it('forwards false capability flags so keyword fallbacks do not override them', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            capabilities: {
+              image_input: { supported: false },
+              thinking: { supported: false },
+            },
+            created_at: '2024-03-04T00:00:00Z',
+            display_name: 'Text-only Claude',
+            id: 'claude-text-only-custom',
+          },
+        ],
+        has_more: false,
+      }),
+    );
+
+    const models = await createDefaultAnthropicModels({
+      apiKey: 'test-key',
+      baseURL: 'https://api.anthropic.com',
+      fetch: fetchImpl,
+    });
+
+    expect(models).toEqual([
+      expect.objectContaining({
+        id: 'claude-text-only-custom',
+        reasoning: false,
+        vision: false,
+      }),
+    ]);
+  });
+
+  it('leaves abilities undefined on the wire when capabilities is null so keywords can run', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            capabilities: null,
+            created_at: '2024-03-04T00:00:00Z',
+            display_name: 'Claude 3 Opus',
+            id: 'claude-3-opus-20240229',
+            max_input_tokens: null,
+            max_tokens: null,
+          },
+        ],
+        has_more: false,
+      }),
+    );
+
+    const models = await createDefaultAnthropicModels({
+      apiKey: 'test-key',
+      baseURL: 'https://api.anthropic.com',
+      fetch: fetchImpl,
+    });
+
+    expect(models).toEqual([
+      expect.objectContaining({
+        displayName: 'Claude 3 Opus',
+        functionCall: true,
+        id: 'claude-3-opus-20240229',
+        vision: true,
+      }),
+    ]);
+  });
+
+  it('follows last_id when has_more is true', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: [{ created_at: '2025-01-01T00:00:00Z', display_name: 'One', id: 'model-1' }],
+          has_more: true,
+          last_id: 'model-1',
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: [{ created_at: '2025-01-02T00:00:00Z', display_name: 'Two', id: 'model-2' }],
+          has_more: false,
+          last_id: 'model-2',
+        }),
+      );
+
+    const models = await createDefaultAnthropicModels({
+      apiKey: 'test-key',
+      baseURL: 'https://api.anthropic.com',
+      fetch: fetchImpl,
+    });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://api.anthropic.com/v1/models?limit=1000',
+      expect.anything(),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://api.anthropic.com/v1/models?limit=1000&after_id=model-1',
+      expect.anything(),
+    );
+    expect(models.map((model) => model.id)).toEqual(['model-1', 'model-2']);
+  });
+
+  it('throws when the API key is missing', async () => {
+    await expect(
+      createDefaultAnthropicModels({
+        baseURL: 'https://api.anthropic.com',
+        fetch: vi.fn(),
+      }),
+    ).rejects.toThrow('Missing Anthropic API key for model listing');
   });
 });

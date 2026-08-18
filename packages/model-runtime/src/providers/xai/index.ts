@@ -6,10 +6,10 @@ import type { ChatCompletionTool, ChatResponseFormat, ChatStreamPayload } from '
 import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import { createXAIImage } from './createImage';
 import { createXAIVideo } from './createVideo';
+import type { XAIModelCard } from './mapXAIModel';
+import { mapXAIModel } from './mapXAIModel';
 
-export interface XAIModelCard {
-  id: string;
-}
+export type { XAIModelCard } from './mapXAIModel';
 
 interface XAIChatStreamPayload extends ChatStreamPayload {
   frequencyPenalty?: number;
@@ -150,10 +150,10 @@ export const LobeXAI = createOpenAICompatibleRuntime({
     responses: () => process.env.DEBUG_XAI_RESPONSES === '1',
   },
   models: async ({ client }) => {
-    const modelsPage = (await client.models.list()) as any;
-    const modelList: XAIModelCard[] = modelsPage.data;
+    const modelsPage = (await client.models.list()) as { data?: XAIModelCard[] };
+    const modelList: XAIModelCard[] = modelsPage.data ?? [];
 
-    return processModelList(modelList, MODEL_LIST_CONFIGS.xai, 'xai');
+    return processModelList(modelList.map(mapXAIModel), MODEL_LIST_CONFIGS.xai, 'xai');
   },
   promptCacheKeyModels: [/^grok-/],
   provider: ModelProvider.XAI,

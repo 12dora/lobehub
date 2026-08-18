@@ -256,5 +256,46 @@ describe('LobeXAI - custom features', () => {
       expect(instance['client'].models.list).toHaveBeenCalled();
       expect(models.length).toBeGreaterThan(0);
     });
+
+    it('maps documented /v1/models fields through processModelList', async () => {
+      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
+        data: [
+          {
+            aliases: [],
+            cached_prompt_text_token_price: 2000,
+            completion_text_token_price: 25_000,
+            context_length: 131_072,
+            created: 1_776_556_800,
+            id: 'latest',
+            object: 'model',
+            owned_by: 'xai',
+            prompt_image_token_price: 12_500,
+            prompt_text_token_price: 12_500,
+          },
+        ],
+      } as never);
+
+      const models = await instance.models();
+
+      expect(models).toEqual([
+        expect.objectContaining({
+          contextWindowTokens: 131_072,
+          id: 'latest',
+          pricing: {
+            units: [
+              { name: 'textInput', rate: 1.25, strategy: 'fixed', unit: 'millionTokens' },
+              { name: 'textOutput', rate: 2.5, strategy: 'fixed', unit: 'millionTokens' },
+              {
+                name: 'textInput_cacheRead',
+                rate: 0.2,
+                strategy: 'fixed',
+                unit: 'millionTokens',
+              },
+            ],
+          },
+          releasedAt: '2026-04-19',
+        }),
+      ]);
+    });
   });
 });

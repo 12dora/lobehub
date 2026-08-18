@@ -3,44 +3,8 @@ import { ModelProvider } from 'model-bank';
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
 import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import { handleXAIChatCompletionPayload, handleXAIResponsesPayload } from '../xai';
-
-/**
- * Fields the xAI list endpoint documents beyond `{ id }`. Aliases are on the
- * wire but ChatModelCard has nowhere to persist them, so they are not mapped.
- */
-interface SuperGrokModelCard {
-  aliases?: string[];
-  context_window?: number;
-  contextWindowTokens?: number;
-  created?: number;
-  description?: string;
-  displayName?: string;
-  id: string;
-  input_modalities?: string[];
-  max_prompt_length?: number;
-  name?: string;
-  output_modalities?: string[];
-}
-
-const mapSuperGrokModel = (model: SuperGrokModelCard) => {
-  const inputModalities = Array.isArray(model.input_modalities)
-    ? model.input_modalities
-    : undefined;
-  const outputModalities = Array.isArray(model.output_modalities)
-    ? model.output_modalities
-    : undefined;
-
-  return {
-    ...model,
-    contextWindowTokens:
-      model.contextWindowTokens ?? model.context_window ?? model.max_prompt_length,
-    description: model.description,
-    displayName: model.displayName ?? model.name,
-    imageOutput: outputModalities ? outputModalities.includes('image') : undefined,
-    video: outputModalities ? outputModalities.includes('video') : undefined,
-    vision: inputModalities ? inputModalities.includes('image') : undefined,
-  };
-};
+import type { XAIModelCard } from '../xai/mapXAIModel';
+import { mapXAIModel } from '../xai/mapXAIModel';
 
 /**
  * SuperGrok / X Premium subscription access to Grok models.
@@ -66,13 +30,12 @@ export const LobeSuperGrokAI = createOpenAICompatibleRuntime({
     responses: () => process.env.DEBUG_SUPERGROK_RESPONSES === '1',
   },
   models: async ({ client }) => {
-    const modelsPage = (await client.models.list()) as { data?: SuperGrokModelCard[] };
+    const modelsPage = (await client.models.list()) as { data?: XAIModelCard[] };
     if (!Array.isArray(modelsPage?.data)) {
       throw new TypeError('SuperGrok models payload was not a list');
     }
-    const modelList = modelsPage.data;
 
-    return processModelList(modelList.map(mapSuperGrokModel), MODEL_LIST_CONFIGS.xai, 'supergrok');
+    return processModelList(modelsPage.data.map(mapXAIModel), MODEL_LIST_CONFIGS.xai, 'supergrok');
   },
   promptCacheKeyModels: [/^grok-/],
   provider: ModelProvider.SuperGrok,

@@ -57,17 +57,23 @@ describe('LobeSuperGrokAI - models', () => {
     );
   });
 
-  it('maps context window, name, and modalities from the xAI list', async () => {
+  it('maps documented /v1/models fields and leaves abilities to keyword fallback', async () => {
     vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
       data: [
         {
-          aliases: ['custom-latest'],
-          description: 'A live SuperGrok listing',
-          id: 'custom-xai-model',
-          input_modalities: ['text', 'image'],
-          max_prompt_length: 131_072,
-          name: 'Custom XAI',
-          output_modalities: ['text', 'image'],
+          aliases: [],
+          cached_prompt_text_token_price: 2000,
+          completion_text_token_price: 80_000,
+          completion_text_token_price_long_context: 160_000,
+          context_length: 256_000,
+          created: 1_768_003_200,
+          id: 'grok-420-reasoning',
+          long_context_threshold: 128_000,
+          object: 'model',
+          owned_by: 'xai',
+          prompt_image_token_price: 0,
+          prompt_text_token_price: 20_000,
+          prompt_text_token_price_long_context: 40_000,
         },
       ],
     } as never);
@@ -76,18 +82,50 @@ describe('LobeSuperGrokAI - models', () => {
 
     expect(models).toEqual([
       expect.objectContaining({
-        contextWindowTokens: 131_072,
-        description: 'A live SuperGrok listing',
-        displayName: 'Custom XAI',
-        id: 'custom-xai-model',
-        imageOutput: true,
-        video: false,
+        contextWindowTokens: 256_000,
+        functionCall: true,
+        id: 'grok-420-reasoning',
+        pricing: {
+          units: [
+            {
+              name: 'textInput',
+              strategy: 'tiered',
+              tiers: [
+                { rate: 2, upTo: 128_000 },
+                { rate: 4, upTo: 'infinity' },
+              ],
+              unit: 'millionTokens',
+            },
+            {
+              name: 'textOutput',
+              strategy: 'tiered',
+              tiers: [
+                { rate: 8, upTo: 128_000 },
+                { rate: 16, upTo: 'infinity' },
+              ],
+              unit: 'millionTokens',
+            },
+            {
+              name: 'textInput_cacheRead',
+              strategy: 'tiered',
+              tiers: [
+                { rate: 0.2, upTo: 128_000 },
+                { rate: 0.2, upTo: 'infinity' },
+              ],
+              unit: 'millionTokens',
+            },
+          ],
+        },
+        reasoning: true,
+        releasedAt: '2026-01-10',
         vision: true,
       }),
     ]);
+    expect(models[0]).not.toHaveProperty('aliases');
+    expect(models[0]).not.toHaveProperty('owned_by');
   });
 
-  it('leaves vision to keyword fallback when modalities are absent', async () => {
+  it('leaves abilities to keyword fallback when the list card has only an id', async () => {
     vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
       data: [{ id: 'grok-keyword-only-test-model' }],
     } as never);

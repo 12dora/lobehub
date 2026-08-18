@@ -365,6 +365,64 @@ export const handleDefaultAnthropicError = <T extends Record<string, any> = any>
 };
 
 /**
+ * Documented `GET /v1/models` ModelInfo. Capabilities we do not have a
+ * destination for (pdf_input, structured_outputs, effort, batch, citations,
+ * code_execution, context_management) are typed but left unmapped.
+ */
+interface AnthropicCapabilitySupport {
+  supported?: boolean;
+}
+
+interface AnthropicModelCapabilities {
+  batch?: AnthropicCapabilitySupport | null;
+  citations?: AnthropicCapabilitySupport | null;
+  code_execution?: AnthropicCapabilitySupport | null;
+  context_management?: AnthropicCapabilitySupport | null;
+  effort?: AnthropicCapabilitySupport | null;
+  image_input?: AnthropicCapabilitySupport | null;
+  pdf_input?: AnthropicCapabilitySupport | null;
+  structured_outputs?: AnthropicCapabilitySupport | null;
+  thinking?: AnthropicCapabilitySupport | null;
+}
+
+interface AnthropicModelInfo {
+  capabilities?: AnthropicModelCapabilities | null;
+  created_at?: string;
+  display_name?: string;
+  id: string;
+  max_input_tokens?: number | null;
+  max_tokens?: number | null;
+  type?: string;
+}
+
+interface AnthropicModelsPage {
+  data?: AnthropicModelInfo[];
+  first_id?: string | null;
+  has_more?: boolean;
+  last_id?: string | null;
+}
+
+const ANTHROPIC_MODELS_PAGE_LIMIT = 1000;
+const ANTHROPIC_MODELS_MAX_PAGES = 20;
+
+const anthropicCapabilitySupported = (
+  capability?: AnthropicCapabilitySupport | null,
+): boolean | undefined =>
+  typeof capability?.supported === 'boolean' ? capability.supported : undefined;
+
+const mapAnthropicModel = (model: AnthropicModelInfo) => ({
+  // created_at is RFC 3339; processReleasedAt already splits the date.
+  created: model.created_at,
+  contextWindowTokens:
+    typeof model.max_input_tokens === 'number' ? model.max_input_tokens : undefined,
+  displayName: model.display_name,
+  id: model.id,
+  maxOutput: typeof model.max_tokens === 'number' ? model.max_tokens : undefined,
+  reasoning: anthropicCapabilitySupported(model.capabilities?.thinking),
+  vision: anthropicCapabilitySupported(model.capabilities?.image_input),
+});
+
+/**
  * Default Anthropic models list fetcher.
  */
 export const createDefaultAnthropicModels = async ({
@@ -387,32 +445,44 @@ export const createDefaultAnthropicModels = async ({
     (client as { fetch?: typeof fetch } | undefined)?.fetch ??
     globalThis.fetch.bind(globalThis);
 
-  const response = await injectedFetch(`${baseURL}/v1/models`, {
-    headers: {
-      'anthropic-version': '2023-06-01',
-      'x-api-key': `${apiKey}`,
-    },
-    method: 'GET',
-  });
+  const headers = {
+    'anthropic-version': '2023-06-01',
+    'x-api-key': `${apiKey}`,
+  };
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch Anthropic models: ${response.status} ${response.statusText}`);
+  // Documented default page size is 20; follow has_more / last_id so a
+  // workspace with a larger catalogue is not silently truncated.
+  const modelList: AnthropicModelInfo[] = [];
+  let afterId: string | undefined;
+
+  for (let page = 0; page < ANTHROPIC_MODELS_MAX_PAGES; page += 1) {
+    const search = new URLSearchParams({ limit: String(ANTHROPIC_MODELS_PAGE_LIMIT) });
+    if (afterId) search.set('after_id', afterId);
+
+    const response = await injectedFetch(`${baseURL}/v1/models?${search.toString()}`, {
+      headers,
+      method: 'GET',
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to fetch Anthropic models: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    const json = (await response.json()) as AnthropicModelsPage;
+    const pageData = Array.isArray(json.data) ? json.data : [];
+    modelList.push(...pageData);
+
+    if (!json.has_more || !json.last_id || json.last_id === afterId) break;
+    afterId = json.last_id;
   }
 
-  const json = await response.json();
-  const modelList = (json['data'] || []) as Array<{
-    created_at: string;
-    display_name: string;
-    id: string;
-  }>;
-
-  const standardModelList = modelList.map((model) => ({
-    created: model.created_at,
-    displayName: model.display_name,
-    id: model.id,
-  }));
-
-  return processModelList(standardModelList, MODEL_LIST_CONFIGS.anthropic, 'anthropic');
+  return processModelList(
+    modelList.map(mapAnthropicModel),
+    MODEL_LIST_CONFIGS.anthropic,
+    'anthropic',
+  );
 };
 
 /**
