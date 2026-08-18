@@ -167,6 +167,33 @@ describe('ManagedResourcePolicyService', () => {
     expect(invalidation.events).toHaveLength(0);
   });
 
+  it('blocks an enforced agents save until catalog readiness and leaves no partial revision', async () => {
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const service = new ManagedResourcePolicyService(serverDB, {
+      invalidation,
+      readiness: noneReady,
+    });
+    const initial = await service.get();
+    const draft = createUnmanagedResourcePolicyMap();
+    draft.agents = { enforcementMode: 'enforced', managed: true };
+
+    await expect(
+      service.save({
+        actorUserId: 'admin-1',
+        draft,
+        expectedDraftToken: initial.draftToken,
+        expectedRevision: initial.baseRevision,
+        reason: 'unsafe agent enforcement',
+      }),
+    ).rejects.toBeInstanceOf(ManagedResourceCatalogNotReadyError);
+
+    expect(await ownedRevisions()).toHaveLength(0);
+    const after = await service.get();
+    expect(after.published.agents.managed).toBe(false);
+    expect(after.draft.agents.managed).toBe(false);
+    expect(invalidation.events).toHaveLength(0);
+  });
+
   it('publishes revision and all five effective rows atomically before invalidation', async () => {
     const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
     const service = new ManagedResourcePolicyService(serverDB, {

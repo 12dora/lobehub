@@ -133,11 +133,14 @@ describe('HOT readiness registrations', () => {
       await import('../services/skillCatalog/runtimeReadiness');
     const { resetConnectorCatalogReadinessRegistrationForTest } =
       await import('../services/connectorCatalog/runtimeReadiness');
+    const { resetAgentCatalogReadinessRegistrationForTest } =
+      await import('../services/agentCatalog/runtimeReadiness');
     const { clearManagedResourceReadinessForTest } =
       await import('../services/managedResourceReadiness');
     resetAiCatalogReadinessRegistrationForTest();
     resetSkillCatalogReadinessRegistrationForTest();
     resetConnectorCatalogReadinessRegistrationForTest();
+    resetAgentCatalogReadinessRegistrationForTest();
     clearManagedResourceReadinessForTest();
     mocks.isBootModuleEnabled.mockReturnValue(false);
     mocks.isModuleEnabled.mockResolvedValue(false);
@@ -162,5 +165,18 @@ describe('HOT readiness registrations', () => {
   it('does not throw ReferenceError when the unmocked aiCatalogReadiness spec starts', async () => {
     const spec = ENTERPRISE_WORKER_SPECS.find((item) => item.name === 'aiCatalogReadiness')!;
     await expect(spec.start()).resolves.toBeUndefined();
+  });
+
+  it('registers agentCatalogReadiness even when managedAgents is boot-disabled', async () => {
+    const spec = ENTERPRISE_WORKER_SPECS.find((item) => item.name === 'agentCatalogReadiness')!;
+    expect(spec.moduleId).toBeUndefined();
+    await expect(spec.start()).resolves.toBeUndefined();
+
+    const { hasManagedResourceReadinessProbeForTest, resolveManagedResourceReadiness } =
+      await import('../services/managedResourceReadiness');
+    expect(hasManagedResourceReadinessProbeForTest('agents')).toBe(true);
+
+    const disabled = await resolveManagedResourceReadiness();
+    expect(disabled.agents).toBe(false);
   });
 });

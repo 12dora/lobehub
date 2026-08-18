@@ -22,6 +22,7 @@ import {
   clearAiCatalogRuntimeCache,
   getEmptyAiProviderRuntimeState,
 } from './runtimeAdapter';
+import { resolveAiCatalogRuntimeReadiness } from './runtimeReadiness';
 
 const db: LobeChatDatabase = await getTestDB();
 const keyProvider: KeyProvider = {
@@ -86,6 +87,59 @@ describe('AiCatalogAdminService applyImmediate (unconditional publish)', () => {
     // The revision is live; the public catalog projection stays empty until a model is
     // enabled (nothing to expose), which is exactly the user-side provider behaviour.
     expect(detail.published).toBeNull();
+
+    // No stored secret and not env/endpoint-executable → providers stay unready.
+    clearAiCatalogRuntimeCache();
+    await expect(
+      resolveAiCatalogRuntimeReadiness({
+        db,
+        flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+        secretService: new PlatformSecretService({ keyProvider }),
+      }),
+    ).resolves.toEqual({ aiModels: false, aiProviders: false });
+  });
+
+  it('marks providers ready (and models not) after applyImmediate with a secret and no chat model', async () => {
+    const secretService = new PlatformSecretService({ keyProvider });
+    const service = new AiCatalogAdminService(db, secretService, {
+      connectionProbe: async () => {},
+    });
+    const created = await service.applyProviderImmediate('admin', {
+      displayName: 'Secret only',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'secret-ready-no-model',
+      reason: 'create with secret',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai' },
+      source: 'custom',
+    });
+    expect(created.revision).toBe(1);
+    expect(created.draft.models).toEqual([]);
+    expect(created.draft.secret.configured).toBe(true);
+
+    clearAiCatalogRuntimeCache();
+    const flags = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
+    await expect(resolveAiCatalogRuntimeReadiness({ db, flags, secretService })).resolves.toEqual({
+      aiModels: false,
+      aiProviders: true,
+    });
+
+    const detail = await service.getDetail(created.draft.id);
+    await service.applyModelImmediate('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      operation: 'create',
+      providerId: created.draft.id,
+      reason: 'enable chat',
+      type: 'chat',
+    });
+    clearAiCatalogRuntimeCache();
+    await expect(resolveAiCatalogRuntimeReadiness({ db, flags, secretService })).resolves.toEqual({
+      aiModels: true,
+      aiProviders: true,
+    });
   });
 
   it('republishes an update without re-running the connection test', async () => {

@@ -8,4 +8,5 @@ export * from './platformAgentExecutionResolver';
 export * from './publication';
 export * from './rolloutService';
 export * from './rolloutWorker';
+export * from './runtimeReadiness';
 export * from './userListProjection';
