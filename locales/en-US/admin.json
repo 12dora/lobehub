@@ -1931,7 +1931,7 @@
   "modules.summary.less": "less",
   "modules.summary.more": "more",
   "modules.summary.noExternalDeps": "None",
-  "modules.summary.perMessage": "Per-message overhead",
+  "modules.summary.perMessage": "Standing traffic cost",
   "modules.summary.restartPending": "Needs a restart",
   "modules.summary.unmeasured": "Unmeasured",
   "modules.summary.unmeasuredHint": "Some enabled modules have not been measured yet, so the real figure is higher.",

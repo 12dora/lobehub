@@ -26,7 +26,11 @@ export interface ModuleCostSummary {
   measured: number;
   /** Enabled modules whose `idleRssMb` has not been measured yet — the number is a floor. */
   unmeasured: number;
-  /** Enabled modules that add fixed work to every message / outbound fetch. */
+  /**
+   * Enabled modules that add fixed work to traffic rather than only when their own feature is
+   * used — the same set the rows chip as running on every message / request / outbound request.
+   * `onUse` is excluded because on-demand work is not a standing cost.
+   */
   workPerRequest: number;
 }
 
@@ -48,7 +52,7 @@ export const summarizeModules = (state: PlatformModuleStateMap): ModuleCostSumma
       idleRssMb += cost.idleRssMb;
       measured += 1;
     }
-    if (cost.loadKind === 'perMessage' || cost.loadKind === 'perFetch') workPerRequest += 1;
+    if (cost.loadKind !== 'none' && cost.loadKind !== 'onUse') workPerRequest += 1;
     for (const dep of cost.externalDeps) deps.add(dep);
   }
 

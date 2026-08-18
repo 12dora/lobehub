@@ -36,14 +36,20 @@ describe('summarizeModules', () => {
     );
   });
 
-  it('counts per-message and per-fetch modules as load, not per-request ones', () => {
-    const perMessageIds = PLATFORM_MODULE_IDS.filter(
-      (id) =>
-        PLATFORM_MODULES[id].cost.loadKind === 'perMessage' ||
-        PLATFORM_MODULES[id].cost.loadKind === 'perFetch',
+  it('counts standing traffic cost, and does not count on-demand work as one', () => {
+    const standingIds = PLATFORM_MODULE_IDS.filter((id) =>
+      ['perFetch', 'perMessage', 'perRequest'].includes(PLATFORM_MODULES[id].cost.loadKind),
     );
-    expect(summarizeModules(ALL_MODULES_ENABLED).workPerRequest).toBe(perMessageIds.length);
-    expect(summarizeModules(withOff(...perMessageIds)).workPerRequest).toBe(0);
+    // The rows chip exactly these three kinds; a summary that counted a different set would
+    // disagree with the chips right below it.
+    expect(summarizeModules(ALL_MODULES_ENABLED).workPerRequest).toBe(standingIds.length);
+    expect(summarizeModules(withOff(...standingIds)).workPerRequest).toBe(0);
+
+    const onUseIds = PLATFORM_MODULE_IDS.filter(
+      (id) => PLATFORM_MODULES[id].cost.loadKind === 'onUse',
+    );
+    expect(onUseIds.length).toBeGreaterThan(0);
+    expect(summarizeModules(withOff(...standingIds, ...onUseIds)).workPerRequest).toBe(0);
   });
 
   it('reports unmeasured modules instead of pretending the memory total is complete', () => {
@@ -104,7 +110,11 @@ describe('presets', () => {
     const standard = comparePresets(presetStateMap('standard')).find(
       (entry) => entry.preset === 'standard',
     );
-    expect(standard).toMatchObject({ backgroundJobsDelta: 0, idleRssMbDelta: 0, preset: 'standard' });
+    expect(standard).toMatchObject({
+      backgroundJobsDelta: 0,
+      idleRssMbDelta: 0,
+      preset: 'standard',
+    });
 
     const lighter = comparePresets(presetStateMap('minimal')).find(
       (entry) => entry.preset === 'standard',

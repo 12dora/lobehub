@@ -3038,7 +3038,7 @@ export default {
   'contentModeration.mode.off': 'Off',
   'contentModeration.mode.observe': 'Observe',
   'contentModeration.mode.enforce': 'Enforce',
-  'contentModeration.mode.offDesc': 'No requests are screened or recorded.',
+  'contentModeration.mode.offDesc': 'Not screened or recorded.',
   'contentModeration.mode.observeDesc':
     'Requests are scored and recorded, but never blocked or downgraded; users notice nothing.',
   'contentModeration.mode.enforceDesc':
@@ -3993,7 +3993,7 @@ export default {
   'modules.summary.less': 'less',
   'modules.summary.more': 'more',
   'modules.summary.noExternalDeps': 'None',
-  'modules.summary.perMessage': 'Per-message overhead',
+  'modules.summary.perMessage': 'Standing traffic cost',
   'modules.summary.restartPending': 'Needs a restart',
   'modules.summary.unmeasuredHint':
     'Some enabled modules have not been measured yet, so the real figure is higher.',

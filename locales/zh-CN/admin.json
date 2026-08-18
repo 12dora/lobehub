@@ -1931,7 +1931,7 @@
   "modules.summary.less": "少",
   "modules.summary.more": "多",
   "modules.summary.noExternalDeps": "无",
-  "modules.summary.perMessage": "每条消息附加开销",
+  "modules.summary.perMessage": "常驻流量开销",
   "modules.summary.restartPending": "需重启才生效",
   "modules.summary.unmeasured": "未测量",
   "modules.summary.unmeasuredHint": "部分已启用模块尚未测量，实际数字会更高。",
