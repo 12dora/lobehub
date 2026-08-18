@@ -70,10 +70,12 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
     // The summary reports the option ids alongside the values they resolved to.
     const storedKey = browserProfileSelectionKey(data);
     /**
-     * A revalidation that reports the same choice must leave an edit in progress alone; only a
-     * choice the platform actually made — this save, or someone else's — re-seeds the form.
+     * A same-revision revalidation of the same six ids must leave an edit in progress
+     * alone. A regeneration can land on those same ids (the pools are finite) while
+     * minting a new revision and a new installation identity — that is a choice the
+     * platform made, so it re-seeds too.
      */
-    useEffect(() => setDraft(undefined), [storedKey]);
+    useEffect(() => setDraft(undefined), [data?.installationId, data?.revision, storedKey]);
     // Any revision the card has now caught up with is no longer the one it was refused on.
     useEffect(() => setStale(false), [data?.revision]);
 
@@ -114,6 +116,9 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
           setRegenerating(true);
           try {
             await onRegenerate();
+            // Even if the new summary reused the previous six ids, this click
+            // produced a new fingerprint — drop the operator's unsaved draft.
+            setDraft(undefined);
             toast.success(t('browserProfile.toast.regenerated'));
           } catch (cause) {
             toast.error(t('browserProfile.toast.failed'));

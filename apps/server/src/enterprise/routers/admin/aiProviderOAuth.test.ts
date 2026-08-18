@@ -15,6 +15,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
+import type * as PlatformAiCatalogModule from '@/database/repositories/platformAiCatalog';
 import {
   permissions,
   platformAgents,
@@ -70,11 +71,42 @@ vi.mock('@/server/services/oauthDeviceFlow/providers/githubCopilot', async (impo
 }));
 
 /**
+ * Instance-field `getProvider` is not on the prototype, so a spy there would miss
+ * the verification read. Wrapping the constructor lets the post-commit outage
+ * fail that read the same way a gone database would.
+ */
+vi.mock('@/database/repositories/platformAiCatalog', async (importOriginal) => {
+  const actual = await importOriginal<typeof PlatformAiCatalogModule>();
+  return {
+    ...actual,
+    PlatformAiCatalogRepository: class extends actual.PlatformAiCatalogRepository {
+      constructor(...args: ConstructorParameters<typeof actual.PlatformAiCatalogRepository>) {
+        super(...args);
+        const realGetProvider = this.getProvider.bind(this);
+        this.getProvider = async (id: string) => {
+          if (serviceSeam.failVerificationRead && serviceSeam.postCommitReadFailed) {
+            throw new Error('database unavailable');
+          }
+          return realGetProvider(id);
+        };
+      }
+    },
+  };
+});
+
+/**
  * Service methods are instance-level arrow properties, so the persistence seam is
  * swapped on the freshly built service rather than on a prototype.
+ *
+ * `failPostCommitDetail` drives the real apply, then throws from its own final
+ * getDetail — the actual post-commit read, not an error invented after apply
+ * has already returned against a healthy database.
  */
 const serviceSeam = vi.hoisted(() => ({
   applyProviderImmediate: null as ReturnType<typeof vi.fn> | null,
+  failPostCommitDetail: false,
+  failVerificationRead: false,
+  postCommitReadFailed: false,
 }));
 
 vi.mock('./aiCatalogSupport', async (importOriginal) => {
@@ -85,6 +117,18 @@ vi.mock('./aiCatalogSupport', async (importOriginal) => {
       const service = actual.createService(database);
       if (serviceSeam.applyProviderImmediate) {
         service.applyProviderImmediate = serviceSeam.applyProviderImmediate as never;
+      }
+      if (serviceSeam.failPostCommitDetail) {
+        const realGetDetail = service.getDetail;
+        let reads = 0;
+        service.getDetail = (async (...args: Parameters<typeof realGetDetail>) => {
+          reads += 1;
+          if (reads > 1) {
+            serviceSeam.postCommitReadFailed = true;
+            throw new Error('post-commit getDetail failed');
+          }
+          return realGetDetail(...args);
+        }) as typeof realGetDetail;
       }
       return service;
     },
@@ -163,6 +207,9 @@ beforeEach(async () => {
     transportFetch: chatgptWeb.transportFetch as unknown as typeof fetch,
   });
   serviceSeam.applyProviderImmediate = null;
+  serviceSeam.failPostCommitDetail = false;
+  serviceSeam.failVerificationRead = false;
+  serviceSeam.postCommitReadFailed = false;
   await cleanup();
   await db.insert(users).values(Object.values(ids).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -922,6 +969,49 @@ describe('admin.aiProviderOAuth.disconnect', () => {
     expect(await auditRowsFor('admin.aiProviderOAuth.disconnect')).toMatchObject([
       {
         afterDiff: { providerKey: 'chatgpt', revision: first.revision },
+        result: 'success',
+      },
+    ]);
+  });
+
+  it('still publishes when only the draft vault was cleared', async () => {
+    const caller = await connect();
+    const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise();
+    const catalog = new AiCatalogAdminService(db, secrets!);
+    const detail = await catalog.getDetail({ providerKey: 'chatgpt' });
+    expect(detail.draft.secret.configured).toBe(true);
+    expect(detail.published).not.toBeNull();
+
+    await catalog.updateProviderDraft(ids.aiAdmin, {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: detail.draft.id,
+      reason: 'clear the draft vault without publishing',
+      secret: { operation: 'clear' },
+    });
+
+    const unpublished = await catalog.getDetail({ providerKey: 'chatgpt' });
+    expect(unpublished.draft.secret.configured).toBe(false);
+    expect(unpublished.draft.status).toBe('draft');
+    expect(unpublished.published).not.toBeNull();
+
+    const result = await caller.aiProviderOAuth.disconnect({
+      id: 'chatgpt',
+      reason: DISCONNECT_REASON,
+    });
+
+    expect(result.disconnected).toBe(true);
+    expect(result.revision).toBeGreaterThan(unpublished.baseRevision);
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row).toMatchObject({
+      enabled: true,
+      encryptedKeyVaults: null,
+      secretFingerprint: null,
+      status: 'published',
+    });
+    expect(await auditRowsFor('admin.aiProviderOAuth.disconnect')).toMatchObject([
+      {
+        afterDiff: { providerKey: 'chatgpt', revision: result.revision },
         result: 'success',
       },
     ]);
@@ -1770,7 +1860,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
   });
 
-  it('wipes the ChatGPT Web cookie jar when apply commits then fails', async () => {
+  it('reports success when the post-commit detail read fails after a committed clear', async () => {
     const caller = await callerFor();
     const { envelope, started } = await startFlow(caller);
     mockSessionBackend({
@@ -1787,12 +1877,46 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     seedSessionJar(envelope.deviceId);
     expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
 
-    // apply commits the clear, then getDetail (or anything after COMMIT) rejects.
-    serviceSeam.applyProviderImmediate = vi.fn(async (actorUserId, input) => {
-      const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise();
-      await new AiCatalogAdminService(db, secrets!).applyProviderImmediate(actorUserId, input);
-      throw new Error('post-commit getDetail failed');
+    // Drive apply's own final getDetail, not an error thrown after apply returned.
+    serviceSeam.failPostCommitDetail = true;
+    const result = await caller.aiProviderOAuth.disconnect({
+      id: 'chatgptweb',
+      reason: 'withdraw the shared account',
     });
+
+    expect(result.disconnected).toBe(true);
+    expect(result.revision).toBeGreaterThan(0);
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(false);
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row.encryptedKeyVaults).toBeNull();
+    expect(await auditRowsFor('admin.aiProviderOAuth.disconnect')).toMatchObject([
+      {
+        afterDiff: { providerKey: 'chatgptweb', revision: result.revision },
+        result: 'success',
+      },
+    ]);
+  });
+
+  it('wipes the ChatGPT Web cookie jar when the post-commit detail read fails and the database stays unavailable', async () => {
+    const caller = await callerFor();
+    const { envelope, started } = await startFlow(caller);
+    mockSessionBackend({
+      accessToken: PASTE_ACCESS_TOKEN,
+      user: { email: 'session@example.test' },
+    });
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: started.deviceCode,
+      id: 'chatgptweb',
+      reason: 'connect the shared ChatGPT Web account',
+      sessionToken: sessionJwe,
+    });
+
+    seedSessionJar(envelope.deviceId);
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
+
+    serviceSeam.failPostCommitDetail = true;
+    serviceSeam.failVerificationRead = true;
+
     await expect(
       caller.aiProviderOAuth.disconnect({
         id: 'chatgptweb',
@@ -1802,5 +1926,46 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(false);
     const [row] = await db.select().from(platformAiProviders);
     expect(row.encryptedKeyVaults).toBeNull();
+  });
+
+  it('a retry still wipes a leftover ChatGPT Web jar after the vault was already cleared', async () => {
+    const caller = await callerFor();
+    const { envelope, started } = await startFlow(caller);
+    mockSessionBackend({
+      accessToken: PASTE_ACCESS_TOKEN,
+      user: { email: 'session@example.test' },
+    });
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: started.deviceCode,
+      id: 'chatgptweb',
+      reason: 'connect the shared ChatGPT Web account',
+      sessionToken: sessionJwe,
+    });
+
+    seedSessionJar(envelope.deviceId);
+    serviceSeam.failPostCommitDetail = true;
+    serviceSeam.failVerificationRead = true;
+    await expect(
+      caller.aiProviderOAuth.disconnect({
+        id: 'chatgptweb',
+        reason: 'withdraw the shared account',
+      }),
+    ).rejects.toBeTruthy();
+
+    // First request wiped; a leftover jar after that outage must still be
+    // recoverable on retry rather than short-circuited into a no-op.
+    seedSessionJar(envelope.deviceId);
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
+
+    serviceSeam.failPostCommitDetail = false;
+    serviceSeam.failVerificationRead = false;
+    serviceSeam.postCommitReadFailed = false;
+
+    const retry = await caller.aiProviderOAuth.disconnect({
+      id: 'chatgptweb',
+      reason: 'withdraw the shared account',
+    });
+    expect(retry.disconnected).toBe(true);
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(false);
   });
 });

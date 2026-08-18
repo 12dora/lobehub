@@ -710,6 +710,40 @@ describe('BrowserProfileCard as an editable choice', () => {
     expect(mocks.success).toHaveBeenCalledWith('browserProfile.toast.regenerated');
   });
 
+  it('reseeds after regenerate even when the six option ids did not change', async () => {
+    const first = summary();
+    const regenerated: AdminBrowserProfileSummary = {
+      ...first,
+      installationId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      revision: 6,
+      updatedAt: new Date('2026-08-18T02:00:00.000Z'),
+    };
+
+    let current = first;
+    const onRegenerate = vi.fn(async () => {
+      current = regenerated;
+      rerender(editable({ data: current, onRegenerate }));
+    });
+    const { rerender } = render(editable({ data: current, onRegenerate }));
+
+    fireEvent.change(screen.getByLabelText('browserProfile.fields.localeTimezone'), {
+      target: { value: 'locale-zh-cn-shanghai' },
+    });
+    expect(screen.getByText('browserProfile.states.dirty')).toBeTruthy();
+    expect(saveButton().hasAttribute('disabled')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'browserProfile.actions.regenerate' }));
+    await mocks.confirm!.onOk();
+
+    // Same six ids as revision 3, new identity and revision — the unsaved locale
+    // must not stay on screen marked dirty and ready to overwrite the new fingerprint.
+    expect(
+      (screen.getByLabelText('browserProfile.fields.localeTimezone') as HTMLSelectElement).value,
+    ).toBe('locale-en-us-new-york');
+    expect(screen.queryByText('browserProfile.states.dirty')).toBeNull();
+    expect(saveButton().hasAttribute('disabled')).toBe(true);
+  });
+
   it('falls back to the read-only summary until the pools arrive', () => {
     const { container } = render(editable({ options: undefined }));
 

@@ -1,3 +1,7 @@
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import nodePath from 'node:path';
+
 import debug from 'debug';
 import {
   getProviderOAuthGrantFlow,
@@ -57,6 +61,55 @@ import {
 
 const log = debug('lobe-server:admin-ai-provider-oauth');
 
+/**
+ * Device id for the ChatGPT Web jar, persisted beside the jar itself.
+ *
+ * apply commits the vault clear and then a post-commit getDetail can fail
+ * because the database went away. The verification read then fails too, and a
+ * retry sees an empty vault. The id has to live outside the row or the jar is
+ * stranded while a historical revision can still resolve its secret version.
+ */
+const CHATGPT_WEB_PENDING_WIPE_DIR = nodePath.join(tmpdir(), 'aihub-chatgptweb-jars');
+
+const chatgptWebPendingWipePath = (providerId: string) =>
+  nodePath.join(CHATGPT_WEB_PENDING_WIPE_DIR, `pending-wipe-${providerId}`);
+
+const persistChatGPTWebPendingWipe = (providerId: string, deviceId: string): void => {
+  try {
+    mkdirSync(CHATGPT_WEB_PENDING_WIPE_DIR, { mode: 0o700, recursive: true });
+    writeFileSync(chatgptWebPendingWipePath(providerId), deviceId, { mode: 0o600 });
+  } catch {
+    // Best-effort: the in-memory capture still covers this request.
+  }
+};
+
+const readChatGPTWebPendingWipe = (providerId: string): string | undefined => {
+  try {
+    const deviceId = readFileSync(chatgptWebPendingWipePath(providerId), 'utf8').trim();
+    return deviceId || undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const clearChatGPTWebPendingWipe = (providerId: string): void => {
+  try {
+    unlinkSync(chatgptWebPendingWipePath(providerId));
+  } catch {
+    // Already gone.
+  }
+};
+
+const decryptChatGPTWebDeviceId = async (
+  ciphertext: string | null | undefined,
+): Promise<string | undefined> => {
+  if (!ciphertext) return undefined;
+  const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise();
+  if (!secrets) return undefined;
+  const keyVaults = await new AiCatalogSecretManager(secrets).decrypt(ciphertext);
+  return asVaultString(keyVaults.oauthDeviceId);
+};
+
 const adminBase = authedProcedure
   .use(serverDatabase)
   .use(withActiveUser())
@@ -113,45 +166,59 @@ export const adminAiProviderOAuthRouter = router({
       // did not happen.
       if (!detail) return { disconnected: false, revision: null };
 
-      // Already withdrawn. Republishing would mint another immutable revision and
-      // another success audit for an authorization that is not there; a lost
-      // response plus a client retry is enough to trigger that.
-      if (!detail.draft.secret.configured) {
-        return { disconnected: true, revision: detail.baseRevision };
-      }
+      const repo = new PlatformAiCatalogRepository(ctx.serverDB);
 
-      // Capture the device id before the vault is cleared. apply commits the clear
-      // and then does a final getDetail — a transient failure there rejects after
-      // the vault is already null, so the wipe cannot wait on a resolved apply.
-      // Wiping before apply (or after a failed clear) destroys a live session.
+      // Device id first, while a vault (live or the still-published revision) may
+      // still hold it. The apply below clears the row; a later retry cannot
+      // reconstruct this from an empty vault.
       let chatgptWebDeviceId: string | undefined;
       if (input.id === 'chatgptweb') {
         try {
-          const provider = await new PlatformAiCatalogRepository(ctx.serverDB).getProvider(
-            detail.draft.id,
-          );
-          if (provider?.encryptedKeyVaults) {
-            const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise();
-            if (secrets) {
-              const keyVaults = await new AiCatalogSecretManager(secrets).decrypt(
-                provider.encryptedKeyVaults,
+          const provider = await repo.getProvider(detail.draft.id);
+          chatgptWebDeviceId = await decryptChatGPTWebDeviceId(provider?.encryptedKeyVaults);
+          if (!chatgptWebDeviceId) {
+            const published = await repo.getLatestPublishedProviderRevision(detail.draft.id);
+            if (published?.secretFingerprint) {
+              const version = await repo.getProviderSecretVersion(
+                detail.draft.id,
+                published.secretFingerprint,
               );
-              chatgptWebDeviceId = asVaultString(keyVaults.oauthDeviceId);
+              chatgptWebDeviceId = await decryptChatGPTWebDeviceId(version?.ciphertext);
             }
           }
         } catch {
           // Best-effort: never fail the disconnect on a vault-read error.
         }
+        chatgptWebDeviceId ??= readChatGPTWebPendingWipe(detail.draft.id);
       }
 
       const wipeCapturedJar = () => {
-        if (!chatgptWebDeviceId) return;
+        const deviceId = chatgptWebDeviceId ?? readChatGPTWebPendingWipe(detail.draft.id);
+        if (!deviceId) return;
         try {
-          wipeChatGPTWebCookieJar(chatgptWebDeviceId);
+          wipeChatGPTWebCookieJar(deviceId);
         } catch {
           // Best-effort: never fail the disconnect on a jar unlink.
         }
       };
+
+      // Fail-closed: a draft-only clear leaves the published revision's secret
+      // live. An unread published row is treated as still holding one.
+      const publishedHasSecret = await repo
+        .getLatestPublishedProviderRevision(detail.draft.id)
+        .then((published) => Boolean(published?.secretFingerprint))
+        .catch(() => true);
+
+      // Already withdrawn at both draft and published. Republishing would mint
+      // another immutable revision and another success audit for an authorization
+      // that is not there; a lost response plus a client retry is enough.
+      if (!detail.draft.secret.configured && !publishedHasSecret) {
+        wipeCapturedJar();
+        clearChatGPTWebPendingWipe(detail.draft.id);
+        return { disconnected: true, revision: detail.baseRevision };
+      }
+
+      if (chatgptWebDeviceId) persistChatGPTWebPendingWipe(detail.draft.id, chatgptWebDeviceId);
 
       const audit = new PlatformAuditService(ctx.serverDB);
       let result;
@@ -168,16 +235,38 @@ export const adminAiProviderOAuthRouter = router({
           secret: { operation: 'clear' },
         });
       } catch (error) {
-        let clearCommitted = false;
+        // The failure we recover from is usually a post-commit getDetail outage, so
+        // a second database read is likely to fail too. Wipe from the id captured
+        // before apply whenever we cannot prove the session is still live.
+        type ClearOutcome = { revision: number } | 'live' | 'unknown';
+        let outcome: ClearOutcome;
         try {
-          const provider = await new PlatformAiCatalogRepository(ctx.serverDB).getProvider(
-            detail.draft.id,
-          );
-          clearCommitted = !provider?.encryptedKeyVaults;
+          const provider = await repo.getProvider(detail.draft.id);
+          outcome = provider?.encryptedKeyVaults
+            ? 'live'
+            : { revision: provider?.revision ?? detail.baseRevision };
         } catch {
-          // Cannot tell — do not wipe a session that may still be live.
+          outcome = 'unknown';
         }
-        if (clearCommitted) wipeCapturedJar();
+
+        if (outcome === 'live') {
+          clearChatGPTWebPendingWipe(detail.draft.id);
+        } else {
+          wipeCapturedJar();
+        }
+
+        if (typeof outcome === 'object') {
+          clearChatGPTWebPendingWipe(detail.draft.id);
+          await auditProvider(audit, {
+            action: 'admin.aiProviderOAuth.disconnect',
+            actorUserId: ctx.userId!,
+            afterDiff: { providerKey: input.id, revision: outcome.revision },
+            result: 'success',
+            targetId: detail.draft.id,
+          });
+          return { disconnected: true, revision: outcome.revision };
+        }
+
         await auditProvider(audit, {
           action: 'admin.aiProviderOAuth.disconnect',
           actorUserId: ctx.userId!,
@@ -190,6 +279,7 @@ export const adminAiProviderOAuthRouter = router({
       }
 
       wipeCapturedJar();
+      clearChatGPTWebPendingWipe(detail.draft.id);
 
       await auditProvider(audit, {
         action: 'admin.aiProviderOAuth.disconnect',

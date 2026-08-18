@@ -11,8 +11,14 @@ import SystemGeneralPage from './SystemGeneralPage';
 const mocks = vi.hoisted(() => ({
   admin: { authMethod: 'better-auth', permissions: [] as string[], status: 'allowed' },
   profileMutate: vi.fn(),
+  regenerateBrowserProfile: vi.fn(),
   updateBrowserProfile: vi.fn(),
-  view: undefined as undefined | { onProfileSave: (input: unknown) => Promise<void> },
+  view: undefined as
+    | undefined
+    | {
+        onProfileRegenerate: () => Promise<void>;
+        onProfileSave: (input: unknown) => Promise<void>;
+      },
 }));
 
 vi.mock('react-i18next', () => ({
@@ -60,7 +66,10 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 }));
 
 vi.mock('@/enterprise/client/services/adminSystem', () => ({
-  adminSystemService: { updateBrowserProfile: mocks.updateBrowserProfile },
+  adminSystemService: {
+    regenerateBrowserProfile: mocks.regenerateBrowserProfile,
+    updateBrowserProfile: mocks.updateBrowserProfile,
+  },
 }));
 
 vi.mock('../primitives/AdminPageTemplate', () => ({
@@ -104,7 +113,10 @@ vi.mock('./hooks', () => ({
 }));
 
 vi.mock('./SystemGeneralPageView', () => ({
-  SystemGeneralPageView: (props: { onProfileSave: (input: unknown) => Promise<void> }) => {
+  SystemGeneralPageView: (props: {
+    onProfileRegenerate: () => Promise<void>;
+    onProfileSave: (input: unknown) => Promise<void>;
+  }) => {
     mocks.view = props;
     return <div data-testid="tab-body-infrastructure" />;
   },
@@ -137,6 +149,7 @@ beforeEach(() => {
   ];
   mocks.view = undefined;
   mocks.profileMutate.mockReset();
+  mocks.regenerateBrowserProfile.mockReset();
   mocks.updateBrowserProfile.mockReset();
 });
 
@@ -198,6 +211,16 @@ describe('SystemGeneralPage', () => {
     // A revalidation that fails transiently would otherwise leave the card holding the previous
     // summary, so a saved choice keeps reading as unsaved and gets written a second time.
     expect(mocks.profileMutate).toHaveBeenCalledWith(saved, { revalidate: false });
+  });
+
+  it('shows the fingerprint regenerate returned rather than depending on a follow-up read', async () => {
+    const regenerated = { installationId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', revision: 6 };
+    mocks.regenerateBrowserProfile.mockResolvedValue(regenerated);
+    renderAt('/admin/system/general');
+
+    await mocks.view!.onProfileRegenerate();
+
+    expect(mocks.profileMutate).toHaveBeenCalledWith(regenerated, { revalidate: false });
   });
 
   it('refuses the page when the admin can read neither domain', () => {
