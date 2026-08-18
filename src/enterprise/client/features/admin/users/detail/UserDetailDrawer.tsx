@@ -26,12 +26,13 @@ const SHADOW_GUTTER = 48;
 export const USER_PANEL_WIDTH = 'min(560px, calc(100vw - 48px))';
 
 /**
- * Motion for the panel. The library default (300ms in / 220ms out, aggressive ease)
- * reads as a snap; this is a longer, decelerating enter and a slightly quicker,
- * symmetric exit — the "settle into place" feel of a sheet rather than a pop-up.
+ * Motion for the panel. The library default (300ms in / 220ms out) reads as a snap;
+ * this keeps its soft curve but gives the enter almost twice the time to settle, and a
+ * quicker, gently accelerating exit — the "glide into place" feel of a sheet rather
+ * than a pop-up. Verified on the demo: the panel travels ~560px and lands within ~500ms.
  */
-export const USER_PANEL_ENTER_TRANSITION = { duration: 0.48, ease: [0.22, 1, 0.36, 1] } as const;
-export const USER_PANEL_EXIT_TRANSITION = { duration: 0.34, ease: [0.4, 0, 0.2, 1] } as const;
+export const USER_PANEL_ENTER_TRANSITION = { duration: 0.56, ease: [0.32, 0.72, 0, 1] } as const;
+export const USER_PANEL_EXIT_TRANSITION = { duration: 0.36, ease: [0.4, 0, 0.6, 1] } as const;
 
 /**
  * `motionProps` handed to `DrawerPopup`. They are spread after the atom's own
