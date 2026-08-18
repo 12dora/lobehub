@@ -194,6 +194,19 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
   },
   {
+    file: 'src/routes/(main)/settings/profile/features/security/TwoFactor/TotpEnrollFlow.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Rewrites the otpauth issuer to the runtime brand so the authenticator app names this deployment, not the build-time brand',
+  },
+  {
+    file: 'src/routes/(main)/settings/profile/features/security/TwoFactor/RegenerateCodesView.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
     file: 'src/features/Auth/SignIn/SignInEmailStep.tsx',
     importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
     owner: 'M12',

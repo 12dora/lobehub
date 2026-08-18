@@ -3,10 +3,7 @@
 import { confirmModal, toast } from '@lobehub/ui/base-ui';
 import type { TFunction } from 'i18next';
 
-import {
-  AdminReauthCancelledError,
-  requestAdminReauth,
-} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import { AdminReauthCancelledError } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type { AdminAccessContextValue } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 
@@ -41,7 +38,8 @@ export const useIdentityProviderRestartAction = ({
       title: t('identityProviders.restart.title'),
       onOk: async () => {
         try {
-          await requestAdminReauth({ authMethod });
+          // No eager reauth popup: the reason modal below retries through
+          // `withAdminReauthRetry` only when the server challenges.
           openReasonModal({
             authMethod,
             buildPayload: (reason) => ({ reason, requestId: crypto.randomUUID() }),

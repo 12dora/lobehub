@@ -11,6 +11,10 @@ import { z } from 'zod';
 
 import { PLATFORM_SYSTEM_ROLES, type PlatformSystemRoleName } from '@/const/platform/roles';
 
+import {
+  BOOTSTRAP_PASSWORD_MAX_LENGTH,
+  BOOTSTRAP_PASSWORD_MIN_LENGTH,
+} from '../bootstrap/superAdmin';
 import { secretSafeAuditReasonSchema, strictDateSchema } from './shared';
 
 /** Default page size for the users list (offset pagination). */
@@ -23,10 +27,22 @@ export const ADMIN_USERS_LIST_MAX_OFFSET = 100_000;
 export const ADMIN_USERS_AUDIT_DEFAULT_LIMIT = 50;
 
 /**
- * Provisional recent-reauth window for high-risk mutations (M04).
- * M13 may tighten policy; keep this as the single server constant.
+ * Recent-reauth window for high-risk mutations (M04). Single server constant.
+ *
+ * This was 15 minutes, which did not survive contact with real administration.
+ * `authenticatedAt` is the session's ORIGINAL login time and is never refreshed
+ * (see `packages/trpc/src/lambda/context.ts`) — so a quarter of an hour after
+ * signing in, ~80 admin mutations began failing with `ADMIN_REAUTH_REQUIRED`,
+ * and the only cure was the sign-in popup in `requestAdminReauth`, which is
+ * exactly what a pop-up blocker eats. Saving a provider draft or toggling a
+ * module should not require logging in again.
+ *
+ * A working day is the honest window. The control still bounds what a stolen
+ * long-lived session (better-auth sessions outlive this by weeks) can reach,
+ * which is the threat it was actually built for — an abandoned or replayed
+ * session, not an admin who has been working for twenty minutes.
  */
-export const ADMIN_REAUTH_MAX_AGE_MS = 15 * 60 * 1000;
+export const ADMIN_REAUTH_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 
 /**
  * Fixed system role packages assignable via replaceGlobalRoles.
@@ -197,12 +213,20 @@ export const adminUsersGetOutputSchema = z
      */
     isSelf: z.boolean(),
     lastActiveAt: z.date().nullable(),
+    /**
+     * Whether a Better Auth credential account with a non-empty password exists.
+     * Same predicate as `/api/auth/check-user`. Never includes the hash.
+     */
+    hasPassword: z.boolean(),
+    /** Count of Better Auth passkey rows. Aggregate only — no credential material. */
+    passkeyCount: z.number().int().nonnegative(),
     providers: z.array(adminUserProviderSummarySchema),
     roles: z.array(adminUserGlobalRoleSchema),
     sessionCount: z.number().int().nonnegative(),
     /** Bounded recent sessions for the detail page (tokens never included). */
     sessions: z.array(adminUserSessionSummarySchema),
     status: adminUserStatusSchema,
+    twoFactorEnabled: z.boolean(),
     username: z.string().nullable(),
   })
   .strict();
@@ -298,7 +322,7 @@ export const adminUsersCreateInputSchema = z
   .object({
     email: z.string().trim().toLowerCase().email().max(255),
     fullName: z.string().trim().min(1).max(100),
-    password: z.string().min(8).max(64),
+    password: z.string().min(BOOTSTRAP_PASSWORD_MIN_LENGTH).max(BOOTSTRAP_PASSWORD_MAX_LENGTH),
     reason: reasonSchema,
     username: z
       .string()
@@ -347,6 +371,56 @@ export const adminUsersDeleteOutputSchema = z
   .strict();
 
 export type AdminUsersDeleteOutput = z.infer<typeof adminUsersDeleteOutputSchema>;
+
+// ── setPassword (admin reset) ───────────────────────────────────────────────
+
+/**
+ * Admin-set credential password. Bounds reuse Better Auth / bootstrap policy.
+ * The password is input-only — never echoed in outputs or audits.
+ */
+export const adminUsersSetPasswordInputSchema = z
+  .object({
+    newPassword: z.string().min(BOOTSTRAP_PASSWORD_MIN_LENGTH).max(BOOTSTRAP_PASSWORD_MAX_LENGTH),
+    /** Default true: advance the security epoch and drop live sessions. */
+    revokeSessions: z.boolean().optional(),
+    userId: userIdSchema,
+  })
+  .strict();
+
+export type AdminUsersSetPasswordInput = z.infer<typeof adminUsersSetPasswordInputSchema>;
+
+export const adminUsersSetPasswordOutputSchema = z
+  .object({
+    sessionsRevoked: z.boolean(),
+    userId: z.string(),
+  })
+  .strict();
+
+export type AdminUsersSetPasswordOutput = z.infer<typeof adminUsersSetPasswordOutputSchema>;
+
+// ── disableTwoFactor ────────────────────────────────────────────────────────
+
+export const adminUsersDisableTwoFactorInputSchema = z
+  .object({
+    /** When true, also delete the target's passkey rows. Default false. */
+    removePasskeys: z.boolean().optional(),
+    userId: userIdSchema,
+  })
+  .strict();
+
+export type AdminUsersDisableTwoFactorInput = z.infer<typeof adminUsersDisableTwoFactorInputSchema>;
+
+export const adminUsersDisableTwoFactorOutputSchema = z
+  .object({
+    passkeysRemoved: z.boolean(),
+    twoFactorEnabled: z.literal(false),
+    userId: z.string(),
+  })
+  .strict();
+
+export type AdminUsersDisableTwoFactorOutput = z.infer<
+  typeof adminUsersDisableTwoFactorOutputSchema
+>;
 
 // ── replaceGlobalRoles ──────────────────────────────────────────────────────
 

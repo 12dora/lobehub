@@ -5,10 +5,7 @@ import { confirmModal, toast } from '@lobehub/ui/base-ui';
 import type { TFunction } from 'i18next';
 import { useCallback } from 'react';
 
-import {
-  AdminReauthCancelledError,
-  requestAdminReauth,
-} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import { AdminReauthCancelledError } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type { AdminAccessContextValue } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 import { lambdaClient } from '@/libs/trpc/client';
@@ -53,7 +50,9 @@ export const useIdentityProviderRowActions = ({
         title: t('identityProviders.disable.title', { defaultValue: 'Disable identity provider' }),
         onOk: async () => {
           try {
-            await requestAdminReauth({ authMethod });
+            // No eager reauth popup here: the reason modal below runs through
+            // `withAdminReauthRetry`, which challenges only if the server actually
+            // asks. Calling it up front made one action cost two popups.
             openReasonModal({
               authMethod,
               buildPayload: (reason) => ({ reason }),
@@ -117,7 +116,9 @@ export const useIdentityProviderRowActions = ({
         title: t('identityProviders.delete.title'),
         onOk: async () => {
           try {
-            await requestAdminReauth({ authMethod });
+            // No eager reauth popup here: the reason modal below runs through
+            // `withAdminReauthRetry`, which challenges only if the server actually
+            // asks. Calling it up front made one action cost two popups.
             openReasonModal({
               authMethod,
               buildPayload: (reason) => ({ reason }),

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ADMIN_ERROR_CODES } from '@/const/platform/errorCodes';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../contracts/adminUsers';
 import { getEnterpriseErrorBody } from './enterpriseErrors';
 import { assertDangerousReauthWithAudit, assertRecentReauth } from './reauth';
 
@@ -70,13 +71,28 @@ describe('assertRecentReauth', () => {
   it('rejects stale authenticatedAt', () => {
     try {
       assertRecentReauth({
-        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        // Derived from the window rather than a literal: the window has been widened
+        // once already, and a literal silently stops testing staleness when it is.
+        authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
         authMethod: 'better-auth',
       });
       expect.fail('expected throw');
     } catch (error) {
       expect(getEnterpriseErrorBody(error)?.code).toBe(ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED);
     }
+  });
+
+  it('accepts an administrator who has been working for a while', () => {
+    // The window exists to bound stale/replayed sessions, not to interrupt a session
+    // in progress: `authenticatedAt` is the original login time and is never refreshed,
+    // so anything shorter than a working day logs admins out of their own tools mid-task.
+    expect(ADMIN_REAUTH_MAX_AGE_MS).toBeGreaterThanOrEqual(4 * 60 * 60 * 1000);
+    expect(() =>
+      assertRecentReauth({
+        authenticatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+        authMethod: 'better-auth',
+      }),
+    ).not.toThrow();
   });
 });
 
