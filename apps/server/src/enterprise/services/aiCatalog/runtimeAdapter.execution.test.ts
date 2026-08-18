@@ -4,12 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { platformResourceRevisions } from '@/database/schemas';
 
+import { AiCatalogNotFoundError, AiCatalogProviderUnavailableError } from './errors';
 import { AiCatalogExecutionResolver } from './runtimeAdapter';
 import { cleanup, createPublishedProvider, db, secretService } from './runtimeAdapter.testFixtures';
 
 beforeEach(cleanup);
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await cleanup();
 });
 
@@ -98,5 +100,43 @@ describe('AiCatalogExecutionResolver — exact historical revision (MODEL-EXACT)
         providerRevision: 1,
       }),
     ).rejects.toThrow();
+  });
+
+  it('treats a secret-less pinned revision as terminal, not BYOK', async () => {
+    // Env fallback would make the current pointer succeed; this pin is about a
+    // historical revision whose secret is gone, which must stay terminal.
+    delete process.env.OPENAI_API_KEY;
+    const { provider, service } = await createPublishedProvider();
+    const detail = await service.getDetail(provider.id);
+    const cleared = await service.applyProviderImmediate('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: provider.id,
+      mode: 'update',
+      reason: 'clear stored secret',
+      secret: { operation: 'clear' },
+    });
+    const [clearedRevision] = await db
+      .select()
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceId, provider.id),
+          eq(platformResourceRevisions.revision, cleared.revision),
+        ),
+      );
+
+    const execution = new AiCatalogExecutionResolver(db, secretService);
+    await expect(execution.resolveProviderExecutionConfig('alpha')).rejects.toBeInstanceOf(
+      AiCatalogNotFoundError,
+    );
+    await expect(
+      execution.resolveProviderExecutionConfigAtRevision({
+        modelKey: 'chat',
+        providerChecksum: clearedRevision.checksum!,
+        providerKey: 'alpha',
+        providerRevision: cleared.revision,
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogProviderUnavailableError);
   });
 });

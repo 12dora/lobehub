@@ -160,7 +160,7 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
   'admin.aiProviderOAuth.disconnect': dangerousMutation(
     'admin.aiProviderOAuth.disconnect',
     'high',
-    'Remove the stored shared platform provider account and disable the provider immediately.',
+    'Clear the stored shared platform provider authorization without disabling the provider.',
     { reauth: recentReauth },
   ),
   // Persists nothing itself, so it stays a regular mutation — but it opens the single-use

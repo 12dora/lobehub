@@ -22,7 +22,11 @@ import {
   reportPlatformRuntimeMaterialization,
   reportPlatformRuntimeMaterializationSafely,
 } from '../platformInstance/runtimeReporter';
-import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
+import {
+  hasAiCatalogEnvironmentFallback,
+  normalizeAiCatalogExecutionCredentials,
+  resolveAiCatalogRuntimeProvider,
+} from './credentialAdapter';
 import { isPlatformAiTakeoverActive } from './enforcement';
 import {
   AiCatalogModelNotPublishedError,
@@ -306,6 +310,22 @@ export class AiCatalogExecutionResolver {
     // resolveProviderExecutionConfig). The pinned-revision path has no BYOK fallback, so this
     // stays terminal there.
     if (provider.enabled !== true) throw new AiCatalogNotFoundError();
+    // Disconnect leaves the provider enabled (dependents stay valid) and only clears the
+    // vault. A secret-less current pointer is the same "not managed" signal as disabled,
+    // unless the runtime can still execute from the environment. Pinned revisions remap
+    // this NOT_FOUND to a terminal unavailable — a historical pin is not BYOK.
+    const settings = isRecord(provider.settings)
+      ? (provider.settings as PlatformAiProviderSettings)
+      : {};
+    const source = typeof provider.source === 'string' ? provider.source : 'custom';
+    if (
+      !revision.secretFingerprint &&
+      !hasAiCatalogEnvironmentFallback(
+        resolveAiCatalogRuntimeProvider(providerKey, settings, source),
+      )
+    ) {
+      throw new AiCatalogNotFoundError();
+    }
     const allowedModels = Array.isArray(revision.payload.models)
       ? revision.payload.models.flatMap((model) =>
           isRecord(model) && model.enabled === true && typeof model.modelKey === 'string'
@@ -333,9 +353,6 @@ export class AiCatalogExecutionResolver {
         )
       : [];
     const config = isRecord(provider.config) ? (provider.config as PlatformAiProviderConfig) : {};
-    const settings = isRecord(provider.settings)
-      ? (provider.settings as PlatformAiProviderSettings)
-      : {};
     let keyVaults: PlatformProviderKeyVaults = {};
     if (revision.secretFingerprint) {
       const secretVersion = await repository.getProviderSecretVersion(
@@ -377,7 +394,7 @@ export class AiCatalogExecutionResolver {
       config,
       keyVaults,
       providerKey,
-      source: typeof provider.source === 'string' ? provider.source : 'custom',
+      source,
       settings,
     });
     return {

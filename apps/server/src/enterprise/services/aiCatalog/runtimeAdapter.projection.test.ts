@@ -51,6 +51,7 @@ import {
 beforeEach(cleanup);
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await cleanup();
 });
 
@@ -428,6 +429,68 @@ describe('AiCatalogRuntimeAdapter', () => {
     const execution = new AiCatalogExecutionResolver(db, secretService);
     await expect(execution.resolveProviderExecutionConfig('alpha')).rejects.toMatchObject({
       code: 'PLATFORM_NOT_FOUND',
+    });
+  });
+
+  it('omits an enabled secret-less provider from the runtime projection so BYOK can surface', async () => {
+    // ChatGPT never has an environment fallback, so this must not depend on OPENAI_API_KEY.
+    const payload = {
+      models: [{ enabled: true, modelKey: 'gpt-5', type: 'chat' }],
+      provider: {
+        displayName: 'ChatGPT',
+        enabled: true,
+        providerKey: 'chatgpt',
+        secretConfigured: false,
+        source: 'builtin',
+      },
+    };
+    await db.insert(platformAiProviders).values({
+      displayName: 'ChatGPT',
+      enabled: true,
+      id: 'chatgpt-secretless',
+      providerKey: 'chatgpt',
+      revision: 1,
+      status: 'published',
+    });
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(payload),
+      payload,
+      resourceId: 'chatgpt-secretless',
+      resourceType: 'provider',
+      revision: 1,
+      status: 'published',
+    });
+    await advanceAiCatalogAuthority();
+
+    const state = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
+    expect(state.enabledAiProviders.map((item) => item.id)).not.toContain('chatgpt');
+    expect(state.enabledAiModels.every((model) => model.providerId !== 'chatgpt')).toBe(true);
+
+    const execution = new AiCatalogExecutionResolver(db, secretService);
+    await expect(execution.resolveProviderExecutionConfig('chatgpt')).rejects.toMatchObject({
+      code: 'PLATFORM_NOT_FOUND',
+    });
+  });
+
+  it('keeps an enabled env-fallback provider after the vault is cleared', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'environment-fallback-key');
+    const { provider, service } = await createPublishedProvider();
+    const detail = await service.getDetail(provider.id);
+    await service.applyProviderImmediate('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: provider.id,
+      mode: 'update',
+      reason: 'clear stored secret',
+      secret: { operation: 'clear' },
+    });
+    clearAiCatalogRuntimeCache();
+    const state = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
+    expect(state.enabledAiProviders.map((item) => item.id)).toContain('alpha');
+
+    const execution = new AiCatalogExecutionResolver(db, secretService);
+    await expect(execution.resolveProviderExecutionConfig('alpha')).resolves.toMatchObject({
+      providerKey: 'alpha',
     });
   });
 

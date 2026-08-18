@@ -8,14 +8,17 @@
  */
 import { existsSync } from 'node:fs';
 
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import {
   permissions,
+  platformAgents,
+  platformAgentVersions,
   platformAiModels,
   platformAiProviders,
   platformAiProviderSecrets,
@@ -118,6 +121,8 @@ const cleanup = async () => {
     resourceIds: ownedProviders.map((row) => row.id),
     resourceType: 'provider',
   });
+  // Circular currentVersionId ↔ versions FK; TRUNCATE is the established teardown.
+  await db.execute(sql`TRUNCATE TABLE ${platformAgentVersions}, ${platformAgents} CASCADE`);
   await db.delete(platformAiModels);
   await db.delete(platformAiProviderSecrets);
   await db.delete(platformAiProviders);
@@ -680,6 +685,7 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
 
 describe('admin.aiProviderOAuth.disconnect', () => {
   const DISCONNECT_REASON = 'withdraw the shared account';
+  const AGENT_DEPENDENCY_CHECKSUM = 'c'.repeat(64);
 
   /** Connect for real (unmocked service) so the disconnect has durable state to remove. */
   const connect = async () => {
@@ -691,6 +697,54 @@ describe('admin.aiProviderOAuth.disconnect', () => {
       reason: 'connect shared chatgpt account',
     });
     return caller;
+  };
+
+  const createPublishedAgentDependency = async (params: {
+    agentKey: string;
+    modelKey: string;
+    providerKey: string;
+  }) => {
+    const repository = new PlatformAgentCatalogRepository(db);
+    const agent = await repository.createIdentity({
+      agentKey: params.agentKey,
+      isDefault: false,
+      systemKey: null,
+    });
+    const version = await repository.appendVersionCas({
+      agentId: agent.id,
+      config: {
+        avatar: null,
+        backgroundColor: null,
+        description: 'Shared-account disconnect dependent',
+        displayName: 'Shared-account disconnect dependent',
+        modelParameters: {},
+        openingMessage: null,
+        openingQuestions: [],
+        systemRole: 'Use the exact model dependency.',
+        tags: [],
+      },
+      dependencySnapshot: {
+        connectors: [],
+        model: {
+          modelKey: params.modelKey,
+          providerChecksum: AGENT_DEPENDENCY_CHECKSUM,
+          providerKey: params.providerKey,
+          providerRevision: 1,
+        },
+        skills: [],
+      },
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+    await repository.pointToVersionCas({
+      agentId: agent.id,
+      expectedDraftSequence: 1,
+      expectedRevision: 0,
+      publishedAt: new Date(),
+      versionId: version!.id,
+    });
+    return agent;
   };
 
   it('rejects providers that cannot hold a shared rotating-refresh account', async () => {
@@ -721,7 +775,7 @@ describe('admin.aiProviderOAuth.disconnect', () => {
     expect(await auditRowsFor('admin.aiProviderOAuth.disconnect')).toEqual([]);
   });
 
-  it('clears the whole shared vault and turns the provider off', async () => {
+  it('clears the shared vault and leaves the provider enabled', async () => {
     const caller = await connect();
     const [connected] = await db.select().from(platformAiProviders);
     expect(connected).toMatchObject({ enabled: true, providerKey: 'chatgpt' });
@@ -736,9 +790,9 @@ describe('admin.aiProviderOAuth.disconnect', () => {
 
     const [row] = await db.select().from(platformAiProviders);
     expect(row).toMatchObject({
-      // An enabled provider with an empty vault is a site-wide outage members cannot
-      // escape; disabled hands them back to their own BYOK config instead.
-      enabled: false,
+      // Disconnect withdraws the grant, not the catalog entry. Flipping `enabled`
+      // would classify every published model as removed and fail on dependents.
+      enabled: true,
       providerKey: 'chatgpt',
       // `clear` unlinks the ciphertext entirely — the account email goes with it.
       encryptedKeyVaults: null,
@@ -764,6 +818,38 @@ describe('admin.aiProviderOAuth.disconnect', () => {
     });
   });
 
+  it('succeeds when a published agent still depends on a model of this provider', async () => {
+    const caller = await connect();
+    const [model] = await db
+      .select()
+      .from(platformAiModels)
+      .where(eq(platformAiModels.enabled, true));
+    expect(model).toBeTruthy();
+
+    await createPublishedAgentDependency({
+      agentKey: 'disconnect-in-use-agent',
+      modelKey: model!.modelKey,
+      providerKey: 'chatgpt',
+    });
+
+    const result = await caller.aiProviderOAuth.disconnect({
+      id: 'chatgpt',
+      reason: DISCONNECT_REASON,
+    });
+
+    expect(result.disconnected).toBe(true);
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row).toMatchObject({
+      enabled: true,
+      encryptedKeyVaults: null,
+      secretFingerprint: null,
+    });
+    expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' })).toMatchObject({
+      connected: false,
+      secretConfigured: false,
+    });
+  });
+
   it('audits the withdrawal with stable codes only', async () => {
     const caller = await connect();
 
@@ -776,7 +862,7 @@ describe('admin.aiProviderOAuth.disconnect', () => {
     expect(audits).toMatchObject([
       {
         actorUserId: ids.aiAdmin,
-        afterDiff: { enabled: false, providerKey: 'chatgpt', revision: result.revision },
+        afterDiff: { providerKey: 'chatgpt', revision: result.revision },
         result: 'success',
         targetType: 'provider',
       },
@@ -823,7 +909,7 @@ describe('admin.aiProviderOAuth.disconnect', () => {
 
     expect(again.disconnected).toBe(true);
     const [row] = await db.select().from(platformAiProviders);
-    expect(row).toMatchObject({ enabled: false, encryptedKeyVaults: null });
+    expect(row).toMatchObject({ enabled: true, encryptedKeyVaults: null });
   });
 
   /**
@@ -853,7 +939,7 @@ describe('admin.aiProviderOAuth.disconnect', () => {
     });
     const [row] = await db.select().from(platformAiProviders);
     expect(row).toMatchObject({
-      enabled: false,
+      enabled: true,
       encryptedKeyVaults: null,
       secretFingerprint: null,
     });
@@ -1640,5 +1726,32 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     });
     expect(result.disconnected).toBe(true);
     expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(false);
+  });
+
+  it('does not wipe the ChatGPT Web cookie jar when apply fails', async () => {
+    const caller = await callerFor();
+    const { envelope, started } = await startFlow(caller);
+    mockSessionBackend({
+      accessToken: PASTE_ACCESS_TOKEN,
+      user: { email: 'session@example.test' },
+    });
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: started.deviceCode,
+      id: 'chatgptweb',
+      reason: 'connect the shared ChatGPT Web account',
+      sessionToken: sessionJwe,
+    });
+
+    seedSessionJar(envelope.deviceId);
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
+
+    serviceSeam.applyProviderImmediate = vi.fn().mockRejectedValue(new Error('store failed'));
+    await expect(
+      caller.aiProviderOAuth.disconnect({
+        id: 'chatgptweb',
+        reason: 'withdraw the shared account',
+      }),
+    ).rejects.toBeTruthy();
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
   });
 });

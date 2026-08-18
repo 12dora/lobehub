@@ -443,8 +443,8 @@ describe('SharedOAuthConnect', () => {
     });
     // Reauth is handled exactly like the connect flow: the step-up replays the same call.
     expect(mocks.withAdminReauthRetry).toHaveBeenCalledTimes(1);
-    // Disconnect flips `enabled`, so the runtime projection behind the header switch and
-    // the provider grid must be re-read — the status SWR alone would leave them lying.
+    // Disconnect clears the shared credential, so the runtime projection behind the header
+    // switch and the provider grid must be re-read — the status SWR alone would leave them lying.
     expect(mocks.refreshAiProviderDetail).toHaveBeenCalledTimes(1);
     expect(mocks.refreshAiProviderList).toHaveBeenCalledTimes(1);
     expect(mocks.refreshAiProviderRuntimeState).toHaveBeenCalledTimes(1);
@@ -456,7 +456,7 @@ describe('SharedOAuthConnect', () => {
   it('still re-reads the runtime state when an earlier revalidation rejects', async () => {
     // One rejected refresh used to skip every later one. The runtime-state read is the one
     // that must survive: it drives the header switch and the provider grid, which would
-    // otherwise keep showing the provider this write just turned off.
+    // otherwise keep showing a live shared connection this write just withdrew.
     const mutate = vi.fn().mockRejectedValue(new Error('offline'));
     mocks.swr.mockReturnValue({ ...swrResult(connectedStatus), mutate });
     mocks.refreshAiProviderDetail.mockRejectedValue(new Error('offline'));

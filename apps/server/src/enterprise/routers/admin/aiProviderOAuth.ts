@@ -64,15 +64,16 @@ const adminBase = authedProcedure
 
 export const adminAiProviderOAuthRouter = router({
   /**
-   * Withdraw the shared platform account: clear the whole vault and turn the provider off,
-   * applied + published in one write.
+   * Withdraw the shared platform account: clear the vault and publish, leaving the
+   * provider row, its models, and its `enabled` flag untouched.
    *
-   * `enabled: false` is the one update on this router allowed to touch `enabled`, and it is
-   * required for honesty: an ENABLED provider with an empty vault stays in the managed set
-   * and every member's request reaches it unauthenticated — a site-wide outage members
-   * cannot self-serve out of (the managed surface suppresses personal auth). Disabled +
-   * empty resolves to NOT_FOUND on the current-pointer path, which hands the provider back
-   * to each user's own BYOK config.
+   * `enabled` is deliberately left alone. `assertRemovedModelsUnused` treats a flip
+   * to `enabled: false` as removing every published enabled model of this provider,
+   * so any published agent or setting that pins one of them (the normal state of a
+   * shared account) rolls the whole write back with PLATFORM_RESOURCE_IN_USE.
+   * Clearing the vault while staying enabled is a no-op for that check; members
+   * then fall back to their own credentials because a secret-less published
+   * provider is omitted from the runtime projection.
    *
    * NOT a revocation at the authorization server: the provider-side grant stays valid until
    * it expires or is revoked in the provider's own console. The copy must not imply otherwise.
@@ -112,6 +113,10 @@ export const adminAiProviderOAuthRouter = router({
       // did not happen.
       if (!detail) return { disconnected: false, revision: null };
 
+      // Capture the device id before the vault is cleared. The jar wipe must run AFTER
+      // a successful apply: doing it first used to destroy the session file while a
+      // failed apply left the vault intact.
+      let chatgptWebDeviceId: string | undefined;
       if (input.id === 'chatgptweb') {
         try {
           const provider = await new PlatformAiCatalogRepository(ctx.serverDB).getProvider(
@@ -123,11 +128,11 @@ export const adminAiProviderOAuthRouter = router({
               const keyVaults = await new AiCatalogSecretManager(secrets).decrypt(
                 provider.encryptedKeyVaults,
               );
-              wipeChatGPTWebCookieJar(asVaultString(keyVaults.oauthDeviceId));
+              chatgptWebDeviceId = asVaultString(keyVaults.oauthDeviceId);
             }
           }
         } catch {
-          // Best-effort: never fail the disconnect on a jar unlink or vault-read error.
+          // Best-effort: never fail the disconnect on a vault-read error.
         }
       }
 
@@ -135,8 +140,6 @@ export const adminAiProviderOAuthRouter = router({
       let result;
       try {
         result = await service.applyProviderImmediate(ctx.userId!, {
-          // See the procedure note: the ONLY update on this router that sets `enabled`.
-          enabled: false,
           expectedDraftToken: detail.draftToken,
           expectedRevision: detail.baseRevision,
           id: detail.draft.id,
@@ -159,11 +162,19 @@ export const adminAiProviderOAuthRouter = router({
         return mapServiceError(error);
       }
 
+      if (chatgptWebDeviceId) {
+        try {
+          wipeChatGPTWebCookieJar(chatgptWebDeviceId);
+        } catch {
+          // Best-effort: never fail the disconnect on a jar unlink.
+        }
+      }
+
       await auditProvider(audit, {
         action: 'admin.aiProviderOAuth.disconnect',
         actorUserId: ctx.userId!,
         // Stable outcome codes only — never the withdrawn account identity.
-        afterDiff: { enabled: false, providerKey: input.id, revision: result.revision },
+        afterDiff: { providerKey: input.id, revision: result.revision },
         result: 'success',
         targetId: result.draft?.id ?? detail.draft.id,
       });
