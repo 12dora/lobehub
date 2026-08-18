@@ -2,12 +2,13 @@
  * @vitest-environment happy-dom
  */
 import type { TaskTemplate } from '@lobechat/const';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TASK_TEMPLATE_RECOMMENDATION_CACHE_VERSION, taskTemplateKeys } from '@/libs/swr/keys';
 import { taskTemplateService } from '@/services/taskTemplate';
 
+import type { DailyBriefRecommendationsUIState } from './useDailyBriefRecommendationsUI';
 import {
   resolveDailyBriefRecommendationDisplayMode,
   resolveDailyBriefRecommendationRequest,
@@ -16,6 +17,8 @@ import {
 
 const {
   mockMutate,
+  mockRefreshSeed,
+  mockSeedCounter,
   mockSetRefreshSeed,
   mockUseFetchBriefs,
   mockUseFetchLobehubConnectorConnections,
@@ -25,6 +28,8 @@ const {
   mockUseSWR,
 } = vi.hoisted(() => ({
   mockMutate: vi.fn(),
+  mockRefreshSeed: { value: '' },
+  mockSeedCounter: { value: 0 },
   mockSetRefreshSeed: vi.fn(),
   mockUseFetchBriefs: vi.fn(),
   mockUseFetchLobehubConnectorConnections: vi.fn(),
@@ -38,8 +43,28 @@ vi.mock('@/enterprise/client/hooks/usePlatformTaskTemplates', () => ({
   usePlatformTaskTemplates: mockUsePlatformTaskTemplates,
 }));
 
-vi.mock('ahooks', () => ({
-  useSessionStorageState: () => ['', mockSetRefreshSeed],
+// Stateful stand-in for session storage: writing a seed both persists it across mounts and
+// re-renders the caller, exactly like the real `useSessionStorageState`.
+vi.mock('ahooks', async () => {
+  const { useCallback, useState } = await import('react');
+
+  return {
+    useSessionStorageState: () => {
+      const [value, setValue] = useState(() => mockRefreshSeed.value);
+      const setSeed = useCallback((next: string) => {
+        mockRefreshSeed.value = next;
+        mockSetRefreshSeed(next);
+        setValue(next);
+      }, []);
+
+      return [value, setSeed];
+    },
+  };
+});
+
+// Deterministic per-mount seeds so the shuffled platform order is reproducible in tests.
+vi.mock('@lobechat/utils', () => ({
+  createNanoId: () => () => `mount-seed-${++mockSeedCounter.value}`,
 }));
 
 vi.mock('antd', () => ({
@@ -107,6 +132,31 @@ const template = {
   interests: ['coding'],
   title: 'Title',
 } satisfies TaskTemplate;
+
+const platformCatalog = Array.from({ length: 8 }, (_, index) => ({
+  ...template,
+  id: `tpl-${index + 1}`,
+  identifier: `platform-${index + 1}`,
+})) satisfies TaskTemplate[];
+
+const cardIds = (state: DailyBriefRecommendationsUIState): (number | string)[] => {
+  if (state.mode !== 'cards') throw new Error('expected cards');
+  return state.templates.map((tmpl) => tmpl.id);
+};
+
+/** Renders a fresh mount, reads the card order, then unmounts. */
+const renderPlatformIds = (count = 8): (number | string)[] => {
+  const { result, unmount } = renderHook(() => useDailyBriefRecommendationsUI({ count }));
+  const ids = cardIds(result.current);
+  unmount();
+  return ids;
+};
+
+/** A single mount whose recommendation count can change without losing the mount seed. */
+const renderPlatformHook = (count: number) =>
+  renderHook((props: { count: number }) => useDailyBriefRecommendationsUI(props), {
+    initialProps: { count },
+  });
 
 describe('resolveDailyBriefRecommendationRequest', () => {
   it('keeps the cache key available while interests are still initializing', () => {
@@ -247,6 +297,8 @@ describe('resolveDailyBriefRecommendationDisplayMode', () => {
 describe('useDailyBriefRecommendationsUI', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRefreshSeed.value = '';
+    mockSeedCounter.value = 0;
     mockUseResolvedInterestKeys.mockReturnValue(['coding']);
     mockUsePlatformTaskTemplates.mockReturnValue({
       managed: false,
@@ -492,18 +544,122 @@ describe('useDailyBriefRecommendationsUI', () => {
     expect(result.current).toEqual({ mode: 'skeleton', skeletonCount: 3 });
   });
 
-  it('offers no refresh control for a platform-managed catalog', () => {
+  it('reshuffles the platform-managed catalog when the refresh control is used', () => {
     mockUsePlatformTaskTemplates.mockReturnValue({
       managed: true,
       resolved: true,
-      templates: [{ ...template, id: 'tpl-1', identifier: 'platform-daily' }],
+      templates: platformCatalog,
     });
 
-    const { result } = renderHook(() => useDailyBriefRecommendationsUI());
+    // Full catalog so the assertion compares orderings, not which slice survives the cut.
+    const { result } = renderHook(() =>
+      useDailyBriefRecommendationsUI({ count: platformCatalog.length }),
+    );
     if (result.current.mode !== 'cards') throw new Error('expected cards');
+    expect(result.current.onRefresh).toBeDefined();
 
-    // The seed-based reshuffle is meaningless here, so the surfaces must hide the button.
-    expect(result.current.onRefresh).toBeUndefined();
+    const before = cardIds(result.current);
+
+    act(() => {
+      if (result.current.mode !== 'cards') throw new Error('expected cards');
+      result.current.onRefresh?.();
+    });
+
+    // Refreshing writes a new seed, which reshuffles the catalog on the next render.
+    expect(mockSetRefreshSeed).toHaveBeenCalledTimes(1);
+    expect(mockSetRefreshSeed.mock.calls[0][0]).toEqual(expect.any(String));
+    expect(mockSetRefreshSeed.mock.calls[0][0]).not.toBe('');
+
+    const after = cardIds(result.current);
+    expect(after).not.toEqual(before);
+    expect([...after].sort()).toEqual([...before].sort());
+  });
+
+  it('varies the platform-managed order between mounts', () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: true,
+      resolved: true,
+      templates: platformCatalog,
+    });
+
+    const first = renderPlatformIds();
+    const second = renderPlatformIds();
+
+    expect(first).not.toEqual(second);
+    expect([...first].sort()).toEqual([...second].sort());
+  });
+
+  it('varies the platform-managed order between mounts even with a stored refresh seed', () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: true,
+      resolved: true,
+      templates: platformCatalog,
+    });
+    // A refresh seed left in session storage by an earlier visit must not freeze the order.
+    mockRefreshSeed.value = 'seed-a';
+
+    const first = renderPlatformIds();
+    const second = renderPlatformIds();
+
+    expect(first).not.toEqual(second);
+    expect([...first].sort()).toEqual([...second].sort());
+  });
+
+  it('keeps the platform-managed order stable within a mount', () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: true,
+      resolved: true,
+      templates: platformCatalog,
+    });
+    mockRefreshSeed.value = 'seed-a';
+
+    const { result, rerender } = renderPlatformHook(8);
+    const first = cardIds(result.current);
+
+    rerender({ count: 8 });
+
+    expect(cardIds(result.current)).toEqual(first);
+  });
+
+  it('limits the shuffled platform-managed list to the recommendation count', () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: true,
+      resolved: true,
+      templates: platformCatalog,
+    });
+
+    const { result, rerender } = renderPlatformHook(platformCatalog.length);
+    const fullOrder = cardIds(result.current);
+
+    rerender({ count: 3 });
+    const ids = cardIds(result.current);
+
+    expect(ids).toHaveLength(3);
+    expect(ids).toEqual(fullOrder.slice(0, 3));
+  });
+
+  it('excludes dismissed platform templates and pulls the next one in', async () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: true,
+      resolved: true,
+      templates: platformCatalog,
+    });
+    // Same mount throughout: the shuffle order only stays comparable within one mount seed.
+    const { result, rerender } = renderPlatformHook(platformCatalog.length);
+    const fullOrder = cardIds(result.current);
+
+    rerender({ count: 3 });
+    const state = result.current;
+    if (state.mode !== 'cards') throw new Error('expected cards');
+    expect(cardIds(state)).toEqual(fullOrder.slice(0, 3));
+
+    await act(async () => {
+      await state.onDismiss(fullOrder[0]);
+    });
+
+    const remaining = cardIds(result.current);
+    expect(remaining).not.toContain(fullOrder[0]);
+    expect(remaining).toEqual(fullOrder.slice(1, 4));
   });
 
   it('logs recommendation request errors instead of treating them as normal empty data', async () => {

@@ -1,7 +1,8 @@
 'use client';
 
-import { Flexbox, Icon, Text } from '@lobehub/ui';
-import { createStaticStyles, cssVar, responsive } from 'antd-style';
+import { Flexbox, Text } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
+import { createStaticStyles, responsive } from 'antd-style';
 import { RefreshCw } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -62,18 +63,15 @@ const EmptyState = memo<EmptyStateProps>(({ agentId }) => {
             <Text fontSize={13} type={'secondary'} weight={500}>
               {t('taskList.emptyHero.templatesTitle')}
             </Text>
-            {/* A platform-managed catalog is not reshuffled per user, so it omits onRefresh. */}
             {templatesState.mode === 'cards' && templatesState.onRefresh && (
-              <Flexbox
-                horizontal
-                align={'center'}
-                gap={4}
-                style={{ color: cssVar.colorTextDescription, cursor: 'pointer' }}
+              <Button
+                icon={<RefreshCw size={12} />}
+                size={'small'}
+                type={'text'}
                 onClick={templatesState.onRefresh}
               >
-                <Icon icon={RefreshCw} size={12} />
-                <Text fontSize={12}>{tCommon('taskTemplate.action.refresh.button')}</Text>
-              </Flexbox>
+                {tCommon('taskTemplate.action.refresh.button')}
+              </Button>
             )}
           </Flexbox>
           <div className={styles.grid}>

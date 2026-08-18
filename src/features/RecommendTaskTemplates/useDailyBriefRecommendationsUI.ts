@@ -21,6 +21,7 @@ import { useUserStore } from '@/store/user';
 import { authSelectors } from '@/store/user/slices/auth/selectors';
 
 import { getProviderMeta } from './providerMeta';
+import { seededShuffle } from './seededShuffle';
 import { useResolvedInterestKeys } from './useResolvedInterestKeys';
 
 const REFRESH_SEED_STORAGE_KEY = 'lobehub:taskTemplate:refreshSeed';
@@ -34,8 +35,8 @@ export type DailyBriefRecommendationsUIState =
       onCreated: (templateId: number | string) => void;
       onDismiss: (templateId: number | string) => void;
       /**
-       * Absent when the list is not refreshable. A platform-managed catalog has no per-user
-       * reshuffle, so the surface must hide its refresh control instead of showing a dead button.
+       * Reshuffles the list: the market re-queries with a new seed, a platform-managed catalog is
+       * re-ordered client-side with the same seed. Absent only when the list is not refreshable.
        */
       onRefresh?: () => void;
       templates: TaskTemplate[];
@@ -185,6 +186,19 @@ export function useDailyBriefRecommendationsUI(
    */
   const platform = usePlatformTaskTemplates();
   const [dismissedPlatformIds, setDismissedPlatformIds] = useState<string[]>([]);
+  /**
+   * A platform-managed catalog is reshuffled on the client, so it needs a seed even before the
+   * user asks for a refresh: without one every visit would show the same first N rows in admin
+   * order. The mount seed gives each entry into the surface a fresh order.
+   */
+  const [mountShuffleSeed] = useState(() => nextRefreshSeed());
+  /**
+   * Both seeds take part: the mount seed keeps every entry into the surface random even when a
+   * refresh seed from an earlier click is still in session storage, and the refresh seed reshuffles
+   * within the current mount. The market request keeps using `refreshSeed` alone, so its cache key
+   * stays shareable across mounts.
+   */
+  const platformShuffleSeed = `${mountShuffleSeed}:${refreshSeed ?? ''}`;
 
   const recommendationRequest = useMemo(
     () =>
@@ -301,10 +315,12 @@ export function useDailyBriefRecommendationsUI(
   );
   const platformTemplates = useMemo(
     () =>
-      normalizeTaskTemplateRecommendations(platform.templates)
+      // Shuffle before filtering so dismissing a card keeps the remaining order stable and simply
+      // pulls the next template in.
+      seededShuffle(normalizeTaskTemplateRecommendations(platform.templates), platformShuffleSeed)
         .filter((tmpl) => !dismissedPlatformIds.includes(String(tmpl.id)))
         .slice(0, recommendationCount),
-    [dismissedPlatformIds, platform.templates, recommendationCount],
+    [dismissedPlatformIds, platform.templates, platformShuffleSeed, recommendationCount],
   );
   const templates = platform.managed ? platformTemplates : marketTemplates;
   const requiredSources = useMemo(() => {
@@ -321,14 +337,15 @@ export function useDailyBriefRecommendationsUI(
   useFetchUserComposioConnections(requiredSources.has('composio'));
   useFetchLobehubConnectorConnections(requiredSources.has('lobehub'));
 
-  // Platform-managed: the admin list is the whole answer — no market call, no error path, and no
-  // refresh (the catalog is not reshuffled per user).
+  // Platform-managed: the admin list is the whole answer — no market call and no error path.
+  // Refresh still applies: a new seed reshuffles the catalog client-side.
   if (platform.managed) {
     if (templates.length === 0) return { mode: 'hidden' };
     return {
       mode: 'cards',
       onCreated: handleCreated,
       onDismiss: handleDismiss,
+      onRefresh: handleRefresh,
       templates,
     };
   }
