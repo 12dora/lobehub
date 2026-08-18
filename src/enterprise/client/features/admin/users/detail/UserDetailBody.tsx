@@ -38,19 +38,23 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 12px;
     align-items: center;
   `,
+  /** Tab content. `page` variant caps the column so a wide screen does not spread facts out. */
   panel: css`
     display: flex;
     flex-direction: column;
-    gap: 24px;
-    padding-block-start: 8px;
+    gap: 16px;
+    padding-block-start: 4px;
   `,
   panelHeader: css`
     display: flex;
     gap: 12px;
     align-items: center;
 
-    padding-block-end: 16px;
+    padding-block-end: 12px;
     border-block-end: 1px solid ${cssVar.colorBorderSecondary};
+  `,
+  panelPage: css`
+    max-width: 880px;
   `,
   panelHeaderText: css`
     display: flex;
@@ -235,7 +239,7 @@ const UserDetailBody = memo<UserDetailBodyProps>(
     );
 
     const bodyNode = (
-      <div className={styles.panel}>
+      <div className={isPanel ? styles.panel : `${styles.panel} ${styles.panelPage}`}>
         {dataStale ? (
           <Alert
             showIcon

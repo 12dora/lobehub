@@ -6,7 +6,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { startTransition, Suspense, useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import UserDetailDrawer from './UserDetailDrawer';
+import UserDetailDrawer, { resolveUserPanelMotion } from './UserDetailDrawer';
 
 /**
  * Committed frames, in order. The bug this file guards is a *timing* one — a body
@@ -16,7 +16,9 @@ import UserDetailDrawer from './UserDetailDrawer';
 const frames = vi.hoisted(() => ({
   body: [] as (string | null)[],
   drawer: [] as { hasBody: boolean; open: boolean }[],
-  /** Semantic classNames handed to the Drawer — the popup one carries the clip fix. */
+  /** motionProps handed to DrawerPopup — must slow the library default down. */
+  motion: null as any,
+  /** popup className handed to DrawerPopup — carries the clip fix. */
   popupClassName: null as string | null | undefined,
 }));
 
@@ -36,40 +38,60 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-// The real Drawer keeps children mounted through the slide-out; the stub renders
-// them unconditionally so the host's own mount/unmount timing stays observable.
-vi.mock('@lobehub/ui/base-ui', () => ({
-  Drawer: ({
-    afterOpenChange,
-    children,
-    classNames,
-    onClose,
-    open,
-    placement,
-    title,
-    width,
-  }: any) => {
-    frames.drawer.push({ hasBody: Boolean(children), open: Boolean(open) });
-    frames.popupClassName = classNames?.popup;
-    return (
-      <div
-        data-open={String(Boolean(open))}
-        data-placement={placement}
-        data-testid="drawer"
-        data-width={String(width)}
+// The host is composed from the Drawer atoms; the stubs keep children mounted
+// unconditionally so the host's own mount/unmount timing stays observable, and record
+// the props that carry the two fixes (popup clip class, motion overrides).
+vi.mock('@lobehub/ui/base-ui', () => {
+  const Ctx = {
+    onExitComplete: null as null | (() => void),
+    onOpenChange: null as any,
+    open: false,
+  };
+  return {
+    DrawerBackdrop: () => null,
+    DrawerClose: (props: any) => (
+      <button
+        type="button"
+        onClick={() => Ctx.onOpenChange?.(false, { reason: 'close-press' })}
+        {...props}
       >
-        <div data-testid="drawer-title">{title}</div>
-        <button type="button" onClick={onClose}>
-          drawer-close
-        </button>
-        <button type="button" onClick={() => afterOpenChange?.(false)}>
-          drawer-exit-complete
-        </button>
-        {children}
-      </div>
-    );
-  },
-}));
+        drawer-close
+      </button>
+    ),
+    // `children` is the host's body wrapper; its own child is the UserDetailBody (or null).
+    DrawerContent: ({ children }: any) => {
+      frames.drawer.push({ hasBody: Boolean(children?.props?.children), open: Ctx.open });
+      return <div>{children}</div>;
+    },
+    DrawerHeader: ({ children }: any) => <div>{children}</div>,
+    DrawerPopup: ({ children, className, motionProps, placement, popupStyle, width }: any) => {
+      frames.popupClassName = className;
+      frames.motion = motionProps;
+      return (
+        <div
+          data-open={String(Ctx.open)}
+          data-placement={placement}
+          data-popup-width={popupStyle?.width}
+          data-testid="drawer"
+          data-width={String(width)}
+        >
+          <button type="button" onClick={() => Ctx.onExitComplete?.()}>
+            drawer-exit-complete
+          </button>
+          {children}
+        </div>
+      );
+    },
+    DrawerPortal: ({ children }: any) => <>{children}</>,
+    DrawerRoot: ({ children, onExitComplete, onOpenChange, open }: any) => {
+      Ctx.onExitComplete = onExitComplete;
+      Ctx.onOpenChange = onOpenChange;
+      Ctx.open = Boolean(open);
+      return <>{children}</>;
+    },
+    DrawerTitle: ({ children }: any) => <div data-testid="drawer-title">{children}</div>,
+  };
+});
 
 vi.mock('./UserDetailBody', () => ({
   default: ({ onDeleted, onDismiss, userId, variant }: any) => {
@@ -101,6 +123,7 @@ describe('UserDetailDrawer', () => {
     frames.body.length = 0;
     frames.drawer.length = 0;
     frames.popupClassName = null;
+    frames.motion = null;
     suspense.pending = null;
     suspense.release = null;
     suspense.userId = null;
@@ -118,7 +141,8 @@ describe('UserDetailDrawer', () => {
     const drawer = screen.getByTestId('drawer');
     expect(drawer.dataset.open).toBe('true');
     expect(drawer.dataset.placement).toBe('right');
-    expect(drawer.dataset.width).toBe('min(760px, calc(100vw - 48px))');
+    expect(drawer.dataset.width).toBe('min(560px, calc(100vw - 48px))');
+    expect(drawer.dataset.popupWidth).toBe('calc(min(560px, calc(100vw - 48px)) + 48px)');
     expect(screen.getByTestId('drawer-title').textContent).toBe('users.detail.title');
 
     const body = screen.getByTestId('detail-body');
@@ -138,6 +162,17 @@ describe('UserDetailDrawer', () => {
 
     expect(typeof frames.popupClassName).toBe('string');
     expect(frames.popupClassName).toBeTruthy();
+  });
+
+  it('slows the slide down to an easing enter and a shorter exit, and collapses under reduced motion', () => {
+    render(<UserDetailDrawer open userId="u-9" onClose={vi.fn()} />);
+    expect(frames.motion.transition.duration).toBeGreaterThanOrEqual(0.4);
+    expect(frames.motion.exit.transition.duration).toBeGreaterThanOrEqual(0.3);
+    expect(frames.motion.exit.transition.duration).toBeLessThan(frames.motion.transition.duration);
+    expect(frames.motion.exit.x).toBe('100%');
+
+    expect(resolveUserPanelMotion(true).transition.duration).toBe(0);
+    expect(resolveUserPanelMotion(true).exit.transition.duration).toBe(0);
   });
 
   it('keeps the body through the slide-out and drops it once the panel is hidden', () => {

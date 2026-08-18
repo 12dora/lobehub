@@ -10,15 +10,19 @@ import { useTranslation } from 'react-i18next';
 import { formatAuditReason } from '../../audit/shared/auditReasonCodes';
 import { useFetchAdminUserAuditTrail } from '../hooks/useAdminUsers';
 import { formatAdminDateTime } from '../utils';
+import { detailStyles } from './detailStyles';
 
 const styles = createStaticStyles(({ css }) => ({
   row: css`
     display: grid;
-    grid-template-columns: 140px 1fr 100px;
-    gap: 8px;
+    grid-template-columns: 128px minmax(0, 1fr) auto;
+    gap: 8px 12px;
+    align-items: baseline;
 
-    padding-block: 10px;
+    padding-block: 8px;
     border-block-end: 1px solid ${cssVar.colorBorderSecondary};
+
+    font-size: 13px;
   `,
 }));
 
@@ -67,7 +71,7 @@ const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
   if (!canReadAudit) {
     return (
       <Flexbox gap={8}>
-        <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
+        <Text as="h3" className={detailStyles.sectionTitle}>
           {t('users.audit.title')}
         </Text>
         <Text type="secondary">{t('users.audit.noPermission')}</Text>
@@ -99,7 +103,7 @@ const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
 
   return (
     <Flexbox gap={12}>
-      <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
+      <Text as="h3" className={detailStyles.sectionTitle}>
         {t('users.audit.title')}
       </Text>
       {showStaleWarning ? (

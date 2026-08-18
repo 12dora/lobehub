@@ -1,17 +1,64 @@
 'use client';
 
-import { Drawer } from '@lobehub/ui/base-ui';
+import {
+  DrawerBackdrop,
+  DrawerClose,
+  DrawerContent,
+  DrawerHeader,
+  DrawerPopup,
+  DrawerPortal,
+  DrawerRoot,
+  DrawerTitle,
+} from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
-import { memo, useCallback, useLayoutEffect, useReducer, useRef } from 'react';
+import { useReducedMotion } from 'motion/react';
+import { memo, useCallback, useLayoutEffect, useMemo, useReducer, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import UserDetailBody from './UserDetailBody';
 
 /** Space kept inside the clipped popup box for the panel's drop shadow. */
 const SHADOW_GUTTER = 48;
-const PANEL_WIDTH = 'min(760px, calc(100vw - 48px))';
+/**
+ * Content width. 560px fits the description grids, the session rows and the role
+ * card without stranding whitespace; anything wider only spread the same facts out.
+ */
+export const USER_PANEL_WIDTH = 'min(560px, calc(100vw - 48px))';
+
+/**
+ * Motion for the panel. The library default (300ms in / 220ms out, aggressive ease)
+ * reads as a snap; this is a longer, decelerating enter and a slightly quicker,
+ * symmetric exit — the "settle into place" feel of a sheet rather than a pop-up.
+ */
+export const USER_PANEL_ENTER_TRANSITION = { duration: 0.48, ease: [0.22, 1, 0.36, 1] } as const;
+export const USER_PANEL_EXIT_TRANSITION = { duration: 0.34, ease: [0.4, 0, 0.2, 1] } as const;
+
+/**
+ * `motionProps` handed to `DrawerPopup`. They are spread after the atom's own
+ * config, so `transition` / `exit` here replace the library defaults; `initial`
+ * and `animate` (off-screen → in place) stay the atom's.
+ */
+export const resolveUserPanelMotion = (reduceMotion: boolean | null) =>
+  reduceMotion
+    ? {
+        exit: { transition: { duration: 0 }, x: '100%' },
+        transition: { duration: 0 },
+      }
+    : {
+        exit: { transition: USER_PANEL_EXIT_TRANSITION, x: '100%' },
+        transition: USER_PANEL_ENTER_TRANSITION,
+      };
 
 const styles = createStaticStyles(({ css }) => ({
+  body: css`
+    display: flex;
+    flex-direction: column;
+
+    width: 100%;
+    min-height: 100%;
+    padding-block: 12px 24px;
+    padding-inline: 20px;
+  `,
   /**
    * Keeps the page still while the panel slides in.
    *
@@ -49,10 +96,13 @@ export interface UserDetailDrawerProps {
  * operator keeps their page, filters and selection. `/admin/users/:id` stays a
  * full page for deep links (content moderation, bookmarks).
  *
- * Mask, ESC and the close icon are the component defaults — all three dismiss.
+ * Composed from the base-ui Drawer atoms rather than `<Drawer>` because the packaged
+ * component hard-codes its motion; everything else (modal mask, ESC / outside press
+ * → close, close button, `afterOpenChange` via exit-complete) mirrors it.
  */
 const UserDetailDrawer = memo<UserDetailDrawerProps>(({ onClose, open, userId }) => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
 
   /**
    * The rendered user is derived from `userId` in the same render — never mirrored
@@ -79,35 +129,60 @@ const UserDetailDrawer = memo<UserDetailDrawerProps>(({ onClose, open, userId })
     if (userId) lastCommittedUserIdRef.current = userId;
   });
 
-  const handleAfterOpenChange = useCallback((nextOpen: boolean) => {
-    if (nextOpen) return;
+  const handleExitComplete = useCallback(() => {
     // A close → reopen faster than the animation already re-derived the body from
     // `userId`, so dropping the outgoing id here is always safe.
     lastCommittedUserIdRef.current = null;
     forceRender();
   }, []);
 
+  // ESC, outside press and the close button all arrive here as `nextOpen === false`.
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (nextOpen || !open) return;
+      onClose();
+    },
+    [onClose, open],
+  );
+
+  const motionProps = useMemo(() => resolveUserPanelMotion(reduceMotion), [reduceMotion]);
+
   return (
-    <Drawer
-      afterOpenChange={handleAfterOpenChange}
-      classNames={{ popup: styles.popup }}
+    <DrawerRoot
+      modal
       open={open}
-      placement="right"
-      styles={{ popup: { width: `calc(${PANEL_WIDTH} + ${SHADOW_GUTTER}px)` } }}
-      title={t('users.detail.title')}
-      width={PANEL_WIDTH}
-      onClose={onClose}
+      onExitComplete={handleExitComplete}
+      onOpenChange={handleOpenChange}
     >
-      {renderedUserId ? (
-        <UserDetailBody
-          key={renderedUserId}
-          userId={renderedUserId}
-          variant="drawer"
-          onDeleted={onClose}
-          onDismiss={onClose}
-        />
-      ) : null}
-    </Drawer>
+      <DrawerPortal>
+        <DrawerBackdrop />
+        <DrawerPopup
+          className={styles.popup}
+          motionProps={motionProps}
+          placement="right"
+          popupStyle={{ width: `calc(${USER_PANEL_WIDTH} + ${SHADOW_GUTTER}px)` }}
+          width={USER_PANEL_WIDTH}
+        >
+          <DrawerHeader>
+            <DrawerTitle>{t('users.detail.title')}</DrawerTitle>
+            <DrawerClose aria-label={t('users.detail.closePanel')} />
+          </DrawerHeader>
+          <DrawerContent>
+            <div className={styles.body}>
+              {renderedUserId ? (
+                <UserDetailBody
+                  key={renderedUserId}
+                  userId={renderedUserId}
+                  variant="drawer"
+                  onDeleted={onClose}
+                  onDismiss={onClose}
+                />
+              ) : null}
+            </div>
+          </DrawerContent>
+        </DrawerPopup>
+      </DrawerPortal>
+    </DrawerRoot>
   );
 });
 

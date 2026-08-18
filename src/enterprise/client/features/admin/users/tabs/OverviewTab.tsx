@@ -1,9 +1,8 @@
 'use client';
 
-import { Flexbox, Text, Tooltip } from '@lobehub/ui';
+import { Text, Tooltip } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useMemo } from 'react';
+import { Fragment, memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { AdminUsersGetOutput } from '@/enterprise/client/services/adminUsers';
@@ -12,6 +11,7 @@ import { formatAuditReason } from '../../audit/shared/auditReasonCodes';
 import StatusBadge from '../../primitives/StatusBadge';
 import UserSourceTags from '../UserSourceTags';
 import { formatAdminDateTime } from '../utils';
+import { detailStyles as styles } from './detailStyles';
 import SecuritySection from './SecuritySection';
 
 /**
@@ -31,33 +31,6 @@ export const resolveSetPasswordDisabledReason = (params: {
   if (!params.isLive) return 'users.stale.refreshFailed';
   return null;
 };
-
-const styles = createStaticStyles(({ css }) => ({
-  actions: css`
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  `,
-  dl: css`
-    display: grid;
-    grid-template-columns: 160px 1fr;
-    gap: 8px 16px;
-    margin: 0;
-
-    dt {
-      color: ${cssVar.colorTextSecondary};
-    }
-
-    dd {
-      margin: 0;
-    }
-  `,
-  section: css`
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  `,
-}));
 
 interface OverviewTabProps {
   canBan: boolean;
@@ -100,61 +73,77 @@ const OverviewTab = memo<OverviewTabProps>(
     const providerIds = useMemo(() => user.providers.map((p) => p.providerId), [user.providers]);
 
     return (
-      <div className={styles.section}>
-        <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
-          {t('users.overview.identity')}
-        </Text>
-        <dl className={styles.dl}>
-          <dt>{t('users.overview.email')}</dt>
-          <dd>{user.email ?? '—'}</dd>
-          <dt>{t('users.overview.username')}</dt>
-          <dd>{user.username ?? '—'}</dd>
-          <dt>{t('users.overview.fullName')}</dt>
-          <dd>{user.fullName ?? '—'}</dd>
-          <dt>{t('users.overview.jobTitle')}</dt>
-          <dd>{user.dingtalkTitle?.trim() ? user.dingtalkTitle : '—'}</dd>
-          <dt>{t('users.overview.status')}</dt>
-          <dd>
-            <StatusBadge status={user.status} />
-          </dd>
-          <dt>{t('users.overview.source')}</dt>
-          <dd>
-            <UserSourceTags providerIds={providerIds} />
-          </dd>
-          {user.banned ? (
-            <>
-              <dt>{t('users.overview.banReason')}</dt>
-              <dd>
-                {formatAuditReason(user.banReason, (key, options) =>
-                  String(t(key as never, options as never)),
-                ) ?? '—'}
-              </dd>
-              <dt>{t('users.overview.banExpires')}</dt>
-              <dd>{formatAdminDateTime(user.banExpires)}</dd>
-            </>
-          ) : null}
-          <dt>{t('users.overview.createdAt')}</dt>
-          <dd>{formatAdminDateTime(user.createdAt)}</dd>
-          <dt>{t('users.overview.lastActiveAt')}</dt>
-          <dd>{formatAdminDateTime(user.lastActiveAt)}</dd>
-        </dl>
+      <div className={styles.root}>
+        <section className={styles.section}>
+          <Text as="h3" className={styles.sectionTitle}>
+            {t('users.overview.identity')}
+          </Text>
+          <dl className={styles.dl}>
+            <dt>{t('users.overview.email')}</dt>
+            <dd>{user.email ?? '—'}</dd>
+            <dt>{t('users.overview.username')}</dt>
+            <dd>{user.username ?? '—'}</dd>
+            <dt>{t('users.overview.fullName')}</dt>
+            <dd>{user.fullName ?? '—'}</dd>
+            <dt>{t('users.overview.jobTitle')}</dt>
+            <dd>{user.dingtalkTitle?.trim() ? user.dingtalkTitle : '—'}</dd>
+            <dt>{t('users.overview.status')}</dt>
+            <dd>
+              <StatusBadge status={user.status} />
+            </dd>
+            <dt>{t('users.overview.source')}</dt>
+            <dd>
+              <UserSourceTags providerIds={providerIds} />
+            </dd>
+            {user.banned ? (
+              <>
+                <dt>{t('users.overview.banReason')}</dt>
+                <dd>
+                  {formatAuditReason(user.banReason, (key, options) =>
+                    String(t(key as never, options as never)),
+                  ) ?? '—'}
+                </dd>
+                <dt>{t('users.overview.banExpires')}</dt>
+                <dd>{formatAdminDateTime(user.banExpires)}</dd>
+              </>
+            ) : null}
+            <dt>{t('users.overview.createdAt')}</dt>
+            <dd>{formatAdminDateTime(user.createdAt)}</dd>
+            <dt>{t('users.overview.lastActiveAt')}</dt>
+            <dd>{formatAdminDateTime(user.lastActiveAt)}</dd>
+          </dl>
+        </section>
 
-        <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
-          {t('users.overview.providers')}
-        </Text>
-        {user.providers.length === 0 ? (
-          <Text type="secondary">{t('users.overview.noProviders')}</Text>
-        ) : (
-          <Flexbox gap={8}>
-            {user.providers.map((p) => (
-              <Text key={`${p.providerId}-${p.createdAt?.toString() ?? ''}`}>
-                {t(`users.providers.${p.providerId}` as never, { defaultValue: p.providerId })}
-                {p.accountIdHint ? ` (${p.accountIdHint})` : ''}
-                {p.createdAt ? ` · ${formatAdminDateTime(p.createdAt)}` : ''}
-              </Text>
-            ))}
-          </Flexbox>
-        )}
+        <section className={styles.section}>
+          <Text as="h3" className={styles.sectionTitle}>
+            {t('users.overview.providers')}
+          </Text>
+          {user.providers.length === 0 ? (
+            <Text style={{ fontSize: 13 }} type="secondary">
+              {t('users.overview.noProviders')}
+            </Text>
+          ) : (
+            <dl className={styles.dl}>
+              {user.providers.map((p) => (
+                <Fragment key={`${p.providerId}-${p.createdAt?.toString() ?? ''}`}>
+                  <dt>
+                    {t(`users.providers.${p.providerId}` as never, {
+                      defaultValue: p.providerId,
+                    })}
+                  </dt>
+                  <dd>
+                    {[
+                      p.accountIdHint ? `(${p.accountIdHint})` : null,
+                      p.createdAt ? formatAdminDateTime(p.createdAt) : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ') || '—'}
+                  </dd>
+                </Fragment>
+              ))}
+            </dl>
+          )}
+        </section>
 
         <SecuritySection
           canManageCredentials={canManageCredentials}
@@ -163,8 +152,8 @@ const OverviewTab = memo<OverviewTabProps>(
         />
 
         {showActions ? (
-          <>
-            <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
+          <section className={styles.section}>
+            <Text as="h3" className={styles.sectionTitle}>
               {t('users.overview.accountActions')}
             </Text>
             {canManageCredentials || showBanDelete ? (
@@ -206,9 +195,11 @@ const OverviewTab = memo<OverviewTabProps>(
             ) : null}
             {/* Ban/delete are hidden on your own account; change password stays, disabled. */}
             {user.isSelf && (canBan || canDelete) ? (
-              <Text type="secondary">{t('users.overview.selfActionsHidden')}</Text>
+              <Text style={{ fontSize: 12 }} type="secondary">
+                {t('users.overview.selfActionsHidden')}
+              </Text>
             ) : null}
-          </>
+          </section>
         ) : null}
       </div>
     );

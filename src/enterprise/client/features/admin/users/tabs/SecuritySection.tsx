@@ -2,7 +2,6 @@
 
 import { Text, Tooltip } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -13,33 +12,7 @@ import {
   resolveCredentialRecoveryCopy,
   resolveCredentialRecoveryVariant,
 } from '../credentialRecovery';
-
-const styles = createStaticStyles(({ css }) => ({
-  actions: css`
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  `,
-  dl: css`
-    display: grid;
-    grid-template-columns: 160px 1fr;
-    gap: 8px 16px;
-    margin: 0;
-
-    dt {
-      color: ${cssVar.colorTextSecondary};
-    }
-
-    dd {
-      margin: 0;
-    }
-  `,
-  section: css`
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  `,
-}));
+import { detailStyles as styles } from './detailStyles';
 
 export interface SecuritySectionProps {
   /** Actor holds USER_CREDENTIAL_MANAGE. Facts stay visible without it. */
@@ -86,8 +59,8 @@ const SecuritySection = memo<SecuritySectionProps>(
     const recoveryAction = resolveCredentialRecoveryCopy(recoveryVariant, 'action');
 
     return (
-      <div className={styles.section}>
-        <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
+      <section className={styles.section}>
+        <Text as="h3" className={styles.sectionTitle}>
           {t('users.security.title')}
         </Text>
         <dl className={styles.dl}>
@@ -132,7 +105,7 @@ const SecuritySection = memo<SecuritySectionProps>(
             </Tooltip>
           </div>
         ) : null}
-      </div>
+      </section>
     );
   },
 );

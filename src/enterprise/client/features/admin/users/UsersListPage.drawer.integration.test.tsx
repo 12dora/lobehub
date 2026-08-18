@@ -145,7 +145,7 @@ const location = () => screen.getByTestId('location').textContent;
 
 const goBack = () => fireEvent.click(screen.getByTestId('go-back'));
 
-const closeButton = () => screen.getByLabelText('Close');
+const closeButton = () => screen.getByLabelText('users.detail.closePanel');
 
 /** The panel slides out, so the dialog leaves the tree a few frames after the URL does. */
 const waitForDrawerGone = () =>
