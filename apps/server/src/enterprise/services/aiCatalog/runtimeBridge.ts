@@ -25,7 +25,12 @@ let registered = false;
 export const ensurePlatformAiRuntimeRegistered = (): void => {
   if (registered) return;
   const implementation: PlatformAiRuntimeImplementation = {
-    createModelAllowlistHooks: createAiCatalogModelAllowlistHooks,
+    // Deferred on purpose: `globalConfig` runs `ensurePlatformAiRuntimeRegistered()` at module
+    // top level, and it sits on the import cycle runtimeAdapter → credentialAdapter →
+    // modules/ModelRuntime → globalConfig → this file. When `runtimeAdapter` is the entry
+    // (the managed-resource readiness probe imports it lazily on the request path), reading
+    // the binding here during evaluation is a TDZ ReferenceError; a closure reads it at call time.
+    createModelAllowlistHooks: (allowedModels) => createAiCatalogModelAllowlistHooks(allowedModels),
     isEnabled: () => parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AI,
     isTakeoverActive: (db) => isPlatformAiTakeoverActive(db),
     listPublishedModels: async (db, providerKey) => {
