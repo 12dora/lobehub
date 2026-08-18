@@ -63,6 +63,9 @@ vi.mock('@/server/modules/ModelRuntime', () => ({
       return new Response('done');
     }),
   }),
+  // Operation runtimes derive a conversation identity; the fallback start-time
+  // registry is irrelevant to these executor tests.
+  rememberModelRuntimeConversationStartMs: vi.fn(() => 1_700_000_000_000),
 }));
 
 vi.mock('@/server/services/message', () => ({
@@ -346,6 +349,8 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         'user-123',
         'openai',
         'ws-1',
+        // Operation-scoped conversation identity (see operationModelRuntime.ts).
+        expect.objectContaining({ conversationKey: 'user:user-123:operation:op-123' }),
       );
     });
 
