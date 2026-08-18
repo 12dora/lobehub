@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { CURRENT_VERSION } from '@lobechat/const';
+import OpenAI from 'openai';
 import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -345,6 +346,24 @@ describe('LobeChatGPTAI', () => {
 
     it('propagates a 401 from Codex /models instead of publishing the curated catalog', async () => {
       const unauthorized = Object.assign(new Error('HTTP 401'), { status: 401 });
+      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(unauthorized);
+
+      await expect(instance.models()).rejects.toBe(unauthorized);
+    });
+
+    it('propagates a 404 that carries an authentication error instead of publishing the catalog', async () => {
+      const unauthorized = OpenAI.APIError.generate(
+        404,
+        {
+          error: {
+            code: 'invalid_token',
+            message: 'Invalid token',
+            type: 'authentication_error',
+          },
+        },
+        'Invalid token',
+        new Headers(),
+      );
       vi.spyOn(instance['client'].models, 'list').mockRejectedValue(unauthorized);
 
       await expect(instance.models()).rejects.toBe(unauthorized);

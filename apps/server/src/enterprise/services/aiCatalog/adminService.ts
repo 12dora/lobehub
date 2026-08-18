@@ -60,7 +60,11 @@ import {
   appendAiCatalogFailureAudit,
   getLockedAiCatalogDraft,
 } from './shared';
-import { isOAuthAuthorizationExpiredError, refreshSharedOAuthVault } from './sharedOAuthRefresh';
+import {
+  isOAuthAuthorizationExpiredError,
+  isSharedOAuthRefreshConsumedError,
+  refreshSharedOAuthVault,
+} from './sharedOAuthRefresh';
 
 type CreateProviderInput = z.infer<typeof adminAiProviderCreateDraftInputSchema>;
 type UpdateProviderInput = z.infer<typeof adminAiProviderUpdateDraftInputSchema>;
@@ -158,15 +162,18 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceSyncOps {
    * applyImmediate all commit or roll back together. Without this, a publish failure would
    * leave the very thing this design removes: a persisted draft that runtime never serves.
    */
-  private scopedToTransaction = (
-    tx: Transaction,
-    deferInvalidation: DeferInvalidation,
-  ): AiCatalogAdminService =>
-    new AiCatalogAdminService(tx as unknown as LobeChatDatabase, this.secretService, {
+  private scopedToTransaction = (tx: Transaction, deferInvalidation: DeferInvalidation): this => {
+    const Service = this.constructor as new (
+      db: LobeChatDatabase,
+      secretService: PlatformSecretService,
+      options?: AiCatalogAdminServiceOptions,
+    ) => this;
+    return new Service(tx as unknown as LobeChatDatabase, this.secretService, {
       ...this.options,
       deferInvalidation,
       suppressFailureAudit: true,
     });
+  };
 
   /**
    * Run one applyImmediate unit of work in a single transaction, then invalidate the
@@ -183,7 +190,7 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceSyncOps {
       secret?: AiSecretMutation;
       secretTargetId?: string;
     },
-    run: (scoped: AiCatalogAdminService) => Promise<T>,
+    run: (scoped: this) => Promise<T>,
   ): Promise<T> => {
     // Nothing may announce a revision before the transaction that produced it commits: a
     // later failure would leave every cache holding an event for a revision that never
@@ -217,8 +224,7 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceSyncOps {
       secretTargetId?: string;
     },
     run: (scoped: this) => Promise<T>,
-  ): Promise<T> =>
-    this.runApplyTransaction(params, run as (scoped: AiCatalogAdminService) => Promise<T>);
+  ): Promise<T> => this.runApplyTransaction(params, run);
 
   protected sanitizeReason = async (
     reason: string,
@@ -707,7 +713,9 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceSyncOps {
             secrets: this.secrets,
           });
         } catch (error) {
-          if (isOAuthAuthorizationExpiredError(error)) throw error;
+          if (isOAuthAuthorizationExpiredError(error) || isSharedOAuthRefreshConsumedError(error)) {
+            throw error;
+          }
           // Transient — keep the stored vault and let the probe be the real verdict.
           refreshed = keyVaults;
         }

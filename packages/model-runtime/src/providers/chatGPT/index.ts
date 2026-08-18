@@ -1,5 +1,7 @@
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { CURRENT_VERSION } from '@lobechat/const';
+import { isRecord } from '@lobechat/utils/object';
+import type { ChatModelCard } from 'model-bank';
 import { ModelProvider } from 'model-bank';
 import OpenAI from 'openai';
 
@@ -28,11 +30,64 @@ const isResponsesLiteModel = (model: string | undefined) =>
 /** Codex `/models` is undocumented — only "this route is not there" is a catalog fallback. */
 const CODEX_MODELS_MISSING_STATUSES = new Set([404, 405, 501]);
 
+/**
+ * Catalog sync reads this after `processModelList` has already turned every
+ * capability into a boolean. Empty object = live payload sent none of them.
+ */
+export const UPSTREAM_REPORTED_ABILITIES = 'upstreamReportedAbilities';
+
+const UPSTREAM_ABILITY_KEYS = [
+  'files',
+  'functionCall',
+  'imageOutput',
+  'reasoning',
+  'search',
+  'video',
+  'vision',
+] as const;
+
+const AUTH_ERROR_TYPE = /authentication|authorization|permission/i;
+const AUTH_ERROR_CODE =
+  /invalid[_-]?(?:token|api[_-]?key)|unauthorized|forbidden|token[_-]?expired|access[_-]?denied/i;
+
+const collectErrorSignals = (value: unknown, into: string[]): void => {
+  if (!isRecord(value)) return;
+  if (typeof value.code === 'string') into.push(value.code);
+  if (typeof value.type === 'string') into.push(value.type);
+  if ('error' in value) collectErrorSignals(value.error, into);
+  if ('body' in value) collectErrorSignals(value.body, into);
+};
+
+/** A 404/405/501 is "route missing" only when the payload does not say otherwise. */
 const isCodexModelsEndpointMissing = (error: unknown): boolean => {
   if (typeof error !== 'object' || error === null) return false;
   const status =
     (error as { status?: unknown }).status ?? (error as { statusCode?: unknown }).statusCode;
-  return typeof status === 'number' && CODEX_MODELS_MISSING_STATUSES.has(status);
+  if (typeof status !== 'number' || !CODEX_MODELS_MISSING_STATUSES.has(status)) return false;
+  const signals: string[] = [];
+  collectErrorSignals(error, signals);
+  return !signals.some((signal) => AUTH_ERROR_TYPE.test(signal) || AUTH_ERROR_CODE.test(signal));
+};
+
+const attachUpstreamAbilityProvenance = (
+  cards: ChatModelCard[],
+  rawModels: unknown[],
+): ChatModelCard[] => {
+  const reportedById = new Map<string, Record<string, boolean>>();
+  for (const raw of rawModels) {
+    if (!isRecord(raw) || typeof raw.id !== 'string') continue;
+    const reported: Record<string, boolean> = {};
+    for (const key of UPSTREAM_ABILITY_KEYS) {
+      const value = raw[key];
+      if (typeof value === 'boolean') reported[key] = value;
+    }
+    reportedById.set(raw.id, reported);
+  }
+  return cards.map((card) => {
+    const reported = reportedById.get(card.id);
+    if (!reported) return card;
+    return { ...card, [UPSTREAM_REPORTED_ABILITIES]: reported };
+  });
 };
 
 export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>({
@@ -68,7 +123,10 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
         throw new TypeError('ChatGPT Codex models payload was not a list');
       }
 
-      return processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt');
+      return attachUpstreamAbilityProvenance(
+        await processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt'),
+        modelList,
+      );
     } catch (error) {
       if (!(error instanceof TypeError) && !isCodexModelsEndpointMissing(error)) {
         throw error;

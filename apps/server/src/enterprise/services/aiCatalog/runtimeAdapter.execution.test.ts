@@ -1,12 +1,14 @@
 // @vitest-environment node
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { platformResourceRevisions } from '@/database/schemas';
+import { platformJobs, platformResourceRevisions } from '@/database/schemas';
 
+import { AiCatalogAdminService } from './adminService';
 import { AiCatalogNotFoundError, AiCatalogProviderUnavailableError } from './errors';
 import { AiCatalogExecutionResolver } from './runtimeAdapter';
 import { cleanup, createPublishedProvider, db, secretService } from './runtimeAdapter.testFixtures';
+import { SharedOAuthRefreshPersistError } from './sharedOAuthRefresh';
 
 beforeEach(cleanup);
 afterEach(async () => {
@@ -138,5 +140,57 @@ describe('AiCatalogExecutionResolver — exact historical revision (MODEL-EXACT)
         providerRevision: cleared.revision,
       }),
     ).rejects.toBeInstanceOf(AiCatalogProviderUnavailableError);
+  });
+
+  it('does not execute on the stored vault after a post-exchange persist failure', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+    const service = new AiCatalogAdminService(db, secretService, {
+      connectionProbe: async () => {},
+    });
+    await service.applyProviderImmediate('admin', {
+      displayName: 'Shared grok',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'supergrok',
+      reason: 'seed oauth',
+      secret: {
+        operation: 'replace',
+        value: {
+          oauthAccessToken: 'at-old',
+          oauthRefreshToken: 'rt-old',
+          oauthTokenExpiresAt: String(Date.now() + 30_000),
+        },
+      },
+      source: 'builtin',
+    });
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            access_token: 'at-new',
+            expires_in: 3600,
+            refresh_token: 'rt-new',
+            token_type: 'bearer',
+          }),
+          { status: 200 },
+        ),
+    ) as typeof fetch;
+    const encryptSpy = vi
+      .spyOn(secretService, 'encrypt')
+      .mockRejectedValue(new Error('kek write failed'));
+
+    try {
+      const execution = new AiCatalogExecutionResolver(db, secretService);
+      await expect(execution.resolveProviderExecutionConfig('supergrok')).rejects.toBeInstanceOf(
+        SharedOAuthRefreshPersistError,
+      );
+      expect(globalThis.fetch).toHaveBeenCalled();
+    } finally {
+      encryptSpy.mockRestore();
+      globalThis.fetch = realFetch;
+      await db.execute(sql`TRUNCATE TABLE ${platformJobs} RESTART IDENTITY CASCADE`);
+    }
   });
 });

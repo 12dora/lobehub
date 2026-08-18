@@ -651,4 +651,26 @@ describe('AiCatalogAdminService model mutations', () => {
     expect(deleteAudits).toHaveLength(2);
     expect(deleteAudits.map((row) => row.targetId).sort()).toEqual([first.id, second.id].sort());
   });
+
+  it('runs model transactions on a clone of the runtime class, not a bare base instance', async () => {
+    class TenantAiCatalogAdminService extends AiCatalogAdminService {
+      protected tenantOnly() {
+        return 'tenant-ok';
+      }
+
+      async pingScoped() {
+        return this.runModelApplyTransaction(
+          {
+            action: 'admin.aiModels.applyImmediate',
+            actorUserId: 'admin',
+            reason: 'polymorphic this',
+          },
+          async (scoped) => scoped.tenantOnly(),
+        );
+      }
+    }
+
+    const tenant = new TenantAiCatalogAdminService(db, new PlatformSecretService({ keyProvider }));
+    await expect(tenant.pingScoped()).resolves.toBe('tenant-ok');
+  });
 });

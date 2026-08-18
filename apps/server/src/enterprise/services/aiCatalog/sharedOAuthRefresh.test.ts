@@ -2,7 +2,11 @@
 import { AgentRuntimeErrorType } from '@lobechat/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { refreshSharedOAuthVault } from './sharedOAuthRefresh';
+import {
+  isSharedOAuthRefreshConsumedError,
+  refreshSharedOAuthVault,
+  SharedOAuthRefreshPersistError,
+} from './sharedOAuthRefresh';
 
 const { mockCas, mockGetVersion } = vi.hoisted(() => ({
   mockCas: vi.fn(),
@@ -472,6 +476,34 @@ describe('refreshSharedOAuthVault', () => {
       expect(result).toBe(vault);
       expect(mockFetch).not.toHaveBeenCalled();
     });
+  });
+
+  it('throws SharedOAuthRefreshPersistError after a successful exchange if persist fails', async () => {
+    mockFetch.mockResolvedValueOnce(
+      tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+    );
+    mockCas.mockRejectedValue(new Error('cas write failed'));
+    mockGetVersion.mockResolvedValue({
+      ciphertext: encryptVault(baseVault(EXPIRING_AT())),
+      keyId: 'kek-1',
+    });
+
+    let caught: unknown;
+    await expect(
+      refreshSharedOAuthVault(makeParams()).catch((error: unknown) => {
+        caught = error;
+        throw error;
+      }),
+    ).rejects.toBeInstanceOf(SharedOAuthRefreshPersistError);
+    expect(mockFetch).toHaveBeenCalled();
+    expect(isSharedOAuthRefreshConsumedError(caught)).toBe(true);
+    expect(
+      isSharedOAuthRefreshConsumedError(
+        Object.assign(new Error('OAuth tokens for provider "chatgpt" could not be saved'), {
+          errorType: 'InvalidProviderAPIKey',
+        }),
+      ),
+    ).toBe(false);
   });
 
   it('surfaces an admin-facing error when the shared grant is irrecoverably dead', async () => {

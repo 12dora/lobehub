@@ -65,14 +65,34 @@ const clip = (value: string | undefined, max: number): string | undefined => {
 };
 
 /**
- * Undefined = upstream never mentioned these flags, so keep what is stored.
- * An explicit all-false set is `{}` so a capability the account lost can turn off.
+ * Field ChatGPT (and any other hook that can still see the raw payload) stamps
+ * after `processModelList`. That function materializes every capability as a
+ * boolean, so without this the mapper cannot tell "upstream said false" from
+ * "upstream said nothing".
+ */
+const UPSTREAM_REPORTED_ABILITIES = 'upstreamReportedAbilities';
+
+const readUpstreamReportedAbilities = (
+  card: ChatModelCard,
+): Partial<Record<(typeof ABILITY_KEYS)[number], boolean>> | undefined => {
+  const value = (card as unknown as Record<string, unknown>)[UPSTREAM_REPORTED_ABILITIES];
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  return value as Partial<Record<(typeof ABILITY_KEYS)[number], boolean>>;
+};
+
+/**
+ * Clear an ability only when the provider hook recorded that upstream actually
+ * sent `false`. Cards that only went through `processModelList` have no
+ * provenance — treat them as silent and leave stored abilities alone.
  */
 const collectAbilities = (card: ChatModelCard): Record<string, boolean> | undefined => {
+  const provenance = readUpstreamReportedAbilities(card);
+  if (!provenance) return undefined;
+
   const abilities: Record<string, boolean> = {};
   let reported = false;
   for (const key of ABILITY_KEYS) {
-    const value = card[key];
+    const value = provenance[key];
     if (typeof value !== 'boolean') continue;
     reported = true;
     if (value) abilities[key] = true;

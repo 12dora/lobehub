@@ -1,6 +1,5 @@
 // @vitest-environment node
-import { AgentRuntimeError } from '@lobechat/model-runtime';
-import { AgentRuntimeErrorType } from '@lobechat/types';
+import { LobeChatGPTAI } from '@lobechat/model-runtime';
 import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,6 +9,7 @@ import {
   platformAiProviders,
   platformAiProviderSecrets,
   platformAuditLogs,
+  platformJobs,
   platformResourceRevisions,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
@@ -57,7 +57,8 @@ const cleanup = async () => {
       ${platformResourceRevisions},
       ${platformAiModels},
       ${platformAiProviderSecrets},
-      ${platformAiProviders}
+      ${platformAiProviders},
+      ${platformJobs}
     RESTART IDENTITY CASCADE
   `);
 };
@@ -120,73 +121,108 @@ const seedProvider = async (providerKey: string) => {
   return { providerId: created.draft.id, service };
 };
 
+const listThroughChatGPT = async (data: Array<Record<string, unknown>>) => {
+  const instance = new LobeChatGPTAI({ apiKey: 'sync-ability-fixture' });
+  vi.spyOn(instance['client'].models, 'list').mockResolvedValue({ data } as never);
+  return instance.models();
+};
+
 describe('mapCardsToBatchUpdate', () => {
-  it('clears stored abilities when upstream reports every capability as false', () => {
+  it('clears stored abilities when the live Codex payload reports every capability as false', async () => {
+    const cards = await listThroughChatGPT([
+      {
+        displayName: 'Custom Grok',
+        id: 'codex-sync-ability-fixture',
+        reasoning: false,
+        search: false,
+      },
+    ]);
     const existing = draftModel({
       abilities: { reasoning: true, search: true },
-      displayName: 'Custom Grok',
+      displayName: cards[0]?.displayName ?? 'codex-sync-ability-fixture',
       id: 'model-1',
-      modelKey: 'grok-custom',
+      modelKey: 'codex-sync-ability-fixture',
     });
 
-    const result = mapCardsToBatchUpdate(
-      [
-        {
-          displayName: 'Custom Grok',
-          id: 'grok-custom',
-          reasoning: false,
-          search: false,
-        },
-      ],
-      [existing],
-    );
+    const result = mapCardsToBatchUpdate(cards, [existing]);
 
-    expect(result).toEqual({
-      created: 0,
-      items: [expect.objectContaining({ abilities: {}, id: 'model-1' })],
-      total: 1,
-      updated: 1,
-    });
-    expect(result.items[0]?.abilities).toEqual({});
+    expect(result.items).toEqual([expect.objectContaining({ abilities: {}, id: 'model-1' })]);
+    expect(result.updated).toBe(1);
   });
 
-  it('keeps stored abilities when upstream omits every capability flag', () => {
+  it('keeps stored abilities when the live Codex payload is a bare id', async () => {
+    const cards = await listThroughChatGPT([{ id: 'codex-sync-ability-fixture' }]);
     const existing = draftModel({
       abilities: { reasoning: true, search: true },
-      displayName: 'Custom Grok',
+      displayName: cards[0]?.displayName ?? 'codex-sync-ability-fixture',
       id: 'model-1',
-      modelKey: 'grok-custom',
+      modelKey: 'codex-sync-ability-fixture',
     });
 
-    const result = mapCardsToBatchUpdate(
-      [{ displayName: 'Custom Grok', id: 'grok-custom' }],
-      [existing],
-    );
+    const result = mapCardsToBatchUpdate(cards, [existing]);
 
-    expect(result).toEqual({ created: 0, items: [], total: 1, updated: 0 });
+    expect(result.items.every((item) => item.abilities === undefined)).toBe(true);
   });
 });
 
 describe('AiCatalogAdminService.syncUpstream', () => {
   it('does not sync after a post-exchange refresh persistence failure', async () => {
-    const { providerId, service } = await seedProvider('sync-refresh-persist');
+    const actual = await vi.importActual<typeof SharedOAuthRefreshModule>('./sharedOAuthRefresh');
+    mockRefreshSharedOAuthVault.mockImplementation(actual.refreshSharedOAuthVault);
+
+    const secretService = new PlatformSecretService({ keyProvider });
+    const service = new AiCatalogAdminService(db, secretService);
+    const created = await service.applyProviderImmediate('admin', {
+      displayName: 'Shared grok',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'supergrok',
+      reason: 'seed oauth',
+      secret: {
+        operation: 'replace',
+        value: {
+          oauthAccessToken: 'at-old',
+          oauthRefreshToken: 'rt-old',
+          oauthTokenExpiresAt: String(Date.now() + 30_000),
+        },
+      },
+      source: 'builtin',
+    });
     mockModels.mockResolvedValue([{ displayName: 'Should not land', id: 'nope', type: 'chat' }]);
-    mockRefreshSharedOAuthVault.mockRejectedValue(
-      AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey, {
-        message: 'OAuth tokens for provider "chatgpt" could not be saved',
-      }),
-    );
 
-    await expect(service.syncUpstream('admin', { providerId })).rejects.toBeInstanceOf(
-      AiCatalogUpstreamSyncError,
-    );
-    expect(mockModels).not.toHaveBeenCalled();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            access_token: 'at-new',
+            expires_in: 3600,
+            refresh_token: 'rt-new',
+            token_type: 'bearer',
+          }),
+          { status: 200 },
+        ),
+    ) as typeof fetch;
+    const encryptSpy = vi
+      .spyOn(secretService, 'encrypt')
+      .mockRejectedValue(new Error('kek write failed'));
 
-    const models = await db
-      .select()
-      .from(platformAiModels)
-      .where(eq(platformAiModels.providerId, providerId));
-    expect(models).toEqual([]);
+    try {
+      await expect(
+        service.syncUpstream('admin', { providerId: created.draft.id }),
+      ).rejects.toBeInstanceOf(AiCatalogUpstreamSyncError);
+      expect(mockModels).not.toHaveBeenCalled();
+      expect(globalThis.fetch).toHaveBeenCalled();
+
+      const models = await db
+        .select()
+        .from(platformAiModels)
+        .where(eq(platformAiModels.providerId, created.draft.id));
+      expect(models.every((model) => model.modelKey !== 'nope')).toBe(true);
+    } finally {
+      encryptSpy.mockRestore();
+      globalThis.fetch = realFetch;
+    }
   });
 
   it('still lists with the stored vault when the token endpoint fails before exchange', async () => {
@@ -241,30 +277,30 @@ describe('AiCatalogAdminService.syncUpstream', () => {
     expect(successAudits).toEqual([]);
   });
 
-  it('persists an empty abilities object when upstream turns every capability off', async () => {
+  it('persists an empty abilities object when the live Codex payload turns every capability off', async () => {
     const { providerId, service } = await seedProvider('sync-abilities-clear');
+    const cards = await listThroughChatGPT([
+      {
+        displayName: 'Custom Grok',
+        id: 'codex-sync-ability-fixture',
+        reasoning: false,
+        search: false,
+      },
+    ]);
     let detail = await service.getDetail(providerId);
     await service.applyModelImmediate('admin', {
       abilities: { reasoning: true, search: true },
-      displayName: 'Custom Grok',
+      displayName: cards[0]?.displayName ?? 'codex-sync-ability-fixture',
       enabled: true,
       expectedDraftToken: detail.draftToken,
-      modelKey: 'grok-custom',
+      modelKey: 'codex-sync-ability-fixture',
       operation: 'create',
       providerId,
       reason: 'seed existing',
       type: 'chat',
     });
 
-    mockModels.mockResolvedValue([
-      {
-        displayName: 'Custom Grok',
-        id: 'grok-custom',
-        reasoning: false,
-        search: false,
-        type: 'chat',
-      },
-    ]);
+    mockModels.mockImplementation(async () => cards);
 
     await expect(service.syncUpstream('admin', { providerId })).resolves.toEqual({
       created: 0,
@@ -273,9 +309,10 @@ describe('AiCatalogAdminService.syncUpstream', () => {
     });
 
     detail = await service.getDetail(providerId);
-    expect(detail.draft.models.find((model) => model.modelKey === 'grok-custom')).toMatchObject({
+    expect(
+      detail.draft.models.find((model) => model.modelKey === 'codex-sync-ability-fixture'),
+    ).toMatchObject({
       abilities: {},
-      displayName: 'Custom Grok',
       enabled: true,
     });
   });

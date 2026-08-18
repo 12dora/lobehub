@@ -120,31 +120,28 @@ export const isOAuthAuthorizationExpiredError = (error: unknown): boolean =>
   error !== null &&
   (error as { errorType?: unknown }).errorType === AgentRuntimeErrorType.OAuthAuthorizationExpired;
 
-const readRuntimeErrorMessage = (error: unknown): string => {
-  if (typeof error !== 'object' || error === null) return '';
-  const record = error as { error?: unknown; message?: unknown };
-  if (typeof record.message === 'string') return record.message;
-  if (typeof record.error === 'object' && record.error !== null) {
-    const inner = (record.error as { message?: unknown }).message;
-    if (typeof inner === 'string') return inner;
-  }
-  return '';
-};
-
 /**
  * Persist failed after the token endpoint may already have consumed a rotating
  * refresh token. Callers must not fall back to the pre-refresh vault snapshot —
  * durable storage may still hold the consumed token, and the next expiry would
  * kill the shared account with no failed operation to explain it.
  *
- * `ensureFreshOAuthTokenWithStore` surfaces that case as `InvalidProviderAPIKey`
- * with this message; token-endpoint / transport failures keep their original shape.
+ * The refresh helper wraps store failures as a generic `InvalidProviderAPIKey`
+ * object (not an Error), so this class is thrown at the shared-vault boundary
+ * after a rotation persist actually failed — never by matching a message.
  */
+export class SharedOAuthRefreshPersistError extends Error {
+  constructor(cause?: unknown) {
+    super(
+      'Rotated shared OAuth tokens could not be persisted after the token endpoint consumed the refresh token',
+    );
+    this.name = 'SharedOAuthRefreshPersistError';
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
 export const isSharedOAuthRefreshConsumedError = (error: unknown): boolean =>
-  typeof error === 'object' &&
-  error !== null &&
-  (error as { errorType?: unknown }).errorType === AgentRuntimeErrorType.InvalidProviderAPIKey &&
-  readRuntimeErrorMessage(error).includes('could not be saved');
+  error instanceof SharedOAuthRefreshPersistError;
 
 const throwSharedGrantExpired = (providerId: string): never => {
   // Surfaced to end users who cannot fix it themselves — point them at the admin, and
@@ -256,6 +253,10 @@ export const refreshSharedOAuthVault = async (
   // the grant — never CAS again in this flow (we would clobber their newer pair); the
   // refresh policy's fallback re-reads and adopts it instead.
   let foreignRotationDetected = false;
+  // `ensureFreshOAuthTokenWithStore` swallows the persist error and throws a generic
+  // object. Track whether *this* persist was a post-exchange rotation so we can
+  // rethrow a real type after the helper returns.
+  let persistFailedAfterRotation = false;
 
   const readVault = async (): Promise<OAuthTokenKeyVaults> => {
     const version = await repository.getProviderSecretVersion(
@@ -270,38 +271,45 @@ export const refreshSharedOAuthVault = async (
 
   const store: OAuthTokenStore = {
     persist: async (next) => {
-      // A CAS miss is NOT always a competing rotation: the KEK rewrap worker rewrites
-      // the SAME plaintext under a new ciphertext. Losing to it must not strand a
-      // rotated pair whose predecessor refresh token is already consumed at the
-      // provider — that would kill the shared grant platform-wide. Re-baseline and
-      // retry while the durable refresh token is unchanged; only a genuine foreign
-      // rotation escapes to the policy fallback.
-      for (let attempt = 0; ; attempt += 1) {
-        if (foreignRotationDetected) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
-        const previousRefreshToken = asPlatformVaultString(latestFullVault.oauthRefreshToken);
-        // The only write that PROVES the grant recovered, so the only one allowed to drop the
-        // reauth marker (a lifecycle-stamp-only persist carries no access token and keeps it).
-        const merged = mergeTokens(latestFullVault, next, { clearReauthMarker: true });
-        const sealed = await params.secrets.encryptVaultForRotation(merged);
-        const updated = await repository.casProviderSecretCiphertext({
-          ciphertext: sealed.ciphertext,
-          expectedCiphertext: lastCiphertext,
-          fingerprint: params.fingerprint,
-          keyId: sealed.keyId,
-          providerId: params.providerRowId,
-        });
-        if (updated) {
-          lastCiphertext = sealed.ciphertext;
-          latestFullVault = merged;
-          return;
+      try {
+        // A CAS miss is NOT always a competing rotation: the KEK rewrap worker rewrites
+        // the SAME plaintext under a new ciphertext. Losing to it must not strand a
+        // rotated pair whose predecessor refresh token is already consumed at the
+        // provider — that would kill the shared grant platform-wide. Re-baseline and
+        // retry while the durable refresh token is unchanged; only a genuine foreign
+        // rotation escapes to the policy fallback.
+        for (let attempt = 0; ; attempt += 1) {
+          if (foreignRotationDetected) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
+          const previousRefreshToken = asPlatformVaultString(latestFullVault.oauthRefreshToken);
+          // The only write that PROVES the grant recovered, so the only one allowed to drop the
+          // reauth marker (a lifecycle-stamp-only persist carries no access token and keeps it).
+          const merged = mergeTokens(latestFullVault, next, { clearReauthMarker: true });
+          const sealed = await params.secrets.encryptVaultForRotation(merged);
+          const updated = await repository.casProviderSecretCiphertext({
+            ciphertext: sealed.ciphertext,
+            expectedCiphertext: lastCiphertext,
+            fingerprint: params.fingerprint,
+            keyId: sealed.keyId,
+            providerId: params.providerRowId,
+          });
+          if (updated) {
+            lastCiphertext = sealed.ciphertext;
+            latestFullVault = merged;
+            persistFailedAfterRotation = false;
+            return;
+          }
+          if (attempt >= 2) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
+          const reread = await readVault();
+          if (!reread.oauthRefreshToken) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
+          if (reread.oauthRefreshToken !== previousRefreshToken) {
+            foreignRotationDetected = true;
+            throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
+          }
         }
-        if (attempt >= 2) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
-        const reread = await readVault();
-        if (!reread.oauthRefreshToken) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
-        if (reread.oauthRefreshToken !== previousRefreshToken) {
-          foreignRotationDetected = true;
-          throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
-        }
+      } catch (error) {
+        // Lifecycle-stamp-only writes have no access token — those are not a consumed rotation.
+        if (next.oauthAccessToken && next.oauthRefreshToken) persistFailedAfterRotation = true;
+        throw error;
       }
     },
     read: readVault,
@@ -377,6 +385,7 @@ export const refreshSharedOAuthVault = async (
       withRefreshLock,
     });
   } catch (error) {
+    if (persistFailedAfterRotation) throw new SharedOAuthRefreshPersistError(error);
     /**
      * A DEAD grant is the one failure an operator has to act on, and until now nothing wrote
      * it down: the admin card re-ran this refresh, saw the same throw, and reported the

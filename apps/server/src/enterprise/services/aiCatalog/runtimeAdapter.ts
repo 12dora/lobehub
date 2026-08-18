@@ -35,7 +35,11 @@ import {
 } from './runtimeProjection';
 import type { PlatformProviderKeyVaults } from './secretManager';
 import { AiCatalogSecretManager } from './secretManager';
-import { isOAuthAuthorizationExpiredError, refreshSharedOAuthVault } from './sharedOAuthRefresh';
+import {
+  isOAuthAuthorizationExpiredError,
+  isSharedOAuthRefreshConsumedError,
+  refreshSharedOAuthVault,
+} from './sharedOAuthRefresh';
 
 export type { AiCatalogShadowComparison } from './runtimeProjection';
 export {
@@ -377,11 +381,15 @@ export class AiCatalogExecutionResolver {
             secrets: this.secrets,
           });
         } catch (error) {
-          // Only a dead grant is actionable for the caller. Transient failures (network,
-          // token endpoint 5xx, lost persist race) degrade to the stored vault — the
-          // access token may still be inside its expiry skew, and the next request
-          // re-enters the refresh path.
-          if (isOAuthAuthorizationExpiredError(error)) throw error;
+          // A dead grant, or a persist that lost the rotated pair after the token
+          // endpoint consumed it, is terminal. Falling back to the stored vault
+          // would let this request succeed inside the access-token skew and then
+          // kill the shared account for everyone once that token expires.
+          if (isOAuthAuthorizationExpiredError(error) || isSharedOAuthRefreshConsumedError(error)) {
+            throw error;
+          }
+          // Transient failures (network, token endpoint 5xx) degrade to the stored
+          // vault — the access token may still be inside its expiry skew.
           console.error(
             `[ai-catalog] shared OAuth refresh for ${providerKey} failed transiently; using stored vault: ${describeRefreshFailure(error)}`,
           );
