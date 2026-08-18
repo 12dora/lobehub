@@ -617,12 +617,23 @@ const ProviderConfig = memo<ProviderConfigProps>(
     // so it is never shown twice.
     const headerAboveForm = showPersonalAuth || sharedOAuthAdmin || perUserOAuthAdmin;
 
-    const model: FormGroupItemType = {
-      children: configItems,
-      defaultActive: true,
-      extra: headerAboveForm ? undefined : headerExtra,
-      title: headerAboveForm ? '' : headerTitle,
-    };
+    /**
+     * With the header above the form there is no group left to head. `@lobehub/ui` paints the
+     * collapse header and its 1px separator for an EMPTY title all the same, which is what put
+     * a bare rule in a block of empty space under the connect card's buttons. A flat item list
+     * carries no group chrome at all, so the remaining config item (the connectivity checker)
+     * follows the card directly.
+     */
+    const formItems: FormGroupItemType[] | FormItemProps[] = headerAboveForm
+      ? configItems
+      : [
+          {
+            children: configItems,
+            defaultActive: true,
+            extra: headerExtra,
+            title: headerTitle,
+          },
+        ];
 
     // For OAuth providers, only show Form when authenticated
     const shouldShowForm = !showPersonalAuth || isOAuthAuthenticated;
@@ -639,7 +650,9 @@ const ProviderConfig = memo<ProviderConfigProps>(
           />
         )}
         {(sharedOAuthAdmin || perUserOAuthAdmin) && (
-          <Flexbox gap={16} paddingBlock={8}>
+          // No bottom padding: the form below opens straight into its first item, which brings
+          // its own 16px of lead-in. Padding here only widened the gap under the card.
+          <Flexbox gap={16} paddingBlock={'8px 0'}>
             <Flexbox horizontal align={'center'} justify={'space-between'}>
               {headerTitle}
               {headerExtra}
@@ -661,7 +674,8 @@ const ProviderConfig = memo<ProviderConfigProps>(
             className={cx(styles.form, className)}
             disabled={!canManageProvider}
             form={form}
-            items={[model]}
+            items={formItems}
+            itemsType={headerAboveForm ? 'flat' : 'group'}
             variant={'borderless'}
             onValuesChange={(_, values) => {
               if (!canManageProvider) return;

@@ -8,16 +8,8 @@ import { usePlatformAiTakeover } from '@/features/ManagedResources/useManagedRes
 import { usePermission } from '@/hooks/usePermission';
 import { useScopedAiInfraStore } from '@/store/aiInfra';
 
-/**
- * A runtime with no enumerator fails in a way no operator action can fix — there is no account
- * to reconnect and no binary to install — so it gets its own copy instead of the cause line.
- *
- * The server marks this case on the error body rather than by status, because it is otherwise
- * indistinguishable from an upstream that legitimately returned an empty list.
- */
-const cannotEnumerate = (error: unknown): boolean =>
-  (error as { data?: { errorData?: { details?: { reason?: string } } } } | null)?.data?.errorData
-    ?.details?.reason === 'cannot_enumerate';
+import { connectionFailureReasonKey } from '../ProviderConfig/connectionFailureCopy';
+import { readProviderFailureBody } from './providerFailureCopy';
 
 /**
  * Drives the "sync upstream models" menu item for both provider settings panels.
@@ -27,6 +19,8 @@ const cannotEnumerate = (error: unknown): boolean =>
  */
 export const useSyncUpstreamModels = (provider: string) => {
   const { t } = useTranslation('modelProvider');
+  /** The connectivity checker's vocabulary, so both surfaces name a failure the same way. */
+  const { t: tSetting } = useTranslation('setting');
   const { message } = App.useApp();
   const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
   const { takeover, takeoverKnown } = usePlatformAiTakeover();
@@ -67,22 +61,48 @@ export const useSyncUpstreamModels = (provider: string) => {
     } catch (error) {
       console.error(error);
 
-      if (cannotEnumerate(error)) {
+      const body = readProviderFailureBody(error);
+
+      /**
+       * A runtime with no enumerator fails in a way no operator action can fix — there is no
+       * account to reconnect and no binary to install — so it gets its own copy instead of the
+       * cause line.
+       *
+       * The server marks this case on the error body rather than by status, because it is
+       * otherwise indistinguishable from an upstream that legitimately returned an empty list.
+       */
+      if (body.details?.reason === 'cannot_enumerate') {
         message.error(t('providerModels.list.syncUpstream.unsupported'));
         return;
       }
 
+      // Nothing was ever connected, so there is no failure to diagnose — only a step the
+      // operator has not taken yet, and it is on the same page.
+      if (body.details?.reason === 'shared_account_not_connected') {
+        message.error(t('providerModels.list.syncUpstream.sharedAccountNotConnected'));
+        return;
+      }
+
+      const reasonKey = connectionFailureReasonKey({
+        errorCategory: body.details?.errorCategory,
+        errorType: body.details?.errorType,
+        message: body.message,
+      });
+
       message.error(
         t('providerModels.list.syncUpstream.error', {
-          message:
-            error instanceof Error ? error.message : t('providerModels.list.fetcher.errorFallback'),
+          message: reasonKey
+            ? tSetting(reasonKey as never)
+            : typeof body.details?.issueCount === 'number'
+              ? t('providerModels.list.syncUpstream.validationFailed')
+              : t('providerModels.list.fetcher.errorFallback'),
         }),
       );
     } finally {
       // A rejected sync must not leave the trigger spinning forever.
       setIsSyncing(false);
     }
-  }, [disabled, isSyncing, message, provider, syncUpstreamModelList, t]);
+  }, [disabled, isSyncing, message, provider, syncUpstreamModelList, t, tSetting]);
 
   return { disabled, disabledReason, isSyncing, syncUpstream };
 };

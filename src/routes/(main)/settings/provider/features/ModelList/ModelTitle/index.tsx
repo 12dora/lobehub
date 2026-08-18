@@ -12,6 +12,7 @@ import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/
 import { aiModelSelectors } from '@/store/aiInfra/selectors';
 
 import { createCreateNewModelModal } from '../CreateNewModelModal';
+import { resolveFetchFailureMessage } from '../providerFailureCopy';
 import { ProviderSettingsContext } from '../ProviderSettingsContext';
 import { useSyncUpstreamModels } from '../useSyncUpstreamModels';
 import Search from './Search';
@@ -25,6 +26,8 @@ interface ModelFetcherProps {
 const ModelTitle = memo<ModelFetcherProps>(
   ({ provider, showAddNewModel = true, showModelFetcher = true }) => {
     const { t } = useTranslation('modelProvider');
+    /** The connectivity checker's vocabulary, shared so both surfaces name a failure alike. */
+    const { t: tSetting } = useTranslation('setting');
     const { message } = App.useApp();
     const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
     const aiInfraStoreApi = useAiInfraStoreApi();
@@ -143,14 +146,9 @@ const ModelTitle = memo<ModelFetcherProps>(
                         } catch (error) {
                           console.error(error);
 
-                          const errorMessage =
-                            error instanceof Error
-                              ? error.message
-                              : t('providerModels.list.fetcher.errorFallback');
-
                           message.error(
                             t('providerModels.list.fetcher.error', {
-                              message: errorMessage,
+                              message: resolveFetchFailureMessage(error, t, tSetting),
                             }),
                           );
                         } finally {

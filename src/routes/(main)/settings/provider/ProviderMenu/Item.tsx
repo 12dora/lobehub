@@ -10,7 +10,8 @@ import { isCustomBranding } from '@/const/version';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import { useProviderName } from '@/hooks/useProviderName';
 import { type AiProviderListItem } from '@/types/aiProvider';
-import { AiProviderSourceEnum } from '@/types/aiProvider';
+
+import { isBuiltinProviderRow } from './builtinProvider';
 
 interface ProviderItemProps extends AiProviderListItem {
   onClick: (id: string) => void;
@@ -19,9 +20,17 @@ interface ProviderItemProps extends AiProviderListItem {
 const ProviderItem = memo<ProviderItemProps>(
   ({ id, name, source, enabled, logo, onClick = () => {} }) => {
     const location = useLocation();
-    // Builtin ids can opt into a localized name (chatgptweb → 「ChatGPT 网页版」); a custom
-    // provider's own name is the fallback, so it is echoed back untouched.
-    const displayName = useProviderName(id, name || id);
+    const isCustom = !isBuiltinProviderRow(id, source);
+    /**
+     * Builtin ids can opt into a localized name (chatgptweb → 「ChatGPT 网页版」), and are
+     * otherwise named by their model-bank card. The STORED name is deliberately not offered as
+     * the fallback for them: a platform row keeps the display name it was created with, so a
+     * provider renamed on its card ("SuperGrok" → "Grok") kept shadowing the card here while
+     * the panel beside it already said Grok. Only a custom provider's own name is authored by
+     * the operator, so only that one is echoed back untouched — including on a legacy row whose
+     * `source` column is empty, which would otherwise regress to showing its raw id.
+     */
+    const displayName = useProviderName(id, isCustom ? name || id : undefined);
 
     // Extract providerId from pathname:
     // - /settings/provider/xxx
@@ -39,7 +48,6 @@ const ProviderItem = memo<ProviderItemProps>(
       return null;
     }, [location.pathname]);
 
-    const isCustom = source === AiProviderSourceEnum.Custom;
     const providerIcon =
       isCustom && logo ? (
         <Avatar

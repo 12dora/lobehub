@@ -512,10 +512,14 @@ export default {
   'providerModels.list.syncUpstream.error': 'Sync failed: {{message}}',
   'providerModels.list.syncUpstream.managed':
     'Models for this provider are managed by an administrator',
+  'providerModels.list.syncUpstream.sharedAccountNotConnected':
+    'No shared account is connected. Connect one above, then sync.',
   'providerModels.list.syncUpstream.success':
     'Synced {{total}} models from upstream ({{created}} new)',
   'providerModels.list.syncUpstream.syncing': 'Syncing…',
   'providerModels.list.syncUpstream.unsupported': 'This provider cannot enumerate its models',
+  'providerModels.list.syncUpstream.validationFailed':
+    'The provider configuration did not pass validation',
   'providerModels.list.title': 'Model List',
   'providerModels.list.total': '{{count}} models available',
   'providerModels.searchNotFound': 'No search results found',

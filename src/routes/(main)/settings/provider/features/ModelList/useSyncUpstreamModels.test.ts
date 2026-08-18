@@ -135,11 +135,19 @@ describe('useSyncUpstreamModels', () => {
       expect(mocks.store.syncUpstreamModelList).toHaveBeenCalledWith('cursor');
     });
 
-    it('reports an admin sync failure exactly once', async () => {
+    it('reports an admin sync failure exactly once, and never as a raw code', async () => {
       mocks.store.supportsUpstreamSync = true;
-      mocks.store.syncUpstreamModelList = vi
-        .fn()
-        .mockRejectedValue(new Error('PLATFORM_CONFIG_VALIDATION_FAILED'));
+      mocks.store.syncUpstreamModelList = vi.fn().mockRejectedValue(
+        Object.assign(new Error('PLATFORM_CONFIG_VALIDATION_FAILED'), {
+          data: {
+            errorData: {
+              code: 'PLATFORM_CONFIG_VALIDATION_FAILED',
+              details: { issueCount: 2 },
+              message: 'PLATFORM_CONFIG_VALIDATION_FAILED',
+            },
+          },
+        }),
+      );
       const { result } = renderHook(() => useSyncUpstreamModels('cursor'));
 
       await act(async () => {
@@ -147,6 +155,13 @@ describe('useSyncUpstreamModels', () => {
       });
 
       expect(mocks.message.error).toHaveBeenCalledTimes(1);
+      expect(mocks.message.error).toHaveBeenCalledWith(
+        `${KEY}.error|${JSON.stringify({ message: `${KEY}.validationFailed` })}`,
+      );
+      // The enterprise code is the server's own vocabulary; an operator must never read it.
+      expect(String(mocks.message.error.mock.calls[0]![0])).not.toContain(
+        'PLATFORM_CONFIG_VALIDATION_FAILED',
+      );
     });
   });
 
@@ -167,7 +182,85 @@ describe('useSyncUpstreamModels', () => {
   });
 
   describe('failures', () => {
+    // The server classifies the failure and answers with a stable code; the toast turns that
+    // code into the SAME sentence the connectivity checker shows for it.
     it('names the cause the operator can act on', async () => {
+      mocks.store.supportsUpstreamSync = true;
+      mocks.store.syncUpstreamModelList = vi.fn().mockRejectedValue(
+        Object.assign(new Error('PLATFORM_CONFIG_VALIDATION_FAILED'), {
+          data: {
+            errorData: {
+              code: 'PLATFORM_CONFIG_VALIDATION_FAILED',
+              details: { errorCategory: 'invalid_config' },
+              message: 'connection_failed_transport',
+            },
+          },
+        }),
+      );
+      const { result } = renderHook(() => useSyncUpstreamModels('cursor'));
+
+      await act(async () => {
+        await result.current.syncUpstream();
+      });
+
+      expect(mocks.message.error).toHaveBeenCalledWith(
+        `${KEY}.error|${JSON.stringify({
+          message: 'llm.checker.reason.connectionFailedTransport',
+        })}`,
+      );
+    });
+
+    it('sends a dead shared grant to the reconnect copy, by runtime error type', async () => {
+      mocks.store.supportsUpstreamSync = true;
+      mocks.store.syncUpstreamModelList = vi.fn().mockRejectedValue(
+        Object.assign(new Error('PLATFORM_CONFIG_VALIDATION_FAILED'), {
+          data: {
+            errorData: {
+              code: 'PLATFORM_CONFIG_VALIDATION_FAILED',
+              details: { errorCategory: 'auth', errorType: 'OAuthAuthorizationExpired' },
+              message: 'connection_failed_shared_account_expired',
+            },
+          },
+        }),
+      );
+      const { result } = renderHook(() => useSyncUpstreamModels('supergrok'));
+
+      await act(async () => {
+        await result.current.syncUpstream();
+      });
+
+      expect(mocks.message.error).toHaveBeenCalledWith(
+        `${KEY}.error|${JSON.stringify({ message: 'llm.checker.reason.sharedAccountExpired' })}`,
+      );
+    });
+
+    // Nothing has been connected yet: there is no failure to explain, only the step that was
+    // skipped — and it is on the same page.
+    it('points at the connect action when no shared account is stored', async () => {
+      mocks.store.supportsUpstreamSync = true;
+      mocks.store.syncUpstreamModelList = vi.fn().mockRejectedValue(
+        Object.assign(new Error('PLATFORM_CONFIG_VALIDATION_FAILED'), {
+          data: {
+            errorData: {
+              code: 'PLATFORM_CONFIG_VALIDATION_FAILED',
+              details: { issueCount: 1, reason: 'shared_account_not_connected' },
+              message: 'PLATFORM_CONFIG_VALIDATION_FAILED',
+            },
+          },
+        }),
+      );
+      const { result } = renderHook(() => useSyncUpstreamModels('supergrok'));
+
+      await act(async () => {
+        await result.current.syncUpstream();
+      });
+
+      expect(mocks.message.error).toHaveBeenCalledWith(`${KEY}.sharedAccountNotConnected`);
+    });
+
+    // A plain rejection carries no body at all — the generic localized fallback, never the
+    // exception text.
+    it('falls back to localized copy for an error with no server body', async () => {
       mocks.store.syncUpstreamModelList = vi
         .fn()
         .mockRejectedValue(new Error('Cursor Agent transport unavailable'));
@@ -178,7 +271,9 @@ describe('useSyncUpstreamModels', () => {
       });
 
       expect(mocks.message.error).toHaveBeenCalledWith(
-        `${KEY}.error|${JSON.stringify({ message: 'Cursor Agent transport unavailable' })}`,
+        `${KEY}.error|${JSON.stringify({
+          message: 'providerModels.list.fetcher.errorFallback',
+        })}`,
       );
     });
 

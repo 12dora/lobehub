@@ -8,6 +8,7 @@ import {
   PLATFORM_ERROR_CODES,
 } from '@/const/platform/errorCodes';
 import type { EnterpriseErrorBody } from '@/types/platform/errors';
+import { readEnterpriseErrorBodies } from '@/utils/enterpriseErrorBody';
 
 export interface MappedEnterpriseError {
   /** Suggested UX action for shared handlers. */
@@ -61,40 +62,22 @@ const RESOURCE_MANAGED_BY_PLATFORM = 'RESOURCE_MANAGED_BY_PLATFORM';
 const normalizeEnterpriseErrorCode = (code: string): string =>
   code === RESOURCE_MANAGED_BY_PLATFORM ? MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM : code;
 
+/**
+ * First body whose code the catalog recognises, across the transport shapes
+ * (`data.errorData`, a raw `TRPCError`'s `cause.data`, `json.data.errorData`).
+ *
+ * The walk itself lives in the core-safe `readEnterpriseErrorBodies`, shared with the
+ * presentation surfaces that may not import this layer — one place decides where a server
+ * error keeps its code, message and details.
+ *
+ * Codes are NORMALIZED before the check, so a legacy alias like RESOURCE_MANAGED_BY_PLATFORM
+ * cannot survive un-normalized and drop the caller to fuzzy message matching.
+ */
 const extractBody = (error: unknown): EnterpriseErrorBody | null => {
-  if (!error || typeof error !== 'object') return null;
-
-  // tRPC formatted: data.errorData
-  const data = (error as { data?: { errorData?: unknown } }).data;
-  if (data?.errorData && typeof data.errorData === 'object' && data.errorData) {
-    const body = data.errorData as EnterpriseErrorBody;
-    if (typeof body.code === 'string') {
-      const code = normalizeEnterpriseErrorCode(body.code);
-      if (isEnterpriseErrorCode(code)) return { ...body, code };
-    }
-  }
-
-  // Raw TRPCError cause: { data: EnterpriseErrorBody }
-  const cause = (error as { cause?: unknown }).cause;
-  if (cause && typeof cause === 'object' && 'data' in cause) {
-    const body = (cause as { data?: unknown }).data;
-    if (body && typeof body === 'object' && 'code' in body) {
-      const code = normalizeEnterpriseErrorCode(String((body as { code: unknown }).code));
-      // Return the NORMALIZED code (matching the other extract branches) — otherwise a legacy
-      // alias like RESOURCE_MANAGED_BY_PLATFORM survives un-normalized and fails the downstream
-      // isEnterpriseErrorCode(body.code) check, dropping to fuzzy message matching.
-      if (isEnterpriseErrorCode(code)) return { ...(body as EnterpriseErrorBody), code };
-    }
-  }
-
-  // Nested shape used by some clients: error.json?.data?.errorData
-  const json = (error as { json?: { data?: { errorData?: unknown } } }).json;
-  if (json?.data?.errorData && typeof json.data.errorData === 'object') {
-    const body = json.data.errorData as EnterpriseErrorBody;
-    if (typeof body.code === 'string') {
-      const code = normalizeEnterpriseErrorCode(body.code);
-      if (isEnterpriseErrorCode(code)) return { ...body, code };
-    }
+  for (const body of readEnterpriseErrorBodies(error)) {
+    if (!body.code) continue;
+    const code = normalizeEnterpriseErrorCode(body.code);
+    if (isEnterpriseErrorCode(code)) return { ...body, code };
   }
 
   return null;

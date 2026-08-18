@@ -66,6 +66,29 @@ describe('ProviderConfig shared OAuth surfaces', () => {
     expect(screen.getByText('providerModels.config.sharedOAuth.tag')).toBeTruthy();
   });
 
+  /*
+   * `@lobehub/ui` renders a collapse header — and its 1px separator — for an EMPTY group title
+   * too, which put a bare rule in a block of empty space right under the connect card's
+   * buttons. With the header already above the form there is no group left to head.
+   */
+  it('paints no group header when the header lives in the connect card above', () => {
+    const { container } = render(
+      <ProviderSettingsContext value={{ hidePersonalAuth: true, sharedOAuthPanel: sharedPanel }}>
+        <ProviderConfig id="chatgpt" name="ChatGPT" settings={oauthSettings} />
+      </ProviderSettingsContext>,
+    );
+
+    expect(container.querySelectorAll('.ant-collapse-header')).toHaveLength(0);
+    // The config items themselves still render — only the group chrome is gone.
+    expect(screen.getByTestId('checker')).toBeTruthy();
+  });
+
+  it('keeps the group header on a provider whose header IS the form group', () => {
+    const { container } = render(<ProviderConfig id="openai" name="OpenAI" settings={{}} />);
+
+    expect(container.querySelectorAll('.ant-collapse-header').length).toBeGreaterThan(0);
+  });
+
   it('gives the paste-flow provider (chatgptweb) the shared panel like any rotating-refresh one', () => {
     render(
       <ProviderSettingsContext value={{ hidePersonalAuth: true, sharedOAuthPanel: sharedPanel }}>

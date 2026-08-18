@@ -383,13 +383,12 @@ export default {
     'Deleting removes this provider site-wide immediately: conversations in progress can no longer use it, and its platform credentials and version history are erased along with it. This cannot be undone.',
   'aiProviderSettings.description': 'Manage the AI providers the platform offers to all members.',
   'aiProviderSettings.sharedOAuth.account': 'Account {{account}}',
-  'aiProviderSettings.sharedOAuth.accountUnknown': 'Account connected',
   'aiProviderSettings.sharedOAuth.autoRefresh': 'The access token refreshes automatically.',
-  'aiProviderSettings.sharedOAuth.autoRenewKind': 'Connected, renewing itself ({{kind}}).',
+  'aiProviderSettings.sharedOAuth.autoRenewKind': 'Renewing automatically ({{kind}})',
   'aiProviderSettings.sharedOAuth.cancel': 'Cancel',
   'aiProviderSettings.sharedOAuth.connect': 'Connect account',
   'aiProviderSettings.sharedOAuth.connected': 'Connected',
-  'aiProviderSettings.sharedOAuth.currentTokenUntil': 'Current access token runs to {{time}}',
+  'aiProviderSettings.sharedOAuth.currentTokenUntil': 'Access token valid until {{time}}',
   'aiProviderSettings.sharedOAuth.description':
     'One {{name}} account is stored on the platform and serves every member. Members never connect their own.',
   'aiProviderSettings.sharedOAuth.disconnect': 'Disconnect',
@@ -413,7 +412,7 @@ export default {
   'aiProviderSettings.sharedOAuth.error.denied': 'The authorization was denied by the provider.',
   'aiProviderSettings.sharedOAuth.error.providerStoreFailed':
     'Authorization succeeded, but the credentials could not be saved. Connect the account again.',
-  'aiProviderSettings.sharedOAuth.expiresAt': 'Access token expires {{time}}',
+  'aiProviderSettings.sharedOAuth.expiresAt': 'Access token valid until {{time}}',
   'aiProviderSettings.sharedOAuth.lastRefreshAt': 'Last renewed {{time}}',
   'aiProviderSettings.sharedOAuth.needsReauth': 'Needs reauthorization',
   'aiProviderSettings.sharedOAuth.notConnected': 'Not connected',
@@ -502,6 +501,8 @@ export default {
   'aiProviderSettings.sharedOAuth.success.published':
     'Account connected. This provider is on for members.',
   'aiProviderSettings.sharedOAuth.title': 'Shared platform account',
+  'aiProviderSettings.sharedOAuth.tokenUntilWithLastRefresh':
+    'Access token valid until {{time}} (last renewed {{lastRefresh}})',
   'aiProviderSettings.sharedOAuth.verificationUrlLabel': 'Popup blocked? Copy this link:',
   'aiSkillSettings.orgDefault.saved': 'Saved. Applies to every member.',
   'aiSkillSettings.actions.draftSaved': 'Skill saved, but not live yet.',

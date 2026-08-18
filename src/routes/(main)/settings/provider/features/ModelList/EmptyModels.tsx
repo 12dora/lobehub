@@ -9,6 +9,7 @@ import { usePermission } from '@/hooks/usePermission';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import { createCreateNewModelModal } from './CreateNewModelModal';
+import { resolveFetchFailureMessage } from './providerFailureCopy';
 import { ProviderSettingsContext } from './ProviderSettingsContext';
 import { useSyncUpstreamModels } from './useSyncUpstreamModels';
 
@@ -51,6 +52,8 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 const EmptyState = memo<{ provider: string }>(({ provider }) => {
   const aiInfraStoreApi = useAiInfraStoreApi();
   const { t } = useTranslation('modelProvider');
+  /** The connectivity checker's vocabulary, shared so both surfaces name a failure alike. */
+  const { t: tSetting } = useTranslation('setting');
   const { message } = App.useApp();
   const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
 
@@ -128,14 +131,9 @@ const EmptyState = memo<{ provider: string }>(({ provider }) => {
                 } catch (error) {
                   console.error(error);
 
-                  const errorMessage =
-                    error instanceof Error
-                      ? error.message
-                      : t('providerModels.list.fetcher.errorFallback');
-
                   message.error(
                     t('providerModels.list.fetcher.error', {
-                      message: errorMessage,
+                      message: resolveFetchFailureMessage(error, t, tSetting),
                     }),
                   );
                 } finally {

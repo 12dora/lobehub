@@ -127,11 +127,14 @@ const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
       <Flexbox gap={12}>
         {showAccount ? (
           <Flexbox gap={4}>
-            <Text className={styles.meta}>
-              {account
-                ? t('aiProviderSettings.sharedOAuth.account', { account })
-                : t('aiProviderSettings.sharedOAuth.accountUnknown')}
-            </Text>
+            {/* Only when there IS an identity to name. The badge in the header already says
+                the account is connected, so a body line repeating it added a row and no
+                information — and it is the row an operator scans for WHICH account. */}
+            {account && (
+              <Text className={styles.meta}>
+                {t('aiProviderSettings.sharedOAuth.account', { account })}
+              </Text>
+            )}
             {needsReauth ? (
               /**
                * The one actionable state on this card, so it carries the ONE primary action and
@@ -234,17 +237,21 @@ const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
               </Text>
             )}
             {needsReauth && <Text className={styles.hint}>{reauthDetail}</Text>}
-            {autoRenews && expiry && (
-              // The rollover date, stated as what it is — the current token's end, not the
-              // connection's.
+            {autoRenews && (expiry || lastRefresh) && (
+              /*
+               * The rollover date, stated as what it is — the current token's end, not the
+               * connection's — with the proof that the rollover is actually happening on the
+               * SAME line. Two hint rows saying two halves of one fact read as two problems.
+               */
               <Text className={styles.hint}>
-                {t('aiProviderSettings.sharedOAuth.currentTokenUntil', { time: expiry })}
-              </Text>
-            )}
-            {autoRenews && lastRefresh && (
-              // Proof the rollover is actually happening, not just promised.
-              <Text className={styles.hint}>
-                {t('aiProviderSettings.sharedOAuth.lastRefreshAt', { time: lastRefresh })}
+                {expiry && lastRefresh
+                  ? t('aiProviderSettings.sharedOAuth.tokenUntilWithLastRefresh', {
+                      lastRefresh,
+                      time: expiry,
+                    })
+                  : expiry
+                    ? t('aiProviderSettings.sharedOAuth.currentTokenUntil', { time: expiry })
+                    : t('aiProviderSettings.sharedOAuth.lastRefreshAt', { time: lastRefresh })}
               </Text>
             )}
             {enforcementHint}

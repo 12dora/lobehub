@@ -256,7 +256,7 @@ describe('SharedOAuthConnect', () => {
     expect(screen.getByText(/"account":"acc1…"/)).toBeTruthy();
   });
 
-  it('says the account is unknown when neither identity is available', () => {
+  it('says nothing about the account when neither identity is available', () => {
     mocks.swr.mockReturnValue(
       swrResult({
         accountEmail: null,
@@ -269,7 +269,11 @@ describe('SharedOAuthConnect', () => {
 
     render(<SharedOAuthConnect providerId="chatgpt" />);
 
-    expect(screen.getByText('aiProviderSettings.sharedOAuth.accountUnknown')).toBeTruthy();
+    // The header badge already states the connection; a body line repeating it named no
+    // account and only cost a row.
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.accountUnknown/)).toBeNull();
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.account\b/)).toBeNull();
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.connected')).toBeTruthy();
   });
 
   it('offers a reload when the connection status cannot be read', () => {
@@ -825,8 +829,12 @@ describe('SharedOAuthConnect', () => {
     expect(
       screen.getByText(/aiProviderSettings\.sharedOAuth\.renewalKind\.webSession/),
     ).toBeTruthy();
-    expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.currentTokenUntil/)).toBeTruthy();
-    expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.lastRefreshAt/)).toBeTruthy();
+    // One line, not two: the rollover date and the proof it happened are one fact.
+    expect(
+      screen.getByText(/aiProviderSettings\.sharedOAuth\.tokenUntilWithLastRefresh/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.currentTokenUntil/)).toBeNull();
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.lastRefreshAt/)).toBeNull();
     // A rollover date is not a deadline: the bare expiry line would read as a warning.
     expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.expiresAt/)).toBeNull();
     expect(
