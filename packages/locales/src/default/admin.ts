@@ -1516,10 +1516,10 @@ export default {
   'browserProfile.actions.retry': 'Retry',
   'browserProfile.actions.save': 'Save',
   'browserProfile.confirm.description':
-    'ChatGPT Web, Grok, Cursor and other services that use the browser identity will treat later requests as coming from a new device. Shared accounts may need to be verified again.',
+    'Services that use the browser identity will treat later requests as coming from a new device. Shared accounts may need to be verified again.',
   'browserProfile.confirm.title': 'Regenerate browser fingerprint?',
   'browserProfile.description':
-    'The platform reaches services that require a real browser with one fixed fingerprint. Changing or regenerating it makes upstream treat the platform as a new device.',
+    'The platform uses one shared browser identity for services that require a real browser. Changing or regenerating it makes those services treat the platform as a new device.',
   'browserProfile.fields.chrome': 'Chrome version',
   'browserProfile.fields.compute': 'CPU / memory',
   'browserProfile.fields.generatedAt': 'Generated at',

@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { toast } from '@lobehub/ui/base-ui';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ALL_MODULES_ENABLED, type PlatformModuleStateMap } from '@/const/platform/modules';
@@ -6,6 +7,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import type { AdminModulesState } from '@/enterprise/client/services/adminModules';
 
 import ModulesPage from './ModulesPage';
+import { refreshAdminModules } from './useAdminModules';
 
 const access = {
   authMethod: 'password' as const,
@@ -76,10 +78,55 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-vi.mock('react-router', () => ({
-  Link: ({ children }: { children: unknown }) => children,
-  useSearchParams: () => [searchParams, (next: URLSearchParams) => (searchParams = next)],
-}));
+/**
+ * Faithful stand-in for react-router@8's `useSearchParams`:
+ * - a navigation re-renders every mounted consumer (the page reads the wizard flag off the query
+ *   string alone, so a mock that only reassigns the variable could never prove it leaves);
+ * - the setter closes over the params of the render that produced it, and the updater form is
+ *   handed a copy of *those* params — a setter kept from an earlier render is therefore stale,
+ *   exactly as in the real router;
+ * - navigation options are recorded, so `{ replace: true }` is assertable.
+ */
+const router = {
+  listeners: new Set<() => void>(),
+  navigate(next: URLSearchParams, options?: { replace?: boolean }) {
+    searchParams = next;
+    this.navigations.push({ options, search: next.toString() });
+    for (const listener of this.listeners) listener();
+  },
+  navigations: [] as { options?: { replace?: boolean }; search: string }[],
+};
+
+vi.mock('react-router', async () => {
+  const { useEffect, useReducer } = await import('react');
+  return {
+    Link: ({ children }: { children: unknown }) => children,
+    useSearchParams: () => {
+      const [, rerender] = useReducer((tick: number) => tick + 1, 0);
+      useEffect(() => {
+        router.listeners.add(rerender);
+        return () => {
+          router.listeners.delete(rerender);
+        };
+      }, []);
+      const current = searchParams;
+      return [
+        current,
+        (
+          next: URLSearchParams | ((previous: URLSearchParams) => URLSearchParams),
+          options?: { replace?: boolean },
+        ) => {
+          router.navigate(
+            typeof next === 'function'
+              ? new URLSearchParams(next(new URLSearchParams(current)))
+              : new URLSearchParams(next),
+            options,
+          );
+        },
+      ];
+    },
+  };
+});
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
   useAdminAccess: () => access,
@@ -168,6 +215,8 @@ beforeEach(() => {
   infraStatus.data = undefined;
   infraStatus.error = undefined;
   searchParams = new URLSearchParams();
+  router.navigations.length = 0;
+  router.listeners.clear();
   access.permissions = [PLATFORM_PERMISSIONS.SYSTEM_READ, PLATFORM_PERMISSIONS.SYSTEM_OPERATE];
   access.status = 'allowed';
   state.data = buildState();
@@ -372,6 +421,131 @@ describe('ModulesPage', () => {
       modules: {},
       setupCompleted: true,
     });
+  });
+
+  it('returns to the module list once 完成 has saved, keeping the rest of the query', async () => {
+    state.data = buildState({
+      snapshot: { ...buildState().snapshot, setupCompletedAt: null },
+    });
+    searchParams = new URLSearchParams('wizard=1&from=overview');
+    infraStatus.data = { dependencies: {} };
+    render(<ModulesPage />);
+
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.finish'));
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(searchParams.get('wizard')).toBeNull());
+    expect(searchParams.get('from')).toBe('overview');
+    // Ending the wizard is not a step in the history: 后退 must go where the operator came from.
+    expect(router.navigations.at(-1)).toEqual({
+      options: { replace: true },
+      search: 'from=overview',
+    });
+    // Wizard chrome gone, the ordinary page back — not a dead step-3 panel.
+    expect(screen.queryByText('modules.wizard.step1')).toBeNull();
+    expect(screen.queryByText('modules.wizard.finish')).toBeNull();
+    expect(screen.getByText('modules.presets.full.title')).toBeTruthy();
+    expect(switches().length).toBeGreaterThan(0);
+  });
+
+  it('keeps a query param added while the finishing save was still in flight', async () => {
+    state.data = buildState({
+      snapshot: { ...buildState().snapshot, setupCompletedAt: null },
+    });
+    searchParams = new URLSearchParams('wizard=1');
+    infraStatus.data = { dependencies: {} };
+    let finishSave: (value: AdminModulesState) => void = () => {};
+    update.mockImplementationOnce(
+      () =>
+        new Promise<AdminModulesState>((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    render(<ModulesPage />);
+
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.finish'));
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+
+    // Another surface navigates while the save is pending — the finish must strip `wizard` from
+    // the query as it stands then, not restore the one captured when the save began.
+    act(() => {
+      router.navigate(new URLSearchParams('wizard=1&highlight=audit'));
+    });
+    act(() => finishSave(state.data!));
+
+    await waitFor(() => expect(searchParams.get('wizard')).toBeNull());
+    expect(searchParams.get('highlight')).toBe('audit');
+  });
+
+  it('leaves the wizard before the module list is refetched', async () => {
+    state.data = buildState({
+      snapshot: { ...buildState().snapshot, setupCompletedAt: null },
+    });
+    searchParams = new URLSearchParams('wizard=1');
+    infraStatus.data = { dependencies: {} };
+    let finishRefresh: () => void = () => {};
+    vi.mocked(refreshAdminModules).mockReturnValueOnce(
+      new Promise<undefined>((resolve) => {
+        finishRefresh = () => resolve(undefined);
+      }),
+    );
+    render(<ModulesPage />);
+
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.finish'));
+
+    // The refetch is the slow part: the operator must be back on the module list well before it
+    // lands, rather than staring at a finished wizard.
+    await waitFor(() => expect(searchParams.get('wizard')).toBeNull());
+    expect(screen.queryByText('modules.wizard.finish')).toBeNull();
+    expect(toast.success).not.toHaveBeenCalled();
+
+    act(() => finishRefresh());
+    await waitFor(() => expect(toast.success).toHaveBeenCalledTimes(1));
+  });
+
+  it('stays in the wizard when the finishing save fails', async () => {
+    update.mockRejectedValueOnce(new Error('offline'));
+    state.data = buildState({
+      snapshot: { ...buildState().snapshot, setupCompletedAt: null },
+    });
+    searchParams = new URLSearchParams('wizard=1');
+    infraStatus.data = { dependencies: {} };
+    render(<ModulesPage />);
+
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.finish'));
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(mutationErrorKeys).toEqual(['modules.errors.saveFailed']);
+    expect(searchParams.get('wizard')).toBe('1');
+    expect(screen.getByText('modules.wizard.finish')).toBeTruthy();
+  });
+
+  it('stays in the wizard when the compliance confirmation is cancelled', () => {
+    dangerConfirm.mockImplementationOnce(() => {});
+    state.data = buildState({
+      snapshot: { ...buildState().snapshot, setupCompletedAt: null },
+    });
+    searchParams = new URLSearchParams('wizard=1');
+    infraStatus.data = { dependencies: {} };
+    render(<ModulesPage />);
+
+    fireEvent.click(moduleSwitch('audit'));
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.next'));
+    fireEvent.click(screen.getByText('modules.wizard.finish'));
+
+    expect(dangerConfirm).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    expect(searchParams.get('wizard')).toBe('1');
+    expect(screen.getByText('modules.wizard.finish')).toBeTruthy();
   });
 
   it('shows the measured resident-memory figure and the memory half of the preset comparison', () => {

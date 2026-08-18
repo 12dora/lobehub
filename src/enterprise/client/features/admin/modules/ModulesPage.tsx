@@ -3,7 +3,7 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
@@ -86,6 +86,12 @@ const ModulesPage = memo(() => {
   const { authMethod, permissions, status } = useAdminAccess();
   const { canOperate, canRead } = deriveAdminSystemPermissions(permissions);
   const [params, setParams] = useSearchParams();
+  // `setParams` is rebuilt on every navigation and closes over the query string of the render
+  // that produced it — the updater form included. Reading it through a ref refreshed each render
+  // means a save that finishes later strips `wizard` from the query as it stands *then*, instead
+  // of restoring the one captured when the save (or the danger confirmation) began.
+  const setParamsRef = useRef(setParams);
+  setParamsRef.current = setParams;
 
   const enabled = status === 'allowed' && canRead;
   const { data, error, isLoading, mutate } = useAdminModules(enabled);
@@ -108,6 +114,18 @@ const ModulesPage = memo(() => {
     },
     [effective],
   );
+
+  /** Drop `?wizard=1`, keeping every other query param a concurrent navigation may have added. */
+  const exitWizard = useCallback(() => {
+    setParamsRef.current(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete('wizard');
+        return next;
+      },
+      { replace: true },
+    );
+  }, []);
 
   const onSelectPreset = useCallback(
     (next: PlatformModulePreset) => {
@@ -153,6 +171,10 @@ const ModulesPage = memo(() => {
         return;
       }
       setDraft(null);
+      // 完成 persists setup *and* ends the wizard: drop `?wizard=1` so the page falls back to the
+      // module list. Only after a successful save — a failed one (or a cancelled danger confirm,
+      // which never reaches here) must leave the operator where they were.
+      if (setupCompleted) exitWizard();
       await refreshAdminModules();
       toast.success(
         changed.restartRequired.length > 0
@@ -167,7 +189,7 @@ const ModulesPage = memo(() => {
             }),
       );
     },
-    [authMethod, data, effective, mutate, t],
+    [authMethod, data, effective, exitWizard, mutate, t],
   );
 
   /**
@@ -208,7 +230,7 @@ const ModulesPage = memo(() => {
   if (error && !data) {
     return (
       <AdminPageTemplate description={t('modules.description')} title={t('modules.title')}>
-        <Flexbox align="center" gap={12} horizontal role="alert">
+        <Flexbox horizontal align="center" gap={12} role="alert">
           <Text type="danger">{t('modules.errors.loadFailed')}</Text>
           <Button size="small" onClick={() => void mutate()}>
             {t('access.error.retry')}
@@ -231,9 +253,7 @@ const ModulesPage = memo(() => {
           onExit={() => {
             // Leaving the wizard is the same "稍后再说" the overview card offers.
             dismissSetupGuide();
-            const next = new URLSearchParams(params);
-            next.delete('wizard');
-            setParams(next, { replace: true });
+            exitWizard();
           }}
         />
       ) : null}
