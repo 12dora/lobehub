@@ -10,7 +10,7 @@ import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 
 import { getTestDB } from '../../core/getTestDB';
 import { permissions, rolePermissions, roles, userRoles, users } from '../../schemas';
-import { account, session } from '../../schemas/betterAuth';
+import { account, passkey, session, twoFactor } from '../../schemas/betterAuth';
 import type { LobeChatDatabase } from '../../type';
 import { seedPlatformRoles } from '../../utils/seedPlatformRoles';
 import {
@@ -32,6 +32,8 @@ const IDS = {
 
 const cleanup = async () => {
   await serverDB.delete(session);
+  await serverDB.delete(twoFactor);
+  await serverDB.delete(passkey);
   await serverDB.delete(account);
   await serverDB.delete(userRoles);
   await serverDB.delete(rolePermissions);
@@ -295,6 +297,9 @@ describe('AdminUserModel.findDetailById', () => {
     expect(detail).toBeTruthy();
     expect(detail!.sessionCount).toBe(2);
     expect(detail!.sessions).toHaveLength(2);
+    expect(detail!.hasPassword).toBe(true);
+    expect(detail!.passkeyCount).toBe(0);
+    expect(detail!.twoFactorEnabled).toBe(false);
     expect(detail!.providers).toEqual([
       expect.objectContaining({
         accountIdHint: '…5678',
@@ -381,6 +386,55 @@ describe('AdminUserModel.setBanned', () => {
     const after = await model.findBanState(IDS.c);
     expect(after?.banned).toBe(false);
     expect(after?.banReason).toBeNull();
+  });
+});
+
+describe('AdminUserModel credential helpers', () => {
+  it('detects credential accounts and updates the hash without selecting it', async () => {
+    expect(await model.hasCredentialAccount(IDS.a)).toBe(false);
+    expect(await model.hasCredentialPassword(IDS.a)).toBe(false);
+
+    await serverDB.insert(account).values({
+      accountId: IDS.a,
+      id: 'acc-cred',
+      password: 'HASH_SHOULD_NOT_LEAK',
+      providerId: 'credential',
+      updatedAt: new Date(),
+      userId: IDS.a,
+    });
+
+    expect(await model.hasCredentialAccount(IDS.a)).toBe(true);
+    expect(await model.hasCredentialPassword(IDS.a)).toBe(true);
+    expect(await model.updateCredentialPassword({ passwordHash: 'NEW_HASH', userId: IDS.a })).toBe(
+      true,
+    );
+    const row = await serverDB.query.account.findFirst({ where: eq(account.id, 'acc-cred') });
+    expect(row?.password).toBe('NEW_HASH');
+  });
+
+  it('clears two-factor rows and optionally passkeys', async () => {
+    await serverDB.update(users).set({ twoFactorEnabled: true }).where(eq(users.id, IDS.a));
+    await serverDB.insert(twoFactor).values({
+      backupCodes: 'codes',
+      id: 'tf-a',
+      secret: 'secret',
+      userId: IDS.a,
+      verified: true,
+    });
+    await serverDB.insert(passkey).values({
+      credentialID: 'cred-a',
+      id: 'pk-a',
+      publicKey: 'pk',
+      userId: IDS.a,
+    });
+
+    expect(await model.countPasskeys(IDS.a)).toBe(1);
+    expect(await model.deleteTwoFactorForUser(IDS.a)).toBe(1);
+    expect(await model.deleteTwoFactorForUser(IDS.a)).toBe(0);
+    await model.setTwoFactorEnabled({ enabled: false, userId: IDS.a });
+    expect((await model.findDetailById(IDS.a))?.twoFactorEnabled).toBe(false);
+    expect(await model.deletePasskeysForUser(IDS.a)).toBe(1);
+    expect(await model.countPasskeys(IDS.a)).toBe(0);
   });
 });
 

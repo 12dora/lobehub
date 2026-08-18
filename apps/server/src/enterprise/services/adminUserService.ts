@@ -9,12 +9,15 @@ import type {
   AdminUsersBanInput,
   AdminUsersCreateInput,
   AdminUsersDeleteInput,
+  AdminUsersDisableTwoFactorInput,
   AdminUsersGetAuditTrailInputParsed,
   AdminUsersListInputParsed,
   AdminUsersReplaceGlobalRolesInput,
   AdminUsersRevokeSessionsInput,
+  AdminUsersSetPasswordInput,
   AdminUsersUnbanInput,
 } from '../contracts/adminUsers';
+import { AdminUserCredentialService } from './adminUser/credentialService';
 import { AdminUserLifecycleService } from './adminUser/lifecycleService';
 import { AdminUserReadService } from './adminUser/readService';
 import { AdminUserRoleService } from './adminUser/roleService';
@@ -25,11 +28,13 @@ import type { PlatformConfigInvalidationPublisher } from './platformConfigInvali
 
 export {
   AdminUserEmailConflictError,
+  AdminUserNoCredentialAccountError,
   AdminUserNotFoundError,
   AdminUserPasswordAuthDisabledError,
   AdminUserSelfBanError,
   AdminUserSelfDeleteError,
   AdminUserSelfRoleChangeError,
+  AdminUserSelfSetPasswordError,
   fingerprintQuery,
   InvalidRetainedSessionError,
 } from './adminUser/errors';
@@ -39,6 +44,7 @@ export class AdminUserService {
   private readonly lifecycle: AdminUserLifecycleService;
   private readonly sessions: AdminUserSessionService;
   private readonly roles: AdminUserRoleService;
+  private readonly credentials: AdminUserCredentialService;
   private readonly support: AdminUserSupport;
 
   constructor(
@@ -51,6 +57,7 @@ export class AdminUserService {
     this.lifecycle = new AdminUserLifecycleService(db, options);
     this.sessions = new AdminUserSessionService(db, options);
     this.roles = new AdminUserRoleService(db, options);
+    this.credentials = new AdminUserCredentialService(db, options);
     this.support = new AdminUserSupport(db, options);
   }
 
@@ -83,6 +90,12 @@ export class AdminUserService {
     actorUserId: string;
     input: AdminUsersReplaceGlobalRolesInput;
   }) => this.roles.replaceGlobalRoles(params);
+
+  setPassword = (params: { actorUserId: string; input: AdminUsersSetPasswordInput }) =>
+    this.credentials.setPassword(params);
+
+  disableTwoFactor = (params: { actorUserId: string; input: AdminUsersDisableTwoFactorInput }) =>
+    this.credentials.disableTwoFactor(params);
 
   /** Record denied reauth for high-risk mutations (router-level). */
   recordReauthDenied = async (params: {

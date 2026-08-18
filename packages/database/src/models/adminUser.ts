@@ -33,7 +33,7 @@ import {
   sql,
 } from 'drizzle-orm';
 
-import { account, session } from '../schemas/betterAuth';
+import { account, passkey, session, twoFactor } from '../schemas/betterAuth';
 import { roles, userRoles } from '../schemas/rbac';
 import { users } from '../schemas/user';
 import type { LobeChatDatabase, Transaction } from '../type';
@@ -113,13 +113,20 @@ export interface AdminUserDetail {
   email: string | null;
   emailVerified: boolean;
   fullName: string | null;
+  /**
+   * Whether a Better Auth credential account with a non-empty password exists.
+   * Never includes the hash itself.
+   */
+  hasPassword: boolean;
   id: string;
   lastActiveAt: Date | null;
+  passkeyCount: number;
   providers: AdminUserProviderSummary[];
   roles: AdminUserGlobalRoleRow[];
   sessionCount: number;
   sessions: AdminUserSessionSummary[];
   status: AdminUserStatus;
+  twoFactorEnabled: boolean;
   username: string | null;
 }
 
@@ -284,6 +291,7 @@ export class AdminUserModel {
         fullName: users.fullName,
         id: users.id,
         lastActiveAt: users.lastActiveAt,
+        twoFactorEnabled: users.twoFactorEnabled,
         username: users.username,
       })
       .from(users)
@@ -293,16 +301,19 @@ export class AdminUserModel {
     if (!row) return null;
 
     const now = new Date();
-    const [providers, roleRows, sessionCountRow, sessions] = await Promise.all([
-      this.listProviderSummaries(userId),
-      this.listGlobalRoles(userId),
-      this.db
-        .select({ value: count() })
-        .from(session)
-        .where(eq(session.userId, userId))
-        .then((r) => r[0]?.value ?? 0),
-      this.listSessionSummaries(userId, MAX_SESSION_PREVIEW),
-    ]);
+    const [providers, roleRows, sessionCountRow, sessions, passkeyCountRow, hasPassword] =
+      await Promise.all([
+        this.listProviderSummaries(userId),
+        this.listGlobalRoles(userId),
+        this.db
+          .select({ value: count() })
+          .from(session)
+          .where(eq(session.userId, userId))
+          .then((r) => r[0]?.value ?? 0),
+        this.listSessionSummaries(userId, MAX_SESSION_PREVIEW),
+        this.countPasskeys(userId),
+        this.hasCredentialPassword(userId),
+      ]);
 
     return {
       avatar: row.avatar ?? null,
@@ -314,13 +325,16 @@ export class AdminUserModel {
       email: row.email ?? null,
       emailVerified: Boolean(row.emailVerified),
       fullName: row.fullName ?? null,
+      hasPassword,
       id: row.id,
       lastActiveAt: row.lastActiveAt ?? null,
+      passkeyCount: passkeyCountRow,
       providers,
       roles: roleRows,
       sessionCount: Number(sessionCountRow),
       sessions,
       status: isEffectivelyBanned(row, now) ? 'banned' : 'active',
+      twoFactorEnabled: Boolean(row.twoFactorEnabled),
       username: row.username ?? null,
     };
   };
@@ -646,6 +660,93 @@ export class AdminUserModel {
         authInvalidatedExcludedSessionId: params.excludedSessionId ?? null,
         updatedAt: at,
       })
+      .where(eq(users.id, params.userId));
+  };
+
+  /**
+   * True when the user has a Better Auth credential account row.
+   * Does not inspect the password hash (SSO-only users have no such row).
+   */
+  hasCredentialAccount = async (userId: string): Promise<boolean> => {
+    const [row] = await this.db
+      .select({ id: account.id })
+      .from(account)
+      .where(
+        and(eq(account.userId, userId), eq(account.providerId, ADMIN_USER_CREDENTIAL_PROVIDER_ID)),
+      )
+      .limit(1);
+    return Boolean(row);
+  };
+
+  /**
+   * Same predicate as `check-user`: credential provider + non-empty password.
+   * Never returns the hash.
+   */
+  hasCredentialPassword = async (userId: string): Promise<boolean> => {
+    const [row] = await this.db
+      .select({ id: account.id })
+      .from(account)
+      .where(
+        and(
+          eq(account.userId, userId),
+          eq(account.providerId, ADMIN_USER_CREDENTIAL_PROVIDER_ID),
+          sql`${account.password} IS NOT NULL AND length(${account.password}) > 0`,
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  };
+
+  /**
+   * Replace the credential-account password hash. Returns false when no credential
+   * row exists. Never selects the previous hash.
+   */
+  updateCredentialPassword = async (params: {
+    passwordHash: string;
+    userId: string;
+  }): Promise<boolean> => {
+    const now = new Date();
+    const updated = await this.db
+      .update(account)
+      .set({ password: params.passwordHash, updatedAt: now })
+      .where(
+        and(
+          eq(account.userId, params.userId),
+          eq(account.providerId, ADMIN_USER_CREDENTIAL_PROVIDER_ID),
+        ),
+      )
+      .returning({ id: account.id });
+    return updated.length > 0;
+  };
+
+  countPasskeys = async (userId: string): Promise<number> => {
+    const [row] = await this.db
+      .select({ value: count() })
+      .from(passkey)
+      .where(eq(passkey.userId, userId));
+    return Number(row?.value ?? 0);
+  };
+
+  deleteTwoFactorForUser = async (userId: string): Promise<number> => {
+    const deleted = await this.db
+      .delete(twoFactor)
+      .where(eq(twoFactor.userId, userId))
+      .returning({ id: twoFactor.id });
+    return deleted.length;
+  };
+
+  deletePasskeysForUser = async (userId: string): Promise<number> => {
+    const deleted = await this.db
+      .delete(passkey)
+      .where(eq(passkey.userId, userId))
+      .returning({ id: passkey.id });
+    return deleted.length;
+  };
+
+  setTwoFactorEnabled = async (params: { enabled: boolean; userId: string }): Promise<void> => {
+    await this.db
+      .update(users)
+      .set({ twoFactorEnabled: params.enabled, updatedAt: new Date() })
       .where(eq(users.id, params.userId));
   };
 

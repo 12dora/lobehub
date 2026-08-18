@@ -42,6 +42,34 @@ export class AdminUserSelfRoleChangeError extends Error {
 }
 
 /**
+ * Admin tried to set their own password via the admin path (skips current-password proof).
+ * Maps to public PLATFORM_INVALID_INPUT with reason `self_set_password`.
+ */
+export class AdminUserSelfSetPasswordError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;
+  readonly reasonCode = 'self_set_password' as const;
+
+  constructor() {
+    super(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    this.name = 'AdminUserSelfSetPasswordError';
+  }
+}
+
+/**
+ * Target has no Better Auth credential account (SSO-only) — there is no local password to set.
+ * Maps to public PLATFORM_INVALID_INPUT with reason `no_credential_account`.
+ */
+export class AdminUserNoCredentialAccountError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;
+  readonly reasonCode = 'no_credential_account' as const;
+
+  constructor() {
+    super(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    this.name = 'AdminUserNoCredentialAccountError';
+  }
+}
+
+/**
  * Duplicate email (or username) on admin credential-user create.
  * Maps to public PLATFORM_INVALID_INPUT with a machine-readable reason.
  */

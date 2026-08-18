@@ -4,6 +4,7 @@ import {
   enforced,
   identityLkg,
   noReason,
+  notApplicable,
   optionalReason,
   recentReauth,
   regularMutation,
@@ -90,6 +91,19 @@ export const ADMIN_MUTATION_ENTRIES_IDENTITY_ACCESS = {
     'Irreversibly hard delete a user and all owned data.',
     { reauth: recentReauth },
   ),
+  'admin.users.disableTwoFactor': dangerousMutation(
+    'admin.users.disableTwoFactor',
+    'critical',
+    "Disable a user's two-factor enrollment and optionally remove passkeys.",
+    {
+      reason: notApplicable(
+        'The admin console does not collect a typed justification for this operation.',
+      ),
+      reauth: notApplicable(
+        'The admin console does not require a recent session check for this operation.',
+      ),
+    },
+  ),
   'admin.users.replaceGlobalRoles': dangerousMutation(
     'admin.users.replaceGlobalRoles',
     'critical',
@@ -101,6 +115,19 @@ export const ADMIN_MUTATION_ENTRIES_IDENTITY_ACCESS = {
     'critical',
     'Revoke active sessions for a user.',
     { reauth: recentReauth },
+  ),
+  'admin.users.setPassword': dangerousMutation(
+    'admin.users.setPassword',
+    'critical',
+    "Replace a user's local sign-in secret and optionally revoke sessions.",
+    {
+      reason: notApplicable(
+        'The admin console does not collect a typed justification for this operation.',
+      ),
+      reauth: notApplicable(
+        'The admin console does not require a recent session check for this operation.',
+      ),
+    },
   ),
   'admin.users.unban': dangerousMutation(
     'admin.users.unban',

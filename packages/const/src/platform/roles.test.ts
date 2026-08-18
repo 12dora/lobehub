@@ -78,6 +78,7 @@ describe('platform system roles', () => {
     expect(codes).toContain(PLATFORM_PERMISSIONS.USER_BAN);
     expect(codes).toContain(PLATFORM_PERMISSIONS.USER_DELETE);
     expect(codes).toContain(PLATFORM_PERMISSIONS.USER_ROLE_MANAGE);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE);
   });
 
@@ -104,6 +105,7 @@ describe('platform system roles', () => {
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_BAN);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_CREATE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_DELETE);
+    expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE);
     // Conversation body evidence and governance mutations are not default auditor grants.
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ);

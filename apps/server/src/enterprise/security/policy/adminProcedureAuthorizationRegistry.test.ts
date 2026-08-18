@@ -94,14 +94,15 @@ describe('admin procedure authorization registry', () => {
     // +1 query / +1 mutation since: installation-wide browser profile read and regeneration.
     // +1 mutation since: admin.aiModels.syncUpstream (pull the catalog from the upstream account).
     // +1 query / +1 mutation since: admin.browserProfile.{options,update} (a chosen fingerprint).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(224);
+    // +2 mutations since: admin.users.{setPassword,disableTwoFactor} (admin credential takeover).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(226);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(104);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(120);
-    expect(mutationPaths).toHaveLength(120);
+    ).toHaveLength(122);
+    expect(mutationPaths).toHaveLength(122);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

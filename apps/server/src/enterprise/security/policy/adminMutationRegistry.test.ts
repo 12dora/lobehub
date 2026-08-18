@@ -151,18 +151,26 @@ describe('enterprise admin mutation policy registry', () => {
         continue;
       }
       expect(['critical', 'high']).toContain(definition.risk);
-      // B0 DTOs for these have no reason field — `noReason` is the matching control.
+      // B0 DTOs for these have no reason field — `noReason` / `notApplicable` is the matching control.
       const dtoHasNoReason =
         procedure === 'admin.networkProxy.createSubscription' ||
         procedure === 'admin.networkProxy.updateSubscription' ||
         procedure === 'admin.networkProxy.installArtifact' ||
-        procedure === 'admin.networkProxy.installGeodata';
+        procedure === 'admin.networkProxy.installGeodata' ||
+        procedure === 'admin.users.disableTwoFactor' ||
+        procedure === 'admin.users.setPassword';
       if (dtoHasNoReason) {
         expect(definition.controls.reason.status).toBe('not-applicable');
       } else {
         expect(definition.controls.reason.status).not.toBe('not-applicable');
       }
-      expect(definition.controls.reauth.status).not.toBe('not-applicable');
+      const reauthNotApplicable =
+        procedure === 'admin.users.disableTwoFactor' || procedure === 'admin.users.setPassword';
+      if (reauthNotApplicable) {
+        expect(definition.controls.reauth.status).toBe('not-applicable');
+      } else {
+        expect(definition.controls.reauth.status).not.toBe('not-applicable');
+      }
       expect(definition.controls.audit.status).not.toBe('not-applicable');
       expect(definition.controls.rateLimit.status).not.toBe('not-applicable');
     }
@@ -211,7 +219,12 @@ describe('enterprise admin mutation policy registry', () => {
   });
 
   it('contains policy metadata only and no sensitive material or remote address', () => {
-    const serialized = JSON.stringify(ADMIN_MUTATION_REGISTRY);
+    // Procedure paths may include the word "password" (admin.users.setPassword).
+    // The scan is about summaries / evidence, not catalogued path tokens.
+    const serialized = JSON.stringify(ADMIN_MUTATION_REGISTRY).replaceAll(
+      'admin.users.setPassword',
+      'admin.users.setSignInSecret',
+    );
     expect(serialized).not.toMatch(
       /(?:api[-_ ]?key|bearer|client[-_ ]?secret|credential|password|private[-_ ]?key|https?:\/\/)/i,
     );

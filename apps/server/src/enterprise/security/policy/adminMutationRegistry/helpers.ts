@@ -124,7 +124,7 @@ export const dangerousMutation = (
      * subscription, installArtifact, and installGeodata).
      */
     reason?: AdminMutationControl;
-    reauth: RequiredAdminMutationControl;
+    reauth: AdminMutationControl;
   },
 ): DangerousAdminMutationDefinition => ({
   controls: {

@@ -9,12 +9,15 @@ export const PLATFORM_PERMISSIONS = {
 
   USER_READ: 'platform_user:read:all',
   USER_CREATE: 'platform_user:create:all',
-  // No platform_user:update:all — user mutations are specialized (ban/delete/session/role).
-  // Re-introduce USER_UPDATE only when an explicit update procedure enforces it.
+  // No platform_user:update:all — user mutations are specialized
+  // (ban/delete/session/role/credential). Re-introduce USER_UPDATE only when an
+  // explicit update procedure enforces it.
   USER_BAN: 'platform_user:ban:all',
   USER_DELETE: 'platform_user:delete:all',
   USER_SESSION_REVOKE: 'platform_user:session_revoke:all',
   USER_ROLE_MANAGE: 'platform_user:role_manage:all',
+  /** Admin-set password and admin-disable 2FA / passkeys — takeover of sign-in factors. */
+  USER_CREDENTIAL_MANAGE: 'platform_user:credential_manage:all',
 
   SETTINGS_READ: 'platform_settings:read:all',
   SETTINGS_UPDATE: 'platform_settings:update:all',

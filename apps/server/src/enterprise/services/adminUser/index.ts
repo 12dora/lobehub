@@ -1,3 +1,4 @@
+export * from './credentialService';
 export * from './errors';
 export * from './lifecycleService';
 export * from './readService';

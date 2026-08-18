@@ -14,6 +14,8 @@ import {
   adminUsersCreateOutputSchema,
   adminUsersDeleteInputSchema,
   adminUsersDeleteOutputSchema,
+  adminUsersDisableTwoFactorInputSchema,
+  adminUsersDisableTwoFactorOutputSchema,
   adminUsersGetAuditTrailInputSchema,
   adminUsersGetAuditTrailOutputSchema,
   adminUsersGetInputSchema,
@@ -24,6 +26,8 @@ import {
   adminUsersReplaceGlobalRolesOutputSchema,
   adminUsersRevokeSessionsInputSchema,
   adminUsersRevokeSessionsOutputSchema,
+  adminUsersSetPasswordInputSchema,
+  adminUsersSetPasswordOutputSchema,
   adminUsersUnbanInputSchema,
   adminUsersUnbanOutputSchema,
 } from '../../contracts/adminUsers';
@@ -34,11 +38,13 @@ import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   AdminUserEmailConflictError,
+  AdminUserNoCredentialAccountError,
   AdminUserNotFoundError,
   AdminUserPasswordAuthDisabledError,
   AdminUserSelfBanError,
   AdminUserSelfDeleteError,
   AdminUserSelfRoleChangeError,
+  AdminUserSelfSetPasswordError,
   AdminUserService,
   InvalidRetainedSessionError,
 } from '../../services/adminUserService';
@@ -75,6 +81,20 @@ const mapServiceError = (error: unknown): never => {
     throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
       details: { reason: 'self_role_change' },
+      httpCode: 'BAD_REQUEST',
+    });
+  }
+  if (error instanceof AdminUserSelfSetPasswordError) {
+    throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: error.reasonCode },
+      httpCode: 'BAD_REQUEST',
+    });
+  }
+  if (error instanceof AdminUserNoCredentialAccountError) {
+    throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: error.reasonCode },
       httpCode: 'BAD_REQUEST',
     });
   }
@@ -292,6 +312,32 @@ export const adminUsersRouter = router({
           actorUserId: ctx.userId!,
           input,
         });
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
+  setPassword: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE))
+    .input(adminUsersSetPasswordInputSchema)
+    .output(adminUsersSetPasswordOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const service = new AdminUserService(ctx.serverDB);
+      try {
+        return await service.setPassword({ actorUserId: ctx.userId!, input });
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
+  disableTwoFactor: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE))
+    .input(adminUsersDisableTwoFactorInputSchema)
+    .output(adminUsersDisableTwoFactorOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const service = new AdminUserService(ctx.serverDB);
+      try {
+        return await service.disableTwoFactor({ actorUserId: ctx.userId!, input });
       } catch (error) {
         return mapServiceError(error);
       }

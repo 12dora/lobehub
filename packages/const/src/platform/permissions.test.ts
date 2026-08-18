@@ -28,5 +28,6 @@ describe('platform permissions catalog', () => {
     expect(PLATFORM_PERMISSIONS.STATS_READ).toBe('platform_stats:read:all');
     expect(PLATFORM_PERMISSIONS.ROLE_READ).toBe('platform_role:read:all');
     expect(PLATFORM_PERMISSIONS.ROLE_UPDATE).toBe('platform_role:update:all');
+    expect(PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE).toBe('platform_user:credential_manage:all');
   });
 });

@@ -101,6 +101,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_IDENTITY_ACCESS = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_DELETE] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.users.disableTwoFactor',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE] },
+  },
+  {
     kind: 'query',
     path: 'admin.users.get',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_READ] },
@@ -124,6 +129,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_IDENTITY_ACCESS = [
     kind: 'mutation',
     path: 'admin.users.revokeSessions',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_SESSION_REVOKE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.users.setPassword',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE] },
   },
   {
     kind: 'mutation',

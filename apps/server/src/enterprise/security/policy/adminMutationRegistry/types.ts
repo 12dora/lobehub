@@ -35,7 +35,8 @@ export interface DangerousAdminMutationDefinition extends AdminMutationDefinitio
     rateLimit: RequiredAdminMutationControl;
     /** `noReason` (not-applicable) is allowed when the DTO has no reason field. */
     reason: AdminMutationControl;
-    reauth: RequiredAdminMutationControl;
+    /** `not-applicable` is allowed when recent reauth is deliberately not collected. */
+    reauth: AdminMutationControl;
   };
   dangerous: true;
   risk: 'critical' | 'high';

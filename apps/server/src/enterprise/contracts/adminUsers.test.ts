@@ -14,6 +14,8 @@ import {
   adminUsersBanInputSchema,
   adminUsersCreateInputSchema,
   adminUsersCreateOutputSchema,
+  adminUsersDisableTwoFactorInputSchema,
+  adminUsersDisableTwoFactorOutputSchema,
   adminUsersGetAuditTrailInputSchema,
   adminUsersGetInputSchema,
   adminUsersGetOutputSchema,
@@ -21,6 +23,8 @@ import {
   adminUsersListOutputSchema,
   adminUsersReplaceGlobalRolesInputSchema,
   adminUsersRevokeSessionsInputSchema,
+  adminUsersSetPasswordInputSchema,
+  adminUsersSetPasswordOutputSchema,
   adminUsersUnbanInputSchema,
   escapeLikePattern,
   normalizeAdminUserQuery,
@@ -195,13 +199,16 @@ describe('adminUsersGetOutputSchema isSelf', () => {
     createdAt: new Date(),
     email: null,
     fullName: null,
+    hasPassword: false,
     id: 'u1',
     lastActiveAt: null,
+    passkeyCount: 0,
     providers: [],
     roles: [],
     sessionCount: 0,
     sessions: [],
     status: 'active' as const,
+    twoFactorEnabled: false,
     username: null,
   };
 
@@ -332,6 +339,88 @@ describe('adminUsersCreateOutputSchema', () => {
         userId: 'user_abc',
       } as never),
     ).toThrow();
+  });
+});
+
+describe('adminUsersSetPasswordInputSchema', () => {
+  const base = {
+    newPassword: 'S3cure-pass!x',
+    userId: 'u1',
+  };
+
+  it('enforces password bounds (8–64) mirroring Better Auth / bootstrap policy', () => {
+    expect(() =>
+      adminUsersSetPasswordInputSchema.parse({ ...base, newPassword: 'a'.repeat(7) }),
+    ).toThrow();
+    expect(
+      adminUsersSetPasswordInputSchema.parse({ ...base, newPassword: 'a'.repeat(8) }).newPassword,
+    ).toBe('a'.repeat(8));
+    expect(
+      adminUsersSetPasswordInputSchema.parse({ ...base, newPassword: 'a'.repeat(64) }).newPassword,
+    ).toBe('a'.repeat(64));
+    expect(() =>
+      adminUsersSetPasswordInputSchema.parse({ ...base, newPassword: 'a'.repeat(65) }),
+    ).toThrow();
+  });
+
+  it('accepts a call with no reason field', () => {
+    expect(adminUsersSetPasswordInputSchema.parse(base)).toEqual(base);
+    expect(() =>
+      adminUsersSetPasswordInputSchema.parse({ ...base, reason: 'typed justification' } as never),
+    ).toThrow();
+  });
+
+  it('keeps revokeSessions optional (service defaults to true)', () => {
+    expect(adminUsersSetPasswordInputSchema.parse(base).revokeSessions).toBeUndefined();
+    expect(
+      adminUsersSetPasswordInputSchema.parse({ ...base, revokeSessions: false }).revokeSessions,
+    ).toBe(false);
+  });
+
+  it('rejects unknown keys including leaked hashes', () => {
+    expect(() =>
+      adminUsersSetPasswordInputSchema.parse({ ...base, passwordHash: 'x' } as never),
+    ).toThrow();
+  });
+});
+
+describe('adminUsersSetPasswordOutputSchema', () => {
+  it('never carries a password', () => {
+    expect(
+      adminUsersSetPasswordOutputSchema.parse({ sessionsRevoked: true, userId: 'u1' }),
+    ).toEqual({ sessionsRevoked: true, userId: 'u1' });
+    expect(() =>
+      adminUsersSetPasswordOutputSchema.parse({
+        newPassword: 'leak',
+        sessionsRevoked: true,
+        userId: 'u1',
+      } as never),
+    ).toThrow();
+  });
+});
+
+describe('adminUsersDisableTwoFactorInputSchema', () => {
+  it('accepts a call with only userId and no reason', () => {
+    expect(adminUsersDisableTwoFactorInputSchema.parse({ userId: 'u1' })).toEqual({ userId: 'u1' });
+    expect(() =>
+      adminUsersDisableTwoFactorInputSchema.parse({ reason: 'lost totp', userId: 'u1' } as never),
+    ).toThrow();
+    expect(
+      adminUsersDisableTwoFactorInputSchema.parse({ removePasskeys: true, userId: 'u1' })
+        .removePasskeys,
+    ).toBe(true);
+  });
+});
+
+describe('adminUsersDisableTwoFactorOutputSchema', () => {
+  it('accepts the safe shape', () => {
+    expect(
+      adminUsersDisableTwoFactorOutputSchema.parse({
+        passkeysRemoved: false,
+        twoFactorEnabled: false,
+        userId: 'u1',
+      }),
+    ).toEqual({ passkeysRemoved: false, twoFactorEnabled: false, userId: 'u1' });
   });
 });
 
