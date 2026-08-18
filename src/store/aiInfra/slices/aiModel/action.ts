@@ -10,11 +10,13 @@ import { type SWRResponse } from 'swr';
 import { mutate, useClientDataSWR } from '@/libs/swr';
 import { aiModelKeys } from '@/libs/swr/keys';
 import type { GetAiProviderModelListParams } from '@/services/aiModel';
-import { type AiInfraServices } from '@/store/aiInfra/services';
+import { type AiInfraServices, type UpstreamModelSyncResult } from '@/store/aiInfra/services';
 import { type AiInfraStore } from '@/store/aiInfra/store';
 import { type StoreSetter } from '@/store/types';
 
 type Setter = StoreSetter<AiInfraStore>;
+
+const NOTHING_SYNCED: UpstreamModelSyncResult = { created: 0, total: 0, updated: 0 };
 
 export const createAiModelSlice =
   (services: AiInfraServices) => (set: Setter, get: () => AiInfraStore, _api?: unknown) =>
@@ -25,10 +27,20 @@ export class AiModelActionImpl {
   readonly #services: AiInfraServices;
   readonly #set: Setter;
 
+  /**
+   * Whether this panel can enumerate upstream with the credential it administers.
+   *
+   * Read by the UI to tell the two sync paths apart before anything is dispatched: a panel
+   * without it is a member looking at their own BYOK overlay, where a live sync is only
+   * meaningful while the platform has not taken the catalog over.
+   */
+  readonly supportsUpstreamSync: boolean;
+
   constructor(set: Setter, get: () => AiInfraStore, services: AiInfraServices) {
     this.#set = set;
     this.#get = get;
     this.#services = services;
+    this.supportsUpstreamSync = Boolean(services.aiModel.syncUpstreamModels);
   }
 
   #scopeKey = <T extends readonly unknown[]>(base: T) => {
@@ -111,7 +123,9 @@ export class AiModelActionImpl {
     await this.#get().refreshAiModelList();
   };
 
-  fetchRemoteModelList = async (providerId: string): Promise<void> => {
+  fetchRemoteModelList = async (
+    providerId: string,
+  ): Promise<UpstreamModelSyncResult | undefined> => {
     const { modelsService } = await import('@/services/models');
 
     const data = await modelsService.getModels(providerId);
@@ -161,7 +175,36 @@ export class AiModelActionImpl {
       );
 
       await this.#get().refreshAiModelList();
+
+      // "New" is measured against the list the operator was just looking at, so the count
+      // reports rows that actually appeared rather than server-side insert bookkeeping.
+      const created = data.filter((model) => !currentEnabledState.has(model.id)).length;
+      return { created, total: data.length, updated: data.length - created };
     }
+
+    return undefined;
+  };
+
+  /**
+   * Pull the provider's model list from upstream and persist it, using whichever credential
+   * the current panel actually administers.
+   *
+   * Admin panels inject a service that reads the shared platform account server-side; member
+   * panels have none and fall back to their own BYOK fetch. The caller is responsible for not
+   * offering this to a member whose catalog is platform-managed — writing a live upstream list
+   * into that overlay would fork it from the published platform set.
+   */
+  syncUpstreamModelList = async (providerId: string): Promise<UpstreamModelSyncResult> => {
+    const { aiModel } = this.#services;
+
+    if (!aiModel.syncUpstreamModels) {
+      return (await this.#get().fetchRemoteModelList(providerId)) ?? NOTHING_SYNCED;
+    }
+
+    const result = await aiModel.syncUpstreamModels(providerId);
+    await this.#get().refreshAiModelList();
+
+    return result;
   };
 
   internal_toggleAiModelLoading = (id: string, loading: boolean): void => {

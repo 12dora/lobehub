@@ -21,6 +21,7 @@ import {
   type adminAiModelReorderInputSchema,
   type adminAiModelUpdateInputSchema,
   aiModelDraftSchema,
+  type AiProviderDraft,
 } from '../../contracts/aiCatalog';
 import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
@@ -126,7 +127,7 @@ export abstract class AiCatalogAdminServiceModelOps {
   ) => Promise<T>;
   abstract getDetail: (
     providerIdOrLookup: string | { id?: string; providerKey?: string },
-  ) => Promise<{ draftToken: string }>;
+  ) => Promise<{ draft: AiProviderDraft; draftToken: string }>;
 
   protected withFailureAudit = async <T>(
     action: AuditAction,

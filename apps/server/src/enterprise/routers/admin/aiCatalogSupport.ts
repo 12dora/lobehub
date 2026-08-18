@@ -9,9 +9,11 @@ import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 import {
   AiCatalogAdminService,
+  AiCatalogCannotEnumerateError,
   AiCatalogNotFoundError,
   AiCatalogPermissionDeniedError,
   AiCatalogResourceInUseError,
+  AiCatalogUpstreamSyncError,
   AiCatalogValidationError,
 } from '../../services/aiCatalog/adminService';
 import { credentialStringLeaves } from '../../services/aiCatalog/credentialAdapter';
@@ -98,6 +100,23 @@ export const mapServiceError = (error: unknown): never => {
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE,
       details: { dependentCount: error.dependents.length },
+      httpCode: 'PRECONDITION_FAILED',
+    });
+  }
+  if (error instanceof AiCatalogCannotEnumerateError) {
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: error.reason },
+      httpCode: 'PRECONDITION_FAILED',
+    });
+  }
+  if (error instanceof AiCatalogUpstreamSyncError) {
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+      details: {
+        errorCategory: error.errorCategory,
+        ...(error.errorType ? { errorType: error.errorType } : {}),
+      },
       httpCode: 'PRECONDITION_FAILED',
     });
   }

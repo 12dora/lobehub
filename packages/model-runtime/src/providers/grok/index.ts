@@ -1,3 +1,5 @@
+import type { ChatModelCard } from '@lobechat/types';
+import type { ExtendParamsType } from 'model-bank';
 import { ModelProvider } from 'model-bank';
 import OpenAI, { type ClientOptions } from 'openai';
 
@@ -91,12 +93,105 @@ export interface GrokClientOptions {
   userAgentPlatform?: string;
 }
 
+type GrokReasoningEffortParam = 'grok4_20ReasoningEffort' | 'grok4_5ReasoningEffort';
+
+type GrokReasoningEffortItem = string | { id?: unknown };
+
 interface GrokProxyModelCard extends XAIModelCard {
+  api_backend?: string;
   context_window?: number;
   contextWindowTokens?: number;
+  description?: string;
   displayName?: string;
   name?: string;
+  reasoning?: boolean;
+  reasoning_efforts?: GrokReasoningEffortItem[];
+  search?: boolean;
+  settings?: ChatModelCard['settings'];
+  supports_backend_search?: boolean;
+  supports_reasoning_effort?: boolean;
 }
+
+const GROK_REASONING_EFFORT_PARAMS = new Set<ExtendParamsType>([
+  'grok4_20ReasoningEffort',
+  'grok4_5ReasoningEffort',
+]);
+
+const extractGrokEffortIds = (efforts: GrokProxyModelCard['reasoning_efforts']): string[] => {
+  if (!Array.isArray(efforts)) return [];
+
+  return efforts.flatMap((item) => {
+    if (typeof item === 'string' && item) return [item];
+    if (item && typeof item === 'object' && typeof item.id === 'string' && item.id) {
+      return [item.id];
+    }
+    return [];
+  });
+};
+
+// Pick from the effort list the proxy reports, not the model id: xhigh is
+// grok-4.20's extra step, everything else in this family is grok-4.5's trio.
+const resolveGrokReasoningEffortParam = (
+  effortIds: string[],
+): GrokReasoningEffortParam | undefined => {
+  if (effortIds.length === 0) return undefined;
+
+  return effortIds.includes('xhigh') ? 'grok4_20ReasoningEffort' : 'grok4_5ReasoningEffort';
+};
+
+const mapGrokProxyModel = (model: GrokProxyModelCard): GrokProxyModelCard => {
+  const effortIds = extractGrokEffortIds(model.reasoning_efforts);
+  const effortParam = resolveGrokReasoningEffortParam(effortIds);
+  const settings = { ...model.settings };
+
+  if (model.supports_backend_search === true) {
+    settings.searchImpl = 'params';
+  }
+
+  if (effortParam) {
+    settings.extendParams = [effortParam];
+  }
+
+  return {
+    ...model,
+    contextWindowTokens: model.contextWindowTokens ?? model.context_window,
+    description: model.description,
+    displayName: model.displayName ?? model.name,
+    reasoning:
+      model.supports_reasoning_effort === true || effortIds.length > 0
+        ? true
+        : model.supports_reasoning_effort === false
+          ? false
+          : undefined,
+    search:
+      typeof model.supports_backend_search === 'boolean'
+        ? model.supports_backend_search
+        : undefined,
+    settings: Object.keys(settings).length > 0 ? settings : undefined,
+  };
+};
+
+const applyLiveGrokReasoningEffort = (
+  card: ChatModelCard,
+  effortParam?: GrokReasoningEffortParam,
+): ChatModelCard => {
+  if (!effortParam) return card;
+
+  const extendParams = [
+    ...(card.settings?.extendParams ?? []).filter(
+      (param) => !GROK_REASONING_EFFORT_PARAMS.has(param),
+    ),
+    effortParam,
+  ];
+
+  return {
+    ...card,
+    settings: {
+      ...card.settings,
+      extendParams,
+    },
+  };
+};
 
 /**
  * Grok Build / SuperGrok subscription access to Grok models.
@@ -328,18 +423,22 @@ export const LobeGrokAI = createOpenAICompatibleRuntime<GrokClientOptions>({
     responses: () => process.env.DEBUG_GROK_RESPONSES === '1',
   },
   models: async ({ client }) => {
-    const modelsPage = (await client.models.list()) as any;
-    const modelList: GrokProxyModelCard[] = modelsPage.data;
+    const modelsPage = (await client.models.list()) as { data?: GrokProxyModelCard[] };
+    const modelList = Array.isArray(modelsPage.data) ? modelsPage.data : [];
+    const effortParamById = new Map(
+      modelList.map((model) => [
+        model.id,
+        resolveGrokReasoningEffortParam(extractGrokEffortIds(model.reasoning_efforts)),
+      ]),
+    );
 
-    return processModelList(
-      modelList.map((model) => ({
-        ...model,
-        contextWindowTokens: model.contextWindowTokens ?? model.context_window,
-        displayName: model.displayName ?? model.name,
-      })),
+    const cards = await processModelList(
+      modelList.map(mapGrokProxyModel),
       MODEL_LIST_CONFIGS.xai,
       'grok',
     );
+
+    return cards.map((card) => applyLiveGrokReasoningEffort(card, effortParamById.get(card.id)));
   },
   // Structured output must take the SAME wire path as chat: `generateObject` does not
   // inherit `chatCompletion.useResponse`, so without this it would go to

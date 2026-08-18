@@ -10,8 +10,10 @@ import type {
 } from 'model-bank';
 import { AiModelSourceEnum, LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
 
+import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { lambdaClient } from '@/libs/trpc/client';
 import type { GetAiProviderModelListParams } from '@/services/aiModel';
+import type { UpstreamModelSyncResult } from '@/store/aiInfra/services';
 
 import { mapModelListItem } from './mappers';
 import { DEFAULT_REASON, getDetail, isPlatformNotFoundError, withReauth } from './shared';
@@ -287,6 +289,25 @@ export class AdminAiModelService {
   };
 
   clearRemoteModels = async (providerId: string) => this.clearModelsByProvider(providerId);
+
+  /**
+   * Enumerate the provider upstream using the SHARED platform account and persist the result.
+   *
+   * Discovery has to happen server-side: the credential is a platform-vault OAuth account no
+   * browser can decrypt, and two of these providers only answer through a process-local
+   * transport (curl-impersonate, the `cursor-agent` CLI). The user route is not an option
+   * either — it opens the caller's personal vault, and under takeover it replays the published
+   * catalog instead of calling upstream at all.
+   *
+   * `providerId` is the provider key the settings UI addresses everything else by; the server
+   * resolves it to the platform row the same way `admin.aiProviders.get` does.
+   *
+   * Reauth-wrapped but deliberately NOT toast-wrapped: the server distinguishes "this runtime
+   * has no enumerator" from an ordinary write failure, and the generic adapter toast cannot say
+   * that. The model-list caller renders exactly one message and owns that distinction.
+   */
+  syncUpstreamModels = async (providerId: string): Promise<UpstreamModelSyncResult> =>
+    withAdminReauthRetry(() => lambdaClient.admin.aiModels.syncUpstream.mutate({ providerId }));
 
   updateAiModelOrder = async (providerId: string, items: AiModelSortMap[]) => {
     const detail = await getDetail(providerId);

@@ -142,6 +142,19 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'Apply model mutation(s) and publish the parent provider immediately (the only model write).',
     { reauth: recentReauth },
   ),
+  'admin.aiModels.syncUpstream': dangerousMutation(
+    'admin.aiModels.syncUpstream',
+    'high',
+    'Discover models from the shared platform account and publish them into the catalog.',
+    {
+      outbound: safeOutbound,
+      reason: conditional(
+        'The procedure DTO has no operator reason; the service persists a server-authored audit reason on the sync action.',
+        'The admin console does not prompt for a reason on this operation.',
+      ),
+      reauth: recentReauth,
+    },
+  ),
   // No outbound call at all: the provider-side grant is NOT revoked here, only the local
   // credential is withdrawn — so `outbound` stays at the default no-remote-request.
   'admin.aiProviderOAuth.disconnect': dangerousMutation(

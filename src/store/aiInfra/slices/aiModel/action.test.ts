@@ -7,7 +7,8 @@ import { mutate } from '@/libs/swr';
 import { aiModelService } from '@/services/aiModel';
 import { withSWR } from '~test-utils';
 
-import { useAiInfraStore as useStore } from '../../store';
+import { defaultAiInfraServices } from '../../services';
+import { createAiInfraStore, useAiInfraStore as useStore } from '../../store';
 
 vi.mock('zustand/traditional');
 
@@ -429,6 +430,119 @@ describe('AiModelAction', () => {
       }).rejects.toThrow('model fetch failed');
 
       expect(batchUpdateSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('syncUpstreamModelList', () => {
+    /** Admin-shaped store: services carry the platform-vault sync capability. */
+    const createAdminStore = (
+      syncUpstreamModels = vi.fn().mockResolvedValue({ created: 3, total: 14, updated: 11 }),
+    ) => {
+      const store = createAiInfraStore({
+        ...defaultAiInfraServices,
+        aiModel: { ...defaultAiInfraServices.aiModel, syncUpstreamModels },
+        swrScope: 'admin',
+      });
+      store.setState({
+        activeAiProvider: 'test-provider',
+        aiProviderModelList: [],
+        refreshAiProviderRuntimeState: vi.fn(),
+      });
+      return { store, syncUpstreamModels };
+    };
+
+    it('dispatches to the injected sync capability, never the user models endpoint', async () => {
+      const { store, syncUpstreamModels } = createAdminStore();
+      const getModels = vi.fn();
+      vi.resetModules();
+      vi.doMock('@/services/models', () => ({ modelsService: { getModels } }));
+
+      const result = await store.getState().syncUpstreamModelList('test-provider');
+
+      expect(syncUpstreamModels).toHaveBeenCalledWith('test-provider');
+      // The user route reads the caller's personal vault and, under takeover, replays the
+      // published catalog — it must never stand in for a platform sync.
+      expect(getModels).not.toHaveBeenCalled();
+      expect(result).toEqual({ created: 3, total: 14, updated: 11 });
+    });
+
+    it('refreshes the list so synced rows appear without a reload', async () => {
+      const { store } = createAdminStore();
+      const refreshSpy = vi
+        .spyOn(store.getState(), 'refreshAiModelList')
+        .mockResolvedValue(undefined);
+
+      await store.getState().syncUpstreamModelList('test-provider');
+
+      expect(refreshSpy).toHaveBeenCalled();
+    });
+
+    it('propagates a rejected admin sync so the caller can report the cause', async () => {
+      const { store } = createAdminStore(
+        vi.fn().mockRejectedValue(new Error('Cursor Agent transport unavailable')),
+      );
+
+      await expect(store.getState().syncUpstreamModelList('test-provider')).rejects.toThrow(
+        'Cursor Agent transport unavailable',
+      );
+    });
+
+    it('falls back to the member BYOK fetch when no sync capability is injected', async () => {
+      const { result } = renderHook(() => useStore());
+      expect(result.current.supportsUpstreamSync).toBe(false);
+
+      const fetchSpy = vi
+        .spyOn(result.current, 'fetchRemoteModelList')
+        .mockResolvedValue({ created: 2, total: 2, updated: 0 });
+
+      let outcome;
+      await act(async () => {
+        outcome = await result.current.syncUpstreamModelList('test-provider');
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith('test-provider');
+      expect(outcome).toEqual({ created: 2, total: 2, updated: 0 });
+    });
+
+    it('reports nothing synced when the member fetch returns no data', async () => {
+      const { result } = renderHook(() => useStore());
+      vi.spyOn(result.current, 'fetchRemoteModelList').mockResolvedValue(undefined);
+
+      let outcome;
+      await act(async () => {
+        outcome = await result.current.syncUpstreamModelList('test-provider');
+      });
+
+      expect(outcome).toEqual({ created: 0, total: 0, updated: 0 });
+    });
+
+    it('counts as created only the models that were not already listed', async () => {
+      act(() => {
+        useStore.setState({
+          aiProviderModelList: [{ enabled: true, id: 'already-here', type: 'chat' }] as any,
+        });
+      });
+
+      const { result } = renderHook(() => useStore());
+      vi.spyOn(result.current, 'batchUpdateAiModels').mockResolvedValue(undefined);
+      vi.spyOn(result.current, 'refreshAiModelList').mockResolvedValue(undefined);
+
+      vi.resetModules();
+      vi.doMock('@/services/models', () => ({
+        modelsService: {
+          getModels: vi.fn().mockResolvedValue([
+            { id: 'already-here', type: 'chat' },
+            { id: 'brand-new', type: 'chat' },
+          ]),
+        },
+      }));
+
+      let outcome;
+      await act(async () => {
+        outcome = await result.current.syncUpstreamModelList('test-provider');
+      });
+
+      expect(outcome).toEqual({ created: 1, total: 2, updated: 1 });
     });
   });
 

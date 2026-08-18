@@ -632,6 +632,25 @@ export const adminAiModelApplyImmediateInputSchema = z.discriminatedUnion('opera
 
 export type AdminAiModelApplyImmediateInput = z.infer<typeof adminAiModelApplyImmediateInputSchema>;
 
+/** Discover the platform catalog from the shared account's live upstream `models()`. */
+export const adminAiModelSyncUpstreamInputSchema = z
+  .object({
+    // Provider key (`supergrok`), not the platform row UUID — the client store's id.
+    providerId: providerKeySchema,
+  })
+  .strict();
+
+export const adminAiModelSyncUpstreamOutputSchema = z
+  .object({
+    created: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    updated: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type AdminAiModelSyncUpstreamInput = z.infer<typeof adminAiModelSyncUpstreamInputSchema>;
+export type AdminAiModelSyncUpstreamOutput = z.infer<typeof adminAiModelSyncUpstreamOutputSchema>;
+
 export type AiProviderDraft = z.infer<typeof aiProviderDraftSchema>;
 export type PublishedAiCatalog = z.infer<typeof publishedAiCatalogSchema>;
 export type PublishedAiProvider = z.infer<typeof publishedAiProviderSchema>;

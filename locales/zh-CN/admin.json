@@ -531,6 +531,7 @@
   "audit.logs.action.admin.aiModels.create": "创建模型",
   "audit.logs.action.admin.aiModels.deleteFromDraft": "从草稿删除模型",
   "audit.logs.action.admin.aiModels.reorder": "调整模型顺序",
+  "audit.logs.action.admin.aiModels.syncUpstream": "同步上游模型",
   "audit.logs.action.admin.aiModels.update": "更新模型",
   "audit.logs.action.admin.aiProviderOAuth.disconnect": "断开共享服务商账号",
   "audit.logs.action.admin.aiProviderOAuth.initiateDeviceCode": "发起共享服务商账号连接",

@@ -297,4 +297,67 @@ describe('LobeChatGPTAI', () => {
     expect(request.reasoning).toEqual({ effort: 'high', summary: 'auto' });
     expect(request.tools).toContainEqual({ type: 'web_search' });
   });
+
+  describe('models', () => {
+    const catalogIds = ['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'];
+
+    it('uses the live Codex list when the endpoint answers', async () => {
+      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
+        data: [{ id: 'gpt-5.5' }, { id: 'codex-only-model' }],
+      } as never);
+
+      const models = await instance.models();
+
+      expect(instance['client'].models.list).toHaveBeenCalled();
+      expect(models.map((model) => model.id).sort()).toEqual(['codex-only-model', 'gpt-5.5']);
+      expect(models).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            contextWindowTokens: 272_000,
+            id: 'gpt-5.5',
+          }),
+          expect.objectContaining({ id: 'codex-only-model' }),
+        ]),
+      );
+    });
+
+    it.each([
+      { reason: '404s', status: 404 },
+      { reason: '401s', status: 401 },
+    ])('returns the chatgpt catalog when Codex /models $reason', async ({ status }) => {
+      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(
+        Object.assign(new Error(`HTTP ${status}`), { status }),
+      );
+
+      const models = await instance.models();
+
+      expect(models.map((model) => model.id).sort()).toEqual(catalogIds);
+      expect(models).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            contextWindowTokens: 272_000,
+            id: 'gpt-5.5',
+          }),
+        ]),
+      );
+    });
+
+    it('returns the chatgpt catalog when the live payload cannot be parsed', async () => {
+      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
+        data: 'not-a-list',
+      } as never);
+
+      const models = await instance.models();
+
+      expect(models.map((model) => model.id).sort()).toEqual(catalogIds);
+    });
+
+    it('never throws for a reason the operator cannot act on', async () => {
+      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(new Error('socket hang up'));
+
+      await expect(instance.models()).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'gpt-5.5' })]),
+      );
+    });
+  });
 });

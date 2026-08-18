@@ -11,6 +11,8 @@ import {
   adminAiModelDependentsOutputSchema,
   adminAiModelListInputSchema,
   adminAiModelListOutputSchema,
+  adminAiModelSyncUpstreamInputSchema,
+  adminAiModelSyncUpstreamOutputSchema,
   adminAiProviderApplyImmediateInputSchema,
   adminAiProviderApplyImmediateOutputSchema,
   adminAiProviderDeleteInputSchema,
@@ -30,6 +32,7 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import {
+  withAllPlatformPermissions,
   withCompoundPlatformPermission,
   withPlatformPermission,
 } from '../../guards/platformPermission';
@@ -257,6 +260,38 @@ export const adminAiModelsRouter = router({
           });
         }
         throw error;
+      }
+    }),
+
+  /**
+   * Live-discover models from the shared platform vault and fold them into the
+   * catalog. Same create+update+publish grant as applyImmediate `batchUpdate`.
+   */
+  syncUpstream: adminBase
+    .use(
+      withAllPlatformPermissions([
+        PLATFORM_PERMISSIONS.AI_MODEL_CREATE,
+        PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+        PLATFORM_PERMISSIONS.AI_MODEL_PUBLISH,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+      ]),
+    )
+    .input(adminAiModelSyncUpstreamInputSchema)
+    .output(adminAiModelSyncUpstreamOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertDangerousReauth({
+        action: 'admin.aiModels.syncUpstream',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: 'Sync models from upstream',
+        serverDB: ctx.serverDB,
+        targetId: input.providerId,
+      });
+      try {
+        return await createService(ctx.serverDB).syncUpstream(ctx.userId!, input);
+      } catch (error) {
+        return mapServiceError(error);
       }
     }),
 });

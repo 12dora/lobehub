@@ -32,7 +32,8 @@ import type { PlatformConfigInvalidationPublisher } from '../platformConfigInval
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import { invalidateAiCatalogAuthorityToken } from '../platformInstance/catalogTokens';
 import type { DeferInvalidation } from '../platformPublisher';
-import { AiCatalogAdminServiceModelOps } from './adminService.models';
+import type { AiCatalogAdminServiceModelOps } from './adminService.models';
+import { AiCatalogAdminServiceSyncOps } from './adminService.sync';
 import { AiCatalogReadService } from './catalogReadService';
 import {
   AiCatalogConnectionTestService,
@@ -121,7 +122,7 @@ const toProviderDraft = (view: PlatformAiProviderDraftView): AiProviderDraft =>
     },
   });
 
-export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
+export class AiCatalogAdminService extends AiCatalogAdminServiceSyncOps {
   protected readonly connectionTests: AiCatalogConnectionTestService;
   protected readonly db: LobeChatDatabase;
   protected readonly lifecycle: NonNullable<AiCatalogAdminServiceOptions['lifecycle']>;
@@ -906,9 +907,11 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
 }
 
 export {
+  AiCatalogCannotEnumerateError,
   type AiCatalogDependent,
   AiCatalogNotFoundError,
   AiCatalogPermissionDeniedError,
   AiCatalogResourceInUseError,
+  AiCatalogUpstreamSyncError,
   AiCatalogValidationError,
 } from './errors';

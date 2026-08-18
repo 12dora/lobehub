@@ -10,6 +10,7 @@ import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/
 
 import { createCreateNewModelModal } from './CreateNewModelModal';
 import { ProviderSettingsContext } from './ProviderSettingsContext';
+import { useSyncUpstreamModels } from './useSyncUpstreamModels';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   circle: css`
@@ -53,10 +54,14 @@ const EmptyState = memo<{ provider: string }>(({ provider }) => {
   const { message } = App.useApp();
   const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
 
-  const [fetchRemoteModelList] = useAiInfraStore((s) => [s.fetchRemoteModelList]);
+  const [fetchRemoteModelList, supportsUpstreamSync] = useAiInfraStore((s) => [
+    s.fetchRemoteModelList,
+    s.supportsUpstreamSync,
+  ]);
 
   const [fetchRemoteModelsLoading, setFetchRemoteModelsLoading] = useState(false);
   const { showDeployName } = use(ProviderSettingsContext);
+  const sync = useSyncUpstreamModels(provider);
 
   return (
     <Center className={styles.container} gap={24} paddingBlock={40}>
@@ -87,40 +92,63 @@ const EmptyState = memo<{ provider: string }>(({ provider }) => {
             {t('providerModels.list.addNew')}
           </Button>
         </Tooltip>
-        <Tooltip title={canManageProvider ? '' : reason}>
-          <Button
-            disabled={!canManageProvider}
-            icon={<Icon icon={LucideRefreshCcwDot} />}
-            loading={fetchRemoteModelsLoading}
-            type={'primary'}
-            onClick={async () => {
-              if (!canManageProvider) return;
-              setFetchRemoteModelsLoading(true);
-              try {
-                await fetchRemoteModelList(provider);
-              } catch (error) {
-                console.error(error);
+        {/*
+         * An empty list is where discovery matters most, and the panel that administers a shared
+         * platform account cannot use the BYOK fetch below at all — it reads the signed-in
+         * operator's own vault. Where upstream sync is available it *is* the primary action, so it
+         * replaces the fetch button rather than crowding a third one beside it; on a member's own
+         * provider the two are the same call and one button is the honest count.
+         */}
+        {supportsUpstreamSync ? (
+          <Tooltip title={sync.disabledReason ?? ''}>
+            <Button
+              disabled={sync.disabled}
+              icon={<Icon icon={LucideRefreshCcwDot} />}
+              loading={sync.isSyncing}
+              type={'primary'}
+              onClick={sync.syncUpstream}
+            >
+              {sync.isSyncing
+                ? t('providerModels.list.syncUpstream.syncing')
+                : t('providerModels.list.syncUpstream.action')}
+            </Button>
+          </Tooltip>
+        ) : (
+          <Tooltip title={canManageProvider ? '' : reason}>
+            <Button
+              disabled={!canManageProvider}
+              icon={<Icon icon={LucideRefreshCcwDot} />}
+              loading={fetchRemoteModelsLoading}
+              type={'primary'}
+              onClick={async () => {
+                if (!canManageProvider) return;
+                setFetchRemoteModelsLoading(true);
+                try {
+                  await fetchRemoteModelList(provider);
+                } catch (error) {
+                  console.error(error);
 
-                const errorMessage =
-                  error instanceof Error
-                    ? error.message
-                    : t('providerModels.list.fetcher.errorFallback');
+                  const errorMessage =
+                    error instanceof Error
+                      ? error.message
+                      : t('providerModels.list.fetcher.errorFallback');
 
-                message.error(
-                  t('providerModels.list.fetcher.error', {
-                    message: errorMessage,
-                  }),
-                );
-              } finally {
-                setFetchRemoteModelsLoading(false);
-              }
-            }}
-          >
-            {fetchRemoteModelsLoading
-              ? t('providerModels.list.fetcher.fetching')
-              : t('providerModels.list.fetcher.fetch')}
-          </Button>
-        </Tooltip>
+                  message.error(
+                    t('providerModels.list.fetcher.error', {
+                      message: errorMessage,
+                    }),
+                  );
+                } finally {
+                  setFetchRemoteModelsLoading(false);
+                }
+              }}
+            >
+              {fetchRemoteModelsLoading
+                ? t('providerModels.list.fetcher.fetching')
+                : t('providerModels.list.fetcher.fetch')}
+            </Button>
+          </Tooltip>
+        )}
       </Flexbox>
     </Center>
   );

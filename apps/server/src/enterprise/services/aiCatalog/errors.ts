@@ -85,3 +85,36 @@ export class AiCatalogResourceInUseError extends Error {
     this.dependents = dependents;
   }
 }
+
+/**
+ * The runtime has no `models()` enumerator — distinct from an empty upstream list so
+ * the admin client can render "this provider cannot enumerate its models".
+ */
+export class AiCatalogCannotEnumerateError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;
+  readonly reason = 'cannot_enumerate' as const;
+
+  constructor() {
+    super(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    this.name = 'AiCatalogCannotEnumerateError';
+  }
+}
+
+/**
+ * A live upstream `models()` (or the shared-grant refresh that precedes it) failed with
+ * a classified runtime fault — transport missing, OAuth expired, incomplete credential
+ * already became {@link AiCatalogValidationError}. The router maps this to the same
+ * stable codes the connection probe uses, not a generic 500.
+ */
+export class AiCatalogUpstreamSyncError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED;
+  readonly errorCategory: string;
+  readonly errorType?: string;
+
+  constructor(params: { errorCategory: string; errorType?: string; message: string }) {
+    super(params.message);
+    this.name = 'AiCatalogUpstreamSyncError';
+    this.errorCategory = params.errorCategory;
+    this.errorType = params.errorType;
+  }
+}

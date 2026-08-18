@@ -2343,6 +2343,7 @@ export default {
   'audit.logs.action.admin.aiModels.create': 'Create model',
   'audit.logs.action.admin.aiModels.deleteFromDraft': 'Delete model from draft',
   'audit.logs.action.admin.aiModels.reorder': 'Reorder models',
+  'audit.logs.action.admin.aiModels.syncUpstream': 'Sync upstream models',
   'audit.logs.action.admin.aiModels.update': 'Update model',
   'audit.logs.action.admin.aiProviderOAuth.disconnect': 'Disconnect shared provider account',
   'audit.logs.action.admin.aiProviderOAuth.initiateDeviceCode':

@@ -715,6 +715,81 @@ describe('LobeGrokAI', () => {
         ]),
       );
     });
+
+    it('carries description, backend search, and the effort list through to abilities/settings', async () => {
+      vi.spyOn(instance['client'].models, 'list').mockResolvedValue(GROK_PROXY_MODELS as never);
+
+      const models = await instance.models();
+      const grok46 = models.find((model) => model.id === 'grok-4.6');
+      const grok45 = models.find((model) => model.id === 'grok-4.5');
+
+      expect(grok46).toEqual(
+        expect.objectContaining({
+          description: "SpaceXAI's latest frontier model",
+          id: 'grok-4.6',
+          reasoning: true,
+          search: true,
+          settings: expect.objectContaining({
+            extendParams: ['grok4_20ReasoningEffort'],
+            searchImpl: 'params',
+          }),
+        }),
+      );
+      expect(grok45).toEqual(
+        expect.objectContaining({
+          id: 'grok-4.5',
+          reasoning: true,
+          settings: expect.objectContaining({
+            extendParams: ['grok4_5ReasoningEffort'],
+          }),
+        }),
+      );
+    });
+
+    it('picks the reasoning-effort param from the effort list, not the model id', async () => {
+      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
+        data: [
+          {
+            id: 'grok-4.5',
+            name: 'Grok 4.5 with xhigh',
+            reasoning_efforts: [{ id: 'xhigh' }, { id: 'high' }],
+            supports_reasoning_effort: true,
+          },
+          {
+            id: 'grok-4.6',
+            name: 'Grok 4.6 without xhigh',
+            reasoning_efforts: ['high', 'medium', 'low'],
+          },
+        ],
+      } as never);
+
+      const models = await instance.models();
+
+      expect(models.find((model) => model.id === 'grok-4.5')?.settings?.extendParams).toEqual([
+        'grok4_20ReasoningEffort',
+      ]);
+      expect(models.find((model) => model.id === 'grok-4.6')?.settings?.extendParams).toEqual([
+        'grok4_5ReasoningEffort',
+      ]);
+    });
+
+    it('falls back to xai keyword inference when the proxy is silent', async () => {
+      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
+        data: [{ id: 'grok-keyword-only-test-model' }],
+      } as never);
+
+      const models = await instance.models();
+
+      expect(models).toEqual([
+        expect.objectContaining({
+          functionCall: true,
+          id: 'grok-keyword-only-test-model',
+          reasoning: false,
+          search: false,
+          vision: false,
+        }),
+      ]);
+    });
   });
 
   describe('request capture', () => {

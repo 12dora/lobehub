@@ -13,6 +13,7 @@ import { aiModelSelectors } from '@/store/aiInfra/selectors';
 
 import { createCreateNewModelModal } from '../CreateNewModelModal';
 import { ProviderSettingsContext } from '../ProviderSettingsContext';
+import { useSyncUpstreamModels } from '../useSyncUpstreamModels';
 import Search from './Search';
 
 interface ModelFetcherProps {
@@ -48,6 +49,13 @@ const ModelTitle = memo<ModelFetcherProps>(
     ]);
 
     const { isLoading } = useFetchAiProviderModels(provider);
+
+    const {
+      disabled: syncUpstreamDisabled,
+      disabledReason: syncUpstreamDisabledReason,
+      isSyncing,
+      syncUpstream,
+    } = useSyncUpstreamModels(provider);
 
     const [fetchRemoteModelsLoading, setFetchRemoteModelsLoading] = useState(false);
     const [clearRemoteModelsLoading, setClearRemoteModelsLoading] = useState(false);
@@ -178,6 +186,26 @@ const ModelTitle = memo<ModelFetcherProps>(
                 <DropdownMenu
                   items={[
                     {
+                      disabled: syncUpstreamDisabled || isSyncing,
+                      key: 'syncUpstream',
+                      // The reason rides in the label rather than a tooltip: a disabled menu
+                      // item swallows pointer events, so a tooltip on it would never open and
+                      // the operator would be left with a dead row and no explanation.
+                      label: (
+                        <Flexbox gap={2}>
+                          {isSyncing
+                            ? t('providerModels.list.syncUpstream.syncing')
+                            : t('providerModels.list.syncUpstream.action')}
+                          {syncUpstreamDisabledReason && (
+                            <Text style={{ fontSize: 12 }} type={'secondary'}>
+                              {syncUpstreamDisabledReason}
+                            </Text>
+                          )}
+                        </Flexbox>
+                      ),
+                      onClick: syncUpstream,
+                    },
+                    {
                       disabled: !canManageProvider,
                       key: 'reset',
                       label: t('providerModels.list.resetAll.title'),
@@ -195,7 +223,8 @@ const ModelTitle = memo<ModelFetcherProps>(
                     },
                   ]}
                 >
-                  <Button icon={EllipsisVertical} size={'small'} />
+                  {/* The menu closes on click, so the trigger carries the sync's in-flight state. */}
+                  <Button icon={EllipsisVertical} loading={isSyncing} size={'small'} />
                 </DropdownMenu>
               </Space.Compact>
             </Flexbox>

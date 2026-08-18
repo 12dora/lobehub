@@ -146,6 +146,20 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   },
   {
     kind: 'mutation',
+    path: 'admin.aiModels.syncUpstream',
+    // Same grant applyImmediate needs for a create+update+publish (batchUpdate of new keys).
+    permission: {
+      mode: 'all',
+      permissions: [
+        PLATFORM_PERMISSIONS.AI_MODEL_CREATE,
+        PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+        PLATFORM_PERMISSIONS.AI_MODEL_PUBLISH,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+      ],
+    },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.aiProviderOAuth.disconnect',
     // Update + publish of an existing row only — it can never create one, so CREATE is
     // deliberately absent (and nothing is deleted, so DELETE is not it either).

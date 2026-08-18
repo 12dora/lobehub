@@ -4,6 +4,7 @@ import { ModelProvider } from 'model-bank';
 import OpenAI from 'openai';
 
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
+import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import { params as openAIParams } from '../openai';
 
 const CHATGPT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
@@ -46,6 +47,23 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
   debug: {
     chatCompletion: () => process.env.DEBUG_CHATGPT_CHAT_COMPLETION === '1',
     responses: () => process.env.DEBUG_CHATGPT_RESPONSES === '1',
+  },
+  // Codex `/models` is undocumented and may 404/401; fall back to the curated
+  // catalog so sync still returns a persistable list instead of a dead error.
+  models: async ({ client }) => {
+    try {
+      const modelsPage = (await client.models.list()) as { data?: unknown };
+      const modelList = modelsPage.data;
+      if (!Array.isArray(modelList)) {
+        throw new TypeError('ChatGPT Codex models payload was not a list');
+      }
+
+      return processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt');
+    } catch {
+      const { chatgpt } = await import('model-bank');
+
+      return processModelList(chatgpt, MODEL_LIST_CONFIGS.openai, 'chatgpt');
+    }
   },
   provider: ModelProvider.ChatGPT,
   responses: {

@@ -34,6 +34,7 @@ export const AUDIT_ACTIONS = [
   'admin.aiModels.create',
   'admin.aiModels.deleteFromDraft',
   'admin.aiModels.reorder',
+  'admin.aiModels.syncUpstream',
   'admin.aiModels.update',
   'admin.aiProviderOAuth.disconnect',
   'admin.aiProviderOAuth.initiateDeviceCode',
