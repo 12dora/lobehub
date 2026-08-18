@@ -7,6 +7,10 @@ import { useTranslation } from 'react-i18next';
 
 import UserDetailBody from './UserDetailBody';
 
+/** Space kept inside the clipped popup box for the panel's drop shadow. */
+const SHADOW_GUTTER = 48;
+const PANEL_WIDTH = 'min(760px, calc(100vw - 48px))';
+
 const styles = createStaticStyles(({ css }) => ({
   /**
    * Keeps the page still while the panel slides in.
@@ -21,12 +25,16 @@ const styles = createStaticStyles(({ css }) => ({
    *
    * `overflow: clip` cuts the entering panel at the popup's own fixed box, removing that
    * scrollable overflow without making the popup a scroll container — which `overflow:
-   * hidden` would, handing the focus trap something to scroll instead. The clip margin
-   * keeps the panel's drop shadow (9px offset + 28px blur + 8px spread) painted.
+   * hidden` would, handing the focus trap something to scroll instead. An
+   * `overflow-clip-margin` would re-extend the scrollable overflow by the same amount
+   * (verified: the page still jumped by exactly the margin), so the room for the panel's
+   * drop shadow (9px offset + 28px blur + 8px spread) comes from padding INSIDE the clipped
+   * box instead: the popup is widened by ${SHADOW_GUTTER}px on the page side and the panel
+   * (flex: 1) keeps its own width.
    */
   popup: css`
     overflow: clip;
-    overflow-clip-margin: 48px;
+    padding-inline-start: ${SHADOW_GUTTER}px;
   `,
 }));
 
@@ -85,8 +93,9 @@ const UserDetailDrawer = memo<UserDetailDrawerProps>(({ onClose, open, userId })
       classNames={{ popup: styles.popup }}
       open={open}
       placement="right"
+      styles={{ popup: { width: `calc(${PANEL_WIDTH} + ${SHADOW_GUTTER}px)` } }}
       title={t('users.detail.title')}
-      width="min(760px, calc(100vw - 48px))"
+      width={PANEL_WIDTH}
       onClose={onClose}
     >
       {renderedUserId ? (
