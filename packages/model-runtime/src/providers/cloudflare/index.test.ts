@@ -528,10 +528,14 @@ describe('LobeCloudflareAI', () => {
                 description: 'Model 1',
                 name: 'model1',
                 task: { name: 'Text Generation' },
-                properties: [{ property_id: 'beta', value: 'false' }],
+                properties: [
+                  { property_id: 'beta', value: 'false' },
+                  { property_id: 'max_total_tokens', value: '8192' },
+                  { property_id: 'function_calling', value: 'true' },
+                ],
               },
               {
-                description: 'Model 2',
+                description: 'Model 2 with vision',
                 name: 'model2',
                 task: { name: 'Text Generation' },
                 properties: [{ property_id: 'beta', value: 'true' }],
@@ -557,6 +561,18 @@ describe('LobeCloudflareAI', () => {
       );
 
       expect(result).toHaveLength(2);
+      expect(result[0]).toMatchObject({
+        contextWindowTokens: 8192,
+        description: 'Model 1',
+        functionCall: true,
+        id: 'model1',
+      });
+      expect(result[1]).toMatchObject({
+        description: 'Model 2 with vision',
+        displayName: 'model2 (Beta)',
+        id: 'model2',
+        vision: true,
+      });
     });
 
     it('should throw regular Error when API returns null result', async () => {

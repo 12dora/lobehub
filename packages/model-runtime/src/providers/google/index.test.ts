@@ -1346,6 +1346,109 @@ describe('models', () => {
     expect(options.headers).toMatchObject({
       'x-goog-api-key': apiKey,
     });
+    expect(url).toContain('pageSize=1000');
+  });
+
+  it('maps documented description, thinking, and generation methods', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      json: () =>
+        Promise.resolve({
+          models: [
+            {
+              name: 'models/gemini-2.5-pro',
+              displayName: 'Gemini 2.5 Pro',
+              description: 'A short description of the model.',
+              inputTokenLimit: 1_048_576,
+              outputTokenLimit: 65_536,
+              thinking: true,
+              supportedGenerationMethods: ['generateContent', 'countTokens'],
+            },
+            {
+              name: 'models/text-embedding-004',
+              displayName: 'Text Embedding 004',
+              description: 'Embedding model',
+              inputTokenLimit: 2048,
+              outputTokenLimit: 1,
+              supportedGenerationMethods: ['embedContent'],
+            },
+            {
+              name: 'models/imagen-3.0-generate-002',
+              displayName: 'Imagen 3',
+              description: 'Image model',
+              inputTokenLimit: 480,
+              outputTokenLimit: 8192,
+              supportedGenerationMethods: ['predict'],
+            },
+          ],
+        }),
+      ok: true,
+    });
+    global.fetch = mockFetch;
+
+    const models = await new LobeGoogleAI({ apiKey: 'test-google-key' }).models();
+    const chat = models.find((m) => m.id === 'gemini-2.5-pro');
+    const embedding = models.find((m) => m.id === 'text-embedding-004');
+    const imagen = models.find((m) => m.id === 'imagen-3.0-generate-002');
+
+    expect(chat).toMatchObject({
+      description: 'A short description of the model.',
+      displayName: 'Gemini 2.5 Pro',
+      reasoning: true,
+      type: 'chat',
+    });
+    expect(chat?.contextWindowTokens).toBe(1_048_576 + 65_536);
+    expect(embedding).toMatchObject({
+      type: 'embedding',
+    });
+    expect(embedding?.reasoning).toBe(false);
+    expect(imagen).toBeUndefined();
+  });
+
+  it('follows nextPageToken until the catalog is exhausted', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        json: () =>
+          Promise.resolve({
+            models: [
+              {
+                name: 'models/page-one',
+                displayName: 'Page One',
+                inputTokenLimit: 100,
+                outputTokenLimit: 10,
+                supportedGenerationMethods: ['generateContent'],
+              },
+            ],
+            nextPageToken: 'page-2',
+          }),
+        ok: true,
+      })
+      .mockResolvedValueOnce({
+        json: () =>
+          Promise.resolve({
+            models: [
+              {
+                name: 'models/page-two',
+                displayName: 'Page Two',
+                inputTokenLimit: 200,
+                outputTokenLimit: 20,
+                supportedGenerationMethods: ['embedContent'],
+              },
+            ],
+          }),
+        ok: true,
+      });
+    global.fetch = mockFetch;
+
+    const models = await new LobeGoogleAI({ apiKey: 'test-google-key' }).models();
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[0][0]).toContain('pageSize=1000');
+    expect(mockFetch.mock.calls[0][0]).not.toContain('pageToken=');
+    expect(mockFetch.mock.calls[1][0]).toContain('pageToken=page-2');
+    expect(models.map((m) => m.id)).toEqual(['page-one', 'page-two']);
+    expect(models[0].type).toBe('chat');
+    expect(models[1].type).toBe('embedding');
   });
 
   describe('transcribe', () => {

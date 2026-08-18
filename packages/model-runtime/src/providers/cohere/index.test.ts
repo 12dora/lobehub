@@ -348,13 +348,13 @@ describe('LobeCohereAI - custom features', () => {
         id: 'command-r-plus',
         contextWindowTokens: 128000,
         functionCall: true, // Has tools in features
-        vision: false,
+        vision: undefined,
       });
       expect(models[1]).toMatchObject({
         id: 'command-r',
         contextWindowTokens: 128000,
         functionCall: true, // Has tools in features
-        vision: false,
+        vision: undefined,
       });
     });
 
@@ -401,8 +401,8 @@ describe('LobeCohereAI - custom features', () => {
       expect(models[0]).toMatchObject({
         id: 'command',
         contextWindowTokens: 4096,
-        functionCall: false, // No tools in features, fallback to known model
-        vision: false,
+        functionCall: undefined,
+        vision: undefined,
       });
     });
 
@@ -425,8 +425,8 @@ describe('LobeCohereAI - custom features', () => {
       expect(models).toHaveLength(1);
       expect(models[0]).toMatchObject({
         id: 'command-light',
-        functionCall: false, // No tools in features
-        vision: false,
+        functionCall: undefined,
+        vision: undefined,
       });
     });
 
@@ -474,8 +474,8 @@ describe('LobeCohereAI - custom features', () => {
         contextWindowTokens: 8192,
         displayName: undefined,
         enabled: false,
-        functionCall: false,
-        vision: false,
+        functionCall: undefined,
+        vision: undefined,
       });
     });
 
@@ -520,7 +520,7 @@ describe('LobeCohereAI - custom features', () => {
       expect(models).toHaveLength(1);
       // Should combine API features with known model abilities
       expect(models[0].functionCall).toBe(true); // From features
-      expect(models[0].vision).toBe(false); // From API
+      expect(models[0].vision).toBeUndefined();
     });
 
     it('should handle empty model list', async () => {
@@ -592,8 +592,8 @@ describe('LobeCohereAI - custom features', () => {
       const models = await params.models({ client: mockClient as any });
 
       expect(models).toHaveLength(1);
-      // Should use known model abilities as fallback
-      expect(models[0].functionCall).toBeDefined();
+      // undocumented / absent features must not pin functionCall false
+      expect(models[0].functionCall).toBeUndefined();
     });
 
     it('should handle models with various context lengths', async () => {
@@ -669,8 +669,8 @@ describe('LobeCohereAI - custom features', () => {
         },
       });
 
-      // Should throw error when trying to map over undefined
-      await expect(params.models({ client: mockClient as any })).rejects.toThrow();
+      const models = await params.models({ client: mockClient as any });
+      expect(models).toEqual([]);
     });
 
     it('should handle malformed model data', async () => {
@@ -811,6 +811,78 @@ describe('LobeCohereAI - custom features', () => {
         expect(model).toHaveProperty('vision');
         expect(model).toHaveProperty('enabled');
       });
+    });
+
+    it('maps documented endpoints to type and leaves undocumented abilities unset', async () => {
+      mockClient.models.list.mockResolvedValue({
+        body: {
+          models: [
+            {
+              name: 'command-r-plus-wire',
+              context_length: 128000,
+              endpoints: ['chat', 'summarize'],
+              features: ['tools'],
+            },
+            {
+              name: 'embed-english-v3.0-wire',
+              context_length: 512,
+              endpoints: ['embed'],
+              features: [],
+            },
+            {
+              name: 'rerank-english-v3.0-wire',
+              context_length: 4096,
+              endpoints: ['rerank'],
+            },
+          ],
+          next_page_token: '',
+        },
+      });
+
+      const models = await params.models({ client: mockClient as any });
+
+      expect(models[0]).toMatchObject({
+        id: 'command-r-plus-wire',
+        functionCall: true,
+        type: 'chat',
+        vision: undefined,
+      });
+      expect(models[1]).toMatchObject({
+        id: 'embed-english-v3.0-wire',
+        functionCall: undefined,
+        type: 'embedding',
+      });
+      expect(models[2]).toMatchObject({
+        id: 'rerank-english-v3.0-wire',
+        type: undefined,
+      });
+    });
+
+    it('follows next_page_token and requests page_size 1000', async () => {
+      mockClient.models.list
+        .mockResolvedValueOnce({
+          body: {
+            models: [{ name: 'page-one-model', context_length: 1000, endpoints: ['chat'] }],
+            next_page_token: 'token-2',
+          },
+        })
+        .mockResolvedValueOnce({
+          body: {
+            models: [{ name: 'page-two-model', context_length: 2000, endpoints: ['embed'] }],
+          },
+        });
+
+      const models = await params.models({ client: mockClient as any });
+
+      expect(mockClient.models.list).toHaveBeenNthCalledWith(1, {
+        query: { page_size: 1000 },
+      });
+      expect(mockClient.models.list).toHaveBeenNthCalledWith(2, {
+        query: { page_size: 1000, page_token: 'token-2' },
+      });
+      expect(models.map((model) => model.id)).toEqual(['page-one-model', 'page-two-model']);
+      expect(models[0].type).toBe('chat');
+      expect(models[1].type).toBe('embedding');
     });
   });
 

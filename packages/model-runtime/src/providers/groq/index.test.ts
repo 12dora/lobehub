@@ -824,6 +824,28 @@ describe('LobeGroq - custom features', () => {
       });
     });
 
+    it('maps documented max_completion_tokens and created', async () => {
+      mockClient.models.list.mockResolvedValue({
+        data: [
+          {
+            id: 'llama-3.1-70b-versatile',
+            context_window: 131072,
+            max_completion_tokens: 32768,
+            created: 1_720_000_000,
+          },
+        ],
+      });
+
+      const models = await params.models({ client: mockClient as any });
+
+      expect(models[0]).toMatchObject({
+        id: 'llama-3.1-70b-versatile',
+        contextWindowTokens: 131072,
+        maxOutput: 32768,
+        releasedAt: '2024-07-03',
+      });
+    });
+
     it('should handle empty model list', async () => {
       mockClient.models.list.mockResolvedValue({
         data: [],

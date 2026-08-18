@@ -8,9 +8,26 @@ export interface XinferenceModelCard {
   id: string;
   model_ability: string[];
   model_description: string;
+  model_name: string;
   model_type: string;
-  name: string;
 }
+
+const xinferenceTypeFromModelType = (modelType?: string): ChatModelCard['type'] => {
+  switch (modelType?.toLowerCase()) {
+    case 'llm': {
+      return 'chat';
+    }
+    case 'embedding': {
+      return 'embedding';
+    }
+    case 'image': {
+      return 'image';
+    }
+    default: {
+      return undefined;
+    }
+  }
+};
 
 export const LobeXinferenceAI = createOpenAICompatibleRuntime({
   baseURL: 'http://localhost:9997/v1',
@@ -32,7 +49,7 @@ export const LobeXinferenceAI = createOpenAICompatibleRuntime({
         return {
           contextWindowTokens: model.context_length,
           description: model.model_description,
-          displayName: model.name,
+          displayName: model.model_name,
           enabled: knownModel?.enabled || false,
           functionCall:
             (model.model_ability && model.model_ability.includes('tools')) ||
@@ -43,6 +60,7 @@ export const LobeXinferenceAI = createOpenAICompatibleRuntime({
             (model.model_ability && model.model_ability.includes('reasoning')) ||
             knownModel?.abilities?.reasoning ||
             false,
+          type: xinferenceTypeFromModelType(model.model_type),
           vision:
             (model.model_ability && model.model_ability.includes('vision')) ||
             knownModel?.abilities?.vision ||

@@ -313,14 +313,14 @@ describe('LobeMistralAI - custom features', () => {
         id: 'mistral-large-latest',
         contextWindowTokens: 128000,
         functionCall: true,
-        vision: false,
+        vision: undefined,
         description: 'Mistral Large model',
       });
       expect(models[1]).toMatchObject({
         id: 'mistral-small-latest',
         contextWindowTokens: 32000,
         functionCall: true,
-        vision: false,
+        vision: undefined,
         description: 'Mistral Small model',
       });
     });
@@ -393,8 +393,8 @@ describe('LobeMistralAI - custom features', () => {
       expect(models[0]).toMatchObject({
         id: 'unknown-mistral-model',
         contextWindowTokens: 8192,
-        functionCall: false,
-        vision: false,
+        functionCall: undefined,
+        vision: undefined,
         displayName: undefined,
         enabled: false,
         description: 'Unknown model',
@@ -443,8 +443,8 @@ describe('LobeMistralAI - custom features', () => {
 
       expect(models).toHaveLength(1);
       expect(models[0]).toHaveProperty('reasoning');
-      // reasoning should be false unless specified in LOBE_DEFAULT_MODEL_LIST
-      expect(models[0].reasoning).toBe(false);
+      // absent/false wire capabilities must not pin reasoning false
+      expect(models[0].reasoning).toBeUndefined();
     });
 
     it('should handle empty model list', async () => {
@@ -553,11 +553,11 @@ describe('LobeMistralAI - custom features', () => {
 
       expect(models).toHaveLength(3);
       expect(models[0].functionCall).toBe(true);
-      expect(models[0].vision).toBe(false);
-      expect(models[1].functionCall).toBe(false);
+      expect(models[0].vision).toBeUndefined();
+      expect(models[1].functionCall).toBeUndefined();
       expect(models[1].vision).toBe(true);
-      expect(models[2].functionCall).toBe(false);
-      expect(models[2].vision).toBe(false);
+      expect(models[2].functionCall).toBeUndefined();
+      expect(models[2].vision).toBeUndefined();
     });
 
     it('should handle all properties from API response', async () => {
@@ -634,7 +634,12 @@ describe('LobeMistralAI - custom features', () => {
         ],
       });
 
-      await expect(params.models({ client: mockClient as any })).rejects.toThrow();
+      const models = await params.models({ client: mockClient as any });
+
+      expect(models).toHaveLength(1);
+      expect(models[0].functionCall).toBeUndefined();
+      expect(models[0].vision).toBeUndefined();
+      expect(models[0].reasoning).toBeUndefined();
     });
 
     it('should filter out falsy values', async () => {
@@ -658,6 +663,66 @@ describe('LobeMistralAI - custom features', () => {
 
       expect(models).toHaveLength(1);
       expect(models[0].id).toBe('valid-model');
+    });
+
+    it('maps documented OpenAPI fields: reasoning, name, created, exclusive type', async () => {
+      mockClient.models.list.mockResolvedValue({
+        data: [
+          {
+            id: 'magistral-wire-model',
+            object: 'model',
+            created: 1_714_608_000,
+            owned_by: 'mistralai',
+            name: 'Magistral Medium',
+            description: 'Reasoning model',
+            max_context_length: 128000,
+            capabilities: {
+              completion_chat: true,
+              completion_fim: false,
+              function_calling: true,
+              fine_tuning: false,
+              reasoning: true,
+              vision: false,
+            },
+          },
+          {
+            id: 'voxtral-transcribe-wire',
+            created: 1_714_608_000,
+            name: 'Voxtral Transcribe',
+            description: 'ASR only',
+            max_context_length: 32768,
+            capabilities: {
+              audio_transcription: true,
+            },
+          },
+          {
+            id: 'multi-capability-wire',
+            name: 'Chat plus speech',
+            capabilities: {
+              completion_chat: true,
+              audio_speech: true,
+            },
+          },
+        ],
+      });
+
+      const models = await params.models({ client: mockClient as any });
+
+      expect(models[0]).toMatchObject({
+        id: 'magistral-wire-model',
+        displayName: 'Magistral Medium',
+        functionCall: true,
+        reasoning: true,
+        releasedAt: '2024-05-02',
+        type: 'chat',
+        vision: undefined,
+      });
+      expect(models[1]).toMatchObject({
+        id: 'voxtral-transcribe-wire',
+        displayName: 'Voxtral Transcribe',
+        type: 'asr',
+      });
+      expect(models[2].type).toBeUndefined();
     });
   });
 

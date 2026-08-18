@@ -49,7 +49,7 @@ export const params = {
             knownModel?.abilities?.functionCall ||
             false,
           id: model.id,
-          maxTokens: model.top_provider.max_completion_tokens,
+          maxOutput: model.top_provider.max_completion_tokens,
           reasoning:
             model.description.includes('reasoning') || knownModel?.abilities?.reasoning || false,
           vision:

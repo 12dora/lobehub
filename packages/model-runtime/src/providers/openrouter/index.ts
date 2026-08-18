@@ -106,6 +106,7 @@ export const params = {
       const { top_provider, architecture, pricing, supported_parameters } = model;
 
       const inputModalities = architecture.input_modalities || [];
+      const outputModalities = architecture.output_modalities || [];
 
       // Process the name, by default strip the colon and everything before it
       let displayName = model.name;
@@ -142,12 +143,11 @@ export const params = {
         displayName,
         functionCall: supported_parameters.includes('tools'),
         id: model.id,
+        imageOutput: outputModalities.includes('image') ? true : undefined,
         maxOutput:
           typeof top_provider.max_completion_tokens === 'number'
             ? top_provider.max_completion_tokens
-            : typeof model.context_length === 'number'
-              ? model.context_length
-              : undefined,
+            : undefined,
         pricing: {
           cachedInput: cachedInputPrice,
           input: inputPrice,
@@ -156,6 +156,7 @@ export const params = {
         },
         reasoning: hasReasoning,
         releasedAt: new Date(model.created * 1000).toISOString().split('T')[0],
+        video: outputModalities.includes('video') ? true : undefined,
         vision: inputModalities.includes('image'),
         // Merge all applicable extendParams for settings
         ...(() => {

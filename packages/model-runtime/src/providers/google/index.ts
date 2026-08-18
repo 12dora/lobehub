@@ -66,11 +66,28 @@ const normalizeThinkingConfig = (config?: ThinkingConfig): ThinkingConfig | unde
 };
 
 export interface GoogleModelCard {
+  description?: string;
   displayName: string;
   inputTokenLimit: number;
   name: string;
   outputTokenLimit: number;
+  supportedGenerationMethods?: string[];
+  thinking?: boolean;
 }
+
+const googleTypeFromMethods = (methods: string[] | undefined): 'chat' | 'embedding' | undefined => {
+  if (!methods?.length) return undefined;
+
+  const hasEmbed = methods.includes('embedContent') || methods.includes('batchEmbedContents');
+  const hasChat =
+    methods.includes('generateContent') ||
+    methods.includes('streamGenerateContent') ||
+    methods.includes('bidiGenerateContent');
+
+  if (hasEmbed && !hasChat) return 'embedding';
+  if (hasChat && !hasEmbed) return 'chat';
+  return undefined;
+};
 
 enum HarmCategory {
   HARM_CATEGORY_DANGEROUS_CONTENT = 'HARM_CATEGORY_DANGEROUS_CONTENT',
@@ -524,31 +541,50 @@ export class LobeGoogleAI implements LobeRuntimeAI {
 
   private async modelsUnbound(options?: { signal?: AbortSignal }) {
     try {
-      const url = `${this.baseURL}/v1beta/models`;
-      const response = await fetch(url, {
-        headers: {
-          'x-goog-api-key': this.apiKey!,
-        },
-        method: 'GET',
-        signal: options?.signal,
-      });
+      const modelList: GoogleModelCard[] = [];
+      let pageToken: string | undefined;
+      let pages = 0;
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      do {
+        const search = new URLSearchParams({ pageSize: '1000' });
+        if (pageToken) search.set('pageToken', pageToken);
 
-      const json = await response.json();
+        const response = await fetch(`${this.baseURL}/v1beta/models?${search}`, {
+          headers: {
+            'x-goog-api-key': this.apiKey!,
+          },
+          method: 'GET',
+          signal: options?.signal,
+        });
 
-      const modelList: GoogleModelCard[] = json.models;
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const json = await response.json();
+        if (Array.isArray(json.models)) {
+          modelList.push(...json.models);
+        }
+
+        pageToken =
+          typeof json.nextPageToken === 'string' && json.nextPageToken
+            ? json.nextPageToken
+            : undefined;
+        pages += 1;
+      } while (pageToken && pages < 20);
 
       const processedModels = modelList.map((model) => {
         const id = model.name.replace(/^models\//, '');
 
         return {
           contextWindowTokens: (model.inputTokenLimit || 0) + (model.outputTokenLimit || 0),
+          description: model.description,
           displayName: model.displayName || id,
           id,
           maxOutput: model.outputTokenLimit || undefined,
+          // Newer field; omit when absent so catalog/keyword reasoning is not forced off.
+          reasoning: typeof model.thinking === 'boolean' ? model.thinking : undefined,
+          type: googleTypeFromMethods(model.supportedGenerationMethods),
         };
       });
 

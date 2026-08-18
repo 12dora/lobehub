@@ -29,16 +29,24 @@ describe('LobeXinferenceAI - custom features', () => {
           id: 'qwen-7b',
           model_ability: ['chat', 'tools', 'vision'],
           model_description: 'Qwen 7B model',
+          model_name: 'Qwen 7B',
           model_type: 'LLM',
-          name: 'Qwen 7B',
         },
         {
           context_length: 8192,
           id: 'llama-2-13b',
           model_ability: ['chat', 'reasoning'],
           model_description: 'Llama 2 13B model',
+          model_name: 'Llama 2 13B',
           model_type: 'LLM',
-          name: 'Llama 2 13B',
+        },
+        {
+          context_length: 512,
+          id: 'bge-base',
+          model_ability: ['embed'],
+          model_description: 'BGE embedding',
+          model_name: 'BGE Base',
+          model_type: 'embedding',
         },
       ];
 
@@ -49,13 +57,14 @@ describe('LobeXinferenceAI - custom features', () => {
       const models = await instance.models();
 
       expect(instance['client'].models.list).toHaveBeenCalled();
-      expect(models).toHaveLength(2);
+      expect(models).toHaveLength(3);
       expect(models[0]).toMatchObject({
         id: 'qwen-7b',
         displayName: 'Qwen 7B',
         contextWindowTokens: 4096,
         description: 'Qwen 7B model',
         functionCall: true,
+        type: 'chat',
         vision: true,
         reasoning: false,
       });
@@ -65,8 +74,14 @@ describe('LobeXinferenceAI - custom features', () => {
         contextWindowTokens: 8192,
         description: 'Llama 2 13B model',
         functionCall: false,
+        type: 'chat',
         vision: false,
         reasoning: true,
+      });
+      expect(models[2]).toMatchObject({
+        id: 'bge-base',
+        displayName: 'BGE Base',
+        type: 'embedding',
       });
     });
 

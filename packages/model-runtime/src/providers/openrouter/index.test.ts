@@ -1293,8 +1293,72 @@ describe('LobeOpenRouterAI - custom features', () => {
       const models = await params.models();
 
       const nullMaxOutputModel = models.find((m) => m.id === 'null-maxoutput/model');
-      // When top_provider.max_completion_tokens is null, falls back to model.context_length
-      expect(nullMaxOutputModel?.maxOutput).toBe(8192);
+      // absent max_completion_tokens is absent — do not substitute context_length
+      expect(nullMaxOutputModel?.maxOutput).toBeUndefined();
+    });
+
+    it('maps documented output_modalities to imageOutput and video', async () => {
+      const mockModels = [
+        {
+          id: 'acme/canvas-out',
+          canonical_slug: 'acme/canvas-out',
+          name: 'Canvas Out Model',
+          created: 1679587200,
+          context_length: 8192,
+          architecture: {
+            modality: 'text+image->text+image',
+            input_modalities: ['text'],
+            output_modalities: ['text', 'image'],
+            tokenizer: 'default',
+            instruct_type: null,
+          },
+          pricing: { prompt: '0.00001', completion: '0.00002' },
+          top_provider: {
+            context_length: 8192,
+            max_completion_tokens: 4096,
+            is_moderated: false,
+          },
+          supported_parameters: [],
+        },
+        {
+          id: 'acme/clip-out',
+          canonical_slug: 'acme/clip-out',
+          name: 'Clip Out Model',
+          created: 1679587200,
+          context_length: 8192,
+          architecture: {
+            modality: 'text->video',
+            input_modalities: ['text'],
+            output_modalities: ['video'],
+            tokenizer: 'default',
+            instruct_type: null,
+          },
+          pricing: { prompt: '0.00001', completion: '0.00002' },
+          top_provider: {
+            context_length: 8192,
+            max_completion_tokens: 4096,
+            is_moderated: false,
+          },
+          supported_parameters: [],
+        },
+      ];
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: mockModels }),
+        }),
+      );
+
+      const models = await params.models();
+      const imageModel = models.find((m) => m.id === 'acme/canvas-out');
+      const videoModel = models.find((m) => m.id === 'acme/clip-out');
+
+      expect(imageModel?.imageOutput).toBe(true);
+      expect(imageModel?.video).toBe(false);
+      expect(videoModel?.video).toBe(true);
+      expect(videoModel?.imageOutput).toBe(false);
     });
 
     it('should format releasedAt from created timestamp', async () => {

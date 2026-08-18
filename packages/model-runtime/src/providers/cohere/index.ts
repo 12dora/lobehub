@@ -5,12 +5,25 @@ import type { OpenAICompatibleFactoryOptions } from '../../core/openaiCompatible
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
 import { resolveParameters } from '../../core/parameterResolver';
 
+export type CohereCompatibleEndpoint =
+  'chat' | 'classify' | 'embed' | 'generate' | 'rate' | 'rerank' | 'summarize';
+
 export interface CohereModelCard {
-  context_length: number;
-  features: string[] | null;
+  context_length?: number;
+  endpoints?: CohereCompatibleEndpoint[];
+  features?: string[] | null;
   name: string;
-  supports_vision: boolean;
+  supports_vision?: boolean;
 }
+
+const cohereTypeFromEndpoints = (
+  endpoints: CohereCompatibleEndpoint[] | undefined,
+): ChatModelCard['type'] => {
+  if (!endpoints?.length) return undefined;
+  if (endpoints.includes('chat')) return 'chat';
+  if (endpoints.includes('embed')) return 'embedding';
+  return undefined;
+};
 
 export const params = {
   baseURL: 'https://api.cohere.ai/compatibility/v1',
@@ -46,8 +59,25 @@ export const params = {
 
     client.baseURL = 'https://api.cohere.com/v1';
 
-    const modelsPage = (await client.models.list()) as any;
-    const modelList: CohereModelCard[] = modelsPage.body.models;
+    const modelList: CohereModelCard[] = [];
+    let pageToken: string | undefined;
+    let pages = 0;
+
+    do {
+      const modelsPage = (await client.models.list({
+        query: {
+          page_size: 1000,
+          ...(pageToken ? { page_token: pageToken } : {}),
+        },
+      })) as any;
+      const pageModels: CohereModelCard[] = modelsPage.body?.models ?? [];
+      modelList.push(...pageModels);
+      pageToken =
+        typeof modelsPage.body?.next_page_token === 'string' && modelsPage.body.next_page_token
+          ? modelsPage.body.next_page_token
+          : undefined;
+      pages += 1;
+    } while (pageToken && pages < 20);
 
     return modelList
       .map((model) => {
@@ -60,11 +90,10 @@ export const params = {
           displayName: knownModel?.displayName ?? undefined,
           enabled: knownModel?.enabled || false,
           functionCall:
-            (model.features && model.features.includes('tools')) ||
-            knownModel?.abilities?.functionCall ||
-            false,
+            model.features?.includes('tools') === true ? true : knownModel?.abilities?.functionCall,
           id: model.name,
-          vision: model.supports_vision || knownModel?.abilities?.vision || false,
+          type: cohereTypeFromEndpoints(model.endpoints),
+          vision: model.supports_vision === true ? true : knownModel?.abilities?.vision,
         };
       })
       .filter(Boolean) as ChatModelCard[];

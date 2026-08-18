@@ -15,15 +15,28 @@ import { AgentRuntimeError } from '../../utils/createError';
 import { debugStream } from '../../utils/debugStream';
 import { StreamingResponse } from '../../utils/response';
 
+export interface CloudflareModelProperty {
+  property_id: string;
+  value: string;
+}
+
 export interface CloudflareModelCard {
   description: string;
   name: string;
-  properties?: Record<string, string>;
+  properties?: CloudflareModelProperty[];
   task?: {
     description?: string;
     name: string;
   };
 }
+
+const cloudflareProperty = (
+  properties: CloudflareModelCard['properties'],
+  id: string,
+): string | undefined => {
+  if (!Array.isArray(properties)) return undefined;
+  return properties.find((property) => property.property_id === id)?.value;
+};
 
 /**
  * Walks common upstream error shapes (Error, { message }, { error: { message } },
@@ -184,17 +197,22 @@ export class LobeCloudflareAI implements LobeRuntimeAI {
           (m) => model.name.toLowerCase() === m.id.toLowerCase(),
         );
 
+        const maxTotalTokens = cloudflareProperty(model.properties, 'max_total_tokens');
+
         return {
-          contextWindowTokens: model.properties?.max_total_tokens
-            ? Number(model.properties.max_total_tokens)
+          contextWindowTokens: maxTotalTokens
+            ? Number(maxTotalTokens)
             : (knownModel?.contextWindowTokens ?? undefined),
+          description: model.description,
           displayName:
             knownModel?.displayName ??
-            (model.properties?.['beta'] === 'true' ? `${model.name} (Beta)` : undefined),
+            (cloudflareProperty(model.properties, 'beta') === 'true'
+              ? `${model.name} (Beta)`
+              : undefined),
           enabled: knownModel?.enabled || false,
           functionCall:
             model.description.toLowerCase().includes('function call') ||
-            model.properties?.['function_calling'] === 'true' ||
+            cloudflareProperty(model.properties, 'function_calling') === 'true' ||
             knownModel?.abilities?.functionCall ||
             false,
           id: model.name,

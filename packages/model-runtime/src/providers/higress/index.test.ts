@@ -68,6 +68,8 @@ describe('LobeHigressAI - params', () => {
       expect(models[0]).toHaveProperty('functionCall');
       expect(models[0]).toHaveProperty('vision');
       expect(models[0]).toHaveProperty('reasoning');
+      expect(models[0].maxOutput).toBe(4096);
+      expect(models[0]).not.toHaveProperty('maxTokens');
     });
 
     it('should detect functionCall from description', async () => {

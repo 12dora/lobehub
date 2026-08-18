@@ -8,7 +8,9 @@ import { AgentRuntimeErrorType } from '../../types/error';
 
 export interface GroqModelCard {
   context_window: number;
+  created?: number;
   id: string;
+  max_completion_tokens?: number;
 }
 
 /**
@@ -116,10 +118,15 @@ export const params = {
             knownModel?.abilities?.functionCall ||
             false,
           id: model.id,
+          maxOutput: model.max_completion_tokens,
           reasoning:
             reasoningKeywords.some((keyword) => model.id.toLowerCase().includes(keyword)) ||
             knownModel?.abilities?.reasoning ||
             false,
+          releasedAt:
+            typeof model.created === 'number' && model.created > 1_630_000_000
+              ? new Date(model.created * 1000).toISOString().split('T')[0]
+              : undefined,
           vision:
             model.id.toLowerCase().includes('vision') || knownModel?.abilities?.vision || false,
         };
