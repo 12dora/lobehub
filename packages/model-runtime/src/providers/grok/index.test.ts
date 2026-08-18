@@ -790,6 +790,21 @@ describe('LobeGrokAI', () => {
         }),
       ]);
     });
+
+    it('treats an explicit empty list as zero models', async () => {
+      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({ data: [] } as never);
+
+      await expect(instance.models()).resolves.toEqual([]);
+    });
+
+    it.each([
+      { data: undefined, label: 'missing data' },
+      { data: { error: { code: 'invalid_token' } }, label: 'a non-array data field' },
+    ])('throws when the proxy answers with $label', async ({ data }) => {
+      vi.spyOn(instance['client'].models, 'list').mockResolvedValue({ data } as never);
+
+      await expect(instance.models()).rejects.toThrow('Grok models payload was not a list');
+    });
   });
 
   describe('request capture', () => {

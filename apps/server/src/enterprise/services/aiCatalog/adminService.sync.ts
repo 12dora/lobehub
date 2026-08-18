@@ -20,7 +20,11 @@ import {
 } from './errors';
 import { mergeModelUpdateFields } from './modelBatchDml';
 import type { AiCatalogSecretManager } from './secretManager';
-import { isOAuthAuthorizationExpiredError, refreshSharedOAuthVault } from './sharedOAuthRefresh';
+import {
+  isOAuthAuthorizationExpiredError,
+  isSharedOAuthRefreshConsumedError,
+  refreshSharedOAuthVault,
+} from './sharedOAuthRefresh';
 
 const SYNC_UPSTREAM_REASON = 'Sync models from upstream';
 const MODEL_KEY_MAX = 150;
@@ -60,16 +64,20 @@ const clip = (value: string | undefined, max: number): string | undefined => {
   return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
 };
 
+/**
+ * Undefined = upstream never mentioned these flags, so keep what is stored.
+ * An explicit all-false set is `{}` so a capability the account lost can turn off.
+ */
 const collectAbilities = (card: ChatModelCard): Record<string, boolean> | undefined => {
   const abilities: Record<string, boolean> = {};
-  let any = false;
+  let reported = false;
   for (const key of ABILITY_KEYS) {
-    if (card[key]) {
-      abilities[key] = true;
-      any = true;
-    }
+    const value = card[key];
+    if (typeof value !== 'boolean') continue;
+    reported = true;
+    if (value) abilities[key] = true;
   }
-  return any ? abilities : undefined;
+  return reported ? abilities : undefined;
 };
 
 const toUpstreamSyncError = (error: unknown): AiCatalogUpstreamSyncError => {
@@ -154,7 +162,7 @@ export const mapCardsToBatchUpdate = (
 
     const item: BatchUpdateItem = {
       id: current?.id ?? modelKey,
-      ...(abilities ? { abilities } : {}),
+      ...(abilities !== undefined ? { abilities } : {}),
       ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
       ...(description !== undefined ? { description } : {}),
       ...(displayName !== undefined ? { displayName } : {}),
@@ -241,8 +249,11 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
             secrets: this.secrets,
           });
         } catch (error) {
-          if (isOAuthAuthorizationExpiredError(error)) throw toUpstreamSyncError(error);
-          // Transient token-endpoint blip — the still-valid access token may list models.
+          if (isOAuthAuthorizationExpiredError(error) || isSharedOAuthRefreshConsumedError(error)) {
+            throw toUpstreamSyncError(error);
+          }
+          // Token-endpoint blip before the rotating token is spent — the still-valid
+          // access token may list models. Persist failures after exchange are terminal.
           refreshed = keyVaults;
         }
       }
@@ -267,29 +278,45 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
 
       const { created, items, total, updated } = mapCardsToBatchUpdate(cards, detail.draft.models);
 
-      if (items.length > 0) {
-        await this.applyModelImmediate(
+      const appendSyncSuccessAudit = (db: typeof this.db) =>
+        new PlatformAuditService(db).append({
+          action: 'admin.aiModels.syncUpstream',
           actorUserId,
-          {
-            expectedDraftToken: detail.draftToken,
-            models: items,
-            operation: 'batchUpdate',
-            providerId: detail.draft.id,
-            reason,
-          },
-          { allowModelCreate: true },
-        );
-      }
+          afterDiff: { created, total, updated },
+          reason,
+          result: 'success',
+          targetId: detail.draft.id,
+          targetType: 'provider',
+        });
 
-      await new PlatformAuditService(this.db).append({
-        action: 'admin.aiModels.syncUpstream',
-        actorUserId,
-        afterDiff: { created, total, updated },
-        reason,
-        result: 'success',
-        targetId: detail.draft.id,
-        targetType: 'provider',
-      });
+      if (items.length > 0) {
+        await this.runModelApplyTransaction(
+          {
+            action: 'admin.aiModels.applyImmediate',
+            actorUserId,
+            auditTargetId: detail.draft.id,
+            reason,
+            secretTargetId: detail.draft.id,
+          },
+          async (scoped) => {
+            await scoped.applyModelMutation(
+              actorUserId,
+              {
+                expectedDraftToken: detail.draftToken,
+                models: items,
+                operation: 'batchUpdate',
+                providerId: detail.draft.id,
+                reason,
+              },
+              { allowModelCreate: true },
+            );
+            await scoped.publishAfterMutation(actorUserId, detail.draft.id, reason);
+            await appendSyncSuccessAudit(scoped.db);
+          },
+        );
+      } else {
+        await appendSyncSuccessAudit(this.db);
+      }
 
       return { created, total, updated };
     } catch (error) {

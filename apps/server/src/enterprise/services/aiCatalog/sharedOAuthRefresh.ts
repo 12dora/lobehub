@@ -120,6 +120,32 @@ export const isOAuthAuthorizationExpiredError = (error: unknown): boolean =>
   error !== null &&
   (error as { errorType?: unknown }).errorType === AgentRuntimeErrorType.OAuthAuthorizationExpired;
 
+const readRuntimeErrorMessage = (error: unknown): string => {
+  if (typeof error !== 'object' || error === null) return '';
+  const record = error as { error?: unknown; message?: unknown };
+  if (typeof record.message === 'string') return record.message;
+  if (typeof record.error === 'object' && record.error !== null) {
+    const inner = (record.error as { message?: unknown }).message;
+    if (typeof inner === 'string') return inner;
+  }
+  return '';
+};
+
+/**
+ * Persist failed after the token endpoint may already have consumed a rotating
+ * refresh token. Callers must not fall back to the pre-refresh vault snapshot —
+ * durable storage may still hold the consumed token, and the next expiry would
+ * kill the shared account with no failed operation to explain it.
+ *
+ * `ensureFreshOAuthTokenWithStore` surfaces that case as `InvalidProviderAPIKey`
+ * with this message; token-endpoint / transport failures keep their original shape.
+ */
+export const isSharedOAuthRefreshConsumedError = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { errorType?: unknown }).errorType === AgentRuntimeErrorType.InvalidProviderAPIKey &&
+  readRuntimeErrorMessage(error).includes('could not be saved');
+
 const throwSharedGrantExpired = (providerId: string): never => {
   // Surfaced to end users who cannot fix it themselves — point them at the admin, and
   // leave an operator trace (the vault is deliberately NOT cleared; it is the evidence).

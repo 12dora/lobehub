@@ -25,6 +25,16 @@ interface ChatGPTAdditionalToolsInput {
 const isResponsesLiteModel = (model: string | undefined) =>
   !!model && CHATGPT_RESPONSES_LITE_MODEL_IDS.has(model);
 
+/** Codex `/models` is undocumented — only "this route is not there" is a catalog fallback. */
+const CODEX_MODELS_MISSING_STATUSES = new Set([404, 405, 501]);
+
+const isCodexModelsEndpointMissing = (error: unknown): boolean => {
+  if (typeof error !== 'object' || error === null) return false;
+  const status =
+    (error as { status?: unknown }).status ?? (error as { statusCode?: unknown }).statusCode;
+  return typeof status === 'number' && CODEX_MODELS_MISSING_STATUSES.has(status);
+};
+
 export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>({
   baseURL: CHATGPT_CODEX_BASE_URL,
   chatCompletion: {
@@ -48,8 +58,8 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
     chatCompletion: () => process.env.DEBUG_CHATGPT_CHAT_COMPLETION === '1',
     responses: () => process.env.DEBUG_CHATGPT_RESPONSES === '1',
   },
-  // Codex `/models` is undocumented and may 404/401; fall back to the curated
-  // catalog so sync still returns a persistable list instead of a dead error.
+  // Codex `/models` is undocumented and may simply not exist. Auth, rate-limit,
+  // and transport failures must surface — those are the errors an operator can act on.
   models: async ({ client }) => {
     try {
       const modelsPage = (await client.models.list()) as { data?: unknown };
@@ -59,7 +69,11 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
       }
 
       return processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt');
-    } catch {
+    } catch (error) {
+      if (!(error instanceof TypeError) && !isCodexModelsEndpointMissing(error)) {
+        throw error;
+      }
+
       const { chatgpt } = await import('model-bank');
 
       return processModelList(chatgpt, MODEL_LIST_CONFIGS.openai, 'chatgpt');

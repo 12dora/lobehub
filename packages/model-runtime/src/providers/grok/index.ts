@@ -424,7 +424,10 @@ export const LobeGrokAI = createOpenAICompatibleRuntime<GrokClientOptions>({
   },
   models: async ({ client }) => {
     const modelsPage = (await client.models.list()) as { data?: GrokProxyModelCard[] };
-    const modelList = Array.isArray(modelsPage.data) ? modelsPage.data : [];
+    if (!Array.isArray(modelsPage?.data)) {
+      throw new TypeError('Grok models payload was not a list');
+    }
+    const modelList = modelsPage.data;
     const effortParamById = new Map(
       modelList.map((model) => [
         model.id,

@@ -67,7 +67,10 @@ export const LobeSuperGrokAI = createOpenAICompatibleRuntime({
   },
   models: async ({ client }) => {
     const modelsPage = (await client.models.list()) as { data?: SuperGrokModelCard[] };
-    const modelList = Array.isArray(modelsPage.data) ? modelsPage.data : [];
+    if (!Array.isArray(modelsPage?.data)) {
+      throw new TypeError('SuperGrok models payload was not a list');
+    }
+    const modelList = modelsPage.data;
 
     return processModelList(modelList.map(mapSuperGrokModel), MODEL_LIST_CONFIGS.xai, 'supergrok');
   },

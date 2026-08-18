@@ -323,7 +323,8 @@ describe('LobeChatGPTAI', () => {
 
     it.each([
       { reason: '404s', status: 404 },
-      { reason: '401s', status: 401 },
+      { reason: '405s', status: 405 },
+      { reason: '501s', status: 501 },
     ])('returns the chatgpt catalog when Codex /models $reason', async ({ status }) => {
       vi.spyOn(instance['client'].models, 'list').mockRejectedValue(
         Object.assign(new Error(`HTTP ${status}`), { status }),
@@ -342,6 +343,13 @@ describe('LobeChatGPTAI', () => {
       );
     });
 
+    it('propagates a 401 from Codex /models instead of publishing the curated catalog', async () => {
+      const unauthorized = Object.assign(new Error('HTTP 401'), { status: 401 });
+      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(unauthorized);
+
+      await expect(instance.models()).rejects.toBe(unauthorized);
+    });
+
     it('returns the chatgpt catalog when the live payload cannot be parsed', async () => {
       vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
         data: 'not-a-list',
@@ -352,12 +360,11 @@ describe('LobeChatGPTAI', () => {
       expect(models.map((model) => model.id).sort()).toEqual(catalogIds);
     });
 
-    it('never throws for a reason the operator cannot act on', async () => {
-      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(new Error('socket hang up'));
+    it('propagates transport failures from Codex /models', async () => {
+      const transport = new Error('socket hang up');
+      vi.spyOn(instance['client'].models, 'list').mockRejectedValue(transport);
 
-      await expect(instance.models()).resolves.toEqual(
-        expect.arrayContaining([expect.objectContaining({ id: 'gpt-5.5' })]),
-      );
+      await expect(instance.models()).rejects.toBe(transport);
     });
   });
 });

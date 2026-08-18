@@ -32,7 +32,6 @@ import type { PlatformConfigInvalidationPublisher } from '../platformConfigInval
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import { invalidateAiCatalogAuthorityToken } from '../platformInstance/catalogTokens';
 import type { DeferInvalidation } from '../platformPublisher';
-import type { AiCatalogAdminServiceModelOps } from './adminService.models';
 import { AiCatalogAdminServiceSyncOps } from './adminService.sync';
 import { AiCatalogReadService } from './catalogReadService';
 import {
@@ -217,8 +216,9 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceSyncOps {
       reason: string;
       secretTargetId?: string;
     },
-    run: (scoped: AiCatalogAdminServiceModelOps) => Promise<T>,
-  ): Promise<T> => this.runApplyTransaction(params, run);
+    run: (scoped: this) => Promise<T>,
+  ): Promise<T> =>
+    this.runApplyTransaction(params, run as (scoped: AiCatalogAdminService) => Promise<T>);
 
   protected sanitizeReason = async (
     reason: string,

@@ -123,7 +123,9 @@ export abstract class AiCatalogAdminServiceModelOps {
       reason: string;
       secretTargetId?: string;
     },
-    run: (scoped: AiCatalogAdminServiceModelOps) => Promise<T>,
+    // Polymorphic `this`, not the base class: the scoped clone really is the full service, and a
+    // subclass that runs a model transaction needs to reach its own protected members on it.
+    run: (scoped: this) => Promise<T>,
   ) => Promise<T>;
   abstract getDetail: (
     providerIdOrLookup: string | { id?: string; providerKey?: string },
