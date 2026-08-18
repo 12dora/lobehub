@@ -1,9 +1,8 @@
 {
-  "ai21.description": "AI21 Labs 为企业构建基础模型和 AI 系统，加速生成式 AI 的落地应用。",
   "ai302.description": "302.AI 是一个按需付费的 AI 平台，提供丰富的 AI API 和在线 AI 应用目录。",
   "ai360.description": "360 AI 是来自 360 的模型与服务平台，提供如 360GPT2 Pro、360GPT Pro 和 360GPT Turbo 等自然语言处理模型，结合大参数规模与多模态能力，支持文本生成、语义理解、对话与代码处理，定价灵活，满足多样化需求。",
   "aihubmix.description": "AiHubMix 通过统一 API 提供多种 AI 模型的访问能力。",
-  "akashchat.description": "Akash 是一个无需许可的云资源市场，与传统云提供商相比，其定价具有竞争力。",
+  "akashchat.description": "AkashML 基于 Akash Network 提供开源模型的托管推理服务。",
   "antgroup.description": "蚂蚁百灵（Ant Ling）是蚂蚁集团通用人工智能（AGI）计划的核心基础模型系列，致力于构建并开放前沿基础模型能力。我们相信，智能的发展需要走向开放、共享和可扩展，从小事出发，推动通用人工智能的稳健演进与真实落地。",
   "anthropic.description": "Anthropic 构建了先进的语言模型，如 Claude 3.5 Sonnet、Claude 3 Sonnet、Claude 3 Opus 和 Claude 3 Haiku，兼顾智能、速度与成本，适用于企业级到快速响应等多种场景。",
   "azure.description": "Azure 提供先进的 AI 模型，包括 GPT-3.5 和 GPT-4 系列，支持多种数据类型和复杂任务，注重安全、可靠与可持续的 AI 实践。",
@@ -25,7 +24,6 @@
   "fal.description": "一个为开发者打造的生成式媒体平台。",
   "fireworksai.description": "Fireworks AI 提供先进的语言模型服务，支持函数调用与多模态处理。Firefunction V2（基于 Llama-3）优化了函数调用、对话与指令执行，FireLLaVA-13B 支持图文混合输入，另有 Llama 与 Mixtral 系列模型。",
   "giteeai.description": "Gitee AI Serverless API 为开发者提供即插即用的大模型推理服务。",
-  "github.description": "通过 GitHub Models，开发者可使用行业领先模型构建 AI 工程项目。",
   "githubcopilot.description": "通过您的 GitHub Copilot 订阅访问 Claude、GPT 和 Gemini 模型。",
   "glmcodingplan.description": "GLM Coding Plan 提供对智谱 AI 模型（包括 GLM-5 和 GLM-4.7）的访问，适用于编程任务，采用固定月费订阅模式。",
   "google.description": "Google 的 Gemini 系列是其最先进的通用 AI，由 Google DeepMind 构建，支持文本、代码、图像、音频与视频的多模态应用，具备从数据中心到移动设备的高效扩展能力。",

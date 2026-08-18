@@ -239,3 +239,15 @@ describe('model provider predicates', () => {
     expect(rejected).toEqual([]);
   });
 });
+
+// Captured before the suite above mutates the shared array in place.
+const pickerIdsAtLoad = DEFAULT_MODEL_PROVIDER_LIST.map((provider) => provider.id);
+
+describe('retired providers', () => {
+  it('omits ai21 and github from the picker list', () => {
+    expect(pickerIdsAtLoad).not.toContain('ai21');
+    expect(pickerIdsAtLoad).not.toContain('github');
+    // GitHub Copilot is a different product and stays listed.
+    expect(pickerIdsAtLoad).toContain('githubcopilot');
+  });
+});

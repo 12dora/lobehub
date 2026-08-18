@@ -1,7 +1,6 @@
 import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
 
 import type { ChatModelCard, ModelProviderCard } from '../types';
-import Ai21Provider from './ai21';
 import Ai302Provider from './ai302';
 import Ai360Provider from './ai360';
 import AiHubMixProvider from './aihubmix';
@@ -26,7 +25,6 @@ import DeepSeekProvider from './deepseek';
 import FalProvider from './fal';
 import FireworksAIProvider from './fireworksai';
 import GiteeAIProvider from './giteeai';
-import GithubProvider from './github';
 import GithubCopilotProvider from './githubCopilot';
 import GLMCodingPlanProvider from './glmCodingPlan';
 import GoogleProvider from './google';
@@ -100,7 +98,6 @@ export const LOBE_DEFAULT_MODEL_LIST: ChatModelCard[] = [
   DeepSeekProvider.chatModels,
   GoogleProvider.chatModels,
   GroqProvider.chatModels,
-  GithubProvider.chatModels,
   MinimaxProvider.chatModels,
   MistralProvider.chatModels,
   ModelScopeProvider.chatModels,
@@ -132,7 +129,6 @@ export const LOBE_DEFAULT_MODEL_LIST: ChatModelCard[] = [
   GiteeAIProvider.chatModels,
   UpstageProvider.chatModels,
   SparkProvider.chatModels,
-  Ai21Provider.chatModels,
   HunyuanProvider.chatModels,
   WenxinProvider.chatModels,
   SenseNovaProvider.chatModels,
@@ -145,6 +141,9 @@ export const LOBE_DEFAULT_MODEL_LIST: ChatModelCard[] = [
   VercelAIGatewayProvider.chatModels,
 ].flat();
 
+// `ai21` and `github` stay in ModelProvider / runtimeMap / aiModels so a stored
+// row still resolves; they are omitted here because both upstream APIs are retired
+// and the picker is built from this list.
 export const DEFAULT_MODEL_PROVIDER_LIST = [
   ...(ENABLE_BUSINESS_FEATURES ? [LobeHubProvider] : []),
   AnthropicProvider,
@@ -171,7 +170,6 @@ export const DEFAULT_MODEL_PROVIDER_LIST = [
   ComfyUIProvider,
   HuggingFaceProvider,
   CloudflareProvider,
-  GithubProvider,
   GithubCopilotProvider,
   NewAPIProvider,
   BflProvider,
@@ -185,7 +183,6 @@ export const DEFAULT_MODEL_PROVIDER_LIST = [
   PerplexityProvider,
   MistralProvider,
   ModelScopeProvider,
-  Ai21Provider,
   UpstageProvider,
   XAIProvider,
   SuperGrokProvider,

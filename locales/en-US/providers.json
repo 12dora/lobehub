@@ -1,9 +1,8 @@
 {
-  "ai21.description": "AI21 Labs builds foundation models and AI systems for enterprises, accelerating generative AI in production.",
   "ai302.description": "302.AI is a pay-as-you-go AI platform offering a broad catalog of AI APIs and online AI apps.",
   "ai360.description": "360 AI is a model and service platform from 360, offering NLP models like 360GPT2 Pro, 360GPT Pro, and 360GPT Turbo. The models combine large-scale parameters and multimodal capabilities for text generation, semantic understanding, chat, and code, with flexible pricing for diverse needs.",
   "aihubmix.description": "AIHubMix provides access to multiple AI models through a unified API.",
-  "akashchat.description": "Akash is a permissionless cloud resource marketplace with competitive pricing compared to traditional cloud providers.",
+  "akashchat.description": "AkashML provides managed inference for open source AI models, powered by the Akash Network.",
   "antgroup.description": "Ant Ling is the core foundation model series of Ant Group’s Artificial General Intelligence (AGI) initiative, dedicated to building and opening up cutting-edge foundational model capabilities. We believe that the development of intelligence must move toward openness, sharing, and scalability—starting from small, practical steps to drive the steady evolution and real-world deployment of AGI.",
   "anthropic.description": "Anthropic builds advanced language models like Claude 3.5 Sonnet, Claude 3 Sonnet, Claude 3 Opus, and Claude 3 Haiku, balancing intelligence, speed, and cost for workloads from enterprise to rapid-response use cases.",
   "azure.description": "Azure offers advanced AI models, including GPT-3.5 and GPT-4 series, for diverse data types and complex tasks with a focus on safe, reliable, and sustainable AI.",
@@ -25,7 +24,6 @@
   "fal.description": "A generative media platform built for developers.",
   "fireworksai.description": "Fireworks AI provides advanced language model services with function calling and multimodal processing. Firefunction V2 (based on Llama-3) is optimized for function calls, chat, and instruction following, while FireLLaVA-13B supports mixed image-text inputs. Other notable models include the Llama and Mixtral families.",
   "giteeai.description": "Gitee AI Serverless APIs provide plug-and-play LLM inference services for developers.",
-  "github.description": "With GitHub Models, developers can build as AI engineers using industry-leading models.",
   "githubcopilot.description": "Access Claude, GPT, and Gemini models through your GitHub Copilot subscription.",
   "glmcodingplan.description": "GLM Coding Plan provides access to Zhipu AI models including GLM-5 and GLM-4.7 for coding tasks via a fixed-fee subscription.",
   "google.description": "Google's Gemini family is its most advanced general-purpose AI, built by Google DeepMind for multimodal use across text, code, images, audio, and video. It scales from data centers to mobile devices with strong efficiency and reach.",

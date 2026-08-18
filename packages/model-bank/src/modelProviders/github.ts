@@ -1,21 +1,17 @@
 import type { ModelProviderCard } from '../types';
 
-// ref: https://github.com/marketplace/models
+// Not on DEFAULT_MODEL_PROVIDER_LIST: GitHub Models retired 2026-07-30 (catalogue + inference 410).
 const Github: ModelProviderCard = {
   chatModels: [],
   checkModel: 'microsoft/Phi-3-mini-4k-instruct',
-  // Ref: https://github.blog/news-insights/product-news/introducing-github-models/
-  description:
-    'With GitHub Models, developers can build as AI engineers using industry-leading models.',
+  description: 'GitHub Models has been retired. Existing credentials can still be disabled here.',
   id: 'github',
-  modelList: { showModelFetcher: true },
-  // I'm not sure if it is good to show the model fetcher, as remote list is not complete.
   name: 'GitHub',
   settings: {
     sdkType: 'azure',
-    showModelFetcher: true,
+    showModelFetcher: false,
   },
-  url: 'https://github.com/marketplace/models',
+  url: 'https://github.blog/changelog/2026-07-30-github-models-is-now-retired/',
 };
 
 export default Github;
