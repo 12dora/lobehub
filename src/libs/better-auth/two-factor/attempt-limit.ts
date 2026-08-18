@@ -73,19 +73,35 @@ export const enforceTwoFactorAttemptLimit = async (
 };
 
 /**
- * Process-local atomic increment. Used when Redis is not configured (tests,
- * single-node without Redis). Concurrent callers for the same key are
+ * Process-local atomic increment. Used when Redis is not configured (tests
+ * and docker-compose.minimal). Concurrent callers for the same key are
  * serialized on a per-key promise tail — not a read-then-write.
+ *
+ * Not a substitute for Redis in a multi-replica production deploy: each
+ * process has its own budget. We still ship it because the documented
+ * minimal compose has no Redis, and failing closed would make TOTP login
+ * impossible there. Keys expire and are deleted on consume so this is not
+ * an unbounded leak.
  */
 export const createMemoryAtomicIncrement = () => {
   const counts = new Map<string, { count: number; expiresAt: number }>();
   const tails = new Map<string, Promise<unknown>>();
+
+  const evictExpired = (now: number) => {
+    for (const [key, entry] of counts) {
+      if (entry.expiresAt <= now) {
+        counts.delete(key);
+        tails.delete(key);
+      }
+    }
+  };
 
   const increment = async (key: string, ttlSeconds = TWO_FACTOR_ATTEMPT_WINDOW_SECONDS) => {
     const previous = tails.get(key) ?? Promise.resolve();
     let nextCount = 0;
     const next = previous.then(() => {
       const now = Date.now();
+      evictExpired(now);
       const current = counts.get(key);
       nextCount = !current || current.expiresAt <= now ? 1 : current.count + 1;
       counts.set(key, { count: nextCount, expiresAt: now + ttlSeconds * 1000 });
@@ -98,7 +114,12 @@ export const createMemoryAtomicIncrement = () => {
     return nextCount;
   };
 
-  return { increment };
+  const remove = async (key: string) => {
+    counts.delete(key);
+    tails.delete(key);
+  };
+
+  return { delete: remove, increment, size: () => counts.size };
 };
 
 export interface TwoFactorAttemptLimitOptions {
@@ -113,20 +134,40 @@ export interface TwoFactorAttemptLimitOptions {
  * per-IP and does a separate get-then-set, so parallel batches all read the
  * same count. This plugin is the per-challenge counter that actually serializes.
  */
+const readChallengeId = async (ctx: {
+  context: { createAuthCookie: (name: string) => { name: string }; secret: string };
+  getSignedCookie: (name: string, secret: string) => Promise<string | false | null>;
+}) => {
+  const cookie = ctx.context.createAuthCookie('two_factor');
+  const signed = await ctx.getSignedCookie(cookie.name, ctx.context.secret);
+  return typeof signed === 'string' && signed.length > 0 ? signed : null;
+};
+
 export const twoFactorAttemptLimit = (
   options: TwoFactorAttemptLimitOptions = {},
 ): BetterAuthPlugin => {
-  const increment = options.increment ?? createMemoryAtomicIncrement().increment;
+  const memory = options.increment ? null : createMemoryAtomicIncrement();
+  const increment = options.increment ?? memory!.increment;
+  const remove = options.delete ?? memory?.delete;
   const maxAttempts = options.maxAttempts ?? TWO_FACTOR_MAX_ATTEMPTS;
+  const matchesLimitPath = (ctx: { path?: string }) =>
+    typeof ctx.path === 'string' && TWO_FACTOR_ATTEMPT_LIMIT_PATHS.has(ctx.path);
 
   return {
     hooks: {
+      after: [
+        {
+          handler: createAuthMiddleware(async (ctx) => {
+            const challengeId = await readChallengeId(ctx);
+            if (challengeId) await remove?.(attemptKey(challengeId));
+          }),
+          matcher: matchesLimitPath,
+        },
+      ],
       before: [
         {
           handler: createAuthMiddleware(async (ctx) => {
-            const cookie = ctx.context.createAuthCookie('two_factor');
-            const signed = await ctx.getSignedCookie(cookie.name, ctx.context.secret);
-            const challengeId = typeof signed === 'string' && signed.length > 0 ? signed : null;
+            const challengeId = await readChallengeId(ctx);
 
             await enforceTwoFactorAttemptLimit({
               challengeId,
@@ -134,13 +175,12 @@ export const twoFactorAttemptLimit = (
               invalidate: async () => {
                 if (!challengeId) return;
                 await ctx.context.internalAdapter.deleteVerificationByIdentifier(challengeId);
-                await options.delete?.(attemptKey(challengeId));
+                await remove?.(attemptKey(challengeId));
               },
               maxAttempts,
             });
           }),
-          matcher: (ctx) =>
-            typeof ctx.path === 'string' && TWO_FACTOR_ATTEMPT_LIMIT_PATHS.has(ctx.path),
+          matcher: matchesLimitPath,
         },
       ],
     },

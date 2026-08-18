@@ -9,7 +9,9 @@ const mocks = vi.hoisted(() => ({
   getCurrentAuthContext: vi.fn(),
   getTwoFactorEnrollmentState: vi.fn(async () => ({
     enabled: true,
+    hasUnverifiedFactor: false,
     hasVerifiedFactor: true,
+    userUpdatedAt: new Date(),
   })),
 }));
 
@@ -20,6 +22,7 @@ vi.mock('@better-auth/core/context', () => ({
 vi.mock('@/database/models/twoFactor', () => ({
   clearOrphanedTwoFactorEnabled: mocks.clearOrphanedTwoFactorEnabled,
   getTwoFactorEnrollmentState: mocks.getTwoFactorEnrollmentState,
+  isStaleTwoFactorOrphan: () => false,
 }));
 
 const STOCK_2FA_PATHS = ['/sign-in/email', '/sign-in/username', '/sign-in/phone-number'] as const;
@@ -61,6 +64,11 @@ describe('withTwoFactorChallengedPaths', () => {
     expect(rewrite.matcher(pathCtx('/verify-email'))).toBe(true);
     expect(rewrite.matcher(pathCtx('/sign-in/email-otp'))).toBe(false);
     expect(rewrite.matcher(pathCtx('/callback/google'))).toBe(false);
+
+    const before = (
+      wrapped.hooks as { before?: { matcher: (ctx: never) => boolean }[] } | undefined
+    )?.before;
+    expect(before?.some((hook) => hook.matcher(pathCtx('/two-factor/verify-totp')))).toBe(true);
   });
 });
 
@@ -71,7 +79,9 @@ describe('gate × challenge interaction', () => {
     vi.clearAllMocks();
     mocks.getTwoFactorEnrollmentState.mockResolvedValue({
       enabled: true,
+      hasUnverifiedFactor: false,
       hasVerifiedFactor: true,
+      userUpdatedAt: new Date(),
     });
     mocks.getCurrentAuthContext.mockRejectedValue(new Error('no request context'));
   });

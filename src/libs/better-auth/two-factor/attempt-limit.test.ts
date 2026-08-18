@@ -55,6 +55,15 @@ describe('consumeTwoFactorAttempt', () => {
     expect(invalidate).not.toHaveBeenCalled();
   });
 
+  it('evicts expired keys and deletes on consume so the map cannot grow without bound', async () => {
+    const memory = createMemoryAtomicIncrement();
+    await memory.increment('2fa-attempts:old', 0);
+    await memory.increment('2fa-attempts:live', 600);
+    expect(memory.size()).toBe(1);
+    await memory.delete('2fa-attempts:live');
+    expect(memory.size()).toBe(0);
+  });
+
   it('isolates counters per challenge', async () => {
     const { increment } = createMemoryAtomicIncrement();
     const invalidate = vi.fn(async () => undefined);

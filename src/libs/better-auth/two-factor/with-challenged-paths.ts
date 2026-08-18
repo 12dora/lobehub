@@ -5,6 +5,7 @@ import {
   NAVIGATION_2FA_CHALLENGE_PATHS,
   rewriteNavigationTwoFactorChallenge,
 } from './navigation-challenge-redirect';
+import { stripTrustDeviceHook } from './strip-trust-device';
 
 /**
  * Sign-in endpoints that create a session via `setSessionCookie` (so
@@ -30,6 +31,9 @@ export const EXTRA_2FA_CHALLENGE_PATHS = new Set([
   // response shape as magic-link when there is no callback redirect; when
   // there is one, after-hooks still run and can replace the response.
   '/verify-email',
+  // Mobile email-verification auto-sign-in. Same `setSessionCookie` + JSON
+  // contract (`email-otp/routes.mjs` ~324). A fetch, so no navigation rewrite.
+  '/email-otp/verify-email',
 ]);
 
 /**
@@ -45,6 +49,11 @@ export const withTwoFactorChallengedPaths = <T extends BetterAuthPlugin>(plugin:
     ...plugin,
     hooks: {
       ...plugin.hooks,
+      before: [
+        ...((plugin.hooks as { before?: (typeof stripTrustDeviceHook)[] } | undefined)?.before ??
+          []),
+        stripTrustDeviceHook,
+      ],
       after: [
         ...after.map((hook) => ({
           ...hook,

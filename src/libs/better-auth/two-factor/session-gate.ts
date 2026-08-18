@@ -4,10 +4,20 @@ import { APIError } from 'better-auth/api';
 import {
   clearOrphanedTwoFactorEnabled,
   getTwoFactorEnrollmentState,
+  isStaleTwoFactorOrphan,
 } from '@/database/models/twoFactor';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { EXTRA_2FA_CHALLENGE_PATHS } from './with-challenged-paths';
+
+export const TWO_FACTOR_VERIFICATION_PATHS = new Set([
+  '/two-factor/verify-totp',
+  '/two-factor/verify-backup-code',
+  '/two-factor/verify-otp',
+]);
+
+export const isTwoFactorVerificationPath = (path: string | null | undefined): boolean =>
+  typeof path === 'string' && TWO_FACTOR_VERIFICATION_PATHS.has(path);
 
 /**
  * HTTP paths that may mint a session for a user with `twoFactorEnabled`.
@@ -28,20 +38,19 @@ import { EXTRA_2FA_CHALLENGE_PATHS } from './with-challenged-paths';
  * are matched separately — they are not challenged, because a redirect
  * response cannot carry `twoFactorRedirect`.
  *
- * `/change-password` and `/admin/impersonate-user` rotate a session for an
- * already-authenticated principal (or an admin). They are not sign-in bypasses.
+ * `/change-password` rotates a session for an already-authenticated principal.
+ * `/admin/impersonate-user` is NOT here: it mints a TOTP user's session with
+ * no challenge. Platform admin blocks the route when enabled; when it is off
+ * the built-in better-auth admin must not be a 2FA bypass.
  */
 export const TWO_FACTOR_SESSION_ALLOWED_PATHS = new Set([
-  '/two-factor/verify-totp',
-  '/two-factor/verify-backup-code',
-  '/two-factor/verify-otp',
+  ...TWO_FACTOR_VERIFICATION_PATHS,
   '/passkey/verify-authentication',
   '/sign-in/email',
   '/sign-in/username',
   '/sign-in/phone-number',
   ...EXTRA_2FA_CHALLENGE_PATHS,
   '/change-password',
-  '/admin/impersonate-user',
 ]);
 
 /** better-auth social (`/callback/:id`) and generic-OAuth (`/oauth2/callback/:id`). */
@@ -56,7 +65,11 @@ export const TWO_FACTOR_REQUIRED_MESSAGE =
 type AuthPathContext = { path?: string | null };
 
 export const isTwoFactorSessionPathAllowed = (path: string | null | undefined): boolean => {
-  if (typeof path !== 'string' || path.length === 0) return true;
+  // `null` / `undefined` = no HTTP request (bootstrap, scripts, tests). Those
+  // callers already hold whatever privilege they need to mint a session.
+  // An empty string is a request that failed to name a route — fail closed.
+  if (path === null || path === undefined) return true;
+  if (path.length === 0) return false;
   if (TWO_FACTOR_SESSION_ALLOWED_PATHS.has(path)) return true;
   return isOAuthCallbackPath(path);
 };
@@ -74,7 +87,10 @@ export const resolveAuthRequestPath = async (
     }
   }
 
-  return typeof path === 'string' && path.length > 0 ? path : null;
+  // Preserve empty-string so the gate can fail closed; only a missing
+  // context becomes null (scripted / bootstrap create).
+  if (typeof path === 'string') return path;
+  return null;
 };
 
 export const rejectTwoFactorSessionBypass = (): never => {
@@ -93,23 +109,30 @@ export const rejectTwoFactorSessionBypass = (): never => {
  * provisioning and tests keep working.
  *
  * Orphaned `twoFactorEnabled` (flag set, no verified factor) is repaired
- * first so a half-finished enrolment cannot lock the user out of every path.
+ * so a half-finished enrolment cannot lock the user out — but NEVER during
+ * `/two-factor/verify-*`, where that pair is the in-flight enable transition
+ * (flag flipped, session rotated, *then* the row marked verified).
  */
 export const enforceTwoFactorSessionGate = async (params: {
   context?: AuthPathContext | null;
   db: LobeChatDatabase;
   userId: string;
 }): Promise<void> => {
+  const path = await resolveAuthRequestPath(params.context);
   const state = await getTwoFactorEnrollmentState(params.db, params.userId);
 
-  if (state.enabled && !state.hasVerifiedFactor) {
+  if (
+    state.enabled &&
+    !state.hasVerifiedFactor &&
+    !isTwoFactorVerificationPath(path) &&
+    isStaleTwoFactorOrphan(state)
+  ) {
     await clearOrphanedTwoFactorEnabled(params.db, params.userId);
     return;
   }
 
   if (!state.enabled) return;
 
-  const path = await resolveAuthRequestPath(params.context);
   if (isTwoFactorSessionPathAllowed(path)) return;
 
   rejectTwoFactorSessionBypass();
