@@ -33,6 +33,23 @@ export default {
   'agentCatalog.assignment.targetIdGlobal': 'Applies to every member',
   'agentCatalog.assignment.targetType': 'Target type',
   'agentCatalog.assignment.tooManyToEdit': 'Too many assignments to edit here.',
+  'agentCatalog.bulk.archive.action': 'Archive',
+  'agentCatalog.bulk.archive.description':
+    '{{count}} assistants will be archived and excluded from new assignments.',
+  'agentCatalog.bulk.archive.ineligible':
+    'None of the selected assistants can be archived. Archived and default assistants are excluded.',
+  'agentCatalog.bulk.archive.submit': 'Archive selected',
+  'agentCatalog.bulk.archive.title': 'Archive selected assistants',
+  'agentCatalog.bulk.delete.action': 'Delete',
+  'agentCatalog.bulk.delete.description':
+    '{{count}} assistants, including every version, assignment, and members’ copies, will be permanently deleted.',
+  'agentCatalog.bulk.delete.ineligible':
+    'None of the selected assistants can be deleted. Default and system assistants are excluded.',
+  'agentCatalog.bulk.delete.submit': 'Delete permanently',
+  'agentCatalog.bulk.delete.title': 'Delete selected assistants',
+  'agentCatalog.bulk.more': 'and {{count}} more',
+  'agentCatalog.bulk.skipped':
+    '{{count}} selected assistants are not eligible and will be skipped.',
   'agentCatalog.defaultSwitch.action': 'Set as default',
   'agentCatalog.defaultSwitch.description':
     'Make this the organization default assistant. Only new conversations are affected.',
@@ -163,6 +180,7 @@ export default {
   'agentCatalog.editor.tagsPlaceholder': 'Add a tag and press Enter',
   'agentCatalog.editor.title.create': 'New platform assistant',
   'agentCatalog.editor.title.edit': 'Edit platform assistant',
+  'agentCatalog.list.bulk.actions': 'Actions',
   'agentCatalog.list.columns.actions': 'Actions',
   'agentCatalog.list.columns.agent': 'Assistant',
   'agentCatalog.list.columns.assignments': 'Assignments',
@@ -177,6 +195,7 @@ export default {
   'agentCatalog.list.loadingMore': 'Loading…',
   'agentCatalog.list.more': 'More',
   'agentCatalog.list.search': 'Search assistants',
+  'agentCatalog.list.selectedCount': '{{count}} selected',
   'agentCatalog.list.title': 'Platform assistants',
   'agentCatalog.recovery.refreshFailed': 'Saved, but the latest state could not be loaded.',
   'agentCatalog.save.invalid': 'Fill in the name, role, and model before saving.',
@@ -186,6 +205,11 @@ export default {
   'agentCatalog.toast.actionFailed':
     'The action could not be started. Check your connection and try again.',
   'agentCatalog.toast.archived': 'Assistant archived.',
+  'agentCatalog.toast.bulkCancelled': 'Cancelled, {{count}} not processed',
+  'agentCatalog.toast.bulkDone': '{{count}} succeeded',
+  'agentCatalog.toast.bulkFailureDetail': '{{label}}: {{reason}}',
+  'agentCatalog.toast.bulkSkipped': '{{count}} skipped',
+  'agentCatalog.toast.bulkSummary': '{{succeeded}} succeeded, {{failed}} failed',
   'agentCatalog.toast.created': 'Assistant created and live.',
   'agentCatalog.toast.deleted': 'Assistant deleted.',
   'agentCatalog.toast.refreshDeferred':

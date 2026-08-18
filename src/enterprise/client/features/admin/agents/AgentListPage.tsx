@@ -18,6 +18,7 @@ import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { enumColumnFilter } from '../primitives/columnFilters';
 import DataTable, { type AdminTableChangeMeta } from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
+import AgentListBulkActions from './AgentListBulkActions';
 import { applyAgentSaveOutputToListItem } from './applySaveOutput';
 import { deriveAdminAgentActionAvailability, deriveAdminAgentPermissions } from './controller';
 import { getAdminAgentErrorMessage } from './errorPresentation';
@@ -27,6 +28,7 @@ import { openDeleteAgentModal } from './openDeleteAgentModal';
 import { usePruneLegacyAdminAgentDrafts } from './pruneLegacyAgentDrafts';
 import type { AdminAgentListItem } from './types';
 import { fetchAdminAgentDetail, useAdminAgentListPagination } from './useAdminAgents';
+import { useAgentListSelection } from './useAgentListSelection';
 import { useAgentRowActions } from './useAgentRowActions';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -60,6 +62,14 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   toolbar: css`
     width: 100%;
+  `,
+  toolbarRight: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+
+    margin-inline-start: auto;
   `,
   toolbarSearch: css`
     flex: 0 1 260px;
@@ -102,6 +112,10 @@ const AgentListPage = memo(() => {
   const filtered = Boolean(input.query || input.status);
   // 设为默认助理 / 归档助理 moved here from the removed assistant detail page.
   const rowActions = useAgentRowActions({ authMethod: authMethod ?? null, onChanged: refreshList });
+  const { clearSelection, rowSelection, selectedRows } = useAgentListSelection();
+  // Archive and hard delete both sit behind AGENT_DELETE: without it the checkbox column would
+  // only ever collect rows nothing can act on.
+  const canBulk = agentPermissions.canDelete;
   // AGENT_ASSIGN is independently grantable: it must open the editor even without AGENT_UPDATE.
   const canOpenEditor = availability.canEdit || agentPermissions.canAssign;
   const hasRowActions = canOpenEditor || agentPermissions.canDelete || agentPermissions.canPublish;
@@ -172,6 +186,16 @@ const AgentListPage = memo(() => {
     },
     [authMethod, removeListItem, t],
   );
+
+  /** One revalidation for the whole batch, then the selection is released. */
+  const handleBulkDone = useCallback(async () => {
+    try {
+      await refreshList();
+    } catch {
+      toast.warning(t('agentCatalog.recovery.refreshFailed'));
+    }
+    clearSelection();
+  }, [clearSelection, refreshList, t]);
 
   // Every column carries an explicit width so the table runs `tableLayout: fixed` (see `scroll.x`
   // below): under `auto`, a CJK header collapses to one character per line.
@@ -363,9 +387,10 @@ const AgentListPage = memo(() => {
             columns={columns}
             dataSource={list.items}
             rowKey={(item) => item.identity.id}
+            rowSelection={canBulk ? rowSelection : undefined}
             // Fixed layout + horizontal scroll: honour the column widths instead of letting the
-            // browser crush a CJK header to one character.
-            scroll={{ x: 900 }}
+            // browser crush a CJK header to one character. The checkbox column adds its own 40px.
+            scroll={{ x: canBulk ? 940 : 900 }}
             size="small"
             emptyDescription={t(
               filtered ? 'agentCatalog.list.empty.filtered' : 'agentCatalog.list.empty.default',
@@ -388,11 +413,19 @@ const AgentListPage = memo(() => {
                     onPressEnter={() => patch('q', queryDraft.trim() || undefined)}
                   />
                 </div>
-                {filtered ? (
-                  <Button size="small" type="text" onClick={clearFilters}>
-                    {t('primitives.filterBar.clear')}
-                  </Button>
-                ) : null}
+                <div className={styles.toolbarRight}>
+                  {filtered ? (
+                    <Button size="small" type="text" onClick={clearFilters}>
+                      {t('primitives.filterBar.clear')}
+                    </Button>
+                  ) : null}
+                  <AgentListBulkActions
+                    authMethod={authMethod ?? null}
+                    canDelete={agentPermissions.canDelete}
+                    selectedRows={selectedRows}
+                    onDone={handleBulkDone}
+                  />
+                </div>
               </Flexbox>
             }
             onChange={handleTableChange}

@@ -15,7 +15,7 @@ const t = (key: string) => String(i18n.t(key as never, { ns: 'admin' }));
  * Stable, non-localized audit reason for the confirm-only hard delete. The server still bounds
  * it as a non-empty reason; keeping it locale-independent keeps the audit trail consistent.
  */
-const DELETE_REASON = 'Platform assistant hard-deleted from admin console';
+export const AGENT_DELETE_AUTO_REASON = 'Platform assistant hard-deleted from admin console';
 
 /**
  * Irreversible hard delete of a platform assistant (and all its versions, assignments,
@@ -37,7 +37,7 @@ export const openDeleteAgentModal = (params: {
 }) => {
   openReasonModal({
     authMethod: params.authMethod,
-    autoReason: DELETE_REASON,
+    autoReason: AGENT_DELETE_AUTO_REASON,
     danger: true,
     description: t('agentCatalog.delete.description'),
     hideReason: true,

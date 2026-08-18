@@ -104,7 +104,13 @@ vi.mock('@lobehub/ui/base-ui', () => ({
     <span data-testid="row-more">
       {children}
       {(items ?? []).map((item: any) => (
-        <button data-danger={String(Boolean(item.danger))} key={item.key} onClick={item.onClick}>
+        <button
+          data-danger={String(Boolean(item.danger))}
+          data-desc={item.desc ?? ''}
+          disabled={Boolean(item.disabled)}
+          key={item.key}
+          onClick={item.onClick}
+        >
           {item.label}
         </button>
       ))}
@@ -146,6 +152,7 @@ vi.mock('../primitives/DataTable', () => ({
     emptyDescription,
     onChange,
     onRowActivate,
+    rowSelection,
     scroll,
     size,
     toolbar,
@@ -166,13 +173,21 @@ vi.mock('../primitives/DataTable', () => ({
       sorter: Record<string, never>;
     }) => void;
     onRowActivate?: (record: AdminAgentListItem) => void;
+    rowSelection?: {
+      columnWidth?: number;
+      preserveSelectedRowKeys?: boolean;
+      selectedRowKeys?: string[];
+      onChange?: (keys: string[], rows: AdminAgentListItem[]) => void;
+    };
     scroll?: { x?: number };
     size?: string;
     toolbar?: ReactNode;
   }) => (
     <div
+      data-preserve-selected={String(Boolean(rowSelection?.preserveSelectedRowKeys))}
       data-row-activate={String(Boolean(onRowActivate))}
       data-scroll-x={scroll?.x}
+      data-selection-width={rowSelection?.columnWidth ?? ''}
       data-size={size}
     >
       {toolbar}
@@ -203,6 +218,23 @@ vi.mock('../primitives/DataTable', () => ({
       <div>rows:{dataSource.length}</div>
       {dataSource.map((item) => (
         <div key={item.identity.id}>
+          {rowSelection ? (
+            <input
+              aria-label={`select:${item.identity.id}`}
+              checked={(rowSelection.selectedRowKeys ?? []).includes(item.identity.id)}
+              type="checkbox"
+              onChange={(event) => {
+                const previous = rowSelection.selectedRowKeys ?? [];
+                const keys = event.target.checked
+                  ? [...previous, item.identity.id]
+                  : previous.filter((key) => key !== item.identity.id);
+                rowSelection.onChange?.(
+                  keys,
+                  dataSource.filter((row) => keys.includes(row.identity.id)),
+                );
+              }}
+            />
+          ) : null}
           <button onClick={() => onRowActivate?.(item)}>activate:{item.identity.id}</button>
           {columns.map((column) => (
             <div key={column.key}>{column.render?.(undefined, item)}</div>
@@ -791,5 +823,81 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       .map((option) => option.getAttribute('value'))
       .filter(Boolean);
     expect(options).toEqual(['published', 'archived']);
+  });
+  it('offers no checkbox column to an operator without AGENT_DELETE', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ];
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    const { container } = renderPage();
+    // A selection nothing can act on is dead chrome — and the 40px column is not reserved.
+    expect(screen.queryByLabelText('select:agent-1')).toBeNull();
+    expect(container.querySelector('[data-scroll-x]')?.getAttribute('data-scroll-x')).toBe('900');
+  });
+
+  it('reserves the 40px checkbox column and keeps keys across pages for a deleter', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+    const { container } = renderPage();
+    const table = container.querySelector('[data-scroll-x]')!;
+    expect(table.getAttribute('data-selection-width')).toBe('40');
+    expect(table.getAttribute('data-preserve-selected')).toBe('true');
+    // 900 + the checkbox column.
+    expect(table.getAttribute('data-scroll-x')).toBe('940');
+  });
+
+  it('shows the selected count and one actions menu once rows are selected', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    mocks.list = pagination({
+      boundaryData: [item('agent-1'), item('agent-2')],
+      items: [item('agent-1'), item('agent-2')],
+    });
+    renderPage();
+
+    expect(screen.queryByText('agentCatalog.list.bulk.actions')).toBeNull();
+    fireEvent.click(screen.getByLabelText('select:agent-1'));
+
+    expect(screen.getByText('agentCatalog.list.selectedCount')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.list.bulk.actions')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.bulk.archive.action')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.bulk.delete.action')).toBeTruthy();
+  });
+
+  it('disables the bulk entries whose selection holds no eligible row', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    // The default assistant can be neither bulk-archived (needs a successor) nor deleted.
+    const row = item('agent-default', { isDefault: true });
+    mocks.list = pagination({ boundaryData: [row], items: [row] });
+    renderPage();
+
+    fireEvent.click(screen.getByLabelText('select:agent-default'));
+    const archive = screen.getByText('agentCatalog.bulk.archive.action') as HTMLButtonElement;
+    const remove = screen.getByText('agentCatalog.bulk.delete.action') as HTMLButtonElement;
+    expect(archive.disabled).toBe(true);
+    expect(remove.disabled).toBe(true);
+    // The reason is spelled out rather than left to a vanished menu entry.
+    expect(archive.getAttribute('data-desc')).toBe('agentCatalog.bulk.archive.ineligible');
+    expect(remove.getAttribute('data-desc')).toBe('agentCatalog.bulk.delete.ineligible');
+  });
+
+  it('keeps a selected row that scrolled out of the loaded pages', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    mocks.list = pagination({
+      boundaryData: [item('agent-1'), item('agent-2')],
+      items: [item('agent-1'), item('agent-2')],
+    });
+    const { rerender } = renderPage();
+
+    fireEvent.click(screen.getByLabelText('select:agent-1'));
+    fireEvent.click(screen.getByLabelText('select:agent-2'));
+    expect(screen.getByText('agentCatalog.list.selectedCount')).toBeTruthy();
+
+    // A filter narrows the rendered page; the stored rows must survive so eligibility can still
+    // be computed for rows antd no longer hands back.
+    mocks.list = pagination({ boundaryData: [item('agent-2')], items: [item('agent-2')] });
+    rerender(
+      <MemoryRouter>
+        <AgentListPage />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('agentCatalog.list.bulk.actions')).toBeTruthy();
   });
 });
