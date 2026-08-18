@@ -113,9 +113,17 @@ export const adminAiProviderOAuthRouter = router({
       // did not happen.
       if (!detail) return { disconnected: false, revision: null };
 
-      // Capture the device id before the vault is cleared. The jar wipe must run AFTER
-      // a successful apply: doing it first used to destroy the session file while a
-      // failed apply left the vault intact.
+      // Already withdrawn. Republishing would mint another immutable revision and
+      // another success audit for an authorization that is not there; a lost
+      // response plus a client retry is enough to trigger that.
+      if (!detail.draft.secret.configured) {
+        return { disconnected: true, revision: detail.baseRevision };
+      }
+
+      // Capture the device id before the vault is cleared. apply commits the clear
+      // and then does a final getDetail — a transient failure there rejects after
+      // the vault is already null, so the wipe cannot wait on a resolved apply.
+      // Wiping before apply (or after a failed clear) destroys a live session.
       let chatgptWebDeviceId: string | undefined;
       if (input.id === 'chatgptweb') {
         try {
@@ -136,6 +144,15 @@ export const adminAiProviderOAuthRouter = router({
         }
       }
 
+      const wipeCapturedJar = () => {
+        if (!chatgptWebDeviceId) return;
+        try {
+          wipeChatGPTWebCookieJar(chatgptWebDeviceId);
+        } catch {
+          // Best-effort: never fail the disconnect on a jar unlink.
+        }
+      };
+
       const audit = new PlatformAuditService(ctx.serverDB);
       let result;
       try {
@@ -151,6 +168,16 @@ export const adminAiProviderOAuthRouter = router({
           secret: { operation: 'clear' },
         });
       } catch (error) {
+        let clearCommitted = false;
+        try {
+          const provider = await new PlatformAiCatalogRepository(ctx.serverDB).getProvider(
+            detail.draft.id,
+          );
+          clearCommitted = !provider?.encryptedKeyVaults;
+        } catch {
+          // Cannot tell — do not wipe a session that may still be live.
+        }
+        if (clearCommitted) wipeCapturedJar();
         await auditProvider(audit, {
           action: 'admin.aiProviderOAuth.disconnect',
           actorUserId: ctx.userId!,
@@ -162,13 +189,7 @@ export const adminAiProviderOAuthRouter = router({
         return mapServiceError(error);
       }
 
-      if (chatgptWebDeviceId) {
-        try {
-          wipeChatGPTWebCookieJar(chatgptWebDeviceId);
-        } catch {
-          // Best-effort: never fail the disconnect on a jar unlink.
-        }
-      }
+      wipeCapturedJar();
 
       await auditProvider(audit, {
         action: 'admin.aiProviderOAuth.disconnect',

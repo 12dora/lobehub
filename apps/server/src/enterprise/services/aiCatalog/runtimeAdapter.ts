@@ -22,18 +22,17 @@ import {
   reportPlatformRuntimeMaterialization,
   reportPlatformRuntimeMaterializationSafely,
 } from '../platformInstance/runtimeReporter';
-import {
-  hasAiCatalogEnvironmentFallback,
-  normalizeAiCatalogExecutionCredentials,
-  resolveAiCatalogRuntimeProvider,
-} from './credentialAdapter';
+import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
 import { isPlatformAiTakeoverActive } from './enforcement';
 import {
   AiCatalogModelNotPublishedError,
   AiCatalogNotFoundError,
   AiCatalogProviderUnavailableError,
 } from './errors';
-import { projectAiCatalogRuntimeState } from './runtimeProjection';
+import {
+  canExecuteAiCatalogProviderWithoutStoredSecret,
+  projectAiCatalogRuntimeState,
+} from './runtimeProjection';
 import type { PlatformProviderKeyVaults } from './secretManager';
 import { AiCatalogSecretManager } from './secretManager';
 import { isOAuthAuthorizationExpiredError, refreshSharedOAuthVault } from './sharedOAuthRefresh';
@@ -311,8 +310,9 @@ export class AiCatalogExecutionResolver {
     // stays terminal there.
     if (provider.enabled !== true) throw new AiCatalogNotFoundError();
     // Disconnect leaves the provider enabled (dependents stay valid) and only clears the
-    // vault. A secret-less current pointer is the same "not managed" signal as disabled,
-    // unless the runtime can still execute from the environment. Pinned revisions remap
+    // vault. A current pointer that cannot produce complete credentials is the same
+    // "not managed" signal as disabled, so BYOK can surface. Config-only providers
+    // (Ollama / ComfyUI endpoint, env fallback) still execute. Pinned revisions remap
     // this NOT_FOUND to a terminal unavailable — a historical pin is not BYOK.
     const settings = isRecord(provider.settings)
       ? (provider.settings as PlatformAiProviderSettings)
@@ -320,9 +320,7 @@ export class AiCatalogExecutionResolver {
     const source = typeof provider.source === 'string' ? provider.source : 'custom';
     if (
       !revision.secretFingerprint &&
-      !hasAiCatalogEnvironmentFallback(
-        resolveAiCatalogRuntimeProvider(providerKey, settings, source),
-      )
+      !canExecuteAiCatalogProviderWithoutStoredSecret(providerKey, provider)
     ) {
       throw new AiCatalogNotFoundError();
     }

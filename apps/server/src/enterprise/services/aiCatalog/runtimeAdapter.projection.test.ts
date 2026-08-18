@@ -472,6 +472,139 @@ describe('AiCatalogRuntimeAdapter', () => {
     });
   });
 
+  it('keeps a secretless Ollama provider whose published endpoint is enough to execute', async () => {
+    delete process.env.OLLAMA_PROXY_URL;
+    const payload = {
+      models: [{ enabled: true, modelKey: 'llama3.1', type: 'chat' }],
+      provider: {
+        config: { endpoint: 'http://ollama:11434' },
+        displayName: 'Ollama',
+        enabled: true,
+        providerKey: 'ollama',
+        secretConfigured: false,
+        source: 'builtin',
+      },
+    };
+    await db.insert(platformAiProviders).values({
+      displayName: 'Ollama',
+      enabled: true,
+      id: 'ollama-config-only',
+      providerKey: 'ollama',
+      revision: 1,
+      status: 'published',
+    });
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(payload),
+      payload,
+      resourceId: 'ollama-config-only',
+      resourceType: 'provider',
+      revision: 1,
+      status: 'published',
+    });
+    await advanceAiCatalogAuthority();
+
+    const state = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
+    expect(state.enabledAiProviders.map((item) => item.id)).toContain('ollama');
+    expect(
+      state.enabledAiModels.some(
+        (model) => model.providerId === 'ollama' && model.id === 'llama3.1',
+      ),
+    ).toBe(true);
+    expect(state.enabledChatAiProviders.map((item) => item.id)).toContain('ollama');
+
+    const execution = new AiCatalogExecutionResolver(db, secretService);
+    await expect(execution.resolveProviderExecutionConfig('ollama')).resolves.toMatchObject({
+      keyVaults: { baseURL: 'http://ollama:11434' },
+      providerKey: 'ollama',
+    });
+  });
+
+  it('keeps a secretless ComfyUI provider with implicit authType none and a published endpoint', async () => {
+    delete process.env.COMFYUI_BASE_URL;
+    const payload = {
+      models: [{ enabled: true, modelKey: 'workflow', type: 'image' }],
+      provider: {
+        config: { endpoint: 'http://comfyui:8188' },
+        displayName: 'ComfyUI',
+        enabled: true,
+        providerKey: 'comfyui',
+        secretConfigured: false,
+        source: 'builtin',
+      },
+    };
+    await db.insert(platformAiProviders).values({
+      displayName: 'ComfyUI',
+      enabled: true,
+      id: 'comfyui-config-only',
+      providerKey: 'comfyui',
+      revision: 1,
+      status: 'published',
+    });
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(payload),
+      payload,
+      resourceId: 'comfyui-config-only',
+      resourceType: 'provider',
+      revision: 1,
+      status: 'published',
+    });
+    await advanceAiCatalogAuthority();
+
+    const state = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
+    expect(state.enabledAiProviders.map((item) => item.id)).toContain('comfyui');
+    expect(
+      state.enabledAiModels.some(
+        (model) => model.providerId === 'comfyui' && model.id === 'workflow',
+      ),
+    ).toBe(true);
+
+    const execution = new AiCatalogExecutionResolver(db, secretService);
+    await expect(execution.resolveProviderExecutionConfig('comfyui')).resolves.toMatchObject({
+      keyVaults: { baseURL: 'http://comfyui:8188' },
+      providerKey: 'comfyui',
+    });
+  });
+
+  it('still omits a secretless Ollama provider that has no endpoint and no env fallback', async () => {
+    delete process.env.OLLAMA_PROXY_URL;
+    const payload = {
+      models: [{ enabled: true, modelKey: 'llama3.1', type: 'chat' }],
+      provider: {
+        displayName: 'Ollama',
+        enabled: true,
+        providerKey: 'ollama',
+        secretConfigured: false,
+        source: 'builtin',
+      },
+    };
+    await db.insert(platformAiProviders).values({
+      displayName: 'Ollama',
+      enabled: true,
+      id: 'ollama-empty',
+      providerKey: 'ollama',
+      revision: 1,
+      status: 'published',
+    });
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(payload),
+      payload,
+      resourceId: 'ollama-empty',
+      resourceType: 'provider',
+      revision: 1,
+      status: 'published',
+    });
+    await advanceAiCatalogAuthority();
+
+    const state = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
+    expect(state.enabledAiProviders.map((item) => item.id)).not.toContain('ollama');
+    expect(state.enabledAiModels.every((model) => model.providerId !== 'ollama')).toBe(true);
+
+    const execution = new AiCatalogExecutionResolver(db, secretService);
+    await expect(execution.resolveProviderExecutionConfig('ollama')).rejects.toMatchObject({
+      code: 'PLATFORM_NOT_FOUND',
+    });
+  });
+
   it('keeps an enabled env-fallback provider after the vault is cleared', async () => {
     vi.stubEnv('OPENAI_API_KEY', 'environment-fallback-key');
     const { provider, service } = await createPublishedProvider();

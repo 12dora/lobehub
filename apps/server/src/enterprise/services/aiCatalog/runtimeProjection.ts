@@ -8,14 +8,13 @@ import type { EnabledAiModel } from 'model-bank';
 import { LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
 
 import type {
+  PlatformAiProviderConfig,
   PlatformAiProviderSettings,
   PlatformResourceRevisionItem,
 } from '@/database/schemas/platform';
 
-import {
-  hasAiCatalogEnvironmentFallback,
-  resolveAiCatalogRuntimeProvider,
-} from './credentialAdapter';
+import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
+import { AiCatalogValidationError } from './errors';
 
 /**
  * Credential-free provider config fields safe to expose in public runtime state.
@@ -120,22 +119,43 @@ const hasPublishedMetadata = (value: unknown): value is Record<string, unknown> 
   isRecord(value) && Object.keys(value).length > 0;
 
 /**
- * An enabled published provider with no stored secret would stay in the managed set
- * and hide the member's own credentials. Skip it unless the runtime can still execute
- * from the environment (env-only providers must keep working).
+ * Vault presence is the wrong skip predicate: Ollama / ComfyUI execute from
+ * `config.endpoint` with no secret at all, while a cleared shared OAuth account
+ * cannot. Ask the same normalizer execution uses — empty vault + published
+ * config + env — whether credentials would be complete.
  */
-const isSecretlessWithoutEnvironmentFallback = (
-  provider: Record<string, unknown>,
+export const canExecuteAiCatalogProviderWithoutStoredSecret = (
   providerKey: string,
+  provider: Record<string, unknown>,
 ): boolean => {
-  if (provider.secretConfigured !== false) return false;
   const settings = isRecord(provider.settings)
     ? (provider.settings as PlatformAiProviderSettings)
     : {};
   const source = typeof provider.source === 'string' ? provider.source : 'custom';
-  return !hasAiCatalogEnvironmentFallback(
-    resolveAiCatalogRuntimeProvider(providerKey, settings, source),
-  );
+  const config = isRecord(provider.config) ? (provider.config as PlatformAiProviderConfig) : {};
+  try {
+    normalizeAiCatalogExecutionCredentials({
+      config,
+      keyVaults: {},
+      providerKey,
+      source,
+      settings,
+    });
+    return true;
+  } catch (error) {
+    if (error instanceof AiCatalogValidationError) return false;
+    throw error;
+  }
+};
+
+const cannotExecuteWithoutManagedSecret = (
+  provider: Record<string, unknown>,
+  providerKey: string,
+): boolean => {
+  // Older published payloads omit the flag; they stay visible because we cannot
+  // assume the vault is empty. Only an explicit `false` is a cleared secret.
+  if (provider.secretConfigured !== false) return false;
+  return !canExecuteAiCatalogProviderWithoutStoredSecret(providerKey, provider);
 };
 
 export const projectAiCatalogRuntimeState = (
@@ -156,7 +176,7 @@ export const projectAiCatalogRuntimeState = (
       continue;
     }
     const providerKey = provider.providerKey;
-    if (isSecretlessWithoutEnvironmentFallback(provider, providerKey)) continue;
+    if (cannotExecuteWithoutManagedSecret(provider, providerKey)) continue;
     sortedProviders.push({
       provider: {
         id: providerKey,

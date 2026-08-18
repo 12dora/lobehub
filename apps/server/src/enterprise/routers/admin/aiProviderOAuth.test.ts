@@ -35,6 +35,7 @@ import { createContextInner } from '@/libs/trpc/lambda/context';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { digestPlatformAiCredential } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
+import { AiCatalogAdminService } from '../../services/aiCatalog/adminService';
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
 import { markSharedOAuthGrantInvalidForProvider } from '../../services/aiCatalog/sharedOAuthReauthMarker';
 import { ChatGPTWebOAuthService } from '../../services/chatgptWeb/oauthService';
@@ -900,7 +901,10 @@ describe('admin.aiProviderOAuth.disconnect', () => {
 
   it('is idempotent: withdrawing an already-empty vault still succeeds', async () => {
     const caller = await connect();
-    await caller.aiProviderOAuth.disconnect({ id: 'chatgpt', reason: DISCONNECT_REASON });
+    const first = await caller.aiProviderOAuth.disconnect({
+      id: 'chatgpt',
+      reason: DISCONNECT_REASON,
+    });
 
     const again = await caller.aiProviderOAuth.disconnect({
       id: 'chatgpt',
@@ -908,8 +912,19 @@ describe('admin.aiProviderOAuth.disconnect', () => {
     });
 
     expect(again.disconnected).toBe(true);
+    expect(again.revision).toBe(first.revision);
     const [row] = await db.select().from(platformAiProviders);
-    expect(row).toMatchObject({ enabled: true, encryptedKeyVaults: null });
+    expect(row).toMatchObject({
+      enabled: true,
+      encryptedKeyVaults: null,
+      revision: first.revision,
+    });
+    expect(await auditRowsFor('admin.aiProviderOAuth.disconnect')).toMatchObject([
+      {
+        afterDiff: { providerKey: 'chatgpt', revision: first.revision },
+        result: 'success',
+      },
+    ]);
   });
 
   /**
@@ -1753,5 +1768,39 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
       }),
     ).rejects.toBeTruthy();
     expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
+  });
+
+  it('wipes the ChatGPT Web cookie jar when apply commits then fails', async () => {
+    const caller = await callerFor();
+    const { envelope, started } = await startFlow(caller);
+    mockSessionBackend({
+      accessToken: PASTE_ACCESS_TOKEN,
+      user: { email: 'session@example.test' },
+    });
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: started.deviceCode,
+      id: 'chatgptweb',
+      reason: 'connect the shared ChatGPT Web account',
+      sessionToken: sessionJwe,
+    });
+
+    seedSessionJar(envelope.deviceId);
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
+
+    // apply commits the clear, then getDetail (or anything after COMMIT) rejects.
+    serviceSeam.applyProviderImmediate = vi.fn(async (actorUserId, input) => {
+      const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise();
+      await new AiCatalogAdminService(db, secrets!).applyProviderImmediate(actorUserId, input);
+      throw new Error('post-commit getDetail failed');
+    });
+    await expect(
+      caller.aiProviderOAuth.disconnect({
+        id: 'chatgptweb',
+        reason: 'withdraw the shared account',
+      }),
+    ).rejects.toBeTruthy();
+    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(false);
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row.encryptedKeyVaults).toBeNull();
   });
 });
