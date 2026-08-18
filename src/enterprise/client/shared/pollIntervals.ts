@@ -40,6 +40,11 @@ export const ADMIN_POLL_INTERVALS = {
   /** `admin.system.getJobs`, only while a job is active (+ visible). */
   jobs: 3000,
   /**
+   * `admin.system.getStatus` dependency cards. Server memo is 30s; this keeps the
+   * page current without waiting for a manual refresh or the jobs poll.
+   */
+  systemStatus: 30_000,
+  /**
    * Module restart convergence, only while a restart is in flight (+ visible). The loop pauses
    * while the tab is hidden — including its convergence budget — and resumes on refocus.
    */

@@ -8,11 +8,12 @@ import {
   PlatformSystemJobInvalidError,
   PlatformSystemJobNotFoundError,
 } from './errors';
-import { keyManagementHealth, mailHealth, objectStorageHealth } from './infraDependencyConfig';
+import { mailHealth } from './infraDependencyConfig';
 
 export type DependencyHealth = {
   errorCategory:
     'configuration_incomplete' | 'operation_unavailable' | 'passive_check_only' | 'timeout' | null;
+  lastCheckedAt: Date | null;
   status: 'degraded' | 'disabled' | 'healthy' | 'unavailable' | 'unknown';
 };
 
@@ -28,7 +29,11 @@ export const defaultRedisHealthDependencies: RedisHealthDependencies = {
   isRedisEnabled,
 };
 
-export const disabledHealth = (): DependencyHealth => ({ errorCategory: null, status: 'disabled' });
+export const disabledHealth = (): DependencyHealth => ({
+  errorCategory: null,
+  lastCheckedAt: null,
+  status: 'disabled',
+});
 
 export const probeRedis = async (
   dependencies: RedisHealthDependencies,
@@ -36,16 +41,18 @@ export const probeRedis = async (
   const config = dependencies.getRedisConfig();
   if (!dependencies.isRedisEnabled(config)) return disabledHealth();
   let client: BaseRedisProvider | null = null;
+  const checkedAt = new Date();
   try {
     client = await dependencies.createRedisWithPrefix(config, 'platformSystemHealth');
     if (!client) return disabledHealth();
-    return { errorCategory: null, status: 'healthy' };
+    return { errorCategory: null, lastCheckedAt: checkedAt, status: 'healthy' };
   } catch (error) {
     return {
       errorCategory:
         error instanceof Error && /timeout/i.test(error.message)
           ? 'timeout'
           : 'operation_unavailable',
+      lastCheckedAt: checkedAt,
       status: 'unavailable',
     };
   } finally {
@@ -129,23 +136,45 @@ export const projectOidcStatus = (params: {
         } as const);
 };
 
+const withCheckedAt = (health: DependencyHealth, checkedAt: Date): DependencyHealth => ({
+  errorCategory: health.errorCategory,
+  lastCheckedAt:
+    health.lastCheckedAt === undefined
+      ? health.status === 'disabled' || health.errorCategory === 'configuration_incomplete'
+        ? null
+        : checkedAt
+      : health.lastCheckedAt,
+  status: health.status,
+});
+
 export const projectDependencies = (params: {
+  checkedAt: Date;
   databaseResult: PromiseSettledResult<unknown>;
   env: Record<string, string | undefined>;
+  keyManagement: DependencyHealth;
+  objectStorage: DependencyHealth;
   redisResult: PromiseSettledResult<DependencyHealth>;
 }) => {
-  const { env, databaseResult, redisResult } = params;
+  const { checkedAt, env, databaseResult, keyManagement, objectStorage, redisResult } = params;
   return {
     database:
       databaseResult.status === 'fulfilled'
-        ? ({ errorCategory: null, status: 'healthy' } as const)
-        : ({ errorCategory: 'operation_unavailable', status: 'unavailable' } as const),
-    keyManagement: keyManagementHealth(env),
+        ? ({ errorCategory: null, lastCheckedAt: checkedAt, status: 'healthy' } as const)
+        : ({
+            errorCategory: 'operation_unavailable',
+            lastCheckedAt: checkedAt,
+            status: 'unavailable',
+          } as const),
+    keyManagement: withCheckedAt(keyManagement, checkedAt),
     mail: mailHealth(env),
-    objectStorage: objectStorageHealth(env),
+    objectStorage: withCheckedAt(objectStorage, checkedAt),
     redis:
       redisResult.status === 'fulfilled'
-        ? redisResult.value
-        : ({ errorCategory: 'operation_unavailable', status: 'unavailable' } as const),
+        ? withCheckedAt(redisResult.value, checkedAt)
+        : ({
+            errorCategory: 'operation_unavailable',
+            lastCheckedAt: checkedAt,
+            status: 'unavailable',
+          } as const),
   };
 };

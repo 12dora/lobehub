@@ -34,6 +34,7 @@ import {
   IdentityProviderSystemService,
   loadPublishedIdentityTarget,
 } from '../identityProvider/systemService';
+import { getInfraSnapshot, objectStorageSnapshotToEnvBag } from '../infraSettings';
 import { PlatformAuditService } from '../platformAudit';
 import {
   PlatformInstanceStatusService,
@@ -51,6 +52,9 @@ import {
   PlatformSystemJobInvalidError,
   PlatformSystemJobNotFoundError,
 } from './errors';
+import type { InfraEnvBag } from './infraDependencyConfig';
+import type { LiveInfraHealth, LiveInfraHealthProbe } from './infraHealthMemo';
+import { getLiveInfraHealth } from './infraHealthMemo';
 import { fullJobProjection, projectJob } from './jobProjection';
 import {
   defaultRedisHealthDependencies,
@@ -73,8 +77,11 @@ export const RECENT_PUBLISH_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 interface PlatformSystemAdminServiceOptions {
   env?: Record<string, string | undefined>;
+  getScopeEpoch?: () => Promise<string>;
   jobSummary?: () => Promise<{ active: number; completed: number; failed: number; total: number }>;
+  keyManagementProbe?: LiveInfraHealthProbe;
   now?: () => Date;
+  objectStorageProbe?: LiveInfraHealthProbe;
   publishFailureSummary?: () => Promise<{
     count: number;
     errorCategory: null;
@@ -92,8 +99,12 @@ interface PlatformSystemAdminServiceOptions {
 
 export class PlatformSystemAdminService {
   private readonly env: Record<string, string | undefined>;
+  private readonly envOverride: boolean;
+  private readonly getScopeEpoch: (() => Promise<string>) | undefined;
   private readonly jobSummary: NonNullable<PlatformSystemAdminServiceOptions['jobSummary']>;
+  private readonly keyManagementProbe: LiveInfraHealthProbe | undefined;
   private readonly now: () => Date;
+  private readonly objectStorageProbe: LiveInfraHealthProbe | undefined;
   private readonly publishFailureSummary: NonNullable<
     PlatformSystemAdminServiceOptions['publishFailureSummary']
   >;
@@ -103,15 +114,38 @@ export class PlatformSystemAdminService {
     private readonly db: LobeChatDatabase,
     options: PlatformSystemAdminServiceOptions = {},
   ) {
+    this.envOverride = options.env !== undefined;
     this.env = options.env ?? process.env;
+    this.getScopeEpoch = options.getScopeEpoch;
     this.jobSummary = options.jobSummary ?? (() => new PlatformJobModel(this.db).getAdminSummary());
+    this.keyManagementProbe = options.keyManagementProbe;
     this.now = options.now ?? (() => new Date());
+    this.objectStorageProbe = options.objectStorageProbe;
     this.publishFailureSummary =
       options.publishFailureSummary ?? (() => this.getRecentPublishFailures());
     this.redisProbe =
       options.redisProbe ??
       (() => probeRedis(options.redisDependencies ?? defaultRedisHealthDependencies));
   }
+
+  /** Same effective S3 bag as `testDependency` (infra snapshot over env). */
+  private resolveObjectStorageEnv = async (): Promise<InfraEnvBag> => {
+    if (this.envOverride) return this.env;
+    const snapshot = await getInfraSnapshot();
+    return { ...this.env, ...objectStorageSnapshotToEnvBag(snapshot.objectStorage) };
+  };
+
+  private loadLiveInfraHealth = async (): Promise<LiveInfraHealth> => {
+    const objectStorageEnv = await this.resolveObjectStorageEnv();
+    return getLiveInfraHealth({
+      getScopeEpoch: this.getScopeEpoch,
+      keyManagementEnv: this.env,
+      now: this.now,
+      objectStorageEnv,
+      probeKeyManagement: this.keyManagementProbe,
+      probeObjectStorageHealth: this.objectStorageProbe,
+    });
+  };
 
   private appendFailureAudit = async (
     actorUserId: string,
@@ -379,6 +413,7 @@ export class PlatformSystemAdminService {
 
   getStatus = async () => {
     const flags = parseEnterpriseFeatureFlags(this.env);
+    const snapshotAt = this.now();
     const [
       databaseResult,
       instanceResult,
@@ -386,6 +421,7 @@ export class PlatformSystemAdminService {
       redisResult,
       publishFailureResult,
       authSnapshotResult,
+      liveInfraResult,
     ] = await Promise.allSettled([
       this.db.execute(sql`select 1`),
       new PlatformInstanceStatusService(this.db, { env: this.env }).getStatus(),
@@ -403,6 +439,7 @@ export class PlatformSystemAdminService {
             this.env,
           ).getAuthSnapshotStatus()
         : Promise.resolve(null),
+      this.loadLiveInfraHealth(),
     ]);
     const instance = instanceResult.status === 'fulfilled' ? instanceResult.value : null;
     const rawGitSha = this.env.VERCEL_GIT_COMMIT_SHA ?? this.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA;
@@ -410,6 +447,21 @@ export class PlatformSystemAdminService {
     const artifact = flags.ENABLE_DATABASE_OIDC ? getIdentityProviderStartupArtifactHealth() : null;
     const authSnapshot =
       authSnapshotResult.status === 'fulfilled' ? authSnapshotResult.value : null;
+    const liveInfra =
+      liveInfraResult.status === 'fulfilled'
+        ? liveInfraResult.value
+        : {
+            keyManagement: {
+              errorCategory: 'operation_unavailable' as const,
+              lastCheckedAt: snapshotAt,
+              status: 'unavailable' as const,
+            },
+            objectStorage: {
+              errorCategory: 'operation_unavailable' as const,
+              lastCheckedAt: snapshotAt,
+              status: 'unavailable' as const,
+            },
+          };
     // Same published-selection as getAuthSnapshotStatus (live, enabled, not env-shadowed).
     let oidcConfiguredWithoutArtifact = false;
     if (flags.ENABLE_DATABASE_OIDC && !artifact) {
@@ -423,8 +475,11 @@ export class PlatformSystemAdminService {
     return {
       build: { gitSha, version: CURRENT_VERSION },
       dependencies: projectDependencies({
+        checkedAt: snapshotAt,
         databaseResult,
         env: this.env,
+        keyManagement: liveInfra.keyManagement,
+        objectStorage: liveInfra.objectStorage,
         redisResult,
       }),
       domains: instance?.domains ?? [],
@@ -439,8 +494,12 @@ export class PlatformSystemAdminService {
         settingsPolicy: flags.ENABLE_PLATFORM_SETTINGS_POLICY,
       },
       instanceStatus: instance
-        ? ({ errorCategory: null, status: 'healthy' } as const)
-        : ({ errorCategory: 'operation_unavailable', status: 'unavailable' } as const),
+        ? ({ errorCategory: null, lastCheckedAt: snapshotAt, status: 'healthy' } as const)
+        : ({
+            errorCategory: 'operation_unavailable',
+            lastCheckedAt: snapshotAt,
+            status: 'unavailable',
+          } as const),
       jobs:
         jobsResult.status === 'fulfilled'
           ? { ...jobsResult.value, errorCategory: null, status: 'healthy' as const }
@@ -467,7 +526,7 @@ export class PlatformSystemAdminService {
               items: [],
               status: 'unavailable' as const,
             },
-      snapshotAt: this.now(),
+      snapshotAt,
     };
   };
 

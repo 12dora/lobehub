@@ -46,6 +46,7 @@ export const adminSystemDependencyErrorCategorySchema = z.enum([
 const adminSystemDependencyHealthSchema = z
   .object({
     errorCategory: adminSystemDependencyErrorCategorySchema.nullable(),
+    lastCheckedAt: z.date().nullable(),
     status: adminSystemDependencyStatusSchema,
   })
   .strict();

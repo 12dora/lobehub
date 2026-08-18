@@ -85,6 +85,7 @@ const dependencyHealth = z
     errorCategory: z
       .enum(['configuration_incomplete', 'operation_unavailable', 'passive_check_only', 'timeout'])
       .nullable(),
+    lastCheckedAt: wireDate.nullable(),
     status: z.enum(['degraded', 'disabled', 'healthy', 'unavailable', 'unknown']),
   })
   .strict();

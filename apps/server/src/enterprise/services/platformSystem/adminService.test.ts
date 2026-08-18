@@ -34,6 +34,7 @@ import {
 import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
 import { PlatformSystemAdminService } from './adminService';
 import { PlatformSystemJobConflictError, PlatformSystemJobInvalidError } from './errors';
+import { resetInfraHealthMemoForTest } from './infraHealthMemo';
 
 const db: LobeChatDatabase = await getTestDB();
 
@@ -64,6 +65,7 @@ const rewrapInput = (revision: number) => ({
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  resetInfraHealthMemoForTest();
   resetIdentityProviderStartupArtifactForTest();
   stopIdentityProviderHeartbeatForTest();
   await db.transaction(async (tx) => {
@@ -461,7 +463,11 @@ describe('PlatformSystemAdminService status', () => {
       },
     }).getStatus();
 
-    expect(status.dependencies.redis).toEqual({ errorCategory: null, status: 'disabled' });
+    expect(status.dependencies.redis).toEqual({
+      errorCategory: null,
+      lastCheckedAt: null,
+      status: 'disabled',
+    });
     expect(createRedisWithPrefix).not.toHaveBeenCalled();
   });
 
@@ -486,7 +492,11 @@ describe('PlatformSystemAdminService status', () => {
       },
     }).getStatus();
 
-    expect(status.dependencies.redis).toEqual({ errorCategory: null, status: 'healthy' });
+    expect(status.dependencies.redis).toEqual({
+      errorCategory: null,
+      lastCheckedAt: expect.any(Date),
+      status: 'healthy',
+    });
     expect(createRedisWithPrefix).toHaveBeenCalledWith(config, 'platformSystemHealth');
     expect(disconnect).toHaveBeenCalledOnce();
     expect(JSON.stringify(status)).not.toContain('sensitive-password');
@@ -518,6 +528,7 @@ describe('PlatformSystemAdminService status', () => {
 
     expect(status.dependencies.redis).toEqual({
       errorCategory: 'operation_unavailable',
+      lastCheckedAt: expect.any(Date),
       status: 'unavailable',
     });
     expect(disconnect).toHaveBeenCalledOnce();
@@ -535,6 +546,7 @@ describe('PlatformSystemAdminService status', () => {
       result: 'failure',
       targetType: 'settings',
     });
+    const checkedAt = new Date('2026-08-18T12:00:00.000Z');
     const service = new PlatformSystemAdminService(db, {
       env: {
         EMAIL_SERVICE_PROVIDER: 'resend',
@@ -552,7 +564,21 @@ describe('PlatformSystemAdminService status', () => {
         VAULT_TOKEN: 'secret-vault-token',
         VERCEL_GIT_COMMIT_SHA: 'abcdef1234567890',
       },
-      redisProbe: async () => ({ errorCategory: 'timeout', status: 'unavailable' }),
+      keyManagementProbe: async () => ({
+        errorCategory: 'operation_unavailable',
+        lastCheckedAt: checkedAt,
+        status: 'unavailable',
+      }),
+      objectStorageProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: checkedAt,
+        status: 'healthy',
+      }),
+      redisProbe: async () => ({
+        errorCategory: 'timeout',
+        lastCheckedAt: checkedAt,
+        status: 'unavailable',
+      }),
     });
 
     const status = await service.getStatus();
@@ -560,10 +586,14 @@ describe('PlatformSystemAdminService status', () => {
     expect(status).toMatchObject({
       build: { gitSha: 'abcdef1234567890' },
       dependencies: {
-        keyManagement: { errorCategory: 'passive_check_only', status: 'unknown' },
-        mail: { errorCategory: 'passive_check_only', status: 'unknown' },
-        objectStorage: { errorCategory: 'passive_check_only', status: 'unknown' },
-        redis: { errorCategory: 'timeout', status: 'unavailable' },
+        keyManagement: {
+          errorCategory: 'operation_unavailable',
+          lastCheckedAt: checkedAt,
+          status: 'unavailable',
+        },
+        mail: { errorCategory: 'passive_check_only', lastCheckedAt: null, status: 'unknown' },
+        objectStorage: { errorCategory: null, lastCheckedAt: checkedAt, status: 'healthy' },
+        redis: { errorCategory: 'timeout', lastCheckedAt: checkedAt, status: 'unavailable' },
       },
       featureFlags: { platformAdmin: true },
       oidc: { configured: false, source: 'disabled', status: 'disabled' },
@@ -666,7 +696,11 @@ describe('PlatformSystemAdminService status', () => {
       publishFailureSummary: async () => {
         throw new Error('private audit failure');
       },
-      redisProbe: async () => ({ errorCategory: null, status: 'disabled' }),
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
     });
 
     const status = await service.getStatus();
@@ -687,8 +721,84 @@ describe('PlatformSystemAdminService status', () => {
     });
     expect(status.dependencies.keyManagement).toEqual({
       errorCategory: 'configuration_incomplete',
+      lastCheckedAt: null,
       status: 'degraded',
     });
+  });
+
+  it('projects live object-storage and key-management probes including lastCheckedAt', async () => {
+    const checkedAt = new Date('2026-08-18T12:00:01.000Z');
+    const objectStorageProbe = vi.fn(async () => ({
+      errorCategory: 'timeout' as const,
+      lastCheckedAt: checkedAt,
+      status: 'unavailable' as const,
+    }));
+    const keyManagementProbe = vi.fn(async () => ({
+      errorCategory: null,
+      lastCheckedAt: checkedAt,
+      status: 'healthy' as const,
+    }));
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        ENABLE_DATABASE_OIDC: '0',
+        PLATFORM_MASTER_KEY: Buffer.alloc(32, 7).toString('base64'),
+        S3_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+        S3_BUCKET: 'files',
+        S3_ENDPOINT: 'https://s3.example.com',
+        S3_SECRET_ACCESS_KEY: 'secret-storage-key',
+      },
+      keyManagementProbe,
+      objectStorageProbe,
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    expect(status.dependencies.objectStorage).toEqual({
+      errorCategory: 'timeout',
+      lastCheckedAt: checkedAt,
+      status: 'unavailable',
+    });
+    expect(status.dependencies.keyManagement).toEqual({
+      errorCategory: null,
+      lastCheckedAt: checkedAt,
+      status: 'healthy',
+    });
+    expect(objectStorageProbe).toHaveBeenCalledOnce();
+    expect(keyManagementProbe).toHaveBeenCalledOnce();
+    expect(JSON.stringify(status)).not.toContain('secret-storage-key');
+    expect(JSON.stringify(status)).not.toContain('s3.example.com');
+  });
+
+  it('skips live probes when object storage or key management is unconfigured', async () => {
+    const objectStorageProbe = vi.fn();
+    const keyManagementProbe = vi.fn();
+    const status = await new PlatformSystemAdminService(db, {
+      env: { ENABLE_DATABASE_OIDC: '0' },
+      keyManagementProbe,
+      objectStorageProbe,
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
+    }).getStatus();
+
+    expect(status.dependencies.objectStorage).toEqual({
+      errorCategory: null,
+      lastCheckedAt: null,
+      status: 'disabled',
+    });
+    expect(status.dependencies.keyManagement).toEqual({
+      errorCategory: null,
+      lastCheckedAt: null,
+      status: 'disabled',
+    });
+    expect(objectStorageProbe).not.toHaveBeenCalled();
+    expect(keyManagementProbe).not.toHaveBeenCalled();
   });
 
   it('reportsEnvironmentShadowedPendingRestartFromCanonicalStatus', async () => {
@@ -762,7 +872,11 @@ describe('PlatformSystemAdminService status', () => {
         ENABLE_PLATFORM_ADMIN: '1',
       },
       now: () => now,
-      redisProbe: async () => ({ errorCategory: null, status: 'disabled' }),
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
     }).getStatus();
 
     expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
@@ -843,7 +957,11 @@ describe('PlatformSystemAdminService status', () => {
         ENABLE_PLATFORM_ADMIN: '1',
       },
       now: () => now,
-      redisProbe: async () => ({ errorCategory: null, status: 'disabled' }),
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
     }).getStatus();
 
     expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
@@ -858,7 +976,11 @@ describe('PlatformSystemAdminService status', () => {
         ENABLE_DATABASE_OIDC: '1',
         ENABLE_PLATFORM_ADMIN: '1',
       },
-      redisProbe: async () => ({ errorCategory: null, status: 'disabled' }),
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
     }).getStatus();
 
     expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
@@ -919,7 +1041,11 @@ describe('PlatformSystemAdminService status', () => {
         ENABLE_PLATFORM_ADMIN: '1',
       },
       now: () => now,
-      redisProbe: async () => ({ errorCategory: null, status: 'disabled' }),
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
     }).getStatus();
 
     expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();

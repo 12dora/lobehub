@@ -13,11 +13,15 @@ import {
 const validStatus = {
   build: { gitSha: 'abcdef1', version: '2.0.0' },
   dependencies: {
-    database: { errorCategory: null, status: 'healthy' },
-    keyManagement: { errorCategory: null, status: 'healthy' },
-    mail: { errorCategory: null, status: 'disabled' },
-    objectStorage: { errorCategory: null, status: 'unknown' },
-    redis: { errorCategory: null, status: 'healthy' },
+    database: { errorCategory: null, lastCheckedAt: '2026-07-20T00:01:00.000Z', status: 'healthy' },
+    keyManagement: {
+      errorCategory: null,
+      lastCheckedAt: '2026-07-20T00:01:00.000Z',
+      status: 'healthy',
+    },
+    mail: { errorCategory: null, lastCheckedAt: null, status: 'disabled' },
+    objectStorage: { errorCategory: null, lastCheckedAt: null, status: 'unknown' },
+    redis: { errorCategory: null, lastCheckedAt: '2026-07-20T00:01:00.000Z', status: 'healthy' },
   },
   domains: [],
   featureFlags: {
@@ -30,7 +34,11 @@ const validStatus = {
     runtimeBranding: true,
     settingsPolicy: true,
   },
-  instanceStatus: { errorCategory: null, status: 'healthy' },
+  instanceStatus: {
+    errorCategory: null,
+    lastCheckedAt: '2026-07-20T00:01:00.000Z',
+    status: 'healthy',
+  },
   jobs: {
     active: 0,
     completed: 0,
@@ -245,6 +253,7 @@ describe('trpc helpers', () => {
           ...validStatus.dependencies,
           redis: {
             errorCategory: null,
+            lastCheckedAt: '2026-07-20T00:01:00.000Z',
             status: 'healthy',
             token: 'redis://secret@host:6379',
           },
@@ -268,6 +277,7 @@ describe('trpc helpers', () => {
           ...validStatus.dependencies,
           redis: {
             errorCategory: null,
+            lastCheckedAt: '2026-07-20T00:01:00.000Z',
             password: 'x',
             status: 'healthy',
           },

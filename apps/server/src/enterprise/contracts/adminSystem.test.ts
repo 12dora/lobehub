@@ -41,7 +41,11 @@ describe('admin system operational contracts', () => {
       dependencies: Object.fromEntries(
         ['database', 'keyManagement', 'mail', 'objectStorage', 'redis'].map((key) => [
           key,
-          { errorCategory: null, status: 'healthy' },
+          {
+            errorCategory: null,
+            lastCheckedAt: new Date('2026-07-20T00:01:00Z'),
+            status: 'healthy',
+          },
         ]),
       ),
       domains: [],
@@ -55,7 +59,11 @@ describe('admin system operational contracts', () => {
         runtimeBranding: true,
         settingsPolicy: true,
       },
-      instanceStatus: { errorCategory: null, status: 'healthy' },
+      instanceStatus: {
+        errorCategory: null,
+        lastCheckedAt: new Date('2026-07-20T00:01:00Z'),
+        status: 'healthy',
+      },
       jobs: {
         active: 2,
         completed: 3,
@@ -107,6 +115,15 @@ describe('admin system operational contracts', () => {
       adminSystemGetStatusOutputSchema.safeParse({
         ...status,
         jobs: { ...status.jobs, errorCategory: null, status: 'unavailable' },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSystemGetStatusOutputSchema.safeParse({
+        ...status,
+        dependencies: {
+          ...status.dependencies,
+          objectStorage: { errorCategory: null, status: 'healthy' },
+        },
       }).success,
     ).toBe(false);
   });

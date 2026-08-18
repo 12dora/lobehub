@@ -1,12 +1,14 @@
 import { resolveFileS3Config } from '@/server/modules/S3/resolveFileS3Config';
 
-import { PlatformSecretService } from '../../security/secret';
+import { PlatformSecretError, PlatformSecretService } from '../../security/secret';
+import { isTimeoutError } from './infraProbes';
 
 export type InfraEnvBag = Record<string, string | undefined>;
 
 export type DependencyHealth = {
   errorCategory:
     'configuration_incomplete' | 'operation_unavailable' | 'passive_check_only' | 'timeout' | null;
+  lastCheckedAt: Date | null;
   status: 'degraded' | 'disabled' | 'healthy' | 'unavailable' | 'unknown';
 };
 
@@ -33,13 +35,19 @@ export type ResolvedEmailConfig =
       user: string;
     };
 
-const disabledHealth = (): DependencyHealth => ({ errorCategory: null, status: 'disabled' });
+const disabledHealth = (): DependencyHealth => ({
+  errorCategory: null,
+  lastCheckedAt: null,
+  status: 'disabled',
+});
 const passiveHealth = (): DependencyHealth => ({
   errorCategory: 'passive_check_only',
+  lastCheckedAt: null,
   status: 'unknown',
 });
 const incompleteHealth = (): DependencyHealth => ({
   errorCategory: 'configuration_incomplete',
+  lastCheckedAt: null,
   status: 'degraded',
 });
 
@@ -141,5 +149,54 @@ export const keyManagementHealth = (env: InfraEnvBag): DependencyHealth => {
     return service ? passiveHealth() : disabledHealth();
   } catch {
     return incompleteHealth();
+  }
+};
+
+const isKeyProbeTimeout = (error: unknown): boolean => {
+  if (isTimeoutError(error)) return true;
+  if (!(error instanceof PlatformSecretError) || !error.details) return false;
+  const reason = error.details.reason;
+  return reason === 'request-timeout' || reason === 'secret-id-provider-timeout';
+};
+
+/**
+ * Live key-management check. Keeps tryFromEnv disabled / incomplete branches, then
+ * `getActiveKeyId()` (Vault hits auth + KV; env validates the local KEK). Env
+ * additionally encrypts and decrypts a fixed payload. Never returns key ids,
+ * addresses, or ciphertext.
+ */
+export const probeKeyManagement = async (
+  env: InfraEnvBag,
+  now: () => Date = () => new Date(),
+): Promise<DependencyHealth> => {
+  let service: PlatformSecretService | null;
+  try {
+    service = PlatformSecretService.tryFromEnv(env);
+  } catch {
+    return incompleteHealth();
+  }
+  if (!service) return disabledHealth();
+
+  const checkedAt = now();
+  try {
+    await service.getActiveKeyId();
+    if (service.keyProviderId === 'env') {
+      const ciphertext = await service.encrypt('health');
+      const plaintext = await service.decrypt(ciphertext);
+      if (plaintext !== 'health') {
+        return {
+          errorCategory: 'operation_unavailable',
+          lastCheckedAt: checkedAt,
+          status: 'unavailable',
+        };
+      }
+    }
+    return { errorCategory: null, lastCheckedAt: checkedAt, status: 'healthy' };
+  } catch (error) {
+    return {
+      errorCategory: isKeyProbeTimeout(error) ? 'timeout' : 'operation_unavailable',
+      lastCheckedAt: checkedAt,
+      status: 'unavailable',
+    };
   }
 };

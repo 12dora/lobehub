@@ -1,12 +1,14 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { resolveFileS3Config } from '@/server/modules/S3/resolveFileS3Config';
 
+import { PlatformSecretService } from '../../security/secret';
 import {
   keyManagementHealth,
   mailHealth,
   objectStorageHealth,
+  probeKeyManagement,
   resolveEmailConfig,
 } from './infraDependencyConfig';
 
@@ -73,21 +75,117 @@ describe('shared dependency health', () => {
         S3_REGION: 'us-west-2',
         S3_SECRET_ACCESS_KEY: 'secret',
       }),
-    ).toEqual({ errorCategory: 'configuration_incomplete', status: 'degraded' });
+    ).toEqual({
+      errorCategory: 'configuration_incomplete',
+      lastCheckedAt: null,
+      status: 'degraded',
+    });
+    expect(
+      objectStorageHealth({
+        S3_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+        S3_BUCKET: 'files',
+        S3_ENDPOINT: 'https://s3.example.com',
+        S3_SECRET_ACCESS_KEY: 'secret',
+      }),
+    ).toEqual({
+      errorCategory: 'passive_check_only',
+      lastCheckedAt: null,
+      status: 'unknown',
+    });
   });
 
   it('treats omitted email provider plus credentials as configured SMTP', () => {
     expect(mailHealth({ SMTP_PASS: 'secret', SMTP_USER: 'smtp-user' })).toEqual({
       errorCategory: 'passive_check_only',
+      lastCheckedAt: null,
       status: 'unknown',
     });
   });
 
-  it('keeps key-management health on tryFromEnv', () => {
-    expect(keyManagementHealth({})).toEqual({ errorCategory: null, status: 'disabled' });
+  it('classifies key-management from tryFromEnv without probing', () => {
+    expect(keyManagementHealth({})).toEqual({
+      errorCategory: null,
+      lastCheckedAt: null,
+      status: 'disabled',
+    });
     expect(keyManagementHealth({ PLATFORM_MASTER_KEY: FAKE_MASTER_KEY })).toEqual({
       errorCategory: 'passive_check_only',
+      lastCheckedAt: null,
       status: 'unknown',
     });
+  });
+});
+
+describe('probeKeyManagement', () => {
+  it('keeps disabled and incomplete branches and does not emit key material', async () => {
+    expect(await probeKeyManagement({})).toEqual({
+      errorCategory: null,
+      lastCheckedAt: null,
+      status: 'disabled',
+    });
+    expect(await probeKeyManagement({ PLATFORM_MASTER_KEY: 'not-valid-base64' })).toEqual({
+      errorCategory: 'configuration_incomplete',
+      lastCheckedAt: null,
+      status: 'degraded',
+    });
+  });
+
+  it('round-trips an env KEK and reports healthy without leaking the key id', async () => {
+    const checkedAt = new Date('2026-08-18T00:00:00.000Z');
+    const result = await probeKeyManagement(
+      { PLATFORM_MASTER_KEY: FAKE_MASTER_KEY, PLATFORM_MASTER_KEY_ID: 'env:health' },
+      () => checkedAt,
+    );
+    expect(result).toEqual({
+      errorCategory: null,
+      lastCheckedAt: checkedAt,
+      status: 'healthy',
+    });
+    expect(JSON.stringify(result)).not.toContain('env:health');
+    expect(JSON.stringify(result)).not.toContain(FAKE_MASTER_KEY);
+  });
+
+  it('maps abort and vault timeout to timeout without leaking the address', async () => {
+    vi.spyOn(PlatformSecretService, 'tryFromEnv').mockReturnValue({
+      encrypt: vi.fn(),
+      getActiveKeyId: async () => {
+        throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      },
+      keyProviderId: 'vault',
+    } as never);
+
+    const result = await probeKeyManagement({
+      PLATFORM_KEY_PROVIDER: 'vault',
+      VAULT_ADDR: 'https://vault.private.example',
+      VAULT_TOKEN: 'secret-vault-token',
+    });
+
+    expect(result).toMatchObject({ errorCategory: 'timeout', status: 'unavailable' });
+    expect(result.lastCheckedAt).toBeInstanceOf(Date);
+    expect(JSON.stringify(result)).not.toContain('vault.private.example');
+    expect(JSON.stringify(result)).not.toContain('secret-vault-token');
+    vi.restoreAllMocks();
+  });
+
+  it('maps other provider failures to operation_unavailable', async () => {
+    vi.spyOn(PlatformSecretService, 'tryFromEnv').mockReturnValue({
+      encrypt: vi.fn(),
+      getActiveKeyId: async () => {
+        throw new Error('Vault key material is unavailable');
+      },
+      keyProviderId: 'vault',
+    } as never);
+
+    await expect(
+      probeKeyManagement({
+        PLATFORM_KEY_PROVIDER: 'vault',
+        VAULT_ADDR: 'https://vault.private.example',
+        VAULT_TOKEN: 'secret-vault-token',
+      }),
+    ).resolves.toMatchObject({
+      errorCategory: 'operation_unavailable',
+      status: 'unavailable',
+    });
+    vi.restoreAllMocks();
   });
 });

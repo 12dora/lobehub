@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import useSWRInfinite from 'swr/infinite';
 
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
@@ -43,12 +43,54 @@ import {
 
 const DEFAULT_PAGE_SIZE = 50;
 const ACTIVE_JOB_POLL_INTERVAL_MS = ADMIN_POLL_INTERVALS.jobs;
+const SYSTEM_STATUS_POLL_INTERVAL_MS = ADMIN_POLL_INTERVALS.systemStatus;
 
-export const useAdminSystemStatus = (enabled: boolean, service: AdminSystemService) =>
-  useClientDataSWR(buildAdminSystemStatusKey(enabled), () => service.getStatus(), {
+/**
+ * The jobs poll mutates the same status query every 3s. Status's own 30s timer
+ * must yield for that loop so the two schedules do not race.
+ */
+let jobsStatusPollActive = false;
+const jobsStatusPollListeners = new Set<() => void>();
+
+const setJobsStatusPollActive = (next: boolean) => {
+  if (jobsStatusPollActive === next) return;
+  jobsStatusPollActive = next;
+  for (const listener of jobsStatusPollListeners) listener();
+};
+
+const subscribeJobsStatusPollActive = (onStoreChange: () => void) => {
+  jobsStatusPollListeners.add(onStoreChange);
+  return () => {
+    jobsStatusPollListeners.delete(onStoreChange);
+  };
+};
+
+const getJobsStatusPollActive = () => jobsStatusPollActive;
+const getJobsStatusPollActiveServerSnapshot = () => false;
+
+const useJobsStatusPollActive = (): boolean =>
+  useSyncExternalStore(
+    subscribeJobsStatusPollActive,
+    getJobsStatusPollActive,
+    getJobsStatusPollActiveServerSnapshot,
+  );
+
+export const resetAdminSystemJobsStatusPollForTest = () => {
+  jobsStatusPollActive = false;
+};
+
+export const useAdminSystemStatus = (enabled: boolean, service: AdminSystemService) => {
+  const jobsPollOwnsRefresh = useJobsStatusPollActive();
+  const refreshInterval = useVisiblePoll(
+    SYSTEM_STATUS_POLL_INTERVAL_MS,
+    enabled && !jobsPollOwnsRefresh,
+  );
+  return useClientDataSWR(buildAdminSystemStatusKey(enabled), () => service.getStatus(), {
     keepPreviousData: true,
+    refreshInterval,
     revalidateOnFocus: false,
   });
+};
 
 export const useAdminSystemAuthSnapshotStatus = (
   enabled: boolean,
@@ -195,6 +237,11 @@ export const useAdminSystemJobs = (
   const authoritativeActiveCount = options.authoritativeActiveCount;
   const shouldPoll =
     enabled && shouldPollAdminSystemJobs({ authoritativeActiveCount, visibleHasActiveJobs });
+  // Publish before paint so the status hook can drop its 30s timer in the same frame.
+  useLayoutEffect(() => {
+    setJobsStatusPollActive(shouldPoll);
+    return () => setJobsStatusPollActive(false);
+  }, [shouldPoll]);
   // An active job only needs watching while somebody is watching: the poll (and the authority
   // refresh it drags along) stops for a background tab and resumes on refocus.
   const jobsRefreshInterval = useVisiblePoll(ACTIVE_JOB_POLL_INTERVAL_MS, shouldPoll);

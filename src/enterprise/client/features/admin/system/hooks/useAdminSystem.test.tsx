@@ -8,7 +8,12 @@ import type {
   AdminSystemService,
 } from '@/enterprise/client/services/adminSystem';
 
-import { useAdminSystemJobMutations, useAdminSystemJobs } from './useAdminSystem';
+import {
+  resetAdminSystemJobsStatusPollForTest,
+  useAdminSystemJobMutations,
+  useAdminSystemJobs,
+  useAdminSystemStatus,
+} from './useAdminSystem';
 
 interface PollConfig {
   onSuccess?: (incoming: AdminSystemJobs) => void;
@@ -17,7 +22,7 @@ interface PollConfig {
 
 interface PollCall {
   config: PollConfig;
-  key: readonly [string, number] | null;
+  key: readonly [string, number] | readonly [string] | null;
 }
 
 type JobsKeyLoader = (
@@ -47,7 +52,7 @@ vi.mock('swr/infinite', () => ({
 
 vi.mock('@/libs/swr', () => ({
   useClientDataSWR: (
-    key: readonly [string, number] | null,
+    key: readonly [string, number] | readonly [string] | null,
     _fetcher: () => Promise<AdminSystemJobs>,
     config: PollConfig,
   ) => {
@@ -96,6 +101,7 @@ const service = (overrides: Partial<AdminSystemService> = {}): AdminSystemServic
 
 describe('useAdminSystemJobs polling authority', () => {
   beforeEach(() => {
+    resetAdminSystemJobsStatusPollForTest();
     mocks.infinite.data = [page([job({ status: 'succeeded' })])];
     mocks.infinite.error = undefined;
     mocks.infinite.isValidating = false;
@@ -230,6 +236,75 @@ describe('useAdminSystemJobs polling authority', () => {
 
     expect(result.current.initialError).toBeInstanceOf(Error);
     expect(result.current.hasMore).toBe(false);
+  });
+});
+
+describe('useAdminSystemStatus polling', () => {
+  beforeEach(() => {
+    resetAdminSystemJobsStatusPollForTest();
+    mocks.pollCalls.length = 0;
+  });
+
+  it('polls status on a visibility-gated interval', () => {
+    renderHook(() => useAdminSystemStatus(true, service()));
+    expect(mocks.pollCalls.at(-1)?.key).toEqual(['admin.system.getStatus']);
+    expect(mocks.pollCalls.at(-1)?.config.refreshInterval).toBe(30_000);
+  });
+
+  it('stops the status poll while the tab is hidden', () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    try {
+      renderHook(() => useAdminSystemStatus(true, service()));
+      expect(mocks.pollCalls.at(-1)?.key).toEqual(['admin.system.getStatus']);
+      expect(mocks.pollCalls.at(-1)?.config.refreshInterval).toBe(0);
+    } finally {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'visible',
+      });
+    }
+  });
+
+  it('does not poll status without read permission', () => {
+    renderHook(() => useAdminSystemStatus(false, service()));
+    expect(mocks.pollCalls.at(-1)?.key).toBeNull();
+    expect(mocks.pollCalls.at(-1)?.config.refreshInterval).toBe(0);
+  });
+
+  it('suppresses the 30s status cadence while the jobs poll owns refresh', () => {
+    mocks.infinite.data = [page([job({ status: 'succeeded' })])];
+    const { rerender } = renderHook(
+      ({ activeCount }) => {
+        useAdminSystemStatus(true, service());
+        useAdminSystemJobs(true, service(), {
+          authoritativeActiveCount: activeCount,
+          refreshAuthority: vi.fn().mockResolvedValue(undefined),
+        });
+      },
+      { initialProps: { activeCount: 2 } },
+    );
+
+    const latest = (name: string) =>
+      [...mocks.pollCalls].reverse().find((call) => call.key?.[0] === name);
+
+    expect(latest('admin.system.getJobs.poll')?.config.refreshInterval).toBe(3000);
+    expect(latest('admin.system.getStatus')?.config.refreshInterval).toBe(0);
+
+    const beforeStop = mocks.pollCalls.length;
+    rerender({ activeCount: 0 });
+    const afterStop = mocks.pollCalls.slice(beforeStop);
+    expect(afterStop).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          config: expect.objectContaining({ refreshInterval: 0 }),
+          key: null,
+        }),
+        expect.objectContaining({
+          config: expect.objectContaining({ refreshInterval: 30_000 }),
+          key: ['admin.system.getStatus'],
+        }),
+      ]),
+    );
   });
 });
 
