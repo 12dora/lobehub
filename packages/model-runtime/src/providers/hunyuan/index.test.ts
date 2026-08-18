@@ -4,7 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LobeOpenAICompatibleRuntime } from '../../core/BaseAI';
 import { testProvider } from '../../providerTestUtils';
-import { LobeHunyuanAI, params } from './index';
+import { LobeHunyuanAI, mapHunyuanModel, params } from './index';
+
+const loadModelsMock = vi.hoisted(() => vi.fn().mockResolvedValue([]));
+
+vi.mock('@lobechat/business-model-bank/model-config', () => ({
+  loadModels: loadModelsMock,
+}));
 
 testProvider({
   Runtime: LobeHunyuanAI,
@@ -170,5 +176,46 @@ describe('LobeHunyuanAI - custom features', () => {
       expect(result.search_info).toBeUndefined();
       expect(result.enable_speed_search).toBeUndefined();
     });
+  });
+});
+
+// Wire shape from https://cloud.tencent.com/document/product/1823/130078
+const documentedTokenHubModel = {
+  created: 1_750_000_000,
+  id: 'hy3-preview',
+  name: '混元 3 Preview',
+  object: 'model',
+  status: 'pre-offline',
+};
+
+describe('mapHunyuanModel', () => {
+  it('maps documented name to displayName and does not map status', () => {
+    expect(mapHunyuanModel(documentedTokenHubModel)).toEqual({
+      created: 1_750_000_000,
+      displayName: '混元 3 Preview',
+      id: 'hy3-preview',
+    });
+  });
+});
+
+describe('LobeHunyuanAI models', () => {
+  it('overrides the SDK default and maps TokenHub name', async () => {
+    const mockClient = {
+      models: {
+        list: vi.fn().mockResolvedValue({ data: [documentedTokenHubModel] }),
+      },
+    } as any;
+
+    const models = await params.models!({ client: mockClient });
+
+    expect(mockClient.models.list).toHaveBeenCalledTimes(1);
+    expect(models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          displayName: '混元 3 Preview',
+          id: 'hy3-preview',
+        }),
+      ]),
+    );
   });
 });

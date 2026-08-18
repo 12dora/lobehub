@@ -2,8 +2,28 @@ import { ModelProvider } from 'model-bank';
 
 import type { OpenAICompatibleFactoryOptions } from '../../core/openaiCompatibleFactory';
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
+import { processMultiProviderModelList } from '../../utils/modelParse';
 import { createHunyuanImage } from './createImage';
 import { createHunyuanVideo } from './createVideo';
+
+/**
+ * Documented TokenHub GET /v1/models card.
+ * `owned_by` is not in the field table or the official example.
+ * @see https://cloud.tencent.com/document/product/1823/130078
+ */
+export interface HunyuanModelCard {
+  created?: number;
+  id: string;
+  name?: string;
+  object?: string;
+  status?: string;
+}
+
+export const mapHunyuanModel = (model: HunyuanModelCard) => ({
+  created: model.created,
+  displayName: model.name,
+  id: model.id,
+});
 
 export const params = {
   baseURL: 'https://tokenhub.tencentmaas.com/v1',
@@ -67,6 +87,12 @@ export const params = {
   },
   debug: {
     chatCompletion: () => process.env.DEBUG_HUNYUAN_CHAT_COMPLETION === '1',
+  },
+  models: async ({ client }) => {
+    const modelsPage = (await client.models.list()) as any;
+    const modelList: HunyuanModelCard[] = Array.isArray(modelsPage?.data) ? modelsPage.data : [];
+
+    return processMultiProviderModelList(modelList.map(mapHunyuanModel), 'hunyuan');
   },
   provider: ModelProvider.Hunyuan,
 } satisfies OpenAICompatibleFactoryOptions;

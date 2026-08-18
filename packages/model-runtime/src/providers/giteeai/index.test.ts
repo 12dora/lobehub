@@ -3,7 +3,7 @@ import { ModelProvider } from 'model-bank';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { testProvider } from '../../providerTestUtils';
-import { LobeGiteeAI, params } from './index';
+import { LobeGiteeAI, mapGiteeAIModel, params } from './index';
 
 const loadModelsMock = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 
@@ -295,6 +295,85 @@ describe('LobeGiteeAI - custom features', () => {
       // Verify processMultiProviderModelList was called with correct parameters
       expect(models).toBeDefined();
       expect(Array.isArray(models)).toBe(true);
+    });
+
+    it('requests include_details=true on the same /v1/models endpoint', async () => {
+      const mockClient = {
+        models: {
+          list: vi.fn().mockResolvedValue({ data: [] }),
+        },
+      } as any;
+
+      await params.models!({ client: mockClient });
+
+      expect(mockClient.models.list).toHaveBeenCalledWith({
+        query: { include_details: true },
+      });
+    });
+  });
+});
+
+// Wire shape from https://ai.gitee.com/v1/yaml when include_details=true
+const documentedGiteeChat = {
+  avatar: 'https://ai.gitee.com/avatars/qwen.png',
+  created: 1_720_000_000,
+  description: 'Qwen2.5 72B instruction-tuned model',
+  id: 'Qwen2.5-72B-Instruct',
+  object: 'model',
+  operations: [
+    {
+      input_million_tokens_price: '2',
+      name: 'Chat Completions',
+      output_million_tokens_price: '6',
+      path: '/v1/chat/completions',
+      price: '0.002',
+      type: 'text2text',
+      unit_tag: { slug: 'token' },
+    },
+  ],
+  owned_by: 'Qwen',
+};
+
+describe('mapGiteeAIModel', () => {
+  it('maps documented description and operations[].type, and leaves unstated-currency prices unmapped', () => {
+    expect(mapGiteeAIModel(documentedGiteeChat)).toEqual({
+      created: 1_720_000_000,
+      description: 'Qwen2.5 72B instruction-tuned model',
+      id: 'Qwen2.5-72B-Instruct',
+      type: 'chat',
+    });
+  });
+
+  it('translates documented operation types and leaves rerank unmapped', () => {
+    expect(mapGiteeAIModel({ id: 'bge-m3', operations: [{ type: 'embeddings' }] }).type).toBe(
+      'embedding',
+    );
+    expect(mapGiteeAIModel({ id: 'flux', operations: [{ type: 'text2image' }] }).type).toBe(
+      'image',
+    );
+    expect(mapGiteeAIModel({ id: 'whisper', operations: [{ type: 'speech2text' }] }).type).toBe(
+      'asr',
+    );
+    expect(mapGiteeAIModel({ id: 'cosyvoice', operations: [{ type: 'text2speech' }] }).type).toBe(
+      'tts',
+    );
+    expect(
+      mapGiteeAIModel({ id: 'hunyuan-video', operations: [{ type: 'text2video' }] }).type,
+    ).toBe('video');
+    expect(mapGiteeAIModel({ id: 'musicgen', operations: [{ type: 'text2music' }] }).type).toBe(
+      'text2music',
+    );
+    expect(mapGiteeAIModel({ id: 'bge-reranker', operations: [{ type: 'rerank' }] }).type).toBe(
+      undefined,
+    );
+  });
+
+  it('tolerates missing description and operations', () => {
+    expect(mapGiteeAIModel({ id: 'bare-model' })).toEqual({
+      created: undefined,
+      description: undefined,
+      id: 'bare-model',
+      type: undefined,
     });
   });
 });

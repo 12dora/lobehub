@@ -5,22 +5,49 @@ import type { OpenAICompatibleFactoryOptions } from '../../core/openaiCompatible
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
 
 export interface SenseNovaModelCard {
-  context_length: number;
-  created: number;
-  description: string;
+  context_length?: number;
+  created?: number;
+  description?: string;
   id: string;
-  input_modalities: string[];
-  max_output_length: number;
-  name: string;
-  pricing: {
-    prompt: string;
-    completion: string;
-    image: string;
-    request: string;
-    input_cache_read: string;
+  input_modalities?: string[];
+  max_output_length?: number;
+  name?: string;
+  openrouter?: { slug?: string };
+  output_modalities?: string[];
+  // Sub-keys, currency and unit are undocumented (USD/token vs CNY/1k). Do not map.
+  pricing?: {
+    completion?: string;
+    image?: string;
+    input_cache_read?: string;
+    prompt?: string;
+    request?: string;
   };
-  supported_features: string[];
+  supported_features?: string[];
 }
+
+export const mapSenseNovaModel = (
+  model: SenseNovaModelCard,
+  knownModel?: (typeof LOBE_DEFAULT_MODEL_LIST)[number],
+) => ({
+  contextWindowTokens: model.context_length ?? knownModel?.contextWindowTokens ?? undefined,
+  description: model.description ?? knownModel?.description ?? undefined,
+  displayName: model.name ?? knownModel?.displayName ?? undefined,
+  enabled: knownModel?.enabled || false,
+  functionCall:
+    model.supported_features?.includes('tools') || knownModel?.abilities?.functionCall || false,
+  id: model.id,
+  imageOutput:
+    model.output_modalities?.includes('image') || knownModel?.abilities?.imageOutput || false,
+  maxOutput: model.max_output_length ?? knownModel?.maxOutput ?? undefined,
+  releasedAt: model.created ? new Date(model.created * 1000).toISOString() : undefined,
+  reasoning:
+    model.supported_features?.includes('reasoning') || knownModel?.abilities?.reasoning || false,
+  structuredOutput:
+    model.supported_features?.includes('json_mode') ||
+    knownModel?.abilities?.structuredOutput ||
+    false,
+  vision: model.input_modalities?.includes('image') || knownModel?.abilities?.vision || false,
+});
 
 export const params = {
   baseURL: 'https://token.sensenova.cn/v1',
@@ -59,52 +86,7 @@ export const params = {
           (m) => model.id.toLowerCase() === m.id.toLowerCase(),
         );
 
-        return {
-          contextWindowTokens: model.context_length ?? knownModel?.contextWindowTokens ?? undefined,
-          displayName: model.name ?? knownModel?.displayName ?? undefined,
-          enabled: knownModel?.enabled || false,
-          functionCall:
-            model.supported_features?.includes('tools') ||
-            knownModel?.abilities?.functionCall ||
-            false,
-          id: model.id,
-          maxOutput: model.max_output_length ?? knownModel?.maxOutput ?? undefined,
-          pricing: {
-            units: [
-              {
-                name: 'textInput',
-                rate: model.pricing.prompt ? parseFloat(model.pricing.prompt) : 0,
-                strategy: 'fixed',
-                unit: 'millionTokens',
-              },
-              {
-                name: 'textInput_cacheRead',
-                rate: model.pricing.input_cache_read
-                  ? parseFloat(model.pricing.input_cache_read)
-                  : 0,
-                strategy: 'fixed',
-                unit: 'millionTokens',
-              },
-              {
-                name: 'textOutput',
-                rate: model.pricing.completion ? parseFloat(model.pricing.completion) : 0,
-                strategy: 'fixed',
-                unit: 'millionTokens',
-              },
-            ],
-          },
-          releasedAt: model.created ? new Date(model.created * 1000).toISOString() : undefined,
-          reasoning:
-            model.supported_features?.includes('reasoning') ||
-            knownModel?.abilities?.reasoning ||
-            false,
-          structuredOutput:
-            model.supported_features?.includes('json_mode') ||
-            knownModel?.abilities?.structuredOutput ||
-            false,
-          vision:
-            model.input_modalities?.includes('image') || knownModel?.abilities?.vision || false,
-        };
+        return mapSenseNovaModel(model, knownModel);
       })
       .filter(Boolean) as ChatModelCard[];
   },

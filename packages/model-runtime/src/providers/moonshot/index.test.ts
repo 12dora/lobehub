@@ -1259,6 +1259,79 @@ describe('models', () => {
     expect(models[0].id).toBe('moonshot-v1-8k');
   });
 
+  // Wire shape from https://platform.kimi.com/docs/api/list-models.md
+  const documentedKimiK3 = {
+    context_length: 262_144,
+    created: 1_700_000_000,
+    id: 'kimi-k3',
+    object: 'model',
+    owned_by: 'moonshot',
+    supports_image_in: true,
+    supports_reasoning: true,
+    supports_video_in: true,
+  };
+
+  it('maps documented context_length and the three supports_* flags', async () => {
+    const mockClient = {
+      models: {
+        list: vi.fn().mockResolvedValue({ data: [documentedKimiK3] }),
+      },
+    } as unknown as OpenAI;
+
+    const models = await fetchModels({ client: mockClient });
+
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({
+      contextWindowTokens: 262_144,
+      id: 'kimi-k3',
+      reasoning: true,
+      video: true,
+      vision: true,
+    });
+  });
+
+  it('forwards documented false flags so keyword fallbacks cannot invent abilities', async () => {
+    const mockClient = {
+      models: {
+        list: vi.fn().mockResolvedValue({
+          data: [
+            {
+              ...documentedKimiK3,
+              supports_image_in: false,
+              supports_reasoning: false,
+              supports_video_in: false,
+            },
+          ],
+        }),
+      },
+    } as unknown as OpenAI;
+
+    const models = await fetchModels({ client: mockClient });
+
+    expect(models[0]).toMatchObject({
+      id: 'kimi-k3',
+      reasoning: false,
+      video: false,
+      vision: false,
+    });
+  });
+
+  it('lets keyword fallbacks run when the supports_* keys are absent', async () => {
+    const mockClient = {
+      models: {
+        list: vi.fn().mockResolvedValue({
+          data: [{ context_length: 262_144, id: 'kimi-k3', object: 'model' }],
+        }),
+      },
+    } as unknown as OpenAI;
+
+    const models = await fetchModels({ client: mockClient });
+
+    // kimi-k3 is in MODEL_LIST_CONFIGS.moonshot vision/reasoning keywords
+    expect(models[0].vision).toBe(true);
+    expect(models[0].reasoning).toBe(true);
+  });
+
   it('should handle empty model list', async () => {
     const mockClient = {
       models: {

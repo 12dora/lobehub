@@ -27,9 +27,17 @@ import {
 
 export interface MoonshotModelCard {
   context_length?: number;
+  created?: number;
   id: string;
+  object?: string;
+  owned_by?: string;
   supports_image_in?: boolean;
+  supports_reasoning?: boolean;
+  supports_video_in?: boolean;
 }
+
+// Documented booleans are authoritative; false must suppress keyword fallbacks.
+const moonshotFlag = (value?: boolean) => (typeof value === 'boolean' ? value : undefined);
 
 const DEFAULT_MOONSHOT_BASE_URL = 'https://api.moonshot.cn/v1';
 const DEFAULT_MOONSHOT_ANTHROPIC_BASE_URL = 'https://api.moonshot.cn/anthropic';
@@ -373,8 +381,11 @@ export const fetchMoonshotModels = async ({
 
   const processedList = modelList.map((model) => ({
     contextWindowTokens: model.context_length,
+    created: model.created,
     id: model.id,
-    vision: model.supports_image_in,
+    reasoning: moonshotFlag(model.supports_reasoning),
+    video: moonshotFlag(model.supports_video_in),
+    vision: moonshotFlag(model.supports_image_in),
   }));
 
   return processModelList(processedList, MODEL_LIST_CONFIGS.moonshot, 'moonshot');

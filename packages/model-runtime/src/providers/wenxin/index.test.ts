@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LobeOpenAICompatibleRuntime } from '../../core/BaseAI';
 import { testProvider } from '../../providerTestUtils';
-import { LobeWenxinAI, params } from './index';
+import { LobeWenxinAI, mapWenxinModel, params } from './index';
 
 testProvider({
   Runtime: LobeWenxinAI,
@@ -306,5 +306,136 @@ describe('LobeWenxinAI - Custom Features', () => {
 
       expect(result.thinking_budget).toBeUndefined();
     });
+  });
+});
+
+// Wire shape from https://cloud.baidu.com/doc/qianfan-api/s/Dmba8k71y propertyOrder
+const documentedWenxinChat = {
+  architecture: {
+    input_modalities: ['text'],
+    modality: 'text->text',
+    output_modalities: ['text'],
+  },
+  context_length: 131_072,
+  created: 1_717_200_000,
+  id: 'ernie-4.5-turbo-128k',
+  max_completions_tokens: 8192,
+  max_tokens: 4096,
+  object: 'model',
+  owned_by: 'Baidu',
+  pricing: {
+    completion: '0.006',
+    prompt: '0.003',
+  },
+  prompt_tokens: 126_976,
+  type: 'chat',
+};
+
+const documentedWenxinVision = {
+  architecture: {
+    input_modalities: ['text', 'image'],
+    modality: 'text+image->text',
+    output_modalities: ['text'],
+  },
+  context_length: 32_768,
+  created: 1_717_200_000,
+  id: 'ernie-4.5-turbo-vl',
+  max_completions_tokens: null,
+  max_tokens: 4096,
+  object: 'model',
+  owned_by: 'Baidu',
+  prompt_tokens: null,
+  type: 'chat',
+};
+
+const documentedWenxinImage = {
+  architecture: {
+    input_modalities: ['text'],
+    modality: 'text->image',
+    output_modalities: ['image'],
+  },
+  context_length: null,
+  created: 1_717_200_000,
+  id: 'irag-1.0',
+  max_completions_tokens: null,
+  max_tokens: null,
+  object: 'model',
+  owned_by: 'Baidu',
+  pricing: { image: '0.06' },
+  prompt_tokens: null,
+  type: 'text2image',
+};
+
+const documentedWenxinRerank = {
+  architecture: {
+    input_modalities: ['text'],
+    modality: 'text->text',
+    output_modalities: ['text'],
+  },
+  context_length: 8192,
+  created: 1_717_200_000,
+  id: 'bce-reranker-base',
+  max_completions_tokens: null,
+  max_tokens: null,
+  object: 'model',
+  owned_by: 'Baidu',
+  prompt_tokens: null,
+  type: 'rerank',
+};
+
+describe('mapWenxinModel', () => {
+  it('maps documented token, type and created fields and leaves CNY pricing unmapped', () => {
+    expect(mapWenxinModel(documentedWenxinChat)).toEqual({
+      contextWindowTokens: 131_072,
+      created: 1_717_200_000,
+      id: 'ernie-4.5-turbo-128k',
+      imageOutput: undefined,
+      maxOutput: 4096,
+      type: 'chat',
+      vision: undefined,
+    });
+  });
+
+  it('maps input image modality to vision and treats present-null token fields as unknown', () => {
+    expect(mapWenxinModel(documentedWenxinVision)).toEqual({
+      contextWindowTokens: 32_768,
+      created: 1_717_200_000,
+      id: 'ernie-4.5-turbo-vl',
+      imageOutput: undefined,
+      maxOutput: 4096,
+      type: 'chat',
+      vision: true,
+    });
+  });
+
+  it('maps text2image to image and output image modality to imageOutput', () => {
+    expect(mapWenxinModel(documentedWenxinImage)).toEqual({
+      contextWindowTokens: undefined,
+      created: 1_717_200_000,
+      id: 'irag-1.0',
+      imageOutput: true,
+      maxOutput: undefined,
+      type: 'image',
+      vision: undefined,
+    });
+  });
+
+  it('leaves open-enum types such as rerank unmapped', () => {
+    expect(mapWenxinModel(documentedWenxinRerank).type).toBeUndefined();
+  });
+
+  it('does not treat output video as the video-input ability', () => {
+    const mapped = mapWenxinModel({
+      architecture: {
+        input_modalities: ['text'],
+        modality: 'text->video',
+        output_modalities: ['video'],
+      },
+      id: 'text2video-example',
+      type: 'text2video',
+    });
+
+    expect(mapped.type).toBe('video');
+    expect(mapped).not.toHaveProperty('video');
   });
 });
