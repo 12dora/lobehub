@@ -9,14 +9,49 @@ import { memo } from 'react';
 import { type ImageProps } from '@/libs/next/Image';
 import Image from '@/libs/next/Image';
 
-const styles = createStaticStyles(({ css }) => {
+const styles = createStaticStyles(({ css, cssVar }) => {
   return {
     extraTitle: css`
       font-weight: 300;
       white-space: nowrap;
     `,
+    monogram: css`
+      user-select: none;
+
+      flex: none;
+
+      font-weight: 800;
+      line-height: 1;
+      color: ${cssVar.colorText};
+      text-transform: uppercase;
+
+      background: ${cssVar.colorFillSecondary};
+    `,
   };
 });
+
+const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/**
+ * A brand with no uploaded logo still needs a square mark wherever a logo image
+ * would go. Rendering the whole name there overflows its container, so derive a
+ * short monogram instead — the same convention avatars use.
+ */
+export const getBrandMonogram = (name: string): string => {
+  const trimmed = name.trim();
+  if (!trimmed) return '?';
+
+  const words = trimmed.split(/[\s\-_·/|]+/).filter(Boolean);
+  const first = [...(words[0] ?? trimmed)];
+
+  // CJK reads as one glyph per character, so a single character is enough.
+  if (CJK_RE.test(first[0])) return first[0];
+
+  const second = words[1] ? [...words[1]][0] : undefined;
+  if (second && !CJK_RE.test(second)) return (first[0] + second).toUpperCase();
+
+  return first.slice(0, 2).join('').toUpperCase();
+};
 
 const CustomTextLogo = memo<FlexboxProps & { name: string; size: number }>(
   ({ name, size, style, ...rest }) => {
@@ -32,6 +67,31 @@ const CustomTextLogo = memo<FlexboxProps & { name: string; size: number }>(
         {...rest}
       >
         {name}
+      </Flexbox>
+    );
+  },
+);
+
+const CustomMonogramLogo = memo<FlexboxProps & { name: string; size: number }>(
+  ({ name, size, style, ...rest }) => {
+    const monogram = getBrandMonogram(name);
+
+    return (
+      <Flexbox
+        align={'center'}
+        className={styles.monogram}
+        height={size}
+        justify={'center'}
+        title={name}
+        width={size}
+        style={{
+          borderRadius: Math.round(size / 4),
+          fontSize: Math.round(size / (monogram.length > 1 ? 2.4 : 1.8)),
+          ...style,
+        }}
+        {...rest}
+      >
+        {monogram}
       </Flexbox>
     );
   },
@@ -71,7 +131,14 @@ const CustomLogo = memo<CustomLogoProps>(
     let logoComponent: ReactNode;
 
     if (!logoUrl) {
-      logoComponent = <CustomTextLogo name={name} size={size} style={style} {...rest} />;
+      // Wordmark slots ('text' / 'combine') want the whole name; every other slot is a
+      // square logo box, where the whole name overflows — use a monogram there instead.
+      logoComponent =
+        type === 'text' || type === 'combine' ? (
+          <CustomTextLogo name={name} size={size} style={style} {...rest} />
+        ) : (
+          <CustomMonogramLogo name={name} size={size} style={style} {...rest} />
+        );
     } else {
       switch (type) {
         case '3d':
