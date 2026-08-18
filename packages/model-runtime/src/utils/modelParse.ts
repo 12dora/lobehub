@@ -566,16 +566,24 @@ const processModelCard = (
 
   const mergedSettings = mergeSettings(model.settings, knownModel?.settings, options);
 
+  /**
+   * Carries `currency` through both doors. Cost computation and every price label already read it
+   * and default to USD when it is absent (`computeChatCost.ts`, `useModelDetailPanel.ts`), so a
+   * provider that discovers a CNY rate upstream and loses the currency here does not merely display
+   * the wrong symbol — it bills at roughly a seventh of the real rate.
+   */
   const formatPricing = (pricing?: {
     cachedInput?: number;
+    currency?: 'CNY' | 'USD';
     input?: number;
     output?: number;
     units?: any[];
     writeCacheInput?: number;
   }) => {
     if (!pricing || typeof pricing !== 'object') return undefined;
+    const currency = pricing.currency ? { currency: pricing.currency } : {};
     if (Array.isArray(pricing.units)) {
-      return { units: pricing.units };
+      return { ...currency, units: pricing.units };
     }
     const { input, output, cachedInput, writeCacheInput } = pricing;
     if (
@@ -619,7 +627,7 @@ const processModelCard = (
         unit: 'millionTokens' as const,
       });
     }
-    return { units };
+    return { ...currency, units };
   };
 
   return {
@@ -674,8 +682,16 @@ const processModelCard = (
  * @param provider Provider type (optional, used to prioritize matching corresponding local configuration, will only attempt to override enabled from local configuration when provider is provided)
  * @returns Processed model card list
  */
+/**
+ * What a provider's `models()` may hand these processors: the upstream id, plus any of the fields
+ * `processModelCard` knows how to read. Declaring it as `{ id: string }` — which is what both
+ * entry points used to say — made the richer contract invisible, so providers kept mapping into
+ * field names nothing consumes and the loss was silent.
+ */
+export type ProcessableModelCard = { [key: string]: any; id: string };
+
 export const processModelList = async (
-  modelList: Array<{ id: string }>,
+  modelList: ProcessableModelCard[],
   config: ModelProcessorConfig,
   provider?: ModelProviderKey,
 ): Promise<ChatModelCard[]> => {
@@ -732,7 +748,7 @@ export const processModelList = async (
  * @returns Processed model card list
  */
 export const processMultiProviderModelList = async (
-  modelList: Array<{ id: string }>,
+  modelList: ProcessableModelCard[],
   providerid?: ModelProviderKey,
 ): Promise<ChatModelCard[]> => {
   const { loadModels } =

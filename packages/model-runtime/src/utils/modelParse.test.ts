@@ -195,6 +195,46 @@ describe('modelParse', () => {
     });
   });
 
+  describe('pricing currency', () => {
+    /**
+     * Cost computation and every price label default an absent currency to USD, so dropping a CNY
+     * rate here does not just mislabel the symbol — it bills at roughly a seventh of the real price.
+     */
+    it('carries an explicit currency through the scalar door', async () => {
+      const result = await processModelList(
+        [{ id: 'cny-scalar', pricing: { currency: 'CNY', input: 4, output: 16 } }],
+        MODEL_LIST_CONFIGS.openai,
+      );
+
+      expect(result[0].pricing?.currency).toBe('CNY');
+      expect(result[0].pricing?.units).toEqual([
+        { name: 'textInput', rate: 4, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 16, strategy: 'fixed', unit: 'millionTokens' },
+      ]);
+    });
+
+    it('carries an explicit currency through the units door', async () => {
+      const units = [{ name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' }];
+      const result = await processModelList(
+        [{ id: 'cny-units', pricing: { currency: 'CNY', units } }],
+        MODEL_LIST_CONFIGS.openai,
+      );
+
+      expect(result[0].pricing?.currency).toBe('CNY');
+      expect(result[0].pricing?.units).toEqual(units);
+    });
+
+    it('leaves currency unset when upstream did not state one, so USD stays the default', async () => {
+      const result = await processModelList(
+        [{ id: 'no-currency', pricing: { input: 1 } }],
+        MODEL_LIST_CONFIGS.openai,
+      );
+
+      expect(result[0].pricing).toBeDefined();
+      expect(result[0].pricing?.currency).toBeUndefined();
+    });
+  });
+
   describe('processModelList', () => {
     it('should process a list of models with the given provider config', async () => {
       const modelList = [{ id: 'gpt-4o' }, { id: 'gpt-3.5-turbo' }];
