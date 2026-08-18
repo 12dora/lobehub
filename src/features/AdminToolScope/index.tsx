@@ -96,6 +96,11 @@ export interface AdminToolScope {
   }) => Promise<void>;
   toggleBuiltinSkill: (identifier: string, enabled: boolean) => Promise<void>;
   updateToolPermission: (toolId: string, permission: ConnectorToolPermission) => Promise<void>;
+  /**
+   * Apply one permission to a whole tool group in a single backend write.
+   * Optional so partial scopes keep working; callers fall back to per-tool writes.
+   */
+  updateToolsPermission?: (toolIds: string[], permission: ConnectorToolPermission) => Promise<void>;
   /** Detail data for an org catalog skill (AgentSkillDetail parity). */
   useOrgSkillDetail: (skillId: string) => {
     data?: AdminOrgSkillDetailData;

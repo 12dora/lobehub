@@ -54,6 +54,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     retry: retryConnectors,
     submitCustomConnector,
     updateToolPermission,
+    updateToolsPermission,
   } = useAdminConnectorScope({
     capabilities,
     enabled: view === 'connector',
@@ -95,6 +96,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       submitCustomConnector,
       toggleBuiltinSkill,
       updateToolPermission,
+      updateToolsPermission,
       useOrgSkillDetail,
     }),
     [
@@ -120,6 +122,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       submitCustomConnector,
       toggleBuiltinSkill,
       updateToolPermission,
+      updateToolsPermission,
       useOrgSkillDetail,
     ],
   );

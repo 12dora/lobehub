@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as ZodModule from 'zod';
 
-import { ConnectorSourceType } from '@/database/schemas';
+import { ConnectorSourceType, ConnectorToolPermission } from '@/database/schemas';
 
 import ConnectorDetail from './index';
 
@@ -42,6 +42,7 @@ const mocks = vi.hoisted(() => ({
     uninstallBuiltinTool: vi.fn(),
     uninstallMCPPlugin: vi.fn(),
     updateToolPermission: vi.fn(),
+    updateToolsPermission: vi.fn(),
   },
 }));
 
@@ -100,17 +101,36 @@ vi.mock('../CustomConnectorModal', () => ({
 vi.mock('./ToolPermissionGroup', () => ({
   default: ({
     label,
+    onBatchPermission,
     onPermissionChange,
     tools,
   }: {
     label: string;
+    onBatchPermission: (ids: string[], permission: string) => void;
     onPermissionChange: (id: string, permission: string) => void;
     tools: Array<{ id: string }>;
   }) => (
     <div data-testid="permission-group">
       {label}
+      {tools.length > 0 && (
+        <button
+          type="button"
+          onClick={() =>
+            onBatchPermission(
+              tools.map((tool) => tool.id),
+              ConnectorToolPermission.disabled,
+            )
+          }
+        >
+          disable all {label}
+        </button>
+      )}
       {tools.map((tool) => (
-        <button key={tool.id} type="button" onClick={() => onPermissionChange(tool.id, 'always')}>
+        <button
+          key={tool.id}
+          type="button"
+          onClick={() => onPermissionChange(tool.id, ConnectorToolPermission.auto)}
+        >
           allow {tool.id}
         </button>
       ))}
@@ -150,13 +170,13 @@ describe('ConnectorDetail', () => {
     expect(screen.getByText('Notion')).toBeInTheDocument();
     expect(screen.getByText('Workspace notes')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Disconnect Notion' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Uninstall' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'connector.uninstall' })).not.toBeInTheDocument();
   });
 
   it('falls back to the marketplace uninstall action when no lifecycle override is provided', () => {
     render(<ConnectorDetail connectorId="connector-1" />);
 
-    expect(screen.getByRole('button', { name: 'Uninstall' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'connector.uninstall' })).toBeInTheDocument();
   });
 
   it('keeps OAuth lifecycle and tool permissions editable in managed-safe detail', () => {
@@ -170,13 +190,31 @@ describe('ConnectorDetail', () => {
       />,
     );
 
-    screen.getByRole('button', { name: 'Reset permissions' }).click();
+    screen.getByRole('button', { name: 'connector.resetPermissions' }).click();
     screen.getByRole('button', { name: 'allow search-pages' }).click();
 
     expect(mocks.toolState.resetConnectorPermissions).toHaveBeenCalledWith('connector-1');
-    expect(mocks.toolState.updateToolPermission).toHaveBeenCalledWith('search-pages', 'always');
+    expect(mocks.toolState.updateToolPermission).toHaveBeenCalledWith(
+      'search-pages',
+      ConnectorToolPermission.auto,
+    );
     expect(screen.getByRole('button', { name: 'Disconnect Notion' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Uninstall' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'connector.refresh' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'connector.uninstall' })).not.toBeInTheDocument();
+  });
+
+  it('routes a group action through the batched store write instead of one call per tool', () => {
+    mocks.toolState.connectorTools.readTools = [{ id: 'search-pages' }, { id: 'read-page' }];
+
+    render(<ConnectorDetail connectorId="connector-1" />);
+
+    screen.getByRole('button', { name: 'disable all connector.readOnlyTools' }).click();
+
+    expect(mocks.toolState.updateToolsPermission).toHaveBeenCalledTimes(1);
+    expect(mocks.toolState.updateToolsPermission).toHaveBeenCalledWith(
+      ['search-pages', 'read-page'],
+      ConnectorToolPermission.disabled,
+    );
+    expect(mocks.toolState.updateToolPermission).not.toHaveBeenCalled();
   });
 });

@@ -43,6 +43,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
     const uninstallMCPPlugin = useToolStore((s) => s.uninstallMCPPlugin);
     const fetchConnectors = useToolStore((s) => s.fetchConnectors);
     const storeUpdateToolPermission = useToolStore((s) => s.updateToolPermission);
+    const storeUpdateToolsPermission = useToolStore((s) => s.updateToolsPermission);
 
     // Admin scope: rows come from the org catalog / builtin manifests, and
     // permission writes target the platform connector policy.
@@ -63,6 +64,10 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
     const updateToolPermission = adminScope
       ? adminScope.updateToolPermission
       : storeUpdateToolPermission;
+    // Batched group write: ONE backend write per click instead of N racing ones.
+    const updateToolsPermission = adminScope
+      ? adminScope.updateToolsPermission
+      : storeUpdateToolsPermission;
     const resetConnectorPermissions = adminScope
       ? adminScope.resetConnectorPermissions
       : storeResetConnectorPermissions;
@@ -96,7 +101,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
           await deleteConnector(connectorId);
           onDelete?.();
         },
-        title: t('connector.uninstallConfirm', 'Uninstall this tool?'),
+        title: t('connector.uninstallConfirm'),
       });
     };
 
@@ -118,8 +123,8 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
     // Sync button label: re-sync tool list from manifest (does NOT reset permissions)
     const syncLabel =
       connector?.sourceType === ConnectorSourceType.custom
-        ? t('connector.sync', 'Sync')
-        : t('connector.refresh', 'Refresh');
+        ? t('connector.sync')
+        : t('connector.refresh');
 
     const hasTools =
       readTools.length > 0 ||
@@ -131,6 +136,11 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
       toolIds: string[],
       permission: ConnectorToolPermission,
     ) => {
+      if (updateToolsPermission) {
+        await updateToolsPermission(toolIds, permission);
+        return;
+      }
+      // Fallback for scopes without a batched write.
       await Promise.all(toolIds.map((id) => updateToolPermission(id, permission)));
     };
 
@@ -154,7 +164,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
             {/* Reset permissions: restore all tools to auto (fully open) */}
             {!permissionsReadOnly && (
               <Button size="small" onClick={() => resetConnectorPermissions(connectorId)}>
-                {t('connector.resetPermissions', 'Reset permissions')}
+                {t('connector.resetPermissions')}
               </Button>
             )}
             {/* Sync/Refresh: re-sync tool list from manifest (per-user rows only) */}
@@ -178,7 +188,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
                   size="small"
                   onClick={() => setCustomModalOpen(true)}
                 >
-                  {t('connector.edit', 'Edit')}
+                  {t('connector.edit')}
                 </Button>
               )}
             {lifecycleActions !== undefined && lifecycleActions !== null ? (
@@ -198,11 +208,11 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
                         await deleteConnector(connectorId);
                         onDelete?.();
                       },
-                      title: t('connector.deleteConfirm', 'Delete this connector?'),
+                      title: t('connector.deleteConfirm'),
                     });
                   }}
                 >
-                  {t('connector.delete', 'Delete')}
+                  {t('connector.delete')}
                 </Button>
               ) : null
             ) : !managed ? (
@@ -211,7 +221,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
                 {isMcpConnector && (
                   <>
                     <Button danger size="small" onClick={() => disconnectConnector(connectorId)}>
-                      {t('connector.disconnect', 'Disconnect')}
+                      {t('connector.disconnect')}
                     </Button>
                     <Button
                       danger
@@ -224,18 +234,18 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
                             await deleteConnector(connectorId);
                             onDelete?.();
                           },
-                          title: t('connector.deleteConfirm', 'Delete this connector?'),
+                          title: t('connector.deleteConfirm'),
                         });
                       }}
                     >
-                      {t('connector.delete', 'Delete')}
+                      {t('connector.delete')}
                     </Button>
                   </>
                 )}
                 {/* Uninstall for builtin and marketplace tools */}
                 {(isBuiltin || isMarketplace) && (
                   <Button danger icon={<Trash2 size={14} />} size="small" onClick={handleUninstall}>
-                    {t('connector.uninstall', 'Uninstall')}
+                    {t('connector.uninstall')}
                   </Button>
                 )}
               </>
@@ -270,28 +280,28 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
           {hasTools ? (
             <div style={{ flex: 1, overflowY: 'auto' }}>
               <ToolPermissionGroup
-                label={t('connector.readOnlyTools', 'Read-only tools')}
+                label={t('connector.readOnlyTools')}
                 readOnly={permissionsReadOnly}
                 tools={readTools}
                 onBatchPermission={handleBatchPermission}
                 onPermissionChange={updateToolPermission}
               />
               <ToolPermissionGroup
-                label={t('connector.createTools', 'Create tools')}
+                label={t('connector.createTools')}
                 readOnly={permissionsReadOnly}
                 tools={createTools}
                 onBatchPermission={handleBatchPermission}
                 onPermissionChange={updateToolPermission}
               />
               <ToolPermissionGroup
-                label={t('connector.updateTools', 'Update tools')}
+                label={t('connector.updateTools')}
                 readOnly={permissionsReadOnly}
                 tools={updateTools}
                 onBatchPermission={handleBatchPermission}
                 onPermissionChange={updateToolPermission}
               />
               <ToolPermissionGroup
-                label={t('connector.deleteTools', 'Delete tools')}
+                label={t('connector.deleteTools')}
                 readOnly={permissionsReadOnly}
                 tools={deleteTools}
                 onBatchPermission={handleBatchPermission}
@@ -300,7 +310,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
             </div>
           ) : (
             <div style={{ color: 'var(--lobe-colors-neutral-500)', fontSize: 14 }}>
-              {t('connector.noTools', 'No tool permissions to configure.')}
+              {t('connector.noTools')}
             </div>
           )}
 

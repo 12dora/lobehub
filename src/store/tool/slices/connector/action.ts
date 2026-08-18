@@ -177,6 +177,42 @@ export class ConnectorActionImpl {
       await this.fetchConnectors();
     }
   };
+
+  /**
+   * Apply one permission to a whole tool group: a single optimistic patch for
+   * every row, then the per-tool mutations. Rows are independent server-side, so
+   * a failure only needs ONE refetch to resync the whole group.
+   */
+  updateToolsPermission = async (
+    toolIds: string[],
+    permission: ConnectorToolPermission,
+  ): Promise<void> => {
+    if (toolIds.length === 0) return;
+    const targets = new Set(toolIds);
+
+    // Optimistic update — one set for the whole group
+    this.#set(
+      (s) => ({
+        connectors: s.connectors.map((c) => ({
+          ...c,
+          tools: c.tools.map((t) => (targets.has(t.id) ? { ...t, permission } : t)),
+        })),
+      }),
+      false,
+      'updateToolsPermission/optimistic',
+    );
+
+    const results = await Promise.allSettled(
+      toolIds.map((toolId) =>
+        lambdaClient.connector.updateToolPermission.mutate({ permission, toolId }),
+      ),
+    );
+
+    // Roll back once on any failure
+    if (results.some((result) => result.status === 'rejected')) {
+      await this.fetchConnectors();
+    }
+  };
 }
 
 export type ConnectorAction = Pick<ConnectorActionImpl, keyof ConnectorActionImpl>;

@@ -1,5 +1,6 @@
 import { type LobeToolCustomPlugin } from '@lobechat/types';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import type { ConnectorCredentials, OIDCConfig } from '@/database/schemas';
 import { ConnectorSourceType } from '@/database/schemas';
@@ -97,6 +98,7 @@ const cleanRecord = (record?: Record<string, string>): Record<string, string> | 
  */
 const CustomConnectorModal = memo<CustomConnectorModalProps>(
   ({ open, onClose, connectorId, legacyPlugin, onEditSuccess }) => {
+    const { t } = useTranslation('tool');
     const adminScope = useAdminToolScope();
     const createConnector = useToolStore((s) => s.createConnector);
     const updateConnector = useToolStore((s) => s.updateConnector);
@@ -230,10 +232,10 @@ const CustomConnectorModal = memo<CustomConnectorModalProps>(
         if (!result.ok) {
           throw new Error(
             result.reason === 'no-mcp'
-              ? 'This custom plugin has no MCP configuration to migrate.'
+              ? t('connector.migrate.noMcp')
               : result.reason === 'no-endpoint'
-                ? 'This custom plugin is missing a URL (for HTTP) or command (for stdio).'
-                : 'This custom plugin uses an unsupported transport.',
+                ? t('connector.migrate.noEndpoint')
+                : t('connector.migrate.unsupportedTransport'),
           );
         }
         onEditSuccess?.();
@@ -319,14 +321,18 @@ const CustomConnectorModal = memo<CustomConnectorModalProps>(
 
         if (authType === 'oauth2' && isHttp) {
           const popup = ctx?.oauthPopup ?? null;
-          if (!popup) throw new Error('OAuth popup was blocked');
+          if (!popup) throw new Error(t('connector.add.popupBlocked'));
           try {
             const authorizationUrl = await startConnectorOAuth(connectorId);
             popup.location.href = authorizationUrl;
             const result = await waitForOAuthPopup(popup, connectorId);
             await fetchConnectors();
             if (result.status !== 'success') {
-              throw new Error(result.error || 'Authorization was not completed');
+              throw new Error(
+                result.error
+                  ? t('connector.add.authError', { reason: result.error })
+                  : t('connector.add.cancelled'),
+              );
             }
           } catch (e) {
             if (!popup.closed) popup.close();
@@ -358,7 +364,7 @@ const CustomConnectorModal = memo<CustomConnectorModalProps>(
       // DevModal already opened synchronously for us.
       if (isHttp && authType === 'oauth2') {
         const popup = ctx?.oauthPopup ?? null;
-        if (!popup) throw new Error('OAuth popup was blocked');
+        if (!popup) throw new Error(t('connector.add.popupBlocked'));
 
         const clientId = mcp.auth?.clientId?.trim();
         try {
@@ -377,7 +383,11 @@ const CustomConnectorModal = memo<CustomConnectorModalProps>(
           const result = await waitForOAuthPopup(popup, newConnectorId);
           await fetchConnectors();
           if (result.status !== 'success') {
-            throw new Error(result.error || 'Authorization was not completed');
+            throw new Error(
+              result.error
+                ? t('connector.add.authError', { reason: result.error })
+                : t('connector.add.cancelled'),
+            );
           }
         } catch (e) {
           // Close the blank/in-flight popup we opened so it isn't left dangling.

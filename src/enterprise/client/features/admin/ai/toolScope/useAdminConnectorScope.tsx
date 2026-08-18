@@ -316,6 +316,65 @@ export const useAdminConnectorScope = ({
     [applyConnectorToolsPatch, updateBuiltinPolicies],
   );
 
+  /**
+   * Apply one permission to a whole group in a SINGLE write per backing document:
+   * one governance update for the builtin matrix, one CAS applyImmediate per
+   * platform connector. Fanning out per tool would race the same expected
+   * revision and fail every write but the first (PLATFORM_REVISION_CONFLICT).
+   */
+  const updateToolsPermission = useCallback(
+    async (toolIds: string[], permission: ConnectorToolPermission) => {
+      const builtinByIdentifier = new Map<string, string[]>();
+      const platformByConnector = new Map<string, string[]>();
+
+      for (const toolId of toolIds) {
+        if (toolId.startsWith(BUILTIN_ROW_PREFIX)) {
+          // `admin-builtin:<identifier>:<toolName>` — toolName may contain ':'.
+          const [, identifier, ...nameParts] = toolId.split(':');
+          const toolName = nameParts.join(':');
+          if (!identifier || !toolName) continue;
+          builtinByIdentifier.set(identifier, [
+            ...(builtinByIdentifier.get(identifier) ?? []),
+            toolName,
+          ]);
+          continue;
+        }
+        if (!toolId.startsWith(PLATFORM_TOOL_PREFIX)) continue;
+        // `platform:<connectorId>:<toolKey>` — toolKey may contain ':'.
+        const [, connectorId, ...toolKeyParts] = toolId.split(':');
+        const toolKey = toolKeyParts.join(':');
+        if (!connectorId || !toolKey) continue;
+        platformByConnector.set(connectorId, [
+          ...(platformByConnector.get(connectorId) ?? []),
+          toolKey,
+        ]);
+      }
+
+      if (builtinByIdentifier.size > 0) {
+        await updateBuiltinPolicies((policies) => {
+          const next = { ...policies };
+          for (const [identifier, toolNames] of builtinByIdentifier) {
+            const entry = { ...next[identifier] };
+            for (const toolName of toolNames) entry[toolName] = permission;
+            next[identifier] = entry;
+          }
+          return next;
+        });
+      }
+
+      const policy = permissionToPolicy(permission);
+      // Sequential: each connector is its own CAS document, and the cached
+      // detail map only refreshes after a completed write.
+      for (const [connectorId, toolKeys] of platformByConnector) {
+        const targets = new Set(toolKeys);
+        await applyConnectorToolsPatch(connectorId, (tools) =>
+          tools.map((tool) => (targets.has(tool.toolKey) ? { ...tool, ...policy } : tool)),
+        );
+      }
+    },
+    [applyConnectorToolsPatch, updateBuiltinPolicies],
+  );
+
   const resetConnectorPermissions = useCallback(
     async (connectorId: string) => {
       if (connectorId.startsWith(BUILTIN_ROW_PREFIX)) {
@@ -507,5 +566,6 @@ export const useAdminConnectorScope = ({
     retry,
     submitCustomConnector,
     updateToolPermission,
+    updateToolsPermission,
   };
 };

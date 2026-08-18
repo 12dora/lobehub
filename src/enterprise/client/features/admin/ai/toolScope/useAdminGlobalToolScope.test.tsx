@@ -625,6 +625,91 @@ describe('useAdminGlobalToolScope', () => {
       expect(patchedTool.requiresConfirmation).toBe(false);
     });
 
+    it('updateToolsPermission writes a group in ONE CAS applyImmediate', async () => {
+      mocks.connectors.list.mockResolvedValue({
+        items: [{ id: 'conn-1', key: 'jira' }],
+        nextCursor: null,
+      });
+      mocks.connectors.getBatch.mockResolvedValue({
+        failedIds: [],
+        items: [connectorDetail()],
+      });
+      mocks.connectors.applyImmediate.mockResolvedValue({
+        draft: { id: 'conn-1' },
+        publishError: null,
+        published: true,
+      });
+
+      const { result } = renderScope('connector');
+      await waitFor(() =>
+        expect(result.current.connectors.some((c) => c.id === 'conn-1')).toBe(true),
+      );
+
+      await act(async () => {
+        await result.current.updateToolsPermission!(
+          [
+            'platform:conn-1:create_issue',
+            'platform:conn-1:search_issues',
+            'platform:conn-1:delete_issue',
+          ],
+          ConnectorToolPermission.needs_approval,
+        );
+      });
+
+      // One write, not one per tool — N writes would race the same revision.
+      expect(mocks.connectors.applyImmediate).toHaveBeenCalledTimes(1);
+      const input = mocks.connectors.applyImmediate.mock.calls[0][0];
+      expect(input).toMatchObject({
+        expectedDraftToken: 'c'.repeat(64),
+        expectedRevision: 5,
+        id: 'conn-1',
+        mode: 'update',
+      });
+      expect(
+        input.tools.map(
+          (tool: { platformPolicy: string; requiresConfirmation: boolean; toolKey: string }) => [
+            tool.toolKey,
+            tool.platformPolicy,
+            tool.requiresConfirmation,
+          ],
+        ),
+      ).toEqual([
+        ['create_issue', 'allow', true],
+        ['search_issues', 'allow', true],
+        ['delete_issue', 'allow', true],
+      ]);
+    });
+
+    it('updateToolsPermission writes builtin group policies in ONE governance update', async () => {
+      const { result } = renderScope('connector');
+      await waitFor(() => expect(result.current.listLoading).toBe(false));
+
+      await act(async () => {
+        await result.current.updateToolsPermission!(
+          [
+            'admin-builtin:lobe-web-browsing:search',
+            'admin-builtin:lobe-web-browsing:crawl:multi',
+            'admin-builtin:lobe-image-designer:generate',
+          ],
+          ConnectorToolPermission.disabled,
+        );
+      });
+
+      expect(mocks.connectors.updateBuiltinToolPolicy).toHaveBeenCalledTimes(1);
+      expect(mocks.connectors.updateBuiltinToolPolicy.mock.calls[0][0]).toMatchObject({
+        expectedRevision: 0,
+        policies: {
+          'lobe-image-designer': { generate: ConnectorToolPermission.disabled },
+          // Tool names may contain ':' — the id split must keep them intact.
+          'lobe-web-browsing': {
+            'crawl:multi': ConnectorToolPermission.disabled,
+            'search': ConnectorToolPermission.disabled,
+          },
+        },
+      });
+      expect(mocks.connectors.applyImmediate).not.toHaveBeenCalled();
+    });
+
     it('surfaces partial connector detail failures via listError', async () => {
       mocks.connectors.list.mockResolvedValue({
         items: [
