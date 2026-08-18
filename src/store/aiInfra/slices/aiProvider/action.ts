@@ -15,7 +15,7 @@ import type {
 import { isAiModelVisible } from 'model-bank';
 import { type SWRResponse } from 'swr';
 
-import { mutate, useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWRWithSync } from '@/libs/swr';
 import { type AiInfraServices } from '@/store/aiInfra/services';
 import { type AiInfraStore } from '@/store/aiInfra/store';
 import { type StoreSetter } from '@/store/types';
@@ -559,17 +559,25 @@ export class AiProviderActionImpl {
   };
 
   useFetchAiProviderItem = (id: string): SWRResponse<AiProviderDetailItem | undefined> => {
-    return useClientDataSWR<AiProviderDetailItem | undefined>(
+    return useClientDataSWRWithSync<AiProviderDetailItem | undefined>(
       this.#scopeKey([AiProviderSwrKey.fetchAiProviderItem, id]),
       () => this.#services.aiProvider.getAiProviderById(id),
       {
-        onSuccess: (data) => {
+        // `onData` (not `onSuccess`) so a store created AFTER the request settled — the admin
+        // page builds a fresh scoped store on every route mount — still hydrates from the SWR
+        // cache. `ProviderConfig` treats a missing `aiProviderDetailMap[id]` as "still loading",
+        // so a cache hit that never re-runs `onSuccess` would pin it on the skeleton forever.
+        onData: (data) => {
           if (!data) return;
 
+          const state = this.#get();
+          // Same object already in the map: writing it again only churns subscribers.
+          if (state.activeAiProvider === id && state.aiProviderDetailMap[id] === data) return;
+
           this.#set(
-            (state) => ({
+            (prev) => ({
               activeAiProvider: id,
-              aiProviderDetailMap: { ...state.aiProviderDetailMap, [id]: data },
+              aiProviderDetailMap: { ...prev.aiProviderDetailMap, [id]: data },
             }),
             false,
             'useFetchAiProviderItem',
@@ -580,21 +588,28 @@ export class AiProviderActionImpl {
   };
 
   useFetchAiProviderList = (opts?: { enabled?: boolean }): SWRResponse<AiProviderListItem[]> => {
-    return useClientDataSWR<AiProviderListItem[]>(
+    return useClientDataSWRWithSync<AiProviderListItem[]>(
       opts?.enabled === false ? null : this.#scopeKey(AiProviderSwrKey.fetchAiProviderList),
       () => this.#services.aiProvider.getAiProviderList(),
       {
-        onSuccess: (data) => {
-          if (!this.#get().initAiProviderList) {
-            this.#set(
-              { aiProviderList: data, initAiProviderList: true },
-              false,
-              'useFetchAiProviderList/init',
-            );
-            return;
-          }
+        // `onData` (not `onSuccess`) so cached data hydrates the store too. The admin providers
+        // page recreates its scoped store on every route mount while SWR keeps the response in
+        // memory; a remount inside the dedupe window is served from cache and never fires
+        // `onSuccess`, which left `initAiProviderList` false and the menu/grid stuck on skeletons.
+        onData: (data) => {
+          if (!data) return;
 
-          this.#set({ aiProviderList: data }, false, 'useFetchAiProviderList/refresh');
+          const state = this.#get();
+          // Same list object already in the store: nothing to write.
+          if (state.initAiProviderList && state.aiProviderList === data) return;
+
+          this.#set(
+            { aiProviderList: data, initAiProviderList: true },
+            false,
+            state.initAiProviderList
+              ? 'useFetchAiProviderList/refresh'
+              : 'useFetchAiProviderList/init',
+          );
         },
       },
     );
@@ -611,7 +626,7 @@ export class AiProviderActionImpl {
     // Prevents unnecessary requests when login state is null/undefined
     const shouldFetch = isAuthLoaded && isLogin !== null && isLogin !== undefined;
 
-    return useClientDataSWR<AiProviderRuntimeStateWithBuiltinModels | undefined>(
+    return useClientDataSWRWithSync<AiProviderRuntimeStateWithBuiltinModels | undefined>(
       shouldFetch ? this.#scopeKey([AiProviderSwrKey.fetchAiProviderRuntimeState, isLogin]) : null,
       async () => {
         // Close over isLogin — SWR key may be scoped with a leading scope segment.
@@ -692,9 +707,15 @@ export class AiProviderActionImpl {
         };
       },
       {
-        onSuccess: (data) => {
+        // `onData` (not `onSuccess`) so a store mounted against a warm SWR cache still flips
+        // `isInitAiProviderRuntimeState`; every model picker treats that flag as "list ready".
+        onData: (data) => {
           if (!data) return;
 
+          // No local "already applied" guard here: the payload is fanned out into a dozen
+          // independent fields, so any partial check (e.g. comparing `enabledAiModels` alone)
+          // silently drops refreshes that only changed `runtimeConfig`, the provider lists or the
+          // redirects. `useClientDataSWRWithSync` already delivers each (key, payload) pair once.
           this.#set(
             {
               aiProviderRuntimeConfig: data.runtimeConfig,
