@@ -22,6 +22,7 @@ import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/r
 import type { AdminUsersSetPasswordInput } from '@/enterprise/client/services/adminUsers';
 
 import { getAdminUsersMutationErrorKey } from '../../utils';
+import { generatePassword } from '../generatePassword';
 import { PASSWORD_MAX, PASSWORD_MIN, validateSetPasswordForm } from './setPasswordValidation';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -47,6 +48,11 @@ const styles = createStaticStyles(({ css }) => ({
     display: flex;
     gap: 8px;
     align-items: flex-start;
+  `,
+  passwordRow: css`
+    display: flex;
+    gap: 8px;
+    align-items: center;
   `,
   title: css`
     margin: 0;
@@ -144,6 +150,16 @@ export const SetPasswordModalContent = memo<SetPasswordModalContentProps>(
       cancelReauth(phase);
     }, [cancelReauth, phase]);
 
+    // Fills both fields: retyping a 16-character random string into the confirm box
+    // is transcription work with no verification value. The reveal toggle on the
+    // input is how the admin reads what to hand over.
+    const handleGenerate = useCallback(() => {
+      const next = generatePassword();
+      setNewPassword(next);
+      setConfirmPassword(next);
+      setErrorKeySafe(null);
+    }, [setErrorKeySafe]);
+
     const handleSubmit = useCallback(async () => {
       if (phase !== 'idle' || !formValid) return;
 
@@ -180,27 +196,31 @@ export const SetPasswordModalContent = memo<SetPasswordModalContentProps>(
     return (
       <div className={styles.body}>
         <Text as="h2" className={styles.title}>
+          {/* The title already names the target — a second "target" line only repeats it. */}
           {t('users.security.password.title', { name: targetLabel })}
-        </Text>
-        <Text>
-          <strong>{t('users.modals.target')}</strong> {targetLabel}
         </Text>
         {/* The user is never notified — the admin owns handing the password over. */}
         <Alert showIcon message={t('users.security.password.warning')} type="warning" />
         <div className={styles.field}>
           <Text strong>{t('users.security.password.newLabel')}</Text>
-          <InputPassword
-            aria-label={t('users.security.password.newLabel')}
-            autoComplete="new-password"
-            disabled={locked}
-            maxLength={PASSWORD_MAX}
-            status={passwordInvalid ? 'error' : undefined}
-            value={newPassword}
-            onChange={(e) => {
-              setNewPassword(e.target.value);
-              setErrorKeySafe(null);
-            }}
-          />
+          <div className={styles.passwordRow}>
+            <InputPassword
+              aria-label={t('users.security.password.newLabel')}
+              autoComplete="new-password"
+              disabled={locked}
+              maxLength={PASSWORD_MAX}
+              status={passwordInvalid ? 'error' : undefined}
+              style={{ flex: 1 }}
+              value={newPassword}
+              onChange={(e) => {
+                setNewPassword(e.target.value);
+                setErrorKeySafe(null);
+              }}
+            />
+            <Button disabled={locked} onClick={handleGenerate}>
+              {t('users.modals.create.generate')}
+            </Button>
+          </div>
           <Text type="secondary">{t('users.security.password.rule', { min: PASSWORD_MIN })}</Text>
         </div>
         <div className={styles.field}>

@@ -49,28 +49,8 @@ export interface SecuritySectionProps {
    * Undefined when the action is unavailable (stale detail data).
    */
   onDisableTwoFactor?: () => void;
-  /** Undefined when the action is unavailable (stale detail data). */
-  onSetPassword?: () => void;
   user: AdminUsersGetOutput;
 }
-
-/**
- * Reason (i18n key) the change-password button is disabled, or null when it is live.
- *
- * Order matters: the account-shape reason (SSO-only) outranks the actor-shape one
- * (self) so the admin is told the fact that will still be true tomorrow.
- */
-export const resolveSetPasswordDisabledReason = (params: {
-  hasPassword: boolean;
-  isSelf: boolean;
-  /** False when the detail view is stale and high-risk actions are locked. */
-  isLive: boolean;
-}): string | null => {
-  if (!params.hasPassword) return 'users.security.password.ssoOnly';
-  if (params.isSelf) return 'users.errors.selfAction';
-  if (!params.isLive) return 'users.stale.refreshFailed';
-  return null;
-};
 
 /** Reason the credential-recovery button is disabled, or null when it is live. */
 export const resolveDisableTwoFactorDisabledReason = (params: {
@@ -78,23 +58,21 @@ export const resolveDisableTwoFactorDisabledReason = (params: {
 }): string | null => (params.isLive ? null : 'users.stale.refreshFailed');
 
 /**
- * Security facts + the two credential-takeover actions.
+ * Security facts + credential recovery.
  *
  * Lives on the overview tab rather than access: access is about *what the user may
  * do* (roles), while password / 2FA / passkeys are *how the user proves who they
  * are* — the same identity story the overview already tells. Unlike the ban/delete
  * cluster it stays rendered for `isSelf` and for actors without the credential
  * permission, because the facts are exactly what an admin is called to look up.
+ *
+ * Changing a password is an account action, not a fact, so that button lives in the
+ * 账户操作 block next to ban/delete — see `OverviewTab`.
  */
 const SecuritySection = memo<SecuritySectionProps>(
-  ({ canManageCredentials, onDisableTwoFactor, onSetPassword, user }) => {
+  ({ canManageCredentials, onDisableTwoFactor, user }) => {
     const { t } = useTranslation('admin');
 
-    const setPasswordDisabledReason = resolveSetPasswordDisabledReason({
-      hasPassword: user.hasPassword,
-      isLive: Boolean(onSetPassword),
-      isSelf: user.isSelf,
-    });
     const disableTwoFactorDisabledReason = resolveDisableTwoFactorDisabledReason({
       isLive: Boolean(onDisableTwoFactor),
     });
@@ -133,38 +111,25 @@ const SecuritySection = memo<SecuritySectionProps>(
               : t('users.security.passkey.none')}
           </dd>
         </dl>
-        {canManageCredentials ? (
+        {canManageCredentials && canRecoverCredentials ? (
           <div className={styles.actions}>
-            <Tooltip title={setPasswordDisabledReason ? t(setPasswordDisabledReason as never) : ''}>
+            <Tooltip
+              title={
+                disableTwoFactorDisabledReason ? t(disableTwoFactorDisabledReason as never) : ''
+              }
+            >
               {/* Wrapper span: a disabled button swallows the events the tooltip needs. */}
               <span>
                 <Button
-                  disabled={Boolean(setPasswordDisabledReason)}
+                  danger
+                  disabled={Boolean(disableTwoFactorDisabledReason)}
                   size="small"
-                  onClick={onSetPassword}
+                  onClick={onDisableTwoFactor}
                 >
-                  {t('users.security.password.action')}
+                  {t(recoveryAction.key as never, { defaultValue: recoveryAction.defaultValue })}
                 </Button>
               </span>
             </Tooltip>
-            {canRecoverCredentials ? (
-              <Tooltip
-                title={
-                  disableTwoFactorDisabledReason ? t(disableTwoFactorDisabledReason as never) : ''
-                }
-              >
-                <span>
-                  <Button
-                    danger
-                    disabled={Boolean(disableTwoFactorDisabledReason)}
-                    size="small"
-                    onClick={onDisableTwoFactor}
-                  >
-                    {t(recoveryAction.key as never, { defaultValue: recoveryAction.defaultValue })}
-                  </Button>
-                </span>
-              </Tooltip>
-            ) : null}
           </div>
         ) : null}
       </div>

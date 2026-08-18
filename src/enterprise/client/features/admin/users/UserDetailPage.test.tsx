@@ -413,6 +413,22 @@ describe('UserDetailPage', () => {
     );
   });
 
+  // Changing a password is an account action: it sits in 账户操作 with ban/delete, not
+  // in the security facts block.
+  it('renders change password inside the account-actions block', () => {
+    renderDetail();
+    const accountActions = screen.getByRole('heading', { name: 'users.overview.accountActions' });
+    const password = screen.getByRole('button', { name: 'users.security.password.action' });
+    const recovery = screen.getByRole('button', { name: 'users.security.twoFactor.action' });
+
+    const follows = (node: Element, other: Element) =>
+      Boolean(node.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    expect(follows(accountActions, password)).toBe(true);
+    // Credential recovery stays above, in the security block.
+    expect(follows(recovery, accountActions)).toBe(true);
+  });
+
   it('opens the credential-recovery modal with the passkey count and self flag', () => {
     renderDetail();
     fireEvent.click(screen.getByRole('button', { name: 'users.security.twoFactor.action' }));

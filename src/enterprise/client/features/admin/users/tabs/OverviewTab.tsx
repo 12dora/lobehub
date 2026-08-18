@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, Text } from '@lobehub/ui';
+import { Flexbox, Text, Tooltip } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useMemo } from 'react';
@@ -13,6 +13,24 @@ import StatusBadge from '../../primitives/StatusBadge';
 import UserSourceTags from '../UserSourceTags';
 import { formatAdminDateTime } from '../utils';
 import SecuritySection from './SecuritySection';
+
+/**
+ * Reason (i18n key) the change-password button is disabled, or null when it is live.
+ *
+ * Order matters: the account-shape reason (SSO-only) outranks the actor-shape one
+ * (self) so the admin is told the fact that will still be true tomorrow.
+ */
+export const resolveSetPasswordDisabledReason = (params: {
+  hasPassword: boolean;
+  /** False when the detail view is stale and high-risk actions are locked. */
+  isLive: boolean;
+  isSelf: boolean;
+}): string | null => {
+  if (!params.hasPassword) return 'users.security.password.ssoOnly';
+  if (params.isSelf) return 'users.errors.selfAction';
+  if (!params.isLive) return 'users.stale.refreshFailed';
+  return null;
+};
 
 const styles = createStaticStyles(({ css }) => ({
   actions: css`
@@ -70,7 +88,15 @@ const OverviewTab = memo<OverviewTabProps>(
   }) => {
     const { t } = useTranslation('admin');
     const isBanned = user.status === 'banned';
-    const showActions = canBan || canDelete;
+    // Change password is gated by its own permission, so the block has to appear for an
+    // actor who may only manage credentials — not just for ban/delete holders.
+    const showActions = canBan || canDelete || canManageCredentials;
+    const showBanDelete = !user.isSelf && (canBan || canDelete);
+    const setPasswordDisabledReason = resolveSetPasswordDisabledReason({
+      hasPassword: user.hasPassword,
+      isLive: Boolean(onSetPassword),
+      isSelf: user.isSelf,
+    });
     const providerIds = useMemo(() => user.providers.map((p) => p.providerId), [user.providers]);
 
     return (
@@ -134,7 +160,6 @@ const OverviewTab = memo<OverviewTabProps>(
           canManageCredentials={canManageCredentials}
           user={user}
           onDisableTwoFactor={onDisableTwoFactor}
-          onSetPassword={onSetPassword}
         />
 
         {showActions ? (
@@ -142,27 +167,47 @@ const OverviewTab = memo<OverviewTabProps>(
             <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
               {t('users.overview.accountActions')}
             </Text>
-            {user.isSelf ? (
-              <Text type="secondary">{t('users.overview.selfActionsHidden')}</Text>
-            ) : (
+            {canManageCredentials || showBanDelete ? (
               <div className={styles.actions}>
-                {canBan && !isBanned && onBan ? (
+                {/* Least destructive first: changing a password recovers an account,
+                    banning and deleting take one away. */}
+                {canManageCredentials ? (
+                  <Tooltip
+                    title={setPasswordDisabledReason ? t(setPasswordDisabledReason as never) : ''}
+                  >
+                    {/* Wrapper span: a disabled button swallows the events the tooltip needs. */}
+                    <span>
+                      <Button
+                        disabled={Boolean(setPasswordDisabledReason)}
+                        size="small"
+                        onClick={onSetPassword}
+                      >
+                        {t('users.security.password.action')}
+                      </Button>
+                    </span>
+                  </Tooltip>
+                ) : null}
+                {showBanDelete && canBan && !isBanned && onBan ? (
                   <Button danger size="small" onClick={onBan}>
                     {t('users.actions.ban')}
                   </Button>
                 ) : null}
-                {canBan && isBanned && onUnban ? (
+                {showBanDelete && canBan && isBanned && onUnban ? (
                   <Button size="small" onClick={onUnban}>
                     {t('users.actions.unban')}
                   </Button>
                 ) : null}
-                {canDelete && onDelete ? (
+                {showBanDelete && canDelete && onDelete ? (
                   <Button danger size="small" onClick={onDelete}>
                     {t('users.actions.delete')}
                   </Button>
                 ) : null}
               </div>
-            )}
+            ) : null}
+            {/* Ban/delete are hidden on your own account; change password stays, disabled. */}
+            {user.isSelf && (canBan || canDelete) ? (
+              <Text type="secondary">{t('users.overview.selfActionsHidden')}</Text>
+            ) : null}
           </>
         ) : null}
       </div>

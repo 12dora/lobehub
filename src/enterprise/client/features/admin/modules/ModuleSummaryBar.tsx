@@ -26,6 +26,8 @@ const styles = createStaticStyles(({ css }) => ({
     flex: 1 1 140px;
     flex-direction: column;
     gap: 2px;
+
+    min-width: 0;
   `,
   root: css`
     display: flex;
@@ -78,7 +80,10 @@ const ModuleSummaryBar = memo<ModuleSummaryBarProps>(({ draft, restartRequiredCo
             {t('modules.summary.idleRss')}
           </Text>
           <Tooltip title={summary.unmeasured > 0 ? t('modules.summary.unmeasuredHint') : undefined}>
-            <span className={styles.value} style={summary.measured === 0 ? { fontSize: 14 } : undefined}>
+            <span
+              className={styles.value}
+              style={summary.measured === 0 ? { fontSize: 14 } : undefined}
+            >
               {/* No measurement at all ⇒ say so. "≥ 0 MB" would read as a real, tiny number. */}
               {summary.measured === 0
                 ? t('modules.summary.unmeasured')
@@ -104,11 +109,16 @@ const ModuleSummaryBar = memo<ModuleSummaryBarProps>(({ draft, restartRequiredCo
           <Text style={{ fontSize: 12 }} type="secondary">
             {t('modules.summary.externalDeps')}
           </Text>
-          <span className={styles.value} style={{ fontSize: 14 }}>
+          {/* The joined list gets long; keep the row one line high and move the rest to a tooltip. */}
+          <Text
+            className={styles.value}
+            ellipsis={{ tooltip: true, tooltipWhenOverflow: true }}
+            style={{ fontSize: 14, minWidth: 0 }}
+          >
             {summary.externalDeps.length === 0
               ? t('modules.summary.noExternalDeps')
               : summary.externalDeps.map((dep) => t(`modules.deps.${dep}` as never)).join(' · ')}
-          </span>
+          </Text>
         </div>
         <div className={styles.item}>
           <Text style={{ fontSize: 12 }} type="secondary">
