@@ -38,6 +38,11 @@ export interface UseUserDetailActionsParams {
     | 'unbanUser'
   >;
   navigate: NavigateFunction;
+  /**
+   * Where to go once the target user is gone. The full page returns to the list;
+   * the slide-in panel closes itself instead (the list stays mounted underneath).
+   */
+  onDeleted?: () => void;
   t: TFunction<'admin'>;
   userId: string | undefined;
 }
@@ -48,6 +53,7 @@ export const useUserDetailActions = ({
   data,
   mutations,
   navigate,
+  onDeleted,
   t,
   userId,
 }: UseUserDetailActionsParams) => {
@@ -96,11 +102,12 @@ export const useUserDetailActions = ({
       userId,
       onConfirm: async (input) => {
         await deleteUser(input);
-        // The user is gone — return to the list.
-        navigate('/admin/users');
+        // The user is gone — leave the surface that was showing them.
+        if (onDeleted) onDeleted();
+        else navigate('/admin/users');
       },
     });
-  }, [authMethod, data, deleteUser, navigate, userId]);
+  }, [authMethod, data, deleteUser, navigate, onDeleted, userId]);
 
   const openRevokeAll = useCallback(() => {
     if (!data || !userId) return;

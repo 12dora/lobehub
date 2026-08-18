@@ -3,7 +3,7 @@
  * @vitest-environment happy-dom
  */
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import UsersListPage from './UsersListPage';
@@ -69,8 +69,10 @@ listMock.mockImplementation((input?: unknown) => {
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (k: string, opts?: { count?: number; defaultValue?: string }) => {
+    t: (k: string, opts?: { count?: number; defaultValue?: string; name?: string }) => {
       if (opts?.count != null && k === 'users.list.selectedCount') return `selected-${opts.count}`;
+      // Interpolated names are appended so per-user labels stay distinguishable.
+      if (opts?.name != null) return `${k}:${opts.name}`;
       return opts?.defaultValue ?? k;
     },
   }),
@@ -135,6 +137,17 @@ vi.mock('./modals/actions', () => ({
   openDeleteUserModal: (params: unknown) => evidence.openDelete(params),
   openReplaceRolesModal: (params: unknown) => evidence.openRoles(params),
   openUnbanUserModal: (params: unknown) => evidence.openUnban(params),
+}));
+
+vi.mock('./detail/UserDetailDrawer', () => ({
+  default: ({ onClose, open, userId }: any) =>
+    open ? (
+      <div data-testid="user-detail-drawer" data-user-id={userId}>
+        <button type="button" onClick={onClose}>
+          close-drawer
+        </button>
+      </div>
+    ) : null,
 }));
 
 vi.mock('./modals/bulkActions', () => ({
@@ -612,5 +625,113 @@ describe('UsersListPage actions + self protection + bulk', () => {
     };
     expect(params.actorUserId).toBe('u1');
     expect(params.targets.map((item) => item.id)).toEqual(['u2']);
+  });
+});
+
+describe('UsersListPage detail panel (identity + email are the only click targets)', () => {
+  const LocationProbe = () => {
+    const location = useLocation();
+    return <span data-testid="location-search">{location.search}</span>;
+  };
+
+  const renderPage = () =>
+    render(
+      <MemoryRouter initialEntries={['/admin/users']}>
+        <UsersListPage />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+  beforeEach(() => {
+    evidence.lastSerializedSwrKey = null;
+    evidence.actorPermissions = [];
+    evidence.currentUserId = 'admin-self';
+  });
+
+  const openTargets = (rowId: string, name: string) =>
+    within(screen.getByTestId(`row-${rowId}`)).getAllByLabelText(`users.list.openDetail:${name}`);
+
+  it('opens the panel from the identity cell and writes ?user=', () => {
+    renderPage();
+    expect(screen.queryByTestId('user-detail-drawer')).toBeNull();
+
+    const [identity] = openTargets('u1', 'Alice');
+    fireEvent.click(identity);
+
+    expect(screen.getByTestId('user-detail-drawer').dataset.userId).toBe('u1');
+    expect(screen.getByTestId('location-search').textContent).toBe('?user=u1');
+  });
+
+  it('opens the panel from the email cell', () => {
+    renderPage();
+    const [, emailTarget] = openTargets('u2', 'Carol');
+    fireEvent.click(emailTarget);
+
+    expect(screen.getByTestId('user-detail-drawer').dataset.userId).toBe('u2');
+    expect(screen.getByTestId('location-search').textContent).toBe('?user=u2');
+  });
+
+  it('opens the panel from the keyboard (Enter / Space) on an open target', () => {
+    renderPage();
+    const [identity] = openTargets('u2', 'Carol');
+    expect(identity.getAttribute('role')).toBe('button');
+    expect(identity.getAttribute('tabindex')).toBe('0');
+
+    fireEvent.keyDown(identity, { key: 'Enter' });
+    expect(screen.getByTestId('user-detail-drawer').dataset.userId).toBe('u2');
+  });
+
+  it('names the user in every open control so rows are distinguishable to a screen reader', () => {
+    renderPage();
+    const openLabels = (rowId: string) =>
+      [
+        ...screen
+          .getByTestId(`row-${rowId}`)
+          .querySelectorAll('[aria-label^="users.list.openDetail"]'),
+      ].map((node) => node.getAttribute('aria-label'));
+
+    // An aria-label overrides the visible name / email, so a shared one would make
+    // both cells of every row announce as the same anonymous control.
+    expect(openLabels('u1')).toEqual([
+      'users.list.openDetail:Alice',
+      'users.list.openDetail:Alice',
+    ]);
+    expect(openLabels('u2')).toEqual([
+      'users.list.openDetail:Carol',
+      'users.list.openDetail:Carol',
+    ]);
+  });
+
+  it('does nothing when other cells or the row checkbox are clicked', () => {
+    renderPage();
+    const row = screen.getByTestId('row-u2');
+    fireEvent.click(within(row).getByTestId('cell-status'));
+    fireEvent.click(within(row).getByTestId('cell-roles'));
+    fireEvent.click(within(row).getByTestId('cell-dingtalkTitle'));
+    fireEvent.click(within(row).getByTestId('cell-createdAt'));
+    fireEvent.click(screen.getByLabelText('select-u2'));
+
+    expect(screen.queryByTestId('user-detail-drawer')).toBeNull();
+    expect(screen.getByTestId('location-search').textContent).toBe('');
+  });
+
+  it('closing the panel removes the search param', () => {
+    renderPage();
+    const [identity] = openTargets('u2', 'Carol');
+    fireEvent.click(identity);
+    expect(screen.getByTestId('user-detail-drawer')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('close-drawer'));
+    expect(screen.queryByTestId('user-detail-drawer')).toBeNull();
+    expect(screen.getByTestId('location-search').textContent).toBe('');
+  });
+
+  it('restores the panel from a shared ?user= link', () => {
+    render(
+      <MemoryRouter initialEntries={['/admin/users?user=u2']}>
+        <UsersListPage />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId('user-detail-drawer').dataset.userId).toBe('u2');
   });
 });

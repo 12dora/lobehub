@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
+import UserDetailBody from './detail/UserDetailBody';
 import UserDetailPage from './UserDetailPage';
 
 const auditMock = vi.fn();
@@ -565,5 +566,87 @@ describe('UserDetailPage', () => {
         currentRoles: [{ expiresAt: null, name: 'user_admin' }],
       }),
     );
+  });
+});
+
+/**
+ * The list's slide-in panel renders the very same body with `variant="drawer"`:
+ * compact identity header instead of the page h1, and terminal states that close
+ * the panel instead of navigating away.
+ */
+describe('UserDetailBody (drawer variant)', () => {
+  const onDismiss = vi.fn();
+  const onDeleted = vi.fn();
+
+  const renderPanel = () =>
+    render(
+      <MemoryRouter initialEntries={['/admin/users?user=u-bob']}>
+        <UserDetailBody
+          userId="u-bob"
+          variant="drawer"
+          onDeleted={onDeleted}
+          onDismiss={onDismiss}
+        />
+      </MemoryRouter>,
+    );
+
+  beforeEach(() => {
+    onDismiss.mockReset();
+    onDeleted.mockReset();
+    openDelete.mockReset();
+    mutateMock.mockReset();
+    permissionsRef.current = [
+      PLATFORM_PERMISSIONS.USER_READ,
+      PLATFORM_PERMISSIONS.USER_BAN,
+      PLATFORM_PERMISSIONS.USER_DELETE,
+    ];
+    detailState = { data: { ...baseUser }, error: undefined, isLoading: false };
+  });
+
+  it('renders a compact identity header and the tabs, without the page heading', () => {
+    renderPanel();
+    expect(screen.queryByRole('heading', { level: 1 })).toBeNull();
+    const header = screen.getByTestId('user-panel-header');
+    expect(within(header).getByText('Bob')).toBeTruthy();
+    expect(within(header).getByText('bob@example.com')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'users.tabs.overview' })).toBeTruthy();
+  });
+
+  it('shows a loading skeleton while the detail is in flight', () => {
+    detailState = { data: undefined, error: undefined, isLoading: true };
+    renderPanel();
+    expect(screen.getByRole('status')).toBeTruthy();
+    expect(screen.getByTestId('skeleton')).toBeTruthy();
+  });
+
+  it('shows a not-found state that closes the panel', () => {
+    detailState = {
+      data: undefined,
+      error: { message: 'PLATFORM_NOT_FOUND', data: { code: 'PLATFORM_NOT_FOUND' } },
+      isLoading: false,
+    };
+    renderPanel();
+    expect(screen.getByText('users.detail.notFoundTitle')).toBeTruthy();
+    expect(screen.queryByText('users.detail.backToList')).toBeNull();
+    fireEvent.click(screen.getByText('users.detail.closePanel'));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows an error state with retry', () => {
+    detailState = { data: undefined, error: new Error('Network down'), isLoading: false };
+    renderPanel();
+    expect(screen.getByRole('alert')).toBeTruthy();
+    fireEvent.click(screen.getByText('primitives.dataTable.retry'));
+    expect(mutateMock).toHaveBeenCalled();
+  });
+
+  it('closes the panel instead of navigating once the user is deleted', async () => {
+    renderPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'users.actions.delete' }));
+    const params = openDelete.mock.calls[0]![0] as {
+      onConfirm: (input: unknown) => Promise<void>;
+    };
+    await params.onConfirm({ reason: 'r', userId: 'u-bob' });
+    expect(onDeleted).toHaveBeenCalledTimes(1);
   });
 });

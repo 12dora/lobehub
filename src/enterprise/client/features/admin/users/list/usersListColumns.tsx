@@ -2,8 +2,9 @@
 
 import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
 import type { TableColumnsType } from 'antd';
-import { createStaticStyles } from 'antd-style';
+import { createStaticStyles, cssVar } from 'antd-style';
 import type { TFunction } from 'i18next';
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
@@ -29,7 +30,61 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 2px;
     min-width: 0;
   `,
+  /**
+   * The only click target for opening a user. Fills the cell so the whole
+   * identity / email area is hittable, without making the row look clickable.
+   */
+  openTarget: css`
+    cursor: pointer;
+    display: block;
+    min-width: 0;
+    border-radius: 4px;
+
+    &:hover {
+      color: ${cssVar.colorLinkHover};
+      text-decoration: underline;
+    }
+
+    &:focus-visible {
+      outline: 2px solid ${cssVar.colorPrimaryBorder};
+      outline-offset: 2px;
+    }
+  `,
 }));
+
+interface OpenUserCellProps {
+  children: ReactNode;
+  label: string;
+  onOpen: () => void;
+}
+
+/**
+ * Keyboard-reachable open control. `stopPropagation` keeps the row checkbox and
+ * the row actions untouched — nothing else in the row reacts to a click.
+ *
+ * `label` names the user it opens: an aria-label overrides the visible text, so a
+ * shared one would read every identity and email cell out as the same control.
+ */
+const OpenUserCell = ({ children, label, onOpen }: OpenUserCellProps) => (
+  <div
+    aria-label={label}
+    className={styles.openTarget}
+    role="button"
+    tabIndex={0}
+    onClick={(event: MouseEvent<HTMLDivElement>) => {
+      event.stopPropagation();
+      onOpen();
+    }}
+    onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onOpen();
+    }}
+  >
+    {children}
+  </div>
+);
 
 const ROLE_OPTIONS = Object.values(PLATFORM_SYSTEM_ROLES);
 
@@ -46,6 +101,8 @@ export interface BuildUsersListColumnsParams {
     ReturnType<typeof useAdminUserMutations>,
     'banUser' | 'deleteUser' | 'replaceGlobalRoles' | 'unbanUser'
   >;
+  /** Opens the slide-in detail panel. Wired to the identity and email cells only. */
+  onOpenUser: (userId: string) => void;
   role?: string;
   source?: string;
   status?: string;
@@ -62,6 +119,7 @@ export const buildUsersListColumns = ({
   currentUserId,
   handleCreatedRange,
   mutations,
+  onOpenUser,
   role,
   source,
   status,
@@ -72,19 +130,24 @@ export const buildUsersListColumns = ({
     title: t('users.list.columns.identity'),
     width: 200,
     render: (_, row) => (
-      <div className={styles.identity}>
-        <Avatar avatar={row.avatar ?? undefined} size={32} />
-        <div className={styles.identityText}>
-          <Text ellipsis style={{ fontWeight: 600, margin: 0 }}>
-            {displayUserName(row)}
-          </Text>
-          {row.username ? (
-            <Text ellipsis style={{ margin: 0 }} type="secondary">
-              @{row.username}
+      <OpenUserCell
+        label={t('users.list.openDetail', { name: displayUserName(row) })}
+        onOpen={() => onOpenUser(row.id)}
+      >
+        <div className={styles.identity}>
+          <Avatar avatar={row.avatar ?? undefined} size={32} />
+          <div className={styles.identityText}>
+            <Text ellipsis style={{ fontWeight: 600, margin: 0 }}>
+              {displayUserName(row)}
             </Text>
-          ) : null}
+            {row.username ? (
+              <Text ellipsis style={{ margin: 0 }} type="secondary">
+                @{row.username}
+              </Text>
+            ) : null}
+          </div>
         </div>
-      </div>
+      </OpenUserCell>
     ),
   },
   {
@@ -93,7 +156,14 @@ export const buildUsersListColumns = ({
     key: 'email',
     title: t('users.list.columns.email'),
     width: 230,
-    render: (value: string | null) => value ?? '—',
+    render: (value: string | null, row) => (
+      <OpenUserCell
+        label={t('users.list.openDetail', { name: displayUserName(row) })}
+        onOpen={() => onOpenUser(row.id)}
+      >
+        {value ?? '—'}
+      </OpenUserCell>
+    ),
   },
   {
     dataIndex: 'dingtalkTitle',

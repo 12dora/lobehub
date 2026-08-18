@@ -4,7 +4,7 @@ import { Alert } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router';
+import { useSearchParams } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
@@ -13,6 +13,7 @@ import { userProfileSelectors } from '@/store/user/selectors';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import DataTable from '../primitives/DataTable';
+import UserDetailDrawer from './detail/UserDetailDrawer';
 import { useAdminUserMutations } from './hooks/useAdminUsers';
 import { buildUsersListColumns } from './list/usersListColumns';
 import { UsersListToolbar } from './list/UsersListToolbar';
@@ -22,9 +23,12 @@ import { useUsersListSelection } from './list/useUsersListSelection';
 import { openCreateUserModal } from './modals/CreateUserModal';
 import { hasPermission } from './utils';
 
+/** Search param that drives the slide-in detail panel — shareable and Back-closable. */
+const SELECTED_USER_PARAM = 'user';
+
 const UsersListPage = memo(() => {
   const { t } = useTranslation('admin');
-  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { permissions, roles: actorRoles, authMethod } = useAdminAccess();
   const currentUserId = useUserStore(userProfileSelectors.userId);
   const { createUser, banUser, unbanUser, deleteUser, replaceGlobalRoles } =
@@ -60,6 +64,24 @@ const UsersListPage = memo(() => {
   const showStaleWarning = Boolean(error) && Boolean(data);
   const hasFilters = Boolean(query || status || role || source || createdFrom || createdTo);
 
+  const selectedUserId = searchParams.get(SELECTED_USER_PARAM);
+
+  // Push on open so Back closes the panel; replace on close so Back does not reopen it.
+  const openUserPanel = useCallback(
+    (userId: string) => {
+      const next = new URLSearchParams(searchParams);
+      next.set(SELECTED_USER_PARAM, userId);
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const closeUserPanel = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete(SELECTED_USER_PARAM);
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
   const selfTitle = t('users.list.selfActionDisabled');
   const { clearSelection, rowSelection, selectedRows, toBulkTargets } = useUsersListSelection({
     currentUserId,
@@ -83,6 +105,7 @@ const UsersListPage = memo(() => {
         currentUserId,
         handleCreatedRange,
         mutations,
+        onOpenUser: openUserPanel,
         role,
         source,
         status,
@@ -98,6 +121,7 @@ const UsersListPage = memo(() => {
       currentUserId,
       handleCreatedRange,
       mutations,
+      openUserPanel,
       role,
       source,
       status,
@@ -184,9 +208,11 @@ const UsersListPage = memo(() => {
         onRetry={() => {
           void mutate();
         }}
-        onRowActivate={(row) => {
-          navigate(`/admin/users/${row.id}`);
-        }}
+      />
+      <UserDetailDrawer
+        open={Boolean(selectedUserId)}
+        userId={selectedUserId}
+        onClose={closeUserPanel}
       />
     </AdminPageTemplate>
   );
