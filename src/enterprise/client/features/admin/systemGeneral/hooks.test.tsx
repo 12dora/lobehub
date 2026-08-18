@@ -8,7 +8,12 @@ import type {
   AdminSystemInfraSettings,
 } from '@/enterprise/client/services/adminSystem';
 
-import { useAdminBrowserProfile, useAdminInfraSettings, useInfraDependencyProbe } from './hooks';
+import {
+  useAdminBrowserProfile,
+  useAdminBrowserProfileOptions,
+  useAdminInfraSettings,
+  useInfraDependencyProbe,
+} from './hooks';
 
 const mocks = vi.hoisted(() => ({
   swr: {
@@ -38,7 +43,9 @@ const service = (
 
 const browserProfileService = (): AdminBrowserProfileService => ({
   getBrowserProfile: vi.fn(),
+  getBrowserProfileOptions: vi.fn(),
   regenerateBrowserProfile: vi.fn(),
+  updateBrowserProfile: vi.fn(),
 });
 
 describe('useAdminInfraSettings', () => {
@@ -62,6 +69,14 @@ describe('useAdminInfraSettings', () => {
 
     renderHook(() => useAdminBrowserProfile(true, browserProfileService()));
     expect(mocks.swrCalls.at(-1)).toEqual(['admin.browserProfile.get']);
+  });
+
+  it('gates the fingerprint option pools behind the same permission', () => {
+    renderHook(() => useAdminBrowserProfileOptions(false, browserProfileService()));
+    expect(mocks.swrCalls.at(-1)).toBeNull();
+
+    renderHook(() => useAdminBrowserProfileOptions(true, browserProfileService()));
+    expect(mocks.swrCalls.at(-1)).toEqual(['admin.browserProfile.options']);
   });
 });
 

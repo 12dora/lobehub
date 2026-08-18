@@ -83,6 +83,12 @@ vi.mock('./hooks', () => ({
     isLoading: false,
     mutate: vi.fn(),
   }),
+  useAdminBrowserProfileOptions: () => ({
+    data: undefined,
+    error: undefined,
+    isLoading: false,
+    mutate: vi.fn(),
+  }),
   useAdminInfraSettings: () => ({
     data: undefined,
     error: undefined,

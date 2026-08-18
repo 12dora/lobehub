@@ -19,6 +19,22 @@ export const InfraSourceTag = memo<{ source: InfraSettingsSource }>(({ source })
 
 InfraSourceTag.displayName = 'AdminInfraSourceTag';
 
+/**
+ * Folding a card hides its 保存 along with the form. The header is what stays, so it is where an
+ * edit that has not been written yet has to be visible — the navigation guard only speaks up when
+ * the operator leaves the page, which is far too late to notice a card they folded away.
+ */
+export const InfraUnsavedTag = memo(() => {
+  const { t } = useTranslation('admin');
+  return (
+    <Tag color="warning" size="small">
+      {t('systemGeneral.unsaved.title')}
+    </Tag>
+  );
+});
+
+InfraUnsavedTag.displayName = 'AdminInfraUnsavedTag';
+
 export interface InfraEditorAlertsProps {
   /** CAS mismatch on save — the other admin's version has to be loaded first. */
   conflict: boolean;

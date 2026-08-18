@@ -2494,6 +2494,7 @@ export default {
   'audit.logs.action.network_proxy.subscription.refresh': 'Refresh network proxy subscription',
   'audit.logs.action.network_proxy.subscription.update': 'Update network proxy subscription',
   'audit.logs.action.system.browser_profile.regenerate': 'Regenerate browser fingerprint',
+  'audit.logs.action.system.browser_profile.update': 'Edit browser fingerprint',
   'audit.logs.action.system.email.send': 'Send platform email',
   'audit.logs.action.system.infra.mail.update': 'Update mail service',
   'audit.logs.action.system.infra.object_storage.update': 'Update object storage',

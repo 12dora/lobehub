@@ -3,9 +3,12 @@ import {
   DEFAULT_BROWSER_DEVICE_PROFILE,
   deriveChromiumBrandHeaders,
   generateBrowserDeviceProfile,
+  listBrowserProfileOptions,
+  resolveBrowserProfileOptionIds,
 } from '@lobechat/model-runtime/browserProfile';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PlatformRevisionConflictError } from '@/database/models/platform/errors';
 import {
   PLATFORM_BROWSER_PROFILE_ID,
   type PlatformBrowserProfileItem,
@@ -40,6 +43,7 @@ interface FakeDatabase {
 
 interface FakeDatabaseOptions {
   profileRepairConflictWinner?: PlatformBrowserProfileItem;
+  revisionConflict?: boolean;
 }
 
 const createFakeDatabase = (
@@ -97,6 +101,7 @@ const createFakeDatabase = (
               row = options?.profileRepairConflictWinner;
               return [];
             }
+            if (options?.revisionConflict && 'revision' in values) return [];
             row = { ...row, ...values };
             return [row];
           },
@@ -316,6 +321,157 @@ describe('PlatformBrowserProfileService', () => {
     expect(JSON.stringify(mocks.auditAppend.mock.calls)).not.toContain(profile.seed);
     // The identity changed, so state minted under the old one must go.
     expect(mocks.resetCookieJars).toHaveBeenCalled();
+  });
+
+  it('reports selected option ids on a freshly generated profile', async () => {
+    const fake = createFakeDatabase();
+    const service = new PlatformBrowserProfileService(fake.db);
+
+    const profile = await service.get();
+    const summary = await service.getSummary();
+    const expected = resolveBrowserProfileOptionIds(profile);
+
+    expect(summary).toMatchObject(expected);
+    expect(Object.values(expected).every(Boolean)).toBe(true);
+  });
+
+  it('updates from curated option ids while preserving installation identity', async () => {
+    const fake = createFakeDatabase();
+    const service = new PlatformBrowserProfileService(fake.db);
+    const before = await service.get();
+    const options = listBrowserProfileOptions();
+    const currentIds = resolveBrowserProfileOptionIds(before);
+    const nextLocale = options.locales.find((item) => item.id !== currentIds.localeId);
+
+    expect(currentIds.chromeId && nextLocale).toBeTruthy();
+
+    const summary = await service.update({
+      actorUserId: 'admin-1',
+      chromeId: currentIds.chromeId!,
+      computeId: currentIds.computeId!,
+      localeId: nextLocale!.id,
+      screenId: currentIds.screenId!,
+      systemId: currentIds.systemId!,
+      webglId: currentIds.webglId!,
+    });
+
+    const after = asBrowserProfile(fake.read()?.profile);
+    expect(after?.installationId).toBe(before.installationId);
+    expect(after?.seed).toBe(before.seed);
+    expect(fake.read()?.seed).toBe(before.seed);
+    expect(after?.id).toBe(before.id);
+    expect(after?.timezone.iana).toBe(nextLocale!.timezone);
+    expect(summary.localeId).toBe(nextLocale!.id);
+    expect(summary.revision).toBe(1);
+    expect(mocks.resetCookieJars).not.toHaveBeenCalled();
+    expect(mocks.auditAppend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterDiff: expect.objectContaining({
+          identityRotated: false,
+          localeId: nextLocale!.id,
+          revision: 1,
+        }),
+        beforeDiff: expect.objectContaining({ localeId: currentIds.localeId, revision: 0 }),
+      }),
+    );
+    expect(JSON.stringify(mocks.auditAppend.mock.calls)).not.toContain(before.seed);
+  });
+
+  it('rotates profile.id and cookie jars only when UA or impersonation changes', async () => {
+    const fake = createFakeDatabase();
+    const service = new PlatformBrowserProfileService(fake.db);
+    const before = await service.get();
+    const options = listBrowserProfileOptions();
+    const currentIds = resolveBrowserProfileOptionIds(before);
+    const nextChrome = options.chrome.find((item) => item.id !== currentIds.chromeId);
+
+    expect(currentIds.chromeId && nextChrome).toBeTruthy();
+
+    await service.update({
+      actorUserId: 'admin-1',
+      chromeId: nextChrome!.id,
+      computeId: currentIds.computeId!,
+      localeId: currentIds.localeId!,
+      screenId: currentIds.screenId!,
+      systemId: currentIds.systemId!,
+      webglId: currentIds.webglId!,
+    });
+
+    const after = asBrowserProfile(fake.read()?.profile);
+    expect(after?.installationId).toBe(before.installationId);
+    expect(after?.seed).toBe(before.seed);
+    expect(after?.id).not.toBe(before.id);
+    expect(after?.impersonateProfile).toBe(nextChrome!.impersonateProfile);
+    expect(after?.userAgent).not.toBe(before.userAgent);
+    expect(mocks.resetCookieJars).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an unknown option id and a platform-incompatible combination without writing', async () => {
+    const fake = createFakeDatabase();
+    const service = new PlatformBrowserProfileService(fake.db);
+    const before = await service.get();
+    const snapshot = fake.read();
+    const options = listBrowserProfileOptions();
+    const currentIds = resolveBrowserProfileOptionIds(before);
+    const windows = options.systems.find((item) => item.platform === 'Windows');
+    const windowsScreen = options.screens.find((item) => item.platform === 'Windows');
+    const windowsCompute = options.compute.find(
+      (item) => item.platform === 'Windows' && item.arch === 'x86',
+    );
+    const macGpu = options.webgl.find((item) => item.platform === 'macOS' && item.arch === 'arm');
+
+    expect(
+      windows && windowsScreen && windowsCompute && macGpu && currentIds.chromeId,
+    ).toBeTruthy();
+
+    await expect(
+      service.update({
+        actorUserId: 'admin-1',
+        chromeId: 'missing-chrome',
+        computeId: currentIds.computeId!,
+        localeId: currentIds.localeId!,
+        screenId: currentIds.screenId!,
+        systemId: currentIds.systemId!,
+        webglId: currentIds.webglId!,
+      }),
+    ).rejects.toMatchObject({ code: 'UNKNOWN_OPTION' });
+
+    await expect(
+      service.update({
+        actorUserId: 'admin-1',
+        chromeId: currentIds.chromeId!,
+        computeId: windowsCompute!.id,
+        localeId: currentIds.localeId!,
+        screenId: windowsScreen!.id,
+        systemId: windows!.id,
+        webglId: macGpu!.id,
+      }),
+    ).rejects.toMatchObject({ code: 'INCOMPATIBLE_OPTIONS' });
+
+    expect(fake.read()).toEqual(snapshot);
+    expect(mocks.resetCookieJars).not.toHaveBeenCalled();
+    expect(mocks.auditAppend).not.toHaveBeenCalled();
+  });
+
+  it('throws a distinguishable revision conflict when CAS loses', async () => {
+    const fake = createFakeDatabase(undefined, { revisionConflict: true });
+    const service = new PlatformBrowserProfileService(fake.db);
+    const before = await service.get();
+    const ids = resolveBrowserProfileOptionIds(before);
+
+    await expect(
+      service.update({
+        actorUserId: 'admin-1',
+        chromeId: ids.chromeId!,
+        computeId: ids.computeId!,
+        localeId: ids.localeId!,
+        screenId: ids.screenId!,
+        systemId: ids.systemId!,
+        webglId: ids.webglId!,
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(fake.read()?.revision).toBe(0);
+    expect(mocks.resetCookieJars).not.toHaveBeenCalled();
   });
 
   it('redacts secret-shaped text from the append-only audit reason', async () => {

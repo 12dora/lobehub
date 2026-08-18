@@ -3,16 +3,24 @@ import { randomUUID } from 'node:crypto';
 import type { BrowserDeviceProfile } from '@lobechat/model-runtime/browserProfile';
 import {
   assertBrowserInstallationId,
+  composeBrowserDeviceProfileFromOptions,
   DEFAULT_BROWSER_DEVICE_PROFILE,
   generateBrowserDeviceProfile,
+  listBrowserProfileOptions,
+  resolveBrowserProfileOptionIds,
+  validateBrowserDeviceProfile,
   validateBrowserDeviceProfileShape,
 } from '@lobechat/model-runtime/browserProfile';
 import debug from 'debug';
 import { and, eq } from 'drizzle-orm';
 
+import { PlatformRevisionConflictError } from '@/database/models/platform/errors';
 import { PLATFORM_BROWSER_PROFILE_ID, platformBrowserProfiles } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
-import type { AdminBrowserProfileSummary } from '@/server/enterprise/contracts/adminBrowserProfile';
+import type {
+  AdminBrowserProfileOptions,
+  AdminBrowserProfileSummary,
+} from '@/server/enterprise/contracts/adminBrowserProfile';
 import {
   containsEnterpriseSecretMaterial,
   REDACTED_PLACEHOLDER,
@@ -79,26 +87,35 @@ const toRecord = (
 
 export const summarizeBrowserProfile = (
   record: PlatformBrowserProfileRecord,
-): AdminBrowserProfileSummary => ({
-  arch: record.profile.arch,
-  chromeVersion: record.profile.chrome.fullVersion,
-  cores: record.profile.hardwareConcurrency,
-  createdAt: record.createdAt,
-  impersonateProfile: record.profile.impersonateProfile,
-  installationId: record.profile.installationId,
-  locale: record.profile.oaiLanguage,
-  memoryGiB: record.profile.deviceMemoryGiB,
-  platform: record.profile.platform,
-  platformVersion: record.profile.platformVersion,
-  revision: record.revision,
-  screen: {
-    dpr: record.profile.screen.dpr,
-    height: record.profile.screen.height,
-    width: record.profile.screen.width,
-  },
-  timezone: record.profile.timezone.iana,
-  updatedAt: record.updatedAt,
-});
+): AdminBrowserProfileSummary => {
+  const optionIds = resolveBrowserProfileOptionIds(record.profile);
+  return {
+    arch: record.profile.arch,
+    chromeId: optionIds.chromeId,
+    chromeVersion: record.profile.chrome.fullVersion,
+    computeId: optionIds.computeId,
+    cores: record.profile.hardwareConcurrency,
+    createdAt: record.createdAt,
+    impersonateProfile: record.profile.impersonateProfile,
+    installationId: record.profile.installationId,
+    locale: record.profile.oaiLanguage,
+    localeId: optionIds.localeId,
+    memoryGiB: record.profile.deviceMemoryGiB,
+    platform: record.profile.platform,
+    platformVersion: record.profile.platformVersion,
+    revision: record.revision,
+    screen: {
+      dpr: record.profile.screen.dpr,
+      height: record.profile.screen.height,
+      width: record.profile.screen.width,
+    },
+    screenId: optionIds.screenId,
+    systemId: optionIds.systemId,
+    timezone: record.profile.timezone.iana,
+    updatedAt: record.updatedAt,
+    webglId: optionIds.webglId,
+  };
+};
 
 const normalizePersistedProfile = (
   profile: PersistedBrowserDeviceProfile,
@@ -173,6 +190,8 @@ export class PlatformBrowserProfileService {
   getSummary = async (): Promise<AdminBrowserProfileSummary> =>
     summarizeBrowserProfile(await this.getRecord());
 
+  getOptions = (): AdminBrowserProfileOptions => listBrowserProfileOptions();
+
   invalidate = (): void => {
     profileCache.delete(this.cacheKey);
   };
@@ -215,7 +234,9 @@ export class PlatformBrowserProfileService {
           ),
         )
         .returning();
-      if (!updated) throw new Error('Platform browser profile revision conflict');
+      if (!updated) {
+        throw new PlatformRevisionConflictError('Platform browser profile revision conflict');
+      }
 
       await new PlatformAuditService(tx).append({
         action: AUDIT_ACTION.SYSTEM_BROWSER_PROFILE_REGENERATE,
@@ -235,6 +256,117 @@ export class PlatformBrowserProfileService {
     resetCookieJars();
     return summarizeBrowserProfile(record);
   };
+
+  async update({
+    actorUserId,
+    chromeId,
+    computeId,
+    localeId,
+    reason,
+    screenId,
+    systemId,
+    webglId,
+  }: {
+    actorUserId: string;
+    chromeId: string;
+    computeId: string;
+    localeId: string;
+    reason?: string;
+    screenId: string;
+    systemId: string;
+    webglId: string;
+  }): Promise<AdminBrowserProfileSummary> {
+    await this.getRecord({ bypassCache: true });
+
+    const selection = { chromeId, computeId, localeId, screenId, systemId, webglId };
+    const now = new Date();
+    const { record, resetJars } = await this.db.transaction(async (tx) => {
+      const [locked] = await tx
+        .select()
+        .from(platformBrowserProfiles)
+        .where(eq(platformBrowserProfiles.id, PLATFORM_BROWSER_PROFILE_ID))
+        .limit(1)
+        .for('update');
+      if (!locked) throw new Error('Platform browser profile disappeared during update');
+
+      const current = toRecord(locked);
+      const nextProfile = composeBrowserDeviceProfileFromOptions(
+        selection,
+        {
+          dnt: current.profile.dnt,
+          id: current.profile.id,
+          installationId: current.profile.installationId,
+          prefersColorScheme: current.profile.prefersColorScheme,
+          prefersReducedMotion: current.profile.prefersReducedMotion,
+          seed: current.profile.seed,
+        },
+        current.profile,
+      );
+
+      const identityRotated =
+        nextProfile.userAgent !== current.profile.userAgent ||
+        nextProfile.impersonateProfile !== current.profile.impersonateProfile;
+      const profile = identityRotated
+        ? validateBrowserDeviceProfile({ ...nextProfile, id: randomUUID() })
+        : nextProfile;
+
+      const nextRevision = locked.revision + 1;
+      const [updated] = await tx
+        .update(platformBrowserProfiles)
+        .set({
+          profile,
+          revision: nextRevision,
+          updatedAt: now,
+          updatedBy: actorUserId,
+        })
+        .where(
+          and(
+            eq(platformBrowserProfiles.id, PLATFORM_BROWSER_PROFILE_ID),
+            eq(platformBrowserProfiles.revision, locked.revision),
+          ),
+        )
+        .returning();
+      if (!updated) {
+        throw new PlatformRevisionConflictError('Platform browser profile revision conflict');
+      }
+
+      const beforeIds = resolveBrowserProfileOptionIds(current.profile);
+      const afterIds = resolveBrowserProfileOptionIds(profile);
+      await new PlatformAuditService(tx).append({
+        action: AUDIT_ACTION.SYSTEM_BROWSER_PROFILE_UPDATE,
+        actorUserId,
+        afterDiff: {
+          chromeId: afterIds.chromeId,
+          computeId: afterIds.computeId,
+          identityRotated,
+          localeId: afterIds.localeId,
+          revision: nextRevision,
+          screenId: afterIds.screenId,
+          systemId: afterIds.systemId,
+          webglId: afterIds.webglId,
+        },
+        beforeDiff: {
+          chromeId: beforeIds.chromeId,
+          computeId: beforeIds.computeId,
+          localeId: beforeIds.localeId,
+          revision: locked.revision,
+          screenId: beforeIds.screenId,
+          systemId: beforeIds.systemId,
+          webglId: beforeIds.webglId,
+        },
+        configRevision: nextRevision,
+        reason: sanitizeAuditReason(reason),
+        result: 'success',
+        targetId: PLATFORM_BROWSER_PROFILE_ID,
+        targetType: 'system',
+      });
+      return { record: toRecord(updated), resetJars: identityRotated };
+    });
+
+    this.invalidate();
+    if (resetJars) resetCookieJars();
+    return summarizeBrowserProfile(record);
+  }
 
   private remember = (record: PlatformBrowserProfileRecord): PlatformBrowserProfileRecord => {
     const previous = profileCache.get(this.cacheKey);

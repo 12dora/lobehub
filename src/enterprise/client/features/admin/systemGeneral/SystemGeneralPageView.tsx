@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import { AdminLoadingSurface } from '@/enterprise/client/features/admin/pages/AdminStateSurfaces';
 import type {
+  AdminBrowserProfileOptions,
   AdminBrowserProfileSummary,
   AdminSystemInfraSettings,
   AdminSystemTestDependencyResult,
@@ -14,6 +15,7 @@ import type {
 import type { AdminSystemInfraDependency } from '@/server/enterprise/contracts/adminSystem';
 
 import { BrowserProfileCard } from './infra/BrowserProfileCard';
+import type { BrowserProfileSelection } from './infra/browserProfileSelection';
 import { MailCard } from './infra/MailCard';
 import { ObjectStorageCard } from './infra/ObjectStorageCard';
 import { infraSettingsStyles as styles } from './styles';
@@ -25,6 +27,7 @@ export interface SystemGeneralPageViewProps {
   isLoading: boolean;
   onProfileRegenerate?: () => Promise<void>;
   onProfileRetry?: () => void;
+  onProfileSave?: (selection: BrowserProfileSelection) => Promise<void>;
   onRetry: () => void;
   onTest: (dependency: AdminSystemInfraDependency) => void;
   probeBusy: Partial<Record<AdminSystemInfraDependency, boolean>>;
@@ -32,6 +35,7 @@ export interface SystemGeneralPageViewProps {
   profileData?: AdminBrowserProfileSummary;
   profileError?: unknown;
   profileIsLoading?: boolean;
+  profileOptions?: AdminBrowserProfileOptions;
 }
 
 /**
@@ -53,6 +57,7 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
     isLoading,
     onProfileRegenerate = async () => undefined,
     onProfileRetry = () => undefined,
+    onProfileSave = async () => undefined,
     onRetry,
     onTest,
     probeBusy,
@@ -60,6 +65,7 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
     profileData,
     profileError,
     profileIsLoading = false,
+    profileOptions,
   }) => {
     const { t } = useTranslation('admin');
 
@@ -132,8 +138,10 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
                 // this page was fixed out of.
                 error={pageFailed ? undefined : profileError}
                 isLoading={profileIsLoading}
+                options={profileOptions}
                 onRegenerate={onProfileRegenerate}
                 onRetry={onProfileRetry}
+                onSave={onProfileSave}
               />
             ) : null}
           </div>

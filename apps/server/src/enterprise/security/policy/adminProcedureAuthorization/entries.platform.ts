@@ -10,8 +10,18 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
   },
   {
+    kind: 'query',
+    path: 'admin.browserProfile.options',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
     kind: 'mutation',
     path: 'admin.browserProfile.regenerate',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.browserProfile.update',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
   {

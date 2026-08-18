@@ -2,8 +2,10 @@ import type { z } from 'zod';
 
 import { lambdaClient } from '@/libs/trpc/client';
 import type {
+  AdminBrowserProfileOptions,
   AdminBrowserProfileRegenerateInput,
   AdminBrowserProfileSummary,
+  AdminBrowserProfileUpdateInput,
 } from '@/server/enterprise/contracts/adminBrowserProfile';
 import type {
   AdminSystemCancelJobInput,
@@ -55,8 +57,13 @@ export interface AdminInfraSettingsService {
 
 export interface AdminBrowserProfileService {
   getBrowserProfile: () => Promise<AdminBrowserProfileSummary>;
+  /** The curated pools a fingerprint may be composed from — the card never posts raw values. */
+  getBrowserProfileOptions: () => Promise<AdminBrowserProfileOptions>;
   regenerateBrowserProfile: (
     input: AdminBrowserProfileRegenerateInput,
+  ) => Promise<AdminBrowserProfileSummary>;
+  updateBrowserProfile: (
+    input: AdminBrowserProfileUpdateInput,
   ) => Promise<AdminBrowserProfileSummary>;
 }
 
@@ -69,6 +76,8 @@ class AdminSystemServiceImpl
   getInfraSettings = () => lambdaClient.admin.system.getInfraSettings.query();
 
   getBrowserProfile = () => lambdaClient.admin.browserProfile.get.query();
+
+  getBrowserProfileOptions = () => lambdaClient.admin.browserProfile.options.query();
 
   getInstanceRevisions = (input?: AdminSystemGetInstanceRevisionsInput) =>
     lambdaClient.admin.system.getInstanceRevisions.query(input);
@@ -84,6 +93,9 @@ class AdminSystemServiceImpl
 
   testDependency = (input: AdminSystemTestDependencyInput) =>
     lambdaClient.admin.system.testDependency.mutate(input);
+
+  updateBrowserProfile = (input: AdminBrowserProfileUpdateInput) =>
+    lambdaClient.admin.browserProfile.update.mutate(input);
 
   updateInfraSettings = (input: AdminSystemUpdateInfraSettingsInput) =>
     lambdaClient.admin.system.updateInfraSettings.mutate(input);
@@ -102,4 +114,9 @@ export type {
   AdminSystemUpdateInfraSettingsInput,
   AdminSystemUpdateInfraSettingsOutput,
 };
-export type { AdminBrowserProfileRegenerateInput, AdminBrowserProfileSummary };
+export type {
+  AdminBrowserProfileOptions,
+  AdminBrowserProfileRegenerateInput,
+  AdminBrowserProfileSummary,
+  AdminBrowserProfileUpdateInput,
+};

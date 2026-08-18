@@ -50,7 +50,7 @@ export const IMPERSONATE_CHROME_PROFILES = [
   },
 ] as const satisfies readonly ImpersonateChromeProfileDefinition[];
 
-interface LocaleBundle {
+export interface LocaleBundle {
   acceptLanguage: string;
   languages: readonly string[];
   oaiLanguage: string;
@@ -58,7 +58,7 @@ interface LocaleBundle {
   weight: number;
 }
 
-const LOCALE_BUNDLES = [
+export const LOCALE_BUNDLES = [
   {
     acceptLanguage: 'zh-CN,zh;q=0.9,en;q=0.8',
     languages: ['zh-CN', 'zh', 'en'],
@@ -240,7 +240,7 @@ export const BROWSER_PROFILE_TIMEZONE_POOL: readonly string[] = [
   ...new Set(LOCALE_BUNDLES.map((bundle) => bundle.timezone.iana)),
 ];
 
-interface PlatformDefinition {
+export interface PlatformDefinition {
   architectures: readonly { value: BrowserArchitecture; weight: number }[];
   coresByArchitecture: Partial<Record<BrowserArchitecture, readonly number[]>>;
   memoriesByArchitecture: Partial<Record<BrowserArchitecture, readonly number[]>>;
@@ -308,7 +308,7 @@ export const isPhysicallyPlausibleScreen = (screen: BrowserScreenProfile): boole
       Math.abs(Math.round(screen.height * screen.dpr) - panelHeight) <= PANEL_TOLERANCE_PX,
   );
 
-const PLATFORM_DEFINITIONS = [
+export const PLATFORM_DEFINITIONS = [
   {
     architectures: [
       { value: 'arm', weight: 7 },

@@ -14,7 +14,13 @@ import { adminSystemService } from '@/enterprise/client/services/adminSystem';
 import NetworkProxyTab from '../networkProxy/NetworkProxyTab';
 import { deriveNetworkProxyPermissions } from '../networkProxy/permissions';
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
-import { useAdminBrowserProfile, useAdminInfraSettings, useInfraDependencyProbe } from './hooks';
+import {
+  useAdminBrowserProfile,
+  useAdminBrowserProfileOptions,
+  useAdminInfraSettings,
+  useInfraDependencyProbe,
+} from './hooks';
+import type { BrowserProfileSelection } from './infra/browserProfileSelection';
 import { SystemGeneralPageView } from './SystemGeneralPageView';
 
 export const SYSTEM_GENERAL_TABS = ['infrastructure', 'network-proxy'] as const;
@@ -60,12 +66,22 @@ const SystemGeneralPage = memo(() => {
   const infraEnabled = allowed && canRead && tab === 'infrastructure';
   const settings = useAdminInfraSettings(infraEnabled, adminSystemService);
   const browserProfile = useAdminBrowserProfile(infraEnabled, adminSystemService);
+  // Read permission, not operate: the pools also name the GPU the card reports read-only.
+  const browserProfileOptions = useAdminBrowserProfileOptions(infraEnabled, adminSystemService);
   const probe = useInfraDependencyProbe(adminSystemService);
 
   const regenerateBrowserProfile = useCallback(async () => {
     await adminSystemService.regenerateBrowserProfile({});
     await browserProfile.mutate().catch(() => undefined);
   }, [browserProfile]);
+
+  const saveBrowserProfile = useCallback(
+    async (selection: BrowserProfileSelection) => {
+      await adminSystemService.updateBrowserProfile(selection);
+      await browserProfile.mutate().catch(() => undefined);
+    },
+    [browserProfile],
+  );
 
   const tabs = useMemo(
     () =>
@@ -118,8 +134,10 @@ const SystemGeneralPage = memo(() => {
           profileData={browserProfile.data}
           profileError={browserProfile.error}
           profileIsLoading={browserProfile.isLoading}
+          profileOptions={browserProfileOptions.data}
           onProfileRegenerate={regenerateBrowserProfile}
           onProfileRetry={() => void browserProfile.mutate()}
+          onProfileSave={saveBrowserProfile}
           onRetry={() => void settings.mutate()}
           onTest={(dependency) => void probe.run(dependency)}
         />

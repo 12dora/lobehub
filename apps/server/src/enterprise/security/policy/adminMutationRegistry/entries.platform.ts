@@ -24,6 +24,12 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'Replace the installation-wide synthetic browser identity and clear tied cookie jars.',
     { reason: optionalReasonInput },
   ),
+  'admin.browserProfile.update': regularMutation(
+    'admin.browserProfile.update',
+    'medium',
+    'Compose the installation-wide synthetic browser identity from curated pool options and clear tied cookie jars when the User-Agent or TLS impersonation target changes.',
+    { reason: optionalReasonInput },
+  ),
   'admin.contentModeration.clearDecisionCache': regularMutation(
     'admin.contentModeration.clearDecisionCache',
     'medium',

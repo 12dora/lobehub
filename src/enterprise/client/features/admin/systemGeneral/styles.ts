@@ -13,7 +13,6 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
     gap: 16px;
 
     min-width: 0;
-    height: 100%;
     padding: 16px;
     border: 1px solid ${cssVar.colorBorderSecondary};
     border-radius: ${cssVar.borderRadiusLG};
@@ -81,11 +80,16 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
     gap: 12px;
     margin-block-start: auto;
   `,
+  /*
+   * Each card is its own height. The columns used to stretch to the tallest card, which reads well
+   * for two cards of similar length but turns a folded card into a header floating over its own
+   * empty box — and a stretched card cannot animate its height honestly either.
+   */
   grid: css`
     display: grid;
     grid-template-columns: 1fr;
     gap: 16px;
-    align-items: stretch;
+    align-items: start;
 
     @media (width >= 1024px) {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -97,6 +101,11 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
     gap: 8px;
     align-items: center;
     justify-content: space-between;
+  `,
+  /** The same header row, as the accordion's title: it has to claim the width the chevron leaves. */
+  headerInAccordion: css`
+    flex: 1;
+    min-width: 0;
   `,
   headerTags: css`
     display: flex;

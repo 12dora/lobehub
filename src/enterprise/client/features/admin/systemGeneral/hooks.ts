@@ -11,13 +11,31 @@ import type {
 import { useClientDataSWR } from '@/libs/swr';
 import type { AdminSystemInfraDependency } from '@/server/enterprise/contracts/adminSystem';
 
-import { buildAdminBrowserProfileKey, buildAdminInfraSettingsKey } from './swrKeys';
+import {
+  buildAdminBrowserProfileKey,
+  buildAdminBrowserProfileOptionsKey,
+  buildAdminInfraSettingsKey,
+} from './swrKeys';
 
 export const useAdminBrowserProfile = (enabled: boolean, service: AdminBrowserProfileService) =>
   useClientDataSWR(buildAdminBrowserProfileKey(enabled), () => service.getBrowserProfile(), {
     keepPreviousData: true,
     revalidateOnFocus: false,
   });
+
+/**
+ * The pools a fingerprint may be composed from. They are compiled into the build, so unlike the
+ * profile itself they cannot go stale while the page is open.
+ */
+export const useAdminBrowserProfileOptions = (
+  enabled: boolean,
+  service: AdminBrowserProfileService,
+) =>
+  useClientDataSWR(
+    buildAdminBrowserProfileOptionsKey(enabled),
+    () => service.getBrowserProfileOptions(),
+    { keepPreviousData: true, revalidateIfStale: false, revalidateOnFocus: false },
+  );
 
 export const useAdminInfraSettings = (enabled: boolean, service: AdminInfraSettingsService) =>
   useClientDataSWR(buildAdminInfraSettingsKey(enabled), () => service.getInfraSettings(), {

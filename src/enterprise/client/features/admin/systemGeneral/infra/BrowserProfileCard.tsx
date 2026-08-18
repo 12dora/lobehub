@@ -3,13 +3,25 @@
 import { Alert, CopyButton, Flexbox, Skeleton, Tooltip } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { Fingerprint } from 'lucide-react';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { AdminBrowserProfileSummary } from '@/enterprise/client/services/adminSystem';
+import type {
+  AdminBrowserProfileOptions,
+  AdminBrowserProfileSummary,
+} from '@/enterprise/client/services/adminSystem';
 
-import { InfraSettingsCard } from '../InfraSettingsCard';
+import { InfraFieldRows, InfraSettingsCard } from '../InfraSettingsCard';
 import { infraSettingsStyles as styles } from '../styles';
+import { BrowserProfileFields } from './BrowserProfileFields';
+import {
+  type BrowserProfileSelection,
+  browserProfileSelectionKey,
+  isBrowserProfileSelectionDirty,
+  repairBrowserProfileSelection,
+  visibleBrowserProfileOptions,
+} from './browserProfileSelection';
+import { infraFormStyles as formStyles } from './styles';
 
 export interface BrowserProfileCardProps {
   canOperate: boolean;
@@ -18,6 +30,9 @@ export interface BrowserProfileCardProps {
   isLoading: boolean;
   onRegenerate: () => Promise<void>;
   onRetry: () => void;
+  onSave: (selection: BrowserProfileSelection) => Promise<void>;
+  /** The curated pools each field may be chosen from; absent until the options query answers. */
+  options?: AdminBrowserProfileOptions;
 }
 
 const noop = () => undefined;
@@ -41,9 +56,35 @@ const formatPlatform = (platform: string, platformVersion: string): string => {
 
 /** Installation-wide identity shared by every browser-impersonating transport. */
 export const BrowserProfileCard = memo<BrowserProfileCardProps>(
-  ({ canOperate, data, error, isLoading, onRegenerate, onRetry }) => {
+  ({ canOperate, data, error, isLoading, onRegenerate, onRetry, onSave, options }) => {
     const { t } = useTranslation('admin');
     const [regenerating, setRegenerating] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [draft, setDraft] = useState<BrowserProfileSelection>();
+
+    // The summary reports the option ids alongside the values they resolved to.
+    const storedKey = browserProfileSelectionKey(data);
+    /**
+     * A revalidation that reports the same choice must leave an edit in progress alone; only a
+     * choice the platform actually made — this save, or someone else's — re-seeds the form.
+     */
+    useEffect(() => setDraft(undefined), [storedKey]);
+
+    const settled = useMemo(() => repairBrowserProfileSelection(options, data), [options, data]);
+    const selection = draft ?? settled;
+    const dirty = isBrowserProfileSelectionDirty(data, selection);
+
+    const visible = useMemo(
+      () => (options ? visibleBrowserProfileOptions(options, selection?.systemId) : undefined),
+      [options, selection?.systemId],
+    );
+
+    /** Every change goes back through the settle step: a new machine invalidates its own hardware. */
+    const patch = useCallback(
+      (next: Partial<BrowserProfileSelection>) =>
+        setDraft(repairBrowserProfileSelection(options, { ...selection, ...next })),
+      [options, selection],
+    );
 
     const generatedAt = useMemo(() => {
       if (!data) return undefined;
@@ -76,6 +117,20 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
       });
     }, [onRegenerate, t]);
 
+    const requestSave = useCallback(async () => {
+      if (!selection) return;
+      setSaving(true);
+      try {
+        await onSave(selection);
+        toast.success(t('browserProfile.toast.saved'));
+      } catch {
+        // The draft stays: the operator's choice is still on screen to retry or amend.
+        toast.error(t('browserProfile.toast.saveFailed'));
+      } finally {
+        setSaving(false);
+      }
+    }, [onSave, selection, t]);
+
     const banner = error ? (
       <Alert
         showIcon
@@ -92,6 +147,29 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
       <Alert showIcon message={t('browserProfile.states.empty')} type="info" />
     ) : undefined;
 
+    /** Minted, not chosen: regenerating is the only thing that moves either of them. */
+    const installationIdField = {
+      label: t('browserProfile.fields.installationId'),
+      /**
+       * In full, and copyable. It is not a secret — it identifies this deployment to upstream and
+       * is what an operator quotes in a support thread — and the 8-char mask it used to carry
+       * could neither be read nor copied.
+       */
+      value: data ? (
+        <Flexbox horizontal align={'center'} gap={4} justify={'flex-end'}>
+          <span className={styles.code}>{data.installationId}</span>
+          <CopyButton content={data.installationId} size={'small'} />
+        </Flexbox>
+      ) : undefined,
+    };
+    const generatedAtField = {
+      label: t('browserProfile.fields.generatedAt'),
+      value: generatedAt,
+    };
+
+    // Nothing to amend before there is a fingerprint: that card offers 生成 instead.
+    const editing = canOperate && Boolean(data) && Boolean(selection) && Boolean(visible);
+
     return (
       <InfraSettingsCard
         banner={banner}
@@ -106,39 +184,54 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
         status={data ? 'unknown' : 'disabled'}
         title={t('browserProfile.title')}
         editor={
-          isLoading && !data ? <Skeleton active paragraph={{ rows: 5 }} title={false} /> : undefined
+          isLoading && !data ? (
+            <Skeleton active paragraph={{ rows: 5 }} title={false} />
+          ) : editing ? (
+            <div className={formStyles.stack}>
+              <InfraFieldRows fields={[installationIdField, generatedAtField]} />
+              <BrowserProfileFields
+                disabled={saving || regenerating}
+                options={visible!}
+                selection={selection!}
+                onChange={patch}
+              />
+            </div>
+          ) : undefined
         }
         extraActions={
           canOperate ? (
-            <Button
-              // Regenerating is destructive and irreversible: never offered over a card that
-              // has not resolved what it is about to replace.
-              disabled={isLoading || Boolean(error)}
-              loading={regenerating}
-              size="small"
-              onClick={requestRegenerate}
-            >
-              {t(data ? 'browserProfile.actions.regenerate' : 'browserProfile.actions.generate')}
-            </Button>
+            <>
+              <Button
+                // Regenerating is destructive and irreversible: never offered over a card that
+                // has not resolved what it is about to replace.
+                disabled={isLoading || Boolean(error)}
+                loading={regenerating}
+                size="small"
+                onClick={requestRegenerate}
+              >
+                {t(data ? 'browserProfile.actions.regenerate' : 'browserProfile.actions.generate')}
+              </Button>
+              {editing ? (
+                <Button
+                  disabled={!dirty || regenerating}
+                  loading={saving}
+                  size="small"
+                  type="primary"
+                  onClick={() => void requestSave()}
+                >
+                  {t('browserProfile.actions.save')}
+                </Button>
+              ) : null}
+              {dirty && editing ? (
+                <span className={formStyles.hint}>{t('browserProfile.states.dirty')}</span>
+              ) : null}
+            </>
           ) : null
         }
         fields={
           data
             ? [
-                {
-                  label: t('browserProfile.fields.installationId'),
-                  /**
-                   * In full, and copyable. It is not a secret — it identifies this deployment
-                   * to upstream and is what an operator quotes in a support thread — and the
-                   * 8-char mask it used to carry could neither be read nor copied.
-                   */
-                  value: (
-                    <Flexbox horizontal align={'center'} gap={4} justify={'flex-end'}>
-                      <span className={styles.code}>{data.installationId}</span>
-                      <CopyButton content={data.installationId} size={'small'} />
-                    </Flexbox>
-                  ),
-                },
+                installationIdField,
                 {
                   label: t('browserProfile.fields.chrome'),
                   /**
@@ -176,9 +269,11 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
                   }),
                 },
                 {
-                  label: t('browserProfile.fields.generatedAt'),
-                  value: generatedAt,
+                  label: t('browserProfile.fields.webgl'),
+                  // The summary reports the GPU only as the option it was chosen from.
+                  value: options?.webgl.find((entry) => entry.id === data.webglId)?.label,
                 },
+                generatedAtField,
               ]
             : undefined
         }

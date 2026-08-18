@@ -1,17 +1,26 @@
 'use client';
 
-import { Flexbox, Icon, Tag, Text } from '@lobehub/ui';
+import { AccordionItem, Flexbox, Icon, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import type { LucideIcon } from 'lucide-react';
 import { AlertTriangle, CheckCircle2, CircleDashed, XCircle } from 'lucide-react';
-import { memo, type ReactNode } from 'react';
+import {
+  cloneElement,
+  type HTMLAttributes,
+  isValidElement,
+  memo,
+  type ReactElement,
+  type ReactNode,
+  useCallback,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { AdminSystemTestDependencyResult } from '@/enterprise/client/services/adminSystem';
 
 import { infraSettingsStyles as styles } from './styles';
 
-interface Field {
+export interface Field {
   label: string;
   value: ReactNode;
 }
@@ -20,6 +29,12 @@ export interface InfraSettingsCardProps {
   /** Alert above the body — shown in both the read-only and the editing state. */
   banner?: ReactNode;
   canTest: boolean;
+  /**
+   * Fold the body away behind the header. Only the two dependencies an operator configures are
+   * foldable: the header keeps saying where the configuration comes from and whether it works, so
+   * a folded card is still an answer rather than a closed door.
+   */
+  collapsible?: boolean;
   /** Editable body; replaces the read-only rows when present. */
   editor?: ReactNode;
   /** Environment variables that drive this dependency. Omitted while it is configured here. */
@@ -71,10 +86,27 @@ const InfraStatusTag = memo<{ status: string }>(({ status }) => {
 
 InfraStatusTag.displayName = 'AdminInfraStatusTag';
 
+/** Label / value rows. Also used by the fingerprint card, whose editor keeps two of them read-only. */
+export const InfraFieldRows = memo<{ fields: readonly Field[] }>(({ fields }) => (
+  <div className={styles.fields}>
+    {fields.map((field) => (
+      <div className={styles.fieldRow} key={field.label}>
+        <Text className={styles.fieldLabel} type="secondary">
+          {field.label}
+        </Text>
+        <Text className={styles.fieldValue}>{display(field.value)}</Text>
+      </div>
+    ))}
+  </div>
+));
+
+InfraFieldRows.displayName = 'AdminInfraFieldRows';
+
 export const InfraSettingsCard = memo<InfraSettingsCardProps>(
   ({
     banner,
     canTest,
+    collapsible,
     editor,
     envVars,
     extraActions,
@@ -90,94 +122,130 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
     title,
   }) => {
     const { t } = useTranslation('admin');
+    const [expanded, setExpanded] = useState(true);
+
+    /**
+     * The primitive renders a clickable header, binds Enter/Space to it and even styles a focus
+     * ring for it — but never makes it focusable, so folding a section would be mouse-only. Its
+     * keyboard handler is on this very element, so the semantics it already behaves like are the
+     * only thing missing, and `headerWrapper` is the seam it offers for adding them.
+     */
+    const headerWrapper = useCallback(
+      (header: ReactNode) =>
+        isValidElement(header)
+          ? // eslint-disable-next-line @eslint-react/no-clone-element
+            cloneElement(header as ReactElement<HTMLAttributes<HTMLElement>>, {
+              'aria-expanded': expanded,
+              'role': 'button',
+              'tabIndex': 0,
+            })
+          : header,
+      [expanded],
+    );
+
+    const header = (
+      <div className={collapsible ? `${styles.header} ${styles.headerInAccordion}` : styles.header}>
+        <div className={styles.title}>
+          <Icon icon={icon} size={16} />
+          <Text strong>{title}</Text>
+        </div>
+        <div className={styles.headerTags}>
+          {headerExtra}
+          {status ? <InfraStatusTag status={status} /> : null}
+        </div>
+      </div>
+    );
+
+    const body = (
+      <div className={styles.cardBody}>
+        {banner}
+        {editor ?? <InfraFieldRows fields={fields ?? []} />}
+
+        <div className={styles.footer}>
+          {probe ? (
+            <Flexbox gap={4}>
+              <Text
+                type={
+                  !probe.ok
+                    ? 'danger'
+                    : probe.message === 'configured_unverified'
+                      ? 'secondary'
+                      : 'success'
+                }
+              >
+                {t(
+                  !probe.ok
+                    ? 'systemGeneral.test.failure'
+                    : probe.message === 'configured_unverified'
+                      ? 'systemGeneral.test.unverified'
+                      : 'systemGeneral.test.success',
+                )}
+                {probe.message
+                  ? ` · ${t(`systemGeneral.test.reason.${probe.message}` as never)}`
+                  : ''}
+              </Text>
+              <Text className={styles.code} type="secondary">
+                {t('systemGeneral.test.latency', { ms: probe.latencyMs })}
+              </Text>
+            </Flexbox>
+          ) : null}
+
+          {canTest || extraActions ? (
+            <div className={styles.actionsRow}>
+              {canTest ? (
+                <Button disabled={testDisabled} loading={probing} size="small" onClick={onTest}>
+                  {t('systemGeneral.testConnection')}
+                </Button>
+              ) : null}
+              {extraActions}
+            </div>
+          ) : null}
+
+          {notice || envVars?.length ? (
+            <div className={styles.hint}>
+              <Text type="secondary">{notice ?? t('systemGeneral.howToChange.title')}</Text>
+              {envVars?.length ? (
+                <div className={styles.envList}>
+                  {envVars.map((name) => (
+                    <span className={styles.envChip} key={name}>
+                      {name}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {notice ? null : (
+                <Text type="secondary">{t('systemGeneral.howToChange.restart')}</Text>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+
+    if (!collapsible)
+      return (
+        <section className={styles.card}>
+          {header}
+          {body}
+        </section>
+      );
 
     return (
       <section className={styles.card}>
-        <div className={styles.header}>
-          <div className={styles.title}>
-            <Icon icon={icon} size={16} />
-            <Text strong>{title}</Text>
-          </div>
-          <div className={styles.headerTags}>
-            {headerExtra}
-            {status ? <InfraStatusTag status={status} /> : null}
-          </div>
-        </div>
-
-        <div className={styles.cardBody}>
-          {banner}
-          {editor ?? (
-            <div className={styles.fields}>
-              {(fields ?? []).map((field) => (
-                <div className={styles.fieldRow} key={field.label}>
-                  <Text className={styles.fieldLabel} type="secondary">
-                    {field.label}
-                  </Text>
-                  <Text className={styles.fieldValue}>{display(field.value)}</Text>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className={styles.footer}>
-            {probe ? (
-              <Flexbox gap={4}>
-                <Text
-                  type={
-                    !probe.ok
-                      ? 'danger'
-                      : probe.message === 'configured_unverified'
-                        ? 'secondary'
-                        : 'success'
-                  }
-                >
-                  {t(
-                    !probe.ok
-                      ? 'systemGeneral.test.failure'
-                      : probe.message === 'configured_unverified'
-                        ? 'systemGeneral.test.unverified'
-                        : 'systemGeneral.test.success',
-                  )}
-                  {probe.message
-                    ? ` · ${t(`systemGeneral.test.reason.${probe.message}` as never)}`
-                    : ''}
-                </Text>
-                <Text className={styles.code} type="secondary">
-                  {t('systemGeneral.test.latency', { ms: probe.latencyMs })}
-                </Text>
-              </Flexbox>
-            ) : null}
-
-            {canTest || extraActions ? (
-              <div className={styles.actionsRow}>
-                {canTest ? (
-                  <Button disabled={testDisabled} loading={probing} size="small" onClick={onTest}>
-                    {t('systemGeneral.testConnection')}
-                  </Button>
-                ) : null}
-                {extraActions}
-              </div>
-            ) : null}
-
-            {notice || envVars?.length ? (
-              <div className={styles.hint}>
-                <Text type="secondary">{notice ?? t('systemGeneral.howToChange.title')}</Text>
-                {envVars?.length ? (
-                  <div className={styles.envList}>
-                    {envVars.map((name) => (
-                      <span className={styles.envChip} key={name}>
-                        {name}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                {notice ? null : (
-                  <Text type="secondary">{t('systemGeneral.howToChange.restart')}</Text>
-                )}
-              </div>
-            ) : null}
-          </div>
-        </div>
+        <AccordionItem
+          expand={expanded}
+          headerWrapper={headerWrapper}
+          indicatorPlacement="end"
+          itemKey={title}
+          paddingBlock={0}
+          paddingInline={0}
+          // The card already spaces its own header from its body; the accordion does not.
+          styles={{ content: { paddingBlockStart: 16 } }}
+          title={header}
+          onExpandChange={setExpanded}
+        >
+          {body}
+        </AccordionItem>
       </section>
     );
   },

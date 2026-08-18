@@ -687,6 +687,7 @@
   "audit.logs.action.platform.settings.publish": "发布设置",
   "audit.logs.action.platform.skill.publish": "发布技能",
   "audit.logs.action.system.browser_profile.regenerate": "重新生成浏览器指纹",
+  "audit.logs.action.system.browser_profile.update": "修改浏览器指纹",
   "audit.logs.action.system.email.send": "发送平台邮件",
   "audit.logs.action.system.infra.mail.update": "更新邮件服务",
   "audit.logs.action.system.infra.object_storage.update": "更新对象存储",
