@@ -172,12 +172,13 @@ describe('draftToUpdatePayload', () => {
 });
 
 describe('dependencies and grouping', () => {
-  it('reports a dependency the draft leaves off', () => {
-    const dependent = PLATFORM_MODULE_IDS.find((id) => PLATFORM_MODULES[id].dependsOn.length > 0)!;
-    const dependency = PLATFORM_MODULES[dependent].dependsOn[0];
-
-    expect(unmetDependencies(dependent, ALL_MODULES_ENABLED)).toEqual([]);
-    expect(unmetDependencies(dependent, withOff(dependency))).toEqual([dependency]);
+  it('has no live module dependencies, so unmetDependencies is always empty', () => {
+    // chatgptWeb was the only dependsOn edge; it is no longer a platform module.
+    for (const id of PLATFORM_MODULE_IDS) {
+      expect(PLATFORM_MODULES[id].dependsOn).toEqual([]);
+      expect(unmetDependencies(id, ALL_MODULES_ENABLED)).toEqual([]);
+      expect(unmetDependencies(id, withOff(id))).toEqual([]);
+    }
   });
 
   it('splits every module into exactly one of the two groups', () => {

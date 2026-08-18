@@ -3952,8 +3952,6 @@ export default {
   'modules.items.bots.title': 'Chat platform bots',
   'modules.items.branding.desc': 'Custom name, logo and colors, plus the asset cleanup job.',
   'modules.items.branding.title': 'Runtime branding',
-  'modules.items.chatgptWeb.desc': 'Uses a ChatGPT web session as a provider.',
-  'modules.items.chatgptWeb.title': 'ChatGPT web provider',
   'modules.items.databaseIdp.desc':
     'Identity providers configured in the database (DingTalk, OIDC …).',
   'modules.items.databaseIdp.title': 'Sign-in methods',

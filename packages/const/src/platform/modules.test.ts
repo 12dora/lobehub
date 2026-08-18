@@ -172,6 +172,14 @@ describe('LOBE_MODULES_DISABLED parsing', () => {
     expect(parseDisabledModulesList(undefined)).toEqual({ disabled: [], unknown: [] });
   });
 
+  it('treats a retired chatgptWeb env token as unknown, not a disable', () => {
+    expect(isPlatformModuleId('chatgptWeb')).toBe(false);
+    expect(parseDisabledModulesList('chatgptWeb')).toEqual({
+      disabled: [],
+      unknown: ['chatgptWeb'],
+    });
+  });
+
   it('dedupes repeated ids', () => {
     expect(parseDisabledModulesList('audit,audit audit')).toEqual({
       disabled: ['audit'],
@@ -247,6 +255,21 @@ describe('computeEffectiveModules', () => {
     const effective = computeEffectiveModules(new Set(['audit']), { audit: true, branding: false });
     expect(effective.audit).toBe(false);
     expect(effective.branding).toBe(false);
+  });
+
+  it('ignores a leftover chatgptWeb key from a stored DB map', () => {
+    const effective = computeEffectiveModules(new Set(), {
+      audit: false,
+      chatgptWeb: false,
+    } as Parameters<typeof computeEffectiveModules>[1]);
+
+    expect(effective).not.toHaveProperty('chatgptWeb');
+    expect(effective.audit).toBe(false);
+    for (const id of PLATFORM_MODULE_IDS) {
+      if (id === 'audit') continue;
+      expect(effective[id]).toBe(true);
+    }
+    expect(matchPreset(effective)).toBeNull();
   });
 });
 

@@ -49,7 +49,7 @@
 
 **部署与性能**
 
-- 24 个功能模块按需启停：`LOBE_MODULE_PRESET=minimal|standard|full` 三档预设，或在管理页逐个开关
+- 23 个功能模块按需启停：`LOBE_MODULE_PRESET=minimal|standard|full` 三档预设，或在管理页逐个开关
 - 从完整栈到「一个容器 + 一个数据库」的最小部署，见下文[部署形态](#部署形态)
 - 两轮性能优化实测：空闲 CPU 约 1.5% 降至约 0.1%，启动内存约 500 MB 降至约 240 MB，空闲数据库往返减少约 80%，首屏 JS 从 33.8 MB 降至约 25 MB
 
@@ -114,7 +114,7 @@ docker compose logs app | grep -i bootstrap
 | `docker compose --profile search up -d`              | 另加 SearXNG                | 需要内置联网搜索                                |
 | `docker compose -f docker-compose.minimal.yml up -d` | 仅 ParadeDB                 | 小机器（1–2 核 / 2–4 GiB），搭配 `minimal` 预设 |
 
-24 个功能模块由 `LOBE_MODULE_PRESET=minimal|standard|full` 三档预设决定默认启停（默认 `full`，即今天的完整行为），单个模块可在管理页「系统 → 模块」或用 `LOBE_MODULES_DISABLED` 覆盖。Node 堆上限 `LOBE_NODE_HEAP_MB` 由 compose 注入 1536（裸 `docker run` 不设则不封顶）。各模块的内存 / 后台任务开销与实测数据见 [`docs/enterprise/modules.md`](./docs/enterprise/modules.md)。
+23 个功能模块由 `LOBE_MODULE_PRESET=minimal|standard|full` 三档预设决定默认启停（默认 `full`，即今天的完整行为），单个模块可在管理页「系统 → 模块」或用 `LOBE_MODULES_DISABLED` 覆盖。Node 堆上限 `LOBE_NODE_HEAP_MB` 由 compose 注入 1536（裸 `docker run` 不设则不封顶）。各模块的内存 / 后台任务开销与实测数据见 [`docs/enterprise/modules.md`](./docs/enterprise/modules.md)。
 
 升级：`docker compose pull && docker compose up -d`（迁移自动执行）。镜像标签：`latest`、`1.0`、`1.0.0`，支持 `linux/amd64` 与 `linux/arm64`（Apple 芯片的 Mac 通过 Docker Desktop 直接使用 arm64 镜像）。完整示例见 [`docker-compose/enhanced/`](./docker-compose/enhanced/)。
 

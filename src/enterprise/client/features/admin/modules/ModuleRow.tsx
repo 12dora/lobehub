@@ -51,7 +51,7 @@ const styles = createStaticStyles(({ css }) => ({
 
 /**
  * Load kinds that deserve a chip. `none` never had one, and `onUse` — idle until someone uses
- * the feature — is the benign default rather than a cost: it sat on 11 of 24 rows and told an
+ * the feature — is the benign default rather than a cost: it sat on 11 of 23 rows and told an
  * operator nothing they could act on, which is what made the whole row read as decoration.
  */
 const CHIPPED_LOAD_KINDS = new Set<PlatformModuleLoadKind>([
@@ -128,7 +128,7 @@ const ModuleRow = memo<ModuleRowProps>(
         // The bare noun ("Redis") is a label; what the operator needs is the obligation.
         label: t('modules.tags.requires', { dep: t(`modules.deps.${dep}` as never) }),
       })),
-      // 0 MB is the common case now that routers load lazily, and "≈ 0 MB" on 20 of 24 rows
+      // 0 MB is the common case now that routers load lazily, and "≈ 0 MB" on 19 of 23 rows
       // buried the four modules that actually hold memory.
       cost.idleRssMb !== null && cost.idleRssMb > 0
         ? { key: 'idleRss', label: t('modules.tags.idleRss', { mb: cost.idleRssMb }) }

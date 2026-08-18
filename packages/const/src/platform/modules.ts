@@ -57,7 +57,6 @@ export const PLATFORM_MODULE_IDS = [
   'networkProxy',
   'platformStats',
   'taskTemplates',
-  'chatgptWeb',
 ] as const;
 
 export type PlatformModuleId = (typeof PLATFORM_MODULE_IDS)[number];
@@ -241,27 +240,6 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     tier: 'minimal',
     toolsRouterKeys: [],
     workers: ['brandingAssetCleanup'],
-  }),
-  chatgptWeb: def({
-    adminRouterKeys: [],
-    asyncRouterKeys: [],
-    cost: {
-      backgroundJobs: 0,
-      externalDeps: [],
-      idleRssMb: 0,
-      loadKind: 'onUse',
-      loadSensitive: false,
-      subprocess: false,
-    },
-    dependsOn: ['managedAi'],
-    featureFlagKeys: [],
-    id: 'chatgptWeb',
-    kind: 'restart',
-    lambdaRouterKeys: [],
-    origin: 'fork',
-    tier: 'standard',
-    toolsRouterKeys: [],
-    workers: [],
   }),
   databaseIdp: def({
     adminRouterKeys: ['identityProviders'],

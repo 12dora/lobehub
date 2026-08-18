@@ -107,7 +107,6 @@ operator may leave out of a deployment to save memory, CPU, or sidecars.
 | `networkProxy`      | fork     | standard | restart | ✗       | ✓        | ✓    | rss 8MB, 3 jobs, perFetch, subprocess              |
 | `platformStats`     | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 0MB, 0 jobs, onUse                             |
 | `taskTemplates`     | fork     | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, none                              |
-| `chatgptWeb`        | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, onUse                             |
 
 <!-- END MODULE TABLE -->
 
@@ -126,11 +125,11 @@ configured_) are not modules and cannot be turned off.
 
 ## Presets & sizing
 
-| Preset     | Typical box       | `LOBE_NODE_HEAP_MB` | Sidecars      | What you keep                                                                                                        |
-| ---------- | ----------------- | ------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `minimal`  | 1–2 CPU / 2–4 GiB | **1024**            | ParadeDB only | Chat + admin skeleton + managed AI/skills, settings policy, branding, stats, DB identity                             |
-| `standard` | 2–4 CPU / 4–8 GiB | **1536** (default)  | + Redis + S3  | Above + audit / moderation / network proxy / managed agents & connectors / ChatGPT Web / image / memory / web search |
-| `full`     | 4+ CPU / 8+ GiB   | **2048**            | + SearXNG     | Everything. This is the default and today's behaviour.                                                               |
+| Preset     | Typical box       | `LOBE_NODE_HEAP_MB` | Sidecars      | What you keep                                                                                          |
+| ---------- | ----------------- | ------------------- | ------------- | ------------------------------------------------------------------------------------------------------ |
+| `minimal`  | 1–2 CPU / 2–4 GiB | **1024**            | ParadeDB only | Chat + admin skeleton + managed AI/skills, settings policy, branding, stats, DB identity               |
+| `standard` | 2–4 CPU / 4–8 GiB | **1536** (default)  | + Redis + S3  | Above + audit / moderation / network proxy / managed agents & connectors / image / memory / web search |
+| `full`     | 4+ CPU / 8+ GiB   | **2048**            | + SearXNG     | Everything. This is the default and today's behaviour.                                                 |
 
 ### Measured (reference build, arm64, standalone server, 2026-08-17)
 
@@ -215,32 +214,31 @@ A disabled module does **not** unmount its router.
 { "error": "PLATFORM_MODULE_DISABLED", "moduleId": "<id>" }
 ```
 
-| Module              | Hidden from the user                                  | Still there            | Extra boot cost if left on                      |
-| ------------------- | ----------------------------------------------------- | ---------------------- | ----------------------------------------------- |
-| `knowledgeBase`     | KB / RAG / chunk / ragEval UI (`knowledge_base` flag) | pgvector tables        | file-loader / canvas on first parse             |
-| `imageGen`          | Image / video / ComfyUI (`ai_image` flag)             | —                      | `sharp` / `ffmpeg-static` on first use          |
-| `speech`            | TTS / STT (`speech_to_text` flag)                     | —                      | —                                               |
-| `webSearch`         | Built-in search / web-browsing tool                   | Other search providers | 11 search-provider imports                      |
-| `market`            | Agent / plugin market (`market` flag)                 | —                      | —                                               |
-| `memory`            | User-memory extraction                                | tables                 | per-message extractor                           |
-| `bots`              | Messenger / gateway                                   | —                      | GatewayService + 9 adapters (restart)           |
-| `agentSignal`       | Agent-signal workflows                                | —                      | eager graph (restart)                           |
-| `workflows`         | Upstash workflow routes                               | —                      | needs QStash                                    |
-| `sandbox`           | Python / cloud sandbox tools                          | —                      | needs sandbox service                           |
-| `deviceGateway`     | Remote-device routes                                  | —                      | needs `DEVICE_GATEWAY_URL`                      |
-| `managedAi`         | Platform AI catalog                                   | BYOK providers         | per-message catalog lookup                      |
-| `managedSkills`     | Platform skill catalog                                | user skills            | —                                               |
-| `managedConnectors` | Connector admin + 3 workers                           | —                      | restart                                         |
-| `managedAgents`     | Platform assistants + rollout worker                  | user agents            | restart                                         |
-| `settingsPolicy`    | Platform default / lock policy                        | user settings          | per-request resolve                             |
-| `branding`          | Runtime brand assets                                  | build-time brand       | S3 cleanup job                                  |
-| `databaseIdp`       | DB identity providers + 2 workers                     | env SSO                | restart                                         |
-| `audit`             | Audit UI + 2 workers                                  | —                      | restart; export needs S3                        |
-| `moderation`        | Content-moderation wrapper                            | —                      | per-message, load-sensitive                     |
-| `networkProxy`      | mihomo subprocess + egress wrap                       | direct egress          | restart + subprocess                            |
-| `platformStats`     | Global stats page                                     | —                      | heavy on-demand queries                         |
-| `taskTemplates`     | Task-template admin / home                            | —                      | —                                               |
-| `chatgptWeb`        | ChatGPT Web provider transport                        | other providers        | restart; curl-impersonate is still in the image |
+| Module              | Hidden from the user                                  | Still there            | Extra boot cost if left on             |
+| ------------------- | ----------------------------------------------------- | ---------------------- | -------------------------------------- |
+| `knowledgeBase`     | KB / RAG / chunk / ragEval UI (`knowledge_base` flag) | pgvector tables        | file-loader / canvas on first parse    |
+| `imageGen`          | Image / video / ComfyUI (`ai_image` flag)             | —                      | `sharp` / `ffmpeg-static` on first use |
+| `speech`            | TTS / STT (`speech_to_text` flag)                     | —                      | —                                      |
+| `webSearch`         | Built-in search / web-browsing tool                   | Other search providers | 11 search-provider imports             |
+| `market`            | Agent / plugin market (`market` flag)                 | —                      | —                                      |
+| `memory`            | User-memory extraction                                | tables                 | per-message extractor                  |
+| `bots`              | Messenger / gateway                                   | —                      | GatewayService + 9 adapters (restart)  |
+| `agentSignal`       | Agent-signal workflows                                | —                      | eager graph (restart)                  |
+| `workflows`         | Upstash workflow routes                               | —                      | needs QStash                           |
+| `sandbox`           | Python / cloud sandbox tools                          | —                      | needs sandbox service                  |
+| `deviceGateway`     | Remote-device routes                                  | —                      | needs `DEVICE_GATEWAY_URL`             |
+| `managedAi`         | Platform AI catalog                                   | BYOK providers         | per-message catalog lookup             |
+| `managedSkills`     | Platform skill catalog                                | user skills            | —                                      |
+| `managedConnectors` | Connector admin + 3 workers                           | —                      | restart                                |
+| `managedAgents`     | Platform assistants + rollout worker                  | user agents            | restart                                |
+| `settingsPolicy`    | Platform default / lock policy                        | user settings          | per-request resolve                    |
+| `branding`          | Runtime brand assets                                  | build-time brand       | S3 cleanup job                         |
+| `databaseIdp`       | DB identity providers + 2 workers                     | env SSO                | restart                                |
+| `audit`             | Audit UI + 2 workers                                  | —                      | restart; export needs S3               |
+| `moderation`        | Content-moderation wrapper                            | —                      | per-message, load-sensitive            |
+| `networkProxy`      | mihomo subprocess + egress wrap                       | direct egress          | restart + subprocess                   |
+| `platformStats`     | Global stats page                                     | —                      | heavy on-demand queries                |
+| `taskTemplates`     | Task-template admin / home                            | —                      | —                                      |
 
 Permissions are orthogonal: turning a module off never revokes RBAC.
 

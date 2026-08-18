@@ -1859,8 +1859,6 @@
   "modules.items.bots.title": "聊天平台机器人",
   "modules.items.branding.desc": "自定义名称、图标与配色，附带资源清理任务。",
   "modules.items.branding.title": "品牌自定义",
-  "modules.items.chatgptWeb.desc": "以 ChatGPT 网页会话作为服务商接入。",
-  "modules.items.chatgptWeb.title": "ChatGPT 网页版服务商",
   "modules.items.databaseIdp.desc": "在数据库中配置的身份提供方（钉钉、OIDC 等）。",
   "modules.items.databaseIdp.title": "登录方式",
   "modules.items.deviceGateway.desc": "远程设备控制，需要设备网关服务。",
