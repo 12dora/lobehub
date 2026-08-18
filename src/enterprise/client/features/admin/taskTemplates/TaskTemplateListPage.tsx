@@ -146,7 +146,7 @@ const TaskTemplateListPage = memo(() => {
           // Sum of the column widths: fixed table layout keeps CJK headers on one line
           // and scrolls horizontally instead of collapsing to one character per column.
           // `virtual` stays off — the drag-and-drop row seam needs real `<tr>` elements.
-          scroll={{ x: 1176 }}
+          scroll={{ x: 1126 }}
           emptyDescription={
             filtered
               ? t('taskTemplateCatalog.list.empty.filtered')

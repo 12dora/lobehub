@@ -25,16 +25,32 @@ const styles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorBgContainer};
 
-    transition: border-color ${cssVar.motionDurationMid} ${cssVar.motionEaseInOut};
+    transition:
+      background 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease;
 
+    &:focus-visible {
+      outline: 2px solid ${cssVar.colorPrimaryBorder};
+      outline-offset: 2px;
+    }
+
+    /* Soft filled selected state — hue-independent, no outline ring. Matches the
+       stat cards above the operation-log table. */
     &[data-active='true'] {
-      border-color: ${cssVar.colorPrimary};
-      background: ${cssVar.colorPrimaryBg};
+      border-color: transparent;
+      background: ${cssVar.colorFillTertiary};
     }
 
     &:disabled {
       cursor: not-allowed;
       opacity: 0.6;
+    }
+
+    /* Last: the selected card must keep its fill while hovered, so this is scoped
+       narrower than both rules above and therefore has to follow them. */
+    &:hover:not(:disabled, [data-active='true']) {
+      background: ${cssVar.colorFillQuaternary};
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -53,9 +69,13 @@ const styles = createStaticStyles(({ css }) => ({
     border: 1px dashed ${cssVar.colorBorder};
     border-radius: ${cssVar.borderRadiusLG};
 
+    transition:
+      background 0.15s ease,
+      border-color 0.15s ease;
+
     &[data-active='true'] {
-      border-color: ${cssVar.colorPrimary};
-      color: ${cssVar.colorPrimaryText};
+      border-color: transparent;
+      background: ${cssVar.colorFillTertiary};
     }
   `,
   root: css`

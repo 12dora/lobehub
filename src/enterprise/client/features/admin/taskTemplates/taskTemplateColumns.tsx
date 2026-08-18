@@ -36,7 +36,7 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 /** Connector tags rendered inline before the rest collapses into a "+N" tag. */
-const CONNECTOR_TAG_LIMIT = 3;
+const CONNECTOR_TAG_LIMIT = 2;
 
 export interface BuildTaskTemplateColumnsParams {
   canDelete: boolean;
@@ -111,7 +111,9 @@ export const buildTaskTemplateColumns = ({
     dataIndex: 'connectors',
     key: 'connectors',
     title: t('taskTemplateCatalog.list.columns.connectors'),
-    width: 160,
+    // Most templates declare no connector at all, so the column only ever needs room for
+    // the header plus a tag or two — 160 was dead space pushing the useful columns out.
+    width: 110,
     render: (value: AdminTaskTemplateItem['connectors']) => {
       if (value.length === 0) {
         return <Text type="secondary">{t('taskTemplateCatalog.list.connectors.none')}</Text>;
