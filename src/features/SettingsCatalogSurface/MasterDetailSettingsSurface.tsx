@@ -35,6 +35,7 @@ const styles = createStaticStyles(({ css }) => ({
   detail: css`
     overflow-y: auto;
     flex: 1;
+    min-height: 0;
   `,
   left: css`
     overflow: hidden;
@@ -43,11 +44,14 @@ const styles = createStaticStyles(({ css }) => ({
 
     width: 300px;
     min-width: 260px;
+    min-height: 0;
     border-inline-end: 1px solid ${cssVar.colorBorderSecondary};
   `,
   leftBody: css`
     overflow-y: auto;
     flex: 1;
+
+    min-height: 0;
     padding-block: 4px;
     padding-inline: 8px;
   `,
@@ -66,7 +70,9 @@ const styles = createStaticStyles(({ css }) => ({
     overflow: hidden;
     display: flex;
     flex: 1;
+
     height: 100%;
+    min-height: 0;
   `,
   shell: css`
     display: flex;

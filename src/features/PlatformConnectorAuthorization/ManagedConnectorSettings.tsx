@@ -6,6 +6,7 @@ import { memo } from 'react';
 import AsyncError from '@/components/AsyncError';
 import Loading from '@/components/Loading/BrandTextLoading';
 import { ManagedResourceTransition, useManagedResource } from '@/features/ManagedResources';
+import SettingContainer from '@/features/Setting/SettingContainer';
 
 import PlatformConnectorAuthorization from './PlatformConnectorAuthorization';
 
@@ -27,7 +28,12 @@ const ManagedConnectorSettings = memo<ManagedConnectorSettingsProps>(({ fallback
   ) : loading ? (
     <Loading debugId="ManagedConnectorSettings" />
   ) : managed ? (
-    <PlatformConnectorAuthorization />
+    // Document-flow page, not the master-detail catalog the unmanaged fallback
+    // renders: it needs its own scroller because the settings pane is
+    // `overflow: hidden`.
+    <SettingContainer flex={1} maxWidth={1024} paddingInline={24} style={{ minHeight: 0 }}>
+      <PlatformConnectorAuthorization />
+    </SettingContainer>
   ) : (
     fallback
   );

@@ -2,7 +2,7 @@
 
 import { Flexbox } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 
 const styles = createStaticStyles(({ css }) => ({
   state: css`
@@ -31,8 +31,30 @@ interface ManagedResourceTransitionProps {
   state: 'content' | 'error' | 'loading' | 'managed';
 }
 
-export const ManagedResourceTransition = ({ children, state }: ManagedResourceTransitionProps) => (
-  <Flexbox className={styles.state} data-managed-resource-state={state} flex={1} key={state}>
-    {children}
-  </Flexbox>
-);
+/**
+ * Layout-transparent in the `content` state: it renders the page exactly where
+ * upstream renders it, with no DOM box in between. Upstream has no wrapper here,
+ * and full-bleed catalog pages (provider / skill / connector) depend on that:
+ * their inner `height: 100%` + `overflow: auto` panes only become scrollports
+ * when the height chain from the settings pane down is unbroken, so an extra
+ * `flex: 1` box with an auto height silently kills their scrolling.
+ *
+ * The animated box is kept only for the notice states (loading / error /
+ * managed), which render their own centred content and need a bounded box —
+ * hence `height: 100%` + `min-height: 0`.
+ */
+export const ManagedResourceTransition = ({ children, state }: ManagedResourceTransitionProps) =>
+  state === 'content' ? (
+    <Fragment key={state}>{children}</Fragment>
+  ) : (
+    <Flexbox
+      className={styles.state}
+      data-managed-resource-state={state}
+      flex={1}
+      height={'100%'}
+      key={state}
+      style={{ minHeight: 0 }}
+    >
+      {children}
+    </Flexbox>
+  );
