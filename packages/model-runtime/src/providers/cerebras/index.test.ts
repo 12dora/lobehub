@@ -491,7 +491,10 @@ describe('LobeCerebrasAI - custom features', () => {
 
       const models = await params.models!({ client: mockClient });
 
-      expect(global.fetch).toHaveBeenCalledWith('https://api.cerebras.ai/public/v1/models');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.cerebras.ai/public/v1/models',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
       expect(models.map((m) => m.id)).toEqual(['gemma-4-31b', 'gpt-oss-120b']);
 
       const gemma = models.find((m) => m.id === 'gemma-4-31b');
@@ -534,6 +537,89 @@ describe('LobeCerebrasAI - custom features', () => {
 
       expect(models).toHaveLength(1);
       expect(models[0]?.id).toBe('llama3.1-8b');
+    });
+
+    it('should keep the authenticated list when the public catalog never completes', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      global.fetch = vi.fn(
+        (_url, init) =>
+          new Promise<never>((_resolve, reject) => {
+            const signal = (init as RequestInit | undefined)?.signal;
+            if (!signal) return;
+            const abort = () => {
+              const error = new Error('The operation was aborted.');
+              error.name = 'AbortError';
+              reject(error);
+            };
+            if (signal.aborted) {
+              abort();
+              return;
+            }
+            signal.addEventListener('abort', abort, { once: true });
+          }),
+      );
+
+      const mockClient = {
+        apiKey: 'test_api_key',
+        baseURL: 'https://api.cerebras.ai/v1',
+        models: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ id: 'llama3.1-8b', object: 'model', owned_by: 'cerebras' }],
+          }),
+        },
+      } as any;
+
+      try {
+        const pending = params.models!({ client: mockClient });
+        await vi.advanceTimersByTimeAsync(10_000);
+        const models = await pending;
+
+        expect(models).toHaveLength(1);
+        expect(models[0]?.id).toBe('llama3.1-8b');
+        expect(models[0]?.pricing).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should drop blank, negative and overflowing public-catalog prices', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        json: async () => ({
+          data: [
+            {
+              id: 'blank-price',
+              pricing: { completion: '-0.000001', prompt: ' ' },
+            },
+            {
+              id: 'overflow-price',
+              pricing: { completion: '1e308', prompt: '1e308' },
+            },
+          ],
+        }),
+        ok: true,
+        status: 200,
+      });
+
+      const mockClient = {
+        apiKey: 'test_api_key',
+        baseURL: 'https://api.cerebras.ai/v1',
+        models: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ id: 'blank-price' }, { id: 'overflow-price' }],
+          }),
+        },
+      } as any;
+
+      const models = await params.models!({ client: mockClient });
+      const blank = models.find((m) => m.id === 'blank-price');
+      const overflow = models.find((m) => m.id === 'overflow-price');
+
+      expect(blank?.pricing).toBeUndefined();
+      expect(overflow?.pricing).toBeUndefined();
+      expect(fixedRate(blank?.pricing?.units, 'textInput')).toBeUndefined();
+      expect(fixedRate(blank?.pricing?.units, 'textOutput')).toBeUndefined();
+      expect(fixedRate(overflow?.pricing?.units, 'textInput')).toBeUndefined();
+      expect(fixedRate(overflow?.pricing?.units, 'textOutput')).toBeUndefined();
     });
   });
 });

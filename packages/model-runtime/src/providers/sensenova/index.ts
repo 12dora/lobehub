@@ -25,6 +25,10 @@ export interface SenseNovaModelCard {
   supported_features?: string[];
 }
 
+/** Present array is authoritative; an omitted container must not become `false`. */
+const fromList = (list: string[] | undefined, value: string): boolean | undefined =>
+  Array.isArray(list) ? list.includes(value) : undefined;
+
 export const mapSenseNovaModel = (
   model: SenseNovaModelCard,
   knownModel?: (typeof LOBE_DEFAULT_MODEL_LIST)[number],
@@ -33,20 +37,15 @@ export const mapSenseNovaModel = (
   description: model.description ?? knownModel?.description ?? undefined,
   displayName: model.name ?? knownModel?.displayName ?? undefined,
   enabled: knownModel?.enabled || false,
-  functionCall:
-    model.supported_features?.includes('tools') || knownModel?.abilities?.functionCall || false,
+  functionCall: fromList(model.supported_features, 'tools') ?? knownModel?.abilities?.functionCall,
   id: model.id,
-  imageOutput:
-    model.output_modalities?.includes('image') || knownModel?.abilities?.imageOutput || false,
+  imageOutput: fromList(model.output_modalities, 'image') ?? knownModel?.abilities?.imageOutput,
   maxOutput: model.max_output_length ?? knownModel?.maxOutput ?? undefined,
   releasedAt: model.created ? new Date(model.created * 1000).toISOString() : undefined,
-  reasoning:
-    model.supported_features?.includes('reasoning') || knownModel?.abilities?.reasoning || false,
+  reasoning: fromList(model.supported_features, 'reasoning') ?? knownModel?.abilities?.reasoning,
   structuredOutput:
-    model.supported_features?.includes('json_mode') ||
-    knownModel?.abilities?.structuredOutput ||
-    false,
-  vision: model.input_modalities?.includes('image') || knownModel?.abilities?.vision || false,
+    fromList(model.supported_features, 'json_mode') ?? knownModel?.abilities?.structuredOutput,
+  vision: fromList(model.input_modalities, 'image') ?? knownModel?.abilities?.vision,
 });
 
 export const params = {

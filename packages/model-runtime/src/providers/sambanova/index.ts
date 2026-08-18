@@ -17,12 +17,15 @@ export interface SambaNovaModelCard {
 /**
  * SambaNova documents pricing as USD per single token.
  * formatPricing expects USD per million tokens, so × 1e6.
+ * Drop the unit unless the converted rate is a finite, non-negative number.
  */
 const usdPerTokenToPerMillion = (value: number | string | undefined): number | undefined => {
-  if (value === undefined || value === null || value === '') return undefined;
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string' && value.trim() === '') return undefined;
   const n = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(n)) return undefined;
-  return n * 1e6;
+  const perMillion = n * 1e6;
+  if (!Number.isFinite(perMillion) || perMillion < 0) return undefined;
+  return perMillion;
 };
 
 const mapSambaNovaModel = (model: SambaNovaModelCard) => {

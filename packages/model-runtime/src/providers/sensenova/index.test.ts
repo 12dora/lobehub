@@ -69,6 +69,44 @@ describe('mapSenseNovaModel', () => {
     expect(mapped).not.toHaveProperty('video');
     expect(mapped).not.toHaveProperty('pricing');
   });
+
+  it('leaves omitted capability containers open to fallbacks', () => {
+    const unmapped = mapSenseNovaModel({
+      id: 'new-sensenova-model',
+      name: 'New SenseNova',
+    });
+
+    expect(unmapped.functionCall).toBeUndefined();
+    expect(unmapped.imageOutput).toBeUndefined();
+    expect(unmapped.reasoning).toBeUndefined();
+    expect(unmapped.structuredOutput).toBeUndefined();
+    expect(unmapped.vision).toBeUndefined();
+
+    const withBank = mapSenseNovaModel({ id: 'new-sensenova-model', name: 'New SenseNova' }, {
+      abilities: { functionCall: true, imageOutput: true, reasoning: true, vision: true },
+      id: 'new-sensenova-model',
+    } as any);
+
+    expect(withBank.functionCall).toBe(true);
+    expect(withBank.imageOutput).toBe(true);
+    expect(withBank.reasoning).toBe(true);
+    expect(withBank.vision).toBe(true);
+  });
+
+  it('treats empty capability arrays as authoritative negatives', () => {
+    const mapped = mapSenseNovaModel({
+      id: 'empty-caps',
+      input_modalities: [],
+      output_modalities: [],
+      supported_features: [],
+    });
+
+    expect(mapped.functionCall).toBe(false);
+    expect(mapped.imageOutput).toBe(false);
+    expect(mapped.reasoning).toBe(false);
+    expect(mapped.structuredOutput).toBe(false);
+    expect(mapped.vision).toBe(false);
+  });
 });
 
 describe('LobeSenseNovaAI models', () => {

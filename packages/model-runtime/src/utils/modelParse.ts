@@ -6,6 +6,8 @@ import type {
   AiModelType,
   ExtendParamsType,
   LobeDefaultAiModelListItem,
+  ModelParamsSchema,
+  Pricing,
 } from 'model-bank';
 import { AiModelTypeSchema, ModelProvider } from 'model-bank';
 
@@ -366,7 +368,7 @@ const formatTimestampToDate = (timestamp: number): string | undefined => {
  * @param knownModel Known model configuration
  * @returns Processed releasedAt value
  */
-const processReleasedAt = (model: any, knownModel?: any): string | undefined => {
+const processReleasedAt = (model: ProcessableModelCard, knownModel?: any): string | undefined => {
   // Check model.created first
   if (model.created !== undefined && model.created !== null) {
     // Check if it's in timestamp format
@@ -527,7 +529,7 @@ const getModelLocalEnableConfig = (
  * Common logic for processing model cards
  */
 const processModelCard = (
-  model: { [key: string]: any; id: string },
+  model: ProcessableModelCard,
   config: ModelProcessorConfig,
   knownModel?: any,
   options?: { includeKnownExtendParams?: boolean; includeSearchSettings?: boolean },
@@ -683,12 +685,37 @@ const processModelCard = (
  * @returns Processed model card list
  */
 /**
- * What a provider's `models()` may hand these processors: the upstream id, plus any of the fields
- * `processModelCard` knows how to read. Declaring it as `{ id: string }` — which is what both
- * entry points used to say — made the richer contract invisible, so providers kept mapping into
- * field names nothing consumes and the loss was silent.
+ * What a provider's `models()` may hand these processors: the upstream id, plus the fields
+ * `processModelCard` actually reads. Extra keys are rejected on object literals so a typo
+ * like `maxTokens` (the Higress bug) cannot compile into a silent `maxOutput: undefined`.
  */
-export type ProcessableModelCard = { [key: string]: any; id: string };
+export interface ProcessableModelCard {
+  contextWindowTokens?: number;
+  created?: number | string;
+  description?: string;
+  displayName?: string;
+  enabled?: boolean;
+  functionCall?: boolean;
+  id: string;
+  imageOutput?: boolean;
+  maxOutput?: number;
+  parameters?: ModelParamsSchema;
+  pricing?: {
+    cachedInput?: number;
+    currency?: 'CNY' | 'USD';
+    input?: number;
+    output?: number;
+    units?: Pricing['units'];
+    writeCacheInput?: number;
+  };
+  reasoning?: boolean;
+  releasedAt?: string;
+  search?: boolean;
+  settings?: AiModelSettings;
+  type?: string;
+  video?: boolean;
+  vision?: boolean;
+}
 
 export const processModelList = async (
   modelList: ProcessableModelCard[],

@@ -204,6 +204,32 @@ describe('LobeLMStudioAI - custom features', () => {
       expect(Array.isArray(models)).toBe(true);
     });
 
+    const hangUntilAborted = (init?: RequestInit) =>
+      new Promise<never>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return;
+        const abort = () => {
+          const error = new Error('The operation was aborted.');
+          error.name = 'AbortError';
+          reject(error);
+        };
+        if (signal.aborted) {
+          abort();
+          return;
+        }
+        signal.addEventListener('abort', abort, { once: true });
+      });
+
+    const openaiCompatibleClient = (id = 'legacy-local-model') => ({
+      apiKey: 'placeholder-to-avoid-error',
+      baseURL: 'http://127.0.0.1:1234/v1',
+      models: {
+        list: vi.fn().mockResolvedValue({
+          data: [{ id }],
+        }),
+      },
+    });
+
     it('should fall back to OpenAI-compatible /v1/models on native 404', async () => {
       const mockClient = {
         apiKey: 'placeholder-to-avoid-error',
@@ -223,6 +249,38 @@ describe('LobeLMStudioAI - custom features', () => {
       );
       expect(mockClient.models.list).toHaveBeenCalled();
       expect(models.map((m) => m.id)).toEqual(['legacy-local-model']);
+    });
+
+    it('should fall back to /v1/models on a non-404 native failure', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+
+      const mockClient = openaiCompatibleClient();
+      const models = await params.models!({ client: mockClient as any });
+
+      expect(mockClient.models.list).toHaveBeenCalled();
+      expect(models.map((m) => m.id)).toEqual(['legacy-local-model']);
+    });
+
+    it('should fall back to /v1/models when the native request never completes', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      global.fetch = vi.fn((_url, init) => hangUntilAborted(init as RequestInit));
+
+      const mockClient = openaiCompatibleClient();
+
+      try {
+        const pending = params.models!({ client: mockClient as any });
+        await vi.advanceTimersByTimeAsync(10_000);
+        const models = await pending;
+
+        expect(mockClient.models.list).toHaveBeenCalled();
+        expect(models.map((m) => m.id)).toEqual(['legacy-local-model']);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('should map documented native /api/v1/models fields', async () => {

@@ -2,12 +2,16 @@ import { ModelProvider } from 'model-bank';
 
 import type { OpenAICompatibleFactoryOptions } from '../../core/openaiCompatibleFactory';
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
+import { composeAbortSignal } from '../../utils/fetchTransport';
 import { processMultiProviderModelList } from '../../utils/modelParse';
 
-/** OpenAI-compatible `/v1/models` item — id only. Used on the 404 fallback. */
+/** OpenAI-compatible `/v1/models` item — id only. Used when the native path fails. */
 export interface LMStudioModelCard {
   id: string;
 }
+
+/** Native REST is a local nicety; a hang must not stall discovery. */
+const NATIVE_MODELS_FETCH_TIMEOUT_MS = 10_000;
 
 /**
  * Native `GET /api/v1/models` item (LM Studio 0.4.0+).
@@ -64,31 +68,39 @@ const mapNativeLmStudioModel = (model: LMStudioNativeModel) => {
   };
 };
 
-const fetchNativeLmStudioModels = async (client: {
-  // The OpenAI client types `apiKey` as nullable; LM Studio ignores it anyway (the placeholder
-  // above exists only so the SDK constructs), so accept both and send the header only when set.
-  apiKey?: string | null;
-  baseURL?: string;
-}): Promise<LMStudioNativeModel[] | 'fallback'> => {
-  const response = await fetch(resolveLmStudioNativeModelsUrl(client.baseURL), {
-    headers: {
-      Accept: 'application/json',
-      ...(client.apiKey ? { Authorization: `Bearer ${client.apiKey}` } : {}),
-    },
-    method: 'GET',
-  });
+const fetchNativeLmStudioModels = async (
+  client: {
+    // The OpenAI client types `apiKey` as nullable; LM Studio ignores it anyway (the placeholder
+    // above exists only so the SDK constructs), so accept both and send the header only when set.
+    apiKey?: string | null;
+    baseURL?: string;
+  },
+  signal?: AbortSignal,
+): Promise<LMStudioNativeModel[] | 'fallback'> => {
+  const abort = composeAbortSignal(signal, NATIVE_MODELS_FETCH_TIMEOUT_MS);
 
-  // Native REST shipped in 0.4.0; older installs 404 and must keep using /v1/models.
-  if (response.status === 404) return 'fallback';
+  try {
+    const response = await fetch(resolveLmStudioNativeModelsUrl(client.baseURL), {
+      headers: {
+        Accept: 'application/json',
+        ...(client.apiKey ? { Authorization: `Bearer ${client.apiKey}` } : {}),
+      },
+      method: 'GET',
+      signal: abort.signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(
-      `LM Studio native models API failed: ${response.status} ${response.statusText}`,
-    );
+    // Native REST shipped in 0.4.0. Any failure — 404, 5xx, refused, hang, or a
+    // body that is not `{ models: [...] }` — must keep using /v1/models so
+    // discovery is never worse than before the native path existed.
+    if (!response.ok) return 'fallback';
+
+    const body = (await response.json()) as { models?: LMStudioNativeModel[] };
+    return Array.isArray(body?.models) ? body.models : 'fallback';
+  } catch {
+    return 'fallback';
+  } finally {
+    abort.cleanup();
   }
-
-  const body = (await response.json()) as { models?: LMStudioNativeModel[] };
-  return Array.isArray(body.models) ? body.models : [];
 };
 
 export const params = {

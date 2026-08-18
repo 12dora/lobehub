@@ -1,3 +1,4 @@
+import type { ExtendParamsType } from 'model-bank';
 import { ModelProvider } from 'model-bank';
 
 import type { OpenAICompatibleFactoryOptions } from '../../core/openaiCompatibleFactory';
@@ -156,11 +157,12 @@ export const params = {
         },
         reasoning: hasReasoning,
         releasedAt: new Date(model.created * 1000).toISOString().split('T')[0],
-        video: outputModalities.includes('video') ? true : undefined,
+        // `video` / `vision` gate uploads (input). Image generation is `imageOutput`.
+        video: inputModalities.includes('video') ? true : undefined,
         vision: inputModalities.includes('image'),
         // Merge all applicable extendParams for settings
         ...(() => {
-          const extendParams: string[] = [];
+          const extendParams: ExtendParamsType[] = [];
           if (model.description && model.description.includes('`reasoning` `enabled`')) {
             extendParams.push('enableReasoning');
           }

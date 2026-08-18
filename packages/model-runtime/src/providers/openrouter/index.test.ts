@@ -1297,7 +1297,7 @@ describe('LobeOpenRouterAI - custom features', () => {
       expect(nullMaxOutputModel?.maxOutput).toBeUndefined();
     });
 
-    it('maps documented output_modalities to imageOutput and video', async () => {
+    it('maps imageOutput from output_modalities and video from input_modalities', async () => {
       const mockModels = [
         {
           id: 'acme/canvas-out',
@@ -1341,6 +1341,27 @@ describe('LobeOpenRouterAI - custom features', () => {
           },
           supported_parameters: [],
         },
+        {
+          id: 'acme/clip-in',
+          canonical_slug: 'acme/clip-in',
+          name: 'Clip In Model',
+          created: 1679587200,
+          context_length: 8192,
+          architecture: {
+            modality: 'text+video->text',
+            input_modalities: ['text', 'video'],
+            output_modalities: ['text'],
+            tokenizer: 'default',
+            instruct_type: null,
+          },
+          pricing: { prompt: '0.00001', completion: '0.00002' },
+          top_provider: {
+            context_length: 8192,
+            max_completion_tokens: 4096,
+            is_moderated: false,
+          },
+          supported_parameters: [],
+        },
       ];
 
       vi.stubGlobal(
@@ -1353,12 +1374,16 @@ describe('LobeOpenRouterAI - custom features', () => {
 
       const models = await params.models();
       const imageModel = models.find((m) => m.id === 'acme/canvas-out');
-      const videoModel = models.find((m) => m.id === 'acme/clip-out');
+      const videoOutModel = models.find((m) => m.id === 'acme/clip-out');
+      const videoInModel = models.find((m) => m.id === 'acme/clip-in');
 
       expect(imageModel?.imageOutput).toBe(true);
       expect(imageModel?.video).toBe(false);
-      expect(videoModel?.video).toBe(true);
-      expect(videoModel?.imageOutput).toBe(false);
+      // text-in / video-out is not a video-upload model
+      expect(videoOutModel?.video).toBe(false);
+      expect(videoOutModel?.imageOutput).toBe(false);
+      expect(videoInModel?.video).toBe(true);
+      expect(videoInModel?.imageOutput).toBe(false);
     });
 
     it('should format releasedAt from created timestamp', async () => {

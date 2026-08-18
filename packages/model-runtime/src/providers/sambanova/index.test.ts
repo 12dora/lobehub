@@ -93,4 +93,34 @@ describe('LobeSambaNovaAI - models mapping', () => {
     expect(model).not.toHaveProperty('functionCall', true);
     expect(model).not.toMatchObject({ vision: true });
   });
+
+  it('should drop blank, negative and overflowing price strings', async () => {
+    const mockClient = {
+      models: {
+        list: vi.fn().mockResolvedValue({
+          data: [
+            {
+              id: 'blank-and-negative',
+              pricing: { completion: '-0.000001', prompt: ' ' },
+            },
+            {
+              id: 'overflow-price',
+              pricing: { completion: '1e308', prompt: '1e308' },
+            },
+          ],
+        }),
+      },
+    };
+
+    const models = await params.models!({ client: mockClient as any });
+    const blank = models.find((m) => m.id === 'blank-and-negative');
+    const overflow = models.find((m) => m.id === 'overflow-price');
+
+    expect(blank?.pricing).toBeUndefined();
+    expect(overflow?.pricing).toBeUndefined();
+    expect(fixedRate(blank?.pricing?.units, 'textInput')).toBeUndefined();
+    expect(fixedRate(blank?.pricing?.units, 'textOutput')).toBeUndefined();
+    expect(fixedRate(overflow?.pricing?.units, 'textInput')).toBeUndefined();
+    expect(fixedRate(overflow?.pricing?.units, 'textOutput')).toBeUndefined();
+  });
 });

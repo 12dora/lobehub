@@ -197,12 +197,13 @@ export class LobeCloudflareAI implements LobeRuntimeAI {
           (m) => model.name.toLowerCase() === m.id.toLowerCase(),
         );
 
-        const maxTotalTokens = cloudflareProperty(model.properties, 'max_total_tokens');
-
         return {
-          contextWindowTokens: maxTotalTokens
-            ? Number(maxTotalTokens)
-            : (knownModel?.contextWindowTokens ?? undefined),
+          // Cloudflare's OpenAPI types each result item as unknown and documents
+          // no `property_id` names. Only `beta` is read — it is the id already
+          // present on the in-repo fixture that proved the array shape.
+          // Ungrounded ids (`max_total_tokens`, `function_calling`) stay
+          // unmapped so model-bank / keyword fallbacks decide.
+          contextWindowTokens: knownModel?.contextWindowTokens ?? undefined,
           description: model.description,
           displayName:
             knownModel?.displayName ??
@@ -212,7 +213,6 @@ export class LobeCloudflareAI implements LobeRuntimeAI {
           enabled: knownModel?.enabled || false,
           functionCall:
             model.description.toLowerCase().includes('function call') ||
-            cloudflareProperty(model.properties, 'function_calling') === 'true' ||
             knownModel?.abilities?.functionCall ||
             false,
           id: model.name,

@@ -1,6 +1,9 @@
 // @vitest-environment node
+import type { ModelTokensUsage } from '@lobechat/types';
+import type { Pricing } from 'model-bank';
 import { describe, expect, it } from 'vitest';
 
+import { computeChatCost } from '../../core/usageConverters/utils/computeChatCost';
 import { mapXAIModel } from './mapXAIModel';
 
 // Verbatim examples from https://docs.x.ai/developers/rest-api-reference/inference/models
@@ -68,7 +71,7 @@ describe('mapXAIModel', () => {
             name: 'textInput',
             strategy: 'tiered',
             tiers: [
-              { rate: 2, upTo: 128_000 },
+              { rate: 2, upTo: 127_999 },
               { rate: 4, upTo: 'infinity' },
             ],
             unit: 'millionTokens',
@@ -77,7 +80,7 @@ describe('mapXAIModel', () => {
             name: 'textOutput',
             strategy: 'tiered',
             tiers: [
-              { rate: 8, upTo: 128_000 },
+              { rate: 8, upTo: 127_999 },
               { rate: 16, upTo: 'infinity' },
             ],
             unit: 'millionTokens',
@@ -86,7 +89,7 @@ describe('mapXAIModel', () => {
             name: 'textInput_cacheRead',
             strategy: 'tiered',
             tiers: [
-              { rate: 0.2, upTo: 128_000 },
+              { rate: 0.2, upTo: 127_999 },
               { rate: 0.2, upTo: 'infinity' },
             ],
             unit: 'millionTokens',
@@ -103,6 +106,26 @@ describe('mapXAIModel', () => {
       id: 'grok-imagine-image',
       pricing: undefined,
     });
+  });
+
+  it('charges the long-context rate at or above the documented threshold', () => {
+    const mapped = mapXAIModel(documentedXAIModels[1]);
+    const pricing = mapped.pricing as Pricing;
+    const threshold = 128_000;
+
+    const usageAt = (inputTokens: number): ModelTokensUsage => ({
+      inputTextTokens: inputTokens,
+      totalInputTokens: inputTokens,
+    });
+
+    const inputRate = (inputTokens: number) => {
+      const result = computeChatCost(pricing, usageAt(inputTokens));
+      return result?.breakdown.find((item) => item.unit.name === 'textInput')?.segments?.[0]?.rate;
+    };
+
+    expect(inputRate(threshold - 1)).toBe(2);
+    expect(inputRate(threshold)).toBe(4);
+    expect(inputRate(threshold + 1)).toBe(4);
   });
 
   it('does not treat a zero long_context_threshold as a long-context tier', () => {

@@ -2,6 +2,7 @@ import { ModelProvider } from 'model-bank';
 
 import type { OpenAICompatibleFactoryOptions } from '../../core/openaiCompatibleFactory';
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
+import { composeAbortSignal } from '../../utils/fetchTransport';
 import { processMultiProviderModelList } from '../../utils/modelParse';
 
 const DEFAULT_CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
@@ -43,15 +44,21 @@ export interface CerebrasPublicModel {
   };
 }
 
+/** Public catalog is enrichment only; a hang must not stall the authenticated list. */
+const PUBLIC_CATALOG_FETCH_TIMEOUT_MS = 10_000;
+
 /**
  * Default Cerebras format: USD per single token. formatPricing expects
  * USD per million tokens, so × 1e6. 0.00000099 × 1e6 = 0.99.
+ * Drop the unit unless the converted rate is a finite, non-negative number.
  */
 const usdPerTokenToPerMillion = (value: number | string | undefined): number | undefined => {
-  if (value === undefined || value === null || value === '') return undefined;
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string' && value.trim() === '') return undefined;
   const n = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(n)) return undefined;
-  return n * 1e6;
+  const perMillion = n * 1e6;
+  if (!Number.isFinite(perMillion) || perMillion < 0) return undefined;
+  return perMillion;
 };
 
 const optionalBool = (value: boolean | undefined) =>
@@ -75,11 +82,15 @@ const mapCerebrasPublicEnrichment = (pub: CerebrasPublicModel) => {
 
 const loadCerebrasPublicCatalog = async (
   baseURL?: string,
+  signal?: AbortSignal,
 ): Promise<Map<string, CerebrasPublicModel>> => {
   const catalog = new Map<string, CerebrasPublicModel>();
+  const abort = composeAbortSignal(signal, PUBLIC_CATALOG_FETCH_TIMEOUT_MS);
 
   try {
-    const response = await fetch(resolveCerebrasPublicModelsUrl(baseURL));
+    const response = await fetch(resolveCerebrasPublicModelsUrl(baseURL), {
+      signal: abort.signal,
+    });
     if (!response.ok) return catalog;
 
     const body = (await response.json()) as
@@ -90,7 +101,9 @@ const loadCerebrasPublicCatalog = async (
       if (item?.id) catalog.set(item.id, item);
     }
   } catch {
-    // Public list is enrichment only; a failure must not fail /v1/models.
+    // Public list is enrichment only; a failure or timeout must not fail /v1/models.
+  } finally {
+    abort.cleanup();
   }
 
   return catalog;

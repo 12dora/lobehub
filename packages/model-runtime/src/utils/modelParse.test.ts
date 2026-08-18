@@ -1,10 +1,12 @@
 import type { ChatModelCard } from '@lobechat/types';
+import type { Pricing } from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   detectModelProvider,
   MODEL_LIST_CONFIGS,
   MODEL_OWNER_DETECTION_CONFIG,
+  type ProcessableModelCard,
   processModelList,
   processMultiProviderModelList,
 } from './modelParse';
@@ -214,7 +216,9 @@ describe('modelParse', () => {
     });
 
     it('carries an explicit currency through the units door', async () => {
-      const units = [{ name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' }];
+      const units: Pricing['units'] = [
+        { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
+      ];
       const result = await processModelList(
         [{ id: 'cny-units', pricing: { currency: 'CNY', units } }],
         MODEL_LIST_CONFIGS.openai,
@@ -508,7 +512,7 @@ describe('modelParse', () => {
       });
 
       it('should merge extendParams from known and remote models while preserving uniqueness', async () => {
-        const modelList = [
+        const modelList: ProcessableModelCard[] = [
           {
             id: 'model-known-settings',
             settings: {
@@ -535,7 +539,10 @@ describe('modelParse', () => {
         { id: 'claude-3-opus' }, // anthropic
         { id: 'gemini-pro' }, // google
         { id: 'qwen-turbo' }, // qwen
-        { id: 'comfyui/flux-dev', parameters: { width: 1024, height: 1024 } }, // comfyui
+        {
+          id: 'comfyui/flux-dev',
+          parameters: { prompt: { default: '' }, width: { default: 1024, max: 2048, min: 512 } },
+        }, // comfyui
       ];
 
       const result = await processMultiProviderModelList(modelList);

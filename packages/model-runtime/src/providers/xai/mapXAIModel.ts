@@ -56,11 +56,14 @@ const pushTieredUnit = (
 ) => {
   if (typeof standard !== 'number' || typeof longRate !== 'number') return;
 
+  // xAI applies long-context rates at or above the threshold. computeChatCost
+  // matches a tier with `quantity <= upTo`, so the standard band must end at
+  // threshold - 1 or the exact-threshold request is undercharged 2×.
   units.push({
     name,
     strategy: 'tiered',
     tiers: [
-      { rate: standard, upTo: threshold },
+      { rate: standard, upTo: threshold - 1 },
       { rate: longRate, upTo: 'infinity' },
     ],
     unit: 'millionTokens',
