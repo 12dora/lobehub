@@ -6,33 +6,52 @@
 
 </div>
 
-把开源的 LobeHub 变成一套**开箱即用的企业 AI 平台**：自带管理面板和用户管理，支持**钉钉扫码登录**与 **Authentik / 通用 OIDC 单点登录**，额外接入 **ChatGPT 网页版**等服务商并可全员共享一个账号，品牌名称与颜色随你定制，所有管理操作**全程留痕可审计**。一条 `docker compose up -d` 就能私有部署，Docker 镜像同时支持 x86-64 与 ARM（含 Apple 芯片）。
+把开源的 LobeHub 变成一套**开箱即用的企业 AI 平台**：自带管理面板和用户管理，支持**钉钉扫码登录**与 **Authentik / 通用 OIDC 单点登录**，额外接入 **ChatGPT 网页版、Grok、Cursor** 等服务商并可全员共享一个账号，品牌名称与颜色随你定制，所有管理操作**全程留痕可审计**。一条 `docker compose up -d` 就能私有部署，Docker 镜像同时支持 x86-64 与 ARM（含 Apple 芯片）。
 
 > 本项目是社区维护的非官方分支，**与 LobeHub LLC 无关，也未获其背书或支持**。它基于 [lobehub/lobehub](https://github.com/lobehub/lobehub) 二次开发，按 LobeHub Community License 分发（见 [LICENSE](./LICENSE)）。“LobeHub” 是 LobeHub LLC 的商标，此处仅用于说明上游项目。
 
-|          |                                              |          |                                   |
-| -------- | -------------------------------------------- | -------- | --------------------------------- |
-| 代码仓库 | `https://github.com/12dora/lobehub-enhanced` | 容器镜像 | `ghcr.io/12dora/lobehub-enhanced` |
-| 当前版本 | `v1.0.0`                                     | 上游基线 | `lobehub/lobehub` v2.2.10         |
+|          |                                              |          |                                                  |
+| -------- | -------------------------------------------- | -------- | ------------------------------------------------ |
+| 代码仓库 | `https://github.com/12dora/lobehub-enhanced` | 容器镜像 | `ghcr.io/12dora/lobehub-enhanced`                |
+| 当前版本 | `v1.0.0`                                     | 上游基线 | `lobehub/lobehub` v2.2.10（已吸收 v2.2.13 更新） |
 
 ## 新增功能
 
-所有增强功能**默认开启**，需要时可用环境变量逐项关闭（见下文）。
+所有增强功能**默认开启**，可以在管理面板「系统 → 模块」在线开关，也可以用环境变量逐项关闭（见下文）。
 
-| 新增功能                               | 支持 | 新增功能                               | 支持 |
-| -------------------------------------- | :--: | -------------------------------------- | :--: |
-| 管理面板（`/admin`）                   |  ✓   | 用户管理（角色、封禁、会话、删除）     |  ✓   |
-| 钉钉扫码登录（企业白名单）             |  ✓   | Authentik / 通用 OIDC 单点登录         |  ✓   |
-| 登录方式向导（测试、发布、回滚）       |  ✓   | 开放注册 + 邮箱域名白名单              |  ✓   |
-| ChatGPT 网页版服务商                   |  ✓   | 共享平台账号（成员无需各自登录）       |  ✓   |
-| AI 服务商与模型统一管理                |  ✓   | 平台助理（全员下发、灰度发布）         |  ✓   |
-| 技能与连接器治理                       |  ✓   | 共享 OAuth 连接器授权                  |  ✓   |
-| 设置策略（默认值 / 锁定）              |  ✓   | 侧边栏布局管控                         |  ✓   |
-| 任务模板（首页推荐可增删改、拖拽排序） |  ✓   | 品牌自定义（名称、Logo、主色）         |  ✓   |
-| 操作日志与实时查看                     |  ✓   | 会话历史、证据导出、法律保全、数据保留 |  ✓   |
-| 数据统计与活跃度热力图                 |  ✓   | 状态监控（服务实例、后台任务）         |  ✓   |
-| 平台密钥信封加密（主密钥 / Vault）     |  ✓   | 关闭遥测上报                           |  ✓   |
-| 首个管理员容器内自动引导               |  ✓   | 多架构镜像（linux/amd64、linux/arm64） |  ✓   |
+**登录与账号**
+
+- 钉钉扫码登录：扫码即入，企业白名单，只有白名单企业的成员才能登录
+- Authentik / 通用 OIDC 单点登录，登录方式向导带你完成配置、测试、发布与回滚
+- 两步验证（TOTP 验证器）与通行密钥（Passkey）登录；管理员可为本地账号重置密码、清除两步验证（SSO 账号的认证因子仍归 IdP 管）
+- 开放注册 + 邮箱域名白名单
+- 用户管理：角色、封禁、会话、删除，全部在管理面板（`/admin`）完成
+
+**AI 服务商**
+
+- 共享账号服务商：**ChatGPT 网页版、Grok（SuperGrok / X Premium 订阅）、Grok Build（CLI 代理）、Cursor** —— 管理员授权一次平台账号，全员直接用，无需人手一份 API Key
+- 80+ 服务商与模型统一管理，模型列表可从上游一键同步
+- 平台助理：全员下发、灰度发布
+- 技能与连接器治理，连接器支持共享 OAuth 授权
+
+**管控与审计**
+
+- 操作日志与实时查看；会话历史、证据导出、法律保全、数据保留
+- 内容审计：关键词 + LLM 裁判，按内容类别配置阻断 / 降级 / 仅记录
+- 设置策略（默认值 / 锁定）与侧边栏布局管控
+- 网络代理：内置代理引擎，按作用域决定哪些出站流量走代理
+- 遥测上报已彻底移除
+
+**运营与品牌**
+
+- 品牌自定义：名称、Logo、主色，一直覆盖到启动画面
+- 任务模板库：面向制造业场景的首页任务推荐，可增删改、拖拽排序
+
+**部署与性能**
+
+- 24 个功能模块按需启停：`LOBE_MODULE_PRESET=minimal|standard|full` 三档预设，或在管理页逐个开关
+- 从完整栈到「一个容器 + 一个数据库」的最小部署，见下文[部署形态](#部署形态)
+- 两轮性能优化实测：空闲 CPU 约 1.5% 降至约 0.1%，启动内存约 500 MB 降至约 240 MB，空闲数据库往返减少约 80%，首屏 JS 从 33.8 MB 降至约 25 MB
 
 ## 截图
 
@@ -83,9 +102,19 @@ docker compose logs app | grep -i bootstrap
 | `PLATFORM_MASTER_KEY`         | 平台密钥的主密钥（base64，32 字节）。**务必备份**，丢失后已存的服务商 / 连接器 / 登录方式密钥无法解密 |
 | `BOOTSTRAP_SUPER_ADMIN_EMAIL` | 首个管理员邮箱；配合 `BOOTSTRAP_ALLOW_CREATE=1` 自动创建                                              |
 
-增强功能默认全部开启；如需关闭某项，把对应变量设为 `0`：`ENABLE_PLATFORM_ADMIN`（管理面板）、`ENABLE_PLATFORM_MANAGED_AI`、`ENABLE_PLATFORM_MANAGED_SKILLS`、`ENABLE_PLATFORM_MANAGED_CONNECTORS`、`ENABLE_PLATFORM_MANAGED_AGENTS`、`ENABLE_PLATFORM_SETTINGS_POLICY`、`ENABLE_RUNTIME_BRANDING`、`ENABLE_DATABASE_OIDC`。使用数据库配置的登录方式时请保持 `AUTH_SSO_PROVIDERS` 为空。
+增强功能默认全部开启；如需关闭某项，可在管理面板「系统 → 模块」在线开关，或把对应变量设为 `0`：`ENABLE_PLATFORM_ADMIN`（管理面板）、`ENABLE_PLATFORM_MANAGED_AI`、`ENABLE_PLATFORM_MANAGED_SKILLS`、`ENABLE_PLATFORM_MANAGED_CONNECTORS`、`ENABLE_PLATFORM_MANAGED_AGENTS`、`ENABLE_PLATFORM_SETTINGS_POLICY`、`ENABLE_RUNTIME_BRANDING`、`ENABLE_DATABASE_OIDC`。使用数据库配置的登录方式时请保持 `AUTH_SSO_PROVIDERS` 为空。
 
-**更小的部署**：`docker compose up -d` 仍是今天的栈（app + ParadeDB + Redis + 对象存储）。SearXNG 用 `docker compose --profile search up -d` 另加；只要数据库时用 `docker compose -f docker-compose.minimal.yml up -d`。模块预设 `LOBE_MODULE_PRESET=minimal|standard|full`（默认 full，只关不开）。堆上限 `LOBE_NODE_HEAP_MB` 由 compose 注入 1536（裸 `docker run` 不设则不封顶），见 [`docs/enterprise/modules.md`](./docs/enterprise/modules.md)。
+### 部署形态
+
+同一个镜像，从完整栈到「一个容器 + 一个数据库」按机器选择：
+
+| 启动命令                                             | 边车                        | 适用                                            |
+| ---------------------------------------------------- | --------------------------- | ----------------------------------------------- |
+| `docker compose up -d`                               | ParadeDB + Redis + 对象存储 | 默认完整栈（4 核 / 8 GiB 起）                   |
+| `docker compose --profile search up -d`              | 另加 SearXNG                | 需要内置联网搜索                                |
+| `docker compose -f docker-compose.minimal.yml up -d` | 仅 ParadeDB                 | 小机器（1–2 核 / 2–4 GiB），搭配 `minimal` 预设 |
+
+24 个功能模块由 `LOBE_MODULE_PRESET=minimal|standard|full` 三档预设决定默认启停（默认 `full`，即今天的完整行为），单个模块可在管理页「系统 → 模块」或用 `LOBE_MODULES_DISABLED` 覆盖。Node 堆上限 `LOBE_NODE_HEAP_MB` 由 compose 注入 1536（裸 `docker run` 不设则不封顶）。各模块的内存 / 后台任务开销与实测数据见 [`docs/enterprise/modules.md`](./docs/enterprise/modules.md)。
 
 升级：`docker compose pull && docker compose up -d`（迁移自动执行）。镜像标签：`latest`、`1.0`、`1.0.0`，支持 `linux/amd64` 与 `linux/arm64`（Apple 芯片的 Mac 通过 Docker Desktop 直接使用 arm64 镜像）。完整示例见 [`docker-compose/enhanced/`](./docker-compose/enhanced/)。
 

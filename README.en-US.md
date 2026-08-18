@@ -6,33 +6,52 @@
 
 </div>
 
-Turns open-source LobeHub into a **ready-to-run enterprise AI platform**: an admin console with user management, **DingTalk QR sign-in** and **Authentik / generic OIDC single sign-on**, extra providers such as **ChatGPT Web** with one account shared by the whole team, your own brand name and colours, and a **full audit trail** of every admin action. Deploy privately with one `docker compose up -d`; the image ships for x86-64 and ARM (Apple Silicon included).
+Turns open-source LobeHub into a **ready-to-run enterprise AI platform**: an admin console with user management, **DingTalk QR sign-in** and **Authentik / generic OIDC single sign-on**, extra providers such as **ChatGPT Web, Grok and Cursor** with one account shared by the whole team, your own brand name and colours, and a **full audit trail** of every admin action. Deploy privately with one `docker compose up -d`; the image ships for x86-64 and ARM (Apple Silicon included).
 
 > Unofficial community fork — **not affiliated with, endorsed by, or supported by LobeHub LLC**. It is a derivative work of [lobehub/lobehub](https://github.com/lobehub/lobehub), distributed under the LobeHub Community License (see [LICENSE](./LICENSE)). "LobeHub" is a trademark of LobeHub LLC and is used only to identify the upstream project.
 
-|                 |                                              |               |                                   |
-| --------------- | -------------------------------------------- | ------------- | --------------------------------- |
-| Repository      | `https://github.com/12dora/lobehub-enhanced` | Image         | `ghcr.io/12dora/lobehub-enhanced` |
-| Current version | `v1.0.0`                                     | Upstream base | `lobehub/lobehub` v2.2.10         |
+|                 |                                              |               |                                                      |
+| --------------- | -------------------------------------------- | ------------- | ---------------------------------------------------- |
+| Repository      | `https://github.com/12dora/lobehub-enhanced` | Image         | `ghcr.io/12dora/lobehub-enhanced`                    |
+| Current version | `v1.0.0`                                     | Upstream base | `lobehub/lobehub` v2.2.10 (v2.2.13 changes absorbed) |
 
 ## What is added
 
-Every enhancement is **on by default**; each can be switched off with an environment variable (see below).
+Every enhancement is **on by default**; each can be toggled live in the admin console under **System → Modules**, or switched off with an environment variable (see below).
 
-| Feature                                           | Supported | Feature                                                 | Supported |
-| ------------------------------------------------- | :-------: | ------------------------------------------------------- | :-------: |
-| Admin console (`/admin`)                          |     ✓     | User management (roles, ban, sessions, delete)          |     ✓     |
-| DingTalk QR sign-in (organisation allowlist)      |     ✓     | Authentik / generic OIDC single sign-on                 |     ✓     |
-| Login-method wizard (test, publish, roll back)    |     ✓     | Open registration + email-domain allowlist              |     ✓     |
-| ChatGPT Web provider                              |     ✓     | Shared platform account (members need not sign in)      |     ✓     |
-| Central AI provider & model management            |     ✓     | Platform assistants (pushed to everyone, staged)        |     ✓     |
-| Skills & connectors governance                    |     ✓     | Shared OAuth connector accounts                         |     ✓     |
-| Settings policies (defaults / locks)              |     ✓     | Sidebar layout control                                  |     ✓     |
-| Task templates (home recommendations, drag-sort)  |     ✓     | Branding (name, logo, primary colour)                   |     ✓     |
-| Operation logs & live view                        |     ✓     | Session history, evidence export, legal hold, retention |     ✓     |
-| Statistics & activity heatmap                     |     ✓     | Status monitoring (instances, background jobs)          |     ✓     |
-| Envelope-encrypted platform secrets (key / Vault) |     ✓     | Telemetry disabled                                      |     ✓     |
-| First admin bootstrapped inside the container     |     ✓     | Multi-arch image (linux/amd64, linux/arm64)             |     ✓     |
+**Sign-in & accounts**
+
+- DingTalk QR sign-in with an organisation allowlist — only members of allow-listed organisations get in
+- Authentik / generic OIDC single sign-on; a login-method wizard walks through configuration, test, publish and rollback
+- Two-step verification (TOTP authenticator) and passkey (WebAuthn) sign-in; admins can reset a local account's password or clear its second factor (SSO accounts keep their factors at the IdP)
+- Open registration with an email-domain allowlist
+- User management — roles, bans, sessions, deletion — all from the admin console (`/admin`)
+
+**AI providers**
+
+- Shared-account providers: **ChatGPT Web, Grok (SuperGrok / X Premium subscription), Grok Build (CLI proxy) and Cursor** — an admin authorises the platform account once and the whole team uses it, no per-user API keys
+- 80+ providers and their models managed centrally; model lists sync from upstream in one click
+- Platform assistants pushed to everyone, with staged rollout
+- Skills and connectors governance, including shared OAuth connector accounts
+
+**Governance & audit**
+
+- Operation logs with live view; session history, evidence export, legal hold, data retention
+- Content moderation: keyword rules plus an LLM judge, with block / degrade / log-only policies per content category
+- Settings policies (defaults / locks) and sidebar layout control
+- Network proxy: a built-in proxy engine with per-scope rules for which outbound traffic goes through it
+- Telemetry removed entirely
+
+**Operations & branding**
+
+- Branding — name, logo, primary colour — all the way down to the boot splash screen
+- Task template library: manufacturing-oriented home-page task recommendations, editable and drag-sortable
+
+**Deployment & performance**
+
+- 24 feature modules that start only when you want them: `LOBE_MODULE_PRESET=minimal|standard|full` presets, or per-module toggles in the admin console
+- Scales from the full stack down to "one container plus one database" — see [Deployment options](#deployment-options) below
+- Two optimisation waves, measured: idle CPU from \~1.5% to \~0.1%, boot memory from \~500 MB to \~240 MB, idle database round-trips down \~80%, first-screen JS from 33.8 MB to \~25 MB
 
 ## Screenshots
 
@@ -83,7 +102,19 @@ docker compose logs app | grep -i bootstrap
 | `PLATFORM_MASTER_KEY`         | Master key for platform secrets (base64, 32 bytes). **Back it up** — without it stored provider / connector / login-method secrets cannot be decrypted |
 | `BOOTSTRAP_SUPER_ADMIN_EMAIL` | First admin; with `BOOTSTRAP_ALLOW_CREATE=1` the account is created automatically                                                                      |
 
-All enhancements are enabled by default; set a variable to `0` to switch one off: `ENABLE_PLATFORM_ADMIN` (admin console), `ENABLE_PLATFORM_MANAGED_AI`, `ENABLE_PLATFORM_MANAGED_SKILLS`, `ENABLE_PLATFORM_MANAGED_CONNECTORS`, `ENABLE_PLATFORM_MANAGED_AGENTS`, `ENABLE_PLATFORM_SETTINGS_POLICY`, `ENABLE_RUNTIME_BRANDING`, `ENABLE_DATABASE_OIDC`. Keep `AUTH_SSO_PROVIDERS` empty when login methods are configured in the database.
+All enhancements are enabled by default; toggle them live in the admin console under **System → Modules**, or set a variable to `0` to switch one off: `ENABLE_PLATFORM_ADMIN` (admin console), `ENABLE_PLATFORM_MANAGED_AI`, `ENABLE_PLATFORM_MANAGED_SKILLS`, `ENABLE_PLATFORM_MANAGED_CONNECTORS`, `ENABLE_PLATFORM_MANAGED_AGENTS`, `ENABLE_PLATFORM_SETTINGS_POLICY`, `ENABLE_RUNTIME_BRANDING`, `ENABLE_DATABASE_OIDC`. Keep `AUTH_SSO_PROVIDERS` empty when login methods are configured in the database.
+
+### Deployment options
+
+One image, sized to the machine — from the full stack down to one container plus one database:
+
+| Command                                              | Sidecars                        | When                                                      |
+| ---------------------------------------------------- | ------------------------------- | --------------------------------------------------------- |
+| `docker compose up -d`                               | ParadeDB + Redis + object store | Default full stack (4+ CPU / 8+ GiB)                      |
+| `docker compose --profile search up -d`              | + SearXNG                       | You want the built-in web search                          |
+| `docker compose -f docker-compose.minimal.yml up -d` | ParadeDB only                   | Small boxes (1–2 CPU / 2–4 GiB) with the `minimal` preset |
+
+The 24 feature modules default on or off per `LOBE_MODULE_PRESET=minimal|standard|full` (default `full`, i.e. today's behaviour); individual modules can be overridden in the admin console under **System → Modules** or with `LOBE_MODULES_DISABLED`. Compose injects the Node heap cap `LOBE_NODE_HEAP_MB=1536` (a bare `docker run` leaves the heap uncapped). Per-module memory / background-job costs and the measured numbers are in [`docs/enterprise/modules.md`](./docs/enterprise/modules.md).
 
 Upgrade: `docker compose pull && docker compose up -d` (migrations are automatic). Image tags: `latest`, `1.0`, `1.0.0`; platforms `linux/amd64` and `linux/arm64` (Apple Silicon Macs use the arm64 image through Docker Desktop). Full example in [`docker-compose/enhanced/`](./docker-compose/enhanced/).
 
