@@ -4,31 +4,31 @@ import type { OpenAICompatibleFactoryOptions } from '../../core/openaiCompatible
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
 import { processMultiProviderModelList } from '../../utils/modelParse';
 
-const THINKING_MODELS = new Set(['DeepSeek-V3-1']);
-
 export interface AkashChatModelCard {
   id: string;
 }
 
 export const params = {
-  baseURL: 'https://chatapi.akash.network/api/v1',
+  baseURL: 'https://api.akashml.com/v1',
   chatCompletion: {
     handlePayload: (payload) => {
-      const { model, thinking, ...rest } = payload;
+      const { model, reasoning, reasoning_effort, thinking, ...rest } = payload;
 
-      const thinkingFlag =
-        thinking?.type === 'enabled' ? true : thinking?.type === 'disabled' ? false : undefined;
+      // AkashML documents a first-class `reasoning` object (effort / enabled /
+      // max_tokens). The old LiteLLM fields and the DeepSeek-V3-1 allowlist
+      // are gone with the chatapi.akash.network gateway.
+      const finalReasoning = {
+        ...reasoning,
+        ...(reasoning_effort && { effort: reasoning_effort }),
+        ...(thinking?.budget_tokens && { max_tokens: thinking.budget_tokens }),
+        ...(thinking?.type === 'enabled' && { enabled: true }),
+        ...(thinking?.type === 'disabled' && { enabled: false }),
+      };
 
       return {
         ...rest,
-        allowed_openai_params: ['reasoning_effort'],
-        cache: { 'no-cache': true },
         model,
-        ...(THINKING_MODELS.has(model)
-          ? {
-              chat_template_kwargs: { thinking: thinkingFlag },
-            }
-          : {}),
+        ...(Object.keys(finalReasoning).length > 0 && { reasoning: finalReasoning }),
       } as any;
     },
   },

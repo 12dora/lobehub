@@ -2,17 +2,17 @@ import type { ModelProviderCard } from '../types';
 
 const AkashChat: ModelProviderCard = {
   chatModels: [],
-  checkModel: 'Meta-Llama-3-1-8B-Instruct-FP8',
+  checkModel: 'zai-org/GLM-5.2',
   description:
-    'Akash is a permissionless cloud resource marketplace with competitive pricing compared to traditional cloud providers.',
+    'AkashML provides managed inference for open source AI models, powered by the Akash Network.',
   id: 'akashchat',
-  modelsUrl: 'https://chatapi.akash.network/documentation',
-  name: 'AkashChat',
+  modelsUrl: 'https://akashml.com/docs',
+  name: 'AkashML',
   settings: {
     sdkType: 'openai',
     showModelFetcher: true,
   },
-  url: 'https://chatapi.akash.network/',
+  url: 'https://akashml.com/',
 };
 
 export default AkashChat;

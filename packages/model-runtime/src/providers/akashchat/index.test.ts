@@ -12,13 +12,13 @@ vi.mock('@lobechat/business-model-bank/model-config', () => ({
 }));
 
 const provider = ModelProvider.AkashChat;
-const defaultBaseURL = 'https://chatapi.akash.network/api/v1';
+const defaultBaseURL = 'https://api.akashml.com/v1';
 
 testProvider({
   Runtime: LobeAkashChatAI,
   bizErrorType: 'ProviderBizError',
   chatDebugEnv: 'DEBUG_AKASH_CHAT_COMPLETION',
-  chatModel: 'llama-3.1-8b-instruct',
+  chatModel: 'meta-llama/Llama-3.3-70B-Instruct',
   defaultBaseURL,
   invalidErrorType: 'InvalidProviderAPIKey',
   provider,
@@ -42,7 +42,7 @@ describe('LobeAkashChatAI - custom features', () => {
     it('should export params object', () => {
       expect(params).toBeDefined();
       expect(params.provider).toBe(ModelProvider.AkashChat);
-      expect(params.baseURL).toBe('https://chatapi.akash.network/api/v1');
+      expect(params.baseURL).toBe('https://api.akashml.com/v1');
     });
 
     it('should have chatCompletion config with handlePayload', () => {
@@ -86,32 +86,33 @@ describe('LobeAkashChatAI - custom features', () => {
   });
 
   describe('handlePayload', () => {
-    it('should add allowed_openai_params and cache for all models', async () => {
+    it('should not inject LiteLLM-only fields', async () => {
       await instance.chat({
         messages: [{ content: 'Hello', role: 'user' }],
-        model: 'llama-3.1-8b-instruct',
+        model: 'meta-llama/Llama-3.3-70B-Instruct',
       });
 
       const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-      expect(calledPayload.allowed_openai_params).toEqual(['reasoning_effort']);
-      expect(calledPayload.cache).toEqual({ 'no-cache': true });
+      expect(calledPayload.allowed_openai_params).toBeUndefined();
+      expect(calledPayload.cache).toBeUndefined();
+      expect(calledPayload.chat_template_kwargs).toBeUndefined();
     });
 
     it('should preserve model in payload', async () => {
       await instance.chat({
         messages: [{ content: 'Hello', role: 'user' }],
-        model: 'llama-3.1-8b-instruct',
+        model: 'meta-llama/Llama-3.3-70B-Instruct',
       });
 
       const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-      expect(calledPayload.model).toBe('llama-3.1-8b-instruct');
+      expect(calledPayload.model).toBe('meta-llama/Llama-3.3-70B-Instruct');
     });
 
     it('should preserve other payload properties', async () => {
       await instance.chat({
         max_tokens: 1024,
         messages: [{ content: 'Hello', role: 'user' }],
-        model: 'llama-3.1-8b-instruct',
+        model: 'meta-llama/Llama-3.3-70B-Instruct',
         temperature: 0.7,
         top_p: 0.9,
       });
@@ -123,78 +124,73 @@ describe('LobeAkashChatAI - custom features', () => {
       expect(calledPayload.messages).toEqual([{ content: 'Hello', role: 'user' }]);
     });
 
-    describe('thinking models', () => {
-      it('should add chat_template_kwargs with thinking=true for DeepSeek-V3-1 when thinking is enabled', async () => {
+    describe('documented reasoning object', () => {
+      it('should map thinking.type=enabled to reasoning.enabled=true', async () => {
         await instance.chat({
           messages: [{ content: 'Hello', role: 'user' }],
-          model: 'DeepSeek-V3-1',
+          model: 'openai/gpt-oss-120b',
           thinking: { type: 'enabled', budget_tokens: 1024 },
         });
 
         const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-        expect(calledPayload.chat_template_kwargs).toEqual({ thinking: true });
+        expect(calledPayload.reasoning).toEqual({ enabled: true, max_tokens: 1024 });
+        expect(calledPayload.thinking).toBeUndefined();
+        expect(calledPayload.chat_template_kwargs).toBeUndefined();
       });
 
-      it('should add chat_template_kwargs with thinking=false for DeepSeek-V3-1 when thinking is disabled', async () => {
+      it('should map thinking.type=disabled to reasoning.enabled=false', async () => {
         await instance.chat({
           messages: [{ content: 'Hello', role: 'user' }],
-          model: 'DeepSeek-V3-1',
+          model: 'openai/gpt-oss-120b',
           thinking: { type: 'disabled', budget_tokens: 1024 },
         });
 
         const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-        expect(calledPayload.chat_template_kwargs).toEqual({ thinking: false });
+        expect(calledPayload.reasoning).toEqual({ enabled: false, max_tokens: 1024 });
+        expect(calledPayload.thinking).toBeUndefined();
       });
 
-      it('should add chat_template_kwargs with thinking=undefined for DeepSeek-V3-1 when thinking type is not enabled/disabled', async () => {
+      it('should map reasoning_effort to reasoning.effort', async () => {
         await instance.chat({
           messages: [{ content: 'Hello', role: 'user' }],
-          model: 'DeepSeek-V3-1',
+          model: 'openai/gpt-oss-120b',
+          reasoning_effort: 'high',
+        });
+
+        const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
+        expect(calledPayload.reasoning).toEqual({ effort: 'high' });
+        expect(calledPayload.reasoning_effort).toBeUndefined();
+      });
+
+      it('should not add reasoning when thinking and reasoning_effort are absent', async () => {
+        await instance.chat({
+          messages: [{ content: 'Hello', role: 'user' }],
+          model: 'meta-llama/Llama-3.3-70B-Instruct',
+        });
+
+        const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
+        expect(calledPayload.reasoning).toBeUndefined();
+        expect(calledPayload.thinking).toBeUndefined();
+      });
+
+      it('should strip thinking without adding reasoning when type is not enabled/disabled', async () => {
+        await instance.chat({
+          messages: [{ content: 'Hello', role: 'user' }],
+          model: 'openai/gpt-oss-120b',
           thinking: { type: 'auto' } as any,
         });
 
         const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-        expect(calledPayload.chat_template_kwargs).toEqual({ thinking: undefined });
-      });
-
-      it('should add chat_template_kwargs with thinking=undefined for DeepSeek-V3-1 when thinking is not provided', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'DeepSeek-V3-1',
-        });
-
-        const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-        expect(calledPayload.chat_template_kwargs).toEqual({ thinking: undefined });
-      });
-
-      it('should not add chat_template_kwargs for non-thinking models', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'llama-3.1-8b-instruct',
-          thinking: { type: 'enabled', budget_tokens: 1024 },
-        });
-
-        const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-        expect(calledPayload.chat_template_kwargs).toBeUndefined();
-      });
-
-      it('should not add chat_template_kwargs for models that contain but dont match thinking model names', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'DeepSeek-V3-1-preview',
-          thinking: { type: 'enabled', budget_tokens: 1024 },
-        });
-
-        const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-        expect(calledPayload.chat_template_kwargs).toBeUndefined();
+        expect(calledPayload.reasoning).toBeUndefined();
+        expect(calledPayload.thinking).toBeUndefined();
       });
     });
 
     describe('thinking parameter removal', () => {
-      it('should remove thinking from payload for thinking models', async () => {
+      it('should remove thinking from payload', async () => {
         await instance.chat({
           messages: [{ content: 'Hello', role: 'user' }],
-          model: 'DeepSeek-V3-1',
+          model: 'openai/gpt-oss-120b',
           thinking: { type: 'enabled', budget_tokens: 1024 },
         });
 
@@ -202,10 +198,10 @@ describe('LobeAkashChatAI - custom features', () => {
         expect(calledPayload.thinking).toBeUndefined();
       });
 
-      it('should remove thinking from payload for non-thinking models', async () => {
+      it('should remove thinking from payload for models without extra reasoning fields', async () => {
         await instance.chat({
           messages: [{ content: 'Hello', role: 'user' }],
-          model: 'llama-3.1-8b-instruct',
+          model: 'meta-llama/Llama-3.3-70B-Instruct',
           thinking: { type: 'enabled', budget_tokens: 1024 },
         });
 
@@ -218,35 +214,13 @@ describe('LobeAkashChatAI - custom features', () => {
       it('should handle empty messages array', async () => {
         await instance.chat({
           messages: [],
-          model: 'llama-3.1-8b-instruct',
+          model: 'meta-llama/Llama-3.3-70B-Instruct',
         });
 
         const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
         expect(calledPayload.messages).toEqual([]);
-        expect(calledPayload.allowed_openai_params).toEqual(['reasoning_effort']);
-        expect(calledPayload.cache).toEqual({ 'no-cache': true });
-      });
-
-      it('should handle thinking models with case-sensitive match', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'deepseek-v3-1',
-          thinking: { type: 'enabled', budget_tokens: 1024 },
-        });
-
-        const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-        expect(calledPayload.chat_template_kwargs).toBeUndefined();
-      });
-
-      it('should handle multiple thinking model keywords', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'DeepSeek-V3-1',
-          thinking: { type: 'enabled', budget_tokens: 1024 },
-        });
-
-        const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-        expect(calledPayload.chat_template_kwargs).toEqual({ thinking: true });
+        expect(calledPayload.allowed_openai_params).toBeUndefined();
+        expect(calledPayload.cache).toBeUndefined();
       });
     });
   });
@@ -255,12 +229,12 @@ describe('LobeAkashChatAI - custom features', () => {
     it('should fetch and process models successfully', async () => {
       const mockClient = {
         apiKey: 'test',
-        baseURL: 'https://chatapi.akash.network/api/v1',
+        baseURL: 'https://api.akashml.com/v1',
         models: {
           list: vi.fn().mockResolvedValue({
             data: [
-              { created: 1234567890, id: 'llama-3.1-8b-instruct', owned_by: 'meta' },
-              { created: 1234567891, id: 'DeepSeek-V3-1', owned_by: 'deepseek' },
+              { created: 1234567890, id: 'meta-llama/Llama-3.3-70B-Instruct', owned_by: 'meta' },
+              { created: 1234567891, id: 'openai/gpt-oss-120b', owned_by: 'openai' },
             ],
           }),
         },
@@ -276,10 +250,12 @@ describe('LobeAkashChatAI - custom features', () => {
     it('should remove created field from model items', async () => {
       const mockClient = {
         apiKey: 'test',
-        baseURL: 'https://chatapi.akash.network/api/v1',
+        baseURL: 'https://api.akashml.com/v1',
         models: {
           list: vi.fn().mockResolvedValue({
-            data: [{ created: 1234567890, id: 'llama-3.1-8b-instruct', owned_by: 'meta' }],
+            data: [
+              { created: 1234567890, id: 'meta-llama/Llama-3.3-70B-Instruct', owned_by: 'meta' },
+            ],
           }),
         },
       };
@@ -292,7 +268,7 @@ describe('LobeAkashChatAI - custom features', () => {
     it('should handle empty model list', async () => {
       const mockClient = {
         apiKey: 'test',
-        baseURL: 'https://chatapi.akash.network/api/v1',
+        baseURL: 'https://api.akashml.com/v1',
         models: {
           list: vi.fn().mockResolvedValue({
             data: [],
@@ -308,7 +284,7 @@ describe('LobeAkashChatAI - custom features', () => {
     it('should handle missing data field', async () => {
       const mockClient = {
         apiKey: 'test',
-        baseURL: 'https://chatapi.akash.network/api/v1',
+        baseURL: 'https://api.akashml.com/v1',
         models: {
           list: vi.fn().mockResolvedValue({}),
         },
@@ -322,7 +298,7 @@ describe('LobeAkashChatAI - custom features', () => {
     it('should throw when model API fails', async () => {
       const mockClient = {
         apiKey: 'test',
-        baseURL: 'https://chatapi.akash.network/api/v1',
+        baseURL: 'https://api.akashml.com/v1',
         models: {
           list: vi.fn().mockRejectedValue(new Error('API Error')),
         },
@@ -334,7 +310,7 @@ describe('LobeAkashChatAI - custom features', () => {
     it('should handle network timeout errors', async () => {
       const mockClient = {
         apiKey: 'test',
-        baseURL: 'https://chatapi.akash.network/api/v1',
+        baseURL: 'https://api.akashml.com/v1',
         models: {
           list: vi.fn().mockRejectedValue(new Error('Network timeout')),
         },
@@ -346,7 +322,7 @@ describe('LobeAkashChatAI - custom features', () => {
     it('should handle invalid API key errors', async () => {
       const mockClient = {
         apiKey: 'invalid',
-        baseURL: 'https://chatapi.akash.network/api/v1',
+        baseURL: 'https://api.akashml.com/v1',
         models: {
           list: vi.fn().mockRejectedValue(new Error('Unauthorized')),
         },
@@ -358,7 +334,7 @@ describe('LobeAkashChatAI - custom features', () => {
     it('should throw on malformed response data', async () => {
       const mockClient = {
         apiKey: 'test',
-        baseURL: 'https://chatapi.akash.network/api/v1',
+        baseURL: 'https://api.akashml.com/v1',
         models: {
           list: vi.fn().mockResolvedValue({
             data: [null, undefined, { id: 'valid-model' }],
@@ -373,14 +349,14 @@ describe('LobeAkashChatAI - custom features', () => {
   });
 
   describe('integration tests', () => {
-    it('should handle complete chat request with thinking model', async () => {
+    it('should handle complete chat request with reasoning controls', async () => {
       const response = await instance.chat({
         max_tokens: 2048,
         messages: [
           { content: 'You are a helpful assistant', role: 'system' },
           { content: 'What is 2+2?', role: 'user' },
         ],
-        model: 'DeepSeek-V3-1',
+        model: 'openai/gpt-oss-120b',
         temperature: 0.5,
         thinking: { type: 'enabled', budget_tokens: 1024 },
         top_p: 0.95,
@@ -388,39 +364,40 @@ describe('LobeAkashChatAI - custom features', () => {
 
       expect(response).toBeInstanceOf(Response);
       const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-      expect(calledPayload.model).toBe('DeepSeek-V3-1');
-      expect(calledPayload.chat_template_kwargs).toEqual({ thinking: true });
-      expect(calledPayload.allowed_openai_params).toEqual(['reasoning_effort']);
-      expect(calledPayload.cache).toEqual({ 'no-cache': true });
+      expect(calledPayload.model).toBe('openai/gpt-oss-120b');
+      expect(calledPayload.reasoning).toEqual({ enabled: true, max_tokens: 1024 });
+      expect(calledPayload.chat_template_kwargs).toBeUndefined();
+      expect(calledPayload.allowed_openai_params).toBeUndefined();
+      expect(calledPayload.cache).toBeUndefined();
       expect(calledPayload.thinking).toBeUndefined();
     });
 
-    it('should handle complete chat request with non-thinking model', async () => {
+    it('should handle complete chat request without reasoning controls', async () => {
       const response = await instance.chat({
         max_tokens: 2048,
         messages: [
           { content: 'You are a helpful assistant', role: 'system' },
           { content: 'What is 2+2?', role: 'user' },
         ],
-        model: 'llama-3.1-8b-instruct',
+        model: 'meta-llama/Llama-3.3-70B-Instruct',
         temperature: 0.5,
-        thinking: { type: 'enabled', budget_tokens: 1024 },
         top_p: 0.95,
       });
 
       expect(response).toBeInstanceOf(Response);
       const calledPayload = (instance['client'].chat.completions.create as any).mock.calls[0][0];
-      expect(calledPayload.model).toBe('llama-3.1-8b-instruct');
+      expect(calledPayload.model).toBe('meta-llama/Llama-3.3-70B-Instruct');
+      expect(calledPayload.reasoning).toBeUndefined();
       expect(calledPayload.chat_template_kwargs).toBeUndefined();
-      expect(calledPayload.allowed_openai_params).toEqual(['reasoning_effort']);
-      expect(calledPayload.cache).toEqual({ 'no-cache': true });
+      expect(calledPayload.allowed_openai_params).toBeUndefined();
+      expect(calledPayload.cache).toBeUndefined();
       expect(calledPayload.thinking).toBeUndefined();
     });
 
     it('should handle streaming requests', async () => {
       const response = await instance.chat({
         messages: [{ content: 'Hello', role: 'user' }],
-        model: 'llama-3.1-8b-instruct',
+        model: 'meta-llama/Llama-3.3-70B-Instruct',
         stream: true,
       });
 
