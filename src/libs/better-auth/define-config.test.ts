@@ -4,9 +4,11 @@ const mocks = vi.hoisted(() => ({
   betterAuth: vi.fn((options) => options),
   ensureDefaultPlatformUserRole: vi.fn(async () => undefined),
   enforcePlatformOidcGroupRoleMappingForUserAccounts: vi.fn(async () => undefined),
+  enforceTwoFactorSessionGate: vi.fn(async () => undefined),
   EnvHttpProxyAgent: vi.fn((options) => ({ options })),
   initUser: vi.fn(async () => undefined),
   setGlobalDispatcher: vi.fn(),
+  withTwoFactorChallengedPaths: vi.fn((plugin) => plugin),
 }));
 
 vi.mock('@better-auth/expo', () => ({
@@ -105,6 +107,23 @@ vi.mock('@/libs/better-auth/plugins/email-whitelist', () => ({
 
 vi.mock('@/libs/better-auth/plugins/registration-guard', () => ({
   registrationGuard: vi.fn(() => ({ id: 'registration-guard' })),
+}));
+
+vi.mock('@/libs/better-auth/two-factor/session-gate', () => ({
+  enforceTwoFactorSessionGate: mocks.enforceTwoFactorSessionGate,
+}));
+
+vi.mock('@/libs/better-auth/two-factor/attempt-limit', () => ({
+  twoFactorAttemptLimit: vi.fn(() => ({ id: 'two-factor-attempt-limit' })),
+}));
+
+vi.mock('@/libs/better-auth/two-factor/passkey-user-verification', () => ({
+  assertPasskeyUserVerified: vi.fn(),
+}));
+
+vi.mock('@/libs/better-auth/two-factor/with-challenged-paths', () => ({
+  EXTRA_2FA_CHALLENGE_PATHS: new Set(['/magic-link/verify', '/sign-in/email-otp', '/verify-email']),
+  withTwoFactorChallengedPaths: mocks.withTwoFactorChallengedPaths,
 }));
 
 vi.mock('@/database/models/platform/ensureDefaultRole', () => ({
@@ -207,6 +226,7 @@ describe('defineConfig', { timeout: 15_000 }, () => {
     const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
     expect(options.plugins).toContainEqual({ id: 'two-factor' });
     expect(options.plugins).toContainEqual({ id: 'passkey' });
+    expect(mocks.withTwoFactorChallengedPaths).toHaveBeenCalledWith({ id: 'two-factor' });
 
     // A half-finished enrolment must not count as a factor.
     expect(twoFactor).toHaveBeenCalledWith(
@@ -456,5 +476,68 @@ describe('defineConfig', { timeout: 15_000 }, () => {
     await expect(
       options.databaseHooks.session.create.before({ userId: 'user_sso_1' }),
     ).resolves.toBe(false);
+  });
+
+  it('runs the 2FA session gate on session.create.before', async () => {
+    const { defineConfig } = await import('./define-config');
+    const { serverDB } = await import('@lobechat/database');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0] as {
+      databaseHooks: {
+        session: {
+          create: {
+            before: (
+              session: Record<string, unknown>,
+              context?: { path?: string },
+            ) => Promise<false | { data: Record<string, unknown> }>;
+          };
+        };
+      };
+    };
+
+    const context = { path: '/callback/google' };
+    await options.databaseHooks.session.create.before({ userId: 'user_2fa_1' }, context);
+
+    expect(mocks.enforceTwoFactorSessionGate).toHaveBeenCalledWith({
+      context,
+      db: serverDB,
+      userId: 'user_2fa_1',
+    });
+  });
+
+  it('requires passkey user verification and registers the atomic 2FA counter', async () => {
+    const { defineConfig } = await import('./define-config');
+    const { passkey } = await import('@better-auth/passkey');
+    const { twoFactorAttemptLimit } = await import('@/libs/better-auth/two-factor/attempt-limit');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
+    expect(options.plugins).toContainEqual({ id: 'two-factor-attempt-limit' });
+    expect(twoFactorAttemptLimit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        increment: undefined,
+      }),
+    );
+
+    expect(passkey).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authenticatorSelection: { userVerification: 'required' },
+        authentication: expect.objectContaining({
+          afterVerification: expect.any(Function),
+        }),
+      }),
+    );
+
+    const { assertPasskeyUserVerified } =
+      await import('@/libs/better-auth/two-factor/passkey-user-verification');
+    const passkeyOptions = vi.mocked(passkey).mock.calls.at(-1)?.[0] as {
+      authentication: { afterVerification: (args: { verification: unknown }) => Promise<void> };
+    };
+    const verification = { authenticationInfo: { userVerified: false } };
+    await passkeyOptions.authentication.afterVerification({ verification });
+    expect(assertPasskeyUserVerified).toHaveBeenCalledWith(verification);
   });
 });

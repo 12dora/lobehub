@@ -110,6 +110,25 @@ export const createSecondaryStorage = () => {
         buildKey(key),
       );
     },
+    /**
+     * Atomic INCR + EXPIRE-on-first-write. The stock Better Auth limiter does a
+     * separate get-then-set, so concurrent requests all read the same count.
+     * Redis INCR is the primitive that actually serializes.
+     */
+    increment: async (key: string, ttlSeconds?: number) => {
+      const redisClient = await getRedisClient();
+      const namespaced = buildKey(key);
+      if (typeof ttlSeconds !== 'number') {
+        return redisClient.incr(namespaced);
+      }
+
+      return redisClient.eval<number>(
+        "local n = redis.call('INCR', KEYS[1]); if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end; return n",
+        1,
+        namespaced,
+        String(ttlSeconds),
+      );
+    },
     set: async (key: string, value: string, ttl?: number) => {
       const redisClient = await getRedisClient();
       if (typeof ttl === 'number') {

@@ -32,6 +32,10 @@ import {
   type RuntimeIdentityProvider,
 } from '@/libs/better-auth/sso/platformIdentityProvider';
 import { platformIdentityProviderState } from '@/libs/better-auth/sso/platformIdentityProviderState';
+import { twoFactorAttemptLimit } from '@/libs/better-auth/two-factor/attempt-limit';
+import { assertPasskeyUserVerified } from '@/libs/better-auth/two-factor/passkey-user-verification';
+import { enforceTwoFactorSessionGate } from '@/libs/better-auth/two-factor/session-gate';
+import { withTwoFactorChallengedPaths } from '@/libs/better-auth/two-factor/with-challenged-paths';
 import { createSecondaryStorage, getTrustedOrigins } from '@/libs/better-auth/utils/config';
 import { parseSSOProviders } from '@/libs/better-auth/utils/server';
 import { EmailService } from '@/server/services/email';
@@ -160,6 +164,7 @@ export function defineConfig(
   const { socialProviders, genericOAuthProviders } = initBetterAuthSSOProviders({
     additionalGenericOAuthProviders: databaseProviders,
   });
+  const secondaryStorage = createSecondaryStorage();
   const options = {
     account: {
       accountLinking: {
@@ -268,7 +273,7 @@ export function defineConfig(
       // experimental joins feature needs schema to pass full relation
       schema,
     }),
-    secondaryStorage: createSecondaryStorage(),
+    secondaryStorage,
     /**
      * Database joins is useful when Better-Auth needs to fetch related data from multiple tables in a single query.
      * Endpoints like /get-session, /get-full-organization and many others benefit greatly from this feature,
@@ -290,7 +295,7 @@ export function defineConfig(
            * so a swallowed failure there can leave an authenticated over-privileged session.
            * `create.before` returning false aborts session creation fail-closed.
            */
-          before: async (session) => {
+          before: async (session, context) => {
             // Idempotent repair: signup may have failed to grant platform_user
             // (DB-004). Never blocks the session — errors stay non-blocking.
             try {
@@ -300,6 +305,16 @@ export function defineConfig(
             } catch {
               // ignore — session creation must proceed
             }
+
+            // Defence-in-depth 2FA gate. Magic-link / email-OTP / verify-email
+            // are allowed here so the widened two-factor after-hook can convert
+            // the new session into a challenge. Unknown sign-in paths fail
+            // closed. Also repairs orphaned `twoFactorEnabled`.
+            await enforceTwoFactorSessionGate({
+              context,
+              db: serverDB,
+              userId: session.userId,
+            });
 
             const linked = await serverDB
               .select({
@@ -453,14 +468,22 @@ export function defineConfig(
       // Two documented second factors: an authenticator app (TOTP) and a passkey. OTP-over-email
       // is deliberately left off — it would make the recovery channel (the mailbox) the factor.
       // Backup codes stay on as the account-recovery path.
-      twoFactor({
-        // The issuer shown inside the authenticator app. Like `passkey.rpName` below this is
-        // captured at startup, so it is the build-time brand; the enrolment UI rewrites the
-        // otpauth label with the runtime brand before rendering the QR code.
-        issuer: BRANDING_NAME,
-        // Leave `twoFactorEnabled` false until a code from the authenticator is accepted,
-        // so a user who scans the QR and walks away is not locked out of their own account.
-        skipVerificationOnEnable: false,
+      withTwoFactorChallengedPaths(
+        twoFactor({
+          // The issuer shown inside the authenticator app. Like `passkey.rpName` below this is
+          // captured at startup, so it is the build-time brand; the enrolment UI rewrites the
+          // otpauth label with the runtime brand before rendering the QR code.
+          issuer: BRANDING_NAME,
+          // Leave `twoFactorEnabled` false until a code from the authenticator is accepted,
+          // so a user who scans the QR and walks away is not locked out of their own account.
+          skipVerificationOnEnable: false,
+        }),
+      ),
+      // Per-challenge atomic failure counter. The built-in IP limiter is not
+      // atomic and is not keyed by user/challenge — keep it, and add this.
+      twoFactorAttemptLimit({
+        delete: secondaryStorage?.delete,
+        increment: secondaryStorage?.increment,
       }),
       passkey({
         // WebAuthn RP metadata is captured at Better Auth startup and intentionally does not hot-update.
@@ -472,6 +495,17 @@ export function defineConfig(
         // Android origin format: android:apk-key-hash:<base64url-sha256-fingerprint>
         // Returns undefined if AUTH_URL is not set (e.g., in e2e tests)
         origin: getPasskeyOrigins(),
+        // New passkeys must be created with UV. Authentication options are
+        // hardcoded to "preferred" inside the plugin; afterVerification below
+        // is the fail-closed check that a presence-only touch is not enough.
+        authenticatorSelection: {
+          userVerification: 'required',
+        },
+        authentication: {
+          afterVerification: async ({ verification }) => {
+            assertPasskeyUserVerified(verification);
+          },
+        },
       }),
       ...(databaseProviders.length > 0
         ? [platformIdentityProviderState(databaseProviders.map((provider) => provider.providerId))]

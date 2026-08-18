@@ -33,6 +33,12 @@ export class AdminUserCredentialService extends AdminUserSupport {
       throw new AdminUserSelfSetPasswordError();
     }
 
+    await this.assertPasswordAuthEnabled({
+      action: 'admin.users.setPassword',
+      actorUserId,
+      targetId: input.userId,
+    });
+
     const exists = await this.users.findBanState(input.userId);
     if (!exists) {
       await this.auditUserFailure({

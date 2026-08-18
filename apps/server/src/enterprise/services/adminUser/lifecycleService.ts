@@ -9,7 +9,6 @@ import { PlatformContentModerationRecordModel } from '@/database/models/platform
 import { LastSuperAdminProtectionError, RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase } from '@/database/type';
 import { getGlobalRoleIdsByName } from '@/database/utils/seedPlatformRoles';
-import { authEnv } from '@/envs/auth';
 import { revokeOIDCArtifactsByUserId } from '@/libs/oidc-provider/access-control';
 
 import type {
@@ -23,7 +22,6 @@ import { LastSuperAdminError } from '../platformRbac';
 import {
   AdminUserEmailConflictError,
   AdminUserNotFoundError,
-  AdminUserPasswordAuthDisabledError,
   AdminUserSelfBanError,
   AdminUserSelfDeleteError,
   findUniqueViolation,
@@ -247,16 +245,11 @@ export class AdminUserLifecycleService extends AdminUserSupport {
 
     // Email/password sign-in is disabled instance-wide — a credential user could
     // never log in. Reject before any write (mirrors the email-conflict path).
-    if (authEnv.AUTH_DISABLE_EMAIL_PASSWORD) {
-      await this.auditUserFailure({
-        action: 'admin.users.create',
-        actorUserId,
-        error: 'password_auth_disabled',
-        reason: input.reason,
-        result: 'failure',
-      });
-      throw new AdminUserPasswordAuthDisabledError();
-    }
+    await this.assertPasswordAuthEnabled({
+      action: 'admin.users.create',
+      actorUserId,
+      reason: input.reason,
+    });
 
     const conflict = async (reasonCode: 'email_taken' | 'username_taken') => {
       await this.auditUserFailure({

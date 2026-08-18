@@ -11,6 +11,7 @@ import {
 } from '@/database/models/platform';
 import { RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
+import { authEnv } from '@/envs/auth';
 
 import { bumpUserActiveCacheEpoch } from '../../guards/userActiveCache';
 import {
@@ -18,6 +19,7 @@ import {
   type PlatformConfigInvalidationPublisher,
 } from '../platformConfigInvalidation';
 import { LastSuperAdminError, PlatformRbacService } from '../platformRbac';
+import { AdminUserPasswordAuthDisabledError } from './errors';
 
 export class AdminUserSupport {
   readonly users: AdminUserModel;
@@ -59,6 +61,30 @@ export class AdminUserSupport {
         errorName: error instanceof Error ? error.name : 'unknown',
       });
     }
+  };
+
+  /**
+   * Single AUTH_DISABLE_EMAIL_PASSWORD check. createUser and setPassword both
+   * refuse before any hash or write — a success toast on an SSO-only install
+   * would revoke sessions and leave the user with a password they cannot use.
+   */
+  protected assertPasswordAuthEnabled = async (params: {
+    action: string;
+    actorUserId: string;
+    reason?: string | null;
+    targetId?: string | null;
+  }) => {
+    if (!authEnv.AUTH_DISABLE_EMAIL_PASSWORD) return;
+
+    await this.auditUserFailure({
+      action: params.action,
+      actorUserId: params.actorUserId,
+      error: 'password_auth_disabled',
+      reason: params.reason,
+      result: 'failure',
+      targetId: params.targetId,
+    });
+    throw new AdminUserPasswordAuthDisabledError();
   };
 
   protected auditUserFailure = async (params: {

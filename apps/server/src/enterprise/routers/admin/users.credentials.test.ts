@@ -22,6 +22,7 @@ import {
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
+import { authEnv } from '@/envs/auth';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
@@ -33,6 +34,12 @@ let db: LobeChatDatabase;
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
 }));
+
+// Mutable copy so tests can flip AUTH_DISABLE_EMAIL_PASSWORD (read at call time).
+vi.mock('@/envs/auth', async (importOriginal) => {
+  const actual = (await importOriginal()) as { authEnv: Record<string, unknown> };
+  return { ...actual, authEnv: { ...actual.authEnv } };
+});
 
 vi.mock('@/libs/oidc-provider/access-control', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -95,6 +102,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+  (authEnv as { AUTH_DISABLE_EMAIL_PASSWORD: boolean }).AUTH_DISABLE_EMAIL_PASSWORD = false;
   await cleanup();
   await db.insert(users).values(Object.values(IDS).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -265,6 +273,41 @@ describe('admin.users.setPassword', () => {
     expect(after?.authInvalidatedAt?.getTime() ?? null).toBe(
       before?.authInvalidatedAt?.getTime() ?? null,
     );
+  });
+
+  it('rejects setPassword when email/password auth is disabled instance-wide', async () => {
+    await seedCredentialAccount(IDS.target, 'Old-pass!1234');
+    (authEnv as { AUTH_DISABLE_EMAIL_PASSWORD: boolean }).AUTH_DISABLE_EMAIL_PASSWORD = true;
+
+    const caller = createAdminCaller(await ctx(IDS.userAdmin));
+    await expect(
+      caller.users.setPassword({
+        newPassword: NEW_PASSWORD,
+        userId: IDS.target,
+      }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      cause: {
+        data: {
+          code: 'PLATFORM_INVALID_INPUT',
+          details: { reason: 'password_auth_disabled' },
+        },
+      },
+    });
+
+    const acct = await db.query.account.findFirst({ where: eq(account.userId, IDS.target) });
+    await expect(verifyPassword({ hash: acct!.password!, password: NEW_PASSWORD })).resolves.toBe(
+      false,
+    );
+
+    const failures = (
+      await db.query.platformAuditLogs.findMany({
+        where: eq(platformAuditLogs.action, 'admin.users.setPassword'),
+      })
+    ).filter((a) => a.result === 'failure');
+    expect(
+      failures.some((a) => (a.afterDiff as { error?: string })?.error === 'password_auth_disabled'),
+    ).toBe(true);
   });
 
   it('denies setPassword without USER_CREDENTIAL_MANAGE', async () => {

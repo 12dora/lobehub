@@ -6,7 +6,9 @@ const authEnvMock = vi.hoisted(() => ({
 
 const redisMocks = vi.hoisted(() => ({
   del: vi.fn(),
+  eval: vi.fn(),
   get: vi.fn(),
+  incr: vi.fn(),
   set: vi.fn(),
 }));
 
@@ -58,5 +60,21 @@ describe('createSecondaryStorage', () => {
       ex: 60,
     });
     expect(redisMocks.get).toHaveBeenCalledWith('better-auth:aihub-3011:session-key');
+  });
+
+  it('increments atomically with INCR+EXPIRE in one Redis eval', async () => {
+    redisMocks.eval.mockResolvedValue(1);
+    const { createSecondaryStorage } = await import('./config');
+
+    const storage = createSecondaryStorage();
+    await expect(storage!.increment('2fa-attempts:c1', 600)).resolves.toBe(1);
+
+    expect(redisMocks.eval).toHaveBeenCalledWith(
+      "local n = redis.call('INCR', KEYS[1]); if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end; return n",
+      1,
+      'better-auth:2fa-attempts:c1',
+      '600',
+    );
+    expect(redisMocks.incr).not.toHaveBeenCalled();
   });
 });
