@@ -858,6 +858,7 @@ export default {
   'users.tabs.sessions': 'Sessions',
   'users.tabs.audit': 'Audit',
   'users.actions.ban': 'Ban user',
+  'users.actions.reasonOptional': 'Reason (optional)',
   'users.actions.unban': 'Unban user',
   'users.actions.delete': 'Delete user',
   'users.actions.replaceRoles': 'Update permissions',
@@ -935,9 +936,16 @@ export default {
   'users.audit.result.failure': 'Failure',
   'users.audit.result.denied': 'Denied',
   'audit.autoReason.agentArchive': 'Platform assistant archived from admin console',
+  'audit.autoReason.ban': 'User banned from admin console',
+  'audit.autoReason.connectorDeleteDraft': 'Connector draft deleted from admin console',
+  'audit.autoReason.connectorRevokeAllBindings':
+    'All connector bindings revoked from admin console',
   'audit.autoReason.connectorRollback': 'Connector rolled back from admin console',
   'audit.autoReason.create': 'User created from admin console',
   'audit.autoReason.delete': 'User hard-deleted from admin console',
+  'audit.autoReason.identityProviderDelete': 'Sign-in method draft deleted from admin console',
+  'audit.autoReason.identityProviderDisable': 'Sign-in method disabled from admin console',
+  'audit.autoReason.identityProviderPublish': 'Sign-in method published from admin console',
   'audit.autoReason.moderationAutoBan':
     'Auto-banned by content moderation ({{count}} violations in window)',
   'audit.autoReason.revokeAll': 'All sessions revoked from admin console',
@@ -945,6 +953,8 @@ export default {
   'audit.autoReason.roleRevoke': 'Global role revoked from admin console',
   'audit.autoReason.roles': 'Global roles updated from admin console',
   'audit.autoReason.sharedOAuth': 'Set org shared OAuth authorization from managed resources',
+  'audit.autoReason.systemRestart': 'Restart requested from admin console',
+  'audit.autoReason.unban': 'User unbanned from admin console',
   'audit.autoReason.toolScope.builtinToolPolicy':
     'Update org builtin tool policy from admin settings',
   'audit.autoReason.toolScope.connectorCreate': 'Create platform connector from admin settings',
