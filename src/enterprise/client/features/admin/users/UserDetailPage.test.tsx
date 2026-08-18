@@ -413,15 +413,22 @@ describe('UserDetailPage', () => {
     );
   });
 
-  it('opens the disable-two-factor modal with the passkey count and self flag', () => {
+  it('opens the credential-recovery modal with the passkey count and self flag', () => {
     renderDetail();
     fireEvent.click(screen.getByRole('button', { name: 'users.security.twoFactor.action' }));
     expect(openDisableTwoFactor).toHaveBeenCalledWith(
-      expect.objectContaining({ isSelf: false, passkeyCount: 2, userId: 'u-bob' }),
+      expect.objectContaining({
+        isSelf: false,
+        passkeyCount: 2,
+        twoFactorEnabled: true,
+        userId: 'u-bob',
+      }),
     );
   });
 
-  it('offers no two-factor action when two-step verification is already off', () => {
+  // Lockout recovery for a passkey-only account: the admin's only lever when the
+  // device holding the user's single passkey is gone.
+  it('still offers credential recovery for a passkey-only account', () => {
     detailState = {
       data: { ...baseUser, twoFactorEnabled: false },
       error: undefined,
@@ -429,6 +436,23 @@ describe('UserDetailPage', () => {
     };
     renderDetail();
     expect(screen.queryByRole('button', { name: 'users.security.twoFactor.action' })).toBeNull();
+    // This mock resolves a key with a `defaultValue` to that fallback copy.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove passkeys' }));
+    expect(openDisableTwoFactor).toHaveBeenCalledWith(
+      expect.objectContaining({ passkeyCount: 2, twoFactorEnabled: false, userId: 'u-bob' }),
+    );
+  });
+
+  it('offers no credential-recovery action when there is nothing to clear', () => {
+    detailState = {
+      data: { ...baseUser, passkeyCount: 0, twoFactorEnabled: false },
+      error: undefined,
+      isLoading: false,
+    };
+    renderDetail();
+    expect(screen.queryByRole('button', { name: 'users.security.twoFactor.action' })).toBeNull();
+    // This mock resolves a key with a `defaultValue` to that fallback copy.
+    expect(screen.queryByRole('button', { name: 'Remove passkeys' })).toBeNull();
   });
 
   it('shows the security facts but hides both actions without the credential permission', () => {

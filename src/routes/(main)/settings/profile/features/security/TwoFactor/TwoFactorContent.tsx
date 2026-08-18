@@ -1,5 +1,6 @@
 'use client';
 
+import { isDesktop } from '@lobechat/const';
 import { Text } from '@lobehub/ui';
 import { Button, useModalContext } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
@@ -165,9 +166,19 @@ const TwoFactorContent = memo<TwoFactorContentProps>(({ dismissGuardRef }) => {
         )}
       </div>
 
-      <hr className={securityStyles.divider} />
-
-      <PasskeySection />
+      {/*
+        The desktop renderer is served from `app://renderer` while the passkey RP
+        and accepted origin are pinned to the remote APP_URL, so no ceremony can
+        complete here — listing and adding passkeys are both dead ends. Drop the
+        whole section (divider included) rather than show controls that can only
+        fail. `isDesktop` is the same build constant that hides the password row.
+      */}
+      {!isDesktop && (
+        <>
+          <hr className={securityStyles.divider} />
+          <PasskeySection />
+        </>
+      )}
 
       <div className={securityStyles.footer}>
         <Button onClick={handleClose}>{t('profile.security.close')}</Button>

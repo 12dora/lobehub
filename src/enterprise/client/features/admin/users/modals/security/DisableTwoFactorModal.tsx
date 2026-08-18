@@ -21,6 +21,12 @@ import {
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type { AdminUsersDisableTwoFactorInput } from '@/enterprise/client/services/adminUsers';
 
+import {
+  isPasskeyRemovalOptional,
+  resolveCredentialRecoveryCopy,
+  resolveCredentialRecoveryVariant,
+  resolveRemovePasskeys,
+} from '../../credentialRecovery';
 import { getAdminUsersMutationErrorKey } from '../../utils';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -70,9 +76,21 @@ export interface DisableTwoFactorModalContentProps {
   /** Count of the target's passkeys — the opt-in checkbox is hidden at 0. */
   passkeyCount: number;
   targetLabel: string;
+  /**
+   * Whether the target actually has an authenticator. False for a passkey-only
+   * account, where the modal must not mention two-step verification at all.
+   */
+  twoFactorEnabled: boolean;
   userId: string;
 }
 
+/**
+ * Clears a user's second factors so an admin can get them back in.
+ *
+ * Three shapes, three readings — see `credentialRecovery.ts`. The passkey-only one
+ * is not a corner case: it is what every passkey user without an authenticator
+ * looks like, and the only lockout an admin can resolve for them.
+ */
 export const DisableTwoFactorModalContent = memo<DisableTwoFactorModalContentProps>(
   ({
     abortControllerRef,
@@ -83,12 +101,22 @@ export const DisableTwoFactorModalContent = memo<DisableTwoFactorModalContentPro
     onSubmit,
     passkeyCount,
     targetLabel,
+    twoFactorEnabled,
     userId,
   }) => {
     const { t } = useTranslation('admin');
     const { close } = useModalContext();
 
-    // Opt-in: removing passkeys is a second, separate loss of access.
+    const variant = resolveCredentialRecoveryVariant({ twoFactorEnabled });
+    const copy = (slot: Parameters<typeof resolveCredentialRecoveryCopy>[1]) => {
+      const { defaultValue, key } = resolveCredentialRecoveryCopy(variant, slot);
+      return { defaultValue, key: key as never };
+    };
+    const titleCopy = copy('title');
+    const descCopy = copy('desc');
+    const submitCopy = copy('submit');
+
+    const passkeyRemovalIsOptional = isPasskeyRemovalOptional({ passkeyCount, twoFactorEnabled });
     const [removePasskeys, setRemovePasskeys] = useState(false);
 
     const { phase, setPhase: syncPhase } = useModalPhaseGuard<DisableTwoFactorModalPhase>({
@@ -126,7 +154,11 @@ export const DisableTwoFactorModalContent = memo<DisableTwoFactorModalContentPro
       if (phase !== 'idle') return;
 
       const input: AdminUsersDisableTwoFactorInput = {
-        removePasskeys: passkeyCount > 0 ? removePasskeys : false,
+        removePasskeys: resolveRemovePasskeys({
+          optIn: removePasskeys,
+          passkeyCount,
+          twoFactorEnabled,
+        }),
         userId,
       };
 
@@ -139,7 +171,10 @@ export const DisableTwoFactorModalContent = memo<DisableTwoFactorModalContentPro
         },
         onSuccess: () => {
           if (dismissGuardRef) dismissGuardRef.current.closedExplicitly = true;
-          toast.success(t('users.security.twoFactor.success'));
+          const success = resolveCredentialRecoveryCopy(variant, 'success');
+          toast.success(
+            t(success.key as never, { defaultValue: success.defaultValue }) as unknown as string,
+          );
           close();
         },
       });
@@ -153,15 +188,23 @@ export const DisableTwoFactorModalContent = memo<DisableTwoFactorModalContentPro
       removePasskeys,
       runReauthedSubmit,
       t,
+      twoFactorEnabled,
       userId,
+      variant,
     ]);
 
     return (
       <div className={styles.body}>
         <Text as="h2" className={styles.title}>
-          {t('users.security.twoFactor.title')}
+          {t(titleCopy.key, { defaultValue: titleCopy.defaultValue })}
         </Text>
-        <Text type="secondary">{t('users.security.twoFactor.desc', { name: targetLabel })}</Text>
+        <Text type="secondary">
+          {t(descCopy.key, {
+            defaultValue: descCopy.defaultValue,
+            name: targetLabel,
+            num: passkeyCount,
+          })}
+        </Text>
         <Text>
           <strong>{t('users.modals.target')}</strong> {targetLabel}
         </Text>
@@ -170,7 +213,7 @@ export const DisableTwoFactorModalContent = memo<DisableTwoFactorModalContentPro
         {isSelf ? (
           <Text type="danger">{t('users.modals.revoke.includeCurrentWarning')}</Text>
         ) : null}
-        {passkeyCount > 0 ? (
+        {passkeyRemovalIsOptional ? (
           <label className={styles.option}>
             <Checkbox
               checked={removePasskeys}
@@ -207,7 +250,7 @@ export const DisableTwoFactorModalContent = memo<DisableTwoFactorModalContentPro
             type="primary"
             onClick={() => void handleSubmit()}
           >
-            {t('users.security.twoFactor.submit')}
+            {t(submitCopy.key, { defaultValue: submitCopy.defaultValue })}
           </Button>
         </div>
       </div>

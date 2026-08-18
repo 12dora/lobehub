@@ -222,8 +222,11 @@ export const SignInEmailStep = ({
           >
             <Input
               // "webauthn" opts this field into conditional UI so the browser's
-              // autofill dropdown can offer a saved passkey.
-              autoComplete="username webauthn"
+              // autofill dropdown can offer a saved passkey — dropped where no
+              // ceremony can complete (no WebAuthn, or the desktop renderer,
+              // whose origin the relying party will not accept), so the dropdown
+              // never dangles an option that dies on selection.
+              autoComplete={isPasskeySupported ? 'username webauthn' : 'username'}
               inputMode="email"
               placeholder={t('betterAuth.signin.emailPlaceholder')}
               prefix={<Icon icon={Mail} style={{ marginInline: 6 }} />}

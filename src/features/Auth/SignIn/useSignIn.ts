@@ -12,6 +12,7 @@ import { trackLoginOrSignupClicked } from '@/features/User/UserLoginOrSignup/tra
 import { requestPasswordReset, signIn, twoFactor } from '@/libs/better-auth/auth-client';
 import { isBuiltinProvider, normalizeProviderId } from '@/libs/better-auth/utils/client';
 import { buildOnboardingRedirectUrl, sanitizeRedirectPath } from '@/utils/onboardingRedirect';
+import { isPasskeySupported as detectPasskeySupport } from '@/utils/passkeySupport';
 
 import { EMAIL_REGEX, USERNAME_REGEX } from './validation';
 
@@ -49,7 +50,6 @@ interface TwoFactorRedirectData {
 
 export interface TwoFactorFormValues {
   code: string;
-  trustDevice?: boolean;
 }
 
 /**
@@ -59,9 +59,6 @@ export interface TwoFactorFormValues {
  */
 const isPasskeyCeremonyCancelled = (error: { code?: string; status: number }) =>
   error.code === 'AUTH_CANCELLED' || error.code === 'ERROR_CEREMONY_ABORTED';
-
-const isWebAuthnSupported = () =>
-  typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined';
 
 interface ResolvedEmailResult {
   email: string;
@@ -93,7 +90,9 @@ export const useSignIn = () => {
   const [isSocialOnly, setIsSocialOnly] = useState(false);
   const [twoFactorMode, setTwoFactorMode] = useState<TwoFactorMode>('totp');
   const [passkeyLoading, setPasskeyLoading] = useState(false);
-  const [isPasskeySupported] = useState(isWebAuthnSupported);
+  // Covers both "this browser has no WebAuthn" and "this runtime can never
+  // complete a ceremony for our RP" (the desktop renderer) — see detectPasskeySupport.
+  const [isPasskeySupported] = useState(detectPasskeySupport);
   // Conditional-UI autofill is speculative and must run at most once per mount.
   const passkeyAutoFillStarted = useRef(false);
   const [lastAuthProvider] = useState(() => {
@@ -305,12 +304,15 @@ export const useSignIn = () => {
     try {
       const callbackUrl = searchParams.get('callbackUrl') || '/';
       const code = (values.code || '').trim();
-      const trustDevice = values.trustDevice ?? false;
 
+      // `trustDevice` is deliberately never passed: a trusted-device record
+      // outlives a 2FA disable/re-enrol cycle (see SignInTwoFactorStep), which
+      // would turn the convenience into a password-only bypass of the new
+      // authenticator. Omitting it keeps better-auth's default of false.
       const { error } =
         twoFactorMode === 'backupCode'
-          ? await twoFactor.verifyBackupCode({ code, trustDevice })
-          : await twoFactor.verifyTotp({ code, trustDevice });
+          ? await twoFactor.verifyBackupCode({ code })
+          : await twoFactor.verifyTotp({ code });
 
       if (error) {
         // The intermediate challenge cookie is short-lived. Once it lapses no

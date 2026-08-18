@@ -888,9 +888,15 @@ export default {
   'users.access.lastSuperNote':
     'At least one permanent super admin must remain; the super admin role cannot have an expiry.',
   'users.access.noPermission': 'You do not have permission to change global roles.',
+  'users.security.passkey.action': 'Remove passkeys',
+  'users.security.passkey.desc':
+    "This removes {{name}}'s passkeys ({{num}}). Confirm who you are talking to first — afterwards they sign in with their password alone.",
   'users.security.passkey.count': '{{num}}',
   'users.security.passkey.label': 'Passkeys',
   'users.security.passkey.none': 'None',
+  'users.security.passkey.submit': 'Remove passkeys',
+  'users.security.passkey.success': 'Passkeys removed',
+  'users.security.passkey.title': 'Remove passkeys?',
   'users.security.password.action': 'Change password',
   'users.security.password.confirmLabel': 'Confirm new password',
   'users.security.password.label': 'Password',

@@ -37,8 +37,17 @@ describe('SignInTwoFactorStep', () => {
     // Someone here may have just lost their phone — the fallback must not be
     // hidden behind a disclosure.
     expect(screen.getByText('betterAuth.signin.twoFactor.useBackupCode')).toBeInTheDocument();
-    expect(screen.getByText('betterAuth.signin.twoFactor.trustDevice')).toBeInTheDocument();
     expect(screen.getByText('betterAuth.signin.twoFactor.backToPassword')).toBeInTheDocument();
+  });
+
+  // A trusted-device cookie survives disabling and re-enrolling 2FA, so the
+  // option is a password-only bypass of the new authenticator. It must stay
+  // absent — this test is the guard against someone re-adding it.
+  it('never offers to trust the device', () => {
+    render(<Harness />);
+
+    expect(screen.queryByText('betterAuth.signin.twoFactor.trustDevice')).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
   });
 
   it('autofocuses the code field so the user can type straight away', () => {
@@ -63,20 +72,7 @@ describe('SignInTwoFactorStep', () => {
     fireEvent.click(screen.getByText('betterAuth.signin.twoFactor.submit'));
 
     await waitFor(() => {
-      expect(onSubmit).toHaveBeenCalledWith({ code: '123456', trustDevice: false });
-    });
-  });
-
-  it('passes the trust-this-device choice through to the verification call', async () => {
-    const onSubmit = vi.fn(async () => {});
-    render(<Harness onSubmit={onSubmit} />);
-
-    fireEvent.click(screen.getByText('betterAuth.signin.twoFactor.trustDevice'));
-    fireEvent.change(getCodeInput(), { target: { value: '654321' } });
-    fireEvent.click(screen.getByText('betterAuth.signin.twoFactor.submit'));
-
-    await waitFor(() => {
-      expect(onSubmit).toHaveBeenCalledWith({ code: '654321', trustDevice: true });
+      expect(onSubmit).toHaveBeenCalledWith({ code: '123456' });
     });
   });
 

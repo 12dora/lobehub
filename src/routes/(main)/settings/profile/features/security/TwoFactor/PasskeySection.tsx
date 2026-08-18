@@ -7,6 +7,7 @@ import { type ChangeEvent, memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { passkey as passkeyClient, useListPasskeys } from '@/libs/better-auth/auth-client';
+import { isPasskeySupported } from '@/utils/passkeySupport';
 
 import { securityStyles } from '../styles';
 import PasskeyRow, { type PasskeyItem } from './PasskeyRow';
@@ -32,10 +33,6 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-/** `window.PublicKeyCredential` is the standard capability probe for WebAuthn. */
-const detectWebAuthn = (): boolean =>
-  typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined';
-
 /**
  * Passkey management: list, add, rename, remove. The add affordance is capability-gated —
  * offering a button that can only fail on a browser without WebAuthn is worse than saying
@@ -49,7 +46,7 @@ const PasskeySection = memo(() => {
   // so anything reading live data has to do it from within the mounted component.
   const { data, error, isPending, refetch } = useListPasskeys();
 
-  const [supported] = useState(detectWebAuthn);
+  const [supported] = useState(isPasskeySupported);
   const [name, setName] = useState('');
   const [adding, setAdding] = useState(false);
   const [mutating, setMutating] = useState(false);

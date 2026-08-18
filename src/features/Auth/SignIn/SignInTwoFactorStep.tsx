@@ -1,10 +1,10 @@
 import { Icon, Input, Text } from '@lobehub/ui';
-import { Button, Checkbox } from '@lobehub/ui/base-ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { type FormInstance, type InputRef } from 'antd';
 import { Form } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { KeyRound, ShieldCheck } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AuthCard from '@/features/AuthCard';
@@ -39,6 +39,23 @@ export interface SignInTwoFactorStepProps {
   onToggleMode: () => void;
 }
 
+/**
+ * NOTE — there is deliberately no "trust this device for 30 days" option here,
+ * and it must not be re-added.
+ *
+ * A trusted device is a signed cookie backed by a verification record. Turning
+ * two-step verification off does *not* invalidate those records: better-auth's
+ * disable endpoint only deletes the record belonging to the browser making that
+ * very request, and our admin `disableTwoFactor` deletes TOTP rows and sessions
+ * but no trusted-device records at all. So a browser trusted before 2FA was
+ * turned off keeps a cookie that is still honoured — and silently refreshed —
+ * after the user re-enrols, letting a password alone back in past the new
+ * authenticator.
+ *
+ * A revocation epoch is not a viable fix either: the records live in Postgres
+ * *and* Redis secondary storage, and a partial purge is worse than not offering
+ * the convenience at all.
+ */
 export const SignInTwoFactorStep = ({
   form,
   loading,
@@ -49,9 +66,6 @@ export const SignInTwoFactorStep = ({
 }: SignInTwoFactorStepProps) => {
   const { t } = useTranslation('auth');
   const codeInputRef = useRef<InputRef>(null);
-  // Deliberately local: an unchecked box is the safe default on every fresh
-  // challenge, and it must not survive a switch to the recovery-code path.
-  const [trustDevice, setTrustDevice] = useState(false);
 
   const isBackupCode = mode === 'backupCode';
 
@@ -95,7 +109,7 @@ export const SignInTwoFactorStep = ({
       <Form
         form={form}
         layout="vertical"
-        onFinish={(values) => onSubmit({ ...(values as { code: string }), trustDevice })}
+        onFinish={(values) => onSubmit(values as TwoFactorFormValues)}
       >
         <Form.Item
           name="code"
@@ -134,9 +148,6 @@ export const SignInTwoFactorStep = ({
             }
           />
         </Form.Item>
-        <Checkbox checked={trustDevice} style={{ marginBottom: 16 }} onChange={setTrustDevice}>
-          {t('betterAuth.signin.twoFactor.trustDevice')}
-        </Checkbox>
         <Button block htmlType="submit" loading={loading} size="large" type="primary">
           {t('betterAuth.signin.twoFactor.submit')}
         </Button>

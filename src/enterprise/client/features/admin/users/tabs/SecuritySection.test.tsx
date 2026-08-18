@@ -126,13 +126,14 @@ describe('SecuritySection', () => {
     expect(screen.queryByRole('button', { name: 'users.security.twoFactor.action' })).toBeNull();
   });
 
-  it('only offers the two-factor action when two-step verification is on', () => {
-    const { rerender } = render(
-      <SecuritySection canManageCredentials user={user()} onSetPassword={vi.fn()} />,
-    );
+  it('offers no credential-recovery action when there is nothing to clear', () => {
+    render(<SecuritySection canManageCredentials user={user()} onSetPassword={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'users.security.twoFactor.action' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'users.security.passkey.action' })).toBeNull();
+  });
 
-    rerender(
+  it('offers the two-factor wording when two-step verification is on', () => {
+    render(
       <SecuritySection
         canManageCredentials
         user={user({ twoFactorEnabled: true })}
@@ -141,6 +142,22 @@ describe('SecuritySection', () => {
       />,
     );
     expect(screen.getByRole('button', { name: 'users.security.twoFactor.action' })).toBeTruthy();
+  });
+
+  // The lockout-recovery gap: a passkey-only user who lost their device had no
+  // action at all, because the gate read `twoFactorEnabled` alone.
+  it('offers passkey-only wording for a passkey user with 2FA off', () => {
+    render(
+      <SecuritySection
+        canManageCredentials
+        user={user({ passkeyCount: 1 })}
+        onDisableTwoFactor={vi.fn()}
+        onSetPassword={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'users.security.passkey.action' })).toBeTruthy();
+    // …and never names a factor the account does not have
+    expect(screen.queryByRole('button', { name: 'users.security.twoFactor.action' })).toBeNull();
   });
 
   it('disables change-password with an explanatory tooltip for SSO-only targets', () => {

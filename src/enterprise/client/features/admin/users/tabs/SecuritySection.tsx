@@ -8,6 +8,12 @@ import { useTranslation } from 'react-i18next';
 
 import type { AdminUsersGetOutput } from '@/enterprise/client/services/adminUsers';
 
+import {
+  hasRecoverableCredentials,
+  resolveCredentialRecoveryCopy,
+  resolveCredentialRecoveryVariant,
+} from '../credentialRecovery';
+
 const styles = createStaticStyles(({ css }) => ({
   actions: css`
     display: flex;
@@ -38,7 +44,10 @@ const styles = createStaticStyles(({ css }) => ({
 export interface SecuritySectionProps {
   /** Actor holds USER_CREDENTIAL_MANAGE. Facts stay visible without it. */
   canManageCredentials: boolean;
-  /** Undefined when the action is unavailable (stale detail data). */
+  /**
+   * Opens the credential-recovery modal (clear TOTP and/or passkeys).
+   * Undefined when the action is unavailable (stale detail data).
+   */
   onDisableTwoFactor?: () => void;
   /** Undefined when the action is unavailable (stale detail data). */
   onSetPassword?: () => void;
@@ -63,7 +72,7 @@ export const resolveSetPasswordDisabledReason = (params: {
   return null;
 };
 
-/** Reason the disable-2FA button is disabled, or null when it is live. */
+/** Reason the credential-recovery button is disabled, or null when it is live. */
 export const resolveDisableTwoFactorDisabledReason = (params: {
   isLive: boolean;
 }): string | null => (params.isLive ? null : 'users.stale.refreshFailed');
@@ -89,6 +98,14 @@ const SecuritySection = memo<SecuritySectionProps>(
     const disableTwoFactorDisabledReason = resolveDisableTwoFactorDisabledReason({
       isLive: Boolean(onDisableTwoFactor),
     });
+
+    // A passkey-only account (2FA off, passkeys present) is the ordinary state of a
+    // passkey user — and the one an admin is called about when the device holding
+    // the only passkey is gone. Offer the recovery action there too, worded for
+    // what the account actually has.
+    const canRecoverCredentials = hasRecoverableCredentials(user);
+    const recoveryVariant = resolveCredentialRecoveryVariant(user);
+    const recoveryAction = resolveCredentialRecoveryCopy(recoveryVariant, 'action');
 
     return (
       <div className={styles.section}>
@@ -130,7 +147,7 @@ const SecuritySection = memo<SecuritySectionProps>(
                 </Button>
               </span>
             </Tooltip>
-            {user.twoFactorEnabled ? (
+            {canRecoverCredentials ? (
               <Tooltip
                 title={
                   disableTwoFactorDisabledReason ? t(disableTwoFactorDisabledReason as never) : ''
@@ -143,7 +160,7 @@ const SecuritySection = memo<SecuritySectionProps>(
                     size="small"
                     onClick={onDisableTwoFactor}
                   >
-                    {t('users.security.twoFactor.action')}
+                    {t(recoveryAction.key as never, { defaultValue: recoveryAction.defaultValue })}
                   </Button>
                 </span>
               </Tooltip>

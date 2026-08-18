@@ -8,6 +8,7 @@ import { type PlatformSystemRoleName, resolvePlatformRoleLabel } from '@/const/p
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type { AdminUsersGetOutput } from '@/enterprise/client/services/adminUsers';
 
+import { hasRecoverableCredentials } from '../credentialRecovery';
 import {
   openBanUserModal,
   openDeleteUserModal,
@@ -185,13 +186,17 @@ export const useUserDetailActions = ({
     });
   }, [authMethod, data, setUserPassword, userId]);
 
+  // Credential recovery covers a passkey-only account too (2FA off, passkeys
+  // present): that is the ordinary passkey user, and gating on `twoFactorEnabled`
+  // alone left an admin unable to help one who lost their only passkey.
   const openDisableTwoFactor = useCallback(() => {
-    if (!data || !userId || !data.twoFactorEnabled) return;
+    if (!data || !userId || !hasRecoverableCredentials(data)) return;
     openDisableTwoFactorModal({
       authMethod,
       isSelf: data.isSelf,
       passkeyCount: data.passkeyCount,
       targetLabel: displayUserName(data),
+      twoFactorEnabled: data.twoFactorEnabled,
       userId,
       onSubmit: async (input) => {
         await disableUserTwoFactor(input);

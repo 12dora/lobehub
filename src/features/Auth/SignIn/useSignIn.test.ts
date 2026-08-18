@@ -60,7 +60,11 @@ vi.mock('@/libs/better-auth/utils/client', () => ({
   normalizeProviderId: (p: string) => p,
 }));
 
-vi.mock('@lobechat/business-const', () => ({
+// Partial: the hook now reaches `@lobechat/const` (for the desktop-runtime probe
+// behind the passkey capability check), whose barrel needs the rest of the real
+// branding constants.
+vi.mock('@lobechat/business-const', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   BRANDING_NAME: 'LobeHub',
 }));
 
@@ -413,10 +417,12 @@ describe('useSignIn', () => {
       mockVerifyTotp.mockResolvedValue({ data: { token: 'session-token' }, error: null });
 
       await act(async () => {
-        await result.current.handleTwoFactorVerify({ code: '123456', trustDevice: true });
+        await result.current.handleTwoFactorVerify({ code: '123456' });
       });
 
-      expect(mockVerifyTotp).toHaveBeenCalledWith({ code: '123456', trustDevice: true });
+      // No `trustDevice`: a trusted-device record outlives a disable/re-enrol
+      // cycle, so the option is deliberately not offered or sent.
+      expect(mockVerifyTotp).toHaveBeenCalledWith({ code: '123456' });
       expect(window.location.href).toBe('/');
     });
 
@@ -475,10 +481,7 @@ describe('useSignIn', () => {
         await result.current.handleTwoFactorVerify({ code: 'RECOVERY-1' });
       });
 
-      expect(mockVerifyBackupCode).toHaveBeenCalledWith({
-        code: 'RECOVERY-1',
-        trustDevice: false,
-      });
+      expect(mockVerifyBackupCode).toHaveBeenCalledWith({ code: 'RECOVERY-1' });
       expect(mockVerifyTotp).not.toHaveBeenCalled();
       expect(window.location.href).toBe('/');
     });
