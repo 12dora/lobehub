@@ -9,7 +9,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { verifyPassword as defaultVerifyPassword } from 'better-auth/crypto';
 import { type BetterAuthOptions } from 'better-auth/minimal';
 import { betterAuth } from 'better-auth/minimal';
-import { admin, emailOTP, genericOAuth, magicLink } from 'better-auth/plugins';
+import { admin, emailOTP, genericOAuth, magicLink, twoFactor } from 'better-auth/plugins';
 import { type BetterAuthPlugin } from 'better-auth/types';
 import { eq } from 'drizzle-orm';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
@@ -401,8 +401,17 @@ export function defineConfig(
     },
     rateLimit: {
       customRules: {
+        // The passkey ceremony is bound to a server-issued challenge, so only the
+        // challenge-minting endpoint is worth throttling.
+        '/passkey/generate-authenticate-options': { max: 10, window: 60 },
         '/request-password-reset': { max: 3, window: 60 },
         '/send-verification-email': { max: 3, window: 60 },
+        // Second-factor guessing: a 6-digit TOTP and a backup code are both small enough
+        // search spaces that an unthrottled endpoint is the weakest link in the whole flow.
+        '/two-factor/disable': { max: 5, window: 60 },
+        '/two-factor/enable': { max: 5, window: 60 },
+        '/two-factor/verify-backup-code': { max: 5, window: 60 },
+        '/two-factor/verify-totp': { max: 5, window: 60 },
       },
     },
     plugins: [
@@ -440,6 +449,18 @@ export function defineConfig(
             }),
           }));
         },
+      }),
+      // Two documented second factors: an authenticator app (TOTP) and a passkey. OTP-over-email
+      // is deliberately left off — it would make the recovery channel (the mailbox) the factor.
+      // Backup codes stay on as the account-recovery path.
+      twoFactor({
+        // The issuer shown inside the authenticator app. Like `passkey.rpName` below this is
+        // captured at startup, so it is the build-time brand; the enrolment UI rewrites the
+        // otpauth label with the runtime brand before rendering the QR code.
+        issuer: BRANDING_NAME,
+        // Leave `twoFactorEnabled` false until a code from the authenticator is accepted,
+        // so a user who scans the QR and walks away is not locked out of their own account.
+        skipVerificationOnEnable: false,
       }),
       passkey({
         // WebAuthn RP metadata is captured at Better Auth startup and intentionally does not hot-update.

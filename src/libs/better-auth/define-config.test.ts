@@ -64,6 +64,7 @@ vi.mock('better-auth/plugins', () => ({
   emailOTP: vi.fn(() => ({ id: 'email-otp' })),
   genericOAuth: vi.fn(() => ({ id: 'generic-oauth' })),
   magicLink: vi.fn(() => ({ id: 'magic-link' })),
+  twoFactor: vi.fn(() => ({ id: 'two-factor' })),
 }));
 
 vi.mock('undici', () => ({
@@ -195,6 +196,28 @@ describe('defineConfig', { timeout: 15_000 }, () => {
         }),
       }),
     );
+  });
+
+  it('registers both second factors and throttles the guessable ones', async () => {
+    const { defineConfig } = await import('./define-config');
+    const { twoFactor } = await import('better-auth/plugins');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
+    expect(options.plugins).toContainEqual({ id: 'two-factor' });
+    expect(options.plugins).toContainEqual({ id: 'passkey' });
+
+    // A half-finished enrolment must not count as a factor.
+    expect(twoFactor).toHaveBeenCalledWith(
+      expect.objectContaining({ skipVerificationOnEnable: false }),
+    );
+
+    // A 6-digit code and a backup code are both small enough to brute-force unthrottled.
+    expect(options.rateLimit.customRules).toMatchObject({
+      '/two-factor/verify-backup-code': { max: 5, window: 60 },
+      '/two-factor/verify-totp': { max: 5, window: 60 },
+    });
   });
 
   it('stores OAuth state in the shared database for one-time callback consumption', async () => {

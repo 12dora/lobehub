@@ -93,6 +93,9 @@ export const twoFactor = pgTable(
     userId: text('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    // False between `/two-factor/enable` and the first accepted TOTP code, so a half-finished
+    // enrolment never counts as a factor. Flipped to true by `/two-factor/verify-totp`.
+    verified: boolean('verified').default(true).notNull(),
   },
   (table) => [
     index('two_factor_secret_idx').on(table.secret),

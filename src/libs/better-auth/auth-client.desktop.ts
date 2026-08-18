@@ -1,8 +1,10 @@
+import { passkeyClient } from '@better-auth/passkey/client';
 import {
   adminClient,
   genericOAuthClient,
   inferAdditionalFields,
   magicLinkClient,
+  twoFactorClient,
 } from 'better-auth/client/plugins';
 import { createAuthClient } from 'better-auth/react';
 
@@ -23,6 +25,8 @@ function getClient() {
         inferAdditionalFields<typeof auth>(),
         genericOAuthClient(),
         magicLinkClient(),
+        twoFactorClient(),
+        passkeyClient(),
       ],
     });
   }
@@ -44,15 +48,19 @@ function lazyProp(key: string): any {
 }
 
 export const changeEmail = lazyProp('changeEmail');
+export const changePassword = lazyProp('changePassword');
 export const linkSocial = lazyProp('linkSocial');
 export const oauth2 = lazyProp('oauth2');
 export const accountInfo = lazyProp('accountInfo');
 export const listAccounts = lazyProp('listAccounts');
+export const passkey = lazyProp('passkey');
 export const requestPasswordReset = lazyProp('requestPasswordReset');
 export const resetPassword = lazyProp('resetPassword');
 export const sendVerificationEmail = lazyProp('sendVerificationEmail');
 export const signIn = lazyProp('signIn');
 export const signOut = lazyProp('signOut');
 export const signUp = lazyProp('signUp');
+export const twoFactor = lazyProp('twoFactor');
 export const unlinkAccount = lazyProp('unlinkAccount');
+export const useListPasskeys = lazyProp('useListPasskeys');
 export const useSession = lazyProp('useSession');
