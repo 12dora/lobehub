@@ -67,13 +67,22 @@ const normalizeThinkingConfig = (config?: ThinkingConfig): ThinkingConfig | unde
 
 export interface GoogleModelCard {
   description?: string;
-  displayName: string;
-  inputTokenLimit: number;
-  name: string;
-  outputTokenLimit: number;
+  displayName?: string;
+  inputTokenLimit?: number;
+  name?: string;
+  outputTokenLimit?: number;
+  /**
+   * SDK `Model.supportedActions`. The Gemini Developer REST field is
+   * `supportedGenerationMethods`; `@google/genai` remaps that name on the
+   * API-key path, but Vertex's converter does not, so read both.
+   */
+  supportedActions?: string[];
   supportedGenerationMethods?: string[];
   thinking?: boolean;
 }
+
+const MAX_MODEL_LIST_PAGES = 20;
+const MODEL_LIST_PAGE_SIZE = 1000;
 
 const googleTypeFromMethods = (methods: string[] | undefined): 'chat' | 'embedding' | undefined => {
   if (!methods?.length) return undefined;
@@ -87,6 +96,28 @@ const googleTypeFromMethods = (methods: string[] | undefined): 'chat' | 'embeddi
   if (hasEmbed && !hasChat) return 'embedding';
   if (hasChat && !hasEmbed) return 'chat';
   return undefined;
+};
+
+const stripGoogleModelResourceName = (name: string): string => {
+  const vertexPathIndex = name.lastIndexOf('/models/');
+  if (vertexPathIndex >= 0) return name.slice(vertexPathIndex + '/models/'.length);
+  return name.replace(/^models\//, '');
+};
+
+const mapGoogleModelCard = (model: GoogleModelCard) => {
+  const id = stripGoogleModelResourceName(model.name ?? '');
+  const methods = [...(model.supportedActions ?? []), ...(model.supportedGenerationMethods ?? [])];
+
+  return {
+    contextWindowTokens: (model.inputTokenLimit || 0) + (model.outputTokenLimit || 0),
+    description: model.description,
+    displayName: model.displayName || id,
+    id,
+    maxOutput: model.outputTokenLimit || undefined,
+    // Newer field; omit when absent so catalog/keyword reasoning is not forced off.
+    reasoning: typeof model.thinking === 'boolean' ? model.thinking : undefined,
+    type: googleTypeFromMethods(methods.length > 0 ? methods : undefined),
+  };
 };
 
 enum HarmCategory {
@@ -539,54 +570,67 @@ export class LobeGoogleAI implements LobeRuntimeAI {
     return this.withTransport(() => this.modelsUnbound(options));
   }
 
+  private async listModelsFromClient(signal?: AbortSignal): Promise<GoogleModelCard[]> {
+    const pager = await this.client.models.list({
+      config: {
+        abortSignal: signal,
+        pageSize: MODEL_LIST_PAGE_SIZE,
+      },
+    });
+
+    const models: GoogleModelCard[] = [];
+    for await (const model of pager) {
+      models.push(model);
+      if (models.length >= MAX_MODEL_LIST_PAGES * MODEL_LIST_PAGE_SIZE) break;
+    }
+    return models;
+  }
+
+  private async listModelsFromRest(signal?: AbortSignal): Promise<GoogleModelCard[]> {
+    const modelList: GoogleModelCard[] = [];
+    let pageToken: string | undefined;
+    let pages = 0;
+
+    do {
+      const search = new URLSearchParams({ pageSize: String(MODEL_LIST_PAGE_SIZE) });
+      if (pageToken) search.set('pageToken', pageToken);
+
+      const response = await fetch(`${this.baseURL}/v1beta/models?${search}`, {
+        headers: {
+          'x-goog-api-key': this.apiKey!,
+        },
+        method: 'GET',
+        signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const json = await response.json();
+      if (Array.isArray(json.models)) {
+        modelList.push(...json.models);
+      }
+
+      pageToken =
+        typeof json.nextPageToken === 'string' && json.nextPageToken
+          ? json.nextPageToken
+          : undefined;
+      pages += 1;
+    } while (pageToken && pages < MAX_MODEL_LIST_PAGES);
+
+    return modelList;
+  }
+
   private async modelsUnbound(options?: { signal?: AbortSignal }) {
     try {
-      const modelList: GoogleModelCard[] = [];
-      let pageToken: string | undefined;
-      let pages = 0;
+      // Injected clients (Vertex) have no REST baseURL — fetching it yields
+      // `undefined/v1beta/models` with the placeholder key. List through the SDK.
+      const modelList = this.baseURL
+        ? await this.listModelsFromRest(options?.signal)
+        : await this.listModelsFromClient(options?.signal);
 
-      do {
-        const search = new URLSearchParams({ pageSize: '1000' });
-        if (pageToken) search.set('pageToken', pageToken);
-
-        const response = await fetch(`${this.baseURL}/v1beta/models?${search}`, {
-          headers: {
-            'x-goog-api-key': this.apiKey!,
-          },
-          method: 'GET',
-          signal: options?.signal,
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const json = await response.json();
-        if (Array.isArray(json.models)) {
-          modelList.push(...json.models);
-        }
-
-        pageToken =
-          typeof json.nextPageToken === 'string' && json.nextPageToken
-            ? json.nextPageToken
-            : undefined;
-        pages += 1;
-      } while (pageToken && pages < 20);
-
-      const processedModels = modelList.map((model) => {
-        const id = model.name.replace(/^models\//, '');
-
-        return {
-          contextWindowTokens: (model.inputTokenLimit || 0) + (model.outputTokenLimit || 0),
-          description: model.description,
-          displayName: model.displayName || id,
-          id,
-          maxOutput: model.outputTokenLimit || undefined,
-          // Newer field; omit when absent so catalog/keyword reasoning is not forced off.
-          reasoning: typeof model.thinking === 'boolean' ? model.thinking : undefined,
-          type: googleTypeFromMethods(model.supportedGenerationMethods),
-        };
-      });
+      const processedModels = modelList.map(mapGoogleModelCard);
 
       const { MODEL_LIST_CONFIGS, processModelList } = await import('../../utils/modelParse');
 

@@ -1451,6 +1451,106 @@ describe('models', () => {
     expect(models[1].type).toBe('embedding');
   });
 
+  const createAsyncPager = <T>(pages: T[][]) => {
+    const items = pages.flat();
+    return {
+      [Symbol.asyncIterator]: async function* () {
+        yield* items;
+      },
+      hasNextPage: () => pages.length > 1,
+      page: pages[0] ?? [],
+    };
+  };
+
+  it('lists models through an injected Vertex client instead of fetching undefined/v1beta/models', async () => {
+    const mockFetch = vi.fn();
+    global.fetch = mockFetch;
+
+    const list = vi.fn().mockResolvedValue(
+      createAsyncPager([
+        [
+          {
+            name: 'publishers/google/models/gemini-2.5-pro',
+            displayName: 'Gemini 2.5 Pro',
+            description: 'A short description of the model.',
+            inputTokenLimit: 1_048_576,
+            outputTokenLimit: 65_536,
+            thinking: true,
+            supportedActions: ['generateContent', 'countTokens'],
+          },
+          {
+            name: 'publishers/google/models/text-embedding-004',
+            displayName: 'Text Embedding 004',
+            description: 'Embedding model',
+            inputTokenLimit: 2048,
+            outputTokenLimit: 1,
+            supportedActions: ['embedContent'],
+          },
+        ],
+      ]),
+    );
+
+    const vertexInstance = new LobeGoogleAI({
+      apiKey: 'avoid-error',
+      client: { models: { list } } as any,
+      isVertexAi: true,
+    });
+
+    const models = await vertexInstance.models();
+    const chat = models.find((m) => m.id === 'gemini-2.5-pro');
+    const embedding = models.find((m) => m.id === 'text-embedding-004');
+
+    expect(list).toHaveBeenCalledWith({
+      config: expect.objectContaining({ pageSize: 1000 }),
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(chat).toMatchObject({
+      description: 'A short description of the model.',
+      displayName: 'Gemini 2.5 Pro',
+      reasoning: true,
+      type: 'chat',
+    });
+    expect(chat?.contextWindowTokens).toBe(1_048_576 + 65_536);
+    expect(embedding).toMatchObject({ type: 'embedding' });
+  });
+
+  it('drains every page of an injected-client pager', async () => {
+    const list = vi.fn().mockResolvedValue(
+      createAsyncPager([
+        [
+          {
+            name: 'models/page-one',
+            displayName: 'Page One',
+            inputTokenLimit: 100,
+            outputTokenLimit: 10,
+            supportedActions: ['generateContent'],
+          },
+        ],
+        [
+          {
+            name: 'models/page-two',
+            displayName: 'Page Two',
+            inputTokenLimit: 200,
+            outputTokenLimit: 20,
+            supportedGenerationMethods: ['embedContent'],
+          },
+        ],
+      ]),
+    );
+
+    const vertexInstance = new LobeGoogleAI({
+      apiKey: 'avoid-error',
+      client: { models: { list } } as any,
+      isVertexAi: true,
+    });
+
+    const models = await vertexInstance.models();
+
+    expect(models.map((m) => m.id)).toEqual(['page-one', 'page-two']);
+    expect(models[0].type).toBe('chat');
+    expect(models[1].type).toBe('embedding');
+  });
+
   describe('transcribe', () => {
     it('should transcribe audio via native generateContent and return text', async () => {
       const generateContentMock = vi

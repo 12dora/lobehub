@@ -25,7 +25,6 @@ export interface GithubModelCard {
   version: string;
 }
 
-
 export const params = {
   baseURL: 'https://models.github.ai/inference',
   chatCompletion: {
@@ -52,6 +51,10 @@ export const params = {
   },
   models: async () => {
     const response = await fetch('https://models.github.ai/catalog/models');
+    if (!response.ok) {
+      throw new Error(`GitHub Models catalogue request failed with HTTP ${response.status}`);
+    }
+
     const modelList: GithubModelCard[] = await response.json();
 
     const formattedModels = modelList.map((model) => ({

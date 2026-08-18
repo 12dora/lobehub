@@ -330,6 +330,7 @@ describe('LobeGithubAI - custom features', () => {
 
     it('should fetch and format models successfully', async () => {
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => mockGithubModels,
       });
 
@@ -344,6 +345,7 @@ describe('LobeGithubAI - custom features', () => {
 
     it('should format model with all capabilities', async () => {
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [mockGithubModels[0]],
       });
 
@@ -362,6 +364,7 @@ describe('LobeGithubAI - custom features', () => {
 
     it('should format model with reasoning tag', async () => {
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [mockGithubModels[2]],
       });
 
@@ -374,6 +377,7 @@ describe('LobeGithubAI - custom features', () => {
 
     it('should handle model without tool-calling capability', async () => {
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [mockGithubModels[2]],
       });
 
@@ -386,6 +390,7 @@ describe('LobeGithubAI - custom features', () => {
 
     it('should handle model without multimodal/vision tags', async () => {
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [mockGithubModels[1]],
       });
 
@@ -398,6 +403,7 @@ describe('LobeGithubAI - custom features', () => {
 
     it('should handle invalid version format', async () => {
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [mockGithubModels[3]],
       });
 
@@ -415,6 +421,7 @@ describe('LobeGithubAI - custom features', () => {
       };
 
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [validVersionModel],
       });
 
@@ -431,6 +438,7 @@ describe('LobeGithubAI - custom features', () => {
       };
 
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [visionModel],
       });
 
@@ -441,6 +449,7 @@ describe('LobeGithubAI - custom features', () => {
 
     it('should handle empty model list', async () => {
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [],
       });
 
@@ -459,12 +468,29 @@ describe('LobeGithubAI - custom features', () => {
 
     it('should handle invalid JSON response', async () => {
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => {
           throw new Error('Invalid JSON');
         },
       });
 
       await expect(params.models!()).rejects.toThrow('Invalid JSON');
+    });
+
+    it('surfaces a clear error when the catalogue returns HTTP 410', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        json: async () => ({
+          message: 'GitHub Models is retired',
+        }),
+        ok: false,
+        status: 410,
+        statusText: 'Gone',
+      });
+
+      await expect(params.models!()).rejects.toThrow(
+        'GitHub Models catalogue request failed with HTTP 410',
+      );
+      await expect(params.models!()).rejects.not.toBeInstanceOf(TypeError);
     });
 
     it('should handle models with missing optional fields', async () => {
@@ -488,6 +514,7 @@ describe('LobeGithubAI - custom features', () => {
       };
 
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [minimalModel],
       });
 
@@ -512,6 +539,7 @@ describe('LobeGithubAI - custom features', () => {
       };
 
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => [testModel],
       });
 
@@ -522,6 +550,7 @@ describe('LobeGithubAI - custom features', () => {
 
     it('should handle multiple models with different features', async () => {
       global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
         json: async () => mockGithubModels,
       });
 
