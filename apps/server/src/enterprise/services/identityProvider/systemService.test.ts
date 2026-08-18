@@ -100,6 +100,7 @@ const insertInstance = async (input: {
   activeIdentityRevision: string;
   instanceId: string;
   lastHeartbeat?: Date;
+  startupSource?: 'break_glass' | 'database' | 'environment' | 'lkg';
 }) => {
   await db.insert(platformIdentityProviderInstances).values({
     activeIdentityRevision: input.activeIdentityRevision,
@@ -110,7 +111,7 @@ const insertInstance = async (input: {
     loadedAt: now,
     startedAt: new Date(now.getTime() - 120_000),
     startupGeneration: 'generation',
-    startupSource: 'database',
+    startupSource: input.startupSource ?? 'database',
   });
 };
 
@@ -414,6 +415,65 @@ describe('IdentityProviderSystemService', () => {
     expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('pending_restart');
   });
 
+  it('does not invent break_glass_fallback when nothing was published', async () => {
+    const local = getIdentityProviderProcessInstance();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: null,
+      health: 'degraded',
+      identityRevision: null,
+      lastError: 'startup_snapshot_not_initialized',
+      loadedAt: now,
+      providerIds: [],
+      source: 'break_glass',
+    });
+    await insertInstance({
+      activeIdentityRevision: 'a'.repeat(64),
+      instanceId: local.instanceId,
+    });
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => undefined,
+    };
+    const status = await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    ).getAuthSnapshotStatus();
+    expect(status.artifact.degradedCategory).toBe('startup_snapshot_unavailable');
+    expect(status.artifact.degradedCategory).not.toBe('break_glass_fallback');
+  });
+
+  it('surfaces secret_unavailable instead of break_glass_fallback when secrets are missing', async () => {
+    const local = getIdentityProviderProcessInstance();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: null,
+      health: 'degraded',
+      identityRevision: null,
+      lastError: 'secret_unavailable',
+      loadedAt: now,
+      providerIds: [],
+      source: 'break_glass',
+    });
+    await insertInstance({
+      activeIdentityRevision: 'a'.repeat(64),
+      instanceId: local.instanceId,
+    });
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => undefined,
+    };
+    const status = await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    ).getAuthSnapshotStatus();
+    expect(status.artifact.degradedCategory).toBe('secret_unavailable');
+  });
+
   it('demotes an active DB provider blocked by a newly authoritative environment provider', async () => {
     const target = await seedPendingTarget();
     const local = getIdentityProviderProcessInstance();
@@ -505,6 +565,84 @@ describe('IdentityProviderSystemService', () => {
       },
     });
     expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('active');
+  });
+
+  it('converges an unrelated tombstone when env SSO is the live source', async () => {
+    const emptyIdentity = identityProviderLkgIdentity([]);
+    const payload = {
+      autoProvision: true,
+      buttonLabel: 'Work account',
+      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+      clientId: 'client-id',
+      displayName: 'Work',
+      domainAllowlist: [],
+      enabled: false,
+      groupRoleMapping: {},
+      icon: null,
+      issuer: 'https://login.example.test',
+      providerKey: 'work',
+      scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
+      secretFingerprint: 'b'.repeat(64),
+      secretUpdatedAt: now.toISOString(),
+      type: 'generic_oidc' as const,
+      usePkce: true as const,
+    };
+    await db.insert(platformIdentityProviders).values({
+      activationRevision: 1,
+      buttonLabel: 'Work account',
+      displayName: 'Work',
+      enabled: false,
+      id: 'provider-work',
+      providerKey: 'work',
+      revision: 1,
+      status: 'pending_restart',
+    });
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(payload),
+      id: 'revision-work-tombstone-1',
+      payload,
+      publishedAt: now,
+      resourceId: 'provider-work',
+      resourceType: 'oidc',
+      revision: 1,
+      secretFingerprint: 'b'.repeat(64),
+      status: 'published',
+    });
+    const env = { AUTH_SSO_PROVIDERS: 'google', ENABLE_DATABASE_OIDC: '1' };
+    const local = getIdentityProviderProcessInstance();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: 'generation',
+      health: 'healthy',
+      identityRevision: emptyIdentity,
+      lastError: null,
+      loadedAt: now,
+      providerIds: ['google'],
+      source: 'environment',
+    });
+    await insertInstance({
+      activeIdentityRevision: emptyIdentity,
+      instanceId: local.instanceId,
+      startupSource: 'environment',
+    });
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => undefined,
+    };
+    const status = await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+      env,
+    ).getAuthSnapshotStatus();
+    expect(status).toMatchObject({
+      active: { allFreshInstancesActive: true },
+      pendingPublished: [],
+      pendingRestart: false,
+      targetIdentityRevision: emptyIdentity,
+    });
+    expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('disabled');
   });
 
   it('does not ignore a mismatched fresh instance beyond the old 200-row boundary', async () => {

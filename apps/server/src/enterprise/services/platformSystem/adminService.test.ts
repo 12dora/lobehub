@@ -1057,4 +1057,178 @@ describe('PlatformSystemAdminService status', () => {
       status: 'unavailable',
     });
   });
+
+  it('reports oidc as not configured when a break-glass artifact has no provider ids', async () => {
+    const now = new Date();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: null,
+      health: 'degraded',
+      identityRevision: null,
+      lastError: 'startup_snapshot_not_initialized',
+      loadedAt: now,
+      providerIds: [],
+      source: 'break_glass',
+    });
+
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        ENABLE_DATABASE_OIDC: '1',
+        ENABLE_PLATFORM_ADMIN: '1',
+      },
+      now: () => now,
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    expect(status.oidc).toMatchObject({
+      configured: false,
+      source: 'break_glass',
+      status: 'degraded',
+    });
+  });
+
+  it('reports oidc as not configured for an empty healthy database snapshot', async () => {
+    const now = new Date();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: 'generation',
+      health: 'healthy',
+      identityRevision: 'c'.repeat(64),
+      lastError: null,
+      loadedAt: now,
+      providerIds: [],
+      source: 'database',
+    });
+
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        ENABLE_DATABASE_OIDC: '1',
+        ENABLE_PLATFORM_ADMIN: '1',
+      },
+      now: () => now,
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    expect(status.oidc).toMatchObject({
+      configured: false,
+      source: 'database',
+      status: 'healthy',
+    });
+  });
+
+  it('reports environment SSO when the database-OIDC flag is off and env providers are set', async () => {
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        AUTH_SSO_PROVIDERS: 'google',
+        ENABLE_DATABASE_OIDC: '0',
+        ENABLE_PLATFORM_ADMIN: '1',
+      },
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    expect(status.oidc).toMatchObject({
+      configured: true,
+      pendingRestart: false,
+      source: 'environment',
+      status: 'healthy',
+    });
+  });
+
+  it('reports environment source when nothing is published and env SSO is set', async () => {
+    const now = new Date();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: null,
+      health: 'healthy',
+      identityRevision: 'c'.repeat(64),
+      lastError: null,
+      loadedAt: now,
+      providerIds: ['google'],
+      source: 'environment',
+    });
+
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        AUTH_SSO_PROVIDERS: 'google',
+        ENABLE_DATABASE_OIDC: '1',
+        ENABLE_PLATFORM_ADMIN: '1',
+      },
+      now: () => now,
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    expect(status.oidc).toMatchObject({
+      configured: true,
+      source: 'environment',
+      status: 'healthy',
+    });
+  });
+
+  it('fails closed when published selection cannot be loaded', async () => {
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx.insert(platformResourceRevisions).values({
+        checksum: 'f'.repeat(64),
+        id: 'revision-tampered-1',
+        payload: { providerKey: 'work', secretFingerprint: 'broken' },
+        publishedAt: now,
+        resourceId: 'provider-work',
+        resourceType: 'oidc',
+        revision: 1,
+        secretFingerprint: 'b'.repeat(64),
+        status: 'published',
+      });
+    });
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: 'generation',
+      health: 'healthy',
+      identityRevision: 'c'.repeat(64),
+      lastError: null,
+      loadedAt: now,
+      providerIds: [],
+      source: 'database',
+    });
+
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        ENABLE_DATABASE_OIDC: '1',
+        ENABLE_PLATFORM_ADMIN: '1',
+      },
+      now: () => now,
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    expect(status.oidc).toMatchObject({
+      configured: true,
+      source: 'database',
+      status: 'unavailable',
+    });
+  });
 });

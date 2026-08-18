@@ -4,6 +4,7 @@ import {
   commitIdentityProviderStartupSnapshot,
   getIdentityProviderPublicArtifact,
   getIdentityProviderRuntimeArtifact,
+  getIdentityProviderStartupArtifactHealth,
   getInitializedIdentityProviderPublicArtifact,
   markIdentityProviderStartupLoading,
   resetIdentityProviderStartupArtifactForTest,
@@ -114,5 +115,24 @@ describe('identity provider startup artifact', () => {
       providerIds: ['work'],
     });
     isolatedChunk.resetIdentityProviderStartupArtifactForTest();
+  });
+
+  it('includes providerIds on the process health DTO', () => {
+    resetIdentityProviderStartupArtifactForTest();
+    expect(getIdentityProviderStartupArtifactHealth()).toBeNull();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: 'generation',
+      health: 'healthy',
+      identityRevision: 'a'.repeat(64),
+      lastError: null,
+      loadedAt: new Date(),
+      providerIds: ['work'],
+      source: 'database',
+    });
+    expect(getIdentityProviderStartupArtifactHealth()).toMatchObject({
+      providerIds: ['work'],
+      source: 'database',
+    });
   });
 });

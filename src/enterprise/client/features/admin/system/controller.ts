@@ -74,6 +74,8 @@ const resolveSsoPresentationKind = (oidc: SsoOidcStatus): SsoPresentationKind =>
   ) {
     return 'not_configured';
   }
+  // Ledger / published-lookup failure is an error, not "restart pending".
+  if (oidc.status === 'unavailable') return 'attention';
   if (oidc.pendingRestart) return 'restart_pending';
   if (oidc.status === 'healthy' && oidc.configured) return 'enabled';
   return 'attention';
@@ -81,7 +83,8 @@ const resolveSsoPresentationKind = (oidc: SsoOidcStatus): SsoPresentationKind =>
 
 /**
  * One operator-facing SSO state for the health page.
- * `pendingRestart` wins over degraded health; `configured: false` is "not configured".
+ * `unavailable` wins over restart-pending; `pendingRestart` still wins over
+ * degraded-but-known health; `configured: false` is "not configured".
  */
 export const deriveSsoPresentation = (input: {
   oidc: SsoOidcStatus;

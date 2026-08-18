@@ -189,7 +189,7 @@ describe('deriveSsoPresentation', () => {
         activeRevision: null,
         pendingRestart: true,
         source: 'unknown',
-        status: 'unavailable',
+        status: 'healthy',
       }),
     });
     expect(presentation.kind).toBe('restart_pending');
@@ -203,6 +203,21 @@ describe('deriveSsoPresentation', () => {
         oidc: oidc({ pendingRestart: true, status: 'degraded' }),
       }).kind,
     ).toBe('restart_pending');
+  });
+
+  it('surfaces unavailable ahead of restart-pending as attention', () => {
+    const presentation = deriveSsoPresentation({
+      oidc: oidc({
+        configured: true,
+        pendingRestart: true,
+        status: 'unavailable',
+      }),
+    });
+    expect(presentation).toMatchObject({
+      kind: 'attention',
+      labelKey: 'system.oidc.attention',
+      tone: 'error',
+    });
   });
 
   it('reports enabled only when healthy, configured, and not waiting on restart', () => {
@@ -228,6 +243,32 @@ describe('deriveSsoPresentation', () => {
       tone: 'warning',
     });
     expect(deriveSsoPresentation({ oidc: oidc({ status: 'unavailable' }) }).tone).toBe('error');
+  });
+
+  it('hides the source line when break-glass has no live SSO providers', () => {
+    const presentation = deriveSsoPresentation({
+      oidc: oidc({
+        configured: false,
+        source: 'break_glass',
+        status: 'degraded',
+      }),
+    });
+    expect(presentation.kind).toBe('not_configured');
+    expect(presentation.showSource).toBe(false);
+    expect(presentation.labelKey).toBe('system.oidc.notConfigured');
+  });
+
+  it('reports attention for a real break-glass fallback that still has live SSO', () => {
+    const presentation = deriveSsoPresentation({
+      oidc: oidc({ configured: true, source: 'break_glass', status: 'degraded' }),
+      snapshot: { artifact: { degradedCategory: 'break_glass_fallback' } },
+    });
+    expect(presentation).toMatchObject({
+      degradedCategory: 'break_glass_fallback',
+      kind: 'attention',
+      showSource: true,
+      tone: 'warning',
+    });
   });
 });
 

@@ -248,6 +248,90 @@ describe('identity provider startup snapshot', () => {
     },
   );
 
+  it('treats no published rows as a healthy empty database snapshot when secrets exist', async () => {
+    const env = await baseEnv();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const snapshot = await loadSnapshot({ cache: false, db, env });
+
+      expect(snapshot).toMatchObject({
+        databaseProviders: [],
+        health: 'healthy',
+        lastError: null,
+        providerIds: [],
+        source: 'database',
+      });
+      expect(
+        errorSpy.mock.calls.some((call) =>
+          String(call[0]).includes('critical database snapshot failure'),
+        ),
+      ).toBe(false);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('treats no published rows as a healthy empty database snapshot without a master key', async () => {
+    const env = {
+      ...(await baseEnv()),
+      PLATFORM_MASTER_KEY: undefined,
+      PLATFORM_MASTER_KEY_ID: undefined,
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const snapshot = await loadSnapshot({ cache: false, db, env });
+
+      expect(snapshot).toMatchObject({
+        databaseProviders: [],
+        health: 'healthy',
+        lastError: null,
+        providerIds: [],
+        source: 'database',
+      });
+      expect(snapshot.source).not.toBe('break_glass');
+      expect(
+        errorSpy.mock.calls.some((call) =>
+          String(call[0]).includes('critical database snapshot failure'),
+        ),
+      ).toBe(false);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('uses environment source when nothing is published but env SSO is set', async () => {
+    const env = { ...(await baseEnv()), AUTH_SSO_PROVIDERS: 'google' };
+    const snapshot = await loadSnapshot({ cache: false, db, env });
+
+    expect(snapshot).toMatchObject({
+      databaseProviders: [],
+      health: 'healthy',
+      lastError: null,
+      providerIds: ['google'],
+      source: 'environment',
+    });
+  });
+
+  it('falls back to break-glass when published rows exist but secrets are unavailable', async () => {
+    const env = await baseEnv();
+    await seedPublished(env);
+
+    const snapshot = await loadSnapshot({
+      cache: false,
+      db,
+      env: { ...env, PLATFORM_MASTER_KEY: undefined, PLATFORM_MASTER_KEY_ID: undefined },
+    });
+
+    expect(snapshot).toMatchObject({
+      databaseProviders: [],
+      health: 'degraded',
+      lastError: 'secret_unavailable',
+      source: 'break_glass',
+    });
+  });
+
   it('has a flag-off zero DB/LKG path', async () => {
     const snapshot = await loadSnapshot({
       cache: false,

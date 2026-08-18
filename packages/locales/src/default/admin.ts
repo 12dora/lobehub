@@ -2024,13 +2024,13 @@ export default {
     'Complete a successful sign-in test before publishing.',
   'identityProviders.values.claimType.string': 'text',
   'identityProviders.values.degraded.break_glass_fallback':
-    'Running on the emergency sign-in configuration; the published configuration could not be loaded',
+    'Could not load the published sign-in settings; using the environment-variable providers, or local login if none are set.',
   'identityProviders.values.degraded.environment_provider_shadowed':
     'The published configuration is overridden by an environment-variable provider of the same name',
   'identityProviders.values.degraded.instance_status_unavailable':
     'Service instance status is unavailable',
   'identityProviders.values.degraded.lkg_fallback':
-    'Running on the last known good configuration; the latest publish has not been loaded',
+    'Using the last known good sign-in settings; the latest publish has not loaded yet.',
   'identityProviders.values.degraded.lkg_permissions_invalid':
     'The last-known-good configuration file has incorrect permissions',
   'identityProviders.values.degraded.lkg_signature_invalid':
@@ -2038,9 +2038,10 @@ export default {
   'identityProviders.values.degraded.lkg_stale': 'The last-known-good configuration is stale',
   'identityProviders.values.degraded.lkg_write_unavailable':
     'The last-known-good configuration could not be saved',
-  'identityProviders.values.degraded.secret_unavailable': 'The client secret is unavailable',
+  'identityProviders.values.degraded.secret_unavailable':
+    'The identity-provider client secret could not be decrypted.',
   'identityProviders.values.degraded.startup_snapshot_unavailable':
-    'The sign-in configuration could not be loaded at startup',
+    'Sign-in settings could not be loaded at startup.',
   'identityProviders.values.degraded.unknown': 'Runtime is degraded for an unknown reason',
   'identityProviders.values.testStatus.failed': 'Failed',
   'identityProviders.values.testStatus.pending': 'Waiting to start',
@@ -2126,12 +2127,13 @@ export default {
   'system.jobs.toast.retryRequested': 'Retry requested',
   'system.jobs.updatesAvailable': 'New job updates are available',
   'system.jobs.updatesAvailableDescription': 'Click Apply updates to see the latest jobs.',
-  'system.oidc.attention': 'Attention needed',
-  'system.oidc.attentionHint': 'Single sign-on needs attention.',
+  'system.oidc.attention': 'Needs attention',
+  'system.oidc.attentionHint': 'Single sign-on is not running from the published configuration.',
   'system.oidc.enabled': 'Enabled',
-  'system.oidc.enabledHint': 'Single sign-on is running on this instance.',
+  'system.oidc.enabledHint': 'Single sign-on is enabled on this instance.',
   'system.oidc.notConfigured': 'Not configured',
-  'system.oidc.notConfiguredHint': 'No single sign-on method is set up.',
+  'system.oidc.notConfiguredHint':
+    'Single sign-on is not set up. Users sign in with a local email and password.',
   'system.oidc.pendingRestart': 'Restart pending',
   'system.oidc.pendingRestartHint':
     'The latest sign-on configuration takes effect after a restart.',
@@ -2173,11 +2175,11 @@ export default {
   'system.values.jobKind.connector_secret_cleanup': 'Connector credential cleanup',
   'system.values.jobKind.secret_rewrap': 'Key rotation',
   'system.values.jobKind.unknown': 'Other background job',
-  'system.values.oidcSource.break_glass': 'Emergency configuration',
-  'system.values.oidcSource.database': 'Admin console',
+  'system.values.oidcSource.break_glass': 'Environment-variable fallback',
+  'system.values.oidcSource.database': 'Published in admin',
   'system.values.oidcSource.disabled': 'Disabled',
   'system.values.oidcSource.environment': 'Environment variables',
-  'system.values.oidcSource.lkg': 'Last known good',
+  'system.values.oidcSource.lkg': 'Last known good (cached)',
   'system.values.oidcSource.unknown': 'Unknown',
   'system.values.publishFailure.conflict': 'Conflict',
   'system.values.publishFailure.dependency_unavailable': 'Dependency unavailable',

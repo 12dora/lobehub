@@ -87,8 +87,10 @@ describe('admin system value locale catalog (server-emitted)', () => {
       'system.oidc.title',
       'system.values.oidcSource.break_glass',
       'system.values.oidcSource.database',
+      'system.values.oidcSource.disabled',
       'system.values.oidcSource.environment',
       'system.values.oidcSource.lkg',
+      'system.values.oidcSource.unknown',
     ];
 
     for (const key of keys) {

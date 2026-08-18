@@ -219,7 +219,6 @@ export class IdentityProviderSystemService {
           : identityProviderDegradedCategory({
               ...artifact,
               databaseProviders: [],
-              providerIds: [],
             }),
         fresh: true,
         health: registrationFailed ? ('degraded' as const) : artifact.health,
@@ -244,11 +243,20 @@ export class IdentityProviderSystemService {
         ...sortedFreshInstances,
         ...staleInstances.map((instance) => ({ ...instance, fresh: false })),
       ];
-      const isActive = (instance: (typeof fresh)[number]) =>
-        Boolean(target.identityRevision) &&
-        instance.activeIdentityRevision === target.identityRevision &&
-        instance.health === 'healthy' &&
-        instance.startupSource === 'database';
+      const isActive = (instance: (typeof fresh)[number]) => {
+        if (
+          !target.identityRevision ||
+          instance.activeIdentityRevision !== target.identityRevision ||
+          instance.health !== 'healthy'
+        ) {
+          return false;
+        }
+        if (instance.startupSource === 'database') return true;
+        // Empty canonical DB set + env SSO loads as source:environment with the
+        // empty-set identity digest. Treat that as converged so tombstones can
+        // reconcile instead of leaving restart pending forever.
+        return instance.startupSource === 'environment' && target.providers.length === 0;
+      };
       const activeCount = fresh.filter(isActive).length;
       const allFreshInstancesActive = fresh.length > 0 && activeCount === fresh.length;
       let pendingPublished = pendingRows.flatMap((row) =>

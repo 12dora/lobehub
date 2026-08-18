@@ -260,6 +260,7 @@ describe('PlatformInstanceStatusService (PGlite)', () => {
         identityRevision: target,
         lastError: null,
         loadedAt: new Date(now.getTime() - 500),
+        providerIds: [],
         source: 'lkg',
       }),
       getIdentityProcess: () => localIdentity,
@@ -306,6 +307,7 @@ describe('PlatformInstanceStatusService (PGlite)', () => {
                 identityRevision: target,
                 lastError: null,
                 loadedAt: new Date(),
+                providerIds: [],
                 source: 'database',
               }
             : null,

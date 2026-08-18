@@ -449,9 +449,58 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
     new IdentityProviderDiscoveryValidator(
       new SafeOutboundHttpClient({ mode: resolveIdentityProviderOutboundMode(env) }),
     );
+  const environmentProviderIdSet = new Set(environmentProviderIds);
   let databaseError: unknown = new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE');
   /** Tombstones validated before a later live-provider failure — applied to LKG fallback. */
   let validatedTombstones: ValidatedTombstone[] = [];
+
+  // Select published revisions before requiring secrets so "nothing published"
+  // is a healthy empty database snapshot, not break-glass.
+  let publishedSelection: Awaited<
+    ReturnType<typeof loadPublishedIdentityProviderSelection>
+  > | null = null;
+  try {
+    const db = options.db ?? (await loadDatabase());
+    publishedSelection = await loadPublishedIdentityProviderSelection({
+      db,
+      environmentProviderIds: environmentProviderIdSet,
+    });
+  } catch (error) {
+    databaseError = error;
+  }
+
+  if (publishedSelection && publishedSelection.selected.length === 0) {
+    const emptyPayload: DatabasePayload = {
+      rows: [],
+      tombstoneGenerations: publishedSelection.tombstoneGenerations,
+      tombstones: publishedSelection.tombstones,
+    };
+    return {
+      databaseProviders: [],
+      generation: snapshotGeneration(emptyPayload),
+      health: 'healthy',
+      identityRevision: identityRevision([]),
+      lastError: null,
+      loadedAt,
+      providerIds: environmentProviderIds,
+      // Env-only SSO must not be labelled "published in admin".
+      source: environmentProviderIds.length > 0 ? 'environment' : 'database',
+    };
+  }
+
+  if (publishedSelection && publishedSelection.selected.length > 0 && !secrets) {
+    return {
+      databaseProviders: [],
+      generation: null,
+      health: 'degraded',
+      identityRevision: null,
+      lastError: errorCategory(databaseError),
+      loadedAt,
+      providerIds: environmentProviderIds,
+      source: 'break_glass',
+    };
+  }
+
   if (secrets) {
     let durableRevocations: IdentityProviderRevocationJournalEntry[] | null = null;
     try {
@@ -463,7 +512,6 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
     }
     try {
       const db = options.db ?? (await loadDatabase());
-      const environmentProviderIdSet = new Set(environmentProviderIds);
       for (let attempt = 0; attempt < 2; attempt++) {
         // Capture tombstones before live secret/discovery materialization so a
         // co-provider failure cannot discard an already-validated revoke.

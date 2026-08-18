@@ -76,7 +76,6 @@ export const identityProviderDegradedCategory = (
 ): string | null => {
   if (snapshot.health === 'healthy') return null;
   if (snapshot.source === 'lkg') return 'lkg_fallback';
-  if (snapshot.source === 'break_glass') return 'break_glass_fallback';
   const error = snapshot.lastError ?? '';
   if (error.includes('secret')) return 'secret_unavailable';
   if (error.includes('permission') || error.includes('owner')) return 'lkg_permissions_invalid';
@@ -84,6 +83,12 @@ export const identityProviderDegradedCategory = (
   if (error.includes('stale')) return 'lkg_stale';
   if (error.startsWith('lkg_write_')) return 'lkg_write_unavailable';
   if (error.includes('activation_status')) return 'instance_status_unavailable';
+  // Process-init lastError values — not a published-config load failure.
+  if (error.includes('startup_snapshot') && error !== 'startup_snapshot_unavailable') {
+    return 'startup_snapshot_unavailable';
+  }
+  // Only after lastError: break-glass means published material failed to load.
+  if (snapshot.source === 'break_glass') return 'break_glass_fallback';
   return 'startup_snapshot_unavailable';
 };
 

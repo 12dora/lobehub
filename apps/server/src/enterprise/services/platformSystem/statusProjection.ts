@@ -98,42 +98,64 @@ export const mutationFailureCategory = (error: unknown): string => {
   return 'operation_unavailable';
 };
 
+export type PublishedSsoLookup = 'empty' | 'lookup_failed' | 'present';
+
 export const projectOidcStatus = (params: {
   artifact: IdentityProviderStartupHealth | null;
   authSnapshot: { pendingRestart: boolean } | null;
+  envSsoConfigured: boolean;
   flags: { ENABLE_DATABASE_OIDC: boolean };
-  oidcConfiguredWithoutArtifact: boolean;
+  publishedSso: PublishedSsoLookup;
 }) => {
-  const { flags, artifact, authSnapshot, oidcConfiguredWithoutArtifact } = params;
+  const { flags, artifact, authSnapshot, envSsoConfigured, publishedSso } = params;
+  const configured =
+    envSsoConfigured ||
+    (artifact?.providerIds.length ?? 0) > 0 ||
+    publishedSso === 'present' ||
+    publishedSso === 'lookup_failed';
   // Fail closed: if the canonical ledger is unavailable, do not claim "active".
   const pendingRestart = authSnapshot
     ? authSnapshot.pendingRestart
     : Boolean(flags.ENABLE_DATABASE_OIDC && artifact);
-  return !flags.ENABLE_DATABASE_OIDC
-    ? ({
-        activeRevision: null,
-        configured: false,
-        pendingRestart: false,
-        source: 'disabled',
-        status: 'disabled',
-      } as const)
-    : artifact
+  if (!flags.ENABLE_DATABASE_OIDC) {
+    return envSsoConfigured
       ? ({
-          activeRevision: artifact.identityRevision,
+          activeRevision: null,
           configured: true,
-          pendingRestart,
-          source: artifact.source,
-          // Prefer artifact health when the ledger is available; mark unavailable
-          // when the canonical restart status could not be loaded.
-          status: authSnapshot ? artifact.health : ('unavailable' as const),
+          pendingRestart: false,
+          source: 'environment',
+          status: 'healthy',
         } as const)
       : ({
           activeRevision: null,
-          configured: oidcConfiguredWithoutArtifact,
-          pendingRestart: true,
-          source: 'unknown',
-          status: 'unavailable',
+          configured: false,
+          pendingRestart: false,
+          source: 'disabled',
+          status: 'disabled',
         } as const);
+  }
+  if (artifact) {
+    return {
+      activeRevision: artifact.identityRevision,
+      configured,
+      pendingRestart,
+      source: artifact.source,
+      // Prefer artifact health when the ledger is available; mark unavailable
+      // when the canonical restart status could not be loaded or published
+      // selection itself failed.
+      status:
+        publishedSso === 'lookup_failed' || !authSnapshot
+          ? ('unavailable' as const)
+          : artifact.health,
+    } as const;
+  }
+  return {
+    activeRevision: null,
+    configured,
+    pendingRestart: true,
+    source: 'unknown',
+    status: 'unavailable',
+  } as const;
 };
 
 const withCheckedAt = (health: DependencyHealth, checkedAt: Date): DependencyHealth => ({

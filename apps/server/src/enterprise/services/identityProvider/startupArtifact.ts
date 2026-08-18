@@ -9,12 +9,12 @@ export interface IdentityProviderStartupHealth {
   identityRevision: string | null;
   lastError: string | null;
   loadedAt: Date;
+  providerIds: string[];
   source: IdentityProviderStartupSource;
 }
 
 export interface IdentityProviderStartupSnapshot extends IdentityProviderStartupHealth {
   databaseProviders: RuntimeIdentityProvider[];
-  providerIds: string[];
 }
 
 export interface IdentityProviderPublicDefinition {
@@ -27,7 +27,6 @@ export interface IdentityProviderPublicDefinition {
 
 export interface IdentityProviderPublicArtifact extends IdentityProviderStartupHealth {
   phase: IdentityProviderStartupPhase;
-  providerIds: string[];
   providers: IdentityProviderPublicDefinition[];
 }
 
@@ -79,6 +78,7 @@ const fallbackHealth = (): IdentityProviderStartupHealth => {
     lastError:
       phase === 'loading' ? 'startup_snapshot_loading' : 'startup_snapshot_not_initialized',
     loadedAt: new Date(0),
+    providerIds: [],
     source: 'break_glass',
   };
 };
@@ -192,6 +192,7 @@ export const getIdentityProviderStartupArtifactHealth =
           identityRevision: snapshot.identityRevision,
           lastError: snapshot.lastError,
           loadedAt: snapshot.loadedAt,
+          providerIds: snapshot.providerIds,
           source: snapshot.source,
         }
       : null;

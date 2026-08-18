@@ -30,6 +30,7 @@ import {
 } from '../agentCatalog/rolloutService';
 import { AUDIT_ACTION, type AuditAction } from '../audit/auditActionCatalog';
 import { getIdentityProviderStartupArtifactHealth } from '../identityProvider/startupArtifact';
+import { parseEnvironmentIdentityProviderIds } from '../identityProvider/startupSnapshot';
 import {
   IdentityProviderSystemService,
   loadPublishedIdentityTarget,
@@ -65,6 +66,7 @@ import {
   projectDependencies,
   projectOidcStatus,
   publicationDomains,
+  type PublishedSsoLookup,
   type RedisHealthDependencies,
 } from './statusProjection';
 
@@ -462,14 +464,24 @@ export class PlatformSystemAdminService {
               status: 'unavailable' as const,
             },
           };
-    // Same published-selection as getAuthSnapshotStatus (live, enabled, not env-shadowed).
-    let oidcConfiguredWithoutArtifact = false;
-    if (flags.ENABLE_DATABASE_OIDC && !artifact) {
+    // Live SSO = env providers, artifact providerIds, or published live selection.
+    // Always resolve published count when the artifact has no providerIds so an
+    // empty healthy database snapshot stays unconfigured, while a published
+    // set that failed to load still counts as configured (SSO was expected).
+    // Only a confirmed empty selection may yield configured:false — a lookup
+    // error must not fail open into "not configured".
+    const envSsoConfigured = parseEnvironmentIdentityProviderIds(this.env).length > 0;
+    let publishedSso: PublishedSsoLookup = 'empty';
+    if (
+      flags.ENABLE_DATABASE_OIDC &&
+      (!artifact || artifact.providerIds.length === 0) &&
+      !envSsoConfigured
+    ) {
       try {
         const target = await loadPublishedIdentityTarget(this.db, this.env);
-        oidcConfiguredWithoutArtifact = target.providers.length > 0;
+        publishedSso = target.providers.length > 0 ? 'present' : 'empty';
       } catch {
-        oidcConfiguredWithoutArtifact = false;
+        publishedSso = 'lookup_failed';
       }
     }
     return {
@@ -514,8 +526,9 @@ export class PlatformSystemAdminService {
       oidc: projectOidcStatus({
         artifact,
         authSnapshot,
+        envSsoConfigured,
         flags,
-        oidcConfiguredWithoutArtifact,
+        publishedSso,
       }),
       recentPublishFailures:
         publishFailureResult.status === 'fulfilled'
