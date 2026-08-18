@@ -6,6 +6,8 @@ import type {
   AdminUsersCreateOutput,
   AdminUsersDeleteInput,
   AdminUsersDeleteOutput,
+  AdminUsersDisableTwoFactorInput,
+  AdminUsersDisableTwoFactorOutput,
   AdminUsersGetAuditTrailInput,
   AdminUsersGetAuditTrailOutput,
   AdminUsersGetInput,
@@ -16,6 +18,8 @@ import type {
   AdminUsersReplaceGlobalRolesOutput,
   AdminUsersRevokeSessionsInput,
   AdminUsersRevokeSessionsOutput,
+  AdminUsersSetPasswordInput,
+  AdminUsersSetPasswordOutput,
   AdminUsersUnbanInput,
   AdminUsersUnbanOutput,
 } from '@/server/enterprise/contracts/adminUsers';
@@ -66,6 +70,17 @@ class AdminUsersService {
   ): Promise<AdminUsersReplaceGlobalRolesOutput> => {
     return lambdaClient.admin.users.replaceGlobalRoles.mutate(input);
   };
+
+  /** Admin takeover of a credential password. Never log or echo `newPassword`. */
+  setPassword = async (input: AdminUsersSetPasswordInput): Promise<AdminUsersSetPasswordOutput> => {
+    return lambdaClient.admin.users.setPassword.mutate(input);
+  };
+
+  disableTwoFactor = async (
+    input: AdminUsersDisableTwoFactorInput,
+  ): Promise<AdminUsersDisableTwoFactorOutput> => {
+    return lambdaClient.admin.users.disableTwoFactor.mutate(input);
+  };
 }
 
 export const adminUsersService = new AdminUsersService();
@@ -77,6 +92,8 @@ export type {
   AdminUsersCreateOutput,
   AdminUsersDeleteInput,
   AdminUsersDeleteOutput,
+  AdminUsersDisableTwoFactorInput,
+  AdminUsersDisableTwoFactorOutput,
   AdminUsersGetAuditTrailInput,
   AdminUsersGetAuditTrailOutput,
   AdminUsersGetInput,
@@ -87,6 +104,8 @@ export type {
   AdminUsersReplaceGlobalRolesOutput,
   AdminUsersRevokeSessionsInput,
   AdminUsersRevokeSessionsOutput,
+  AdminUsersSetPasswordInput,
+  AdminUsersSetPasswordOutput,
   AdminUsersUnbanInput,
   AdminUsersUnbanOutput,
 };

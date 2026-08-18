@@ -66,6 +66,10 @@ const UserDetailPage = memo(() => {
   const canDelete = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_DELETE);
   const canRevoke = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_SESSION_REVOKE);
   const canManageRoles = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_ROLE_MANAGE);
+  const canManageCredentials = hasPermission(
+    permissions,
+    PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE,
+  );
   const canReadAudit = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_READ);
 
   // Same eligibility the replace-permissions modal uses: non-super actors cannot
@@ -74,20 +78,45 @@ const UserDetailPage = memo(() => {
   const canRevokeRoleName = (roleName: string) => eligibleRoleNames.has(roleName);
 
   const { data, error, isLoading, mutate } = useFetchAdminUserDetail(userId);
-  const { banUser, unbanUser, deleteUser, revokeSessions, replaceGlobalRoles } =
-    useAdminUserMutations();
+  const {
+    banUser,
+    unbanUser,
+    deleteUser,
+    disableUserTwoFactor,
+    revokeSessions,
+    replaceGlobalRoles,
+    setUserPassword,
+  } = useAdminUserMutations();
 
   const mutations = useMemo(
-    () => ({ banUser, deleteUser, replaceGlobalRoles, revokeSessions, unbanUser }),
-    [banUser, deleteUser, replaceGlobalRoles, revokeSessions, unbanUser],
+    () => ({
+      banUser,
+      deleteUser,
+      disableUserTwoFactor,
+      replaceGlobalRoles,
+      revokeSessions,
+      setUserPassword,
+      unbanUser,
+    }),
+    [
+      banUser,
+      deleteUser,
+      disableUserTwoFactor,
+      replaceGlobalRoles,
+      revokeSessions,
+      setUserPassword,
+      unbanUser,
+    ],
   );
 
   const {
     openBan,
     openDelete,
+    openDisableTwoFactor,
     openRevokeAll,
     openRevokeRole,
     openRevokeSingle,
+    openSetPassword,
     openUnban,
     openUpdatePermissions,
   } = useUserDetailActions({
@@ -171,10 +200,15 @@ const UserDetailPage = memo(() => {
           <OverviewTab
             canBan={canBan && allowHighRisk}
             canDelete={canDelete && allowHighRisk}
+            canManageCredentials={canManageCredentials}
             user={data}
             onBan={canBan && allowHighRisk ? openBan : undefined}
             onDelete={canDelete && allowHighRisk ? openDelete : undefined}
+            onSetPassword={canManageCredentials && allowHighRisk ? openSetPassword : undefined}
             onUnban={canBan && allowHighRisk ? openUnban : undefined}
+            onDisableTwoFactor={
+              canManageCredentials && allowHighRisk ? openDisableTwoFactor : undefined
+            }
           />
         ) : null}
         {tab === 'access' ? (

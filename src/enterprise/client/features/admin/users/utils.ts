@@ -28,9 +28,18 @@ export const getAdminUsersMutationErrorKey = (error: unknown): string => {
   if (mapped?.code === 'PLATFORM_NOT_FOUND') return 'users.errors.notFound';
   if (mapped?.code === 'PLATFORM_INVALID_INPUT') {
     const reason = mapped.details?.reason;
-    if (reason === 'self_ban' || reason === 'self_delete' || reason === 'self_role_change') {
+    if (
+      reason === 'self_ban' ||
+      reason === 'self_delete' ||
+      reason === 'self_role_change' ||
+      reason === 'self_set_password'
+    ) {
       return 'users.errors.selfAction';
     }
+    // SSO-only target: no local credential account to overwrite. The security
+    // section explains the same state, so reuse its copy instead of a generic
+    // "invalid input" that hides the actual reason.
+    if (reason === 'no_credential_account') return 'users.security.password.ssoOnly';
     return 'users.errors.invalidInput';
   }
   // Shared CAS / optimistic-lock conflict (settings, branding, audit policy, …).

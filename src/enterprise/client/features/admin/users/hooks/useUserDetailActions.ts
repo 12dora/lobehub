@@ -17,6 +17,8 @@ import {
   openRevokeSingleSessionModal,
   openUnbanUserModal,
 } from '../modals/actions';
+import { openDisableTwoFactorModal } from '../modals/security/DisableTwoFactorModal';
+import { openSetPasswordModal } from '../modals/security/SetPasswordModal';
 import { displayUserName } from '../utils';
 import type { useAdminUserMutations } from './useAdminUsers';
 
@@ -26,7 +28,13 @@ export interface UseUserDetailActionsParams {
   data: AdminUsersGetOutput | undefined;
   mutations: Pick<
     ReturnType<typeof useAdminUserMutations>,
-    'banUser' | 'deleteUser' | 'replaceGlobalRoles' | 'revokeSessions' | 'unbanUser'
+    | 'banUser'
+    | 'deleteUser'
+    | 'disableUserTwoFactor'
+    | 'replaceGlobalRoles'
+    | 'revokeSessions'
+    | 'setUserPassword'
+    | 'unbanUser'
   >;
   navigate: NavigateFunction;
   t: TFunction<'admin'>;
@@ -42,7 +50,15 @@ export const useUserDetailActions = ({
   t,
   userId,
 }: UseUserDetailActionsParams) => {
-  const { banUser, deleteUser, replaceGlobalRoles, revokeSessions, unbanUser } = mutations;
+  const {
+    banUser,
+    deleteUser,
+    disableUserTwoFactor,
+    replaceGlobalRoles,
+    revokeSessions,
+    setUserPassword,
+    unbanUser,
+  } = mutations;
 
   // Post-commit SWR refresh lives inside useAdminUserMutations (soft — never fails the mutation).
   // Do not await a second mutate() here: a refresh rejection would surface as a mutation failure.
@@ -155,12 +171,42 @@ export const useUserDetailActions = ({
     [authMethod, data, replaceGlobalRoles, t, userId],
   );
 
+  const openSetPassword = useCallback(() => {
+    // Mirrors the server guard: SSO-only targets have no credential row to rewrite,
+    // and the admin path skips the current-password proof, so never on self.
+    if (!data || !userId || data.isSelf || !data.hasPassword) return;
+    openSetPasswordModal({
+      authMethod,
+      targetLabel: displayUserName(data),
+      userId,
+      onSubmit: async (input) => {
+        await setUserPassword(input);
+      },
+    });
+  }, [authMethod, data, setUserPassword, userId]);
+
+  const openDisableTwoFactor = useCallback(() => {
+    if (!data || !userId || !data.twoFactorEnabled) return;
+    openDisableTwoFactorModal({
+      authMethod,
+      isSelf: data.isSelf,
+      passkeyCount: data.passkeyCount,
+      targetLabel: displayUserName(data),
+      userId,
+      onSubmit: async (input) => {
+        await disableUserTwoFactor(input);
+      },
+    });
+  }, [authMethod, data, disableUserTwoFactor, userId]);
+
   return {
     openBan,
     openDelete,
+    openDisableTwoFactor,
     openRevokeAll,
     openRevokeRole,
     openRevokeSingle,
+    openSetPassword,
     openUnban,
     openUpdatePermissions,
   };

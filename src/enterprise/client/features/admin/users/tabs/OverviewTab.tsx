@@ -12,6 +12,7 @@ import { formatAuditReason } from '../../audit/shared/auditReasonCodes';
 import StatusBadge from '../../primitives/StatusBadge';
 import UserSourceTags from '../UserSourceTags';
 import { formatAdminDateTime } from '../utils';
+import SecuritySection from './SecuritySection';
 
 const styles = createStaticStyles(({ css }) => ({
   actions: css`
@@ -43,14 +44,30 @@ const styles = createStaticStyles(({ css }) => ({
 interface OverviewTabProps {
   canBan: boolean;
   canDelete: boolean;
+  /** Actor holds USER_CREDENTIAL_MANAGE — gates the two security actions only. */
+  canManageCredentials?: boolean;
   onBan?: () => void;
   onDelete?: () => void;
+  /** Undefined when the action is unavailable (stale detail data). */
+  onDisableTwoFactor?: () => void;
+  /** Undefined when the action is unavailable (stale detail data). */
+  onSetPassword?: () => void;
   onUnban?: () => void;
   user: AdminUsersGetOutput;
 }
 
 const OverviewTab = memo<OverviewTabProps>(
-  ({ user, canBan, canDelete, onBan, onDelete, onUnban }) => {
+  ({
+    user,
+    canBan,
+    canDelete,
+    canManageCredentials = false,
+    onBan,
+    onDelete,
+    onDisableTwoFactor,
+    onSetPassword,
+    onUnban,
+  }) => {
     const { t } = useTranslation('admin');
     const isBanned = user.status === 'banned';
     const showActions = canBan || canDelete;
@@ -112,6 +129,13 @@ const OverviewTab = memo<OverviewTabProps>(
             ))}
           </Flexbox>
         )}
+
+        <SecuritySection
+          canManageCredentials={canManageCredentials}
+          user={user}
+          onDisableTwoFactor={onDisableTwoFactor}
+          onSetPassword={onSetPassword}
+        />
 
         {showActions ? (
           <>

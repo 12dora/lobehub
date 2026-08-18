@@ -19,6 +19,7 @@ vi.mock('antd-style', () => ({
 vi.mock('@lobehub/ui', () => ({
   Flexbox: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
+  Tooltip: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({

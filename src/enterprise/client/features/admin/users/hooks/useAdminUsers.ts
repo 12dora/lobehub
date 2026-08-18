@@ -9,11 +9,13 @@ import {
   type AdminUsersBanInput,
   type AdminUsersCreateInput,
   type AdminUsersDeleteInput,
+  type AdminUsersDisableTwoFactorInput,
   type AdminUsersGetAuditTrailInput,
   type AdminUsersListInput,
   type AdminUsersReplaceGlobalRolesInput,
   type AdminUsersRevokeSessionsInput,
   adminUsersService,
+  type AdminUsersSetPasswordInput,
   type AdminUsersUnbanInput,
 } from '@/enterprise/client/services/adminUsers';
 import { mutate, useClientDataSWR } from '@/libs/swr';
@@ -163,5 +165,32 @@ export const useAdminUserMutations = () => {
     return result;
   }, []);
 
-  return { banUser, createUser, deleteUser, replaceGlobalRoles, revokeSessions, unbanUser };
+  /**
+   * Admin credential takeover. Refreshes the detail so `hasPassword` /
+   * `sessionCount` / `sessions` reflect the new state (the server may have
+   * revoked every session as part of the same commit).
+   */
+  const setUserPassword = useCallback(async (input: AdminUsersSetPasswordInput) => {
+    const result = await adminUsersService.setPassword(input);
+    await softRefreshUserCaches(input.userId);
+    return result;
+  }, []);
+
+  /** Refreshes the detail so `twoFactorEnabled` / `passkeyCount` update in place. */
+  const disableUserTwoFactor = useCallback(async (input: AdminUsersDisableTwoFactorInput) => {
+    const result = await adminUsersService.disableTwoFactor(input);
+    await softRefreshUserCaches(input.userId);
+    return result;
+  }, []);
+
+  return {
+    banUser,
+    createUser,
+    deleteUser,
+    disableUserTwoFactor,
+    replaceGlobalRoles,
+    revokeSessions,
+    setUserPassword,
+    unbanUser,
+  };
 };

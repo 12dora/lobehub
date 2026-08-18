@@ -13,6 +13,8 @@ const auditMock = vi.fn();
 const banMock = vi.fn();
 const revokeMock = vi.fn();
 const replaceRolesMock = vi.fn();
+const setPasswordMock = vi.fn();
+const disableTwoFactorMock = vi.fn();
 const mutateMock = vi.fn();
 
 let detailState: {
@@ -177,6 +179,17 @@ vi.mock('./modals/actions', () => ({
   },
 }));
 
+const openSetPassword = vi.fn();
+const openDisableTwoFactor = vi.fn();
+
+vi.mock('./modals/security/SetPasswordModal', () => ({
+  openSetPasswordModal: (...a: unknown[]) => openSetPassword(...a),
+}));
+
+vi.mock('./modals/security/DisableTwoFactorModal', () => ({
+  openDisableTwoFactorModal: (...a: unknown[]) => openDisableTwoFactor(...a),
+}));
+
 vi.mock('./hooks/useAdminUsers', () => ({
   useFetchAdminUserDetail: () => ({
     data: detailState.data,
@@ -196,8 +209,10 @@ vi.mock('./hooks/useAdminUsers', () => ({
   useAdminUserMutations: () => ({
     banUser: banMock,
     deleteUser: vi.fn(),
+    disableUserTwoFactor: disableTwoFactorMock,
     replaceGlobalRoles: replaceRolesMock,
     revokeSessions: revokeMock,
+    setUserPassword: setPasswordMock,
     unbanUser: vi.fn(),
   }),
 }));
@@ -230,6 +245,9 @@ const baseUser = {
   ],
   status: 'active' as const,
   username: 'bob',
+  hasPassword: true,
+  passkeyCount: 2,
+  twoFactorEnabled: true,
   password: 'secret-hash',
   token: 'session-token-leak',
 };
@@ -255,6 +273,8 @@ describe('UserDetailPage', () => {
     openRevokeSingle.mockReset();
     openRoles.mockReset();
     openRevokeRole.mockReset();
+    openSetPassword.mockReset();
+    openDisableTwoFactor.mockReset();
     mutateMock.mockReset();
     permissionsRef.current = [
       PLATFORM_PERMISSIONS.USER_READ,
@@ -262,6 +282,7 @@ describe('UserDetailPage', () => {
       PLATFORM_PERMISSIONS.USER_DELETE,
       PLATFORM_PERMISSIONS.USER_SESSION_REVOKE,
       PLATFORM_PERMISSIONS.USER_ROLE_MANAGE,
+      PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE,
     ];
     rolesRef.current = [{ displayName: 'User Admin', name: 'user_admin' }];
     detailState = {
@@ -382,6 +403,70 @@ describe('UserDetailPage', () => {
     renderDetail();
     fireEvent.click(screen.getByRole('button', { name: 'users.actions.delete' }));
     expect(openDelete).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-bob' }));
+  });
+
+  it('opens the change-password modal for a credential target', () => {
+    renderDetail();
+    fireEvent.click(screen.getByRole('button', { name: 'users.security.password.action' }));
+    expect(openSetPassword).toHaveBeenCalledWith(
+      expect.objectContaining({ targetLabel: 'Bob', userId: 'u-bob' }),
+    );
+  });
+
+  it('opens the disable-two-factor modal with the passkey count and self flag', () => {
+    renderDetail();
+    fireEvent.click(screen.getByRole('button', { name: 'users.security.twoFactor.action' }));
+    expect(openDisableTwoFactor).toHaveBeenCalledWith(
+      expect.objectContaining({ isSelf: false, passkeyCount: 2, userId: 'u-bob' }),
+    );
+  });
+
+  it('offers no two-factor action when two-step verification is already off', () => {
+    detailState = {
+      data: { ...baseUser, twoFactorEnabled: false },
+      error: undefined,
+      isLoading: false,
+    };
+    renderDetail();
+    expect(screen.queryByRole('button', { name: 'users.security.twoFactor.action' })).toBeNull();
+  });
+
+  it('shows the security facts but hides both actions without the credential permission', () => {
+    permissionsRef.current = [PLATFORM_PERMISSIONS.USER_READ];
+    renderDetail();
+    expect(screen.getByText('users.security.title')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'users.security.password.action' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'users.security.twoFactor.action' })).toBeNull();
+  });
+
+  it('locks both credential actions when the detail is stale', () => {
+    detailState = {
+      data: { ...baseUser },
+      error: new Error('revalidation failed'),
+      isLoading: false,
+    };
+    renderDetail();
+    const password = screen.getByRole('button', { name: 'users.security.password.action' });
+    const twoFactor = screen.getByRole('button', { name: 'users.security.twoFactor.action' });
+    expect(password.hasAttribute('disabled')).toBe(true);
+    expect(twoFactor.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(password);
+    fireEvent.click(twoFactor);
+    expect(openSetPassword).not.toHaveBeenCalled();
+    expect(openDisableTwoFactor).not.toHaveBeenCalled();
+  });
+
+  it('keeps the security facts visible for self but disables change-password', () => {
+    detailState = {
+      data: { ...baseUser, isSelf: true },
+      error: undefined,
+      isLoading: false,
+    };
+    renderDetail();
+    const password = screen.getByRole('button', { name: 'users.security.password.action' });
+    expect(password.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(password);
+    expect(openSetPassword).not.toHaveBeenCalled();
   });
 
   it('opens single-session revoke from a session card', () => {
