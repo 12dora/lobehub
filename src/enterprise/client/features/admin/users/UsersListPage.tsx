@@ -180,7 +180,7 @@ const UsersListPage = memo(() => {
         loading={showLoading || (isValidating && !data)}
         rowKey="id"
         rowSelection={rowSelection}
-        scroll={{ x: 1370, y: 560 }}
+        scroll={{ x: 1440, y: 560 }}
         pagination={{
           current: page,
           pageSize,

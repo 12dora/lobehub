@@ -37,20 +37,31 @@ export interface UsersListRowActionsProps {
   isSelf: boolean;
   onBan: Parameters<typeof openBanUserModal>[0]['onConfirm'];
   onDelete: Parameters<typeof openDeleteUserModal>[0]['onConfirm'];
+  /** Opens the slide-in user detail. Only needs USER_READ, which the list already requires. */
+  onOpenDetail: () => void;
   onReplaceRoles: Parameters<typeof openReplaceRolesModal>[0]['onConfirm'];
   onUnban: Parameters<typeof openUnbanUserModal>[0]['onConfirm'];
   row: AdminUserListItem;
 }
 
 const ActionButton = memo<{
+  /** Names the target user, so rows stay distinguishable to a screen reader. */
+  ariaLabel?: string;
   danger?: boolean;
-  disabled: boolean;
-  disabledTitle: string;
+  disabled?: boolean;
+  disabledTitle?: string;
   label: string;
   onClick: () => void;
-}>(({ danger, disabled, disabledTitle, label, onClick }) => {
+}>(({ ariaLabel, danger, disabled, disabledTitle, label, onClick }) => {
   const button = (
-    <Button danger={danger} disabled={disabled} size="small" type="text" onClick={onClick}>
+    <Button
+      aria-label={ariaLabel}
+      danger={danger}
+      disabled={disabled}
+      size="small"
+      type="text"
+      onClick={onClick}
+    >
       {label}
     </Button>
   );
@@ -75,6 +86,7 @@ const UsersListRowActions = memo<UsersListRowActionsProps>(
     isSelf,
     onBan,
     onDelete,
+    onOpenDetail,
     onReplaceRoles,
     onUnban,
     row,
@@ -85,6 +97,11 @@ const UsersListRowActions = memo<UsersListRowActionsProps>(
 
     return (
       <div className={styles.actions}>
+        <ActionButton
+          ariaLabel={t('users.list.actions.editUser', { name: targetLabel })}
+          label={t('users.list.actions.edit')}
+          onClick={onOpenDetail}
+        />
         {canManageRoles ? (
           <ActionButton
             disabled={isSelf}

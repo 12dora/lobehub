@@ -16,6 +16,8 @@ import UserDetailDrawer from './UserDetailDrawer';
 const frames = vi.hoisted(() => ({
   body: [] as (string | null)[],
   drawer: [] as { hasBody: boolean; open: boolean }[],
+  /** Semantic classNames handed to the Drawer — the popup one carries the clip fix. */
+  popupClassName: null as string | null | undefined,
 }));
 
 /**
@@ -37,8 +39,18 @@ vi.mock('react-i18next', () => ({
 // The real Drawer keeps children mounted through the slide-out; the stub renders
 // them unconditionally so the host's own mount/unmount timing stays observable.
 vi.mock('@lobehub/ui/base-ui', () => ({
-  Drawer: ({ afterOpenChange, children, onClose, open, placement, title, width }: any) => {
+  Drawer: ({
+    afterOpenChange,
+    children,
+    classNames,
+    onClose,
+    open,
+    placement,
+    title,
+    width,
+  }: any) => {
     frames.drawer.push({ hasBody: Boolean(children), open: Boolean(open) });
+    frames.popupClassName = classNames?.popup;
     return (
       <div
         data-open={String(Boolean(open))}
@@ -88,6 +100,7 @@ describe('UserDetailDrawer', () => {
   beforeEach(() => {
     frames.body.length = 0;
     frames.drawer.length = 0;
+    frames.popupClassName = null;
     suspense.pending = null;
     suspense.release = null;
     suspense.userId = null;
@@ -111,6 +124,20 @@ describe('UserDetailDrawer', () => {
     const body = screen.getByTestId('detail-body');
     expect(body.dataset.userId).toBe('u-9');
     expect(body.dataset.variant).toBe('drawer');
+  });
+
+  /**
+   * `body` carries `transform: translateZ(0)` app-wide, so it is the containing block of
+   * the popup's fixed box: an unclipped popup lets the entering panel (translateX(100%))
+   * extend `body.scrollWidth`, and the focus trap then scrolls the whole page sideways.
+   * The class clips it. Real proof is the Playwright probe on the demo; this only guards
+   * the wiring.
+   */
+  it('clips the popup wrapper so the entering panel cannot scroll the page', () => {
+    render(<UserDetailDrawer open userId="u-9" onClose={vi.fn()} />);
+
+    expect(typeof frames.popupClassName).toBe('string');
+    expect(frames.popupClassName).toBeTruthy();
   });
 
   it('keeps the body through the slide-out and drops it once the panel is hidden', () => {

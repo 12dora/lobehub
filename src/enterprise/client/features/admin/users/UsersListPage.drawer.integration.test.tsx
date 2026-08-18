@@ -131,14 +131,12 @@ const renderPage = (entries: string[] = ['/admin/users']) =>
 const row = (container: HTMLElement, id: string) =>
   container.querySelector<HTMLElement>(`[data-row-key="${id}"]`)!;
 
-/** Identity cell first, email cell second — the only two open affordances in a row. */
-const NAME_BY_ID: Record<string, string> = { u1: 'Alice', u2: 'Carol' };
-
-const openTargets = (container: HTMLElement, id: string) =>
-  within(row(container, id)).getAllByLabelText(`users.list.openDetail:${NAME_BY_ID[id]}`);
+/** The row's Edit action — the only affordance that opens a user. */
+const editButton = (container: HTMLElement, id: string) =>
+  within(row(container, id)).getByText('users.list.actions.edit');
 
 const openUser = (container: HTMLElement, id: string) => {
-  fireEvent.click(openTargets(container, id)[0]);
+  fireEvent.click(editButton(container, id));
 };
 
 const bodyUserId = () => screen.getByTestId('detail-body').dataset.userId;
@@ -237,12 +235,23 @@ describe('UsersListPage × UserDetailDrawer (real DataTable + real Drawer)', () 
     expect(bodyRenders).toEqual(['u2']);
   });
 
-  it('opens from the email cell too', () => {
+  it('leaves the identity and email cells inert — only Edit opens a user', () => {
     const { container } = renderPage();
-    fireEvent.click(openTargets(container, 'u2')[1]);
+    const target = row(container, 'u2');
 
-    expect(bodyUserId()).toBe('u2');
-    expect(location()).toBe('/admin/users?user=u2');
+    // The cells that used to carry the open control are plain content again.
+    expect(target.querySelectorAll('[role="button"][aria-label]')).toHaveLength(0);
+
+    const cellWith = (text: string) =>
+      [...target.querySelectorAll<HTMLElement>('.ant-table-cell')].find((cell) =>
+        cell.textContent?.includes(text),
+      )!;
+
+    fireEvent.click(cellWith('Carol'));
+    fireEvent.click(cellWith('carol@example.com'));
+
+    expect(screen.queryByTestId('detail-body')).toBeNull();
+    expect(location()).toBe('/admin/users');
   });
 
   it('unmounts the body only after the panel has finished sliding out', async () => {
@@ -258,7 +267,7 @@ describe('UsersListPage × UserDetailDrawer (real DataTable + real Drawer)', () 
     await waitForDrawerGone();
   });
 
-  it('leaves rows non-clickable — only the identity and email cells open a user', () => {
+  it('leaves rows non-clickable — only the Edit action opens a user', () => {
     const { container } = renderPage();
 
     const rows = container.querySelectorAll('.ant-table-row');

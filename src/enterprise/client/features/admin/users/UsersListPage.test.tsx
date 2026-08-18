@@ -597,6 +597,27 @@ describe('UsersListPage actions + self protection + bulk', () => {
     expect(evidence.openBan.mock.calls[0][0]).toMatchObject({ userId: 'u2' });
   });
 
+  it('leads the row actions with Edit, which opens the detail panel', () => {
+    renderPage();
+    const actionsCell = within(screen.getByTestId('row-u2')).getByTestId('cell-actions');
+    const labels = [...actionsCell.querySelectorAll('button')].map((node) => node.textContent);
+    expect(labels).toEqual([
+      'users.list.actions.edit',
+      'users.list.actions.roles',
+      'users.list.actions.ban',
+      'users.list.actions.delete',
+    ]);
+
+    fireEvent.click(within(actionsCell).getByText('users.list.actions.edit'));
+    expect(screen.getByTestId('user-detail-drawer').dataset.userId).toBe('u2');
+  });
+
+  it('keeps Edit enabled on the row of the signed-in admin', () => {
+    renderPage();
+    const selfEdit = within(screen.getByTestId('row-u1')).getByText('users.list.actions.edit');
+    expect((selfEdit as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('disables the self-row checkbox and self-row actions', () => {
     renderPage();
     const selfCheckbox = screen.getByLabelText('select-u1') as HTMLInputElement;
@@ -628,7 +649,7 @@ describe('UsersListPage actions + self protection + bulk', () => {
   });
 });
 
-describe('UsersListPage detail panel (identity + email are the only click targets)', () => {
+describe('UsersListPage detail panel (the row Edit action is the only trigger)', () => {
   const LocationProbe = () => {
     const location = useLocation();
     return <span data-testid="location-search">{location.search}</span>;
@@ -648,58 +669,53 @@ describe('UsersListPage detail panel (identity + email are the only click target
     evidence.currentUserId = 'admin-self';
   });
 
-  const openTargets = (rowId: string, name: string) =>
-    within(screen.getByTestId(`row-${rowId}`)).getAllByLabelText(`users.list.openDetail:${name}`);
+  const editButton = (rowId: string) =>
+    within(screen.getByTestId(`row-${rowId}`)).getByText('users.list.actions.edit');
 
-  it('opens the panel from the identity cell and writes ?user=', () => {
+  it('opens the panel from the row Edit action and writes ?user=', () => {
     renderPage();
     expect(screen.queryByTestId('user-detail-drawer')).toBeNull();
 
-    const [identity] = openTargets('u1', 'Alice');
-    fireEvent.click(identity);
+    fireEvent.click(editButton('u1'));
 
     expect(screen.getByTestId('user-detail-drawer').dataset.userId).toBe('u1');
     expect(screen.getByTestId('location-search').textContent).toBe('?user=u1');
   });
 
-  it('opens the panel from the email cell', () => {
+  it('opens the panel for the row the action belongs to', () => {
     renderPage();
-    const [, emailTarget] = openTargets('u2', 'Carol');
-    fireEvent.click(emailTarget);
+    fireEvent.click(editButton('u2'));
 
     expect(screen.getByTestId('user-detail-drawer').dataset.userId).toBe('u2');
     expect(screen.getByTestId('location-search').textContent).toBe('?user=u2');
   });
 
-  it('opens the panel from the keyboard (Enter / Space) on an open target', () => {
+  it('offers the Edit action on every row, even without any mutation permission', () => {
     renderPage();
-    const [identity] = openTargets('u2', 'Carol');
-    expect(identity.getAttribute('role')).toBe('button');
-    expect(identity.getAttribute('tabindex')).toBe('0');
-
-    fireEvent.keyDown(identity, { key: 'Enter' });
-    expect(screen.getByTestId('user-detail-drawer').dataset.userId).toBe('u2');
+    // Viewing a user needs only the read permission the list itself requires.
+    expect((editButton('u1') as HTMLButtonElement).disabled).toBe(false);
+    expect((editButton('u2') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('names the user in every open control so rows are distinguishable to a screen reader', () => {
+  it('names the user on every Edit action so rows are distinguishable to a screen reader', () => {
     renderPage();
-    const openLabels = (rowId: string) =>
-      [
-        ...screen
-          .getByTestId(`row-${rowId}`)
-          .querySelectorAll('[aria-label^="users.list.openDetail"]'),
-      ].map((node) => node.getAttribute('aria-label'));
+    expect(editButton('u1').getAttribute('aria-label')).toBe('users.list.actions.editUser:Alice');
+    expect(editButton('u2').getAttribute('aria-label')).toBe('users.list.actions.editUser:Carol');
+  });
 
-    // An aria-label overrides the visible name / email, so a shared one would make
-    // both cells of every row announce as the same anonymous control.
-    expect(openLabels('u1')).toEqual([
-      'users.list.openDetail:Alice',
-      'users.list.openDetail:Alice',
-    ]);
-    expect(openLabels('u2')).toEqual([
-      'users.list.openDetail:Carol',
-      'users.list.openDetail:Carol',
-    ]);
+  it('leaves the identity and email cells inert', () => {
+    renderPage();
+    const row = screen.getByTestId('row-u2');
+
+    for (const key of ['identity', 'email']) {
+      const cell = within(row).getByTestId(`cell-${key}`);
+      expect(cell.querySelector('[role="button"]')).toBeNull();
+      expect(cell.querySelector('[aria-label]')).toBeNull();
+      fireEvent.click(cell);
+    }
+
+    expect(screen.queryByTestId('user-detail-drawer')).toBeNull();
+    expect(screen.getByTestId('location-search').textContent).toBe('');
   });
 
   it('does nothing when other cells or the row checkbox are clicked', () => {
@@ -717,8 +733,7 @@ describe('UsersListPage detail panel (identity + email are the only click target
 
   it('closing the panel removes the search param', () => {
     renderPage();
-    const [identity] = openTargets('u2', 'Carol');
-    fireEvent.click(identity);
+    fireEvent.click(editButton('u2'));
     expect(screen.getByTestId('user-detail-drawer')).toBeTruthy();
 
     fireEvent.click(screen.getByText('close-drawer'));

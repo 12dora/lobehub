@@ -1,10 +1,34 @@
 'use client';
 
 import { Drawer } from '@lobehub/ui/base-ui';
+import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useLayoutEffect, useReducer, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import UserDetailBody from './UserDetailBody';
+
+const styles = createStaticStyles(({ css }) => ({
+  /**
+   * Keeps the page still while the panel slides in.
+   *
+   * Root cause: `src/styles/global.ts` sets `transform: translateZ(0)` on `body`, so
+   * `body` is the containing block of every `position: fixed` box — this drawer's popup
+   * wrapper included. The motion panel enters at `translateX(100%)`, sticking a full
+   * panel width past the viewport, which grows `body.scrollWidth`; the dialog's focus
+   * trap then scrolls `body` (still programmatically scrollable under `overflow: hidden`)
+   * to reveal the close button, so the nav, title and table jump left and slide back as
+   * the panel lands.
+   *
+   * `overflow: clip` cuts the entering panel at the popup's own fixed box, removing that
+   * scrollable overflow without making the popup a scroll container — which `overflow:
+   * hidden` would, handing the focus trap something to scroll instead. The clip margin
+   * keeps the panel's drop shadow (9px offset + 28px blur + 8px spread) painted.
+   */
+  popup: css`
+    overflow: clip;
+    overflow-clip-margin: 48px;
+  `,
+}));
 
 export interface UserDetailDrawerProps {
   onClose: () => void;
@@ -58,6 +82,7 @@ const UserDetailDrawer = memo<UserDetailDrawerProps>(({ onClose, open, userId })
   return (
     <Drawer
       afterOpenChange={handleAfterOpenChange}
+      classNames={{ popup: styles.popup }}
       open={open}
       placement="right"
       title={t('users.detail.title')}
