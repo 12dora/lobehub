@@ -11,7 +11,7 @@ import {
 } from '@/const/platform/modules';
 
 /**
- * Pure draft/summary maths for the 模块 page. Kept out of the components so the numbers the
+ * Pure draft/summary maths for the 模块配置 page. Kept out of the components so the numbers the
  * operator makes a deployment decision on are directly testable.
  */
 
@@ -82,7 +82,7 @@ export interface PresetComparison {
   preset: PlatformModulePreset;
 }
 
-/** Compare a draft against every preset, so the bar can say "比标准档少 N 个后台任务". */
+/** Compare a draft against every preset, so the bar can say "比标准配置少 N 个后台任务". */
 export const comparePresets = (draft: PlatformModuleStateMap): PresetComparison[] => {
   const summary = summarizeModules(draft);
   return PLATFORM_MODULE_PRESETS.map((preset) => {

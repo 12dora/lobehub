@@ -62,7 +62,7 @@ export interface ModuleGroupListProps {
   readOnly: boolean;
 }
 
-/** Enterprise features first — that is what an operator of this fork came here to size down. */
+/** Platform management first — that is what an operator came here to size down. */
 const ModuleGroupList = memo<ModuleGroupListProps>(
   ({ draft, envDisabledBy, onToggle, pendingRestart, readOnly }) => {
     const { t } = useTranslation('admin');

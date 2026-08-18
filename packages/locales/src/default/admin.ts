@@ -3873,13 +3873,13 @@ export default {
   'modules.danger.desc':
     'Records already collected are kept. This only stops new collection and removes the query entry point.',
   'modules.danger.title': 'Switch off {{modules}}?',
-  'modules.deps.externalService': 'External service',
+  'modules.deps.externalService': 'external service',
   'modules.deps.redis': 'Redis',
-  'modules.deps.s3': 'Object storage',
-  'modules.deps.searxng': 'Search engine',
+  'modules.deps.s3': 'object storage',
+  'modules.deps.searxng': 'search engine',
   'modules.description':
     'Turning off modules you do not use lowers memory and background work. Most changes take effect once you reload the page; modules tagged “restart required” only free their resources after the service restarts.',
-  'modules.disabledSurface.action': 'Go to module settings',
+  'modules.disabledSurface.action': 'Go to module configuration',
   'modules.disabledSurface.byEnv':
     'Switched off by {{variable}}. Change the container parameter and restart the service to enable it.',
   'modules.disabledSurface.desc':
@@ -3957,7 +3957,7 @@ export default {
   'modules.items.workflows.desc': 'Asynchronous workflows backed by Upstash / QStash.',
   'modules.items.workflows.title': 'Workflows',
   'modules.pendingChanges': '{{enabled}} to switch on, {{disabled}} to switch off',
-  'modules.presets.custom.desc': 'Pick your own set',
+  'modules.presets.custom.desc': 'Your own combination',
   'modules.presets.custom.title': 'Custom',
   'modules.presets.full.desc': 'Every feature',
   'modules.presets.full.title': 'Complete',
