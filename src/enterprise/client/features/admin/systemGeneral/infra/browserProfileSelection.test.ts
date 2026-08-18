@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import type { AdminBrowserProfileOptions } from '@/enterprise/client/services/adminSystem';
 
 import {
+  adoptBrowserProfileSelection,
   browserProfileSelectionKey,
+  completeBrowserProfileSelection,
   isBrowserProfileSelectionDirty,
   repairBrowserProfileSelection,
   visibleBrowserProfileOptions,
@@ -156,6 +158,42 @@ describe('visibleBrowserProfileOptions', () => {
   });
 });
 
+describe('adoptBrowserProfileSelection', () => {
+  it('opens on exactly what the platform is running', () => {
+    expect(adoptBrowserProfileSelection(options(), onMac)).toEqual(onMac);
+  });
+
+  it('leaves a stored option the pools no longer describe for the operator to answer', () => {
+    // An upgrade dropped this Chrome build and this GPU from the catalogs; the server reports both
+    // as null. Guessing the first entry would open the card already changed, and a save of an
+    // unrelated field would silently replace the browser identity with the guess.
+    const adopted = adoptBrowserProfileSelection(options(), {
+      ...onMac,
+      chromeId: null,
+      webglId: null,
+    });
+
+    expect(adopted).toEqual({ ...onMac, chromeId: undefined, webglId: undefined });
+  });
+
+  it('drops the hardware of a machine it cannot resolve', () => {
+    const adopted = adoptBrowserProfileSelection(options(), { ...onMac, systemId: null });
+
+    expect(adopted).toEqual({
+      chromeId: 'chrome-150',
+      computeId: undefined,
+      localeId: 'locale-en-us-new-york',
+      screenId: undefined,
+      systemId: undefined,
+      webglId: undefined,
+    });
+  });
+
+  it('has nothing to offer without options', () => {
+    expect(adoptBrowserProfileSelection(undefined, onMac)).toBeUndefined();
+  });
+});
+
 describe('repairBrowserProfileSelection', () => {
   it('leaves a choice that is still offered alone', () => {
     expect(repairBrowserProfileSelection(options(), onMac)).toEqual(onMac);
@@ -177,21 +215,26 @@ describe('repairBrowserProfileSelection', () => {
     });
   });
 
-  it('settles a profile the pools no longer describe onto something savable', () => {
+  it('does not answer a dimension the operator has not answered', () => {
     const repaired = repairBrowserProfileSelection(options(), {
-      chromeId: null,
-      computeId: null,
-      localeId: null,
-      screenId: null,
-      systemId: null,
-      webglId: null,
+      ...onMac,
+      chromeId: undefined,
+      webglId: undefined,
     });
 
-    expect(repaired).toEqual(onMac);
+    expect(repaired).toEqual({ ...onMac, chromeId: undefined, webglId: undefined });
   });
 
   it('has nothing to offer without options', () => {
     expect(repairBrowserProfileSelection(undefined, onMac)).toBeUndefined();
+  });
+});
+
+describe('completeBrowserProfileSelection', () => {
+  it('withholds a draft that still has an unresolved dimension', () => {
+    expect(completeBrowserProfileSelection({ ...onMac, webglId: undefined })).toBeUndefined();
+    expect(completeBrowserProfileSelection(undefined)).toBeUndefined();
+    expect(completeBrowserProfileSelection(onMac)).toEqual(onMac);
   });
 });
 
@@ -202,6 +245,13 @@ describe('isBrowserProfileSelectionDirty', () => {
     // A stored value the pools cannot name is a change waiting to be written, not a match.
     expect(isBrowserProfileSelectionDirty({ ...onMac, webglId: null }, onMac)).toBe(true);
     expect(isBrowserProfileSelectionDirty(onMac, undefined)).toBe(false);
+  });
+
+  it('does not call an unanswered dimension a change', () => {
+    // Stored null, chosen nothing: the operator has not edited anything yet.
+    expect(
+      isBrowserProfileSelectionDirty({ ...onMac, webglId: null }, { ...onMac, webglId: undefined }),
+    ).toBe(false);
   });
 });
 

@@ -6,6 +6,7 @@ import { Fingerprint } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import type {
   AdminBrowserProfileOptions,
   AdminBrowserProfileSummary,
@@ -15,8 +16,11 @@ import { InfraFieldRows, InfraSettingsCard } from '../InfraSettingsCard';
 import { infraSettingsStyles as styles } from '../styles';
 import { BrowserProfileFields } from './BrowserProfileFields';
 import {
-  type BrowserProfileSelection,
+  adoptBrowserProfileSelection,
+  type BrowserProfileDraft,
+  type BrowserProfileSaveInput,
   browserProfileSelectionKey,
+  completeBrowserProfileSelection,
   isBrowserProfileSelectionDirty,
   repairBrowserProfileSelection,
   visibleBrowserProfileOptions,
@@ -30,7 +34,7 @@ export interface BrowserProfileCardProps {
   isLoading: boolean;
   onRegenerate: () => Promise<void>;
   onRetry: () => void;
-  onSave: (selection: BrowserProfileSelection) => Promise<void>;
+  onSave: (input: BrowserProfileSaveInput) => Promise<void>;
   /** The curated pools each field may be chosen from; absent until the options query answers. */
   options?: AdminBrowserProfileOptions;
 }
@@ -60,7 +64,8 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
     const { t } = useTranslation('admin');
     const [regenerating, setRegenerating] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [draft, setDraft] = useState<BrowserProfileSelection>();
+    const [stale, setStale] = useState(false);
+    const [draft, setDraft] = useState<BrowserProfileDraft>();
 
     // The summary reports the option ids alongside the values they resolved to.
     const storedKey = browserProfileSelectionKey(data);
@@ -69,9 +74,12 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
      * choice the platform actually made — this save, or someone else's — re-seeds the form.
      */
     useEffect(() => setDraft(undefined), [storedKey]);
+    // Any revision the card has now caught up with is no longer the one it was refused on.
+    useEffect(() => setStale(false), [data?.revision]);
 
-    const settled = useMemo(() => repairBrowserProfileSelection(options, data), [options, data]);
+    const settled = useMemo(() => adoptBrowserProfileSelection(options, data), [options, data]);
     const selection = draft ?? settled;
+    const complete = useMemo(() => completeBrowserProfileSelection(selection), [selection]);
     const dirty = isBrowserProfileSelectionDirty(data, selection);
 
     const visible = useMemo(
@@ -81,7 +89,7 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
 
     /** Every change goes back through the settle step: a new machine invalidates its own hardware. */
     const patch = useCallback(
-      (next: Partial<BrowserProfileSelection>) =>
+      (next: Partial<BrowserProfileDraft>) =>
         setDraft(repairBrowserProfileSelection(options, { ...selection, ...next })),
       [options, selection],
     );
@@ -118,18 +126,32 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
     }, [onRegenerate, t]);
 
     const requestSave = useCallback(async () => {
-      if (!selection) return;
+      if (!complete || !data) return;
       setSaving(true);
       try {
-        await onSave(selection);
+        await onSave({ ...complete, expectedRevision: data.revision });
         toast.success(t('browserProfile.toast.saved'));
-      } catch {
-        // The draft stays: the operator's choice is still on screen to retry or amend.
-        toast.error(t('browserProfile.toast.saveFailed'));
+      } catch (cause) {
+        // A refused save is not a failed one. The fingerprint moved under this form, so the six ids
+        // on screen would reinstate what the other operator just replaced — say so, and offer the
+        // reload, instead of inviting a retry of the same payload.
+        if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') {
+          setStale(true);
+          toast.error(t('systemGeneral.conflict.title'));
+        } else {
+          // The draft stays: the operator's choice is still on screen to retry or amend.
+          toast.error(t('browserProfile.toast.saveFailed'));
+        }
       } finally {
         setSaving(false);
       }
-    }, [onSave, selection, t]);
+    }, [complete, data, onSave, t]);
+
+    const requestReload = useCallback(() => {
+      setStale(false);
+      setDraft(undefined);
+      onRetry();
+    }, [onRetry]);
 
     const banner = error ? (
       <Alert
@@ -140,6 +162,18 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
         action={
           <Button size="small" onClick={onRetry}>
             {t('browserProfile.actions.retry')}
+          </Button>
+        }
+      />
+    ) : stale ? (
+      <Alert
+        showIcon
+        description={t('systemGeneral.conflict.description')}
+        message={t('systemGeneral.conflict.title')}
+        type="warning"
+        action={
+          <Button size="small" onClick={requestReload}>
+            {t('systemGeneral.conflict.reload')}
           </Button>
         }
       />
@@ -213,7 +247,7 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
               </Button>
               {editing ? (
                 <Button
-                  disabled={!dirty || regenerating}
+                  disabled={!dirty || !complete || regenerating}
                   loading={saving}
                   size="small"
                   type="primary"
@@ -222,7 +256,9 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
                   {t('browserProfile.actions.save')}
                 </Button>
               ) : null}
-              {dirty && editing ? (
+              {editing && !complete ? (
+                <span className={formStyles.hint}>{t('systemGeneral.edit.invalidDraft')}</span>
+              ) : dirty && editing ? (
                 <span className={formStyles.hint}>{t('browserProfile.states.dirty')}</span>
               ) : null}
             </>

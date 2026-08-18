@@ -15,7 +15,7 @@ import type {
 import type { AdminSystemInfraDependency } from '@/server/enterprise/contracts/adminSystem';
 
 import { BrowserProfileCard } from './infra/BrowserProfileCard';
-import type { BrowserProfileSelection } from './infra/browserProfileSelection';
+import type { BrowserProfileSaveInput } from './infra/browserProfileSelection';
 import { MailCard } from './infra/MailCard';
 import { ObjectStorageCard } from './infra/ObjectStorageCard';
 import { infraSettingsStyles as styles } from './styles';
@@ -27,7 +27,7 @@ export interface SystemGeneralPageViewProps {
   isLoading: boolean;
   onProfileRegenerate?: () => Promise<void>;
   onProfileRetry?: () => void;
-  onProfileSave?: (selection: BrowserProfileSelection) => Promise<void>;
+  onProfileSave?: (input: BrowserProfileSaveInput) => Promise<void>;
   onRetry: () => void;
   onTest: (dependency: AdminSystemInfraDependency) => void;
   probeBusy: Partial<Record<AdminSystemInfraDependency, boolean>>;

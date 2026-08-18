@@ -20,7 +20,7 @@ import {
   useAdminInfraSettings,
   useInfraDependencyProbe,
 } from './hooks';
-import type { BrowserProfileSelection } from './infra/browserProfileSelection';
+import type { BrowserProfileSaveInput } from './infra/browserProfileSelection';
 import { SystemGeneralPageView } from './SystemGeneralPageView';
 
 export const SYSTEM_GENERAL_TABS = ['infrastructure', 'network-proxy'] as const;
@@ -70,15 +70,20 @@ const SystemGeneralPage = memo(() => {
   const browserProfileOptions = useAdminBrowserProfileOptions(infraEnabled, adminSystemService);
   const probe = useInfraDependencyProbe(adminSystemService);
 
+  /**
+   * Both writes answer with the summary they produced, so the card is fed that rather than a
+   * follow-up read: a revalidation that fails transiently would otherwise leave a saved choice
+   * looking unsaved, and the operator would write the same selection a second time.
+   */
   const regenerateBrowserProfile = useCallback(async () => {
-    await adminSystemService.regenerateBrowserProfile({});
-    await browserProfile.mutate().catch(() => undefined);
+    const summary = await adminSystemService.regenerateBrowserProfile({});
+    await browserProfile.mutate(summary, { revalidate: false });
   }, [browserProfile]);
 
   const saveBrowserProfile = useCallback(
-    async (selection: BrowserProfileSelection) => {
-      await adminSystemService.updateBrowserProfile(selection);
-      await browserProfile.mutate().catch(() => undefined);
+    async (input: BrowserProfileSaveInput) => {
+      const summary = await adminSystemService.updateBrowserProfile(input);
+      await browserProfile.mutate(summary, { revalidate: false });
     },
     [browserProfile],
   );

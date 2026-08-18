@@ -8,13 +8,11 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { PlatformRevisionConflictError } from '@/database/models/platform/errors';
 import { platformAuditLogs, platformBrowserProfiles } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
-import { PlatformBrowserProfileService } from '../../services/browserProfile';
 import { createAdminAuthorizationFixture } from '../../testing/adminAuthorizationFixture';
 import { adminRouter } from '../admin';
 
@@ -79,6 +77,7 @@ describe('admin.browserProfile', () => {
       denied.update({
         chromeId: 'chrome150',
         computeId: 'x',
+        expectedRevision: 0,
         localeId: 'x',
         screenId: 'x',
         systemId: 'x',
@@ -155,6 +154,7 @@ describe('admin.browserProfile', () => {
     const summary = await caller.update({
       chromeId: beforeSummary.chromeId!,
       computeId: beforeSummary.computeId!,
+      expectedRevision: beforeSummary.revision,
       localeId: nextLocale!.id,
       screenId: beforeSummary.screenId!,
       systemId: beforeSummary.systemId!,
@@ -186,38 +186,46 @@ describe('admin.browserProfile', () => {
     expect(JSON.stringify(audits)).not.toContain(after.seed);
   });
 
-  it('surfaces a CAS conflict as its own error, not temporarily unavailable', async () => {
+  it('refuses a second save composed against a revision the first one replaced', async () => {
     const caller = await callerFor('superAdmin');
-    const summary = await caller.get();
-    const spy = vi
-      .spyOn(PlatformBrowserProfileService.prototype, 'update')
-      .mockRejectedValue(
-        new PlatformRevisionConflictError('Platform browser profile revision conflict'),
-      );
+    const base = await caller.get();
+    const options = await caller.options();
+    const [winner, loser] = options.locales.filter((item) => item.id !== base.localeId);
 
-    try {
-      const rejected = await caller
-        .update({
-          chromeId: summary.chromeId!,
-          computeId: summary.computeId!,
-          localeId: summary.localeId!,
-          screenId: summary.screenId!,
-          systemId: summary.systemId!,
-          webglId: summary.webglId!,
-        })
-        .catch((error: unknown) => error);
+    expect(winner && loser).toBeTruthy();
 
-      expect(rejected).toMatchObject({
-        code: 'CONFLICT',
-        message: 'Platform browser profile was changed by another operator',
-      });
-      expect(getEnterpriseErrorBody(rejected)?.code).toBe('PLATFORM_REVISION_CONFLICT');
-      expect(String((rejected as { message?: string }).message)).not.toContain(
-        'temporarily unavailable',
-      );
-    } finally {
-      spy.mockRestore();
-    }
+    const selection = {
+      chromeId: base.chromeId!,
+      computeId: base.computeId!,
+      screenId: base.screenId!,
+      systemId: base.systemId!,
+      webglId: base.webglId!,
+    };
+
+    // Two operators opened the card on the same revision; only the first save may land.
+    const saved = await caller.update({
+      ...selection,
+      expectedRevision: base.revision,
+      localeId: winner!.id,
+    });
+    expect(saved.revision).toBe(base.revision + 1);
+
+    const rejected = await caller
+      .update({ ...selection, expectedRevision: base.revision, localeId: loser!.id })
+      .catch((error: unknown) => error);
+
+    expect(rejected).toMatchObject({
+      code: 'CONFLICT',
+      message: 'Platform browser profile was changed by another operator',
+    });
+    expect(getEnterpriseErrorBody(rejected)?.code).toBe('PLATFORM_REVISION_CONFLICT');
+    expect(String((rejected as { message?: string }).message)).not.toContain(
+      'temporarily unavailable',
+    );
+
+    const [after] = await db.select().from(platformBrowserProfiles);
+    expect(after.revision).toBe(base.revision + 1);
+    expect(asBrowserProfile(after.profile).timezone.iana).toBe(winner!.timezone);
   });
 
   it('maps an unknown option id to invalid input without writing', async () => {
@@ -229,6 +237,7 @@ describe('admin.browserProfile', () => {
       caller.update({
         chromeId: 'not-a-real-chrome',
         computeId: summary.computeId!,
+        expectedRevision: summary.revision,
         localeId: summary.localeId!,
         screenId: summary.screenId!,
         systemId: summary.systemId!,

@@ -43,7 +43,6 @@ interface FakeDatabase {
 
 interface FakeDatabaseOptions {
   profileRepairConflictWinner?: PlatformBrowserProfileItem;
-  revisionConflict?: boolean;
 }
 
 const createFakeDatabase = (
@@ -101,7 +100,6 @@ const createFakeDatabase = (
               row = options?.profileRepairConflictWinner;
               return [];
             }
-            if (options?.revisionConflict && 'revision' in values) return [];
             row = { ...row, ...values };
             return [row];
           },
@@ -349,6 +347,7 @@ describe('PlatformBrowserProfileService', () => {
       actorUserId: 'admin-1',
       chromeId: currentIds.chromeId!,
       computeId: currentIds.computeId!,
+      expectedRevision: 0,
       localeId: nextLocale!.id,
       screenId: currentIds.screenId!,
       systemId: currentIds.systemId!,
@@ -391,6 +390,7 @@ describe('PlatformBrowserProfileService', () => {
       actorUserId: 'admin-1',
       chromeId: nextChrome!.id,
       computeId: currentIds.computeId!,
+      expectedRevision: 0,
       localeId: currentIds.localeId!,
       screenId: currentIds.screenId!,
       systemId: currentIds.systemId!,
@@ -429,6 +429,7 @@ describe('PlatformBrowserProfileService', () => {
         actorUserId: 'admin-1',
         chromeId: 'missing-chrome',
         computeId: currentIds.computeId!,
+        expectedRevision: 0,
         localeId: currentIds.localeId!,
         screenId: currentIds.screenId!,
         systemId: currentIds.systemId!,
@@ -441,6 +442,7 @@ describe('PlatformBrowserProfileService', () => {
         actorUserId: 'admin-1',
         chromeId: currentIds.chromeId!,
         computeId: windowsCompute!.id,
+        expectedRevision: 0,
         localeId: currentIds.localeId!,
         screenId: windowsScreen!.id,
         systemId: windows!.id,
@@ -453,25 +455,79 @@ describe('PlatformBrowserProfileService', () => {
     expect(mocks.auditAppend).not.toHaveBeenCalled();
   });
 
-  it('throws a distinguishable revision conflict when CAS loses', async () => {
-    const fake = createFakeDatabase(undefined, { revisionConflict: true });
+  it('refuses the second of two saves composed against the same revision', async () => {
+    const fake = createFakeDatabase();
     const service = new PlatformBrowserProfileService(fake.db);
     const before = await service.get();
     const ids = resolveBrowserProfileOptionIds(before);
+    const options = listBrowserProfileOptions();
+    const others = options.locales.filter((item) => item.id !== ids.localeId);
+    const [winner, loser] = others;
+
+    expect(winner && loser).toBeTruthy();
+
+    // Both operators opened the card on revision 0.
+    const saved = await service.update({
+      actorUserId: 'admin-1',
+      chromeId: ids.chromeId!,
+      computeId: ids.computeId!,
+      expectedRevision: 0,
+      localeId: winner!.id,
+      screenId: ids.screenId!,
+      systemId: ids.systemId!,
+      webglId: ids.webglId!,
+    });
+    expect(saved.revision).toBe(1);
 
     await expect(
       service.update({
-        actorUserId: 'admin-1',
+        actorUserId: 'admin-2',
         chromeId: ids.chromeId!,
         computeId: ids.computeId!,
-        localeId: ids.localeId!,
+        expectedRevision: 0,
+        localeId: loser!.id,
         screenId: ids.screenId!,
         systemId: ids.systemId!,
         webglId: ids.webglId!,
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
-    expect(fake.read()?.revision).toBe(0);
-    expect(mocks.resetCookieJars).not.toHaveBeenCalled();
+
+    // The first operator's choice survives, and the refused save left no audit row behind.
+    expect(fake.read()?.revision).toBe(1);
+    expect(asBrowserProfile(fake.read()?.profile)?.timezone.iana).toBe(winner!.timezone);
+    expect(mocks.auditAppend).toHaveBeenCalledOnce();
+  });
+
+  it('accepts a save composed against the revision the previous save produced', async () => {
+    const fake = createFakeDatabase();
+    const service = new PlatformBrowserProfileService(fake.db);
+    const before = await service.get();
+    const ids = resolveBrowserProfileOptionIds(before);
+    const options = listBrowserProfileOptions();
+    const [first, second] = options.locales.filter((item) => item.id !== ids.localeId);
+
+    const base = {
+      chromeId: ids.chromeId!,
+      computeId: ids.computeId!,
+      screenId: ids.screenId!,
+      systemId: ids.systemId!,
+      webglId: ids.webglId!,
+    };
+    await service.update({
+      ...base,
+      actorUserId: 'admin-1',
+      expectedRevision: 0,
+      localeId: first!.id,
+    });
+    const summary = await service.update({
+      ...base,
+      actorUserId: 'admin-1',
+      expectedRevision: 1,
+      localeId: second!.id,
+    });
+
+    expect(summary.revision).toBe(2);
+    expect(summary.localeId).toBe(second!.id);
   });
 
   it('redacts secret-shaped text from the append-only audit reason', async () => {

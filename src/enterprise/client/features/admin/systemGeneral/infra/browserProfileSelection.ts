@@ -11,7 +11,19 @@ export type BrowserProfileStoredSelection = Pick<
 >;
 
 /** A complete choice — every dimension resolved to an option the server will accept. */
-export type BrowserProfileSelection = Omit<AdminBrowserProfileUpdateInput, 'reason'>;
+export type BrowserProfileSelection = Omit<
+  AdminBrowserProfileUpdateInput,
+  'expectedRevision' | 'reason'
+>;
+
+/**
+ * A choice in progress. A dimension is `undefined` while it is the operator's to make — a stored
+ * option the pools no longer describe is left for them rather than answered on their behalf.
+ */
+export type BrowserProfileDraft = Partial<BrowserProfileSelection>;
+
+/** What Save posts: the complete choice, plus the revision the form was built from. */
+export type BrowserProfileSaveInput = Omit<AdminBrowserProfileUpdateInput, 'reason'>;
 
 export const BROWSER_PROFILE_SELECTION_KEYS = [
   'chromeId',
@@ -50,46 +62,96 @@ export const visibleBrowserProfileOptions = (
   };
 };
 
-const resolve = (
+const offered = (
   entries: readonly { id: string }[],
   id: string | null | undefined,
-): string | undefined =>
-  entries.some((entry) => entry.id === id) ? id! : (entries[0]?.id ?? undefined);
+): string | undefined => (entries.some((entry) => entry.id === id) ? id! : undefined);
 
 /**
- * Settle a possibly-invalid choice onto one the server will accept: keep every id that is still
- * offered, and fall back to the first option that is where it is not. Changing the system is what
- * makes this necessary — the screen, the memory and the GPU that were true of the old machine are
- * usually not options on the new one, and leaving them selected would only produce a rejected save.
+ * Seed the form from what is stored. An id the pools no longer describe stays unresolved.
  *
- * `undefined` when a dimension has no options at all: there is nothing to save, so nothing to show.
+ * The server reports an unmatchable selection as `null` on purpose, and answering it with the first
+ * entry of the pool would open the card already changed: an operator who then edits only the locale
+ * would also replace the browser build — rotating the identity ChatGPT's session id and the
+ * Cloudflare cookie jars are pinned to — having chosen nothing of the sort.
+ *
+ * `undefined` before the pools arrive: there is nothing to choose from, so nothing to show.
+ */
+export const adoptBrowserProfileSelection = (
+  options: AdminBrowserProfileOptions | undefined,
+  stored: Partial<BrowserProfileStoredSelection> | undefined,
+): BrowserProfileDraft | undefined => {
+  if (!options) return undefined;
+
+  const systemId = offered(options.systems, stored?.systemId);
+  const visible = visibleBrowserProfileOptions(options, systemId);
+
+  return {
+    chromeId: offered(options.chrome, stored?.chromeId),
+    computeId: offered(visible.compute, stored?.computeId),
+    localeId: offered(options.locales, stored?.localeId),
+    screenId: offered(visible.screens, stored?.screenId),
+    systemId,
+    webglId: offered(visible.webgl, stored?.webglId),
+  };
+};
+
+const keepOrRepoint = (
+  entries: readonly { id: string }[],
+  id: string | undefined,
+): string | undefined => {
+  if (id === undefined) return undefined;
+  return entries.some((entry) => entry.id === id) ? id : entries[0]?.id;
+};
+
+/**
+ * Settle a draft the operator just changed. Choosing a different machine is what makes this
+ * necessary: the screen, the memory and the GPU that were true of the old one are usually not
+ * options on the new one, and leaving them selected would only produce a rejected save. Repointing
+ * them is the operator's own edit following through, not a guess — so a dimension they have not
+ * resolved yet stays unresolved.
  */
 export const repairBrowserProfileSelection = (
   options: AdminBrowserProfileOptions | undefined,
-  stored: Partial<BrowserProfileStoredSelection> | undefined,
-): BrowserProfileSelection | undefined => {
+  draft: BrowserProfileDraft | undefined,
+): BrowserProfileDraft | undefined => {
   if (!options) return undefined;
 
-  const systemId = resolve(options.systems, stored?.systemId);
+  const systemId = draft?.systemId;
   const visible = visibleBrowserProfileOptions(options, systemId);
 
-  const chromeId = resolve(options.chrome, stored?.chromeId);
-  const computeId = resolve(visible.compute, stored?.computeId);
-  const localeId = resolve(options.locales, stored?.localeId);
-  const screenId = resolve(visible.screens, stored?.screenId);
-  const webglId = resolve(visible.webgl, stored?.webglId);
+  return {
+    chromeId: draft?.chromeId,
+    computeId: keepOrRepoint(visible.compute, draft?.computeId),
+    localeId: draft?.localeId,
+    screenId: keepOrRepoint(visible.screens, draft?.screenId),
+    systemId,
+    webglId: keepOrRepoint(visible.webgl, draft?.webglId),
+  };
+};
 
+/** The draft as something Save can post, or `undefined` while a dimension is still unresolved. */
+export const completeBrowserProfileSelection = (
+  draft: BrowserProfileDraft | undefined,
+): BrowserProfileSelection | undefined => {
+  if (!draft) return undefined;
+  const { chromeId, computeId, localeId, screenId, systemId, webglId } = draft;
   if (!chromeId || !computeId || !localeId || !screenId || !systemId || !webglId) return undefined;
   return { chromeId, computeId, localeId, screenId, systemId, webglId };
 };
 
-/** Save is only meaningful against what is stored, so this is what lights it up. */
+/**
+ * Save is only meaningful against what is stored, so this is what lights it up. A stored id the
+ * pools cannot name compares equal to an unresolved one: nothing has been chosen yet.
+ */
 export const isBrowserProfileSelectionDirty = (
   stored: Partial<BrowserProfileStoredSelection> | undefined,
-  selection: BrowserProfileSelection | undefined,
+  selection: BrowserProfileDraft | undefined,
 ): boolean =>
   Boolean(selection) &&
-  BROWSER_PROFILE_SELECTION_KEYS.some((key) => stored?.[key] !== selection![key]);
+  BROWSER_PROFILE_SELECTION_KEYS.some(
+    (key) => (stored?.[key] ?? null) !== (selection![key] ?? null),
+  );
 
 /**
  * Identity of a stored choice, for re-seeding the form. A revalidation that returns the same ids

@@ -101,6 +101,12 @@ export const adminBrowserProfileOptionsSchema = z.object({
 export const adminBrowserProfileUpdateInputSchema = z.object({
   chromeId: optionIdSchema,
   computeId: optionIdSchema,
+  /**
+   * The revision the form was built from. Without it the write is last-one-in-wins: the six ids
+   * describe the whole fingerprint, so a save composed against a stale screen silently reinstates
+   * every dimension the other operator had just changed.
+   */
+  expectedRevision: z.number().int().nonnegative(),
   localeId: optionIdSchema,
   reason: z.string().trim().max(500).optional(),
   screenId: optionIdSchema,

@@ -257,10 +257,21 @@ export class PlatformBrowserProfileService {
     return summarizeBrowserProfile(record);
   };
 
+  /**
+   * Persist an operator's choice.
+   *
+   * `expectedRevision` is the revision the caller composed its six ids against, and the write is
+   * refused when the stored row has moved past it. Comparing against the revision this
+   * transaction just locked would compare a value with itself: the lock waits for the concurrent
+   * writer and then reads what that writer left behind, so the predicate could never fail and two
+   * operators would overwrite each other — including the Chrome change that rotates the profile
+   * identity and resets the tied cookie jars.
+   */
   async update({
     actorUserId,
     chromeId,
     computeId,
+    expectedRevision,
     localeId,
     reason,
     screenId,
@@ -270,6 +281,7 @@ export class PlatformBrowserProfileService {
     actorUserId: string;
     chromeId: string;
     computeId: string;
+    expectedRevision: number;
     localeId: string;
     reason?: string;
     screenId: string;
@@ -288,6 +300,9 @@ export class PlatformBrowserProfileService {
         .limit(1)
         .for('update');
       if (!locked) throw new Error('Platform browser profile disappeared during update');
+      if (locked.revision !== expectedRevision) {
+        throw new PlatformRevisionConflictError('Platform browser profile revision conflict');
+      }
 
       const current = toRecord(locked);
       const nextProfile = composeBrowserDeviceProfileFromOptions(
@@ -310,7 +325,7 @@ export class PlatformBrowserProfileService {
         ? validateBrowserDeviceProfile({ ...nextProfile, id: randomUUID() })
         : nextProfile;
 
-      const nextRevision = locked.revision + 1;
+      const nextRevision = expectedRevision + 1;
       const [updated] = await tx
         .update(platformBrowserProfiles)
         .set({
@@ -322,7 +337,7 @@ export class PlatformBrowserProfileService {
         .where(
           and(
             eq(platformBrowserProfiles.id, PLATFORM_BROWSER_PROFILE_ID),
-            eq(platformBrowserProfiles.revision, locked.revision),
+            eq(platformBrowserProfiles.revision, expectedRevision),
           ),
         )
         .returning();

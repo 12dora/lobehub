@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   AdminBrowserProfileOptions,
@@ -61,26 +61,30 @@ vi.mock('@lobehub/ui/base-ui', () => ({
   confirmModal: (options: typeof mocks.confirm) => {
     mocks.confirm = options;
   },
-  // A real <select> so the test can see what is offered and pick from it.
+  // A real <select> so the test can see what is offered and pick from it. An unset value shows the
+  // placeholder entry, the way the base-ui trigger does.
   Select: ({
     disabled,
     id,
     onChange,
     options: entries,
+    placeholder,
     value,
   }: {
     disabled?: boolean;
     id?: string;
     onChange?: (next: string) => void;
     options?: Array<{ label: string; value: string }>;
-    value?: string;
+    placeholder?: ReactNode;
+    value?: string | null;
   }) => (
     <select
       disabled={disabled}
       id={id}
-      value={value}
+      value={value ?? ''}
       onChange={(event) => onChange?.(event.target.value)}
     >
+      {value == null ? <option value="">{placeholder}</option> : null}
       {(entries ?? []).map((entry) => (
         <option key={entry.value} value={entry.value}>
           {entry.label}
@@ -282,6 +286,14 @@ const options = (): AdminBrowserProfileOptions => ({
 
 const labelsOf = (element: HTMLElement) =>
   [...element.querySelectorAll('option')].map((option) => option.textContent);
+
+const saveButton = () => screen.getByRole('button', { name: 'browserProfile.actions.save' });
+
+beforeEach(() => {
+  mocks.confirm = undefined;
+  mocks.error.mockClear();
+  mocks.success.mockClear();
+});
 
 describe('BrowserProfileCard', () => {
   it('shows the safe summary without exposing a seed', () => {
@@ -588,28 +600,34 @@ describe('BrowserProfileCard as an editable choice', () => {
     expect(screen.getByText('browserProfile.states.dirty')).toBeTruthy();
   });
 
-  it('saves the chosen ids and says so', async () => {
+  it('saves the chosen ids against the revision the form was built from', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(editable({ onSave }));
 
     fireEvent.change(screen.getByLabelText('browserProfile.fields.chrome'), {
       target: { value: 'chrome-146' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'browserProfile.actions.save' }));
+    fireEvent.click(saveButton());
     await vi.waitFor(() => expect(onSave).toHaveBeenCalledOnce());
 
-    expect(onSave).toHaveBeenCalledWith({ ...onMac, chromeId: 'chrome-146' });
+    // Without the revision the server cannot tell this apart from a save composed on the latest
+    // fingerprint, and the other operator's change is overwritten.
+    expect(onSave).toHaveBeenCalledWith({
+      ...onMac,
+      chromeId: 'chrome-146',
+      expectedRevision: 3,
+    });
     expect(mocks.success).toHaveBeenCalledWith('browserProfile.toast.saved');
   });
 
   it('keeps the choice on screen when the save is refused', async () => {
-    const onSave = vi.fn().mockRejectedValue(new Error('conflict'));
+    const onSave = vi.fn().mockRejectedValue(new Error('offline'));
     render(editable({ onSave }));
 
     fireEvent.change(screen.getByLabelText('browserProfile.fields.chrome'), {
       target: { value: 'chrome-146' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'browserProfile.actions.save' }));
+    fireEvent.click(saveButton());
     await vi.waitFor(() =>
       expect(mocks.error).toHaveBeenCalledWith('browserProfile.toast.saveFailed'),
     );
@@ -617,6 +635,64 @@ describe('BrowserProfileCard as an editable choice', () => {
     expect((screen.getByLabelText('browserProfile.fields.chrome') as HTMLSelectElement).value).toBe(
       'chrome-146',
     );
+  });
+
+  it('says the view is stale, not that the save failed, when the fingerprint moved underneath it', async () => {
+    const onRetry = vi.fn();
+    const onSave = vi
+      .fn()
+      .mockRejectedValue({ data: { errorData: { code: 'PLATFORM_REVISION_CONFLICT' } } });
+    render(editable({ onRetry, onSave }));
+
+    fireEvent.change(screen.getByLabelText('browserProfile.fields.chrome'), {
+      target: { value: 'chrome-146' },
+    });
+    fireEvent.click(saveButton());
+    await vi.waitFor(() => expect(screen.getByText('systemGeneral.conflict.title')).toBeTruthy());
+
+    // Retrying the same payload would only overwrite the other operator again.
+    expect(mocks.error).toHaveBeenCalledWith('systemGeneral.conflict.title');
+    expect(mocks.error).not.toHaveBeenCalledWith('browserProfile.toast.saveFailed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'systemGeneral.conflict.reload' }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it('leaves a stored option the pools no longer describe unanswered', () => {
+    render(editable({ data: { ...summary(), webglId: null } }));
+
+    // Selecting the first GPU on the operator's behalf would open the card already changed.
+    expect((screen.getByLabelText('browserProfile.fields.webgl') as HTMLSelectElement).value).toBe(
+      '',
+    );
+    expect(screen.getByText('systemGeneral.errors.required')).toBeTruthy();
+    expect(screen.queryByText('browserProfile.states.dirty')).toBeNull();
+    expect(saveButton().hasAttribute('disabled')).toBe(true);
+  });
+
+  it('will not carry an unanswered dimension into an unrelated edit', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(editable({ data: { ...summary(), webglId: null }, onSave }));
+
+    fireEvent.change(screen.getByLabelText('browserProfile.fields.localeTimezone'), {
+      target: { value: 'locale-zh-cn-shanghai' },
+    });
+
+    // Saving here would replace the graphics adapter with a guess the operator never made.
+    expect(screen.getByText('systemGeneral.edit.invalidDraft')).toBeTruthy();
+    expect(saveButton().hasAttribute('disabled')).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('browserProfile.fields.webgl'), {
+      target: { value: 'webgl-apple-m3' },
+    });
+    fireEvent.click(saveButton());
+    await vi.waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+
+    expect(onSave).toHaveBeenCalledWith({
+      ...onMac,
+      expectedRevision: 3,
+      localeId: 'locale-zh-cn-shanghai',
+    });
   });
 
   it('still regenerates in one confirmed step, with no save in between', async () => {

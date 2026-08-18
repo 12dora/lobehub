@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { AdminBrowserProfileOptions } from '@/enterprise/client/services/adminSystem';
 
-import type { BrowserProfileSelection } from './browserProfileSelection';
+import type { BrowserProfileDraft, BrowserProfileSelection } from './browserProfileSelection';
 import { InfraField } from './InfraField';
 import { infraFormStyles as styles } from './styles';
 
@@ -15,7 +15,7 @@ export interface BrowserProfileFieldsProps {
   onChange: (next: Partial<BrowserProfileSelection>) => void;
   /** Already filtered down to what is true of the chosen machine. */
   options: AdminBrowserProfileOptions;
-  selection: BrowserProfileSelection;
+  selection: BrowserProfileDraft;
 }
 
 const toSelectOptions = (entries: readonly { id: string; label: string }[]) =>
@@ -71,14 +71,21 @@ export const BrowserProfileFields = memo<BrowserProfileFieldsProps>(
     return (
       <div className={styles.fieldGrid}>
         {items.map((item) => (
-          <InfraField key={item.key} label={item.label}>
+          <InfraField
+            // An unresolved dimension is the operator's to answer, so it reads as a field waiting
+            // for them rather than as a value the card quietly picked.
+            error={selection[item.key] ? undefined : t('systemGeneral.errors.required')}
+            key={item.key}
+            label={item.label}
+          >
             {(field) => (
               <Select
                 {...field.control}
                 disabled={disabled}
                 options={toSelectOptions(item.entries)}
+                placeholder={t('systemGeneral.values.unset')}
                 style={{ width: '100%' }}
-                value={selection[item.key]}
+                value={selection[item.key] ?? null}
                 onChange={(next) => {
                   if (typeof next !== 'string') return;
                   onChange({ [item.key]: next });

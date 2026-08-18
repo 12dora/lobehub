@@ -10,6 +10,9 @@ import SystemGeneralPage from './SystemGeneralPage';
 
 const mocks = vi.hoisted(() => ({
   admin: { authMethod: 'better-auth', permissions: [] as string[], status: 'allowed' },
+  profileMutate: vi.fn(),
+  updateBrowserProfile: vi.fn(),
+  view: undefined as undefined | { onProfileSave: (input: unknown) => Promise<void> },
 }));
 
 vi.mock('react-i18next', () => ({
@@ -56,7 +59,9 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
   useAdminAccess: () => mocks.admin,
 }));
 
-vi.mock('@/enterprise/client/services/adminSystem', () => ({ adminSystemService: {} }));
+vi.mock('@/enterprise/client/services/adminSystem', () => ({
+  adminSystemService: { updateBrowserProfile: mocks.updateBrowserProfile },
+}));
 
 vi.mock('../primitives/AdminPageTemplate', () => ({
   default: ({
@@ -81,7 +86,7 @@ vi.mock('./hooks', () => ({
     data: undefined,
     error: undefined,
     isLoading: false,
-    mutate: vi.fn(),
+    mutate: mocks.profileMutate,
   }),
   useAdminBrowserProfileOptions: () => ({
     data: undefined,
@@ -99,7 +104,10 @@ vi.mock('./hooks', () => ({
 }));
 
 vi.mock('./SystemGeneralPageView', () => ({
-  SystemGeneralPageView: () => <div data-testid="tab-body-infrastructure" />,
+  SystemGeneralPageView: (props: { onProfileSave: (input: unknown) => Promise<void> }) => {
+    mocks.view = props;
+    return <div data-testid="tab-body-infrastructure" />;
+  },
 }));
 
 vi.mock('../networkProxy/NetworkProxyTab', () => ({
@@ -127,6 +135,9 @@ beforeEach(() => {
     PLATFORM_PERMISSIONS.SYSTEM_READ,
     PLATFORM_PERMISSIONS.NETWORK_PROXY_READ,
   ];
+  mocks.view = undefined;
+  mocks.profileMutate.mockReset();
+  mocks.updateBrowserProfile.mockReset();
 });
 
 describe('SystemGeneralPage', () => {
@@ -175,6 +186,18 @@ describe('SystemGeneralPage', () => {
     ];
     renderAt('/admin/system/general?tab=network-proxy');
     expect(screen.getByTestId('tab-body-network-proxy').dataset.canManage).toBe('true');
+  });
+
+  it('shows the fingerprint the save returned rather than depending on a follow-up read', async () => {
+    const saved = { localeId: 'locale-zh-cn-shanghai', revision: 9 };
+    mocks.updateBrowserProfile.mockResolvedValue(saved);
+    renderAt('/admin/system/general');
+
+    await mocks.view!.onProfileSave({ expectedRevision: 8 });
+
+    // A revalidation that fails transiently would otherwise leave the card holding the previous
+    // summary, so a saved choice keeps reading as unsaved and gets written a second time.
+    expect(mocks.profileMutate).toHaveBeenCalledWith(saved, { revalidate: false });
   });
 
   it('refuses the page when the admin can read neither domain', () => {

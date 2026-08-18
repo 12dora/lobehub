@@ -95,6 +95,7 @@ export const adminBrowserProfileRouter = router({
           actorUserId: ctx.userId!,
           chromeId: input.chromeId,
           computeId: input.computeId,
+          expectedRevision: input.expectedRevision,
           localeId: input.localeId,
           reason: input.reason,
           screenId: input.screenId,
