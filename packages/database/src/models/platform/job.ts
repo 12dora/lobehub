@@ -25,6 +25,21 @@ export interface ClaimJobParams {
   workerId: string;
 }
 
+export interface ClaimBatchParams {
+  /** Per-type lease override. Types omitted here use `leaseMs` / the model default. */
+  leaseMs?: number;
+  leaseMsByType?: Readonly<Record<string, number>>;
+  /**
+   * Fallback per-type cap when `limitByType[type]` is omitted. Clamped to [1, 100].
+   * This is never a global oldest-N across types.
+   */
+  limit?: number;
+  /** Hard cap per `type`, applied after `FOR UPDATE SKIP LOCKED` (LATERAL LIMIT). */
+  limitByType?: Readonly<Record<string, number>>;
+  types: readonly string[];
+  workerId: string;
+}
+
 export interface CheckpointJobParams {
   cursor?: PlatformJobItem['cursor'];
   jobId: string;
@@ -103,6 +118,34 @@ export interface AdminPlatformJobSummary {
 
 const DEFAULT_LEASE_MS = 30_000;
 const databaseNow = sql<Date>`statement_timestamp()`;
+
+const rowsOf = <T>(result: unknown): T[] => {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === 'object' && 'rows' in result) {
+    const rows = (result as { rows?: unknown }).rows;
+    return Array.isArray(rows) ? (rows as T[]) : [];
+  }
+  return [];
+};
+
+const asDate = (value: Date | string | null | undefined): Date | null => {
+  if (value instanceof Date) return value;
+  if (typeof value === 'string' || typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  return null;
+};
+
+const coerceClaimedJob = (row: PlatformJobItem): PlatformJobItem => ({
+  ...row,
+  createdAt: asDate(row.createdAt) ?? row.createdAt,
+  finishedAt: asDate(row.finishedAt),
+  heartbeatAt: asDate(row.heartbeatAt),
+  leaseUntil: asDate(row.leaseUntil),
+  startedAt: asDate(row.startedAt),
+  updatedAt: asDate(row.updatedAt) ?? row.updatedAt,
+});
 const databaseLeaseUntil = (leaseMs: number) =>
   sql<Date>`statement_timestamp() + (${leaseMs} * interval '1 millisecond')`;
 
@@ -427,6 +470,137 @@ export class PlatformJobModel {
 
       return claimed ?? null;
     });
+  };
+
+  /**
+   * Claim a mixed-type batch in one statement. Cap is applied *after*
+   * `FOR UPDATE SKIP LOCKED` via a LATERAL subquery per type so a locked
+   * oldest row does not starve the next available one. Eligibility matches
+   * {@link claimNext}.
+   */
+  claimBatch = async (params: ClaimBatchParams): Promise<PlatformJobItem[]> => {
+    if (params.types.length === 0) return [];
+    const types = [...new Set(params.types)];
+    const defaultCap = Math.min(Math.max(Math.floor(params.limit ?? 25), 1), 100);
+    const defaultLeaseMs = params.leaseMs ?? DEFAULT_LEASE_MS;
+    const capRows = types.map((type) => {
+      const rawCap = params.limitByType?.[type] ?? defaultCap;
+      const cap = Math.min(Math.max(Math.floor(rawCap), 1), 100);
+      const leaseMs = params.leaseMsByType?.[type] ?? defaultLeaseMs;
+      return sql`(${type}, ${cap}::int, ${leaseMs}::int)`;
+    });
+
+    const result = await this.db.execute(sql`
+      WITH caps(type, cap, lease_ms) AS (
+        VALUES ${sql.join(capRows, sql`, `)}
+      ),
+      dead AS (
+        UPDATE platform_jobs
+        SET
+          finished_at = statement_timestamp(),
+          last_error = coalesce(
+            last_error,
+            '{"code":"MAX_ATTEMPTS_EXCEEDED","reason":"lease_expired_after_attempt_budget"}'::jsonb
+          ),
+          lease_owner = NULL,
+          lease_until = NULL,
+          status = 'dead',
+          updated_at = statement_timestamp()
+        WHERE status = 'running'
+          AND lease_until <= statement_timestamp()
+          AND max_attempts IS NOT NULL
+          AND attempt >= max_attempts
+          AND type IN (SELECT type FROM caps)
+        RETURNING id
+      ),
+      picked AS (
+        SELECT locked.id, t.lease_ms
+        FROM caps t
+        CROSS JOIN LATERAL (
+          SELECT j.id
+          FROM platform_jobs j
+          WHERE j.type = t.type
+            AND (
+              j.status = 'pending'
+              OR (j.status = 'running' AND j.lease_until <= statement_timestamp())
+            )
+            AND (j.max_attempts IS NULL OR j.attempt < j.max_attempts)
+            AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.id = j.id)
+          ORDER BY j.created_at ASC
+          LIMIT t.cap
+          FOR UPDATE SKIP LOCKED
+        ) locked
+      )
+      UPDATE platform_jobs AS j
+      SET
+        attempt = j.attempt + 1,
+        heartbeat_at = statement_timestamp(),
+        lease_owner = ${params.workerId},
+        lease_until = statement_timestamp() + (picked.lease_ms * interval '1 millisecond'),
+        started_at = coalesce(j.started_at, statement_timestamp()),
+        status = 'running',
+        updated_at = statement_timestamp()
+      FROM picked
+      WHERE j.id = picked.id
+      RETURNING
+        j.id,
+        j.type,
+        j.status,
+        j.idempotency_key AS "idempotencyKey",
+        j.input,
+        j.progress_total AS "progressTotal",
+        j.progress_done AS "progressDone",
+        j.cursor,
+        j.result_summary AS "resultSummary",
+        j.last_error AS "lastError",
+        j.attempt,
+        j.max_attempts AS "maxAttempts",
+        j.lease_owner AS "leaseOwner",
+        j.lease_until AS "leaseUntil",
+        j.heartbeat_at AS "heartbeatAt",
+        j.requested_by AS "requestedBy",
+        j.started_at AS "startedAt",
+        j.finished_at AS "finishedAt",
+        j.created_at AS "createdAt",
+        j.updated_at AS "updatedAt"
+    `);
+
+    return rowsOf<PlatformJobItem>(result).map(coerceClaimedJob);
+  };
+
+  /**
+   * Undo a claim for rows this worker leased but will not process (lane stop /
+   * handler throw). Restores `pending` and decrements `attempt` so the row
+   * looks as if {@link claimNext} never took it.
+   */
+  releaseUnprocessed = async (params: {
+    jobIds: readonly string[];
+    workerId: string;
+  }): Promise<number> => {
+    if (params.jobIds.length === 0) return 0;
+    const rows = await this.db
+      .update(platformJobs)
+      .set({
+        attempt: sql`greatest(${platformJobs.attempt} - 1, 0)`,
+        heartbeatAt: null,
+        leaseOwner: null,
+        leaseUntil: null,
+        startedAt: sql<Date | null>`case
+          when ${platformJobs.attempt} <= 1 then null
+          else ${platformJobs.startedAt}
+        end`,
+        status: 'pending',
+        updatedAt: databaseNow,
+      })
+      .where(
+        and(
+          inArray(platformJobs.id, [...params.jobIds]),
+          eq(platformJobs.leaseOwner, params.workerId),
+          eq(platformJobs.status, 'running'),
+        ),
+      )
+      .returning({ id: platformJobs.id });
+    return rows.length;
   };
 
   /**

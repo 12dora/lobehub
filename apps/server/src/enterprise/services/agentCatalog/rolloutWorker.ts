@@ -53,6 +53,11 @@ export interface PlatformAgentRolloutWorkerLifecycle {
 }
 
 export interface ProcessPlatformAgentRolloutBatchOptions {
+  /**
+   * Already-claimed job. When set, this entry point skips `claimNext` so a
+   * mixed-type dispatcher can own the SELECT … FOR UPDATE SKIP LOCKED.
+   */
+  claimed?: PlatformJobItem;
   leaseMs?: number;
   lifecycle?: PlatformAgentRolloutWorkerLifecycle;
 }
@@ -275,11 +280,13 @@ export const processNextPlatformAgentRolloutBatch = async (
   options: ProcessPlatformAgentRolloutBatchOptions = {},
 ): Promise<ProcessPlatformAgentRolloutBatchResult> => {
   const jobs = new PlatformJobModel(db);
-  const claimed = await jobs.claimNext({
-    leaseMs: options.leaseMs ?? 60_000,
-    types: [PLATFORM_AGENT_ROLLOUT_JOB_TYPE],
-    workerId,
-  });
+  const claimed =
+    options.claimed ??
+    (await jobs.claimNext({
+      leaseMs: options.leaseMs ?? 60_000,
+      types: [PLATFORM_AGENT_ROLLOUT_JOB_TYPE],
+      workerId,
+    }));
   if (!claimed) return { claimed: false };
 
   let claimedInput: PlatformAgentRolloutJobInput;

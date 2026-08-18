@@ -1,19 +1,24 @@
-import { getServerDB } from '@/database/core/db-adaptor';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { isPersistentEnterpriseWorkerRuntime } from '../../jobs/persistentWorkerRuntime';
+import type {
+  PlatformJobDispatchHandlerContext,
+  PlatformJobDispatchHandlerResult,
+} from '../../jobs/platformJobsDispatcher';
 import {
-  type PersistentWorkerScheduler,
-  startPersistentWorkerScheduler,
-} from '../../jobs/persistentWorkerScheduler';
+  ensurePlatformJobsDispatcherStarted,
+  resetPlatformJobsDispatcherForTest,
+} from '../../jobs/platformJobsDispatcher';
 import { PlatformSecretService } from '../../security/secret';
 import type { ConnectorCatalogSecretStore } from './catalogTypes';
 import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
-import { reconcileConnectorSecretCleanups } from './secretCleanup';
+import {
+  reconcileConnectorSecretCleanups,
+  settleClaimedConnectorSecretCleanup,
+} from './secretCleanup';
 
 const DEFAULT_BATCH_SIZE = 50;
-const DEFAULT_INTERVAL_MS = 5000;
 
 /**
  * Env contract for serverless / external schedulers.
@@ -73,31 +78,23 @@ export const runConnectorSecretCleanupBatch = async (
     workerId: `connector-secret-cleanup-batch:${process.pid}`,
   });
 
-let workerStarted = false;
-let workerScheduler: PersistentWorkerScheduler | undefined;
+/** Handle one already-claimed `connector.secret.cleanup.v1` job. */
+export const handleClaimedConnectorSecretCleanupJob = async (
+  ctx: PlatformJobDispatchHandlerContext,
+): Promise<PlatformJobDispatchHandlerResult> => {
+  const secrets = createConnectorSecretCleanupStore(ctx.db);
+  if (!secrets) return { stop: true };
+  const outcome = await settleClaimedConnectorSecretCleanup(ctx.db, ctx.job, secrets, ctx.workerId);
+  return outcome === 'retry' ? { stop: true } : {};
+};
 
 /** Test-only: reset module timer latch between behavioral cases. */
 export const __resetConnectorSecretCleanupWorkerForTests = (): void => {
-  workerScheduler?.stop();
-  workerScheduler = undefined;
-  workerStarted = false;
+  resetPlatformJobsDispatcherForTest();
 };
 
-/** Starts one non-overlapping poller per process; DB job leases coordinate instances. */
+/** Registers this type with the merged `platform_jobs` dispatcher. */
 export const ensureConnectorSecretCleanupWorkerStarted = (): void => {
-  if (workerStarted || !isPersistentEnterpriseWorkerRuntime()) {
-    return;
-  }
-  workerStarted = true;
-  workerScheduler = startPersistentWorkerScheduler({
-    baseIntervalMs: DEFAULT_INTERVAL_MS,
-    namespace: 'connector-secret-cleanup',
-    run: async () => {
-      const db = await getServerDB();
-      const secrets = createConnectorSecretCleanupStore(db);
-      if (!secrets) return { didWork: false };
-      const result = await runConnectorSecretCleanupBatch(db, secrets);
-      return { didWork: result.completed > 0 || result.failed > 0 };
-    },
-  });
+  if (!isPersistentEnterpriseWorkerRuntime()) return;
+  ensurePlatformJobsDispatcherStarted({ extraWorkerName: 'connectorSecretCleanup' });
 };

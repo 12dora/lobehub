@@ -1,15 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
-import { getServerDB } from '@/database/core/db-adaptor';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { parsePlatformKeyProviderName, PlatformSecretService } from '../security/secret';
 import { processNextPlatformSecretRewrapBatch } from '../services/secretRewrap';
 import { isPersistentEnterpriseWorkerRuntime } from './persistentWorkerRuntime';
-import { startPersistentWorkerScheduler } from './persistentWorkerScheduler';
+import type { PlatformJobDispatchHandlerContext } from './platformJobsDispatcher';
+import { ensurePlatformJobsDispatcherStarted } from './platformJobsDispatcher';
 
 const DEFAULT_BATCH_LIMIT = 10;
-const DEFAULT_INTERVAL_MS = 2000;
 
 /** Run bounded checkpoints with an explicitly supplied Vault-backed service. */
 export const runPlatformSecretRewrapBatches = async (
@@ -31,7 +30,17 @@ export const runPlatformSecretRewrapBatches = async (
   return processed;
 };
 
-let workerStarted = false;
+/** Handle one already-claimed `platform.secret.rewrap.v1` job. */
+export const handleClaimedPlatformSecretRewrapJob = async (
+  ctx: PlatformJobDispatchHandlerContext,
+): Promise<void> => {
+  const secrets = PlatformSecretService.tryFromEnv(process.env);
+  if (!secrets || secrets.keyProviderId !== 'vault') return;
+  await processNextPlatformSecretRewrapBatch(ctx.db, secrets, ctx.workerId, {
+    claimed: ctx.job,
+    leaseMs: ctx.spec.leaseMs,
+  });
+};
 
 export const isPlatformSecretRewrapWorkerRuntime = (
   env: Partial<NodeJS.ProcessEnv> = process.env,
@@ -39,20 +48,11 @@ export const isPlatformSecretRewrapWorkerRuntime = (
   isPersistentEnterpriseWorkerRuntime(env) && parsePlatformKeyProviderName(env) === 'vault';
 
 /**
+ * Registers this type with the merged `platform_jobs` dispatcher.
  * Persistent Node-process poller only. Serverless/Vercel deployments must use
  * a separate durable worker process and must never start this timer.
  */
 export const ensurePlatformSecretRewrapWorkerStarted = (): void => {
-  if (workerStarted || !isPlatformSecretRewrapWorkerRuntime()) return;
-  workerStarted = true;
-  startPersistentWorkerScheduler({
-    baseIntervalMs: DEFAULT_INTERVAL_MS,
-    namespace: 'secret-rewrap',
-    run: async () => {
-      const secrets = PlatformSecretService.tryFromEnv(process.env);
-      if (!secrets || secrets.keyProviderId !== 'vault') return { didWork: false };
-      const processed = await runPlatformSecretRewrapBatches(await getServerDB(), secrets);
-      return { didWork: processed > 0 };
-    },
-  });
+  if (!isPlatformSecretRewrapWorkerRuntime()) return;
+  ensurePlatformJobsDispatcherStarted({ extraWorkerName: 'secretRewrap' });
 };

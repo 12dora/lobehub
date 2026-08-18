@@ -1,15 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
-import { getServerDB } from '@/database/core/db-adaptor';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { processNextPlatformAgentRolloutBatch } from '../services/agentCatalog/rolloutWorker';
 import { isPersistentEnterpriseWorkerRuntime } from './persistentWorkerRuntime';
-import { startPersistentWorkerScheduler } from './persistentWorkerScheduler';
+import type { PlatformJobDispatchHandlerContext } from './platformJobsDispatcher';
+import { ensurePlatformJobsDispatcherStarted } from './platformJobsDispatcher';
 
 const DEFAULT_BATCH_LIMIT = 10;
-const DEFAULT_INTERVAL_MS = 2000;
 
 /**
  * Process bounded rollout checkpoints. The feature gate is evaluated before the first query, so a
@@ -32,7 +31,15 @@ export const runPlatformAgentRolloutBatches = async (
   return processed;
 };
 
-let workerStarted = false;
+/** Handle one already-claimed `platform.agent.rollout.v1` job. */
+export const handleClaimedPlatformAgentRolloutJob = async (
+  ctx: PlatformJobDispatchHandlerContext,
+): Promise<void> => {
+  await processNextPlatformAgentRolloutBatch(ctx.db, ctx.workerId, {
+    claimed: ctx.job,
+    leaseMs: ctx.spec.leaseMs,
+  });
+};
 
 export const isPlatformAgentRolloutWorkerRuntime = (
   env: Partial<NodeJS.ProcessEnv> = process.env,
@@ -40,19 +47,8 @@ export const isPlatformAgentRolloutWorkerRuntime = (
   isPersistentEnterpriseWorkerRuntime(env) &&
   parseEnterpriseFeatureFlags(env).ENABLE_PLATFORM_MANAGED_AGENTS;
 
-/** Starts one non-overlapping poller per Node process; M01 leases coordinate multiple instances. */
+/** Registers this type with the merged `platform_jobs` dispatcher. */
 export const ensurePlatformAgentRolloutWorkerStarted = (): void => {
-  if (workerStarted || !isPlatformAgentRolloutWorkerRuntime()) return;
-  workerStarted = true;
-  startPersistentWorkerScheduler({
-    baseIntervalMs: DEFAULT_INTERVAL_MS,
-    namespace: 'agent-rollout',
-    run: async () => {
-      if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) {
-        return { didWork: false };
-      }
-      const processed = await runPlatformAgentRolloutBatches(await getServerDB());
-      return { didWork: processed > 0 };
-    },
-  });
+  if (!isPlatformAgentRolloutWorkerRuntime()) return;
+  ensurePlatformJobsDispatcherStarted({ extraWorkerName: 'agentRollout' });
 };

@@ -279,12 +279,11 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
     return claimed ? this.deliverClaimed(claimed, workerId, delivery) : false;
   };
 
-  /** Background worker entry point: claims pending audits or expired unknown outcomes. */
-  reconcileNext = async (
-    delivery: (record: ConnectorRuntimeAuditRecord) => Promise<void>,
-  ): Promise<boolean> => {
-    // A reserved row proves no external call began. Expired reservations are
-    // safe to delete and must never become an `unknown` audit outcome.
+  /**
+   * Delete one expired reservation. A reserved row proves no external call
+   * began; it must never become an `unknown` audit outcome.
+   */
+  cleanupExpiredReservation = async (): Promise<boolean> => {
     const [cleanedReservation] = await this.db
       .delete(platformJobs)
       .where(
@@ -295,7 +294,23 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
         ),
       )
       .returning({ id: platformJobs.id });
-    if (cleanedReservation) return true;
+    return Boolean(cleanedReservation);
+  };
+
+  /** Handle one already-claimed pending / lease-expired runtime-audit job. */
+  processClaimed = async (
+    job: typeof platformJobs.$inferSelect,
+    delivery: (record: ConnectorRuntimeAuditRecord) => Promise<void>,
+  ): Promise<boolean> => {
+    const workerId = job.leaseOwner ?? randomUUID();
+    return this.deliverClaimed(job, workerId, delivery);
+  };
+
+  /** Background worker entry point: claims pending audits or expired unknown outcomes. */
+  reconcileNext = async (
+    delivery: (record: ConnectorRuntimeAuditRecord) => Promise<void>,
+  ): Promise<boolean> => {
+    if (await this.cleanupExpiredReservation()) return true;
     const workerId = randomUUID();
     const claimed = await this.jobs.claimNext({ types: [CONNECTOR_RUNTIME_JOB_TYPE], workerId });
     return claimed ? this.deliverClaimed(claimed, workerId, delivery) : false;

@@ -1,6 +1,7 @@
 import debug from 'debug';
 
 import { PlatformJobModel } from '@/database/models/platform/job';
+import type { PlatformJobItem } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { ConnectorCatalogSecretStore, ConnectorSecretSlot } from './catalogTypes';
@@ -150,6 +151,63 @@ export const cleanupConnectorSecretRefs = async (
 };
 
 /**
+ * Handle one already-claimed `connector.secret.cleanup.v1` job. `retry` means
+ * the revoke failed and the job was requeued — callers should stop the batch
+ * so a short secret-service outage cannot burn `maxAttempts` in one tick.
+ */
+export const settleClaimedConnectorSecretCleanup = async (
+  db: LobeChatDatabase,
+  job: PlatformJobItem,
+  secrets: ConnectorCatalogSecretStore,
+  workerId: string,
+): Promise<'completed' | 'failed' | 'retry'> => {
+  const jobs = new PlatformJobModel(db);
+  const cleanup = isCleanupRef(job.input) ? job.input : null;
+  if (!cleanup) {
+    await jobs.fail({
+      error: { code: 'CONNECTOR_SECRET_CLEANUP_INVALID_INPUT' },
+      jobId: job.id,
+      terminal: true,
+      workerId,
+    });
+    return 'failed';
+  }
+
+  const ok = await revokeOne(secrets, cleanup);
+  if (ok) {
+    await jobs.complete({ jobId: job.id, resultSummary: { ref: cleanup.ref }, workerId });
+    return 'completed';
+  }
+  await jobs.fail({
+    error: { code: 'CONNECTOR_SECRET_CLEANUP_REVOKE_FAILED' },
+    jobId: job.id,
+    workerId,
+  });
+  return 'retry';
+};
+
+/** Throttled aged-orphan GC. Safe to call from the merged dispatcher after a tick. */
+export const maybeRunConnectorSecretOrphanGc = async (
+  secrets: ConnectorCatalogSecretStore,
+): Promise<boolean> => {
+  const nowMs = Date.now();
+  if (
+    !secrets.garbageCollectOrphanedSecrets ||
+    nowMs - lastOrphanGcAtMs < ORPHAN_GC_MIN_INTERVAL_MS
+  ) {
+    return false;
+  }
+  lastOrphanGcAtMs = nowMs;
+  try {
+    await secrets.garbageCollectOrphanedSecrets();
+    return true;
+  } catch (error) {
+    log('reconcile GC failed errorClass=%s', error instanceof Error ? error.name : 'UnknownError');
+    return false;
+  }
+};
+
+/**
  * Drain durable cleanup jobs (exact ref revoke, no grace window) and run aged
  * orphan GC (throttled). Safe to call from workers or after archive/disconnect paths.
  */
@@ -171,51 +229,13 @@ export const reconcileConnectorSecretCleanups = async (
     });
     if (!job) break;
 
-    const cleanup = isCleanupRef(job.input) ? job.input : null;
-    if (!cleanup) {
-      await jobs.fail({
-        error: { code: 'CONNECTOR_SECRET_CLEANUP_INVALID_INPUT' },
-        jobId: job.id,
-        terminal: true,
-        workerId,
-      });
-      failed += 1;
-      continue;
-    }
-
-    const ok = await revokeOne(secrets, cleanup);
-    if (ok) {
-      await jobs.complete({ jobId: job.id, resultSummary: { ref: cleanup.ref }, workerId });
-      completed += 1;
-    } else {
-      await jobs.fail({
-        error: { code: 'CONNECTOR_SECRET_CLEANUP_REVOKE_FAILED' },
-        jobId: job.id,
-        workerId,
-      });
-      failed += 1;
-      // PlatformJobModel.fail requeues to pending with no delay. Breaking here
-      // spreads attempts across poll ticks (~5s) so a short secret-service outage
-      // cannot burn all CLEANUP_MAX_ATTEMPTS inside a single batch (~12s).
-      break;
-    }
+    const outcome = await settleClaimedConnectorSecretCleanup(db, job, secrets, workerId);
+    if (outcome === 'completed') completed += 1;
+    else failed += 1;
+    if (outcome === 'retry') break;
   }
 
-  const nowMs = Date.now();
-  if (
-    secrets.garbageCollectOrphanedSecrets &&
-    nowMs - lastOrphanGcAtMs >= ORPHAN_GC_MIN_INTERVAL_MS
-  ) {
-    lastOrphanGcAtMs = nowMs;
-    try {
-      await secrets.garbageCollectOrphanedSecrets();
-    } catch (error) {
-      log(
-        'reconcile GC failed errorClass=%s',
-        error instanceof Error ? error.name : 'UnknownError',
-      );
-    }
-  }
+  await maybeRunConnectorSecretOrphanGc(secrets);
 
   return { completed, failed };
 };

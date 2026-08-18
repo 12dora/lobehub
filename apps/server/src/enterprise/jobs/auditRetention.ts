@@ -4,13 +4,13 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { isPersistentEnterpriseWorkerRuntime } from './persistentWorkerRuntime';
+import type { PlatformJobDispatchHandlerContext } from './platformJobsDispatcher';
 import {
-  type PersistentWorkerScheduler,
-  startPersistentWorkerScheduler,
-} from './persistentWorkerScheduler';
+  ensurePlatformJobsDispatcherStarted,
+  resetPlatformJobsDispatcherForTest,
+} from './platformJobsDispatcher';
 
 const DEFAULT_BATCH_LIMIT = 5;
-const DEFAULT_INTERVAL_MS = 3000;
 
 /** Run bounded retention jobs with an explicitly supplied database. */
 export const runPlatformAuditRetentionBatches = async (
@@ -27,14 +27,21 @@ export const runPlatformAuditRetentionBatches = async (
   });
 };
 
-let workerStarted = false;
-let workerScheduler: PersistentWorkerScheduler | undefined;
+/** Handle one already-claimed `platform.audit.retention.v1` job. */
+export const handleClaimedPlatformAuditRetentionJob = async (
+  ctx: PlatformJobDispatchHandlerContext,
+): Promise<void> => {
+  const { processNextAuditRetentionJob } = await import('../services/audit/retentionWorker');
+  await processNextAuditRetentionJob(ctx.db, {
+    claimed: ctx.job,
+    leaseMs: ctx.spec.leaseMs,
+    workerId: ctx.workerId,
+  });
+};
 
 /** Test-only: reset module timer latch between behavioral cases. */
 export const __resetPlatformAuditRetentionWorkerForTests = (): void => {
-  workerScheduler?.stop();
-  workerScheduler = undefined;
-  workerStarted = false;
+  resetPlatformJobsDispatcherForTest();
 };
 
 export const isPlatformAuditRetentionWorkerRuntime = (
@@ -44,25 +51,12 @@ export const isPlatformAuditRetentionWorkerRuntime = (
   parseEnterpriseFeatureFlags(env).ENABLE_PLATFORM_ADMIN;
 
 /**
+ * Registers this type with the merged `platform_jobs` dispatcher.
  * Persistent Node-process poller only. Serverless/Vercel deployments must use
  * a separate durable worker process and must never start this timer.
  * Requires ENABLE_PLATFORM_ADMIN (default-off).
  */
 export const ensurePlatformAuditRetentionWorkerStarted = (): void => {
-  if (workerStarted || !isPlatformAuditRetentionWorkerRuntime()) return;
-  workerStarted = true;
-  workerScheduler = startPersistentWorkerScheduler({
-    baseIntervalMs: DEFAULT_INTERVAL_MS,
-    namespace: 'audit-retention',
-    run: async () => {
-      // Re-check flag each batch so closing the flag stops work without restart.
-      if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_ADMIN) {
-        return { didWork: false };
-      }
-      // Lazy DB adaptor: never acquire a connection while the feature is closed.
-      const { getServerDB } = await import('@/database/core/db-adaptor');
-      const processed = await runPlatformAuditRetentionBatches(await getServerDB());
-      return { didWork: processed > 0 };
-    },
-  });
+  if (!isPlatformAuditRetentionWorkerRuntime()) return;
+  ensurePlatformJobsDispatcherStarted({ extraWorkerName: 'auditRetention' });
 };

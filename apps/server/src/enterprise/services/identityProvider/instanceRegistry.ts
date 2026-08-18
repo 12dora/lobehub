@@ -9,6 +9,11 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import {
+  isPlatformInstanceHeartbeatTickerRunning,
+  onPlatformInstanceHeartbeatTick,
+  onPlatformInstanceHeartbeatTickerStarted,
+} from '../platformInstance/heartbeatRuntime';
 import { identityProviderLkgIdentity } from './lkg';
 import type { IdentityProviderStartupSnapshot } from './startupArtifact';
 import {
@@ -26,6 +31,9 @@ interface IdentityProviderInstanceProcessState {
   registered: boolean;
   registrationState: 'failed' | 'registered' | 'unknown';
   startedAt: Date;
+  tickAttached: boolean;
+  tickDetach: (() => void) | null;
+  tickerStartedDetach: (() => void) | null;
 }
 
 const instanceProcess = process as NodeJS.Process & {
@@ -39,6 +47,9 @@ const ownedInstanceProcessState = (instanceProcess.__lobehubIdentityProviderInst
   registered: false,
   registrationState: 'unknown',
   startedAt: new Date(),
+  tickAttached: false,
+  tickDetach: null,
+  tickerStartedDetach: null,
 });
 
 const instanceProcessState = (): IdentityProviderInstanceProcessState => ownedInstanceProcessState;
@@ -149,31 +160,39 @@ export const demoteEnvironmentShadowedIdentityProviders = async (
     );
 };
 
-const heartbeat = async (
-  db: LobeChatDatabase,
+/** Apply the IdP instance heartbeat on an already-open transaction. */
+export const applyIdentityProviderInstanceHeartbeat = async (
+  tx: Transaction,
   env: Record<string, string | undefined>,
 ): Promise<void> => {
   const state = instanceProcessState();
   if (!state.registered) return;
-  await db.transaction(async (tx) => {
-    await acquireIdentityProviderConvergenceLock(tx);
-    const [instance] = await tx
-      .update(platformIdentityProviderInstances)
-      .set({ lastHeartbeat: sql`clock_timestamp()` })
-      .where(eq(platformIdentityProviderInstances.instanceId, state.instanceId))
-      .returning({
-        activeIdentityRevision: platformIdentityProviderInstances.activeIdentityRevision,
-        health: platformIdentityProviderInstances.health,
-        startupSource: platformIdentityProviderInstances.startupSource,
-      });
-    if (!instance) return;
-    await demoteActiveProvidersForInstance({
-      env,
-      health: instance.health,
-      identityRevision: instance.activeIdentityRevision,
-      source: instance.startupSource,
-      tx,
+  await acquireIdentityProviderConvergenceLock(tx);
+  const [instance] = await tx
+    .update(platformIdentityProviderInstances)
+    .set({ lastHeartbeat: sql`clock_timestamp()` })
+    .where(eq(platformIdentityProviderInstances.instanceId, state.instanceId))
+    .returning({
+      activeIdentityRevision: platformIdentityProviderInstances.activeIdentityRevision,
+      health: platformIdentityProviderInstances.health,
+      startupSource: platformIdentityProviderInstances.startupSource,
     });
+  if (!instance) return;
+  await demoteActiveProvidersForInstance({
+    env,
+    health: instance.health,
+    identityRevision: instance.activeIdentityRevision,
+    source: instance.startupSource,
+    tx,
+  });
+};
+
+const heartbeat = async (
+  db: LobeChatDatabase,
+  env: Record<string, string | undefined>,
+): Promise<void> => {
+  await db.transaction(async (tx) => {
+    await applyIdentityProviderInstanceHeartbeat(tx, env);
   });
 };
 
@@ -226,7 +245,37 @@ export const registerIdentityProviderInstance = async (input: {
   state.registered = true;
   state.registrationState = 'registered';
 
-  if (state.heartbeatTimer || isServerlessRuntime(env)) return;
+  if (isServerlessRuntime(env)) return;
+
+  const stopFallbackTimer = (): void => {
+    if (!state.heartbeatTimer) return;
+    clearInterval(state.heartbeatTimer);
+    state.heartbeatTimer = null;
+  };
+
+  if (!state.tickAttached) {
+    state.tickAttached = true;
+    const runTick = async (db: LobeChatDatabase) => {
+      try {
+        // Nested SAVEPOINT when invoked from the platform ticker; rethrow so
+        // the savepoint rolls back. Catch only logs.
+        await applyIdentityProviderInstanceHeartbeat(db as Transaction, env);
+      } catch (error) {
+        console.error('[identityProviderInstance] heartbeat unavailable', {
+          errorClass: error instanceof Error ? error.name : 'UnknownError',
+          instanceId: state.instanceId,
+        });
+        throw error;
+      }
+    };
+    state.tickDetach = onPlatformInstanceHeartbeatTick(runTick);
+    state.tickerStartedDetach = onPlatformInstanceHeartbeatTickerStarted(stopFallbackTimer);
+  }
+
+  // Production: instrumentation starts the platform-instance ticker after IdP
+  // registration, then takeover stops this fallback. Dev/test (ticker gated
+  // off) keeps the existing 30s timer so lastHeartbeat semantics stay intact.
+  if (state.heartbeatTimer || isPlatformInstanceHeartbeatTickerRunning()) return;
   state.heartbeatTimer = setInterval(() => {
     void heartbeat(input.db, env).catch((error) => {
       console.error('[identityProviderInstance] heartbeat unavailable', {
@@ -242,6 +291,11 @@ export const stopIdentityProviderHeartbeatForTest = (): void => {
   const state = instanceProcessState();
   if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
   state.heartbeatTimer = null;
+  state.tickDetach?.();
+  state.tickerStartedDetach?.();
+  state.tickDetach = null;
+  state.tickerStartedDetach = null;
+  state.tickAttached = false;
   state.registered = false;
   state.registrationState = 'unknown';
 };

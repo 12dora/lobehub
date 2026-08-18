@@ -1,16 +1,15 @@
-import { getServerDB } from '@/database/core/db-adaptor';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { isPersistentEnterpriseWorkerRuntime } from '../../jobs/persistentWorkerRuntime';
+import type { PlatformJobDispatchHandlerContext } from '../../jobs/platformJobsDispatcher';
 import {
-  type PersistentWorkerScheduler,
-  startPersistentWorkerScheduler,
-} from '../../jobs/persistentWorkerScheduler';
+  ensurePlatformJobsDispatcherStarted,
+  resetPlatformJobsDispatcherForTest,
+} from '../../jobs/platformJobsDispatcher';
 import { appendConnectorRuntimeAudit } from './runtimeAudit';
 import { DatabaseConnectorRuntimeExecutionJournal } from './runtimeExecutionJournal';
 
 const DEFAULT_BATCH_SIZE = 25;
-const DEFAULT_INTERVAL_MS = 5000;
 
 /**
  * Env contract for serverless / external schedulers.
@@ -55,29 +54,21 @@ export const runConnectorRuntimeAuditBatch = async (
   return processed;
 };
 
-let workerStarted = false;
-let workerScheduler: PersistentWorkerScheduler | undefined;
+/** Handle one already-claimed `connector.runtime.shared-call.v1` job. */
+export const handleClaimedConnectorRuntimeAuditJob = async (
+  ctx: PlatformJobDispatchHandlerContext,
+): Promise<void> => {
+  const journal = new DatabaseConnectorRuntimeExecutionJournal(ctx.db);
+  await journal.processClaimed(ctx.job, (entry) => appendConnectorRuntimeAudit(ctx.db, entry));
+};
 
 /** Test-only: reset module timer latch between behavioral cases. */
 export const __resetConnectorRuntimeAuditWorkerForTests = (): void => {
-  workerScheduler?.stop();
-  workerScheduler = undefined;
-  workerStarted = false;
+  resetPlatformJobsDispatcherForTest();
 };
 
-/** Starts one non-overlapping poller per process; DB leases coordinate instances. */
+/** Registers this type with the merged `platform_jobs` dispatcher. */
 export const ensureConnectorRuntimeAuditWorkerStarted = (): void => {
-  if (workerStarted || !isPersistentEnterpriseWorkerRuntime()) {
-    return;
-  }
-  workerStarted = true;
-  workerScheduler = startPersistentWorkerScheduler({
-    baseIntervalMs: DEFAULT_INTERVAL_MS,
-    namespace: 'connector-runtime-audit',
-    run: async () => {
-      const db = await getServerDB();
-      const processed = await runConnectorRuntimeAuditBatch(db);
-      return { didWork: processed > 0 };
-    },
-  });
+  if (!isPersistentEnterpriseWorkerRuntime()) return;
+  ensurePlatformJobsDispatcherStarted({ extraWorkerName: 'connectorRuntimeAudit' });
 };

@@ -13,6 +13,7 @@ import {
 import {
   ensurePlatformInstanceHeartbeatStarted,
   getPlatformInstanceId,
+  onPlatformInstanceHeartbeatTick,
   resetPlatformInstanceHeartbeatForTest,
   shouldStartPlatformInstanceHeartbeat,
 } from './heartbeatRuntime';
@@ -39,6 +40,13 @@ const allEnterpriseFlagsOff = (): Record<string, string> => ({
   ENABLE_PLATFORM_SETTINGS_POLICY: '0',
   ENABLE_RUNTIME_BRANDING: '0',
 });
+
+const dbWithTransaction = (): LobeChatDatabase => {
+  const db = {} as LobeChatDatabase;
+  return {
+    transaction: vi.fn(async (fn: (tx: LobeChatDatabase) => Promise<unknown>) => fn(db)),
+  } as unknown as LobeChatDatabase;
+};
 
 const repository = () => ({
   registerInstance: vi.fn<PlatformInstanceRepository['registerInstance']>().mockResolvedValue({
@@ -121,7 +129,7 @@ describe('platform instance heartbeat runtime', () => {
     const target = repository();
     const unref = vi.fn();
     const schedule = vi.fn(() => ({ unref }));
-    const getDatabase = vi.fn(async () => ({}) as LobeChatDatabase);
+    const getDatabase = vi.fn(async () => dbWithTransaction());
     const createRepository = vi.fn(() => target);
 
     const results = await Promise.all([
@@ -176,7 +184,7 @@ describe('platform instance heartbeat runtime', () => {
           upsertHeartbeat: vi.fn(),
         }),
         env: productionEnv(),
-        getDatabase: async () => ({}) as LobeChatDatabase,
+        getDatabase: async () => dbWithTransaction(),
         logFailure,
         schedule,
       }),
@@ -210,7 +218,7 @@ describe('platform instance heartbeat runtime', () => {
     await ensurePlatformInstanceHeartbeatStarted({
       createRepository: () => target,
       env: productionEnv(),
-      getDatabase: async () => ({}) as LobeChatDatabase,
+      getDatabase: async () => dbWithTransaction(),
       logFailure,
       schedule: (callback) => {
         tick = callback;
@@ -243,7 +251,7 @@ describe('platform instance heartbeat runtime', () => {
     await ensurePlatformInstanceHeartbeatStarted({
       createRepository: () => target,
       env: productionEnv(),
-      getDatabase: async () => ({}) as LobeChatDatabase,
+      getDatabase: async () => dbWithTransaction(),
       now: () => now,
       schedule: (callback) => {
         tick = callback;
@@ -263,5 +271,34 @@ describe('platform instance heartbeat runtime', () => {
       }),
     );
     expect(JSON.stringify(observations)).not.toContain('pinst_');
+  });
+
+  it('runs platform upsert and IdP listener inside one shared transaction', async () => {
+    const target = repository();
+    const listener = vi.fn().mockResolvedValue(undefined);
+    let tick: (() => void) | undefined;
+    const tx = { kind: 'tx' } as unknown as LobeChatDatabase;
+    const db = {
+      transaction: vi.fn(async (fn: (inner: LobeChatDatabase) => Promise<unknown>) => fn(tx)),
+    } as unknown as LobeChatDatabase;
+    const createRepository = vi.fn(() => target);
+    onPlatformInstanceHeartbeatTick(listener);
+
+    await ensurePlatformInstanceHeartbeatStarted({
+      createRepository,
+      env: productionEnv(),
+      getDatabase: async () => db,
+      schedule: (callback) => {
+        tick = callback;
+        return { unref: vi.fn() };
+      },
+    });
+
+    tick?.();
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith(tx);
+    expect(createRepository).toHaveBeenLastCalledWith(tx);
+    expect(target.upsertHeartbeat).toHaveBeenCalledTimes(1);
   });
 });

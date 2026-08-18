@@ -16,6 +16,7 @@ import {
   PlatformAuditRetentionRunModel,
   PlatformJobModel,
 } from '@/database/models/platform';
+import type { PlatformJobItem } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import { type AuditExportArtifactStorage, AuditExportPrivateS3Storage } from './exportStorage';
@@ -69,6 +70,11 @@ export interface ProcessNextAuditRetentionOptions {
    * Used to simulate final-step lease loss without cancelling the domain.
    */
   afterDomainComplete?: (info: { jobId: string; runId: string }) => Promise<void> | void;
+  /**
+   * Already-claimed job. When set, this entry point skips `claimNext` so a
+   * mixed-type dispatcher can own the SELECT … FOR UPDATE SKIP LOCKED.
+   */
+  claimed?: PlatformJobItem;
   leaseMs?: number;
   storage?: AuditExportArtifactStorage;
   workerId: string;
@@ -95,11 +101,13 @@ export const processNextAuditRetentionJob = async (
   // Storage is only resolved when export_artifacts execute needs it.
   let storage: AuditExportArtifactStorage | undefined = options.storage;
 
-  const claimed = await jobs.claimNext({
-    leaseMs,
-    types: [PLATFORM_AUDIT_RETENTION_JOB_TYPE],
-    workerId: options.workerId,
-  });
+  const claimed =
+    options.claimed ??
+    (await jobs.claimNext({
+      leaseMs,
+      types: [PLATFORM_AUDIT_RETENTION_JOB_TYPE],
+      workerId: options.workerId,
+    }));
   if (!claimed) return { claimed: false };
 
   const parsedInput = parseAuditRetentionJobInput(claimed.input);

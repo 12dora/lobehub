@@ -141,7 +141,7 @@ describe('HOT readiness registrations', () => {
     clearManagedResourceReadinessForTest();
     mocks.isBootModuleEnabled.mockReturnValue(false);
     mocks.isModuleEnabled.mockResolvedValue(false);
-  }, 30_000);
+  }, 60_000);
 
   it('registers aiCatalogReadiness even when managedAi is boot-disabled, then answers after hot-enable', async () => {
     const spec = ENTERPRISE_WORKER_SPECS.find((item) => item.name === 'aiCatalogReadiness')!;

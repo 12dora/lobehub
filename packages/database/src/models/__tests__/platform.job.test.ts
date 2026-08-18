@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -287,6 +287,194 @@ describe('PlatformJobModel', () => {
       expect(reclaimed?.leaseOwner).toBe('worker-b');
       expect(reclaimed?.attempt).toBe(2);
       expect(reclaimed?.status).toBe('running');
+    });
+  });
+
+  describe('claimBatch', () => {
+    it('claims a mixed-type backlog in one call and leaves other types alone', async () => {
+      const older = new Date('2026-08-01T00:00:00.000Z');
+      const newer = new Date('2026-08-01T00:00:01.000Z');
+      await jobModel.enqueue({
+        idempotencyKey: 'batch-export',
+        type: 'platform.audit.export.v1',
+      });
+      await jobModel.enqueue({
+        idempotencyKey: 'batch-rollout',
+        type: 'platform.agent.rollout.v1',
+      });
+      await jobModel.enqueue({
+        idempotencyKey: 'batch-hidden',
+        type: 'platform.secret.rewrap.v1',
+      });
+      await serverDB
+        .update(platformJobs)
+        .set({ createdAt: older })
+        .where(eq(platformJobs.idempotencyKey, 'batch-export'));
+      await serverDB
+        .update(platformJobs)
+        .set({ createdAt: newer })
+        .where(eq(platformJobs.idempotencyKey, 'batch-rollout'));
+
+      const claimed = await jobModel.claimBatch({
+        leaseMsByType: {
+          'platform.agent.rollout.v1': 60_000,
+          'platform.audit.export.v1': 45_000,
+        },
+        limit: 10,
+        types: ['platform.audit.export.v1', 'platform.agent.rollout.v1'],
+        workerId: 'dispatcher-a',
+      });
+
+      expect(claimed.map((job) => job.type).sort()).toEqual([
+        'platform.agent.rollout.v1',
+        'platform.audit.export.v1',
+      ]);
+      expect(claimed.every((job) => job.status === 'running')).toBe(true);
+      expect(claimed.every((job) => job.leaseOwner === 'dispatcher-a')).toBe(true);
+      expect(claimed.every((job) => job.attempt === 1)).toBe(true);
+
+      const exportJob = claimed.find((job) => job.type === 'platform.audit.export.v1')!;
+      const rolloutJob = claimed.find((job) => job.type === 'platform.agent.rollout.v1')!;
+      const exportLeaseMs =
+        exportJob.leaseUntil!.getTime() - (exportJob.heartbeatAt ?? exportJob.startedAt)!.getTime();
+      const rolloutLeaseMs =
+        rolloutJob.leaseUntil!.getTime() -
+        (rolloutJob.heartbeatAt ?? rolloutJob.startedAt)!.getTime();
+      expect(exportLeaseMs).toBeLessThan(rolloutLeaseMs);
+
+      const leftover = await jobModel.claimNext({
+        types: ['platform.secret.rewrap.v1'],
+        workerId: 'other',
+      });
+      expect(leftover?.idempotencyKey).toBe('batch-hidden');
+    });
+
+    it('returns [] when the type set is empty or the backlog is empty', async () => {
+      await expect(jobModel.claimBatch({ types: [], workerId: 'dispatcher-a' })).resolves.toEqual(
+        [],
+      );
+      await expect(
+        jobModel.claimBatch({
+          types: ['platform.audit.export.v1'],
+          workerId: 'dispatcher-a',
+        }),
+      ).resolves.toEqual([]);
+    });
+
+    it('caps each type independently so a deep queue cannot starve another type', async () => {
+      const older = new Date('2026-08-01T00:00:00.000Z');
+      await serverDB.insert(platformJobs).values([
+        ...[0, 1, 2, 3, 4].map((index) => ({
+          createdAt: new Date(older.getTime() + index),
+          idempotencyKey: `batch-cap-export-${index}`,
+          status: 'pending' as const,
+          type: 'platform.audit.export.v1',
+        })),
+        ...[0, 1].map((index) => ({
+          createdAt: new Date(older.getTime() + 100 + index),
+          idempotencyKey: `batch-cap-rollout-${index}`,
+          status: 'pending' as const,
+          type: 'platform.agent.rollout.v1',
+        })),
+      ]);
+
+      const claimed = await jobModel.claimBatch({
+        limitByType: {
+          'platform.agent.rollout.v1': 2,
+          'platform.audit.export.v1': 2,
+        },
+        types: ['platform.audit.export.v1', 'platform.agent.rollout.v1'],
+        workerId: 'dispatcher-a',
+      });
+
+      const byType = claimed.reduce<Record<string, number>>((acc, job) => {
+        acc[job.type] = (acc[job.type] ?? 0) + 1;
+        return acc;
+      }, {});
+      expect(byType).toEqual({
+        'platform.agent.rollout.v1': 2,
+        'platform.audit.export.v1': 2,
+      });
+
+      const leftoverExport = await serverDB.query.platformJobs.findMany({
+        where: and(
+          eq(platformJobs.type, 'platform.audit.export.v1'),
+          eq(platformJobs.status, 'pending'),
+        ),
+      });
+      expect(leftoverExport).toHaveLength(3);
+    });
+
+    it('gives two sequential claimants distinct rows of the same type (PGlite cannot overlap two transactions)', async () => {
+      await jobModel.enqueue({
+        idempotencyKey: 'batch-conc-1',
+        type: 'platform.audit.export.v1',
+      });
+      await jobModel.enqueue({
+        idempotencyKey: 'batch-conc-2',
+        type: 'platform.audit.export.v1',
+      });
+
+      const first = await jobModel.claimBatch({
+        limitByType: { 'platform.audit.export.v1': 1 },
+        types: ['platform.audit.export.v1'],
+        workerId: 'worker-a',
+      });
+      const second = await jobModel.claimBatch({
+        limitByType: { 'platform.audit.export.v1': 1 },
+        types: ['platform.audit.export.v1'],
+        workerId: 'worker-b',
+      });
+
+      expect(first).toHaveLength(1);
+      expect(second).toHaveLength(1);
+      expect(first[0]!.id).not.toBe(second[0]!.id);
+      expect(new Set([first[0]!.leaseOwner, second[0]!.leaseOwner])).toEqual(
+        new Set(['worker-a', 'worker-b']),
+      );
+    });
+
+    it('releaseUnprocessed restores pending and undoes the claim attempt', async () => {
+      const { job } = await jobModel.enqueue({
+        idempotencyKey: 'batch-release',
+        type: 'platform.audit.export.v1',
+      });
+      const [claimed] = await jobModel.claimBatch({
+        types: ['platform.audit.export.v1'],
+        workerId: 'dispatcher-a',
+      });
+      expect(claimed?.attempt).toBe(1);
+
+      await expect(
+        jobModel.releaseUnprocessed({ jobIds: [job.id], workerId: 'dispatcher-a' }),
+      ).resolves.toBe(1);
+      const row = await jobModel.findById(job.id);
+      expect(row).toMatchObject({
+        attempt: 0,
+        leaseOwner: null,
+        status: 'pending',
+      });
+    });
+
+    it('dead-letters exhausted leases instead of reclaiming them in the batch', async () => {
+      const { job } = await jobModel.enqueue({
+        idempotencyKey: 'batch-dead',
+        maxAttempts: 1,
+        type: 'platform.audit.export.v1',
+      });
+      await jobModel.claimNext({ leaseMs: 5_000, workerId: 'worker-a' });
+      await serverDB
+        .update(platformJobs)
+        .set({ leaseUntil: new Date(Date.now() - 1_000) })
+        .where(eq(platformJobs.id, job.id));
+
+      const claimed = await jobModel.claimBatch({
+        types: ['platform.audit.export.v1'],
+        workerId: 'dispatcher-a',
+      });
+      expect(claimed).toEqual([]);
+      const row = await jobModel.findById(job.id);
+      expect(row?.status).toBe('dead');
     });
   });
 

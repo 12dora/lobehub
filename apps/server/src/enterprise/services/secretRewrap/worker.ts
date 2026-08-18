@@ -84,6 +84,11 @@ export interface PlatformSecretRewrapWorkerLifecycle {
 
 export interface ProcessPlatformSecretRewrapBatchOptions {
   batchSize?: number;
+  /**
+   * Already-claimed job. When set, this entry point skips the rewrap-specific
+   * claim lane so a mixed-type dispatcher can own the SELECT … FOR UPDATE.
+   */
+  claimed?: PlatformJobItem;
   leaseMs?: number;
   lifecycle?: PlatformSecretRewrapWorkerLifecycle;
 }
@@ -476,10 +481,12 @@ export const processNextPlatformSecretRewrapBatch = async (
     PLATFORM_SECRET_REWRAP_BATCH_SIZE,
   );
   const leaseMs = Math.max(Math.floor(options.leaseMs ?? DEFAULT_LEASE_MS), 1);
-  const claimed = await claimNextPlatformSecretRewrapJob(db, {
-    leaseMs,
-    workerId,
-  });
+  const claimed =
+    options.claimed ??
+    (await claimNextPlatformSecretRewrapJob(db, {
+      leaseMs,
+      workerId,
+    }));
   if (!claimed) return { claimed: false };
 
   let claimedInput: PlatformSecretRewrapJobInput;

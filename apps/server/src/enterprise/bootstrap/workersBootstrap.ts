@@ -87,6 +87,18 @@ export const ENTERPRISE_WORKER_SPECS: readonly WorkerSpec[] = [
     },
   },
   {
+    // Single scheduler for the six `platform_jobs` pollers. Enable-set is the
+    // boot-module view (+ Vault for secretRewrap). The six names below stay as
+    // virtual specs so `[modules] worker … skipped` and the modules page listing
+    // keep their existing worker names.
+    name: 'platformJobsDispatcher',
+    start: async () => {
+      const { ensurePlatformJobsDispatcherStarted } =
+        await import('../jobs/platformJobsDispatcher');
+      ensurePlatformJobsDispatcherStarted();
+    },
+  },
+  {
     moduleId: 'audit',
     name: 'auditExport',
     start: async () => {

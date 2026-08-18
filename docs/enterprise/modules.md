@@ -28,7 +28,7 @@ operator may leave out of a deployment to save memory, CPU, or sidecars.
 ## Storage & API
 
 - **Storage**: singleton row `platform_module_settings` (`id='global'`, jsonb `modules`
-  = partial `{ [moduleId]: boolean }`, `setup_completed_at`, CAS `revision`, `updated_by`);
+  \= partial `{ [moduleId]: boolean }`, `setup_completed_at`, CAS `revision`, `updated_by`);
   migration `0020_platform_module_settings`. A missing row means "everything enabled".
 - **Resolution** (`apps/server/src/enterprise/services/moduleSettings`):
   `effective[id] = envDisabled ? false : (db.modules[id] ?? true)` where the env layer is
@@ -43,7 +43,7 @@ operator may leave out of a deployment to save memory, CPU, or sidecars.
   key), `guards/moduleGuard.ts` (`platform.*` user-facing sub-routers),
   `enterprise/routers/moduleRouter.ts` (upstream sub-routers, tRPC `lazy()`),
   `guards/webapiModuleGate.ts` (Hono `/api/agent`, `/api/workflows`),
-  `enterprise/bootstrap/workersBootstrap.ts` (workers), and the FEATURE_FLAGS derivation
+  `enterprise/bootstrap/workersBootstrap.ts` (workers), and the FEATURE\_FLAGS derivation
   (`services/moduleSettings/featureFlagOverrides.ts`) that hides upstream UI.
 - **API** (`admin.modules.*`, registered in both policy registries):
   - `get` (`SYSTEM_READ`) → `{ snapshot, pendingRestart, restart: { supported, reason? }, instanceId }`
@@ -63,8 +63,8 @@ operator may leave out of a deployment to save memory, CPU, or sidecars.
 - **Summary bar** (live, from the draft): estimated resident memory, background jobs,
   per-message work, required sidecars (S3 / Redis / search / external service), and how many
   changes need a restart — with a comparison against the presets.
-- **Per-module tags** from the constant table's `cost` metadata: 需重启, 子进程, 负载敏感,
-  每条消息 / 每次请求 / 每次出站 / 使用时, N 个后台任务, sidecar chips, dependency warnings.
+- **Per-module tags** from the constant table's `cost` metadata: 需重启，子进程，负载敏感，
+  每条消息 / 每次请求 / 每次出站 / 使用时，N 个后台任务，sidecar chips, dependency warnings.
   Status badge: 运行中 / 已停用 / 待重启 / 由环境变量控制 (switch disabled, tooltip names the
   container variable). Core modules are listed read-only.
 - **Save** is CAS-protected (`expectedRevision`); turning off 审计 / 内容审计 asks for
@@ -134,26 +134,26 @@ configured_) are not modules and cannot be turned off.
 
 ### Measured (reference build, arm64, standalone server, 2026-08-17)
 
-|                                      | before this batch                                              | after                                                                   |
-| ------------------------------------ | -------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Idle CPU of `next-server`            | ~1.5 % (11 workers polling every 2–5 s, ~2.3 DB xact/s)        | ~0.1 % / ~0.2 xact/s (workers module-gated + idle backoff to 60 s)      |
-| Boot RSS (`full`)                    | ~500 MB (every server entry pre-required at Ready)             | ~275 MB (`preloadEntriesOnStart: false`, entries load on first request) |
-| RSS after a typical browsing session | ~650 MB (first tRPC call pulled the whole static router graph) | ~375 MB (every non-core sub-router is tRPC `lazy()`)                    |
-| Boot RSS `minimal` vs `full`         | —                                                              | ≈ −45 MB at boot (gateway / audit / connector graphs never load)        |
-| Image                                | 1.72 GB (`/app/dist` 270 MB of Vite intermediates traced in)   | ~1.07 GB                                                                |
-| First-screen JS (chat home)          | 33.8 MB / 423 files                                            | 22.4 MB / 127 files                                                     |
+|                                      | before this batch                                               | after                                                                    |
+| ------------------------------------ | --------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Idle CPU of `next-server`            | \~1.5 % (11 workers polling every 2–5 s, \~2.3 DB xact/s)       | \~0.1 % / \~0.2 xact/s (workers module-gated + idle backoff to 60 s)     |
+| Boot RSS (`full`)                    | \~500 MB (every server entry pre-required at Ready)             | \~275 MB (`preloadEntriesOnStart: false`, entries load on first request) |
+| RSS after a typical browsing session | \~650 MB (first tRPC call pulled the whole static router graph) | \~375 MB (every non-core sub-router is tRPC `lazy()`)                    |
+| Boot RSS `minimal` vs `full`         | —                                                               | ≈ −45 MB at boot (gateway / audit / connector graphs never load)         |
+| Image                                | 1.72 GB (`/app/dist` 270 MB of Vite intermediates traced in)    | \~1.07 GB                                                                |
+| First-screen JS (chat home)          | 33.8 MB / 423 files                                             | 22.4 MB / 127 files                                                      |
 
 Cold latency of a lazily loaded router is +20–60 ms once per process; the very first
-request after boot pays ~0.4 s to load the tRPC entry.
+request after boot pays \~0.4 s to load the tRPC entry.
 
 Heap is a **V8 old-space cap**, not a container memory limit. Idle RSS of the
-current image is ~375 MiB after warm-up; 1024 is tight under load (knowledge-base parse +
+current image is \~375 MiB after warm-up; 1024 is tight under load (knowledge-base parse +
 concurrent streams). Symptom of too-low a cap: process exit with
 `JavaScript heap out of memory`, then Compose `restart: always` loops it.
 Unset = no cap (raw `docker run`). Compose injects `1536`. `0` also disables.
 
 OOM-kill of the _container_ (as opposed to V8) means `mem_limit` is below
-heap + native buffers (canvas / sharp / ffmpeg). Leave ~1.5× heap for RSS.
+heap + native buffers (canvas / sharp / ffmpeg). Leave \~1.5× heap for RSS.
 
 ## Env reference
 
@@ -244,6 +244,20 @@ A disabled module does **not** unmount its router.
 
 Permissions are orthogonal: turning a module off never revokes RBAC.
 
+## Background workers
+
+The six `platform_jobs` pollers (`auditExport`, `auditRetention`, `agentRollout`,
+`connectorRuntimeAudit`, `connectorSecretCleanup`, `secretRewrap`) share one
+scheduler (`enterprise/jobs/platformJobsDispatcher.ts`). It claims a mixed-type
+batch with `SELECT … FOR UPDATE SKIP LOCKED` at `min(interval)` of the types
+whose module is on in the boot view (plus the Vault predicate for
+`secretRewrap`), then dispatches each row to the existing per-type handler.
+Disabled modules are never claimed; the registry still logs
+`[modules] worker <name> skipped: module <id> disabled` for those names so the
+modules page listing stays unchanged. Advisory-lock cleanups, branding GC,
+shared-OAuth keepalive, the mihomo supervisor, GatewayService, and readiness
+probes stay on their own loops.
+
 ## Restart semantics
 
 Modules with `kind: restart` own a boot-time facility (worker, subprocess,
@@ -281,21 +295,27 @@ This batch:
   `path.resolve(process.cwd(), <const>)` in `networkProxy/engine/platform.ts`
   triggered a whole-project trace. The commander replaced that with literal
   path segments; whether those trees disappear is verified on the r2 image.
-- `@napi-rs/canvas` `skia.node` is **not** hard-linked. The three copies are
-  byte-identical, but `COPY --from=app / /` into scratch explodes hardlinks
-  back to three inodes, and deleting the `.pnpm` copies is unsafe
-  (`js-binding.js` `require('@napi-rs/canvas-linux-*')` from each nested
-  canvas package). sharp-libvips 1.2.4 vs 1.3.2 is left alone (different
-  SONAMEs). `@vitejs/devtools` is pruned in the busybox stage (not resolvable
-  at runtime).
+- The final scratch image is two layers: (a) OS + `/app/node_modules` and
+  (b) the app payload (`.next`, `public`, launcher, remnants). A source-only
+  rebuild reuses layer (a).
+- `@napi-rs/canvas` keeps **one** `skia.node`: the hoisted
+  `node_modules/@napi-rs/canvas-linux-*` that `require()` resolves. The two
+  `.pnpm` copies are dropped (tracing exclude + busybox prune).
+  `js-binding.js` walks up to the hoisted package. sharp-libvips **1.2.4 and
+  1.3.2 both stay** — app `sharp@0.34.5` vs Next's own `sharp@0.35.3`
+  (different SONAMEs). `@vitejs/devtools` is still pruned.
+- `ffmpeg-static` stays in the default (full) image. The import is
+  `await import('ffmpeg-static')` behind `isBootModuleEnabled('imageGen')`,
+  so a later image can exclude the 49 MiB binary when `imageGen` is off.
+  Do not restore `WITH_VIDEO` — `serverExternalPackages` still lists it.
 - Heap cap is applied in `startServer.js` **only when `LOBE_NODE_HEAP_MB` is
   set**. Compose injects `1536`. Image `NODE_OPTIONS` stay
   `--dns-result-order=ipv4first --use-openssl-ca`.
 
 Measured on `aihub:slim-r2` (2026-08-17, arm64, commander `platform.ts`
 fix included): image **1.07 GB** (was 1.72 GB), `/app` **634 MiB**
-(was 1.25 GiB), `/app/src` **80 KiB** (was 43 MiB). Full table:
-`scratchpad/slim/reports/G5.md`.
+(was 1.25 GiB), `/app/src` **80 KiB** (was 43 MiB). Phase-2 layering
+numbers: `audit/slim-2026-08-17/phase2/reports/G5.md`.
 
 ## Phase 2 / handoff
 

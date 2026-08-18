@@ -32,6 +32,7 @@ import {
   PlatformAuditPolicyModel,
   PlatformJobModel,
 } from '@/database/models/platform';
+import type { PlatformJobItem } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { assertConversationAccessEnabled } from './contentPolicy';
@@ -89,6 +90,11 @@ export interface ProcessNextAuditExportOptions {
    * `createWriteStream(tmpPath)`. Used to prove async stream errors after
    * `write()===true` follow the bounded failure path without process death.
    */
+  /**
+   * Already-claimed job. When set, this entry point skips `claimNext` so a
+   * mixed-type dispatcher can own the SELECT … FOR UPDATE SKIP LOCKED.
+   */
+  claimed?: PlatformJobItem;
   createArtifactWriteStream?: (tmpPath: string) => NodeJS.WritableStream;
   leaseMs?: number;
   /**
@@ -134,11 +140,13 @@ export const processNextAuditExportJob = async (
   const leaseMs = options.leaseMs ?? AUDIT_EXPORT_DEFAULT_LEASE_MS;
   const maxArtifactBytes = options.maxArtifactBytes ?? AUDIT_EXPORT_MAX_ARTIFACT_BYTES;
 
-  const claimed = await jobs.claimNext({
-    leaseMs,
-    types: [PLATFORM_AUDIT_EXPORT_JOB_TYPE],
-    workerId: options.workerId,
-  });
+  const claimed =
+    options.claimed ??
+    (await jobs.claimNext({
+      leaseMs,
+      types: [PLATFORM_AUDIT_EXPORT_JOB_TYPE],
+      workerId: options.workerId,
+    }));
   if (!claimed) return { claimed: false };
 
   const parsedInput = parseAuditExportJobInput(claimed.input);

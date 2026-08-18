@@ -18,10 +18,14 @@ interface PlatformInstanceHeartbeatTimer {
   unref?: () => void;
 }
 
+export type PlatformInstanceHeartbeatTickListener = (db: LobeChatDatabase) => Promise<void>;
+
 interface PlatformInstanceHeartbeatProcessState {
   heartbeatInFlight: boolean;
   instanceId: string;
   startPromise: Promise<boolean> | null;
+  tickerStartedListeners: Array<() => void>;
+  tickListeners: PlatformInstanceHeartbeatTickListener[];
   timer: PlatformInstanceHeartbeatTimer | null;
 }
 
@@ -33,6 +37,8 @@ const createProcessState = (): PlatformInstanceHeartbeatProcessState => ({
   heartbeatInFlight: false,
   instanceId: `pinst_${randomBytes(24).toString('hex')}`,
   startPromise: null,
+  tickListeners: [],
+  tickerStartedListeners: [],
   timer: null,
 });
 
@@ -97,6 +103,52 @@ const errorClassOf = (error: unknown): string =>
 
 export const getPlatformInstanceId = (): string => processState().instanceId;
 
+export const isPlatformInstanceHeartbeatTickerRunning = (): boolean =>
+  Boolean(processState().timer);
+
+/**
+ * Run on every successful-or-failed platform-instance heartbeat tick.
+ * Used by the IdP instance registry so both tables share one 30s timer.
+ */
+export const onPlatformInstanceHeartbeatTick = (
+  listener: PlatformInstanceHeartbeatTickListener,
+): (() => void) => {
+  const listeners = processState().tickListeners;
+  listeners.push(listener);
+  return () => {
+    const index = listeners.indexOf(listener);
+    if (index >= 0) listeners.splice(index, 1);
+  };
+};
+
+/** Fired once when the process-global ticker is created so fallback timers can stop. */
+export const onPlatformInstanceHeartbeatTickerStarted = (listener: () => void): (() => void) => {
+  const listeners = processState().tickerStartedListeners;
+  listeners.push(listener);
+  return () => {
+    const index = listeners.indexOf(listener);
+    if (index >= 0) listeners.splice(index, 1);
+  };
+};
+
+const runHeartbeatTickListeners = async (db: LobeChatDatabase): Promise<void> => {
+  for (const listener of processState().tickListeners) {
+    try {
+      // Nested tx = SAVEPOINT when `db` is already the outer heartbeat
+      // transaction, so a listener failure rolls back only its writes.
+      if (typeof db.transaction === 'function') {
+        await db.transaction(async (inner) => {
+          await listener(inner as LobeChatDatabase);
+        });
+      } else {
+        await listener(db);
+      }
+    } catch {
+      // Savepoint rolled back; the platform-instance upsert still commits.
+    }
+  }
+};
+
 /**
  * Starts at most one process-global heartbeat loop. Unsupported runtimes return before resolving
  * the database module, preserving zero-DB and zero-timer behavior when the feature is off.
@@ -132,8 +184,14 @@ export const ensurePlatformInstanceHeartbeatStarted = async (
         if (state.heartbeatInFlight) return;
         state.heartbeatInFlight = true;
         const heartbeatStartedAt = now();
-        void repository
-          .upsertHeartbeat(state.instanceId)
+        void db
+          .transaction(async (tx) => {
+            const txRepository = options.createRepository
+              ? options.createRepository(tx as LobeChatDatabase)
+              : new PlatformInstanceRepository(tx as LobeChatDatabase);
+            await txRepository.upsertHeartbeat(state.instanceId);
+            await runHeartbeatTickListeners(tx as LobeChatDatabase);
+          })
           .then(() => {
             observeEnterprisePlatformEvent({
               durationMs: now() - heartbeatStartedAt,
@@ -161,6 +219,7 @@ export const ensurePlatformInstanceHeartbeatStarted = async (
         PLATFORM_INSTANCE_HEARTBEAT_INTERVAL_MS,
       );
       state.timer.unref?.();
+      for (const listener of state.tickerStartedListeners) listener();
       return true;
     } catch (error) {
       observeEnterprisePlatformEvent({
