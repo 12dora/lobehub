@@ -144,6 +144,7 @@ const PolicyEditModal = memo<{
 
   return (
     <Modal
+      cancelText={t('users.modals.cancel')}
       okText={t('audit.retention.policy.save')}
       open={open}
       title={t('audit.retention.policy.edit')}

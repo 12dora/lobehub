@@ -199,6 +199,11 @@ export interface DataTableProps<T extends object = Record<string, unknown>> {
    * When an object is provided, Table stays controlled (no local page state).
    */
   pagination?: false | AdminTablePagination;
+  /**
+   * Extra per-row class name, merged with the built-in row classes.
+   * Use for transient row states (e.g. highlighting freshly created rows).
+   */
+  rowClassName?: (record: T, index: number) => string | undefined;
   rowKey: TableProps<T>['rowKey'];
   rowSelection?: TableRowSelection<T>;
   /**
@@ -242,6 +247,7 @@ function DataTableInner<T extends object>({
   onPaginationChange,
   onChange,
   onRowActivate,
+  rowClassName,
   rowSelection,
   scroll,
   virtual,
@@ -338,6 +344,38 @@ function DataTableInner<T extends object>({
   // The toolbar (search / bulk actions) stays mounted across loading / error / empty so
   // controls do not blink out of existence while a page refetches.
   const toolbarNode = toolbar ? <div className={styles.toolbar}>{toolbar}</div> : null;
+
+  // Merge the activation affordance class with any caller-supplied row class so both
+  // survive; returning undefined keeps Ant Design's default row rendering untouched.
+  const handleRow: TableProps<T>['onRow'] =
+    onRowActivate || rowClassName
+      ? (record, index) => {
+          const extraClassName = rowClassName?.(record, index ?? 0);
+          if (!onRowActivate) {
+            return extraClassName ? { className: extraClassName } : {};
+          }
+          return {
+            className: extraClassName
+              ? `admin-table-row-clickable ${extraClassName}`
+              : 'admin-table-row-clickable',
+            onClick: (event) => {
+              if (event.defaultPrevented) return;
+              if (isInteractiveDescendantTarget(event.target, event.currentTarget)) return;
+              onRowActivate(record);
+            },
+            onKeyDown: (event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              if (event.defaultPrevented) return;
+              // Nested controls own their keyboard activation; do not also navigate the row.
+              if (isInteractiveDescendantTarget(event.target, event.currentTarget)) return;
+              event.preventDefault();
+              onRowActivate(record);
+            },
+            role: 'link',
+            tabIndex: 0,
+          };
+        }
+      : undefined;
 
   if (loading) {
     return (
@@ -451,28 +489,7 @@ function DataTableInner<T extends object>({
           emptyText: <Empty description={emptyDescription ?? t('primitives.dataTable.empty')} />,
         }}
         onChange={handleTableChange}
-        onRow={
-          onRowActivate
-            ? (record) => ({
-                className: 'admin-table-row-clickable',
-                onClick: (event) => {
-                  if (event.defaultPrevented) return;
-                  if (isInteractiveDescendantTarget(event.target, event.currentTarget)) return;
-                  onRowActivate(record);
-                },
-                onKeyDown: (event) => {
-                  if (event.key !== 'Enter' && event.key !== ' ') return;
-                  if (event.defaultPrevented) return;
-                  // Nested controls own their keyboard activation; do not also navigate the row.
-                  if (isInteractiveDescendantTarget(event.target, event.currentTarget)) return;
-                  event.preventDefault();
-                  onRowActivate(record);
-                },
-                role: 'link',
-                tabIndex: 0,
-              })
-            : undefined
-        }
+        onRow={handleRow}
       />
       {cursorNav}
     </div>

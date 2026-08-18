@@ -23,12 +23,19 @@ const styles = createStaticStyles(({ css }) => ({
   card: css`
     cursor: pointer;
 
+    display: flex;
     flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+    justify-content: flex-start;
 
     min-width: 140px;
     padding: 14px;
     border: 1px solid ${cssVar.colorBorderSecondary};
     border-radius: ${cssVar.borderRadiusLG};
+
+    text-align: start;
 
     &[data-active='true'] {
       border-color: ${cssVar.colorPrimary};

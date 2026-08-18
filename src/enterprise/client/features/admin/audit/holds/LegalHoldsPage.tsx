@@ -300,6 +300,7 @@ const LegalHoldsPage = memo(() => {
       />
 
       <Modal
+        cancelText={t('users.modals.cancel')}
         okText={t('audit.holds.create.continue')}
         open={createOpen}
         title={t('audit.holds.create.title')}

@@ -43,24 +43,51 @@ const styles = createStaticStyles(({ css }) => ({
     border-radius: ${cssVar.borderRadiusLG};
     background: ${cssVar.colorBgContainer};
   `,
+  newRunRow: css`
+    animation: audit-retention-row-enter 0.4s ease-out;
+
+    @keyframes audit-retention-row-enter {
+      0% {
+        transform: translateY(-4px);
+        opacity: 0;
+      }
+
+      100% {
+        transform: none;
+        opacity: 1;
+      }
+    }
+
+    @keyframes audit-retention-row-pulse {
+      0% {
+        background-color: ${cssVar.colorPrimaryBg};
+      }
+
+      100% {
+        background-color: transparent;
+      }
+    }
+
+    > td {
+      animation: audit-retention-row-pulse 1.4s ease-out;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      &,
+      > td {
+        animation: none;
+      }
+    }
+  `,
   section: css`
     display: flex;
     flex-direction: column;
     gap: 12px;
-
-    @keyframes audit-highlight-fade {
-      0% {
-        background: ${cssVar.colorPrimaryBg};
-        box-shadow: inset 0 0 0 2px ${cssVar.colorPrimary};
-      }
-
-      100% {
-        background: transparent;
-        box-shadow: none;
-      }
-    }
   `,
 }));
+
+/** Keep slightly above the longest row animation so polling cannot replay it. */
+const HIGHLIGHT_CLEAR_MS = 1600;
 
 const RetentionPage = memo(() => {
   const { t } = useTranslation('admin');
@@ -128,6 +155,14 @@ const RetentionPage = memo(() => {
     });
   }, [data, retentionFailureMessage, t]);
 
+  // Drop the highlight once the animation has played out; SWR polling re-renders
+  // the same rows every few seconds and would otherwise replay it forever.
+  useEffect(() => {
+    if (highlightIds.length === 0) return;
+    const timer = window.setTimeout(() => setHighlightIds([]), HIGHLIGHT_CLEAR_MS);
+    return () => window.clearTimeout(timer);
+  }, [highlightIds]);
+
   const startCleanup = useCallback(
     (mode: 'dry_run' | 'execute') => {
       const run = async () => {
@@ -151,7 +186,7 @@ const RetentionPage = memo(() => {
             setHighlightIds(ids);
             resetCursor();
             void mutate();
-            // Scroll runs table into view; row highlight is applied via rowClassName.
+            // Scroll the runs table into view; new rows are highlighted via rowClassName.
             window.setTimeout(() => {
               runsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }, 50);
@@ -252,6 +287,7 @@ const RetentionPage = memo(() => {
               error={Boolean(error) && !data}
               loading={isLoading && !data}
               pagination={false}
+              rowClassName={(row) => (highlightIds.includes(row.id) ? styles.newRunRow : undefined)}
               rowKey="id"
               scroll={{ x: 1200 }}
               cursorPagination={{
@@ -265,20 +301,7 @@ const RetentionPage = memo(() => {
               onRetry={() => void mutate()}
               onRowActivate={(row) => setDetail(row)}
             />
-            {/* Highlight newly created runs (class applied via rowKey match below). */}
-            {highlightIds.length > 0 ? (
-              <style>{`
-                ${highlightIds.map((id) => `[data-row-key="${id}"]`).join(',')} {
-                  animation: audit-highlight-fade 2.4s ease-out;
-                }
-              `}</style>
-            ) : null}
           </div>
-          {highlightIds.length > 0 ? (
-            <Text style={{ marginBlockStart: 8 }} type="secondary">
-              {t('audit.retention.runs.highlighted', { ids: highlightIds.join(', ') })}
-            </Text>
-          ) : null}
         </div>
       </div>
 

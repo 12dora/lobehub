@@ -2684,12 +2684,9 @@ export default {
   'audit.exports.kind.operation_logs': 'Admin activity',
   'audit.exports.kind.conversations': 'User chats',
   'audit.exports.kind.user_timeline': 'User activity trail',
-  'audit.exports.kindDesc.operation_logs':
-    'Actions taken by platform admins: who did what, when, and the result.',
-  'audit.exports.kindDesc.conversations':
-    'Full conversation content for one user in the chosen time range.',
-  'audit.exports.kindDesc.user_timeline':
-    'When a user started conversations and was active, as a timeline.',
+  'audit.exports.kindDesc.operation_logs': 'Admin operation log for the selected range',
+  'audit.exports.kindDesc.conversations': "One user's full conversations in the range",
+  'audit.exports.kindDesc.user_timeline': "One user's session and activity timeline",
   'audit.exports.download.title': 'Download export',
   'audit.exports.download.desc':
     'Opens a short-lived download link. Your reason is recorded in the audit log.',
@@ -2730,7 +2727,7 @@ export default {
   'audit.exports.filter.userId': 'User',
   'audit.exports.filter.workspaceId': 'Workspace',
   'audit.exports.create.title': 'New export',
-  'audit.exports.create.pickKind': 'What would you like to export?',
+  'audit.exports.create.pickKind': 'Select what to export',
   'audit.exports.create.next': 'Next',
   'audit.exports.create.back': 'Back',
   'audit.exports.create.continueReason': 'Continue',
@@ -2856,7 +2853,6 @@ export default {
   'audit.retention.runs.metric.sessions': 'Sessions',
   'audit.retention.runs.metric.exportArtifacts': 'Export files',
   'audit.retention.runs.scanned': 'Scanned',
-  'audit.retention.runs.highlighted': 'New run(s): {{ids}}',
   'errors.revisionConflict': 'This record was changed by someone else. Refresh and try again.',
   'audit.retention.policy.loadError': 'Could not load audit policy.',
   'audit.retention.policy.conflictDescription':

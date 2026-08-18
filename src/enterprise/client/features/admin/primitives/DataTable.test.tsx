@@ -161,6 +161,29 @@ describe('DataTable server-driven list', () => {
     expect(onChange).toHaveBeenCalled();
   });
 
+  it('selects a row without also activating it', () => {
+    const onSelectionChange = vi.fn();
+    const onRowActivate = vi.fn();
+    render(
+      <DataTable
+        columns={columns}
+        dataSource={rows}
+        pagination={false}
+        rowKey="id"
+        rowSelection={{
+          onChange: (keys) => onSelectionChange(keys),
+          selectedRowKeys: [],
+        }}
+        onRowActivate={onRowActivate}
+      />,
+    );
+
+    // The selection checkbox is a nested interactive control: ticking it must not open the row.
+    fireEvent.click(screen.getAllByRole('checkbox')[1]!);
+    expect(onSelectionChange).toHaveBeenCalled();
+    expect(onRowActivate).not.toHaveBeenCalled();
+  });
+
   it('accepts large-list scroll/virtual props', () => {
     const { container } = render(
       <DataTable
@@ -271,6 +294,46 @@ describe('DataTable server-driven list', () => {
     expect(screen.getByText('40 items')).toBeTruthy();
     fireEvent.click(screen.getByTitle('1'));
     expect(onPaginationChange).toHaveBeenCalledWith(1, 20);
+  });
+
+  it('merges rowClassName with the row activation class, and works without onRowActivate', () => {
+    const rowClassName = (record: Row, index: number) =>
+      index === 0 ? `highlight-${record.id}` : undefined;
+
+    const { container, rerender } = render(
+      <DataTable<Row>
+        columns={columns}
+        dataSource={rows}
+        pagination={false}
+        rowClassName={rowClassName}
+        rowKey="id"
+        onRowActivate={() => {}}
+      />,
+    );
+
+    const firstRow = container.querySelector('.ant-table-tbody tr[data-row-key="1"]')!;
+    expect(firstRow.classList.contains('admin-table-row-clickable')).toBe(true);
+    expect(firstRow.classList.contains('highlight-1')).toBe(true);
+
+    const secondRow = container.querySelector('.ant-table-tbody tr[data-row-key="2"]')!;
+    expect(secondRow.classList.contains('admin-table-row-clickable')).toBe(true);
+    expect(secondRow.className).not.toContain('highlight-');
+
+    // Without onRowActivate the row stays non-interactive but still gets the extra class.
+    rerender(
+      <DataTable<Row>
+        columns={columns}
+        dataSource={rows}
+        pagination={false}
+        rowClassName={rowClassName}
+        rowKey="id"
+      />,
+    );
+
+    const plainRow = container.querySelector('.ant-table-tbody tr[data-row-key="1"]')!;
+    expect(plainRow.classList.contains('highlight-1')).toBe(true);
+    expect(plainRow.classList.contains('admin-table-row-clickable')).toBe(false);
+    expect(plainRow.getAttribute('role')).toBeNull();
   });
 
   it('does not keep numeric pagination when the list is truly empty', () => {

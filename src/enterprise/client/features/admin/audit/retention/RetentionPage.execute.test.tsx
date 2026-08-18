@@ -38,7 +38,9 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('antd-style', () => ({
-  createStaticStyles: () => new Proxy({}, { get: () => '' }),
+  // Return the style key itself so class-name wiring stays assertable in tests.
+  createStaticStyles: () =>
+    new Proxy({}, { get: (_target, key) => (typeof key === 'string' ? key : '') }),
   cssVar: {},
 }));
 
@@ -191,13 +193,20 @@ vi.mock('../../primitives/DataTable', () => ({
   default: ({
     dataSource,
     onRowActivate,
+    rowClassName,
   }: {
     dataSource?: Array<{ id: string }>;
     onRowActivate?: (row: { id: string }) => void;
+    rowClassName?: (row: { id: string }, index: number) => string | undefined;
   }) => (
     <div data-testid="runs-table">
-      {(dataSource ?? []).map((row) => (
-        <button key={row.id} type="button" onClick={() => onRowActivate?.(row)}>
+      {(dataSource ?? []).map((row, index) => (
+        <button
+          data-row-class={rowClassName?.(row, index) ?? ''}
+          key={row.id}
+          type="button"
+          onClick={() => onRowActivate?.(row)}
+        >
           {row.id}
         </button>
       ))}
@@ -321,6 +330,43 @@ describe('RetentionPage execute confirmation payload', () => {
       conversationRetentionDays: 45,
       expectedRevision: 2,
     });
+  });
+
+  it('highlights new runs via rowClassName, drops the caption and injected style, then clears', async () => {
+    // happy-dom does not always implement scrollIntoView; the page schedules one after submit.
+    (Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => {};
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    try {
+      runsData = {
+        items: [
+          { id: 'run-1', status: 'pending' },
+          { id: 'run-old', status: 'succeeded' },
+        ],
+        nextCursor: null,
+      };
+
+      const { container } = render(<RetentionPage />);
+      fireEvent.click(screen.getByText('audit.retention.cleanup.execute'));
+      await act(async () => {
+        await openAuditReasonModal.mock.results[0]!.value;
+      });
+
+      // Only the freshly created run carries the animation class.
+      expect(screen.getByText('run-1').getAttribute('data-row-class')).toBe('newRunRow');
+      expect(screen.getByText('run-old').getAttribute('data-row-class')).toBe('');
+      // No raw <style> injection and no "new run(s): …" caption any more.
+      expect(container.querySelector('style')).toBeNull();
+      expect(screen.queryByText('audit.retention.runs.highlighted')).toBeNull();
+
+      // Highlight is dropped once the animation has played, so polling cannot replay it.
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByText('run-1').getAttribute('data-row-class')).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports a mutation-seeded run that fails in the first list response exactly once', async () => {
