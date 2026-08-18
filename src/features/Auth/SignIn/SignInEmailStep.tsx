@@ -2,7 +2,7 @@ import { Alert, Button, Flexbox, Icon, Input, Text } from '@lobehub/ui';
 import { type FormInstance, type InputRef } from 'antd';
 import { Badge, Divider, Form } from 'antd';
 import { createStaticStyles } from 'antd-style';
-import { Mail } from 'lucide-react';
+import { Fingerprint, Mail } from 'lucide-react';
 import { type CSSProperties, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -36,6 +36,7 @@ const getProviderName = (provider: string) =>
 export interface SignInEmailStepProps {
   disableEmailPassword?: boolean;
   form: FormInstance<{ email: string }>;
+  isPasskeySupported: boolean;
   isSocialOnly: boolean;
   lastAuthProvider?: string | null;
   loading: boolean;
@@ -43,9 +44,12 @@ export interface SignInEmailStepProps {
   oAuthSSOProviders: string[];
   onCheckUser: (values: { email: string }) => Promise<void>;
   onGoToSignup: () => void;
+  onPasskeyAutoFill: () => void;
+  onPasskeySignIn: () => void;
   onResetEmail: () => void;
   onSetPassword: () => void;
   onSocialSignIn: (provider: string) => void;
+  passkeyLoading: boolean;
   serverConfigInit: boolean;
   socialLoading: string | null;
 }
@@ -53,15 +57,19 @@ export interface SignInEmailStepProps {
 export const SignInEmailStep = ({
   disableEmailPassword,
   form,
+  isPasskeySupported,
   isSocialOnly,
   lastAuthProvider,
   loading,
   oAuthSSOProviders,
   oAuthSSOProviderMetadata = [],
+  passkeyLoading,
   serverConfigInit,
   socialLoading,
   onCheckUser,
   onGoToSignup,
+  onPasskeyAutoFill,
+  onPasskeySignIn,
   onResetEmail,
   onSetPassword,
   onSocialSignIn,
@@ -73,8 +81,16 @@ export const SignInEmailStep = ({
   const openRegistration = useEnterprisePlatform().publicSnapshot.login.openRegistration;
   const emailInputRef = useRef<InputRef>(null);
 
+  // Ref-latched so the speculative passkey offer is kicked off exactly once per
+  // mount, without re-running the effect on every parent render.
+  const passkeyAutoFillRef = useRef(onPasskeyAutoFill);
+  passkeyAutoFillRef.current = onPasskeyAutoFill;
+
   useEffect(() => {
     emailInputRef.current?.focus();
+    // Browser autofill can offer a passkey on the email field itself
+    // (autoComplete="username webauthn"), so the user never types anything.
+    passkeyAutoFillRef.current();
   }, []);
 
   const divider = (
@@ -123,7 +139,7 @@ export const SignInEmailStep = ({
 
   return (
     <AuthCard title={t('signin.subtitle', { appName: branding.name })}>
-      {serverConfigInit && oAuthSSOProviders.length > 0 && (
+      {serverConfigInit && (oAuthSSOProviders.length > 0 || isPasskeySupported) && (
         <Flexbox gap={12}>
           {oAuthSSOProviders.map((provider) => {
             const button = (
@@ -156,6 +172,23 @@ export const SignInEmailStep = ({
               button
             );
           })}
+          {/*
+            Belongs with the other credential-free entries. Hidden outright when
+            WebAuthn is unavailable (no HTTPS / old browser) rather than shown
+            dead — every account here also has a password to fall back on.
+          */}
+          {isPasskeySupported && (
+            <Button
+              block
+              icon={<Icon icon={Fingerprint} style={PROVIDER_ICON_STYLE} />}
+              iconProps={{ size: 18, style: PROVIDER_ICON_STYLE }}
+              loading={passkeyLoading}
+              size="large"
+              onClick={onPasskeySignIn}
+            >
+              {t('betterAuth.signin.passkey.action')}
+            </Button>
+          )}
           {showEmailForm && divider}
         </Flexbox>
       )}
@@ -188,7 +221,9 @@ export const SignInEmailStep = ({
             ]}
           >
             <Input
-              autoComplete="username"
+              // "webauthn" opts this field into conditional UI so the browser's
+              // autofill dropdown can offer a saved passkey.
+              autoComplete="username webauthn"
               inputMode="email"
               placeholder={t('betterAuth.signin.emailPlaceholder')}
               prefix={<Icon icon={Mail} style={{ marginInline: 6 }} />}

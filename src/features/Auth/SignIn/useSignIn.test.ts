@@ -11,6 +11,9 @@ const mockSignInSocial = vi.hoisted(() => vi.fn());
 const mockSignInOauth2 = vi.hoisted(() => vi.fn());
 const mockSignInEmail = vi.hoisted(() => vi.fn());
 const mockSignInMagicLink = vi.hoisted(() => vi.fn());
+const mockSignInPasskey = vi.hoisted(() => vi.fn());
+const mockVerifyTotp = vi.hoisted(() => vi.fn());
+const mockVerifyBackupCode = vi.hoisted(() => vi.fn());
 const mockRequestPasswordReset = vi.hoisted(() => vi.fn());
 const mockBusinessSignin = vi.hoisted(() => ({
   getAdditionalData: vi.fn(async () => ({})),
@@ -43,7 +46,12 @@ vi.mock('@/libs/better-auth/auth-client', () => ({
     email: mockSignInEmail,
     magicLink: mockSignInMagicLink,
     oauth2: mockSignInOauth2,
+    passkey: mockSignInPasskey,
     social: mockSignInSocial,
+  },
+  twoFactor: {
+    verifyBackupCode: mockVerifyBackupCode,
+    verifyTotp: mockVerifyTotp,
   },
 }));
 
@@ -358,6 +366,262 @@ describe('useSignIn', () => {
       expect(mockNavigate).toHaveBeenCalledWith(
         expect.stringContaining('/verify-email?email=user%40example.com'),
       );
+    });
+  });
+
+  describe('two-step verification', () => {
+    // Drive the form to the 2FA challenge the way a real sign-in does.
+    const arriveAtTwoFactorStep = async () => {
+      mockSignInEmail.mockImplementation(async (_data: any, opts: any) => {
+        // better-auth answers the challenge with HTTP 200, so better-fetch still
+        // runs the caller's onSuccess handler.
+        opts.onSuccess({ data: { twoFactorMethods: ['totp'], twoFactorRedirect: true } });
+        return { data: { twoFactorMethods: ['totp'], twoFactorRedirect: true }, error: null };
+      });
+      mockFetch.mockResolvedValueOnce({
+        json: async () => ({ exists: true, hasPassword: true }),
+        ok: true,
+      });
+
+      const { result } = renderHook(() => useSignIn());
+
+      await act(async () => {
+        await result.current.handleCheckUser({ email: 'user@example.com' });
+      });
+      await act(async () => {
+        await result.current.handleSignIn({ password: 'password123' });
+      });
+
+      return result;
+    };
+
+    it('moves to the two-factor step and does NOT navigate away', async () => {
+      const result = await arriveAtTwoFactorStep();
+
+      expect(result.current.step).toBe('twoFactor');
+      expect(result.current.twoFactorMode).toBe('totp');
+      // The regression that would silently defeat 2FA: onSuccess fires on the
+      // twoFactorRedirect response, so an ungated redirect navigates away before
+      // the challenge can render.
+      expect(window.location.href).toBe('');
+      // …and a challenge is not a failed password
+      expect(mockSetFields).not.toHaveBeenCalled();
+    });
+
+    it('completes sign-in on a correct TOTP code', async () => {
+      const result = await arriveAtTwoFactorStep();
+      mockVerifyTotp.mockResolvedValue({ data: { token: 'session-token' }, error: null });
+
+      await act(async () => {
+        await result.current.handleTwoFactorVerify({ code: '123456', trustDevice: true });
+      });
+
+      expect(mockVerifyTotp).toHaveBeenCalledWith({ code: '123456', trustDevice: true });
+      expect(window.location.href).toBe('/');
+    });
+
+    it('pins a wrong code inline on the field instead of a toast', async () => {
+      const result = await arriveAtTwoFactorStep();
+      mockVerifyTotp.mockResolvedValue({
+        data: null,
+        error: { code: 'INVALID_CODE', message: 'Invalid code', status: 401 },
+      });
+
+      await act(async () => {
+        await result.current.handleTwoFactorVerify({ code: '000000' });
+      });
+
+      expect(mockSetFields).toHaveBeenCalledWith([
+        { errors: [expect.stringContaining('twoFactor.error')], name: 'code' },
+      ]);
+      expect(mockMessageError).not.toHaveBeenCalled();
+      // The user stays on the challenge and can retry
+      expect(result.current.step).toBe('twoFactor');
+      expect(window.location.href).toBe('');
+    });
+
+    it('reads a 429 as too many attempts, distinctly from a wrong code', async () => {
+      const result = await arriveAtTwoFactorStep();
+      mockVerifyTotp.mockResolvedValue({
+        data: null,
+        error: { message: 'Too many requests', status: 429 },
+      });
+
+      await act(async () => {
+        await result.current.handleTwoFactorVerify({ code: '123456' });
+      });
+
+      expect(mockSetFields).toHaveBeenCalledWith([
+        { errors: [expect.stringContaining('RATE_LIMIT_EXCEEDED')], name: 'code' },
+      ]);
+      const [[[field]]] = mockSetFields.mock.calls as any;
+      expect(field.errors[0]).not.toContain('twoFactor.error');
+    });
+
+    it('switches the submitted endpoint when the recovery-code path is chosen', async () => {
+      const result = await arriveAtTwoFactorStep();
+      mockVerifyBackupCode.mockResolvedValue({ data: { token: 'session-token' }, error: null });
+
+      mockResetFields.mockClear();
+      act(() => {
+        result.current.handleToggleTwoFactorMode();
+      });
+
+      expect(result.current.twoFactorMode).toBe('backupCode');
+      // Switching credentials clears the half-typed value + its inline error
+      expect(mockResetFields).toHaveBeenCalledWith(['code']);
+
+      await act(async () => {
+        await result.current.handleTwoFactorVerify({ code: 'RECOVERY-1' });
+      });
+
+      expect(mockVerifyBackupCode).toHaveBeenCalledWith({
+        code: 'RECOVERY-1',
+        trustDevice: false,
+      });
+      expect(mockVerifyTotp).not.toHaveBeenCalled();
+      expect(window.location.href).toBe('/');
+    });
+
+    it('returns to the password step without stranding the user', async () => {
+      const result = await arriveAtTwoFactorStep();
+
+      act(() => {
+        result.current.handleBackToPassword();
+      });
+
+      expect(result.current.step).toBe('password');
+      expect(result.current.email).toBe('user@example.com');
+      expect(result.current.twoFactorMode).toBe('totp');
+    });
+
+    it('sends the user back to the password step when the challenge cookie has lapsed', async () => {
+      const result = await arriveAtTwoFactorStep();
+      mockVerifyTotp.mockResolvedValue({
+        data: null,
+        error: { code: 'INVALID_TWO_FACTOR_COOKIE', message: 'Invalid cookie', status: 401 },
+      });
+
+      await act(async () => {
+        await result.current.handleTwoFactorVerify({ code: '123456' });
+      });
+
+      // No code can ever succeed against a lapsed challenge — don't leave the
+      // user typing into a dead field.
+      expect(result.current.step).toBe('password');
+      expect(mockMessageError).toHaveBeenCalled();
+    });
+
+    it('still redirects normally when the account has no two-step verification', async () => {
+      mockSignInEmail.mockImplementation(async (_data: any, opts: any) => {
+        opts.onSuccess({ data: { redirect: false, token: 'session-token' } });
+        return { data: { token: 'session-token' }, error: null };
+      });
+      mockFetch.mockResolvedValueOnce({
+        json: async () => ({ exists: true, hasPassword: true }),
+        ok: true,
+      });
+
+      const { result } = renderHook(() => useSignIn());
+
+      await act(async () => {
+        await result.current.handleCheckUser({ email: 'user@example.com' });
+      });
+      await act(async () => {
+        await result.current.handleSignIn({ password: 'password123' });
+      });
+
+      expect(result.current.step).toBe('password');
+      expect(window.location.href).toBe('/');
+    });
+  });
+
+  describe('passkey sign in', () => {
+    it('signs in and redirects on a successful ceremony', async () => {
+      mockSignInPasskey.mockResolvedValue({ data: { token: 'session-token' }, error: null });
+
+      const { result } = renderHook(() => useSignIn());
+
+      await act(async () => {
+        await result.current.handlePasskeySignIn();
+      });
+
+      expect(window.location.href).toBe('/');
+      expect(mockMessageError).not.toHaveBeenCalled();
+    });
+
+    it.each(['AUTH_CANCELLED', 'ERROR_CEREMONY_ABORTED'])(
+      'stays silent when the user dismisses the ceremony (%s)',
+      async (code) => {
+        mockSignInPasskey.mockResolvedValue({
+          data: null,
+          error: { code, message: 'Auth cancelled', status: 400 },
+        });
+
+        const { result } = renderHook(() => useSignIn());
+
+        await act(async () => {
+          await result.current.handlePasskeySignIn();
+        });
+
+        expect(mockMessageError).not.toHaveBeenCalled();
+        expect(window.location.href).toBe('');
+      },
+    );
+
+    it('reports a real passkey failure', async () => {
+      mockSignInPasskey.mockResolvedValue({
+        data: null,
+        error: { code: 'UNKNOWN_ERROR', message: 'boom', status: 500 },
+      });
+
+      const { result } = renderHook(() => useSignIn());
+
+      await act(async () => {
+        await result.current.handlePasskeySignIn();
+      });
+
+      expect(mockMessageError).toHaveBeenCalled();
+    });
+
+    it('skips the speculative autofill offer when WebAuthn is unavailable', async () => {
+      const { result } = renderHook(() => useSignIn());
+
+      expect(result.current.isPasskeySupported).toBe(false);
+
+      await act(async () => {
+        await result.current.handlePasskeyAutoFill();
+      });
+
+      expect(mockSignInPasskey).not.toHaveBeenCalled();
+    });
+
+    it('never surfaces a failed autofill attempt — it is speculative', async () => {
+      Object.defineProperty(globalThis, 'PublicKeyCredential', {
+        configurable: true,
+        value: { isConditionalMediationAvailable: async () => true },
+        writable: true,
+      });
+      mockSignInPasskey.mockResolvedValue({
+        data: null,
+        error: { code: 'ERROR_CEREMONY_ABORTED', message: 'aborted', status: 400 },
+      });
+
+      try {
+        const { result } = renderHook(() => useSignIn());
+
+        expect(result.current.isPasskeySupported).toBe(true);
+
+        await act(async () => {
+          await result.current.handlePasskeyAutoFill();
+        });
+
+        expect(mockSignInPasskey).toHaveBeenCalledWith({ autoFill: true });
+        expect(mockMessageError).not.toHaveBeenCalled();
+        expect(window.location.href).toBe('');
+      } finally {
+        Reflect.deleteProperty(globalThis, 'PublicKeyCredential');
+      }
     });
   });
 
