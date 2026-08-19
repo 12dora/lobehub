@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -19,6 +20,12 @@ import type { BrowserSessionCookieJarRef } from './types';
 const log = debug('lobe-server:browser-session');
 
 export const DEFAULT_BROWSER_COOKIE_JAR_DIR_NAME = 'aihub-browser-session-jars';
+/**
+ * Pre-C1 ChatGPT device-id jar directory. Swept at boot so a crash cannot
+ * reopen a partial old jar beside a new page id. The common layer does not
+ * import ChatGPT modules — this is a well-known on-disk location.
+ */
+export const LEGACY_DEVICE_BROWSER_COOKIE_JAR_DIR_NAME = 'aihub-chatgptweb-jars';
 
 const NETSCAPE_HEADER = '# Netscape HTTP Cookie File';
 const HTTPONLY_PREFIX = '#HttpOnly_';
@@ -29,6 +36,36 @@ const MAX_COOKIE_VALUE_LENGTH = 16_384;
 
 /** In-process set of jar files this process created or touched (lost on restart). */
 const createdJars = new Set<string>();
+/**
+ * Paths that must not be recreated. Survives unlink so a late curl `--cookie-jar`
+ * or `ensureBrowserCookieJarFile` cannot resurrect a dropped context's jar.
+ * Bounded LRU: after drain settles the path is un-tombstoned (retired context
+ * keys handle stale traffic). Cap is a backstop for leaked entries.
+ */
+const TOMBSTONE_CAP = 4096;
+const tombstonedJars = new Set<string>();
+const tombstoneOrder: string[] = [];
+
+export const isBrowserCookieJarTombstoned = (path: string): boolean => tombstonedJars.has(path);
+
+export const tombstoneBrowserCookieJar = (path: string): void => {
+  if (tombstonedJars.has(path)) return;
+  tombstonedJars.add(path);
+  tombstoneOrder.push(path);
+  while (tombstoneOrder.length > TOMBSTONE_CAP) {
+    const oldest = tombstoneOrder.shift();
+    if (oldest) tombstonedJars.delete(oldest);
+  }
+};
+
+/** Drop the fence after drains settled. Boot-swept orphans never need this. */
+export const clearBrowserCookieJarTombstone = (path: string): void => {
+  if (!tombstonedJars.delete(path)) return;
+  const index = tombstoneOrder.indexOf(path);
+  if (index >= 0) tombstoneOrder.splice(index, 1);
+};
+
+const isJarWritable = (path: string): boolean => !tombstonedJars.has(path);
 
 export interface CookieSeed {
   domain: string;
@@ -192,9 +229,27 @@ const writeCookies = (path: string, cookies: CookieRecord[]): void => {
   writeAtomically(path, body);
 };
 
-export const readBrowserCookieJar = (path: string): CookieRecord[] => {
-  if (!existsSync(path)) return [];
-  const text = readFileSync(path, 'utf8');
+/**
+ * In-process per-path mutex for read-modify-write jar updates.
+ *
+ * Synchronous. Same-stack reentry is allowed so a locked writer may call
+ * {@link writeBrowserCookieJarRecords}. Distinct callers cannot interleave
+ * in JS; this serializes RMW sections that must not race a COOKIELIST delta.
+ */
+const jarLockDepth = new Map<string, number>();
+
+export const withBrowserCookieJarLock = <T>(path: string, fn: () => T): T => {
+  jarLockDepth.set(path, (jarLockDepth.get(path) ?? 0) + 1);
+  try {
+    return fn();
+  } finally {
+    const depth = (jarLockDepth.get(path) ?? 1) - 1;
+    if (depth <= 0) jarLockDepth.delete(path);
+    else jarLockDepth.set(path, depth);
+  }
+};
+
+export const parseNetscapeCookieJarText = (text: string): CookieRecord[] => {
   const cookies: CookieRecord[] = [];
   for (const line of text.split('\n')) {
     const cookie = parseCookieLine(line.replace(/\r$/, ''));
@@ -202,6 +257,18 @@ export const readBrowserCookieJar = (path: string): CookieRecord[] => {
   }
   return cookies;
 };
+
+export const readBrowserCookieJar = (path: string): CookieRecord[] => {
+  if (!existsSync(path)) return [];
+  return parseNetscapeCookieJarText(readFileSync(path, 'utf8'));
+};
+
+/** Atomic replace of the jar contents. No-op when the path is tombstoned. */
+export const writeBrowserCookieJarRecords = (path: string, cookies: CookieRecord[]): void =>
+  withBrowserCookieJarLock(path, () => {
+    if (!isJarWritable(path)) return;
+    writeCookies(path, cookies);
+  });
 
 export const inspectBrowserCookieJar = (path: string): CookieJarInspection => {
   const cookies = readBrowserCookieJar(path).map((cookie) => ({
@@ -224,6 +291,7 @@ export const inspectBrowserCookieJar = (path: string): CookieJarInspection => {
  * Safe to call on every request; existing files are only chmod'd.
  */
 export const ensureBrowserCookieJarFile = (path: string): void => {
+  if (!isJarWritable(path)) return;
   const directory = nodePath.dirname(path);
   mkdirSync(directory, { mode: 0o700, recursive: true });
   chmodSync(directory, 0o700);
@@ -239,6 +307,9 @@ export const createBrowserCookieJar = (params: {
   key: string;
 }): BrowserSessionCookieJarRef => {
   const path = resolveBrowserCookieJarPath(params);
+  // A new contextId produces a new path; drop any stale tombstone for that
+  // path only so a UUID collision (astronomically rare) is still writable.
+  tombstonedJars.delete(path);
   ensureBrowserCookieJarFile(path);
   return {
     digest: digestBrowserSessionMaterial(params.key),
@@ -289,16 +360,19 @@ export const seedBrowserCookieJar = (
   cookies: CookieSeed[],
   options?: SeedBrowserCookieJarOptions,
 ): void => {
-  ensureBrowserCookieJarFile(path);
-  const admitted = admitSeeds(cookies, options?.allowedNames);
-  const incoming = admitted.map(toCookieRecord);
-  writeCookies(path, mergeReplacingFamilies(readBrowserCookieJar(path), incoming));
-  log(
-    'seeded jar %s cookies=%d families=%d',
-    pathDigest(path),
-    incoming.length,
-    new Set(incoming.map((cookie) => cookieFamilyName(cookie.name))).size,
-  );
+  withBrowserCookieJarLock(path, () => {
+    if (!isJarWritable(path)) return;
+    ensureBrowserCookieJarFile(path);
+    const admitted = admitSeeds(cookies, options?.allowedNames);
+    const incoming = admitted.map(toCookieRecord);
+    writeCookies(path, mergeReplacingFamilies(readBrowserCookieJar(path), incoming));
+    log(
+      'seeded jar %s cookies=%d families=%d',
+      pathDigest(path),
+      incoming.length,
+      new Set(incoming.map((cookie) => cookieFamilyName(cookie.name))).size,
+    );
+  });
 };
 
 /** Remove one cookie family (base + `.N` chunks) at domain/path, then write `cookies`. */
@@ -306,24 +380,27 @@ export const replaceBrowserCookieFamily = (
   path: string,
   params: ReplaceCookieFamilyParams,
 ): void => {
-  ensureBrowserCookieJarFile(path);
-  const cookiePath = params.path ?? '/';
-  const admitted = admitSeeds(
-    params.cookies.map((cookie) => ({
-      ...cookie,
-      domain: cookie.domain || params.domain,
-      path: cookie.path ?? cookiePath,
-    })),
-  );
-  const existing = readBrowserCookieJar(path).filter(
-    (cookie) =>
-      !(
-        isCookieFamilyMember(cookie.name, params.familyName) &&
-        normalizeDomain(cookie.domain) === normalizeDomain(params.domain) &&
-        cookie.path === cookiePath
-      ),
-  );
-  writeCookies(path, [...existing, ...admitted.map(toCookieRecord)]);
+  withBrowserCookieJarLock(path, () => {
+    if (!isJarWritable(path)) return;
+    ensureBrowserCookieJarFile(path);
+    const cookiePath = params.path ?? '/';
+    const admitted = admitSeeds(
+      params.cookies.map((cookie) => ({
+        ...cookie,
+        domain: cookie.domain || params.domain,
+        path: cookie.path ?? cookiePath,
+      })),
+    );
+    const existing = readBrowserCookieJar(path).filter(
+      (cookie) =>
+        !(
+          isCookieFamilyMember(cookie.name, params.familyName) &&
+          normalizeDomain(cookie.domain) === normalizeDomain(params.domain) &&
+          cookie.path === cookiePath
+        ),
+    );
+    writeCookies(path, [...existing, ...admitted.map(toCookieRecord)]);
+  });
 };
 
 interface ParsedSetCookie {
@@ -422,63 +499,66 @@ export const applySetCookieToBrowserCookieJar = (
   headers: string[],
   options: ApplySetCookieOptions,
 ): void => {
-  ensureBrowserCookieJarFile(path);
-  const now = options.now ?? Date.now();
-  const defaults = { domain: options.defaultDomain, path: options.defaultPath ?? '/' };
-  const parsed = headers
-    .map((header) => parseSetCookie(header, now, defaults))
-    .filter((cookie): cookie is ParsedSetCookie => Boolean(cookie))
-    .filter(
-      (cookie) => !options.allowedNames || isAllowedCookieName(cookie.name, options.allowedNames),
+  withBrowserCookieJarLock(path, () => {
+    if (!isJarWritable(path)) return;
+    ensureBrowserCookieJarFile(path);
+    const now = options.now ?? Date.now();
+    const defaults = { domain: options.defaultDomain, path: options.defaultPath ?? '/' };
+    const parsed = headers
+      .map((header) => parseSetCookie(header, now, defaults))
+      .filter((cookie): cookie is ParsedSetCookie => Boolean(cookie))
+      .filter(
+        (cookie) => !options.allowedNames || isAllowedCookieName(cookie.name, options.allowedNames),
+      );
+
+    if (parsed.length === 0) return;
+
+    const existing = new Map(
+      readBrowserCookieJar(path).map((cookie) => [cookieIdentity(cookie), cookie]),
     );
+    const byFamily = new Map<string, ParsedSetCookie[]>();
+    for (const cookie of parsed) {
+      const key = familyIdentity(cookieFamilyName(cookie.name), cookie.domain, cookie.path);
+      const list = byFamily.get(key) ?? [];
+      list.push(cookie);
+      byFamily.set(key, list);
+    }
 
-  if (parsed.length === 0) return;
-
-  const existing = new Map(
-    readBrowserCookieJar(path).map((cookie) => [cookieIdentity(cookie), cookie]),
-  );
-  const byFamily = new Map<string, ParsedSetCookie[]>();
-  for (const cookie of parsed) {
-    const key = familyIdentity(cookieFamilyName(cookie.name), cookie.domain, cookie.path);
-    const list = byFamily.get(key) ?? [];
-    list.push(cookie);
-    byFamily.set(key, list);
-  }
-
-  for (const group of byFamily.values()) {
-    const live = group.filter((cookie) => !cookie.deleted);
-    if (live.length > 0) {
-      const sample = live[0]!;
-      for (const [key, cookie] of existing) {
-        if (
-          isCookieFamilyMember(cookie.name, cookieFamilyName(sample.name)) &&
-          normalizeDomain(cookie.domain) === normalizeDomain(sample.domain) &&
-          cookie.path === sample.path
-        ) {
-          existing.delete(key);
+    for (const group of byFamily.values()) {
+      const live = group.filter((cookie) => !cookie.deleted);
+      if (live.length > 0) {
+        const sample = live[0]!;
+        for (const [key, cookie] of existing) {
+          if (
+            isCookieFamilyMember(cookie.name, cookieFamilyName(sample.name)) &&
+            normalizeDomain(cookie.domain) === normalizeDomain(sample.domain) &&
+            cookie.path === sample.path
+          ) {
+            existing.delete(key);
+          }
         }
+        for (const cookie of live) {
+          if (!isSafeCookieSeed(cookie)) continue;
+          existing.set(cookieIdentity(cookie), {
+            domain: cookie.domain,
+            expires: cookie.expires,
+            httpOnly: cookie.httpOnly,
+            name: cookie.name,
+            path: cookie.path,
+            secure: cookie.secure,
+            value: cookie.value,
+          });
+        }
+        continue;
       }
-      for (const cookie of live) {
-        if (!isSafeCookieSeed(cookie)) continue;
-        existing.set(cookieIdentity(cookie), {
-          domain: cookie.domain,
-          expires: cookie.expires,
-          httpOnly: cookie.httpOnly,
-          name: cookie.name,
-          path: cookie.path,
-          secure: cookie.secure,
-          value: cookie.value,
-        });
+
+      for (const cookie of group) {
+        existing.delete(cookieIdentity(cookie));
       }
-      continue;
     }
 
-    for (const cookie of group) {
-      existing.delete(cookieIdentity(cookie));
-    }
-  }
-
-  writeCookies(path, [...existing.values()]);
+    writeCookies(path, [...existing.values()]);
+  });
 };
 
 export const purgeExpiredBrowserCookies = (path: string, now = Date.now()): void => {
@@ -490,6 +570,7 @@ export const purgeExpiredBrowserCookies = (path: string, now = Date.now()): void
 };
 
 export const deleteBrowserCookieJar = (path: string): void => {
+  tombstoneBrowserCookieJar(path);
   createdJars.delete(path);
   try {
     unlinkSync(path);
@@ -498,14 +579,57 @@ export const deleteBrowserCookieJar = (path: string): void => {
   }
 };
 
+const unlinkQuietly = (path: string): void => {
+  try {
+    unlinkSync(path);
+  } catch {
+    // Already gone.
+  }
+};
+
+const sweepJarDirectory = (
+  directoryName: string,
+  shouldUnlink: (fileName: string) => boolean,
+): void => {
+  const directory = jarDirectory(directoryName);
+  if (!existsSync(directory)) return;
+  let entries: string[];
+  try {
+    entries = readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!shouldUnlink(name)) continue;
+    if (!name.endsWith('.txt') && !name.endsWith('.tmp')) continue;
+    const path = nodePath.join(directory, name);
+    createdJars.delete(path);
+    unlinkQuietly(path);
+  }
+};
+
+/**
+ * Boot-time orphan wipe. Process-local registry maps die with the process;
+ * leftover disk jars would otherwise leak (context UUID paths) or be reopened
+ * as a partial identity (legacy device-id paths).
+ *
+ * Single-process assumption: do not run this if two OS processes share
+ * `$TMPDIR` — it would unlink the other process's live jars (plan principle 7).
+ *
+ * `pending-wipe-*` files are admin disconnect recovery, not cookie jars.
+ */
+export const sweepOrphanBrowserCookieJars = (): void => {
+  sweepJarDirectory(DEFAULT_BROWSER_COOKIE_JAR_DIR_NAME, () => true);
+  sweepJarDirectory(
+    LEGACY_DEVICE_BROWSER_COOKIE_JAR_DIR_NAME,
+    (fileName) => !fileName.startsWith('pending-wipe-'),
+  );
+};
+
 /** Test / shutdown seam: unlink every jar this process created. */
 export const resetBrowserCookieJars = (): void => {
-  for (const path of createdJars) {
-    try {
-      unlinkSync(path);
-    } catch {
-      // Already gone.
-    }
-  }
+  for (const path of createdJars) unlinkQuietly(path);
   createdJars.clear();
+  tombstonedJars.clear();
+  tombstoneOrder.length = 0;
 };

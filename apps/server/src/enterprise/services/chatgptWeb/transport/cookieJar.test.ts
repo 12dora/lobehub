@@ -6,8 +6,10 @@ import nodePath from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  CONTEXT_GONE_ERROR,
   COOKIE_JAR_HEADER,
   deleteCookieJar,
+  getContextCookieJarPoolKey,
   getCookieJarPath,
   isContextCookieJarKey,
   registerContextCookieJar,
@@ -15,10 +17,11 @@ import {
   resolveCookieJarPath,
   seedCookieJar,
   stripCookieJarHeader,
+  unregisterContextCookieJar,
 } from './cookieJar';
 
-afterEach(() => {
-  resetCookieJars();
+afterEach(async () => {
+  await Promise.resolve(resetCookieJars());
 });
 
 describe('getCookieJarPath', () => {
@@ -90,11 +93,11 @@ describe('deleteCookieJar / resetCookieJars', () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  it('resetCookieJars unlinks every jar this process created', () => {
+  it('resetCookieJars unlinks every jar this process created', async () => {
     const path = getCookieJarPath('reset-me');
     seedCookieJar(path, [{ domain: '.chatgpt.com', name: 'oai-did', value: 'reset-me' }]);
     expect(existsSync(path)).toBe(true);
-    resetCookieJars();
+    await Promise.resolve(resetCookieJars());
     expect(existsSync(path)).toBe(false);
   });
 });
@@ -109,6 +112,25 @@ describe('context cookie jar registry', () => {
     expect(isContextCookieJarKey('digest-account-a')).toBe(true);
     expect(isContextCookieJarKey('device-1')).toBe(false);
     expect(resolveCookieJarPath('device-1')).not.toBe(path);
+  });
+
+  it('stores an optional transport-pool key with the digest', () => {
+    const path = getCookieJarPath('context-owned-pool');
+    registerContextCookieJar('digest-with-pool', path, 'pool-scope-abc');
+
+    expect(getContextCookieJarPoolKey('digest-with-pool')).toBe('pool-scope-abc');
+    expect(getContextCookieJarPoolKey('digest-account-a')).toBeUndefined();
+  });
+
+  it('retired context digests stay context keys and never resolve as a device id', () => {
+    const digest = 'ab'.repeat(32);
+    const path = getCookieJarPath('retired-owned');
+    registerContextCookieJar(digest, path, 'pool-retired');
+    unregisterContextCookieJar(digest);
+
+    expect(isContextCookieJarKey(digest)).toBe(true);
+    expect(() => resolveCookieJarPath(digest)).toThrow(CONTEXT_GONE_ERROR);
+    expect(isContextCookieJarKey('123e4567-e89b-42d3-a456-426614174000')).toBe(false);
   });
 });
 

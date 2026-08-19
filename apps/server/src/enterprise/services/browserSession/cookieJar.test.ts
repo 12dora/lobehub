@@ -7,7 +7,10 @@ import {
   applySetCookieToBrowserCookieJar,
   cookieFamilyName,
   createBrowserCookieJar,
+  deleteBrowserCookieJar,
+  ensureBrowserCookieJarFile,
   inspectBrowserCookieJar,
+  isBrowserCookieJarTombstoned,
   isCookieFamilyMember,
   purgeExpiredBrowserCookies,
   readBrowserCookieJar,
@@ -289,5 +292,25 @@ describe('purgeExpiredBrowserCookies', () => {
     purgeExpiredBrowserCookies(jar.path, 20_000);
 
     expect(names(jar.path)).toEqual(['session']);
+  });
+});
+
+describe('cookie jar tombstone', () => {
+  it('deleteBrowserCookieJar tombstones the path so seed/ensure cannot recreate it', () => {
+    const jar = jarFor('tombstone-c4');
+    seedBrowserCookieJar(jar.path, [
+      { domain: '.chatgpt.com', name: 'oai-did', value: 'tombstone-c4' },
+    ]);
+    expect(existsSync(jar.path)).toBe(true);
+
+    deleteBrowserCookieJar(jar.path);
+    expect(existsSync(jar.path)).toBe(false);
+    expect(isBrowserCookieJarTombstoned(jar.path)).toBe(true);
+
+    ensureBrowserCookieJarFile(jar.path);
+    seedBrowserCookieJar(jar.path, [
+      { domain: '.chatgpt.com', name: 'oai-did', value: 'resurrected' },
+    ]);
+    expect(existsSync(jar.path)).toBe(false);
   });
 });

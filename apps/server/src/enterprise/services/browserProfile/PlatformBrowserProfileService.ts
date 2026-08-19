@@ -253,7 +253,7 @@ export class PlatformBrowserProfileService {
     });
 
     this.invalidate();
-    resetCookieJars();
+    await Promise.resolve(resetCookieJars());
     return summarizeBrowserProfile(record);
   };
 
@@ -379,13 +379,19 @@ export class PlatformBrowserProfileService {
     });
 
     this.invalidate();
-    if (resetJars) resetCookieJars();
+    if (resetJars) await Promise.resolve(resetCookieJars());
     return summarizeBrowserProfile(record);
   }
 
   private remember = (record: PlatformBrowserProfileRecord): PlatformBrowserProfileRecord => {
     const previous = profileCache.get(this.cacheKey);
-    if (previous && previous.record.profile.id !== record.profile.id) resetCookieJars();
+    if (previous && previous.record.profile.id !== record.profile.id) {
+      void Promise.resolve(resetCookieJars()).catch((error) => {
+        console.error('[browser-profile] cookie jar reset after profile rotation failed', {
+          errorClass: error instanceof Error ? error.name : 'UnknownError',
+        });
+      });
+    }
     profileCache.set(this.cacheKey, {
       expiresAt: Date.now() + BROWSER_PROFILE_CACHE_TTL_MS,
       record,
@@ -413,7 +419,7 @@ export class PlatformBrowserProfileService {
         error instanceof Error ? error.name : 'UnknownError',
       );
       const migrated = await this.migrateUnusableProfile();
-      resetCookieJars();
+      await Promise.resolve(resetCookieJars());
       return migrated;
     }
     return this.persistProfileRepair(row, record);

@@ -6,10 +6,15 @@ import { bindNetworkProxyEgressIfEnabled } from '../../networkProxy/engine/bindE
 bindNetworkProxyEgressIfEnabled();
 
 export {
+  CONTEXT_GONE_ERROR,
   COOKIE_JAR_HEADER,
+  createContextGoneError,
   deleteCookieJar,
+  getContextCookieJarPoolKey,
   getCookieJarPath,
+  isBrowserSessionContextDigestShape,
   isContextCookieJarKey,
+  isRetiredContextCookieJarKey,
   registerContextCookieJar,
   resetCookieJars,
   resolveCookieJarPath,
@@ -22,7 +27,11 @@ export {
   createCurlImpersonateFetch,
   type CurlImpersonateFetchOptions,
   DEFAULT_IMPERSONATE_PROFILE,
+  drainAllCurlImpersonateChildren,
+  drainCurlImpersonateChildren,
+  evictChatGPTWebFetchExcept,
   getChatGPTWebFetch,
+  getChatGPTWebTransportStatus,
   resetChatGPTWebFetch,
 } from './curlImpersonateFetch';
 export {
