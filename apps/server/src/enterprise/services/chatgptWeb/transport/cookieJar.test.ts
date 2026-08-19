@@ -58,6 +58,22 @@ describe('seedCookieJar', () => {
     expect(text).not.toContain('oai-did\tfirst');
     expect(text).toContain('_cfuvid\tcf-1');
   });
+
+  it('replaces a session-token family so a rotation cannot leave a stale .1', () => {
+    const path = getCookieJarPath('chunk-device');
+    seedCookieJar(path, [
+      { domain: '.chatgpt.com', name: '__Secure-next-auth.session-token.0', value: 'old-0' },
+      { domain: '.chatgpt.com', name: '__Secure-next-auth.session-token.1', value: 'old-1' },
+    ]);
+    seedCookieJar(path, [
+      { domain: '.chatgpt.com', name: '__Secure-next-auth.session-token', value: 'plain' },
+    ]);
+
+    const text = readFileSync(path, 'utf8');
+    expect(text).toContain('__Secure-next-auth.session-token\tplain');
+    expect(text).not.toContain('session-token.0');
+    expect(text).not.toContain('session-token.1');
+  });
 });
 
 describe('deleteCookieJar / resetCookieJars', () => {
