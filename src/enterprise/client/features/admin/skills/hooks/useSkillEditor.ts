@@ -13,12 +13,12 @@ import {
   fingerprintSkillDraft,
   isSkillIdentityDirty,
   rebaseSkillDraft,
-  shouldConfirmSkillHydration,
   type SkillRebaseConflict,
   type SkillSaveState,
   toEditableSkillDraft,
 } from '../controller';
 import { clearSkillLocalDraft, loadSkillLocalDraft } from '../localDraftStorage';
+import { decideSkillHydration } from '../skillHydration';
 import type { AdminSkillGetOutput } from '../types';
 import { useSkillDraftPersistence } from './useSkillDraftPersistence';
 
@@ -97,25 +97,6 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
   useEffect(() => {
     if (!snapshot) return;
     const hydrationKey = hydrationKeyOf(snapshot, editable);
-    if (hydratedKeyRef.current === hydrationKey) {
-      // Returning to the still-active Skill is an explicit reset boundary for a
-      // previously rejected target. A later request for that target must ask
-      // again instead of being permanently ignored.
-      rejectedHydrationKeyRef.current = null;
-      return;
-    }
-    if (allowedHydrationSkillIdRef.current === snapshot.draft.id) {
-      allowedHydrationSkillIdRef.current = null;
-      rejectedHydrationKeyRef.current = null;
-      switchModalRef.current?.close();
-      switchModalRef.current = null;
-      hydrateSnapshot(snapshot);
-      return;
-    }
-    if (rejectedHydrationKeyRef.current === hydrationKey) {
-      return;
-    }
-
     const storedCurrent =
       dirty && activeSnapshot && draft && persistenceStatus === 'saved'
         ? loadSkillLocalDraft(activeSnapshot.draft.id)
@@ -125,41 +106,64 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
       draft &&
       fingerprintSkillDraft(storedCurrent.draft) === fingerprintSkillDraft(draft),
     );
+    const decision = decideSkillHydration({
+      allowedSkillId: allowedHydrationSkillIdRef.current,
+      currentHydrationKey: hydratedKeyRef.current,
+      dirty,
+      hasSafeRecovery,
+      hydrationKey,
+      rejectedHydrationKey: rejectedHydrationKeyRef.current,
+      snapshotSkillId: snapshot.draft.id,
+    });
 
-    if (
-      shouldConfirmSkillHydration({
-        currentHydrationKey: hydratedKeyRef.current,
-        dirty,
-        hasSafeRecovery,
-        nextHydrationKey: hydrationKey,
-      })
-    ) {
-      pendingSnapshotRef.current = snapshot;
-      setPendingSwitchId(snapshot.draft.id);
-      if (switchModalRef.current) return;
-      switchModalRef.current = confirmModal({
-        cancelText: t('skillCatalog.editor.unsaved.stay'),
-        content: t('skillCatalog.editor.unsaved.desc'),
-        okText: t('skillCatalog.editor.unsaved.leave'),
-        title: t('skillCatalog.editor.unsaved.title'),
-        onCancel: () => {
-          rejectedHydrationKeyRef.current = hydrationKey;
-          pendingSnapshotRef.current = null;
-          setPendingSwitchId(null);
-          switchModalRef.current = null;
-        },
-        onOk: () => {
-          const pending = pendingSnapshotRef.current;
-          switchModalRef.current = null;
-          if (pending) hydrateSnapshot(pending);
-        },
-      });
-      return;
+    switch (decision.type) {
+      case 'already-hydrated': {
+        // Returning to the still-active Skill is an explicit reset boundary for a
+        // previously rejected target. A later request for that target must ask
+        // again instead of being permanently ignored.
+        rejectedHydrationKeyRef.current = null;
+        return;
+      }
+      case 'hydrate-allowed': {
+        allowedHydrationSkillIdRef.current = null;
+        rejectedHydrationKeyRef.current = null;
+        switchModalRef.current?.close();
+        switchModalRef.current = null;
+        hydrateSnapshot(snapshot);
+        return;
+      }
+      case 'skip-rejected': {
+        return;
+      }
+      case 'confirm': {
+        pendingSnapshotRef.current = snapshot;
+        setPendingSwitchId(snapshot.draft.id);
+        if (switchModalRef.current) return;
+        switchModalRef.current = confirmModal({
+          cancelText: t('skillCatalog.editor.unsaved.stay'),
+          content: t('skillCatalog.editor.unsaved.desc'),
+          okText: t('skillCatalog.editor.unsaved.leave'),
+          title: t('skillCatalog.editor.unsaved.title'),
+          onCancel: () => {
+            rejectedHydrationKeyRef.current = hydrationKey;
+            pendingSnapshotRef.current = null;
+            setPendingSwitchId(null);
+            switchModalRef.current = null;
+          },
+          onOk: () => {
+            const pending = pendingSnapshotRef.current;
+            switchModalRef.current = null;
+            if (pending) hydrateSnapshot(pending);
+          },
+        });
+        return;
+      }
+      case 'hydrate': {
+        switchModalRef.current?.close();
+        switchModalRef.current = null;
+        hydrateSnapshot(snapshot);
+      }
     }
-
-    switchModalRef.current?.close();
-    switchModalRef.current = null;
-    hydrateSnapshot(snapshot);
   }, [activeSnapshot, dirty, draft, editable, hydrateSnapshot, persistenceStatus, snapshot, t]);
 
   const skillLeaveBlocker = useMemo<boolean | BlockerFunction>(() => {

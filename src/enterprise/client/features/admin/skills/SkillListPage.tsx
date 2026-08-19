@@ -3,26 +3,23 @@
 import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
-import type { FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles } from 'antd-style';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useSearchParams } from 'react-router';
+import { useNavigate } from 'react-router';
 
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { enumColumnFilter } from '../primitives/columnFilters';
-import DataTable, { type AdminTableChangeMeta } from '../primitives/DataTable';
+import DataTable from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import { deriveSkillPermissions } from './controller';
 import { refreshAdminSkillLists, useFetchAdminSkills } from './hooks/useAdminSkills';
+import { useSkillListQuery } from './hooks/useSkillListQuery';
 import { openCreateSkillModal } from './openCreateSkillModal';
-import type { AdminSkillListInput, AdminSkillListItem } from './types';
-
-const DEFAULT_LIMIT = 50;
-const SEARCH_DEBOUNCE_MS = 300;
+import type { AdminSkillListItem } from './types';
 
 const styles = createStaticStyles(({ css }) => ({
   identity: css`
@@ -42,96 +39,30 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
-  const first = Array.isArray(value) ? value[0] : value;
-  if (first === undefined || first === null || first === '') return undefined;
-  return String(first);
-};
-
-const valueFrom = <Value extends string>(
-  value: string | null,
-  allowed: readonly Value[],
-): Value | undefined => (allowed.includes(value as Value) ? (value as Value) : undefined);
-
 const SkillListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const { authMethod, permissions } = useAdminAccess();
   const { canCreate, canRead } = deriveSkillPermissions(permissions);
-  const [searchParams, setSearchParams] = useSearchParams();
-  const query = searchParams.get('q') ?? '';
-  const normalizedQuery = query.trim();
-  const status = valueFrom(searchParams.get('status'), ['draft', 'published', 'archived']);
-  // Admin list is DB-backed only (all production creates use source:'uploaded').
-  // Built-in bundled skills are merged at runtime by the read service, not this list.
-  const source = valueFrom(searchParams.get('source'), ['uploaded'] as const);
-  const distribution = valueFrom(searchParams.get('distribution'), [
-    'mandatory',
-    'default',
-    'optional',
-  ]);
-  const enabledParam = searchParams.get('enabled');
-  const enabled = enabledParam === 'true' ? true : enabledParam === 'false' ? false : undefined;
-  const filterFingerprint = JSON.stringify([
-    normalizedQuery,
-    status ?? '',
-    source ?? '',
-    distribution ?? '',
-    enabledParam === 'true' || enabledParam === 'false' ? enabledParam : '',
-  ]);
-  const [queryDraft, setQueryDraft] = useState(query);
+  const {
+    cursorStack,
+    distribution,
+    enabledParam,
+    filtered,
+    handleTableChange,
+    input,
+    limit,
+    onNext,
+    onPageSizeChange,
+    onPrevious,
+    queryDraft,
+    setQueryDraft,
+    status,
+  } = useSkillListQuery();
   const [committedCreateId, setCommittedCreateId] = useState<string | null>(null);
   const [createRefreshFailed, setCreateRefreshFailed] = useState(false);
   const [createRefreshRetrying, setCreateRefreshRetrying] = useState(false);
-  const [cursorState, setCursorState] = useState<{
-    fingerprint: string;
-    stack: (string | null)[];
-  }>(() => ({ fingerprint: filterFingerprint, stack: [] }));
-  const [limit, setLimit] = useState(DEFAULT_LIMIT);
-  const searchTimerRef = useRef<number | null>(null);
-  const cursorStack = cursorState.fingerprint === filterFingerprint ? cursorState.stack : [];
-  const cursor = cursorStack.at(-1) ?? null;
-  const input = useMemo<AdminSkillListInput>(
-    () => ({
-      cursor: cursor ?? undefined,
-      distribution,
-      enabled,
-      limit,
-      query: normalizedQuery || undefined,
-      source,
-      status,
-    }),
-    [cursor, distribution, enabled, limit, normalizedQuery, source, status],
-  );
   const { data, error, isLoading, mutate } = useFetchAdminSkills(input, canRead);
-
-  const patchFilter = useCallback(
-    (key: 'distribution' | 'enabled' | 'q' | 'source' | 'status', value?: string) => {
-      const next = new URLSearchParams(searchParams);
-      if (value) next.set(key, value);
-      else next.delete(key);
-      setSearchParams(next, { replace: true });
-      setCursorState({ fingerprint: '', stack: [] });
-    },
-    [searchParams, setSearchParams],
-  );
-
-  useEffect(() => setQueryDraft(query), [query]);
-  useEffect(() => {
-    if (cursorState.fingerprint === filterFingerprint) return;
-    setCursorState({ fingerprint: filterFingerprint, stack: [] });
-  }, [cursorState.fingerprint, filterFingerprint]);
-  useEffect(() => {
-    if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
-    if (queryDraft === query) return;
-    searchTimerRef.current = window.setTimeout(
-      () => patchFilter('q', queryDraft.trim() || undefined),
-      SEARCH_DEBOUNCE_MS,
-    );
-    return () => {
-      if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
-    };
-  }, [patchFilter, query, queryDraft]);
 
   const columns = useMemo<TableColumnsType<AdminSkillListItem>>(
     () => [
@@ -209,38 +140,6 @@ const SkillListPage = memo(() => {
     [distribution, enabledParam, status, t],
   );
 
-  const handleTableChange = useCallback(
-    ({ filters }: AdminTableChangeMeta) => {
-      const next = new URLSearchParams(searchParams);
-      let changed = false;
-      const assign = (key: 'distribution' | 'enabled' | 'status') => {
-        if (!(key in filters)) return;
-        const value = firstFilterValue(filters[key]);
-        const current = next.get(key) ?? undefined;
-        if (value === current) return;
-        if (value) next.set(key, value);
-        else next.delete(key);
-        changed = true;
-      };
-      assign('status');
-      assign('distribution');
-      assign('enabled');
-      if (!changed) return;
-      setSearchParams(next, { replace: true });
-      setCursorState({ fingerprint: '', stack: [] });
-    },
-    [searchParams, setSearchParams],
-  );
-
-  const filtered = Boolean(
-    normalizedQuery ||
-    status ||
-    source ||
-    distribution ||
-    enabledParam === 'true' ||
-    enabledParam === 'false',
-  );
-
   const retryCreatedRefresh = async () => {
     if (!committedCreateId) return;
     setCreateRefreshRetrying(true);
@@ -313,23 +212,9 @@ const SkillListPage = memo(() => {
           hasNext: Boolean(data?.nextCursor) && !error && !isLoading,
           hasPrevious: cursorStack.length > 0 && !isLoading,
           pageSize: limit,
-          onNext: () => {
-            if (!data?.nextCursor || isLoading) return;
-            // Idempotent: ignore double-click while the next cursor is already active.
-            if (cursorStack.at(-1) === data.nextCursor) return;
-            setCursorState({
-              fingerprint: filterFingerprint,
-              stack: [...cursorStack, data.nextCursor],
-            });
-          },
-          onPageSizeChange: (pageSize) => {
-            setLimit(pageSize);
-            setCursorState({ fingerprint: filterFingerprint, stack: [] });
-          },
-          onPrevious: () => {
-            if (isLoading) return;
-            setCursorState({ fingerprint: filterFingerprint, stack: cursorStack.slice(0, -1) });
-          },
+          onNext: () => onNext(data?.nextCursor, isLoading),
+          onPageSizeChange,
+          onPrevious: () => onPrevious(isLoading),
         }}
         emptyDescription={
           filtered ? t('skillCatalog.list.empty.filtered') : t('skillCatalog.list.empty.default')

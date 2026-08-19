@@ -1,10 +1,9 @@
 'use client';
 
-import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, type DropdownItem, DropdownMenu, toast } from '@lobehub/ui/base-ui';
-import type { TableColumnsType } from 'antd';
+import { Flexbox, Input, Text } from '@lobehub/ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import type { FilterValue } from 'antd/es/table/interface';
-import { createStaticStyles, cssVar } from 'antd-style';
+import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
@@ -15,10 +14,9 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
-import { enumColumnFilter } from '../primitives/columnFilters';
 import DataTable, { type AdminTableChangeMeta } from '../primitives/DataTable';
-import StatusBadge from '../primitives/StatusBadge';
 import AgentListBulkActions from './AgentListBulkActions';
+import { buildAgentListColumns } from './agentListColumns';
 import { applyAgentSaveOutputToListItem } from './applySaveOutput';
 import { deriveAdminAgentActionAvailability, deriveAdminAgentPermissions } from './controller';
 import { getAdminAgentErrorMessage } from './errorPresentation';
@@ -32,34 +30,6 @@ import { useAgentListSelection } from './useAgentListSelection';
 import { useAgentRowActions } from './useAgentRowActions';
 
 const styles = createStaticStyles(({ css }) => ({
-  /**
-   * Name and identifier on ONE line: the identifier is secondary context for the name, and a
-   * two-line cell is what made every row 70px tall.
-   */
-  identity: css`
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    min-width: 0;
-  `,
-  identityKey: css`
-    overflow: hidden;
-    flex: 0 1 auto;
-
-    font-family: ${cssVar.fontFamilyCode};
-    font-size: ${cssVar.fontSizeSM};
-    color: ${cssVar.colorTextTertiary};
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  `,
-  identityName: css`
-    overflow: hidden;
-    flex: 0 1 auto;
-
-    font-weight: 600;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  `,
   toolbar: css`
     width: 100%;
   `,
@@ -199,136 +169,29 @@ const AgentListPage = memo(() => {
 
   // Every column carries an explicit width so the table runs `tableLayout: fixed` (see `scroll.x`
   // below): under `auto`, a CJK header collapses to one character per line.
-  const columns = useMemo<TableColumnsType<AdminAgentListItem>>(
-    () => [
-      {
-        ellipsis: true,
-        key: 'agent',
-        title: t('agentCatalog.list.columns.agent'),
-        width: 340,
-        render: (_, item) => (
-          <div className={styles.identity}>
-            <span className={styles.identityName}>{item.displayName}</span>
-            <span className={styles.identityKey}>{item.identity.agentKey}</span>
-          </div>
-        ),
-      },
-      {
-        key: 'status',
-        title: t('agentCatalog.list.columns.status'),
-        width: 140,
-        render: (_, item) => <StatusBadge status={item.identity.status} />,
-        ...enumColumnFilter({
-          options: (['published', 'archived'] as const).map((value) => ({
-            label: t(`agentCatalog.status.${value}` as never),
-            value,
-          })),
-          value: status,
-        }),
-      },
-      {
-        dataIndex: 'assignmentCount',
-        key: 'assignmentCount',
-        title: t('agentCatalog.list.columns.assignments'),
-        width: 100,
-      },
-      {
-        key: 'isDefault',
-        title: t('agentCatalog.list.columns.scope'),
-        width: 120,
-        render: (_, item) => (
-          <Tag size="small">
-            {item.identity.isDefault ? t('agentCatalog.defaultInbox') : t('agentCatalog.standard')}
-          </Tag>
-        ),
-      },
-      ...(hasRowActions
-        ? [
-            {
-              key: 'actions',
-              title: t('agentCatalog.list.columns.actions'),
-              width: 200,
-              render: (_: unknown, item: AdminAgentListItem) => {
-                // Default / system assistants cannot be hard-deleted (server refuses too).
-                const deletable = !item.identity.isDefault && item.identity.systemKey === null;
-                // Archiving an already-archived assistant is a no-op the server rejects.
-                const archivable = item.identity.status === 'published';
-                // A published row always has a current version (the DB pointer check guarantees
-                // it), which is exactly what the detail page's `canSetDefaultNow` required.
-                const promotable =
-                  agentPermissions.canPublish && archivable && !item.identity.isDefault;
-                // Both destructive lifecycle actions live behind 更多 so the row keeps three
-                // controls at most; the everyday ones stay one click away.
-                const moreActions: DropdownItem[] = [
-                  ...(availability.canArchiveNow && archivable
-                    ? [
-                        {
-                          danger: true,
-                          key: 'archive',
-                          label: t('agentCatalog.archive.submit'),
-                          onClick: () => void rowActions.archive(item),
-                        },
-                      ]
-                    : []),
-                  ...(agentPermissions.canDelete && deletable
-                    ? [
-                        {
-                          danger: true,
-                          key: 'delete',
-                          label: t('agentCatalog.delete.action'),
-                          onClick: () => void openDelete(item),
-                        },
-                      ]
-                    : []),
-                ];
-                return (
-                  <Flexbox horizontal gap={4} onClick={(event) => event.stopPropagation()}>
-                    {canOpenEditor ? (
-                      <Button size="small" type="text" onClick={() => void openEditor(item)}>
-                        {/* An assignment-only operator opens the SAME modal, config read-only. */}
-                        {t(
-                          availability.canEdit
-                            ? 'agentCatalog.action.edit'
-                            : 'agentCatalog.action.assign',
-                        )}
-                      </Button>
-                    ) : null}
-                    {/* Promoting an assistant that already IS the default says nothing — hide it. */}
-                    {promotable ? (
-                      <Button
-                        size="small"
-                        type="text"
-                        onClick={() => void rowActions.setDefaultInbox(item)}
-                      >
-                        {t('agentCatalog.defaultSwitch.action')}
-                      </Button>
-                    ) : null}
-                    {moreActions.length > 0 ? (
-                      <DropdownMenu items={moreActions} placement="bottomRight">
-                        <Button aria-label={t('agentCatalog.list.more')} size="small" type="text">
-                          {t('agentCatalog.list.more')}
-                        </Button>
-                      </DropdownMenu>
-                    ) : null}
-                  </Flexbox>
-                );
-              },
-            },
-          ]
-        : []),
-    ],
+  const columns = useMemo(
+    () =>
+      buildAgentListColumns({
+        agentPermissions,
+        availability,
+        canOpenEditor,
+        hasRowActions,
+        openDelete,
+        openEditor,
+        rowActions,
+        status,
+        t,
+      }),
     [
-      status,
-      t,
-      agentPermissions.canDelete,
-      agentPermissions.canPublish,
-      availability.canArchiveNow,
-      availability.canEdit,
+      agentPermissions,
+      availability,
       canOpenEditor,
       hasRowActions,
       openDelete,
       openEditor,
       rowActions,
+      status,
+      t,
     ],
   );
   const patch = useCallback(
