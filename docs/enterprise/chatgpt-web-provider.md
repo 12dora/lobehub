@@ -1,12 +1,12 @@
 # ChatGPT Web 服务商运维手册
 
 > 2026-08-15 制定，对应 `ae772f2b84..2ca058c20a`。
-> 服务商 id `chatgptweb`、显示名 **ChatGPT Web**，直连 `chatgpt.com` 的网页端私有协议（非 OpenAI Platform API），因此它比其他服务商多一个**运维前置条件**：服务端必须能运行 `curl-impersonate` 二进制。
+> 服务商 id `chatgptweb`、显示名 **ChatGPT Web**，直连 `chatgpt.com` 的网页端私有协议（非 OpenAI Platform API），因此它比其他服务商多一个**运维前置条件**：服务端必须能加载 `libcurl-impersonate`（持久 HTTP/2 传输）或运行 `curl-impersonate` 二进制（CLI 回落）。
 > 本文只描述当前代码的真实行为；协议细节以 `packages/model-runtime/src/providers/chatgptWeb/` 为准。
 
 ## 0. 为什么需要一个额外的二进制
 
-`chatgpt.com` 与 `chatgpt.com/backend-api/*` 在 Cloudflare bot-fight 之后，校验的是 **TLS / HTTP2 指纹**而不是请求头：Node 自带的 `fetch` 无论带什么 header、带不带 `Authorization`，都会拿到 `403` + `cf-mitigated: challenge`。所以服务端用 [`lexiforest/curl-impersonate`](https://github.com/lexiforest/curl-impersonate) 起子进程发请求，并从平台的[共享浏览器设备画像](./browser-device-profile.md)取得匹配的 impersonate 目标、UA、UA-CH、语言、时区、屏幕与硬件特征。画像由安装 seed 生成、不会读取管理员电脑，并在管理员主动刷新前保持稳定。实测画像池中的 chrome136–150 今天都能过 Cloudflare；「异常登录」（unusual login）警告来自 OpenAI 的**应用层风控**，出网 IP / 地理是最大剩余信号，不是 CF bot filter。每条连接还有一份进程内 Netscape Cookie 罐（按 `oauthDeviceId` 分桶，画像刷新时一并清空）和一个进程生命周期内稳定、重启后轮换的 UUIDv4 `OAI-Session-Id`。
+`chatgpt.com` 与 `chatgpt.com/backend-api/*` 在 Cloudflare bot-fight 之后，校验的是 **TLS / HTTP2 指纹**而不是请求头：Node 自带的 `fetch` 无论带什么 header、带不带 `Authorization`，都会拿到 `403` + `cf-mitigated: challenge`。所以服务端用 [`lexiforest/curl-impersonate`](https://github.com/lexiforest/curl-impersonate) 发请求：**默认优先**通过 `koffi` 加载 `libcurl-impersonate` 共享库，在进程内复用 HTTP/2 连接（同一浏览器上下文 + 源 + 出口 + 画像修订共用一个连接池，并行流在同一条连接上多路复用）；库缺失、加载失败或 `CHATGPT_WEB_TRANSPORT=cli` 时回落到原来的 `curl-impersonate` 子进程。画像仍从平台的[共享浏览器设备画像](./browser-device-profile.md)取得匹配的 impersonate 目标、UA、UA-CH、语言、时区、屏幕与硬件特征。画像由安装 seed 生成、不会读取管理员电脑，并在管理员主动刷新前保持稳定。实测画像池中的 chrome136–150 今天都能过 Cloudflare；「异常登录」（unusual login）警告来自 OpenAI 的**应用层风控**，出网 IP / 地理是最大剩余信号，不是 CF bot filter。每条连接还有一份进程内 Netscape Cookie 罐（按 `oauthDeviceId` 分桶，画像刷新时一并清空）和一个进程生命周期内稳定、重启后轮换的 UUIDv4 `OAI-Session-Id`。
 
 - 传输层代码：`apps/server/src/enterprise/services/chatgptWeb/transport/`（仅服务端；`packages/model-runtime` 必须保持同构，运行时通过构造参数注入 `fetch`）。
 - 注入点：`apps/server/src/modules/ModelRuntime/index.ts`（用户路径）、企业 `runtimeAdapter.ts`（平台托管路径）、`connectionTestService.ts`（管理端连通性检查）。
@@ -14,15 +14,22 @@
 
 ## 1. 环境变量
 
-| 变量                               | 默认值 | 说明                                                                                                                                                         |
-| ---------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CHATGPT_WEB_CURL_IMPERSONATE_BIN` | 空     | `curl-impersonate` 可执行文件的**绝对路径**。显式指定时若不可执行，直接报错（不再继续探测）。                                                                |
-| `CHATGPT_WEB_ALLOWED_HOSTS`        | 空     | 追加到传输层主机白名单的**域名后缀**，英文逗号分隔。内置白名单恒生效。                                                                                       |
-| `CHATGPT_WEB_ALLOW_INSECURE_HTTP`  | `0`    | 置 `1` 允许该传输层走明文 `http`。**仅供测试 / 本地 mock 后端**，生产不要开。                                                                                |
-| `PROXY_URL` / `HTTPS_PROXY`        | 空     | 复用既有出网代理变量，作为 `curl -x` 传入（也识别小写 `https_proxy`）。带 `user:password@` 的代理串只写进子进程 stdin 的 config，不会出现在 argv / `ps` 里。 |
-| `SSL_CERT_FILE`                    | 空     | CA bundle，作为 `--cacert` 传入；未设置时回落 `NODE_EXTRA_CA_CERTS`。静态 musl 版 curl 自带的证书路径可能与宿主不同，内网 TLS 拦截场景需要显式指定。         |
+| 变量                                   | 默认值 | 说明                                                                                                                                                                                 |
+| -------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CHATGPT_WEB_CURL_IMPERSONATE_BIN`     | 空     | `curl-impersonate` 可执行文件的**绝对路径**。显式指定时若不可执行，直接报错（不再继续探测）。                                                                                        |
+| `CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH` | 空     | `libcurl-impersonate` 共享库的**绝对路径**（macOS `.dylib` / Linux `.so`）。显式指定时若无法加载，持久传输不可用（`auto` 回落 CLI；`persistent` 直接报错）。                         |
+| `CHATGPT_WEB_TRANSPORT`                | `auto` | `auto`（默认）：能加载库就走持久 HTTP/2，否则 CLI。`persistent`：必须走库，失败即不可用。`cli`：强制子进程，忽略库。                                                                 |
+| `CHATGPT_WEB_ALLOWED_HOSTS`            | 空     | 追加到传输层主机白名单的**域名后缀**，英文逗号分隔。内置白名单恒生效。                                                                                                               |
+| `CHATGPT_WEB_ALLOW_INSECURE_HTTP`      | `0`    | 置 `1` 允许该传输层走明文 `http`。**仅供测试 / 本地 mock 后端**，生产不要开。                                                                                                        |
+| `PROXY_URL` / `HTTPS_PROXY`            | 空     | 复用既有出网代理变量（也识别小写 `https_proxy`）。**CLI**：作为 `proxy =` 写进子进程 stdin config，不进 argv / `ps`。**持久传输**：`CURLOPT_PROXY` 设在进程内句柄上，同样不进 argv。 |
+| `SSL_CERT_FILE`                        | 空     | CA bundle；未设置时回落 `NODE_EXTRA_CA_CERTS`。**CLI**：`--cacert`。**持久传输**：`CURLOPT_CAINFO`。静态 musl 版 curl 自带的证书路径可能与宿主不同，内网 TLS 拦截场景需要显式指定。  |
 
-`.env.example` 的 `AI Provider Service` 段落已列出前三个（`## ChatGPT Web ###`）。
+`.env.example` 的 `## ChatGPT Web ###` 段落列出五个变量：`CHATGPT_WEB_CURL_IMPERSONATE_BIN`、`CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH`、`CHATGPT_WEB_TRANSPORT`、`CHATGPT_WEB_ALLOWED_HOSTS`、`CHATGPT_WEB_ALLOW_INSECURE_HTTP`。官方镜像已钉住二进制与库路径。
+
+两种传输的凭据与回收方式不同，不要混着读：
+
+- **持久传输**（默认，`auto` 且库可加载）：TLS / HTTP2 指纹留在进程内的 libcurl-impersonate 连接池，同一 `(browser context, origin, proxy/egress, impersonation profile revision)` 上的 prepare /conversation/ Sentinel 复用一条 HTTP/2 连接，并行流多路复用。代理凭据只存在进程内存（`CURLOPT_PROXY`），从未出现在 argv。调用方不读响应体时，从 multi 上摘掉对应 easy handle，不杀进程。
+- **CLI 回落**（库缺失 / 加载失败 / `CHATGPT_WEB_TRANSPORT=cli`）：每个请求一个 `curl-impersonate` 子进程。代理凭据只写进 stdin 的 config。调用方不读响应体时，杀子进程。
 
 ### 1.1 二进制解析顺序
 
@@ -42,9 +49,19 @@ Run `bun run curl-impersonate:install` for local development,
 or set CHATGPT_WEB_CURL_IMPERSONATE_BIN to an absolute path.
 ```
 
+### 1.1a 共享库解析顺序
+
+持久传输解析 `libcurl-impersonate` 的顺序（取第一个能被 `koffi` 加载的常规文件）：
+
+1. `CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH`；
+2. 仓库内 `./.cache/curl-impersonate/libcurl-impersonate.dylib`（macOS）或 `libcurl-impersonate.so`（Linux）（开发机，见 §2）；
+3. `/usr/local/lib/libcurl-impersonate.so`（Docker 镜像内置位置）。
+
+全都找不到（或 `CHATGPT_WEB_TRANSPORT=auto` 时加载失败）就回落 §1.1 的 CLI 二进制。`CHATGPT_WEB_TRANSPORT=persistent` 时不回落，直接报传输不可用。
+
 ### 1.2 主机白名单
 
-该传输层是裸子进程，企业 SSRF 栈看不见它，因此**唯一的出向管控就是目的主机白名单**。内置后缀（恒生效）：
+两种传输都不走企业 SSRF 栈（CLI 是裸子进程；持久传输是进程内 libcurl），因此**唯一的出向管控就是目的主机白名单**。内置后缀（恒生效）：
 
 ```plaintext
 chatgpt.com  openai.com  oaiusercontent.com  oaistatic.com  blob.core.windows.net
@@ -57,7 +74,12 @@ chatgpt.com  openai.com  oaiusercontent.com  oaistatic.com  blob.core.windows.ne
 
 ### 1.3 其他固定参数（非环境变量，改需动代码）
 
-`--max-time` 600 s、`--connect-timeout` 20 s、未被读取的响应体 60 s 后杀子进程；curl 以 `--disable` 起头，不读宿主的 `.curlrc`。
+请求预算两边相同：整请求 600 s、连接 20 s。未读完的响应体 60 s 后回收，但回收动作不同：
+
+- **CLI**：杀 `curl-impersonate` 子进程（先 SIGTERM，再 SIGKILL）。
+- **持久传输**：从 multi 上 `curl_multi_remove_handle` 并 `easy_cleanup`，进程继续活着。
+
+CLI 以 `--disable` 起头，不读宿主的 `.curlrc`。
 
 ## 2. 开发机准备
 
@@ -67,25 +89,33 @@ bun run curl-impersonate:install
 
 - 脚本：`scripts/curlImpersonate/install.mts`；版本、下载源、每个产物的 SHA-256 钉在 `scripts/curlImpersonate/manifest.json`（当前 `v2.1.0`）。
 - 校验和不匹配**一律不解压**：HTTPS 只能证明「谁给的文件」，不能证明「是我们审过的那个文件」，而这个二进制会带着服务端凭据运行。
-- 支持的平台：`darwin:arm64` / `darwin:x64` / `linux:arm64` / `linux:x64`（linux 取 **musl 静态链接**版；gnu 版是动态链接，塞不进 distroless 镜像）。
-- 只从 tar 包里取 `curl-impersonate` 一个文件；同包附带的～40 个 `curl_<browser>` 包装脚本不装（它们内置的 header 集合正是传输层要自己替换的部分）。
-- 落地位置 `./.cache/curl-impersonate/curl-impersonate`，同文件系统原子 rename 安装。
-- 换镜像源：`CURL_IMPERSONATE_DOWNLOAD_BASE=<prefix>`（默认取 manifest 的 `baseUrl`）。日志只打印来源的 scheme+host，不打印路径 /query/userinfo。
+- 支持的平台：`darwin:arm64` / `darwin:x64` / `linux:arm64` / `linux:x64`。CLI 二进制 linux 取 **musl 静态链接**版；**库**取 **gnu** 动态链接版（koffi 加载；glibc 由 Node 运行时提供）。
+- 二进制：只从 tar 包里取 `curl-impersonate` 一个文件；同包附带的～40 个 `curl_<browser>` 包装脚本不装（它们内置的 header 集合正是传输层要自己替换的部分）。落地 `./.cache/curl-impersonate/curl-impersonate`。
+- 库：只取真实成员（`libcurl-impersonate.4.8.0.dylib` / `libcurl-impersonate.so.4.8.0`，不解 symlink），落地为 `./.cache/curl-impersonate/libcurl-impersonate.dylib`（macOS）或 `libcurl-impersonate.so`（Linux），mode `0755`。旁边写 `libcurl-impersonate.version`（manifest 版本）。版本未变则跳过下载。版本变了会**先删掉**稳定库再下新的：升级失败时目录里不会留下旧库，警告「no library installed → CLI fallback」是真话。库失败**不阻断**二进制安装。
+- 换镜像源：`CURL_IMPERSONATE_DOWNLOAD_BASE=<prefix>`（默认取 manifest 的 `baseUrl`）。带 `user:password@` 的前缀会剥掉 userinfo、改走 `Authorization: Basic`（Node `fetch` 拒带凭据的 URL）。日志只打印 scheme+host，不打印路径 /query/userinfo，也不打印 fetch 异常原文。
 
 ## 3. Docker 镜像
 
-`Dockerfile` 的 `base` 阶段下载静态 musl 版并放进 `/distroless/usr/local/bin/curl-impersonate`，运行阶段用 `ENV CHATGPT_WEB_CURL_IMPERSONATE_BIN="/usr/local/bin/curl-impersonate"` 钉住路径，因此**官方镜像开箱即用，无需额外挂载**。
+`Dockerfile` 的 `base` 阶段下载静态 musl 版二进制到 `/distroless/usr/local/bin/curl-impersonate`，并下载 linux-gnu `libcurl-impersonate.so.4.8.0` 安装为 `/distroless/usr/local/lib/libcurl-impersonate.so`。运行阶段钉住
+
+```plaintext
+CHATGPT_WEB_CURL_IMPERSONATE_BIN=/usr/local/bin/curl-impersonate
+CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH=/usr/local/lib/libcurl-impersonate.so
+```
+
+因此**官方镜像开箱即用，无需额外挂载**。`COPY --from=base /distroless/` 与后续 layer-a 对 `/usr` 的整树拷贝会把库带进最终 scratch 镜像。
 
 相关构建参数：
 
-| ARG                                              | 默认          | 说明                                                                                                     |
-| ------------------------------------------------ | ------------- | -------------------------------------------------------------------------------------------------------- |
-| `CURL_IMPERSONATE_VERSION`                       | `v2.1.0`      | 与 `manifest.json` 的 `version` 保持一致。                                                               |
-| `CURL_IMPERSONATE_DOWNLOAD_BASE`                 | 空            | 显式镜像前缀；留空时按 `USE_CN_MIRROR` 选择。                                                            |
-| `CURL_IMPERSONATE_SHA256_AARCH64` / `..._X86_64` | 见 Dockerfile | 与 `manifest.json` 里的两个 linux/musl 摘要**重复登记**（shell 阶段读不了 JSON），改版本时两处必须同步。 |
-| `USE_CN_MIRROR=true`                             | —             | 下载源换成 `https://ghfast.top/https://github.com/…`（国内网络构建必带）。                               |
+| ARG                                                 | 默认          | 说明                                                                                              |
+| --------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------- |
+| `CURL_IMPERSONATE_VERSION`                          | `v2.1.0`      | 与 `manifest.json` 的 `version` 保持一致（二进制与库同一 release）。                              |
+| `CURL_IMPERSONATE_DOWNLOAD_BASE`                    | 空            | 显式镜像前缀；留空时按 `USE_CN_MIRROR` 选择。二进制与库共用。                                     |
+| `CURL_IMPERSONATE_SHA256_AARCH64` / `..._X86_64`    | 见 Dockerfile | 与 `manifest.json` `assets` 里的两个 linux/musl **二进制**摘要重复登记（shell 阶段读不了 JSON）。 |
+| `LIBCURL_IMPERSONATE_SHA256_AARCH64` / `..._X86_64` | 见 Dockerfile | 与 `manifest.json` `libraries` 里的两个 linux-gnu **库**摘要重复登记。改版本时四处必须同步。      |
+| `USE_CN_MIRROR=true`                                | —             | 下载源换成 `https://ghfast.top/https://github.com/…`（国内网络构建必带）。                        |
 
-镜像构建期会 `sha256sum -c`、拒绝符号链接、`chmod 755` 并执行一次 `--version` 自检，任一步失败即构建失败。CA bundle 由镜像自带的 `ca-certificates` 提供。
+镜像构建期会 `sha256sum -c`、拒绝符号链接、`chmod 755`，二进制跑一次 `--version`，库跑一次 `ldd`（不得出现 `not found`），任一步失败即构建失败。CA bundle 由镜像自带的 `ca-certificates` 提供。
 
 ## 4. 接入流程（管理端 / 用户端）
 
@@ -203,7 +233,7 @@ bun run curl-impersonate:install
 
 | 现象                                                 | 先看                                                                                                                                                                                                                                                                         |
 | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 检查报「组件未安装」/ 运行时报 transport unavailable | 服务器上有没有 `curl-impersonate`；`CHATGPT_WEB_CURL_IMPERSONATE_BIN` 指的文件是否可执行                                                                                                                                                                                     |
+| 检查报「组件未安装」/ 运行时报 transport unavailable | 服务器上有没有 `curl-impersonate`；`CHATGPT_WEB_CURL_IMPERSONATE_BIN` 指的文件是否可执行。若强制了 `CHATGPT_WEB_TRANSPORT=persistent`，再看 `CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH` / `.cache` / `/usr/local/lib/libcurl-impersonate.so` 能否被 koffi 加载                    |
 | 403 / Cloudflare                                     | 画像的 impersonate 目标、UA 与 UA-CH 是否同主版本；出网 IP / 地理是否漂移（应用层风控）；有没有绕过传输层用了 Node fetch                                                                                                                                                     |
 | TLS 握手失败（内网 TLS 拦截）                        | `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`                                                                                                                                                                                                                                      |
 | 代理不生效                                           | `PROXY_URL` / `HTTPS_PROXY`（代理串只进 stdin config，`ps` 里看不到是正常的）                                                                                                                                                                                                |

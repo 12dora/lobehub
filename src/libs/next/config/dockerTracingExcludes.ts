@@ -28,4 +28,24 @@ export const dockerTracingExcludes = (): string[] => [
   // path). Busybox prune in the Dockerfile is the belt if includes win.
   'node_modules/.pnpm/@napi-rs+canvas@*/node_modules/@napi-rs/canvas-*/*.node',
   'node_modules/.pnpm/@napi-rs+canvas-linux-*@*/node_modules/@napi-rs/canvas-*/*.node',
+  // Non-linux (and non-x64/arm64 linux) koffi natives. Docker is linux glibc;
+  // `static.cjs` has a `require()` per platform so tracing can pull them all in
+  // when the image is built on macOS. `contains: true` also matches the
+  // `.pnpm/@koromix+koffi-…/node_modules/@koromix/koffi-…` store copies.
+  'node_modules/@koromix/koffi-darwin-*/**',
+  'node_modules/@koromix/koffi-win32-*/**',
+  'node_modules/@koromix/koffi-freebsd-*/**',
+  'node_modules/@koromix/koffi-openbsd-*/**',
+  'node_modules/@koromix/koffi-android-*/**',
+  'node_modules/@koromix/koffi-*-ia32/**',
+  'node_modules/@koromix/koffi-linux-riscv*/**',
+  'node_modules/@koromix/koffi-linux-loong*/**',
+  'node_modules/.pnpm/@koromix+koffi-darwin-*@*/**',
+  'node_modules/.pnpm/@koromix+koffi-win32-*@*/**',
+  'node_modules/.pnpm/@koromix+koffi-freebsd-*@*/**',
+  'node_modules/.pnpm/@koromix+koffi-openbsd-*@*/**',
+  'node_modules/.pnpm/@koromix+koffi-android-*@*/**',
+  'node_modules/.pnpm/@koromix+koffi-*-ia32@*/**',
+  'node_modules/.pnpm/@koromix+koffi-linux-riscv*@*/**',
+  'node_modules/.pnpm/@koromix+koffi-linux-loong*@*/**',
 ];

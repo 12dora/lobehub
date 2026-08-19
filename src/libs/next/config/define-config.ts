@@ -3,6 +3,7 @@ import { type NextConfig } from 'next';
 import { type Header, type Redirect } from 'next/dist/lib/load-custom-routes';
 
 import { dockerCanvasTracingIncludes } from './dockerCanvasTracingIncludes';
+import { dockerKoffiTracingIncludes } from './dockerKoffiTracingIncludes';
 
 const LANDING_SITEMAP_URL = 'https://lobehub.com/sitemap.xml';
 
@@ -48,6 +49,9 @@ export function defineConfig(config: CustomNextConfig) {
               // `@napi-rs/canvas` is loaded via dynamic `require()` (see packages/file-loaders),
               // which may not be picked up by Next.js output tracing.
               ...dockerCanvasTracingIncludes,
+              // `koffi` loads `@koromix/koffi-<os>-<arch>` via dynamic `require`
+              // (see node_modules/koffi/src/koffi/src/static.cjs).
+              ...dockerKoffiTracingIncludes,
             ]
           : []),
       ],
@@ -360,6 +364,9 @@ export function defineConfig(config: CustomNextConfig) {
       'pdfjs-dist',
       'ajv',
       'oidc-provider',
+      // Prebuilt native FFI addon (no install-time compile). Must stay unbundled
+      // so `require('@koromix/koffi-<os>-<arch>')` still resolves at runtime.
+      'koffi',
     ],
 
     transpilePackages: ['mermaid'],

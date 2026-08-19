@@ -16,11 +16,17 @@ ARG USE_CN_MIRROR
 ## are STATICALLY linked, so the binary runs in the busybox/scratch runtime image.
 ## Version + digests are pinned in scripts/curlImpersonate/manifest.json (the single
 ## source of truth, read by the dev installer). A shell build stage cannot read JSON, so
-## the two linux/musl digests are duplicated here — change them together.
+## the two linux/musl binary digests and the two linux-gnu library digests are
+## duplicated here — change them together.
 ARG CURL_IMPERSONATE_VERSION="v2.1.0"
 ARG CURL_IMPERSONATE_DOWNLOAD_BASE=""
 ARG CURL_IMPERSONATE_SHA256_AARCH64="e6dea0ce4fe5d6e7f01c1926c2b3bf6bbd140e1b890c0788881a10bfc09b25e2"
 ARG CURL_IMPERSONATE_SHA256_X86_64="4fb112bd537ab701c197506b7a06d6711a564f8338dac30a8862683b9f7107e9"
+## libcurl-impersonate: in-process persistent HTTP/2 transport loaded via koffi.
+## linux-gnu .so (glibc ≥ 2.17 is what node:slim ships; the .so itself needs ≥ 2.7;
+## BoringSSL/nghttp2/brotli/zstd are statically inside).
+ARG LIBCURL_IMPERSONATE_SHA256_AARCH64="b0c62ee0523b982470bf624fc8d60fdebe62ca5974fa3d9362b7bf204b3d5439"
+ARG LIBCURL_IMPERSONATE_SHA256_X86_64="ab6ab7c0a36a8dde1197349440e43e35c6bdf909e8fb8f218036660e05a37225"
 
 ## Cursor Agent CLI: the Cursor provider transport. Distroless has no bash, so the
 ## server spawns `<home>/node --use-system-ca <home>/index.js` with
@@ -49,6 +55,12 @@ RUN set -e && \
     cp /usr/lib/$(arch)-linux-gnu/libz.so.1 /distroless/lib/libz.so.1 && \
     cp /usr/lib/$(arch)-linux-gnu/libgcc_s.so.1 /distroless/lib/libgcc_s.so.1 && \
     cp /usr/lib/$(arch)-linux-gnu/librt.so.1 /distroless/lib/librt.so.1 && \
+    ## libcurl-impersonate.so NEEDs libpthread.so.0 / libc.so.6 / libdl.so.2 (+ the
+    ## ld-linux loader). The busybox:glibc runtime image already ships all of them
+    ## (its own glibc — 2.41 at the time of writing — newer than node:slim's 2.36), and
+    ## node itself runs on that libc. Do NOT copy libc.so.6 / libpthread / ld-linux from
+    ## node:slim here: mixing an older libc.so.6 with the runtime's libm/libresolv/libnss
+    ## breaks every dynamically linked binary in the final image (GLIBC_PRIVATE mismatch).
     cp /usr/local/bin/node /distroless/bin/node && \
     cp /etc/ssl/certs/ca-certificates.crt /distroless/etc/ssl/certs/ca-certificates.crt && \
     rm -rf /tmp/* /var/lib/apt/lists/* /var/tmp/*
@@ -81,6 +93,42 @@ RUN set -e && \
     /tmp/curl-impersonate/curl-impersonate --version | head -n 1 && \
     mv -f /tmp/curl-impersonate/curl-impersonate /distroless/usr/local/bin/curl-impersonate && \
     rm -rf /tmp/curl-impersonate
+
+## libcurl-impersonate.so: same release as the CLI binary, gnu (not musl) so koffi
+## can dlopen it. The app stage `COPY --from=base /distroless/` and the layer-a
+## catch-all (`cp -a /usr`) both carry `/usr/local/lib` into the final image.
+RUN set -e && \
+    CURL_IMPERSONATE_BASE="${CURL_IMPERSONATE_DOWNLOAD_BASE}"; \
+    if [ -z "${CURL_IMPERSONATE_BASE}" ]; then \
+        if [ "${USE_CN_MIRROR:-false}" = "true" ]; then \
+            CURL_IMPERSONATE_BASE="https://ghfast.top/https://github.com/lexiforest/curl-impersonate/releases/download"; \
+        else \
+            CURL_IMPERSONATE_BASE="https://github.com/lexiforest/curl-impersonate/releases/download"; \
+        fi; \
+    fi; \
+    case "$(arch)" in \
+        x86_64) LIBCURL_IMPERSONATE_ARCH="x86_64-linux-gnu"; LIBCURL_IMPERSONATE_SHA256="${LIBCURL_IMPERSONATE_SHA256_X86_64}" ;; \
+        aarch64|arm64) LIBCURL_IMPERSONATE_ARCH="aarch64-linux-gnu"; LIBCURL_IMPERSONATE_SHA256="${LIBCURL_IMPERSONATE_SHA256_AARCH64}" ;; \
+        *) echo "libcurl-impersonate: unsupported architecture $(arch)" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /distroless/usr/local/lib /tmp/libcurl-impersonate && \
+    curl -fsSL "${CURL_IMPERSONATE_BASE}/${CURL_IMPERSONATE_VERSION}/libcurl-impersonate-${CURL_IMPERSONATE_VERSION}.${LIBCURL_IMPERSONATE_ARCH}.tar.gz" \
+        -o /tmp/libcurl-impersonate/libcurl-impersonate.tar.gz && \
+    ## Fail closed on anything but the reviewed release.
+    echo "${LIBCURL_IMPERSONATE_SHA256}  /tmp/libcurl-impersonate/libcurl-impersonate.tar.gz" | sha256sum -c - && \
+    ## Extract the REAL .so.4.8.0 (not the .so / .so.4 symlinks), install as a
+    ## regular file named libcurl-impersonate.so.
+    tar -xzf /tmp/libcurl-impersonate/libcurl-impersonate.tar.gz -C /tmp/libcurl-impersonate libcurl-impersonate.so.4.8.0 && \
+    test -f /tmp/libcurl-impersonate/libcurl-impersonate.so.4.8.0 && test ! -L /tmp/libcurl-impersonate/libcurl-impersonate.so.4.8.0 && \
+    chmod 755 /tmp/libcurl-impersonate/libcurl-impersonate.so.4.8.0 && \
+    mv -f /tmp/libcurl-impersonate/libcurl-impersonate.so.4.8.0 /distroless/usr/local/lib/libcurl-impersonate.so && \
+    test -f /distroless/usr/local/lib/libcurl-impersonate.so && test ! -L /distroless/usr/local/lib/libcurl-impersonate.so && \
+    ldd /distroless/usr/local/lib/libcurl-impersonate.so | tee /tmp/libcurl-impersonate.ldd && \
+    if grep -q 'not found' /tmp/libcurl-impersonate.ldd; then \
+        echo "libcurl-impersonate: unresolved NEEDED (see ldd above)" >&2; \
+        exit 1; \
+    fi && \
+    rm -rf /tmp/libcurl-impersonate /tmp/libcurl-impersonate.ldd
 
 RUN set -e && \
     case "$(arch)" in \
@@ -275,6 +323,7 @@ ENV APP_URL="" \
 
 # ChatGPT Web provider transport (browser-fingerprinted curl, shipped in this image)
 ENV CHATGPT_WEB_CURL_IMPERSONATE_BIN="/usr/local/bin/curl-impersonate" \
+    CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH="/usr/local/lib/libcurl-impersonate.so" \
     CHATGPT_WEB_ALLOWED_HOSTS=""
 
 # Cursor provider transport (pinned agent CLI, shipped in this image)

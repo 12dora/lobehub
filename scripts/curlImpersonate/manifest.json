@@ -1,5 +1,5 @@
 {
-  "$comment": "Pinned curl-impersonate release assets for the ChatGPT Web provider transport. SHA-256 values were computed from the exact tarballs served by the GitHub release; a mirror that serves anything else fails closed. The Dockerfile cannot read JSON, so the two linux/musl digests are duplicated there as build args — keep them in sync.",
+  "$comment": "Pinned curl-impersonate release assets for the ChatGPT Web provider transport. SHA-256 values were computed from the exact tarballs served by the GitHub release; a mirror that serves anything else fails closed. The Dockerfile cannot read JSON, so the two linux/musl binary digests and the two linux-gnu library digests are duplicated there as build args — keep them in sync. `libraries` is keyed by the same ASSET_ARCH values as `assets`; linux keys point at the gnu .so tarballs (koffi cannot load the musl CLI).",
   "assets": {
     "aarch64-linux-musl": {
       "file": "curl-impersonate-v2.1.0.aarch64-linux-musl.tar.gz",
@@ -20,5 +20,27 @@
   },
   "baseUrl": "https://github.com/lexiforest/curl-impersonate/releases/download",
   "binaryName": "curl-impersonate",
+  "libraries": {
+    "aarch64-linux-musl": {
+      "file": "libcurl-impersonate-v2.1.0.aarch64-linux-gnu.tar.gz",
+      "member": "libcurl-impersonate.so.4.8.0",
+      "sha256": "b0c62ee0523b982470bf624fc8d60fdebe62ca5974fa3d9362b7bf204b3d5439"
+    },
+    "x86_64-linux-musl": {
+      "file": "libcurl-impersonate-v2.1.0.x86_64-linux-gnu.tar.gz",
+      "member": "libcurl-impersonate.so.4.8.0",
+      "sha256": "ab6ab7c0a36a8dde1197349440e43e35c6bdf909e8fb8f218036660e05a37225"
+    },
+    "arm64-macos": {
+      "file": "libcurl-impersonate-v2.1.0.arm64-macos.tar.gz",
+      "member": "libcurl-impersonate.4.8.0.dylib",
+      "sha256": "5c230e9fc4298d2f7e06acf57bad4b2225f4f0aeb5b3f2ad8eff1c67a8137cd6"
+    },
+    "x86_64-macos": {
+      "file": "libcurl-impersonate-v2.1.0.x86_64-macos.tar.gz",
+      "member": "libcurl-impersonate.4.8.0.dylib",
+      "sha256": "b434fad9ad1c1a4cbad2c712a06a3968cae479ec066cf914000c633bd88f4a7d"
+    }
+  },
   "version": "v2.1.0"
 }
