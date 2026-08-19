@@ -326,6 +326,15 @@ describe('resolveEffectiveSettings truth table', () => {
     expect(result.platformRevision).toBe(7);
     expect(result.userOverrideRevision).toBe(4);
   });
+
+  it('user override of reasoningEffort null is an explicit clear', () => {
+    const result = resolveEffectiveSettings({
+      overrides: { 'systemAgent.topic.reasoningEffort': { value: null } },
+      platformPolicyEnabled: true,
+    });
+    expect(result.effectiveValues['systemAgent.topic.reasoningEffort']).toBeNull();
+    expect(result.pathMeta['systemAgent.topic.reasoningEffort']?.source).toBe('user');
+  });
 });
 
 describe('settingsRegistry', () => {

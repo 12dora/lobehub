@@ -7,7 +7,7 @@
 import { AgentChatConfigSchema, LobeMetaDataSchema, ReasoningGraphSchema } from '@lobechat/types';
 import { z } from 'zod';
 
-import { SETTINGS_SECRET_PATH_PREFIXES } from './registry';
+import { SETTINGS_SECRET_PATH_PREFIXES, systemAgentReasoningEffortSchema } from './registry';
 
 const animationModeSchema = z.enum(['disabled', 'agile', 'elegant']);
 const transitionModeSchema = z.enum(['smooth', 'fadeIn', 'none']);
@@ -116,6 +116,9 @@ const systemAgentItemSchema = z
     enabled: z.boolean().optional(),
     model: z.string().optional(),
     provider: z.string().optional(),
+    // `.nullable().optional()`: omit (sparse) OR `null` (user-side explicit clear).
+    // The settings merge drops `undefined`, so `null` is the persistable clear sentinel.
+    reasoningEffort: systemAgentReasoningEffortSchema.nullable().optional(),
   })
   .strict();
 

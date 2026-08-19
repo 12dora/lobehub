@@ -226,29 +226,39 @@ describe('AdminSettingsService.applyImmediate', () => {
       'tts.openAI.ttsModel',
       'systemAgent.topic.model',
       'systemAgent.topic.provider',
+      'systemAgent.topic.reasoningEffort',
       'systemAgent.generationTopic.model',
       'systemAgent.generationTopic.provider',
+      'systemAgent.generationTopic.reasoningEffort',
       'systemAgent.translation.model',
       'systemAgent.translation.provider',
+      'systemAgent.translation.reasoningEffort',
       'systemAgent.historyCompress.model',
       'systemAgent.historyCompress.provider',
+      'systemAgent.historyCompress.reasoningEffort',
       'systemAgent.agentMeta.model',
       'systemAgent.agentMeta.provider',
+      'systemAgent.agentMeta.reasoningEffort',
       'systemAgent.followUpAction.model',
       'systemAgent.followUpAction.provider',
       'systemAgent.followUpAction.enabled',
+      'systemAgent.followUpAction.reasoningEffort',
       'systemAgent.inputCompletion.model',
       'systemAgent.inputCompletion.provider',
       'systemAgent.inputCompletion.enabled',
+      'systemAgent.inputCompletion.reasoningEffort',
       'systemAgent.promptRewrite.model',
       'systemAgent.promptRewrite.provider',
       'systemAgent.promptRewrite.enabled',
+      'systemAgent.promptRewrite.reasoningEffort',
       'systemAgent.memoryAnalysisAgentConfig.model',
       'systemAgent.memoryAnalysisAgentConfig.provider',
       'systemAgent.memoryAnalysisAgentConfig.contextLimit',
+      'systemAgent.memoryAnalysisAgentConfig.reasoningEffort',
       'systemAgent.userMemoryPersonaWriter.model',
       'systemAgent.userMemoryPersonaWriter.provider',
       'systemAgent.userMemoryPersonaWriter.contextLimit',
+      'systemAgent.userMemoryPersonaWriter.reasoningEffort',
       'systemAgent.userMemoryEmbedding.model',
       'systemAgent.userMemoryEmbedding.provider',
       'systemAgent.userMemoryEmbedding.contextLimit',
@@ -259,6 +269,84 @@ describe('AdminSettingsService.applyImmediate', () => {
         settingsRegistry.assertPathWritable({ path, requirePlatformEligible: true }),
       ).toBeNull();
     }
+
+    expect(settingsRegistry.has('systemAgent.userMemoryEmbedding.reasoningEffort')).toBe(false);
+    expect(settingsRegistry.has('systemAgent.thread.reasoningEffort')).toBe(false);
+    expect(settingsRegistry.validateValue('systemAgent.topic.reasoningEffort', 'high').ok).toBe(
+      true,
+    );
+    expect(settingsRegistry.validateValue('systemAgent.topic.reasoningEffort', null).ok).toBe(true);
+    expect(settingsRegistry.validateValue('systemAgent.topic.reasoningEffort', 'bogus').ok).toBe(
+      false,
+    );
+  });
+
+  it('publishes systemAgent reasoningEffort via applyImmediate', async () => {
+    const result = await service.applyImmediate({
+      actorUserId: 'admin-1',
+      patch: { 'systemAgent.topic.reasoningEffort': 'high' },
+      reason: 'set topic reasoning effort',
+    });
+
+    expect(result.paths).toEqual(['systemAgent.topic.reasoningEffort']);
+
+    const policies = await serverDB.select().from(platformSettingPolicies);
+    expect(policies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mode: 'default',
+          path: 'systemAgent.topic.reasoningEffort',
+          value: 'high',
+        }),
+      ]),
+    );
+
+    const effective = new EffectiveSettingsService(serverDB);
+    const userState = await effective.getEffectiveSettings({ userId: 'user-1' });
+    expect(userState.effectiveValues['systemAgent.topic.reasoningEffort']).toBe('high');
+  });
+
+  it('rejects invalid systemAgent reasoningEffort via applyImmediate', async () => {
+    await expect(
+      service.applyImmediate({
+        actorUserId: 'admin-1',
+        patch: { 'systemAgent.topic.reasoningEffort': 'bogus' },
+      }),
+    ).rejects.toBeInstanceOf(SettingsDraftValidationError);
+  });
+
+  it('clears systemAgent reasoningEffort back to provider default via null', async () => {
+    await service.applyImmediate({
+      actorUserId: 'admin-1',
+      patch: { 'systemAgent.topic.reasoningEffort': 'high' },
+      reason: 'set topic reasoning effort',
+    });
+
+    await service.applyImmediate({
+      actorUserId: 'admin-1',
+      patch: { 'systemAgent.topic.reasoningEffort': null },
+      reason: 'clear topic reasoning effort',
+    });
+
+    const policies = await serverDB.select().from(platformSettingPolicies);
+    expect(policies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mode: 'default',
+          path: 'systemAgent.topic.reasoningEffort',
+          value: null,
+        }),
+      ]),
+    );
+
+    const effective = new EffectiveSettingsService(serverDB);
+    const userState = await effective.getEffectiveSettings({ userId: 'user-1' });
+    // Null sentinel = provider default (same as contextLimit clear).
+    expect(userState.effectiveValues['systemAgent.topic.reasoningEffort']).toBeNull();
+    const topic = (
+      userState.effectiveSettings.systemAgent as { topic?: { reasoningEffort?: unknown } }
+    )?.topic;
+    expect(topic?.reasoningEffort ?? null).toBeNull();
   });
 
   it('allows overwriting draft-vs-published diffs on paths inside the patch', async () => {

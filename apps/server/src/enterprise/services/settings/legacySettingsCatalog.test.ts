@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { validateLegacySettingsUpdate } from './legacySettingsCatalog';
+import { settingsRegistry } from './registry';
 
 const validReasoningGraph = {
   edges: [
@@ -279,5 +280,64 @@ describe('strict legacy settings catalog (B4-R2)', () => {
       languageModel: { openai: {} },
     });
     expect(r.ok).toBe(false);
+  });
+
+  it('accepts systemAgent.reasoningEffort high', () => {
+    const result = validateLegacySettingsUpdate({
+      systemAgent: {
+        thread: { reasoningEffort: 'medium' },
+        topic: { model: 'gpt-4o-mini', provider: 'openai', reasoningEffort: 'high' },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.systemAgent?.topic?.reasoningEffort).toBe('high');
+      expect(result.value.systemAgent?.thread?.reasoningEffort).toBe('medium');
+    }
+  });
+
+  it('preserves sparse systemAgent without injecting reasoningEffort', () => {
+    const result = validateLegacySettingsUpdate({
+      systemAgent: { topic: { model: 'gpt-4o-mini', provider: 'openai' } },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({
+        systemAgent: { topic: { model: 'gpt-4o-mini', provider: 'openai' } },
+      });
+    }
+  });
+
+  it('accepts systemAgent.reasoningEffort null as explicit clear', () => {
+    const result = validateLegacySettingsUpdate({
+      systemAgent: { topic: { reasoningEffort: null } },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.systemAgent?.topic?.reasoningEffort).toBeNull();
+      // User save path: catalog then registry leaf. Null must pass both.
+      expect(
+        settingsRegistry.validateValue(
+          'systemAgent.topic.reasoningEffort',
+          result.value.systemAgent?.topic?.reasoningEffort,
+        ).ok,
+      ).toBe(true);
+    }
+  });
+
+  it('rejects bogus systemAgent.reasoningEffort', () => {
+    const result = validateLegacySettingsUpdate({
+      systemAgent: { topic: { reasoningEffort: 'bogus' } },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('MANAGED_SETTING_INVALID_VALUE');
+  });
+
+  it('still rejects unknown systemAgent item fields', () => {
+    const result = validateLegacySettingsUpdate({
+      systemAgent: { topic: { model: 'x', extra: true } },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toMatch(/UNKNOWN|INVALID/);
   });
 });

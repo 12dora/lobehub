@@ -15,6 +15,7 @@ import {
   DEFAULT_SYSTEM_AGENT_CONFIG,
   DEFAULT_TTS_CONFIG,
 } from '@lobechat/const';
+import type { SystemAgentReasoningEffort } from '@lobechat/types';
 import { z } from 'zod';
 
 import type {
@@ -24,7 +25,7 @@ import type {
 } from '@/types/platform/settings';
 
 /** Bump when registered paths / schemas change in a breaking way for cache keys. */
-export const SETTINGS_REGISTRY_VERSION = 1;
+export const SETTINGS_REGISTRY_VERSION = 3;
 
 /** Appearance / preference leaves used only in user UI clients (B6-R2). */
 const UI_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile'];
@@ -38,6 +39,50 @@ const approvalModeSchema = z.enum(['auto-run', 'allow-list', 'manual', 'headless
 const sttServerSchema = z.enum(['openai', 'browser']);
 const sttModelSchema = z.literal('whisper-1');
 const ttsModelSchema = z.enum(['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd']);
+/**
+ * Canonical discrete levels for `SystemAgentItem.reasoningEffort`.
+ * Shared with `legacySettingsCatalog` so both gates cannot drift.
+ */
+export const SYSTEM_AGENT_REASONING_EFFORT_LEVELS = [
+  'no_think',
+  'disabled',
+  'none',
+  'minimal',
+  'auto',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'enabled',
+] as const satisfies readonly SystemAgentReasoningEffort[];
+
+type _MissingSystemAgentReasoningEffort = Exclude<
+  SystemAgentReasoningEffort,
+  (typeof SYSTEM_AGENT_REASONING_EFFORT_LEVELS)[number]
+>;
+const _assertAllSystemAgentReasoningEffortLevels: _MissingSystemAgentReasoningEffort extends never
+  ? true
+  : never = true;
+void _assertAllSystemAgentReasoningEffortLevels;
+
+export const systemAgentReasoningEffortSchema = z.enum(SYSTEM_AGENT_REASONING_EFFORT_LEVELS);
+const SYSTEM_AGENT_REASONING_EFFORT_KEYS = [
+  'topic',
+  'generationTopic',
+  'translation',
+  'historyCompress',
+  'agentMeta',
+  'followUpAction',
+  'inputCompletion',
+  'promptRewrite',
+  'memoryAnalysisAgentConfig',
+  'userMemoryPersonaWriter',
+] as const;
+const SYSTEM_AGENT_REASONING_EFFORT_OPTIONS = SYSTEM_AGENT_REASONING_EFFORT_LEVELS.map((value) => ({
+  labelKey: `settingsPolicy.options.systemAgent.reasoningEffort.${value}`,
+  value,
+}));
 
 type Def = SettingDefinition;
 
@@ -508,10 +553,13 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.defaultAgent.config.params.temperature.title',
   }),
 
-  // ── systemAgent (model/provider/enabled/contextLimit — no secrets) ───────
+  // ── systemAgent (model/provider/enabled/contextLimit/reasoningEffort — no secrets) ──
   // Service-model page keys: topic, generationTopic, translation, historyCompress,
   // agentMeta, followUpAction, inputCompletion, promptRewrite,
   // memoryAnalysisAgentConfig, userMemoryPersonaWriter, userMemoryEmbedding.
+  // reasoningEffort is registered for every service-model key except embeddings.
+  // `thread` is deliberately unregistered (no model/provider surface either);
+  // effort stays a dormant user-settings blob field until that row is surfaced.
   ...(
     [
       'topic',
@@ -609,6 +657,30 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
     return entries;
   }),
+
+  // reasoningEffort is a nullable leaf, same as `systemAgent.<key>.contextLimit`:
+  // admin clear writes `null` ("provider default"); builtInDefault is `null` so
+  // an unset policy also reads as absent. Shared title/desc keys.
+  ...SYSTEM_AGENT_REASONING_EFFORT_KEYS.map((key) =>
+    def({
+      applicableClients: RUNTIME_CLIENTS,
+      builtInDefault: null,
+      control: 'select',
+      descriptionKey: 'settingsPolicy.paths.systemAgent.reasoningEffort.desc',
+      group: 'systemAgent',
+      options: SYSTEM_AGENT_REASONING_EFFORT_OPTIONS,
+      path: `systemAgent.${key}.reasoningEffort`,
+      userControlSurface: {
+        kind: 'surface',
+        surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
+      },
+      platformPolicyEligible: true,
+      schema: systemAgentReasoningEffortSchema.nullable(),
+      schemaVersion: 1,
+      sensitivity: 'public',
+      titleKey: 'settingsPolicy.paths.systemAgent.reasoningEffort.title',
+    }),
+  ),
 ];
 
 /** Paths that must never enter the registry (defense-in-depth denylist). */
