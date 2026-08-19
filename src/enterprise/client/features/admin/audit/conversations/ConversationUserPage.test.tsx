@@ -359,4 +359,19 @@ describe('ConversationUserPage', () => {
     renderPage();
     expect(screen.getByText('audit.conversations.user.emptyTimeline')).toBeTruthy();
   });
+
+  it('timeline-only FORBIDDEN still gates the whole page, not the pane retry UI', async () => {
+    evidence.timelineData = undefined as never;
+    evidence.timelineError = { data: { code: 'FORBIDDEN' } };
+    evidence.listError = undefined;
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('content-disabled')).toBeTruthy();
+    });
+    expect(screen.queryByText('audit.conversations.user.timelineError')).toBeNull();
+    expect(screen.queryByText('audit.conversations.user.timelineRetry')).toBeNull();
+    expect(screen.queryByTestId('topics-table')).toBeNull();
+  });
 });

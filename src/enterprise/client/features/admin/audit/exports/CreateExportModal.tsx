@@ -4,8 +4,8 @@ import { Flexbox, Input, Text } from '@lobehub/ui';
 import { Button, Modal, Switch } from '@lobehub/ui/base-ui';
 import { DatePicker } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
-import dayjs, { type Dayjs } from 'dayjs';
-import { memo, useEffect, useMemo, useState } from 'react';
+import dayjs from 'dayjs';
+import { memo, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -17,7 +17,14 @@ import { useFetchAuditPolicy } from '../hooks/useAdminAudit';
 import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
 import { hasPermission } from '../shared/format';
 import { openAuditReasonModal } from '../shared/openAuditReasonModal';
-import { getDefaultAuditTimeWindow, parseAuditDate } from '../shared/timeWindow';
+import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
+import type { ExportKind } from './exportCreateForm';
+import {
+  buildExportCreateInput,
+  canAdvanceFromFilters,
+  exportBodyAllowed,
+  parseExportPrefill,
+} from './exportCreateForm';
 
 const styles = createStaticStyles(({ css }) => ({
   card: css`
@@ -55,8 +62,6 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-type ExportKind = AdminAuditExportsCreateInput['kind'];
-
 export interface CreateExportModalProps {
   authMethod?: AdminReauthAuthMethod | null;
   onClose: () => void;
@@ -74,79 +79,22 @@ const CreateExportModal = memo<CreateExportModalProps>(
     const canSearchUsers = canReadPolicy;
     // policy.get requires AUDIT_READ — never fetch without it.
     const policy = useFetchAuditPolicy(open && canReadPolicy);
-    const defaultWindow = useMemo(() => getDefaultAuditTimeWindow(), []);
-
-    const [step, setStep] = useState(0);
-    const [kind, setKind] = useState<ExportKind>('operation_logs');
-    const [range, setRange] = useState<[Dayjs, Dayjs]>(() => [
-      dayjs(defaultWindow.from),
-      dayjs(defaultWindow.to),
-    ]);
-    const [userId, setUserId] = useState<string | undefined>();
-    const [actorUserId, setActorUserId] = useState<string | undefined>();
-    const [topicId, setTopicId] = useState('');
-    const [q, setQ] = useState('');
-    const [includeBodies, setIncludeBodies] = useState(false);
-    const [action, setAction] = useState('');
+    const [draft, setDraft] = useState(() =>
+      parseExportPrefill(undefined, getDefaultAuditTimeWindow()),
+    );
+    const { action, actorUserId, includeBodies, kind, q, range, step, topicId, userId } = draft;
 
     // Reset every field when a new modal session starts, then apply URL prefill
     // as a complete replacement so reopen never reuses stale filters.
     useEffect(() => {
       if (!open) return;
-      const fresh = getDefaultAuditTimeWindow();
-      let nextKind: ExportKind = 'operation_logs';
-      let nextRange: [Dayjs, Dayjs] = [dayjs(fresh.from), dayjs(fresh.to)];
-      let nextUserId: string | undefined;
-      let nextActorUserId: string | undefined;
-      let nextTopicId = '';
-      let nextQ = '';
-      const nextIncludeBodies = false;
-      let nextAction = '';
-      let nextStep = 0;
-
-      if (searchParams) {
-        const k = searchParams.get('kind');
-        if (k === 'operation_logs' || k === 'conversations' || k === 'user_timeline') {
-          nextKind = k;
-          nextStep = 1;
-        }
-        const from = parseAuditDate(searchParams.get('from'));
-        const to = parseAuditDate(searchParams.get('to'));
-        if (from && to) nextRange = [dayjs(from), dayjs(to)];
-        const act = searchParams.get('action');
-        if (act) nextAction = act;
-        const uid = searchParams.get('userId');
-        if (uid) nextUserId = uid;
-        const actor = searchParams.get('actorUserId');
-        if (actor) nextActorUserId = actor;
-        const tid = searchParams.get('topicId');
-        if (tid) nextTopicId = tid;
-        const query = searchParams.get('q');
-        if (query) nextQ = query;
-      }
-
-      setKind(nextKind);
-      setRange(nextRange);
-      setUserId(nextUserId);
-      setActorUserId(nextActorUserId);
-      setTopicId(nextTopicId);
-      setQ(nextQ);
-      setIncludeBodies(nextIncludeBodies);
-      setAction(nextAction);
-      setStep(nextStep);
+      setDraft(parseExportPrefill(searchParams, getDefaultAuditTimeWindow()));
     }, [open, searchParams]);
 
     // Conservative: without policy read, never enable includeMessageBodies.
-    const bodyAllowed =
-      canReadPolicy &&
-      policy.data?.contentAccessMode === 'content_allowed' &&
-      policy.data?.messageBodyInExport;
+    const bodyAllowed = exportBodyAllowed(canReadPolicy, policy.data);
 
-    const canNextFromFilters = () => {
-      if (!range[0] || !range[1]) return false;
-      if ((kind === 'conversations' || kind === 'user_timeline') && !userId) return false;
-      return true;
-    };
+    const canNextFromFilters = () => canAdvanceFromFilters(kind, range, userId);
 
     const kindLabel = (k: ExportKind) => {
       switch (k) {
@@ -168,27 +116,7 @@ const CreateExportModal = memo<CreateExportModalProps>(
     const submitWithReason = () => {
       openAuditReasonModal({
         authMethod: authMethod ?? undefined,
-        buildPayload: (reason) => {
-          const base: AdminAuditExportsCreateInput = {
-            from: range[0].toDate(),
-            kind,
-            reason,
-            to: range[1].toDate(),
-          };
-          if (kind === 'operation_logs') {
-            if (action.trim()) base.action = action.trim();
-            if (actorUserId) base.actorUserId = actorUserId;
-          }
-          if (kind === 'conversations' || kind === 'user_timeline') {
-            base.userId = userId;
-          }
-          if (kind === 'conversations') {
-            if (topicId.trim()) base.topicId = topicId.trim();
-            if (q.trim()) base.q = q.trim();
-            if (includeBodies && bodyAllowed) base.includeMessageBodies = true;
-          }
-          return base;
-        },
+        buildPayload: (reason) => buildExportCreateInput(draft, reason, bodyAllowed),
         description: t('audit.exports.create.reasonDesc'),
         onSubmit: async (payload) => {
           await onSubmit(payload as AdminAuditExportsCreateInput);
@@ -211,12 +139,12 @@ const CreateExportModal = memo<CreateExportModalProps>(
               {t('users.modals.cancel')}
             </Button>
             {step > 0 ? (
-              <Button type="default" onClick={() => setStep((s) => s - 1)}>
+              <Button type="default" onClick={() => setDraft((d) => ({ ...d, step: d.step - 1 }))}>
                 {t('audit.exports.create.back')}
               </Button>
             ) : null}
             {step < 1 ? (
-              <Button type="primary" onClick={() => setStep(1)}>
+              <Button type="primary" onClick={() => setDraft((d) => ({ ...d, step: 1 }))}>
                 {t('audit.exports.create.next')}
               </Button>
             ) : (
@@ -238,7 +166,7 @@ const CreateExportModal = memo<CreateExportModalProps>(
                   data-active={kind === k}
                   key={k}
                   type="button"
-                  onClick={() => setKind(k)}
+                  onClick={() => setDraft((d) => ({ ...d, kind: k }))}
                 >
                   <Text style={{ fontWeight: 600, margin: 0 }}>
                     {t(`audit.exports.kind.${k}` as never)}
@@ -259,9 +187,12 @@ const CreateExportModal = memo<CreateExportModalProps>(
                 allowClear={false}
                 placeholder={[t('timeRange.from'), t('timeRange.to')]}
                 style={{ width: '100%' }}
-                value={range}
+                value={[dayjs(range[0]), dayjs(range[1])]}
                 onChange={(vals) => {
-                  if (vals?.[0] && vals[1]) setRange([vals[0], vals[1]]);
+                  const from = vals?.[0];
+                  const to = vals?.[1];
+                  if (!from || !to) return;
+                  setDraft((d) => ({ ...d, range: [from.toDate(), to.toDate()] }));
                 }}
               />
               {policy.data?.maxListWindowDays ? (
@@ -281,14 +212,17 @@ const CreateExportModal = memo<CreateExportModalProps>(
               <>
                 <div className={styles.field}>
                   <Text>{t('audit.exports.create.action')}</Text>
-                  <Input value={action} onChange={(e) => setAction(e.target.value)} />
+                  <Input
+                    value={action}
+                    onChange={(e) => setDraft((d) => ({ ...d, action: e.target.value }))}
+                  />
                 </div>
                 <div className={styles.field}>
                   <Text>{t('audit.exports.create.actor')}</Text>
                   <AuditUserSearchSelect
                     enabled={canSearchUsers}
                     value={actorUserId}
-                    onChange={(id) => setActorUserId(id)}
+                    onChange={(id) => setDraft((d) => ({ ...d, actorUserId: id }))}
                   />
                 </div>
               </>
@@ -299,7 +233,7 @@ const CreateExportModal = memo<CreateExportModalProps>(
                 <AuditUserSearchSelect
                   enabled={canSearchUsers}
                   value={userId}
-                  onChange={(id) => setUserId(id)}
+                  onChange={(id) => setDraft((d) => ({ ...d, userId: id }))}
                 />
               </div>
             ) : null}
@@ -307,18 +241,24 @@ const CreateExportModal = memo<CreateExportModalProps>(
               <>
                 <div className={styles.field}>
                   <Text>{t('audit.exports.create.topicId')}</Text>
-                  <Input value={topicId} onChange={(e) => setTopicId(e.target.value)} />
+                  <Input
+                    value={topicId}
+                    onChange={(e) => setDraft((d) => ({ ...d, topicId: e.target.value }))}
+                  />
                 </div>
                 <div className={styles.field}>
                   <Text>{t('audit.exports.create.titleKeyword')}</Text>
-                  <Input value={q} onChange={(e) => setQ(e.target.value)} />
+                  <Input
+                    value={q}
+                    onChange={(e) => setDraft((d) => ({ ...d, q: e.target.value }))}
+                  />
                 </div>
                 <div className={styles.field}>
                   <Flexbox horizontal align="center" gap={8}>
                     <Switch
                       checked={includeBodies}
                       disabled={!bodyAllowed}
-                      onChange={(v) => setIncludeBodies(Boolean(v))}
+                      onChange={(v) => setDraft((d) => ({ ...d, includeBodies: Boolean(v) }))}
                     />
                     <Text>{t('audit.exports.create.includeBodies')}</Text>
                   </Flexbox>

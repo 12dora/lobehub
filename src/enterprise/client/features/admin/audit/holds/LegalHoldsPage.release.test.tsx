@@ -40,8 +40,25 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {children}
     </button>
   ),
-  Modal: ({ children, open }: { children?: React.ReactNode; open?: boolean }) =>
-    open ? <div data-testid="modal">{children}</div> : null,
+  Modal: ({
+    children,
+    okText,
+    onOk,
+    open,
+  }: {
+    children?: React.ReactNode;
+    okText?: string;
+    onOk?: () => void;
+    open?: boolean;
+  }) =>
+    open ? (
+      <div data-testid="modal">
+        {children}
+        <button type="button" onClick={onOk}>
+          {okText}
+        </button>
+      </div>
+    ) : null,
   Select: ({ onChange, value }: { onChange?: (v: string) => void; value?: string }) => (
     <select data-testid="select" value={value ?? ''} onChange={(e) => onChange?.(e.target.value)}>
       <option value="user">user</option>
@@ -51,7 +68,18 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 }));
 
 vi.mock('antd', () => ({
-  DatePicker: () => <div data-testid="datepicker" />,
+  DatePicker: ({ onChange }: { onChange?: (v: unknown) => void }) => (
+    <button
+      data-testid="datepicker-past"
+      type="button"
+      onClick={() =>
+        onChange?.({
+          toDate: () => new Date(0),
+          valueOf: () => 0,
+        })
+      }
+    />
+  ),
 }));
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
@@ -100,9 +128,24 @@ vi.mock('../shared/openAuditReasonModal', () => ({
 }));
 
 vi.mock('../shared/AuditUserSearchSelect', () => ({
-  default: ({ enabled }: { enabled?: boolean }) => {
+  default: ({
+    enabled,
+    onChange,
+    value,
+  }: {
+    enabled?: boolean;
+    onChange?: (id: string | undefined) => void;
+    value?: string;
+  }) => {
     holdsAccess.searchEnabled.push(enabled !== false);
-    return <div data-enabled={enabled !== false ? '1' : '0'} data-testid="user-search" />;
+    return (
+      <input
+        data-enabled={enabled !== false ? '1' : '0'}
+        data-testid="user-search"
+        value={value ?? ''}
+        onChange={(e) => onChange?.(e.target.value)}
+      />
+    );
   },
 }));
 
@@ -159,6 +202,18 @@ vi.mock('../../primitives/DataTable', () => ({
     );
   },
 }));
+
+type ReasonModalOpts = {
+  buildPayload: (reason: string) => unknown;
+  onSubmit: (payload: unknown) => Promise<void>;
+  validateExtra?: () => string | null;
+};
+
+const lastReasonModalOpts = () => openAuditReasonModal.mock.calls.at(-1)?.[0] as ReasonModalOpts;
+
+const captureReasonModalOnly = () => {
+  openAuditReasonModal.mockImplementation(async () => undefined);
+};
 
 describe('LegalHoldsPage release', () => {
   beforeEach(() => {
@@ -228,5 +283,73 @@ describe('LegalHoldsPage release', () => {
 
     expect(screen.getByTestId('user-search').getAttribute('data-enabled')).toBe('1');
     expect(holdsAccess.searchEnabled.some(Boolean)).toBe(true);
+  });
+
+  it('builds a global create payload with null scopeId and no expiresAt', async () => {
+    captureReasonModalOnly();
+    render(<LegalHoldsPage />);
+
+    fireEvent.click(screen.getByText('audit.holds.actions.create'));
+    fireEvent.change(screen.getByTestId('select'), { target: { value: 'global' } });
+    fireEvent.click(screen.getByText('audit.holds.create.continue'));
+
+    await waitFor(() => {
+      expect(openAuditReasonModal).toHaveBeenCalled();
+    });
+    expect(lastReasonModalOpts().buildPayload('r')).toEqual({
+      expiresAt: undefined,
+      reason: 'r',
+      scopeId: null,
+      scopeType: 'global',
+    });
+  });
+
+  it('requires a scope id when creating a user hold', async () => {
+    captureReasonModalOnly();
+    render(<LegalHoldsPage />);
+
+    fireEvent.click(screen.getByText('audit.holds.actions.create'));
+    fireEvent.click(screen.getByText('audit.holds.create.continue'));
+
+    await waitFor(() => {
+      expect(openAuditReasonModal).toHaveBeenCalled();
+    });
+    expect(lastReasonModalOpts().validateExtra?.()).toBe('audit.holds.create.scopeIdRequired');
+  });
+
+  it('trims the user scope id in the create payload', async () => {
+    captureReasonModalOnly();
+    render(<LegalHoldsPage />);
+
+    fireEvent.click(screen.getByText('audit.holds.actions.create'));
+    fireEvent.change(screen.getByTestId('user-search'), { target: { value: '  abc  ' } });
+    fireEvent.click(screen.getByText('audit.holds.create.continue'));
+
+    await waitFor(() => {
+      expect(openAuditReasonModal).toHaveBeenCalled();
+    });
+    expect(lastReasonModalOpts().buildPayload('r')).toEqual({
+      expiresAt: undefined,
+      reason: 'r',
+      scopeId: 'abc',
+      scopeType: 'user',
+    });
+  });
+
+  it('rejects an expiresAt that is not in the future', async () => {
+    captureReasonModalOnly();
+    render(<LegalHoldsPage />);
+
+    fireEvent.click(screen.getByText('audit.holds.actions.create'));
+    fireEvent.change(screen.getByTestId('select'), { target: { value: 'global' } });
+    fireEvent.click(screen.getByTestId('datepicker-past'));
+    fireEvent.click(screen.getByText('audit.holds.create.continue'));
+
+    await waitFor(() => {
+      expect(openAuditReasonModal).toHaveBeenCalled();
+    });
+    expect(lastReasonModalOpts().validateExtra?.()).toBe(
+      'audit.holds.create.expiresAtMustBeFuture',
+    );
   });
 });

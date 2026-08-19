@@ -3,17 +3,12 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { Button, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
-import type {
-  AdminAuditConversationListItem,
-  AdminAuditConversationMessage,
-} from '@/enterprise/client/services/adminAudit';
-import { adminAuditService } from '@/enterprise/client/services/adminAudit';
 import { useIsPollGateOpen } from '@/enterprise/client/shared/useVisiblePoll';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
@@ -21,24 +16,17 @@ import ContentAccessDisabledState from '../conversations/ContentAccessDisabledSt
 import {
   useFetchAuditConversation,
   useFetchAuditConversationMessages,
-  useFetchAuditConversationsList,
   useFetchAuditPolicy,
 } from '../hooks/useAdminAudit';
 import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
 import { formatAdminDateTime, hasPermission } from '../shared/format';
-import {
-  type AuditContentAccessMode,
-  mergeMessagePages,
-  resolveLiveBodyAccess,
-  stripMessageBodies,
-} from '../shared/liveMessageUtils';
-import { idSetsDisjoint, mergeTopicPages } from '../shared/topicListUtils';
 import { AUDIT_LIST_POLL_MS } from '../shared/useCursorPagination';
 import MessagePane from './MessagePane';
 import TopicListPane from './TopicListPane';
-
-const LIST_LIMIT = 30;
-const MSG_LIMIT = 100;
+import { useLiveAuditAccess } from './useLiveAuditAccess';
+import { useLiveFeedRefresh } from './useLiveFeedRefresh';
+import { MSG_LIMIT, useLiveMessageFeed } from './useLiveMessageFeed';
+import { useLiveTopicPagination } from './useLiveTopicPagination';
 
 const styles = createStaticStyles(({ css }) => ({
   layout: css`
@@ -138,9 +126,6 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const isForbiddenError = (err: unknown) =>
-  Boolean(err && (err as { data?: { code?: string } }).data?.code === 'FORBIDDEN');
-
 const LivePage = memo(() => {
   const { t } = useTranslation('admin');
   const [searchParams] = useSearchParams();
@@ -162,24 +147,6 @@ const LivePage = memo(() => {
   // together the moment this tab goes to the background.
   const pageVisible = useIsPollGateOpen();
 
-  // Topics: always poll head (no cursor); accumulate older pages for "load more".
-  const [topicOlderPages, setTopicOlderPages] = useState<AdminAuditConversationListItem[][]>([]);
-  const [topicNextCursor, setTopicNextCursor] = useState<string | null>(null);
-  const [loadingMoreTopics, setLoadingMoreTopics] = useState(false);
-
-  // Messages: poll head; accumulate older pages.
-  const [olderPages, setOlderPages] = useState<AdminAuditConversationMessage[][]>([]);
-  const [olderNextCursor, setOlderNextCursor] = useState<string | null>(null);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [messageGap, setMessageGap] = useState(false);
-  const prevHeadIdsRef = useRef<Set<string>>(new Set());
-
-  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
-  const [topicPageError, setTopicPageError] = useState<string | null>(null);
-  const [messagePageError, setMessagePageError] = useState<string | null>(null);
-  const topicsValidatingRef = useRef(false);
-  const messagesValidatingRef = useRef(false);
-
   const poll = live && pageVisible && canConversationRead;
 
   // Prefill from query when URL changes (e.g. evidence → live deep link).
@@ -191,56 +158,28 @@ const LivePage = memo(() => {
     setTopicId(qUser ? qTopic : undefined);
   }, [searchParams]);
 
-  const resetTopicPagination = useCallback(() => {
-    setTopicOlderPages([]);
-    setTopicNextCursor(null);
-  }, []);
-
-  const resetMessagePagination = useCallback(() => {
-    setOlderPages([]);
-    setOlderNextCursor(null);
-    setMessageGap(false);
-    prevHeadIdsRef.current = new Set();
-  }, []);
-
-  useEffect(() => {
-    resetTopicPagination();
-    resetMessagePagination();
-  }, [userId, resetMessagePagination, resetTopicPagination]);
-
-  useEffect(() => {
-    resetMessagePagination();
-  }, [topicId, resetMessagePagination]);
-
   const onUserChange = useCallback((id: string | undefined) => {
     setUserId(id);
     setTopicId(undefined);
   }, []);
 
-  // policy.get requires AUDIT_READ — do not gate on conversation-only permission.
-  // Prefer authoritative contentAccessMode from the polled messages response so a
-  // remote policy transition (e.g. content_allowed → metadata_only) is observed
-  // even when the non-polling policy hook is stale.
-  const policy = useFetchAuditPolicy(canAuditRead);
+  const {
+    loadMoreTopics,
+    loadingMoreTopics,
+    orderedTopics,
+    topicNextCursor,
+    topicPageError,
+    topics,
+  } = useLiveTopicPagination({ canConversationRead, poll, t, userId });
 
-  const topics = useFetchAuditConversationsList(
-    {
-      limit: LIST_LIMIT,
-      userId: userId!,
-    },
-    canConversationRead && !!userId,
-    { refreshInterval: poll && !!userId ? AUDIT_LIST_POLL_MS : 0 },
-  );
+  // policy.get requires AUDIT_READ — do not gate on conversation-only permission.
+  const policy = useFetchAuditPolicy(canAuditRead);
 
   const topicDetail = useFetchAuditConversation(
     userId,
     topicId,
     canConversationRead && !!userId && !!topicId,
   );
-
-  // Sticky polled mode: after SWR head purge we must not fall back to a stale
-  // policy.get snapshot and re-enable body serving until the next authorized poll.
-  const lastPolledModeRef = useRef<AuditContentAccessMode | undefined>(undefined);
 
   // Request bodies when conversation read is allowed; server + polled contentAccessMode
   // are authoritative if policy was revoked to metadata_only mid-session.
@@ -255,232 +194,61 @@ const LivePage = memo(() => {
     { refreshInterval: poll && !!topicId ? AUDIT_LIST_POLL_MS : 0 },
   );
 
-  useEffect(() => {
-    const polled = messagesLive.data?.contentAccessMode as AuditContentAccessMode | undefined;
-    if (polled) lastPolledModeRef.current = polled;
-  }, [messagesLive.data?.contentAccessMode]);
-
-  // Reset sticky mode when the operator switches topic/user so we re-resolve fresh.
-  useEffect(() => {
-    lastPolledModeRef.current = undefined;
-  }, [userId, topicId]);
-
-  const contentAccessMode =
-    (messagesLive.data?.contentAccessMode as AuditContentAccessMode | undefined) ??
-    lastPolledModeRef.current ??
-    (topicDetail.data?.contentAccessMode as AuditContentAccessMode | undefined) ??
-    (policy.data?.contentAccessMode as AuditContentAccessMode | undefined);
-
-  // Re-check authorization on every render/poll: permission + contentAccessMode.
-  const liveAccess = resolveLiveBodyAccess({
-    canConversationRead,
+  const {
+    accessEpochRef,
+    bodyHidden,
     contentAccessMode,
-  });
-  const { bodyHidden, includeBody } = liveAccess;
-  const messagesAccessDenied = !canConversationRead;
-
-  // Request epoch: discard in-flight pagination that started under a prior access mode.
-  const accessEpochRef = useRef(0);
-  useEffect(() => {
-    accessEpochRef.current += 1;
-  }, [canConversationRead, contentAccessMode, includeBody]);
-
-  // Drop cached body-bearing pages + SWR head when policy or conversation
-  // permission is lost so previously loaded content cannot outlive authorization.
-  useEffect(() => {
-    if (liveAccess.mustPurgeCachedBodies || !includeBody) {
-      resetMessagePagination();
-    }
-    if (liveAccess.mustPurgeCachedBodies) {
-      // Clear SWR head so revoked permission/policy cannot keep serving prior bodies.
-      void messagesLive.mutate(undefined, { revalidate: false });
-    }
-    // messagesLive.mutate identity is stable enough for access-edge effects.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run on access edges
-  }, [
-    canConversationRead,
-    contentAccessMode,
+    feedError,
     includeBody,
-    liveAccess.mustPurgeCachedBodies,
-    resetMessagePagination,
-  ]);
-
-  // Update last-refreshed only when every active feed finished successfully (F9).
-  // A successful topics poll must not advance the timestamp while messages failed.
-  useEffect(() => {
-    const topicsWasValidating = topicsValidatingRef.current;
-    const messagesWasValidating = messagesValidatingRef.current;
-    topicsValidatingRef.current = Boolean(topics.isValidating);
-    messagesValidatingRef.current = Boolean(messagesLive.isValidating);
-
-    const topicsJustSettled = topicsWasValidating && !topics.isValidating;
-    const messagesJustSettled = messagesWasValidating && !messagesLive.isValidating;
-    if (!topicsJustSettled && !messagesJustSettled) return;
-
-    // Wait until all active feeds are idle.
-    if (topics.isValidating || messagesLive.isValidating) return;
-
-    // Topics feed is active only with a selected user; messages only with topic.
-    const topicsOk = !userId || (!topics.error && topics.data !== undefined);
-    const messagesOk =
-      !userId || !topicId || (!messagesLive.error && messagesLive.data !== undefined);
-
-    if (topicsOk && messagesOk) {
-      setLastRefreshedAt(new Date());
-    }
-  }, [
-    messagesLive.data,
-    messagesLive.error,
-    messagesLive.isValidating,
+    isForbidden,
+    liveAccess,
+    messagesAccessDenied,
+    showPolicyBanner,
+  } = useLiveAuditAccess({
+    canAuditRead,
+    canConversationRead,
+    messagesLive,
+    policy,
+    t,
+    topicDetail,
     topicId,
-    topics.data,
-    topics.error,
-    topics.isValidating,
+    topics,
     userId,
-  ]);
+  });
 
-  // Only conversation-domain FORBIDDEN means policy disabled (not policy.get failures).
-  const isForbidden = useMemo(() => {
-    return [topics.error, messagesLive.error, topicDetail.error].some(isForbiddenError);
-  }, [messagesLive.error, topicDetail.error, topics.error]);
-
-  const feedError = useMemo(() => {
-    if (isForbidden) return null;
-    const err = topics.error ?? messagesLive.error ?? topicDetail.error;
-    if (!err) return null;
-    return t('audit.live.errors.loadFailed', {
-      defaultValue: 'Failed to refresh the live feed. Retry or check connectivity.',
-    });
-  }, [isForbidden, messagesLive.error, t, topicDetail.error, topics.error]);
-
-  // Sync topic next cursor from head when no older pages accumulated.
-  useEffect(() => {
-    if (topicOlderPages.length === 0) {
-      setTopicNextCursor(topics.data?.nextCursor ?? null);
-    }
-  }, [topicOlderPages.length, topics.data?.nextCursor]);
-
-  // Message next cursor + gap detection when older pages exist.
-  useEffect(() => {
-    const head = messagesLive.data?.items ?? [];
-    const headIds = new Set(head.map((m) => m.id));
-
-    if (olderPages.length === 0) {
-      setOlderNextCursor(messagesLive.data?.nextCursor ?? null);
-      prevHeadIdsRef.current = headIds;
-      setMessageGap(false);
-      return;
-    }
-
-    // Full head page with no overlap vs previous head ⇒ possible silent gap while paginated.
-    if (
-      head.length === MSG_LIMIT &&
-      prevHeadIdsRef.current.size > 0 &&
-      idSetsDisjoint(headIds, prevHeadIdsRef.current)
-    ) {
-      setMessageGap(true);
-    }
-    prevHeadIdsRef.current = headIds;
-  }, [messagesLive.data?.items, messagesLive.data?.nextCursor, olderPages.length]);
-
-  const reloadMessages = useCallback(() => {
-    setOlderPages([]);
-    setOlderNextCursor(null);
-    setMessageGap(false);
-    prevHeadIdsRef.current = new Set();
-    void messagesLive.mutate();
-  }, [messagesLive]);
-
-  const loadMoreTopics = useCallback(async () => {
-    const next = topicNextCursor;
-    if (!next || !userId || loadingMoreTopics) return;
-    setLoadingMoreTopics(true);
-    setTopicPageError(null);
-    try {
-      const page = await adminAuditService.listConversations({
-        cursor: next,
-        limit: LIST_LIMIT,
-        userId,
-      });
-      setTopicOlderPages((p) => [...p, page.items]);
-      setTopicNextCursor(page.nextCursor);
-    } catch {
-      setTopicPageError(
-        t('audit.live.errors.loadMoreTopics', {
-          defaultValue: 'Failed to load more topics. Try again.',
-        }),
-      );
-    } finally {
-      setLoadingMoreTopics(false);
-    }
-  }, [loadingMoreTopics, t, topicNextCursor, userId]);
-
-  const loadOlderMessages = useCallback(async () => {
-    const next = olderNextCursor;
-    // Discard pagination once access is revoked (stale in-flight results ignored).
-    if (!next || !userId || !topicId || loadingOlder || !canConversationRead || bodyHidden) return;
-    const epoch = accessEpochRef.current;
-    setLoadingOlder(true);
-    setMessagePageError(null);
-    try {
-      const page = await adminAuditService.listConversationMessages({
-        cursor: next,
-        includeBody,
-        limit: MSG_LIMIT,
-        topicId,
-        userId,
-      });
-      // Re-check after await — permission/policy may have been revoked mid-flight.
-      if (
-        epoch !== accessEpochRef.current ||
-        !canConversationRead ||
-        bodyHidden ||
-        page.contentAccessMode === 'metadata_only' ||
-        page.contentAccessMode === 'disabled'
-      ) {
-        return;
-      }
-      setOlderPages((p) => [...p, page.items]);
-      setOlderNextCursor(page.nextCursor);
-    } catch {
-      setMessagePageError(
-        t('audit.live.errors.loadMoreMessages', {
-          defaultValue: 'Failed to load older messages. Try again.',
-        }),
-      );
-    } finally {
-      setLoadingOlder(false);
-    }
-  }, [
+  const {
+    allMessages,
+    loadOlderMessages,
+    loadingOlder,
+    messageGap,
+    messagePageError,
+    olderNextCursor,
+    reloadMessages,
+  } = useLiveMessageFeed({
+    accessEpochRef,
     bodyHidden,
     canConversationRead,
+    contentAccessMode,
     includeBody,
-    loadingOlder,
-    olderNextCursor,
+    messagesAccessDenied,
+    messagesLive,
+    mustPurgeCachedBodies: liveAccess.mustPurgeCachedBodies,
     t,
     topicId,
     userId,
-  ]);
+  });
 
-  const allMessages = useMemo(() => {
-    if (messagesAccessDenied) return [];
-    const latest = messagesLive.data?.items ?? [];
-    const merged = mergeMessagePages(olderPages.flat(), latest);
-    // Strip bodies if policy/permission revoked while pages still hold cached content.
-    return bodyHidden ? stripMessageBodies(merged) : merged;
-  }, [bodyHidden, messagesAccessDenied, messagesLive.data?.items, olderPages]);
-
-  const orderedTopics = useMemo(() => {
-    const head = topics.data?.items ?? [];
-    return mergeTopicPages(head, topicOlderPages);
-  }, [topicOlderPages, topics.data?.items]);
+  const { lastRefreshedAt, refreshAllFeeds } = useLiveFeedRefresh({
+    messagesLive,
+    topicDetail,
+    topicId,
+    topics,
+    userId,
+  });
 
   if (isForbidden || contentAccessMode === 'disabled') {
     return <ContentAccessDisabledState />;
   }
-
-  // Hide policy-dependent banners when AUDIT_READ is missing (mode unknown → conservative UI only).
-  const showPolicyBanner = canAuditRead && Boolean(contentAccessMode);
 
   if (messagesAccessDenied && !canAuditRead) {
     // No conversation read and no audit read — nothing useful to show.
@@ -529,25 +297,7 @@ const LivePage = memo(() => {
             ) : null}
           </Flexbox>
           {live ? null : (
-            <Button
-              size="small"
-              type="default"
-              onClick={() => {
-                void (async () => {
-                  try {
-                    // All active feeds must succeed before advancing the shared timestamp (F9).
-                    await Promise.all([
-                      topics.mutate(),
-                      messagesLive.mutate(),
-                      topicDetail.mutate(),
-                    ]);
-                    setLastRefreshedAt(new Date());
-                  } catch {
-                    // SWR error state surfaces via feedError; do not advance refresh time.
-                  }
-                })();
-              }}
-            >
+            <Button size="small" type="default" onClick={() => void refreshAllFeeds()}>
               {t('audit.live.filters.refreshNow')}
             </Button>
           )}
@@ -557,20 +307,7 @@ const LivePage = memo(() => {
       {feedError ? (
         <div className={styles.gapBanner} role="alert">
           <Text>{feedError}</Text>
-          <Button
-            size="small"
-            type="primary"
-            onClick={() => {
-              void (async () => {
-                try {
-                  await Promise.all([topics.mutate(), messagesLive.mutate(), topicDetail.mutate()]);
-                  setLastRefreshedAt(new Date());
-                } catch {
-                  // Leave lastRefreshedAt unchanged; feedError stays until success.
-                }
-              })();
-            }}
-          >
+          <Button size="small" type="primary" onClick={() => void refreshAllFeeds()}>
             {t('audit.live.errors.retry', { defaultValue: 'Retry' })}
           </Button>
         </div>

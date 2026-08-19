@@ -1,6 +1,6 @@
 'use client';
 
-import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -14,19 +14,14 @@ import type { AdminAuditConversationListItem } from '@/enterprise/client/service
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import DataTable, { type AdminTableChangeMeta } from '../../primitives/DataTable';
-import {
-  useFetchAuditConversationsList,
-  useFetchAuditUserSummary,
-  useFetchAuditUserTimeline,
-} from '../hooks/useAdminAudit';
+import { useFetchAuditConversationsList, useFetchAuditUserSummary } from '../hooks/useAdminAudit';
 import { displayAuditUserLabel, formatAdminDateTime, hasPermission } from '../shared/format';
 import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
+import { useCursorPagination } from '../shared/useCursorPagination';
 import ContentAccessDisabledState from './ContentAccessDisabledState';
 import { endOfDay, firstFilterValue, parseIsoDay, sameCalendarDay, startOfDay } from './dayFilters';
 import { useConversationColumns } from './useConversationColumns';
-
-const DEFAULT_LIST_LIMIT = 50;
-const TIMELINE_PAGE_SIZE = 30;
+import UserTimelinePane from './UserTimelinePane';
 
 const styles = createStaticStyles(({ css }) => ({
   summary: css`
@@ -39,34 +34,6 @@ const styles = createStaticStyles(({ css }) => ({
     border-radius: ${cssVar.borderRadiusLG};
 
     background: ${cssVar.colorBgContainer};
-  `,
-  timeline: css`
-    overflow: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-
-    max-height: 480px;
-  `,
-  timelineItem: css`
-    cursor: pointer;
-
-    padding-block: 10px;
-    padding-inline: 12px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadius};
-
-    &:hover {
-      border-color: ${cssVar.colorPrimary};
-    }
-  `,
-  timelineFooter: css`
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    align-items: stretch;
-
-    margin-block-start: 4px;
   `,
 }));
 
@@ -94,21 +61,26 @@ const ConversationUserPage = memo(() => {
   const [from, setFrom] = useState(window0.from);
   const [to, setTo] = useState(window0.to);
   const [q, setQ] = useState('');
-  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
-  const [timelineCursorStack, setTimelineCursorStack] = useState<(string | null)[]>([]);
-  const [limit, setLimit] = useState(DEFAULT_LIST_LIMIT);
+  const {
+    currentCursor,
+    hasPrevious,
+    limit,
+    onNext,
+    onPageSizeChange,
+    onPrevious,
+    reset: resetCursor,
+  } = useCursorPagination();
+  const [timelineError, setTimelineError] = useState<unknown>();
   const summaryFailureNotifiedRef = useRef(false);
-  const currentCursor = cursorStack.at(-1) ?? null;
-  const timelineCursor = timelineCursorStack.at(-1) ?? null;
 
   const applyTitleQuery = useCallback(
     (next: string) => {
       const trimmed = next.trim();
       if (trimmed === q) return;
       setQ(trimmed);
-      setCursorStack([]);
+      resetCursor();
     },
-    [q],
+    [q, resetCursor],
   );
 
   const applyDateRange = useCallback(
@@ -117,7 +89,7 @@ const ConversationUserPage = memo(() => {
         const fallback = getDefaultAuditTimeWindow();
         setFrom(fallback.from);
         setTo(fallback.to);
-        setCursorStack([]);
+        resetCursor();
         return;
       }
       const nextFrom = startOfDay(range[0]);
@@ -125,9 +97,9 @@ const ConversationUserPage = memo(() => {
       if (sameCalendarDay(from, nextFrom) && sameCalendarDay(to, nextTo)) return;
       setFrom(nextFrom);
       setTo(nextTo);
-      setCursorStack([]);
+      resetCursor();
     },
-    [from, to],
+    [from, resetCursor, to],
   );
 
   const handleTableChange = useCallback(
@@ -150,11 +122,6 @@ const ConversationUserPage = memo(() => {
     [applyDateRange, applyTitleQuery],
   );
 
-  // Reset timeline pagination when the evidence window or subject changes.
-  useEffect(() => {
-    setTimelineCursorStack([]);
-  }, [from, to, userId]);
-
   const summary = useFetchAuditUserSummary(userId, canAuditRead && !!userId);
   const list = useFetchAuditConversationsList(
     {
@@ -167,15 +134,11 @@ const ConversationUserPage = memo(() => {
     },
     canConversationRead && !!userId,
   );
-  const timeline = useFetchAuditUserTimeline(
-    { cursor: timelineCursor, from, limit: TIMELINE_PAGE_SIZE, to, userId },
-    canConversationRead && !!userId,
-  );
 
   // Only conversation evidence failures deny the page — not optional AUDIT_READ summary.
   const isForbidden = useMemo(() => {
-    return [list.error, timeline.error].some(isForbiddenError);
-  }, [list.error, timeline.error]);
+    return [list.error, timelineError].some(isForbiddenError);
+  }, [list.error, timelineError]);
   const summaryFailed = Boolean(summary.error);
 
   useEffect(() => {
@@ -195,38 +158,11 @@ const ConversationUserPage = memo(() => {
     to,
   });
 
-  const goNext = useCallback(() => {
-    const next = list.data?.nextCursor;
-    if (!next) return;
-    setCursorStack((prev) => [...prev, next]);
-  }, [list.data?.nextCursor]);
-
-  // Timeline uses page-replace cursor stack (same pattern as topics / other admin lists),
-  // not client-side append — previous/next controls keep all pages reachable.
-  const goNextTimeline = useCallback(() => {
-    const next = timeline.data?.nextCursor;
-    if (!next) return;
-    setTimelineCursorStack((prev) => [...prev, next]);
-  }, [timeline.data?.nextCursor]);
-
-  const goPreviousTimeline = useCallback(() => {
-    setTimelineCursorStack((prev) => (prev.length ? prev.slice(0, -1) : prev));
-  }, []);
-
   if (isForbidden) {
     return <ContentAccessDisabledState />;
   }
 
   const user = summary.data;
-  const timelineItems = timeline.data?.items ?? [];
-  const timelineFailed = Boolean(timeline.error) && !timeline.data;
-  const timelineEmpty =
-    !timeline.isLoading &&
-    !timelineFailed &&
-    timeline.data !== undefined &&
-    timelineItems.length === 0;
-  const timelineHasNext = Boolean(timeline.data?.nextCursor);
-  const timelineHasPrevious = timelineCursorStack.length > 0;
 
   return (
     <AdminPageTemplate
@@ -287,14 +223,11 @@ const ConversationUserPage = memo(() => {
             rowKey="id"
             cursorPagination={{
               hasNext: Boolean(list.data?.nextCursor),
-              hasPrevious: cursorStack.length > 0,
-              onNext: goNext,
-              onPrevious: () => setCursorStack((p) => p.slice(0, -1)),
+              hasPrevious,
+              onNext: () => onNext(list.data?.nextCursor),
+              onPrevious,
               pageSize: limit,
-              onPageSizeChange: (size) => {
-                setLimit(size);
-                setCursorStack([]);
-              },
+              onPageSizeChange,
             }}
             onChange={handleTableChange}
             onRetry={() => void list.mutate()}
@@ -303,76 +236,13 @@ const ConversationUserPage = memo(() => {
             }
           />
         </div>
-        <div style={{ flex: '0 1 320px', minWidth: 260 }}>
-          <Text style={{ fontWeight: 600 }}>{t('audit.conversations.user.timeline')}</Text>
-          <div className={styles.timeline}>
-            {timeline.isLoading && !timeline.data ? (
-              <Text type="secondary">{t('audit.conversations.user.timelineLoading')}</Text>
-            ) : null}
-            {timelineFailed ? (
-              <div className={styles.timelineFooter}>
-                <Text type="secondary">{t('audit.conversations.user.timelineError')}</Text>
-                <Button type="default" onClick={() => void timeline.mutate()}>
-                  {t('audit.conversations.user.timelineRetry')}
-                </Button>
-              </div>
-            ) : null}
-            {!timelineFailed
-              ? timelineItems.map((item) => (
-                  <div
-                    className={styles.timelineItem}
-                    key={`${item.kind}-${item.id}`}
-                    onClick={() => {
-                      if (item.kind === 'topic' && item.topicId) {
-                        navigate(`/admin/audit/conversations/${userId}/topics/${item.topicId}`);
-                      }
-                    }}
-                  >
-                    <Flexbox horizontal gap={6}>
-                      <Tag size="small">
-                        {t(`audit.conversations.timeline.kind.${item.kind}` as never, {
-                          defaultValue: item.kind,
-                        })}
-                      </Tag>
-                      <Text ellipsis style={{ margin: 0 }}>
-                        {item.title || item.id}
-                      </Text>
-                    </Flexbox>
-                    <Text style={{ fontSize: 12 }} type="secondary">
-                      {formatAdminDateTime(item.updatedAt)}
-                    </Text>
-                  </div>
-                ))
-              : null}
-            {timelineEmpty ? (
-              <Text type="secondary">{t('audit.conversations.user.emptyTimeline')}</Text>
-            ) : null}
-            {!timelineFailed && (timelineHasPrevious || timelineHasNext) ? (
-              <div className={styles.timelineFooter}>
-                <Flexbox horizontal gap={8}>
-                  <Button
-                    disabled={!timelineHasPrevious}
-                    type="default"
-                    onClick={goPreviousTimeline}
-                  >
-                    {t('audit.conversations.user.timelinePrevious')}
-                  </Button>
-                  <Button
-                    disabled={!timelineHasNext}
-                    loading={timeline.isValidating}
-                    type="default"
-                    onClick={goNextTimeline}
-                  >
-                    {t('audit.conversations.user.timelineNext')}
-                  </Button>
-                </Flexbox>
-              </div>
-            ) : null}
-            {!timelineFailed && timeline.error && timeline.data ? (
-              <Text type="secondary">{t('audit.conversations.user.timelineStale')}</Text>
-            ) : null}
-          </div>
-        </div>
+        <UserTimelinePane
+          canFetch={canConversationRead && !!userId}
+          from={from}
+          to={to}
+          userId={userId}
+          onErrorChange={setTimelineError}
+        />
       </Flexbox>
     </AdminPageTemplate>
   );
