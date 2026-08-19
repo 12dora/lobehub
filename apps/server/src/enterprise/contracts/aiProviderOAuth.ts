@@ -39,6 +39,17 @@ export const chatgptWebSessionTokenSchema = z
   .max(16_384)
   .regex(CHATGPT_WEB_SESSION_TOKEN_PATTERN);
 
+/**
+ * ChatGPT browser device id (`OAI-Device-Id` / `oai-did`). Same injection boundary as
+ * the session token: it is interpolated into a Cookie header and `OAI-Device-Id`.
+ */
+export const chatgptWebDeviceIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[\w-]{1,128}$/);
+
 export const adminAiProviderOAuthInitiateInputSchema = z.object({ id: providerKeySchema }).strict();
 
 /**
@@ -77,11 +88,40 @@ export const adminAiProviderOAuthPollInputSchema = z
     accessToken: z.string().min(1).max(8192).optional(),
     callbackUrl: z.string().min(1).max(4096).optional(),
     deviceCode: deviceCodeSchema,
+    /**
+     * Device id extracted from the paste (`OAI-Device-Id` / `oai-did`). Preferred over
+     * the random authorization-envelope id for web-session connections so the stored
+     * `oauthDeviceId` stays bound to the browser that created the session.
+     */
+    deviceId: chatgptWebDeviceIdSchema.optional(),
     id: providerKeySchema,
     reason: adminReasonSchema,
+    /**
+     * Original `.0/.1/…` session-cookie values when the paste supplied them. The joined
+     * `sessionToken` stays the vault credential; these are transport layout only.
+     */
+    sessionChunks: z.array(chatgptWebSessionTokenSchema).min(2).max(8).optional(),
     sessionToken: chatgptWebSessionTokenSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.sessionChunks) return;
+    if (!value.sessionToken) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'sessionChunks requires sessionToken',
+        path: ['sessionChunks'],
+      });
+      return;
+    }
+    if (value.sessionChunks.join('') !== value.sessionToken) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'sessionChunks must reassemble sessionToken',
+        path: ['sessionChunks'],
+      });
+    }
+  });
 
 /**
  * Every stable outcome code a poll may surface. A closed union rather than a free string:
@@ -92,6 +132,7 @@ export const adminAiProviderOAuthPollInputSchema = z
  */
 export const aiProviderOAuthPollErrorSchema = z.enum([
   'access_token_invalid',
+  'device_mismatch',
   'exchange_failed',
   'expired',
   'invalid_callback',

@@ -27,6 +27,8 @@ export type SharedOAuthPasteError =
   | 'stateMismatch'
   | 'exchangeFailed'
   | 'accessTokenInvalid'
+  /** The paste carried both `OAI-Device-Id` and `oai-did`, and they disagree. */
+  | 'deviceMismatch'
   /** The pasted web session is expired or revoked — it mints no access token. */
   | 'sessionInvalid'
   /** The credential works, but belongs to a client with no chatgpt.com web permission. */
@@ -432,7 +434,8 @@ export const useAdminSharedOAuthFlow = ({
 
   /** The renewable paste: a chatgpt.com web session, stored as the renewal credential. */
   const submitSessionToken = useCallback(
-    async (sessionToken: string) => submitPasted({ sessionToken }),
+    async (sessionToken: string, extras?: { deviceId?: string; sessionChunks?: string[] }) =>
+      submitPasted({ sessionToken, ...extras }),
     [submitPasted],
   );
 

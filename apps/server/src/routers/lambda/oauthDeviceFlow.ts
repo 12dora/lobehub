@@ -16,6 +16,7 @@ import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import {
   type AiProviderOAuthPollError,
+  chatgptWebDeviceIdSchema,
   chatgptWebSessionTokenSchema,
 } from '@/server/enterprise/contracts/aiProviderOAuth';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
@@ -25,6 +26,7 @@ import {
   ChatGPTWebOAuthError,
   ChatGPTWebOAuthService,
   parsePasteEnvelope,
+  resolveChatGPTWebConnectDeviceId,
   wipeChatGPTWebCookieJar,
 } from '@/server/enterprise/services/chatgptWeb/oauthService';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
@@ -227,31 +229,59 @@ export const oauthDeviceFlowRouter = router({
   pollAuthStatus: oauthWriteProcedure
     .use(withManagedResourceGuard('oauthDeviceFlow.pollAuthStatus'))
     .input(
-      z.object({
-        /**
-         * Paste flow only: the pasted redirect URL, or the bare authorization code.
-         *
-         * `.min(1)` like the admin contract, and not decoration: an empty string is a
-         * malformed submit, not "nothing pasted yet", and every gate below reads these
-         * fields for truthiness. An empty `callbackUrl` therefore reached the pending
-         * branch and answered `pending` where a web-session-only provider owes a
-         * `BAD_REQUEST`.
-         */
-        accessToken: z.string().min(1).max(8192).optional(),
-        callbackUrl: z.string().min(1).max(4096).optional(),
-        // Same bound as the admin contract: for the paste flow this is a client-held
-        // envelope, and an unbounded string would be an unbounded server-side JSON parse.
-        deviceCode: z.string().max(8192),
-        providerId: z.string(),
-        /**
-         * Paste flow only: the chatgpt.com web session cookie (a next-auth JWE). Unlike a
-         * bare access token this one RENEWS — it mints fresh access tokens the way the web
-         * app does. Same schema as the admin contract: roomier bound (next-auth chunks a
-         * large session cookie) and a charset that cannot carry cookie-header delimiters,
-         * because this value ends up interpolated into a `Cookie:` header.
-         */
-        sessionToken: chatgptWebSessionTokenSchema.optional(),
-      }),
+      z
+        .object({
+          /**
+           * Paste flow only: the pasted redirect URL, or the bare authorization code.
+           *
+           * `.min(1)` like the admin contract, and not decoration: an empty string is a
+           * malformed submit, not "nothing pasted yet", and every gate below reads these
+           * fields for truthiness. An empty `callbackUrl` therefore reached the pending
+           * branch and answered `pending` where a web-session-only provider owes a
+           * `BAD_REQUEST`.
+           */
+          accessToken: z.string().min(1).max(8192).optional(),
+          callbackUrl: z.string().min(1).max(4096).optional(),
+          // Same bound as the admin contract: for the paste flow this is a client-held
+          // envelope, and an unbounded string would be an unbounded server-side JSON parse.
+          deviceCode: z.string().max(8192),
+          /**
+           * Device id extracted from the paste (`OAI-Device-Id` / `oai-did`). Preferred
+           * over the random authorization-envelope id for web-session connections.
+           */
+          deviceId: chatgptWebDeviceIdSchema.optional(),
+          providerId: z.string(),
+          /**
+           * Original `.0/.1/…` session-cookie values when the paste supplied them.
+           */
+          sessionChunks: z.array(chatgptWebSessionTokenSchema).min(2).max(8).optional(),
+          /**
+           * Paste flow only: the chatgpt.com web session cookie (a next-auth JWE). Unlike a
+           * bare access token this one RENEWS — it mints fresh access tokens the way the web
+           * app does. Same schema as the admin contract: roomier bound (next-auth chunks a
+           * large session cookie) and a charset that cannot carry cookie-header delimiters,
+           * because this value ends up interpolated into a `Cookie:` header.
+           */
+          sessionToken: chatgptWebSessionTokenSchema.optional(),
+        })
+        .superRefine((value, ctx) => {
+          if (!value.sessionChunks) return;
+          if (!value.sessionToken) {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'sessionChunks requires sessionToken',
+              path: ['sessionChunks'],
+            });
+            return;
+          }
+          if (value.sessionChunks.join('') !== value.sessionToken) {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'sessionChunks must reassemble sessionToken',
+              path: ['sessionChunks'],
+            });
+          }
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       const config = getOAuthConfig(input.providerId);
@@ -322,14 +352,38 @@ export const oauthDeviceFlowRouter = router({
           // minting a fresh device id, which would break the sentinel handshake the stored
           // `oai-device-id` is supposed to keep stable.
           const envelope = parsePasteEnvelope(input.deviceCode);
+          const existing = await ctx.aiProviderModel.getAiProviderById(
+            input.providerId,
+            KeyVaultsGateKeeper.getUserKeyVaults,
+          );
+          const existingDeviceId = (existing?.keyVaults as Record<string, unknown> | undefined)
+            ?.oauthDeviceId;
+          const connectDeviceId = resolveChatGPTWebConnectDeviceId({
+            envelopeDeviceId: envelope.deviceId,
+            ...(typeof existingDeviceId === 'string' && existingDeviceId
+              ? { existingDeviceId }
+              : {}),
+            ...(input.deviceId ? { pastedDeviceId: input.deviceId } : {}),
+            webSessionOnly: isProviderWebSessionOnly(input.providerId),
+          });
+          if (
+            typeof existingDeviceId === 'string' &&
+            existingDeviceId &&
+            connectDeviceId &&
+            existingDeviceId !== connectDeviceId
+          ) {
+            wipeChatGPTWebCookieJar(existingDeviceId);
+          }
           // Callback URL → PKCE exchange; web session → the renewable paste; access token →
           // the non-renewable fallback. Checked in that order so a paste carrying both a
           // session and a token stores the one that can renew itself.
           connection = input.callbackUrl
             ? await service.exchangeCallback(config, input.deviceCode, input.callbackUrl)
             : input.sessionToken
-              ? await service.connectWithSession(input.sessionToken, envelope.deviceId)
-              : await service.verifyAccessToken(input.accessToken!, envelope.deviceId);
+              ? await service.connectWithSession(input.sessionToken, connectDeviceId, {
+                  ...(input.sessionChunks ? { sessionChunks: input.sessionChunks } : {}),
+                })
+              : await service.verifyAccessToken(input.accessToken!, connectDeviceId);
         } catch (error) {
           // Stable machine-readable codes only: provider prose (and the pasted callback,
           // which carries a live authorization code) must never reach the client or logs.

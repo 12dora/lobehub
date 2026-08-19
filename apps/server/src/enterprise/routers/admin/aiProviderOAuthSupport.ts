@@ -44,6 +44,8 @@ import {
   ChatGPTWebOAuthError,
   ChatGPTWebOAuthService,
   parsePasteEnvelope,
+  resolveChatGPTWebConnectDeviceId,
+  wipeChatGPTWebCookieJar,
 } from '../../services/chatgptWeb/oauthService';
 import type {
   AppendPlatformAuditLogParams,
@@ -241,6 +243,7 @@ export const acquireSharedConnectionTokens = async ({
   audit,
   browserProfile,
   card,
+  existingDeviceId,
   input,
   targetId,
 }: {
@@ -248,6 +251,7 @@ export const acquireSharedConnectionTokens = async ({
   audit: PlatformAuditService;
   browserProfile?: BrowserDeviceProfile;
   card: RotatingOAuthProviderCard;
+  existingDeviceId?: string;
   input: AdminAiProviderOAuthPollInput;
   targetId: string;
 }): Promise<
@@ -302,14 +306,28 @@ export const acquireSharedConnectionTokens = async ({
       // minting a fresh device id, which would break the sentinel handshake the stored
       // `oai-device-id` is supposed to keep stable.
       const envelope = parsePasteEnvelope(input.deviceCode);
+      const webSessionOnly = isProviderWebSessionOnly(input.id);
+      const connectDeviceId = resolveChatGPTWebConnectDeviceId({
+        envelopeDeviceId: envelope.deviceId,
+        ...(existingDeviceId ? { existingDeviceId } : {}),
+        ...(input.deviceId ? { pastedDeviceId: input.deviceId } : {}),
+        webSessionOnly,
+      });
+      // A device change is a new logical browser: drop the previous jar so CF
+      // cookies and a rotated-away session cannot follow the new identity.
+      if (existingDeviceId && connectDeviceId && existingDeviceId !== connectDeviceId) {
+        wipeChatGPTWebCookieJar(existingDeviceId);
+      }
       // Callback URL → PKCE exchange; web session → the renewable paste; access token →
       // the non-renewable fallback. Checked in that order so a paste carrying both a
       // session and a token stores the one that can renew itself.
       const connection = input.callbackUrl
         ? await oauthService.exchangeCallback(card.config, input.deviceCode, input.callbackUrl)
         : input.sessionToken
-          ? await oauthService.connectWithSession(input.sessionToken, envelope.deviceId)
-          : await oauthService.verifyAccessToken(input.accessToken!, envelope.deviceId);
+          ? await oauthService.connectWithSession(input.sessionToken, connectDeviceId, {
+              ...(input.sessionChunks ? { sessionChunks: input.sessionChunks } : {}),
+            })
+          : await oauthService.verifyAccessToken(input.accessToken!, connectDeviceId);
       connectionTokens = toSharedTokens(connection);
     } catch (error) {
       // Operator-fixable outcomes (bad paste, stale envelope, rejected exchange) are

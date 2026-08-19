@@ -23,6 +23,8 @@ export type PasteSubmitError =
   | 'stateMismatch'
   | 'exchangeFailed'
   | 'accessTokenInvalid'
+  /** The paste carried both `OAI-Device-Id` and `oai-did`, and they disagree. */
+  | 'deviceMismatch'
   /** The pasted web session is expired or revoked — it mints no access token. */
   | 'sessionInvalid'
   /** The credential works, but belongs to a client with no chatgpt.com web permission. */
@@ -46,6 +48,7 @@ export type ApiKeyConnectPhase = 'idle' | 'requestingEnvelope' | 'exchangingKey'
 /** Server error literal (K3) → i18n suffix used by the paste form. */
 const PASTE_ERROR_MAP: Record<string, PasteSubmitError | 'expired'> = {
   access_token_invalid: 'accessTokenInvalid',
+  device_mismatch: 'deviceMismatch',
   exchange_failed: 'exchangeFailed',
   expired: 'expired',
   invalid_callback: 'invalidCallback',
@@ -463,7 +466,8 @@ export function useOAuthDeviceFlow({
 
   /** The renewable paste: a chatgpt.com web session, stored as the renewal credential. */
   const submitSessionToken = useCallback(
-    async (sessionToken: string) => submitPasted({ sessionToken }),
+    async (sessionToken: string, extras?: { deviceId?: string; sessionChunks?: string[] }) =>
+      submitPasted({ sessionToken, ...extras }),
     [submitPasted],
   );
 

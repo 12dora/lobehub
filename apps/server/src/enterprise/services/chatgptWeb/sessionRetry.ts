@@ -21,15 +21,21 @@ export class ChatGPTWebSessionRetryableError extends Error {
    * value the moment it rotates, so a later attempt must present this one instead — retrying
    * the value the upstream just replaced would turn a transient failure into a dead session.
    */
+  readonly rotatedSessionChunks?: readonly string[];
   readonly rotatedSessionToken?: string;
 
   constructor(
     readonly classification: SessionFailureClass,
     message: string,
-    options?: { cause?: unknown; rotatedSessionToken?: string },
+    options?: {
+      cause?: unknown;
+      rotatedSessionChunks?: readonly string[];
+      rotatedSessionToken?: string;
+    },
   ) {
     super(message, options);
     this.name = 'ChatGPTWebSessionRetryableError';
+    this.rotatedSessionChunks = options?.rotatedSessionChunks;
     this.rotatedSessionToken = options?.rotatedSessionToken;
   }
 }

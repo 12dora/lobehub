@@ -219,6 +219,14 @@ describe('decidePastePollResult', () => {
       name: 'access_token_invalid maps onto the token field',
     },
     {
+      expected: { error: 'deviceMismatch', kind: 'fieldError', source: 'token' },
+      input: {
+        result: { error: 'device_mismatch', revision: null, status: 'error' },
+        source: 'token' as const,
+      },
+      name: 'device_mismatch maps onto the token field',
+    },
+    {
       expected: { error: 'sessionInvalid', kind: 'fieldError', source: 'token' },
       input: {
         result: { error: 'session_invalid', revision: null, status: 'error' },

@@ -27,6 +27,19 @@ const SESSION_COOKIE_NAME = '__Secure-next-auth.session-token';
  */
 const SESSION_COOKIE = /__Secure-next-auth\.session-token(?:\.(\d+))?=([^\s"',;\\]+)/g;
 
+/**
+ * ChatGPT's browser device id (`OAI-Device-Id` / `oai-did`). Interpolated into a Cookie
+ * header and the `OAI-Device-Id` request header, so the charset is the same injection
+ * boundary as a session token: no `;`, `,`, `=`, whitespace or controls.
+ */
+export const CHATGPT_WEB_DEVICE_ID_PATTERN = /^[\w-]{1,128}$/;
+
+/** `OAI-Device-Id: <id>` in a header line or a cURL `-H` argument. */
+const DEVICE_ID_HEADER = /oai-device-id["']?\s*[:=]\s*["']?([\w-]+)/gi;
+
+/** `oai-did=<id>` in a Cookie header, a `-b` flag, or a cookie string. */
+const DEVICE_ID_COOKIE = /oai-did=([\w-]+)/g;
+
 /** `authorization: Bearer <token>` in a header line, a cURL `-H` argument, or JSON. */
 const BEARER_HEADER = /authorization["']?\s*[:=]\s*(?:["']\s*)?Bearer\s+([\w.~+/=-]+)/i;
 
@@ -115,27 +128,82 @@ const decodeCookieValue = (value: string): string => {
   }
 };
 
+interface ExtractedSessionCookie {
+  /** Original `.0/.1/…` values, in index order, when the paste supplied chunks. */
+  chunks?: string[];
+  token: string;
+}
+
 /**
  * Extract the session cookie, re-assembling next-auth's chunked form
  * (`…session-token.0`, `.1`, …) which appears whenever the JWE outgrows one cookie.
+ *
+ * The joined token is what the vault stores. The original chunks are kept so the
+ * outbound jar can replay Chrome's layout instead of re-chunking differently.
  */
-const extractSessionToken = (text: string): string | undefined => {
-  const chunks: { index: number; value: string }[] = [];
+const extractSessionToken = (text: string): ExtractedSessionCookie | undefined => {
+  const chunks = new Map<number, string>();
   let plain: string | undefined;
 
   SESSION_COOKIE.lastIndex = 0;
   for (let match = SESSION_COOKIE.exec(text); match; match = SESSION_COOKIE.exec(text)) {
     const [, chunkIndex, value] = match;
     if (chunkIndex === undefined) plain ??= decodeCookieValue(value);
-    else chunks.push({ index: Number(chunkIndex), value: decodeCookieValue(value) });
+    else chunks.set(Number(chunkIndex), decodeCookieValue(value));
   }
 
-  if (plain) return plain;
-  if (chunks.length === 0) return undefined;
-  return chunks
-    .sort((a, b) => a.index - b.index)
-    .map((chunk) => chunk.value)
-    .join('');
+  if (plain) return { token: plain };
+  if (chunks.size === 0) return undefined;
+
+  const ordered: string[] = [];
+  for (let index = 0; index < chunks.size; index += 1) {
+    const part = chunks.get(index);
+    if (part === undefined) break;
+    ordered.push(part);
+  }
+  // A gapped set is still joined (best-effort identification) but is not a
+  // layout we should replay — only a contiguous-from-0 set is preserved.
+  if (ordered.length !== chunks.size) {
+    return {
+      token: [...chunks.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, value]) => value)
+        .join(''),
+    };
+  }
+  return { chunks: ordered, token: ordered.join('') };
+};
+
+const firstMatch = (pattern: RegExp, text: string): string | undefined => {
+  pattern.lastIndex = 0;
+  const match = pattern.exec(text);
+  return match?.[1];
+};
+
+/**
+ * Header `OAI-Device-Id` and cookie `oai-did` must name the same browser. When both
+ * are present and they disagree, the paste is rejected rather than silently picking
+ * one — that disagreement is how a session gets bound to the wrong device.
+ */
+export const resolveChatGPTWebDeviceBinding = (
+  headerId: string | undefined,
+  cookieId: string | undefined,
+): { deviceId?: string; mismatch: boolean } => {
+  const header = headerId && CHATGPT_WEB_DEVICE_ID_PATTERN.test(headerId) ? headerId : undefined;
+  const cookie = cookieId && CHATGPT_WEB_DEVICE_ID_PATTERN.test(cookieId) ? cookieId : undefined;
+  if (header && cookie && header.toLowerCase() !== cookie.toLowerCase()) {
+    return { mismatch: true };
+  }
+  return { deviceId: header ?? cookie, mismatch: false };
+};
+
+const extractDeviceBinding = (text: string): { deviceId?: string; mismatch: boolean } => {
+  const header = firstMatch(DEVICE_ID_HEADER, text);
+  const cookieRaw = firstMatch(DEVICE_ID_COOKIE, text);
+  return resolveChatGPTWebDeviceBinding(
+    header,
+    cookieRaw ? decodeCookieValue(cookieRaw) : undefined,
+  );
 };
 
 const extractAccessToken = (text: string, single: string | undefined): string | undefined => {
@@ -164,16 +232,28 @@ const extractAccessToken = (text: string, single: string | undefined): string | 
   return undefined;
 };
 
-export type ChatGPTWebPasteKind = 'access_token' | 'unknown' | 'web_session';
+export type ChatGPTWebPasteKind = 'access_token' | 'device_mismatch' | 'unknown' | 'web_session';
 
 export interface ChatGPTWebPasteResult {
   /** Present when the paste also carried a usable access token. */
   accessToken?: string;
   /**
+   * ChatGPT browser device id from `OAI-Device-Id` and/or `oai-did`, when they agree.
+   * Absent on a bare token paste — the server then generates one and persists it.
+   */
+  deviceId?: string;
+  /**
    * `web_session` whenever a session cookie was found — it is the renewable credential, so
    * it wins over an access token pasted alongside it.
+   * `device_mismatch` when the paste carried both a header and a cookie device id and
+   * they disagree: nothing is submitted, and the UI names the conflict.
    */
   kind: ChatGPTWebPasteKind;
+  /**
+   * Original next-auth `.0/.1/…` cookie values, in index order. Present only when the
+   * paste supplied a contiguous chunked cookie (not a single unchunked token).
+   */
+  sessionChunks?: string[];
   sessionToken?: string;
 }
 
@@ -188,19 +268,31 @@ export const parseChatGPTWebPaste = (text: string): ChatGPTWebPasteResult => {
   /** The whole paste as ONE token, i.e. a raw value rather than a header/command/JSON. */
   const single = /\s/.test(trimmed) ? undefined : trimmed;
 
-  const sessionToken =
-    extractSessionToken(trimmed) ??
-    (single && isChatGPTWebSessionToken(single) ? single : undefined);
-  const accessToken = extractAccessToken(trimmed, single);
+  const binding = extractDeviceBinding(trimmed);
+  if (binding.mismatch) return { kind: 'device_mismatch' };
 
-  if (sessionToken) {
+  const session =
+    extractSessionToken(trimmed) ??
+    (single && isChatGPTWebSessionToken(single) ? { token: single } : undefined);
+  const accessToken = extractAccessToken(trimmed, single);
+  const deviceId = binding.deviceId;
+
+  if (session) {
     return {
       ...(accessToken ? { accessToken } : {}),
+      ...(deviceId ? { deviceId } : {}),
       kind: 'web_session',
-      sessionToken,
+      ...(session.chunks && session.chunks.length > 1 ? { sessionChunks: session.chunks } : {}),
+      sessionToken: session.token,
     };
   }
-  if (accessToken) return { accessToken, kind: 'access_token' };
+  if (accessToken) {
+    return {
+      accessToken,
+      ...(deviceId ? { deviceId } : {}),
+      kind: 'access_token',
+    };
+  }
   return { kind: 'unknown' };
 };
 

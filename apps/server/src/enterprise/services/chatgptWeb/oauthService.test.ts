@@ -19,8 +19,10 @@ import {
   type ChatGPTWebPasteEnvelope,
   parseCallbackInput,
   parsePasteEnvelope,
+  resolveChatGPTWebConnectDeviceId,
   sessionHeaders,
 } from './oauthService';
+import { readMatchingSessionChunksFromJar } from './sessionCookie';
 import { resetCookieJars } from './transport';
 
 const PROFILE = DEFAULT_BROWSER_DEVICE_PROFILE;
@@ -1252,6 +1254,109 @@ describe('ChatGPTWebOAuthService.connectWithSession', () => {
     expect(probeCalls.length).toBeGreaterThan(0);
     // Already aborted: the probe inherited the connect deadline instead of starting a fresh one.
     for (const [, init] of probeCalls) expect(init.signal.aborted).toBe(true);
+  });
+
+  it('sends a two-chunk paste as two cookies and stores the logical token', async () => {
+    const transportFetch = vi
+      .fn()
+      .mockResolvedValue(sessionResponse({ accessToken: jwt({ exp: futureExp }) }));
+    const chunks = ['AAA', 'BBB'];
+
+    const connection = await build(transportFetch).connectWithSession('AAABBB', 'device-chunks', {
+      sessionChunks: chunks,
+    });
+
+    expect(connection.refreshToken).toBe('AAABBB');
+    expect(connection.deviceId).toBe('device-chunks');
+    expect(sessionCookieOf(transportFetch)).toBe(
+      `oai-did=device-chunks; ${SESSION_COOKIE}.0=AAA; ${SESSION_COOKIE}.1=BBB`,
+    );
+    expect(readMatchingSessionChunksFromJar('device-chunks', 'AAABBB')).toEqual(chunks);
+  });
+
+  it('clears stale chunks when a later rotation is a single unchunked cookie', async () => {
+    const transportFetch = vi.fn();
+    transportFetch.mockImplementation(async (url: string) =>
+      String(url).endsWith('/api/auth/session')
+        ? sessionResponse(
+            { accessToken: jwt({ exp: futureExp }) },
+            transportFetch.mock.calls.filter(([callUrl]) =>
+              String(callUrl).endsWith('/api/auth/session'),
+            ).length > 1
+              ? { setCookie: [`${SESSION_COOKIE}=rotated-plain; Path=/`] }
+              : {},
+          )
+        : jsonResponse({}),
+    );
+
+    const service = build(transportFetch);
+    await service.connectWithSession('AAABBB', 'device-rotate', { sessionChunks: ['AAA', 'BBB'] });
+    const tokens = await service.refreshAccessToken(config, 'AAABBB', {
+      deviceId: 'device-rotate',
+      renewalKind: 'web_session',
+    });
+
+    expect(tokens.refreshToken).toBe('rotated-plain');
+    // Refresh still presented the original two chunks; the jar then replaced them.
+    expect(sessionCookieOf(transportFetch, 1)).toBe(
+      `oai-did=device-rotate; ${SESSION_COOKIE}.0=AAA; ${SESSION_COOKIE}.1=BBB`,
+    );
+    expect(readMatchingSessionChunksFromJar('device-rotate', 'rotated-plain')).toEqual([
+      'rotated-plain',
+    ]);
+  });
+
+  it('does not mint a new device id when the caller already has one', async () => {
+    const transportFetch = vi
+      .fn()
+      .mockImplementation(async () => sessionResponse({ accessToken: jwt({ exp: futureExp }) }));
+
+    const first = await build(transportFetch).connectWithSession(SESSION_JWE, 'device-stable');
+    const second = await build(transportFetch).connectWithSession(SESSION_JWE, 'device-stable');
+
+    expect(first.deviceId).toBe('device-stable');
+    expect(second.deviceId).toBe('device-stable');
+  });
+});
+
+describe('resolveChatGPTWebConnectDeviceId', () => {
+  it('prefers the pasted device id over the envelope and a stored id', () => {
+    expect(
+      resolveChatGPTWebConnectDeviceId({
+        envelopeDeviceId: 'envelope',
+        existingDeviceId: 'stored',
+        pastedDeviceId: 'chrome',
+        webSessionOnly: true,
+      }),
+    ).toBe('chrome');
+  });
+
+  it('reuses the stored id on a web-session-only reconnect without a pasted device', () => {
+    expect(
+      resolveChatGPTWebConnectDeviceId({
+        envelopeDeviceId: 'envelope',
+        existingDeviceId: 'stored',
+        webSessionOnly: true,
+      }),
+    ).toBe('stored');
+  });
+
+  it('does not fall back to the envelope id for a web-session-only first connect', () => {
+    expect(
+      resolveChatGPTWebConnectDeviceId({
+        envelopeDeviceId: 'envelope',
+        webSessionOnly: true,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('uses the envelope id when the provider is not web-session-only and nothing was pasted', () => {
+    expect(
+      resolveChatGPTWebConnectDeviceId({
+        envelopeDeviceId: 'envelope',
+        webSessionOnly: false,
+      }),
+    ).toBe('envelope');
   });
 });
 

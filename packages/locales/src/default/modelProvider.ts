@@ -270,6 +270,8 @@ export default {
     'That access token was rejected. Sign in at chatgpt.com again and copy the web session instead — it renews itself.',
   'providerModels.config.oauth.paste.errors.authError':
     'The connection could not be completed. Please try again.',
+  'providerModels.config.oauth.paste.errors.deviceMismatch':
+    'The pasted request has two different ChatGPT device ids (OAI-Device-Id vs oai-did). Copy the request again from the same Chrome session so both match.',
   'providerModels.config.oauth.paste.errors.exchangeFailed':
     'The authorization could not be exchanged. Generate a new link and sign in again.',
   'providerModels.config.oauth.paste.errors.invalidCallback':

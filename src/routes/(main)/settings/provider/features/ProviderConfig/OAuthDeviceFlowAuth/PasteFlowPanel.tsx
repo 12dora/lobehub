@@ -71,7 +71,10 @@ export interface PasteFlowPanelProps {
   onRegenerate: () => void;
   onSubmitAccessToken: (accessToken: string) => void;
   onSubmitCallback: (callbackUrl: string) => void;
-  onSubmitSessionToken: (sessionToken: string) => void;
+  onSubmitSessionToken: (
+    sessionToken: string,
+    extras?: { deviceId?: string; sessionChunks?: string[] },
+  ) => void;
   submitError?: PasteSubmitError;
   /** Which input the failed submit came from; decides where the error is shown. */
   submitErrorSource?: PasteSubmitSource;
@@ -96,6 +99,7 @@ const CHATGPT_SESSION_URL = 'https://chatgpt.com/api/auth/session';
 /** Submit errors that belong to the pasted-credential box rather than the callback box. */
 const TOKEN_SOURCE_ERRORS = new Set<PasteSubmitError>([
   'accessTokenInvalid',
+  'deviceMismatch',
   'sessionInvalid',
   'tokenNotWeb',
 ]);
@@ -150,17 +154,6 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
      * generic `authError`, which belongs to whichever input was submitted. Reading the
      * literal alone put every such failure on the callback box.
      */
-    const errorSource =
-      submitErrorSource ??
-      (submitError && TOKEN_SOURCE_ERRORS.has(submitError) ? 'token' : 'callback');
-    const tokenError = submitError && errorSource === 'token' ? submitError : undefined;
-    const callbackError = submitError && !tokenError ? submitError : undefined;
-    const tokenErrorKey =
-      tokenError &&
-      `providerModels.config.oauth.paste.errors.${tokenError}${
-        webSessionOnly && SESSION_ONLY_ERRORS.has(tokenError) ? 'SessionOnly' : ''
-      }`;
-
     /**
      * What was pasted, resolved live: a session cookie, a whole "Copy as cURL" command, the
      * JSON body of `/api/auth/session`, or a bare access token. The difference that matters
@@ -168,6 +161,23 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
      * text, so it is stated before anything is submitted.
      */
     const parsed = useMemo(() => parseChatGPTWebPaste(pasted), [pasted]);
+    const deviceMismatch = parsed.kind === 'device_mismatch';
+
+    const errorSource =
+      submitErrorSource ??
+      (submitError && TOKEN_SOURCE_ERRORS.has(submitError) ? 'token' : 'callback');
+    const tokenError = deviceMismatch
+      ? 'deviceMismatch'
+      : submitError && errorSource === 'token'
+        ? submitError
+        : undefined;
+    const callbackError = submitError && !tokenError ? submitError : undefined;
+    const tokenErrorKey =
+      tokenError &&
+      `providerModels.config.oauth.paste.errors.${tokenError}${
+        webSessionOnly && SESSION_ONLY_ERRORS.has(tokenError) ? 'SessionOnly' : ''
+      }`;
+
     const detection =
       pasted.trim().length === 0
         ? undefined
@@ -175,7 +185,9 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
           ? 'session'
           : parsed.kind === 'access_token'
             ? 'accessToken'
-            : 'unknown';
+            : parsed.kind === 'device_mismatch'
+              ? undefined
+              : 'unknown';
 
     const handleSubmitCallback = useCallback(() => {
       const value = callbackUrl.trim();
@@ -185,9 +197,22 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
 
     /** Always submit the renewable half when the paste carried both. */
     const handleSubmitPasted = useCallback(() => {
-      if (parsed.sessionToken) onSubmitSessionToken(parsed.sessionToken);
-      else if (parsed.accessToken) onSubmitAccessToken(parsed.accessToken);
-    }, [onSubmitAccessToken, onSubmitSessionToken, parsed.accessToken, parsed.sessionToken]);
+      if (parsed.kind === 'device_mismatch') return;
+      if (parsed.sessionToken) {
+        onSubmitSessionToken(parsed.sessionToken, {
+          ...(parsed.deviceId ? { deviceId: parsed.deviceId } : {}),
+          ...(parsed.sessionChunks ? { sessionChunks: parsed.sessionChunks } : {}),
+        });
+      } else if (parsed.accessToken) onSubmitAccessToken(parsed.accessToken);
+    }, [
+      onSubmitAccessToken,
+      onSubmitSessionToken,
+      parsed.accessToken,
+      parsed.deviceId,
+      parsed.kind,
+      parsed.sessionChunks,
+      parsed.sessionToken,
+    ]);
 
     /**
      * What to do BEFORE there is anything to paste, as three steps with the pages they name
@@ -296,7 +321,7 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
           <Flexbox gap={12}>
             <Button
               block
-              disabled={disabled || parsed.kind === 'unknown'}
+              disabled={disabled || parsed.kind === 'unknown' || parsed.kind === 'device_mismatch'}
               loading={submitting}
               type="primary"
               onClick={handleSubmitPasted}
@@ -396,8 +421,10 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
                 {sessionSteps}
                 <Button
                   block
-                  disabled={disabled || parsed.kind === 'unknown'}
                   loading={submitting}
+                  disabled={
+                    disabled || parsed.kind === 'unknown' || parsed.kind === 'device_mismatch'
+                  }
                   onClick={handleSubmitPasted}
                 >
                   {t('providerModels.config.oauth.paste.sessionSubmit')}

@@ -1,8 +1,36 @@
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+
+import { isChatGPTWebSessionTokenSafe } from '@lobechat/utils/chatgptWebPaste';
 import debug from 'debug';
 
-import { isUsableSessionToken } from './sessionToken';
+import { getCookieJarPath, seedCookieJar } from './transport';
 
 const log = debug('lobe-server:chatgpt-web-oauth');
+
+/** next-auth session cookie; chunked variants get a `.<n>` suffix. */
+export const CHATGPT_WEB_SESSION_COOKIE_NAME = '__Secure-next-auth.session-token';
+
+/**
+ * Conservative per-cookie value bound. Browsers reject a single cookie above 4096 bytes;
+ * next-auth therefore chunks `__Secure-next-auth.session-token` at this ceiling. The vault
+ * assembled-token bound (`16_384`) is four such chunks — do not invent a second number.
+ */
+export const CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX = 4096;
+
+/** Matches the routers' input bound and {@link CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX} × 4. */
+const MAX_SESSION_TOKEN_LENGTH = CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX * 4;
+
+const SESSION_COOKIE_NAME_RE = /^__Secure-next-auth\.session-token(?:\.\d+)?$/;
+
+/**
+ * Same security predicate as {@link isUsableSessionToken} in `sessionToken.ts`, kept local
+ * so this module does not import that file (webSessionHeaders imports US for chunk layout).
+ */
+const isUsableRotatedToken = (value: string): boolean =>
+  Boolean(value) &&
+  value.length <= MAX_SESSION_TOKEN_LENGTH &&
+  isChatGPTWebSessionTokenSafe(value) &&
+  /[\w-]/.test(value);
 
 /**
  * `__Secure-next-auth.session-token=<value>`, or its chunked form `…session-token.<n>=<value>`.
@@ -43,7 +71,13 @@ const decodeCookieValue = (value: string): string => {
  *
  * The value is returned to the caller and NEVER logged.
  */
-export const readRotatedSessionToken = (response: Response): string | undefined => {
+export interface RotatedSessionCookie {
+  /** Original `.0/.1/…` values when the rotation arrived chunked. */
+  chunks?: string[];
+  token: string;
+}
+
+export const readRotatedSessionCookie = (response: Response): RotatedSessionCookie | undefined => {
   const raw =
     typeof response.headers.getSetCookie === 'function'
       ? response.headers.getSetCookie()
@@ -90,16 +124,164 @@ export const readRotatedSessionToken = (response: Response): string | undefined 
     // A rotated value is about to be PERSISTED and later interpolated into a Cookie header,
     // so it is held to the same boundary rule as a pasted one: the upstream is no more
     // trusted than the operator here.
-    if (parts.length === chunks.size && isUsableSessionToken(joined)) return joined;
+    if (parts.length === chunks.size && isUsableRotatedToken(joined)) {
+      return { chunks: parts, token: joined };
+    }
     // Count only — never the values, not even a fragment of one.
     log('discarding an unusable rotated session cookie (%d chunk(s))', chunks.size);
     return undefined;
   }
 
   if (!plain) return undefined;
-  if (!isUsableSessionToken(plain)) {
+  if (!isUsableRotatedToken(plain)) {
     log('discarding a rotated session cookie that is not a usable cookie value');
     return undefined;
   }
-  return plain;
+  return { token: plain };
+};
+
+/** Joined logical token only — vault/CAS bookkeeping never depends on chunk layout. */
+export const readRotatedSessionToken = (response: Response): string | undefined =>
+  readRotatedSessionCookie(response)?.token;
+
+/** Split a logical token at the conservative cookie-size boundary. */
+export const splitSessionTokenForCookie = (token: string): string[] => {
+  if (token.length <= CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX) return [token];
+  const parts: string[] = [];
+  for (let offset = 0; offset < token.length; offset += CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX) {
+    parts.push(token.slice(offset, offset + CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX));
+  }
+  return parts;
+};
+
+const chunksJoinToToken = (chunks: readonly string[] | undefined, token: string): boolean =>
+  Boolean(chunks && chunks.length > 0 && chunks.every(Boolean) && chunks.join('') === token);
+
+/**
+ * Prefer the caller-supplied layout when it still joins to the logical token (a Chrome
+ * paste, or a chunked Set-Cookie rotation), then the jar's current layout for the same
+ * token, then a split at the cookie-size boundary.
+ */
+export const resolveSessionCookieChunks = (
+  token: string,
+  originalChunks?: readonly string[],
+  jarChunks?: readonly string[],
+): string[] => {
+  if (originalChunks && chunksJoinToToken(originalChunks, token)) return [...originalChunks];
+  if (jarChunks && chunksJoinToToken(jarChunks, token)) return [...jarChunks];
+  return splitSessionTokenForCookie(token);
+};
+
+/** Cookie-header fragment: unchunked `name=value`, or `name.0=…; name.1=…`. */
+export const formatSessionCookieHeader = (chunks: readonly string[]): string => {
+  if (chunks.length <= 1) {
+    return `${CHATGPT_WEB_SESSION_COOKIE_NAME}=${chunks[0] ?? ''}`;
+  }
+  return chunks
+    .map((value, index) => `${CHATGPT_WEB_SESSION_COOKIE_NAME}.${index}=${value}`)
+    .join('; ');
+};
+
+const netscapeCookieName = (line: string): string | undefined => {
+  const rest = line.startsWith('#HttpOnly_') ? line.slice('#HttpOnly_'.length) : line;
+  if (!rest || rest.startsWith('#')) return undefined;
+  const parts = rest.split('\t');
+  return parts.length >= 7 ? parts[5] : undefined;
+};
+
+/** Drop every session-token name (plain and `.n`) so a rotation cannot leave a stale `.1`. */
+const removeSessionCookiesFromJar = (path: string): void => {
+  if (!existsSync(path)) return;
+  const text = readFileSync(path, 'utf8');
+  const kept = text.split('\n').filter((line) => {
+    const name = netscapeCookieName(line);
+    return !name || !SESSION_COOKIE_NAME_RE.test(name);
+  });
+  writeFileSync(path, kept.join('\n'), { mode: 0o600 });
+};
+
+/**
+ * Read the jar's current session-cookie layout when it still joins to `expectedToken`.
+ * The jar is transport state derived from the vault token — reuse its chunks so a
+ * two-chunk paste is not rewritten as one cookie on the next seed of the same token.
+ */
+export const readMatchingSessionChunksFromJar = (
+  deviceId: string,
+  expectedToken: string,
+): string[] | undefined => {
+  const path = getCookieJarPath(deviceId);
+  if (!existsSync(path)) return undefined;
+
+  const byIndex = new Map<number, string>();
+  let plain: string | undefined;
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const rest = line.startsWith('#HttpOnly_') ? line.slice('#HttpOnly_'.length) : line;
+    if (!rest || rest.startsWith('#')) continue;
+    const parts = rest.split('\t');
+    if (parts.length < 7) continue;
+    const name = parts[5];
+    const value = parts[6] ?? '';
+    if (name === CHATGPT_WEB_SESSION_COOKIE_NAME) {
+      plain = value;
+      continue;
+    }
+    const suffix = name.startsWith(`${CHATGPT_WEB_SESSION_COOKIE_NAME}.`)
+      ? name.slice(CHATGPT_WEB_SESSION_COOKIE_NAME.length + 1)
+      : undefined;
+    if (suffix !== undefined && /^\d+$/.test(suffix) && value) byIndex.set(Number(suffix), value);
+  }
+
+  if (byIndex.size > 0) {
+    const parts: string[] = [];
+    for (let index = 0; index < byIndex.size; index += 1) {
+      const part = byIndex.get(index);
+      if (part === undefined) return undefined;
+      parts.push(part);
+    }
+    return parts.join('') === expectedToken ? parts : undefined;
+  }
+  return plain && plain === expectedToken ? [plain] : undefined;
+};
+
+/**
+ * Vault-authoritative session cookies for a connection. Replaces every previous
+ * session-token name before installing the new set, and always seeds `oai-did`
+ * from the same stored device id the headers will send.
+ */
+export const seedChatGPTWebSessionJar = (
+  deviceId: string,
+  sessionToken?: string,
+  originalChunks?: readonly string[],
+): string => {
+  const path = getCookieJarPath(deviceId);
+  const seeds: { domain: string; httpOnly?: boolean; name: string; value: string }[] = [
+    { domain: '.chatgpt.com', name: 'oai-did', value: deviceId },
+  ];
+  if (sessionToken) {
+    const chunks = resolveSessionCookieChunks(
+      sessionToken,
+      originalChunks,
+      readMatchingSessionChunksFromJar(deviceId, sessionToken),
+    );
+    removeSessionCookiesFromJar(path);
+    if (chunks.length === 1) {
+      seeds.push({
+        domain: '.chatgpt.com',
+        httpOnly: true,
+        name: CHATGPT_WEB_SESSION_COOKIE_NAME,
+        value: chunks[0],
+      });
+    } else {
+      for (const [index, value] of chunks.entries()) {
+        seeds.push({
+          domain: '.chatgpt.com',
+          httpOnly: true,
+          name: `${CHATGPT_WEB_SESSION_COOKIE_NAME}.${index}`,
+          value,
+        });
+      }
+    }
+  }
+  seedCookieJar(path, seeds);
+  return path;
 };

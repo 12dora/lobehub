@@ -8,7 +8,7 @@ import { OAuthInvalidGrantError, parseJwtExpiry } from '@/server/services/oauthD
 import { ChatGPTWebOAuthError } from './oauthErrors';
 import type { ChatGPTWebConnection } from './oauthService.identity';
 import { assertWebCapableAccessToken, ChatGPTWebOAuthIdentityOps } from './oauthService.identity';
-import { readRotatedSessionToken } from './sessionCookie';
+import { readRotatedSessionCookie, seedChatGPTWebSessionJar } from './sessionCookie';
 import {
   ChatGPTWebSessionRetryableError,
   classifySessionStatus,
@@ -26,7 +26,6 @@ import {
 import {
   deleteCookieJar,
   isChatGPTWebTransportUnavailableError,
-  seedSessionJar,
   withCookieJarHeader,
 } from './transport';
 
@@ -67,6 +66,8 @@ const SESSION_REFRESH_ATTEMPTS = 3;
 interface WebSessionMint {
   accessToken: string;
   email?: string;
+  /** Chunk layout that still joins to `sessionToken`, when we have one. */
+  sessionChunks?: string[];
   /** Epoch millis from the response's `expires`, when parseable. */
   sessionExpiresAt?: number;
   /** Rotated cookie value when the response carried one, else the presented token. */
@@ -97,6 +98,7 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
     attempts: number;
     deviceId?: string;
     onInvalidSession: () => never;
+    sessionChunks?: readonly string[];
     sessionToken: string;
     /** Whole-operation budget: every attempt AND every backoff lives inside it. */
     signal: AbortSignal;
@@ -110,15 +112,19 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
      * returned credential — must use the rotated one.
      */
     let sessionToken = params.sessionToken;
+    let sessionChunks = params.sessionChunks;
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        return await this.mintFromWebSessionOnce({ ...params, sessionToken });
+        return await this.mintFromWebSessionOnce({ ...params, sessionChunks, sessionToken });
       } catch (error) {
         // Terminal outcomes (dead session), operator problems (no transport binary) and a
         // spent budget all leave through here untouched — only a retryable attempt loops.
         if (!(error instanceof ChatGPTWebSessionRetryableError)) throw error;
-        if (error.rotatedSessionToken) sessionToken = error.rotatedSessionToken;
+        if (error.rotatedSessionToken) {
+          sessionToken = error.rotatedSessionToken;
+          sessionChunks = error.rotatedSessionChunks;
+        }
         lastRetryable = error;
         if (attempt >= attempts || params.signal.aborted) break;
 
@@ -144,6 +150,7 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
   private async mintFromWebSessionOnce(params: {
     deviceId?: string;
     onInvalidSession: () => never;
+    sessionChunks?: readonly string[];
     sessionToken: string;
     signal: AbortSignal;
   }): Promise<WebSessionMint> {
@@ -151,10 +158,17 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
     // catch below would otherwise reclassify it as a retryable network failure.
     const cookieJarKey = this.cookieJarKeyFor(params.deviceId);
     const headers = withCookieJarHeader(
-      webSessionHeaders(params.sessionToken, params.deviceId, this.browserProfile),
+      webSessionHeaders(
+        params.sessionToken,
+        params.deviceId,
+        this.browserProfile,
+        params.sessionChunks,
+      ),
       cookieJarKey,
     );
-    if (cookieJarKey) seedSessionJar(cookieJarKey, params.sessionToken);
+    if (cookieJarKey) {
+      seedChatGPTWebSessionJar(cookieJarKey, params.sessionToken, params.sessionChunks);
+    }
 
     let response: Response;
     try {
@@ -177,7 +191,7 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
     }
 
     // Read the rotation BEFORE the body: a failed JSON parse must not lose it.
-    const rotated = readRotatedSessionToken(response);
+    const rotated = readRotatedSessionCookie(response);
 
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -186,7 +200,12 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
       const message = `ChatGPT Web session request failed: ${response.status}`;
       if (!isRetryableSessionStatus(response.status)) throw new Error(message);
       throw new ChatGPTWebSessionRetryableError(classifySessionStatus(response), message, {
-        ...(rotated ? { rotatedSessionToken: rotated } : {}),
+        ...(rotated
+          ? {
+              ...(rotated.chunks ? { rotatedSessionChunks: rotated.chunks } : {}),
+              rotatedSessionToken: rotated.token,
+            }
+          : {}),
       });
     }
 
@@ -215,7 +234,12 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
         cause: error,
         // If this attempt already rotated the cookie, the presented one is gone: the retry
         // must present the rotation, not the value the upstream just invalidated.
-        ...(rotated ? { rotatedSessionToken: rotated } : {}),
+        ...(rotated
+          ? {
+              ...(rotated.chunks ? { rotatedSessionChunks: rotated.chunks } : {}),
+              rotatedSessionToken: rotated.token,
+            }
+          : {}),
       });
     }
 
@@ -229,14 +253,17 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
         ? body.user.email
         : undefined;
     const expires = typeof body?.expires === 'string' ? Date.parse(body.expires) : Number.NaN;
-    const sessionToken = rotated ?? params.sessionToken;
+    const sessionToken = rotated?.token ?? params.sessionToken;
+    const sessionChunks = rotated ? rotated.chunks : params.sessionChunks;
     // Vault wins: the jar is a cache. Re-seed so a curl-written session cookie
-    // cannot disagree with the value we are about to persist.
-    if (params.deviceId) seedSessionJar(params.deviceId, sessionToken);
+    // cannot disagree with the value we are about to persist. Chunk layout is
+    // transport state derived from that token (paste chunks, else size-split).
+    if (params.deviceId) seedChatGPTWebSessionJar(params.deviceId, sessionToken, sessionChunks);
 
     return {
       accessToken,
       ...(email ? { email } : {}),
+      ...(sessionChunks && sessionChunks.length > 1 ? { sessionChunks: [...sessionChunks] } : {}),
       ...(Number.isFinite(expires) ? { sessionExpiresAt: expires } : {}),
       sessionToken,
     };
@@ -249,11 +276,20 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
    * would occupy (tagged by `oauthRenewalKind`), so it inherits every renewal mechanism
    * already in place rather than adding a second lifecycle to keep in sync.
    */
-  async connectWithSession(sessionToken: string, deviceId?: string): Promise<ChatGPTWebConnection> {
+  async connectWithSession(
+    sessionToken: string,
+    deviceId?: string,
+    options?: { sessionChunks?: readonly string[] },
+  ): Promise<ChatGPTWebConnection> {
     const token = sessionToken.trim();
     // Boundary check, not a formatting nicety: this value is interpolated into a Cookie
     // header, so a delimiter or control character in it is a header-injection primitive.
     assertSessionTokenShape(token);
+
+    const sessionChunks =
+      options?.sessionChunks && options.sessionChunks.join('') === token
+        ? options.sessionChunks
+        : undefined;
 
     const resolvedDeviceId = deviceId ?? randomUUID();
     // Reconnect / a reused paste-envelope device id must not inherit the previous
@@ -276,6 +312,7 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
       onInvalidSession: () => {
         throw new ChatGPTWebOAuthError('session_invalid');
       },
+      ...(sessionChunks ? { sessionChunks } : {}),
       sessionToken: token,
       signal: budget,
     });

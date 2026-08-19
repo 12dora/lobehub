@@ -165,7 +165,9 @@ describe('oauthDeviceFlow.pollAuthStatus (paste flow)', () => {
     const stored = mocks.updateConfig.mock.calls[0][1].keyVaults;
     expect(stored.oauthRefreshToken).toBeUndefined();
     expect(stored.oauthAccountEmail).toBe('me@example.com');
-    expect(stored.oauthDeviceId).toBe(JSON.parse(deviceCode).deviceId);
+    // webSessionOnly: do not inherit the random authorization-envelope id.
+    expect(stored.oauthDeviceId).toMatch(/^[\da-f-]{36}$/);
+    expect(stored.oauthDeviceId).not.toBe(JSON.parse(deviceCode).deviceId);
     expect(authFetch).not.toHaveBeenCalled();
   });
 
@@ -244,9 +246,98 @@ describe('oauthDeviceFlow.pollAuthStatus (paste flow)', () => {
     expect(stored.oauthRefreshToken).toBe('rotated-jwe');
     expect(stored.oauthRenewalKind).toBe('web_session');
     expect(stored.oauthAccountEmail).toBe('me@example.com');
-    expect(stored.oauthDeviceId).toBe(JSON.parse(deviceCode).deviceId);
+    // webSessionOnly: a bare session paste generates one device id and persists it.
+    expect(stored.oauthDeviceId).toMatch(/^[\da-f-]{36}$/);
+    expect(stored.oauthDeviceId).not.toBe(JSON.parse(deviceCode).deviceId);
     // No OAuth token endpoint is involved on this path.
     expect(authFetch).not.toHaveBeenCalled();
+  });
+
+  it('stores a pasted Chrome device id instead of the envelope id', async () => {
+    const { deviceCode } = await startFlow();
+    const sessionJwe = [
+      Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+      '',
+      'aXY',
+      'Y3Q',
+      'dGFn',
+    ].join('.');
+    transportFetch.mockResolvedValue(
+      new Response(JSON.stringify({ accessToken: jwt({ exp: futureExp }) }), {
+        headers: { 'content-type': 'application/json' },
+        status: 200,
+      }),
+    );
+
+    await caller().pollAuthStatus({
+      deviceCode,
+      deviceId: '3f7c0f7a-6f6e-4a1b-9c2d-8e5a1b2c3d4e',
+      providerId: PROVIDER,
+      sessionToken: sessionJwe,
+    });
+
+    expect(mocks.updateConfig.mock.calls[0][1].keyVaults.oauthDeviceId).toBe(
+      '3f7c0f7a-6f6e-4a1b-9c2d-8e5a1b2c3d4e',
+    );
+  });
+
+  it('reuses the stored device id on a web-session reconnect without a pasted device', async () => {
+    const { deviceCode } = await startFlow();
+    const sessionJwe = [
+      Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+      '',
+      'aXY',
+      'Y3Q',
+      'dGFn',
+    ].join('.');
+    mocks.getAiProviderById.mockResolvedValue({
+      keyVaults: { oauthDeviceId: 'stored-browser' },
+    });
+    transportFetch.mockResolvedValue(
+      new Response(JSON.stringify({ accessToken: jwt({ exp: futureExp }) }), {
+        headers: { 'content-type': 'application/json' },
+        status: 200,
+      }),
+    );
+
+    await caller().pollAuthStatus({
+      deviceCode,
+      providerId: PROVIDER,
+      sessionToken: sessionJwe,
+    });
+
+    expect(mocks.updateConfig.mock.calls[0][1].keyVaults.oauthDeviceId).toBe('stored-browser');
+    expect(mocks.wipeChatGPTWebCookieJar).not.toHaveBeenCalled();
+  });
+
+  it('wipes the previous jar when the pasted device id changes', async () => {
+    const { deviceCode } = await startFlow();
+    const sessionJwe = [
+      Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+      '',
+      'aXY',
+      'Y3Q',
+      'dGFn',
+    ].join('.');
+    mocks.getAiProviderById.mockResolvedValue({
+      keyVaults: { oauthDeviceId: 'old-browser' },
+    });
+    transportFetch.mockResolvedValue(
+      new Response(JSON.stringify({ accessToken: jwt({ exp: futureExp }) }), {
+        headers: { 'content-type': 'application/json' },
+        status: 200,
+      }),
+    );
+
+    await caller().pollAuthStatus({
+      deviceCode,
+      deviceId: 'new-browser',
+      providerId: PROVIDER,
+      sessionToken: sessionJwe,
+    });
+
+    expect(mocks.wipeChatGPTWebCookieJar).toHaveBeenCalledWith('old-browser');
+    expect(mocks.updateConfig.mock.calls[0][1].keyVaults.oauthDeviceId).toBe('new-browser');
   });
 
   it('reports a dead web session with a stable code and stores nothing', async () => {

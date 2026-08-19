@@ -231,6 +231,7 @@
   "providerModels.config.oauth.paste.errors.accessTokenInvalid": "该访问令牌无效，请重新复制，或改用授权页面连接。",
   "providerModels.config.oauth.paste.errors.accessTokenInvalidSessionOnly": "该访问令牌无效。请重新登录 chatgpt.com 并改为复制网页会话，网页会话可以自动续期。",
   "providerModels.config.oauth.paste.errors.authError": "连接未能完成，请重试。",
+  "providerModels.config.oauth.paste.errors.deviceMismatch": "粘贴的请求里 OAI-Device-Id 与 oai-did 不一致。请从同一次 Chrome 会话重新复制请求，确保两者相同。",
   "providerModels.config.oauth.paste.errors.exchangeFailed": "授权兑换失败，请重新生成链接并再次登录。",
   "providerModels.config.oauth.paste.errors.invalidCallback": "这看起来不是回调地址，请在登录后复制浏览器地址栏中的完整网址。",
   "providerModels.config.oauth.paste.errors.sessionInvalid": "该网页会话已失效，请重新登录 chatgpt.com 后再复制一次 Cookie。",

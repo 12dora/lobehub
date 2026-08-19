@@ -1,5 +1,7 @@
 export type ChatGPTWebOAuthErrorCode =
   | 'access_token_invalid'
+  /** The paste carried both `OAI-Device-Id` and `oai-did`, and they disagree. */
+  | 'device_mismatch'
   | 'exchange_failed'
   | 'expired'
   | 'invalid_callback'

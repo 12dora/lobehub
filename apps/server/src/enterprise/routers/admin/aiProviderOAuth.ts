@@ -437,11 +437,18 @@ export const adminAiProviderOAuthRouter = router({
         getProviderOAuthGrantFlow(input.id) === 'authorization_code_paste'
           ? await new PlatformBrowserProfileService(ctx.serverDB).getOrFallback()
           : undefined;
+      const existingDeviceId = detail
+        ? await captureChatGPTWebDeviceId({
+            draftId: detail.draft.id,
+            repo: new PlatformAiCatalogRepository(ctx.serverDB),
+          })
+        : undefined;
       const acquired = await acquireSharedConnectionTokens({
         actorUserId: ctx.userId!,
         audit,
         browserProfile,
         card,
+        ...(existingDeviceId ? { existingDeviceId } : {}),
         input,
         targetId,
       });

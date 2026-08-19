@@ -48,7 +48,10 @@ interface SharedOAuthPasteFormProps {
   onRegenerate: () => void;
   onSubmitAccessToken: (accessToken: string) => void;
   onSubmitCallback: (callbackUrl: string) => void;
-  onSubmitSessionToken: (sessionToken: string) => void;
+  onSubmitSessionToken: (
+    sessionToken: string,
+    extras?: { deviceId?: string; sessionChunks?: string[] },
+  ) => void;
   submitError?: SharedOAuthPasteError;
   /** Which input the failed submit came from; decides where the error is shown. */
   submitErrorSource?: SharedOAuthPasteSource;
@@ -64,6 +67,7 @@ interface SharedOAuthPasteFormProps {
 /** Submit errors that belong to the pasted-credential box rather than the callback box. */
 const TOKEN_SOURCE_ERRORS = new Set<SharedOAuthPasteError>([
   'accessTokenInvalid',
+  'deviceMismatch',
   'sessionInvalid',
   'tokenNotWeb',
 ]);
@@ -116,17 +120,6 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
      * generic `authError`, which belongs to whichever input was submitted. Reading the
      * literal alone put every such failure on the callback box.
      */
-    const errorSource =
-      submitErrorSource ??
-      (submitError && TOKEN_SOURCE_ERRORS.has(submitError) ? 'token' : 'callback');
-    const tokenError = submitError && errorSource === 'token' ? submitError : undefined;
-    const callbackError = submitError && !tokenError ? submitError : undefined;
-    const tokenErrorKey =
-      tokenError &&
-      `aiProviderSettings.sharedOAuth.paste.errors.${tokenError}${
-        webSessionOnly && SESSION_ONLY_ERRORS.has(tokenError) ? 'SessionOnly' : ''
-      }`;
-
     /**
      * What the operator actually pasted, resolved live: a session cookie, a whole "Copy as
      * cURL" command, the JSON body of `/api/auth/session`, or a bare access token. Saying so
@@ -134,6 +127,23 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
      * not, and that difference is invisible in the raw text.
      */
     const parsed = useMemo(() => parseChatGPTWebPaste(pasted), [pasted]);
+    const deviceMismatch = parsed.kind === 'device_mismatch';
+
+    const errorSource =
+      submitErrorSource ??
+      (submitError && TOKEN_SOURCE_ERRORS.has(submitError) ? 'token' : 'callback');
+    const tokenError = deviceMismatch
+      ? 'deviceMismatch'
+      : submitError && errorSource === 'token'
+        ? submitError
+        : undefined;
+    const callbackError = submitError && !tokenError ? submitError : undefined;
+    const tokenErrorKey =
+      tokenError &&
+      `aiProviderSettings.sharedOAuth.paste.errors.${tokenError}${
+        webSessionOnly && SESSION_ONLY_ERRORS.has(tokenError) ? 'SessionOnly' : ''
+      }`;
+
     const detection =
       pasted.trim().length === 0
         ? undefined
@@ -141,7 +151,9 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
           ? 'session'
           : parsed.kind === 'access_token'
             ? 'accessToken'
-            : 'unknown';
+            : parsed.kind === 'device_mismatch'
+              ? undefined
+              : 'unknown';
 
     const handleSubmitCallback = useCallback(() => {
       const value = callbackUrl.trim();
@@ -151,9 +163,22 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
 
     /** Always submit the renewable half when the paste carried both. */
     const handleSubmitPasted = useCallback(() => {
-      if (parsed.sessionToken) onSubmitSessionToken(parsed.sessionToken);
-      else if (parsed.accessToken) onSubmitAccessToken(parsed.accessToken);
-    }, [onSubmitAccessToken, onSubmitSessionToken, parsed.accessToken, parsed.sessionToken]);
+      if (parsed.kind === 'device_mismatch') return;
+      if (parsed.sessionToken) {
+        onSubmitSessionToken(parsed.sessionToken, {
+          ...(parsed.deviceId ? { deviceId: parsed.deviceId } : {}),
+          ...(parsed.sessionChunks ? { sessionChunks: parsed.sessionChunks } : {}),
+        });
+      } else if (parsed.accessToken) onSubmitAccessToken(parsed.accessToken);
+    }, [
+      onSubmitAccessToken,
+      onSubmitSessionToken,
+      parsed.accessToken,
+      parsed.deviceId,
+      parsed.kind,
+      parsed.sessionChunks,
+      parsed.sessionToken,
+    ]);
 
     const sessionSteps = <SharedOAuthSessionSteps />;
     const sessionFields = (
@@ -188,7 +213,7 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
           <Flexbox gap={8}>{sessionFields}</Flexbox>
           <Flexbox horizontal gap={8}>
             <Button
-              disabled={parsed.kind === 'unknown'}
+              disabled={parsed.kind === 'unknown' || parsed.kind === 'device_mismatch'}
               loading={submitting}
               type={'primary'}
               onClick={handleSubmitPasted}
@@ -271,7 +296,7 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
                 {sessionSteps}
                 <Flexbox horizontal>
                   <Button
-                    disabled={parsed.kind === 'unknown'}
+                    disabled={parsed.kind === 'unknown' || parsed.kind === 'device_mismatch'}
                     loading={submitting}
                     onClick={handleSubmitPasted}
                   >

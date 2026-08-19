@@ -62,6 +62,30 @@ export const wipeChatGPTWebCookieJar = (deviceId: string | undefined): void => {
 };
 
 /**
+ * Device id for a ChatGPT Web connect.
+ *
+ * `webSessionOnly` pastes must NOT inherit the random authorization-envelope id — that
+ * id was minted for a different product's authorize URL. Prefer the pasted Chrome
+ * device, then the already-persisted vault id (reconnect with the same browser), and
+ * only then let `connectWithSession` generate one and persist it.
+ */
+export const resolveChatGPTWebConnectDeviceId = ({
+  envelopeDeviceId,
+  existingDeviceId,
+  pastedDeviceId,
+  webSessionOnly,
+}: {
+  envelopeDeviceId: string;
+  existingDeviceId?: string;
+  pastedDeviceId?: string;
+  webSessionOnly: boolean;
+}): string | undefined => {
+  if (pastedDeviceId) return pastedDeviceId;
+  if (webSessionOnly) return existingDeviceId;
+  return existingDeviceId ?? envelopeDeviceId;
+};
+
+/**
  * ChatGPT Web connect flow: OAuth authorization code + PKCE where the user signs in in
  * their OWN browser and pastes the callback URL back. The redirect URI belongs to
  * OpenAI (`platform.openai.com/auth/callback`) and cannot be repointed at this

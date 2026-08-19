@@ -10,10 +10,13 @@ import {
 import { isChatGPTWebSessionTokenSafe } from '@lobechat/utils/chatgptWebPaste';
 
 import { ChatGPTWebOAuthError } from './oauthErrors';
+import {
+  formatSessionCookieHeader,
+  readMatchingSessionChunksFromJar,
+  resolveSessionCookieChunks,
+} from './sessionCookie';
 
 export const CHATGPT_BASE = 'https://chatgpt.com';
-/** next-auth session cookie; the renewal credential of the web-session connect path. */
-const SESSION_COOKIE_NAME = '__Secure-next-auth.session-token';
 
 /**
  * Upper bound on a session token we are willing to hold. next-auth chunks a large session
@@ -65,9 +68,15 @@ export const webSessionHeaders = (
   sessionToken: string,
   deviceId?: string,
   browserProfile: BrowserDeviceProfile = DEFAULT_BROWSER_DEVICE_PROFILE,
+  sessionChunks?: readonly string[],
 ): Record<string, string> => {
   assertSessionTokenShape(sessionToken);
   const safeDeviceId = deviceId && DEVICE_ID_CHARSET.test(deviceId) ? deviceId : undefined;
+  const cookieChunks = resolveSessionCookieChunks(
+    sessionToken,
+    sessionChunks,
+    deviceId ? readMatchingSessionChunksFromJar(deviceId, sessionToken) : undefined,
+  );
 
   const headers: Record<string, string> = {
     accept: 'application/json',
@@ -79,7 +88,7 @@ export const webSessionHeaders = (
     ),
     cookie: [
       ...(safeDeviceId ? [`oai-did=${safeDeviceId}`] : []),
-      `${SESSION_COOKIE_NAME}=${sessionToken}`,
+      formatSessionCookieHeader(cookieChunks),
     ].join('; '),
     origin: CHATGPT_BASE,
     priority: PRIORITY_XHR,

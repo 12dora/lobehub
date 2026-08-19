@@ -1911,6 +1911,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     });
     await caller.aiProviderOAuth.pollAuthStatus({
       deviceCode: started.deviceCode,
+      deviceId: envelope.deviceId,
       id: 'chatgptweb',
       reason: 'connect the shared ChatGPT Web account',
       sessionToken: sessionJwe,
@@ -1936,6 +1937,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     });
     await caller.aiProviderOAuth.pollAuthStatus({
       deviceCode: started.deviceCode,
+      deviceId: envelope.deviceId,
       id: 'chatgptweb',
       reason: 'connect the shared ChatGPT Web account',
       sessionToken: sessionJwe,
@@ -1963,6 +1965,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     });
     await caller.aiProviderOAuth.pollAuthStatus({
       deviceCode: started.deviceCode,
+      deviceId: envelope.deviceId,
       id: 'chatgptweb',
       reason: 'connect the shared ChatGPT Web account',
       sessionToken: sessionJwe,
@@ -2000,6 +2003,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     });
     await caller.aiProviderOAuth.pollAuthStatus({
       deviceCode: started.deviceCode,
+      deviceId: envelope.deviceId,
       id: 'chatgptweb',
       reason: 'connect the shared ChatGPT Web account',
       sessionToken: sessionJwe,
@@ -2031,6 +2035,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     });
     await caller.aiProviderOAuth.pollAuthStatus({
       deviceCode: started.deviceCode,
+      deviceId: envelope.deviceId,
       id: 'chatgptweb',
       reason: 'connect the shared ChatGPT Web account',
       sessionToken: sessionJwe,

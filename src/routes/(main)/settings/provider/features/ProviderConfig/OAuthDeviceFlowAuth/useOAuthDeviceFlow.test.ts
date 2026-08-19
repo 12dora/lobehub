@@ -194,6 +194,7 @@ describe('useOAuthDeviceFlow paste flow', () => {
   });
 
   it.each([
+    ['device_mismatch', 'deviceMismatch'],
     ['session_invalid', 'sessionInvalid'],
     ['token_not_web', 'tokenNotWeb'],
   ])('maps the %s literal onto the pasted-credential field', async (code, mapped) => {

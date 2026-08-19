@@ -7,6 +7,7 @@ import type {
 /** Server error literal (K3) → i18n suffix used by the paste form. */
 const PASTE_ERROR_MAP: Record<string, SharedOAuthPasteError | 'expired'> = {
   access_token_invalid: 'accessTokenInvalid',
+  device_mismatch: 'deviceMismatch',
   exchange_failed: 'exchangeFailed',
   expired: 'expired',
   invalid_callback: 'invalidCallback',

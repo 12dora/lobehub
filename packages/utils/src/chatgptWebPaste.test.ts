@@ -4,6 +4,7 @@ import {
   isChatGPTWebSessionToken,
   isChatGPTWebSessionTokenSafe,
   parseChatGPTWebPaste,
+  resolveChatGPTWebDeviceBinding,
 } from './chatgptWebPaste';
 
 const b64url = (value: string): string =>
@@ -84,7 +85,7 @@ describe('parseChatGPTWebPaste', () => {
     const result = parseChatGPTWebPaste(
       `oai-did=abc; __Secure-next-auth.session-token=${token}; _cfuvid=zzz`,
     );
-    expect(result).toEqual({ kind: 'web_session', sessionToken: token });
+    expect(result).toEqual({ deviceId: 'abc', kind: 'web_session', sessionToken: token });
   });
 
   it('accepts a `Cookie:` header prefix and percent-encoded values', () => {
@@ -100,7 +101,11 @@ describe('parseChatGPTWebPaste', () => {
     const result = parseChatGPTWebPaste(
       '__Secure-next-auth.session-token.1=BBB; __Secure-next-auth.session-token.0=AAA',
     );
-    expect(result).toEqual({ kind: 'web_session', sessionToken: 'AAABBB' });
+    expect(result).toEqual({
+      kind: 'web_session',
+      sessionChunks: ['AAA', 'BBB'],
+      sessionToken: 'AAABBB',
+    });
   });
 
   it('extracts both credentials from a bash "Copy as cURL" command, preferring the session', () => {
@@ -115,7 +120,12 @@ describe('parseChatGPTWebPaste', () => {
         `  --compressed`,
       ].join('\n'),
     );
-    expect(result).toEqual({ accessToken: token, kind: 'web_session', sessionToken: session });
+    expect(result).toEqual({
+      accessToken: token,
+      deviceId: '1',
+      kind: 'web_session',
+      sessionToken: session,
+    });
   });
 
   it('handles cmd/PowerShell double-quoted cURL and the -b cookie flag', () => {
@@ -175,6 +185,65 @@ describe('parseChatGPTWebPaste', () => {
 
   it('never returns a session token for a multi-token paste without the cookie', () => {
     expect(parseChatGPTWebPaste(`${jwe()} ${jwe()}`)).toEqual({ kind: 'unknown' });
+  });
+
+  it('extracts a matching OAI-Device-Id header and oai-did cookie', () => {
+    const deviceId = '3f7c0f7a-6f6e-4a1b-9c2d-8e5a1b2c3d4e';
+    const session = jwe();
+    const result = parseChatGPTWebPaste(
+      [
+        `curl 'https://chatgpt.com/backend-api/me' \\`,
+        `  -H 'oai-device-id: ${deviceId}' \\`,
+        `  -H 'cookie: oai-did=${deviceId}; __Secure-next-auth.session-token=${session}'`,
+      ].join('\n'),
+    );
+    expect(result).toEqual({
+      deviceId,
+      kind: 'web_session',
+      sessionToken: session,
+    });
+  });
+
+  it('rejects a paste whose header and cookie device ids disagree', () => {
+    const session = jwe();
+    expect(
+      parseChatGPTWebPaste(
+        [
+          `-H 'OAI-Device-Id: 3f7c0f7a-6f6e-4a1b-9c2d-8e5a1b2c3d4e'`,
+          `-H 'cookie: oai-did=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee; __Secure-next-auth.session-token=${session}'`,
+        ].join('\n'),
+      ),
+    ).toEqual({ kind: 'device_mismatch' });
+  });
+
+  it('treats header/cookie device ids that differ only by case as the same binding', () => {
+    const session = jwe();
+    expect(
+      parseChatGPTWebPaste(
+        `OAI-Device-Id: ABC-1; oai-did=abc-1; __Secure-next-auth.session-token=${session}`,
+      ),
+    ).toEqual({
+      deviceId: 'ABC-1',
+      kind: 'web_session',
+      sessionToken: session,
+    });
+  });
+});
+
+describe('resolveChatGPTWebDeviceBinding', () => {
+  it('returns the one id that is present', () => {
+    expect(resolveChatGPTWebDeviceBinding('dev-1', undefined)).toEqual({
+      deviceId: 'dev-1',
+      mismatch: false,
+    });
+    expect(resolveChatGPTWebDeviceBinding(undefined, 'dev-1')).toEqual({
+      deviceId: 'dev-1',
+      mismatch: false,
+    });
+  });
+
+  it('flags a mismatch rather than picking one', () => {
+    expect(resolveChatGPTWebDeviceBinding('dev-1', 'dev-2')).toEqual({ mismatch: true });
   });
 });
 
