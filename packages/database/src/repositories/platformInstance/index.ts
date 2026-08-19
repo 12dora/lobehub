@@ -4,14 +4,12 @@ import {
   count,
   desc,
   eq,
-  gt,
   gte,
   inArray,
   isNull,
   lt,
   notExists,
   notInArray,
-  or,
   sql,
 } from 'drizzle-orm';
 
@@ -30,6 +28,8 @@ import {
   platformInstanceRevisionStates,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { freshnessPredicate, heartbeatIdCursor, mergeInventoryCandidates } from './inventoryPage';
+import { boundedSkipLockedDelete } from './purge';
 
 export const PLATFORM_INSTANCE_HEARTBEAT_INTERVAL_MS = 30_000;
 export const PLATFORM_INSTANCE_STALE_AFTER_MS = 90_000;
@@ -479,41 +479,20 @@ export class PlatformInstanceRepository {
     const snapshotAt = params.snapshotAt ?? (await this.readSnapshotAt());
     const cutoff = new Date(snapshotAt.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
     const freshness = params.freshness ?? 'all';
-    const platformFreshness =
-      freshness === 'live'
-        ? gte(platformInstanceHeartbeats.lastHeartbeatAt, cutoff)
-        : freshness === 'offline'
-          ? lt(platformInstanceHeartbeats.lastHeartbeatAt, cutoff)
-          : undefined;
-    const identityFreshness =
-      freshness === 'live'
-        ? gte(platformIdentityProviderInstances.lastHeartbeat, cutoff)
-        : freshness === 'offline'
-          ? lt(platformIdentityProviderInstances.lastHeartbeat, cutoff)
-          : undefined;
-    const platformCursor = params.cursor
-      ? or(
-          lt(platformInstanceHeartbeats.lastHeartbeatAt, params.cursor.lastHeartbeatAt),
-          and(
-            eq(platformInstanceHeartbeats.lastHeartbeatAt, params.cursor.lastHeartbeatAt),
-            gt(platformInstanceHeartbeats.instanceId, params.cursor.instanceId),
-          ),
-        )
-      : undefined;
-    const identityCursor = params.cursor
-      ? or(
-          lt(platformIdentityProviderInstances.lastHeartbeat, params.cursor.lastHeartbeatAt),
-          and(
-            eq(platformIdentityProviderInstances.lastHeartbeat, params.cursor.lastHeartbeatAt),
-            gt(platformIdentityProviderInstances.instanceId, params.cursor.instanceId),
-          ),
-        )
-      : undefined;
     // Sequential reads: callers wrap this in a transaction (statusService inventory page).
     const platformRows = await this.db
       .select()
       .from(platformInstanceHeartbeats)
-      .where(and(platformFreshness, platformCursor))
+      .where(
+        and(
+          freshnessPredicate(platformInstanceHeartbeats.lastHeartbeatAt, freshness, cutoff),
+          heartbeatIdCursor(
+            platformInstanceHeartbeats.lastHeartbeatAt,
+            platformInstanceHeartbeats.instanceId,
+            params.cursor,
+          ),
+        ),
+      )
       .orderBy(
         desc(platformInstanceHeartbeats.lastHeartbeatAt),
         asc(platformInstanceHeartbeats.instanceId),
@@ -522,32 +501,22 @@ export class PlatformInstanceRepository {
     const identityRows = await this.db
       .select()
       .from(platformIdentityProviderInstances)
-      .where(and(identityFreshness, identityCursor))
+      .where(
+        and(
+          freshnessPredicate(platformIdentityProviderInstances.lastHeartbeat, freshness, cutoff),
+          heartbeatIdCursor(
+            platformIdentityProviderInstances.lastHeartbeat,
+            platformIdentityProviderInstances.instanceId,
+            params.cursor,
+          ),
+        ),
+      )
       .orderBy(
         desc(platformIdentityProviderInstances.lastHeartbeat),
         asc(platformIdentityProviderInstances.instanceId),
       )
       .limit(limit + 1);
-    const candidates = [
-      ...platformRows.map((instance) => ({
-        heartbeat: instance.lastHeartbeatAt,
-        instance,
-        instanceId: instance.instanceId,
-        instanceKind: 'platform' as const,
-      })),
-      ...identityRows.map((instance) => ({
-        heartbeat: instance.lastHeartbeat,
-        instance,
-        instanceId: instance.instanceId,
-        instanceKind: 'identity_startup' as const,
-      })),
-    ]
-      .sort(
-        (left, right) =>
-          right.heartbeat.getTime() - left.heartbeat.getTime() ||
-          left.instanceId.localeCompare(right.instanceId),
-      )
-      .slice(0, limit + 1);
+    const candidates = mergeInventoryCandidates(platformRows, identityRows, limit);
     const hasMore = candidates.length > limit;
     const visible = hasMore ? candidates.slice(0, limit) : candidates;
     const platformIds = visible
@@ -653,62 +622,32 @@ export class PlatformInstanceRepository {
         keep.length > 0 ? notInArray(platformInstanceHeartbeats.instanceId, keep) : undefined,
       );
 
-    const expiredRequests = await this.db
-      .delete(platformIdentityProviderRestartRequests)
-      .where(
-        and(
-          inArray(
-            platformIdentityProviderRestartRequests.requestId,
-            this.db
-              .select({ requestId: platformIdentityProviderRestartRequests.requestId })
-              .from(platformIdentityProviderRestartRequests)
-              .where(expiredRequest())
-              .orderBy(asc(platformIdentityProviderRestartRequests.createdAt))
-              .limit(limit)
-              .for('update', { skipLocked: true }),
-          ),
-          expiredRequest(),
-        ),
-      )
-      .returning({ requestId: platformIdentityProviderRestartRequests.requestId });
+    const expiredRequests = await boundedSkipLockedDelete({
+      db: this.db,
+      idColumn: platformIdentityProviderRestartRequests.requestId,
+      limit,
+      orderColumn: platformIdentityProviderRestartRequests.createdAt,
+      table: platformIdentityProviderRestartRequests,
+      where: expiredRequest(),
+    });
 
-    const identityInstances = await this.db
-      .delete(platformIdentityProviderInstances)
-      .where(
-        and(
-          inArray(
-            platformIdentityProviderInstances.instanceId,
-            this.db
-              .select({ instanceId: platformIdentityProviderInstances.instanceId })
-              .from(platformIdentityProviderInstances)
-              .where(purgeableIdentity())
-              .orderBy(asc(platformIdentityProviderInstances.lastHeartbeat))
-              .limit(limit)
-              .for('update', { skipLocked: true }),
-          ),
-          purgeableIdentity(),
-        ),
-      )
-      .returning({ instanceId: platformIdentityProviderInstances.instanceId });
+    const identityInstances = await boundedSkipLockedDelete({
+      db: this.db,
+      idColumn: platformIdentityProviderInstances.instanceId,
+      limit,
+      orderColumn: platformIdentityProviderInstances.lastHeartbeat,
+      table: platformIdentityProviderInstances,
+      where: purgeableIdentity(),
+    });
 
-    const platformInstances = await this.db
-      .delete(platformInstanceHeartbeats)
-      .where(
-        and(
-          inArray(
-            platformInstanceHeartbeats.instanceId,
-            this.db
-              .select({ instanceId: platformInstanceHeartbeats.instanceId })
-              .from(platformInstanceHeartbeats)
-              .where(purgeablePlatform())
-              .orderBy(asc(platformInstanceHeartbeats.lastHeartbeatAt))
-              .limit(limit)
-              .for('update', { skipLocked: true }),
-          ),
-          purgeablePlatform(),
-        ),
-      )
-      .returning({ instanceId: platformInstanceHeartbeats.instanceId });
+    const platformInstances = await boundedSkipLockedDelete({
+      db: this.db,
+      idColumn: platformInstanceHeartbeats.instanceId,
+      limit,
+      orderColumn: platformInstanceHeartbeats.lastHeartbeatAt,
+      table: platformInstanceHeartbeats,
+      where: purgeablePlatform(),
+    });
 
     return {
       identityInstances: identityInstances.length,

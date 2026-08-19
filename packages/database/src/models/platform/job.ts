@@ -9,6 +9,16 @@ import {
   type PlatformJobStatus,
 } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
+import {
+  claimCandidateWhere,
+  coerceClaimedJob,
+  databaseLeaseUntil,
+  databaseNow,
+  deadLetterLeaseExhausted,
+  DEFAULT_LEASE_MS,
+  MAX_ATTEMPTS_LEASE_EXPIRED_ERROR_JSON,
+  rowsOf,
+} from './jobClaim';
 
 export interface EnqueueJobParams {
   idempotencyKey: string;
@@ -115,39 +125,6 @@ export interface AdminPlatformJobSummary {
   failed: number;
   total: number;
 }
-
-const DEFAULT_LEASE_MS = 30_000;
-const databaseNow = sql<Date>`statement_timestamp()`;
-
-const rowsOf = <T>(result: unknown): T[] => {
-  if (Array.isArray(result)) return result as T[];
-  if (result && typeof result === 'object' && 'rows' in result) {
-    const rows = (result as { rows?: unknown }).rows;
-    return Array.isArray(rows) ? (rows as T[]) : [];
-  }
-  return [];
-};
-
-const asDate = (value: Date | string | null | undefined): Date | null => {
-  if (value instanceof Date) return value;
-  if (typeof value === 'string' || typeof value === 'number') {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-  return null;
-};
-
-const coerceClaimedJob = (row: PlatformJobItem): PlatformJobItem => ({
-  ...row,
-  createdAt: asDate(row.createdAt) ?? row.createdAt,
-  finishedAt: asDate(row.finishedAt),
-  heartbeatAt: asDate(row.heartbeatAt),
-  leaseUntil: asDate(row.leaseUntil),
-  startedAt: asDate(row.startedAt),
-  updatedAt: asDate(row.updatedAt) ?? row.updatedAt,
-});
-const databaseLeaseUntil = (leaseMs: number) =>
-  sql<Date>`statement_timestamp() + (${leaseMs} * interval '1 millisecond')`;
 
 /**
  * Platform job state machine with idempotent enqueue, lease claim, heartbeat, and retry.
@@ -376,15 +353,6 @@ export class PlatformJobModel {
    */
   claimNext = async (params: ClaimJobParams): Promise<PlatformJobItem | null> => {
     const leaseMs = params.leaseMs ?? DEFAULT_LEASE_MS;
-    /** Rows still allowed another claim: unlimited, or attempt count below the cap. */
-    const withinAttemptBudget = sql<boolean>`(
-      ${platformJobs.maxAttempts} IS NULL
-      OR ${platformJobs.attempt} < ${platformJobs.maxAttempts}
-    )`;
-    const attemptBudgetExhausted = sql<boolean>`(
-      ${platformJobs.maxAttempts} IS NOT NULL
-      AND ${platformJobs.attempt} >= ${platformJobs.maxAttempts}
-    )`;
 
     return this.db.transaction(async (tx) => {
       const typeFilter =
@@ -394,46 +362,14 @@ export class PlatformJobModel {
 
       // Crash recovery: lease-expired work that already burned its attempt budget
       // must not be reclaimed — dead-letter it instead of stranding as `running`.
-      await tx
-        .update(platformJobs)
-        .set({
-          finishedAt: databaseNow,
-          lastError: sql<Record<string, unknown>>`coalesce(
-            ${platformJobs.lastError},
-            '{"code":"MAX_ATTEMPTS_EXCEEDED","reason":"lease_expired_after_attempt_budget"}'::jsonb
-          )`,
-          leaseOwner: null,
-          leaseUntil: null,
-          status: 'dead',
-          updatedAt: databaseNow,
-        })
-        .where(
-          and(
-            eq(platformJobs.status, 'running'),
-            lte(platformJobs.leaseUntil, databaseNow),
-            attemptBudgetExhausted,
-            typeFilter,
-          ),
-        );
-
-      const conditions = [
-        or(
-          eq(platformJobs.status, 'pending'),
-          and(eq(platformJobs.status, 'running'), lte(platformJobs.leaseUntil, databaseNow)),
-        )!,
-        withinAttemptBudget,
-      ];
-
-      if (typeFilter) {
-        conditions.push(typeFilter);
-      }
+      await deadLetterLeaseExhausted(tx, typeFilter);
 
       // Prefer oldest pending / expired work. FOR UPDATE prevents double claim.
       // skipLocked lets concurrent workers proceed when another holds a row lock.
       const candidates = await tx
         .select()
         .from(platformJobs)
-        .where(and(...conditions))
+        .where(claimCandidateWhere(typeFilter))
         .orderBy(asc(platformJobs.createdAt))
         .limit(1)
         .for('update', { skipLocked: true });
@@ -456,16 +392,7 @@ export class PlatformJobModel {
           status: 'running',
           updatedAt: databaseNow,
         })
-        .where(
-          and(
-            eq(platformJobs.id, candidate.id),
-            or(
-              eq(platformJobs.status, 'pending'),
-              and(eq(platformJobs.status, 'running'), lte(platformJobs.leaseUntil, databaseNow)),
-            ),
-            withinAttemptBudget,
-          ),
-        )
+        .where(and(eq(platformJobs.id, candidate.id), claimCandidateWhere()))
         .returning();
 
       return claimed ?? null;
@@ -500,7 +427,7 @@ export class PlatformJobModel {
           finished_at = statement_timestamp(),
           last_error = coalesce(
             last_error,
-            '{"code":"MAX_ATTEMPTS_EXCEEDED","reason":"lease_expired_after_attempt_budget"}'::jsonb
+            ${sql.raw(`'${MAX_ATTEMPTS_LEASE_EXPIRED_ERROR_JSON}'`)}::jsonb
           ),
           lease_owner = NULL,
           lease_until = NULL,

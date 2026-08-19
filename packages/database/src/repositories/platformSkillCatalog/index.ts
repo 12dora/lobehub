@@ -3,8 +3,6 @@ import { and, asc, desc, eq, gt, ilike, inArray, lt, or, sql } from 'drizzle-orm
 import {
   type NewPlatformSkill,
   type NewPlatformSkillVersion,
-  platformAgents,
-  platformAgentVersions,
   type PlatformDistribution,
   platformResourceRevisions,
   type PlatformResourceStatus,
@@ -18,6 +16,9 @@ import {
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { boundedLimit } from '../platformPagination';
 import { likeContains } from '../platformSearch';
+import { mergeDependentPage, selectAgentDependents, selectSkillDependents } from './dependents';
+import type { PublishedSkillJoinRow } from './publishedJoin';
+import { joinPublishedSkillVersions, joinPublishedSkillVersionsExact } from './publishedJoin';
 
 export interface PlatformSkillPage {
   items: PlatformSkillItem[];
@@ -75,15 +76,6 @@ export interface PlatformSkillDependentCursor {
   type: 'agent' | 'skill';
   version: string;
 }
-
-const compareCodepoint = (left: string, right: string) =>
-  left < right ? -1 : left > right ? 1 : 0;
-
-const compareDependent = (left: PlatformSkillDependent, right: PlatformSkillDependent) =>
-  compareCodepoint(left.type, right.type) ||
-  compareCodepoint(left.key, right.key) ||
-  compareCodepoint(left.version, right.version) ||
-  compareCodepoint(left.id, right.id);
 
 /** Persistence boundary for stable Skill identities and append-only Skill versions. */
 export class PlatformSkillCatalogRepository {
@@ -267,40 +259,15 @@ export class PlatformSkillCatalogRepository {
       eq(platformResourceRevisions.resourceType, 'skill'),
       inArray(platformResourceRevisions.status, ['published', 'archived']),
       sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
+      eq(platformResourceRevisions.revision, platformSkills.revision),
     ];
     if (params.cursor) conditions.push(gt(snapshotSkillKey, params.cursor));
-    const rows = await this.db
-      .select({
-        payload: platformResourceRevisions.payload,
-        revision: platformResourceRevisions.revision,
-        skillId: platformSkills.id,
-        status: platformResourceRevisions.status,
-        version: platformSkillVersions,
-      })
-      .from(platformSkills)
-      .innerJoin(
-        platformResourceRevisions,
-        and(
-          eq(platformResourceRevisions.resourceType, 'skill'),
-          eq(platformResourceRevisions.resourceId, platformSkills.id),
-          eq(platformResourceRevisions.revision, platformSkills.revision),
-        ),
-      )
-      .innerJoin(
-        platformSkillVersions,
-        and(
-          eq(
-            platformSkillVersions.id,
-            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
-          ),
-          eq(platformSkillVersions.skillId, platformSkills.id),
-        ),
-      )
+    const rows = await joinPublishedSkillVersions(this.db)
       .where(and(...conditions))
       .orderBy(asc(snapshotSkillKey))
       .limit(limit + 1);
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((row) => ({
+    const items = (hasMore ? rows.slice(0, limit) : rows).map((row: PublishedSkillJoinRow) => ({
       ...row,
       payload: row.payload as unknown as PlatformPublishedSkillSnapshot,
     }));
@@ -415,32 +382,7 @@ export class PlatformSkillCatalogRepository {
         sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
       );
     }
-    const [row] = await this.db
-      .select({
-        payload: platformResourceRevisions.payload,
-        revision: platformResourceRevisions.revision,
-        skillId: platformSkills.id,
-        status: platformResourceRevisions.status,
-        version: platformSkillVersions,
-      })
-      .from(platformSkills)
-      .innerJoin(
-        platformResourceRevisions,
-        and(
-          eq(platformResourceRevisions.resourceType, 'skill'),
-          eq(platformResourceRevisions.resourceId, platformSkills.id),
-        ),
-      )
-      .innerJoin(
-        platformSkillVersions,
-        and(
-          eq(platformSkillVersions.skillId, platformSkills.id),
-          eq(
-            platformSkillVersions.id,
-            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
-          ),
-        ),
-      )
+    const [row] = await joinPublishedSkillVersions(this.db)
       .where(and(...conditions))
       .orderBy(desc(platformResourceRevisions.revision))
       .limit(1);
@@ -457,39 +399,14 @@ export class PlatformSkillCatalogRepository {
     skillKey: string,
     version: string,
   ): Promise<PlatformPublishedSkillRow | undefined> => {
-    const [row] = await this.db
-      .select({
-        payload: platformResourceRevisions.payload,
-        revision: platformResourceRevisions.revision,
-        skillId: platformSkills.id,
-        status: platformResourceRevisions.status,
-        version: platformSkillVersions,
-      })
-      .from(platformSkills)
-      .innerJoin(
-        platformResourceRevisions,
-        and(
-          eq(platformResourceRevisions.resourceType, 'skill'),
-          eq(platformResourceRevisions.resourceId, platformSkills.id),
-          eq(platformResourceRevisions.status, 'published'),
-        ),
-      )
-      .innerJoin(
-        platformSkillVersions,
-        and(
-          eq(platformSkillVersions.skillId, platformSkills.id),
-          eq(
-            platformSkillVersions.id,
-            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
-          ),
-          eq(platformSkillVersions.version, version),
-        ),
-      )
+    const [row] = await joinPublishedSkillVersions(this.db)
       .where(
         and(
           eq(platformSkills.skillKey, skillKey),
           eq(platformSkills.status, 'published'),
           eq(platformSkills.enabled, true),
+          eq(platformResourceRevisions.status, 'published'),
+          eq(platformSkillVersions.version, version),
           sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
           sql`${platformResourceRevisions.payload}->'skill'->>'skillKey' = ${skillKey}`,
         ),
@@ -511,38 +428,11 @@ export class PlatformSkillCatalogRepository {
     const requestedPairs = references.map(({ skillKey, version }) =>
       and(eq(platformSkills.skillKey, skillKey), eq(platformSkillVersions.version, version)),
     );
-    const rows = await this.db
-      .select({
-        payload: platformResourceRevisions.payload,
-        revision: platformResourceRevisions.revision,
-        skillId: platformSkills.id,
-        // Join identity — must key the batch map by the *requested* skillKey so a
-        // renamed skill still hits the map and surfaces dependency_identity_mismatch
-        // (payload.skill.skillKey may diverge from the table identity).
-        skillKey: platformSkills.skillKey,
-        status: platformResourceRevisions.status,
-        version: platformSkillVersions,
-      })
-      .from(platformSkills)
-      .innerJoin(
-        platformResourceRevisions,
-        and(
-          eq(platformResourceRevisions.resourceType, 'skill'),
-          eq(platformResourceRevisions.resourceId, platformSkills.id),
-          eq(platformResourceRevisions.status, 'published'),
-        ),
-      )
-      .innerJoin(
-        platformSkillVersions,
-        and(
-          eq(platformSkillVersions.skillId, platformSkills.id),
-          eq(
-            platformSkillVersions.id,
-            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
-          ),
-        ),
-      )
-      .where(or(...requestedPairs))
+    // Join identity — must key the batch map by the *requested* skillKey so a
+    // renamed skill still hits the map and surfaces dependency_identity_mismatch
+    // (payload.skill.skillKey may diverge from the table identity).
+    const rows = await joinPublishedSkillVersionsExact(this.db)
+      .where(and(eq(platformResourceRevisions.status, 'published'), or(...requestedPairs)))
       .orderBy(
         asc(platformSkills.skillKey),
         asc(platformSkillVersions.version),
@@ -569,37 +459,12 @@ export class PlatformSkillCatalogRepository {
     const requestedPairs = references.map(({ skillKey, version }) =>
       and(eq(platformSkills.skillKey, skillKey), eq(platformSkillVersions.version, version)),
     );
-    const rows = await this.db
-      .select({
-        payload: platformResourceRevisions.payload,
-        revision: platformResourceRevisions.revision,
-        skillId: platformSkills.id,
-        status: platformResourceRevisions.status,
-        version: platformSkillVersions,
-      })
-      .from(platformSkills)
-      .innerJoin(
-        platformResourceRevisions,
-        and(
-          eq(platformResourceRevisions.resourceType, 'skill'),
-          eq(platformResourceRevisions.resourceId, platformSkills.id),
-          eq(platformResourceRevisions.status, 'published'),
-        ),
-      )
-      .innerJoin(
-        platformSkillVersions,
-        and(
-          eq(platformSkillVersions.skillId, platformSkills.id),
-          eq(
-            platformSkillVersions.id,
-            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
-          ),
-        ),
-      )
+    const rows = await joinPublishedSkillVersions(this.db)
       .where(
         and(
           eq(platformSkills.status, 'published'),
           eq(platformSkills.enabled, true),
+          eq(platformResourceRevisions.status, 'published'),
           sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
           sql`${platformResourceRevisions.payload}->'skill'->>'skillKey' = ${platformSkills.skillKey}`,
           or(...requestedPairs),
@@ -627,110 +492,9 @@ export class PlatformSkillCatalogRepository {
     version?: string;
   }) => {
     const limit = boundedLimit(params.limit);
-    const agentCursorCondition = params.cursor
-      ? params.cursor.type === 'skill'
-        ? sql`false`
-        : sql`(${platformAgents.agentKey}, ${platformAgentVersions.version}, ${platformAgentVersions.id}) > (${params.cursor.key}, ${params.cursor.version}, ${params.cursor.id})`
-      : undefined;
-    const skillCursorCondition = params.cursor
-      ? params.cursor.type === 'agent'
-        ? undefined
-        : sql`(${platformSkills.skillKey}, ${platformSkillVersions.version}, ${platformSkillVersions.id}) > (${params.cursor.key}, ${params.cursor.version}, ${params.cursor.id})`
-      : undefined;
-    const versionCondition = params.version
-      ? sql`dependency->>'version' = ${params.version}`
-      : sql`true`;
-    const skillRows = await this.db
-      .select({
-        id: platformSkillVersions.id,
-        name: platformSkills.name,
-        key: platformSkills.skillKey,
-        version: platformSkillVersions.version,
-      })
-      .from(platformSkillVersions)
-      .innerJoin(platformSkills, eq(platformSkillVersions.skillId, platformSkills.id))
-      .where(
-        and(
-          or(
-            and(
-              eq(platformSkills.status, 'published'),
-              eq(platformSkills.currentVersionId, platformSkillVersions.id),
-            ),
-            sql`EXISTS (
-              SELECT 1 FROM ${platformResourceRevisions} skill_revision
-              WHERE skill_revision.resource_type = 'skill'
-                AND skill_revision.resource_id = ${platformSkills.id}
-                AND skill_revision.status = 'published'
-                AND skill_revision.payload->>'versionId' = ${platformSkillVersions.id}
-            )`,
-          )!,
-          skillCursorCondition,
-          sql`EXISTS (
-            SELECT 1
-            FROM jsonb_array_elements(${platformSkillVersions.manifest}->'skillDependencies') dependency
-            WHERE dependency->>'skillKey' = ${params.skillKey} AND ${versionCondition}
-          )`,
-        ),
-      )
-      .orderBy(
-        asc(platformSkills.skillKey),
-        asc(platformSkillVersions.version),
-        asc(platformSkillVersions.id),
-      )
-      .limit(limit + 1);
-    const agentRows = await this.db
-      .select({
-        id: platformAgentVersions.id,
-        key: platformAgents.agentKey,
-        name: platformAgents.title,
-        version: platformAgentVersions.version,
-      })
-      .from(platformAgentVersions)
-      .innerJoin(platformAgents, eq(platformAgentVersions.agentId, platformAgents.id))
-      .where(
-        and(
-          or(
-            and(
-              eq(platformAgents.status, 'published'),
-              eq(platformAgents.migrationRequired, false),
-              eq(platformAgents.currentVersionId, platformAgentVersions.id),
-            ),
-            sql`EXISTS (
-              SELECT 1 FROM ${platformResourceRevisions} agent_revision
-              WHERE agent_revision.resource_type = 'agent'
-                AND agent_revision.resource_id = ${platformAgents.id}
-                AND agent_revision.status = 'published'
-                AND agent_revision.payload->>'versionId' = ${platformAgentVersions.id}
-            )`,
-          )!,
-          agentCursorCondition,
-          sql`EXISTS (
-            SELECT 1
-            FROM jsonb_array_elements(${platformAgentVersions.dependencySnapshot}->'skills') dependency
-            WHERE dependency->>'skillKey' = ${params.skillKey} AND ${versionCondition}
-          )`,
-        ),
-      )
-      .orderBy(
-        asc(platformAgents.agentKey),
-        asc(platformAgentVersions.version),
-        asc(platformAgentVersions.id),
-      )
-      .limit(limit + 1);
-
-    const merged: PlatformSkillDependent[] = [
-      ...agentRows.map((row) => ({ ...row, type: 'agent' as const })),
-      ...skillRows.map((row) => ({ ...row, type: 'skill' as const })),
-    ].sort(compareDependent);
-    const hasMore = merged.length > limit;
-    const items = hasMore ? merged.slice(0, limit) : merged;
-    const last = items.at(-1);
-    return {
-      items,
-      nextCursor:
-        hasMore && last
-          ? { id: last.id, key: last.key, type: last.type, version: last.version }
-          : null,
-    };
+    const query = { ...params, limit };
+    const skillRows = await selectSkillDependents(this.db, query);
+    const agentRows = await selectAgentDependents(this.db, query);
+    return mergeDependentPage(agentRows, skillRows, limit);
   };
 }

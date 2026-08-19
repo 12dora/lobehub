@@ -870,6 +870,30 @@ describe('PlatformGlobalStatsModel', () => {
 
       vi.useRealTimers();
     });
+
+    it('prefers usage.cost over a conflicting flat metadata.cost in both page methods', async () => {
+      const createdAt = new Date('2024-06-10T12:00:00.000Z');
+      await serverDB.insert(messages).values({
+        content: 'conflict',
+        createdAt,
+        id: 'usage-vs-flat-cost',
+        metadata: { cost: 99.99 },
+        model: 'gpt-4',
+        provider: 'openai',
+        role: 'assistant',
+        usage: { cost: 0.42, totalInputTokens: 1, totalOutputTokens: 2 },
+        userId: USER_A,
+      });
+
+      const page = await globalStats.findByDateRangePage(
+        '2024-06-01T00:00:00.000Z',
+        '2024-07-01T00:00:00.000Z',
+      );
+      expect(page.items.find((row) => row.id === 'usage-vs-flat-cost')?.spend).toBe(0.42);
+
+      const bounded = await globalStats.findByMonthBounded('2024-06', 50);
+      expect(bounded.items.find((row) => row.id === 'usage-vs-flat-cost')?.spend).toBe(0.42);
+    });
   });
 
   describe('getMaxTaskDuration', () => {

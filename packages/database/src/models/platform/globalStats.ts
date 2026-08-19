@@ -8,10 +8,8 @@
 import type { AgentRankItem, ModelRankItem, TopicRankItem } from '@lobechat/types';
 import type { HeatmapsProps } from '@lobehub/charts';
 import dayjs from 'dayjs';
-import utc from 'dayjs/plugin/utc';
 import { and, asc, count, desc, eq, gt, gte, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 
-import type { MessageMetadata } from '@/types/message';
 import { today } from '@/utils/time';
 
 import { agents, messages, topics, users } from '../../schemas';
@@ -19,6 +17,8 @@ import { agentOperations } from '../../schemas/agentOperations';
 import type { LobeChatDatabase } from '../../type';
 import { genRangeWhere, genWhere } from '../../utils/genWhere';
 import { normalizeInboxAgentMeta } from '../../utils/inboxAgent';
+import { queryUsageLogsByDay } from './globalStatsGroupByDay';
+import { fillCalendarHeatmap } from './globalStatsHeatmaps';
 import type {
   ActivityPoint,
   ActivitySeriesParams,
@@ -39,26 +39,23 @@ import type {
   GlobalStatsTotals,
   GlobalUsageLog,
   GlobalUsageRecordItem,
-  GroupByDayDimRow,
   UserRankItem,
   UserRankOrderBy,
 } from './globalStatsShared';
 import {
   activityLevel,
-  asRows,
-  capGroupByDayRecords,
   explicitRangeWhere,
-  GROUP_BY_DAY_MAX_MODELS,
-  GROUP_BY_DAY_MAX_PROVIDERS,
-  GROUP_BY_DAY_OTHER_USER_ID,
-  GROUP_BY_DAY_TOP_USERS,
   HEATMAP_MESSAGES_PER_LEVEL,
   isNonVirtualAgentSql,
   legacyDateWheres,
   MAX_HEATMAP_LEVEL,
   MAX_USAGE_DETAIL_ROWS,
   messageTotalTokensSql,
-  userDisplaySql,
+  selectUsageDetailProjection,
+  toGlobalUsageRecordItem,
+  usageCostSql,
+  usageInputTokensSql,
+  usageOutputTokensSql,
 } from './globalStatsShared';
 
 export type {
@@ -96,8 +93,6 @@ export {
   MAX_USAGE_DETAIL_ROWS,
   messageTotalTokensSql,
 } from './globalStatsShared';
-
-dayjs.extend(utc);
 
 export class PlatformGlobalStatsModel {
   private readonly db: LobeChatDatabase;
@@ -231,18 +226,8 @@ export class PlatformGlobalStatsModel {
   ): Promise<Array<{ day: string; totalTokens: number }>> => {
     const params = toStatsFilterParams(arg);
     const range = resolveStatsRange(params);
-    const inputTokensExpr = sql<number>`COALESCE(
-      (${messages.usage}->>'totalInputTokens')::double precision,
-      (${messages.metadata}->'usage'->>'totalInputTokens')::double precision,
-      (${messages.metadata}->>'totalInputTokens')::double precision,
-      0
-    )`;
-    const outputTokensExpr = sql<number>`COALESCE(
-      (${messages.usage}->>'totalOutputTokens')::double precision,
-      (${messages.metadata}->'usage'->>'totalOutputTokens')::double precision,
-      (${messages.metadata}->>'totalOutputTokens')::double precision,
-      0
-    )`;
+    const inputTokensExpr = usageInputTokensSql();
+    const outputTokensExpr = usageOutputTokensSql();
     const dayExpr = sql<string>`to_char(date_trunc('day', ${messages.createdAt} AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
 
     const rangeWhere = genWhere([
@@ -439,24 +424,9 @@ export class PlatformGlobalStatsModel {
       endAt: params?.endAt ?? new Date(),
       startAt: params?.startAt,
     });
-    const costExpr = sql<number>`COALESCE(
-      (${messages.usage}->>'cost')::double precision,
-      (${messages.metadata}->'usage'->>'cost')::double precision,
-      (${messages.metadata}->>'cost')::double precision,
-      0
-    )`;
-    const inputTokensExpr = sql<number>`COALESCE(
-      (${messages.usage}->>'totalInputTokens')::double precision,
-      (${messages.metadata}->'usage'->>'totalInputTokens')::double precision,
-      (${messages.metadata}->>'totalInputTokens')::double precision,
-      0
-    )`;
-    const outputTokensExpr = sql<number>`COALESCE(
-      (${messages.usage}->>'totalOutputTokens')::double precision,
-      (${messages.metadata}->'usage'->>'totalOutputTokens')::double precision,
-      (${messages.metadata}->>'totalOutputTokens')::double precision,
-      0
-    )`;
+    const costExpr = usageCostSql();
+    const inputTokensExpr = usageInputTokensSql();
+    const outputTokensExpr = usageOutputTokensSql();
     // users row may be missing (deleted account) — fall back to the message's userId.
     const nameExpr = sql<string>`COALESCE(NULLIF(TRIM(${users.fullName}), ''), NULLIF(TRIM(${users.username}), ''), NULLIF(TRIM(${users.email}), ''), ${users.id}, ${messages.userId})`;
     /** Usage lives on assistant replies — gate every SUM, never the message COUNT. */
@@ -529,9 +499,6 @@ export class PlatformGlobalStatsModel {
       .groupBy(sql`heatmaps_date`)
       .orderBy(desc(sql`heatmaps_date`));
 
-    const heatmapData: HeatmapsProps['data'] = [];
-    let currentDate = startDate.clone();
-
     const dateCountMap = new Map<string, number>();
     for (const item of result) {
       if (item?.date) {
@@ -540,23 +507,15 @@ export class PlatformGlobalStatsModel {
       }
     }
 
-    while (currentDate.isBefore(endDate) || currentDate.isSame(endDate, 'day')) {
-      const formattedDate = currentDate.format('YYYY-MM-DD');
-      const dayCount = dateCountMap.get(formattedDate) || 0;
-
-      const levelCount = dayCount > 0 ? Math.ceil(dayCount / HEATMAP_MESSAGES_PER_LEVEL) : 0;
-      const level = Math.min(MAX_HEATMAP_LEVEL, levelCount);
-
-      heatmapData.push({
-        count: dayCount,
-        date: formattedDate,
-        level,
-      });
-
-      currentDate = currentDate.add(1, 'day');
-    }
-
-    return heatmapData;
+    return fillCalendarHeatmap({
+      endDate,
+      levelOf: (dayCount) => {
+        const levelCount = dayCount > 0 ? Math.ceil(dayCount / HEATMAP_MESSAGES_PER_LEVEL) : 0;
+        return Math.min(MAX_HEATMAP_LEVEL, levelCount);
+      },
+      startDate,
+      values: dateCountMap,
+    });
   };
 
   getTokenHeatmaps = async (): Promise<HeatmapsProps['data']> => {
@@ -593,31 +552,18 @@ export class PlatformGlobalStatsModel {
       }
     }
 
-    const heatmapData: HeatmapsProps['data'] = [];
-    let currentDate = startDate.clone();
-
-    while (currentDate.isBefore(endDate) || currentDate.isSame(endDate, 'day')) {
-      const formattedDate = currentDate.format('YYYY-MM-DD');
-      const tokens = dateTokenMap.get(formattedDate) || 0;
-
-      const level =
+    return fillCalendarHeatmap({
+      endDate,
+      levelOf: (tokens) =>
         tokens > 0 && maxTokens > 0
           ? Math.min(
               MAX_HEATMAP_LEVEL,
               Math.max(1, Math.ceil((tokens / maxTokens) * MAX_HEATMAP_LEVEL)),
             )
-          : 0;
-
-      heatmapData.push({
-        count: tokens,
-        date: formattedDate,
-        level,
-      });
-
-      currentDate = currentDate.add(1, 'day');
-    }
-
-    return heatmapData;
+          : 0,
+      startDate,
+      values: dateTokenMap,
+    });
   };
 
   /**
@@ -692,17 +638,7 @@ export class PlatformGlobalStatsModel {
     }
 
     const spends = await this.db
-      .select({
-        createdAt: messages.createdAt,
-        id: messages.id,
-        metadata: messages.metadata,
-        model: messages.model,
-        provider: messages.provider,
-        role: messages.role,
-        usage: messages.usage,
-        userDisplay: userDisplaySql,
-        userId: messages.userId,
-      })
+      .select(selectUsageDetailProjection)
       .from(messages)
       .leftJoin(users, eq(messages.userId, users.id))
       .where(cursorCondition ? and(conditions, cursorCondition) : conditions)
@@ -711,33 +647,7 @@ export class PlatformGlobalStatsModel {
 
     const hasMore = spends.length > limit;
     const page = hasMore ? spends.slice(0, limit) : spends;
-    const items = page.map((spend) => {
-      const metadata = spend.metadata as MessageMetadata | null;
-      // Prefer the dedicated `usage` column, then nested metadata.usage /
-      // metadata.performance, then deprecated flat metadata fields (parity with
-      // UsageRecordService.findByDateRange).
-      const usage = spend.usage ?? metadata?.usage;
-      const performance = metadata?.performance;
-      const totalInputTokens = usage?.totalInputTokens ?? metadata?.totalInputTokens ?? 0;
-      const totalOutputTokens = usage?.totalOutputTokens ?? metadata?.totalOutputTokens ?? 0;
-      return {
-        createdAt: spend.createdAt,
-        id: spend.id,
-        metadata: spend.metadata as MessageMetadata | null,
-        model: spend.model ?? '',
-        provider: spend.provider ?? '',
-        spend: usage?.cost ?? metadata?.cost ?? 0,
-        totalInputTokens,
-        totalOutputTokens,
-        totalTokens: totalInputTokens + totalOutputTokens,
-        tps: performance?.tps ?? metadata?.tps ?? 0,
-        ttft: performance?.ttft ?? metadata?.ttft ?? 0,
-        type: 'chat',
-        updatedAt: spend.createdAt,
-        userDisplay: spend.userDisplay || spend.userId,
-        userId: spend.userId,
-      } satisfies GlobalUsageRecordItem;
-    });
+    const items = page.map(toGlobalUsageRecordItem);
 
     const last = items.at(-1);
     return {
@@ -810,17 +720,7 @@ export class PlatformGlobalStatsModel {
     ]);
 
     const spends = await this.db
-      .select({
-        createdAt: messages.createdAt,
-        id: messages.id,
-        metadata: messages.metadata,
-        model: messages.model,
-        provider: messages.provider,
-        role: messages.role,
-        usage: messages.usage,
-        userDisplay: userDisplaySql,
-        userId: messages.userId,
-      })
+      .select(selectUsageDetailProjection)
       .from(messages)
       .leftJoin(users, eq(messages.userId, users.id))
       .where(conditions)
@@ -829,30 +729,7 @@ export class PlatformGlobalStatsModel {
 
     const hasMore = spends.length > limit;
     const page = hasMore ? spends.slice(0, limit) : spends;
-    const items = page.map((spend) => {
-      const metadata = spend.metadata as MessageMetadata | null;
-      const usage = spend.usage ?? metadata?.usage;
-      const performance = metadata?.performance;
-      const totalInputTokens = usage?.totalInputTokens ?? metadata?.totalInputTokens ?? 0;
-      const totalOutputTokens = usage?.totalOutputTokens ?? metadata?.totalOutputTokens ?? 0;
-      return {
-        createdAt: spend.createdAt,
-        id: spend.id,
-        metadata: spend.metadata as MessageMetadata | null,
-        model: spend.model ?? '',
-        provider: spend.provider ?? '',
-        spend: usage?.cost ?? metadata?.cost ?? 0,
-        totalInputTokens,
-        totalOutputTokens,
-        totalTokens: totalInputTokens + totalOutputTokens,
-        tps: performance?.tps ?? metadata?.tps ?? 0,
-        ttft: performance?.ttft ?? metadata?.ttft ?? 0,
-        type: 'chat',
-        updatedAt: spend.createdAt,
-        userDisplay: spend.userDisplay || spend.userId,
-        userId: spend.userId,
-      } satisfies GlobalUsageRecordItem;
-    });
+    const items = page.map(toGlobalUsageRecordItem);
 
     return { hasMore, items };
   };
@@ -883,189 +760,6 @@ export class PlatformGlobalStatsModel {
    * non-blank userId/displayName series.
    */
   findAndGroupByDay = async (arg?: StatsFilterArg): Promise<GlobalUsageLog[]> => {
-    const params = toStatsFilterParams(arg);
-    const range = resolveStatsRange(params);
-
-    // Cost / token extraction mirrors findByDateRange fallback chain in SQL.
-    const costExpr = sql<number>`COALESCE(
-      (${messages.usage}->>'cost')::double precision,
-      (${messages.metadata}->'usage'->>'cost')::double precision,
-      (${messages.metadata}->>'cost')::double precision,
-      0
-    )`;
-    const inputTokensExpr = sql<number>`COALESCE(
-      (${messages.usage}->>'totalInputTokens')::double precision,
-      (${messages.metadata}->'usage'->>'totalInputTokens')::double precision,
-      (${messages.metadata}->>'totalInputTokens')::double precision,
-      0
-    )`;
-    const outputTokensExpr = sql<number>`COALESCE(
-      (${messages.usage}->>'totalOutputTokens')::double precision,
-      (${messages.metadata}->'usage'->>'totalOutputTokens')::double precision,
-      (${messages.metadata}->>'totalOutputTokens')::double precision,
-      0
-    )`;
-    const dayExpr = sql<string>`to_char(date_trunc('day', ${messages.createdAt} AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
-    const modelExpr = sql<string>`COALESCE(${messages.model}, '')`;
-    const providerExpr = sql<string>`COALESCE(${messages.provider}, '')`;
-
-    const rangeWhere = genWhere([
-      eq(messages.role, 'assistant'),
-      genInstantRangeWhere(range, messages.createdAt),
-      params.userId ? eq(messages.userId, params.userId) : undefined,
-    ]);
-
-    const [dayTotals, dimResult] = await Promise.all([
-      this.db
-        .select({
-          day: dayExpr.as('day'),
-          totalRequests: count(messages.id).mapWith(Number),
-          totalSpend: sql<number>`COALESCE(SUM(${costExpr}), 0)`.mapWith(Number),
-          totalTokens:
-            sql<number>`COALESCE(SUM(${inputTokensExpr} + ${outputTokensExpr}), 0)`.mapWith(Number),
-        })
-        .from(messages)
-        .where(rangeWhere)
-        .groupBy(dayExpr)
-        .orderBy(asc(dayExpr)),
-      // Rank and fold every dimension before rows cross the DB boundary. The
-      // second aggregation gives the result a hard day × capped-dimension bound.
-      this.db.execute(sql`
-        WITH base AS (
-          SELECT
-            ${dayExpr} AS day,
-            COALESCE(${messages.userId}, ${GROUP_BY_DAY_OTHER_USER_ID}) AS user_id,
-            ${userDisplaySql} AS user_display,
-            ${modelExpr} AS model,
-            ${providerExpr} AS provider,
-            COALESCE(SUM(${costExpr}), 0)::double precision AS spend,
-            COALESCE(SUM(${inputTokensExpr}), 0)::double precision AS input_tokens,
-            COALESCE(SUM(${outputTokensExpr}), 0)::double precision AS output_tokens
-          FROM ${messages}
-          LEFT JOIN ${users} ON ${messages.userId} = ${users.id}
-          WHERE ${rangeWhere}
-          GROUP BY ${dayExpr}, ${messages.userId}, ${userDisplaySql}, ${modelExpr}, ${providerExpr}
-        ),
-        user_ranked AS (
-          SELECT
-            day,
-            user_id,
-            ROW_NUMBER() OVER (
-              PARTITION BY day
-              ORDER BY SUM(input_tokens + output_tokens) DESC, user_id ASC
-            ) AS rank
-          FROM base
-          GROUP BY day, user_id
-        ),
-        model_ranked AS (
-          SELECT
-            day,
-            model,
-            ROW_NUMBER() OVER (
-              PARTITION BY day
-              ORDER BY SUM(input_tokens + output_tokens) DESC, model ASC
-            ) AS rank
-          FROM base
-          GROUP BY day, model
-        ),
-        provider_ranked AS (
-          SELECT
-            day,
-            provider,
-            ROW_NUMBER() OVER (
-              PARTITION BY day
-              ORDER BY SUM(input_tokens + output_tokens) DESC, provider ASC
-            ) AS rank
-          FROM base
-          GROUP BY day, provider
-        ),
-        labeled AS (
-          SELECT
-            base.day,
-            CASE
-              WHEN user_ranked.rank <= ${GROUP_BY_DAY_TOP_USERS} THEN base.user_id
-              ELSE ${GROUP_BY_DAY_OTHER_USER_ID}
-            END AS user_id,
-            CASE
-              WHEN user_ranked.rank <= ${GROUP_BY_DAY_TOP_USERS}
-                THEN COALESCE(NULLIF(TRIM(base.user_display), ''), base.user_id)
-              ELSE 'Other'
-            END AS user_display,
-            CASE
-              WHEN base.model = '' OR model_ranked.rank <= ${GROUP_BY_DAY_MAX_MODELS}
-                THEN base.model
-              ELSE '__other__'
-            END AS model,
-            CASE
-              WHEN base.provider = '' OR provider_ranked.rank <= ${GROUP_BY_DAY_MAX_PROVIDERS}
-                THEN base.provider
-              ELSE '__other__'
-            END AS provider,
-            base.spend,
-            base.input_tokens,
-            base.output_tokens
-          FROM base
-          INNER JOIN user_ranked
-            ON base.day = user_ranked.day AND base.user_id = user_ranked.user_id
-          INNER JOIN model_ranked
-            ON base.day = model_ranked.day AND base.model = model_ranked.model
-          INNER JOIN provider_ranked
-            ON base.day = provider_ranked.day AND base.provider = provider_ranked.provider
-        )
-        SELECT
-          day,
-          model,
-          provider,
-          SUM(spend)::double precision AS spend,
-          SUM(input_tokens)::double precision AS "totalInputTokens",
-          SUM(output_tokens)::double precision AS "totalOutputTokens",
-          MAX(user_display) AS "userDisplay",
-          user_id AS "userId"
-        FROM labeled
-        GROUP BY day, user_id, model, provider
-        ORDER BY day, user_id, model, provider
-      `),
-    ]);
-    const dimRows = asRows<GroupByDayDimRow>(dimResult);
-
-    type DimRow = (typeof dimRows)[number];
-    const rowsByDay = new Map<string, DimRow[]>();
-    for (const row of dimRows) {
-      const list = rowsByDay.get(row.day) ?? [];
-      list.push(row);
-      rowsByDay.set(row.day, list);
-    }
-
-    const recordsByDay = new Map<string, GlobalUsageRecordItem[]>();
-    for (const [day, rows] of rowsByDay) {
-      recordsByDay.set(day, capGroupByDayRecords(day, rows));
-    }
-
-    const byDay = new Map(
-      dayTotals.map((row) => [
-        row.day,
-        {
-          date: dayjs.utc(row.day).toDate().getTime(),
-          day: row.day,
-          records: recordsByDay.get(row.day) ?? [],
-          totalRequests: row.totalRequests,
-          totalSpend: row.totalSpend,
-          totalTokens: row.totalTokens,
-        } satisfies GlobalUsageLog,
-      ]),
-    );
-
-    // Every UTC day the half-open window touches, last day inclusive.
-    return eachUtcDayKey(range).map(
-      (key) =>
-        byDay.get(key) ?? {
-          date: dayjs.utc(key).toDate().getTime(),
-          day: key,
-          records: [],
-          totalRequests: 0,
-          totalSpend: 0,
-          totalTokens: 0,
-        },
-    );
+    return queryUsageLogsByDay(this.db, arg);
   };
 }

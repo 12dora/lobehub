@@ -268,4 +268,108 @@ describe('PlatformSettingsModel', () => {
     expect(overrides).toHaveLength(0);
     expect(revs).toHaveLength(0);
   });
+
+  describe('readEffectiveSettingsSnapshot', () => {
+    it('returns camelCase published policies and empty overrides when userId is null', async () => {
+      await model.ensureBundle();
+      await model.replacePublishedPolicies({
+        draft: {
+          'general.fontSize': {
+            mode: 'default',
+            schemaVersion: 1,
+            value: 16,
+            visibility: 'visible',
+          },
+        },
+        revision: 1,
+        updatedBy: 'admin-1',
+      });
+
+      const bundle = await model.getBundle();
+      const snapshot = await model.readEffectiveSettingsSnapshot({ userId: null });
+
+      expect(snapshot.overrideRows).toEqual([]);
+      expect(snapshot.userOverrideRevision).toBe(0);
+      expect(snapshot.platformRevision).toBe(bundle?.revision);
+      expect(snapshot.published).toHaveLength(1);
+      expect(snapshot.published[0]).toEqual(
+        expect.objectContaining({
+          createdAt: expect.anything(),
+          mode: 'default',
+          path: 'general.fontSize',
+          revision: 1,
+          schemaVersion: 1,
+          status: 'published',
+          updatedAt: expect.anything(),
+          updatedBy: 'admin-1',
+          value: 16,
+          visibility: 'visible',
+        }),
+      );
+      expect(snapshot.published[0]).not.toHaveProperty('schema_version');
+      expect(snapshot.published[0]).not.toHaveProperty('updated_by');
+      expect(snapshot.published[0]).not.toHaveProperty('created_at');
+      expect(snapshot.published[0]).not.toHaveProperty('updated_at');
+    });
+
+    it('includes override rows and matching user override revision for a userId', async () => {
+      await ensureUsers('user-a');
+      await model.upsertUserOverride({
+        path: 'general.fontSize',
+        source: 'user',
+        userId: 'user-a',
+        value: 20,
+      });
+
+      const expectedRevision = await model.getUserOverrideRevision('user-a');
+      const snapshot = await model.readEffectiveSettingsSnapshot({ userId: 'user-a' });
+
+      expect(snapshot.userOverrideRevision).toBe(expectedRevision);
+      expect(snapshot.overrideRows).toHaveLength(1);
+      expect(snapshot.overrideRows[0]).toEqual(
+        expect.objectContaining({
+          path: 'general.fontSize',
+          source: 'user',
+          updatedAt: expect.anything(),
+          userId: 'user-a',
+          value: 20,
+        }),
+      );
+    });
+
+    it('returns an empty published array when the published table is empty', async () => {
+      const snapshot = await model.readEffectiveSettingsSnapshot({ userId: null });
+
+      expect(snapshot.published).toEqual([]);
+      expect(snapshot.published).not.toBeNull();
+    });
+
+    it('parses json_agg into objects whether the driver returns an array or a JSON string', async () => {
+      await model.replacePublishedPolicies({
+        draft: {
+          'memory.enabled': {
+            mode: 'locked',
+            schemaVersion: 2,
+            value: true,
+            visibility: 'hidden',
+          },
+        },
+        revision: 3,
+        updatedBy: 'admin-2',
+      });
+
+      const snapshot = await model.readEffectiveSettingsSnapshot({ userId: null });
+
+      expect(Array.isArray(snapshot.published)).toBe(true);
+      expect(typeof snapshot.published).not.toBe('string');
+      expect(snapshot.published[0]).toEqual(
+        expect.objectContaining({
+          path: 'memory.enabled',
+          schemaVersion: 2,
+          updatedBy: 'admin-2',
+        }),
+      );
+      expect(typeof snapshot.published[0]).toBe('object');
+    });
+  });
 });

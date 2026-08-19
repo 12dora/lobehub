@@ -8,6 +8,7 @@ import type { SQL } from 'drizzle-orm';
 import { eq, isNull, or, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 
+import type { MessageMetadata } from '@/types/message';
 import type { UsageLog, UsageRecordItem } from '@/types/usage/usageRecord';
 
 import { agents, messages, users } from '../../schemas';
@@ -39,6 +40,34 @@ export const messageTotalTokensSql = () => sql<number>`COALESCE(
     (${messages.metadata}->>'totalOutputTokens')::double precision,
     0
   )
+)`;
+
+/**
+ * Cost / input / output COALESCE chains for rank, chart, and usage-detail SQL.
+ * Always read the dedicated `usage` column first, then nested `metadata.usage`,
+ * then the deprecated flat `metadata` fields. Input and output are summed
+ * independently — unlike {@link messageTotalTokensSql}, these never prefer a
+ * recorded `totalTokens` (activity/heatmap callers stay on that helper).
+ */
+export const usageCostSql = () => sql<number>`COALESCE(
+  (${messages.usage}->>'cost')::double precision,
+  (${messages.metadata}->'usage'->>'cost')::double precision,
+  (${messages.metadata}->>'cost')::double precision,
+  0
+)`;
+
+export const usageInputTokensSql = () => sql<number>`COALESCE(
+  (${messages.usage}->>'totalInputTokens')::double precision,
+  (${messages.metadata}->'usage'->>'totalInputTokens')::double precision,
+  (${messages.metadata}->>'totalInputTokens')::double precision,
+  0
+)`;
+
+export const usageOutputTokensSql = () => sql<number>`COALESCE(
+  (${messages.usage}->>'totalOutputTokens')::double precision,
+  (${messages.metadata}->'usage'->>'totalOutputTokens')::double precision,
+  (${messages.metadata}->>'totalOutputTokens')::double precision,
+  0
 )`;
 
 /**
@@ -155,6 +184,58 @@ export const activityLevel = (metric: ActivityMetric, value: number, maxValue: n
 };
 
 export const userDisplaySql = sql<string>`COALESCE(NULLIF(TRIM(${users.fullName}), ''), NULLIF(TRIM(${users.username}), ''), NULLIF(TRIM(${users.email}), ''), ${users.id})`;
+
+/** Shared `.select({...})` fields for usage-detail keyset and bounded-month pages. */
+export const selectUsageDetailProjection = {
+  createdAt: messages.createdAt,
+  id: messages.id,
+  metadata: messages.metadata,
+  model: messages.model,
+  provider: messages.provider,
+  role: messages.role,
+  usage: messages.usage,
+  userDisplay: userDisplaySql,
+  userId: messages.userId,
+};
+
+/**
+ * Prefer the dedicated `usage` column, then nested metadata.usage /
+ * metadata.performance, then deprecated flat metadata fields (parity with
+ * UsageRecordService.findByDateRange).
+ */
+export const toGlobalUsageRecordItem = (spend: {
+  createdAt: Date;
+  id: string;
+  metadata: unknown;
+  model: string | null;
+  provider: string | null;
+  usage: MessageMetadata['usage'] | null;
+  userDisplay: string | null;
+  userId: string;
+}): GlobalUsageRecordItem => {
+  const metadata = spend.metadata as MessageMetadata | null;
+  const usage = spend.usage ?? metadata?.usage;
+  const performance = metadata?.performance;
+  const totalInputTokens = usage?.totalInputTokens ?? metadata?.totalInputTokens ?? 0;
+  const totalOutputTokens = usage?.totalOutputTokens ?? metadata?.totalOutputTokens ?? 0;
+  return {
+    createdAt: spend.createdAt,
+    id: spend.id,
+    metadata: spend.metadata as MessageMetadata | null,
+    model: spend.model ?? '',
+    provider: spend.provider ?? '',
+    spend: usage?.cost ?? metadata?.cost ?? 0,
+    totalInputTokens,
+    totalOutputTokens,
+    totalTokens: totalInputTokens + totalOutputTokens,
+    tps: performance?.tps ?? metadata?.tps ?? 0,
+    ttft: performance?.ttft ?? metadata?.ttft ?? 0,
+    type: 'chat',
+    updatedAt: spend.createdAt,
+    userDisplay: spend.userDisplay || spend.userId,
+    userId: spend.userId,
+  } satisfies GlobalUsageRecordItem;
+};
 
 export type GroupByDayDimRow = {
   day: string;

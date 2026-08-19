@@ -16,6 +16,14 @@ import {
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import type { ResourcePointerAdapter } from './revision';
+import {
+  overrideRowsJsonAggSql,
+  platformRevisionSql,
+  publishedPoliciesJsonAggSql,
+  readExecuteRows,
+  runInSettingsTx,
+  userOverrideRevisionSql,
+} from './settingsSnapshotSql';
 
 export const PLATFORM_SETTINGS_BUNDLE_ID = 'global';
 
@@ -96,10 +104,7 @@ export class PlatformSettingsModel {
     const result = await this.db.execute(
       sql`SELECT "revision" FROM "platform_settings_bundle" WHERE "id" = ${PLATFORM_SETTINGS_BUNDLE_ID} FOR UPDATE`,
     );
-    const rows =
-      (result as unknown as { rows?: { revision: number }[] }).rows ??
-      (result as unknown as { revision: number }[]);
-    const row = Array.isArray(rows) ? rows[0] : undefined;
+    const row = readExecuteRows<{ revision: number }>(result)[0];
     return Number(row?.revision ?? 0);
   };
 
@@ -263,35 +268,8 @@ export class PlatformSettingsModel {
         published: PlatformSettingPolicyItem[] | string | null;
       }>(sql`
         SELECT
-          COALESCE(
-            (
-              SELECT "revision"
-              FROM "platform_settings_bundle"
-              WHERE "id" = ${PLATFORM_SETTINGS_BUNDLE_ID}
-            ),
-            0
-          ) AS "platform_revision",
-          COALESCE(
-            (
-              SELECT json_agg(row_to_json(p))
-              FROM (
-                SELECT
-                  "path",
-                  "mode",
-                  "visibility",
-                  "value",
-                  "schema_version" AS "schemaVersion",
-                  "revision",
-                  "status",
-                  "updated_by" AS "updatedBy",
-                  "created_at" AS "createdAt",
-                  "updated_at" AS "updatedAt"
-                FROM "platform_setting_policies"
-                WHERE "status" = 'published'
-              ) p
-            ),
-            '[]'::json
-          ) AS "published"
+          ${platformRevisionSql(PLATFORM_SETTINGS_BUNDLE_ID)} AS "platform_revision",
+          ${publishedPoliciesJsonAggSql()} AS "published"
       `);
       return {
         overrideRows: [],
@@ -308,59 +286,10 @@ export class PlatformSettingsModel {
       user_override_revision: number | string;
     }>(sql`
       SELECT
-        COALESCE(
-          (
-            SELECT "revision"
-            FROM "platform_settings_bundle"
-            WHERE "id" = ${PLATFORM_SETTINGS_BUNDLE_ID}
-          ),
-          0
-        ) AS "platform_revision",
-        COALESCE(
-          (
-            SELECT "revision"
-            FROM "user_setting_override_revisions"
-            WHERE "user_id" = ${params.userId}
-          ),
-          0
-        ) AS "user_override_revision",
-        COALESCE(
-          (
-            SELECT json_agg(row_to_json(p))
-            FROM (
-              SELECT
-                "path",
-                "mode",
-                "visibility",
-                "value",
-                "schema_version" AS "schemaVersion",
-                "revision",
-                "status",
-                "updated_by" AS "updatedBy",
-                "created_at" AS "createdAt",
-                "updated_at" AS "updatedAt"
-              FROM "platform_setting_policies"
-              WHERE "status" = 'published'
-            ) p
-          ),
-          '[]'::json
-        ) AS "published",
-        COALESCE(
-          (
-            SELECT json_agg(row_to_json(o))
-            FROM (
-              SELECT
-                "user_id" AS "userId",
-                "path",
-                "value",
-                "source",
-                "updated_at" AS "updatedAt"
-              FROM "user_setting_overrides"
-              WHERE "user_id" = ${params.userId}
-            ) o
-          ),
-          '[]'::json
-        ) AS "override_rows"
+        ${platformRevisionSql(PLATFORM_SETTINGS_BUNDLE_ID)} AS "platform_revision",
+        ${userOverrideRevisionSql(params.userId)} AS "user_override_revision",
+        ${publishedPoliciesJsonAggSql()} AS "published",
+        ${overrideRowsJsonAggSql(params.userId)} AS "override_rows"
     `);
 
     return {
@@ -376,8 +305,7 @@ export class PlatformSettingsModel {
     query: ReturnType<typeof sql>,
   ): Promise<T | undefined> => {
     const result = await this.db.execute(query);
-    const rows = (result as unknown as { rows?: T[] }).rows ?? (result as unknown as T[]);
-    return Array.isArray(rows) ? rows[0] : undefined;
+    return readExecuteRows<T>(result)[0];
   };
 
   getPublishedPolicy = async (path: string): Promise<PlatformSettingPolicyItem | undefined> => {
@@ -474,10 +402,7 @@ export class PlatformSettingsModel {
       return { override, revision };
     };
 
-    if (params.alreadyInTransaction || !('transaction' in this.db)) {
-      return run(this.db);
-    }
-    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+    return runInSettingsTx(this.db, params.alreadyInTransaction, run);
   };
 
   /**
@@ -498,10 +423,7 @@ export class PlatformSettingsModel {
       return { deleted: deleted.length > 0, revision };
     };
 
-    if (opts?.alreadyInTransaction || !('transaction' in this.db)) {
-      return run(this.db);
-    }
-    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+    return runInSettingsTx(this.db, opts?.alreadyInTransaction, run);
   };
 
   /**
@@ -542,10 +464,7 @@ export class PlatformSettingsModel {
       return model.bumpUserOverrideRevision(params.userId);
     };
 
-    if (params.alreadyInTransaction || !('transaction' in this.db)) {
-      return run(this.db);
-    }
-    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+    return runInSettingsTx(this.db, params.alreadyInTransaction, run);
   };
 
   /**
@@ -594,10 +513,7 @@ export class PlatformSettingsModel {
       };
     };
 
-    if (params.alreadyInTransaction || !('transaction' in this.db)) {
-      return run(this.db);
-    }
-    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+    return runInSettingsTx(this.db, params.alreadyInTransaction, run);
   };
 
   /** Delete all overrides for a user + bump revision once (full reset). */
@@ -610,10 +526,7 @@ export class PlatformSettingsModel {
       await db.delete(userSettingOverrides).where(eq(userSettingOverrides.userId, userId));
       return model.bumpUserOverrideRevision(userId);
     };
-    if (opts?.alreadyInTransaction || !('transaction' in this.db)) {
-      return run(this.db);
-    }
-    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+    return runInSettingsTx(this.db, opts?.alreadyInTransaction, run);
   };
 
   getUserOverrideRevision = async (userId: string): Promise<number> => {
@@ -671,10 +584,7 @@ export const createSettingsPointerAdapter = (
       const result = await tx.execute(
         sql`SELECT "revision" FROM "platform_settings_bundle" WHERE "id" = ${bundleId} FOR UPDATE`,
       );
-      const rows =
-        (result as unknown as { rows?: { revision: number }[] }).rows ??
-        (result as unknown as { revision: number }[]);
-      const row = Array.isArray(rows) ? rows[0] : undefined;
+      const row = readExecuteRows<{ revision: number }>(result)[0];
       if (!row) {
         throw new Error(`Settings bundle not found: ${bundleId}`);
       }
