@@ -1,27 +1,23 @@
 'use client';
 
-import { Alert, Avatar, Text } from '@lobehub/ui';
-import { Button, Tabs } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
+import { Tabs } from '@lobehub/ui/base-ui';
+import { createStaticStyles } from 'antd-style';
 import { useReducedMotion } from 'motion/react';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
-import StatusBadge from '../../primitives/StatusBadge';
 import { useAdminUserMutations, useFetchAdminUserDetail } from '../hooks/useAdminUsers';
 import { useUserDetailActions } from '../hooks/useUserDetailActions';
 import { getEligibleAssignableRoles } from '../modals/actions';
-import AccessTab from '../tabs/AccessTab';
-import AuditTab from '../tabs/AuditTab';
-import OverviewTab from '../tabs/OverviewTab';
-import SessionsTab from '../tabs/SessionsTab';
 import { displayUserName, hasPermission } from '../utils';
+import { isNotFoundError } from './isNotFoundError';
+import { resolveUserDetailActionFlags } from './resolveUserDetailActionFlags';
+import { UserDetailIdentityHeader } from './UserDetailIdentityHeader';
 import {
   UserDetailError,
   UserDetailLoading,
@@ -30,38 +26,10 @@ import {
   UserPanelLoading,
   UserPanelNotFound,
 } from './UserDetailStates';
+import type { UserDetailTab } from './UserDetailTabPanels';
+import { UserDetailTabPanels } from './UserDetailTabPanels';
 
 const styles = createStaticStyles(({ css }) => ({
-  headerMeta: css`
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: center;
-  `,
-  /** Tab content. `page` variant caps the column so a wide screen does not spread facts out. */
-  panel: css`
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    padding-block-start: 4px;
-  `,
-  panelHeader: css`
-    display: flex;
-    gap: 12px;
-    align-items: center;
-
-    padding-block-end: 12px;
-    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
-  `,
-  panelPage: css`
-    max-width: 880px;
-  `,
-  panelHeaderText: css`
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  `,
   panelRoot: css`
     display: flex;
     flex-direction: column;
@@ -69,8 +37,6 @@ const styles = createStaticStyles(({ css }) => ({
     min-width: 0;
   `,
 }));
-
-type DetailTab = 'overview' | 'access' | 'sessions' | 'audit';
 
 /** Slide-in panel or full page — the body below is identical either way. */
 export type UserDetailVariant = 'drawer' | 'page';
@@ -87,19 +53,6 @@ export interface UserDetailBodyProps {
   variant?: UserDetailVariant;
 }
 
-const isNotFoundError = (error: unknown): boolean => {
-  if (!error) return false;
-  const mapped = mapEnterpriseError(error);
-  if (mapped?.code === 'PLATFORM_NOT_FOUND') return true;
-  const message = String((error as { message?: string })?.message ?? '');
-  const dataCode = String(
-    (error as { data?: { code?: string; errorData?: { code?: string } } })?.data?.errorData?.code ??
-      (error as { data?: { code?: string } })?.data?.code ??
-      '',
-  );
-  return /PLATFORM_NOT_FOUND/.test(message) || dataCode === 'PLATFORM_NOT_FOUND';
-};
-
 /**
  * User detail body — tabs, SWR detail, stale guard and every mutation entry point.
  * Rendered by the `/admin/users/:id` page (full chrome) and by the list's slide-in
@@ -111,7 +64,7 @@ const UserDetailBody = memo<UserDetailBodyProps>(
     const reduceMotion = useReducedMotion();
     const navigate = useNavigate();
     const { permissions, roles: actorRoles, authMethod } = useAdminAccess();
-    const [tab, setTab] = useState<DetailTab>('overview');
+    const [tab, setTab] = useState<UserDetailTab>('overview');
     const isPanel = variant === 'drawer';
 
     const canBan = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_BAN);
@@ -225,6 +178,27 @@ const UserDetailBody = memo<UserDetailBodyProps>(
     const dataStale = Boolean(error) && Boolean(data);
     const allowHighRisk = !dataStale;
 
+    const flags = resolveUserDetailActionFlags({
+      allowHighRisk,
+      canBan,
+      canDelete,
+      canManageCredentials,
+      canManageRoles,
+      canReadAudit,
+      canRevoke,
+      openers: {
+        openBan,
+        openDelete,
+        openDisableTwoFactor,
+        openRevokeAll,
+        openRevokeRole,
+        openRevokeSingle,
+        openSetPassword,
+        openUnban,
+        openUpdatePermissions,
+      },
+    });
+
     const tabsNode = (
       <Tabs
         activeKey={tab}
@@ -234,86 +208,37 @@ const UserDetailBody = memo<UserDetailBodyProps>(
           { key: 'sessions', label: t('users.tabs.sessions') },
           { key: 'audit', label: t('users.tabs.audit') },
         ]}
-        onChange={(key) => setTab(key as DetailTab)}
+        onChange={(key) => setTab(key as UserDetailTab)}
       />
     );
 
-    const bodyNode = (
-      <div className={isPanel ? styles.panel : `${styles.panel} ${styles.panelPage}`}>
-        {dataStale ? (
-          <Alert
-            showIcon
-            type="warning"
-            action={
-              <Button size="small" onClick={() => void mutate()}>
-                {t('primitives.dataTable.retry')}
-              </Button>
-            }
-            message={t('users.stale.refreshFailed', {
-              defaultValue:
-                'Showing cached data. High-risk actions are disabled until refresh succeeds.',
-            })}
-          />
-        ) : null}
-        {tab === 'overview' ? (
-          <OverviewTab
-            canBan={canBan && allowHighRisk}
-            canDelete={canDelete && allowHighRisk}
-            canManageCredentials={canManageCredentials}
-            user={data}
-            onBan={canBan && allowHighRisk ? openBan : undefined}
-            onDelete={canDelete && allowHighRisk ? openDelete : undefined}
-            onSetPassword={canManageCredentials && allowHighRisk ? openSetPassword : undefined}
-            onUnban={canBan && allowHighRisk ? openUnban : undefined}
-            onDisableTwoFactor={
-              canManageCredentials && allowHighRisk ? openDisableTwoFactor : undefined
-            }
-          />
-        ) : null}
-        {tab === 'access' ? (
-          <AccessTab
-            canManageRoles={canManageRoles && allowHighRisk}
-            canRevokeRole={canRevokeRoleName}
-            user={data}
-            onRevokeRole={canManageRoles && allowHighRisk ? openRevokeRole : undefined}
-            onUpdatePermissions={
-              canManageRoles && allowHighRisk ? openUpdatePermissions : undefined
-            }
-          />
-        ) : null}
-        {tab === 'sessions' ? (
-          <SessionsTab
-            canRevoke={canRevoke && allowHighRisk}
-            user={data}
-            onRevokeAll={canRevoke && allowHighRisk ? openRevokeAll : undefined}
-            onRevokeSession={canRevoke && allowHighRisk ? openRevokeSingle : undefined}
-          />
-        ) : null}
-        {tab === 'audit' ? (
-          <AuditTab canReadAudit={canReadAudit} enabled={tab === 'audit'} userId={userId} />
-        ) : null}
-      </div>
+    const panels = (
+      <UserDetailTabPanels
+        canRevokeRoleName={canRevokeRoleName}
+        data={data}
+        dataStale={dataStale}
+        flags={flags}
+        isPanel={isPanel}
+        mutate={mutate}
+        tab={tab}
+        userId={userId}
+      />
     );
 
     // Slide-in panel: identity header instead of the page h1 + divider.
     if (isPanel) {
       return (
         <div className={styles.panelRoot}>
-          <div className={styles.panelHeader} data-testid="user-panel-header">
-            <Avatar avatar={data.avatar ?? undefined} size={40} />
-            <div className={styles.panelHeaderText}>
-              <Text ellipsis style={{ fontWeight: 600, margin: 0 }}>
-                {titleName}
-              </Text>
-              <Text ellipsis style={{ margin: 0 }} type="secondary">
-                {data.email ?? data.id}
-              </Text>
-            </div>
-            <StatusBadge status={data.status} />
-            {data.isSelf ? <Text type="secondary">{t('users.detail.youBadge')}</Text> : null}
-          </div>
+          <UserDetailIdentityHeader
+            avatar={data.avatar}
+            emailOrId={data.email ?? data.id}
+            isSelf={data.isSelf}
+            name={titleName}
+            status={data.status}
+            variant="panel"
+          />
           {tabsNode}
-          {bodyNode}
+          {panels}
         </div>
       );
     }
@@ -323,15 +248,17 @@ const UserDetailBody = memo<UserDetailBodyProps>(
         title={titleName}
         toolbar={tabsNode}
         description={
-          <div className={styles.headerMeta}>
-            <Avatar avatar={data.avatar ?? undefined} size={40} />
-            <Text type="secondary">{data.email ?? data.id}</Text>
-            <StatusBadge status={data.status} />
-            {data.isSelf ? <Text type="secondary">{t('users.detail.youBadge')}</Text> : null}
-          </div>
+          <UserDetailIdentityHeader
+            avatar={data.avatar}
+            emailOrId={data.email ?? data.id}
+            isSelf={data.isSelf}
+            name={titleName}
+            status={data.status}
+            variant="page"
+          />
         }
       >
-        {bodyNode}
+        {panels}
       </AdminPageTemplate>
     );
   },

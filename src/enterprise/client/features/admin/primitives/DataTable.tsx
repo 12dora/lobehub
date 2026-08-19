@@ -1,49 +1,25 @@
 'use client';
 
 import { Empty } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Button } from '@lobehub/ui/base-ui';
 import type { TableColumnsType, TableProps } from 'antd';
 import { Table } from 'antd';
-import type {
-  FilterValue,
-  SorterResult,
-  TableCurrentDataSource,
-  TablePaginationConfig,
-  TableRowSelection,
-} from 'antd/es/table/interface';
+import type { FilterValue, TableRowSelection } from 'antd/es/table/interface';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, type ReactNode, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
 
-/**
- * True when the event target is (or sits inside) a *nested* interactive control.
- * The row itself often uses role="link" for keyboard a11y — that must still activate.
- * Nested buttons/links/inputs must not also trigger row activation.
- */
-const isInteractiveDescendantTarget = (
-  target: EventTarget | null,
-  currentTarget: EventTarget | null,
-): boolean => {
-  if (!(target instanceof Element) || !(currentTarget instanceof Element)) return false;
-  const interactive = target.closest(
-    'a, button, input, select, textarea, label, [role="button"], [role="link"], [role="menuitem"], [role="checkbox"], [role="switch"], [role="textbox"], [contenteditable="true"]',
-  );
-  if (!interactive || interactive === currentTarget) return false;
-  return currentTarget.contains(interactive);
-};
+import {
+  buildTablePagination,
+  createHandleTableChange,
+  toAdminPagination,
+} from './dataTableChange';
+import { DataTableCursorBar } from './DataTableCursorBar';
+import { createOnRow } from './dataTableRowActivation';
 
 const styles = createStaticStyles(({ css }) => ({
-  cursorBar: css`
-    display: flex;
-    flex-wrap: nowrap;
-    gap: 8px;
-    align-items: center;
-    justify-content: flex-end;
-
-    margin-block-start: 12px;
-  `,
   empty: css`
     padding-block: 48px;
   `,
@@ -122,9 +98,6 @@ const styles = createStaticStyles(({ css }) => ({
     margin-block-end: 12px;
   `,
 }));
-
-const DEFAULT_PAGE_SIZE = 20;
-const DEFAULT_PAGE_SIZE_OPTIONS = ['20', '50', '100'] as const;
 
 /** Server-driven pagination state for large lists (10k+). */
 export interface AdminTablePagination {
@@ -221,13 +194,6 @@ export interface DataTableProps<T extends object = Record<string, unknown>> {
   virtual?: boolean;
 }
 
-const toAdminPagination = (
-  pagination: false | AdminTablePagination | undefined,
-): false | AdminTablePagination => {
-  if (pagination === false || pagination === undefined) return false;
-  return pagination;
-};
-
 /**
  * Admin list table with explicit loading / empty / error states.
  * Error wins over empty. Supports controlled server pagination, sort/filter
@@ -260,86 +226,17 @@ function DataTableInner<T extends object>({
   // Ant Design Table fires pagination through the top-level `onChange` once;
   // a second pagination.onChange would double-invoke onPaginationChange.
   // Cursor mode always disables Ant Design numeric pagination.
-  const tablePagination = useMemo((): TablePaginationConfig | false => {
-    if (cursorPagination) return false;
-    const p = toAdminPagination(pagination);
-    if (!p) return false;
-    const totalKnown = typeof p.total === 'number' && Number.isFinite(p.total);
-    const showTotal = p.showTotal ?? totalKnown;
-    return {
-      align: 'end',
-      current: p.current,
-      locale: {
-        items_per_page: t('primitives.dataTable.itemsPerPage'),
-        jump_to: t('primitives.dataTable.jumpTo'),
-        next_page: t('primitives.dataTable.nextPage'),
-        page: t('primitives.dataTable.page'),
-        prev_page: t('primitives.dataTable.prevPage'),
-      },
-      pageSize: p.pageSize || DEFAULT_PAGE_SIZE,
-      pageSizeOptions: p.pageSizeOptions ?? [...DEFAULT_PAGE_SIZE_OPTIONS],
-      placement: ['bottomEnd'],
-      showQuickJumper: p.showQuickJumper ?? totalKnown,
-      showSizeChanger: p.showSizeChanger ?? true,
-      showTotal: showTotal ? (total) => t('primitives.dataTable.showTotal', { total }) : undefined,
-      total: p.total,
-    };
-  }, [cursorPagination, pagination, t]);
+  const tablePagination = useMemo(
+    () => buildTablePagination({ cursorPagination, pagination, t }),
+    [cursorPagination, pagination, t],
+  );
 
-  const handleTableChange: TableProps<T>['onChange'] = (
-    pag,
-    filters,
-    sorter,
-    _extra: TableCurrentDataSource<T>,
-  ) => {
-    const currentPagination = toAdminPagination(pagination);
-
-    let nextPagination: AdminTablePagination | false = false;
-    if (!cursorPagination && currentPagination !== false) {
-      const nextPageSize = pag.pageSize ?? currentPagination.pageSize;
-      const pageSizeChanged = nextPageSize !== currentPagination.pageSize;
-      // Server-driven lists: page-size change always resets to page 1.
-      const nextCurrent = pageSizeChanged ? 1 : (pag.current ?? currentPagination.current);
-      nextPagination = {
-        ...currentPagination,
-        current: nextCurrent,
-        pageSize: nextPageSize,
-      };
-    }
-
-    // Single path for pagination callbacks (page number or page size).
-    if (
-      nextPagination !== false &&
-      currentPagination !== false &&
-      onPaginationChange &&
-      (nextPagination.current !== currentPagination.current ||
-        nextPagination.pageSize !== currentPagination.pageSize)
-    ) {
-      onPaginationChange(nextPagination.current, nextPagination.pageSize);
-    }
-
-    const normalizeSorter = (
-      value: SorterResult<T> | SorterResult<T>[],
-    ): AdminTableSort | AdminTableSort[] => {
-      if (Array.isArray(value)) {
-        return value.map((s) => ({
-          field: s.field as string | number | undefined,
-          order: (s.order ?? null) as AdminTableSortOrder,
-        }));
-      }
-      return {
-        field: value.field as string | number | undefined,
-        order: (value.order ?? null) as AdminTableSortOrder,
-      };
-    };
-
-    // Unified meta for sort/filter/pagination (callers may use this alone).
-    onChange?.({
-      filters: filters as Record<string, FilterValue | null>,
-      pagination: nextPagination,
-      sorter: normalizeSorter(sorter),
-    });
-  };
+  const handleTableChange = createHandleTableChange<T>({
+    cursorPagination,
+    onChange,
+    onPaginationChange,
+    pagination,
+  });
 
   // The toolbar (search / bulk actions) stays mounted across loading / error / empty so
   // controls do not blink out of existence while a page refetches.
@@ -347,35 +244,7 @@ function DataTableInner<T extends object>({
 
   // Merge the activation affordance class with any caller-supplied row class so both
   // survive; returning undefined keeps Ant Design's default row rendering untouched.
-  const handleRow: TableProps<T>['onRow'] =
-    onRowActivate || rowClassName
-      ? (record, index) => {
-          const extraClassName = rowClassName?.(record, index ?? 0);
-          if (!onRowActivate) {
-            return extraClassName ? { className: extraClassName } : {};
-          }
-          return {
-            className: extraClassName
-              ? `admin-table-row-clickable ${extraClassName}`
-              : 'admin-table-row-clickable',
-            onClick: (event) => {
-              if (event.defaultPrevented) return;
-              if (isInteractiveDescendantTarget(event.target, event.currentTarget)) return;
-              onRowActivate(record);
-            },
-            onKeyDown: (event) => {
-              if (event.key !== 'Enter' && event.key !== ' ') return;
-              if (event.defaultPrevented) return;
-              // Nested controls own their keyboard activation; do not also navigate the row.
-              if (isInteractiveDescendantTarget(event.target, event.currentTarget)) return;
-              event.preventDefault();
-              onRowActivate(record);
-            },
-            role: 'link',
-            tabIndex: 0,
-          };
-        }
-      : undefined;
+  const handleRow = createOnRow({ onRowActivate, rowClassName });
 
   if (loading) {
     return (
@@ -420,44 +289,7 @@ function DataTableInner<T extends object>({
     // Keep Previous/Next when the current page is empty but a prior cursor exists
     // (e.g. last row deleted on page 2) so the user is not trapped.
     (Boolean(dataSource?.length) || cursorPagination.hasPrevious || cursorPagination.hasNext) ? (
-      <div
-        aria-label={t('primitives.dataTable.cursorNav')}
-        className={styles.cursorBar}
-        role="navigation"
-      >
-        {cursorPagination.onPageSizeChange && cursorPagination.pageSize ? (
-          <Select
-            aria-label={t('primitives.dataTable.pageSize')}
-            style={{ minWidth: 128 }}
-            value={String(cursorPagination.pageSize)}
-            options={(cursorPagination.pageSizeOptions ?? [...DEFAULT_PAGE_SIZE_OPTIONS]).map(
-              (opt) => ({
-                label: t('primitives.dataTable.pageSizeOption', { count: opt }),
-                value: opt,
-              }),
-            )}
-            onChange={(value) => {
-              cursorPagination.onPageSizeChange?.(Number(value));
-            }}
-          />
-        ) : null}
-        <Button
-          disabled={!cursorPagination.hasPrevious}
-          size="small"
-          type="default"
-          onClick={cursorPagination.onPrevious}
-        >
-          {t('primitives.dataTable.previous')}
-        </Button>
-        <Button
-          disabled={!cursorPagination.hasNext}
-          size="small"
-          type="default"
-          onClick={cursorPagination.onNext}
-        >
-          {t('primitives.dataTable.next')}
-        </Button>
-      </div>
+      <DataTableCursorBar t={t} {...cursorPagination} />
     ) : null;
 
   if (!dataSource?.length && !keepNumericPaginationOnEmpty) {
