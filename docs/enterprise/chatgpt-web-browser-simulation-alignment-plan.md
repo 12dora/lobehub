@@ -548,6 +548,88 @@ Recommended delivery sequence:
 5. C3 and C4;
 6. G7 integration and regression suite.
 
+## Extending isolation to Grok and Cursor
+
+C1/C2 (`apps/server/src/enterprise/services/browserSession/`) were built provider-neutral, but only
+ChatGPT Web was ever wired to them. Grok and Cursor were investigated (research pass, 2026-08-20)
+to see whether they could reuse the same context/cookie-jar machinery. **They cannot, structurally
+— do not attempt to wire them into `browserSession/{contextRegistry,cookieJar}.ts`:**
+
+- Grok is a stateless Bearer-token JSON API client (`packages/model-runtime/src/providers/grok/index.ts`).
+  No cookies, no TLS/H2 impersonation, no persistent connection object — plain `undici.fetch`. There
+  is nothing for a cookie jar or an impersonated transport to hold.
+- Cursor doesn't make its own HTTP calls at all. `apps/server/src/enterprise/services/cursorAgent/transport.ts`
+  spawns the real, official `cursor-agent` CLI binary per turn and relays its stdout; the genuine
+  CLI does its own networking with its own TLS stack. AIHub never needs to impersonate a browser for
+  Cursor, because it is running the real client.
+
+However, the investigation found a **real, distinct isolation gap in both** — structurally similar
+in spirit to the ChatGPT bug this whole plan fixes, but shaped differently enough that it needs its
+own, separate tasks, not a reuse of G1–G7:
+
+### GX1 — Account-scope the Grok agent identity
+
+**Priority:** P2 — no evidence of active harm today; this is a deliberate design question, not an
+obvious bug. Do not implement without an explicit decision (see below).
+
+`deriveGrokAgentId` (`packages/model-runtime/src/browserProfile/identity.ts`) is a pure function of
+the single, global, deployment-wide `installationId` — `UUIDv5("aihub-grok-agent:" + installationId)`.
+Every stored Grok connection on a deployment (the platform-managed shared account, and any number of
+individual users' own BYOK connections) therefore presents the **identical** `x-grok-agent-id` to
+xAI, always, by construction. This is the SAME shape of problem G1 fixed for ChatGPT (identity not
+scoped by account) — except here it is the current, deliberate, documented design (see "Existing
+shared-profile consumers" above: "Grok... derives its agent id from `installationId`"), not an
+accident.
+
+**Decision needed before implementing:** is a single shared `x-grok-agent-id` across every account
+on a deployment an acceptable simplification, or a real risk? xAI may or may not correlate/rate-limit/
+risk-score by this header the way chatgpt.com does by device id — that is currently unknown and
+unresearched. Do the same kind of evidence-gathering this plan's ChatGPT investigation did (HAR
+comparison, documented account behavior) before assuming this needs fixing; do not fix it reflexively
+just because it looks structurally similar.
+
+**If the decision is to fix it:** fold an account-scoped identity (reuse the same
+`accountId` shape ChatGPT Web uses — provider revision, or `user:workspace:provider` for BYOK; do
+not invent a second convention) into `deriveGrokAgentId`, so distinct stored connections present
+distinct agent ids. Keep it stable across reconnects of the same stored connection. The global
+`installationId` itself must not be touched — only how Grok further derives its own header value
+from it changes. `x-grok-user-id` (already derived per-request from the JWT's `principal_id`/`sub`
+claim) already differentiates accounts at the wire level for THAT header — check whether that
+alone is sufficient before concluding `x-grok-agent-id` also needs to change.
+
+### CX1 — Isolate the Cursor CLI state cache per connection
+
+**Priority:** P1 — this one has a more concrete correctness case, independent of any xAI-style
+"design decision."
+
+`apps/server/src/enterprise/services/cursorAgent/transport.scratch.ts` maintains ONE shared
+`config-seed` directory per server instance (`ensureCursorAgentStateDir`), holding the CLI's own
+`authInfo`, `version`, and `privacyCache.ghostMode` (`cli-config.json`) plus `statsig-cache.json`.
+This is copied into every turn's scratch dir as a starting point and best-effort copied back
+afterward, **regardless of which stored Cursor connection (platform-shared, or any user's own BYOK)
+is making that turn.** Two different accounts' turns on the same server instance currently read and
+write the same cache.
+
+The actual bearer credential is NOT at risk here — `CURSOR_AUTH_TOKEN` is passed fresh per spawn via
+env, and `AGENT_CLI_CREDENTIAL_STORE=memory` already stops the CLI from persisting it to its own
+on-disk store. The risk is state bleed, not credential leak: one account's ghost-mode/privacy
+preference, cached CLI version negotiation, or statsig experiment bucket could silently apply to a
+completely different account's turn.
+
+**Basic direction:**
+
+1. Key the config-seed directory by the same `accountId` concept (one per stored Cursor connection),
+   not one global directory per server instance.
+2. Confirm nothing in `authInfo`/`statsig-cache.json` is actually credential-shaped before assuming
+   the fix is purely a correctness improvement — verify the "no real leak" premise above rather than
+   taking it on faith.
+3. Preserve existing per-turn scratch-dir creation/cleanup and the compare-and-swap-on-digest
+   copy-back behavior; only the "which persistent seed dir do we start from" part changes.
+
+**Acceptance criteria:** two different stored Cursor connections never read or write the same
+config-seed directory; the platform-managed shared connection's seed stays stable across turns and
+reconnects, same as today; per-turn scratch/cleanup timing is unaffected.
+
 ## Validation policy
 
 Most validation must be offline until the account's real Chrome control again returns Pro.
