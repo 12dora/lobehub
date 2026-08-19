@@ -4,6 +4,10 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  isBrowserCookieJarTombstoned,
+  tombstoneBrowserCookieJar,
+} from '../../browserSession/cookieJar';
 import * as browserSessionTransport from '../../browserSession/transport';
 import { H2_CERT_PATH, startH2Fixture } from '../../browserSession/transport/h2Fixture';
 import {
@@ -84,7 +88,7 @@ describe('getChatGPTWebTransportStatus', () => {
 });
 
 describe('getChatGPTWebFetch stale context keys', () => {
-  const digest = 'cd'.repeat(32);
+  const digest = `ctx:${'cd'.repeat(32)}`;
 
   it('registered then unregistered keys fail closed on the CLI path', async () => {
     vi.stubEnv(CHATGPT_WEB_TRANSPORT_ENV, 'cli');
@@ -118,6 +122,44 @@ describe('getChatGPTWebFetch stale context keys', () => {
       fetchImpl('https://chatgpt.com/', { headers: { [COOKIE_JAR_HEADER]: digest } }),
     ).rejects.toThrow(CONTEXT_GONE_ERROR);
   });
+
+  it('throws CONTEXT_GONE for a tombstoned context-bound jar on the CLI path', async () => {
+    vi.stubEnv(CHATGPT_WEB_TRANSPORT_ENV, 'cli');
+    const jarPath = '/tmp/tombstone-cli.jar';
+    registerContextCookieJar(digest, jarPath, 'scope-tomb-cli');
+    tombstoneBrowserCookieJar(jarPath);
+    const fetchImpl = getChatGPTWebFetch();
+    await expect(
+      fetchImpl('https://chatgpt.com/', { headers: { [COOKIE_JAR_HEADER]: digest } }),
+    ).rejects.toThrow(CONTEXT_GONE_ERROR);
+  });
+
+  it('throws CONTEXT_GONE for a tombstoned context-bound jar on the persistent routing path', async () => {
+    vi.stubEnv(CHATGPT_WEB_TRANSPORT_ENV, 'auto');
+    vi.spyOn(browserSessionTransport, 'probeLibcurlImpersonate').mockReturnValue({
+      available: true,
+      version: 'mock',
+    });
+    vi.spyOn(browserSessionTransport, 'createPersistentImpersonateFetch').mockImplementation(
+      (options) =>
+        (async (_input, init) => {
+          const headers = new Headers(init?.headers);
+          const key = headers.get(COOKIE_JAR_HEADER) ?? '';
+          const resolved = options?.resolvePool?.(key);
+          if (!resolved || isBrowserCookieJarTombstoned(resolved.cookieJarPath)) {
+            throw new TypeError(CONTEXT_GONE_ERROR);
+          }
+          return new Response('ok');
+        }) as typeof fetch,
+    );
+    const jarPath = '/tmp/tombstone-persistent.jar';
+    registerContextCookieJar(digest, jarPath, 'scope-tomb-persistent');
+    tombstoneBrowserCookieJar(jarPath);
+    const fetchImpl = getChatGPTWebFetch();
+    await expect(
+      fetchImpl('https://chatgpt.com/', { headers: { [COOKIE_JAR_HEADER]: digest } }),
+    ).rejects.toThrow(CONTEXT_GONE_ERROR);
+  });
 });
 
 describe.skipIf(!probe.available)('getChatGPTWebFetch request routing', () => {
@@ -128,13 +170,13 @@ describe.skipIf(!probe.available)('getChatGPTWebFetch request routing', () => {
 
     const dir = mkdtempSync(path.join(tmpdir(), 'c3-route-'));
     const jar = path.join(dir, 'ctx.txt');
-    registerContextCookieJar('digest-route-persistent', jar, 'scope-persistent');
-    expect(getContextCookieJarPoolKey('digest-route-persistent')).toBe('scope-persistent');
+    registerContextCookieJar('ctx:digest-route-persistent', jar, 'scope-persistent');
+    expect(getContextCookieJarPoolKey('ctx:digest-route-persistent')).toBe('scope-persistent');
 
     const fixture = await startH2Fixture();
     try {
       const fetchImpl = getChatGPTWebFetch(null, { impersonate: IMPERSONATE });
-      const headers = { [COOKIE_JAR_HEADER]: 'digest-route-persistent' };
+      const headers = { [COOKIE_JAR_HEADER]: 'ctx:digest-route-persistent' };
       await (await fetchImpl(fixture.url('/r1'), { headers })).text();
       await (await fetchImpl(fixture.url('/r2'), { headers })).text();
       expect(fixture.sessions).toBe(1);
@@ -170,12 +212,12 @@ describe.skipIf(!probe.available)('getChatGPTWebFetch request routing', () => {
 
     const dir = mkdtempSync(path.join(tmpdir(), 'c3-route-cli-'));
     const jar = path.join(dir, 'ctx.txt');
-    registerContextCookieJar('digest-route-cli', jar, 'scope-cli');
+    registerContextCookieJar('ctx:digest-route-cli', jar, 'scope-cli');
 
     const fixture = await startH2Fixture();
     try {
       const fetchImpl = getChatGPTWebFetch(null, { impersonate: IMPERSONATE });
-      const headers = { [COOKIE_JAR_HEADER]: 'digest-route-cli' };
+      const headers = { [COOKIE_JAR_HEADER]: 'ctx:digest-route-cli' };
       await (await fetchImpl(fixture.url('/cli-1'), { headers })).text();
       await (await fetchImpl(fixture.url('/cli-2'), { headers })).text();
       expect(fixture.sessions).toBeGreaterThanOrEqual(2);

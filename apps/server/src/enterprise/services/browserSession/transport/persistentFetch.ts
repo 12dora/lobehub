@@ -100,6 +100,7 @@ export const createPersistentImpersonateFetch = (
       poolScope = resolved.poolScope;
     }
     if (cookieJarPath && isBrowserCookieJarTombstoned(cookieJarPath)) {
+      if (contextBound) throw new TypeError(CONTEXT_GONE_ERROR);
       cookieJarPath = undefined;
     } else if (cookieJarPath) {
       ensureBrowserCookieJarFile(cookieJarPath);

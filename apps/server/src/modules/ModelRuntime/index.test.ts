@@ -1211,8 +1211,8 @@ describe('ChatGPT Web transport injection', () => {
     vi.restoreAllMocks();
   });
 
-  afterEach(() => {
-    resetBrowserSessionRegistryForTests();
+  afterEach(async () => {
+    await resetBrowserSessionRegistryForTests();
   });
 
   /**

@@ -32,7 +32,10 @@ import {
   buildBrowserSessionBindingDigest,
   normalizeBrowserSessionAcquireInput,
 } from '@/server/enterprise/services/browserSession/identity';
-import { onBrowserSessionInvalidate } from '@/server/enterprise/services/browserSession/lifecycle';
+import {
+  onBrowserSessionBeforeDispose,
+  onBrowserSessionInvalidate,
+} from '@/server/enterprise/services/browserSession/lifecycle';
 import type {
   BrowserSessionContext,
   BrowserSessionWriteFence,
@@ -40,7 +43,11 @@ import type {
 import { BrowserSessionError } from '@/server/enterprise/services/browserSession/types';
 
 import { CHATGPT_WEB_SESSION_COOKIE_NAME } from './sessionCookie';
-import { registerContextCookieJar, unregisterContextCookieJar } from './transport/cookieJar';
+import {
+  registerContextCookieJar,
+  toContextCookieJarKey,
+  unregisterContextCookieJar,
+} from './transport/cookieJar';
 
 const log = debug('lobe-server:chatgpt-web-browser-session');
 
@@ -90,9 +97,16 @@ const chatgptWebIdentity = (accountId: string) => ({
   provider: CHATGPT_WEB_BROWSER_SESSION_PROVIDER,
 });
 
+const cookieJarKeyFor = (context: BrowserSessionContext): string =>
+  toContextCookieJarKey(context.cookieJar.digest);
+
+onBrowserSessionBeforeDispose((context) => {
+  if (context.provider !== CHATGPT_WEB_BROWSER_SESSION_PROVIDER) return;
+  unregisterContextCookieJar(cookieJarKeyFor(context));
+});
+
 onBrowserSessionInvalidate((context) => {
   if (context.provider !== CHATGPT_WEB_BROWSER_SESSION_PROVIDER) return;
-  unregisterContextCookieJar(context.cookieJar.digest);
   getSharedSentinelBundlePool().invalidate(context.contextId);
 });
 
@@ -106,7 +120,7 @@ const wrapHandle = (context: BrowserSessionContext): ChatGPTWebSessionContext =>
   context.lastUsedAt = Date.now();
   return {
     contextId: context.contextId,
-    cookieJarKey: context.cookieJar.digest,
+    cookieJarKey: cookieJarKeyFor(context),
     getBootstrap: () => getBrowserSessionProviderState(context, PROVIDER_STATE_NS),
     logicalPageId: context.logicalPageId,
     release: () => {
@@ -123,7 +137,7 @@ const wrapHandle = (context: BrowserSessionContext): ChatGPTWebSessionContext =>
 const bindJar = (context: BrowserSessionContext, deviceId?: string): void => {
   if (!assertWritable(context)) return;
   registerContextCookieJar(
-    context.cookieJar.digest,
+    cookieJarKeyFor(context),
     context.cookieJar.path,
     context.transportPoolKey,
   );
@@ -144,7 +158,7 @@ const toAcquireInput = (params: BindChatGPTWebBrowserSessionParams) => ({
 });
 
 const dropChatGPTWebBrowserContext = (context: BrowserSessionContext): void => {
-  unregisterContextCookieJar(context.cookieJar.digest);
+  unregisterContextCookieJar(cookieJarKeyFor(context));
   getSharedSentinelBundlePool().invalidate(context.contextId);
   getBrowserSessionRegistry().invalidate(context.contextId);
 };
@@ -233,7 +247,7 @@ export const invalidateChatGPTWebBrowserSession = (accountId: string): void => {
   const registry = getBrowserSessionRegistry();
   const existing = registry.getForIdentity(chatgptWebIdentity(accountId));
   if (existing) {
-    unregisterContextCookieJar(existing.cookieJar.digest);
+    unregisterContextCookieJar(cookieJarKeyFor(existing));
     getSharedSentinelBundlePool().invalidate(existing.contextId);
   }
   registry.invalidateForIdentity(chatgptWebIdentity(accountId));

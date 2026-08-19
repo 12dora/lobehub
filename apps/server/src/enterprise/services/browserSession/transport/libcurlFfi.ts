@@ -500,11 +500,38 @@ export const formatCurlmError = (bindings: LibcurlBindings, code: number): strin
   }
 };
 
+/**
+ * Request-facing multi-loop failures. Always a TypeError with `fetch failed: `
+ * and a numeric code — never a raw Error. CURLM codes use `curlm(N)`; poll-path
+ * exceptions use `curl(0)`.
+ */
+export const fetchFailedMulti = (
+  bindings: LibcurlBindings,
+  source: number | unknown,
+): TypeError => {
+  if (typeof source === 'number') {
+    return new TypeError(`fetch failed: curlm(${source}): ${formatCurlmError(bindings, source)}`);
+  }
+  const message = source instanceof Error ? source.message : String(source ?? 'unknown error');
+  const detail = message.trim() || 'unknown error';
+  return new TypeError(`fetch failed: curl(0): ${detail}`);
+};
+
 export type CookieSlistResult = { code: number; ok: false } | { lines: string[]; ok: true };
 
+/** Alloc/decode seam so getinfo-failure tests do not need a native koffi addon. */
+export interface CookieSlistKoffi {
+  alloc: (type: string, length: number) => unknown;
+  decode: (value: unknown, type: unknown) => unknown;
+  struct: (fields: Record<string, string>) => unknown;
+}
+
 /** Walk a `curl_slist*` of Netscape cookie lines from CURLINFO_COOKIELIST. */
-export const readCookieSlist = (bindings: LibcurlBindings, handle: unknown): CookieSlistResult => {
-  const koffi = loadKoffi();
+export const readCookieSlist = (
+  bindings: LibcurlBindings,
+  handle: unknown,
+  koffi: CookieSlistKoffi = loadKoffi() as CookieSlistKoffi,
+): CookieSlistResult => {
   const slot = koffi.alloc('void *', 1);
   const rc = bindings.curl_easy_getinfo(handle, CURLINFO.COOKIELIST, 'void **', slot);
   if (rc !== 0) return { code: rc, ok: false };

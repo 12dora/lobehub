@@ -12,7 +12,7 @@ import {
   seedBrowserCookieJar,
 } from '../cookieJar';
 import { H2_CERT_PATH, type H2Fixture, startH2Fixture } from './h2Fixture';
-import { probeLibcurlImpersonate } from './libcurlFfi';
+import { fetchFailedMulti, type LibcurlBindings, probeLibcurlImpersonate } from './libcurlFfi';
 import {
   createLibcurlMultiDriver,
   type LibcurlMultiDriver,
@@ -40,6 +40,28 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 4000): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 15));
   }
 };
+
+describe('fetchFailedMulti', () => {
+  const bindings = {
+    curl_multi_strerror: (code: number) => `CURLMcode ${code} detail`,
+  } as unknown as LibcurlBindings;
+
+  it('shapes perform/poll CURLM codes as fetch failed: curlm(N)', () => {
+    expect(fetchFailedMulti(bindings, 2)).toMatchObject({
+      message: 'fetch failed: curlm(2): CURLMcode 2 detail',
+      name: 'TypeError',
+    });
+  });
+
+  it('shapes poll exceptions as fetch failed: curl(0) and never passes a raw Error through', () => {
+    const raw = new Error('poll exploded');
+    const error = fetchFailedMulti(bindings, raw);
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).not.toBe(raw);
+    expect(error.constructor).toBe(TypeError);
+    expect(error.message).toBe('fetch failed: curl(0): poll exploded');
+  });
+});
 
 describe.skipIf(!probe.available)('createLibcurlMultiDriver', () => {
   let fixture: H2Fixture;
@@ -286,9 +308,9 @@ describe.skipIf(!probe.available)('createLibcurlMultiDriver', () => {
     await boot();
     const response = await get('/large', undefined, { timeoutMs: 30_000 });
     const reader = response.body!.getReader();
-    const first = await reader.read();
-    await waitFor(() => driver.stats().polling > 0 || driver.stats().paused > 0);
-    const chunks: Uint8Array[] = first.value ? [first.value] : [];
+    await waitFor(() => driver.stats().polling > 0);
+    expect(driver.stats().polling).toBeGreaterThan(0);
+    const chunks: Uint8Array[] = [];
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;

@@ -106,24 +106,24 @@ describe('context cookie jar registry', () => {
   it('resolves a registered digest to the context path and not a device-id jar', () => {
     const path = getCookieJarPath('context-owned');
     seedCookieJar(path, [{ domain: '.chatgpt.com', name: 'oai-did', value: 'real-device' }]);
-    registerContextCookieJar('digest-account-a', path);
+    registerContextCookieJar('ctx:digest-account-a', path);
 
-    expect(resolveCookieJarPath('digest-account-a')).toBe(path);
-    expect(isContextCookieJarKey('digest-account-a')).toBe(true);
+    expect(resolveCookieJarPath('ctx:digest-account-a')).toBe(path);
+    expect(isContextCookieJarKey('ctx:digest-account-a')).toBe(true);
     expect(isContextCookieJarKey('device-1')).toBe(false);
     expect(resolveCookieJarPath('device-1')).not.toBe(path);
   });
 
   it('stores an optional transport-pool key with the digest', () => {
     const path = getCookieJarPath('context-owned-pool');
-    registerContextCookieJar('digest-with-pool', path, 'pool-scope-abc');
+    registerContextCookieJar('ctx:digest-with-pool', path, 'pool-scope-abc');
 
-    expect(getContextCookieJarPoolKey('digest-with-pool')).toBe('pool-scope-abc');
-    expect(getContextCookieJarPoolKey('digest-account-a')).toBeUndefined();
+    expect(getContextCookieJarPoolKey('ctx:digest-with-pool')).toBe('pool-scope-abc');
+    expect(getContextCookieJarPoolKey('ctx:digest-account-a')).toBeUndefined();
   });
 
-  it('retired context digests stay context keys and never resolve as a device id', () => {
-    const digest = 'ab'.repeat(32);
+  it('retired context keys stay namespaced and never resolve as a device id', () => {
+    const digest = `ctx:${'ab'.repeat(32)}`;
     const path = getCookieJarPath('retired-owned');
     registerContextCookieJar(digest, path, 'pool-retired');
     unregisterContextCookieJar(digest);
@@ -131,6 +131,13 @@ describe('context cookie jar registry', () => {
     expect(isContextCookieJarKey(digest)).toBe(true);
     expect(() => resolveCookieJarPath(digest)).toThrow(CONTEXT_GONE_ERROR);
     expect(isContextCookieJarKey('123e4567-e89b-42d3-a456-426614174000')).toBe(false);
+  });
+
+  it('treats a 64-hex legacy device id as a device jar, not a context digest', () => {
+    const legacyHex = 'cd'.repeat(32);
+    expect(isContextCookieJarKey(legacyHex)).toBe(false);
+    expect(resolveCookieJarPath(legacyHex)).toBe(getCookieJarPath(legacyHex));
+    expect(() => resolveCookieJarPath(`ctx:${legacyHex}`)).toThrow(CONTEXT_GONE_ERROR);
   });
 });
 

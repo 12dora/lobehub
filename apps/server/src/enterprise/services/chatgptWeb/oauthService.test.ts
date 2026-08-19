@@ -131,7 +131,7 @@ const futureExp = Math.floor(Date.now() / 1000) + 86_400;
 
 afterEach(async () => {
   await Promise.resolve(resetCookieJars());
-  resetBrowserSessionRegistryForTests();
+  await resetBrowserSessionRegistryForTests();
 });
 
 describe('ChatGPTWebOAuthService.initiateDeviceCode', () => {
@@ -799,7 +799,9 @@ describe('ChatGPTWebOAuthService.verifyAccessToken', () => {
       provider: 'chatgptweb',
     });
     expect(committed?.lifecycle).toBe('active');
-    const committedPath = committed ? resolveCookieJarPath(committed.cookieJar.digest) : livePath;
+    const committedPath = committed
+      ? resolveCookieJarPath(`ctx:${committed.cookieJar.digest}`)
+      : livePath;
     expect(readFileSync(committedPath, 'utf8')).toContain('new-session');
     expect(readFileSync(committedPath, 'utf8')).not.toContain('old-session');
   });

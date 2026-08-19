@@ -9,6 +9,7 @@ import {
   disposeAllBrowserSessions,
   getBrowserSessionProviderState,
   getBrowserSessionRegistry,
+  installBrowserSessionRegistryForTests,
   resetBrowserSessionRegistryForTests,
   setBrowserSessionProviderState,
 } from './contextRegistry';
@@ -25,8 +26,8 @@ import { onBrowserSessionInvalidate } from './lifecycle';
 import type { BrowserSessionAcquireInput } from './types';
 import { BrowserSessionError } from './types';
 
-afterEach(() => {
-  resetBrowserSessionRegistryForTests();
+afterEach(async () => {
+  await resetBrowserSessionRegistryForTests();
   resetBrowserCookieJars();
 });
 
@@ -245,9 +246,7 @@ describe('getBrowserSessionRegistry', () => {
     const second = getBrowserSessionRegistry().acquire(baseInput());
     expect(second.contextId).toBe(first.contextId);
 
-    const registry = getBrowserSessionRegistry();
-    resetBrowserSessionRegistryForTests();
-    await registry.awaitPendingCleanup();
+    await resetBrowserSessionRegistryForTests();
     expect(existsSync(first.cookieJar.path)).toBe(false);
 
     const third = getBrowserSessionRegistry().acquire(baseInput());
@@ -419,6 +418,40 @@ describe('idle expiry and bounded count', () => {
     expect(existsSync(live.cookieJar.path)).toBe(true);
   });
 
+  it('ephemeral acquire does not idle-sweep a TTL-expired ordinary context', () => {
+    let now = 1_000;
+    const registry = createBrowserSessionRegistry({
+      idleTtlMs: 1_000,
+      maxContexts: 1,
+      now: () => now,
+    });
+    const live = registry.acquire(baseInput({ accountId: 'live' }));
+    now = 10_000;
+    expect(() => registry.acquire(baseInput({ accountId: 'pending', ephemeral: true }))).toThrow(
+      BrowserSessionError,
+    );
+    expect(registry.get(live.contextId)).toBe(live);
+    expect(live.lifecycle).toBe('active');
+    expect(existsSync(live.cookieJar.path)).toBe(true);
+  });
+
+  it('rejects acquire and hides identity lookup once dispose starts', () => {
+    const registry = createBrowserSessionRegistry();
+    const live = registry.acquire(baseInput({ accountId: 'live' }));
+    registry.dispose();
+    expect(() => registry.acquire(baseInput({ accountId: 'sneak' }))).toThrow(
+      /browser session registry is resetting/,
+    );
+    expect(
+      registry.getForIdentity({
+        accountId: 'live',
+        origin: 'https://chatgpt.com',
+        provider: 'chatgptweb',
+      }),
+    ).toBeUndefined();
+    expect(live.lifecycle).toBe('released');
+  });
+
   it('sweepOrphanBrowserCookieJars deletes leftover txt files and keeps pending-wipe-*', () => {
     const contextDir = nodePath.join(tmpdir(), 'aihub-browser-session-jars');
     const legacyDir = nodePath.join(tmpdir(), LEGACY_DEVICE_BROWSER_COOKIE_JAR_DIR_NAME);
@@ -448,6 +481,44 @@ describe('disposeAllBrowserSessions', () => {
     const path = context.cookieJar.path;
     await disposeAllBrowserSessions();
     expect(existsSync(path)).toBe(false);
+  });
+
+  it('rejects admission during reset and does not unlink a post-reset context', async () => {
+    let releaseDrain: (() => void) | undefined;
+    const hanging = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    const registry = createBrowserSessionRegistry({
+      transportPool: {
+        bind: vi.fn(),
+        drain: () => hanging,
+        drainAll: () => hanging,
+        has: () => false,
+      },
+    });
+    installBrowserSessionRegistryForTests(registry);
+    const first = getBrowserSessionRegistry().acquire(baseInput({ accountId: 'before' }));
+    const oldPath = first.cookieJar.path;
+
+    const resetting = disposeAllBrowserSessions();
+    expect(() => getBrowserSessionRegistry().acquire(baseInput({ accountId: 'during' }))).toThrow(
+      /browser session registry is resetting/,
+    );
+    expect(
+      getBrowserSessionRegistry().getForIdentity({
+        accountId: 'before',
+        origin: 'https://chatgpt.com',
+        provider: 'chatgptweb',
+      }),
+    ).toBeUndefined();
+
+    releaseDrain?.();
+    await resetting;
+
+    const next = getBrowserSessionRegistry().acquire(baseInput({ accountId: 'after' }));
+    expect(next.contextId).not.toBe(first.contextId);
+    expect(existsSync(next.cookieJar.path)).toBe(true);
+    expect(existsSync(oldPath)).toBe(false);
   });
 });
 

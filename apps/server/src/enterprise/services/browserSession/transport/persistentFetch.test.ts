@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { COOKIE_JAR_HEADER } from '../../chatgptWeb/transport/cookieJar';
 import { createCurlImpersonateFetch } from '../../chatgptWeb/transport/curlImpersonateFetch';
 import { resolveCurlImpersonateBinary } from '../../chatgptWeb/transport/resolveBinary';
+import { tombstoneBrowserCookieJar } from '../cookieJar';
 import { H2_CERT_PATH, startH2Fixture } from './h2Fixture';
 import { probeLibcurlImpersonate } from './libcurlFfi';
 import { createLibcurlMultiDriver } from './multiDriver';
@@ -129,6 +130,30 @@ describe.skipIf(!probe.available)('createPersistentImpersonateFetch', () => {
       mapping.delete('live-digest');
       releaseBody?.(new TextEncoder().encode('{}'));
       await expect(pending).rejects.toThrow(CONTEXT_GONE_ERROR);
+      expect(driver.stats().pools).toBe(0);
+    } finally {
+      await driver.drainAll();
+      await fixture.close();
+    }
+  });
+
+  it('rejects a context-bound tombstoned jar instead of continuing jarless', async () => {
+    process.env.CHATGPT_WEB_ALLOWED_HOSTS = 'localhost';
+    const fixture = await startH2Fixture();
+    const driver = createLibcurlMultiDriver();
+    try {
+      const jarPath = '/tmp/c3-tombstone.jar';
+      tombstoneBrowserCookieJar(jarPath);
+      const fetchImpl = createPersistentImpersonateFetch({
+        caBundle: H2_CERT_PATH,
+        defaultPoolScope: 'unscoped-must-not-win',
+        driver,
+        impersonate: IMPERSONATE,
+        resolvePool: () => ({ cookieJarPath: jarPath, poolScope: 'scope-tomb' }),
+      });
+      await expect(
+        fetchImpl(fixture.url('/json'), { headers: { [COOKIE_JAR_HEADER]: 'ctx:tomb' } }),
+      ).rejects.toThrow(CONTEXT_GONE_ERROR);
       expect(driver.stats().pools).toBe(0);
     } finally {
       await driver.drainAll();

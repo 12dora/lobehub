@@ -6,14 +6,16 @@
  * Instead we snapshot the file at request start, read CURLINFO_COOKIELIST at
  * completion, and apply only the delta under the shared per-path jar lock.
  *
- * Compare-and-swap vs the snapshot:
- * - delete/update only while the current jar value still equals the snapshot
- *   (external change or deletion wins);
- * - a cookie absent from the snapshot is upserted only if current is missing
- *   or already equal; a different current value is treated as an external write.
+ * Compare-and-swap is family-granular: `(familyName, domain, path)` where
+ * `familyName` is the cookie name with an optional `.N` chunk suffix stripped.
+ * If the current family's membership or values differ from the snapshot
+ * (an external writer changed topology or values), every response change for
+ * that family is suppressed. Otherwise the family's final members replace the
+ * current members atomically (upserts + deletions).
  */
 import type { CookieRecord } from '../cookieJar';
 import {
+  cookieFamilyName,
   isBrowserCookieJarTombstoned,
   parseNetscapeCookieJarText,
   readBrowserCookieJar,
@@ -24,11 +26,35 @@ import {
 const cookieId = (cookie: Pick<CookieRecord, 'domain' | 'name' | 'path'>): string =>
   `${cookie.name}\0${cookie.domain.toLowerCase()}\0${cookie.path}`;
 
+const familyKey = (cookie: Pick<CookieRecord, 'domain' | 'name' | 'path'>): string =>
+  `${cookieFamilyName(cookie.name)}\0${cookie.domain.toLowerCase()}\0${cookie.path}`;
+
 const sameCookie = (left: CookieRecord, right: CookieRecord): boolean =>
   left.value === right.value &&
   left.expires === right.expires &&
   left.httpOnly === right.httpOnly &&
   left.secure === right.secure;
+
+const groupByFamily = (cookies: CookieRecord[]): Map<string, CookieRecord[]> => {
+  const groups = new Map<string, CookieRecord[]>();
+  for (const cookie of cookies) {
+    const key = familyKey(cookie);
+    const members = groups.get(key);
+    if (members) members.push(cookie);
+    else groups.set(key, [cookie]);
+  }
+  return groups;
+};
+
+const familyEquals = (left: CookieRecord[], right: CookieRecord[]): boolean => {
+  if (left.length !== right.length) return false;
+  const rightById = new Map(right.map((cookie) => [cookieId(cookie), cookie]));
+  for (const cookie of left) {
+    const other = rightById.get(cookieId(cookie));
+    if (!other || !sameCookie(cookie, other)) return false;
+  }
+  return true;
+};
 
 export const applyCookieListDelta = (params: {
   cookieJarPath: string;
@@ -40,31 +66,27 @@ export const applyCookieListDelta = (params: {
 
   withBrowserCookieJarLock(cookieJarPath, () => {
     if (isBrowserCookieJarTombstoned(cookieJarPath)) return;
-    const snapshotMap = new Map(snapshot.map((cookie) => [cookieId(cookie), cookie]));
-    const finalMap = new Map(
-      parseNetscapeCookieJarText(listLines.join('\n')).map((cookie) => [cookieId(cookie), cookie]),
-    );
-    const current = new Map(
-      readBrowserCookieJar(cookieJarPath).map((cookie) => [cookieId(cookie), cookie]),
-    );
+    const snapshotFamilies = groupByFamily(snapshot);
+    const finalFamilies = groupByFamily(parseNetscapeCookieJarText(listLines.join('\n')));
+    const currentCookies = readBrowserCookieJar(cookieJarPath);
+    const currentFamilies = groupByFamily(currentCookies);
+    const managedKeys = new Set([...snapshotFamilies.keys(), ...finalFamilies.keys()]);
 
-    for (const [id, snap] of snapshotMap) {
-      if (finalMap.has(id)) continue;
-      const cur = current.get(id);
-      if (cur && sameCookie(cur, snap)) current.delete(id);
+    const next: CookieRecord[] = [];
+    for (const cookie of currentCookies) {
+      if (!managedKeys.has(familyKey(cookie))) next.push(cookie);
     }
 
-    for (const [id, cookie] of finalMap) {
-      const snap = snapshotMap.get(id);
-      const cur = current.get(id);
-      if (snap) {
-        if (sameCookie(snap, cookie)) continue;
-        if (cur && sameCookie(cur, snap)) current.set(id, cookie);
+    for (const key of managedKeys) {
+      const snap = snapshotFamilies.get(key) ?? [];
+      const cur = currentFamilies.get(key) ?? [];
+      if (!familyEquals(cur, snap)) {
+        next.push(...cur);
         continue;
       }
-      if (!cur) current.set(id, cookie);
+      next.push(...(finalFamilies.get(key) ?? []));
     }
 
-    writeBrowserCookieJarRecords(cookieJarPath, [...current.values()]);
+    writeBrowserCookieJarRecords(cookieJarPath, next);
   });
 };

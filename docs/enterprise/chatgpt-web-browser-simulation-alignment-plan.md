@@ -32,7 +32,7 @@ but it does not require controlling the user's real Chrome for every inference.
 | G6      | Pro Turn Coordinator                                  | ✅ Done — `0a720e3370`                                                                                                                                     |
 | G7      | Route All ChatGPT Endpoints Through One Context       | ✅ Done — `bb3d3f48a6` (account-scoped, 6 codex review rounds)                                                                                             |
 | **C3**  | **Persistent Impersonated Transport**                 | 🔄 **In progress (verification pending)**                                                                                                                  |
-| **C4**  | **Context Ownership and Cleanup**                     | ✅ Done — `pending`                                                                                                                         |
+| **C4**  | **Context Ownership and Cleanup**                     | ✅ Done — `pending`                                                                                                                                        |
 | **CX1** | **Isolate the Cursor CLI state cache per connection** | ✅ Done — per-connection `config-seed/<sha256(accountId)[:32]>/` via `x-aihub-account`; token-digest fallback; legacy global dir left in place (`pending`) |
 | ~~GX1~~ | ~~Account-scope the Grok agent identity~~             | ❌ **Decided against — do not implement.** No browser-session-shaped risk found for Grok's CLI-proxy endpoint.                                             |
 
@@ -523,11 +523,16 @@ browser context + origin + proxy/egress outlet + impersonation profile revision
 
 #### C3 implementation notes
 
-Shipped as an **in-process libcurl-impersonate multi driver** via `koffi` (not a sidecar
-process). Each pool is one `CURLM` with `CURLMOPT_PIPELINING=CURLPIPE_MULTIPLEX`, keyed
+Implemented as an **in-process libcurl-impersonate multi driver** via `koffi` (not a sidecar
+process); commander flips the package status on merge. Each pool is one `CURLM` with
+`CURLMOPT_PIPELINING=CURLPIPE_MULTIPLEX`, keyed
 by `browser context + origin + proxy/egress outlet + impersonation profile`. While
 `curl_multi_poll.async` is outstanding, the only native call allowed from elsewhere is
 `curl_multi_wakeup`; add/remove/pause/cleanup run on the loop after poll returns.
+
+This repository has **no CI test workflow** (no GitHub Actions job that runs tests, and none
+that installs libcurl-impersonate). Native suites run locally only; they skip when the probe
+is unavailable.
 
 The on-disk Netscape jar remains the cookie source of truth: handles load it with
 `CURLOPT_COOKIEFILE` and merge `CURLINFO_COOKIELIST` deltas at completion. There is no
@@ -583,9 +588,9 @@ Productionize C1/C3 so long-lived sessions do not leak resources or split owners
 
 The owner lease is **not** an exclusive mutex and **not** a distributed lock. `ownerLease.ownerId` stays `pid:<pid>` (this OS process owns the persistent transport). Concurrent prepare / conversation / Sentinel replenish on one context (G6/G7) share a generation: `revision` (monotonic per context object, starts at 1) plus an `inFlight` counter. `withContextOwnership` and `bindChatGPTWebBrowserSession` increment `inFlight`. Runtime `chat()` transfers the lease to `ChatGPTWebStream.onCleanup` (success / failure / abort / consumer disconnect); method-level `release` is only a fallback when no stream was constructed. Invalidate (reconnect) does **not** wait for `inFlight === 0` — it fences immediately.
 
-**Dispose order:** fence (`lifecycle` + `revision++`) and tombstone the jar immediately → **await** that context's transport drains (persistent pool **and** CLI children tracked by jar/pool scope) → unlink the jar → clear the tombstone → fire `onBrowserSessionInvalidate` (ChatGPT retires the digest so it can never become a legacy device-id jar, then invalidates the Sentinel slot). `invalidate` / `dispose` stay synchronous for callers and enqueue work on `awaitPendingCleanup()`. `disposeAllBrowserSessions()` and `stopEnterpriseWorkers()` await that queue. `resetCookieJars()` fences routing first, then disposes, then awaits cleanup + `drainAll()`, and only then clears mappings / unlinks / tombstones. Drain failures are logged.
+**Dispose order:** fence (`lifecycle` + `revision++`) and tombstone the jar immediately → synchronous `onBrowserSessionBeforeDispose` (ChatGPT retires the namespaced `ctx:<sha256>` digest so idle/overflow eviction cannot leave stale routing live) → **await** that context's transport drains via `Promise.allSettled` (persistent pool **and** CLI children tracked by jar/pool scope; wait for every transport) → unlink the jar **only if every drain fulfilled**. On any drain rejection keep the tombstone, do **not** unlink, log an aggregate error, and still fire listeners. Tombstones stay in a **bounded LRU** (cap 4096); they are not cleared after drain. Post-drain `onBrowserSessionInvalidate` deletes the Sentinel slot. `invalidate` / `dispose` stay synchronous for callers and enqueue work on `awaitPendingCleanup()`. `registry.dispose()` marks the registry `disposed` before any await; a disposed registry rejects `acquire()` with `BrowserSessionError('browser session registry is resetting')` and `getForIdentity` returns undefined. `disposeAllBrowserSessions()`, `resetBrowserSessionRegistryForTests()`, and `resetCookieJars()`: mark disposed → drop → await cleanup + `drainAll` → unlink those jars → atomically install a fresh registry (never unlinking jars that belong to the replacement).
 
-Sweeper defaults: `maxContexts = 256`, `idleTtlMs = 45 min`. Staged contexts pass `ephemeral: true` into `acquire()` at creation; an ephemeral candidate at capacity may evict only another idle ephemeral entry, otherwise staging fails closed. The sweeper never evicts `inFlight > 0`. `drainAll()` is shutdown/test-reset only.
+Sweeper defaults: `maxContexts = 256`, `idleTtlMs = 45 min`. Staged contexts pass `ephemeral: true` into `acquire()` at creation; ephemeral admission normalizes first and may run only an ephemeral-only reclamation pass (never the ordinary idle/TTL sweep). An ephemeral candidate at capacity may evict only another idle ephemeral entry, otherwise staging fails closed. The sweeper never evicts `inFlight > 0`. `drainAll()` is shutdown/test-reset only. Context jar keys on the wire are `ctx:<sha256>`; a 64-hex legacy device id is not treated as a context digest.
 
 Staged commit records live presence as `BrowserSessionWriteFence | null` and requires an exact match at commit (absent stays absent; a captured generation must still be that generation). A device-changing commit may drop only that captured generation. `commitVerifiedChatGPTWebSession` rotates only after a successful promotion.
 

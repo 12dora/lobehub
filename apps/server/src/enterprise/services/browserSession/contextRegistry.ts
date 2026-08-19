@@ -169,6 +169,8 @@ export const createBrowserSessionRegistry = (
     }
   };
 
+  let disposed = false;
+
   const drop = (context: BrowserSessionContext, next: 'invalidated' | 'released'): void => {
     // Fence first so closed-over handles fail writes before drain/unlink.
     context.revision += 1;
@@ -182,7 +184,22 @@ export const createBrowserSessionRegistry = (
     log('%s context=%s lookup=%s', next, context.contextId, context.lookupKey);
   };
 
+  const reclaimIdleEphemeral = (nowMs?: number): number => {
+    if (disposed) return 0;
+    const at = nowMs ?? now();
+    const idle = [...byContextId.values()].filter((context) => {
+      if (context.lifecycle !== 'active') return false;
+      if (context.inFlight > 0) return false;
+      if (!isEphemeralContext(context)) return false;
+      return at - context.lastUsedAt >= ephemeralIdleTtlMs;
+    });
+    idle.sort((left, right) => left.lastUsedAt - right.lastUsedAt);
+    for (const context of idle) drop(context, 'released');
+    return idle.length;
+  };
+
   const sweepIdleAndBound = (nowMs?: number, reserve = 0): number => {
+    if (disposed) return 0;
     const at = nowMs ?? now();
     const cap = Math.max(0, maxContexts - reserve);
     const active = [...byContextId.values()].filter((context) => context.lifecycle === 'active');
@@ -275,8 +292,15 @@ export const createBrowserSessionRegistry = (
   };
 
   const acquire = (raw: BrowserSessionAcquireInput): BrowserSessionContext => {
-    sweepIdleAndBound();
+    if (disposed) {
+      throw new BrowserSessionError('browser session registry is resetting');
+    }
     const input = normalizeBrowserSessionAcquireInput(raw);
+    if (input.ephemeral) {
+      reclaimIdleEphemeral();
+    } else {
+      sweepIdleAndBound();
+    }
     const lookupKey = buildBrowserSessionLookupKey(input);
     const bindingDigest = buildBrowserSessionBindingDigest(input);
     const existingId = byLookupKey.get(lookupKey);
@@ -327,6 +351,7 @@ export const createBrowserSessionRegistry = (
   const getForIdentity = (
     input: Pick<BrowserSessionAcquireInput, 'accountId' | 'origin' | 'provider'>,
   ): BrowserSessionContext | undefined => {
+    if (disposed) return undefined;
     const lookupKey = buildBrowserSessionLookupKey(normalizeBrowserSessionIdentity(input));
     const contextId = byLookupKey.get(lookupKey);
     if (!contextId) return undefined;
@@ -394,6 +419,8 @@ export const createBrowserSessionRegistry = (
   };
 
   const dispose = (): void => {
+    // Admission fence first: no await has started; acquire() must fail closed.
+    disposed = true;
     stopSweepTimer();
     for (const context of Array.from(byContextId.values())) drop(context, 'released');
     const leftover = transportPool.drainAll?.();
@@ -467,23 +494,38 @@ export const stopBrowserSessionIdleSweep = (): void => {
   defaultSweepTimer = undefined;
 };
 
-export const disposeAllBrowserSessions = async (): Promise<void> => {
+/**
+ * Mark the current singleton disposed, drop its contexts, wait for cleanup and
+ * leftover `drainAll`, unlink those jars, then atomically install a fresh
+ * registry. Never unlinks jars created by the replacement.
+ */
+const resetAndReplaceBrowserSessionRegistry = async (
+  afterDispose?: () => Promise<void>,
+): Promise<void> => {
   stopBrowserSessionIdleSweep();
   const registry = defaultRegistry;
   registry?.dispose();
   await registry?.awaitPendingCleanup();
-  defaultRegistry = undefined;
+  if (afterDispose) await afterDispose();
   resetBrowserCookieJars();
+  defaultRegistry = createBrowserSessionRegistry();
+};
+
+export const disposeAllBrowserSessions = async (): Promise<void> => {
+  await resetAndReplaceBrowserSessionRegistry();
 };
 
 export const installBrowserSessionRegistryForTests = (registry: BrowserSessionRegistry): void => {
   defaultRegistry = registry;
 };
 
-export const resetBrowserSessionRegistryForTests = (): void => {
-  stopBrowserSessionIdleSweep();
-  const registry = defaultRegistry;
-  registry?.dispose();
-  void registry?.awaitPendingCleanup();
-  defaultRegistry = undefined;
+export const resetBrowserSessionRegistryForTests = async (): Promise<void> => {
+  await resetAndReplaceBrowserSessionRegistry();
+};
+
+/** ChatGPT profile reset: extra global drains run after dispose, before unlink. */
+export const resetAndReplaceBrowserSessionRegistryAfter = async (
+  afterDispose: () => Promise<void>,
+): Promise<void> => {
+  await resetAndReplaceBrowserSessionRegistry(afterDispose);
 };

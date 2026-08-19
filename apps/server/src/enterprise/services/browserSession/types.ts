@@ -151,6 +151,10 @@ export interface BrowserSessionContextSummary {
 }
 
 export interface BrowserSessionRegistry {
+  /**
+   * Throws {@link BrowserSessionError} with `browser session registry is resetting`
+   * once {@link dispose} has marked this instance disposed.
+   */
   acquire: (input: BrowserSessionAcquireInput) => BrowserSessionContext;
   /**
    * Wait for every in-flight dispose drain+unlink. `invalidate` / `dispose`

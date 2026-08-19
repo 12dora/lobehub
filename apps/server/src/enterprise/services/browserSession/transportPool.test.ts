@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildBrowserSessionTransportPoolKey,
   createBrowserSessionTransportPool,
+  registerBrowserSessionScopeDrain,
 } from './transportPool';
 
 describe('buildBrowserSessionTransportPoolKey', () => {
@@ -50,5 +51,32 @@ describe('createBrowserSessionTransportPool', () => {
     expect(drainB).toHaveBeenCalledTimes(1);
     expect(pool.has('a')).toBe(false);
     expect(pool.has('b')).toBe(false);
+  });
+
+  it('waits for every extra drain before rejecting when one fails', async () => {
+    let releaseSlow: (() => void) | undefined;
+    const slow = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    let slowFinished = false;
+    const unregFail = registerBrowserSessionScopeDrain(async () => {
+      throw new Error('persistent cleanup failed');
+    });
+    const unregSlow = registerBrowserSessionScopeDrain(async () => {
+      await slow;
+      slowFinished = true;
+    });
+    try {
+      const pool = createBrowserSessionTransportPool();
+      const pending = Promise.resolve(pool.drain('missing-key'));
+      await Promise.resolve();
+      expect(slowFinished).toBe(false);
+      releaseSlow?.();
+      await expect(pending).rejects.toThrow(/browser session drain failed/);
+      expect(slowFinished).toBe(true);
+    } finally {
+      unregFail();
+      unregSlow();
+    }
   });
 });

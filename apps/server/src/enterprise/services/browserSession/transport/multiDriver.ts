@@ -32,6 +32,7 @@ import {
   CURLPIPE_MULTIPLEX,
   decodeBytes,
   decodeCurlMsg,
+  fetchFailedMulti,
   formatCurlmError,
   getLibcurlBindings,
   handleAddress,
@@ -359,7 +360,7 @@ export const createLibcurlMultiDriver = (
         }
         const rc = bindings.curl_multi_add_handle(pool.multi, command.req.handle);
         if (rc !== 0) {
-          failRequest(bindings, command.req, fetchFailed(rc, formatCurlmError(bindings, rc)));
+          failRequest(bindings, command.req, fetchFailedMulti(bindings, rc));
           continue;
         }
         command.req.added = true;
@@ -417,7 +418,7 @@ export const createLibcurlMultiDriver = (
             performRc = bindings.curl_multi_perform(pool.multi, running);
           }
           if (performRc !== CURLM_CALL_MULTI_PERFORM && !isCurlmOk(performRc)) {
-            failPool(pool, new TypeError(`fetch failed: ${formatCurlmError(bindings, performRc)}`));
+            failPool(pool, fetchFailedMulti(bindings, performRc));
             finishDestroyPool(bindings, pool, pools);
             return;
           }
@@ -443,14 +444,14 @@ export const createLibcurlMultiDriver = (
             options.onPoll?.('exit');
           }
           if (!isCurlmOk(pollRc)) {
-            failPool(pool, new TypeError(`fetch failed: ${formatCurlmError(bindings, pollRc)}`));
+            failPool(pool, fetchFailedMulti(bindings, pollRc));
             finishDestroyPool(bindings, pool, pools);
             return;
           }
         }
       } catch (error) {
         log('libcurl multi loop failed: %s', (error as Error).message);
-        failPool(pool, error);
+        failPool(pool, fetchFailedMulti(bindings, error));
         finishDestroyPool(bindings, pool, pools);
       } finally {
         pool.loopRunning = false;

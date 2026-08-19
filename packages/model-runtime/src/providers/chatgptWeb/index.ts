@@ -255,6 +255,12 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     const inputStartAt = Date.now();
     const signal = options?.signal;
     let streamConstructed = false;
+    let leaseReleased = false;
+    const releaseLease = () => {
+      if (leaseReleased) return;
+      leaseReleased = true;
+      this.releaseSessionContext();
+    };
 
     try {
       const { echoHistory, inputText, messages, mimeTypes } = await this.buildMessages(
@@ -420,7 +426,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
           try {
             this.hideTurn(turn, conversationId);
           } finally {
-            this.releaseSessionContext();
+            releaseLease();
           }
         },
         onDone: (context) => this.finalizeTurn(context, turn, search, signal),
@@ -429,36 +435,56 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         resolveImage: (pointer) => this.resolveImage(pointer, turn, signal),
         signal,
       });
-      streamConstructed = true;
 
-      if (process.env[DEBUG_FLAG] === '1') {
-        const [prod, useForDebug] = stream.tee();
-        // never dump full base64 payloads / signed URLs into the log
-        debugStream(useForDebug.pipeThrough(createDebugRedactor())).catch(console.error);
-        return StreamingResponse(prod, { headers: options?.headers });
+      const cancelLeaseSources = () => {
+        void stream.cancel().catch(() => undefined);
+        const closing = iterator.return?.();
+        if (closing && typeof (closing as Promise<unknown>).then === 'function') {
+          void (closing as Promise<unknown>).catch(() => undefined);
+        }
+      };
+
+      try {
+        if (process.env[DEBUG_FLAG] === '1') {
+          const [prod, useForDebug] = stream.tee();
+          // never dump full base64 payloads / signed URLs into the log
+          debugStream(useForDebug.pipeThrough(createDebugRedactor())).catch(console.error);
+          const response = StreamingResponse(prod, { headers: options?.headers });
+          streamConstructed = true;
+          return response;
+        }
+
+        const response = StreamingResponse(stream, { headers: options?.headers });
+        streamConstructed = true;
+        return response;
+      } catch (wrapError) {
+        cancelLeaseSources();
+        throw wrapError;
       }
-
-      return StreamingResponse(stream, { headers: options?.headers });
     } catch (error) {
       // The user pressing stop is not a provider failure: surface the runtime's
       // abort terminal instead of an error card.
       if (isCallerAbort(signal) || isAbortError(error)) {
-        streamConstructed = true;
-        return StreamingResponse(
-          ChatGPTWebStream(throwingEvents(error), {
-            callbacks: options?.callback,
-            model: payload.model,
-            onCleanup: () => this.releaseSessionContext(),
-            provider: this.provider,
-            signal,
-          }),
-          { headers: options?.headers },
-        );
+        const abortStream = ChatGPTWebStream(throwingEvents(error), {
+          callbacks: options?.callback,
+          model: payload.model,
+          onCleanup: () => releaseLease(),
+          provider: this.provider,
+          signal,
+        });
+        try {
+          const response = StreamingResponse(abortStream, { headers: options?.headers });
+          streamConstructed = true;
+          return response;
+        } catch (wrapError) {
+          void abortStream.cancel().catch(() => undefined);
+          throw wrapError;
+        }
       }
 
       throw this.toRuntimeError(error);
     } finally {
-      if (!streamConstructed) this.releaseSessionContext();
+      if (!streamConstructed) releaseLease();
     }
   }
 

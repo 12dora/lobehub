@@ -9,6 +9,23 @@ import { clearUploadCache } from './uploadCache';
 
 vi.mock('../../utils/debugStream', () => ({ debugStream: vi.fn(async () => {}) }));
 
+const streamingResponse = vi.hoisted(() => ({
+  impl: (stream: ReadableStream, options?: { headers?: Record<string, string> }) =>
+    new Response(stream, {
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Content-Type': 'text/event-stream',
+        'X-Accel-Buffering': 'no',
+        ...options?.headers,
+      },
+    }),
+}));
+
+vi.mock('../../utils/response', () => ({
+  StreamingResponse: (stream: ReadableStream, options?: { headers?: Record<string, string> }) =>
+    streamingResponse.impl(stream, options),
+}));
+
 const PNG_BYTES = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 2,
   0, 0, 0, 3, 8, 6, 0, 0, 0,
@@ -130,7 +147,10 @@ const documentFor = (body: any, message: { parts: string[]; status: string }) =>
   },
 });
 
+const defaultStreamingResponse = streamingResponse.impl;
+
 beforeEach(() => {
+  streamingResponse.impl = defaultStreamingResponse;
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   clearUploadCache();
@@ -738,6 +758,34 @@ describe('LobeChatGPTWebAI', () => {
       expect(release).not.toHaveBeenCalled();
       await response.body?.cancel();
       await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    });
+
+    it('releases the session lease once if StreamingResponse construction throws', async () => {
+      const release = vi.fn();
+      streamingResponse.impl = () => {
+        throw new TypeError('invalid response headers');
+      };
+
+      await expect(
+        new LobeChatGPTWebAI({
+          apiKey: 'token',
+          client: createFakeClient() as any,
+          sessionContext: {
+            contextId: 'ctx-release-wrap',
+            cookieJarKey: 'jar-digest',
+            getBootstrap: () => undefined,
+            logicalPageId: '11111111-1111-4111-8111-111111111111',
+            release,
+            setBootstrap: () => {},
+          },
+        }).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'auto',
+          temperature: 1,
+        }),
+      ).rejects.toBeDefined();
+
+      expect(release).toHaveBeenCalledTimes(1);
     });
 
     it('uses sessionContext.contextId as the Sentinel pool key', async () => {

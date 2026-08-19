@@ -11,6 +11,7 @@ export {
   getBrowserSessionRegistry,
   installBrowserSessionRegistryForTests,
   isBrowserSessionWritable,
+  resetAndReplaceBrowserSessionRegistryAfter,
   resetBrowserSessionRegistryForTests,
   setBrowserSessionProviderState,
   startBrowserSessionIdleSweep,
@@ -58,7 +59,10 @@ export {
   normalizeBrowserSessionIdentity,
   normalizeBrowserSessionOrigin,
 } from './identity';
-export type { BrowserSessionInvalidateListener } from './lifecycle';
+export type {
+  BrowserSessionBeforeDisposeListener,
+  BrowserSessionInvalidateListener,
+} from './lifecycle';
 export {
   createBrowserSessionOwnerLease,
   disposeBrowserSessionResources,
@@ -66,7 +70,9 @@ export {
   isBrowserSessionLeaseHeldBy,
   markBrowserSessionInvalidated,
   markBrowserSessionReleased,
+  notifyBrowserSessionBeforeDispose,
   notifyBrowserSessionInvalidated,
+  onBrowserSessionBeforeDispose,
   onBrowserSessionInvalidate,
 } from './lifecycle';
 export type {

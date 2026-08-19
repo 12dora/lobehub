@@ -6,7 +6,6 @@ import {
   ensureBrowserCookieJarFile,
   isBrowserCookieJarTombstoned,
   LEGACY_DEVICE_BROWSER_COOKIE_JAR_DIR_NAME,
-  resetBrowserCookieJars,
   resolveBrowserCookieJarPath,
   seedBrowserCookieJar,
 } from '@/server/enterprise/services/browserSession/cookieJar';
@@ -68,17 +67,28 @@ export const CONTEXT_GONE_ERROR = 'fetch failed: browser session context is gone
 
 export const createContextGoneError = (): TypeError => new TypeError(CONTEXT_GONE_ERROR);
 
-const SHA256_HEX = /^[\da-f]{64}$/i;
+/** On-the-wire namespace for context-owned jars. Classify ownership only by this prefix. */
+export const CONTEXT_COOKIE_JAR_KEY_PREFIX = 'ctx:';
 
-/** Context digests are sha256 hex; legacy device ids are UUIDs (or other non-digest keys). */
-export const isBrowserSessionContextDigestShape = (key: string): boolean => SHA256_HEX.test(key);
+export const toContextCookieJarKey = (digest: string): string =>
+  digest.startsWith(CONTEXT_COOKIE_JAR_KEY_PREFIX)
+    ? digest
+    : `${CONTEXT_COOKIE_JAR_KEY_PREFIX}${digest}`;
+
+/** True when `key` is a namespaced context jar (`ctx:<sha256>`). Never infer from hex shape. */
+export const isContextCookieJarKey = (key: string): boolean =>
+  key.startsWith(CONTEXT_COOKIE_JAR_KEY_PREFIX);
+
+/** @deprecated Use {@link isContextCookieJarKey}. Kept so existing re-exports keep compiling. */
+export const isBrowserSessionContextDigestShape = isContextCookieJarKey;
 
 const RETIRED_CAP = 4096;
 const retiredContextDigests = new Map<string, number>();
 
 const rememberRetiredContextDigest = (digest: string): void => {
-  retiredContextDigests.delete(digest);
-  retiredContextDigests.set(digest, Date.now());
+  const key = toContextCookieJarKey(digest);
+  retiredContextDigests.delete(key);
+  retiredContextDigests.set(key, Date.now());
   while (retiredContextDigests.size > RETIRED_CAP) {
     const oldest = retiredContextDigests.keys().next().value;
     if (oldest === undefined) break;
@@ -86,20 +96,21 @@ const rememberRetiredContextDigest = (digest: string): void => {
   }
 };
 
+const logDrainRejection = (label: string, reason: unknown): void => {
+  console.error(`[chatgpt-web] ${label} during jar reset failed`, {
+    errorClass: reason instanceof Error ? reason.name : 'UnknownError',
+  });
+};
+
 /**
  * Drain persistent pools, dispose live browser-session contexts, then clear
  * mappings and unlink jars. Profile regeneration invalidates every context.
  *
- * Order: fence routing for every context key → dispose registry → await
- * pending cleanup + drainAll → only then clear mappings / unlink / tombstones.
+ * Order: retire routing keys → mark registry disposed → drop contexts → await
+ * pending cleanup + drainAll → only then unlink jars → atomically install a
+ * fresh registry. Never unlinks jars belonging to the replacement.
  */
 export const resetCookieJars = (): void | Promise<void> => {
-  const finish = (): void => {
-    contextJarPaths.clear();
-    contextJarPoolKeys.clear();
-    resetBrowserCookieJars();
-  };
-
   const run = async (): Promise<void> => {
     for (const digest of Array.from(contextJarPaths.keys())) {
       rememberRetiredContextDigest(digest);
@@ -107,31 +118,24 @@ export const resetCookieJars = (): void | Promise<void> => {
       contextJarPoolKeys.delete(digest);
     }
 
-    const { getBrowserSessionRegistry } = await import('../../browserSession/contextRegistry');
-    const registry = getBrowserSessionRegistry();
-    registry.dispose();
-    await registry.awaitPendingCleanup();
+    const { resetAndReplaceBrowserSessionRegistryAfter } =
+      await import('../../browserSession/contextRegistry');
 
-    try {
+    await resetAndReplaceBrowserSessionRegistryAfter(async () => {
       const { drainAllPersistentTransport } =
         await import('../../browserSession/transport/persistentFetch');
-      await drainAllPersistentTransport();
-    } catch (error) {
-      console.error('[chatgpt-web] persistent drainAll during jar reset failed', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
-    }
-
-    try {
       const { drainAllCurlImpersonateChildren } = await import('./curlImpersonateFetch');
-      await drainAllCurlImpersonateChildren();
-    } catch (error) {
-      console.error('[chatgpt-web] CLI child drain during jar reset failed', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
-    }
-
-    finish();
+      const results = await Promise.allSettled([
+        drainAllPersistentTransport(),
+        drainAllCurlImpersonateChildren(),
+      ]);
+      if (results[0]?.status === 'rejected') {
+        logDrainRejection('persistent drainAll', results[0].reason);
+      }
+      if (results[1]?.status === 'rejected') {
+        logDrainRejection('CLI child drain', results[1].reason);
+      }
+    });
   };
 
   return run();
@@ -151,42 +155,32 @@ export const registerContextCookieJar = (
   path: string,
   transportPoolKey?: string,
 ): void => {
-  retiredContextDigests.delete(digest);
-  contextJarPaths.set(digest, path);
-  if (transportPoolKey) contextJarPoolKeys.set(digest, transportPoolKey);
-  else contextJarPoolKeys.delete(digest);
+  const key = toContextCookieJarKey(digest);
+  retiredContextDigests.delete(key);
+  contextJarPaths.set(key, path);
+  if (transportPoolKey) contextJarPoolKeys.set(key, transportPoolKey);
+  else contextJarPoolKeys.delete(key);
 };
 
 export const unregisterContextCookieJar = (digest: string): void => {
-  if (contextJarPaths.has(digest) || isBrowserSessionContextDigestShape(digest)) {
-    rememberRetiredContextDigest(digest);
-  }
-  contextJarPaths.delete(digest);
-  contextJarPoolKeys.delete(digest);
+  const key = toContextCookieJarKey(digest);
+  rememberRetiredContextDigest(key);
+  contextJarPaths.delete(key);
+  contextJarPoolKeys.delete(key);
 };
 
-/** Context transport-pool key registered alongside the jar digest. */
+/** Context transport-pool key registered alongside the namespaced jar key. */
 export const getContextCookieJarPoolKey = (digest: string): string | undefined =>
-  contextJarPoolKeys.get(digest);
+  contextJarPoolKeys.get(digest) ?? contextJarPoolKeys.get(toContextCookieJarKey(digest));
 
-const isRetiredOrDigestContextKey = (key: string): boolean =>
-  retiredContextDigests.has(key) || isBrowserSessionContextDigestShape(key);
-
-/** Absolute paths, registered context digests, or the legacy device-id key. */
+/** Absolute paths, registered `ctx:<sha256>` keys, or the legacy device-id key. */
 export const resolveCookieJarPath = (key: string): string => {
   const registered = contextJarPaths.get(key);
   if (registered) return registered;
   if (key.startsWith('/') || key.includes('/')) return key;
-  if (isRetiredOrDigestContextKey(key)) throw createContextGoneError();
+  if (isContextCookieJarKey(key)) throw createContextGoneError();
   return getCookieJarPath(key);
 };
-
-/** True when `key` names a context jar (do not seed `oai-did` from the key). */
-export const isContextCookieJarKey = (key: string): boolean =>
-  contextJarPaths.has(key) ||
-  isRetiredOrDigestContextKey(key) ||
-  key.startsWith('/') ||
-  key.includes('/');
 
 export const isRetiredContextCookieJarKey = (key: string): boolean =>
   retiredContextDigests.has(key);

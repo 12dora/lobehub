@@ -6,6 +6,7 @@ import { bindNetworkProxyEgressIfEnabled } from '../../networkProxy/engine/bindE
 bindNetworkProxyEgressIfEnabled();
 
 export {
+  CONTEXT_COOKIE_JAR_KEY_PREFIX,
   CONTEXT_GONE_ERROR,
   COOKIE_JAR_HEADER,
   createContextGoneError,
@@ -20,6 +21,7 @@ export {
   resolveCookieJarPath,
   seedCookieJar,
   seedSessionJar,
+  toContextCookieJarKey,
   unregisterContextCookieJar,
   withCookieJarHeader,
 } from './cookieJar';

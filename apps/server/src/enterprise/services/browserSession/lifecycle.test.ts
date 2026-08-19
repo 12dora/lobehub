@@ -11,12 +11,17 @@ import {
   createBrowserSessionOwnerLease,
   disposeBrowserSessionResources,
   isBrowserSessionLeaseHeldBy,
+  onBrowserSessionBeforeDispose,
   onBrowserSessionInvalidate,
 } from './lifecycle';
+import {
+  createBrowserSessionTransportPool,
+  registerBrowserSessionScopeDrain,
+} from './transportPool';
 import type { BrowserSessionAcquireInput } from './types';
 
-afterEach(() => {
-  resetBrowserSessionRegistryForTests();
+afterEach(async () => {
+  await resetBrowserSessionRegistryForTests();
   resetBrowserCookieJars();
 });
 
@@ -107,5 +112,68 @@ describe('disposeBrowserSessionResources', () => {
     const lease = createBrowserSessionOwnerLease({ ownerId: `pid:${process.pid}` });
     expect(isBrowserSessionLeaseHeldBy(lease, `pid:${process.pid}`)).toBe(true);
     expect(isBrowserSessionLeaseHeldBy(lease, 'pid:0')).toBe(false);
+  });
+
+  it('onBrowserSessionBeforeDispose runs before drain', async () => {
+    const order: string[] = [];
+    let releaseDrain: (() => void) | undefined;
+    const drainPromise = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    const unsubBefore = onBrowserSessionBeforeDispose(() => {
+      order.push('before');
+    });
+    const unsubAfter = onBrowserSessionInvalidate(() => {
+      order.push('after');
+    });
+    const registry = createBrowserSessionRegistry({
+      transportPool: {
+        bind: vi.fn(),
+        drain: () => {
+          order.push('drain');
+          return drainPromise;
+        },
+        has: () => false,
+      },
+    });
+    const context = registry.acquire(baseInput());
+    registry.invalidate(context.contextId);
+    expect(order).toEqual(['before', 'drain']);
+    releaseDrain?.();
+    await registry.awaitPendingCleanup();
+    unsubBefore();
+    unsubAfter();
+    expect(order).toEqual(['before', 'drain', 'after']);
+  });
+
+  it('does not unlink the jar when one drain rejects while another is still pending', async () => {
+    let releaseChild: (() => void) | undefined;
+    const childPending = new Promise<void>((resolve) => {
+      releaseChild = resolve;
+    });
+    let rejectedSettled = false;
+    const unregReject = registerBrowserSessionScopeDrain(async () => {
+      rejectedSettled = true;
+      throw new Error('curl_multi_cleanup failed');
+    });
+    const unregChild = registerBrowserSessionScopeDrain(async () => {
+      await childPending;
+    });
+    try {
+      const pool = createBrowserSessionTransportPool();
+      const registry = createBrowserSessionRegistry({ transportPool: pool });
+      const context = registry.acquire(baseInput());
+      const path = context.cookieJar.path;
+      registry.invalidate(context.contextId);
+      await vi.waitFor(() => expect(rejectedSettled).toBe(true));
+      expect(existsSync(path)).toBe(true);
+      releaseChild?.();
+      await registry.awaitPendingCleanup();
+      expect(existsSync(path)).toBe(true);
+      expect(isBrowserCookieJarTombstoned(path)).toBe(true);
+    } finally {
+      unregReject();
+      unregChild();
+    }
   });
 });

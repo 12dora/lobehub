@@ -52,8 +52,20 @@ export const registerBrowserSessionScopeDrain = (
   };
 };
 
+const awaitAllDrains = async (tasks: Array<void | Promise<void>>): Promise<void> => {
+  const results = await Promise.allSettled(tasks.map((task) => Promise.resolve(task)));
+  const rejected = results.filter(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (rejected.length === 0) return;
+  const detail = rejected
+    .map((result) => (result.reason instanceof Error ? result.reason.message : 'UnknownError'))
+    .join('; ');
+  throw new Error(`browser session drain failed: ${detail}`);
+};
+
 const runExtraDrains = async (key: string): Promise<void> => {
-  await Promise.all([...extraScopeDrains].map((drain) => Promise.resolve(drain(key))));
+  await awaitAllDrains([...extraScopeDrains].map((drain) => drain(key)));
 };
 
 export const buildBrowserSessionTransportPoolKey = (params: {
@@ -83,17 +95,14 @@ export const createBrowserSessionTransportPool = (): BrowserSessionTransportPool
       const handle = handles.get(key);
       handles.delete(key);
       handle?.drain();
-      return Promise.all([drainPersistentForKey(key), runExtraDrains(key)]).then(() => undefined);
+      return awaitAllDrains([drainPersistentForKey(key), runExtraDrains(key)]);
     },
     drainAll: () => {
       for (const [key, handle] of handles) {
         handles.delete(key);
         handle.drain();
       }
-      return Promise.all([
-        drainAllPersistent(),
-        extraDrainAll ? Promise.resolve(extraDrainAll()) : Promise.resolve(),
-      ]).then(() => undefined);
+      return awaitAllDrains([drainAllPersistent(), extraDrainAll?.()]);
     },
     has: (key) => handles.has(key),
   };

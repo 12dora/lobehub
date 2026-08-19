@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createBrowserSessionRegistry,
+  disposeAllBrowserSessions,
   getBrowserSessionRegistry,
   installBrowserSessionRegistryForTests,
   resetBrowserSessionRegistryForTests,
@@ -36,7 +37,7 @@ const SAME_DEVICE = 'oai-did-shared-physical-browser';
 
 afterEach(async () => {
   await Promise.resolve(resetCookieJars());
-  resetBrowserSessionRegistryForTests();
+  await resetBrowserSessionRegistryForTests();
   resetBrowserCookieJars();
   vi.restoreAllMocks();
 });
@@ -124,6 +125,7 @@ describe('bindChatGPTWebBrowserSession', () => {
     expect(second.contextId).toBe(first.contextId);
     expect(second.logicalPageId).toBe(first.logicalPageId);
     expect(second.cookieJarKey).toBe(first.cookieJarKey);
+    expect(first.cookieJarKey.startsWith('ctx:')).toBe(true);
     expect(second.logicalPageId).toMatch(
       /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/,
     );
@@ -256,7 +258,7 @@ describe('stageChatGPTWebBrowserSession', () => {
     expect(staged.context.contextId).not.toBe(liveId);
     const stillLive = getBrowserSessionRegistry().get(liveId);
     expect(stillLive?.lifecycle).toBe('active');
-    expect(stillLive?.cookieJar.digest).toBe(live.cookieJarKey);
+    expect(live.cookieJarKey).toBe(`ctx:${stillLive?.cookieJar.digest}`);
     expect(existsSync(livePath)).toBe(true);
     expect(readFileSync(livePath, 'utf8')).toContain('live-session');
     expect(readFileSync(livePath, 'utf8')).toContain('_cfuvid\tcf-live');
@@ -594,6 +596,54 @@ describe('C4 isolation and inFlight', () => {
     expect(registry.get(live.contextId)?.lifecycle).toBe('active');
     expect(existsSync(livePath)).toBe(true);
     expect(readFileSync(livePath, 'utf8')).toContain('cf-live');
+  });
+
+  it('failed staging at maxContexts 1 does not evict a TTL-expired live context', () => {
+    let now = 1_000;
+    const registry = createBrowserSessionRegistry({
+      idleTtlMs: 1_000,
+      maxContexts: 1,
+      now: () => now,
+    });
+    installBrowserSessionRegistryForTests(registry);
+    const live = bind('user:alice:_:chatgptweb')!;
+    live.release?.();
+    const livePath = resolveCookieJarPath(live.cookieJarKey);
+    seedCookieJar(livePath, [{ domain: '.chatgpt.com', name: '_cfuvid', value: 'cf-live' }]);
+    now = 10_000;
+
+    expect(
+      stageChatGPTWebBrowserSession({
+        accountId: 'user:alice:_:chatgptweb',
+        browserProfile: profile,
+        deviceId: SAME_DEVICE,
+      }),
+    ).toBeUndefined();
+
+    expect(registry.get(live.contextId)?.lifecycle).toBe('active');
+    expect(existsSync(livePath)).toBe(true);
+    expect(readFileSync(livePath, 'utf8')).toContain('cf-live');
+  });
+
+  it('bind throws a retryable BrowserSessionError while the registry is resetting', async () => {
+    let releaseDrain: (() => void) | undefined;
+    const hanging = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    const registry = createBrowserSessionRegistry({
+      transportPool: {
+        bind: vi.fn(),
+        drain: () => hanging,
+        drainAll: () => hanging,
+        has: () => false,
+      },
+    });
+    installBrowserSessionRegistryForTests(registry);
+    bind('user:alice:_:chatgptweb');
+    const resetting = disposeAllBrowserSessions();
+    expect(() => bind('user:bob:_:chatgptweb')).toThrow(/browser session registry is resetting/);
+    releaseDrain?.();
+    await resetting;
   });
 
   it('in-flight bind inFlight prevents idle eviction of that account only', () => {

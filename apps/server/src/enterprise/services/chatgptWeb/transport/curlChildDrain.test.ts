@@ -24,7 +24,7 @@ describe('CLI child drain', () => {
     writeFileSync(stub, '#!/bin/sh\nexec sleep 30\n');
     chmodSync(stub, 0o755);
 
-    const digest = 'ef'.repeat(32);
+    const digest = `ctx:${'ef'.repeat(32)}`;
     registerContextCookieJar(digest, path.join(dir, 'jar.txt'), 'pool-cli-child');
     process.env.CHATGPT_WEB_ALLOWED_HOSTS = 'chatgpt.com';
     const fetchImpl = createCurlImpersonateFetch({ binaryPath: stub });

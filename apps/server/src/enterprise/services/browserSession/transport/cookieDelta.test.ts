@@ -12,13 +12,16 @@ import {
   seedBrowserCookieJar,
 } from '../cookieJar';
 import { applyCookieListDelta } from './cookieDelta';
-import type { LibcurlBindings } from './libcurlFfi';
-import { probeLibcurlImpersonate, readCookieSlist } from './libcurlFfi';
-
-const probe = probeLibcurlImpersonate();
+import type { CookieSlistKoffi, LibcurlBindings } from './libcurlFfi';
+import { readCookieSlist } from './libcurlFfi';
 
 const netscapeLine = (name: string, value: string): string =>
   `localhost\tFALSE\t/\tFALSE\t0\t${name}\t${value}`;
+
+const namesAndValues = (file: string): Array<[string, string]> =>
+  readBrowserCookieJar(file)
+    .map((cookie) => [cookie.name, cookie.value] as [string, string])
+    .toSorted((left, right) => left[0].localeCompare(right[0]));
 
 describe('applyCookieListDelta compare-and-swap', () => {
   const dirs: string[] = [];
@@ -67,14 +70,107 @@ describe('applyCookieListDelta compare-and-swap', () => {
     });
     expect(readBrowserCookieJar(file).some((cookie) => cookie.name === 'token')).toBe(false);
   });
+
+  it('does not insert response chunks beside an external unchunked family', () => {
+    const file = jar();
+    seedBrowserCookieJar(file, [{ domain: 'localhost', name: 'token', value: 'old' }]);
+    const snapshot = readBrowserCookieJar(file);
+    replaceBrowserCookieFamily(file, {
+      cookies: [{ domain: 'localhost', name: 'token', value: 'external' }],
+      domain: 'localhost',
+      familyName: 'token',
+    });
+    applyCookieListDelta({
+      cookieJarPath: file,
+      listLines: [netscapeLine('token.0', 'chunk-a'), netscapeLine('token.1', 'chunk-b')],
+      snapshot,
+    });
+    expect(namesAndValues(file)).toEqual([['token', 'external']]);
+  });
+
+  it('does not collapse external chunks when the response yields an unchunked member', () => {
+    const file = jar();
+    seedBrowserCookieJar(file, [{ domain: 'localhost', name: 'token', value: 'old' }]);
+    const snapshot = readBrowserCookieJar(file);
+    replaceBrowserCookieFamily(file, {
+      cookies: [
+        { domain: 'localhost', name: 'token.0', value: 'ext-a' },
+        { domain: 'localhost', name: 'token.1', value: 'ext-b' },
+      ],
+      domain: 'localhost',
+      familyName: 'token',
+    });
+    applyCookieListDelta({
+      cookieJarPath: file,
+      listLines: [netscapeLine('token', 'from-server')],
+      snapshot,
+    });
+    expect(namesAndValues(file)).toEqual([
+      ['token.0', 'ext-a'],
+      ['token.1', 'ext-b'],
+    ]);
+  });
+
+  it('applies an untouched family while suppressing a contended family', () => {
+    const file = jar();
+    seedBrowserCookieJar(file, [
+      { domain: 'localhost', name: 'token', value: 'old' },
+      { domain: 'localhost', name: 'sid', value: 'one' },
+    ]);
+    const snapshot = readBrowserCookieJar(file);
+    replaceBrowserCookieFamily(file, {
+      cookies: [{ domain: 'localhost', name: 'token', value: 'external' }],
+      domain: 'localhost',
+      familyName: 'token',
+    });
+    applyCookieListDelta({
+      cookieJarPath: file,
+      listLines: [
+        netscapeLine('token.0', 'chunk-a'),
+        netscapeLine('token.1', 'chunk-b'),
+        netscapeLine('sid', 'two'),
+      ],
+      snapshot,
+    });
+    expect(namesAndValues(file)).toEqual([
+      ['sid', 'two'],
+      ['token', 'external'],
+    ]);
+  });
+
+  it('applies a matching family topology change atomically', () => {
+    const file = jar();
+    seedBrowserCookieJar(file, [{ domain: 'localhost', name: 'token', value: 'old' }]);
+    const snapshot = readBrowserCookieJar(file);
+    applyCookieListDelta({
+      cookieJarPath: file,
+      listLines: [netscapeLine('token.0', 'chunk-a'), netscapeLine('token.1', 'chunk-b')],
+      snapshot,
+    });
+    expect(namesAndValues(file)).toEqual([
+      ['token.0', 'chunk-a'],
+      ['token.1', 'chunk-b'],
+    ]);
+  });
 });
 
-describe.skipIf(!probe.available)('readCookieSlist', () => {
+describe('readCookieSlist', () => {
   it('returns a discriminated failure on non-zero getinfo and does not invent an empty list', () => {
+    const koffi: CookieSlistKoffi = {
+      alloc: () => ({}),
+      decode: () => {
+        throw new Error('decode must not run after getinfo failure');
+      },
+      struct: () => {
+        throw new Error('struct must not run after getinfo failure');
+      },
+    };
     const bindings = {
       curl_easy_getinfo: () => 77,
-      curl_slist_free_all: () => undefined,
+      curl_slist_free_all: () => {
+        throw new Error('slist free must not run after getinfo failure');
+      },
     } as unknown as LibcurlBindings;
-    expect(readCookieSlist(bindings, {})).toEqual({ code: 77, ok: false });
+    expect(readCookieSlist(bindings, {}, koffi)).toEqual({ code: 77, ok: false });
   });
 });

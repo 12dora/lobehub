@@ -68,16 +68,28 @@ interface TrackedCurlChild {
 
 const trackedCurlChildren = new Set<TrackedCurlChild>();
 
+const awaitChildCloses = async (victims: TrackedCurlChild[]): Promise<void> => {
+  const results = await Promise.allSettled(victims.map((child) => child.close));
+  const rejected = results.filter(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (rejected.length === 0) return;
+  const detail = rejected
+    .map((result) => (result.reason instanceof Error ? result.reason.message : 'UnknownError'))
+    .join('; ');
+  throw new Error(`curl-impersonate child drain failed: ${detail}`);
+};
+
 export const drainCurlImpersonateChildren = async (scope: string): Promise<void> => {
   const victims = [...trackedCurlChildren].filter((child) => child.scopes.has(scope));
   for (const child of victims) child.kill();
-  await Promise.all(victims.map((child) => child.close));
+  await awaitChildCloses(victims);
 };
 
 export const drainAllCurlImpersonateChildren = async (): Promise<void> => {
   const victims = [...trackedCurlChildren];
   for (const child of victims) child.kill();
-  await Promise.all(victims.map((child) => child.close));
+  await awaitChildCloses(victims);
 };
 
 export const trackedCurlChildCountForTests = (): number => trackedCurlChildren.size;
@@ -136,8 +148,14 @@ export const createCurlImpersonateFetch = (
     if (stripped.cookieJarKey) {
       cookieJarPath = resolveCookieJarPath(stripped.cookieJarKey);
       if (cookieJarPath && isBrowserCookieJarTombstoned(cookieJarPath)) {
+        if (isContextCookieJarKey(stripped.cookieJarKey)) throw createContextGoneError();
         cookieJarPath = undefined;
-      } else if (cookieJarPath && !isContextCookieJarKey(stripped.cookieJarKey)) {
+      } else if (
+        cookieJarPath &&
+        !isContextCookieJarKey(stripped.cookieJarKey) &&
+        !stripped.cookieJarKey.startsWith('/') &&
+        !stripped.cookieJarKey.includes('/')
+      ) {
         seedCookieJar(cookieJarPath, [
           { domain: '.chatgpt.com', name: 'oai-did', value: stripped.cookieJarKey },
         ]);

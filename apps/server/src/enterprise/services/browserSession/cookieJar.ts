@@ -39,8 +39,8 @@ const createdJars = new Set<string>();
 /**
  * Paths that must not be recreated. Survives unlink so a late curl `--cookie-jar`
  * or `ensureBrowserCookieJarFile` cannot resurrect a dropped context's jar.
- * Bounded LRU: after drain settles the path is un-tombstoned (retired context
- * keys handle stale traffic). Cap is a backstop for leaked entries.
+ * Bounded LRU: tombstones are retained after drain (not cleared). Retired
+ * context keys fence stale traffic. Cap is a backstop for leaked entries.
  */
 const TOMBSTONE_CAP = 4096;
 const tombstonedJars = new Set<string>();

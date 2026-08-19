@@ -20,8 +20,9 @@ export interface ChatGPTWebSessionContext {
    */
   contextId: string;
   /**
-   * Private hop-by-hop cookie-jar key (`X-AIHub-Cookie-Jar`). Never a raw
-   * device id when a real context is bound — the jar is context-scoped.
+   * Private hop-by-hop cookie-jar key (`X-AIHub-Cookie-Jar`). Namespaced
+   * `ctx:<sha256>` when a real context is bound — never a raw device id, and
+   * never an unnamespaced digest (a 64-hex legacy device id must stay legacy).
    */
   cookieJarKey: string;
   getBootstrap: () => ChatGPTWebBootstrapState | undefined;
