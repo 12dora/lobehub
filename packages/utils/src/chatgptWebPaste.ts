@@ -35,10 +35,10 @@ const SESSION_COOKIE = /__Secure-next-auth\.session-token(?:\.(\d+))?=([^\s"',;\
 export const CHATGPT_WEB_DEVICE_ID_PATTERN = /^[\w-]{1,128}$/;
 
 /** `OAI-Device-Id: <id>` in a header line or a cURL `-H` argument. */
-const DEVICE_ID_HEADER = /oai-device-id["']?\s*[:=]\s*["']?([\w-]+)/gi;
+const DEVICE_ID_HEADER = /oai-device-id["']?\s*[:=]\s*["']?([^\s"',;\\]+)/gi;
 
 /** `oai-did=<id>` in a Cookie header, a `-b` flag, or a cookie string. */
-const DEVICE_ID_COOKIE = /oai-did=([\w-]+)/g;
+const DEVICE_ID_COOKIE = /oai-did=([^\s"',;\\]+)/g;
 
 /** `authorization: Bearer <token>` in a header line, a cURL `-H` argument, or JSON. */
 const BEARER_HEADER = /authorization["']?\s*[:=]\s*(?:["']\s*)?Bearer\s+([\w.~+/=-]+)/i;
@@ -189,12 +189,17 @@ export const resolveChatGPTWebDeviceBinding = (
   headerId: string | undefined,
   cookieId: string | undefined,
 ): { deviceId?: string; mismatch: boolean } => {
-  const header = headerId && CHATGPT_WEB_DEVICE_ID_PATTERN.test(headerId) ? headerId : undefined;
-  const cookie = cookieId && CHATGPT_WEB_DEVICE_ID_PATTERN.test(cookieId) ? cookieId : undefined;
-  if (header && cookie && header.toLowerCase() !== cookie.toLowerCase()) {
+  // Compare the RAW extracted values. Device ids are opaque tokens: case-folding
+  // or stripping trailing garbage before the comparison would accept `ABC`/`abc`
+  // and `abc!`/`abc` as the same binding, which they are not.
+  if (headerId && cookieId && headerId !== cookieId) {
     return { mismatch: true };
   }
-  return { deviceId: header ?? cookie, mismatch: false };
+  const candidate = headerId ?? cookieId;
+  if (candidate && CHATGPT_WEB_DEVICE_ID_PATTERN.test(candidate)) {
+    return { deviceId: candidate, mismatch: false };
+  }
+  return { mismatch: false };
 };
 
 const extractDeviceBinding = (text: string): { deviceId?: string; mismatch: boolean } => {

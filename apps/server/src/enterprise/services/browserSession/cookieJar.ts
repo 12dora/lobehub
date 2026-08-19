@@ -101,7 +101,12 @@ export const isCookieFamilyMember = (name: string, familyName: string): boolean 
 export const isAllowedCookieName = (name: string, allowedNames: string[]): boolean =>
   allowedNames.some((allowed) => isCookieFamilyMember(name, allowed));
 
-const normalizeDomain = (domain: string): string => domain.replace(/^\./, '').toLowerCase();
+/**
+ * Lowercase only. A leading `.` is load-bearing Netscape identity: host-only
+ * (`chatgpt.com`, tailmatch=FALSE) and domain-scoped (`.chatgpt.com`, tailmatch=TRUE)
+ * are distinct cookies and can coexist. Stripping the dot would merge/clobber them.
+ */
+const normalizeDomain = (domain: string): string => domain.toLowerCase();
 
 const cookieIdentity = (cookie: Pick<CookieRecord, 'domain' | 'name' | 'path'>): string =>
   `${cookie.name}\0${normalizeDomain(cookie.domain)}\0${cookie.path}`;

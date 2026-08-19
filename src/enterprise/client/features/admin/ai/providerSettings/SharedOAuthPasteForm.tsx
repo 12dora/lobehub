@@ -46,7 +46,7 @@ interface SharedOAuthPasteFormProps {
   onCancel: () => void;
   onOpenAuthorizePage: () => void;
   onRegenerate: () => void;
-  onSubmitAccessToken: (accessToken: string) => void;
+  onSubmitAccessToken: (accessToken: string, extras?: { deviceId?: string }) => void;
   onSubmitCallback: (callbackUrl: string) => void;
   onSubmitSessionToken: (
     sessionToken: string,
@@ -164,12 +164,21 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
     /** Always submit the renewable half when the paste carried both. */
     const handleSubmitPasted = useCallback(() => {
       if (parsed.kind === 'device_mismatch') return;
+      const deviceExtras = parsed.deviceId ? { deviceId: parsed.deviceId } : undefined;
       if (parsed.sessionToken) {
-        onSubmitSessionToken(parsed.sessionToken, {
-          ...(parsed.deviceId ? { deviceId: parsed.deviceId } : {}),
+        const extras = {
+          ...deviceExtras,
           ...(parsed.sessionChunks ? { sessionChunks: parsed.sessionChunks } : {}),
-        });
-      } else if (parsed.accessToken) onSubmitAccessToken(parsed.accessToken);
+        };
+        if (Object.keys(extras).length > 0) {
+          onSubmitSessionToken(parsed.sessionToken, extras);
+        } else {
+          onSubmitSessionToken(parsed.sessionToken);
+        }
+      } else if (parsed.accessToken) {
+        if (deviceExtras) onSubmitAccessToken(parsed.accessToken, deviceExtras);
+        else onSubmitAccessToken(parsed.accessToken);
+      }
     }, [
       onSubmitAccessToken,
       onSubmitSessionToken,

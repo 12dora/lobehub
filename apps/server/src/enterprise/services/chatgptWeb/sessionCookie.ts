@@ -11,14 +11,17 @@ const log = debug('lobe-server:chatgpt-web-oauth');
 export const CHATGPT_WEB_SESSION_COOKIE_NAME = '__Secure-next-auth.session-token';
 
 /**
- * Conservative per-cookie value bound. Browsers reject a single cookie above 4096 bytes;
- * next-auth therefore chunks `__Secure-next-auth.session-token` at this ceiling. The vault
- * assembled-token bound (`16_384`) is four such chunks — do not invent a second number.
+ * next-auth's own `CHUNK_SIZE` (3500). Browsers reject a single cookie above 4096 bytes,
+ * and the session-token *name* plus Set-Cookie attributes (`Domain`, `Path`, `Secure`,
+ * `HttpOnly`, `SameSite`, an expiry) consume a realistic ~100–200 bytes of that budget.
+ * Chunking the VALUE at 4096 therefore produces cookies larger than next-auth ever emits.
+ * The vault assembled-token bound (`16_384`) is independent — it is the routers' input
+ * ceiling, not four of these chunks.
  */
-export const CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX = 4096;
+export const CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX = 3500;
 
-/** Matches the routers' input bound and {@link CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX} × 4. */
-const MAX_SESSION_TOKEN_LENGTH = CHATGPT_WEB_SESSION_COOKIE_CHUNK_MAX * 4;
+/** Matches the routers' input bound. Independent of the per-cookie chunk size. */
+const MAX_SESSION_TOKEN_LENGTH = 16_384;
 
 const SESSION_COOKIE_NAME_RE = /^__Secure-next-auth\.session-token(?:\.\d+)?$/;
 

@@ -38,6 +38,26 @@ describe('splitSessionTokenForCookie', () => {
       'a'.repeat(10),
     ]);
   });
+
+  /**
+   * A 4000-byte value sat under the old 4096-byte VALUE ceiling and would have
+   * been emitted as one cookie. With a realistic next-auth attribute set the
+   * full Set-Cookie line exceeds 4096, which is why the chunk bound is 3500.
+   */
+  it('chunks a near-4k token so a full Set-Cookie line stays under 4096', () => {
+    const token = 'a'.repeat(4000);
+    const chunks = splitSessionTokenForCookie(token);
+    expect(chunks.length).toBeGreaterThan(1);
+    const attributes =
+      '; Path=/; Domain=.chatgpt.com; Secure; HttpOnly; SameSite=Lax; Expires=Wed, 01 Jan 2031 00:00:00 GMT';
+    for (const [index, value] of chunks.entries()) {
+      const name =
+        chunks.length === 1
+          ? CHATGPT_WEB_SESSION_COOKIE_NAME
+          : `${CHATGPT_WEB_SESSION_COOKIE_NAME}.${index}`;
+      expect(`${name}=${value}${attributes}`.length).toBeLessThanOrEqual(4096);
+    }
+  });
 });
 
 describe('resolveSessionCookieChunks', () => {

@@ -200,6 +200,24 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     expect(mocks.flow.submitSessionToken).not.toHaveBeenCalled();
   });
 
+  it('threads a captured device id through an access-token paste', async () => {
+    await startPasteFlow();
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionToggle'));
+    fireEvent.change(
+      screen.getByPlaceholderText('providerModels.config.oauth.paste.sessionPlaceholder'),
+      {
+        target: {
+          value: `-H 'OAI-Device-Id: chrome-did'\nAuthorization: Bearer ${ACCESS_JWT}`,
+        },
+      },
+    );
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionSubmit'));
+    expect(mocks.flow.submitAccessToken).toHaveBeenCalledWith(ACCESS_JWT, {
+      deviceId: 'chrome-did',
+    });
+    expect(mocks.flow.submitSessionToken).not.toHaveBeenCalled();
+  });
+
   it('drops the pasted credential the moment it is stored, even if the status re-read fails', async () => {
     // The REJECTED revalidation is the load-bearing part: clearing the flow behind an awaited
     // invalidate left `isAuthenticating` set for good when that read failed, so the textarea

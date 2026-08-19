@@ -184,6 +184,31 @@ describe('createBrowserCookieJar / seedBrowserCookieJar', () => {
     expect(readFileSync(beta.path, 'utf8')).not.toContain('alpha-secret-device');
   });
 
+  it('keeps a host-only cookie distinct from a domain cookie of the same name', () => {
+    const jar = jarFor('host-vs-domain');
+    seedBrowserCookieJar(jar.path, [
+      { domain: 'chatgpt.com', name: 'oai-did', value: 'host-only' },
+      { domain: '.chatgpt.com', name: 'oai-did', value: 'domain-scoped' },
+    ]);
+
+    const cookies = readBrowserCookieJar(jar.path).filter((cookie) => cookie.name === 'oai-did');
+    expect(cookies).toHaveLength(2);
+    expect(cookies.map((cookie) => cookie.domain).sort()).toEqual(['.chatgpt.com', 'chatgpt.com']);
+    expect(cookies.find((cookie) => cookie.domain === 'chatgpt.com')?.value).toBe('host-only');
+    expect(cookies.find((cookie) => cookie.domain === '.chatgpt.com')?.value).toBe('domain-scoped');
+
+    seedBrowserCookieJar(jar.path, [
+      { domain: 'chatgpt.com', name: 'oai-did', value: 'host-only-replaced' },
+    ]);
+
+    const after = readBrowserCookieJar(jar.path).filter((cookie) => cookie.name === 'oai-did');
+    expect(after).toHaveLength(2);
+    expect(after.find((cookie) => cookie.domain === 'chatgpt.com')?.value).toBe(
+      'host-only-replaced',
+    );
+    expect(after.find((cookie) => cookie.domain === '.chatgpt.com')?.value).toBe('domain-scoped');
+  });
+
   it('inspects without exposing cookie values', () => {
     const jar = jarFor('inspect');
     seedBrowserCookieJar(jar.path, [

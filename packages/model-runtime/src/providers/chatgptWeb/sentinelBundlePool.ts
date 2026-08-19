@@ -1,7 +1,7 @@
 import createDebug from 'debug';
 
 import { randomUuid } from './binary';
-import { callerAbortReason } from './errors';
+import { callerAbortReason, describeThrownValue } from './errors';
 import type { ChatRequirements } from './types';
 
 const log = createDebug('lobe-chatgptweb:sentinel-pool');
@@ -264,11 +264,11 @@ export class SentinelBundlePool {
         if (this.hasReady(slot) || slot.minting) return;
         const pending = this.startMint(slot, binding, mint, signal);
         void pending.catch((error) => {
-          log('replenish failed: %s', String(error));
+          log('replenish failed: %s', describeThrownValue(error));
         });
       })
       .catch((error) => {
-        log('replenish failed: %s', String(error));
+        log('replenish failed: %s', describeThrownValue(error));
       });
   }
 
@@ -283,7 +283,7 @@ export class SentinelBundlePool {
         slot.binding = undefined;
       })
       .catch((error) => {
-        log('invalidate failed: %s', String(error));
+        log('invalidate failed: %s', describeThrownValue(error));
       });
   }
 

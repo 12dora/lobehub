@@ -23,11 +23,7 @@ import {
   isUsableSessionToken,
   webSessionHeaders,
 } from './sessionToken';
-import {
-  deleteCookieJar,
-  isChatGPTWebTransportUnavailableError,
-  withCookieJarHeader,
-} from './transport';
+import { isChatGPTWebTransportUnavailableError, withCookieJarHeader } from './transport';
 
 const log = debug('lobe-server:chatgpt-web-oauth');
 
@@ -62,6 +58,26 @@ const SESSION_ATTEMPT_TIMEOUT_MS = 8000;
 /** Total attempts (not retries). Connect is user-visible; refresh gets another chance later. */
 const SESSION_CONNECT_ATTEMPTS = 4;
 const SESSION_REFRESH_ATTEMPTS = 3;
+
+/**
+ * Carry a rotation the loop adopted into the error that leaves this method.
+ *
+ * The last attempt may itself have failed WITHOUT a Set-Cookie (the rotation
+ * arrived on an earlier try). The loop already swapped `sessionToken` locally;
+ * this makes that value visible to the refresh persist path.
+ */
+const attachAdoptedSessionRotation = (
+  error: ChatGPTWebSessionRetryableError,
+  sessionToken: string,
+  sessionChunks: readonly string[] | undefined,
+): ChatGPTWebSessionRetryableError => {
+  if (error.rotatedSessionToken === sessionToken) return error;
+  return new ChatGPTWebSessionRetryableError(error.classification, error.message, {
+    cause: error,
+    ...(sessionChunks ? { rotatedSessionChunks: sessionChunks } : {}),
+    rotatedSessionToken: sessionToken,
+  });
+};
 
 interface WebSessionMint {
   accessToken: string;
@@ -143,6 +159,13 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
     }
 
     // Unreachable with attempts >= 1: the loop either returns or records a retryable error.
+    // A rotation adopted during the loop must travel with the thrown error so the
+    // refresh pipeline can CAS-persist it before this failure surfaces. Otherwise
+    // the vault keeps the consumed token, the next refresh 401s, and the connection
+    // is marked dead even though a live replacement was observed.
+    if (sessionToken !== params.sessionToken) {
+      throw attachAdoptedSessionRotation(lastRetryable!, sessionToken, sessionChunks);
+    }
     throw lastRetryable!;
   }
 
@@ -292,9 +315,10 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
         : undefined;
 
     const resolvedDeviceId = deviceId ?? randomUUID();
-    // Reconnect / a reused paste-envelope device id must not inherit the previous
-    // connection's Cloudflare cookies or a rotated-away session token.
-    deleteCookieJar(resolvedDeviceId);
+    // Do not wipe the live jar here. A failed reconnect must leave the previous
+    // connection's CF / session cookies intact; `seedChatGPTWebSessionJar` already
+    // replaces the session-token family on the first mint attempt. A device-id
+    // change is wiped by the caller after the new credential is committed.
     /**
      * ONE deadline for the WHOLE connect, not just the mint.
      *

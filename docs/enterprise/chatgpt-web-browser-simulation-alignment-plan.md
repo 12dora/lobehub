@@ -40,9 +40,29 @@ Existing fixes that agents must preserve:
 
 - commit `bb19f8f225`: browser-impossible system turns are folded into user turns; real
   `model_slug` is observable;
-- workspace: null conduit token is normal;
-- workspace: Pro defaults to `thinking_effort: "standard"`;
-- workspace: Pro prepare calls are non-blocking and share turn identity with the send.
+- commit `0a720e3370`: null conduit token is normal; Pro defaults to `thinking_effort:
+"standard"`; Pro prepare calls are non-blocking and share turn identity with the send;
+  authenticated bootstrap detects the `/unauth-mweb/` shell; a Sentinel bundle pool
+  (`sentinelBundlePool.ts`) replaces the per-turn synchronous handshake;
+- commit `cd38ff93db`: C1/C2 landed as `apps/server/src/enterprise/services/browserSession/`
+  (context registry + generalized cookie jar) plus a thin ChatGPT-specific adapter over it;
+- commit `f40d0d7bb6`: G1/G2 landed — device-id mismatch rejection, `webSessionOnly` device
+  preference, session-cookie chunk-shape preservation.
+
+### Blocking requirement carried into G7 (from the Round 1 codex review)
+
+An independent review of the C1/C2/G1/G2/G4 commits above found that the ChatGPT cookie jar
+(`chatgptWeb/transport/cookieJar.ts` → `browserSession/cookieJar.ts`) and the Sentinel bundle pool
+(`sentinelBundlePool.ts`) are both still keyed by **device id only**, not by account/credential
+identity. `browserSession/contextRegistry.ts` exists but has **no production caller yet** — this
+was expected at this stage (C1/C2 are foundation, not wiring), but it means today the same
+physical browser device pasted for two different ChatGPT accounts (a real scenario now that G1
+prefers the real, stable `oai-did` over a random per-connect id) would share jar and Sentinel
+bundle state across those accounts. **G7 must close this**: every call site G7 touches needs to
+key off the Browser Session Context (which already carries `provider + account/credential
+identity + origin + browser-profile revision`), not off a bare device id. Treat this as an
+acceptance criterion for G7, not an optional cleanup — do not consider G7 done while
+`cookieJar.ts`/`sentinelBundlePool.ts` are still device-id-only.
 
 ## Scope boundary
 

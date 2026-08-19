@@ -118,6 +118,17 @@ const describeEntry = (key: string, value: unknown, depth: number): string =>
 export const describeResponseShape = (body: unknown): string =>
   describeValue(body, 3).slice(0, MAX_SHAPE_LENGTH);
 
+/**
+ * Safe one-line description of a thrown value for debug logs. Error `message`
+ * is treated as a diagnostic field (redacted/truncated); never interpolate
+ * `String(error)` — fetch failures and abort reasons can embed a URL with a
+ * token in it.
+ */
+export const describeThrownValue = (error: unknown): string =>
+  error instanceof Error
+    ? `${error.name} ${describeResponseShape({ message: error.message })}`
+    : describeResponseShape(error);
+
 export class ChatGPTWebError extends Error {
   readonly kind: ChatGPTWebErrorKind;
   readonly status?: number;

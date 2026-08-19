@@ -216,17 +216,22 @@ describe('parseChatGPTWebPaste', () => {
     ).toEqual({ kind: 'device_mismatch' });
   });
 
-  it('treats header/cookie device ids that differ only by case as the same binding', () => {
+  it('rejects header/cookie device ids that differ only by case', () => {
     const session = jwe();
     expect(
       parseChatGPTWebPaste(
         `OAI-Device-Id: ABC-1; oai-did=abc-1; __Secure-next-auth.session-token=${session}`,
       ),
-    ).toEqual({
-      deviceId: 'ABC-1',
-      kind: 'web_session',
-      sessionToken: session,
-    });
+    ).toEqual({ kind: 'device_mismatch' });
+  });
+
+  it('rejects a header device id with trailing garbage that the cookie does not share', () => {
+    const session = jwe();
+    expect(
+      parseChatGPTWebPaste(
+        `OAI-Device-Id: abc!; oai-did=abc; __Secure-next-auth.session-token=${session}`,
+      ),
+    ).toEqual({ kind: 'device_mismatch' });
   });
 });
 
@@ -244,6 +249,14 @@ describe('resolveChatGPTWebDeviceBinding', () => {
 
   it('flags a mismatch rather than picking one', () => {
     expect(resolveChatGPTWebDeviceBinding('dev-1', 'dev-2')).toEqual({ mismatch: true });
+  });
+
+  it('treats mismatched case as a mismatch', () => {
+    expect(resolveChatGPTWebDeviceBinding('ABC', 'abc')).toEqual({ mismatch: true });
+  });
+
+  it('does not launder trailing garbage into a false match', () => {
+    expect(resolveChatGPTWebDeviceBinding('abc!', 'abc')).toEqual({ mismatch: true });
   });
 });
 

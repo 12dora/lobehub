@@ -340,6 +340,25 @@ describe('oauthDeviceFlow.pollAuthStatus (paste flow)', () => {
     expect(mocks.updateConfig.mock.calls[0][1].keyVaults.oauthDeviceId).toBe('new-browser');
   });
 
+  it('does not wipe the previous jar when a reconnect with a new device id fails', async () => {
+    const { deviceCode } = await startFlow();
+    mocks.getAiProviderById.mockResolvedValue({
+      keyVaults: { oauthDeviceId: 'old-browser' },
+    });
+    transportFetch.mockResolvedValue(jsonResponse({ WARNING_BANNER: 'do not paste' }));
+
+    const result = await caller().pollAuthStatus({
+      deviceCode,
+      deviceId: 'new-browser',
+      providerId: PROVIDER,
+      sessionToken: 'not-a-live-session',
+    });
+
+    expect(result).toEqual({ error: 'session_invalid', status: 'error' });
+    expect(mocks.wipeChatGPTWebCookieJar).not.toHaveBeenCalled();
+    expect(mocks.updateConfig).not.toHaveBeenCalled();
+  });
+
   it('reports a dead web session with a stable code and stores nothing', async () => {
     const { deviceCode } = await startFlow();
     transportFetch.mockResolvedValue(jsonResponse({ WARNING_BANNER: 'do not paste' }));

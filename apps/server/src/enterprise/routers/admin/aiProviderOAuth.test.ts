@@ -1754,6 +1754,37 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
       expect(await db.select().from(platformAiProviders)).toEqual([]);
     });
 
+    it('does not wipe the previous jar when a reconnect with a new device id fails', async () => {
+      const caller = await callerFor();
+      const first = await startFlow(caller);
+      mockSessionBackend({
+        accessToken: PASTE_ACCESS_TOKEN,
+        user: { email: 'first@example.test' },
+      });
+      await caller.aiProviderOAuth.pollAuthStatus({
+        deviceCode: first.started.deviceCode,
+        deviceId: first.envelope.deviceId,
+        id: 'chatgptweb',
+        reason: 'connect the shared ChatGPT Web account',
+        sessionToken: sessionJwe,
+      });
+      seedSessionJar(first.envelope.deviceId);
+      expect(existsSync(getCookieJarPath(first.envelope.deviceId))).toBe(true);
+
+      const second = await startFlow(caller);
+      mockSessionBackend({ WARNING_BANNER: 'do not paste' });
+      const result = await caller.aiProviderOAuth.pollAuthStatus({
+        deviceCode: second.started.deviceCode,
+        deviceId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        id: 'chatgptweb',
+        reason: 'reconnect the shared ChatGPT Web account',
+        sessionToken: sessionJwe,
+      });
+
+      expect(result).toMatchObject({ error: 'session_invalid', status: 'error', stored: false });
+      expect(existsSync(getCookieJarPath(first.envelope.deviceId))).toBe(true);
+    });
+
     /**
      * The pasted session ends up interpolated into a `Cookie:` header on requests this server
      * makes with a SHARED credential, so the contract — not just the service — refuses a value

@@ -738,6 +738,61 @@ describe('ensureFreshOAuthToken (chatgptweb override)', () => {
       );
     });
 
+    /**
+     * next-auth can rotate the session cookie on an attempt that then fails (body
+     * never arrives) and exhausts the retry budget. The presented token is already
+     * dead; losing the rotation would 401 the next refresh and mark the connection
+     * permanently dead.
+     */
+    it('persists a rotation observed on the attempt that exhausts the retry budget', async () => {
+      mockUpdateConfig.mockResolvedValue(undefined);
+      const unreadableRotated = () => {
+        const headers = new Headers({ 'content-type': 'application/json' });
+        headers.append('set-cookie', '__Secure-next-auth.session-token=session-rotated');
+        const response = new Response('{"accessToken":', { headers, status: 200 });
+        Object.defineProperty(response, 'json', {
+          value: () => Promise.reject(new TypeError('terminated')),
+        });
+        return response;
+      };
+      mockTransportFetch.mockImplementation(async () => unreadableRotated());
+
+      vi.useFakeTimers();
+      try {
+        const settled = ensureFreshOAuthToken({
+          config: chatgptWebConfig as any,
+          db,
+          keyVaults: {
+            oauthAccessToken: 'at-old',
+            oauthRefreshToken: sessionJwe,
+            oauthRenewalKind: 'web_session',
+            oauthTokenExpiresAt: String(Date.now() - 1000),
+          },
+          providerId: 'chatgptweb',
+          userId: `user-${++userSeq}`,
+        }).then(
+          (value) => ({ status: 'fulfilled' as const, value }),
+          (reason: unknown) => ({ reason, status: 'rejected' as const }),
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        const outcome = await settled;
+
+        expect(outcome.status).toBe('rejected');
+        expect(mockUpdateConfig).toHaveBeenCalledWith(
+          'chatgptweb',
+          expect.objectContaining({
+            keyVaults: expect.objectContaining({
+              oauthRefreshToken: 'session-rotated',
+            }),
+          }),
+          expect.anything(),
+          expect.anything(),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('identifies a session credential by shape when the vault predates the label', async () => {
       mockUpdateConfig.mockResolvedValue(undefined);
       mockTransportFetch.mockResolvedValueOnce(sessionResponse('at-new'));

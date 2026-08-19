@@ -45,7 +45,6 @@ import {
   ChatGPTWebOAuthService,
   parsePasteEnvelope,
   resolveChatGPTWebConnectDeviceId,
-  wipeChatGPTWebCookieJar,
 } from '../../services/chatgptWeb/oauthService';
 import type {
   AppendPlatformAuditLogParams,
@@ -313,11 +312,6 @@ export const acquireSharedConnectionTokens = async ({
         ...(input.deviceId ? { pastedDeviceId: input.deviceId } : {}),
         webSessionOnly,
       });
-      // A device change is a new logical browser: drop the previous jar so CF
-      // cookies and a rotated-away session cannot follow the new identity.
-      if (existingDeviceId && connectDeviceId && existingDeviceId !== connectDeviceId) {
-        wipeChatGPTWebCookieJar(existingDeviceId);
-      }
       // Callback URL → PKCE exchange; web session → the renewable paste; access token →
       // the non-renewable fallback. Checked in that order so a paste carrying both a
       // session and a token stores the one that can renew itself.

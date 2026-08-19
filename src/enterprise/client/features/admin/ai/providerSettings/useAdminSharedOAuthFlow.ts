@@ -329,7 +329,13 @@ export const useAdminSharedOAuthFlow = ({
    * operator can fix the paste without repeating the browser sign-in.
    */
   const submitPasted = useCallback(
-    async (payload: { accessToken?: string; callbackUrl?: string; sessionToken?: string }) => {
+    async (payload: {
+      accessToken?: string;
+      callbackUrl?: string;
+      deviceId?: string;
+      sessionChunks?: string[];
+      sessionToken?: string;
+    }) => {
       const code = deviceCodeRef.current;
       if (!code || submittingRef.current) return;
 
@@ -428,7 +434,8 @@ export const useAdminSharedOAuthFlow = ({
   );
 
   const submitAccessToken = useCallback(
-    async (accessToken: string) => submitPasted({ accessToken }),
+    async (accessToken: string, extras?: { deviceId?: string }) =>
+      submitPasted({ accessToken, ...extras }),
     [submitPasted],
   );
 

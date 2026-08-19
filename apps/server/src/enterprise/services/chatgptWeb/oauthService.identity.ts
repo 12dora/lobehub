@@ -20,11 +20,7 @@ import {
 
 import { ChatGPTWebOAuthError } from './oauthErrors';
 import { CHATGPT_BASE } from './sessionToken';
-import {
-  deleteCookieJar,
-  isChatGPTWebTransportUnavailableError,
-  withCookieJarHeader,
-} from './transport';
+import { isChatGPTWebTransportUnavailableError, withCookieJarHeader } from './transport';
 
 const accountsCheckPath = (profile: BrowserDeviceProfile) =>
   `/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=${resolveProfileTimezone(profile).offsetMinutes}`;
@@ -184,7 +180,8 @@ export abstract class ChatGPTWebOAuthIdentityOps extends OAuthDeviceFlowService 
     assertWebCapableAccessToken(token);
 
     const resolvedDeviceId = deviceId ?? randomUUID();
-    deleteCookieJar(resolvedDeviceId);
+    // Do not wipe the live jar before the token is proven. A failed reconnect
+    // must leave the previous connection's Cloudflare / session cookies intact.
 
     let response: Response;
     try {

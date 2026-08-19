@@ -54,6 +54,7 @@ import {
 } from './client';
 import { createChatGPTWebImage } from './createImage';
 import { createDebugRedactor } from './debugRedactor';
+import { describeThrownValue } from './errors';
 import { readImageDimensions, readImageMimeType } from './imageDimensions';
 import { extractSandboxFiles, resolveFileMimeType, sandboxFileName } from './interpreterFiles';
 import type { TurnState } from './turnHelpers';
@@ -296,7 +297,10 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
           void Promise.allSettled(pendingPrepares).then((results) => {
             for (const result of results) {
               if (result.status === 'rejected')
-                log('non-blocking Pro prepare failed after send: %s', String(result.reason));
+                log(
+                  'non-blocking Pro prepare failed after send: %s',
+                  describeThrownValue(result.reason),
+                );
               else if (result.value.conduitToken)
                 log('non-blocking Pro prepare returned a late conduit token; ignoring it');
             }

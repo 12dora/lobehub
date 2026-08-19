@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 
 import {
   DEFAULT_BROWSER_DEVICE_PROFILE,
@@ -22,8 +23,8 @@ import {
   resolveChatGPTWebConnectDeviceId,
   sessionHeaders,
 } from './oauthService';
-import { readMatchingSessionChunksFromJar } from './sessionCookie';
-import { resetCookieJars } from './transport';
+import { readMatchingSessionChunksFromJar, seedChatGPTWebSessionJar } from './sessionCookie';
+import { resetCookieJars, seedCookieJar } from './transport';
 
 const PROFILE = DEFAULT_BROWSER_DEVICE_PROFILE;
 /** Stands in for the installation's persisted profile (never the bundled fallback). */
@@ -565,6 +566,21 @@ describe('ChatGPTWebOAuthService.verifyAccessToken', () => {
       expect.objectContaining({ code: 'access_token_invalid' }),
     );
     expect(transportFetch).not.toHaveBeenCalled();
+  });
+
+  it('leaves the previous jar intact when access-token verify fails', async () => {
+    const deviceId = 'device-keep-access-jar';
+    const path = seedChatGPTWebSessionJar(deviceId, 'old-session');
+    seedCookieJar(path, [{ domain: '.chatgpt.com', name: '_cfuvid', value: 'cf-live' }]);
+
+    const transportFetch = vi.fn().mockResolvedValue(jsonResponse({ detail: 'nope' }, 401));
+
+    await expect(build(transportFetch).verifyAccessToken('token', deviceId)).rejects.toThrowError(
+      expect.objectContaining({ code: 'access_token_invalid' }),
+    );
+
+    expect(existsSync(path)).toBe(true);
+    expect(readFileSync(path, 'utf8')).toContain('_cfuvid\tcf-live');
   });
 });
 
@@ -1316,6 +1332,21 @@ describe('ChatGPTWebOAuthService.connectWithSession', () => {
 
     expect(first.deviceId).toBe('device-stable');
     expect(second.deviceId).toBe('device-stable');
+  });
+
+  it('leaves the previous jar intact when a reconnect mint fails', async () => {
+    const deviceId = 'device-keep-jar';
+    const path = seedChatGPTWebSessionJar(deviceId, 'old-session');
+    seedCookieJar(path, [{ domain: '.chatgpt.com', name: '_cfuvid', value: 'cf-live' }]);
+
+    const transportFetch = vi.fn().mockResolvedValue(jsonResponse({ WARNING_BANNER: 'nope' }));
+
+    await expect(
+      build(transportFetch).connectWithSession(SESSION_JWE, deviceId),
+    ).rejects.toThrowError(expect.objectContaining({ code: 'session_invalid' }));
+
+    expect(existsSync(path)).toBe(true);
+    expect(readFileSync(path, 'utf8')).toContain('_cfuvid\tcf-live');
   });
 });
 

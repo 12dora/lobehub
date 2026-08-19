@@ -410,6 +410,38 @@ const persistRotatedKeyVaults = async (
 };
 
 /**
+ * A ChatGPT Web `/api/auth/session` attempt can rotate the session cookie and
+ * still fail. next-auth has already invalidated the presented value, so the
+ * rotated one MUST land in the vault even though this mint is about to throw.
+ *
+ * Duck-typed: the retryable error lives in the ChatGPT Web package and this
+ * pipeline must not import it. Successful rotations already persist through
+ * {@link persistRotatedKeyVaults}; this is the same write, on the failure path.
+ */
+const readRotatedSessionTokenFromError = (error: unknown): string | undefined => {
+  if (!error || typeof error !== 'object') return undefined;
+  const token = (error as { rotatedSessionToken?: unknown }).rotatedSessionToken;
+  return typeof token === 'string' && token.length > 0 ? token : undefined;
+};
+
+const persistObservedSessionRotation = async (
+  params: EnsureFreshOAuthTokenWithStoreParams,
+  error: unknown,
+  consumedRefreshToken: string,
+): Promise<void> => {
+  const rotated = readRotatedSessionTokenFromError(error);
+  if (!rotated || rotated === consumedRefreshToken) return;
+  try {
+    await persistRotatedKeyVaults(params, { oauthRefreshToken: rotated }, consumedRefreshToken);
+  } catch {
+    // Persist-then-throw: the mint failure still has to surface. Losing the
+    // rotation is the worse outcome, so we tried; a persist error must not
+    // replace the caller's mint error.
+    log('failed to persist a mid-flight session rotation for %s', params.flightKey);
+  }
+};
+
+/**
  * Record that a refresh attempt failed, so the next few minutes of requests skip the
  * token endpoint instead of re-running a call that is currently failing for everyone.
  *
@@ -505,6 +537,10 @@ const refreshAndPersist = async (
     try {
       return await service.refreshAccessToken(config, refreshToken, buildRefreshOptions(vault));
     } catch (error) {
+      // Persist a rotated session cookie BEFORE the backoff stamp: after this
+      // write, durable state no longer holds the consumed token, so the stamp
+      // correctly skips rather than backing off the replacement.
+      await persistObservedSessionRotation(params, error, refreshToken);
       if (!(error instanceof OAuthInvalidGrantError)) {
         // Keyed to the token THIS call presented: after the invalid_grant self-heal the
         // retry runs on the re-read token, and stamping against the original would both

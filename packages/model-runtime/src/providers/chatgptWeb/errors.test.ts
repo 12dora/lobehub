@@ -7,6 +7,7 @@ import {
   classifyResponseError,
   classifyTransportError,
   describeResponseShape,
+  describeThrownValue,
   parseRetryAfterMs,
   toAgentRuntimeErrorType,
   TRANSPORT_UNAVAILABLE_CODE,
@@ -313,5 +314,16 @@ describe('describeResponseShape', () => {
   it('caps a wide object instead of dumping every key', () => {
     const wide = Object.fromEntries(Array.from({ length: 50 }, (_, index) => [`k${index}`, index]));
     expect(describeResponseShape(wide)).toContain('…+10');
+  });
+});
+
+describe('describeThrownValue', () => {
+  it('redacts a url inside an Error message instead of interpolating it raw', () => {
+    const described = describeThrownValue(
+      new TypeError('fetch failed: https://chatgpt.com/x?token=SECRET'),
+    );
+    expect(described).not.toContain('SECRET');
+    expect(described).toContain('<redacted url>');
+    expect(described).toContain('TypeError');
   });
 });

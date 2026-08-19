@@ -345,6 +345,7 @@ export const oauthDeviceFlowRouter = router({
         }
 
         let connection;
+        let previousDeviceId: string | undefined;
         try {
           // Both branches REQUIRE a live envelope: it carries the PKCE verifier for the
           // code exchange and the device id the authorize call was made with. A malformed
@@ -372,7 +373,7 @@ export const oauthDeviceFlowRouter = router({
             connectDeviceId &&
             existingDeviceId !== connectDeviceId
           ) {
-            wipeChatGPTWebCookieJar(existingDeviceId);
+            previousDeviceId = existingDeviceId;
           }
           // Callback URL → PKCE exchange; web session → the renewable paste; access token →
           // the non-renewable fallback. Checked in that order so a paste carrying both a
@@ -403,6 +404,11 @@ export const oauthDeviceFlowRouter = router({
           ctx.gateKeeper.encrypt,
           KeyVaultsGateKeeper.getUserKeyVaults,
         );
+
+        // A device change is a new logical browser: drop the previous jar only
+        // after the replacement is committed. A failed reconnect must leave the
+        // previously-working transport state intact.
+        if (previousDeviceId) wipeChatGPTWebCookieJar(previousDeviceId);
 
         return { status: 'success' as const };
       }

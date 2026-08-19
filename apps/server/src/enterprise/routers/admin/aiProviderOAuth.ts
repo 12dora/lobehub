@@ -491,6 +491,18 @@ export const adminAiProviderOAuthRouter = router({
         return { ...unfinished, error: 'provider_store_failed', status: 'denied' as const };
       }
 
+      // A device change is a new logical browser: drop the previous jar so CF
+      // cookies and a rotated-away session cannot follow the new identity. Only
+      // after the replacement is committed — a failed reconnect must leave the
+      // previously-working transport state intact.
+      if (
+        existingDeviceId &&
+        connectionTokens.deviceId &&
+        existingDeviceId !== connectionTokens.deviceId
+      ) {
+        wipeChatGPTWebJarBestEffort(existingDeviceId);
+      }
+
       await auditProvider(audit, {
         action: 'admin.aiProviderOAuth.pollAuthStatus',
         actorUserId: ctx.userId!,

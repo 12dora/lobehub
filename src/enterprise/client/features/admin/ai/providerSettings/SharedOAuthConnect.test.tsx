@@ -1008,7 +1008,9 @@ describe('SharedOAuthConnect', () => {
     });
     expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.detected.session')).toBeTruthy();
     fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionSubmit'));
-    expect(mocks.flow.submitSessionToken).toHaveBeenCalledWith(SESSION_JWE);
+    expect(mocks.flow.submitSessionToken).toHaveBeenCalledWith(SESSION_JWE, {
+      deviceId: 'd1',
+    });
     expect(mocks.flow.submitAccessToken).not.toHaveBeenCalled();
   });
 
@@ -1037,6 +1039,37 @@ describe('SharedOAuthConnect', () => {
     ).toBeTruthy();
     fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionSubmit'));
     expect(mocks.flow.submitAccessToken).toHaveBeenCalledWith(ACCESS_JWT);
+    expect(mocks.flow.submitSessionToken).not.toHaveBeenCalled();
+  });
+
+  it('threads a captured device id through an access-token paste', () => {
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: true,
+      deviceCode: 'envelope',
+      expiresIn: 600,
+      flow: 'authorization_code_paste',
+      interval: 0,
+      userCode: '',
+      verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+      verificationUriComplete: null,
+    };
+
+    render(<SharedOAuthConnect providerId="chatgpt" />);
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionToggle'));
+    fireEvent.change(
+      screen.getByPlaceholderText('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder'),
+      {
+        target: {
+          value: `-H 'OAI-Device-Id: chrome-did'\nAuthorization: Bearer ${ACCESS_JWT}`,
+        },
+      },
+    );
+
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionSubmit'));
+    expect(mocks.flow.submitAccessToken).toHaveBeenCalledWith(ACCESS_JWT, {
+      deviceId: 'chrome-did',
+    });
     expect(mocks.flow.submitSessionToken).not.toHaveBeenCalled();
   });
 

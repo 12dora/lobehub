@@ -101,7 +101,7 @@ interface UseOAuthDeviceFlowResult {
   startAuth: () => Promise<DeviceCodeInfo | undefined>;
   state: AuthState;
   /** Paste flow: hand a raw access token to the server (no auto-renewal). */
-  submitAccessToken: (accessToken: string) => Promise<void>;
+  submitAccessToken: (accessToken: string, extras?: { deviceId?: string }) => Promise<void>;
   /**
    * Connect with a dashboard API key. The key is redeemed against a device-code envelope, so
    * this requests one whenever the run holds none — including after an expiry, a denial or a
@@ -391,7 +391,13 @@ export function useOAuthDeviceFlow({
    * other failure keeps the form open, because the user can fix a bad paste in place.
    */
   const submitPasted = useCallback(
-    async (payload: { accessToken?: string; callbackUrl?: string; sessionToken?: string }) => {
+    async (payload: {
+      accessToken?: string;
+      callbackUrl?: string;
+      deviceId?: string;
+      sessionChunks?: string[];
+      sessionToken?: string;
+    }) => {
       const deviceCode = deviceCodeRef.current;
       if (!deviceCode || submittingRef.current) return;
 
@@ -460,7 +466,8 @@ export function useOAuthDeviceFlow({
   );
 
   const submitAccessToken = useCallback(
-    async (accessToken: string) => submitPasted({ accessToken }),
+    async (accessToken: string, extras?: { deviceId?: string }) =>
+      submitPasted({ accessToken, ...extras }),
     [submitPasted],
   );
 
