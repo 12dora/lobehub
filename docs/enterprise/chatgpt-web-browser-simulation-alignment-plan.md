@@ -20,31 +20,30 @@ but it does not require controlling the user's real Chrome for every inference.
 
 **Read this section first. Everything else is detail/history — check here before reading further.**
 
-| Task    | What it is                                            | Status                                                                                                         |
-| ------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| C1      | Common Browser Session Context                        | ✅ Done — `cd38ff93db`                                                                                         |
-| C2      | Provider-isolated Cookie Jar                          | ✅ Done — `cd38ff93db`                                                                                         |
-| G1      | Preserve ChatGPT Device Binding                       | ✅ Done — `f40d0d7bb6`                                                                                         |
-| G2      | Preserve ChatGPT Session-Cookie Shape                 | ✅ Done — `f40d0d7bb6`                                                                                         |
-| G3      | Authenticated ChatGPT Bootstrap                       | ✅ Done — `0a720e3370` (unauth-shell detection) + `bb3d3f48a6` (context-scoped cache)                          |
-| G4      | Sentinel Bundle Manager                               | ✅ Done — `0a720e3370` (pool) + `bb3d3f48a6` (account-scoped key)                                              |
-| G5      | ChatGPT Page Session ID                               | ✅ Done — `bb3d3f48a6`                                                                                         |
-| G6      | Pro Turn Coordinator                                  | ✅ Done — `0a720e3370`                                                                                         |
-| G7      | Route All ChatGPT Endpoints Through One Context       | ✅ Done — `bb3d3f48a6` (account-scoped, 6 codex review rounds)                                                 |
-| **C3**  | **Persistent Impersonated Transport**                 | ⬜ **Not started — next real task, see below**                                                                 |
-| **C4**  | **Context Ownership and Cleanup**                     | ⬜ **Not started — depends on C3**                                                                             |
-| **CX1** | **Isolate the Cursor CLI state cache per connection** | ⬜ **Not started — independent of C3/C4, can be picked up any time**                                           |
-| ~~GX1~~ | ~~Account-scope the Grok agent identity~~             | ❌ **Decided against — do not implement.** No browser-session-shaped risk found for Grok's CLI-proxy endpoint. |
+| Task    | What it is                                            | Status                                                                                                                                                     |
+| ------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1      | Common Browser Session Context                        | ✅ Done — `cd38ff93db`                                                                                                                                     |
+| C2      | Provider-isolated Cookie Jar                          | ✅ Done — `cd38ff93db`                                                                                                                                     |
+| G1      | Preserve ChatGPT Device Binding                       | ✅ Done — `f40d0d7bb6`                                                                                                                                     |
+| G2      | Preserve ChatGPT Session-Cookie Shape                 | ✅ Done — `f40d0d7bb6`                                                                                                                                     |
+| G3      | Authenticated ChatGPT Bootstrap                       | ✅ Done — `0a720e3370` (unauth-shell detection) + `bb3d3f48a6` (context-scoped cache)                                                                      |
+| G4      | Sentinel Bundle Manager                               | ✅ Done — `0a720e3370` (pool) + `bb3d3f48a6` (account-scoped key)                                                                                          |
+| G5      | ChatGPT Page Session ID                               | ✅ Done — `bb3d3f48a6`                                                                                                                                     |
+| G6      | Pro Turn Coordinator                                  | ✅ Done — `0a720e3370`                                                                                                                                     |
+| G7      | Route All ChatGPT Endpoints Through One Context       | ✅ Done — `bb3d3f48a6` (account-scoped, 6 codex review rounds)                                                                                             |
+| **C3**  | **Persistent Impersonated Transport**                 | 🔄 **In progress (verification pending)**                                                                                                                  |
+| **C4**  | **Context Ownership and Cleanup**                     | ✅ Done — `pending`                                                                                                                         |
+| **CX1** | **Isolate the Cursor CLI state cache per connection** | ✅ Done — per-connection `config-seed/<sha256(accountId)[:32]>/` via `x-aihub-account`; token-digest fallback; legacy global dir left in place (`pending`) |
+| ~~GX1~~ | ~~Account-scope the Grok agent identity~~             | ❌ **Decided against — do not implement.** No browser-session-shaped risk found for Grok's CLI-proxy endpoint.                                             |
 
-**If you are picking this up fresh: C1/C2/G1–G7 are shipped, tested, and pushed to `main`.** The
-ChatGPT Web Pro-tier downgrade's root causes (protocol mismatches, device-id-only isolation, no
-persistent session concept) are fixed. **What's actually left is C3 and C4** (bundled below as one
-practical next task, since C4 exists to productionize C3) **and, independently, CX1** (a small,
-self-contained Cursor fix unrelated to everything else in this document). Read "C3 — Persistent
-Impersonated Transport" and "C4 — Context Ownership and Cleanup" in Actionable tasks below, and
-"CX1" under Extending isolation to Grok and Cursor. You do not need to read C1/C2/G1–G7's own
-task descriptions to start work — they're kept below only as historical record of what was built
-and why, and as a reference for the acceptance-criteria style/rigor expected of C3/C4 too.
+**If you are picking this up fresh: C1/C2/G1–G7 are shipped, tested, and pushed to `main`; CX1 is
+done in this worktree.** The ChatGPT Web Pro-tier downgrade's root causes (protocol mismatches,
+device-id-only isolation, no persistent session concept) are fixed. **What's actually left is C3
+and C4** (bundled below as one practical next task, since C4 exists to productionize C3). Read
+"C3 — Persistent Impersonated Transport" and "C4 — Context Ownership and Cleanup" in Actionable
+tasks below. You do not need to read C1/C2/G1–G7's own task descriptions to start work — they're
+kept below only as historical record of what was built and why, and as a reference for the
+acceptance-criteria style/rigor expected of C3/C4 too.
 
 **One hard blocking constraint that carries forward into C3/C4 work:** the Browser Session Context
 registry is currently process-local (in-memory only). This is fine for AIHub's current
@@ -117,17 +116,17 @@ reordering commit to happen only after durable vault persistence succeeds (never
 
 **Known, deliberately accepted residual limitations — read before scaling this deployment:**
 
-- **The context registry is process-local (in-memory), by original C1 design.** This was always
-  the documented scope for this phase (C1's basic direction explicitly says "leave room for a
-  distributed owner/lease implementation" as future work, not build one now). The 6th review round
-  confirmed the consequence: **if this server ever runs as more than one OS process — multiple
-  replicas, PM2/cluster mode, multiple Node workers — a same-device account switch persisted by one
-  worker is invisible to the others**, which keep serving the old account's session cookie from
-  their own warm in-memory context even after the new account's credential is durably stored. AIHub's
-  current deployment (`ENTRYPOINT ["/bin/node"]` / `CMD ["/app/startServer.js"]`, one `app` service,
-  no `deploy.replicas`) is single-process, so this is not an active risk today. **This is a hard
-  blocking prerequisite for C3/C4 (or any horizontal-scaling change) — do not scale this server to
-  multiple processes/replicas until the registry has a real distributed invalidation mechanism.**
+- **The context registry is process-local (in-memory), by original C1 design.** C4 kept that
+  single-process assumption explicit: the owner lease is `pid:<pid>`, the idle sweeper and boot
+  jar wipe are process-local, and there is no Redis/CAS distributed invalidation. **If this server
+  ever runs as more than one OS process — multiple replicas, PM2/cluster mode, multiple Node
+  workers — a same-device account switch persisted by one worker is invisible to the others**,
+  which keep serving the old account's session cookie from their own warm in-memory context even
+  after the new account's credential is durably stored. A boot orphan-jar sweep would also unlink
+  another replica's live `$TMPDIR` jars. AIHub's current deployment (`ENTRYPOINT ["/bin/node"]` /
+  `CMD ["/app/startServer.js"]`, one `app` service, no `deploy.replicas`) is single-process, so
+  this is not an active risk today. **Do not scale this server to multiple processes/replicas
+  until the registry has a real distributed invalidation mechanism.** C4 did not build one.
 - **The user-connect path (`oauthDeviceFlow.ts`) has no CAS/lock around its vault write**, unlike
   the admin path (which has `expectedRevision`/draft-token CAS on `applyProviderImmediate`). Two
   fully concurrent reconnects of the same stored connection could still commit/persist in
@@ -493,7 +492,7 @@ Retain and finish the current workspace implementation rather than returning to 
 **Priority:** P1\
 **Scope:** common infrastructure; initially consumed by ChatGPT Web
 
-**Status:** ⬜ **Not started. This is the next real task** — read this section fully before starting.
+**Status:** 🔄 **In progress (verification pending).**
 
 The current one-process-per-request curl adapter cannot reproduce HTTP/2 connection continuity.
 Replace it with a long-running transport worker or sidecar that owns connection pools.
@@ -522,12 +521,45 @@ browser context + origin + proxy/egress outlet + impersonation profile revision
 - request abort, deadlines, streaming backpressure, and response-header parsing remain correct;
 - secrets continue to travel over private IPC/stdin, never argv.
 
+#### C3 implementation notes
+
+Shipped as an **in-process libcurl-impersonate multi driver** via `koffi` (not a sidecar
+process). Each pool is one `CURLM` with `CURLMOPT_PIPELINING=CURLPIPE_MULTIPLEX`, keyed
+by `browser context + origin + proxy/egress outlet + impersonation profile`. While
+`curl_multi_poll.async` is outstanding, the only native call allowed from elsewhere is
+`curl_multi_wakeup`; add/remove/pause/cleanup run on the loop after poll returns.
+
+The on-disk Netscape jar remains the cookie source of truth: handles load it with
+`CURLOPT_COOKIEFILE` and merge `CURLINFO_COOKIELIST` deltas at completion. There is no
+`CURLSH` share and no `CURLOPT_COOKIEJAR` whole-file rewrite (that would clobber parallel
+Set-Cookie updates). **The jar is deliberately not re-keyed by proxy outlet** — a real
+browser keeps its cookies across an egress/VPN change; connections, not cookies, are
+proxy-scoped. Egress snapshot changes drain every proxied pool even when the local proxy
+URL is unchanged (a stable mihomo listener can hide an upstream node switch).
+
+`CHATGPT_WEB_TRANSPORT=auto` (default) uses the persistent driver for registered context
+jars when the library loads, and falls back to the existing CLI transport otherwise.
+`cli` is a true kill switch: it never probes, loads koffi, or calls `curl_global_init`.
+`persistent` fails closed with `ChatGPTWebTransportUnavailableError` if the library is
+missing.
+
+A sidecar was rejected: it would add an IPC layer and a second process to babysit, while
+still sharing the same crash domain for a native library. The in-process crash risk is
+accepted and mitigated by the env kill-switch. The registry and pools are **process-local**
+(same assumption as C1); a multi-replica deployment does not share connections or jar
+maps. Secrets never appear in argv — libcurl options are set through FFI, not a child
+command line.
+
+**Follow-up:** the common driver currently reuses ChatGPT request/header/response
+primitives (`normalizeRequest`, `HeaderDumpReader`, `buildResponse`, `fetchFailed`).
+Extract those into `browserSession/transport` before a second provider uses this driver.
+
 ### C4 — Context Ownership and Cleanup
 
 **Priority:** P1\
 **Scope:** common infrastructure
 
-**Status:** ⬜ **Not started, depends on C3.**
+**Status:** ✅ **Done** — `pending`.
 
 Productionize C1/C3 so long-lived sessions do not leak resources or split ownership.
 
@@ -546,6 +578,20 @@ Productionize C1/C3 so long-lived sessions do not leak resources or split owners
 - stale workers cannot write into a replacement context;
 - cleanup of one account cannot affect another;
 - crash recovery produces a new coherent context rather than a partial old one.
+
+#### C4 implementation notes
+
+The owner lease is **not** an exclusive mutex and **not** a distributed lock. `ownerLease.ownerId` stays `pid:<pid>` (this OS process owns the persistent transport). Concurrent prepare / conversation / Sentinel replenish on one context (G6/G7) share a generation: `revision` (monotonic per context object, starts at 1) plus an `inFlight` counter. `withContextOwnership` and `bindChatGPTWebBrowserSession` increment `inFlight`. Runtime `chat()` transfers the lease to `ChatGPTWebStream.onCleanup` (success / failure / abort / consumer disconnect); method-level `release` is only a fallback when no stream was constructed. Invalidate (reconnect) does **not** wait for `inFlight === 0` — it fences immediately.
+
+**Dispose order:** fence (`lifecycle` + `revision++`) and tombstone the jar immediately → **await** that context's transport drains (persistent pool **and** CLI children tracked by jar/pool scope) → unlink the jar → clear the tombstone → fire `onBrowserSessionInvalidate` (ChatGPT retires the digest so it can never become a legacy device-id jar, then invalidates the Sentinel slot). `invalidate` / `dispose` stay synchronous for callers and enqueue work on `awaitPendingCleanup()`. `disposeAllBrowserSessions()` and `stopEnterpriseWorkers()` await that queue. `resetCookieJars()` fences routing first, then disposes, then awaits cleanup + `drainAll()`, and only then clears mappings / unlinks / tombstones. Drain failures are logged.
+
+Sweeper defaults: `maxContexts = 256`, `idleTtlMs = 45 min`. Staged contexts pass `ephemeral: true` into `acquire()` at creation; an ephemeral candidate at capacity may evict only another idle ephemeral entry, otherwise staging fails closed. The sweeper never evicts `inFlight > 0`. `drainAll()` is shutdown/test-reset only.
+
+Staged commit records live presence as `BrowserSessionWriteFence | null` and requires an exact match at commit (absent stays absent; a captured generation must still be that generation). A device-changing commit may drop only that captured generation. `commitVerifiedChatGPTWebSession` rotates only after a successful promotion.
+
+Shutdown: `stopEnterpriseWorkers()` → `disposeAllBrowserSessions()`; `src/instrumentation.ts` registers once-hooks on SIGTERM/SIGINT (no `process.exit`). Boot: `sweepOrphanBrowserCookieJars` unlinks leftover jar files and does **not** permanently tombstone them. Single-process: do not run this if two OS processes share `$TMPDIR`.
+
+**Residual limitations kept:** process-local registry; no CAS on the user-connect vault write; `exchangeCallback` still rotates before persist (unreachable for `chatgptweb`). **G4 warm-on-reconnect** is still unimplemented: `rotateChatGPTWebBrowserSession` has no ChatGPT client, so it cannot cheaply/safely fire `warmSentinelBundle`; the first post-reconnect turn still blocks on a cold Sentinel pool.
 
 ### G7 — Route All ChatGPT Endpoints Through One Context
 
@@ -638,6 +684,12 @@ own, separate task, not a reuse of G1–G7:
 
 **Priority:** P1 — this one has a more concrete correctness case, independent of any xAI-style
 "design decision."
+
+**Status:** ✅ **Done** — `pending`. Per-connection CLI config-seed keyed by stored Cursor account id
+(`platform:<providerId>[:rev:<n>]` / `user:<userId>:<workspace>:<providerId>`), carried hop-by-hop as
+`x-aihub-account` and stripped before the CLI spawn. Token-digest fallback when the header is absent;
+legacy global `config-seed/` files are copied once into the current platform connection's dir only,
+never deleted.
 
 `apps/server/src/enterprise/services/cursorAgent/transport.scratch.ts` maintains ONE shared
 `config-seed` directory per server instance (`ensureCursorAgentStateDir`), holding the CLI's own
