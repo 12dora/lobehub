@@ -20,9 +20,12 @@ import { AgentRuntimeErrorType } from '../../types/error';
 import { AgentRuntimeError } from '../../utils/createError';
 import { debugStream } from '../../utils/debugStream';
 import { desensitizeUrl } from '../../utils/desensitizeUrl';
+import type { EffortControlKey } from '../../utils/effortControlRegistry';
+import { isEffortControlKey } from '../../utils/effortControlRegistry';
 import { getModelPricing } from '../../utils/getModelPricing';
 import type { ModelIdMappingOptions } from '../../utils/modelIdMapping';
 import { resolveMappedModelId } from '../../utils/modelIdMapping';
+import type { ProcessableModelCard } from '../../utils/modelParse';
 import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import { StreamingResponse } from '../../utils/response';
 import type { LobeRuntimeAI } from '../BaseAI';
@@ -366,8 +369,9 @@ export const handleDefaultAnthropicError = <T extends Record<string, any> = any>
 
 /**
  * Documented `GET /v1/models` ModelInfo. Capabilities we do not have a
- * destination for (pdf_input, structured_outputs, effort, batch, citations,
+ * destination for (pdf_input, structured_outputs, batch, citations,
  * code_execution, context_management) are typed but left unmapped.
+ * `effort` maps onto the `opus47Effort` extend-param tag.
  */
 interface AnthropicCapabilitySupport {
   supported?: boolean;
@@ -410,17 +414,43 @@ const anthropicCapabilitySupported = (
 ): boolean | undefined =>
   typeof capability?.supported === 'boolean' ? capability.supported : undefined;
 
-const mapAnthropicModel = (model: AnthropicModelInfo) => ({
-  // created_at is RFC 3339; processReleasedAt already splits the date.
-  created: model.created_at,
-  contextWindowTokens:
-    typeof model.max_input_tokens === 'number' ? model.max_input_tokens : undefined,
-  displayName: model.display_name,
-  id: model.id,
-  maxOutput: typeof model.max_tokens === 'number' ? model.max_tokens : undefined,
-  reasoning: anthropicCapabilitySupported(model.capabilities?.thinking),
-  vision: anthropicCapabilitySupported(model.capabilities?.image_input),
-});
+const ANTHROPIC_LIVE_EFFORT_TAG = 'opus47Effort' satisfies EffortControlKey;
+
+const applyLiveEffortExtendParam = (
+  card: ChatModelCard,
+  liveTag: EffortControlKey | undefined,
+): ChatModelCard => {
+  if (!liveTag) return card;
+
+  const extendParams = [
+    ...(card.settings?.extendParams ?? []).filter((param) => !isEffortControlKey(param)),
+    liveTag,
+  ];
+
+  return {
+    ...card,
+    settings: {
+      ...card.settings,
+      extendParams,
+    },
+  };
+};
+
+const mapAnthropicModel = (model: AnthropicModelInfo): ProcessableModelCard => {
+  const effortSupported = anthropicCapabilitySupported(model.capabilities?.effort);
+  return {
+    // created_at is RFC 3339; processReleasedAt already splits the date.
+    created: model.created_at,
+    contextWindowTokens:
+      typeof model.max_input_tokens === 'number' ? model.max_input_tokens : undefined,
+    displayName: model.display_name,
+    id: model.id,
+    maxOutput: typeof model.max_tokens === 'number' ? model.max_tokens : undefined,
+    reasoning: anthropicCapabilitySupported(model.capabilities?.thinking),
+    vision: anthropicCapabilitySupported(model.capabilities?.image_input),
+    ...(effortSupported ? { settings: { extendParams: [ANTHROPIC_LIVE_EFFORT_TAG] } } : {}),
+  };
+};
 
 /**
  * Default Anthropic models list fetcher.
@@ -478,11 +508,16 @@ export const createDefaultAnthropicModels = async ({
     afterId = json.last_id;
   }
 
-  return processModelList(
-    modelList.map(mapAnthropicModel),
-    MODEL_LIST_CONFIGS.anthropic,
-    'anthropic',
+  const mapped = modelList.map(mapAnthropicModel);
+  const liveEffortById = new Map<string, EffortControlKey>(
+    mapped.flatMap((card) =>
+      card.settings?.extendParams?.includes(ANTHROPIC_LIVE_EFFORT_TAG)
+        ? ([[card.id, ANTHROPIC_LIVE_EFFORT_TAG]] as const)
+        : [],
+    ),
   );
+  const processed = await processModelList(mapped, MODEL_LIST_CONFIGS.anthropic, 'anthropic');
+  return processed.map((card) => applyLiveEffortExtendParam(card, liveEffortById.get(card.id)));
 };
 
 /**

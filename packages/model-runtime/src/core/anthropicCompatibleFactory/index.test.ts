@@ -434,4 +434,128 @@ describe('createDefaultAnthropicModels', () => {
       }),
     ).rejects.toThrow('Missing Anthropic API key for model listing');
   });
+
+  it('adds opus47Effort when capabilities.effort is supported and keeps other bank tags', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            capabilities: {
+              effort: { supported: true },
+              thinking: { supported: true },
+            },
+            display_name: 'Claude Opus 4.7',
+            id: 'claude-opus-4-7',
+          },
+          {
+            capabilities: {
+              effort: { supported: true },
+              thinking: { supported: true },
+            },
+            display_name: 'Claude Sonnet 4.6',
+            id: 'claude-sonnet-4-6',
+          },
+          {
+            capabilities: {
+              effort: { supported: true },
+              thinking: { supported: true },
+            },
+            display_name: 'Custom Effort',
+            id: 'claude-effort-only-custom',
+          },
+        ],
+        has_more: false,
+      }),
+    );
+
+    const models = await createDefaultAnthropicModels({
+      apiKey: 'test-key',
+      baseURL: 'https://api.anthropic.com',
+      fetch: fetchImpl,
+    });
+
+    expect(models.find((model) => model.id === 'claude-opus-4-7')?.settings?.extendParams).toEqual([
+      'disableContextCaching',
+      'enableAdaptiveThinking',
+      'opus47Effort',
+    ]);
+    expect(
+      models.find((model) => model.id === 'claude-sonnet-4-6')?.settings?.extendParams,
+    ).toEqual([
+      'disableContextCaching',
+      'enableAdaptiveThinking',
+      'enableReasoning',
+      'reasoningBudgetToken',
+      'opus47Effort',
+    ]);
+    expect(
+      models.find((model) => model.id === 'claude-effort-only-custom')?.settings?.extendParams,
+    ).toEqual(['opus47Effort']);
+  });
+
+  it('preserves the bank opus47Effort tag when live effort is unsupported', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            capabilities: {
+              effort: { supported: false },
+              thinking: { supported: true },
+            },
+            display_name: 'Claude Opus 4.7',
+            id: 'claude-opus-4-7',
+          },
+        ],
+        has_more: false,
+      }),
+    );
+
+    const models = await createDefaultAnthropicModels({
+      apiKey: 'test-key',
+      baseURL: 'https://api.anthropic.com',
+      fetch: fetchImpl,
+    });
+
+    expect(models.find((model) => model.id === 'claude-opus-4-7')?.settings?.extendParams).toEqual([
+      'disableContextCaching',
+      'enableAdaptiveThinking',
+      'opus47Effort',
+    ]);
+  });
+
+  it('does not add opus47Effort when a non-bank model reports effort unsupported or absent', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            capabilities: {
+              effort: { supported: false },
+              thinking: { supported: true },
+            },
+            display_name: 'Custom Effort Off',
+            id: 'claude-effort-unsupported-custom',
+          },
+          {
+            capabilities: { thinking: { supported: true } },
+            display_name: 'Custom No Effort',
+            id: 'claude-no-effort-custom',
+          },
+        ],
+        has_more: false,
+      }),
+    );
+
+    const models = await createDefaultAnthropicModels({
+      apiKey: 'test-key',
+      baseURL: 'https://api.anthropic.com',
+      fetch: fetchImpl,
+    });
+
+    const unsupported = models.find((model) => model.id === 'claude-effort-unsupported-custom');
+    expect(unsupported?.settings).toBeUndefined();
+    expect(unsupported?.settings?.extendParams).toBeUndefined();
+    expect(
+      models.find((model) => model.id === 'claude-no-effort-custom')?.settings?.extendParams,
+    ).toBeUndefined();
+  });
 });

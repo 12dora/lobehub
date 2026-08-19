@@ -865,6 +865,95 @@ describe('AiModelModel', () => {
       // Source is never overwritten
       expect(updated?.source).toBe('builtin');
     });
+
+    it('should update settings when remote provides a non-empty object for remote/custom/null source', async () => {
+      await serverDB.insert(aiModels).values([
+        {
+          id: 'remote-settings',
+          providerId: 'openai',
+          userId,
+          settings: { searchImpl: 'internal' },
+          source: 'remote',
+        },
+        {
+          id: 'custom-settings',
+          providerId: 'openai',
+          userId,
+          settings: { searchImpl: 'internal' },
+          source: 'custom',
+        },
+        {
+          id: 'null-source-settings',
+          providerId: 'openai',
+          userId,
+          settings: { searchImpl: 'internal' },
+          source: null,
+        },
+      ]);
+
+      const incoming = {
+        enabled: false,
+        type: 'chat' as const,
+        settings: { extendParams: ['gpt5_6ReasoningEffort'], searchImpl: 'params' },
+      };
+      await aiProviderModel.batchUpdateAiModels('openai', [
+        { id: 'remote-settings', ...incoming },
+        { id: 'custom-settings', ...incoming },
+        { id: 'null-source-settings', ...incoming },
+      ] as AiProviderModelListItem[]);
+
+      const expected = { extendParams: ['gpt5_6ReasoningEffort'], searchImpl: 'params' };
+      expect((await aiProviderModel.findById('remote-settings'))?.settings).toEqual(expected);
+      expect((await aiProviderModel.findById('custom-settings'))?.settings).toEqual(expected);
+      expect((await aiProviderModel.findById('null-source-settings'))?.settings).toEqual(expected);
+    });
+
+    it('should NOT overwrite existing settings when remote payload has empty settings', async () => {
+      await serverDB.insert(aiModels).values({
+        id: 'keep-settings',
+        providerId: 'openai',
+        userId,
+        settings: { extendParams: ['gpt5_2ReasoningEffort'], searchImpl: 'params' },
+        source: 'remote',
+      });
+
+      await aiProviderModel.batchUpdateAiModels('openai', [
+        {
+          id: 'keep-settings',
+          enabled: false,
+          type: 'chat' as const,
+          settings: {},
+        },
+      ] as AiProviderModelListItem[]);
+
+      const updated = await aiProviderModel.findById('keep-settings');
+      expect(updated?.settings).toEqual({
+        extendParams: ['gpt5_2ReasoningEffort'],
+        searchImpl: 'params',
+      });
+    });
+
+    it('should NOT update builtin settings with remote provider-sourced data', async () => {
+      await serverDB.insert(aiModels).values({
+        id: 'gpt-4',
+        providerId: 'openai',
+        userId,
+        settings: { extendParams: ['reasoningEffort'] },
+        source: 'builtin',
+      });
+
+      await aiProviderModel.batchUpdateAiModels('openai', [
+        {
+          id: 'gpt-4',
+          enabled: false,
+          type: 'chat' as const,
+          settings: { extendParams: ['gpt5_6ReasoningEffort'], searchImpl: 'params' },
+        },
+      ] as AiProviderModelListItem[]);
+
+      const updated = await aiProviderModel.findById('gpt-4');
+      expect(updated?.settings).toEqual({ extendParams: ['reasoningEffort'] });
+    });
   });
 
   describe('batchToggleAiModels', () => {

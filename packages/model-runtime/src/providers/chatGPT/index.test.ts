@@ -5,7 +5,13 @@ import OpenAI from 'openai';
 import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CODEX_CLIENT_VERSION, LobeChatGPTAI, UPSTREAM_REPORTED_ABILITIES } from './index';
+import { applyModelExtendParams } from '../../utils/modelExtendParams';
+import {
+  CODEX_CLIENT_VERSION,
+  LobeChatGPTAI,
+  matchEffortControlForLevels,
+  UPSTREAM_REPORTED_ABILITIES,
+} from './index';
 
 vi.mock('@lobechat/business-model-bank/model-config', () => ({
   loadModels: vi.fn().mockResolvedValue([]),
@@ -299,6 +305,46 @@ describe('LobeChatGPTAI', () => {
     expect(request.tools).toContainEqual({ type: 'web_search' });
   });
 
+  describe('matchEffortControlForLevels', () => {
+    it('returns the ChatGPT candidate whose levels equal the live set', () => {
+      expect(matchEffortControlForLevels(['none', 'low', 'medium', 'high', 'xhigh', 'max'])).toBe(
+        'gpt5_6ReasoningEffort',
+      );
+      expect(matchEffortControlForLevels(['max', 'none', 'high', 'xhigh', 'low', 'medium'])).toBe(
+        'gpt5_6ReasoningEffort',
+      );
+      expect(matchEffortControlForLevels(['low', 'medium', 'high'])).toBe('reasoningEffort');
+    });
+
+    it('falls back to the smallest ChatGPT superset and never picks Anthropic opus47Effort', () => {
+      expect(matchEffortControlForLevels(['none', 'xhigh'])).toBe('gpt5_2ReasoningEffort');
+      expect(matchEffortControlForLevels(['xhigh'])).toBe('gpt5_2ProReasoningEffort');
+      expect(matchEffortControlForLevels(['low', 'medium', 'high', 'xhigh', 'max'])).toBe(
+        'gpt5_6ReasoningEffort',
+      );
+    });
+
+    it('returns undefined when no ChatGPT candidate covers the live levels', () => {
+      expect(matchEffortControlForLevels(['ultra'])).toBeUndefined();
+      expect(matchEffortControlForLevels([])).toBeUndefined();
+      expect(matchEffortControlForLevels(['none', 'ultra'])).toBeUndefined();
+    });
+
+    it('maps the matched tag to reasoning_effort and never to Anthropic effort', () => {
+      const tag = matchEffortControlForLevels(['low', 'medium', 'high', 'xhigh', 'max']);
+      expect(tag).toBe('gpt5_6ReasoningEffort');
+
+      const params = applyModelExtendParams({
+        chatConfig: { gpt5_6ReasoningEffort: 'high' },
+        extendParams: tag ? [tag] : [],
+        model: 'codex-live-effort',
+      });
+
+      expect(params.reasoning_effort).toBe('high');
+      expect(params).not.toHaveProperty('effort');
+    });
+  });
+
   describe('models', () => {
     const catalogIds = ['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'];
 
@@ -348,6 +394,67 @@ describe('LobeChatGPTAI', () => {
           reasoning: true,
           vision: true,
         }),
+      ]);
+    });
+
+    it('maps supported_reasoning_levels onto the matching effort tag and swaps the bank family', async () => {
+      mockModelsGet({
+        models: [
+          {
+            context_window: 272_000,
+            display_name: 'GPT-5.5',
+            slug: 'gpt-5.5',
+            supported_reasoning_levels: [
+              { effort: 'none' },
+              { effort: 'low' },
+              { effort: 'medium' },
+              { effort: 'high' },
+              { effort: 'xhigh' },
+              { effort: 'max' },
+            ],
+          },
+          {
+            display_name: 'Codex Live Only',
+            slug: 'codex-live-effort',
+            supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+          },
+        ],
+      });
+
+      const models = await instance.models();
+      const gpt55 = models.find((model) => model.id === 'gpt-5.5');
+      const liveOnly = models.find((model) => model.id === 'codex-live-effort');
+
+      expect(gpt55?.settings?.extendParams).toEqual([
+        'textVerbosity',
+        'preserveThinking',
+        'gpt5_6ReasoningEffort',
+      ]);
+      expect(liveOnly).toEqual(
+        expect.objectContaining({
+          id: 'codex-live-effort',
+          reasoning: true,
+          settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+        }),
+      );
+    });
+
+    it('leaves bank effort tags untouched when live levels do not match a registry set', async () => {
+      mockModelsGet({
+        models: [
+          {
+            slug: 'gpt-5.5',
+            supported_reasoning_levels: [{ effort: 'ultra' }],
+          },
+        ],
+      });
+
+      const [model] = await instance.models();
+
+      expect(model.settings?.extendParams).toEqual([
+        'gpt5_2ReasoningEffort',
+        'textVerbosity',
+        'preserveThinking',
       ]);
     });
 

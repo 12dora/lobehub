@@ -167,6 +167,32 @@ describe('mapCardsToBatchUpdate', () => {
 
     expect(result.items.every((item) => item.abilities === undefined)).toBe(true);
   });
+
+  it('emits an update when the only change is settings.extendParams', () => {
+    const existing = draftModel({
+      displayName: 'GPT-5.5',
+      id: 'model-1',
+      modelKey: 'gpt-5.5',
+      settings: { extendParams: ['gpt5_2ReasoningEffort'] },
+    });
+    const cards = [
+      {
+        displayName: 'GPT-5.5',
+        id: 'gpt-5.5',
+        settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+      },
+    ];
+
+    const result = mapCardsToBatchUpdate(cards, [existing]);
+
+    expect(result.updated).toBe(1);
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        id: 'model-1',
+        settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+      }),
+    ]);
+  });
 });
 
 describe('AiCatalogAdminService.syncUpstream', () => {

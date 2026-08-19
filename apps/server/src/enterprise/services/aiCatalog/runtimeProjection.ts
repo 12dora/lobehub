@@ -3,6 +3,7 @@ import type {
   AiProviderRuntimeState,
   EnabledProvider,
 } from '@lobechat/types';
+import { merge } from '@lobechat/utils';
 import { isRecord } from '@lobechat/utils/object';
 import type { EnabledAiModel } from 'model-bank';
 import { LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
@@ -231,7 +232,9 @@ export const projectAiCatalogRuntimeState = (
           : builtin?.parameters,
         pricing: hasPublishedMetadata(rawModel.pricing) ? rawModel.pricing : builtin?.pricing,
         providerId: providerKey,
-        settings: hasPublishedMetadata(rawModel.settings) ? rawModel.settings : builtin?.settings,
+        settings: hasPublishedMetadata(rawModel.settings)
+          ? merge(builtin?.settings || {}, rawModel.settings)
+          : builtin?.settings,
         sort: typeof rawModel.sort === 'number' ? rawModel.sort : undefined,
         source: builtin ? 'builtin' : 'custom',
         type: typeof rawModel.type === 'string' ? rawModel.type : 'chat',

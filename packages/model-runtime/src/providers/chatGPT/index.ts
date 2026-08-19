@@ -6,6 +6,8 @@ import { ModelProvider } from 'model-bank';
 import OpenAI from 'openai';
 
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
+import type { EffortControlKey } from '../../utils/effortControlRegistry';
+import { EFFORT_CONTROL_REGISTRY, isEffortControlKey } from '../../utils/effortControlRegistry';
 import type { ProcessableModelCard } from '../../utils/modelParse';
 import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import { params as openAIParams } from '../openai';
@@ -84,11 +86,102 @@ const asNonEmptyString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.length > 0 ? value : undefined;
 
 /**
+ * ChatGPT / Codex tags that `applyModelExtendParams` serializes as
+ * `reasoning_effort`. Searching the full registry would exact-match
+ * `opus47Effort` (Anthropic `effort`) for low/medium/high/xhigh/max.
+ */
+export const CHATGPT_REASONING_EFFORT_CANDIDATES = [
+  'gpt5ReasoningEffort',
+  'gpt5_1ReasoningEffort',
+  'gpt5_2ReasoningEffort',
+  'gpt5_2ProReasoningEffort',
+  'gpt5_6ReasoningEffort',
+  'codexMaxReasoningEffort',
+  'reasoningEffort',
+] as const satisfies readonly EffortControlKey[];
+
+/**
+ * Map a live `supported_reasoning_levels` set onto the best candidate
+ * effort-control tag. Exact set match wins (candidate order breaks ties).
+ * Otherwise pick the smallest candidate level-set that is a superset of the
+ * live set. No match → leave the card untouched.
+ */
+export const matchEffortControlForLevels = (
+  levels: readonly string[],
+  candidates: readonly EffortControlKey[] = CHATGPT_REASONING_EFFORT_CANDIDATES,
+): EffortControlKey | undefined => {
+  const live = new Set(levels.filter((level) => level.length > 0));
+  if (live.size === 0) return undefined;
+
+  for (const key of candidates) {
+    const registryLevels = EFFORT_CONTROL_REGISTRY[key].levels;
+    if (registryLevels.length === live.size && registryLevels.every((level) => live.has(level))) {
+      return key;
+    }
+  }
+
+  let bestKey: EffortControlKey | undefined;
+  let bestSize = Number.POSITIVE_INFINITY;
+  for (const key of candidates) {
+    const registryLevels = EFFORT_CONTROL_REGISTRY[key].levels;
+    if (registryLevels.length >= bestSize) continue;
+    if (![...live].every((level) => (registryLevels as readonly string[]).includes(level))) {
+      continue;
+    }
+    bestKey = key;
+    bestSize = registryLevels.length;
+  }
+  return bestKey;
+};
+
+/** Observed Codex wire items are strings or `{ effort }`. */
+const extractSupportedReasoningLevels = (raw: unknown): string[] | undefined => {
+  if (!Array.isArray(raw)) return undefined;
+
+  return raw.flatMap((item) => {
+    if (typeof item === 'string' && item.length > 0) return [item];
+    if (isRecord(item)) {
+      const effort = asNonEmptyString(item.effort);
+      return effort ? [effort] : [];
+    }
+    return [];
+  });
+};
+
+/**
+ * Generalized `applyLiveGrokReasoningEffort`: drop every effort-control tag
+ * (same family) and append the live-derived one. Non-effort tags stay.
+ * No-op when live discovery found nothing.
+ */
+const applyLiveEffortExtendParam = (
+  card: ChatModelCard,
+  liveTag: EffortControlKey | undefined,
+): ChatModelCard => {
+  if (!liveTag) return card;
+
+  const extendParams = [
+    ...(card.settings?.extendParams ?? []).filter((param) => !isEffortControlKey(param)),
+    liveTag,
+  ];
+
+  return {
+    ...card,
+    settings: {
+      ...card.settings,
+      extendParams,
+    },
+  };
+};
+
+/**
  * Live Codex payload is `{ models: [...] }` with `slug` / `display_name` /
  * `context_window` — not the OpenAI `{ data: [{ id }] }` shape.
  */
-const mapCodexCatalog = (rawModels: unknown[]): ProcessableModelCard[] => {
+const mapCodexCatalog = (
+  rawModels: unknown[],
+): { cards: ProcessableModelCard[]; liveEffortById: Map<string, EffortControlKey> } => {
   const mapped: Array<ProcessableModelCard & { priority: number }> = [];
+  const liveEffortById = new Map<string, EffortControlKey>();
 
   for (const raw of rawModels) {
     if (!isRecord(raw) || raw.visibility === 'hide') continue;
@@ -99,9 +192,15 @@ const mapCodexCatalog = (rawModels: unknown[]): ProcessableModelCard[] => {
     const reasoningLevels = Array.isArray(raw.supported_reasoning_levels)
       ? raw.supported_reasoning_levels
       : undefined;
+    const extractedLevels = extractSupportedReasoningLevels(raw.supported_reasoning_levels);
+    const liveEffort = extractedLevels
+      ? matchEffortControlForLevels(extractedLevels, CHATGPT_REASONING_EFFORT_CANDIDATES)
+      : undefined;
     const displayName = asNonEmptyString(raw.display_name);
     const description = asNonEmptyString(raw.description);
     const contextWindowTokens = asFiniteNumber(raw.context_window);
+
+    if (liveEffort) liveEffortById.set(id, liveEffort);
 
     mapped.push({
       id,
@@ -112,11 +211,15 @@ const mapCodexCatalog = (rawModels: unknown[]): ProcessableModelCard[] => {
       ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
       ...(inputModalities ? { vision: inputModalities.includes('image') } : {}),
       ...(reasoningLevels ? { reasoning: reasoningLevels.length > 0 } : {}),
+      ...(liveEffort ? { settings: { extendParams: [liveEffort] } } : {}),
     });
   }
 
   mapped.sort((left, right) => left.priority - right.priority);
-  return mapped.map(({ priority: _priority, ...card }) => card);
+  return {
+    cards: mapped.map(({ priority: _priority, ...card }) => card),
+    liveEffortById,
+  };
 };
 
 const attachUpstreamAbilityProvenance = (
@@ -178,9 +281,10 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
       // Live Codex shape. An empty `models` array is a real answer (old client
       // versions are gated to none) — do not fall back to model-bank.
       if (Array.isArray(payload.models)) {
-        const modelList = mapCodexCatalog(payload.models);
+        const { cards: modelList, liveEffortById } = mapCodexCatalog(payload.models);
+        const processed = await processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt');
         return attachUpstreamAbilityProvenance(
-          await processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt'),
+          processed.map((card) => applyLiveEffortExtendParam(card, liveEffortById.get(card.id))),
           modelList,
         );
       }

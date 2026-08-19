@@ -47,6 +47,7 @@ import {
   secretService,
   upstreamState,
 } from './runtimeAdapter.testFixtures';
+import { projectAiCatalogRuntimeState } from './runtimeProjection';
 
 beforeEach(cleanup);
 afterEach(async () => {
@@ -1165,5 +1166,50 @@ describe('AiCatalogRuntimeAdapter', () => {
     expect(comparison.providerOnlyInUpstream).toHaveLength(100);
     expect(comparison.providerOnlyInUpstreamTotal).toBe(150);
     expect(comparison.differencesTruncated).toBe(true);
+  });
+});
+
+const projectSettings = (model: { modelKey: string; settings?: Record<string, unknown> }) =>
+  projectAiCatalogRuntimeState([
+    {
+      payload: {
+        models: [{ enabled: true, modelKey: model.modelKey, type: 'chat', ...model }],
+        provider: {
+          displayName: 'OpenAI',
+          enabled: true,
+          providerKey: 'openai',
+          source: 'builtin',
+        },
+      },
+    } as never,
+  ]).enabledAiModels.find((item) => item.id === model.modelKey)?.settings;
+
+describe('projectAiCatalogRuntimeState settings merge', () => {
+  it('keeps builtin effort tags when published settings are only a partial overlay', () => {
+    expect(projectSettings({ modelKey: 'gpt-5.5', settings: { searchImpl: 'params' } })).toEqual({
+      extendParams: ['gpt5_2ReasoningEffort', 'textVerbosity'],
+      searchImpl: 'params',
+    });
+  });
+
+  it('lets a published full settings object replace arrays and win on overlapping keys', () => {
+    expect(
+      projectSettings({
+        modelKey: 'gpt-5.5',
+        settings: { extendParams: ['reasoningEffort'], searchImpl: 'internal' },
+      }),
+    ).toEqual({
+      extendParams: ['reasoningEffort'],
+      searchImpl: 'internal',
+    });
+  });
+
+  it('falls back to builtin settings when published settings are empty or omitted', () => {
+    const builtin = {
+      extendParams: ['gpt5_2ReasoningEffort', 'textVerbosity'],
+      searchImpl: 'params',
+    };
+    expect(projectSettings({ modelKey: 'gpt-5.5', settings: {} })).toEqual(builtin);
+    expect(projectSettings({ modelKey: 'gpt-5.5' })).toEqual(builtin);
   });
 });

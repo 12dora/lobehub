@@ -313,6 +313,13 @@ export class AiModelModel {
             THEN excluded.abilities
             ELSE ai_models.abilities
           END`,
+          settings: sql`CASE
+            WHEN (ai_models.source = 'remote' OR ai_models.source = 'custom' OR ai_models.source IS NULL)
+              AND excluded.settings IS NOT NULL
+              AND excluded.settings != '{}'::jsonb
+            THEN excluded.settings
+            ELSE ai_models.settings
+          END`,
           contextWindowTokens: sql`CASE
             WHEN (ai_models.source = 'remote' OR ai_models.source = 'custom' OR ai_models.source IS NULL) AND excluded.context_window_tokens IS NOT NULL
             THEN excluded.context_window_tokens
