@@ -7,7 +7,6 @@ import type {
   ModerationEffectiveAction,
   ModerationRequestKind,
 } from '@/const/platform/contentModeration';
-import { PlatformContentModerationDecisionModel } from '@/database/models/platform/contentModerationDecisions';
 import type { LobeChatDatabase } from '@/database/type';
 import type { ContentModerationConfig, KeywordRule } from '@/types/platform/contentModeration';
 
@@ -17,16 +16,11 @@ import {
   loadModerationApiKeys,
 } from './classifiers/moderationsApi';
 import { type Classifier, toClassifierErrorCode } from './classifiers/types';
+import { collectJudgment } from './collectJudgment';
 import { MODERATION_DEDUPE_MAX_ENTRIES, MODERATION_DEDUPE_WINDOW_MS } from './constants';
+import { maybeSkipEvaluation } from './evaluateSkip';
 import { hashPrompt } from './normalize';
-import {
-  computePolicyAction,
-  emptyCategoryScores,
-  isExempt,
-  isModelInScope,
-  isSampled,
-  mapPolicyToEffective,
-} from './policy';
+import { computePolicyAction, emptyCategoryScores, mapPolicyToEffective } from './policy';
 import { obtainPlatformSecretService } from './secrets';
 import { getModerationSnapshot, type ModerationSnapshot } from './settingsSnapshot';
 import { getUserPlatformRoleNames } from './userRoles';
@@ -132,6 +126,32 @@ const rememberInflight = (key: string, promise: Promise<CachedJudgment>) => {
   dedupe.set(key, { kind: 'inflight', promise });
   evictIfNeeded();
 };
+
+const dropInflight = (key: string, inflight: Promise<CachedJudgment>) => {
+  const current = dedupe.get(key);
+  if (current?.kind === 'inflight' && current.promise === inflight) {
+    dedupe.delete(key);
+  }
+};
+
+const makeJudgment = (params: {
+  error?: string;
+  hash: string;
+  latencyMs: number;
+  matchedRule?: KeywordRule;
+  now: number;
+  scores: Record<ModerationCategory, number>;
+  source: ModerationDecisionSource;
+}): CachedJudgment => ({
+  error: params.error,
+  expiresAt: params.now + MODERATION_DEDUPE_WINDOW_MS,
+  hash: params.hash,
+  latencyMs: params.latencyMs,
+  matchedRule: params.matchedRule,
+  recordId: randomUUID(),
+  scores: params.scores,
+  source: params.source,
+});
 
 const recall = (key: string, now: number): DedupeSlot | null => {
   const entry = dedupe.get(key);
@@ -300,24 +320,11 @@ export const evaluatePrompt = async (
   const snapshot = input.snapshot ?? (await getSnapshot(db));
   const { config } = snapshot;
 
-  if (config.mode === 'off') return { reason: 'mode_off', skipped: true };
-
-  const roles = await getRoles(db, input.userId);
-  if (isExempt({ config, roles, userId: input.userId })) {
-    return { reason: 'exempt', skipped: true };
-  }
-  if (!config.requestKinds.includes(input.requestKind)) {
-    return { reason: 'request_kind', skipped: true };
-  }
-  if (!isModelInScope({ config, model: input.model, provider: input.provider })) {
-    return { reason: 'model_scope', skipped: true };
-  }
+  const roles = config.mode === 'off' ? [] : await getRoles(db, input.userId);
+  const skipped = maybeSkipEvaluation(config, input, roles);
+  if (skipped) return skipped;
 
   const hash = hashPrompt(input.text);
-  if (!isSampled(hash, config.scope.sampleRate)) {
-    return { reason: 'not_sampled', skipped: true };
-  }
-
   const dedupeKey = `${input.userId}:${hash}`;
   const cached = recall(dedupeKey, now());
   if (cached) {
@@ -332,66 +339,28 @@ export const evaluatePrompt = async (
   rememberInflight(dedupeKey, inflight);
 
   const started = now();
-  let scores = emptyCategoryScores();
-  let source: ModerationDecisionSource = 'none';
-  let matchedRule: KeywordRule | undefined;
-  let error: string | undefined;
 
   try {
-    const keywordHit = await snapshot.matcher.matchAsync(input.text, config.categories);
-    if (keywordHit) {
-      scores[keywordHit.rule.category] = 1;
-      source = 'keyword';
-      matchedRule = keywordHit.rule;
-    } else {
-      const cachedDecision = deps.getDecision
-        ? await deps.getDecision(db, hash)
-        : config.decisionCache.enabled
-          ? await new PlatformContentModerationDecisionModel(db).get(hash)
-          : null;
-      if (cachedDecision) {
-        scores = { ...emptyCategoryScores(), ...cachedDecision.categories };
-        source = 'cache';
-      } else if (config.classifier.kind !== 'none') {
-        try {
-          const classifier = await classify(config, db);
-          if (!classifier) throw new Error('CLASSIFIER_NOT_CONFIGURED');
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), config.classifier.timeoutMs);
-          try {
-            const result = await classifier.classify(input.text, controller.signal);
-            scores = { ...emptyCategoryScores(), ...result.scores };
-            source = classifier.kind === 'llm_judge' ? 'llm_judge' : 'moderations_api';
-          } finally {
-            clearTimeout(timer);
-          }
-        } catch (caught) {
-          const code = toClassifierErrorCode(caught);
-          error = code;
-          source = config.classifier.kind === 'llm_judge' ? 'llm_judge' : 'moderations_api';
-          console.error('[content-moderation] classifier failed', {
-            code,
-            errorClass: caught instanceof Error ? caught.name : 'UnknownError',
-          });
-        }
-      }
-    }
-
-    const judgment: CachedJudgment = {
-      error,
-      expiresAt: now() + MODERATION_DEDUPE_WINDOW_MS,
+    const collected = await collectJudgment({
+      classify,
+      config,
+      db,
+      getDecision: deps.getDecision,
+      hash,
+      matcher: snapshot.matcher,
+      text: input.text,
+    });
+    const judgment = makeJudgment({
+      error: collected.error,
       hash,
       latencyMs: now() - started,
-      matchedRule,
-      recordId: randomUUID(),
-      scores,
-      source,
-    };
-    if (error) {
-      const current = dedupe.get(dedupeKey);
-      if (current?.kind === 'inflight' && current.promise === inflight) {
-        dedupe.delete(dedupeKey);
-      }
+      matchedRule: collected.matchedRule,
+      now: now(),
+      scores: collected.scores,
+      source: collected.source,
+    });
+    if (collected.error) {
+      dropInflight(dedupeKey, inflight);
     } else {
       rememberReady(dedupeKey, judgment);
     }
@@ -399,19 +368,15 @@ export const evaluatePrompt = async (
     return toDecision({ config, input, judgment, reused: false });
   } catch (caught) {
     const code = toClassifierErrorCode(caught);
-    const judgment: CachedJudgment = {
+    const judgment = makeJudgment({
       error: code,
-      expiresAt: now() + MODERATION_DEDUPE_WINDOW_MS,
       hash,
       latencyMs: now() - started,
-      recordId: randomUUID(),
-      scores,
+      now: now(),
+      scores: emptyCategoryScores(),
       source: config.classifier.kind === 'llm_judge' ? 'llm_judge' : 'moderations_api',
-    };
-    const current = dedupe.get(dedupeKey);
-    if (current?.kind === 'inflight' && current.promise === inflight) {
-      dedupe.delete(dedupeKey);
-    }
+    });
+    dropInflight(dedupeKey, inflight);
     resolveInflight(judgment);
     console.error('[content-moderation] classifier failed', {
       code,

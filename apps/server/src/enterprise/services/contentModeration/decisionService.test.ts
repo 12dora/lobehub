@@ -353,4 +353,93 @@ describe('evaluatePrompt', () => {
     expect(second.source).toBe('llm_judge');
     expect(classified).toBe(2);
   });
+
+  it('skips when mode is off without calling classify or the matcher', async () => {
+    const snap = snapshot({ mode: 'off' });
+    const classify = vi.fn(classifyMock);
+    const matchAsync = vi.spyOn(snap.matcher, 'matchAsync');
+    const getRoles = vi.fn(async () => ['member']);
+
+    const decision = await evaluatePrompt({} as never, input, {
+      ...baseDeps(snap),
+      classify,
+      getRoles,
+    });
+
+    expect(decision).toEqual({ reason: 'mode_off', skipped: true });
+    expect(classify).not.toHaveBeenCalled();
+    expect(matchAsync).not.toHaveBeenCalled();
+    expect(getRoles).not.toHaveBeenCalled();
+  });
+
+  it('skips when getRoles returns a role in scope.exemptRoles', async () => {
+    const snap = snapshot();
+    const classify = vi.fn(classifyMock);
+    const matchAsync = vi.spyOn(snap.matcher, 'matchAsync');
+
+    const decision = await evaluatePrompt({} as never, input, {
+      ...baseDeps(snap),
+      classify,
+      getRoles: async () => ['admin'],
+    });
+
+    expect(decision).toEqual({ reason: 'exempt', skipped: true });
+    expect(classify).not.toHaveBeenCalled();
+    expect(matchAsync).not.toHaveBeenCalled();
+  });
+
+  it('skips when requestKind is not in config.requestKinds', async () => {
+    const snap = snapshot({ requestKinds: ['image'] });
+    const classify = vi.fn(classifyMock);
+    const matchAsync = vi.spyOn(snap.matcher, 'matchAsync');
+
+    const decision = await evaluatePrompt({} as never, input, {
+      ...baseDeps(snap),
+      classify,
+    });
+
+    expect(decision).toEqual({ reason: 'request_kind', skipped: true });
+    expect(classify).not.toHaveBeenCalled();
+    expect(matchAsync).not.toHaveBeenCalled();
+  });
+
+  it('skips when an include modelFilter does not list the stock openai/gpt-4o input', async () => {
+    const snap = snapshot({
+      scope: {
+        ...config.scope,
+        modelFilter: { models: ['openai/gpt-4.1'], type: 'include' },
+      },
+    });
+    const classify = vi.fn(classifyMock);
+    const matchAsync = vi.spyOn(snap.matcher, 'matchAsync');
+
+    const decision = await evaluatePrompt({} as never, input, {
+      ...baseDeps(snap),
+      classify,
+    });
+
+    expect(decision).toEqual({ reason: 'model_scope', skipped: true });
+    expect(classify).not.toHaveBeenCalled();
+    expect(matchAsync).not.toHaveBeenCalled();
+  });
+
+  it('skips when sampleRate is 0 without calling classify', async () => {
+    const snap = snapshot({
+      scope: {
+        ...config.scope,
+        sampleRate: 0,
+      },
+    });
+    const classify = vi.fn(classifyMock);
+    const matchAsync = vi.spyOn(snap.matcher, 'matchAsync');
+
+    const decision = await evaluatePrompt({} as never, input, {
+      ...baseDeps(snap),
+      classify,
+    });
+
+    expect(decision).toEqual({ reason: 'not_sampled', skipped: true });
+    expect(classify).not.toHaveBeenCalled();
+    expect(matchAsync).not.toHaveBeenCalled();
+  });
 });

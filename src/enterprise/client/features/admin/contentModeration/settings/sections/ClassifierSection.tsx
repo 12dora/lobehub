@@ -1,7 +1,6 @@
 'use client';
 
-import { Tag, Text } from '@lobehub/ui';
-import { Button, Input, InputNumber, InputPassword, Select, TextArea } from '@lobehub/ui/base-ui';
+import { InputNumber, Select } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -11,14 +10,15 @@ import {
   type ModerationClassifierKind,
 } from '@/const/platform/contentModeration';
 
-import { classifierKindLabel, moderationEndpointChanged } from '../../format';
+import { classifierKindLabel } from '../../format';
 import { moderationStyles as styles } from '../../styles';
 import type { ModerationCatalogModel } from '../../types';
 import type { ModerationConfigView, ModerationSettingsDraft } from '../draft';
 import Field from '../Field';
-import ModelSelect from '../ModelSelect';
 import SettingsSection from '../SettingsSection';
 import TestPanel from '../TestPanel';
+import { LlmJudgeFields } from './classifier/LlmJudgeFields';
+import { ModerationsApiFields } from './classifier/ModerationsApiFields';
 
 export interface ClassifierSectionProps {
   canManage: boolean;
@@ -55,12 +55,6 @@ const ClassifierSection = memo<ClassifierSectionProps>(
   }) => {
     const { t } = useTranslation('admin');
     const classifier = draft.config.classifier;
-    // The server refuses to reuse keys across endpoints, so once the URL is edited the stored
-    // keys are already gone from the admin's point of view — say so before they hit 保存.
-    const endpointChanged =
-      classifier.kind === 'moderations_api' &&
-      (classifier.moderationsApi?.apiKeys.length ?? 0) > 0 &&
-      moderationEndpointChanged(persistedBaseUrl, classifier.moderationsApi?.baseUrl);
 
     const patchClassifier = (patch: Partial<ModerationConfigView['classifier']>) =>
       onPatch({ classifier: { ...classifier, ...patch } });
@@ -117,178 +111,24 @@ const ClassifierSection = memo<ClassifierSectionProps>(
         </div>
 
         {classifier.kind === 'llm_judge' ? (
-          <div className={styles.fieldGrid}>
-            <Field
-              hint={t('contentModeration.settings.classifier.judgeModelHint')}
-              label={t('contentModeration.settings.classifier.judgeModel')}
-            >
-              <ModelSelect
-                catalog={catalog}
-                disabled={disabled}
-                value={
-                  classifier.llmJudge?.provider
-                    ? {
-                        model: classifier.llmJudge.model,
-                        provider: classifier.llmJudge.provider,
-                      }
-                    : null
-                }
-                onChange={(value) =>
-                  patchClassifier({
-                    llmJudge: {
-                      extraGuidance: classifier.llmJudge?.extraGuidance,
-                      model: value?.model ?? '',
-                      provider: value?.provider ?? '',
-                    },
-                  })
-                }
-              />
-            </Field>
-            <Field
-              hint={t('contentModeration.settings.classifier.extraGuidanceHint')}
-              label={t('contentModeration.settings.classifier.extraGuidance')}
-            >
-              <TextArea
-                disabled={disabled}
-                rows={3}
-                value={classifier.llmJudge?.extraGuidance ?? ''}
-                onChange={(event) =>
-                  patchClassifier({
-                    llmJudge: {
-                      extraGuidance: event.target.value || undefined,
-                      model: classifier.llmJudge?.model ?? '',
-                      provider: classifier.llmJudge?.provider ?? '',
-                    },
-                  })
-                }
-              />
-            </Field>
-          </div>
+          <LlmJudgeFields
+            catalog={catalog}
+            classifier={classifier}
+            disabled={disabled}
+            patchClassifier={patchClassifier}
+          />
         ) : null}
 
         {classifier.kind === 'moderations_api' ? (
-          <div className={styles.fieldGrid}>
-            <Field
-              hint={t('contentModeration.settings.classifier.baseUrlHint')}
-              label={t('contentModeration.settings.classifier.baseUrl')}
-            >
-              <Input
-                disabled={disabled}
-                placeholder={t('contentModeration.settings.classifier.baseUrlPlaceholder')}
-                value={classifier.moderationsApi?.baseUrl ?? ''}
-                onChange={(event) =>
-                  patchClassifier({
-                    moderationsApi: {
-                      apiKeys: classifier.moderationsApi?.apiKeys ?? [],
-                      baseUrl: event.target.value,
-                      model: classifier.moderationsApi?.model ?? '',
-                    },
-                  })
-                }
-              />
-            </Field>
-            <Field label={t('contentModeration.settings.classifier.apiModel')}>
-              <Input
-                disabled={disabled}
-                placeholder={t('contentModeration.settings.classifier.apiModelPlaceholder')}
-                value={classifier.moderationsApi?.model ?? ''}
-                onChange={(event) =>
-                  patchClassifier({
-                    moderationsApi: {
-                      apiKeys: classifier.moderationsApi?.apiKeys ?? [],
-                      baseUrl: classifier.moderationsApi?.baseUrl ?? '',
-                      model: event.target.value,
-                    },
-                  })
-                }
-              />
-            </Field>
-            <Field
-              wide
-              hint={t('contentModeration.settings.classifier.apiKeysHint')}
-              label={t('contentModeration.settings.classifier.apiKeys')}
-            >
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div className={styles.formRow}>
-                  {(classifier.moderationsApi?.apiKeys ?? []).length === 0 ? (
-                    <Text className={styles.hintText}>
-                      {t('contentModeration.settings.classifier.noStoredKeys')}
-                    </Text>
-                  ) : (
-                    (classifier.moderationsApi?.apiKeys ?? []).map((key) => (
-                      <Tag
-                        closable={!disabled}
-                        color={endpointChanged ? 'warning' : undefined}
-                        data-testid={`stored-key-${key.fingerprint}`}
-                        key={key.fingerprint}
-                        onClose={() =>
-                          patchClassifier({
-                            moderationsApi: {
-                              apiKeys: (classifier.moderationsApi?.apiKeys ?? []).filter(
-                                (item) => item.fingerprint !== key.fingerprint,
-                              ),
-                              baseUrl: classifier.moderationsApi?.baseUrl ?? '',
-                              model: classifier.moderationsApi?.model ?? '',
-                            },
-                          })
-                        }
-                      >
-                        {endpointChanged
-                          ? t('contentModeration.settings.classifier.keyWillBeRemoved', {
-                              masked: key.masked,
-                            })
-                          : key.masked}
-                      </Tag>
-                    ))
-                  )}
-                </div>
-                {endpointChanged ? (
-                  <Text data-testid="endpoint-changed-warning" type="warning">
-                    {t('contentModeration.settings.classifier.endpointChanged')}
-                  </Text>
-                ) : null}
-                {fieldError ? (
-                  <Text data-testid="classifier-field-error" type="danger">
-                    {fieldError.message}
-                  </Text>
-                ) : null}
-                {draft.addedApiKeys.map((value, index) => (
-                  <div className={styles.toolbarRow} key={`new-key-${index}`}>
-                    <InputPassword
-                      disabled={disabled}
-                      placeholder={t('contentModeration.settings.classifier.newKeyPlaceholder')}
-                      style={{ width: 320 }}
-                      value={value}
-                      onChange={(event) => {
-                        const next = [...draft.addedApiKeys];
-                        next[index] = event.target.value;
-                        onAddedKeysChange(next);
-                      }}
-                    />
-                    <Button
-                      disabled={disabled}
-                      size="small"
-                      type="text"
-                      onClick={() =>
-                        onAddedKeysChange(draft.addedApiKeys.filter((_, i) => i !== index))
-                      }
-                    >
-                      {t('contentModeration.settings.classifier.removeKey')}
-                    </Button>
-                  </div>
-                ))}
-                <div>
-                  <Button
-                    disabled={disabled}
-                    size="small"
-                    onClick={() => onAddedKeysChange([...draft.addedApiKeys, ''])}
-                  >
-                    {t('contentModeration.settings.classifier.addKey')}
-                  </Button>
-                </div>
-              </div>
-            </Field>
-          </div>
+          <ModerationsApiFields
+            addedApiKeys={draft.addedApiKeys}
+            classifier={classifier}
+            disabled={disabled}
+            fieldError={fieldError}
+            patchClassifier={patchClassifier}
+            persistedBaseUrl={persistedBaseUrl}
+            onAddedKeysChange={onAddedKeysChange}
+          />
         ) : null}
 
         {classifier.kind === 'none' ? null : (
