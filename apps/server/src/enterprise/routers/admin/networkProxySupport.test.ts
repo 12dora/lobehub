@@ -1,30 +1,47 @@
 // @vitest-environment node
+import { TRPCError } from '@trpc/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { NETWORK_PROXY_LIMITS } from '@/const/platform/networkProxy';
+import { PlatformRevisionConflictError } from '@/database/models/platform/errors';
 import type { LobeChatDatabase } from '@/database/type';
 import type { NetworkProxyConfigUpdate } from '@/types/platform/networkProxy';
 import { createDefaultNetworkProxyConfig } from '@/types/platform/networkProxy';
 
+import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import {
   assertUploadContentLength,
   handleNetworkProxyArtifactUpload,
   hashNameForAudit,
   isDangerousSettingsUpdate,
+  mapNetworkProxyError,
   redactSecretsFallback,
   rejectOversizedUpload,
   runLocalArtifactInstall,
   sanitizeLocalError,
   setNetworkProxyRuntimeForTests,
+  testOutletConnectivity,
   withLocalInstanceStatus,
 } from './networkProxySupport';
 
 const appendSpy = vi.hoisted(() => vi.fn());
+const fetchMock = vi.hoisted(() => vi.fn());
+const ProxyAgentMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../services/platformAudit', () => ({
   PlatformAuditService: class {
     append = appendSpy;
+  },
+}));
+
+vi.mock('undici', () => ({
+  fetch: fetchMock,
+  ProxyAgent: class {
+    constructor(opts: { uri: string }) {
+      ProxyAgentMock(opts);
+    }
   },
 }));
 
@@ -487,5 +504,275 @@ describe('handleNetworkProxyArtifactUpload', () => {
         result: 'success',
       }),
     );
+  });
+});
+
+const thrown = (fn: () => unknown): unknown => {
+  try {
+    fn();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected throw');
+};
+
+describe('mapNetworkProxyError', () => {
+  it('rethrows TRPCError as-is', () => {
+    const error = new TRPCError({ code: 'BAD_REQUEST', message: 'already mapped' });
+    expect(thrown(() => mapNetworkProxyError(error))).toBe(error);
+  });
+
+  it('maps PlatformRevisionConflictError to PLATFORM_REVISION_CONFLICT', () => {
+    const details = { currentRevision: 4, expectedRevision: 3 };
+    const error = thrown(() =>
+      mapNetworkProxyError(new PlatformRevisionConflictError('conflict', details)),
+    );
+    expect(error).toBeInstanceOf(TRPCError);
+    expect((error as TRPCError).code).toBe('CONFLICT');
+    expect(getEnterpriseErrorBody(error)).toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+      details,
+    });
+  });
+
+  it('maps ZodError to PLATFORM_INVALID_INPUT with issueCount', () => {
+    let zodError: z.ZodError;
+    try {
+      z.object({ a: z.string(), b: z.string() }).parse({});
+      throw new Error('expected ZodError');
+    } catch (error) {
+      if (!(error instanceof z.ZodError)) throw error;
+      zodError = error;
+    }
+
+    const mapped = thrown(() => mapNetworkProxyError(zodError));
+    expect(getEnterpriseErrorBody(mapped)).toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { issueCount: 2 },
+    });
+  });
+
+  it('rethrows when getEnterpriseErrorBody returns a code', () => {
+    const error = Object.assign(new Error('wrapped'), {
+      cause: { data: { code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND } },
+    });
+    expect(thrown(() => mapNetworkProxyError(error))).toBe(error);
+  });
+
+  it('maps { code } in PLATFORM_ERROR_CODES via throwEnterpriseError', () => {
+    const mapped = thrown(() =>
+      mapNetworkProxyError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
+        details: { resourceId: 'np_1' },
+      }),
+    );
+    expect(mapped).toBeInstanceOf(TRPCError);
+    expect(getEnterpriseErrorBody(mapped)).toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
+      details: { resourceId: 'np_1' },
+    });
+  });
+
+  it('maps Error whose message is a platform code to that code', () => {
+    const mapped = thrown(() =>
+      mapNetworkProxyError(new Error(PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED)),
+    );
+    expect(getEnterpriseErrorBody(mapped)?.code).toBe(
+      PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
+    );
+  });
+
+  it('maps unknown errors to PLATFORM_CONFIG_VALIDATION_FAILED and logs once', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const mapped = thrown(() => mapNetworkProxyError(new Error('boom')));
+    expect((mapped as TRPCError).code).toBe('INTERNAL_SERVER_ERROR');
+    expect(getEnterpriseErrorBody(mapped)).toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+      details: { reason: 'operation_failed' },
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('[admin.networkProxy] unexpected operation failure', {
+      errorClass: 'Error',
+    });
+    spy.mockRestore();
+  });
+});
+
+const connectivityRuntime = (overrides: Record<string, unknown> = {}) =>
+  ({
+    getDispatcherFor: vi.fn(() => ({ id: 'dispatcher' })),
+    getEngineRuntime: () => ({
+      getState: () => ({ proxyUrl: 'http://127.0.0.1:7890', state: 'running' }),
+    }),
+    getOutletHealth: () => ({ kind: 'engine' }),
+    peekNetworkProxySnapshot: () => ({ staticProxyUrl: 'http://static.example:8080' }),
+    redactSecrets: (text: string) => `redacted:${text}`,
+    ...overrides,
+  }) as never;
+
+const mockOkResponse = (status = 200, text = '') => ({
+  ok: status >= 200 && status < 300,
+  status,
+  text: async () => text,
+});
+
+describe('testOutletConnectivity', () => {
+  afterEach(() => {
+    fetchMock.mockReset();
+    ProxyAgentMock.mockReset();
+  });
+
+  it('returns outlet_unavailable when the selected proxyUrl is null', async () => {
+    await expect(
+      testOutletConnectivity(
+        connectivityRuntime({
+          getEngineRuntime: () => ({ getState: () => ({ proxyUrl: null, state: 'stopped' }) }),
+          getOutletHealth: () => ({ kind: 'engine' }),
+        }),
+        'https://latency.example/ping',
+      ),
+    ).resolves.toEqual({
+      egressIp: null,
+      error: 'outlet_unavailable',
+      latencyMs: null,
+      ok: false,
+    });
+
+    await expect(
+      testOutletConnectivity(
+        connectivityRuntime({
+          getOutletHealth: () => ({ kind: 'static' }),
+          peekNetworkProxySnapshot: () => ({ staticProxyUrl: null }),
+        }),
+        'https://latency.example/ping',
+      ),
+    ).resolves.toEqual({
+      egressIp: null,
+      error: 'outlet_unavailable',
+      latencyMs: null,
+      ok: false,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns ok with egressIp when latency GET and api.ip.sb succeed', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === 'https://api.ip.sb/ip') return mockOkResponse(200, '  203.0.113.10  ');
+      return mockOkResponse(200);
+    });
+
+    const result = await testOutletConnectivity(
+      connectivityRuntime(),
+      'https://latency.example/ping',
+    );
+    expect(result.ok).toBe(true);
+    expect(result.error).toBeNull();
+    expect(result.egressIp).toBe('203.0.113.10');
+    expect(result.latencyMs).toEqual(expect.any(Number));
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://latency.example/ping',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://api.ip.sb/ip',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('swallows ip.sb throw / non-ok and still returns ok with null egressIp', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === 'https://api.ip.sb/ip') throw new Error('ip lookup failed');
+      return mockOkResponse(200);
+    });
+    await expect(
+      testOutletConnectivity(connectivityRuntime(), 'https://latency.example/ping'),
+    ).resolves.toMatchObject({ egressIp: null, error: null, ok: true });
+
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === 'https://api.ip.sb/ip') return mockOkResponse(502);
+      return mockOkResponse(200);
+    });
+    await expect(
+      testOutletConnectivity(connectivityRuntime(), 'https://latency.example/ping'),
+    ).resolves.toMatchObject({ egressIp: null, error: null, ok: true });
+  });
+
+  it('maps a non-ok latency GET to a redacted http_STATUS error', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === 'https://api.ip.sb/ip') return mockOkResponse(200, '203.0.113.10');
+      return mockOkResponse(503);
+    });
+
+    const result = await testOutletConnectivity(
+      connectivityRuntime(),
+      'https://latency.example/ping',
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('redacted:http_503');
+    expect(result.latencyMs).toEqual(expect.any(Number));
+  });
+
+  it('maps a thrown latency GET to a redacted message and sets latencyMs', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+
+    const result = await testOutletConnectivity(
+      connectivityRuntime(),
+      'https://latency.example/ping',
+    );
+    expect(result).toMatchObject({
+      egressIp: null,
+      error: 'redacted:connect ECONNREFUSED',
+      ok: false,
+    });
+    expect(result.latencyMs).toEqual(expect.any(Number));
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('uses createInlineDispatcher (ProxyAgent) when getDispatcherFor is missing', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === 'https://api.ip.sb/ip') return mockOkResponse(200, '203.0.113.10');
+      return mockOkResponse(200);
+    });
+
+    await testOutletConnectivity(
+      connectivityRuntime({ getDispatcherFor: null }),
+      'https://latency.example/ping',
+    );
+    expect(ProxyAgentMock).toHaveBeenCalledWith({ uri: 'http://127.0.0.1:7890' });
+  });
+
+  it('reads static proxyUrl from the snapshot and engine proxyUrl from engine state', async () => {
+    fetchMock.mockResolvedValue(mockOkResponse(200, '203.0.113.10'));
+    const staticDispatcher = vi.fn((proxyUrl: string) => ({ id: 'static', proxyUrl }));
+    await testOutletConnectivity(
+      connectivityRuntime({
+        getDispatcherFor: staticDispatcher,
+        getEngineRuntime: () => ({
+          getState: () => ({ proxyUrl: 'http://engine-unused:7890', state: 'running' }),
+        }),
+        getOutletHealth: () => ({ kind: 'static' }),
+        peekNetworkProxySnapshot: () => ({ staticProxyUrl: 'http://static.example:8080' }),
+      }),
+      'https://latency.example/ping',
+    );
+    expect(staticDispatcher).toHaveBeenCalledWith('http://static.example:8080');
+
+    const engineDispatcher = vi.fn((proxyUrl: string) => ({ id: 'engine', proxyUrl }));
+    await testOutletConnectivity(
+      connectivityRuntime({
+        getDispatcherFor: engineDispatcher,
+        getEngineRuntime: () => ({
+          getState: () => ({ proxyUrl: 'http://engine.example:7890', state: 'running' }),
+        }),
+        getOutletHealth: () => ({ kind: 'engine' }),
+        peekNetworkProxySnapshot: () => ({ staticProxyUrl: 'http://static-unused:8080' }),
+      }),
+      'https://latency.example/ping',
+    );
+    expect(engineDispatcher).toHaveBeenCalledWith('http://engine.example:7890');
   });
 });

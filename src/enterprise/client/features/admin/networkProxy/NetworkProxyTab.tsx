@@ -1,18 +1,14 @@
 'use client';
 
-import { Alert, Skeleton, Tag, Text } from '@lobehub/ui';
-import { Button, type DropdownItem, DropdownMenu, Switch } from '@lobehub/ui/base-ui';
+import { Alert, Skeleton } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import type { AdminNetworkProxyService } from '@/enterprise/client/services/adminNetworkProxy';
 import { adminNetworkProxyService } from '@/enterprise/client/services/adminNetworkProxy';
-import type { EgressScopeOp } from '@/types/platform/networkProxy';
 
-import { applyConfigPatch } from './configUpdate';
-import FieldStatus from './FieldStatus';
-import { formatDelay } from './format';
 import { deriveGeodataState } from './geodataState';
 import {
   useNetworkProxyArtifacts,
@@ -23,12 +19,13 @@ import {
   useNetworkProxySubscriptions,
 } from './hooks';
 import NetworkProxyBanners from './NetworkProxyBanners';
+import NetworkProxyHeader from './NetworkProxyHeader';
 import EngineSection from './sections/EngineSection';
 import OutletSection from './sections/OutletSection';
 import ScopesSection from './sections/ScopesSection';
 import SubscriptionsSection from './sections/SubscriptionsSection';
 import { networkProxyStyles as styles } from './styles';
-import { NETWORK_PROXY_FIELDS, useNetworkProxyActions } from './useNetworkProxyActions';
+import { useNetworkProxyActions } from './useNetworkProxyActions';
 
 export interface NetworkProxyTabProps {
   canManage: boolean;
@@ -36,17 +33,6 @@ export interface NetworkProxyTabProps {
   enabled: boolean;
   service?: AdminNetworkProxyService;
 }
-
-const ENGINE_TAG_COLOR: Record<string, 'default' | 'success' | 'warning' | 'error'> = {
-  degraded: 'warning',
-  error: 'error',
-  installing: 'warning',
-  not_installed: 'default',
-  running: 'success',
-  starting: 'warning',
-  stopped: 'default',
-  unsupported: 'error',
-};
 
 /**
  * 系统 → 通用设置 → 网络代理 (design §6).
@@ -115,82 +101,6 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
       return [...ids];
     }, [providersQuery.data, settings?.config.scopes.providers]);
 
-    const moreActions = useMemo<DropdownItem[]>(() => {
-      const scopeOps = (field: string, ops: EgressScopeOp[]) => () =>
-        void actions.updateScopes(field, undefined, ops);
-      // Without the catalog we cannot know the full provider set, so a bulk write would burn a
-      // revision while leaving unknown providers untouched.
-      const bulkDisabled = !canManage || providerCatalogFailed;
-      const bulkLabel = (label: string) =>
-        providerCatalogFailed ? t('networkProxy.scopes.bulkUnavailableLabel', { label }) : label;
-      return [
-        {
-          disabled: bulkDisabled,
-          key: 'providers-on',
-          label: bulkLabel(t('networkProxy.more.providersOn')),
-          onClick: scopeOps(NETWORK_PROXY_FIELDS.scopesBulk, [
-            { enabled: true, providerIds, target: 'all_providers' },
-          ]),
-        },
-        {
-          disabled: bulkDisabled,
-          key: 'providers-off',
-          label: bulkLabel(t('networkProxy.more.providersOff')),
-          onClick: scopeOps(NETWORK_PROXY_FIELDS.scopesBulk, [
-            { enabled: false, providerIds, target: 'all_providers' },
-          ]),
-        },
-        {
-          disabled: !canManage,
-          key: 'features-on',
-          label: t('networkProxy.more.featuresOn'),
-          onClick: scopeOps(NETWORK_PROXY_FIELDS.scopesBulk, [
-            { enabled: true, target: 'all_features' },
-          ]),
-        },
-        {
-          disabled: !canManage,
-          key: 'features-off',
-          label: t('networkProxy.more.featuresOff'),
-          onClick: scopeOps(NETWORK_PROXY_FIELDS.scopesBulk, [
-            { enabled: false, target: 'all_features' },
-          ]),
-        },
-        { key: 'divider-1', type: 'divider' },
-        {
-          disabled: bulkDisabled,
-          key: 'fallback-direct',
-          label: bulkLabel(t('networkProxy.more.fallbackDirect')),
-          onClick: scopeOps(NETWORK_PROXY_FIELDS.scopesBulk, [
-            { onUnavailable: 'direct', providerIds, target: 'all_providers' },
-            { onUnavailable: 'direct', target: 'all_features' },
-          ]),
-        },
-        {
-          disabled: bulkDisabled,
-          key: 'fallback-fail',
-          label: bulkLabel(t('networkProxy.more.fallbackFail')),
-          onClick: scopeOps(NETWORK_PROXY_FIELDS.scopesBulk, [
-            { onUnavailable: 'fail', providerIds, target: 'all_providers' },
-            { onUnavailable: 'fail', target: 'all_features' },
-          ]),
-        },
-        { key: 'divider-2', type: 'divider' },
-        {
-          disabled: !canManage || !engineOutlet,
-          key: 'group-latency',
-          label: t('networkProxy.more.groupLatency'),
-          onClick: () => void actions.testLatency(),
-        },
-        {
-          disabled: !canManage,
-          key: 'restart-engine',
-          label: t('networkProxy.more.restartEngine'),
-          onClick: () => void actions.restartEngine(),
-        },
-      ];
-    }, [actions, canManage, engineOutlet, providerCatalogFailed, providerIds, t]);
-
     if (settingsQuery.isLoading && !settings) {
       return <Skeleton.Block height={360} width="100%" />;
     }
@@ -214,9 +124,6 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
     if (!settings) return null;
 
     const { config, globalProxyActive } = settings;
-    const outlet = statusQuery.data?.outlet;
-    const masterLocked = globalProxyActive || !canManage;
-    const masterChecked = actions.valueOf(NETWORK_PROXY_FIELDS.master, config.masterEnabled);
 
     return (
       <div className={styles.stack}>
@@ -239,74 +146,21 @@ const NetworkProxyTab = memo<NetworkProxyTabProps>(
 
         {!canManage ? <Alert showIcon message={t('networkProxy.readOnly')} type="info" /> : null}
 
-        <div className={styles.headerBar}>
-          <div className={styles.headerPrimary}>
-            <Switch
-              aria-label={t('networkProxy.master')}
-              checked={masterChecked}
-              disabled={masterLocked || actions.isBusy(NETWORK_PROXY_FIELDS.master)}
-              onChange={(checked) =>
-                void actions.patchConfig(NETWORK_PROXY_FIELDS.master, Boolean(checked), (base) =>
-                  applyConfigPatch(base.config, { masterEnabled: Boolean(checked) }),
-                )
-              }
-            />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-              <Text strong>{t('networkProxy.master')}</Text>
-              <span className={styles.hintText}>
-                {globalProxyActive
-                  ? t('networkProxy.masterLockedByEnv')
-                  : masterChecked
-                    ? t('networkProxy.masterOnHint')
-                    : t('networkProxy.masterOffHint')}
-              </span>
-              <FieldStatus actions={actions} field={NETWORK_PROXY_FIELDS.master} />
-            </div>
-          </div>
-
-          <div className={styles.badgeRow}>
-            {statusUnknown ? (
-              <Tag color="default">{t('networkProxy.badges.unknown')}</Tag>
-            ) : (
-              <>
-                {statusStale ? <Tag color="warning">{t('networkProxy.badges.stale')}</Tag> : null}
-                <Tag color={ENGINE_TAG_COLOR[current?.engineState ?? 'not_installed'] ?? 'default'}>
-                  {t('networkProxy.badges.engine', {
-                    state: t(
-                      `networkProxy.engineState.${current?.engineState ?? 'not_installed'}` as never,
-                    ),
-                  })}
-                </Tag>
-                <Tag color={outlet?.available ? 'success' : 'error'}>
-                  {t(
-                    outlet?.available
-                      ? 'networkProxy.badges.outletUp'
-                      : 'networkProxy.badges.outletDown',
-                  )}
-                </Tag>
-                <Tag>
-                  {t('networkProxy.badges.node', {
-                    delay: formatDelay(outlet?.activeNodeDelayMs),
-                    node: outlet?.activeNode ?? t('networkProxy.badges.noNode'),
-                  })}
-                </Tag>
-                {/* One node is either on the current configuration or it is not — the ratio only
-                    means something once there is a fleet to be out of step with. */}
-                {instances.length > 1 ? (
-                  <Tag color={appliedCount === instances.length ? 'default' : 'warning'}>
-                    {t('networkProxy.badges.applied', {
-                      applied: appliedCount,
-                      total: instances.length,
-                    })}
-                  </Tag>
-                ) : null}
-              </>
-            )}
-            <DropdownMenu items={moreActions} placement="bottomRight">
-              <Button size="small">{t('networkProxy.more.title')}</Button>
-            </DropdownMenu>
-          </div>
-        </div>
+        <NetworkProxyHeader
+          actions={actions}
+          appliedCount={appliedCount}
+          canManage={canManage}
+          current={current}
+          engineOutlet={engineOutlet}
+          globalProxyActive={globalProxyActive}
+          instances={instances}
+          masterEnabled={config.masterEnabled}
+          outlet={statusQuery.data?.outlet}
+          providerCatalogFailed={providerCatalogFailed}
+          providerIds={providerIds}
+          statusStale={statusStale}
+          statusUnknown={statusUnknown}
+        />
 
         <EngineSection
           actions={actions}
