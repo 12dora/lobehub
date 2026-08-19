@@ -6,6 +6,7 @@ import { getDetail } from './shared';
 
 const mocks = vi.hoisted(() => ({
   applyImmediate: vi.fn(),
+  confirmModal: vi.fn(),
   delete: vi.fn(),
   get: vi.fn(),
   getBatch: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', () => ({
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
+  confirmModal: mocks.confirmModal,
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
@@ -90,6 +92,7 @@ describe('AdminAiProviderService adapter', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.confirmModal.mockReset();
     mocks.list.mockResolvedValue({
       items: [
         {
@@ -454,6 +457,104 @@ describe('AdminAiProviderService adapter', () => {
     await expect(service.toggleProviderEnabled('prov', true)).rejects.toThrow(
       'PLATFORM_CONFIG_VALIDATION_FAILED',
     );
+    expect(toast.error).toHaveBeenCalled();
+  });
+
+  it('toggle-off with force passes force through to applyImmediate', async () => {
+    await service.toggleProviderEnabled('prov', false, true);
+    expect(mocks.applyImmediate).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false, force: true, mode: 'update' }),
+    );
+    expect(mocks.confirmModal).not.toHaveBeenCalled();
+  });
+
+  it('toggle-off PLATFORM_RESOURCE_IN_USE confirms then retries with force', async () => {
+    const inUse = {
+      data: {
+        errorData: {
+          code: 'PLATFORM_RESOURCE_IN_USE',
+          details: {
+            dependentCount: 2,
+            dependents: [
+              { label: 'Support bot', resourceId: 'agent-1', resourceType: 'agent' },
+              {
+                label: 'systemAgent.topic',
+                resourceId: 'systemAgent.topic',
+                resourceType: 'setting',
+              },
+            ],
+          },
+        },
+      },
+    };
+    mocks.applyImmediate.mockRejectedValueOnce(inUse).mockResolvedValueOnce({
+      auditId: 'a-force',
+      draft: { ...detailFixture.draft, enabled: false },
+      revision: 4,
+    });
+    mocks.confirmModal.mockImplementation(({ onOk }: { onOk?: () => void }) => {
+      onOk?.();
+    });
+
+    await service.toggleProviderEnabled('prov', false);
+
+    expect(mocks.confirmModal).toHaveBeenCalledOnce();
+    expect(mocks.applyImmediate).toHaveBeenCalledTimes(2);
+    expect(mocks.applyImmediate.mock.calls[1][0]).toMatchObject({
+      enabled: false,
+      force: true,
+      mode: 'update',
+    });
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('toggle-off confirm cancel does not retry or toast', async () => {
+    mocks.applyImmediate.mockRejectedValue({
+      data: {
+        errorData: {
+          code: 'PLATFORM_RESOURCE_IN_USE',
+          details: {
+            dependentCount: 1,
+            dependents: [{ label: 'Support bot', resourceId: 'agent-1', resourceType: 'agent' }],
+          },
+        },
+      },
+    });
+    mocks.confirmModal.mockImplementation(({ onCancel }: { onCancel?: () => void }) => {
+      onCancel?.();
+    });
+
+    await expect(service.toggleProviderEnabled('prov', false)).rejects.toMatchObject({
+      data: { errorData: { code: 'PLATFORM_RESOURCE_IN_USE' } },
+    });
+    expect(mocks.applyImmediate).toHaveBeenCalledTimes(1);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('toasts when the forced retry fails', async () => {
+    mocks.applyImmediate
+      .mockRejectedValueOnce({
+        data: {
+          errorData: {
+            code: 'PLATFORM_RESOURCE_IN_USE',
+            details: {
+              dependentCount: 1,
+              dependents: [{ label: 'Support bot', resourceId: 'agent-1', resourceType: 'agent' }],
+            },
+          },
+        },
+      })
+      .mockRejectedValueOnce({
+        data: { errorData: { code: 'PLATFORM_REVISION_CONFLICT' } },
+      });
+    mocks.confirmModal.mockImplementation(({ onOk }: { onOk?: () => void }) => {
+      onOk?.();
+    });
+
+    await expect(service.toggleProviderEnabled('prov', false)).rejects.toMatchObject({
+      data: { errorData: { code: 'PLATFORM_REVISION_CONFLICT' } },
+    });
+    expect(mocks.applyImmediate).toHaveBeenCalledTimes(2);
     expect(toast.error).toHaveBeenCalled();
   });
 });

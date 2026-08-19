@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { DEFAULT_AGENT, DEFAULT_SYSTEM_AGENT_CONFIG } from '@lobechat/const';
 import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,11 +14,19 @@ import {
   platformAiProviderSecrets,
   platformAuditLogs,
   platformResourceRevisions,
+  platformSettingPolicies,
+  platformSettingsBundle,
+  users,
 } from '@/database/schemas';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
+import * as featureFlags from '../../featureFlags';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import {
+  EffectiveSettingsService,
+  resetEffectiveSettingsCacheForTest,
+} from '../settings/effectiveSettingsService';
 import {
   AiCatalogAdminService,
   type AiCatalogAdminServiceOptions,
@@ -94,7 +103,9 @@ const cleanup = async () => {
       ${platformAgentVersions},
       ${platformAgents},
       ${platformAiModels},
-      ${platformAiProviders}
+      ${platformAiProviders},
+      ${platformSettingPolicies},
+      ${platformSettingsBundle}
     RESTART IDENTITY CASCADE
   `);
 };
@@ -105,6 +116,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   await cleanup();
 });
 
@@ -950,5 +962,291 @@ describe('AiCatalog publication transaction', () => {
       }),
     ).rejects.toBeInstanceOf(AiCatalogValidationError);
     expect(await db.select().from(platformResourceRevisions)).toHaveLength(4);
+  });
+
+  it('still throws PLATFORM_RESOURCE_IN_USE when disable hits dependents without force', async () => {
+    const { service } = createService();
+    const provider = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Blocked disable',
+      enabled: true,
+      providerKey: 'blocked-disable',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'blocked-disable-key' },
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: provider.id, reason: 'test' });
+    detail = await service.getDetail(provider.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: provider.id,
+      reason: 'publish',
+    });
+    const agent = await createPublishedAgentDependency(db, {
+      agentKey: 'blocked-disable-agent',
+      modelKey: 'chat',
+      providerKey: 'blocked-disable',
+    });
+    detail = await service.getDetail(provider.id);
+    await expect(
+      service.applyProviderImmediate('admin', {
+        enabled: false,
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: provider.id,
+        mode: 'update',
+        reason: 'disable without force',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogResourceInUseError);
+    const [stillPublished] = await db
+      .select()
+      .from(platformAgents)
+      .where(eq(platformAgents.id, agent.id));
+    expect(stillPublished).toMatchObject({
+      migrationRequired: false,
+      status: 'published',
+    });
+    expect((await service.getDetail(provider.id)).draft.enabled).toBe(true);
+  });
+
+  it('force-disables by demoting published agents and resetting setting paths', async () => {
+    vi.spyOn(featureFlags, 'getEnterpriseFeatureFlags').mockReturnValue({
+      ...featureFlags.parseEnterpriseFeatureFlags({}),
+      ENABLE_PLATFORM_SETTINGS_POLICY: true,
+    });
+    resetEffectiveSettingsCacheForTest();
+    await db.insert(users).values({ id: 'force-disable-reader' }).onConflictDoNothing();
+
+    const { service } = createService();
+    const providerKey = 'force-disable';
+    const provider = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Force disable',
+      enabled: true,
+      providerKey,
+      reason: 'create',
+      secret: { operation: 'replace', value: 'force-disable-key' },
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: provider.id, reason: 'test' });
+    detail = await service.getDetail(provider.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: provider.id,
+      reason: 'publish',
+    });
+    const agent = await createPublishedAgentDependency(db, {
+      agentKey: 'force-disable-agent',
+      modelKey: 'chat',
+      providerKey,
+    });
+    await db.insert(platformSettingsBundle).values({
+      draft: {
+        'custom.blob': {
+          mode: 'user',
+          schemaVersion: 1,
+          value: {
+            items: [
+              { model: 'chat', provider: providerKey },
+              { extra: 1, model: 'chat', provider: providerKey },
+            ],
+            keep: true,
+            nested: { model: 'chat', provider: providerKey },
+          },
+          visibility: 'visible',
+        },
+        'defaultAgent.config.model': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: 'chat',
+          visibility: 'visible',
+        },
+        'defaultAgent.config.provider': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: providerKey,
+          visibility: 'visible',
+        },
+        'systemAgent.topic.enabled': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: true,
+          visibility: 'visible',
+        },
+        'systemAgent.topic.model': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: 'chat',
+          visibility: 'visible',
+        },
+        'systemAgent.topic.provider': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: providerKey,
+          visibility: 'visible',
+        },
+      },
+      id: 'global',
+      revision: 1,
+      status: 'published',
+    });
+    await db.insert(platformSettingPolicies).values([
+      {
+        mode: 'user',
+        path: 'custom.blob',
+        revision: 1,
+        schemaVersion: 1,
+        status: 'published',
+        value: {
+          items: [
+            { model: 'chat', provider: providerKey },
+            { extra: 1, model: 'chat', provider: providerKey },
+          ],
+          keep: true,
+          nested: { model: 'chat', provider: providerKey },
+        },
+        visibility: 'visible',
+      },
+      {
+        mode: 'locked',
+        path: 'defaultAgent.config.model',
+        revision: 1,
+        schemaVersion: 1,
+        status: 'published',
+        value: 'chat',
+        visibility: 'visible',
+      },
+      {
+        mode: 'locked',
+        path: 'defaultAgent.config.provider',
+        revision: 1,
+        schemaVersion: 1,
+        status: 'published',
+        value: providerKey,
+        visibility: 'visible',
+      },
+      {
+        mode: 'locked',
+        path: 'systemAgent.topic.enabled',
+        revision: 1,
+        schemaVersion: 1,
+        status: 'published',
+        value: true,
+        visibility: 'visible',
+      },
+      {
+        mode: 'locked',
+        path: 'systemAgent.topic.model',
+        revision: 1,
+        schemaVersion: 1,
+        status: 'published',
+        value: 'chat',
+        visibility: 'visible',
+      },
+      {
+        mode: 'locked',
+        path: 'systemAgent.topic.provider',
+        revision: 1,
+        schemaVersion: 1,
+        status: 'published',
+        value: providerKey,
+        visibility: 'visible',
+      },
+    ]);
+
+    const effective = new EffectiveSettingsService(db);
+    const cached = await effective.getEffectiveSettings({ userId: 'force-disable-reader' });
+    expect(cached.effectiveValues['systemAgent.topic.provider']).toBe(providerKey);
+    expect(cached.effectiveValues['defaultAgent.config.model']).toBe('chat');
+    expect(cached.platformRevision).toBe(1);
+
+    detail = await service.getDetail(provider.id);
+    const off = await service.applyProviderImmediate('admin', {
+      enabled: false,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      force: true,
+      id: provider.id,
+      mode: 'update',
+      reason: 'force disable',
+    });
+    expect(off.draft.enabled).toBe(false);
+
+    const [demoted] = await db.select().from(platformAgents).where(eq(platformAgents.id, agent.id));
+    expect(demoted).toMatchObject({
+      migrationRequired: true,
+      publishedAt: null,
+      status: 'draft',
+    });
+
+    const policies = Object.fromEntries(
+      (await db.select().from(platformSettingPolicies)).map((row) => [row.path, row]),
+    );
+    expect(policies['systemAgent.topic.provider']).toBeUndefined();
+    expect(policies['systemAgent.topic.model']).toBeUndefined();
+    expect(policies['defaultAgent.config.provider']).toBeUndefined();
+    expect(policies['defaultAgent.config.model']).toBeUndefined();
+    expect(policies['systemAgent.topic.enabled']).toMatchObject({
+      mode: 'locked',
+      value: true,
+    });
+    expect(policies['custom.blob']).toMatchObject({
+      mode: 'user',
+      value: { items: [{ extra: 1 }], keep: true },
+    });
+
+    const [bundle] = await db.select().from(platformSettingsBundle);
+    expect(bundle.revision).toBe(2);
+    expect(bundle.draft['systemAgent.topic.provider']).toBeUndefined();
+    expect(bundle.draft['custom.blob']?.value).toEqual({ items: [{ extra: 1 }], keep: true });
+
+    const resolved = await effective.getEffectiveSettings({ userId: 'force-disable-reader' });
+    expect(resolved.platformRevision).toBe(2);
+    expect(resolved.effectiveValues['systemAgent.topic.provider']).toBe(
+      DEFAULT_SYSTEM_AGENT_CONFIG.topic.provider,
+    );
+    expect(resolved.effectiveValues['systemAgent.topic.model']).toBe(
+      DEFAULT_SYSTEM_AGENT_CONFIG.topic.model,
+    );
+    expect(resolved.effectiveValues['defaultAgent.config.provider']).toBe(
+      DEFAULT_AGENT.config.provider,
+    );
+    expect(resolved.effectiveValues['defaultAgent.config.model']).toBe(DEFAULT_AGENT.config.model);
+
+    const audits = await db
+      .select()
+      .from(platformAuditLogs)
+      .where(eq(platformAuditLogs.action, 'platform.provider.publish'));
+    const forceAudit = audits.at(-1);
+    expect(forceAudit?.afterDiff).toMatchObject({
+      forceDisabledDependents: {
+        agents: [{ id: agent.id, title: 'force-disable-agent' }],
+        settings: expect.arrayContaining([
+          'custom.blob',
+          'defaultAgent.config',
+          'systemAgent.topic',
+        ]),
+      },
+    });
   });
 });

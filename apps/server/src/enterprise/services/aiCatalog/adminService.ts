@@ -536,6 +536,7 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceSyncOps {
           });
         }
         // Refuse when any owned model is still referenced by a published agent / setting.
+        // Force-delete is intentionally not implemented (parallel gap to force-disable).
         const models = await repository.listModels(id);
         const dependents = await resolveAiCatalogDependentsForModels(
           tx,
@@ -843,11 +844,13 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceSyncOps {
     actorUserId: string,
     providerId: string,
     reason: string,
+    force?: boolean,
   ): Promise<{ auditId: string; revision: number }> => {
     const detail = await this.getDetail(providerId);
     return this.publishProvider(actorUserId, {
       expectedDraftToken: detail.draftToken,
       expectedRevision: detail.baseRevision,
+      ...(force ? { force: true } : {}),
       id: providerId,
       reason,
     });
@@ -899,7 +902,12 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceSyncOps {
           await scoped.updateProviderDraft(actorUserId, updateInput);
           providerId = input.id;
         }
-        const published = await scoped.publishAfterMutation(actorUserId, providerId, input.reason);
+        const published = await scoped.publishAfterMutation(
+          actorUserId,
+          providerId,
+          input.reason,
+          input.mode === 'update' ? input.force : undefined,
+        );
         await this.lifecycle.afterApplyPublish?.();
         return { providerId, published };
       },

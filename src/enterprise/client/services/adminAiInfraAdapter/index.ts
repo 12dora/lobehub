@@ -1,5 +1,8 @@
+import { isRecord } from '@lobechat/utils/object';
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import type { AdminAiProviderGetOutput } from '@/enterprise/client/features/admin/ai/types';
 import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { lambdaClient } from '@/libs/trpc/client';
@@ -15,6 +18,7 @@ import type {
 import { AiProviderSourceEnum } from '@/types/aiProvider';
 
 import { adminAiModelService } from './AdminAiModelService';
+import { confirmForceDisableProvider, ForceDisableCancelledError } from './confirmForceDisable';
 import { createAdminAiProviderPartialLoadError, reportAdminAiInfraError } from './errors';
 import {
   buildAdminRuntimeState,
@@ -37,6 +41,18 @@ export {
   isAdminAiInfraErrorToasted,
   withAdminAiInfraErrorToast,
 } from './errors';
+
+const readForceDisableDependents = (error: unknown): { label: string; resourceType: string }[] => {
+  const details = mapEnterpriseError(error)?.details;
+  const raw =
+    details && isRecord(details) && Array.isArray(details.dependents) ? details.dependents : [];
+  return raw.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const label = typeof item.label === 'string' ? item.label : '';
+    const resourceType = typeof item.resourceType === 'string' ? item.resourceType : '';
+    return label && resourceType ? [{ label, resourceType }] : [];
+  });
+};
 
 /**
  * Admin adapter implementing the same surface as user AiProviderService.
@@ -131,18 +147,42 @@ export class AdminAiProviderService {
     }
   };
 
-  toggleProviderEnabled = async (id: string, enabled: boolean) => {
+  toggleProviderEnabled = async (id: string, enabled: boolean, force?: boolean) => {
     const detail = await this.#getOrCreateDetail(id);
-    return withReauth(() =>
-      lambdaClient.admin.aiProviders.applyImmediate.mutate({
-        enabled,
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.baseRevision,
-        id: detail.draft.id,
-        mode: 'update',
-        reason: DEFAULT_REASON,
-      }),
-    );
+    const mutate = (nextForce?: boolean) =>
+      withAdminReauthRetry(() =>
+        lambdaClient.admin.aiProviders.applyImmediate.mutate({
+          enabled,
+          expectedDraftToken: detail.draftToken,
+          expectedRevision: detail.baseRevision,
+          ...(nextForce ? { force: true } : {}),
+          id: detail.draft.id,
+          mode: 'update',
+          reason: DEFAULT_REASON,
+        }),
+      );
+    try {
+      return await mutate(force);
+    } catch (error) {
+      if (
+        !enabled &&
+        !force &&
+        mapEnterpriseError(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE
+      ) {
+        try {
+          await confirmForceDisableProvider(readForceDisableDependents(error));
+        } catch (cause) {
+          if (cause instanceof ForceDisableCancelledError) throw error;
+          throw cause;
+        }
+        try {
+          return await mutate(true);
+        } catch (retryError) {
+          reportAdminAiInfraError(retryError);
+        }
+      }
+      reportAdminAiInfraError(error);
+    }
   };
 
   updateAiProvider = async (id: string, value: UpdateAiProviderParams) => {

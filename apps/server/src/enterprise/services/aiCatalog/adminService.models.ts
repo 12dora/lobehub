@@ -114,6 +114,7 @@ export abstract class AiCatalogAdminServiceModelOps {
     actorUserId: string,
     providerId: string,
     reason: string,
+    force?: boolean,
   ) => Promise<{ auditId: string; revision: number }>;
   protected abstract runModelApplyTransaction: <T>(
     params: {

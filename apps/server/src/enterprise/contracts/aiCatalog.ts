@@ -292,6 +292,12 @@ export const adminAiProviderUpdateDraftInputSchema = providerDraftFieldsSchema
   .extend({
     expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
+    /**
+     * When true, a disable/unpublish that would otherwise fail with
+     * PLATFORM_RESOURCE_IN_USE demotes dependent published agents and resets
+     * dependent setting paths in the same transaction instead of throwing.
+     */
+    force: z.boolean().optional(),
     id: z.string().min(1),
     reason: z.string().trim().min(1).max(2000),
   })
@@ -362,6 +368,7 @@ export const adminAiProviderPublishInputSchema = z
   .object({
     expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
+    force: z.boolean().optional(),
     id: z.string().min(1),
     reason: z.string().trim().min(1).max(2000),
   })

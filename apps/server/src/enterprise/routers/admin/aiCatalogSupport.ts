@@ -100,9 +100,18 @@ export const mapServiceError = (error: unknown): never => {
     });
   }
   if (error instanceof AiCatalogResourceInUseError) {
+    const maxDependents = 20;
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE,
-      details: { dependentCount: error.dependents.length },
+      details: {
+        dependentCount: error.dependents.length,
+        dependents: error.dependents.slice(0, maxDependents).map((dependent) => ({
+          blocking: dependent.blocking,
+          label: dependent.label,
+          resourceId: dependent.resourceId,
+          resourceType: dependent.resourceType,
+        })),
+      },
       httpCode: 'PRECONDITION_FAILED',
     });
   }

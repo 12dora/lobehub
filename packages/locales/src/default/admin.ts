@@ -374,6 +374,13 @@ export default {
     'You need settings update and publish permissions to edit platform defaults.',
   'aiServiceModel.savedRefreshFailed':
     'Saved, but the latest values could not be refreshed. Reload the page.',
+  'aiCatalog.provider.forceDisable.agents':
+    'After you disable this provider, these published assistants will be taken offline and will need a new model before they can be published again: {{titles}}',
+  'aiCatalog.provider.forceDisable.cancel': 'Keep enabled',
+  'aiCatalog.provider.forceDisable.confirm': 'Disable provider',
+  'aiCatalog.provider.forceDisable.settings':
+    'These settings will be reset to the platform default: {{paths}}',
+  'aiCatalog.provider.forceDisable.title': 'Disable this provider anyway?',
   'aiInfraError.rateLimited': 'Too many requests. Try again shortly.',
   'aiInfraError.reauthCancelled': 'Re-authentication cancelled.',
   'aiInfraError.reauthRequired': 'Re-authentication required.',

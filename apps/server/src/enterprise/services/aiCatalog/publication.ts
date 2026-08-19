@@ -39,6 +39,13 @@ import {
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from './errors';
+import {
+  EMPTY_FORCE_DISABLE_LOCKS,
+  type ForceDisabledDependents,
+  type ForceDisableLockSet,
+  forceResolveAiCatalogDependents,
+  lockForceDisableTargets,
+} from './forceDisableDependents';
 import { sanitizeAiCatalogPersistedText } from './persistentText';
 import { coercePublishedProviderColumns, toPublishedModelRows } from './publicationCoercion';
 import type { AiCatalogSecretManager } from './secretManager';
@@ -79,18 +86,16 @@ const enabledModelReferences = (payload: Record<string, unknown> | null): Set<st
   );
 };
 
-const assertRemovedModelsUnused = async (
-  tx: Transaction,
-  currentPayload: Record<string, unknown> | null,
-  targetPayload: Record<string, unknown> | null,
-  resolveDependentsForModels: typeof resolveAiCatalogDependentsForModels,
-): Promise<boolean> => {
-  const current = enabledModelReferences(currentPayload);
-  const target = enabledModelReferences(targetPayload);
-  const removed = [...current].filter((reference) => !target.has(reference));
-  if (removed.length === 0) return false;
+interface RemovedModelsCheck {
+  forceDisabledDependents?: ForceDisabledDependents;
+  removed: boolean;
+}
+
+const groupEnabledReferencesByProvider = (
+  references: ReadonlySet<string>,
+): Map<string, string[]> => {
   const byProvider = new Map<string, string[]>();
-  for (const reference of removed) {
+  for (const reference of references) {
     const separator = reference.indexOf(':');
     const providerKey = reference.slice(0, separator);
     const modelKey = reference.slice(separator + 1);
@@ -101,6 +106,16 @@ const assertRemovedModelsUnused = async (
       byProvider.set(providerKey, [modelKey]);
     }
   }
+  return byProvider;
+};
+
+const resolveBlockingDependents = async (
+  tx: Transaction,
+  references: ReadonlySet<string>,
+  resolveDependentsForModels: typeof resolveAiCatalogDependentsForModels,
+) => {
+  const byProvider = groupEnabledReferencesByProvider(references);
+  if (byProvider.size === 0) return [];
   const dependents = (
     await Promise.all(
       [...byProvider].map(([providerKey, modelKeys]) =>
@@ -108,10 +123,51 @@ const assertRemovedModelsUnused = async (
       ),
     )
   ).flat();
-  if (dependents.some((item) => item.blocking)) {
+  return dependents.filter((item) => item.blocking);
+};
+
+const assertRemovedModelsUnused = async (
+  tx: Transaction,
+  currentPayload: Record<string, unknown> | null,
+  targetPayload: Record<string, unknown> | null,
+  resolveDependentsForModels: typeof resolveAiCatalogDependentsForModels,
+  options: { actorUserId: string; force: boolean; locks: ForceDisableLockSet },
+): Promise<RemovedModelsCheck> => {
+  const current = enabledModelReferences(currentPayload);
+  const target = enabledModelReferences(targetPayload);
+  const removed = new Set([...current].filter((reference) => !target.has(reference)));
+  if (removed.size === 0) return { removed: false };
+  const byProvider = groupEnabledReferencesByProvider(removed);
+  const dependents = (
+    await Promise.all(
+      [...byProvider].map(([providerKey, modelKeys]) =>
+        resolveDependentsForModels(tx, providerKey, modelKeys),
+      ),
+    )
+  ).flat();
+  const blocking = dependents.filter((item) => item.blocking);
+  if (blocking.length === 0) return { removed: true };
+  if (!options.force) {
     throw new AiCatalogResourceInUseError(dependents);
   }
-  return true;
+  const unlockedAgent = blocking.some(
+    (item) => item.resourceType === 'agent' && !options.locks.agentIds.has(item.resourceId),
+  );
+  const unlockedSettings =
+    blocking.some((item) => item.resourceType === 'setting') && !options.locks.settingsBundle;
+  if (unlockedAgent || unlockedSettings) {
+    throw new PlatformRevisionConflictError('Published dependents changed during force-disable');
+  }
+  const removedByProvider = new Map(
+    [...byProvider].map(([providerKey, modelKeys]) => [providerKey, new Set(modelKeys)]),
+  );
+  const forceDisabledDependents = await forceResolveAiCatalogDependents(
+    tx,
+    blocking,
+    removedByProvider,
+    options.actorUserId,
+  );
+  return { forceDisabledDependents, removed: true };
 };
 
 export class AiCatalogPublicationService {
@@ -227,14 +283,21 @@ export class AiCatalogPublicationService {
     providerId: string,
     actorUserId: string,
     expectedDraftToken: string,
-    validateForPublish = true,
-    validateArchiveDependents = false,
+    options: {
+      force?: boolean;
+      validateArchiveDependents?: boolean;
+      validateForPublish?: boolean;
+    } = {},
   ): ResourcePointerAdapter => {
+    const force = options.force === true;
+    const validateArchiveDependents = options.validateArchiveDependents === true;
+    const validateForPublish = options.validateForPublish !== false;
     let currentPublishedPayload: Record<string, unknown> | null = null;
+    let forceDisabledDependents: ForceDisabledDependents | undefined;
+    let forceLocks: ForceDisableLockSet = EMPTY_FORCE_DISABLE_LOCKS;
     return {
       assertLockedState: async (tx, { currentRevision }) => {
         await this.lifecycle.afterPublishLock?.(tx);
-        await acquirePlatformDependencyPublicationLock(tx);
         const draft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
         if (!draft) throw new AiCatalogNotFoundError();
         if (aiCatalogDraftToken(draft) !== expectedDraftToken) {
@@ -247,13 +310,26 @@ export class AiCatalogPublicationService {
           );
           currentPublishedPayload = current?.status === 'published' ? current.payload : null;
         }
+        if (force) {
+          // Preview the currently enabled set (a superset of any models this publish
+          // will drop) and lock those foreign rows before the advisory lock.
+          const preview = await resolveBlockingDependents(
+            tx,
+            enabledModelReferences(currentPublishedPayload),
+            this.resolveDependentsForModels,
+          );
+          forceLocks = await lockForceDisableTargets(tx, preview);
+        }
+        await acquirePlatformDependencyPublicationLock(tx);
         if (validateArchiveDependents) {
-          await assertRemovedModelsUnused(
+          const check = await assertRemovedModelsUnused(
             tx,
             currentPublishedPayload,
             null,
             this.resolveDependentsForModels,
+            { actorUserId, force, locks: forceLocks },
           );
+          forceDisabledDependents = check.forceDisabledDependents;
           await this.lifecycle.afterArchiveDependencyCheck?.();
         }
       },
@@ -288,13 +364,17 @@ export class AiCatalogPublicationService {
             : {};
         assertAiCatalogPublicFieldsExcludeCredentials(payload, keyVaults);
         if (operation === 'rollback') {
-          const removed = await assertRemovedModelsUnused(
+          // Rollback writes a fixed afterDiff (`restoredFromRevision`); forceDisabledDependents
+          // from this check is not copied onto that audit row.
+          const check = await assertRemovedModelsUnused(
             tx,
             currentPublishedPayload,
             payload,
             this.resolveDependentsForModels,
+            { actorUserId, force, locks: forceLocks },
           );
-          if (removed) await this.lifecycle.afterModelDependencyCheck?.();
+          forceDisabledDependents = check.forceDisabledDependents ?? forceDisabledDependents;
+          if (check.removed) await this.lifecycle.afterModelDependencyCheck?.();
         }
         await repository.updateProvider(providerId, {
           ...coercePublishedProviderColumns(provider),
@@ -343,16 +423,19 @@ export class AiCatalogPublicationService {
         const payload = await new PlatformAiCatalogModel(tx).prepareRevisionPayload(providerId);
         if (!payload) throw new AiCatalogNotFoundError();
         if (!validateArchiveDependents) {
-          const removed = await assertRemovedModelsUnused(
+          const check = await assertRemovedModelsUnused(
             tx,
             currentPublishedPayload,
             payload as unknown as Record<string, unknown>,
             this.resolveDependentsForModels,
+            { actorUserId, force, locks: forceLocks },
           );
-          if (removed) await this.lifecycle.afterModelDependencyCheck?.();
+          forceDisabledDependents = check.forceDisabledDependents ?? forceDisabledDependents;
+          if (check.removed) await this.lifecycle.afterModelDependencyCheck?.();
         }
         return {
           afterDiff: {
+            ...(forceDisabledDependents ? { forceDisabledDependents } : {}),
             modelCount: draft.models.length,
             providerId,
             secretFingerprint: draft.secret.fingerprint,
@@ -417,9 +500,13 @@ export class AiCatalogPublicationService {
           actorUserId,
           deferInvalidation: this.deferInvalidation,
           expectedRevision: input.expectedRevision,
-          invalidationScopes: ['ai-catalog', 'model-runtime'],
+          invalidationScopes: input.force
+            ? ['ai-catalog', 'model-runtime', 'settings']
+            : ['ai-catalog', 'model-runtime'],
           payload: {},
-          pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
+          pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken, {
+            force: input.force === true,
+          }),
           reason,
           redactionOptions: M07_REDACTION_OPTIONS,
           resourceId: input.id,
@@ -446,9 +533,15 @@ export class AiCatalogPublicationService {
           actorUserId,
           deferInvalidation: this.deferInvalidation,
           expectedRevision: input.expectedRevision,
-          invalidationScopes: ['ai-catalog', 'model-runtime'],
+          invalidationScopes: input.force
+            ? ['ai-catalog', 'model-runtime', 'settings']
+            : ['ai-catalog', 'model-runtime'],
           payload: {},
-          pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken, false, true),
+          pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken, {
+            force: input.force === true,
+            validateArchiveDependents: true,
+            validateForPublish: false,
+          }),
           reason,
           redactionOptions: M07_REDACTION_OPTIONS,
           resourceId: input.id,
@@ -483,8 +576,12 @@ export class AiCatalogPublicationService {
           actorUserId,
           deferInvalidation: this.deferInvalidation,
           expectedRevision: input.expectedRevision,
-          invalidationScopes: ['ai-catalog', 'model-runtime'],
-          pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
+          invalidationScopes: input.force
+            ? ['ai-catalog', 'model-runtime', 'settings']
+            : ['ai-catalog', 'model-runtime'],
+          pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken, {
+            force: input.force === true,
+          }),
           reason,
           resourceId: input.id,
           resourceType: 'provider',
