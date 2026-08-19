@@ -14,6 +14,7 @@ import {
   estimateTokens,
   hexToBytes,
   latin1ToBytes,
+  randomBase64Url,
   randomUuid,
 } from './binary';
 
@@ -109,6 +110,17 @@ describe('randomUuid', () => {
     expect(randomUuid()).toMatch(
       /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/,
     );
+  });
+});
+
+describe('randomBase64Url', () => {
+  it('returns an unpadded browser-safe token of the requested entropy', () => {
+    expect(randomBase64Url(12)).toMatch(/^[\w-]{16}$/u);
+    expect(randomBase64Url(9)).toMatch(/^[\w-]{12}$/u);
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid byte length %s', (length) => {
+    expect(() => randomBase64Url(length)).toThrow(TypeError);
   });
 });
 

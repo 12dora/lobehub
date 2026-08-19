@@ -13,6 +13,7 @@ import {
   callerAbortReason,
   ChatGPTWebError,
   classifyResponseError,
+  describeResponseShape,
   isChatGPTWebError,
 } from './errors';
 import {
@@ -20,27 +21,33 @@ import {
   buildBlobUploadHeaders,
   buildBootstrapHeaders,
   buildSentinelHeaders,
+  buildTurnRequestHeaders,
+  createTurnRequestIdentity,
+  type TurnRequestIdentity,
 } from './headers';
-import {
-  ChatGPTWebHttp,
-  composeSignals,
-  type ManagedResponse,
-  readBodySafely,
-  timeoutSignal,
-} from './http';
+import type { ChatGPTWebClientOptions, ManagedResponse } from './http';
+import { ChatGPTWebHttp, composeSignals, readBodySafely, timeoutSignal } from './http';
 import type { PowResources } from './pow';
 import { buildFileCreateBody } from './requestBuilders';
 import type { LegRequest, LegState } from './resumeLeg';
 import { buildResumeLeg, isRetryableLegError, RESUME_BACKOFF_MS } from './resumeLeg';
+import type { SentinelFinalizeResponse, SentinelPrepareResponse } from './sentinel';
 import {
   buildRequirementsToken,
+  buildSentinelFinalizeBody,
   parseClientBuildInfo,
   resolvePowResources,
-  type SentinelFinalizeResponse,
-  type SentinelPrepareResponse,
+  resolveSentinelBundleExpiryMs,
   solveSentinelChallenges,
   toChatRequirements,
 } from './sentinel';
+import type {
+  AcquiredSentinelBundle,
+  MintedSentinelBundle,
+  SentinelBundleBinding,
+  SentinelBundlePool,
+} from './sentinelBundlePool';
+import { deriveSentinelContextKey, getSharedSentinelBundlePool } from './sentinelBundlePool';
 import { ConversationEventRouter } from './sse/events';
 import { iterSsePayloads } from './sse/reader';
 import type {
@@ -82,6 +89,8 @@ export interface StreamConversationOptions {
   maxResumes?: number;
   requirements: ChatRequirements;
   signal?: AbortSignal;
+  /** Shared with the prepare request for this browser turn. */
+  turnIdentity?: TurnRequestIdentity;
   useFPath?: boolean;
 }
 
@@ -104,8 +113,19 @@ export interface ResumeConversationOptions {
  * TLS-impersonating transport; the default `globalThis.fetch` works in tests but
  * gets Cloudflare-challenged against the real origin).
  */
+export interface ChatGPTWebClientInit extends ChatGPTWebClientOptions {
+  /** Test seam — production uses the process-wide pool. */
+  sentinelBundlePool?: SentinelBundlePool;
+}
+
 export class ChatGPTWebClient extends ChatGPTWebHttp {
   private powResources?: PowResources;
+  private readonly sentinelPool: SentinelBundlePool;
+
+  constructor(options: ChatGPTWebClientInit) {
+    super(options);
+    this.sentinelPool = options.sentinelBundlePool ?? getSharedSentinelBundlePool();
+  }
 
   // ------------------------------------------------------------------ account
 
@@ -228,16 +248,32 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       log('bootstrap failed (%s), falling back to the default pow script', String(error));
     }
 
+    /**
+     * An expired/missing web session gets the lightweight `/unauth-mweb/` shell.
+     * Its build and asset graph are NOT the authenticated ChatGPT client this
+     * runtime impersonates, so mixing them into the session headers / Sentinel
+     * proof creates an impossible hybrid. Keep the pinned authenticated build
+     * pair and SDK when that shell is all the bootstrap returned.
+     */
+    const authenticatedHtml = html?.includes('/unauth-mweb/') ? undefined : html;
+    if (html && !authenticatedHtml)
+      log('bootstrap returned the unauthenticated mweb shell; using pinned web-client markers');
+
     // The bootstrap also carries the live build markers the session headers
     // advertise; keep the pinned constants when it could not be read.
-    const { buildNumber, clientVersion } = parseClientBuildInfo(html);
+    const { buildNumber, clientVersion } = parseClientBuildInfo(authenticatedHtml);
     if (clientVersion) this.fingerprint.clientVersion = clientVersion;
     if (buildNumber) this.fingerprint.clientBuildNumber = buildNumber;
 
-    this.powResources = resolvePowResources(html);
+    this.powResources = resolvePowResources(authenticatedHtml);
     return this.powResources;
   }
 
+  /**
+   * Mint a fresh Sentinel bundle from upstream. Does not touch the pool — image
+   * generation and tests still call this for a blocking handshake. Conversation
+   * turns should go through {@link acquireSentinelBundle} instead.
+   */
   async getChatRequirements({
     onProgress,
     powLimit,
@@ -247,6 +283,99 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     powLimit?: number;
     signal?: AbortSignal;
   } = {}): Promise<ChatRequirements> {
+    return (await this.mintChatRequirements({ onProgress, powLimit, signal })).requirements;
+  }
+
+  /**
+   * Take one ready bundle for this context. Cold contexts mint synchronously;
+   * a warm pool returns immediately without a same-turn handshake.
+   */
+  async acquireSentinelBundle({
+    contextKey,
+    onProgress,
+    powLimit,
+    signal,
+  }: {
+    contextKey?: string;
+    onProgress?: (stage: 'bootstrap' | 'prepare' | 'solve' | 'finalize') => void;
+    powLimit?: number;
+    signal?: AbortSignal;
+  } = {}): Promise<AcquiredSentinelBundle> {
+    const binding = this.sentinelBinding(contextKey);
+    return this.sentinelPool.acquire(
+      binding,
+      (mintSignal) => this.mintChatRequirements({ onProgress, powLimit, signal: mintSignal }),
+      signal,
+    );
+  }
+
+  /**
+   * Park one ready bundle without consuming it. Call on context init/reconnect
+   * so the first turn is not waiting on a background warm that never started.
+   */
+  async warmSentinelBundle({
+    contextKey,
+    signal,
+  }: {
+    contextKey?: string;
+    signal?: AbortSignal;
+  } = {}): Promise<void> {
+    await this.sentinelPool.warm(
+      this.sentinelBinding(contextKey),
+      (mintSignal) => this.mintChatRequirements({ signal: mintSignal }),
+      signal,
+    );
+  }
+
+  /**
+   * Start the next handshake in the background. Fire-and-forget: a failure
+   * never rejects the current turn; the next acquire retries.
+   *
+   * Do not pass the turn abort signal — stopping a stream must not cancel the
+   * next bundle.
+   */
+  replenishSentinelBundle({ contextKey }: { contextKey?: string } = {}): void {
+    this.sentinelPool.replenish(this.sentinelBinding(contextKey), (mintSignal) =>
+      this.mintChatRequirements({ signal: mintSignal }),
+    );
+  }
+
+  /** Drop parked bundles when the context reconnects or the device/profile changes. */
+  invalidateSentinelBundles(contextKey?: string): void {
+    this.sentinelPool.invalidate(this.resolveContextKey(contextKey));
+  }
+
+  private resolveContextKey(contextKey?: string): string {
+    return (
+      contextKey ??
+      deriveSentinelContextKey({
+        deviceId: this.deviceId,
+        profileId: this.browserProfile.id,
+        sessionId: this.sessionId,
+      })
+    );
+  }
+
+  private sentinelBinding(contextKey?: string): SentinelBundleBinding {
+    return {
+      clientBuildNumber: this.fingerprint.clientBuildNumber,
+      clientVersion: this.fingerprint.clientVersion,
+      contextKey: this.resolveContextKey(contextKey),
+      deviceId: this.deviceId,
+      profileId: this.browserProfile.id,
+      sessionId: this.sessionId,
+    };
+  }
+
+  private async mintChatRequirements({
+    onProgress,
+    powLimit,
+    signal,
+  }: {
+    onProgress?: (stage: 'bootstrap' | 'prepare' | 'solve' | 'finalize') => void;
+    powLimit?: number;
+    signal?: AbortSignal;
+  } = {}): Promise<MintedSentinelBundle> {
     onProgress?.('bootstrap');
     const resources = await this.bootstrapPowResources(signal);
     const userAgent = this.userAgent;
@@ -280,11 +409,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     const finalize = await this.retryOnCloudflare(
       () =>
         this.requestJson<SentinelFinalizeResponse>({
-          ...this.jsonBody({
-            prepare_token: prepare.prepare_token,
-            proof_token: challenges.proofToken,
-            turnstile_token: challenges.turnstileToken,
-          }),
+          ...this.jsonBody(buildSentinelFinalizeBody(prepare.prepare_token, challenges)),
           context: 'sentinel_finalize',
           path: `${PATHS.sentinelRequirements}/finalize`,
           signal,
@@ -293,7 +418,12 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       signal,
     );
 
-    return toChatRequirements(finalize, challenges);
+    return {
+      clientBuildNumber: this.fingerprint.clientBuildNumber,
+      clientVersion: this.fingerprint.clientVersion,
+      expiresAtMs: resolveSentinelBundleExpiryMs(finalize),
+      requirements: toChatRequirements(finalize, challenges),
+    };
   }
 
   /**
@@ -319,30 +449,49 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
 
   async prepareConversation(
     body: object,
-    { requirements, signal }: { requirements?: ChatRequirements; signal?: AbortSignal } = {},
-  ): Promise<{ conduitToken: string }> {
-    const raw = await this.requestJson<{ conduit_token?: string }>({
+    {
+      signal,
+      turnIdentity = createTurnRequestIdentity(),
+    }: {
+      requirements?: ChatRequirements;
+      signal?: AbortSignal;
+      turnIdentity?: TurnRequestIdentity;
+    } = {},
+  ): Promise<{ conduitToken?: string }> {
+    const raw = await this.requestJson<Record<string, any>>({
       body: JSON.stringify(body),
       context: 'conversation_prepare',
-      headers: requirements
-        ? buildSentinelHeaders({ accept: '*/*', requirements, variant: 'conduit' })
-        : { 'Content-Type': 'application/json', 'X-Conduit-Token': 'no-token' },
+      // Real Chrome prepare calls carry the turn lifecycle headers, but none of
+      // the Sentinel proofs; those belong on the subsequent SSE send.
+      headers: {
+        'Accept': '*/*',
+        'Content-Type': 'application/json',
+        ...buildTurnRequestHeaders(turnIdentity, 'prepare'),
+      },
       method: 'POST',
       path: PATHS.fConversationPrepare,
       signal,
     });
 
-    // A 200 without a usable token is a FAILED prepare: the conduit path then
-    // streams without `X-Conduit-Token` and dies upstream, while the caller
-    // believes it prepared successfully and never takes its plain fallback.
-    // `upstream` keeps it recoverable — the legacy endpoint needs no token.
+    // `{status:"ok", conduit_token:null}` is a NORMAL prepare response, not a
+    // failure — verified live 2026-08-19 against a captured real Chrome session:
+    // the browser gets the exact same null token for a Pro-tier turn and simply
+    // proceeds to `/backend-api/f/conversation` with no `X-Conduit-Token` header
+    // at all (buildRequestHeaders already omits it when falsy). The previous
+    // behavior — throwing here and letting the caller fall back to the legacy
+    // `/backend-api/conversation` endpoint — is what silently substituted a mini
+    // answer for a Pro turn the legacy endpoint structurally cannot serve. A
+    // missing token is therefore no longer fatal; only genuinely broken
+    // responses (network/timeout/malformed JSON, handled elsewhere in
+    // `requestJson`) still throw.
     const conduitToken = typeof raw?.conduit_token === 'string' ? raw.conduit_token.trim() : '';
-    if (!conduitToken)
-      throw new ChatGPTWebError(
-        'upstream',
-        'conversation_prepare failed: the response carried no conduit token',
-        { status: 200 },
+    if (!conduitToken) {
+      log(
+        'conversation_prepare returned no conduit token; response shape: %s',
+        describeResponseShape(raw),
       );
+      return {};
+    }
 
     return { conduitToken };
   }
@@ -372,6 +521,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       maxResumes = MAX_CHAINED_RESUMES,
       requirements,
       signal,
+      turnIdentity,
       useFPath,
     }: StreamConversationOptions,
   ): AsyncGenerator<ConversationEvent, void, undefined> {
@@ -392,6 +542,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
         accept: 'text/event-stream',
         conduitToken,
         requirements,
+        turnIdentity,
         variant: useFPath ? 'conduit' : 'conversation',
       }),
       path: useFPath ? PATHS.fConversation : PATHS.conversation,
@@ -930,6 +1081,7 @@ export * from './http';
 export * from './pow';
 export * from './requestBuilders';
 export * from './sentinel';
+export * from './sentinelBundlePool';
 export * from './sse/annotations';
 export * from './sse/events';
 export * from './sse/patch';

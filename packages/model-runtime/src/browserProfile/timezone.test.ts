@@ -32,6 +32,21 @@ describe('live timezone resolution', () => {
     );
   });
 
+  it('uses the profile language for the implementation-defined Date suffix', () => {
+    const profile = {
+      languages: ['zh-CN'],
+      oaiLanguage: 'zh-CN',
+      timezone: {
+        iana: 'Asia/Singapore',
+        jsDateSuffix: 'GMT+0800 (新加坡标准时间)',
+        offsetKind: 'standard' as const,
+        offsetMinutes: -480,
+      },
+    };
+
+    expect(resolveProfileTimezone(profile, SUMMER).jsDateSuffix).toBe('GMT+0800 (新加坡标准时间)');
+  });
+
   it('formats a zero offset the way V8 does', () => {
     expect(resolveTimezoneOffsetMinutes('Europe/London', WINTER)).toBe(0);
     expect(resolveTimezoneJsDateSuffix('Europe/London', WINTER)).toBe(

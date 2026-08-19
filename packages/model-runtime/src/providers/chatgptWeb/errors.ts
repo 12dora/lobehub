@@ -68,6 +68,56 @@ export const sanitizeErrorBody = (body: unknown): unknown => {
   return Object.keys(safe).length > 0 ? safe : undefined;
 };
 
+/**
+ * Keys whose STRING value is a diagnostic message rather than data, so it may be
+ * kept (redacted and truncated) when describing an upstream body.
+ */
+const DIAGNOSTIC_VALUE_FIELDS = new Set(['code', 'detail', 'error', 'message', 'reason', 'type']);
+
+const MAX_SHAPE_KEYS = 40;
+const MAX_SHAPE_LENGTH = 800;
+const MAX_DIAGNOSTIC_VALUE_LENGTH = 200;
+
+const describeValue = (value: unknown, depth: number): string => {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  // scalars are safe verbatim; a credential is never a number or a boolean
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  // NEVER the string itself: sentinel tokens and signed URLs live in these
+  if (typeof value === 'string') return `string(${value.length})`;
+  if (Array.isArray(value))
+    return depth <= 0 || value.length === 0
+      ? `array(${value.length})`
+      : `array(${value.length}) of ${describeValue(value[0], depth - 1)}`;
+  if (typeof value !== 'object') return typeof value;
+
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (depth <= 0) return `object(${entries.length})`;
+  const described = entries
+    .slice(0, MAX_SHAPE_KEYS)
+    .map(([key, nested]) => describeEntry(key, nested, depth - 1));
+  if (entries.length > MAX_SHAPE_KEYS) described.push(`…+${entries.length - MAX_SHAPE_KEYS}`);
+  return `{${described.join(', ')}}`;
+};
+
+const describeEntry = (key: string, value: unknown, depth: number): string =>
+  typeof value === 'string' && DIAGNOSTIC_VALUE_FIELDS.has(key)
+    ? `${key}=${JSON.stringify(redactBodyString(value).slice(0, MAX_DIAGNOSTIC_VALUE_LENGTH))}`
+    : `${key}:${describeValue(value, depth)}`;
+
+/**
+ * Describe the SHAPE of an upstream JSON body — key names, value types, and the
+ * few keys that carry a human-readable reason — without leaking the body.
+ *
+ * Written for the one failure mode we cannot otherwise diagnose: a 200 whose
+ * payload is missing the field we needed. Key names are not secrets, but VALUES
+ * are (sentinel tokens, signed URLs, conversation content), so only scalars and
+ * {@link DIAGNOSTIC_VALUE_FIELDS} strings are ever revealed — and those still go
+ * through {@link redactBodyString}.
+ */
+export const describeResponseShape = (body: unknown): string =>
+  describeValue(body, 3).slice(0, MAX_SHAPE_LENGTH);
+
 export class ChatGPTWebError extends Error {
   readonly kind: ChatGPTWebErrorKind;
   readonly status?: number;

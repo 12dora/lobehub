@@ -140,6 +140,19 @@ export const randomUuid = (): string => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
+/** Browser-safe random base64url, without Node's `Buffer` or padding. */
+export const randomBase64Url = (byteLength: number): string => {
+  if (!Number.isInteger(byteLength) || byteLength <= 0)
+    throw new TypeError('byteLength must be a positive integer');
+
+  const bytes = new Uint8Array(byteLength);
+  const cryptoRef = globalThis.crypto;
+  if (cryptoRef?.getRandomValues) cryptoRef.getRandomValues(bytes);
+  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.random() * 256;
+
+  return bytesToBase64(bytes).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
+};
+
 /**
  * Cheap token estimator used for usage reporting when the upstream gives us no
  * counters. ASCII ≈ 4 chars/token, CJK ≈ 1 char/token.

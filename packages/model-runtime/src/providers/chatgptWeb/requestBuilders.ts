@@ -120,9 +120,7 @@ const toImagePointerPart = (attachment: AttachmentRef) => ({
 });
 
 const baseMessageMetadata = () => ({
-  developer_mode_connector_ids: [],
-  selected_all_github_repos: false,
-  selected_github_repos: [],
+  selected_sources: [],
   serialization_metadata: { custom_symbol_offsets: [] },
 });
 
@@ -221,6 +219,8 @@ export interface PrepareBodyOptions extends BrowserEnvironmentOptions {
    * it is ignored there.
    */
   attachmentMimeTypes?: string[];
+  /** Browser dispatch lifecycle state. Pro captures send `success`, then `sent`. */
+  clientPrepareState?: 'sent' | 'success';
   /** Defaults to the flow implied by `systemHints`. */
   flow?: ConduitFlow;
   model: string;
@@ -234,6 +234,7 @@ export interface PrepareBodyOptions extends BrowserEnvironmentOptions {
 /** `POST /backend-api/f/conversation/prepare` — yields the conduit token. */
 export const buildPrepareBody = ({
   attachmentMimeTypes,
+  clientPrepareState = 'success',
   flow,
   model,
   parentMessageId,
@@ -254,10 +255,16 @@ export const buildPrepareBody = ({
 
   return {
     action: 'next',
-    client_contextual_info: { app_name: 'chatgpt.com' },
-    client_prepare_state: 'success',
+    client_contextual_info: {
+      app_name: 'chatgpt.com',
+      has_web_push_capabilities: true,
+      web_push_notification_permission: 'default',
+    },
+    client_prepare_dispatch: 'immediate',
+    client_prepare_source: 'context_change',
+    client_prepare_state: clientPrepareState,
     conversation_mode: { kind: 'primary_assistant' },
-    fork_from_shared_post: false,
+    local_function_names: ['local.continue_in_work'],
     model,
     parent_message_id: parent,
     partial_query: {
@@ -327,6 +334,7 @@ export const buildFConversationBody = ({
     conversation_mode: { kind: 'primary_assistant' },
     enable_message_followups: true,
     force_parallel_switch: 'auto',
+    local_function_names: ['local.continue_in_work'],
     messages: toConversationMessages(messages, {
       lastMessageSystemHints: messageHints,
       withRichMetadata: true,

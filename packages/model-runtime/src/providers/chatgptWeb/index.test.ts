@@ -26,21 +26,33 @@ const createFakeClient = (overrides: Record<string, any> = {}) => {
     for (const event of defaultEvents) yield event;
   });
 
-  return {
-    accountId: 'acc-1',
-    downloadBytes: vi.fn(async () => ({ bytes: PNG_BYTES, mimeType: 'image/png' })),
-    getAttachmentDownloadUrl: vi.fn(async () => 'https://blob/attachment'),
-    getChatRequirements: vi.fn(async () => ({
+  const getChatRequirements =
+    overrides.getChatRequirements ??
+    vi.fn(async () => ({
       proofToken: 'p',
       soToken: 's',
       token: 't',
       turnstileToken: 'ts',
-    })),
+    }));
+
+  return {
+    accountId: 'acc-1',
+    acquireSentinelBundle:
+      overrides.acquireSentinelBundle ??
+      vi.fn(async (opts?: { signal?: AbortSignal }) => ({
+        expiresAtMs: Date.now() + 540_000,
+        id: 'bundle-test',
+        requirements: await getChatRequirements(opts ?? {}),
+      })),
+    downloadBytes: vi.fn(async () => ({ bytes: PNG_BYTES, mimeType: 'image/png' })),
+    getAttachmentDownloadUrl: vi.fn(async () => 'https://blob/attachment'),
+    getChatRequirements,
     getConversation: vi.fn(async () => ({})),
     getFileDownloadUrl: vi.fn(async () => 'https://blob/file'),
     hideConversation: vi.fn(async () => {}),
     listModels: vi.fn(async () => []),
     prepareConversation: vi.fn(async () => ({ conduitToken: 'conduit' })),
+    replenishSentinelBundle: vi.fn(),
     resolveInterpreterFile: vi.fn(async () => ({
       downloadUrl: '',
       fileId: undefined,
@@ -340,6 +352,90 @@ describe('LobeChatGPTWebAI', () => {
       expect(bodyOf(client).thinking_effort).toBeUndefined();
     });
 
+    // Verified against a captured real Chrome session (2026-08-19): picking Pro
+    // with no explicit user-chosen effort still sends `thinking_effort: "standard"`
+    // — the same default other reasoning-capable tiers get. Picking Pro on the
+    // real client IS the effort selection, so AIHub must send the field too.
+    it('defaults thinking_effort to standard for a -pro model without an effort', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6-pro',
+        temperature: 1,
+      });
+
+      expect(bodyOf(client).thinking_effort).toBe('standard');
+      expect(client.prepareConversation).toHaveBeenCalledTimes(2);
+      expect(
+        client.prepareConversation.mock.calls.map(([body]: any[]) => body.client_prepare_state),
+      ).toEqual(['success', 'sent']);
+      const [, firstOptions] = client.prepareConversation.mock.calls[0] as any[];
+      const [, secondOptions] = client.prepareConversation.mock.calls[1] as any[];
+      expect(secondOptions.turnIdentity).toBe(firstOptions.turnIdentity);
+      expect(optionsOf(client).turnIdentity).toBe(firstOptions.turnIdentity);
+      // Chrome starts the Pro send while both prepares are still pending, so a
+      // late conduit token is never an input to this request.
+      expect(optionsOf(client).conduitToken).toBeUndefined();
+      // an effort makes the turn mandatory-conduit — a -pro turn must never be
+      // allowed to fall back to the endpoint that cannot serve it.
+      expect(optionsOf(client).useFPath).toBe(true);
+    });
+
+    it('starts a -pro conversation before either prepare response settles', async () => {
+      const settlePrepares: Array<(value: { conduitToken?: string }) => void> = [];
+      let settled = 0;
+      const prepareConversation = vi.fn(
+        () =>
+          new Promise<{ conduitToken?: string }>((resolve) => {
+            settlePrepares.push((value) => {
+              settled += 1;
+              resolve(value);
+            });
+          }),
+      );
+      const client = createFakeClient({ prepareConversation });
+
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6-pro',
+        temperature: 1,
+      });
+
+      expect(prepareConversation).toHaveBeenCalledTimes(2);
+      expect(settled).toBe(0);
+      expect(client.streamConversation).toHaveBeenCalledTimes(1);
+      expect(Math.max(...prepareConversation.mock.invocationCallOrder)).toBeLessThan(
+        client.streamConversation.mock.invocationCallOrder[0]!,
+      );
+      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+
+      for (const settle of settlePrepares) settle({ conduitToken: 'too-late' });
+      await Promise.resolve();
+    });
+
+    it('does not override an explicit lower effort on a -pro model', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6-pro',
+        reasoning_effort: 'low' as any,
+        temperature: 1,
+      });
+
+      expect(bodyOf(client).thinking_effort).toBe('standard');
+    });
+
+    it('does not default thinking_effort for a plain (non -pro, non -thinking) model', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6',
+        temperature: 1,
+      });
+
+      expect(bodyOf(client).thinking_effort).toBeUndefined();
+    });
+
     it('sends every plain turn through the /f/ conduit path', async () => {
       const client = createFakeClient();
       await createRuntime(client).chat({
@@ -397,14 +493,52 @@ describe('LobeChatGPTWebAI', () => {
       expect(sse).toContain('event: text');
     });
 
+    // A Pro prepare is not a gate: Chrome sends the conversation while both
+    // prepare requests are still pending. A late prepare failure is observed,
+    // while the actual conversation request remains the source of truth.
+    it('does not block a -pro send when a non-gating prepare later fails', async () => {
+      const client = createFakeClient({
+        prepareConversation: vi.fn(async () => {
+          throw new ChatGPTWebError('upstream', 'chat-requirements rejected', { status: 500 });
+        }),
+      });
+
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6-pro',
+        temperature: 1,
+      });
+
+      expect(client.prepareConversation).toHaveBeenCalledTimes(2);
+      expect(client.streamConversation).toHaveBeenCalledTimes(1);
+      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+    });
+
+    // Verified against a captured real Chrome session (2026-08-19): the browser
+    // gets this exact response for a Pro turn and just proceeds — no
+    // `X-Conduit-Token` header, no fallback. `prepareConversation` (see
+    // `client.test.ts`) returns `{}` rather than throwing for this case, so the
+    // conduit path is used normally end to end.
+    it('proceeds via the conduit path when prepare returns no conduit token', async () => {
+      const client = createFakeClient({
+        prepareConversation: vi.fn(async () => ({})),
+      });
+
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6-pro',
+        temperature: 1,
+      });
+
+      expect(optionsOf(client).useFPath).toBe(true);
+      expect(optionsOf(client).conduitToken).toBeUndefined();
+      expect(client.prepareConversation).toHaveBeenCalledTimes(2);
+    });
+
     it.each([
       ['a network hiccup', new ChatGPTWebError('network', 'econnreset')],
       ['a timeout', new ChatGPTWebError('timeout', 'prepare aborted')],
       ['a missing endpoint', new ChatGPTWebError('not_found', 'no such path', { status: 404 })],
-      [
-        'a prepare that carried no conduit token',
-        new ChatGPTWebError('upstream', 'no conduit token', { status: 200 }),
-      ],
     ])('falls back to the plain path on %s', async (_label, raised) => {
       const client = createFakeClient({
         prepareConversation: vi.fn(async () => {
@@ -485,6 +619,44 @@ describe('LobeChatGPTWebAI', () => {
       expect(body.force_use_search).toBe(true);
       expect(body.messages.at(-1).metadata.system_hints).toEqual(['search']);
       expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
+    });
+
+    it('acquires a sentinel bundle by context key and replenishes after send starts', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(client.acquireSentinelBundle).toHaveBeenCalledTimes(1);
+      expect(client.acquireSentinelBundle.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ contextKey: 'chatgptweb:unscoped' }),
+      );
+      expect(client.replenishSentinelBundle).toHaveBeenCalledTimes(1);
+      expect(client.replenishSentinelBundle.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ contextKey: 'chatgptweb:unscoped' }),
+      );
+    });
+
+    it('forwards a Browser Session Context key into acquire and replenish', async () => {
+      const client = createFakeClient();
+      await new LobeChatGPTWebAI({
+        apiKey: 'token',
+        browserSessionContextKey: 'c1-context-id',
+        client: client as any,
+      }).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(client.acquireSentinelBundle.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ contextKey: 'c1-context-id' }),
+      );
+      expect(client.replenishSentinelBundle.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ contextKey: 'c1-context-id' }),
+      );
     });
 
     it('surfaces a Cloudflare challenge from the requirements handshake', async () => {

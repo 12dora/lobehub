@@ -13,7 +13,7 @@ import {
   PRIORITY_XHR,
   userAgentHeaders,
 } from '../../browserProfile';
-import { randomUuid } from './binary';
+import { randomBase64Url, randomUuid } from './binary';
 import {
   AZURE_BLOB_HEADERS,
   CHATGPT_BASE_URL,
@@ -33,6 +33,26 @@ export interface SessionFingerprint {
   deviceId: string;
   sessionId: string;
 }
+
+/** One browser turn shares these values across prepare and send requests. */
+export interface TurnRequestIdentity {
+  observationId: string;
+  traceId: string;
+}
+
+export const createTurnRequestIdentity = (): TurnRequestIdentity => ({
+  // The browser uses a 16-character base64url suffix (12 random bytes).
+  observationId: randomBase64Url(12),
+  traceId: randomUuid(),
+});
+
+export const buildTurnRequestHeaders = (
+  identity: TurnRequestIdentity,
+  phase: 'prepare' | 'send',
+): Record<string, string> => ({
+  'X-Oai-Is-Client-Observation': `v1.${phase === 'prepare' ? 'r' : 's'}.p.${sanitizeHeaderValue(identity.observationId)}`,
+  'X-Oai-Turn-Trace-Id': sanitizeHeaderValue(identity.traceId),
+});
 
 const CRLF_RE = /[\n\r]/;
 
@@ -164,10 +184,13 @@ export interface SentinelHeaderOptions {
   accept?: string;
   conduitToken?: string;
   requirements: ChatRequirements;
+  /** Shared with the prepare request for this browser turn. */
+  turnIdentity?: TurnRequestIdentity;
   /**
-   * The `/f/*` (conduit) variant of the web client omits the turnstile and SO
-   * tokens; the plain `/backend-api/conversation` variant sends them. Faithful
-   * to the observed traffic.
+   * The `/f/*` (conduit) variant sends the turnstile proof on the actual SSE
+   * request, but not on its prepare calls; it still omits the SO token. The
+   * plain `/backend-api/conversation` variant sends both. Faithful to the Pro
+   * capture from 2026-08-19.
    */
   variant: 'conversation' | 'conduit';
 }
@@ -176,6 +199,7 @@ export const buildSentinelHeaders = ({
   accept = 'text/event-stream',
   conduitToken,
   requirements,
+  turnIdentity,
   variant,
 }: SentinelHeaderOptions): Record<string, string> => {
   const headers: Record<string, string> = dropNavigationOnly({
@@ -194,7 +218,23 @@ export const buildSentinelHeaders = ({
       headers['OpenAI-Sentinel-SO-Token'] = sanitizeHeaderValue(requirements.soToken);
   } else {
     if (conduitToken) headers['X-Conduit-Token'] = sanitizeHeaderValue(conduitToken);
-    if (accept === 'text/event-stream') headers['X-Oai-Turn-Trace-Id'] = randomUuid();
+    if (accept === 'text/event-stream') {
+      if (requirements.turnstileToken)
+        headers['OpenAI-Sentinel-Turnstile-Token'] = sanitizeHeaderValue(
+          requirements.turnstileToken,
+        );
+      Object.assign(
+        headers,
+        buildTurnRequestHeaders(turnIdentity ?? createTurnRequestIdentity(), 'send'),
+      );
+      // Present on every real conduit send, captured 2026-08-19 (`chatgpt.com.har`):
+      // `oai-telemetry: [1,null]`. We do not know what varies it — `oai-echo-logs`
+      // (a real page-lifecycle timestamp series) is NOT sent here because we have no
+      // real elapsed-session time to report; a fabricated one would look more
+      // synthetic than omitting it. This is a from-a-single-capture guess, not a
+      // verified requirement — remove if it turns out not to matter.
+      headers['Oai-Telemetry'] = '[1,null]';
+    }
   }
 
   return headers;

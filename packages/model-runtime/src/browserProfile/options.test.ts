@@ -92,6 +92,30 @@ describe('browser profile options', () => {
     expect(second).toEqual(first);
   });
 
+  it('offers the captured Chinese Singapore environment for manual calibration', () => {
+    const option = listBrowserProfileOptions().locales.find(
+      (item) => item.timezone === 'Asia/Singapore',
+    );
+
+    expect(option).toMatchObject({
+      acceptLanguage: 'zh-CN,zh;q=0.9,en;q=0.8,zh-TW;q=0.7,ja;q=0.6',
+      id: 'zh-cn-zh-q-0-9-en-q-0-8-zh-tw-q-0-7-ja-q-0-6--asia-singapore',
+      label: 'zh-CN · Asia/Singapore',
+    });
+  });
+
+  it('offers the captured 16-inch MacBook logical screen for manual calibration', () => {
+    const option = listBrowserProfileOptions().screens.find(
+      (item) => item.platform === 'macOS' && item.width === 1728 && item.height === 1117,
+    );
+
+    expect(option).toMatchObject({
+      dpr: 2,
+      id: 'macos--1728--1117--2',
+      label: '1728 × 1117 @ 2×',
+    });
+  });
+
   it('composes every catalog option into a strictly valid profile', () => {
     const samples = sampleValidBrowserProfileCompositions();
     expect(samples.length).toBeGreaterThan(0);

@@ -4,13 +4,13 @@ import { DEFAULT_BROWSER_DEVICE_PROFILE, generateBrowserDeviceProfile } from '..
 import { ChatGPTWebClient } from './client';
 import { COOKIE_JAR_HEADER, deriveSessionId } from './sessionId';
 
-const UUID_RE = /^[\da-f]{8}-[\da-f]{4}-5[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/;
+const UUID_RE = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/;
 
 /** Stands in for the installation's persisted profile. */
 const browserProfile = generateBrowserDeviceProfile({ seed: 'session-id-installation' });
 
 describe('deriveSessionId', () => {
-  it('is deterministic per deviceId and uuidv5-shaped', () => {
+  it('is stable within one process per device/profile and UUIDv4-shaped', () => {
     const deviceId = '3f7c0f7a-6f6e-4a1b-9c2d-8e5a1b2c3d4e';
     const first = deriveSessionId(deviceId);
 

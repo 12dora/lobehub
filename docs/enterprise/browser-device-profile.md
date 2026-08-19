@@ -36,7 +36,7 @@ AIHub 为需要模拟真实浏览器的服务维护一套平台级、合成的�
 
 因此并发启动的多个实例最终使用同一套画像。每个进程缓存读取结果 60 秒；管理员刷新时当前进程立即失效缓存并清空 ChatGPT Web Cookie 罐，其他实例在下一次观察到画像 ID 变化时也会清空自己的进程内 Cookie 罐。
 
-管理后台路径为「系统 → 通用设置 → 基础设施 → 浏览器指纹」。`admin.browserProfile.get` 需要 `SYSTEM_READ`，`admin.browserProfile.regenerate` 需要 `SYSTEM_OPERATE`。刷新会生成新的 seed、画像和 installationId，原子递增 revision、写入脱敏审计记录，并使上游把后续请求视为新设备；共享账号可能因此需要重新验证。它不会改动账号自己的 `oauthDeviceId`，但新的 `OAI-Session-Id` 会由 `oauthDeviceId + profile.id` 稳定派生。
+管理后台路径为「系统 → 通用设置 → 基础设施 → 浏览器指纹」。`admin.browserProfile.get` 需要 `SYSTEM_READ`，`admin.browserProfile.regenerate` 需要 `SYSTEM_OPERATE`。刷新会生成新的 seed、画像和 installationId，原子递增 revision、写入脱敏审计记录，并使上游把后续请求视为新设备；共享账号可能因此需要重新验证。它不会改动账号自己的 `oauthDeviceId`。`OAI-Session-Id` 模拟网页生命周期：同一服务进程内由进程 nonce + `oauthDeviceId + profile.id` 稳定派生为 UUIDv4，进程重启（相当于页面重载）后轮换；画像变化也会得到新的会话身份。
 
 ## Installation identity for CLI-impersonating providers（CLI 模拟服务的共享安装身份）
 

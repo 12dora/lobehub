@@ -19,6 +19,7 @@ import {
 import type { PhaseOptions } from './createImage.references';
 import { boundedTimeout, uploadReferences } from './createImage.references';
 import { ChatGPTWebError, isChatGPTWebError, toAgentRuntimeErrorType } from './errors';
+import { createTurnRequestIdentity, type TurnRequestIdentity } from './headers';
 import { composeSignals, timeoutSignal } from './http';
 import { pollImageResults } from './imagePoll';
 import type { ImagePointer } from './imageResolve';
@@ -89,6 +90,7 @@ const runConversation = async (
     hardCapMs: number;
     requirements: ChatRequirements;
     signal?: AbortSignal;
+    turnIdentity: TurnRequestIdentity;
   },
 ): Promise<StreamOutcome> => {
   const outcome: StreamOutcome = { blocked: false, pointers: [], text: '' };
@@ -99,6 +101,7 @@ const runConversation = async (
       hardCapMs: options.hardCapMs,
       requirements: options.requirements,
       signal: options.signal,
+      turnIdentity: options.turnIdentity,
       useFPath: true,
     })) {
       // deltas are far too chatty to trace; everything else is one line a turn
@@ -245,6 +248,7 @@ export async function createChatGPTWebImage(
 
     ensureBudget('handshake');
     const requirements = await getRequirementsWithRetry(client, budget.signal);
+    const turnIdentity = createTurnRequestIdentity();
     const bodies = buildImageConversationBodies({
       browserProfile: client.browserProfile,
       model: IMAGE_UPSTREAM_MODEL,
@@ -256,6 +260,7 @@ export async function createChatGPTWebImage(
     const { conduitToken } = await client.prepareConversation(bodies.prepare, {
       requirements,
       signal: budget.signal,
+      turnIdentity,
     });
 
     ensureBudget('generation');
@@ -264,6 +269,7 @@ export async function createChatGPTWebImage(
       hardCapMs: boundedTimeout(IMAGE_SSE_HARD_CAP_MS, remaining),
       requirements,
       signal: budget.signal,
+      turnIdentity,
     });
 
     let pointers = stream.pointers;

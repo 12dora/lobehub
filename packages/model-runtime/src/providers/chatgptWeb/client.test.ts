@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BROWSER_DEVICE_PROFILE, resolveProfileTimezone } from '../../browserProfile';
 import { ChatGPTWebClient } from './client';
+import { SentinelBundlePool } from './sentinelBundlePool';
 import type { ChatRequirements } from './types';
 
 const jsonResponse = (body: unknown, init: ResponseInit = {}) =>
@@ -250,10 +251,16 @@ describe('ChatGPTWebClient.getChatRequirements', () => {
     expect(finalize.url).toBe(
       'https://chatgpt.com/backend-api/sentinel/chat-requirements/finalize',
     );
-    expect(JSON.parse(finalize.init.body as string)).toMatchObject({
+    const finalizeBody = JSON.parse(finalize.init.body as string) as Record<string, unknown>;
+    expect(Object.keys(finalizeBody)).toEqual(['prepare_token', 'proofofwork', 'turnstile']);
+    expect(finalizeBody).toMatchObject({
       prepare_token: 'prepare-1',
-      turnstile_token: '',
+      turnstile: '',
     });
+    expect(typeof finalizeBody.proofofwork).toBe('string');
+    expect((finalizeBody.proofofwork as string).startsWith('gAAAAAB')).toBe(true);
+    expect(finalizeBody).not.toHaveProperty('proof_token');
+    expect(finalizeBody).not.toHaveProperty('turnstile_token');
   });
 
   it('rejects with an arkose error when the upstream asks for one', async () => {
@@ -274,40 +281,113 @@ describe('ChatGPTWebClient.getChatRequirements', () => {
   });
 });
 
-describe('ChatGPTWebClient.prepareConversation', () => {
-  it('reads the conduit token and sends the sentinel headers when given requirements', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ conduit_token: 'conduit-1' }));
+const mockSentinelHandshake = (token: string, expireAt = Math.floor(Date.now() / 1000) + 540) => {
+  fetchMock
+    .mockResolvedValueOnce(new Response('<html></html>', { status: 200 }))
+    .mockResolvedValueOnce(
+      jsonResponse({
+        prepare_token: `prepare-${token}`,
+        proofofwork: { difficulty: 'ffff', required: true, seed: `seed-${token}` },
+        turnstile: { required: false },
+      }),
+    )
+    .mockResolvedValueOnce(
+      jsonResponse({ expire_after: 540, expire_at: expireAt, so_token: `so-${token}`, token }),
+    );
+  return expireAt;
+};
 
-    const result = await createClient().prepareConversation({ action: 'next' }, { requirements });
+describe('ChatGPTWebClient.acquireSentinelBundle', () => {
+  it('returns a warmed bundle without a same-turn handshake', async () => {
+    const pool = new SentinelBundlePool();
+    const client = createClient({ sentinelBundlePool: pool });
+    const expireAt = mockSentinelHandshake('warm');
+
+    await client.warmSentinelBundle({ contextKey: 'ctx-1' });
+    const acquired = await client.acquireSentinelBundle({ contextKey: 'ctx-1' });
+
+    expect(acquired.requirements.token).toBe('warm');
+    expect(acquired.expiresAtMs).toBe(expireAt * 1000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('replenishes a distinct bundle after acquire', async () => {
+    const pool = new SentinelBundlePool();
+    const client = createClient({ sentinelBundlePool: pool });
+    mockSentinelHandshake('a');
+    // bootstrap is cached on the client; the next handshake is prepare + finalize
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prepare_token: 'prepare-b',
+          proofofwork: { difficulty: 'ffff', required: true, seed: 'seed-b' },
+          turnstile: { required: false },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ expire_after: 540, so_token: 'so-b', token: 'b' }));
+
+    const first = await client.acquireSentinelBundle({ contextKey: 'ctx-1' });
+    client.replenishSentinelBundle({ contextKey: 'ctx-1' });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    const second = await client.acquireSentinelBundle({ contextKey: 'ctx-1' });
+
+    expect(first.requirements.token).toBe('a');
+    expect(second.requirements.token).toBe('b');
+    expect(first.id).not.toBe(second.id);
+  });
+});
+
+describe('ChatGPTWebClient.prepareConversation', () => {
+  it('reads the conduit token and sends the browser turn lifecycle headers', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ conduit_token: 'conduit-1' }));
+    const turnIdentity = {
+      observationId: 'abcdefghijklmnop',
+      traceId: '11111111-1111-4111-8111-111111111111',
+    };
+
+    const result = await createClient().prepareConversation(
+      { action: 'next' },
+      { requirements, turnIdentity },
+    );
 
     expect(result).toEqual({ conduitToken: 'conduit-1' });
     const { headers, url } = callAt(0);
     expect(url).toBe('https://chatgpt.com/backend-api/f/conversation/prepare');
-    expect(headers['OpenAI-Sentinel-Chat-Requirements-Token']).toBe('requirements-token');
     expect(headers['Accept']).toBe('*/*');
+    expect(headers['X-Oai-Turn-Trace-Id']).toBe(turnIdentity.traceId);
+    expect(headers['X-Oai-Is-Client-Observation']).toBe(`v1.r.p.${turnIdentity.observationId}`);
+    expect(headers['OpenAI-Sentinel-Chat-Requirements-Token']).toBeUndefined();
+    expect(headers['OpenAI-Sentinel-Proof-Token']).toBeUndefined();
+    expect(headers['OpenAI-Sentinel-Turnstile-Token']).toBeUndefined();
   });
 
-  it('falls back to the no-token conduit header', async () => {
+  it('still emits a fresh turn lifecycle when the caller supplies none', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ conduit_token: 'conduit-1' }));
 
     await createClient().prepareConversation({ action: 'next' });
 
-    expect(callAt(0).headers['X-Conduit-Token']).toBe('no-token');
+    expect(callAt(0).headers['X-Conduit-Token']).toBeUndefined();
+    expect(callAt(0).headers['X-Oai-Turn-Trace-Id']).toMatch(
+      /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/u,
+    );
+    expect(callAt(0).headers['X-Oai-Is-Client-Observation']).toMatch(/^v1\.r\.p\.[\w-]{16}$/u);
   });
 
+  // `{status:"ok", conduit_token:null}` (and equivalent missing/blank/malformed
+  // token shapes) is a NORMAL prepare response, not a failure — verified against
+  // a captured real Chrome session (2026-08-19): the browser gets the same null
+  // token for a Pro-tier turn and just proceeds via the conduit path with no
+  // `X-Conduit-Token` header. Throwing here (the old behavior) is what silently
+  // demoted those turns to the legacy endpoint and substituted a mini answer.
   it.each([
     ['a missing token', {}],
+    ['an explicit null token', { conduit_token: null }],
     ['a blank token', { conduit_token: '   ' }],
     ['a non-string token', { conduit_token: 42 }],
-  ])('rejects a 200 prepare with %s as a recoverable upstream error', async (_label, body) => {
+  ])('resolves with no conduit token for a 200 prepare with %s', async (_label, body) => {
     fetchMock.mockResolvedValue(jsonResponse(body));
 
-    // `upstream` is what lets the runtime take its plain fallback — see
-    // RECOVERABLE_PREPARE_KINDS
-    await expect(createClient().prepareConversation({ action: 'next' })).rejects.toMatchObject({
-      kind: 'upstream',
-      name: 'ChatGPTWebError',
-    });
+    await expect(createClient().prepareConversation({ action: 'next' })).resolves.toEqual({});
   });
 });
 
@@ -351,18 +431,24 @@ describe('ChatGPTWebClient.streamConversation', () => {
 
   it('uses the conduit variant for the /f/ path', async () => {
     fetchMock.mockResolvedValue(sseResponse(['[DONE]']));
+    const turnIdentity = {
+      observationId: 'abcdefghijklmnop',
+      traceId: '11111111-1111-4111-8111-111111111111',
+    };
 
     for await (const _event of createClient().streamConversation(
       {},
-      { conduitToken: 'conduit-1', requirements, useFPath: true },
+      { conduitToken: 'conduit-1', requirements, turnIdentity, useFPath: true },
     ));
 
     const { headers, url } = callAt(0);
     expect(url).toBe('https://chatgpt.com/backend-api/f/conversation');
     expect(headers['X-Conduit-Token']).toBe('conduit-1');
-    expect(headers['X-Oai-Turn-Trace-Id']).toBeTruthy();
-    // the web client omits these two on the conduit path
-    expect(headers['OpenAI-Sentinel-Turnstile-Token']).toBeUndefined();
+    expect(headers['X-Oai-Turn-Trace-Id']).toBe(turnIdentity.traceId);
+    expect(headers['X-Oai-Is-Client-Observation']).toBe(`v1.s.p.${turnIdentity.observationId}`);
+    // Captured Pro turns send the turnstile proof on the conduit SSE request,
+    // while the SO token remains exclusive to the plain endpoint.
+    expect(headers['OpenAI-Sentinel-Turnstile-Token']).toBe('turnstile-token');
     expect(headers['OpenAI-Sentinel-SO-Token']).toBeUndefined();
   });
 

@@ -1,6 +1,6 @@
 import type { RuntimeBrowserDeviceProfile } from '../../browserProfile';
 import { DEFAULT_BROWSER_DEVICE_PROFILE } from '../../browserProfile';
-import { DEFAULT_POW_SCRIPT } from './constants';
+import { DEFAULT_POW_SCRIPT, OAI_CLIENT_VERSION } from './constants';
 import { callerAbortReason, ChatGPTWebError, isChatGPTWebError } from './errors';
 import {
   buildLegacyRequirementsToken,
@@ -20,9 +20,62 @@ export interface SentinelPrepareResponse {
 }
 
 export interface SentinelFinalizeResponse {
+  /**
+   * Seconds until the requirements token expires. Captured 2026-08-19 as `540`.
+   */
+  expire_after?: number;
+  /** Unix-seconds deadline for the requirements token. */
+  expire_at?: number;
   so_token?: string;
   token?: string;
 }
+
+/**
+ * HAR-exact finalize body (2026-08-19 `chatgpt.com.har`). The previous aliases
+ * `proof_token` / `turnstile_token` are not what Chrome sends.
+ */
+export interface SentinelFinalizeBody {
+  prepare_token: string;
+  proofofwork: string;
+  turnstile: string;
+}
+
+/** Observed `expire_after` on a paid-session finalize (seconds). */
+export const SENTINEL_BUNDLE_TTL_SEC = 540;
+
+export const buildSentinelFinalizeBody = (
+  prepareToken: string | undefined,
+  challenges: { proofToken: string; turnstileToken: string },
+): SentinelFinalizeBody => ({
+  prepare_token: prepareToken ?? '',
+  proofofwork: challenges.proofToken,
+  turnstile: challenges.turnstileToken,
+});
+
+/**
+ * Absolute expiry for a minted bundle. Prefer the upstream `expire_at` unix
+ * timestamp; fall back to `expire_after` seconds; last resort is the captured
+ * 540s TTL. Never invent a tighter window than the HAR evidence.
+ */
+export const resolveSentinelBundleExpiryMs = (
+  finalize: SentinelFinalizeResponse,
+  nowMs = Date.now(),
+): number => {
+  if (
+    typeof finalize.expire_at === 'number' &&
+    Number.isFinite(finalize.expire_at) &&
+    finalize.expire_at > 0
+  )
+    return finalize.expire_at * 1000;
+
+  const after =
+    typeof finalize.expire_after === 'number' &&
+    Number.isFinite(finalize.expire_after) &&
+    finalize.expire_after > 0
+      ? finalize.expire_after
+      : SENTINEL_BUNDLE_TTL_SEC;
+  return nowMs + after * 1000;
+};
 
 /**
  * Bootstrap HTML → pow resources. The bootstrap is the request most likely to be
@@ -30,14 +83,19 @@ export interface SentinelFinalizeResponse {
  * upstream accepts.
  */
 export const resolvePowResources = (html: string | undefined): PowResources => {
-  if (!html) return { dataBuild: '', scriptSources: [DEFAULT_POW_SCRIPT] };
+  if (!html) return { dataBuild: OAI_CLIENT_VERSION, scriptSources: [DEFAULT_POW_SCRIPT] };
   return parsePowResources(html);
 };
 
 /** `<html data-build="prod-…">` — the live `OAI-Client-Version`. */
 const CLIENT_VERSION_RE = /data-build="(prod-[\w.-]+)"/;
-/** `…build_number\":9395725.0…` inside the embedded (escaped) JSON payloads. */
-const CLIENT_BUILD_NUMBER_RE = /build_number\\?"\s*:\s*"?(\d+)/;
+/**
+ * `build_number` inside the embedded payloads. The homepage has shipped this
+ * JSON both raw and escaped through multiple serialization layers, so match
+ * bounded non-digits between the stable key and its numeric value rather than
+ * assuming exactly one `\"` layer.
+ */
+const CLIENT_BUILD_NUMBER_RE = /build_number\D{0,32}(\d{5,})/i;
 
 export interface ClientBuildInfo {
   buildNumber?: string;

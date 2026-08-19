@@ -353,7 +353,12 @@ export abstract class ChatGPTWebHttp {
       managed.release();
     }
 
-    if (!text) return {} as T;
+    // An empty body is indistinguishable from `{}` once it is parsed, and the
+    // difference matters when a caller reports a field as missing.
+    if (!text) {
+      log('%s returned an empty body', options.context);
+      return {} as T;
+    }
     try {
       return JSON.parse(text) as T;
     } catch (error) {

@@ -4,7 +4,14 @@ import { ChatGPTWebClient } from './client';
 import { OAI_CLIENT_BUILD_NUMBER, OAI_CLIENT_VERSION } from './constants';
 import { ChatGPTWebError } from './errors';
 import * as pow from './pow';
-import { parseClientBuildInfo, resolvePowResources, solveSentinelChallenges } from './sentinel';
+import {
+  buildSentinelFinalizeBody,
+  parseClientBuildInfo,
+  resolvePowResources,
+  resolveSentinelBundleExpiryMs,
+  SENTINEL_BUNDLE_TTL_SEC,
+  solveSentinelChallenges,
+} from './sentinel';
 
 const resources = { dataBuild: '', scriptSources: ['https://chatgpt.com/x.js'] };
 
@@ -13,25 +20,63 @@ const prepareWithPow = {
   proofofwork: { difficulty: 'ffff', required: true, seed: 'seed' },
 };
 
+describe('buildSentinelFinalizeBody', () => {
+  it('uses the HAR field names, not the proof_token / turnstile_token aliases', () => {
+    const body = buildSentinelFinalizeBody('prep', {
+      proofToken: 'gAAAAABproof',
+      turnstileToken: 'turnstile',
+    });
+
+    expect(Object.keys(body)).toEqual(['prepare_token', 'proofofwork', 'turnstile']);
+    expect(body).toEqual({
+      prepare_token: 'prep',
+      proofofwork: 'gAAAAABproof',
+      turnstile: 'turnstile',
+    });
+  });
+});
+
+describe('resolveSentinelBundleExpiryMs', () => {
+  it('prefers expire_at unix seconds from the finalize payload', () => {
+    expect(resolveSentinelBundleExpiryMs({ expire_after: 540, expire_at: 1_787_125_390 })).toBe(
+      1_787_125_390_000,
+    );
+  });
+
+  it('falls back to expire_after seconds, then the captured 540s TTL', () => {
+    expect(resolveSentinelBundleExpiryMs({ expire_after: 120 }, 1000)).toBe(121_000);
+    expect(resolveSentinelBundleExpiryMs({}, 1000)).toBe(1000 + SENTINEL_BUNDLE_TTL_SEC * 1000);
+  });
+});
+
 describe('resolvePowResources', () => {
   it('falls back to the default sdk script when there is no html', () => {
-    expect(resolvePowResources(undefined).scriptSources).toEqual([
-      'https://chatgpt.com/backend-api/sentinel/sdk.js',
-    ]);
+    expect(resolvePowResources(undefined)).toEqual({
+      dataBuild: OAI_CLIENT_VERSION,
+      scriptSources: ['https://chatgpt.com/sentinel/20260810913b/sdk.js'],
+    });
   });
 });
 
 describe('parseClientBuildInfo', () => {
-  // shape of the live bootstrap HTML (2026-08-15)
+  // shape of the live bootstrap HTML (2026-08-19)
   const html =
-    '<!DOCTYPE html><html lang="en" data-build="prod-ee87f098e2f639d6379472eb197d55ab7018cdff">' +
-    '<script>self.__next_f.push([1,"{\\"build_number\\":9395725.0,\\"x\\":1}"])</script></html>';
+    '<!DOCTYPE html><html lang="en" data-build="prod-7fbaec23e81031dd954e1cf0bc3eecaf58cdd2ab">' +
+    '<script>self.__next_f.push([1,"{\\"build_number\\":9544329.0,\\"x\\":1}"])</script></html>';
 
   it('reads the live client version and build number', () => {
     expect(parseClientBuildInfo(html)).toEqual({
-      buildNumber: '9395725',
-      clientVersion: 'prod-ee87f098e2f639d6379472eb197d55ab7018cdff',
+      buildNumber: '9544329',
+      clientVersion: 'prod-7fbaec23e81031dd954e1cf0bc3eecaf58cdd2ab',
     });
+  });
+
+  it.each([
+    '{"build_number":9544329.0}',
+    String.raw`{\"build_number\":9544329.0}`,
+    String.raw`{\\\"build_number\\\":9544329.0}`,
+  ])('tolerates bootstrap JSON escaping: %s', (payload) => {
+    expect(parseClientBuildInfo(`<html>${payload}</html>`).buildNumber).toBe('9544329');
   });
 
   it('returns nothing it cannot find, so the caller keeps its constants', () => {
@@ -79,6 +124,29 @@ describe('getChatRequirements build markers', () => {
       .mockResolvedValueOnce(new Response('nope', { status: 403 }))
       .mockResolvedValueOnce(json({ prepare_token: 'prep' }))
       .mockResolvedValueOnce(json({ so_token: 'so', token: 'requirements' }));
+
+    const client = new ChatGPTWebClient({
+      accessToken: 'access-token',
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await client.getChatRequirements();
+
+    const headers = fetchMock.mock.calls[1][1].headers as Record<string, string>;
+    expect(headers['OAI-Client-Version']).toBe(OAI_CLIENT_VERSION);
+    expect(headers['OAI-Client-Build-Number']).toBe(OAI_CLIENT_BUILD_NUMBER);
+  });
+
+  it('ignores the unauthenticated mweb shell and keeps the authenticated markers', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          '<html data-build="prod-unauth"><script src="/unauth-mweb/assets/client.js"></script><b>build_number:1111111</b></html>',
+          { headers: { 'content-type': 'text/html' }, status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(json({ prepare_token: 'prep' }))
+      .mockResolvedValueOnce(json({ token: 'requirements' }));
 
     const client = new ChatGPTWebClient({
       accessToken: 'access-token',

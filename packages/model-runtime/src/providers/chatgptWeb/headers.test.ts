@@ -21,6 +21,8 @@ import {
   buildRequestHeaders,
   buildSentinelHeaders,
   buildSessionHeaders,
+  buildTurnRequestHeaders,
+  createTurnRequestIdentity,
   type SessionFingerprint,
 } from './headers';
 
@@ -232,6 +234,16 @@ describe('XHR builders drop navigation-only headers', () => {
     expect(headers['Sec-Fetch-User']).toBe('');
     expect(headers['Upgrade-Insecure-Requests']).toBe('');
     expect(hasNonEmptyNavigationOnly(headers)).toBe(false);
+  });
+
+  it('shares one trace and observation suffix across prepare and send', () => {
+    const identity = createTurnRequestIdentity();
+    const prepare = buildTurnRequestHeaders(identity, 'prepare');
+    const send = buildTurnRequestHeaders(identity, 'send');
+
+    expect(prepare['X-Oai-Turn-Trace-Id']).toBe(send['X-Oai-Turn-Trace-Id']);
+    expect(prepare['X-Oai-Is-Client-Observation']).toBe(`v1.r.p.${identity.observationId}`);
+    expect(send['X-Oai-Is-Client-Observation']).toBe(`v1.s.p.${identity.observationId}`);
   });
 
   it('buildBlobUploadHeaders is a cross-site XHR with the low-entropy trio', () => {

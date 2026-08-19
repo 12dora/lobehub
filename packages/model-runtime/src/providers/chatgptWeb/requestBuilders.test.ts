@@ -186,6 +186,7 @@ describe('toConversationMessages', () => {
 
     expect(messages[0].metadata.system_hints).toBeUndefined();
     expect(messages[1].metadata.system_hints).toEqual(['search']);
+    expect(messages[1].metadata.selected_sources).toEqual([]);
     expect(messages[1].metadata.serialization_metadata).toEqual({ custom_symbol_offsets: [] });
     expect(typeof messages[1].create_time).toBe('number');
   });
@@ -205,7 +206,25 @@ describe('buildPrepareBody', () => {
     expect(body.partial_query.content).toEqual({ content_type: 'text', parts: ['weather?'] });
     expect(body.supports_buffering).toBe(true);
     expect(body.supported_encodings).toEqual(['v1']);
-    expect(body.client_contextual_info).toEqual({ app_name: 'chatgpt.com' });
+    expect(body.client_contextual_info).toEqual({
+      app_name: 'chatgpt.com',
+      has_web_push_capabilities: true,
+      web_push_notification_permission: 'default',
+    });
+    expect(body.client_prepare_dispatch).toBe('immediate');
+    expect(body.client_prepare_source).toBe('context_change');
+    expect(body.local_function_names).toEqual(['local.continue_in_work']);
+    expect(body).not.toHaveProperty('fork_from_shared_post');
+  });
+
+  it('supports the sent phase of the browser prepare lifecycle', () => {
+    expect(
+      buildPrepareBody({
+        clientPrepareState: 'sent',
+        model: 'gpt-5-6-pro',
+        prompt: 'who are you?',
+      }).client_prepare_state,
+    ).toBe('sent');
   });
 
   it('keeps attachment_mime_types for the document flow only', () => {
@@ -336,14 +355,17 @@ describe('buildFConversationBody', () => {
     expect(body.client_prepare_state).toBe('sent');
     expect(body.client_contextual_info).toEqual({
       app_name: 'chatgpt.com',
+      has_web_push_capabilities: true,
       is_dark_mode: false,
-      page_height: Math.min(1138, PROFILE.screen.availHeight),
-      page_width: 803,
+      page_height: Math.min(856, PROFILE.screen.availHeight),
+      page_width: 741,
       pixel_ratio: PROFILE.screen.dpr,
       screen_height: PROFILE.screen.height,
       screen_width: PROFILE.screen.width,
-      time_since_loaded: 401,
+      time_since_loaded: 874,
+      web_push_notification_permission: 'default',
     });
+    expect(body.local_function_names).toEqual(['local.continue_in_work']);
     expect(body.parent_message_id).toBe('client-created-root');
   });
 

@@ -94,12 +94,12 @@ const legacyParseTime = (profile: RuntimeBrowserDeviceProfile, now = Date.now())
 /** Floats are rounded so JS and the reference implementation stringify alike. */
 const round3 = (value: number) => Math.round(value * 1000) / 1000;
 
-export type PowConfig = (string | number)[];
+export type PowConfig = (null | string | number)[];
 
 export interface BuildPowConfigOptions {
   browserProfile?: RuntimeBrowserDeviceProfile;
   dataBuild?: string;
-  scriptSources?: string[];
+  scriptSources?: Array<null | string>;
   userAgent: string;
 }
 
@@ -117,7 +117,8 @@ export const buildPowConfig = ({
   return [
     resolution[0] + resolution[1],
     legacyParseTime(browserProfile),
-    4_294_705_152,
+    // `performance.memory.jsHeapSizeLimit` from the verified Chrome 150 HAR.
+    4_395_630_592,
     1, // overwritten with the iteration counter
     userAgent,
     pick(sources),
@@ -147,7 +148,17 @@ export const buildPowConfig = ({
  * `p` — the "requirements" token: the config array, no work done.
  */
 export const buildLegacyRequirementsToken = (options: BuildPowConfigOptions): string =>
-  POW_CONFIG_PREFIX + encodeUtf8Base64(JSON.stringify(buildPowConfig(options)));
+  POW_CONFIG_PREFIX +
+  encodeUtf8Base64(
+    JSON.stringify(
+      buildPowConfig({
+        ...options,
+        // The browser's initial requirements `p` leaves the script slot null;
+        // the chosen Sentinel SDK appears only in the solved proof config.
+        scriptSources: [null],
+      }),
+    ),
+  );
 
 const yieldToEventLoop = () =>
   new Promise<void>((resolve) => {

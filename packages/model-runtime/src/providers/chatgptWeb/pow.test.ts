@@ -62,7 +62,7 @@ describe('buildPowConfig', () => {
     });
 
     expect(config).toHaveLength(25);
-    expect(config[2]).toBe(4_294_705_152);
+    expect(config[2]).toBe(4_395_630_592);
     expect(config[3]).toBe(1);
     expect(config[4]).toBe(USER_AGENT);
     expect(config[5]).toBe('https://example.com/a.js');
@@ -125,6 +125,7 @@ describe('buildLegacyRequirementsToken', () => {
     const decoded = JSON.parse(decodeBase64Utf8(token.slice(POW_CONFIG_PREFIX.length)));
     expect(decoded).toHaveLength(25);
     expect(decoded[4]).toBe(USER_AGENT);
+    expect(decoded[5]).toBeNull();
   });
 });
 

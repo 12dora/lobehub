@@ -40,6 +40,8 @@ import {
   ChatGPTWebClient,
   ChatGPTWebError,
   composeSignals,
+  createTurnRequestIdentity,
+  deriveSentinelContextKey,
   extractCitations,
   isCallerAbort,
   isChatGPTWebError,
@@ -118,6 +120,26 @@ const timeoutSignalHandle = (ms: number): { cleanup: () => void; signal: AbortSi
 const resolveThinkingEffort = (payload: ChatStreamPayload): string | undefined =>
   normalizeThinkingEffort(payload.reasoning_effort ?? payload.reasoning?.effort);
 
+/**
+ * `-pro` model ids (`gpt-5-6-pro`, `gpt-5-5-pro`, …) are the top research-grade tier —
+ * on the real chatgpt.com client, PICKING Pro in the model switcher IS the effort
+ * selection; there is no separate slider for it the way there is for `-thinking`
+ * models, so a real Pro turn always carries `thinking_effort`. Verified against a
+ * captured real Chrome session (2026-08-19, `chatgpt.com.har`): a Pro turn with no
+ * explicit user-chosen effort sends `thinking_effort: "standard"` — the SAME
+ * default other reasoning-capable tiers get, not `"max"`. (A `conduit_token: null`
+ * prepare response turned out to be normal for this tier regardless of the effort
+ * value sent — see the fix in `client.ts#prepareConversation` — so this default
+ * is about matching the real request shape, not about unblocking the token.)
+ */
+const isProTierModel = (model: string): boolean => model.endsWith('-pro');
+
+const resolveEffectiveThinkingEffort = (payload: ChatStreamPayload): string | undefined => {
+  const requested = resolveThinkingEffort(payload);
+  if (requested) return requested;
+  return isProTierModel(payload.model) ? 'standard' : undefined;
+};
+
 /** Shared settings for a live slug the catalogue does not carry yet. */
 const LIVE_MODEL_SETTINGS: NonNullable<ChatModelCard['settings']> = {
   searchImpl: 'params',
@@ -129,6 +151,11 @@ export interface LobeChatGPTWebParams {
   apiKey?: string;
   baseURL?: string;
   browserProfile?: RuntimeBrowserDeviceProfile;
+  /**
+   * Opaque Browser Session Context key from C1. When omitted, a provisional
+   * key is derived from the device/session/profile already on the client.
+   */
+  browserSessionContextKey?: string;
   chatgptAccountId?: string;
   chatgptDeviceId?: string;
   /** Test seam — inject a pre-built (or fake) protocol client. */
@@ -144,6 +171,11 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
 
   private readonly client: ChatGPTWebClient;
   /**
+   * Opaque C1 context key. Conversation turns pass this into the Sentinel
+   * bundle pool so a later Browser Session Context can share/invalidate it.
+   */
+  private readonly browserSessionContextKey?: string;
+  /**
    * Namespace for the process-wide upload cache. Uploaded file ids are
    * account-scoped, so the cache MUST NOT be shared between credentials — see
    * {@link uploadNamespace}.
@@ -154,6 +186,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     apiKey,
     baseURL,
     browserProfile,
+    browserSessionContextKey,
     chatgptAccountId,
     chatgptDeviceId,
     client,
@@ -165,6 +198,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
 
     this.provider = id || DEFAULT_PROVIDER;
     if (baseURL) this.baseURL = baseURL;
+    this.browserSessionContextKey = browserSessionContextKey;
 
     this.client =
       client ??
@@ -179,6 +213,19 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     this.uploadNamespace = uploadNamespace(chatgptAccountId ?? this.client.accountId, apiKey);
   }
 
+  /**
+   * Until C1 lands, derive a stable per-device/session/profile key. Once the
+   * Browser Session Context exists, pass `browserSessionContextKey` (the
+   * registry context id) into {@link LobeChatGPTWebParams}.
+   */
+  private resolveSentinelContextKey(): string {
+    if (this.browserSessionContextKey) return this.browserSessionContextKey;
+    const { browserProfile, deviceId, sessionId } = this.client;
+    if (deviceId && sessionId && browserProfile?.id)
+      return deriveSentinelContextKey({ deviceId, profileId: browserProfile.id, sessionId });
+    return 'chatgptweb:unscoped';
+  }
+
   async chat(payload: ChatStreamPayload, options?: ChatMethodOptions): Promise<Response> {
     const inputStartAt = Date.now();
     const signal = options?.signal;
@@ -191,7 +238,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
 
       const search = payload.enabledSearch === true;
       const hasAttachments = mimeTypes.length > 0;
-      const thinkingEffort = resolveThinkingEffort(payload);
+      const thinkingEffort = resolveEffectiveThinkingEffort(payload);
       /**
        * The `/f/` conduit path is what the web client uses for EVERY turn, and
        * it is the only one whose conversation the upstream keeps: the plain
@@ -208,23 +255,56 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       const mayFallBack = !search && !hasAttachments && !thinkingEffort;
       const model = payload.model;
 
-      const requirements = await this.client.getChatRequirements({ signal });
+      const contextKey = this.resolveSentinelContextKey();
+      const acquired = await this.client.acquireSentinelBundle({ contextKey, signal });
+      const requirements = acquired.requirements;
+      const turnIdentity = createTurnRequestIdentity();
 
       let useFPath = true;
       let conduitToken: string | undefined;
       try {
-        const prepare = buildPrepareBody({
-          attachmentMimeTypes: hasAttachments ? mimeTypes : undefined,
-          browserProfile: this.client.browserProfile,
-          model,
-          prompt: lastUserText(messages),
-          systemHints: search ? ['search'] : [],
-          thinkingEffort,
-        });
-        ({ conduitToken } = await this.client.prepareConversation(prepare, {
-          requirements,
-          signal,
-        }));
+        const prepare = (clientPrepareState: 'sent' | 'success') =>
+          buildPrepareBody({
+            attachmentMimeTypes: hasAttachments ? mimeTypes : undefined,
+            browserProfile: this.client.browserProfile,
+            clientPrepareState,
+            model,
+            prompt: lastUserText(messages),
+            systemHints: search ? ['search'] : [],
+            thinkingEffort,
+          });
+        const prepareStates: Array<'sent' | 'success'> = isProTierModel(model)
+          ? ['success', 'sent']
+          : ['success'];
+        const pendingPrepares = prepareStates.map((clientPrepareState) =>
+          this.client.prepareConversation(prepare(clientPrepareState), {
+            requirements,
+            signal,
+            turnIdentity,
+          }),
+        );
+
+        if (isProTierModel(model)) {
+          /**
+           * Pro prepare calls are browser lifecycle observations, not a gate. In the real
+           * Chrome HAR both calls started at +0/+11 ms, `/f/conversation` started at +98 ms,
+           * and the prepare responses did not arrive until +1471/+1505 ms. Waiting for them
+           * changes the protocol ordering — and a null conduit token cannot possibly be an
+           * input to a send that was already in flight. Observe failures so no rejection is
+           * lost, but launch the actual turn immediately just like the browser.
+           */
+          void Promise.allSettled(pendingPrepares).then((results) => {
+            for (const result of results) {
+              if (result.status === 'rejected')
+                log('non-blocking Pro prepare failed after send: %s', String(result.reason));
+              else if (result.value.conduitToken)
+                log('non-blocking Pro prepare returned a late conduit token; ignoring it');
+            }
+          });
+        } else {
+          const prepared = await Promise.all(pendingPrepares);
+          conduitToken = prepared.findLast((result) => result.conduitToken)?.conduitToken;
+        }
       } catch (error) {
         // Only a failure the plain path can actually correct falls back: a
         // credential / cap / bot-protection failure is about the account, and
@@ -283,13 +363,18 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         idleTimeoutMs: STREAM_IDLE_MS,
         requirements,
         signal,
+        turnIdentity,
         useFPath,
       });
       const iterator = conversation[Symbol.asyncIterator]();
 
       // Pull the first event here so an upstream 401/403/429 becomes a proper
-      // error Response instead of a mid-stream error chunk.
-      const first = await iterator.next();
+      // error Response instead of a mid-stream error chunk. Kick the next
+      // Sentinel handshake as soon as that request is in flight so it overlaps
+      // the current stream; a replenish failure never rejects this turn.
+      const firstPromise = iterator.next();
+      this.client.replenishSentinelBundle({ contextKey });
+      const first = await firstPromise;
 
       const events = this.trackConversation(replayIterator(first, iterator), turn);
 

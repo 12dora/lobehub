@@ -128,7 +128,7 @@ describe('generateBrowserDeviceProfile', () => {
           "availHeight": 1415,
           "availWidth": 2560,
           "colorDepth": 24,
-          "dpr": 2,
+          "dpr": 1,
           "height": 1440,
           "width": 2560,
         },

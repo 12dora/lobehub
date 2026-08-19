@@ -84,6 +84,24 @@ export const LOCALE_BUNDLES = [
     weight: 4,
   },
   {
+    /**
+     * Captured from the real Chrome session used by the ChatGPT Web shared
+     * account on 2026-08-19. Keep it operator-selectable without changing the
+     * deterministic distribution of already-generated installation profiles.
+     */
+    acceptLanguage: 'zh-CN,zh;q=0.9,en;q=0.8,zh-TW;q=0.7,ja;q=0.6',
+    languages: ['zh-CN', 'zh', 'en', 'zh-TW', 'ja'],
+    oaiLanguage: 'zh-CN',
+    timezone: {
+      iana: 'Asia/Singapore',
+      jsDateSuffix: 'GMT+0800 (新加坡标准时间)',
+      offsetKind: 'standard',
+      offsetMinutes: -480,
+    },
+    // Manual calibration target only; zero preserves seeded generation output.
+    weight: 0,
+  },
+  {
     acceptLanguage: 'en-US,en;q=0.9',
     languages: ['en-US', 'en'],
     oaiLanguage: 'en-US',
@@ -259,6 +277,7 @@ export interface PlatformDefinition {
 const MAC_SCREENS = [
   { availHeight: 875, availWidth: 1440, colorDepth: 24, dpr: 2, height: 900, width: 1440 },
   { availHeight: 956, availWidth: 1512, colorDepth: 24, dpr: 2, height: 982, width: 1512 },
+  { availHeight: 1091, availWidth: 1728, colorDepth: 24, dpr: 2, height: 1117, width: 1728 },
   { availHeight: 1055, availWidth: 1920, colorDepth: 24, dpr: 1, height: 1080, width: 1920 },
   { availHeight: 1415, availWidth: 2560, colorDepth: 24, dpr: 1, height: 1440, width: 2560 },
   { availHeight: 1415, availWidth: 2560, colorDepth: 24, dpr: 2, height: 1440, width: 2560 },

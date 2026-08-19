@@ -6,6 +6,7 @@ import {
   ChatGPTWebError,
   classifyResponseError,
   classifyTransportError,
+  describeResponseShape,
   parseRetryAfterMs,
   toAgentRuntimeErrorType,
   TRANSPORT_UNAVAILABLE_CODE,
@@ -276,5 +277,41 @@ describe('error body sanitization', () => {
       code: 'boom',
       status: 500,
     });
+  });
+});
+
+describe('describeResponseShape', () => {
+  it('describes keys and types without revealing values', () => {
+    expect(
+      describeResponseShape({ conduit_token: null, enabled: false, token: 'abcdef', turns: 3 }),
+    ).toBe('{conduit_token:null, enabled:false, token:string(6), turns:3}');
+  });
+
+  it('keeps the fields that carry a human-readable reason', () => {
+    expect(describeResponseShape({ code: 'model_unavailable', detail: 'no access' })).toBe(
+      '{code="model_unavailable", detail="no access"}',
+    );
+  });
+
+  it('redacts a url or a token inside a revealed reason', () => {
+    const shape = describeResponseShape({ detail: 'retry at https://chatgpt.com/x?sig=SECRET' });
+    expect(shape).not.toContain('SECRET');
+    expect(shape).toContain('<redacted url>');
+  });
+
+  it('descends a bounded number of levels and then reports the size only', () => {
+    expect(describeResponseShape({ a: { b: { c: { d: 1 } } } })).toBe('{a:{b:{c:object(1)}}}');
+  });
+
+  it('describes the non-object shapes a body can take', () => {
+    expect(describeResponseShape({})).toBe('{}');
+    expect(describeResponseShape(null)).toBe('null');
+    expect(describeResponseShape([1, 2])).toBe('array(2) of 1');
+    expect(describeResponseShape('raw')).toBe('string(3)');
+  });
+
+  it('caps a wide object instead of dumping every key', () => {
+    const wide = Object.fromEntries(Array.from({ length: 50 }, (_, index) => [`k${index}`, index]));
+    expect(describeResponseShape(wide)).toContain('…+10');
   });
 });

@@ -24,8 +24,9 @@ const timeZoneNamePart = (
   iana: string,
   at: Date,
   timeZoneName: 'long' | 'longOffset',
+  locale = 'en-US',
 ): string | undefined =>
-  new Intl.DateTimeFormat('en-US', { timeZone: iana, timeZoneName })
+  new Intl.DateTimeFormat(locale, { timeZone: iana, timeZoneName })
     .formatToParts(at)
     .find((part) => part.type === 'timeZoneName')?.value;
 
@@ -60,9 +61,13 @@ const formatOffsetToken = (offsetMinutes: number): string => {
  * The `Date#toString()` tail V8 produces for this zone right now, for example
  * `GMT+0100 (Central European Summer Time)`.
  */
-export const resolveTimezoneJsDateSuffix = (iana: string, at: Date = new Date()) => {
+export const resolveTimezoneJsDateSuffix = (
+  iana: string,
+  at: Date = new Date(),
+  locale = 'en-US',
+) => {
   try {
-    const longName = timeZoneNamePart(iana, at, 'long');
+    const longName = timeZoneNamePart(iana, at, 'long', locale);
     const offsetMinutes = resolveTimezoneOffsetMinutes(iana, at);
     if (!longName || offsetMinutes === undefined) return undefined;
     return `${formatOffsetToken(offsetMinutes)} (${longName})`;
@@ -76,12 +81,14 @@ export const resolveTimezoneJsDateSuffix = (iana: string, at: Date = new Date())
  * values when the runtime does not know the zone (`Intl` without full ICU data).
  */
 export const resolveProfileTimezone = (
-  profile: Pick<BrowserDeviceProfile, 'timezone'>,
+  profile: Pick<BrowserDeviceProfile, 'timezone'> &
+    Partial<Pick<BrowserDeviceProfile, 'languages' | 'oaiLanguage'>>,
   at: Date = new Date(),
 ): Pick<BrowserTimezoneProfile, 'jsDateSuffix' | 'offsetMinutes'> => {
   const { iana, jsDateSuffix, offsetMinutes } = profile.timezone;
+  const locale = profile.languages?.[0] ?? profile.oaiLanguage ?? 'en-US';
   return {
-    jsDateSuffix: resolveTimezoneJsDateSuffix(iana, at) ?? jsDateSuffix,
+    jsDateSuffix: resolveTimezoneJsDateSuffix(iana, at, locale) ?? jsDateSuffix,
     offsetMinutes: resolveTimezoneOffsetMinutes(iana, at) ?? offsetMinutes,
   };
 };

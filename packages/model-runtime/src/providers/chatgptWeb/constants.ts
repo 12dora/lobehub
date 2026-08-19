@@ -33,7 +33,7 @@ export const TEMPLATED_ROUTES = {
 } as const;
 
 /** Fallback pow script when the bootstrap HTML cannot be scraped (403 etc.). */
-export const DEFAULT_POW_SCRIPT = 'https://chatgpt.com/backend-api/sentinel/sdk.js';
+export const DEFAULT_POW_SCRIPT = 'https://chatgpt.com/sentinel/20260810913b/sdk.js';
 
 /**
  * ROTS: these two are pinned build markers of the chatgpt.com web bundle. They
@@ -42,8 +42,8 @@ export const DEFAULT_POW_SCRIPT = 'https://chatgpt.com/backend-api/sentinel/sdk.
  * from a fresh browser session's request headers if the bootstrap ever stops
  * being reachable and the sentinel flow starts failing wholesale.
  */
-export const OAI_CLIENT_VERSION = 'prod-ee87f098e2f639d6379472eb197d55ab7018cdff';
-export const OAI_CLIENT_BUILD_NUMBER = '9395725';
+export const OAI_CLIENT_VERSION = 'prod-7fbaec23e81031dd954e1cf0bc3eecaf58cdd2ab';
+export const OAI_CLIENT_BUILD_NUMBER = '9544329';
 
 /** Proof-of-work token prefixes. */
 export const POW_CONFIG_PREFIX = 'gAAAAAC';
@@ -53,10 +53,12 @@ export const POW_ITERATION_LIMIT = 500_000;
 /** Yield to the event loop every N iterations so a long solve cannot freeze it. */
 export const POW_YIELD_EVERY = 2000;
 
-/** ROTS: React internal property names observed on chatgpt.com's document. */
+/** React uses one random internal-key suffix for the lifetime of the page bundle. */
+const REACT_INTERNAL_SUFFIX = Math.random().toString(36).slice(2);
+
 export const POW_DOCUMENT_KEYS = [
-  '__reactContainer$fzelfjyxej8',
-  '_reactListening5dehydibo78',
+  `__reactContainer$${REACT_INTERNAL_SUFFIX}`,
+  `_reactListening${REACT_INTERNAL_SUFFIX}`,
   'location',
 ];
 /**
@@ -84,6 +86,7 @@ const POW_NAVIGATOR_KEYS_BASE = [
   'presentation−[object Presentation]',
   'onLine−true',
   'mimeTypes−[object MimeTypeArray]',
+  'plugins−[object PluginArray]',
   'credentials−[object CredentialsContainer]',
   'serviceWorker−[object ServiceWorkerContainer]',
   'keyboard−[object Keyboard]',
@@ -118,6 +121,7 @@ export const POW_WINDOW_KEYS = [
   'innerHeight',
   'scrollX',
   'scrollY',
+  'scrollBy',
   'visualViewport',
   'screenX',
   'screenY',
@@ -218,13 +222,15 @@ export const buildClientContextualInfo = (profile: RuntimeBrowserDeviceProfile) 
 export const buildFlowClientContextualInfo = (profile: RuntimeBrowserDeviceProfile) => ({
   attachments: {
     app_name: 'chatgpt.com',
+    has_web_push_capabilities: true,
     is_dark_mode: profile.prefersColorScheme === 'dark',
-    page_height: Math.min(1138, profile.screen.availHeight),
-    page_width: Math.min(803, profile.screen.availWidth),
+    page_height: Math.min(856, profile.screen.availHeight),
+    page_width: Math.min(741, profile.screen.availWidth),
     pixel_ratio: profile.screen.dpr,
     screen_height: profile.screen.height,
     screen_width: profile.screen.width,
-    time_since_loaded: 401,
+    time_since_loaded: 874,
+    web_push_notification_permission: 'default',
   },
   picture: {
     app_name: 'chatgpt.com',
