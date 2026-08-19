@@ -66,6 +66,8 @@ interface InternalBundle {
 
 interface ContextSlot {
   binding?: SentinelBundleBinding;
+  /** Bumped on invalidate so a late mint cannot park on a reused object. */
+  generation: number;
   minting?: Promise<InternalBundle | undefined>;
   mutex: Mutex;
   ready: InternalBundle[];
@@ -195,12 +197,11 @@ export class SentinelBundlePool {
     mint: SentinelBundleMintFn,
     signal?: AbortSignal,
   ): Promise<AcquiredSentinelBundle> {
-    const slot = this.slotFor(binding.contextKey);
-
     for (;;) {
       const abortReason = callerAbortReason(signal);
       if (abortReason !== undefined) throw abortReason;
 
+      const slot = this.slotFor(binding.contextKey);
       const step = await slot.mutex.run(() => {
         this.adoptBinding(slot, binding);
         const ready = this.takeReady(slot);
@@ -276,8 +277,14 @@ export class SentinelBundlePool {
   invalidate(contextKey: string): void {
     const slot = this.slots.get(contextKey);
     if (!slot) return;
+    slot.generation += 1;
+    this.discardReady(slot);
+    slot.minting = undefined;
+    slot.binding = undefined;
+    this.slots.delete(contextKey);
     void slot.mutex
       .run(() => {
+        // Fence any waiter that already held the mutex: the slot is gone.
         this.discardReady(slot);
         slot.minting = undefined;
         slot.binding = undefined;
@@ -287,20 +294,16 @@ export class SentinelBundlePool {
       });
   }
 
-  /** Test seam: drop all slots. Do not call while mints are in flight. */
+  /** Test seam: drop all slots. Safe with in-flight mints — late parks are fenced. */
   reset(): void {
-    for (const slot of this.slots.values()) {
-      this.discardReady(slot);
-      slot.minting = undefined;
-      slot.binding = undefined;
-    }
+    for (const key of Array.from(this.slots.keys())) this.invalidate(key);
     this.slots.clear();
   }
 
   private slotFor(contextKey: string): ContextSlot {
     const existing = this.slots.get(contextKey);
     if (existing) return existing;
-    const created: ContextSlot = { mutex: new Mutex(), ready: [] };
+    const created: ContextSlot = { generation: 0, mutex: new Mutex(), ready: [] };
     this.slots.set(contextKey, created);
     return created;
   }
@@ -366,10 +369,14 @@ export class SentinelBundlePool {
     mint: SentinelBundleMintFn,
     signal?: AbortSignal,
   ): Promise<InternalBundle | undefined> {
+    const generation = slot.generation;
+    const contextKey = binding.contextKey;
     const promise: Promise<InternalBundle | undefined> = (async () => {
       try {
         const minted = await mint(signal);
         return await slot.mutex.run(() => {
+          if (this.slots.get(contextKey) !== slot) return undefined;
+          if (slot.generation !== generation) return undefined;
           if (slot.minting !== promise) return undefined;
           slot.minting = undefined;
           // The slot rotated to another device/session/profile while we were
@@ -391,6 +398,8 @@ export class SentinelBundlePool {
         });
       } catch (error) {
         await slot.mutex.run(() => {
+          if (this.slots.get(contextKey) !== slot) return;
+          if (slot.generation !== generation) return;
           if (slot.minting === promise) slot.minting = undefined;
         });
         throw error;

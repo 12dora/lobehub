@@ -1,3 +1,5 @@
+let enterpriseWorkerShutdownHooksRegistered = false;
+
 export async function register() {
   // In local development, write debug logs to logs/server.log
   if (process.env.NODE_ENV !== 'production' && process.env.NEXT_RUNTIME === 'nodejs') {
@@ -61,6 +63,22 @@ export async function register() {
       console.error('[Instrumentation] enterprise workers bootstrap failed (non-blocking)', {
         errorClass: error instanceof Error ? error.name : 'UnknownError',
       });
+    }
+
+    // Once-hooks: drain browser sessions on SIGTERM/SIGINT. Do not process.exit.
+    if (!enterpriseWorkerShutdownHooksRegistered) {
+      enterpriseWorkerShutdownHooksRegistered = true;
+      const stopWorkers = () => {
+        void import('@/server/enterprise/bootstrap/workersBootstrap')
+          .then((mod) => mod.stopEnterpriseWorkers())
+          .catch((error) => {
+            console.error('[Instrumentation] enterprise workers stop failed (non-blocking)', {
+              errorClass: error instanceof Error ? error.name : 'UnknownError',
+            });
+          });
+      };
+      process.once('SIGTERM', stopWorkers);
+      process.once('SIGINT', stopWorkers);
     }
   }
 

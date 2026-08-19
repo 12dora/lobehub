@@ -1,10 +1,20 @@
 export type { BrowserSessionRegistryOptions } from './contextRegistry';
 export {
+  assertWritable,
   createBrowserSessionRegistry,
+  DEFAULT_BROWSER_SESSION_EPHEMERAL_IDLE_TTL_MS,
+  DEFAULT_BROWSER_SESSION_IDLE_TTL_MS,
+  DEFAULT_BROWSER_SESSION_MAX_CONTEXTS,
+  DEFAULT_BROWSER_SESSION_SWEEP_INTERVAL_MS,
+  disposeAllBrowserSessions,
   getBrowserSessionProviderState,
   getBrowserSessionRegistry,
+  installBrowserSessionRegistryForTests,
+  isBrowserSessionWritable,
   resetBrowserSessionRegistryForTests,
   setBrowserSessionProviderState,
+  startBrowserSessionIdleSweep,
+  stopBrowserSessionIdleSweep,
   summarizeBrowserSessionContext,
 } from './contextRegistry';
 export type {
@@ -17,6 +27,7 @@ export type {
 } from './cookieJar';
 export {
   applySetCookieToBrowserCookieJar,
+  clearBrowserCookieJarTombstone,
   cookieFamilyName,
   createBrowserCookieJar,
   DEFAULT_BROWSER_COOKIE_JAR_DIR_NAME,
@@ -24,14 +35,20 @@ export {
   ensureBrowserCookieJarFile,
   inspectBrowserCookieJar,
   isAllowedCookieName,
+  isBrowserCookieJarTombstoned,
   isCookieFamilyMember,
   isSafeCookieSeed,
+  LEGACY_DEVICE_BROWSER_COOKIE_JAR_DIR_NAME,
+  parseNetscapeCookieJarText,
   purgeExpiredBrowserCookies,
   readBrowserCookieJar,
   replaceBrowserCookieFamily,
   resetBrowserCookieJars,
   resolveBrowserCookieJarPath,
   seedBrowserCookieJar,
+  sweepOrphanBrowserCookieJars,
+  tombstoneBrowserCookieJar,
+  writeBrowserCookieJarRecords,
 } from './cookieJar';
 export {
   buildBrowserSessionBindingDigest,
@@ -41,6 +58,7 @@ export {
   normalizeBrowserSessionIdentity,
   normalizeBrowserSessionOrigin,
 } from './identity';
+export type { BrowserSessionInvalidateListener } from './lifecycle';
 export {
   createBrowserSessionOwnerLease,
   disposeBrowserSessionResources,
@@ -48,11 +66,37 @@ export {
   isBrowserSessionLeaseHeldBy,
   markBrowserSessionInvalidated,
   markBrowserSessionReleased,
+  notifyBrowserSessionInvalidated,
+  onBrowserSessionInvalidate,
 } from './lifecycle';
+export type {
+  LibcurlMultiDriver,
+  LibcurlMultiDriverStats,
+  LibcurlPoolIdentity,
+  LibcurlProbeResult,
+  PersistentImpersonateFetchOptions,
+  PersistentPoolResolution,
+} from './transport';
+export {
+  CONNECT_TIMEOUT_MS,
+  createLibcurlMultiDriver,
+  createPersistentImpersonateFetch,
+  drainAllPersistentTransport,
+  drainPersistentTransportForScope,
+  drainPersistentTransportWhere,
+  getSharedLibcurlMultiDriver,
+  LIBCURL_IMPERSONATE_PATH_ENV,
+  probeLibcurlImpersonate,
+  resetLibcurlImpersonateProbeForTests,
+  resetSharedLibcurlMultiDriverForTests,
+  resolveLibcurlImpersonatePath,
+  TRANSPORT_POOL_DRAINED,
+} from './transport';
 export type { BrowserSessionTransportHandle, BrowserSessionTransportPool } from './transportPool';
 export {
   buildBrowserSessionTransportPoolKey,
   createBrowserSessionTransportPool,
+  registerBrowserSessionScopeDrain,
 } from './transportPool';
 export type {
   BrowserSessionAcquireInput,
@@ -64,5 +108,6 @@ export type {
   BrowserSessionProviderNamespaces,
   BrowserSessionProviderState,
   BrowserSessionRegistry,
+  BrowserSessionWriteFence,
 } from './types';
 export { BrowserSessionError } from './types';

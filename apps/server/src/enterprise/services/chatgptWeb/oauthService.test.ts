@@ -19,7 +19,11 @@ import {
 import { readBrowserCookieJar } from '@/server/enterprise/services/browserSession/cookieJar';
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
-import { bindChatGPTWebBrowserSession } from './browserSession';
+import {
+  bindChatGPTWebBrowserSession,
+  invalidateChatGPTWebBrowserSession,
+  rotateChatGPTWebBrowserSession,
+} from './browserSession';
 import {
   ChatGPTWebOAuthError,
   ChatGPTWebOAuthService,
@@ -125,8 +129,8 @@ const withFakeTimers = async <T>(run: () => Promise<T>): Promise<T> => {
 
 const futureExp = Math.floor(Date.now() / 1000) + 86_400;
 
-afterEach(() => {
-  resetCookieJars();
+afterEach(async () => {
+  await Promise.resolve(resetCookieJars());
   resetBrowserSessionRegistryForTests();
 });
 
@@ -1689,6 +1693,165 @@ describe('ChatGPTWebOAuthService.connectWithSession', () => {
     expect(getBrowserSessionRegistry().get(liveId)?.lifecycle).toBe('active');
     expect(readFileSync(livePath, 'utf8')).toContain('old-session');
     expect(readFileSync(livePath, 'utf8')).not.toContain('new-session');
+  });
+
+  it('refresh seedChatGPTWebSessionJar no-ops when the live context was rotated mid-refresh', async () => {
+    const accountId = 'platform:chatgptweb';
+    const deviceId = 'device-refresh-rotate';
+    const live = bindChatGPTWebBrowserSession({
+      accountId,
+      browserProfile: PERSISTED_PROFILE,
+      deviceId,
+    })!;
+    seedChatGPTWebSessionJar(live.cookieJarKey, 'old-session', undefined, deviceId);
+    const liveId = live.contextId;
+
+    const transportFetch = vi.fn(async () => {
+      rotateChatGPTWebBrowserSession({
+        accountId,
+        browserProfile: PERSISTED_PROFILE,
+        deviceId,
+      })?.release?.();
+      return sessionResponse(
+        { accessToken: jwt({ exp: futureExp }) },
+        { setCookie: [`${SESSION_COOKIE}=rotated-mid-refresh`] },
+      );
+    });
+
+    const service = new ChatGPTWebOAuthService({
+      authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
+      browserSessionAccountId: accountId,
+      transportFetch: transportFetch as unknown as typeof fetch,
+    });
+    await service.refreshAccessToken(config, SESSION_JWE, {
+      deviceId,
+      renewalKind: 'web_session',
+    });
+
+    expect(getBrowserSessionRegistry().get(liveId)).toBeUndefined();
+    const next = getBrowserSessionRegistry().getForIdentity({
+      accountId,
+      origin: 'https://chatgpt.com',
+      provider: 'chatgptweb',
+    });
+    expect(next).toBeDefined();
+    expect(readFileSync(next!.cookieJar.path, 'utf8')).not.toContain('rotated-mid-refresh');
+  });
+
+  it('rotate after commit drains transport for the pre-rotate pool key', async () => {
+    const accountId = 'platform:chatgptweb';
+    const deviceId = 'device-commit-rotate-drain';
+    const live = bindChatGPTWebBrowserSession({
+      accountId,
+      browserProfile: PERSISTED_PROFILE,
+      deviceId,
+    })!;
+    const liveId = live.contextId;
+    const livePath = resolveCookieJarPath(live.cookieJarKey);
+    const preRotatePool = getBrowserSessionRegistry().get(liveId)!.transportPoolKey;
+
+    const transportFetch = vi.fn();
+    transportFetch
+      .mockResolvedValueOnce(sessionResponse({ accessToken: jwt({ exp: futureExp }) }))
+      .mockResolvedValue(jsonResponse({}));
+
+    const service = new ChatGPTWebOAuthService({
+      authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
+      browserSessionAccountId: accountId,
+      transportFetch: transportFetch as unknown as typeof fetch,
+    });
+    await service.connectWithSession(SESSION_JWE, deviceId);
+    service.commitVerifiedChatGPTWebSession(deviceId);
+    await getBrowserSessionRegistry().awaitPendingCleanup();
+
+    expect(getBrowserSessionRegistry().get(liveId)).toBeUndefined();
+    expect(existsSync(livePath)).toBe(false);
+    const next = getBrowserSessionRegistry().getForIdentity({
+      accountId,
+      origin: 'https://chatgpt.com',
+      provider: 'chatgptweb',
+    });
+    expect(next).toBeDefined();
+    expect(next!.transportPoolKey).not.toBe(preRotatePool);
+  });
+
+  it('aborts a changed-device replacement race and does not rotate the newer live context', async () => {
+    const accountId = 'platform:chatgptweb';
+    const live = bindChatGPTWebBrowserSession({
+      accountId,
+      browserProfile: PERSISTED_PROFILE,
+      deviceId: 'device-a',
+    })!;
+    const transportFetch = vi.fn().mockResolvedValue(jsonResponse({ email: 'a@example.com' }));
+    const service = new ChatGPTWebOAuthService({
+      authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
+      browserSessionAccountId: accountId,
+      transportFetch: transportFetch as unknown as typeof fetch,
+    });
+    await service.verifyAccessToken(jwt({ exp: futureExp }), 'device-a-candidate');
+
+    const winner = bindChatGPTWebBrowserSession({
+      accountId,
+      browserProfile: PERSISTED_PROFILE,
+      deviceId: 'device-b',
+    })!;
+    expect(winner.contextId).not.toBe(live.contextId);
+
+    service.commitVerifiedChatGPTWebSession('device-a-candidate');
+    const still = getBrowserSessionRegistry().get(winner.contextId);
+    expect(still?.lifecycle).toBe('active');
+    expect(still?.logicalPageId).toBe(winner.logicalPageId);
+  });
+
+  it('aborts commit when the captured live context disappeared', async () => {
+    const accountId = 'platform:chatgptweb';
+    bindChatGPTWebBrowserSession({
+      accountId,
+      browserProfile: PERSISTED_PROFILE,
+      deviceId: 'device-live',
+    })!;
+    const transportFetch = vi.fn().mockResolvedValue(jsonResponse({ email: 'a@example.com' }));
+    const service = new ChatGPTWebOAuthService({
+      authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
+      browserSessionAccountId: accountId,
+      transportFetch: transportFetch as unknown as typeof fetch,
+    });
+    await service.verifyAccessToken(jwt({ exp: futureExp }), 'device-live');
+    invalidateChatGPTWebBrowserSession(accountId);
+
+    service.commitVerifiedChatGPTWebSession('device-live');
+    expect(
+      getBrowserSessionRegistry().getForIdentity({
+        accountId,
+        origin: 'https://chatgpt.com',
+        provider: 'chatgptweb',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('aborts commit when live appears after staging with no live context', async () => {
+    const accountId = 'platform:chatgptweb-absent';
+    const transportFetch = vi.fn().mockResolvedValue(jsonResponse({ email: 'a@example.com' }));
+    const service = new ChatGPTWebOAuthService({
+      authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
+      browserSessionAccountId: accountId,
+      transportFetch: transportFetch as unknown as typeof fetch,
+    });
+    await service.verifyAccessToken(jwt({ exp: futureExp }), 'device-first');
+    const created = bindChatGPTWebBrowserSession({
+      accountId,
+      browserProfile: PERSISTED_PROFILE,
+      deviceId: 'device-second',
+    })!;
+    const createdId = created.contextId;
+    service.commitVerifiedChatGPTWebSession('device-first');
+    expect(getBrowserSessionRegistry().get(createdId)?.lifecycle).toBe('active');
+    expect(getBrowserSessionRegistry().get(createdId)?.logicalPageId).toBe(created.logicalPageId);
   });
 });
 

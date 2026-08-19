@@ -35,6 +35,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import type * as AiCatalogEnforcement from '@/server/enterprise/services/aiCatalog/enforcement';
+import { getBrowserSessionRegistry } from '@/server/enterprise/services/browserSession/contextRegistry';
 import { resetBrowserSessionRegistryForTests } from '@/server/enterprise/services/chatgptWeb/browserSession';
 import { wrapModelRuntimeWithModeration } from '@/server/enterprise/services/contentModeration/runtime';
 import { createDefaultModerationRuntimeDeps } from '@/server/enterprise/services/contentModeration/runtime/defaults';
@@ -1246,6 +1247,28 @@ describe('ChatGPT Web transport injection', () => {
     );
     expect(params.browserProfile).not.toHaveProperty('seed');
     expect(typeof params.fetch).toBe('function');
+    expect(typeof (params.sessionContext as { release?: () => void }).release).toBe('function');
+  });
+
+  it('repeated init for the same account reuses context and bumps inFlight', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'chatgptweb-inflight' });
+
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload, {
+      browserProfile,
+      managedBy: 'platform',
+    });
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload, {
+      browserProfile,
+      managedBy: 'platform',
+    });
+
+    const first = spy.mock.calls[0][1] as { sessionContext: { contextId: string } };
+    const second = spy.mock.calls[1][1] as { sessionContext: { contextId: string } };
+    expect(second.sessionContext.contextId).toBe(first.sessionContext.contextId);
+    expect(getBrowserSessionRegistry().get(first.sessionContext.contextId)?.inFlight).toBe(2);
   });
 
   it('scopes the bound session by managedBy, user, workspace, and historical revision', () => {

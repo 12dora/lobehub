@@ -175,11 +175,13 @@ export class ChatGPTWebOAuthService extends ChatGPTWebOAuthSessionOps {
   /** A successful connect starts a new page session; refresh must not. */
   private rotatePageSessionAfterConnect(deviceId: string): void {
     if (!this.browserSessionAccountId) return;
-    rotateChatGPTWebBrowserSession({
+    const next = rotateChatGPTWebBrowserSession({
       accountId: this.browserSessionAccountId,
       browserProfile: this.browserProfile,
       deviceId,
     });
+    // Connect is not a chat turn; do not pin inFlight on the new generation.
+    next?.release?.();
   }
 
   /**

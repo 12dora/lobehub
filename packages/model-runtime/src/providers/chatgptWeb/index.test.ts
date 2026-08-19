@@ -690,6 +690,56 @@ describe('LobeChatGPTWebAI', () => {
       );
     });
 
+    it('chat() calls sessionContext.release in finally', async () => {
+      const client = createFakeClient();
+      const release = vi.fn();
+      const response = await new LobeChatGPTWebAI({
+        apiKey: 'token',
+        client: client as any,
+        sessionContext: {
+          contextId: 'ctx-release',
+          cookieJarKey: 'jar-digest',
+          getBootstrap: () => undefined,
+          logicalPageId: '11111111-1111-4111-8111-111111111111',
+          release,
+          setBootstrap: () => {},
+        },
+      }).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(release).not.toHaveBeenCalled();
+      await readSSE(response);
+      expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    it('chat() releases the session lease exactly once after the body is cancelled', async () => {
+      const client = createFakeClient();
+      const release = vi.fn();
+      const response = await new LobeChatGPTWebAI({
+        apiKey: 'token',
+        client: client as any,
+        sessionContext: {
+          contextId: 'ctx-release-cancel',
+          cookieJarKey: 'jar-digest',
+          getBootstrap: () => undefined,
+          logicalPageId: '11111111-1111-4111-8111-111111111111',
+          release,
+          setBootstrap: () => {},
+        },
+      }).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(release).not.toHaveBeenCalled();
+      await response.body?.cancel();
+      await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    });
+
     it('uses sessionContext.contextId as the Sentinel pool key', async () => {
       const client = createFakeClient();
       await new LobeChatGPTWebAI({

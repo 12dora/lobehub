@@ -5,7 +5,9 @@ import { getSharedSentinelBundlePool } from '@lobechat/model-runtime/chatgptWebI
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createBrowserSessionRegistry,
   getBrowserSessionRegistry,
+  installBrowserSessionRegistryForTests,
   resetBrowserSessionRegistryForTests,
 } from '@/server/enterprise/services/browserSession/contextRegistry';
 import * as BrowserCookieJar from '@/server/enterprise/services/browserSession/cookieJar';
@@ -32,10 +34,10 @@ import {
 const profile = generateBrowserDeviceProfile({ seed: 'chatgptweb-g3-g5-g7' });
 const SAME_DEVICE = 'oai-did-shared-physical-browser';
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.resolve(resetCookieJars());
   resetBrowserSessionRegistryForTests();
   resetBrowserCookieJars();
-  resetCookieJars();
   vi.restoreAllMocks();
 });
 
@@ -184,7 +186,10 @@ describe('bindChatGPTWebBrowserSession', () => {
 
     expect(rotated.contextId).not.toBe(oldId);
     expect(getBrowserSessionRegistry().get(oldId)).toBeUndefined();
-    expect(isContextCookieJarKey(oldDigest)).toBe(false);
+    expect(isContextCookieJarKey(oldDigest)).toBe(true);
+    expect(() => resolveCookieJarPath(oldDigest)).toThrow(
+      'fetch failed: browser session context is gone',
+    );
     expect(invalidateSpy).toHaveBeenCalledWith(oldId);
   });
 
@@ -434,7 +439,10 @@ describe('stageChatGPTWebBrowserSession', () => {
 
     expect(committed.contextId).not.toBe(oldId);
     expect(getBrowserSessionRegistry().get(oldId)).toBeUndefined();
-    expect(isContextCookieJarKey(oldDigest)).toBe(false);
+    expect(isContextCookieJarKey(oldDigest)).toBe(true);
+    expect(() => resolveCookieJarPath(oldDigest)).toThrow(
+      'fetch failed: browser session context is gone',
+    );
     expect(invalidateSpy).toHaveBeenCalledWith(oldId);
     expect(
       readBrowserCookieJar(resolveCookieJarPath(committed.cookieJarKey)).some(
@@ -462,5 +470,148 @@ describe('rotateChatGPTWebBrowserSession', () => {
     expect(
       cookies.some((cookie) => cookie.name === 'oai-did' && cookie.value === SAME_DEVICE),
     ).toBe(true);
+  });
+
+  it('stale setBootstrap after rotate does not populate the replacement context', () => {
+    const original = bind('user:alice:_:chatgptweb')!;
+    const rotated = rotateChatGPTWebBrowserSession({
+      accountId: 'user:alice:_:chatgptweb',
+      browserProfile: profile,
+      deviceId: SAME_DEVICE,
+    })!;
+
+    original.setBootstrap({ clientVersion: 'stale-build' });
+    expect(rotated.getBootstrap()).toBeUndefined();
+    expect(original.getBootstrap()).toBeUndefined();
+  });
+});
+
+describe('commit fences', () => {
+  it('commit aborts when live revision/contextId changed under the staged fence', () => {
+    bind('user:alice:_:chatgptweb')!;
+    const staged = stageChatGPTWebBrowserSession({
+      accountId: 'user:alice:_:chatgptweb',
+      browserProfile: profile,
+      deviceId: SAME_DEVICE,
+    })!;
+    seedCookieJar(resolveCookieJarPath(staged.context.cookieJarKey), [
+      { domain: '.chatgpt.com', name: '_cfuvid', value: 'cf-staged' },
+    ]);
+
+    const rotated = rotateChatGPTWebBrowserSession({
+      accountId: 'user:alice:_:chatgptweb',
+      browserProfile: profile,
+      deviceId: SAME_DEVICE,
+    })!;
+    const rotatedPath = resolveCookieJarPath(rotated.cookieJarKey);
+
+    const committed = commitStagedChatGPTWebBrowserSession(
+      {
+        accountId: 'user:alice:_:chatgptweb',
+        browserProfile: profile,
+        deviceId: SAME_DEVICE,
+      },
+      staged.accountId,
+    );
+
+    expect(committed).toBeUndefined();
+    expect(getBrowserSessionRegistry().get(rotated.contextId)?.lifecycle).toBe('active');
+    expect(readFileSync(rotatedPath, 'utf8')).not.toContain('cf-staged');
+  });
+});
+
+describe('C4 isolation and inFlight', () => {
+  it('drop via acquire binding-mismatch still unregisters jar mapping and Sentinel (onInvalidate)', async () => {
+    const original = bind('user:alice:_:chatgptweb', 'device-one')!;
+    const oldId = original.contextId;
+    const oldDigest = original.cookieJarKey;
+    original.release?.();
+
+    const invalidateSpy = vi.spyOn(getSharedSentinelBundlePool(), 'invalidate');
+    const registry = getBrowserSessionRegistry();
+    registry.acquire({
+      accountId: 'user:alice:_:chatgptweb',
+      browserProfileRevision: 0,
+      deviceId: 'device-two',
+      impersonationProfileRevision: profile.id,
+      origin: 'https://chatgpt.com',
+      provider: 'chatgptweb',
+    });
+    await registry.awaitPendingCleanup();
+
+    expect(getBrowserSessionRegistry().get(oldId)).toBeUndefined();
+    expect(isContextCookieJarKey(oldDigest)).toBe(true);
+    expect(() => resolveCookieJarPath(oldDigest)).toThrow(
+      'fetch failed: browser session context is gone',
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith(oldId);
+  });
+
+  it('cleanup of account A does not drain account B transport or jar', async () => {
+    const drained: string[] = [];
+    const pool = {
+      bind: vi.fn(),
+      drain: (key: string) => {
+        drained.push(key);
+      },
+      drainAll: vi.fn(),
+      has: () => false,
+    };
+    const registry = createBrowserSessionRegistry({ transportPool: pool });
+    installBrowserSessionRegistryForTests(registry);
+
+    const alice = bind('user:alice:_:chatgptweb')!;
+    const bob = bind('user:bob:_:chatgptweb')!;
+    const bobPath = resolveCookieJarPath(bob.cookieJarKey);
+    const alicePool = registry.get(alice.contextId)!.transportPoolKey;
+    const bobPool = registry.get(bob.contextId)!.transportPoolKey;
+
+    invalidateChatGPTWebBrowserSession('user:alice:_:chatgptweb');
+    await registry.awaitPendingCleanup();
+
+    expect(drained).toEqual([alicePool]);
+    expect(drained).not.toContain(bobPool);
+    expect(registry.get(alice.contextId)).toBeUndefined();
+    expect(registry.get(bob.contextId)?.lifecycle).toBe('active');
+    expect(existsSync(bobPath)).toBe(true);
+  });
+
+  it('failed staging at capacity leaves the live context and jar untouched', () => {
+    const registry = createBrowserSessionRegistry({ maxContexts: 1 });
+    installBrowserSessionRegistryForTests(registry);
+    const live = bind('user:alice:_:chatgptweb')!;
+    const livePath = resolveCookieJarPath(live.cookieJarKey);
+    seedCookieJar(livePath, [{ domain: '.chatgpt.com', name: '_cfuvid', value: 'cf-live' }]);
+
+    expect(
+      stageChatGPTWebBrowserSession({
+        accountId: 'user:alice:_:chatgptweb',
+        browserProfile: profile,
+        deviceId: SAME_DEVICE,
+      }),
+    ).toBeUndefined();
+
+    expect(registry.get(live.contextId)?.lifecycle).toBe('active');
+    expect(existsSync(livePath)).toBe(true);
+    expect(readFileSync(livePath, 'utf8')).toContain('cf-live');
+  });
+
+  it('in-flight bind inFlight prevents idle eviction of that account only', () => {
+    const held = bind('user:held:_:chatgptweb')!;
+    const idle = bind('user:idle:_:chatgptweb')!;
+    idle.release?.();
+
+    const heldCtx = getBrowserSessionRegistry().get(held.contextId)!;
+    const idleCtx = getBrowserSessionRegistry().get(idle.contextId)!;
+    expect(heldCtx.inFlight).toBeGreaterThan(0);
+    expect(idleCtx.inFlight).toBe(0);
+
+    heldCtx.lastUsedAt = 0;
+    idleCtx.lastUsedAt = 0;
+    getBrowserSessionRegistry().sweepIdleAndBound(Date.now());
+
+    expect(getBrowserSessionRegistry().get(held.contextId)).toBe(heldCtx);
+    expect(getBrowserSessionRegistry().get(idle.contextId)).toBeUndefined();
+    held.release?.();
   });
 });

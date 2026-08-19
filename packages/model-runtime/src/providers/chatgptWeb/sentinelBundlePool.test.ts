@@ -253,4 +253,52 @@ describe('SentinelBundlePool', () => {
     expect(a.requirements.token).toBe('t3');
     expect(b.requirements.token).toBe('t2');
   });
+
+  it('invalidate deletes the slot so a late mint cannot park', async () => {
+    const pool = new SentinelBundlePool();
+    const blocked = deferred<MintedSentinelBundle>();
+    const mint = vi.fn(() => blocked.promise);
+
+    const warm = pool.warm(binding(), mint);
+    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(1));
+    pool.invalidate('ctx-1');
+    blocked.resolve(minted('late'));
+    await warm;
+
+    const after = vi.fn(async () => minted('fresh'));
+    const acquired = await pool.acquire(binding(), after);
+    expect(acquired.requirements.token).toBe('fresh');
+    expect(after).toHaveBeenCalledTimes(1);
+  });
+
+  it('replenish started before invalidate does not park under the replacement contextKey', async () => {
+    const pool = new SentinelBundlePool();
+    const blocked = deferred<MintedSentinelBundle>();
+    const mint = vi.fn(() => blocked.promise);
+
+    pool.replenish(binding(), mint);
+    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(1));
+    pool.invalidate('ctx-1');
+    blocked.resolve(minted('old-page'));
+
+    await vi.waitFor(() => expect(blocked.promise).resolves.toMatchObject({}));
+    const after = vi.fn(async () => minted('new-page'));
+    const acquired = await pool.acquire(binding(), after);
+    expect(acquired.requirements.token).toBe('new-page');
+  });
+
+  it('reset is safe when a mint is in flight', async () => {
+    const pool = new SentinelBundlePool();
+    const blocked = deferred<MintedSentinelBundle>();
+    const mint = vi
+      .fn()
+      .mockImplementationOnce(() => blocked.promise)
+      .mockImplementation(async () => minted('ok'));
+
+    const pending = pool.acquire(binding(), mint);
+    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(1));
+    pool.reset();
+    blocked.resolve(minted('after-reset'));
+    await expect(pending).resolves.toMatchObject({ requirements: { token: 'ok' } });
+  });
 });

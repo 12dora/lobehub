@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MODULE_BY_WORKER_NAME } from '@/const/platform/modules';
@@ -8,6 +12,7 @@ import {
   ENTERPRISE_WORKER_SPECS,
   resetEnterpriseWorkersBootstrapForTest,
   startEnterpriseWorkers,
+  stopEnterpriseWorkers,
 } from './workersBootstrap';
 
 const mocks = vi.hoisted(() => ({
@@ -178,5 +183,49 @@ describe('HOT readiness registrations', () => {
 
     const disabled = await resolveManagedResourceReadiness();
     expect(disabled.agents).toBe(false);
+  });
+});
+
+describe('browser session worker spec', () => {
+  it('stopEnterpriseWorkers disposes the browser session registry', async () => {
+    let releaseDrain: (() => void) | undefined;
+    const drainPromise = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    const { createBrowserSessionRegistry, installBrowserSessionRegistryForTests } =
+      await import('../services/browserSession/contextRegistry');
+    const registry = createBrowserSessionRegistry({
+      transportPool: {
+        bind: vi.fn(),
+        drain: () => drainPromise,
+        drainAll: () => drainPromise,
+        has: () => false,
+      },
+    });
+    installBrowserSessionRegistryForTests(registry);
+    const context = registry.acquire({
+      accountId: 'stop-workers',
+      browserProfileRevision: 1,
+      origin: 'https://chatgpt.com',
+      provider: 'chatgptweb',
+    });
+    const path = context.cookieJar.path;
+    const { existsSync } = await import('node:fs');
+    const stopping = stopEnterpriseWorkers();
+    expect(existsSync(path)).toBe(true);
+    releaseDrain?.();
+    await stopping;
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('start sweeps orphan jar files', async () => {
+    const spec = ENTERPRISE_WORKER_SPECS.find((item) => item.name === 'browserSessionMaintenance')!;
+    expect(spec.moduleId).toBeUndefined();
+    const dir = path.join(tmpdir(), 'aihub-browser-session-jars');
+    mkdirSync(dir, { recursive: true });
+    const orphan = path.join(dir, 'worker-orphan.txt');
+    writeFileSync(orphan, 'x');
+    await spec.start();
+    expect(existsSync(orphan)).toBe(false);
   });
 });

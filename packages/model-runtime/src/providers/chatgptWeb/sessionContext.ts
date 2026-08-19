@@ -27,6 +27,14 @@ export interface ChatGPTWebSessionContext {
   getBootstrap: () => ChatGPTWebBootstrapState | undefined;
   /** Maps 1:1 onto `OAI-Session-Id`. UUIDv4 minted once per context. */
   logicalPageId: string;
+  /**
+   * Drop this handle's in-flight ownership. The runtime package must not
+   * import the server registry; the server adapter closes over the counter.
+   * Idempotent.
+   */
+  release?: () => void;
+  /** Generation captured at wrap time. Optional on in-memory test handles. */
+  revision?: number;
   setBootstrap: (state: ChatGPTWebBootstrapState) => void;
 }
 
@@ -46,6 +54,8 @@ export const createMemoryChatGPTWebSessionContext = ({
     cookieJarKey,
     getBootstrap: () => bootstrap,
     logicalPageId,
+    release: () => undefined,
+    revision: 1,
     setBootstrap: (state) => {
       bootstrap = state;
     },

@@ -54,6 +54,7 @@ export const normalizeBrowserSessionAcquireInput = (
     BrowserSessionAcquireInput,
     | 'credentialDigestInput'
     | 'deviceId'
+    | 'ephemeral'
     | 'impersonationProfileRevision'
     | 'ownerId'
     | 'proxyOutlet'
@@ -68,6 +69,7 @@ export const normalizeBrowserSessionAcquireInput = (
     browserProfileRevision: input.browserProfileRevision,
     credentialDigestInput: normalizeOptional(input.credentialDigestInput),
     deviceId: normalizeOptional(input.deviceId),
+    ...(input.ephemeral ? { ephemeral: true } : {}),
     impersonationProfileRevision: normalizeOptional(input.impersonationProfileRevision),
     origin,
     ownerId: normalizeOptional(input.ownerId),

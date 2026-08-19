@@ -192,7 +192,9 @@ export abstract class ChatGPTWebOAuthIdentityOps extends OAuthDeviceFlowService 
   protected cookieJarKeyFor(deviceId?: string): string | undefined {
     if (isFallbackBrowserProfile(this.browserProfile) || !deviceId) return undefined;
     const context = this.bindBrowserSession(deviceId);
-    return context?.cookieJarKey ?? deviceId;
+    const key = context?.cookieJarKey ?? deviceId;
+    context?.release?.();
+    return key;
   }
 
   protected bindBrowserSession(deviceId?: string) {
@@ -228,11 +230,11 @@ export abstract class ChatGPTWebOAuthIdentityOps extends OAuthDeviceFlowService 
   protected commitVerificationSession(
     deviceId: string | undefined,
     staged: StagedChatGPTWebBrowserSession | undefined,
-  ): void {
-    if (!staged) return;
+  ): boolean {
+    if (!staged) return false;
     const params = this.liveBrowserSessionParams(deviceId);
-    if (!params) return;
-    commitStagedChatGPTWebBrowserSession(params, staged.accountId);
+    if (!params) return false;
+    return Boolean(commitStagedChatGPTWebBrowserSession(params, staged.accountId));
   }
 
   protected discardVerificationSession(staged: StagedChatGPTWebBrowserSession | undefined): void {
@@ -272,14 +274,18 @@ export abstract class ChatGPTWebOAuthIdentityOps extends OAuthDeviceFlowService 
     const pending = this.pendingVerificationSession;
     this.pendingVerificationSession = undefined;
     if (!pending) return;
+    const targetDeviceId = deviceId ?? pending.deviceId;
+    let promoted: boolean | undefined;
     try {
-      this.commitVerificationSession(deviceId ?? pending.deviceId, pending.staged);
+      promoted = this.commitVerificationSession(targetDeviceId, pending.staged);
     } finally {
       // The pending `:pending:` context must never survive this call, even if
       // the filesystem commit itself throws partway through.
       this.discardVerificationSession(pending.staged);
     }
-    this.afterVerifiedSessionCommitted(deviceId ?? pending.deviceId);
+    if (promoted === true) {
+      this.afterVerifiedSessionCommitted(targetDeviceId);
+    }
   }
 
   /**
@@ -291,10 +297,10 @@ export abstract class ChatGPTWebOAuthIdentityOps extends OAuthDeviceFlowService 
   }
 
   protected pageSessionId(deviceId: string): string {
-    return (
-      this.bindBrowserSession(deviceId)?.logicalPageId ??
-      deriveSessionId(deviceId, this.browserProfile)
-    );
+    const bound = this.bindBrowserSession(deviceId);
+    const pageId = bound?.logicalPageId;
+    bound?.release?.();
+    return pageId ?? deriveSessionId(deviceId, this.browserProfile);
   }
 
   protected buildSessionHeaders(accessToken: string, deviceId: string): Record<string, string> {

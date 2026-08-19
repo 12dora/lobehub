@@ -402,6 +402,33 @@ describe('ChatGPTWebClient bootstrap cache on Browser Session Context', () => {
     expect(secondPrepareHeaders['OAI-Client-Version']).toBe('prod-livebuild');
     expect(secondPrepareHeaders['OAI-Client-Build-Number']).toBe('424242');
   });
+
+  it('setBootstrap on an invalidated sessionContext handle is ignored', async () => {
+    let writable = true;
+    let bootstrap: { clientVersion?: string } | undefined;
+    const sessionContext = {
+      contextId: 'ctx-dead',
+      cookieJarKey: 'jar-dead',
+      getBootstrap: () => (writable ? bootstrap : undefined),
+      logicalPageId: '33333333-3333-4333-8333-333333333333',
+      setBootstrap: (state: { clientVersion?: string }) => {
+        if (!writable) return;
+        bootstrap = state;
+      },
+    };
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response('<html data-build="prod-livebuild"><b>build_number\\":424242.0</b></html>', {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ prepare_token: 'prep-1' }))
+      .mockResolvedValueOnce(jsonResponse({ so_token: 'so-1', token: 'req-1' }));
+
+    writable = false;
+    await createClient({ sessionContext }).getChatRequirements();
+    expect(sessionContext.getBootstrap()).toBeUndefined();
+  });
 });
 
 describe('ChatGPTWebClient.prepareConversation', () => {

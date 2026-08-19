@@ -6,6 +6,10 @@ import type { OAuthRefreshOptions, TokenResponse } from '@/server/services/oauth
 import { OAuthInvalidGrantError, parseJwtExpiry } from '@/server/services/oauthDeviceFlow';
 
 import type { StagedChatGPTWebBrowserSession } from './browserSession';
+import {
+  isChatGPTWebBrowserSessionFenceCurrent,
+  peekChatGPTWebBrowserSessionFence,
+} from './browserSession';
 import { ChatGPTWebOAuthError } from './oauthErrors';
 import type { ChatGPTWebConnection } from './oauthService.identity';
 import { assertWebCapableAccessToken, ChatGPTWebOAuthIdentityOps } from './oauthService.identity';
@@ -192,6 +196,15 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
     const cookieJarKey = params.cookieJarKey ?? this.cookieJarKeyFor(params.deviceId);
     const sessionId =
       params.sessionId ?? (params.deviceId ? this.pageSessionId(params.deviceId) : undefined);
+    // Refresh writes the live jar. A reconnect that rotated live mid-mint must
+    // not seed the replacement. Staged connect passes `cookieJarKey` and is
+    // fenced by the staged context's own tombstone.
+    const liveFence =
+      params.cookieJarKey || !this.browserSessionAccountId
+        ? undefined
+        : peekChatGPTWebBrowserSessionFence(this.browserSessionAccountId);
+    const jarStillWritable = (): boolean =>
+      !liveFence || isChatGPTWebBrowserSessionFenceCurrent(liveFence);
     const headers = withCookieJarHeader(
       webSessionHeaders(
         params.sessionToken,
@@ -203,7 +216,7 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
       ),
       cookieJarKey,
     );
-    if (cookieJarKey) {
+    if (cookieJarKey && jarStillWritable()) {
       seedChatGPTWebSessionJar(
         cookieJarKey,
         params.sessionToken,
@@ -300,9 +313,9 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
     // Vault wins: the jar is a cache. Re-seed so a curl-written session cookie
     // cannot disagree with the value we are about to persist. Chunk layout is
     // transport state derived from that token (paste chunks, else size-split).
-    if (cookieJarKey) {
+    if (cookieJarKey && jarStillWritable()) {
       seedChatGPTWebSessionJar(cookieJarKey, sessionToken, sessionChunks, params.deviceId);
-    } else if (params.deviceId) {
+    } else if (params.deviceId && jarStillWritable()) {
       seedChatGPTWebSessionJar(params.deviceId, sessionToken, sessionChunks);
     }
 

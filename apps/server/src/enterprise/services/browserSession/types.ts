@@ -20,13 +20,21 @@ export class BrowserSessionError extends Error {
 }
 
 /**
- * Process-local owner lease. C4 may replace the backend with a distributed
- * lock; the shape (one active owner id + acquire timestamp) is the extension
- * point. Persistent connections must have one active owner.
+ * Process-local owner lease. `ownerId` is `pid:<pid>` — this process owns the
+ * persistent transport. There is no distributed lock / Redis lease (plan
+ * principle 7). Concurrent prepare / conversation / replenish on one context
+ * is required (G6/G7); the lease is NOT an exclusive mutex. Generation
+ * fencing is {@link BrowserSessionContext.revision} + {@link BrowserSessionContext.inFlight}.
  */
 export interface BrowserSessionOwnerLease {
   acquiredAt: number;
   ownerId: string;
+}
+
+/** Captured at bind / ownership time so a stale handle cannot write a replacement. */
+export interface BrowserSessionWriteFence {
+  contextId: string;
+  revision: number;
 }
 
 /** Filesystem Netscape jar owned by one context. Path is a digest, never a token. */
@@ -64,6 +72,12 @@ export interface BrowserSessionContext {
   contextId: string;
   cookieJar: BrowserSessionCookieJarRef;
   createdAt: number;
+  /**
+   * Outstanding owners of this generation (bind / withContextOwnership).
+   * The idle sweeper never evicts `inFlight > 0`. Invalidate does not wait
+   * for this to reach 0 — it fences instead.
+   */
+  inFlight: number;
   lastUsedAt: number;
   lifecycle: BrowserSessionLifecycleStatus;
   /** Stable per context; G5 maps this to ChatGPT `OAI-Session-Id`. */
@@ -74,6 +88,12 @@ export interface BrowserSessionContext {
   ownerLease: BrowserSessionOwnerLease;
   provider: string;
   providerState: BrowserSessionProviderState;
+  /**
+   * Monotonic generation of this object. Starts at 1; bumped on drop so
+   * closed-over handles fail {@link BrowserSessionWriteFence} checks.
+   * `bindingDigest` is not a fence — rotate keeps the same digest.
+   */
+  revision: number;
   transportPoolKey: string;
 }
 
@@ -98,6 +118,12 @@ export interface BrowserSessionAcquireInput {
   credentialDigestInput?: string;
   /** Provider-declared device binding. Change invalidates the context. */
   deviceId?: string;
+  /**
+   * Throwaway/staged context. Set at creation so capacity eviction cannot
+   * steal a live account's slot. An ephemeral acquire at cap may only drop
+   * another idle ephemeral entry.
+   */
+  ephemeral?: boolean;
   /** Impersonation/TLS profile revision; included in the transport-pool key. */
   impersonationProfileRevision?: string;
   origin: string;
@@ -126,6 +152,11 @@ export interface BrowserSessionContextSummary {
 
 export interface BrowserSessionRegistry {
   acquire: (input: BrowserSessionAcquireInput) => BrowserSessionContext;
+  /**
+   * Wait for every in-flight dispose drain+unlink. `invalidate` / `dispose`
+   * stay synchronous for callers; shutdown and tests await this.
+   */
+  awaitPendingCleanup: () => Promise<void>;
   dispose: () => void;
   get: (contextId: string) => BrowserSessionContext | undefined;
   /**
@@ -142,5 +173,19 @@ export interface BrowserSessionRegistry {
   ) => boolean;
   release: (contextId: string) => boolean;
   summarize: (context: BrowserSessionContext) => BrowserSessionContextSummary;
+  /**
+   * Evict idle / over-budget contexts. Never drops `inFlight > 0`.
+   * Returns the number of contexts evicted.
+   */
+  sweepIdleAndBound: (nowMs?: number, reserve?: number) => number;
   touch: (contextId: string) => boolean;
+  /**
+   * Shared-generation ownership. Concurrent callers of the same revision
+   * overlap (not an exclusive mutex). `inFlight` is incremented for the
+   * duration of `fn` and decremented in `finally`.
+   */
+  withContextOwnership: <T>(
+    contextId: string,
+    fn: (ctx: BrowserSessionContext, fence: BrowserSessionWriteFence) => T | Promise<T>,
+  ) => Promise<T>;
 }

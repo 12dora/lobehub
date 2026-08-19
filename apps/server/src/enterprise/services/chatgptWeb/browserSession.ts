@@ -1,5 +1,5 @@
 /**
- * ChatGPT Web adapter over the common Browser Session Context (plan C1/G3/G5/G7).
+ * ChatGPT Web adapter over the common Browser Session Context (plan C1/G3/G5/G7/C4).
  *
  * Lookup is provider + AIHub connection owner + origin — never the ChatGPT
  * device id. Two stored connections that happen to share an `oai-did` (the same
@@ -13,8 +13,10 @@ import type { BrowserDeviceProfile } from '@lobechat/model-runtime/browserProfil
 import { isFallbackBrowserProfile } from '@lobechat/model-runtime/browserProfile';
 import type { ChatGPTWebSessionContext } from '@lobechat/model-runtime/chatgptWebIdentity';
 import { getSharedSentinelBundlePool } from '@lobechat/model-runtime/chatgptWebIdentity';
+import debug from 'debug';
 
 import {
+  assertWritable,
   getBrowserSessionProviderState,
   getBrowserSessionRegistry,
   setBrowserSessionProviderState,
@@ -30,15 +32,23 @@ import {
   buildBrowserSessionBindingDigest,
   normalizeBrowserSessionAcquireInput,
 } from '@/server/enterprise/services/browserSession/identity';
-import type { BrowserSessionContext } from '@/server/enterprise/services/browserSession/types';
+import { onBrowserSessionInvalidate } from '@/server/enterprise/services/browserSession/lifecycle';
+import type {
+  BrowserSessionContext,
+  BrowserSessionWriteFence,
+} from '@/server/enterprise/services/browserSession/types';
+import { BrowserSessionError } from '@/server/enterprise/services/browserSession/types';
 
 import { CHATGPT_WEB_SESSION_COOKIE_NAME } from './sessionCookie';
 import { registerContextCookieJar, unregisterContextCookieJar } from './transport/cookieJar';
+
+const log = debug('lobe-server:chatgpt-web-browser-session');
 
 export const CHATGPT_WEB_BROWSER_SESSION_PROVIDER = 'chatgptweb';
 export const CHATGPT_WEB_BROWSER_SESSION_ORIGIN = 'https://chatgpt.com';
 
 const PROVIDER_STATE_NS = 'chatgptWeb';
+const LIVE_FENCE_STATE_KEY = 'liveFence';
 
 export type ChatGPTWebBrowserSessionOwner =
   | { kind: 'platform'; providerId: string; revision?: number }
@@ -49,6 +59,7 @@ export interface BindChatGPTWebBrowserSessionParams {
   browserProfile: Pick<BrowserDeviceProfile, 'id'>;
   browserProfileRevision?: number;
   deviceId?: string;
+  ephemeral?: boolean;
 }
 
 /**
@@ -73,16 +84,49 @@ export const buildChatGPTWebBrowserSessionAccountId = (
   return `user:${owner.userId}:${workspace}:${owner.providerId}`;
 };
 
-const wrapHandle = (context: BrowserSessionContext): ChatGPTWebSessionContext => ({
-  contextId: context.contextId,
-  cookieJarKey: context.cookieJar.digest,
-  getBootstrap: () => getBrowserSessionProviderState(context, PROVIDER_STATE_NS),
-  logicalPageId: context.logicalPageId,
-  setBootstrap: (state) => setBrowserSessionProviderState(context, PROVIDER_STATE_NS, state),
+const chatgptWebIdentity = (accountId: string) => ({
+  accountId,
+  origin: CHATGPT_WEB_BROWSER_SESSION_ORIGIN,
+  provider: CHATGPT_WEB_BROWSER_SESSION_PROVIDER,
 });
 
+onBrowserSessionInvalidate((context) => {
+  if (context.provider !== CHATGPT_WEB_BROWSER_SESSION_PROVIDER) return;
+  unregisterContextCookieJar(context.cookieJar.digest);
+  getSharedSentinelBundlePool().invalidate(context.contextId);
+});
+
+const wrapHandle = (context: BrowserSessionContext): ChatGPTWebSessionContext => {
+  const fence: BrowserSessionWriteFence = {
+    contextId: context.contextId,
+    revision: context.revision,
+  };
+  let released = false;
+  context.inFlight += 1;
+  context.lastUsedAt = Date.now();
+  return {
+    contextId: context.contextId,
+    cookieJarKey: context.cookieJar.digest,
+    getBootstrap: () => getBrowserSessionProviderState(context, PROVIDER_STATE_NS),
+    logicalPageId: context.logicalPageId,
+    release: () => {
+      if (released) return;
+      released = true;
+      if (context.inFlight > 0) context.inFlight -= 1;
+    },
+    revision: context.revision,
+    setBootstrap: (state) =>
+      setBrowserSessionProviderState(context, PROVIDER_STATE_NS, state, fence),
+  };
+};
+
 const bindJar = (context: BrowserSessionContext, deviceId?: string): void => {
-  registerContextCookieJar(context.cookieJar.digest, context.cookieJar.path);
+  if (!assertWritable(context)) return;
+  registerContextCookieJar(
+    context.cookieJar.digest,
+    context.cookieJar.path,
+    context.transportPoolKey,
+  );
   if (!deviceId) return;
   seedBrowserCookieJar(context.cookieJar.path, [
     { domain: '.chatgpt.com', name: 'oai-did', value: deviceId },
@@ -93,23 +137,16 @@ const toAcquireInput = (params: BindChatGPTWebBrowserSessionParams) => ({
   accountId: params.accountId,
   browserProfileRevision: params.browserProfileRevision ?? 0,
   ...(params.deviceId ? { deviceId: params.deviceId } : {}),
+  ...(params.ephemeral ? { ephemeral: true } : {}),
   impersonationProfileRevision: params.browserProfile.id,
   origin: CHATGPT_WEB_BROWSER_SESSION_ORIGIN,
   provider: CHATGPT_WEB_BROWSER_SESSION_PROVIDER,
 });
 
-/**
- * Unregister the jar-path mapping and drop the Sentinel slot, then invalidate
- * the registry context. `acquire()`'s binding-mismatch drop does neither of
- * the provider-specific steps — callers that are about to replace a live
- * context must go through this instead.
- */
 const dropChatGPTWebBrowserContext = (context: BrowserSessionContext): void => {
-  const digest = context.cookieJar.digest;
-  const contextId = context.contextId;
-  getBrowserSessionRegistry().invalidate(contextId);
-  unregisterContextCookieJar(digest);
-  getSharedSentinelBundlePool().invalidate(contextId);
+  unregisterContextCookieJar(context.cookieJar.digest);
+  getSharedSentinelBundlePool().invalidate(context.contextId);
+  getBrowserSessionRegistry().invalidate(context.contextId);
 };
 
 const liveBindingWouldChange = (
@@ -123,6 +160,8 @@ const liveBindingWouldChange = (
  * Acquire (or reuse) the ChatGPT Web Browser Session Context for this stored
  * connection. Returns undefined on the degraded fallback profile so we never
  * replay a persisted jar behind a different UA/TLS fingerprint.
+ *
+ * Increments `inFlight`. Callers that are not holding a turn must `release()`.
  */
 export const bindChatGPTWebBrowserSession = (
   params: BindChatGPTWebBrowserSessionParams,
@@ -130,9 +169,6 @@ export const bindChatGPTWebBrowserSession = (
   if (!params.accountId.trim()) return undefined;
   if (isFallbackBrowserProfile(params.browserProfile)) return undefined;
 
-  // `acquire()` drops a binding-mismatch context without ChatGPT-specific
-  // cleanup (jar-path unregister + Sentinel slot). Peek first and go through
-  // the same drop path the staged-commit / rotate callers already use.
   const existing = getBrowserSessionRegistry().getForIdentity(chatgptWebIdentity(params.accountId));
   if (existing && liveBindingWouldChange(params, existing)) {
     dropChatGPTWebBrowserContext(existing);
@@ -148,6 +184,11 @@ export const bindChatGPTWebBrowserSession = (
  * and copy cookies across so Cloudflare clearance minted during connect
  * survives the rotation. Call after a successful connect/reconnect, never on
  * refresh.
+ *
+ * TODO(G4): `warmSentinelBundle` after rotate. The mint handshake lives on
+ * ChatGPTWebClient (network prepare/finalize) and this adapter has no client,
+ * so fire-and-forget warm is not cheap/safe here. The first post-reconnect
+ * turn still blocks on a cold pool. See plan C4 implementation notes.
  */
 export const rotateChatGPTWebBrowserSession = (
   params: BindChatGPTWebBrowserSessionParams,
@@ -157,26 +198,35 @@ export const rotateChatGPTWebBrowserSession = (
 
   const registry = getBrowserSessionRegistry();
   const existing = registry.get(current.contextId);
-  if (!existing) return current;
+  if (!existing) {
+    current.release?.();
+    return current;
+  }
 
-  const cookies = readBrowserCookieJar(existing.cookieJar.path);
+  const fence: BrowserSessionWriteFence = {
+    contextId: existing.contextId,
+    revision: existing.revision,
+  };
+  const cookies = assertWritable(existing, fence)
+    ? readBrowserCookieJar(existing.cookieJar.path)
+    : [];
   dropChatGPTWebBrowserContext(existing);
+  current.release?.();
 
   const next = bindChatGPTWebBrowserSession(params);
   if (next && cookies.length > 0) {
     const nextContext = registry.get(next.contextId);
-    if (nextContext) seedBrowserCookieJar(nextContext.cookieJar.path, cookies);
+    if (nextContext && nextContext.revision === 1) {
+      seedBrowserCookieJar(nextContext.cookieJar.path, cookies);
+    }
   }
   return next;
 };
 
-export { resetBrowserSessionRegistryForTests } from '@/server/enterprise/services/browserSession/contextRegistry';
-
-const chatgptWebIdentity = (accountId: string) => ({
-  accountId,
-  origin: CHATGPT_WEB_BROWSER_SESSION_ORIGIN,
-  provider: CHATGPT_WEB_BROWSER_SESSION_PROVIDER,
-});
+export {
+  installBrowserSessionRegistryForTests,
+  resetBrowserSessionRegistryForTests,
+} from '@/server/enterprise/services/browserSession/contextRegistry';
 
 export const invalidateChatGPTWebBrowserSession = (accountId: string): void => {
   if (!accountId.trim()) return;
@@ -192,6 +242,8 @@ export const invalidateChatGPTWebBrowserSession = (accountId: string): void => {
 export interface StagedChatGPTWebBrowserSession {
   accountId: string;
   context: ChatGPTWebSessionContext;
+  /** Exact live generation at stage time. `null` means no live context existed. */
+  liveFence: BrowserSessionWriteFence | null;
 }
 
 /**
@@ -243,18 +295,50 @@ const clearSessionAuthCookieFamily = (jarPath: string): void => {
 const copyContextCookies = (
   fromContextId: string,
   toContextId: string,
-  options?: { verificationSafeOnly?: boolean },
-): void => {
+  options?: { expectedLiveFence?: BrowserSessionWriteFence; verificationSafeOnly?: boolean },
+): boolean => {
   const registry = getBrowserSessionRegistry();
   const from = registry.get(fromContextId);
   const to = registry.get(toContextId);
-  if (!from || !to) return;
+  if (!from || !to) return false;
+  if (from.lifecycle !== 'active' || to.lifecycle !== 'active') return false;
+  if (options?.expectedLiveFence && !assertWritable(to, options.expectedLiveFence)) return false;
   const cookies = readBrowserCookieJar(from.cookieJar.path).filter((cookie) => {
     if (!options?.verificationSafeOnly) return true;
     if (isLiveSessionAuthCookie(cookie.name)) return false;
     return isAllowedCookieName(cookie.name, [...STAGED_VERIFICATION_COOKIE_NAMES]);
   });
   if (cookies.length > 0) seedBrowserCookieJar(to.cookieJar.path, cookies);
+  return true;
+};
+
+type StoredLiveFence = { present: false } | { present: true; contextId: string; revision: number };
+
+const rememberLiveFence = (
+  staged: BrowserSessionContext,
+  liveFence: BrowserSessionWriteFence | null,
+): void => {
+  const stored: StoredLiveFence = liveFence
+    ? { contextId: liveFence.contextId, present: true, revision: liveFence.revision }
+    : { present: false };
+  staged.providerState[LIVE_FENCE_STATE_KEY] = stored;
+};
+
+const readLiveFence = (
+  staged: BrowserSessionContext,
+): BrowserSessionWriteFence | null | undefined => {
+  const raw = staged.providerState[LIVE_FENCE_STATE_KEY];
+  if (!raw || typeof raw !== 'object') return undefined;
+  const stored = raw as Partial<StoredLiveFence> & { present?: unknown };
+  if (stored.present === false) return null;
+  if (
+    stored.present === true &&
+    typeof stored.contextId === 'string' &&
+    typeof stored.revision === 'number'
+  ) {
+    return { contextId: stored.contextId, revision: stored.revision };
+  }
+  return undefined;
 };
 
 /**
@@ -277,14 +361,26 @@ export const stageChatGPTWebBrowserSession = (
   if (!params.accountId.trim()) return undefined;
   const pendingAccountId = `${params.accountId}:pending:${randomUUID()}`;
   const live = getBrowserSessionRegistry().getForIdentity(chatgptWebIdentity(params.accountId));
+  const liveFence: BrowserSessionWriteFence | null = live
+    ? { contextId: live.contextId, revision: live.revision }
+    : null;
 
   try {
-    const context = bindChatGPTWebBrowserSession({ ...params, accountId: pendingAccountId });
+    const context = bindChatGPTWebBrowserSession({
+      ...params,
+      accountId: pendingAccountId,
+      ephemeral: true,
+    });
     if (!context) return undefined;
+    const stagedContext = getBrowserSessionRegistry().get(context.contextId);
+    if (stagedContext) rememberLiveFence(stagedContext, liveFence);
     if (live) copyContextCookies(live.contextId, context.contextId, { verificationSafeOnly: true });
-    return { accountId: pendingAccountId, context };
+    // Staged contexts must stay evictable on the 2-minute ephemeral TTL.
+    context.release?.();
+    return { accountId: pendingAccountId, context, liveFence };
   } catch (error) {
     invalidateChatGPTWebBrowserSession(pendingAccountId);
+    if (error instanceof BrowserSessionError) return undefined;
     throw error;
   }
 };
@@ -304,17 +400,70 @@ export const stageChatGPTWebBrowserSession = (
  * unregister + Sentinel slot invalidate) rather than relying on `acquire()`'s
  * bare binding-mismatch drop. Cookie copy onto the replacement is not
  * transactional: a mid-copy failure can leave the old context already gone.
+ *
+ * If live `contextId` / `revision` changed since stage and this commit is not
+ * itself the device-change drop, abort and leave live untouched.
  */
 export const commitStagedChatGPTWebBrowserSession = (
   liveParams: BindChatGPTWebBrowserSessionParams,
   stagedAccountId: string,
 ): ChatGPTWebSessionContext | undefined => {
-  const staged = bindChatGPTWebBrowserSession({ ...liveParams, accountId: stagedAccountId });
+  const registry = getBrowserSessionRegistry();
+  const stagedContext = registry.getForIdentity(chatgptWebIdentity(stagedAccountId));
+  if (!stagedContext || stagedContext.lifecycle !== 'active') return undefined;
+
+  const capturedFence = readLiveFence(stagedContext);
+  const livePeek = registry.getForIdentity(chatgptWebIdentity(liveParams.accountId));
+
+  // Exact match: absent stays absent; present stays that generation.
+  // Absent→created, captured→disappeared, and a newer generation all abort.
+  if (capturedFence === undefined) {
+    log('commit aborted: staged live fence was not recorded');
+    return undefined;
+  }
+  if (capturedFence === null) {
+    if (livePeek) {
+      log('commit aborted: live context appeared after staging');
+      return undefined;
+    }
+  } else if (!livePeek) {
+    log('commit aborted: captured live context disappeared');
+    return undefined;
+  } else if (
+    livePeek.contextId !== capturedFence.contextId ||
+    livePeek.revision !== capturedFence.revision
+  ) {
+    log('commit aborted: live generation changed under the staged fence');
+    return undefined;
+  }
+
+  // Device-changing commit may drop ONLY the exact captured generation.
+  if (livePeek && liveBindingWouldChange(liveParams, livePeek)) {
+    dropChatGPTWebBrowserContext(livePeek);
+  }
+
   const live = bindChatGPTWebBrowserSession(liveParams);
   if (live) {
-    const liveContext = getBrowserSessionRegistry().get(live.contextId);
+    const liveContext = registry.get(live.contextId);
     if (liveContext) clearSessionAuthCookieFamily(liveContext.cookieJar.path);
   }
-  if (staged && live) copyContextCookies(staged.contextId, live.contextId);
+  if (live) copyContextCookies(stagedContext.contextId, live.contextId);
+  live?.release?.();
   return live;
+};
+
+export const peekChatGPTWebBrowserSessionFence = (
+  accountId: string,
+): BrowserSessionWriteFence | undefined => {
+  const context = getBrowserSessionRegistry().getForIdentity(chatgptWebIdentity(accountId));
+  if (!context) return undefined;
+  return { contextId: context.contextId, revision: context.revision };
+};
+
+export const isChatGPTWebBrowserSessionFenceCurrent = (
+  fence: BrowserSessionWriteFence | undefined,
+): boolean => {
+  if (!fence) return false;
+  const context = getBrowserSessionRegistry().get(fence.contextId);
+  return Boolean(context && assertWritable(context, fence));
 };

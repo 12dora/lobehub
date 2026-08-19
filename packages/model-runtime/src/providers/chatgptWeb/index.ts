@@ -193,6 +193,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
    * {@link uploadNamespace}.
    */
   private readonly uploadNamespace?: string;
+  private readonly sessionContext?: ChatGPTWebSessionContext;
 
   constructor({
     apiKey,
@@ -213,6 +214,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     this.provider = id || DEFAULT_PROVIDER;
     if (baseURL) this.baseURL = baseURL;
     this.browserSessionAccountId = browserSessionAccountId;
+    this.sessionContext = sessionContext;
     this.browserSessionContextKey = sessionContext?.contextId ?? browserSessionContextKey;
 
     this.client =
@@ -245,9 +247,14 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     return 'chatgptweb:unscoped';
   }
 
+  private releaseSessionContext(): void {
+    this.sessionContext?.release?.();
+  }
+
   async chat(payload: ChatStreamPayload, options?: ChatMethodOptions): Promise<Response> {
     const inputStartAt = Date.now();
     const signal = options?.signal;
+    let streamConstructed = false;
 
     try {
       const { echoHistory, inputText, messages, mimeTypes } = await this.buildMessages(
@@ -406,14 +413,23 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         inputText,
         model,
         // runs on success, failure AND abort — the created conversation must
-        // never be left visible in the account history
-        onCleanup: ({ conversationId }) => this.hideTurn(turn, conversationId),
+        // never be left visible in the account history. The session lease
+        // lives until this cleanup so overflow eviction cannot drain a live
+        // stream.
+        onCleanup: ({ conversationId }) => {
+          try {
+            this.hideTurn(turn, conversationId);
+          } finally {
+            this.releaseSessionContext();
+          }
+        },
         onDone: (context) => this.finalizeTurn(context, turn, search, signal),
         provider: this.provider,
         resolveFile: (pointer) => this.resolveFile(pointer, turn, signal),
         resolveImage: (pointer) => this.resolveImage(pointer, turn, signal),
         signal,
       });
+      streamConstructed = true;
 
       if (process.env[DEBUG_FLAG] === '1') {
         const [prod, useForDebug] = stream.tee();
@@ -426,18 +442,23 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     } catch (error) {
       // The user pressing stop is not a provider failure: surface the runtime's
       // abort terminal instead of an error card.
-      if (isCallerAbort(signal) || isAbortError(error))
+      if (isCallerAbort(signal) || isAbortError(error)) {
+        streamConstructed = true;
         return StreamingResponse(
           ChatGPTWebStream(throwingEvents(error), {
             callbacks: options?.callback,
             model: payload.model,
+            onCleanup: () => this.releaseSessionContext(),
             provider: this.provider,
             signal,
           }),
           { headers: options?.headers },
         );
+      }
 
       throw this.toRuntimeError(error);
+    } finally {
+      if (!streamConstructed) this.releaseSessionContext();
     }
   }
 
@@ -445,11 +466,15 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     payload: CreateImagePayload,
     options?: CreateImageMethodOptions,
   ): Promise<CreateImageResponse> {
-    return createChatGPTWebImage(payload, {
-      client: this.client,
-      options,
-      provider: this.provider,
-    });
+    try {
+      return await createChatGPTWebImage(payload, {
+        client: this.client,
+        options,
+        provider: this.provider,
+      });
+    } finally {
+      this.releaseSessionContext();
+    }
   }
 
   async models(options?: { signal?: AbortSignal }): Promise<ChatModelCard[]> {
@@ -460,6 +485,8 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       models = await this.client.listModels(options?.signal);
     } catch (error) {
       throw this.toRuntimeError(error);
+    } finally {
+      this.releaseSessionContext();
     }
 
     const known = (slug: string) =>

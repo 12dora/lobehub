@@ -44,6 +44,19 @@ const startGatewayService = async (): Promise<void> => {
  */
 export const ENTERPRISE_WORKER_SPECS: readonly WorkerSpec[] = [
   {
+    // Core: no moduleId. Process-local browser-session orphan wipe + idle sweep.
+    // Single-process: this must not run in a multi-replica topology that shares
+    // `$TMPDIR` (plan principle 7).
+    name: 'browserSessionMaintenance',
+    start: async () => {
+      const { sweepOrphanBrowserCookieJars } = await import('../services/browserSession/cookieJar');
+      sweepOrphanBrowserCookieJars();
+      const { startBrowserSessionIdleSweep } =
+        await import('../services/browserSession/contextRegistry');
+      startBrowserSessionIdleSweep();
+    },
+  },
+  {
     name: 'warnIfPlatformMasterKeyMissing',
     start: async () => {
       const { warnIfPlatformMasterKeyMissing } = await import('../security/secret');
@@ -225,6 +238,17 @@ let started = false;
 /** Test helper — drop the process-once latch. */
 export const resetEnterpriseWorkersBootstrapForTest = (): void => {
   started = false;
+};
+
+/**
+ * Drain browser-session contexts, jars, and the idle sweeper. Does not
+ * `process.exit` — Next/Node finish the shutdown themselves.
+ */
+export const stopEnterpriseWorkers = async (): Promise<void> => {
+  const { disposeAllBrowserSessions, stopBrowserSessionIdleSweep } =
+    await import('../services/browserSession/contextRegistry');
+  stopBrowserSessionIdleSweep();
+  await disposeAllBrowserSessions();
 };
 
 /**
