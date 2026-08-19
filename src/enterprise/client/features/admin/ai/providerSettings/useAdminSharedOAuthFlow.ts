@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { withReauth } from '@/enterprise/client/services/adminAiInfraAdapter/shared';
 import { lambdaClient } from '@/libs/trpc/client';
 
+import { decideDevicePollTick, decidePastePollResult } from './sharedOAuthFlowDecisions';
+
 export type SharedOAuthFlowState = 'idle' | 'requesting' | 'awaiting' | 'success' | 'error';
 
 export type SharedOAuthFlowError = 'authError' | 'codeExpired' | 'denied' | 'providerStoreFailed';
@@ -45,24 +47,6 @@ export type SharedOAuthPasteSource = 'callback' | 'token';
  */
 export type SharedOAuthApiKeyPhase = 'idle' | 'requestingEnvelope' | 'exchangingKey';
 
-/** Server error literal (K3) → i18n suffix used by the paste form. */
-const PASTE_ERROR_MAP: Record<string, SharedOAuthPasteError | 'expired'> = {
-  access_token_invalid: 'accessTokenInvalid',
-  exchange_failed: 'exchangeFailed',
-  expired: 'expired',
-  invalid_callback: 'invalidCallback',
-  session_invalid: 'sessionInvalid',
-  state_mismatch: 'stateMismatch',
-  token_not_web: 'tokenNotWeb',
-};
-
-/**
- * Server code for "the grant was redeemed but the credentials could not be stored". It arrives
- * on a `denied` poll, so it MUST be split out: the admin did consent, and telling them the
- * provider refused authorization sends them to the wrong fix.
- */
-const PROVIDER_STORE_FAILED = 'provider_store_failed';
-
 export interface SharedOAuthDeviceCode {
   /** Provider accepts a manually pasted access token as a fallback credential. */
   allowAccessTokenPaste?: boolean;
@@ -98,15 +82,6 @@ interface UseAdminSharedOAuthFlowOptions {
 
 /** Audit reason recorded for the reauth-gated store step. */
 const CONNECT_REASON = 'admin shared provider account connect';
-
-/** RFC 8628 §3.5: back off by 5s each time the authorization server says slow_down. */
-const SLOW_DOWN_STEP_SECONDS = 5;
-
-/**
- * A network blip must not throw away a user code that is still valid: keep polling and
- * only give up once this many consecutive ticks failed. Reset by any server answer.
- */
-const MAX_CONSECUTIVE_POLL_FAILURES = 3;
 
 /**
  * Device-flow driver for the platform-owned (shared) provider account.
@@ -274,6 +249,7 @@ export const useAdminSharedOAuthFlow = ({
       if (isStale()) return;
 
       let result;
+      let threw = false;
       try {
         result = await withReauth(() =>
           lambdaClient.admin.aiProviderOAuth.pollAuthStatus.mutate({
@@ -283,58 +259,46 @@ export const useAdminSharedOAuthFlow = ({
           }),
         );
       } catch {
-        if (isStale()) return;
-        consecutiveFailures += 1;
-        // Transient blip: the user code is still valid, so keep the cadence and retry.
-        if (consecutiveFailures < MAX_CONSECUTIVE_POLL_FAILURES) {
-          schedule(seconds);
-          return;
-        }
-        fail('authError');
-        return;
+        threw = true;
       }
 
-      if (isStale()) {
-        // The server already stored the connection even though this run is gone —
-        // surface it via a status re-read rather than dropping the outcome entirely.
-        if (result.status === 'success') markStatusStale();
-        return;
-      }
+      const decision = decideDevicePollTick({
+        consecutiveFailures,
+        intervalSeconds: seconds,
+        result,
+        stale: isStale(),
+        threw,
+      });
 
-      consecutiveFailures = 0;
-
-      switch (result.status) {
+      switch (decision.kind) {
         case 'success': {
+          consecutiveFailures = 0;
           clearTimers();
           runIdRef.current += 1;
-          const stored: SharedOAuthStoreOutcome = { revision: result.revision };
+          const stored: SharedOAuthStoreOutcome = { revision: decision.revision };
           setOutcome(stored);
           setState('success');
           onSuccessRef.current?.(stored);
           return;
         }
-        case 'denied': {
-          // The grant is single-use and already spent, so the operator must reconnect either
-          // way — but only a real denial is the provider's doing.
-          fail(result.error === PROVIDER_STORE_FAILED ? 'providerStoreFailed' : 'denied');
+        case 'fail': {
+          fail(decision.reason);
           return;
         }
-        case 'error': {
-          // Terminal, and NOT a poll to repeat: the grant is spent or the envelope is
-          // unusable. Falling through to `default` here re-scheduled forever.
-          fail(result.error === 'expired' ? 'codeExpired' : 'authError');
+        case 'retry': {
+          if (threw) consecutiveFailures += 1;
+          else consecutiveFailures = 0;
+          schedule(decision.delaySeconds);
           return;
         }
-        case 'expired': {
-          fail('codeExpired');
+        case 'staleSuccess': {
+          // The server already stored the connection even though this run is gone —
+          // surface it via a status re-read rather than dropping the outcome entirely.
+          markStatusStale();
           return;
         }
-        case 'slow_down': {
-          schedule(seconds + SLOW_DOWN_STEP_SECONDS);
+        case 'ignore': {
           return;
-        }
-        default: {
-          schedule(seconds);
         }
       }
     }
@@ -387,57 +351,65 @@ export const useAdminSharedOAuthFlow = ({
       setSubmitting(true);
 
       try {
-        const result = await withReauth(() =>
-          lambdaClient.admin.aiProviderOAuth.pollAuthStatus.mutate({
-            deviceCode: code,
-            id: providerId,
-            reason: CONNECT_REASON,
-            ...payload,
-          }),
-        );
+        let result;
+        let threw = false;
+        try {
+          result = await withReauth(() =>
+            lambdaClient.admin.aiProviderOAuth.pollAuthStatus.mutate({
+              deviceCode: code,
+              id: providerId,
+              reason: CONNECT_REASON,
+              ...payload,
+            }),
+          );
+        } catch {
+          threw = true;
+        }
 
         if (isStale()) {
           // The server stored the connection for a run nobody is watching any more: surface
           // it through a status re-read instead of writing into the current run's state.
-          if (result.status === 'success') markStatusStale();
+          if (!threw && result?.status === 'success') markStatusStale();
           return;
         }
 
-        if (result.status === 'success') {
-          clearTimers();
-          runIdRef.current += 1;
-          deviceCodeRef.current = null;
-          const stored: SharedOAuthStoreOutcome = { revision: result.revision };
-          setOutcome(stored);
-          setState('success');
-          onSuccessRef.current?.(stored);
-          return;
+        const decision = decidePastePollResult({ result, source, threw });
+
+        switch (decision.kind) {
+          case 'success': {
+            clearTimers();
+            runIdRef.current += 1;
+            deviceCodeRef.current = null;
+            const stored: SharedOAuthStoreOutcome = { revision: decision.revision };
+            setOutcome(stored);
+            setState('success');
+            onSuccessRef.current?.(stored);
+            return;
+          }
+          case 'expired': {
+            clearTimers();
+            runIdRef.current += 1;
+            deviceCodeRef.current = null;
+            setDeviceCode(undefined);
+            // Same reason as `fail()`: the `finally` below cannot clear this once the run it
+            // belonged to is retired, and a spinning box refuses the retry it just asked for.
+            setSubmitting(false);
+            setError('codeExpired');
+            setState('error');
+            markStatusStale();
+            return;
+          }
+          case 'fieldError': {
+            setSubmitError(decision.error);
+            setSubmitErrorSource(decision.source);
+            return;
+          }
+          case 'networkError': {
+            setSubmitError('authError');
+            setSubmitErrorSource(decision.source);
+            return;
+          }
         }
-
-        const mapped =
-          PASTE_ERROR_MAP[result.error ?? ''] ??
-          (result.status === 'expired' ? 'expired' : 'authError');
-
-        if (mapped === 'expired') {
-          clearTimers();
-          runIdRef.current += 1;
-          deviceCodeRef.current = null;
-          setDeviceCode(undefined);
-          // Same reason as `fail()`: the `finally` below cannot clear this once the run it
-          // belonged to is retired, and a spinning box refuses the retry it just asked for.
-          setSubmitting(false);
-          setError('codeExpired');
-          setState('error');
-          markStatusStale();
-          return;
-        }
-
-        setSubmitError(mapped);
-        setSubmitErrorSource(source);
-      } catch {
-        if (isStale()) return;
-        setSubmitError('authError');
-        setSubmitErrorSource(source);
       } finally {
         // Only this run's latch: an invalidated run already released it, and clobbering it
         // would unlock a submit the newer run is running.
