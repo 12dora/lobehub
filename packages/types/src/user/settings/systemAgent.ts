@@ -22,8 +22,12 @@ export interface SystemAgentItem {
   enabled?: boolean;
   model: string;
   provider: string;
-  /** Default thinking-effort level applied when this service model runs. */
-  reasoningEffort?: SystemAgentReasoningEffort;
+  /**
+   * Default thinking-effort level applied when this service model runs.
+   * `null` is an explicit clear (falls back to the provider default) — needed
+   * because the settings merge drops `undefined` values.
+   */
+  reasoningEffort?: SystemAgentReasoningEffort | null;
 }
 
 export interface PromptRewriteSystemAgent extends Omit<SystemAgentItem, 'enabled'> {

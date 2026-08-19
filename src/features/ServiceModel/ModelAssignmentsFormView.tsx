@@ -1,5 +1,7 @@
 'use client';
 
+import type { EffortLevel } from '@lobechat/model-runtime';
+import type { LobeAgentChatConfig } from '@lobechat/types';
 import type { FormGroupItemType, FormItemProps } from '@lobehub/ui';
 import { Flexbox, Form, InputNumber, Skeleton, Tooltip } from '@lobehub/ui';
 import { Switch } from '@lobehub/ui/base-ui';
@@ -20,6 +22,12 @@ import type { useSaveState } from '@/hooks/useSaveState';
 import type { LobeAgentSettings } from '@/types/session';
 import type { SystemAgentItem, UserServiceModelConfigKey } from '@/types/user/settings';
 
+import EffortSelect from './EffortSelect';
+
+/** Leaves the model picker + its effort picker edit as one atomic control cluster. */
+const ROW_STYLE = { width: 'min(100%, 448px)' } as const;
+const MODEL_SELECT_STYLE = { minWidth: 0, width: '100%' } as const;
+
 export interface SystemAgentModelItem {
   contextLimit?: boolean;
   key: UserServiceModelConfigKey;
@@ -29,6 +37,10 @@ export interface SystemAgentModelItem {
 export interface SystemAgentPolicyMetas {
   contextLimit?: PlatformSettingMetaState;
   enabled?: PlatformSettingMetaState;
+  /**
+   * Leaves the single model picker cluster writes atomically:
+   * `model`, `provider` and (where registered) `reasoningEffort`.
+   */
   modelProvider: readonly PlatformSettingMetaState[];
 }
 
@@ -36,7 +48,9 @@ export const getSystemAgentPatchMetas = (
   policy: SystemAgentPolicyMetas | undefined,
   value: Partial<SystemAgentItem>,
 ): PlatformSettingMetaState[] => [
-  ...('model' in value || 'provider' in value ? (policy?.modelProvider ?? []) : []),
+  ...('model' in value || 'provider' in value || 'reasoningEffort' in value
+    ? (policy?.modelProvider ?? [])
+    : []),
   ...('enabled' in value && policy?.enabled ? [policy.enabled] : []),
   ...('contextLimit' in value && policy?.contextLimit ? [policy.contextLimit] : []),
 ];
@@ -126,6 +140,16 @@ export interface ModelAssignmentsFormViewProps {
   isInit: boolean;
   onRetryInit?: () => void;
   onUpdateDefaultAgent: (value: { model: string; provider: string }) => Promise<void> | void;
+  /**
+   * Default-assistant thinking effort. Stored on the agent's own `chatConfig` under the
+   * model's registry `configKey`, so there is no platform leaf for it — admin platform
+   * defaults simply omit this prop and the picker is not rendered there.
+   */
+  onUpdateDefaultAgentEffort?: (value: {
+    configKey: keyof LobeAgentChatConfig;
+    /** Always a concrete level — chatConfig mode offers no clear. */
+    level: EffortLevel;
+  }) => Promise<void> | void;
   onUpdateSystemAgent: (
     key: UserServiceModelConfigKey,
     value: Partial<SystemAgentItem>,
@@ -148,6 +172,7 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
     isInit,
     onRetryInit,
     onUpdateDefaultAgent,
+    onUpdateDefaultAgentEffort,
     onUpdateSystemAgent,
     saveState,
     systemAgentMetas = {},
@@ -195,6 +220,33 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
       }
     };
 
+    /**
+     * Unlike the systemAgent leaves — which persist an explicit `null` to clear — the default
+     * assistant stores its level on `chatConfig`, whose fields are strict level unions with no
+     * null member, and the settings merge drops `undefined`. A clear is therefore not
+     * representable, so `EffortSelect` omits the "Default" option in chatConfig mode and only
+     * ever emits a concrete level here. The guard below keeps that contract enforced rather
+     * than assumed: a clear would silently no-op, which is worse than not offering it.
+     */
+    const updateDefaultAgentEffort = async (
+      level: EffortLevel | undefined,
+      configKey: keyof LobeAgentChatConfig,
+    ) => {
+      if (!onUpdateDefaultAgentEffort || level === undefined) return;
+      if (!canManage || defaultAgentMetas.some((meta) => !isPlatformSettingMetaWritable(meta)))
+        return;
+
+      setSavingGroup('assignments');
+      setLoadingKey('defaultAgent');
+      try {
+        await save(async () => {
+          await onUpdateDefaultAgentEffort({ configKey, level });
+        });
+      } finally {
+        setLoadingKey(undefined);
+      }
+    };
+
     const updateSystemAgentModel = async (
       key: UserServiceModelConfigKey,
       value: Partial<SystemAgentItem>,
@@ -223,19 +275,23 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
             <ManagedCompositeSettingFieldContent metas={defaultAgentMetas}>
               {({ disabled }) => (
                 <Tooltip title={disabledReason}>
-                  <Flexbox
-                    align="center"
-                    direction="horizontal"
-                    gap={12}
-                    style={{ width: 'min(100%, 448px)' }}
-                  >
+                  <Flexbox align="center" direction="horizontal" gap={12} style={ROW_STYLE}>
                     <ModelSelect
                       disabled={disabled || !canManage}
                       showAbility={false}
-                      style={{ minWidth: 0, width: '100%' }}
+                      style={MODEL_SELECT_STYLE}
                       value={defaultAgent.config}
                       onChange={updateDefaultAgentModel}
                     />
+                    {onUpdateDefaultAgentEffort && (
+                      <EffortSelect
+                        chatConfig={defaultAgent.config.chatConfig}
+                        disabled={disabled || !canManage}
+                        model={defaultAgent.config.model}
+                        provider={defaultAgent.config.provider ?? ''}
+                        onChange={updateDefaultAgentEffort}
+                      />
+                    )}
                   </Flexbox>
                 </Tooltip>
               )}
@@ -252,51 +308,35 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
 
       if (isSystemAgentPolicyRowHidden(policy)) return null;
 
-      const control = (
-        <Tooltip title={disabledReason}>
-          <Flexbox
-            align="center"
-            direction="horizontal"
-            gap={12}
-            style={{ width: 'min(100%, 448px)' }}
-          >
-            <ModelSelect
-              disabled={!canManage}
-              showAbility={false}
-              style={{ minWidth: 0, width: '100%' }}
-              value={value}
-              onChange={(props) => updateSystemAgentModel(key, props)}
-            />
-          </Flexbox>
-        </Tooltip>
-      );
-
       return {
-        children:
-          managedMetas.length > 0 ? (
-            <ManagedCompositeSettingFieldContent metas={managedMetas}>
-              {({ disabled }) => (
-                <Tooltip title={disabledReason}>
-                  <Flexbox
-                    align="center"
-                    direction="horizontal"
-                    gap={12}
-                    style={{ width: 'min(100%, 448px)' }}
-                  >
-                    <ModelSelect
-                      disabled={disabled || !canManage}
-                      showAbility={false}
-                      style={{ minWidth: 0, width: '100%' }}
-                      value={value}
-                      onChange={(props) => updateSystemAgentModel(key, props)}
-                    />
-                  </Flexbox>
-                </Tooltip>
-              )}
-            </ManagedCompositeSettingFieldContent>
-          ) : (
-            control
-          ),
+        // An empty meta list renders the children unmanaged, so one branch covers both
+        // the policy-enabled user page and the admin platform-defaults page.
+        children: (
+          <ManagedCompositeSettingFieldContent metas={managedMetas}>
+            {({ disabled }) => (
+              <Tooltip title={disabledReason}>
+                <Flexbox align="center" direction="horizontal" gap={12} style={ROW_STYLE}>
+                  <ModelSelect
+                    disabled={disabled || !canManage}
+                    showAbility={false}
+                    style={MODEL_SELECT_STYLE}
+                    value={value}
+                    onChange={(props) => updateSystemAgentModel(key, props)}
+                  />
+                  <EffortSelect
+                    disabled={disabled || !canManage}
+                    model={value.model}
+                    provider={value.provider}
+                    value={value.reasoningEffort}
+                    onChange={(level) =>
+                      updateSystemAgentModel(key, { reasoningEffort: level ?? null })
+                    }
+                  />
+                </Flexbox>
+              </Tooltip>
+            )}
+          </ManagedCompositeSettingFieldContent>
+        ),
         desc: t(`systemAgent.${key}.modelDesc`),
         label: t(`systemAgent.${key}.title`),
       } satisfies FormItemProps;
@@ -314,14 +354,29 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
             <Flexbox direction="vertical" gap={8} style={{ width: 448 }}>
               <ManagedCompositeSettingFieldContent metas={modelProviderMetas}>
                 {({ disabled }) => (
-                  <ModelSelect
-                    disabled={disabled || !canManage}
-                    modelType={modelType}
-                    showAbility={false}
-                    style={{ minWidth: 0, width: '100%' }}
-                    value={value}
-                    onChange={(props) => updateSystemAgentModel(key, props)}
-                  />
+                  <Flexbox align="center" direction="horizontal" gap={12}>
+                    <ModelSelect
+                      disabled={disabled || !canManage}
+                      modelType={modelType}
+                      showAbility={false}
+                      style={MODEL_SELECT_STYLE}
+                      value={value}
+                      onChange={(props) => updateSystemAgentModel(key, props)}
+                    />
+                    {/* Embedding models have no thinking budget — only the two chat
+                     * memory agents (analysis / persona writer) get an effort picker. */}
+                    {modelType !== 'embedding' && (
+                      <EffortSelect
+                        disabled={disabled || !canManage}
+                        model={value.model}
+                        provider={value.provider}
+                        value={value.reasoningEffort}
+                        onChange={(level) =>
+                          updateSystemAgentModel(key, { reasoningEffort: level ?? null })
+                        }
+                      />
+                    )}
+                  </Flexbox>
                 )}
               </ManagedCompositeSettingFieldContent>
               {contextLimit && (
@@ -358,21 +413,27 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
       return {
         children: (
           <Tooltip title={disabledReason}>
-            <Flexbox
-              align="center"
-              direction="horizontal"
-              gap={12}
-              style={{ width: 'min(100%, 448px)' }}
-            >
+            <Flexbox align="center" direction="horizontal" gap={12} style={ROW_STYLE}>
               <ManagedCompositeSettingFieldContent metas={modelProviderMetas}>
                 {({ disabled }) => (
-                  <ModelSelect
-                    disabled={disabled || !canManage}
-                    showAbility={false}
-                    style={{ minWidth: 0, width: '100%' }}
-                    value={value}
-                    onChange={(props) => updateSystemAgentModel(key, props)}
-                  />
+                  <Flexbox align="center" direction="horizontal" gap={12}>
+                    <ModelSelect
+                      disabled={disabled || !canManage}
+                      showAbility={false}
+                      style={MODEL_SELECT_STYLE}
+                      value={value}
+                      onChange={(props) => updateSystemAgentModel(key, props)}
+                    />
+                    <EffortSelect
+                      disabled={disabled || !canManage}
+                      model={value.model}
+                      provider={value.provider}
+                      value={value.reasoningEffort}
+                      onChange={(level) =>
+                        updateSystemAgentModel(key, { reasoningEffort: level ?? null })
+                      }
+                    />
+                  </Flexbox>
                 )}
               </ManagedCompositeSettingFieldContent>
               <ManagedCompositeSettingFieldContent metas={policy?.enabled ? [policy.enabled] : []}>

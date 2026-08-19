@@ -34,41 +34,55 @@ describe('Service Model managed policy coverage', () => {
     fields.map((field) => `systemAgent.${agent}.${field}`),
   );
 
-  it('covers every one of the 28 registered system-agent leaf paths exactly once', () => {
-    expect(registeredPaths).toHaveLength(28);
-    expect(new Set(registeredPaths).size).toBe(28);
+  it('covers every one of the 38 registered system-agent leaf paths exactly once', () => {
+    expect(registeredPaths).toHaveLength(38);
+    expect(new Set(registeredPaths).size).toBe(38);
     expect(registeredPaths).toMatchInlineSnapshot(`
       [
         "systemAgent.agentMeta.model",
         "systemAgent.agentMeta.provider",
+        "systemAgent.agentMeta.reasoningEffort",
         "systemAgent.followUpAction.model",
         "systemAgent.followUpAction.provider",
+        "systemAgent.followUpAction.reasoningEffort",
         "systemAgent.followUpAction.enabled",
         "systemAgent.generationTopic.model",
         "systemAgent.generationTopic.provider",
+        "systemAgent.generationTopic.reasoningEffort",
         "systemAgent.historyCompress.model",
         "systemAgent.historyCompress.provider",
+        "systemAgent.historyCompress.reasoningEffort",
         "systemAgent.inputCompletion.model",
         "systemAgent.inputCompletion.provider",
+        "systemAgent.inputCompletion.reasoningEffort",
         "systemAgent.inputCompletion.enabled",
         "systemAgent.memoryAnalysisAgentConfig.model",
         "systemAgent.memoryAnalysisAgentConfig.provider",
+        "systemAgent.memoryAnalysisAgentConfig.reasoningEffort",
         "systemAgent.memoryAnalysisAgentConfig.contextLimit",
         "systemAgent.promptRewrite.model",
         "systemAgent.promptRewrite.provider",
+        "systemAgent.promptRewrite.reasoningEffort",
         "systemAgent.promptRewrite.enabled",
         "systemAgent.topic.model",
         "systemAgent.topic.provider",
+        "systemAgent.topic.reasoningEffort",
         "systemAgent.translation.model",
         "systemAgent.translation.provider",
+        "systemAgent.translation.reasoningEffort",
         "systemAgent.userMemoryEmbedding.model",
         "systemAgent.userMemoryEmbedding.provider",
         "systemAgent.userMemoryEmbedding.contextLimit",
         "systemAgent.userMemoryPersonaWriter.model",
         "systemAgent.userMemoryPersonaWriter.provider",
+        "systemAgent.userMemoryPersonaWriter.reasoningEffort",
         "systemAgent.userMemoryPersonaWriter.contextLimit",
       ]
     `);
+  });
+
+  it('omits reasoningEffort for the embedding row, which renders no effort picker', () => {
+    expect(SYSTEM_AGENT_POLICY_PATHS.userMemoryEmbedding).not.toContain('reasoningEffort');
   });
 
   it.each([
@@ -76,6 +90,7 @@ describe('Service Model managed policy coverage', () => {
     ['provider', { provider: 'provider' }],
     ['enabled', { enabled: true }],
     ['contextLimit', { contextLimit: 8192 }],
+    ['reasoningEffort', { reasoningEffort: 'high' }],
   ] as const)('selects only the governing metadata for a %s write', (field, patch) => {
     const model = meta();
     const provider = meta();
@@ -89,7 +104,8 @@ describe('Service Model managed policy coverage', () => {
 
     const selected = getSystemAgentPatchMetas(policy, patch as Partial<SystemAgentItem>);
     expect(selected).toEqual(
-      field === 'model' || field === 'provider'
+      // model / provider / reasoningEffort are one atomic picker cluster, so they share metas.
+      field === 'model' || field === 'provider' || field === 'reasoningEffort'
         ? [model, provider]
         : [field === 'enabled' ? enabled : contextLimit],
     );

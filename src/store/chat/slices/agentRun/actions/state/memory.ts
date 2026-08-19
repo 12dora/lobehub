@@ -3,6 +3,7 @@ import { type UIChatMessage } from '@lobechat/types';
 import { TraceNameMap } from '@lobechat/types';
 
 import { chatService } from '@/services/chat';
+import { resolveSystemAgentEffortParams } from '@/services/chat/mecha/systemAgentEffort';
 import { topicService } from '@/services/topic';
 import { type ChatStore } from '@/store/chat';
 import { type StoreSetter } from '@/store/types';
@@ -26,14 +27,21 @@ export class ChatMemoryActionImpl {
     const topicId = this.#get().activeTopicId;
     if (messages.length <= 1 || !topicId) return;
 
-    const { model, provider } = systemAgentSelectors.historyCompress(useUserStore.getState());
+    const historyCompressConfig = systemAgentSelectors.historyCompress(useUserStore.getState());
+    const { model, provider } = historyCompressConfig;
 
     let historySummary = '';
     await chatService.fetchPresetTaskResult({
       onFinish: async (text) => {
         historySummary = text;
       },
-      params: { ...chainSummaryHistory(messages), model, provider, stream: false },
+      params: {
+        ...chainSummaryHistory(messages),
+        model,
+        provider,
+        ...resolveSystemAgentEffortParams(historyCompressConfig),
+        stream: false,
+      },
       trace: {
         sessionId: this.#get().activeAgentId,
         topicId: this.#get().activeTopicId,

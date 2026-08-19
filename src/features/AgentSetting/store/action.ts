@@ -1,4 +1,5 @@
 import { type MessageTextChunk } from '@lobechat/fetch-sse';
+import { type ModelExtendParams } from '@lobechat/model-runtime';
 import {
   chainPickEmoji,
   chainSummaryAgentName,
@@ -12,6 +13,7 @@ import { type PartialDeep } from 'type-fest';
 import { type StateCreator } from 'zustand/vanilla';
 
 import { chatService } from '@/services/chat';
+import { withSystemAgentEffortParams } from '@/services/chat/mecha/systemAgentEffort';
 import { globalHelpers } from '@/store/global/helpers';
 import { useUserStore } from '@/store/user';
 import { systemAgentSelectors } from '@/store/user/slices/settings/selectors';
@@ -59,7 +61,9 @@ export interface Action extends PublicAction {
   dispatchMeta: (payload: MetaDataDispatch) => Promise<void>;
   getCurrentTracePayload: (data: Partial<TracePayload>) => TracePayload;
 
-  internal_getSystemAgentForMeta: () => SystemAgentItem;
+  /** Wire-ready params: the settings-only `reasoningEffort` is already resolved away. */
+  internal_getSystemAgentForMeta: () => Partial<Omit<SystemAgentItem, 'reasoningEffort'>> &
+    ModelExtendParams;
   resetAgentConfig: () => Promise<void>;
 
   resetAgentMeta: () => Promise<void>;
@@ -293,7 +297,7 @@ export const store: StateCreator<Store, [['zustand/devtools', never]]> = (set, g
   }),
 
   internal_getSystemAgentForMeta: () => {
-    return systemAgentSelectors.agentMeta(useUserStore.getState());
+    return withSystemAgentEffortParams(systemAgentSelectors.agentMeta(useUserStore.getState()));
   },
 
   resetAgentConfig: async () => {

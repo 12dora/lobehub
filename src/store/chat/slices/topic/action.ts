@@ -13,6 +13,7 @@ import { LOADING_FLAT } from '@/const/message';
 import { mutate, useClientDataSWRWithSync } from '@/libs/swr';
 import { cronKeys, deviceKeys, topicKeys } from '@/libs/swr/keys';
 import { chatService } from '@/services/chat';
+import { withSystemAgentEffortParams } from '@/services/chat/mecha/systemAgentEffort';
 import { type GitLinkedPRSummary, gitService } from '@/services/git';
 import { messageService } from '@/services/message';
 import { topicService } from '@/services/topic';
@@ -311,7 +312,7 @@ export class ChatTopicActionImpl {
         if (shouldStreamSummaryTitle) internal_updateTopicTitleInSummary(topicId, output);
       },
       params: merge(
-        topicConfig,
+        withSystemAgentEffortParams(topicConfig),
         chainSummaryTitle(
           messages,
           userGeneralSettingsSelectors.currentResponseLanguage(useUserStore.getState()),

@@ -1,6 +1,20 @@
+import { DEFAULT_SYSTEM_AGENT_CONFIG } from '@lobechat/const';
 import { describe, expect, it } from 'vitest';
 
-import { isUnpublishedSettingsDraftError, systemAgentPatch } from './platformDefaults';
+import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
+
+import {
+  buildSystemAgentFromPolicies,
+  isUnpublishedSettingsDraftError,
+  systemAgentPatch,
+} from './platformDefaults';
+
+type PolicyMap = AdminSettingsGetDraftOutput['publishedPolicies'];
+
+const policies = (entries: Record<string, unknown>): PolicyMap =>
+  Object.fromEntries(
+    Object.entries(entries).map(([path, value]) => [path, { value }]),
+  ) as PolicyMap;
 
 describe('systemAgentPatch', () => {
   it('maps explicit contextLimit clear (undefined) to null', () => {
@@ -26,6 +40,113 @@ describe('systemAgentPatch', () => {
       'systemAgent.topic.model': 'gpt-4o',
       'systemAgent.topic.provider': 'openai',
     });
+  });
+
+  it('encodes a chosen reasoningEffort level', () => {
+    expect(systemAgentPatch('topic', { reasoningEffort: 'high' })).toEqual({
+      'systemAgent.topic.reasoningEffort': 'high',
+    });
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+  ] as const)('encodes a reasoningEffort clear (%s) as null', (_label, cleared) => {
+    expect(systemAgentPatch('historyCompress', { reasoningEffort: cleared })).toEqual({
+      'systemAgent.historyCompress.reasoningEffort': null,
+    });
+  });
+
+  it('does not emit reasoningEffort when the field is absent from the partial', () => {
+    expect(systemAgentPatch('topic', { enabled: true })).toEqual({
+      'systemAgent.topic.enabled': true,
+    });
+  });
+
+  it('carries reasoningEffort alongside the other leaves in one patch', () => {
+    expect(
+      systemAgentPatch('memoryAnalysisAgentConfig', {
+        contextLimit: 4096,
+        enabled: true,
+        model: 'gpt-4o',
+        provider: 'openai',
+        reasoningEffort: 'low',
+      }),
+    ).toEqual({
+      'systemAgent.memoryAnalysisAgentConfig.contextLimit': 4096,
+      'systemAgent.memoryAnalysisAgentConfig.enabled': true,
+      'systemAgent.memoryAnalysisAgentConfig.model': 'gpt-4o',
+      'systemAgent.memoryAnalysisAgentConfig.provider': 'openai',
+      'systemAgent.memoryAnalysisAgentConfig.reasoningEffort': 'low',
+    });
+  });
+});
+
+describe('buildSystemAgentFromPolicies — reasoningEffort read-back', () => {
+  it('reads a stored level back onto the item', () => {
+    const result = buildSystemAgentFromPolicies(
+      policies({ 'systemAgent.topic.reasoningEffort': 'high' }),
+    );
+
+    expect(result.topic.reasoningEffort).toBe('high');
+  });
+
+  it('treats a null platform value as unset rather than surfacing null to the picker', () => {
+    const result = buildSystemAgentFromPolicies(
+      policies({ 'systemAgent.topic.reasoningEffort': null }),
+    );
+
+    expect(result.topic.reasoningEffort).toBeUndefined();
+    expect('reasoningEffort' in result.topic).toBe(false);
+  });
+
+  it('leaves reasoningEffort unset when no policy exists for it', () => {
+    expect(buildSystemAgentFromPolicies(policies({})).topic.reasoningEffort).toBeUndefined();
+  });
+
+  it('preserves model / provider / enabled / contextLimit while reading reasoningEffort', () => {
+    const result = buildSystemAgentFromPolicies(
+      policies({
+        'systemAgent.memoryAnalysisAgentConfig.contextLimit': 4096,
+        'systemAgent.memoryAnalysisAgentConfig.enabled': true,
+        'systemAgent.memoryAnalysisAgentConfig.model': 'gpt-4o',
+        'systemAgent.memoryAnalysisAgentConfig.provider': 'openai',
+        'systemAgent.memoryAnalysisAgentConfig.reasoningEffort': 'low',
+      }),
+    );
+
+    expect(result.memoryAnalysisAgentConfig).toMatchObject({
+      contextLimit: 4096,
+      enabled: true,
+      model: 'gpt-4o',
+      provider: 'openai',
+      reasoningEffort: 'low',
+    });
+  });
+
+  it('clearing reasoningEffort does not disturb the sibling leaves', () => {
+    const result = buildSystemAgentFromPolicies(
+      policies({
+        'systemAgent.memoryAnalysisAgentConfig.contextLimit': 4096,
+        'systemAgent.memoryAnalysisAgentConfig.model': 'gpt-4o',
+        'systemAgent.memoryAnalysisAgentConfig.provider': 'openai',
+        'systemAgent.memoryAnalysisAgentConfig.reasoningEffort': null,
+      }),
+    );
+
+    expect(result.memoryAnalysisAgentConfig).toMatchObject({
+      contextLimit: 4096,
+      model: 'gpt-4o',
+      provider: 'openai',
+    });
+    expect(result.memoryAnalysisAgentConfig.reasoningEffort).toBeUndefined();
+  });
+
+  it('falls back to the built-in defaults for keys with no policy at all', () => {
+    const result = buildSystemAgentFromPolicies(policies({}));
+
+    expect(result.topic.model).toBe(DEFAULT_SYSTEM_AGENT_CONFIG.topic.model);
+    expect(result.topic.provider).toBe(DEFAULT_SYSTEM_AGENT_CONFIG.topic.provider);
   });
 });
 

@@ -100,6 +100,35 @@ vi.mock('@/features/ModelSelect', () => ({
   ),
 }));
 
+vi.mock('./EffortSelect', () => ({
+  default: ({
+    disabled,
+    onChange,
+    value,
+  }: {
+    disabled?: boolean;
+    onChange?: (level: string | undefined, configKey: string) => void;
+    value?: string;
+  }) => (
+    <>
+      <button
+        data-effort={value ?? ''}
+        data-testid="effort-select"
+        disabled={disabled}
+        type="button"
+        onClick={() => onChange?.('high', 'reasoningEffort')}
+      />
+      {/* The picker signals "unset" with undefined; the write site decides how to store it. */}
+      <button
+        data-testid="effort-clear"
+        disabled={disabled}
+        type="button"
+        onClick={() => onChange?.(undefined, 'reasoningEffort')}
+      />
+    </>
+  ),
+}));
+
 vi.mock('@/features/PlatformSettingSourceBadge/ManagedSettingField', () => ({
   ManagedCompositeSettingFieldContent: ({
     children,
@@ -215,6 +244,62 @@ describe('ModelAssignmentsFormView managed leaves', () => {
     });
 
     expect(screen.queryByTestId('model-followUpAction')).toBeNull();
+  });
+
+  it('writes the picked effort level through the same system-agent update', () => {
+    const { onUpdateSystemAgent } = renderView({});
+
+    const row = screen.getByTestId('form-item-systemAgent.historyCompress.title');
+    fireEvent.click(within(row).getByTestId('effort-select'));
+
+    expect(onUpdateSystemAgent).toHaveBeenCalledWith('historyCompress', {
+      reasoningEffort: 'high',
+    });
+  });
+
+  it('persists an explicit null when the effort picker is cleared to Default', () => {
+    // The settings merge drops `undefined`, so only a null actually erases a saved level.
+    const { onUpdateSystemAgent } = renderView({});
+
+    const row = screen.getByTestId('form-item-systemAgent.historyCompress.title');
+    fireEvent.click(within(row).getByTestId('effort-clear'));
+
+    expect(onUpdateSystemAgent).toHaveBeenCalledWith('historyCompress', {
+      reasoningEffort: null,
+    });
+  });
+
+  it.each(['memoryAnalysisAgentConfig', 'topic'] as const)(
+    'clears to null on the %s row too',
+    (key) => {
+      const { onUpdateSystemAgent } = renderView({});
+
+      const row = screen.getByTestId(`form-item-systemAgent.${key}.title`);
+      fireEvent.click(within(row).getByTestId('effort-clear'));
+
+      expect(onUpdateSystemAgent).toHaveBeenCalledWith(key, { reasoningEffort: null });
+    },
+  );
+
+  it('disables the effort picker alongside a locked model/provider cluster', () => {
+    renderView({ agentMeta: { modelProvider: [meta({ locked: true }), meta()] } });
+
+    const row = screen.getByTestId('form-item-systemAgent.agentMeta.title');
+    expect(within(row).getByTestId('effort-select')).toBeDisabled();
+  });
+
+  it('offers no effort picker for the embedding memory row', () => {
+    renderView({});
+
+    const row = screen.getByTestId('form-item-systemAgent.userMemoryEmbedding.title');
+    expect(within(row).queryByTestId('effort-select')).toBeNull();
+  });
+
+  it('renders the default-assistant effort picker only when the surface supplies a writer', () => {
+    renderView({});
+    expect(
+      within(screen.getByTestId('form-item-defaultAgent.title')).queryByTestId('effort-select'),
+    ).toBeNull();
   });
 
   it('locks only contextLimit while leaving the memory model/provider selector editable', () => {

@@ -5,6 +5,7 @@ import { merge } from '@lobechat/utils';
 
 import { supportLocales } from '@/locales/resources';
 import { chatService } from '@/services/chat';
+import { withSystemAgentEffortParams } from '@/services/chat/mecha/systemAgentEffort';
 import { messageService } from '@/services/message';
 import { dbMessageSelectors } from '@/store/chat/selectors';
 import { type ChatStore } from '@/store/chat/store';
@@ -48,7 +49,9 @@ export class ChatTranslateActionImpl {
     if (!message) return;
 
     // Get current agent for translation
-    const translationSetting = systemAgentSelectors.translation(useUserStore.getState());
+    const translationSetting = withSystemAgentEffortParams(
+      systemAgentSelectors.translation(useUserStore.getState()),
+    );
 
     // create translate extra
     await updateMessageTranslate(id, { content: '', from: '', to: targetLang });

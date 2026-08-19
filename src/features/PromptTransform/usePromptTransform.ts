@@ -2,6 +2,7 @@ import { chainRewriteGenerationPrompt, chainTranslate } from '@lobechat/prompts'
 import { useCallback, useState } from 'react';
 
 import { chatService } from '@/services/chat';
+import { resolveSystemAgentEffortParams } from '@/services/chat/mecha/systemAgentEffort';
 import { useUserStore } from '@/store/user';
 import { systemAgentSelectors } from '@/store/user/selectors';
 import { merge } from '@/utils/merge';
@@ -25,9 +26,14 @@ export const usePromptTransform = ({ mode, prompt, onPromptChange }: UsePromptTr
   const getConfigByAction = useCallback(
     (action: PromptTransformAction) => {
       // Strip config-only fields (enabled, customPrompt); strict upstreams reject unknown OpenAI params.
+      // `reasoningEffort` is config-only too — it is resolved into real wire params instead.
       const config = action === 'rewrite' ? rewriteConfig : translateConfig;
       if (!config) return {};
-      return { model: config.model, provider: config.provider };
+      return {
+        model: config.model,
+        provider: config.provider,
+        ...resolveSystemAgentEffortParams(config),
+      };
     },
     [rewriteConfig, translateConfig],
   );

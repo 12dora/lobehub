@@ -52,6 +52,16 @@ export const buildSystemAgentFromPolicies = (policies: PolicyMap): UserServiceMo
       next.enabled = policyValue(policies, `systemAgent.${key}.enabled`, base.enabled ?? false);
     }
 
+    // Nullable leaf: a cleared platform default reads back as null and must present as
+    // "unset" so the picker falls back to the provider default rather than showing null.
+    const effort = policyValue<SystemAgentItem['reasoningEffort']>(
+      policies,
+      `systemAgent.${key}.reasoningEffort`,
+      base.reasoningEffort ?? null,
+    );
+    if (effort) next.reasoningEffort = effort;
+    else delete next.reasoningEffort;
+
     if (
       key === 'memoryAnalysisAgentConfig' ||
       key === 'userMemoryPersonaWriter' ||
@@ -112,6 +122,10 @@ export const systemAgentPatch = (
   }
   if ('enabled' in value && value.enabled !== undefined) {
     patch[`systemAgent.${key}.enabled`] = value.enabled;
+  }
+  // Clear (undefined) → null for the nullable registry schema path.
+  if ('reasoningEffort' in value) {
+    patch[`systemAgent.${key}.reasoningEffort`] = value.reasoningEffort ?? null;
   }
   // Clear (undefined) → null for the nullable registry schema path.
   if ('contextLimit' in value) {

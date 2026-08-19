@@ -12,20 +12,28 @@ import type { UserServiceModelConfigKey } from '@/types/user/settings';
 
 import ModelAssignmentsFormView, { type SystemAgentPolicyMetas } from './ModelAssignmentsFormView';
 
+/**
+ * `reasoningEffort` is absent for `userMemoryEmbedding` on purpose: embedding models expose
+ * no thinking budget, so that row renders no effort picker and registering the leaf would
+ * declare a control surface that does not exist.
+ */
 export const SYSTEM_AGENT_POLICY_PATHS = {
-  agentMeta: ['model', 'provider'],
-  followUpAction: ['model', 'provider', 'enabled'],
-  generationTopic: ['model', 'provider'],
-  historyCompress: ['model', 'provider'],
-  inputCompletion: ['model', 'provider', 'enabled'],
-  memoryAnalysisAgentConfig: ['model', 'provider', 'contextLimit'],
-  promptRewrite: ['model', 'provider', 'enabled'],
-  topic: ['model', 'provider'],
-  translation: ['model', 'provider'],
+  agentMeta: ['model', 'provider', 'reasoningEffort'],
+  followUpAction: ['model', 'provider', 'reasoningEffort', 'enabled'],
+  generationTopic: ['model', 'provider', 'reasoningEffort'],
+  historyCompress: ['model', 'provider', 'reasoningEffort'],
+  inputCompletion: ['model', 'provider', 'reasoningEffort', 'enabled'],
+  memoryAnalysisAgentConfig: ['model', 'provider', 'reasoningEffort', 'contextLimit'],
+  promptRewrite: ['model', 'provider', 'reasoningEffort', 'enabled'],
+  topic: ['model', 'provider', 'reasoningEffort'],
+  translation: ['model', 'provider', 'reasoningEffort'],
   userMemoryEmbedding: ['model', 'provider', 'contextLimit'],
-  userMemoryPersonaWriter: ['model', 'provider', 'contextLimit'],
+  userMemoryPersonaWriter: ['model', 'provider', 'reasoningEffort', 'contextLimit'],
 } as const satisfies Partial<
-  Record<UserServiceModelConfigKey, readonly ('contextLimit' | 'enabled' | 'model' | 'provider')[]>
+  Record<
+    UserServiceModelConfigKey,
+    readonly ('contextLimit' | 'enabled' | 'model' | 'provider' | 'reasoningEffort')[]
+  >
 >;
 
 /**
@@ -60,6 +68,7 @@ const ModelAssignmentsForm = memo(() => {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.agentMeta.model'),
         usePlatformSettingMeta('systemAgent.agentMeta.provider'),
+        usePlatformSettingMeta('systemAgent.agentMeta.reasoningEffort'),
       ],
     },
     followUpAction: {
@@ -67,18 +76,21 @@ const ModelAssignmentsForm = memo(() => {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.followUpAction.model'),
         usePlatformSettingMeta('systemAgent.followUpAction.provider'),
+        usePlatformSettingMeta('systemAgent.followUpAction.reasoningEffort'),
       ],
     },
     generationTopic: {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.generationTopic.model'),
         usePlatformSettingMeta('systemAgent.generationTopic.provider'),
+        usePlatformSettingMeta('systemAgent.generationTopic.reasoningEffort'),
       ],
     },
     historyCompress: {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.historyCompress.model'),
         usePlatformSettingMeta('systemAgent.historyCompress.provider'),
+        usePlatformSettingMeta('systemAgent.historyCompress.reasoningEffort'),
       ],
     },
     inputCompletion: {
@@ -86,6 +98,7 @@ const ModelAssignmentsForm = memo(() => {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.inputCompletion.model'),
         usePlatformSettingMeta('systemAgent.inputCompletion.provider'),
+        usePlatformSettingMeta('systemAgent.inputCompletion.reasoningEffort'),
       ],
     },
     memoryAnalysisAgentConfig: {
@@ -93,6 +106,7 @@ const ModelAssignmentsForm = memo(() => {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.memoryAnalysisAgentConfig.model'),
         usePlatformSettingMeta('systemAgent.memoryAnalysisAgentConfig.provider'),
+        usePlatformSettingMeta('systemAgent.memoryAnalysisAgentConfig.reasoningEffort'),
       ],
     },
     promptRewrite: {
@@ -100,18 +114,21 @@ const ModelAssignmentsForm = memo(() => {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.promptRewrite.model'),
         usePlatformSettingMeta('systemAgent.promptRewrite.provider'),
+        usePlatformSettingMeta('systemAgent.promptRewrite.reasoningEffort'),
       ],
     },
     topic: {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.topic.model'),
         usePlatformSettingMeta('systemAgent.topic.provider'),
+        usePlatformSettingMeta('systemAgent.topic.reasoningEffort'),
       ],
     },
     translation: {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.translation.model'),
         usePlatformSettingMeta('systemAgent.translation.provider'),
+        usePlatformSettingMeta('systemAgent.translation.reasoningEffort'),
       ],
     },
     userMemoryEmbedding: {
@@ -126,6 +143,7 @@ const ModelAssignmentsForm = memo(() => {
       modelProvider: [
         usePlatformSettingMeta('systemAgent.userMemoryPersonaWriter.model'),
         usePlatformSettingMeta('systemAgent.userMemoryPersonaWriter.provider'),
+        usePlatformSettingMeta('systemAgent.userMemoryPersonaWriter.reasoningEffort'),
       ],
     },
   };
@@ -145,6 +163,13 @@ const ModelAssignmentsForm = memo(() => {
       onUpdateSystemAgent={(key, value) => updateSystemAgent(key, value)}
       onUpdateDefaultAgent={({ model, provider }) =>
         updateDefaultAgent({ config: { model, provider } })
+      }
+      // The default assistant has no registry leaf for effort — it rides the agent's own
+      // chatConfig under the key the model's effort control declares, exactly like the
+      // in-chat controls write it. `level` is always concrete: chatConfig fields are strict
+      // level unions, so the picker offers no clear here.
+      onUpdateDefaultAgentEffort={({ configKey, level }) =>
+        updateDefaultAgent({ config: { chatConfig: { [configKey]: level } } })
       }
     />
   );

@@ -13,6 +13,7 @@ import { type SWRResponse } from 'swr';
 import { mutate, useClientDataSWR } from '@/libs/swr';
 import { threadKeys } from '@/libs/swr/keys';
 import { chatService } from '@/services/chat';
+import { withSystemAgentEffortParams } from '@/services/chat/mecha/systemAgentEffort';
 import { threadService } from '@/services/thread';
 import { threadSelectors } from '@/store/chat/selectors';
 import { type ChatStore } from '@/store/chat/store';
@@ -226,7 +227,7 @@ export class ChatThreadActionImpl {
         internal_updateThreadTitleInSummary(threadId, output);
       },
       params: merge(
-        threadConfig,
+        withSystemAgentEffortParams(threadConfig),
         chainSummaryTitle(
           messages,
           userGeneralSettingsSelectors.currentResponseLanguage(useUserStore.getState()),
