@@ -28,29 +28,66 @@ describe('buildBrowserSessionTransportPoolKey', () => {
 });
 
 describe('createBrowserSessionTransportPool', () => {
-  it('drains a bound handle and is idempotent for an unknown key', () => {
+  it('drains a bound handle and is idempotent for an unknown key', async () => {
     const pool = createBrowserSessionTransportPool();
     const drain = vi.fn();
     pool.bind('k1', { drain });
     expect(pool.has('k1')).toBe(true);
-    pool.drain('k1');
+    await pool.drain('k1');
     expect(drain).toHaveBeenCalledTimes(1);
     expect(pool.has('k1')).toBe(false);
-    pool.drain('k1');
+    await pool.drain('k1');
     expect(drain).toHaveBeenCalledTimes(1);
   });
 
-  it('drainAll drains every bound handle', () => {
+  it('drainAll drains every bound handle', async () => {
     const pool = createBrowserSessionTransportPool();
     const drainA = vi.fn();
     const drainB = vi.fn();
     pool.bind('a', { drain: drainA });
     pool.bind('b', { drain: drainB });
-    pool.drainAll?.();
+    await pool.drainAll?.();
     expect(drainA).toHaveBeenCalledTimes(1);
     expect(drainB).toHaveBeenCalledTimes(1);
     expect(pool.has('a')).toBe(false);
     expect(pool.has('b')).toBe(false);
+  });
+
+  it('settles a synchronous handle throw without skipping extra drains', async () => {
+    let extraStarted = false;
+    const unreg = registerBrowserSessionScopeDrain(() => {
+      extraStarted = true;
+      throw new Error('sync extra');
+    });
+    try {
+      const pool = createBrowserSessionTransportPool();
+      pool.bind('k1', {
+        drain: () => {
+          throw new Error('sync handle');
+        },
+      });
+      await expect(pool.drain('k1')).rejects.toBeInstanceOf(AggregateError);
+      expect(extraStarted).toBe(true);
+    } finally {
+      unreg();
+    }
+  });
+
+  it('drainAll still starts later handles after a synchronous throw', async () => {
+    let laterRan = false;
+    const pool = createBrowserSessionTransportPool();
+    pool.bind('a', {
+      drain: () => {
+        throw new Error('sync a');
+      },
+    });
+    pool.bind('b', {
+      drain: () => {
+        laterRan = true;
+      },
+    });
+    await expect(pool.drainAll?.()).rejects.toBeInstanceOf(AggregateError);
+    expect(laterRan).toBe(true);
   });
 
   it('waits for every extra drain before rejecting when one fails', async () => {

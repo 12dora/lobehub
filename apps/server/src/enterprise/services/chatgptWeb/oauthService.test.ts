@@ -13,7 +13,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createBrowserSessionRegistry,
+  disposeAllBrowserSessions,
   getBrowserSessionRegistry,
+  installBrowserSessionRegistryForTests,
   resetBrowserSessionRegistryForTests,
 } from '@/server/enterprise/services/browserSession/contextRegistry';
 import { readBrowserCookieJar } from '@/server/enterprise/services/browserSession/cookieJar';
@@ -907,6 +910,40 @@ describe('sessionHeaders / webSessionHeaders identity', () => {
     expect(alice.session).not.toBe(bob.session);
     expect(alice.session).not.toBe(deriveSessionId(deviceId, PERSISTED_PROFILE));
   });
+
+  it('propagates a resetting registry instead of access_token_invalid', async () => {
+    let releaseDrain: (() => void) | undefined;
+    const hanging = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    installBrowserSessionRegistryForTests(
+      createBrowserSessionRegistry({
+        transportPool: {
+          bind: vi.fn(),
+          drain: () => hanging,
+          drainAll: () => hanging,
+          has: () => false,
+        },
+      }),
+    );
+    const transportFetch = vi.fn();
+    const service = new ChatGPTWebOAuthService({
+      authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
+      browserSessionAccountId: 'user:alice:_:chatgptweb',
+      transportFetch: transportFetch as unknown as typeof fetch,
+    });
+    const resetting = disposeAllBrowserSessions();
+    try {
+      await expect(
+        service.verifyAccessToken(jwt({ exp: futureExp }), 'device-reset'),
+      ).rejects.toMatchObject({ code: 'BROWSER_SESSION_RESETTING', retryable: true });
+      expect(transportFetch).not.toHaveBeenCalled();
+    } finally {
+      releaseDrain?.();
+      await resetting;
+    }
+  });
 });
 
 describe('ChatGPTWebOAuthService.refreshAccessToken', () => {
@@ -1405,6 +1442,41 @@ describe('ChatGPTWebOAuthService.connectWithSession', () => {
     const connection = await build(transportFetch).connectWithSession(SESSION_JWE);
 
     expect(connection.refreshToken).toBe(SESSION_JWE);
+  });
+
+  it('propagates a resetting registry as a transient error, not session_invalid', async () => {
+    let releaseDrain: (() => void) | undefined;
+    const hanging = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    installBrowserSessionRegistryForTests(
+      createBrowserSessionRegistry({
+        transportPool: {
+          bind: vi.fn(),
+          drain: () => hanging,
+          drainAll: () => hanging,
+          has: () => false,
+        },
+      }),
+    );
+    const transportFetch = vi.fn();
+    const service = new ChatGPTWebOAuthService({
+      authFetch: vi.fn() as unknown as typeof fetch,
+      browserProfile: PERSISTED_PROFILE,
+      browserSessionAccountId: 'user:alice:_:chatgptweb',
+      transportFetch: transportFetch as unknown as typeof fetch,
+    });
+    const resetting = disposeAllBrowserSessions();
+    try {
+      await expect(service.connectWithSession(SESSION_JWE, 'device-reset')).rejects.toMatchObject({
+        code: 'BROWSER_SESSION_RESETTING',
+        retryable: true,
+      });
+      expect(transportFetch).not.toHaveBeenCalled();
+    } finally {
+      releaseDrain?.();
+      await resetting;
+    }
   });
 
   it.each([

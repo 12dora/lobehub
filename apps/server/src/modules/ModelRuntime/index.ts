@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 import { type GoogleGenAIOptions } from '@google/genai';
 import {
+  AgentRuntimeError,
   mergeModelRuntimeHooks,
   ModelRuntime,
   type ModelRuntimeHooks,
@@ -15,6 +16,7 @@ import {
 } from '@lobechat/model-runtime/browserProfile';
 import { LobeVertexAI } from '@lobechat/model-runtime/vertexai';
 import {
+  AgentRuntimeErrorType,
   type AWSBedrockKeyVault,
   type AzureOpenAIKeyVault,
   type ClientSecretPayload,
@@ -37,6 +39,7 @@ import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
 import { PlatformBrowserProfileService } from '@/server/enterprise/services/browserProfile';
+import { isBrowserSessionResettingError } from '@/server/enterprise/services/browserSession/types';
 import {
   bindChatGPTWebBrowserSession,
   buildChatGPTWebBrowserSessionAccountId,
@@ -788,19 +791,30 @@ const bindChatGPTWebRuntimeSession = ({
           ...(workspaceId ? { workspaceId } : {}),
         },
   );
-  const sessionContext = bindChatGPTWebBrowserSession({
-    accountId,
-    browserProfile,
-    ...(chatgptDeviceId ? { deviceId: chatgptDeviceId } : {}),
-  });
-  // Even on the degraded fallback profile (no jar), the Sentinel pool still
-  // needs an account-scoped key so two stored connections cannot share proofs.
-  if (!sessionContext) return { browserSessionAccountId: accountId };
-  return {
-    browserSessionAccountId: accountId,
-    browserSessionContextKey: sessionContext.contextId,
-    sessionContext,
-  };
+  try {
+    const sessionContext = bindChatGPTWebBrowserSession({
+      accountId,
+      browserProfile,
+      ...(chatgptDeviceId ? { deviceId: chatgptDeviceId } : {}),
+    });
+    // Even on the degraded fallback profile (no jar), the Sentinel pool still
+    // needs an account-scoped key so two stored connections cannot share proofs.
+    if (!sessionContext) return { browserSessionAccountId: accountId };
+    return {
+      browserSessionAccountId: accountId,
+      browserSessionContextKey: sessionContext.contextId,
+      sessionContext,
+    };
+  } catch (error) {
+    if (isBrowserSessionResettingError(error)) {
+      throw AgentRuntimeError.createError(AgentRuntimeErrorType.ProviderNetworkError, {
+        code: error.code,
+        message: error.message,
+        retryable: true,
+      });
+    }
+    throw error;
+  }
 };
 
 export const initModelRuntimeWithUserPayload = (

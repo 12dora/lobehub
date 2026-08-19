@@ -171,6 +171,7 @@ const extractStatus = (error: unknown): number => {
 const TRANSPORT_UNAVAILABLE_CODE = 'CHATGPT_WEB_TRANSPORT_UNAVAILABLE';
 const CURSOR_CLI_UNAVAILABLE_CODE = 'cli_unavailable';
 const TRANSPORT_UNAVAILABLE_KIND = 'transport_unavailable';
+const BROWSER_SESSION_RESETTING_CODE = 'BROWSER_SESSION_RESETTING';
 
 /**
  * A missing impersonation binary is a DEPLOYMENT fault, and it is the only failure whose
@@ -189,6 +190,12 @@ const isTransportUnavailable = (error: unknown): boolean =>
 
 const isCursorCliUnavailable = (error: unknown): boolean =>
   errorChain(error).some((node) => node.code === CURSOR_CLI_UNAVAILABLE_CODE);
+
+const isBrowserSessionResetting = (error: unknown): boolean =>
+  errorChain(error).some(
+    (node) =>
+      node.code === BROWSER_SESSION_RESETTING_CODE || node.name === 'BrowserSessionResettingError',
+  );
 
 const extractErrorType = (error: unknown): string | undefined => {
   if (isTransportUnavailable(error)) return TRANSPORT_UNAVAILABLE_CODE;
@@ -252,6 +259,7 @@ export const classifyAiConnectionFailure = (error: unknown): AiConnectionFailure
     // wrapper's name nor its message describes what actually failed.
     if (rawErrorType === TRANSPORT_UNAVAILABLE_CODE) return 'invalid_config';
     if (rawErrorType === CURSOR_CLI_UNAVAILABLE_CODE) return 'invalid_config';
+    if (isBrowserSessionResetting(error)) return 'network';
     // A named abort/timeout is decisive: an aborted request has no verdict from the provider,
     // whatever generic wrapper (`ProviderBizError`) the runtime put around it.
     if (name && NETWORK_ERROR_NAMES.has(name)) return 'network';

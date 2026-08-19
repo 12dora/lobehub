@@ -14,10 +14,6 @@ import {
   onBrowserSessionBeforeDispose,
   onBrowserSessionInvalidate,
 } from './lifecycle';
-import {
-  createBrowserSessionTransportPool,
-  registerBrowserSessionScopeDrain,
-} from './transportPool';
 import type { BrowserSessionAcquireInput } from './types';
 
 afterEach(async () => {
@@ -152,28 +148,30 @@ describe('disposeBrowserSessionResources', () => {
       releaseChild = resolve;
     });
     let rejectedSettled = false;
-    const unregReject = registerBrowserSessionScopeDrain(async () => {
-      rejectedSettled = true;
-      throw new Error('curl_multi_cleanup failed');
+    const registry = createBrowserSessionRegistry({
+      transportPool: {
+        bind: vi.fn(),
+        drain: () => {
+          rejectedSettled = true;
+          return childPending.then(() => {
+            throw new AggregateError(
+              [new Error('curl_multi_cleanup failed')],
+              'browser session drain failed',
+            );
+          });
+        },
+        has: () => false,
+      },
     });
-    const unregChild = registerBrowserSessionScopeDrain(async () => {
-      await childPending;
-    });
-    try {
-      const pool = createBrowserSessionTransportPool();
-      const registry = createBrowserSessionRegistry({ transportPool: pool });
-      const context = registry.acquire(baseInput());
-      const path = context.cookieJar.path;
-      registry.invalidate(context.contextId);
-      await vi.waitFor(() => expect(rejectedSettled).toBe(true));
-      expect(existsSync(path)).toBe(true);
-      releaseChild?.();
-      await registry.awaitPendingCleanup();
-      expect(existsSync(path)).toBe(true);
-      expect(isBrowserCookieJarTombstoned(path)).toBe(true);
-    } finally {
-      unregReject();
-      unregChild();
-    }
+    const context = registry.acquire(baseInput());
+    const path = context.cookieJar.path;
+    expect(existsSync(path)).toBe(true);
+    registry.invalidate(context.contextId);
+    await vi.waitFor(() => expect(rejectedSettled).toBe(true));
+    expect(existsSync(path)).toBe(true);
+    releaseChild?.();
+    await expect(registry.awaitPendingCleanup()).rejects.toBeInstanceOf(AggregateError);
+    expect(existsSync(path)).toBe(true);
+    expect(isBrowserCookieJarTombstoned(path)).toBe(true);
   });
 });

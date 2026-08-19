@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import debug from 'debug';
 
+import { isBrowserSessionResettingError } from '@/server/enterprise/services/browserSession/types';
 import type { OAuthRefreshOptions, TokenResponse } from '@/server/services/oauthDeviceFlow';
 import { OAuthInvalidGrantError, parseJwtExpiry } from '@/server/services/oauthDeviceFlow';
 
@@ -193,7 +194,19 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
   }): Promise<WebSessionMint> {
     // Built OUTSIDE the try: a malformed credential is a terminal input problem, and the
     // catch below would otherwise reclassify it as a retryable network failure.
-    const cookieJarKey = params.cookieJarKey ?? this.cookieJarKeyFor(params.deviceId);
+    let cookieJarKey: string | undefined;
+    try {
+      cookieJarKey = params.cookieJarKey ?? this.cookieJarKeyFor(params.deviceId);
+    } catch (error) {
+      if (isBrowserSessionResettingError(error)) {
+        throw new ChatGPTWebSessionRetryableError(
+          'network',
+          'ChatGPT Web session request failed: network error',
+          { cause: error },
+        );
+      }
+      throw error;
+    }
     const sessionId =
       params.sessionId ?? (params.deviceId ? this.pageSessionId(params.deviceId) : undefined);
     // Refresh writes the live jar. A reconnect that rotated live mid-mint must
@@ -237,6 +250,13 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
     } catch (error) {
       // A missing transport binary is an operator problem, not a dead session — let it out.
       if (isChatGPTWebTransportUnavailableError(error)) throw error;
+      if (isBrowserSessionResettingError(error)) {
+        throw new ChatGPTWebSessionRetryableError(
+          'network',
+          'ChatGPT Web session request failed: network error',
+          { cause: error },
+        );
+      }
       const message = `ChatGPT Web session request failed: ${error instanceof Error ? error.name : 'network error'}`;
       // The WHOLE budget is spent (caller deadline / refresh lease): another attempt would
       // be dead on arrival, and on the refresh path it would run past the lease.

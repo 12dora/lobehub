@@ -6,7 +6,9 @@ import { isPersistentEnterpriseWorkerRuntime } from '@/server/enterprise/jobs/pe
 
 import {
   createBrowserCookieJar,
+  forgetCreatedBrowserCookieJars,
   resetBrowserCookieJars,
+  snapshotCreatedBrowserCookieJars,
   sweepOrphanBrowserCookieJars,
 } from './cookieJar';
 import {
@@ -33,7 +35,7 @@ import type {
   BrowserSessionRegistry,
   BrowserSessionWriteFence,
 } from './types';
-import { BrowserSessionError } from './types';
+import { BrowserSessionError, BrowserSessionResettingError } from './types';
 
 const log = debug('lobe-server:browser-session');
 
@@ -147,15 +149,20 @@ export const createBrowserSessionRegistry = (
   const byContextId = new Map<string, BrowserSessionContext>();
   const byLookupKey = new Map<string, string>();
   const pendingCleanup: Promise<void>[] = [];
+  const cleanupFailures: unknown[] = [];
   let sweepTimer: ReturnType<typeof setInterval> | undefined;
 
   const enqueueCleanup = (work: Promise<void>): void => {
-    const tracked = work.catch((error) => {
-      log(
-        'browser session cleanup failed: %s',
-        error instanceof Error ? error.message : 'UnknownError',
-      );
-    });
+    const tracked = work.then(
+      () => undefined,
+      (error) => {
+        cleanupFailures.push(error);
+        log(
+          'browser session cleanup failed: %s',
+          error instanceof Error ? error.message : 'UnknownError',
+        );
+      },
+    );
     pendingCleanup.push(tracked);
     void tracked.finally(() => {
       const index = pendingCleanup.indexOf(tracked);
@@ -167,6 +174,9 @@ export const createBrowserSessionRegistry = (
     while (pendingCleanup.length > 0) {
       await Promise.all(pendingCleanup.slice());
     }
+    if (cleanupFailures.length === 0) return;
+    const errors = cleanupFailures.splice(0, cleanupFailures.length);
+    throw new AggregateError(errors, 'browser session cleanup failed');
   };
 
   let disposed = false;
@@ -293,7 +303,7 @@ export const createBrowserSessionRegistry = (
 
   const acquire = (raw: BrowserSessionAcquireInput): BrowserSessionContext => {
     if (disposed) {
-      throw new BrowserSessionError('browser session registry is resetting');
+      throw new BrowserSessionResettingError();
     }
     const input = normalizeBrowserSessionAcquireInput(raw);
     if (input.ephemeral) {
@@ -423,8 +433,13 @@ export const createBrowserSessionRegistry = (
     disposed = true;
     stopSweepTimer();
     for (const context of Array.from(byContextId.values())) drop(context, 'released');
-    const leftover = transportPool.drainAll?.();
-    if (leftover) enqueueCleanup(Promise.resolve(leftover).then(() => undefined));
+    if (transportPool.drainAll) {
+      enqueueCleanup(
+        Promise.resolve()
+          .then(() => transportPool.drainAll?.())
+          .then(() => undefined),
+      );
+    }
   };
 
   if (sweepIntervalMs > 0) {
@@ -453,6 +468,10 @@ export const createBrowserSessionRegistry = (
 let defaultRegistry: BrowserSessionRegistry | undefined;
 let defaultSweepTimer: ReturnType<typeof setInterval> | undefined;
 let orphanSweepDone = false;
+/** Module-level admission fence. Set synchronously before any reset await, including the cold case. */
+let resetting = false;
+let resetsInFlight = 0;
+let resetChain: Promise<void> = Promise.resolve();
 
 const maybeSweepOrphansOnFirstUse = (): void => {
   if (orphanSweepDone) return;
@@ -467,6 +486,7 @@ const maybeSweepOrphansOnFirstUse = (): void => {
  * enterprise workers did not boot (dev / tests that skip workers).
  */
 export const getBrowserSessionRegistry = (): BrowserSessionRegistry => {
+  if (resetting) throw new BrowserSessionResettingError();
   if (!defaultRegistry) {
     maybeSweepOrphansOnFirstUse();
     defaultRegistry = createBrowserSessionRegistry();
@@ -495,27 +515,71 @@ export const stopBrowserSessionIdleSweep = (): void => {
 };
 
 /**
- * Mark the current singleton disposed, drop its contexts, wait for cleanup and
- * leftover `drainAll`, unlink those jars, then atomically install a fresh
- * registry. Never unlinks jars created by the replacement.
+ * Serialize resets behind one promise chain. Each queued reset captures the
+ * registry that is current when *it* runs (after the previous replacement),
+ * so overlapping callers cannot unlink a successor's jars.
+ *
+ * The `resetting` sentinel is raised synchronously — including when
+ * `defaultRegistry` is still undefined — before any await.
  */
-const resetAndReplaceBrowserSessionRegistry = async (
+const resetAndReplaceBrowserSessionRegistry = (
   afterDispose?: () => Promise<void>,
 ): Promise<void> => {
+  resetting = true;
+  resetsInFlight += 1;
   stopBrowserSessionIdleSweep();
-  const registry = defaultRegistry;
-  registry?.dispose();
-  await registry?.awaitPendingCleanup();
-  if (afterDispose) await afterDispose();
-  resetBrowserCookieJars();
-  defaultRegistry = createBrowserSessionRegistry();
+
+  const run = async (): Promise<void> => {
+    const registry = defaultRegistry;
+    const jarSnapshot = snapshotCreatedBrowserCookieJars();
+    registry?.dispose();
+    let cleanupFailed = false;
+    try {
+      await registry?.awaitPendingCleanup();
+    } catch (error) {
+      cleanupFailed = true;
+      log(
+        'browser session reset cleanup unproven: %s',
+        error instanceof Error ? error.message : 'UnknownError',
+      );
+    }
+    if (afterDispose) {
+      try {
+        await afterDispose();
+      } catch (error) {
+        cleanupFailed = true;
+        log(
+          'browser session reset afterDispose unproven: %s',
+          error instanceof Error ? error.message : 'UnknownError',
+        );
+      }
+    }
+    if (cleanupFailed) {
+      forgetCreatedBrowserCookieJars(jarSnapshot);
+    } else {
+      resetBrowserCookieJars();
+    }
+    defaultRegistry = createBrowserSessionRegistry();
+  };
+
+  const queued = resetChain.then(run, run);
+  resetChain = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued.finally(() => {
+    resetsInFlight -= 1;
+    if (resetsInFlight === 0) resetting = false;
+  });
 };
 
 export const disposeAllBrowserSessions = async (): Promise<void> => {
   await resetAndReplaceBrowserSessionRegistry();
 };
 
-export const installBrowserSessionRegistryForTests = (registry: BrowserSessionRegistry): void => {
+export const installBrowserSessionRegistryForTests = (
+  registry: BrowserSessionRegistry | undefined,
+): void => {
   defaultRegistry = registry;
 };
 

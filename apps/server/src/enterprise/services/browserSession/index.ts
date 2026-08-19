@@ -34,6 +34,7 @@ export {
   DEFAULT_BROWSER_COOKIE_JAR_DIR_NAME,
   deleteBrowserCookieJar,
   ensureBrowserCookieJarFile,
+  forgetCreatedBrowserCookieJars,
   inspectBrowserCookieJar,
   isAllowedCookieName,
   isBrowserCookieJarTombstoned,
@@ -47,6 +48,7 @@ export {
   resetBrowserCookieJars,
   resolveBrowserCookieJarPath,
   seedBrowserCookieJar,
+  snapshotCreatedBrowserCookieJars,
   sweepOrphanBrowserCookieJars,
   tombstoneBrowserCookieJar,
   writeBrowserCookieJarRecords,
@@ -116,4 +118,9 @@ export type {
   BrowserSessionRegistry,
   BrowserSessionWriteFence,
 } from './types';
-export { BrowserSessionError } from './types';
+export {
+  BROWSER_SESSION_RESETTING_CODE,
+  BrowserSessionError,
+  BrowserSessionResettingError,
+  isBrowserSessionResettingError,
+} from './types';

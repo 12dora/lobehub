@@ -718,7 +718,7 @@ describe('LobeChatGPTWebAI', () => {
         client: client as any,
         sessionContext: {
           contextId: 'ctx-release',
-          cookieJarKey: 'jar-digest',
+          cookieJarKey: 'ctx:jar-digest',
           getBootstrap: () => undefined,
           logicalPageId: '11111111-1111-4111-8111-111111111111',
           release,
@@ -743,7 +743,7 @@ describe('LobeChatGPTWebAI', () => {
         client: client as any,
         sessionContext: {
           contextId: 'ctx-release-cancel',
-          cookieJarKey: 'jar-digest',
+          cookieJarKey: 'ctx:jar-digest',
           getBootstrap: () => undefined,
           logicalPageId: '11111111-1111-4111-8111-111111111111',
           release,
@@ -772,7 +772,7 @@ describe('LobeChatGPTWebAI', () => {
           client: createFakeClient() as any,
           sessionContext: {
             contextId: 'ctx-release-wrap',
-            cookieJarKey: 'jar-digest',
+            cookieJarKey: 'ctx:jar-digest',
             getBootstrap: () => undefined,
             logicalPageId: '11111111-1111-4111-8111-111111111111',
             release,
@@ -795,7 +795,7 @@ describe('LobeChatGPTWebAI', () => {
         client: client as any,
         sessionContext: {
           contextId: 'ctx-account-scoped',
-          cookieJarKey: 'jar-digest',
+          cookieJarKey: 'ctx:jar-digest',
           getBootstrap: () => undefined,
           logicalPageId: '11111111-1111-4111-8111-111111111111',
           setBootstrap: () => {},

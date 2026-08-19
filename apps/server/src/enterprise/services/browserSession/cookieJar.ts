@@ -626,6 +626,17 @@ export const sweepOrphanBrowserCookieJars = (): void => {
   );
 };
 
+/** Paths this process currently tracks as created jars. */
+export const snapshotCreatedBrowserCookieJars = (): string[] => [...createdJars];
+
+/**
+ * Drop tracking for `paths` without unlinking. Used when reset cleanup is
+ * unproven so a later successful reset cannot delete a replacement's jars.
+ */
+export const forgetCreatedBrowserCookieJars = (paths: readonly string[]): void => {
+  for (const path of paths) createdJars.delete(path);
+};
+
 /** Test / shutdown seam: unlink every jar this process created. */
 export const resetBrowserCookieJars = (): void => {
   for (const path of createdJars) unlinkQuietly(path);

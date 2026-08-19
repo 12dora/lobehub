@@ -501,20 +501,23 @@ export const formatCurlmError = (bindings: LibcurlBindings, code: number): strin
 };
 
 /**
- * Request-facing multi-loop failures. Always a TypeError with `fetch failed: `
- * and a numeric code — never a raw Error. CURLM codes use `curlm(N)`; poll-path
- * exceptions use `curl(0)`.
+ * Request-facing multi-loop failures. Always a TypeError matching the CLI
+ * contract `fetch failed: curl(N): <detail>` — never `curlm(`, never a raw
+ * Error. N is the numeric CURLM code, or `0` when the failure has no code
+ * (poll exceptions, `curl_multi_init` null).
  */
 export const fetchFailedMulti = (
   bindings: LibcurlBindings,
   source: number | unknown,
+  detail?: string,
 ): TypeError => {
   if (typeof source === 'number') {
-    return new TypeError(`fetch failed: curlm(${source}): ${formatCurlmError(bindings, source)}`);
+    const text = detail?.trim() || formatCurlmError(bindings, source);
+    return new TypeError(`fetch failed: curl(${source}): ${text}`);
   }
   const message = source instanceof Error ? source.message : String(source ?? 'unknown error');
-  const detail = message.trim() || 'unknown error';
-  return new TypeError(`fetch failed: curl(0): ${detail}`);
+  const text = (detail ?? message).trim() || 'unknown error';
+  return new TypeError(`fetch failed: curl(0): ${text}`);
 };
 
 export type CookieSlistResult = { code: number; ok: false } | { lines: string[]; ok: true };

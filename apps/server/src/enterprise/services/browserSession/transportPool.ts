@@ -52,8 +52,11 @@ export const registerBrowserSessionScopeDrain = (
   };
 };
 
-const awaitAllDrains = async (tasks: Array<void | Promise<void>>): Promise<void> => {
-  const results = await Promise.allSettled(tasks.map((task) => Promise.resolve(task)));
+const deferDrain = (fn: () => void | Promise<void>): Promise<void> =>
+  Promise.resolve().then(() => fn());
+
+const awaitAllDrains = async (tasks: Array<() => void | Promise<void>>): Promise<void> => {
+  const results = await Promise.allSettled(tasks.map((task) => deferDrain(task)));
   const rejected = results.filter(
     (result): result is PromiseRejectedResult => result.status === 'rejected',
   );
@@ -61,11 +64,10 @@ const awaitAllDrains = async (tasks: Array<void | Promise<void>>): Promise<void>
   const detail = rejected
     .map((result) => (result.reason instanceof Error ? result.reason.message : 'UnknownError'))
     .join('; ');
-  throw new Error(`browser session drain failed: ${detail}`);
-};
-
-const runExtraDrains = async (key: string): Promise<void> => {
-  await awaitAllDrains([...extraScopeDrains].map((drain) => drain(key)));
+  throw new AggregateError(
+    rejected.map((result) => result.reason),
+    `browser session drain failed: ${detail}`,
+  );
 };
 
 export const buildBrowserSessionTransportPoolKey = (params: {
@@ -94,15 +96,18 @@ export const createBrowserSessionTransportPool = (): BrowserSessionTransportPool
     drain: (key) => {
       const handle = handles.get(key);
       handles.delete(key);
-      handle?.drain();
-      return awaitAllDrains([drainPersistentForKey(key), runExtraDrains(key)]);
+      return awaitAllDrains([
+        () => handle?.drain(),
+        () => drainPersistentForKey(key),
+        ...[...extraScopeDrains].map((drain) => () => drain(key)),
+      ]);
     },
     drainAll: () => {
-      for (const [key, handle] of handles) {
-        handles.delete(key);
-        handle.drain();
-      }
-      return awaitAllDrains([drainAllPersistent(), extraDrainAll?.()]);
+      const handleDrains = [...handles.entries()].map(([, handle]) => {
+        return () => handle.drain();
+      });
+      handles.clear();
+      return awaitAllDrains([...handleDrains, () => drainAllPersistent(), () => extraDrainAll?.()]);
     },
     has: (key) => handles.has(key),
   };

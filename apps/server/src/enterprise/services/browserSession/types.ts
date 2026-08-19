@@ -19,6 +19,31 @@ export class BrowserSessionError extends Error {
   }
 }
 
+export const BROWSER_SESSION_RESETTING_CODE = 'BROWSER_SESSION_RESETTING';
+
+/**
+ * Process-local registry is mid-reset. Callers must treat this as transient and
+ * retry — never as an invalid credential or a permanent provider failure.
+ */
+export class BrowserSessionResettingError extends BrowserSessionError {
+  readonly code = BROWSER_SESSION_RESETTING_CODE;
+  readonly retryable = true as const;
+
+  constructor(message = 'browser session registry is resetting') {
+    super(message);
+    this.name = 'BrowserSessionResettingError';
+  }
+}
+
+export const isBrowserSessionResettingError = (
+  error: unknown,
+): error is BrowserSessionResettingError => {
+  if (error instanceof BrowserSessionResettingError) return true;
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as { code?: unknown; retryable?: unknown };
+  return candidate.code === BROWSER_SESSION_RESETTING_CODE && candidate.retryable === true;
+};
+
 /**
  * Process-local owner lease. `ownerId` is `pid:<pid>` — this process owns the
  * persistent transport. There is no distributed lock / Redis lease (plan
@@ -152,13 +177,14 @@ export interface BrowserSessionContextSummary {
 
 export interface BrowserSessionRegistry {
   /**
-   * Throws {@link BrowserSessionError} with `browser session registry is resetting`
-   * once {@link dispose} has marked this instance disposed.
+   * Throws {@link BrowserSessionResettingError} once {@link dispose} has marked
+   * this instance disposed (or the process-level reset sentinel is active).
    */
   acquire: (input: BrowserSessionAcquireInput) => BrowserSessionContext;
   /**
    * Wait for every in-flight dispose drain+unlink. `invalidate` / `dispose`
    * stay synchronous for callers; shutdown and tests await this.
+   * Rejects with {@link AggregateError} when any cleanup drain failed.
    */
   awaitPendingCleanup: () => Promise<void>;
   dispose: () => void;

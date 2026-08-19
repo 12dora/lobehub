@@ -35,7 +35,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import type * as AiCatalogEnforcement from '@/server/enterprise/services/aiCatalog/enforcement';
-import { getBrowserSessionRegistry } from '@/server/enterprise/services/browserSession/contextRegistry';
+import {
+  createBrowserSessionRegistry,
+  disposeAllBrowserSessions,
+  getBrowserSessionRegistry,
+  installBrowserSessionRegistryForTests,
+} from '@/server/enterprise/services/browserSession/contextRegistry';
 import { resetBrowserSessionRegistryForTests } from '@/server/enterprise/services/chatgptWeb/browserSession';
 import { wrapModelRuntimeWithModeration } from '@/server/enterprise/services/contentModeration/runtime';
 import { createDefaultModerationRuntimeDeps } from '@/server/enterprise/services/contentModeration/runtime/defaults';
@@ -1248,6 +1253,38 @@ describe('ChatGPT Web transport injection', () => {
     expect(params.browserProfile).not.toHaveProperty('seed');
     expect(typeof params.fetch).toBe('function');
     expect(typeof (params.sessionContext as { release?: () => void }).release).toBe('function');
+  });
+
+  it('maps a resetting registry to a retryable ProviderNetworkError', async () => {
+    let releaseDrain: (() => void) | undefined;
+    const hanging = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    installBrowserSessionRegistryForTests(
+      createBrowserSessionRegistry({
+        transportPool: {
+          bind: vi.fn(),
+          drain: () => hanging,
+          drainAll: () => hanging,
+          has: () => false,
+        },
+      }),
+    );
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'chatgptweb-reset' });
+    const resetting = disposeAllBrowserSessions();
+    try {
+      expect(() =>
+        initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload, { browserProfile }),
+      ).toThrow(
+        expect.objectContaining({
+          error: expect.objectContaining({ code: 'BROWSER_SESSION_RESETTING', retryable: true }),
+          errorType: 'ProviderNetworkError',
+        }),
+      );
+    } finally {
+      releaseDrain?.();
+      await resetting;
+    }
   });
 
   it('repeated init for the same account reuses context and bumps inFlight', () => {

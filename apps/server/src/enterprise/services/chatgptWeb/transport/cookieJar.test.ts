@@ -133,6 +133,15 @@ describe('context cookie jar registry', () => {
     expect(isContextCookieJarKey('123e4567-e89b-42d3-a456-426614174000')).toBe(false);
   });
 
+  it('does not give a bare legacy id the pool scope of a namespaced digest', () => {
+    const digest = 'ab'.repeat(32);
+    const path = getCookieJarPath('context-owned-exact');
+    registerContextCookieJar(`ctx:${digest}`, path, 'pool-context-only');
+
+    expect(getContextCookieJarPoolKey(`ctx:${digest}`)).toBe('pool-context-only');
+    expect(getContextCookieJarPoolKey(digest)).toBeUndefined();
+  });
+
   it('treats a 64-hex legacy device id as a device jar, not a context digest', () => {
     const legacyHex = 'cd'.repeat(32);
     expect(isContextCookieJarKey(legacyHex)).toBe(false);

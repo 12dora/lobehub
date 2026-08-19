@@ -129,11 +129,20 @@ export const resetCookieJars = (): void | Promise<void> => {
         drainAllPersistentTransport(),
         drainAllCurlImpersonateChildren(),
       ]);
+      const rejected = results.filter(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
       if (results[0]?.status === 'rejected') {
         logDrainRejection('persistent drainAll', results[0].reason);
       }
       if (results[1]?.status === 'rejected') {
         logDrainRejection('CLI child drain', results[1].reason);
+      }
+      if (rejected.length > 0) {
+        throw new AggregateError(
+          rejected.map((result) => result.reason),
+          'chatgpt-web jar reset drains unproven',
+        );
       }
     });
   };
@@ -171,7 +180,7 @@ export const unregisterContextCookieJar = (digest: string): void => {
 
 /** Context transport-pool key registered alongside the namespaced jar key. */
 export const getContextCookieJarPoolKey = (digest: string): string | undefined =>
-  contextJarPoolKeys.get(digest) ?? contextJarPoolKeys.get(toContextCookieJarKey(digest));
+  contextJarPoolKeys.get(digest);
 
 /** Absolute paths, registered `ctx:<sha256>` keys, or the legacy device-id key. */
 export const resolveCookieJarPath = (key: string): string => {

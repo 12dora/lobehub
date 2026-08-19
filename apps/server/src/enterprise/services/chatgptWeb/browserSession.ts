@@ -40,7 +40,10 @@ import type {
   BrowserSessionContext,
   BrowserSessionWriteFence,
 } from '@/server/enterprise/services/browserSession/types';
-import { BrowserSessionError } from '@/server/enterprise/services/browserSession/types';
+import {
+  BrowserSessionError,
+  isBrowserSessionResettingError,
+} from '@/server/enterprise/services/browserSession/types';
 
 import { CHATGPT_WEB_SESSION_COOKIE_NAME } from './sessionCookie';
 import {
@@ -394,6 +397,7 @@ export const stageChatGPTWebBrowserSession = (
     return { accountId: pendingAccountId, context, liveFence };
   } catch (error) {
     invalidateChatGPTWebBrowserSession(pendingAccountId);
+    if (isBrowserSessionResettingError(error)) throw error;
     if (error instanceof BrowserSessionError) return undefined;
     throw error;
   }

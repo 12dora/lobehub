@@ -134,14 +134,14 @@ describe('ChatGPTWebHttp Browser Session Context', () => {
     const deviceId = 'device-stable';
     const sessionContext = createMemoryChatGPTWebSessionContext({
       contextId: 'ctx-account-a',
-      cookieJarKey: 'jar-digest-account-a',
+      cookieJarKey: 'ctx:jar-digest-account-a',
       logicalPageId: '11111111-1111-4111-8111-111111111111',
     });
     const fetchImpl = async (_url: string, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       expect(headers.get('OAI-Session-Id')).toBe(sessionContext.logicalPageId);
       expect(headers.get('OAI-Device-Id')).toBe(deviceId);
-      expect(headers.get(COOKIE_JAR_HEADER)).toBe('jar-digest-account-a');
+      expect(headers.get(COOKIE_JAR_HEADER)).toBe('ctx:jar-digest-account-a');
       expect(headers.get(COOKIE_JAR_HEADER)).not.toBe(deviceId);
       return new Response('{}', { headers: { 'content-type': 'application/json' }, status: 200 });
     };
@@ -173,7 +173,7 @@ describe('ChatGPTWebHttp Browser Session Context', () => {
       fetch: fetchImpl as typeof fetch,
       sessionContext: createMemoryChatGPTWebSessionContext({
         contextId: 'ctx-a',
-        cookieJarKey: 'jar-a',
+        cookieJarKey: 'ctx:jar-a',
         logicalPageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       }),
     }).getMe();
@@ -184,12 +184,12 @@ describe('ChatGPTWebHttp Browser Session Context', () => {
       fetch: fetchImpl as typeof fetch,
       sessionContext: createMemoryChatGPTWebSessionContext({
         contextId: 'ctx-b',
-        cookieJarKey: 'jar-b',
+        cookieJarKey: 'ctx:jar-b',
         logicalPageId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       }),
     }).getMe();
 
-    expect(seen).toEqual(['jar-a', 'jar-b']);
+    expect(seen).toEqual(['ctx:jar-a', 'ctx:jar-b']);
   });
 
   it('does not attach the context jar header to off-origin asset requests', async () => {
@@ -213,7 +213,7 @@ describe('ChatGPTWebHttp Browser Session Context', () => {
       deviceId: 'device-stable',
       fetch: fetchImpl as typeof fetch,
       sessionContext: createMemoryChatGPTWebSessionContext({
-        cookieJarKey: 'jar-digest-account-a',
+        cookieJarKey: 'ctx:jar-digest-account-a',
         logicalPageId: '11111111-1111-4111-8111-111111111111',
       }),
     });

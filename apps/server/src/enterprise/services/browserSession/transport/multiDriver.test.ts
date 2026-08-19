@@ -46,9 +46,9 @@ describe('fetchFailedMulti', () => {
     curl_multi_strerror: (code: number) => `CURLMcode ${code} detail`,
   } as unknown as LibcurlBindings;
 
-  it('shapes perform/poll CURLM codes as fetch failed: curlm(N)', () => {
+  it('shapes perform/poll CURLM codes as fetch failed: curl(N)', () => {
     expect(fetchFailedMulti(bindings, 2)).toMatchObject({
-      message: 'fetch failed: curlm(2): CURLMcode 2 detail',
+      message: 'fetch failed: curl(2): CURLMcode 2 detail',
       name: 'TypeError',
     });
   });
@@ -60,6 +60,17 @@ describe('fetchFailedMulti', () => {
     expect(error).not.toBe(raw);
     expect(error.constructor).toBe(TypeError);
     expect(error.message).toBe('fetch failed: curl(0): poll exploded');
+  });
+
+  it('shapes pool init failures as fetch failed: curl(N) TypeErrors', () => {
+    expect(fetchFailedMulti(bindings, 0, 'curl_multi_init returned null')).toMatchObject({
+      message: 'fetch failed: curl(0): curl_multi_init returned null',
+      name: 'TypeError',
+    });
+    expect(fetchFailedMulti(bindings, 4)).toMatchObject({
+      message: 'fetch failed: curl(4): CURLMcode 4 detail',
+      name: 'TypeError',
+    });
   });
 });
 

@@ -69,7 +69,9 @@ interface TrackedCurlChild {
 const trackedCurlChildren = new Set<TrackedCurlChild>();
 
 const awaitChildCloses = async (victims: TrackedCurlChild[]): Promise<void> => {
-  const results = await Promise.allSettled(victims.map((child) => child.close));
+  const results = await Promise.allSettled(
+    victims.map((child) => Promise.resolve().then(() => child.close)),
+  );
   const rejected = results.filter(
     (result): result is PromiseRejectedResult => result.status === 'rejected',
   );
@@ -77,7 +79,10 @@ const awaitChildCloses = async (victims: TrackedCurlChild[]): Promise<void> => {
   const detail = rejected
     .map((result) => (result.reason instanceof Error ? result.reason.message : 'UnknownError'))
     .join('; ');
-  throw new Error(`curl-impersonate child drain failed: ${detail}`);
+  throw new AggregateError(
+    rejected.map((result) => result.reason),
+    `curl-impersonate child drain failed: ${detail}`,
+  );
 };
 
 export const drainCurlImpersonateChildren = async (scope: string): Promise<void> => {

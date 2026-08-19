@@ -106,14 +106,14 @@ export const disposeBrowserSessionResources = async (
   tombstoneBrowserCookieJar(context.cookieJar.path);
   notifyBrowserSessionBeforeDispose(context);
 
-  let drainFailed = false;
+  let drainError: unknown;
   try {
     const drained = deps.transportPool.drain(context.transportPoolKey);
     if (drained && typeof (drained as Promise<void>).then === 'function') {
       await drained;
     }
   } catch (error) {
-    drainFailed = true;
+    drainError = error;
     log(
       'transport drain failed context=%s: %s',
       context.contextId,
@@ -121,8 +121,9 @@ export const disposeBrowserSessionResources = async (
     );
   }
 
-  if (!drainFailed) {
+  if (!drainError) {
     deleteBrowserCookieJar(context.cookieJar.path);
   }
   notifyBrowserSessionInvalidated(context);
+  if (drainError) throw drainError;
 };

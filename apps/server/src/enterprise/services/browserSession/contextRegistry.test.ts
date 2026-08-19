@@ -10,6 +10,7 @@ import {
   getBrowserSessionProviderState,
   getBrowserSessionRegistry,
   installBrowserSessionRegistryForTests,
+  resetAndReplaceBrowserSessionRegistryAfter,
   resetBrowserSessionRegistryForTests,
   setBrowserSessionProviderState,
 } from './contextRegistry';
@@ -24,7 +25,7 @@ import {
 import { digestBrowserSessionMaterial } from './identity';
 import { onBrowserSessionInvalidate } from './lifecycle';
 import type { BrowserSessionAcquireInput } from './types';
-import { BrowserSessionError } from './types';
+import { BrowserSessionError, BrowserSessionResettingError } from './types';
 
 afterEach(async () => {
   await resetBrowserSessionRegistryForTests();
@@ -230,7 +231,7 @@ describe('createBrowserSessionRegistry', () => {
     });
     expect(context.contextId).not.toBe(installationId);
     expect(context.logicalPageId).not.toBe(installationId);
-    expect(JSON.stringify(registry.summarize(context))).not.toContain('abc');
+    expect(JSON.stringify(registry.summarize(context))).not.toContain('buildNumber');
   });
 
   it('rejects empty identity fields', () => {
@@ -501,16 +502,8 @@ describe('disposeAllBrowserSessions', () => {
     const oldPath = first.cookieJar.path;
 
     const resetting = disposeAllBrowserSessions();
-    expect(() => getBrowserSessionRegistry().acquire(baseInput({ accountId: 'during' }))).toThrow(
-      /browser session registry is resetting/,
-    );
-    expect(
-      getBrowserSessionRegistry().getForIdentity({
-        accountId: 'before',
-        origin: 'https://chatgpt.com',
-        provider: 'chatgptweb',
-      }),
-    ).toBeUndefined();
+    expect(() => getBrowserSessionRegistry()).toThrow(BrowserSessionResettingError);
+    expect(() => getBrowserSessionRegistry()).toThrow(/browser session registry is resetting/);
 
     releaseDrain?.();
     await resetting;
@@ -519,6 +512,89 @@ describe('disposeAllBrowserSessions', () => {
     expect(next.contextId).not.toBe(first.contextId);
     expect(existsSync(next.cookieJar.path)).toBe(true);
     expect(existsSync(oldPath)).toBe(false);
+  });
+
+  it('rejects admission during a cold-registry reset, then succeeds after', async () => {
+    let releaseDrain: (() => void) | undefined;
+    const hanging = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    installBrowserSessionRegistryForTests(undefined);
+    const resetting = resetAndReplaceBrowserSessionRegistryAfter(() => hanging);
+    expect(() => getBrowserSessionRegistry()).toThrow(BrowserSessionResettingError);
+    releaseDrain?.();
+    await resetting;
+    const next = getBrowserSessionRegistry().acquire(baseInput({ accountId: 'after-cold' }));
+    expect(next.lifecycle).toBe('active');
+    expect(existsSync(next.cookieJar.path)).toBe(true);
+  });
+
+  it('serializes overlapping resets so each replacement is not unlinked by the other', async () => {
+    let releaseFirst: (() => void) | undefined;
+    let releaseSecond: (() => void) | undefined;
+    const hangFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const hangSecond = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const registry = createBrowserSessionRegistry({
+      transportPool: {
+        bind: vi.fn(),
+        drain: () => undefined,
+        drainAll: () => undefined,
+        has: () => false,
+      },
+    });
+    installBrowserSessionRegistryForTests(registry);
+    const first = getBrowserSessionRegistry().acquire(baseInput({ accountId: 'overlap-old' }));
+    const oldPath = first.cookieJar.path;
+
+    const resetOne = resetAndReplaceBrowserSessionRegistryAfter(() => hangFirst);
+    const resetTwo = resetAndReplaceBrowserSessionRegistryAfter(() => hangSecond);
+    expect(() => getBrowserSessionRegistry()).toThrow(BrowserSessionResettingError);
+
+    releaseFirst?.();
+    await resetOne;
+    expect(() => getBrowserSessionRegistry()).toThrow(BrowserSessionResettingError);
+
+    releaseSecond?.();
+    await resetTwo;
+
+    const next = getBrowserSessionRegistry().acquire(baseInput({ accountId: 'overlap-new' }));
+    expect(existsSync(next.cookieJar.path)).toBe(true);
+    expect(existsSync(oldPath)).toBe(false);
+    expect(next.cookieJar.path).not.toBe(oldPath);
+  });
+
+  it('refuses to unlink jars when reset cleanup is unproven', async () => {
+    const registry = createBrowserSessionRegistry({
+      transportPool: {
+        bind: vi.fn(),
+        drain: async () => {
+          throw new Error('drain failed');
+        },
+        drainAll: async () => {
+          throw new Error('drainAll failed');
+        },
+        has: () => false,
+      },
+    });
+    installBrowserSessionRegistryForTests(registry);
+    const first = getBrowserSessionRegistry().acquire(baseInput({ accountId: 'keep-jar' }));
+    const oldPath = first.cookieJar.path;
+    expect(existsSync(oldPath)).toBe(true);
+
+    await resetAndReplaceBrowserSessionRegistryAfter(async () => {
+      throw new Error('afterDispose unproven');
+    });
+
+    expect(existsSync(oldPath)).toBe(true);
+    const next = getBrowserSessionRegistry().acquire(
+      baseInput({ accountId: 'fresh-after-unproven' }),
+    );
+    expect(existsSync(next.cookieJar.path)).toBe(true);
+    expect(next.cookieJar.path).not.toBe(oldPath);
   });
 });
 

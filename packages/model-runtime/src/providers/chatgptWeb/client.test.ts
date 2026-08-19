@@ -342,7 +342,7 @@ describe('ChatGPTWebClient bootstrap cache on Browser Session Context', () => {
   it('reuses scraped build markers across reconstructed clients for the same context', async () => {
     const sessionContext = createMemoryChatGPTWebSessionContext({
       contextId: 'ctx-account-a',
-      cookieJarKey: 'jar-a',
+      cookieJarKey: 'ctx:jar-a',
       logicalPageId: '11111111-1111-4111-8111-111111111111',
     });
     fetchMock
@@ -369,7 +369,7 @@ describe('ChatGPTWebClient bootstrap cache on Browser Session Context', () => {
   it('does not cache an unauthenticated /unauth-mweb/ bootstrap on the context', async () => {
     const sessionContext = createMemoryChatGPTWebSessionContext({
       contextId: 'ctx-cold',
-      cookieJarKey: 'jar-cold',
+      cookieJarKey: 'ctx:jar-cold',
       logicalPageId: '22222222-2222-4222-8222-222222222222',
     });
     fetchMock
@@ -408,7 +408,7 @@ describe('ChatGPTWebClient bootstrap cache on Browser Session Context', () => {
     let bootstrap: { clientVersion?: string } | undefined;
     const sessionContext = {
       contextId: 'ctx-dead',
-      cookieJarKey: 'jar-dead',
+      cookieJarKey: 'ctx:jar-dead',
       getBootstrap: () => (writable ? bootstrap : undefined),
       logicalPageId: '33333333-3333-4333-8333-333333333333',
       setBootstrap: (state: { clientVersion?: string }) => {

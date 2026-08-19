@@ -279,6 +279,26 @@ describe('classifyAiConnectionFailure', () => {
     ).toMatchObject({ errorCategory: 'provider', errorType: 'ProviderBizError' });
   });
 
+  it('classifies a browser-session reset as a transient network failure', () => {
+    const error = Object.assign(new Error('browser session registry is resetting'), {
+      code: 'BROWSER_SESSION_RESETTING',
+      name: 'BrowserSessionResettingError',
+      retryable: true,
+    });
+    expect(classifyAiConnectionFailure(error)).toEqual({
+      errorCategory: 'network',
+      status: 0,
+    });
+    expect(
+      classifyAiConnectionFailure(
+        runtimePayload({
+          error: { code: 'BROWSER_SESSION_RESETTING', message: 'resetting', retryable: true },
+          errorType: 'ProviderNetworkError',
+        }),
+      ),
+    ).toMatchObject({ errorCategory: 'network', errorType: 'ProviderNetworkError' });
+  });
+
   it('drops runtime codes that are not on the contract allowlist', () => {
     expect(classifyAiConnectionFailure(runtimePayload({ errorType: 'SomeBrandNewCode' }))).toEqual({
       errorCategory: 'provider',

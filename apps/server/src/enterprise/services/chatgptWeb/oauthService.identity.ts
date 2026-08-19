@@ -12,6 +12,7 @@ import {
 } from '@lobechat/model-runtime/chatgptWebIdentity';
 import { isRecord } from '@lobechat/utils/object';
 
+import { isBrowserSessionResettingError } from '@/server/enterprise/services/browserSession/types';
 import type { OAuthRenewalKind } from '@/server/services/oauthDeviceFlow';
 import { OAuthDeviceFlowService, parseJwtExpiry } from '@/server/services/oauthDeviceFlow';
 import {
@@ -351,6 +352,8 @@ export abstract class ChatGPTWebOAuthIdentityOps extends OAuthDeviceFlowService 
       } catch (error) {
         // A missing transport is an operator problem, not an invalid token — let it out.
         if (isChatGPTWebTransportUnavailableError(error)) throw error;
+        // Registry reset is transient: never a false invalid-token verdict.
+        if (isBrowserSessionResettingError(error)) throw error;
         throw new ChatGPTWebOAuthError('access_token_invalid');
       }
 

@@ -468,7 +468,7 @@ export const createLibcurlMultiDriver = (
     if (existing && !existing.destroyed) return existing;
 
     const multi = bindings.curl_multi_init();
-    if (!multi) throw new Error('curl_multi_init returned null');
+    if (!multi) throw fetchFailedMulti(bindings, 0, 'curl_multi_init returned null');
     const setRc = bindings.curl_multi_setopt(
       multi,
       CURLMOPT_PIPELINING,
@@ -480,7 +480,7 @@ export const createLibcurlMultiDriver = (
       if (cleanupRc !== 0) {
         log('curl_multi_cleanup after setopt failure: %s', formatCurlmError(bindings, cleanupRc));
       }
-      throw new Error(`curl_multi_setopt failed: ${formatCurlmError(bindings, setRc)}`);
+      throw fetchFailedMulti(bindings, setRc);
     }
 
     const pool: Pool = {

@@ -642,6 +642,16 @@ describe('C4 isolation and inFlight', () => {
     bind('user:alice:_:chatgptweb');
     const resetting = disposeAllBrowserSessions();
     expect(() => bind('user:bob:_:chatgptweb')).toThrow(/browser session registry is resetting/);
+    expect(() => bind('user:bob:_:chatgptweb')).toThrow(
+      expect.objectContaining({ code: 'BROWSER_SESSION_RESETTING', retryable: true }),
+    );
+    expect(() =>
+      stageChatGPTWebBrowserSession({
+        accountId: 'user:bob:_:chatgptweb',
+        browserProfile: profile,
+        deviceId: SAME_DEVICE,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'BROWSER_SESSION_RESETTING', retryable: true }));
     releaseDrain?.();
     await resetting;
   });
