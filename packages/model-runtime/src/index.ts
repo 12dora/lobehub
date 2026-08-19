@@ -96,6 +96,16 @@ export {
 } from './utils/boundFetch';
 export { consumeStreamUntilDone } from './utils/consumeStream';
 export { AgentRuntimeError } from './utils/createError';
+export {
+  clampEffortLevel,
+  EFFORT_CONTROL_KEYS,
+  EFFORT_CONTROL_REGISTRY,
+  type EffortControlDefinition,
+  type EffortControlKey,
+  type EffortLevel,
+  findEffortControl,
+  isEffortControlKey,
+} from './utils/effortControlRegistry';
 export { createFetchRequestHandler } from './utils/fetchRequestHandler';
 export { getModelPropertyWithFallback } from './utils/getFallbackModelProperty';
 export { getModelPricing } from './utils/getModelPricing';
