@@ -16,6 +16,43 @@ infrastructure provider-neutral.
 The target architecture remains server-side. It may use a long-running impersonated transport,
 but it does not require controlling the user's real Chrome for every inference.
 
+## Status at a glance
+
+**Read this section first. Everything else is detail/history — check here before reading further.**
+
+| Task    | What it is                                            | Status                                                                                                         |
+| ------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| C1      | Common Browser Session Context                        | ✅ Done — `cd38ff93db`                                                                                         |
+| C2      | Provider-isolated Cookie Jar                          | ✅ Done — `cd38ff93db`                                                                                         |
+| G1      | Preserve ChatGPT Device Binding                       | ✅ Done — `f40d0d7bb6`                                                                                         |
+| G2      | Preserve ChatGPT Session-Cookie Shape                 | ✅ Done — `f40d0d7bb6`                                                                                         |
+| G3      | Authenticated ChatGPT Bootstrap                       | ✅ Done — `0a720e3370` (unauth-shell detection) + `bb3d3f48a6` (context-scoped cache)                          |
+| G4      | Sentinel Bundle Manager                               | ✅ Done — `0a720e3370` (pool) + `bb3d3f48a6` (account-scoped key)                                              |
+| G5      | ChatGPT Page Session ID                               | ✅ Done — `bb3d3f48a6`                                                                                         |
+| G6      | Pro Turn Coordinator                                  | ✅ Done — `0a720e3370`                                                                                         |
+| G7      | Route All ChatGPT Endpoints Through One Context       | ✅ Done — `bb3d3f48a6` (account-scoped, 6 codex review rounds)                                                 |
+| **C3**  | **Persistent Impersonated Transport**                 | ⬜ **Not started — next real task, see below**                                                                 |
+| **C4**  | **Context Ownership and Cleanup**                     | ⬜ **Not started — depends on C3**                                                                             |
+| **CX1** | **Isolate the Cursor CLI state cache per connection** | ⬜ **Not started — independent of C3/C4, can be picked up any time**                                           |
+| ~~GX1~~ | ~~Account-scope the Grok agent identity~~             | ❌ **Decided against — do not implement.** No browser-session-shaped risk found for Grok's CLI-proxy endpoint. |
+
+**If you are picking this up fresh: C1/C2/G1–G7 are shipped, tested, and pushed to `main`.** The
+ChatGPT Web Pro-tier downgrade's root causes (protocol mismatches, device-id-only isolation, no
+persistent session concept) are fixed. **What's actually left is C3 and C4** (bundled below as one
+practical next task, since C4 exists to productionize C3) **and, independently, CX1** (a small,
+self-contained Cursor fix unrelated to everything else in this document). Read "C3 — Persistent
+Impersonated Transport" and "C4 — Context Ownership and Cleanup" in Actionable tasks below, and
+"CX1" under Extending isolation to Grok and Cursor. You do not need to read C1/C2/G1–G7's own
+task descriptions to start work — they're kept below only as historical record of what was built
+and why, and as a reference for the acceptance-criteria style/rigor expected of C3/C4 too.
+
+**One hard blocking constraint that carries forward into C3/C4 work:** the Browser Session Context
+registry is currently process-local (in-memory only). This is fine for AIHub's current
+single-process deployment, but C3 (persistent transport) and C4 (ownership/cleanup) must either
+explicitly preserve that single-process assumption or address it — do not silently let C3/C4 assume
+multi-process safety that doesn't exist yet. See "Known, deliberately accepted residual limitations"
+below for the full detail.
+
 ## Current evidence and constraints
 
 - Clean Chrome HAR baseline: a `gpt-5-6-pro` request was served by `gpt-5-6-pro`.
@@ -179,6 +216,8 @@ The implementation must therefore preserve these invariants:
 **Priority:** P0\
 **Scope:** common infrastructure
 
+**Status:** ✅ **Done** — `cd38ff93db`.
+
 Create a long-lived logical context keyed by at least:
 
 ```text
@@ -220,6 +259,8 @@ OAI or Sentinel fields.
 **Priority:** P0\
 **Scope:** common infrastructure with provider-specific seed adapters
 
+**Status:** ✅ **Done** — `cd38ff93db`.
+
 Generalize the existing Netscape jar so a Browser Session Context owns it. The common component
 must support:
 
@@ -253,6 +294,8 @@ ChatGPT-specific code remains responsible for deciding which cookies to seed.
 
 **Priority:** P0\
 **Scope:** ChatGPT Web-specific
+
+**Status:** ✅ **Done** — `f40d0d7bb6`.
 
 The Copy-as-cURL connection path must preserve the device that created the session.
 
@@ -290,6 +333,8 @@ apps/server/src/enterprise/services/chatgptWeb/oauthService.session.ts
 **Priority:** P0\
 **Scope:** ChatGPT Web-specific adapter over C2
 
+**Status:** ✅ **Done** — `f40d0d7bb6`.
+
 Keep a logical session token for refresh bookkeeping, while writing browser-shaped chunks to the
 outbound jar.
 
@@ -312,6 +357,8 @@ outbound jar.
 
 **Priority:** P0\
 **Scope:** ChatGPT Web-specific
+
+**Status:** ✅ **Done** — `0a720e3370` (unauth-shell detection) + `bb3d3f48a6` (context-scoped cache).
 
 The page bootstrap should use the active ChatGPT cookie jar, exactly as a browser navigation does.
 It must still omit Bearer and OAI request headers.
@@ -344,6 +391,8 @@ apps/server/src/enterprise/services/chatgptWeb/transport/
 
 **Priority:** P0\
 **Scope:** ChatGPT Web-specific
+
+**Status:** ✅ **Done** — `0a720e3370` (pool) + `bb3d3f48a6` (account-scoped key).
 
 Replace the per-turn synchronous Sentinel handshake with a context-scoped pool of ready bundles.
 
@@ -393,6 +442,8 @@ packages/model-runtime/src/providers/chatgptWeb/types.ts
 **Priority:** P0\
 **Scope:** ChatGPT Web-specific adapter over C1
 
+**Status:** ✅ **Done** — `bb3d3f48a6`.
+
 Map the Browser Session Context's logical page id to `OAI-Session-Id`.
 
 **Basic direction**
@@ -414,6 +465,8 @@ Map the Browser Session Context's logical page id to `OAI-Session-Id`.
 
 **Priority:** P0\
 **Scope:** ChatGPT Web-specific
+
+**Status:** ✅ **Done** — `0a720e3370`.
 
 Retain and finish the current workspace implementation rather than returning to a prepare gate.
 
@@ -439,6 +492,8 @@ Retain and finish the current workspace implementation rather than returning to 
 
 **Priority:** P1\
 **Scope:** common infrastructure; initially consumed by ChatGPT Web
+
+**Status:** ⬜ **Not started. This is the next real task** — read this section fully before starting.
 
 The current one-process-per-request curl adapter cannot reproduce HTTP/2 connection continuity.
 Replace it with a long-running transport worker or sidecar that owns connection pools.
@@ -472,6 +527,8 @@ browser context + origin + proxy/egress outlet + impersonation profile revision
 **Priority:** P1\
 **Scope:** common infrastructure
 
+**Status:** ⬜ **Not started, depends on C3.**
+
 Productionize C1/C3 so long-lived sessions do not leak resources or split ownership.
 
 **Basic direction**
@@ -494,6 +551,8 @@ Productionize C1/C3 so long-lived sessions do not leak resources or split owners
 
 **Priority:** P1\
 **Scope:** ChatGPT Web-specific integration
+
+**Status:** ✅ **Done** — `bb3d3f48a6`. See "Blocking requirement carried into G7" and "G3/G5/G7 landed" above for why this took 6 review rounds.
 
 Make the context the single source of browser identity for:
 
@@ -555,47 +614,25 @@ ChatGPT Web was ever wired to them. Grok and Cursor were investigated (research 
 to see whether they could reuse the same context/cookie-jar machinery. **They cannot, structurally
 — do not attempt to wire them into `browserSession/{contextRegistry,cookieJar}.ts`:**
 
-- Grok is a stateless Bearer-token JSON API client (`packages/model-runtime/src/providers/grok/index.ts`).
-  No cookies, no TLS/H2 impersonation, no persistent connection object — plain `undici.fetch`. There
-  is nothing for a cookie jar or an impersonated transport to hold.
+- Grok is a stateless Bearer-token JSON API client (`packages/model-runtime/src/providers/grok/index.ts`),
+  and specifically a **CLI reverse-proxy**, not a browser simulation: it talks to
+  `https://cli-chat-proxy.grok.com/v1` — the Grok Build CLI's own proxy endpoint, not a grok.com web
+  session — with CLI-shaped identity headers (`x-grok-client-identifier: grok-shell`,
+  `x-grok-client-mode: headless`, `x-xai-token-auth: xai-grok-cli`). No cookies, no TLS/H2
+  impersonation, no persistent connection object, no Cloudflare-style bot-fight to evade — plain
+  `undici.fetch`. There is nothing for a cookie jar or an impersonated transport to hold, and no
+  evidence this endpoint does device/session-based risk correlation the way chatgpt.com does.
+  **Decided, not deferred: no browser-session-shaped work is planned for Grok.** If a future
+  investigation finds real evidence of account-correlation risk at this endpoint, that would be a
+  new, separately-scoped task grounded in that evidence — not a revival of this one.
 - Cursor doesn't make its own HTTP calls at all. `apps/server/src/enterprise/services/cursorAgent/transport.ts`
   spawns the real, official `cursor-agent` CLI binary per turn and relays its stdout; the genuine
   CLI does its own networking with its own TLS stack. AIHub never needs to impersonate a browser for
   Cursor, because it is running the real client.
 
-However, the investigation found a **real, distinct isolation gap in both** — structurally similar
+However, the investigation found a **real, distinct isolation gap in Cursor** — structurally similar
 in spirit to the ChatGPT bug this whole plan fixes, but shaped differently enough that it needs its
-own, separate tasks, not a reuse of G1–G7:
-
-### GX1 — Account-scope the Grok agent identity
-
-**Priority:** P2 — no evidence of active harm today; this is a deliberate design question, not an
-obvious bug. Do not implement without an explicit decision (see below).
-
-`deriveGrokAgentId` (`packages/model-runtime/src/browserProfile/identity.ts`) is a pure function of
-the single, global, deployment-wide `installationId` — `UUIDv5("aihub-grok-agent:" + installationId)`.
-Every stored Grok connection on a deployment (the platform-managed shared account, and any number of
-individual users' own BYOK connections) therefore presents the **identical** `x-grok-agent-id` to
-xAI, always, by construction. This is the SAME shape of problem G1 fixed for ChatGPT (identity not
-scoped by account) — except here it is the current, deliberate, documented design (see "Existing
-shared-profile consumers" above: "Grok... derives its agent id from `installationId`"), not an
-accident.
-
-**Decision needed before implementing:** is a single shared `x-grok-agent-id` across every account
-on a deployment an acceptable simplification, or a real risk? xAI may or may not correlate/rate-limit/
-risk-score by this header the way chatgpt.com does by device id — that is currently unknown and
-unresearched. Do the same kind of evidence-gathering this plan's ChatGPT investigation did (HAR
-comparison, documented account behavior) before assuming this needs fixing; do not fix it reflexively
-just because it looks structurally similar.
-
-**If the decision is to fix it:** fold an account-scoped identity (reuse the same
-`accountId` shape ChatGPT Web uses — provider revision, or `user:workspace:provider` for BYOK; do
-not invent a second convention) into `deriveGrokAgentId`, so distinct stored connections present
-distinct agent ids. Keep it stable across reconnects of the same stored connection. The global
-`installationId` itself must not be touched — only how Grok further derives its own header value
-from it changes. `x-grok-user-id` (already derived per-request from the JWT's `principal_id`/`sub`
-claim) already differentiates accounts at the wire level for THAT header — check whether that
-alone is sufficient before concluding `x-grok-agent-id` also needs to change.
+own, separate task, not a reuse of G1–G7:
 
 ### CX1 — Isolate the Cursor CLI state cache per connection
 
@@ -629,6 +666,83 @@ completely different account's turn.
 **Acceptance criteria:** two different stored Cursor connections never read or write the same
 config-seed directory; the platform-managed shared connection's seed stays stable across turns and
 reconnects, same as today; per-turn scratch/cleanup timing is unaffected.
+
+## Reusable groundwork for future browser-simulating providers
+
+If AIHub ever adds another provider that reverse-engineers a real website's session — anything with
+its own cookies, a Cloudflare/bot-fight-style challenge, and a TLS/HTTP2 browser fingerprint to
+match (i.e. something shaped like ChatGPT Web, not like Grok's CLI proxy or Cursor's spawned CLI) —
+this effort already built and hardened the pieces that provider needs. Reuse these; do not
+re-derive them from scratch or re-litigate them from first principles.
+
+**Ready-to-use infrastructure:**
+
+- `apps/server/src/enterprise/services/browserSession/{contextRegistry,cookieJar,lifecycle,transportPool,types,identity}.ts`
+  — provider-neutral: a context registry keyed by `provider + accountId + origin + profile
+revision`, with a separate credential/device/proxy/profile binding digest that atomically
+  invalidates on change; a generalized Netscape-format cookie jar (chunk-aware, atomic writes,
+  0600/0700 permissions, secret-safe redaction). A new provider adapter should look like
+  `apps/server/src/enterprise/services/chatgptWeb/browserSession.ts` — a thin, provider-specific
+  wrapper that decides its own `accountId` shape and which cookies are safe to carry across
+  verification, not a fork of the common module.
+- `packages/model-runtime/src/browserProfile/` — the shared `BrowserDeviceProfile` (UA, client
+  hints, TLS impersonation profile, timezone, screen) generator and its locale-bundle mechanism.
+- `packages/model-runtime/src/providers/chatgptWeb/sessionContext.ts` — the pattern for a
+  reconstructed-per-call runtime client to hold an opaque handle back into the server-side
+  registry, so a fresh client instance still shares bootstrap cache / page session id / cookie-jar
+  key across calls. Any new provider whose client gets rebuilt per request (check
+  `apps/server/src/modules/ModelRuntime/index.ts` — most providers do) needs this same shape or its
+  own caching is silently worthless, the way ChatGPT Web's was before G3 landed.
+
+**Architectural principles earned the hard way (6 independent codex review rounds to get right —
+do not re-discover these by trial and error, apply them from the first implementation):**
+
+1. **Key every piece of session state by account/credential identity, never by a bare device or
+   browser identifier alone.** A device id is real-world stable and can legitimately be reused
+   across two different stored accounts (the same physical browser, reconnected as someone else).
+   If the jar, proof-of-work pool, or any cache is keyed by device id alone, two accounts sharing a
+   device _will_ share state.
+2. **Never let a credential-verification step touch live state.** Stage a candidate credential
+   (cookies, tokens) in a throwaway context; verify against the stage; only copy into the live
+   context after verification succeeds. A failed or wrong-account verification must leave the
+   previously-working connection completely untouched.
+3. **A "merge" cookie/state write must explicitly clear the families it's supposed to replace, not
+   just add new ones.** Naive merge-write leaves a stale prior credential sitting alongside the new
+   one if the new write doesn't happen to mention that family at all — this bit us specifically at
+   the _commit_ step, one layer past where the _staging_ filter had already gotten it right.
+4. **Promotion (making a verified candidate "live") must happen only after durable persistence
+   succeeds — never before.** If a database/vault write can fail after a network verification
+   already succeeded, promoting first and persisting second creates a window where in-memory state
+   says "account B" while durable storage still says "account A."
+5. **A "success" response must be structurally validated, not just status-code-checked.** A 200
+   with an unparseable or wrong-shaped body is not proof anything was actually verified — treat a
+   parse/shape failure as an authentication failure, not a success with an empty fallback object.
+6. **State that any of the above protections depend on must be found by peeking, not by
+   re-acquiring.** A "look up the current live entry" step must never risk mutating/invalidating
+   that entry as a side effect (e.g. a registry `acquire()` that drops an existing entry on a
+   binding-digest mismatch) — add a genuinely read-only lookup if the common module doesn't already
+   have one, the way `contextRegistry.ts` gained `getForIdentity` here.
+7. **A process-local design is a legitimate phase-one scope — but say so explicitly and check the
+   actual deployment topology before trusting the isolation guarantee.** In-memory state doesn't
+   survive a restart and isn't shared across replicas/workers; that's fine for a single-process
+   deployment and a real, silent isolation hole the moment it isn't one.
+
+**Investigative method (how the original ChatGPT downgrade was actually diagnosed, worth repeating
+for any future "our simulation doesn't behave like the real thing" problem):**
+
+- Get a real HAR capture of the genuine client doing the exact thing that's broken, and diff it
+  field-by-field against AIHub's synthetic request — don't guess at what a browser "probably" sends.
+- Distinguish a field that's _unexplained_ (present in the capture, no confirmed cause) from a field
+  that's _load-bearing_ (confirmed via a controlled before/after test to actually change behavior).
+  Do not fabricate a plausible-looking value for an unexplained field — a wrong guess can look more
+  synthetic than honestly omitting it (see `oai-echo-logs` in "Deliberately excluded work" below).
+- Match request _timing and concurrency shape_, not just body/header content — this plan's
+  clean-baseline evidence (two non-blocking prepare calls racing the actual send) was as important
+  a finding as any single header value.
+- Minimize live validation against the real upstream once risk-control is a concern (see "Current
+  evidence and constraints" above) — offline, HAR-grounded, and unit-testable verification should
+  do almost all of the work; a live check is a last, expensive confirmation step, not a debugging
+  tool to iterate with.
 
 ## Validation policy
 
