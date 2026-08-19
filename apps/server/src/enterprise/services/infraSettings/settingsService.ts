@@ -25,14 +25,13 @@ import {
   assertObjectStorageDestinationsAllowed,
 } from './destinationPolicy';
 import {
-  INFRA_SECRET_REUSE_MESSAGE,
   mailDestinationTuple,
   mailTuplesEqual,
   objectStorageDestinationTuple,
   objectStorageTuplesEqual,
 } from './destinationTuple';
-import { InfraSettingsSecretRequiredError, InfraSettingsSecretReuseError } from './errors';
-import { sealInfraSecret } from './secrets';
+import { InfraSettingsSecretRequiredError } from './errors';
+import { resolveInfraSecretCiphertext } from './resolveSecretAction';
 
 export interface InfraSettingsServiceRow<T> {
   config: T;
@@ -74,31 +73,28 @@ export const getMailSettings = async (
   return toMailRow(row);
 };
 
-const KEEP_SECRET = { action: 'keep' as const };
-
 export const applyObjectStorageUpdate = async (
   current: ObjectStoragePersisted | undefined,
   update: ObjectStorageUpdate,
 ): Promise<ObjectStoragePersisted> => {
   const stored = current ?? createDefaultObjectStorageConfig();
-  const secretAction = update.secretAccessKey ?? KEEP_SECRET;
-  let secretAccessKeyCiphertext = stored.secretAccessKeyCiphertext;
-
-  if (secretAction.action === 'clear') {
-    secretAccessKeyCiphertext = undefined;
-  } else if (secretAction.action === 'replace') {
-    secretAccessKeyCiphertext = await sealInfraSecret(secretAction.value);
-  } else if (secretAction.action === 'keep' && secretAccessKeyCiphertext && update.enabled) {
-    const storedTuple = objectStorageDestinationTuple(stored);
-    const nextTuple = objectStorageDestinationTuple({
-      bucket: update.bucket ?? stored.bucket,
-      endpoint: update.endpoint ?? stored.endpoint,
-      region: update.region ?? stored.region,
-    });
-    if (!objectStorageTuplesEqual(storedTuple, nextTuple)) {
-      throw new InfraSettingsSecretReuseError('secretAccessKey', INFRA_SECRET_REUSE_MESSAGE);
-    }
-  }
+  const secretAccessKeyCiphertext = await resolveInfraSecretCiphertext({
+    action: update.secretAccessKey,
+    field: 'secretAccessKey',
+    reuse: update.enabled
+      ? {
+          destinationUnchanged: objectStorageTuplesEqual(
+            objectStorageDestinationTuple(stored),
+            objectStorageDestinationTuple({
+              bucket: update.bucket ?? stored.bucket,
+              endpoint: update.endpoint ?? stored.endpoint,
+              region: update.region ?? stored.region,
+            }),
+          ),
+        }
+      : undefined,
+    storedCiphertext: stored.secretAccessKeyCiphertext,
+  });
 
   if (update.enabled && !secretAccessKeyCiphertext) {
     throw new InfraSettingsSecretRequiredError('secretAccessKey');
@@ -144,6 +140,21 @@ export const applyObjectStorageUpdate = async (
   return next;
 };
 
+const buildMailSmtp = (
+  stored: MailPersisted,
+  smtpUpdate: MailUpdate['smtp'] | undefined,
+  passCiphertext: string | undefined,
+): NonNullable<MailPersisted['smtp']> => {
+  const smtp: NonNullable<MailPersisted['smtp']> = {
+    host: smtpUpdate?.host ?? stored.smtp?.host ?? '',
+    port: smtpUpdate?.port ?? stored.smtp?.port ?? 587,
+    secure: smtpUpdate?.secure ?? stored.smtp?.secure ?? false,
+    user: smtpUpdate?.user ?? stored.smtp?.user ?? '',
+  };
+  if (passCiphertext) smtp.passCiphertext = passCiphertext;
+  return smtp;
+};
+
 export const applyMailUpdate = async (
   current: MailPersisted | undefined,
   update: MailUpdate,
@@ -160,30 +171,20 @@ export const applyMailUpdate = async (
     if (senderName) next.senderName = senderName;
 
     if (stored.smtp || update.smtp) {
-      const passAction = update.smtp?.pass ?? KEEP_SECRET;
-      let passCiphertext = stored.smtp?.passCiphertext;
-      if (passAction.action === 'clear') {
-        passCiphertext = undefined;
-      } else if (passAction.action === 'replace') {
-        passCiphertext = await sealInfraSecret(passAction.value);
-      }
-      next.smtp = {
-        host: update.smtp?.host ?? stored.smtp?.host ?? '',
-        port: update.smtp?.port ?? stored.smtp?.port ?? 587,
-        secure: update.smtp?.secure ?? stored.smtp?.secure ?? false,
-        user: update.smtp?.user ?? stored.smtp?.user ?? '',
-      };
-      if (passCiphertext) next.smtp.passCiphertext = passCiphertext;
+      const passCiphertext = await resolveInfraSecretCiphertext({
+        action: update.smtp?.pass,
+        field: 'pass',
+        storedCiphertext: stored.smtp?.passCiphertext,
+      });
+      next.smtp = buildMailSmtp(stored, update.smtp, passCiphertext);
     }
 
     if (stored.resend || update.resend) {
-      const keyAction = update.resend?.apiKey ?? KEEP_SECRET;
-      let apiKeyCiphertext = stored.resend?.apiKeyCiphertext;
-      if (keyAction.action === 'clear') {
-        apiKeyCiphertext = undefined;
-      } else if (keyAction.action === 'replace') {
-        apiKeyCiphertext = await sealInfraSecret(keyAction.value);
-      }
+      const apiKeyCiphertext = await resolveInfraSecretCiphertext({
+        action: update.resend?.apiKey,
+        field: 'apiKey',
+        storedCiphertext: stored.resend?.apiKeyCiphertext,
+      });
       next.resend = {};
       if (apiKeyCiphertext) next.resend.apiKeyCiphertext = apiKeyCiphertext;
     }
@@ -201,50 +202,40 @@ export const applyMailUpdate = async (
 
   if (provider === 'smtp') {
     const smtp = update.smtp!;
-    const passAction = smtp.pass ?? KEEP_SECRET;
-    let passCiphertext = stored.smtp?.passCiphertext;
-    if (passAction.action === 'clear') {
-      passCiphertext = undefined;
-    } else if (passAction.action === 'replace') {
-      passCiphertext = await sealInfraSecret(passAction.value);
-    } else if (passAction.action === 'keep' && passCiphertext) {
-      const storedTuple = mailDestinationTuple({
-        provider: stored.provider,
-        smtp: stored.smtp,
-      });
-      const nextTuple = mailDestinationTuple({ provider: 'smtp', smtp });
-      if (!mailTuplesEqual(storedTuple, nextTuple)) {
-        throw new InfraSettingsSecretReuseError('pass', INFRA_SECRET_REUSE_MESSAGE);
-      }
-    }
+    const passCiphertext = await resolveInfraSecretCiphertext({
+      action: smtp.pass,
+      field: 'pass',
+      reuse: {
+        destinationUnchanged: mailTuplesEqual(
+          mailDestinationTuple({
+            provider: stored.provider,
+            smtp: stored.smtp,
+          }),
+          mailDestinationTuple({ provider: 'smtp', smtp }),
+        ),
+      },
+      storedCiphertext: stored.smtp?.passCiphertext,
+    });
     if (!passCiphertext) {
       throw new InfraSettingsSecretRequiredError('smtp.pass');
     }
-    next.smtp = {
-      host: smtp.host ?? stored.smtp?.host ?? '',
-      port: smtp.port ?? stored.smtp?.port ?? 587,
-      secure: smtp.secure ?? stored.smtp?.secure ?? false,
-      user: smtp.user ?? stored.smtp?.user ?? '',
-    };
-    if (passCiphertext) next.smtp.passCiphertext = passCiphertext;
+    next.smtp = buildMailSmtp(stored, smtp, passCiphertext);
   } else {
     const resend = update.resend!;
-    const keyAction = resend.apiKey ?? KEEP_SECRET;
-    let apiKeyCiphertext = stored.resend?.apiKeyCiphertext;
-    if (keyAction.action === 'clear') {
-      apiKeyCiphertext = undefined;
-    } else if (keyAction.action === 'replace') {
-      apiKeyCiphertext = await sealInfraSecret(keyAction.value);
-    } else if (keyAction.action === 'keep' && apiKeyCiphertext) {
-      const storedTuple = mailDestinationTuple({
-        provider: stored.provider,
-        smtp: stored.smtp,
-      });
-      const nextTuple = mailDestinationTuple({ provider: 'resend' });
-      if (!mailTuplesEqual(storedTuple, nextTuple)) {
-        throw new InfraSettingsSecretReuseError('apiKey', INFRA_SECRET_REUSE_MESSAGE);
-      }
-    }
+    const apiKeyCiphertext = await resolveInfraSecretCiphertext({
+      action: resend.apiKey,
+      field: 'apiKey',
+      reuse: {
+        destinationUnchanged: mailTuplesEqual(
+          mailDestinationTuple({
+            provider: stored.provider,
+            smtp: stored.smtp,
+          }),
+          mailDestinationTuple({ provider: 'resend' }),
+        ),
+      },
+      storedCiphertext: stored.resend?.apiKeyCiphertext,
+    });
     if (!apiKeyCiphertext) {
       throw new InfraSettingsSecretRequiredError('resend.apiKey');
     }

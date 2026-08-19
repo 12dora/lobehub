@@ -138,6 +138,28 @@ describe('applyObjectStorageUpdate', () => {
       name: 'InfraSettingsSecretReuseError',
     });
   });
+
+  it('keeps ciphertext on disable + keep even when bucket and endpoint change', async () => {
+    const next = await applyObjectStorageUpdate(
+      {
+        bucket: 'files',
+        enabled: true,
+        endpoint: 'https://s3.example.com',
+        forcePathStyle: false,
+        secretAccessKeyCiphertext: 'sealed:old',
+        setAcl: false,
+      },
+      {
+        bucket: 'other-bucket',
+        enabled: false,
+        endpoint: 'https://attacker.example.com',
+        secretAccessKey: { action: 'keep' },
+      },
+    );
+    expect(next.secretAccessKeyCiphertext).toBe('sealed:old');
+    expect(next.bucket).toBe('other-bucket');
+    expect(next.endpoint).toBe('https://attacker.example.com');
+  });
 });
 
 describe('applyMailUpdate', () => {
@@ -229,6 +251,141 @@ describe('applyMailUpdate', () => {
       resend: { apiKey: { action: 'replace', value: 're_xxx' } },
     });
     expect(next.resend?.apiKeyCiphertext).toBe('sealed:re_xxx');
+  });
+
+  it('keeps the previous SMTP password when enabling with an unchanged destination', async () => {
+    const next = await applyMailUpdate(
+      {
+        enabled: true,
+        fromAddress: 'ops@example.com',
+        provider: 'smtp',
+        smtp: {
+          host: 'smtp.example.com',
+          passCiphertext: 'sealed:pass',
+          port: 587,
+          secure: false,
+          user: 'ops',
+        },
+      },
+      {
+        enabled: true,
+        fromAddress: 'ops@example.com',
+        provider: 'smtp',
+        smtp: {
+          host: 'smtp.example.com',
+          pass: { action: 'keep' },
+          port: 587,
+          secure: false,
+          user: 'ops',
+        },
+      },
+    );
+    expect(next.smtp?.passCiphertext).toBe('sealed:pass');
+  });
+
+  it('seals a replace SMTP password without a reuse check', async () => {
+    const next = await applyMailUpdate(
+      {
+        enabled: true,
+        fromAddress: 'ops@example.com',
+        provider: 'smtp',
+        smtp: {
+          host: 'smtp.example.com',
+          passCiphertext: 'sealed:old',
+          port: 587,
+          secure: false,
+          user: 'ops',
+        },
+      },
+      {
+        enabled: true,
+        fromAddress: 'ops@example.com',
+        provider: 'smtp',
+        smtp: {
+          host: 'attacker.example',
+          pass: { action: 'replace', value: 'new-pass' },
+          port: 587,
+          secure: false,
+          user: 'ops',
+        },
+      },
+    );
+    expect(next.smtp?.passCiphertext).toBe('sealed:new-pass');
+  });
+
+  it('rejects enabling Resend without a stored API key', async () => {
+    await expect(
+      applyMailUpdate(undefined, {
+        enabled: true,
+        fromAddress: 'ops@example.com',
+        provider: 'resend',
+        resend: { apiKey: { action: 'keep' } },
+      }),
+    ).rejects.toMatchObject({ field: 'resend.apiKey' });
+  });
+
+  it('rejects keep when enabling Resend after a stored SMTP destination', async () => {
+    await expect(
+      applyMailUpdate(
+        {
+          enabled: true,
+          fromAddress: 'ops@example.com',
+          provider: 'smtp',
+          resend: { apiKeyCiphertext: 'sealed:re_old' },
+          smtp: {
+            host: 'smtp.example.com',
+            passCiphertext: 'sealed:pass',
+            port: 587,
+            secure: false,
+            user: 'ops',
+          },
+        },
+        {
+          enabled: true,
+          fromAddress: 'ops@example.com',
+          provider: 'resend',
+          resend: { apiKey: { action: 'keep' } },
+        },
+      ),
+    ).rejects.toMatchObject({
+      field: 'apiKey',
+      message: INFRA_SECRET_REUSE_MESSAGE,
+      name: 'InfraSettingsSecretReuseError',
+    });
+  });
+
+  it('clears the SMTP password on disable without blanking host and user', async () => {
+    const next = await applyMailUpdate(
+      {
+        enabled: true,
+        fromAddress: 'ops@example.com',
+        provider: 'smtp',
+        smtp: {
+          host: 'smtp.example.com',
+          passCiphertext: 'sealed:pass',
+          port: 587,
+          secure: false,
+          user: 'ops',
+        },
+      },
+      { enabled: false, smtp: { pass: { action: 'clear' } } },
+    );
+    expect(next.smtp?.passCiphertext).toBeUndefined();
+    expect(next.smtp?.host).toBe('smtp.example.com');
+    expect(next.smtp?.user).toBe('ops');
+  });
+
+  it('keeps the Resend API key on disable without a reuse check', async () => {
+    const next = await applyMailUpdate(
+      {
+        enabled: true,
+        fromAddress: 'ops@example.com',
+        provider: 'resend',
+        resend: { apiKeyCiphertext: 'sealed:re_old' },
+      },
+      { enabled: false, resend: { apiKey: { action: 'keep' } } },
+    );
+    expect(next.resend?.apiKeyCiphertext).toBe('sealed:re_old');
   });
 });
 
