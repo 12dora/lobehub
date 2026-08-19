@@ -6,7 +6,8 @@ import { createBodyStream } from './bodyStream';
 import {
   COOKIE_JAR_HEADER,
   ensureCookieJarFile,
-  getCookieJarPath,
+  isContextCookieJarKey,
+  resolveCookieJarPath,
   seedCookieJar,
   stripCookieJarHeader,
 } from './cookieJar';
@@ -54,9 +55,10 @@ export interface CurlImpersonateFetchOptions {
   caBundle?: string;
   /**
    * Factory-level Netscape jar (`cookie` / `cookie-jar`). Per-request
-   * `X-AIHub-Cookie-Jar` (the connection deviceId) overrides this: the
-   * transport maps it to `$TMPDIR/aihub-chatgptweb-jars/<sha256(deviceId)>.txt`,
-   * seeds `oai-did`, and strips the header before spawn. Never forwarded.
+   * `X-AIHub-Cookie-Jar` overrides this. A context digest maps to the
+   * Browser Session Context jar; a legacy device id still maps to
+   * `$TMPDIR/aihub-chatgptweb-jars/<sha256(deviceId)>.txt` and seeds `oai-did`.
+   * The header is stripped before spawn and never forwarded.
    */
   cookieJarPath?: string;
   /** `--max-time` budget for a whole request/response. */
@@ -88,14 +90,20 @@ export const createCurlImpersonateFetch = (
     if (request.signal?.aborted) throw createAbortError();
 
     // `X-AIHub-Cookie-Jar` is a private hop-by-hop header: map it to a jar and
-    // drop it so curl never sends it upstream.
+    // drop it so curl never sends it upstream. A context-scoped key is a digest
+    // (or path) and must NOT be written as `oai-did` — that cookie is the
+    // ChatGPT device id, seeded when the context is acquired.
     const stripped = stripCookieJarHeader(request.headers);
     let cookieJarPath = options.cookieJarPath;
     if (stripped.cookieJarKey) {
-      cookieJarPath = getCookieJarPath(stripped.cookieJarKey);
-      seedCookieJar(cookieJarPath, [
-        { domain: '.chatgpt.com', name: 'oai-did', value: stripped.cookieJarKey },
-      ]);
+      cookieJarPath = resolveCookieJarPath(stripped.cookieJarKey);
+      if (!isContextCookieJarKey(stripped.cookieJarKey)) {
+        seedCookieJar(cookieJarPath, [
+          { domain: '.chatgpt.com', name: 'oai-did', value: stripped.cookieJarKey },
+        ]);
+      } else {
+        ensureCookieJarFile(cookieJarPath);
+      }
     } else if (cookieJarPath) {
       ensureCookieJarFile(cookieJarPath);
     }

@@ -64,6 +64,49 @@ identity + origin + browser-profile revision`), not off a bare device id. Treat 
 acceptance criterion for G7, not an optional cleanup — do not consider G7 done while
 `cookieJar.ts`/`sentinelBundlePool.ts` are still device-id-only.
 
+### G3/G5/G7 landed — account-scoped context wiring (6 review rounds)
+
+The Browser Session Context is now actually wired into the runtime
+(`apps/server/src/enterprise/services/chatgptWeb/browserSession.ts`,
+`packages/model-runtime/src/providers/chatgptWeb/sessionContext.ts`), closing the device-id-only
+gap above: the jar, Sentinel pool, page session id, and bootstrap cache are all keyed by
+`accountId` (the specific stored connection's own identity — provider revision, or
+`user:workspace:provider` for BYOK — never the device id). Six independent codex review rounds
+were needed to get this right; each found and closed a real, progressively narrower gap:
+ownership-key threading at several construction call sites, a staged-verification design so
+credential checks never touch the live context, cookie-family filtering during staging, commit-time
+clearing of a stale prior-account session cookie, malformed-response rejection, and finally
+reordering commit to happen only after durable vault persistence succeeds (never before).
+
+**Known, deliberately accepted residual limitations — read before scaling this deployment:**
+
+- **The context registry is process-local (in-memory), by original C1 design.** This was always
+  the documented scope for this phase (C1's basic direction explicitly says "leave room for a
+  distributed owner/lease implementation" as future work, not build one now). The 6th review round
+  confirmed the consequence: **if this server ever runs as more than one OS process — multiple
+  replicas, PM2/cluster mode, multiple Node workers — a same-device account switch persisted by one
+  worker is invisible to the others**, which keep serving the old account's session cookie from
+  their own warm in-memory context even after the new account's credential is durably stored. AIHub's
+  current deployment (`ENTRYPOINT ["/bin/node"]` / `CMD ["/app/startServer.js"]`, one `app` service,
+  no `deploy.replicas`) is single-process, so this is not an active risk today. **This is a hard
+  blocking prerequisite for C3/C4 (or any horizontal-scaling change) — do not scale this server to
+  multiple processes/replicas until the registry has a real distributed invalidation mechanism.**
+- **The user-connect path (`oauthDeviceFlow.ts`) has no CAS/lock around its vault write**, unlike
+  the admin path (which has `expectedRevision`/draft-token CAS on `applyProviderImmediate`). Two
+  fully concurrent reconnects of the same stored connection could still commit/persist in
+  interleaved order. This is far narrower than the original bug (requires overlapping reconnects of
+  the same connection, not just "two accounts share a device"), and no existing cheap
+  serialization primitive was found to reuse — building one from scratch was judged out of scope
+  for this fix. Revisit if concurrent reconnects of the same user connection turn out to be a real
+  operational occurrence.
+- **`ChatGPTWebOAuthSessionOps.exchangeCallback`** (the original authorization-code-paste flow)
+  still rotates the page session immediately after a successful token exchange, before the caller
+  persists to the vault — the same class of bug fixed everywhere else in this round, just not here.
+  This is currently **unreachable for `chatgptweb`** (the provider is `webSessionOnly`; both routers
+  reject callback-based connections for it) — left as documented debt rather than risking a rushed
+  fix to dead code. If any other authorization-code-paste provider ever reuses this same service
+  class, this must be fixed first.
+
 ## Scope boundary
 
 ### Common browser-simulation infrastructure

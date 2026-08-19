@@ -69,13 +69,15 @@ export const webSessionHeaders = (
   deviceId?: string,
   browserProfile: BrowserDeviceProfile = DEFAULT_BROWSER_DEVICE_PROFILE,
   sessionChunks?: readonly string[],
+  sessionId?: string,
+  jarKey?: string,
 ): Record<string, string> => {
   assertSessionTokenShape(sessionToken);
   const safeDeviceId = deviceId && DEVICE_ID_CHARSET.test(deviceId) ? deviceId : undefined;
   const cookieChunks = resolveSessionCookieChunks(
     sessionToken,
     sessionChunks,
-    deviceId ? readMatchingSessionChunksFromJar(deviceId, sessionToken) : undefined,
+    deviceId ? readMatchingSessionChunksFromJar(jarKey ?? deviceId, sessionToken) : undefined,
   );
 
   const headers: Record<string, string> = {
@@ -105,6 +107,7 @@ export const webSessionHeaders = (
       ]),
     ),
   };
+  if (sessionId) headers['OAI-Session-Id'] = sessionId;
   for (const name of NAVIGATION_ONLY_HEADERS) headers[name] = '';
   return headers;
 };

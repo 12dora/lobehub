@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isChatGPTWebSessionTokenSafe } from '@lobechat/utils/chatgptWebPaste';
 import debug from 'debug';
 
-import { getCookieJarPath, seedCookieJar } from './transport';
+import { isContextCookieJarKey, resolveCookieJarPath, seedCookieJar } from './transport';
 
 const log = debug('lobe-server:chatgpt-web-oauth');
 
@@ -209,10 +209,10 @@ const removeSessionCookiesFromJar = (path: string): void => {
  * two-chunk paste is not rewritten as one cookie on the next seed of the same token.
  */
 export const readMatchingSessionChunksFromJar = (
-  deviceId: string,
+  jarKey: string,
   expectedToken: string,
 ): string[] | undefined => {
-  const path = getCookieJarPath(deviceId);
+  const path = resolveCookieJarPath(jarKey);
   if (!existsSync(path)) return undefined;
 
   const byIndex = new Map<number, string>();
@@ -252,19 +252,22 @@ export const readMatchingSessionChunksFromJar = (
  * from the same stored device id the headers will send.
  */
 export const seedChatGPTWebSessionJar = (
-  deviceId: string,
+  jarKey: string,
   sessionToken?: string,
   originalChunks?: readonly string[],
+  deviceId?: string,
 ): string => {
-  const path = getCookieJarPath(deviceId);
-  const seeds: { domain: string; httpOnly?: boolean; name: string; value: string }[] = [
-    { domain: '.chatgpt.com', name: 'oai-did', value: deviceId },
-  ];
+  const path = resolveCookieJarPath(jarKey);
+  const oaiDid = deviceId ?? (isContextCookieJarKey(jarKey) ? undefined : jarKey);
+  const seeds: { domain: string; httpOnly?: boolean; name: string; value: string }[] = [];
+  if (oaiDid) {
+    seeds.push({ domain: '.chatgpt.com', name: 'oai-did', value: oaiDid });
+  }
   if (sessionToken) {
     const chunks = resolveSessionCookieChunks(
       sessionToken,
       originalChunks,
-      readMatchingSessionChunksFromJar(deviceId, sessionToken),
+      readMatchingSessionChunksFromJar(jarKey, sessionToken),
     );
     removeSessionCookiesFromJar(path);
     if (chunks.length === 1) {

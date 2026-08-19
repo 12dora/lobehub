@@ -218,10 +218,18 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
   /**
    * The bootstrap HTML is the request most likely to be Cloudflare-challenged;
    * on failure we fall back to the default SDK script, which the upstream
-   * accepts. Cached for the lifetime of the client.
+   * accepts. Cached on the Browser Session Context (survives per-call client
+   * reconstruction) and, failing that, on this instance.
    */
   private async bootstrapPowResources(signal?: AbortSignal): Promise<PowResources> {
     if (this.powResources) return this.powResources;
+    const cached = this.sessionContext?.getBootstrap();
+    if (cached?.powResources) {
+      if (cached.clientVersion) this.fingerprint.clientVersion = cached.clientVersion;
+      if (cached.clientBuildNumber) this.fingerprint.clientBuildNumber = cached.clientBuildNumber;
+      this.powResources = cached.powResources;
+      return this.powResources;
+    }
 
     let html: string | undefined;
     try {
@@ -255,7 +263,8 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
      * proof creates an impossible hybrid. Keep the pinned authenticated build
      * pair and SDK when that shell is all the bootstrap returned.
      */
-    const authenticatedHtml = html?.includes('/unauth-mweb/') ? undefined : html;
+    const unauthenticatedShell = Boolean(html?.includes('/unauth-mweb/'));
+    const authenticatedHtml = unauthenticatedShell ? undefined : html;
     if (html && !authenticatedHtml)
       log('bootstrap returned the unauthenticated mweb shell; using pinned web-client markers');
 
@@ -266,6 +275,20 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     if (buildNumber) this.fingerprint.clientBuildNumber = buildNumber;
 
     this.powResources = resolvePowResources(authenticatedHtml);
+    // An unauthenticated `/unauth-mweb/` shell is not a valid cache entry: the
+    // next reconstructed client (after a session cookie is seeded) must retry
+    // authenticated bootstrap instead of trusting pinned fallbacks forever.
+    if (!unauthenticatedShell) {
+      this.sessionContext?.setBootstrap({
+        ...(this.fingerprint.clientBuildNumber
+          ? { clientBuildNumber: this.fingerprint.clientBuildNumber }
+          : {}),
+        ...(this.fingerprint.clientVersion
+          ? { clientVersion: this.fingerprint.clientVersion }
+          : {}),
+        powResources: this.powResources,
+      });
+    }
     return this.powResources;
   }
 
@@ -1069,6 +1092,8 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
 
 export { abortableSleep, assertAllowedAssetUrl, MAX_DOWNLOAD_BYTES, readBoundedBody };
 export { isAllowedAssetUrl } from './assetUrls';
+export type { ChatGPTWebBootstrapState, ChatGPTWebSessionContext } from './sessionContext';
+export { createMemoryChatGPTWebSessionContext } from './sessionContext';
 
 // The protocol core's public surface. `index.ts` is intentionally left to the
 // runtime layer (`LobeChatGPTWebAI`), so consumers import from here.

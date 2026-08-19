@@ -17,6 +17,7 @@ import {
   isChatGPTWebError,
 } from './errors';
 import { buildRequestHeaders, type SessionFingerprint } from './headers';
+import type { ChatGPTWebSessionContext } from './sessionContext';
 import { COOKIE_JAR_HEADER, deriveSessionId } from './sessionId';
 
 const log = createDebug('lobe-chatgptweb:http');
@@ -42,6 +43,11 @@ export interface ChatGPTWebClientOptions {
   /** Stable `OAI-Device-Id`; generated when absent (persist it per account). */
   deviceId?: string;
   fetch?: typeof fetch;
+  /**
+   * Browser Session Context handle. When present, page session id, cookie jar,
+   * and bootstrap cache are owned by the context rather than this instance.
+   */
+  sessionContext?: ChatGPTWebSessionContext;
   sessionId?: string;
 }
 
@@ -179,8 +185,13 @@ export abstract class ChatGPTWebHttp {
    * Vault-supplied device id, when present. Legacy connections that never stored
    * `oauthDeviceId` mint a random `deviceId` for the `OAI-Device-Id` header but
    * do not attach a cookie jar (today's behaviour).
+   *
+   * When a Browser Session Context is bound, this is the context's jar key
+   * (account-scoped), not the raw device id.
    */
   private readonly cookieJarKey?: string;
+  /** Process-local Browser Session Context; undefined in tests that construct a bare client. */
+  protected readonly sessionContext?: ChatGPTWebSessionContext;
 
   readonly accountId?: string;
   readonly browserProfile: RuntimeBrowserDeviceProfile;
@@ -192,6 +203,7 @@ export abstract class ChatGPTWebHttp {
     if (!options.accessToken) throw new ChatGPTWebError('auth', 'missing ChatGPT Web access token');
 
     this.accountId = options.accountId;
+    this.sessionContext = options.sessionContext;
     // Shape-only: a persisted profile that predates a pool edit keeps working (the
     // installation must not silently change device because a Chrome build was retired).
     this.browserProfile = validateBrowserDeviceProfileShape(
@@ -203,17 +215,28 @@ export abstract class ChatGPTWebHttp {
      * different, so replaying them is the UA/cookie mismatch that provokes a Cloudflare
      * challenge — go jarless instead (and leave the jar intact for when the database
      * comes back).
+     *
+     * Legacy vaults with no stored `oauthDeviceId` still get no jar (G1). A bound
+     * context supplies an account-scoped jar key instead of the raw device id.
      */
     this.cookieJarKey = isFallbackBrowserProfile(this.browserProfile)
       ? undefined
-      : options.deviceId;
+      : options.deviceId
+        ? (this.sessionContext?.cookieJarKey ?? options.deviceId)
+        : undefined;
     this.deviceId = options.deviceId || randomUuid();
-    this.sessionId = options.sessionId || deriveSessionId(this.deviceId, this.browserProfile);
+    this.sessionId =
+      this.sessionContext?.logicalPageId ||
+      options.sessionId ||
+      deriveSessionId(this.deviceId, this.browserProfile);
     this.timezone = this.browserProfile.timezone.iana;
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
+    const bootstrap = this.sessionContext?.getBootstrap();
     this.fingerprint = {
       accessToken: options.accessToken,
       browserProfile: this.browserProfile,
+      ...(bootstrap?.clientBuildNumber ? { clientBuildNumber: bootstrap.clientBuildNumber } : {}),
+      ...(bootstrap?.clientVersion ? { clientVersion: bootstrap.clientVersion } : {}),
       deviceId: this.deviceId,
       sessionId: this.sessionId,
     };

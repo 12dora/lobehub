@@ -12,4 +12,7 @@ export {
   buildChatGptWebXhrHeaders,
   buildSessionHeaders,
 } from './headers';
+export { getSharedSentinelBundlePool } from './sentinelBundlePool';
+export type { ChatGPTWebBootstrapState, ChatGPTWebSessionContext } from './sessionContext';
+export { createMemoryChatGPTWebSessionContext } from './sessionContext';
 export { COOKIE_JAR_HEADER, deriveSessionId } from './sessionId';

@@ -587,6 +587,12 @@ export type RuntimeResolveOptions = {
    */
   managedExecution?: PlatformAiExecutionConfig;
   userId?: string;
+  /**
+   * Workspace that owns this extraction. Threaded into ChatGPT Web's Browser
+   * Session account key so two workspace-scoped connections of the same user
+   * never share a jar / Sentinel slot.
+   */
+  workspaceId?: string;
 };
 
 /**
@@ -630,6 +636,7 @@ const initUnmanagedMemoryRuntime = async (
     {
       browserProfile: await options.resolveBrowserProfile(runtimeProvider),
       userId: options.userId,
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
     },
   );
 };
@@ -658,7 +665,12 @@ export const resolveRuntimeAgentConfig = async (
     return initModelRuntimeWithUserPayload(
       execution.providerKey,
       payload,
-      { browserProfile: options.browserProfile, userId: options.userId },
+      {
+        browserProfile: options.browserProfile,
+        managedBy: 'platform',
+        userId: options.userId,
+        ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      },
       mergeModelRuntimeHooks(createPlatformAiModelAllowlistHooks(execution.allowedModels), hooks),
     );
   }
@@ -1738,7 +1750,12 @@ export class MemoryExtractionExecutor {
           );
           const language = userState.settings?.general?.responseLanguage;
 
-          const runtimes = await this.getRuntime(job.userId, memoryServiceConfig, keyVaults);
+          const runtimes = await this.getRuntime(
+            job.userId,
+            memoryServiceConfig,
+            keyVaults,
+            job.workspaceId,
+          );
 
           const conversations = await this.listConversationsForTopic(
             job.userId,
@@ -2684,6 +2701,7 @@ export class MemoryExtractionExecutor {
     userId: string,
     memoryServiceConfig: ResolvedMemoryServiceConfig,
     keyVaults?: ProviderKeyVaultMap,
+    workspaceId?: string,
   ): Promise<RuntimeBundle> {
     // TODO: implement a better cache eviction strategy
     // TODO: make cache size configurable
@@ -2693,6 +2711,7 @@ export class MemoryExtractionExecutor {
 
     const cacheKey = [
       userId,
+      workspaceId ?? '',
       memoryServiceConfig.agents.embedding.provider,
       memoryServiceConfig.agents.gatekeeper.provider,
       memoryServiceConfig.agents.layerExtractor.provider,
@@ -2751,6 +2770,7 @@ export class MemoryExtractionExecutor {
       managedExecution: embeddingExecution,
       resolveBrowserProfile,
       userId,
+      ...(workspaceId ? { workspaceId } : {}),
     };
 
     const gatekeeperOptions: RuntimeResolveOptions = {
@@ -2767,6 +2787,7 @@ export class MemoryExtractionExecutor {
       managedExecution: gatekeeperExecution,
       resolveBrowserProfile,
       userId,
+      ...(workspaceId ? { workspaceId } : {}),
     };
 
     const layerExtractorOptions: RuntimeResolveOptions = {
@@ -2783,6 +2804,7 @@ export class MemoryExtractionExecutor {
       managedExecution: layerExtractorExecution,
       resolveBrowserProfile,
       userId,
+      ...(workspaceId ? { workspaceId } : {}),
     };
 
     const hooks = getBusinessModelRuntimeHooks(userId, 'lobehub');

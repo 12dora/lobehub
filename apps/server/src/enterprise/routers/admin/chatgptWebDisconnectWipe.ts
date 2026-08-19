@@ -6,7 +6,10 @@ import type { PlatformAiCatalogRepository } from '@/database/repositories/platfo
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
-import { wipeChatGPTWebCookieJar } from '../../services/chatgptWeb/oauthService';
+import {
+  buildChatGPTWebBrowserSessionAccountId,
+  wipeChatGPTWebCookieJar,
+} from '../../services/chatgptWeb/oauthService';
 import { asVaultString } from './aiProviderOAuthSupport';
 
 /**
@@ -83,10 +86,13 @@ export const captureChatGPTWebDeviceId = async ({
   return chatgptWebDeviceId;
 };
 
-export const wipeChatGPTWebJarBestEffort = (deviceId: string | undefined): void => {
-  if (!deviceId) return;
+export const wipeChatGPTWebJarBestEffort = (
+  deviceId: string | undefined,
+  accountId?: string,
+): void => {
+  if (!deviceId && !accountId) return;
   try {
-    wipeChatGPTWebCookieJar(deviceId);
+    wipeChatGPTWebCookieJar(deviceId, accountId);
   } catch {
     // Best-effort: never fail the disconnect on a jar unlink.
   }
@@ -120,7 +126,10 @@ export const recoverDisconnectAfterApplyFailure = async ({
   if (outcome === 'live') {
     clearChatGPTWebPendingWipe(draftId);
   } else {
-    wipeChatGPTWebJarBestEffort(capturedDeviceId ?? readChatGPTWebPendingWipe(draftId));
+    wipeChatGPTWebJarBestEffort(
+      capturedDeviceId ?? readChatGPTWebPendingWipe(draftId),
+      buildChatGPTWebBrowserSessionAccountId({ kind: 'platform', providerId: draftId }),
+    );
   }
 
   if (typeof outcome === 'object') {

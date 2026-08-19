@@ -152,6 +152,17 @@ export const createBrowserSessionRegistry = (
 
   const get = (contextId: string): BrowserSessionContext | undefined => byContextId.get(contextId);
 
+  const getForIdentity = (
+    input: Pick<BrowserSessionAcquireInput, 'accountId' | 'origin' | 'provider'>,
+  ): BrowserSessionContext | undefined => {
+    const lookupKey = buildBrowserSessionLookupKey(normalizeBrowserSessionIdentity(input));
+    const contextId = byLookupKey.get(lookupKey);
+    if (!contextId) return undefined;
+    const context = byContextId.get(contextId);
+    if (!context || context.lifecycle !== 'active') return undefined;
+    return context;
+  };
+
   const invalidate = (contextId: string): boolean => {
     const context = byContextId.get(contextId);
     if (!context) return false;
@@ -190,6 +201,7 @@ export const createBrowserSessionRegistry = (
     acquire,
     dispose,
     get,
+    getForIdentity,
     invalidate,
     invalidateForIdentity,
     release,

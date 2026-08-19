@@ -377,6 +377,11 @@ export const refreshSharedOAuthVault = async (
         : undefined;
     refreshed = await ensureFreshOAuthTokenWithStore({
       browserProfile,
+      ...(params.providerKey === 'chatgptweb'
+        ? {
+            browserSessionAccountId: `platform:${params.providerKey}`,
+          }
+        : {}),
       config,
       flightKey: `platform:${params.providerKey}`,
       force: params.force,

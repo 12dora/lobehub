@@ -172,7 +172,7 @@ const defaultRuntimeFactory =
     return initModelRuntimeWithUserPayload(
       provider,
       secretPayload,
-      { browserProfile, userId: JUDGE_USER_ID },
+      { browserProfile, managedBy: 'platform', userId: JUDGE_USER_ID },
       hooks,
     ) as unknown as LlmJudgeRuntime;
   };

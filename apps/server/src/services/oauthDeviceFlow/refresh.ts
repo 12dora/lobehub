@@ -5,6 +5,7 @@ import debug from 'debug';
 
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
+import { buildChatGPTWebBrowserSessionAccountId } from '@/server/enterprise/services/chatgptWeb/browserSession';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { type OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
@@ -118,6 +119,8 @@ interface EnsureFreshOAuthTokenParams {
 export interface EnsureFreshOAuthTokenWithStoreParams {
   /** Shared installation profile for browser-impersonating OAuth providers. */
   browserProfile?: BrowserDeviceProfile;
+  /** ChatGPT Web Browser Session Context account handle. Not a device id. */
+  browserSessionAccountId?: string;
   config: OAuthDeviceFlowConfig;
   /** In-process single-flight key; concurrent callers with the same key share one refresh. */
   flightKey: string;
@@ -497,7 +500,14 @@ const refreshAndPersist = async (
    */
   const service = getOAuthService(
     providerId,
-    params.browserProfile ? { browserProfile: params.browserProfile } : undefined,
+    params.browserProfile || params.browserSessionAccountId
+      ? {
+          ...(params.browserProfile ? { browserProfile: params.browserProfile } : {}),
+          ...(params.browserSessionAccountId
+            ? { browserSessionAccountId: params.browserSessionAccountId }
+            : {}),
+        }
+      : undefined,
   );
   const usedRefreshToken = keyVaults.oauthRefreshToken!;
   const invalidGrant = params.onInvalidGrant ?? throwInvalidGrant;
@@ -677,6 +687,16 @@ export const ensureFreshOAuthToken = async (
 
   return ensureFreshOAuthTokenWithStore({
     browserProfile,
+    ...(providerId === 'chatgptweb'
+      ? {
+          browserSessionAccountId: buildChatGPTWebBrowserSessionAccountId({
+            kind: 'user',
+            providerId,
+            userId,
+            ...(workspaceId ? { workspaceId } : {}),
+          }),
+        }
+      : {}),
     config,
     flightKey: `${userId}:${workspaceId ?? ''}:${providerId}`,
     keyVaults,

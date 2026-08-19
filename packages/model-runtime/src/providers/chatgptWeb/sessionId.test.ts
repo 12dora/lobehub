@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_BROWSER_DEVICE_PROFILE, generateBrowserDeviceProfile } from '../../browserProfile';
 import { ChatGPTWebClient } from './client';
+import { createMemoryChatGPTWebSessionContext } from './sessionContext';
 import { COOKIE_JAR_HEADER, deriveSessionId } from './sessionId';
 
 const UUID_RE = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/;
@@ -125,5 +126,102 @@ describe('ChatGPTWebHttp session identity', () => {
     await client.getMe();
 
     expect(seen).toEqual([null]);
+  });
+});
+
+describe('ChatGPTWebHttp Browser Session Context', () => {
+  it('uses the context page id and jar key instead of a device-derived hash', async () => {
+    const deviceId = 'device-stable';
+    const sessionContext = createMemoryChatGPTWebSessionContext({
+      contextId: 'ctx-account-a',
+      cookieJarKey: 'jar-digest-account-a',
+      logicalPageId: '11111111-1111-4111-8111-111111111111',
+    });
+    const fetchImpl = async (_url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get('OAI-Session-Id')).toBe(sessionContext.logicalPageId);
+      expect(headers.get('OAI-Device-Id')).toBe(deviceId);
+      expect(headers.get(COOKIE_JAR_HEADER)).toBe('jar-digest-account-a');
+      expect(headers.get(COOKIE_JAR_HEADER)).not.toBe(deviceId);
+      return new Response('{}', { headers: { 'content-type': 'application/json' }, status: 200 });
+    };
+
+    const client = new ChatGPTWebClient({
+      accessToken: 'token',
+      browserProfile,
+      deviceId,
+      fetch: fetchImpl as typeof fetch,
+      sessionContext,
+    });
+
+    expect(client.sessionId).toBe(sessionContext.logicalPageId);
+    await client.getMe();
+  });
+
+  it('isolates jar keys for two accounts that share a device id', async () => {
+    const deviceId = 'device-stable';
+    const seen: Array<string | null> = [];
+    const fetchImpl = async (_url: string, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get(COOKIE_JAR_HEADER));
+      return new Response('{}', { headers: { 'content-type': 'application/json' }, status: 200 });
+    };
+
+    await new ChatGPTWebClient({
+      accessToken: 'token',
+      browserProfile,
+      deviceId,
+      fetch: fetchImpl as typeof fetch,
+      sessionContext: createMemoryChatGPTWebSessionContext({
+        contextId: 'ctx-a',
+        cookieJarKey: 'jar-a',
+        logicalPageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      }),
+    }).getMe();
+    await new ChatGPTWebClient({
+      accessToken: 'token',
+      browserProfile,
+      deviceId,
+      fetch: fetchImpl as typeof fetch,
+      sessionContext: createMemoryChatGPTWebSessionContext({
+        contextId: 'ctx-b',
+        cookieJarKey: 'jar-b',
+        logicalPageId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      }),
+    }).getMe();
+
+    expect(seen).toEqual(['jar-a', 'jar-b']);
+  });
+
+  it('does not attach the context jar header to off-origin asset requests', async () => {
+    const seen: Array<{ jar: string | null; oaiSession: string | null; url: string }> = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seen.push({
+        jar: headers.get(COOKIE_JAR_HEADER),
+        oaiSession: headers.get('OAI-Session-Id'),
+        url: String(url),
+      });
+      return new Response(new Uint8Array([1]), {
+        headers: { 'content-type': 'image/png' },
+        status: 200,
+      });
+    };
+
+    const client = new ChatGPTWebClient({
+      accessToken: 'token',
+      browserProfile,
+      deviceId: 'device-stable',
+      fetch: fetchImpl as typeof fetch,
+      sessionContext: createMemoryChatGPTWebSessionContext({
+        cookieJarKey: 'jar-digest-account-a',
+        logicalPageId: '11111111-1111-4111-8111-111111111111',
+      }),
+    });
+
+    await client.downloadBytes('https://oaiusercontent.blob.core.windows.net/signed');
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.jar).toBeNull();
+    expect(seen[0]?.oaiSession).toBeNull();
   });
 });

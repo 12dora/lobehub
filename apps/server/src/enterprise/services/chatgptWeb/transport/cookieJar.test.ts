@@ -9,7 +9,10 @@ import {
   COOKIE_JAR_HEADER,
   deleteCookieJar,
   getCookieJarPath,
+  isContextCookieJarKey,
+  registerContextCookieJar,
   resetCookieJars,
+  resolveCookieJarPath,
   seedCookieJar,
   stripCookieJarHeader,
 } from './cookieJar';
@@ -93,6 +96,19 @@ describe('deleteCookieJar / resetCookieJars', () => {
     expect(existsSync(path)).toBe(true);
     resetCookieJars();
     expect(existsSync(path)).toBe(false);
+  });
+});
+
+describe('context cookie jar registry', () => {
+  it('resolves a registered digest to the context path and not a device-id jar', () => {
+    const path = getCookieJarPath('context-owned');
+    seedCookieJar(path, [{ domain: '.chatgpt.com', name: 'oai-did', value: 'real-device' }]);
+    registerContextCookieJar('digest-account-a', path);
+
+    expect(resolveCookieJarPath('digest-account-a')).toBe(path);
+    expect(isContextCookieJarKey('digest-account-a')).toBe(true);
+    expect(isContextCookieJarKey('device-1')).toBe(false);
+    expect(resolveCookieJarPath('device-1')).not.toBe(path);
   });
 });
 

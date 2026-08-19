@@ -5,6 +5,7 @@ import debug from 'debug';
 import type { OAuthRefreshOptions, TokenResponse } from '@/server/services/oauthDeviceFlow';
 import { OAuthInvalidGrantError, parseJwtExpiry } from '@/server/services/oauthDeviceFlow';
 
+import type { StagedChatGPTWebBrowserSession } from './browserSession';
 import { ChatGPTWebOAuthError } from './oauthErrors';
 import type { ChatGPTWebConnection } from './oauthService.identity';
 import { assertWebCapableAccessToken, ChatGPTWebOAuthIdentityOps } from './oauthService.identity';
@@ -112,9 +113,16 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
   private async mintFromWebSession(params: {
     /** Total attempts, backoff included. See {@link SESSION_CONNECT_ATTEMPTS}. */
     attempts: number;
+    /**
+     * Staged (or live) jar key. Connect/verify pass a staged key so the live
+     * jar is not overwritten until the candidate is proven. Refresh omits this
+     * and uses the live context.
+     */
+    cookieJarKey?: string;
     deviceId?: string;
     onInvalidSession: () => never;
     sessionChunks?: readonly string[];
+    sessionId?: string;
     sessionToken: string;
     /** Whole-operation budget: every attempt AND every backoff lives inside it. */
     signal: AbortSignal;
@@ -171,26 +179,37 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
 
   /** ONE call to `/api/auth/session`, with the outcome classified for {@link mintFromWebSession}. */
   private async mintFromWebSessionOnce(params: {
+    cookieJarKey?: string;
     deviceId?: string;
     onInvalidSession: () => never;
     sessionChunks?: readonly string[];
+    sessionId?: string;
     sessionToken: string;
     signal: AbortSignal;
   }): Promise<WebSessionMint> {
     // Built OUTSIDE the try: a malformed credential is a terminal input problem, and the
     // catch below would otherwise reclassify it as a retryable network failure.
-    const cookieJarKey = this.cookieJarKeyFor(params.deviceId);
+    const cookieJarKey = params.cookieJarKey ?? this.cookieJarKeyFor(params.deviceId);
+    const sessionId =
+      params.sessionId ?? (params.deviceId ? this.pageSessionId(params.deviceId) : undefined);
     const headers = withCookieJarHeader(
       webSessionHeaders(
         params.sessionToken,
         params.deviceId,
         this.browserProfile,
         params.sessionChunks,
+        sessionId,
+        cookieJarKey,
       ),
       cookieJarKey,
     );
     if (cookieJarKey) {
-      seedChatGPTWebSessionJar(cookieJarKey, params.sessionToken, params.sessionChunks);
+      seedChatGPTWebSessionJar(
+        cookieJarKey,
+        params.sessionToken,
+        params.sessionChunks,
+        params.deviceId,
+      );
     }
 
     let response: Response;
@@ -281,7 +300,11 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
     // Vault wins: the jar is a cache. Re-seed so a curl-written session cookie
     // cannot disagree with the value we are about to persist. Chunk layout is
     // transport state derived from that token (paste chunks, else size-split).
-    if (params.deviceId) seedChatGPTWebSessionJar(params.deviceId, sessionToken, sessionChunks);
+    if (cookieJarKey) {
+      seedChatGPTWebSessionJar(cookieJarKey, sessionToken, sessionChunks, params.deviceId);
+    } else if (params.deviceId) {
+      seedChatGPTWebSessionJar(params.deviceId, sessionToken, sessionChunks);
+    }
 
     return {
       accessToken,
@@ -315,10 +338,11 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
         : undefined;
 
     const resolvedDeviceId = deviceId ?? randomUUID();
-    // Do not wipe the live jar here. A failed reconnect must leave the previous
-    // connection's CF / session cookies intact; `seedChatGPTWebSessionJar` already
-    // replaces the session-token family on the first mint attempt. A device-id
-    // change is wiped by the caller after the new credential is committed.
+    // Prove the candidate against a staged jar. `seedChatGPTWebSessionJar` still
+    // replaces the session-token family — but on the staged context, so a failed
+    // reconnect cannot corrupt the live connection, and a candidate for a
+    // different ChatGPT account cannot ride the live cookie family mid-mint.
+    let staged: StagedChatGPTWebBrowserSession | undefined;
     /**
      * ONE deadline for the WHOLE connect, not just the mint.
      *
@@ -328,37 +352,60 @@ export abstract class ChatGPTWebOAuthSessionOps extends ChatGPTWebOAuthIdentityO
      * intersects this signal with its own per-request cap, so the total can never exceed it.
      */
     const budget = AbortSignal.timeout(CONNECT_SESSION_TIMEOUT_MS);
-    const minted = await this.mintFromWebSession({
-      // An operator is watching this one, and a Cloudflare challenge is far more likely
-      // than not — so it gets the widest retry budget of the two paths.
-      attempts: SESSION_CONNECT_ATTEMPTS,
-      deviceId: resolvedDeviceId,
-      onInvalidSession: () => {
-        throw new ChatGPTWebOAuthError('session_invalid');
-      },
-      ...(sessionChunks ? { sessionChunks } : {}),
-      sessionToken: token,
-      signal: budget,
-    });
+    // Promotion is the router's job AFTER the vault write succeeds. Committing
+    // here would leave the live jar holding the new session if persist then
+    // failed, mixing the old vault credential with the new cookie family.
+    this.discardVerifiedChatGPTWebSession();
+    try {
+      staged = this.stageVerificationSession(resolvedDeviceId);
+      const minted = await this.mintFromWebSession({
+        // An operator is watching this one, and a Cloudflare challenge is far more likely
+        // than not — so it gets the widest retry budget of the two paths.
+        attempts: SESSION_CONNECT_ATTEMPTS,
+        ...(staged
+          ? {
+              cookieJarKey: staged.context.cookieJarKey,
+              sessionId: staged.context.logicalPageId,
+            }
+          : {}),
+        deviceId: resolvedDeviceId,
+        onInvalidSession: () => {
+          throw new ChatGPTWebOAuthError('session_invalid');
+        },
+        ...(sessionChunks ? { sessionChunks } : {}),
+        sessionToken: token,
+        signal: budget,
+      });
 
-    // A session belonging to a client without web permission would connect and then fail
-    // every chat; say so here instead.
-    assertWebCapableAccessToken(minted.accessToken);
+      // A session belonging to a client without web permission would connect and then fail
+      // every chat; say so here instead.
+      assertWebCapableAccessToken(minted.accessToken);
 
-    const connection = await this.buildConnection({
-      accessToken: minted.accessToken,
-      deviceId: resolvedDeviceId,
-      fallbackEmail: minted.email,
-      refreshToken: minted.sessionToken,
-      // Whatever the mint left of the connect budget is all the identity probes may spend.
-      signal: budget,
-    });
+      const connection = await this.buildConnection({
+        accessToken: minted.accessToken,
+        deviceId: resolvedDeviceId,
+        fallbackEmail: minted.email,
+        refreshToken: minted.sessionToken,
+        // Whatever the mint left of the connect budget is all the identity probes may spend.
+        signal: budget,
+        ...(staged
+          ? {
+              cookieJarKey: staged.context.cookieJarKey,
+              sessionId: staged.context.logicalPageId,
+            }
+          : {}),
+      });
+      this.rememberPendingVerificationSession(resolvedDeviceId, staged);
 
-    return {
-      ...connection,
-      renewalKind: 'web_session',
-      ...(minted.sessionExpiresAt ? { sessionExpiresAt: minted.sessionExpiresAt } : {}),
-    };
+      return {
+        ...connection,
+        renewalKind: 'web_session',
+        ...(minted.sessionExpiresAt ? { sessionExpiresAt: minted.sessionExpiresAt } : {}),
+      };
+    } catch (error) {
+      this.discardVerificationSession(staged);
+      throw error;
+    }
   }
 
   protected async refreshFromWebSession(

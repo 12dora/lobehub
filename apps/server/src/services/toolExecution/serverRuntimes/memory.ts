@@ -227,6 +227,7 @@ class MemoryServerRuntimeService implements MemoryRuntimeService {
                 this.memoryEmbeddingRuntime.provider,
             ),
             userId: this.userId,
+            ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
           },
         )
       : await initModelRuntimeFromDB(

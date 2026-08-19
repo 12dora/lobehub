@@ -37,6 +37,10 @@ import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
 import { PlatformBrowserProfileService } from '@/server/enterprise/services/browserProfile';
+import {
+  bindChatGPTWebBrowserSession,
+  buildChatGPTWebBrowserSessionAccountId,
+} from '@/server/enterprise/services/chatgptWeb/browserSession';
 import { isBootModuleEnabled } from '@/server/enterprise/services/moduleSettings';
 import { bindNetworkProxyEgressIfEnabled } from '@/server/enterprise/services/networkProxy/engine/bindEgress';
 import {
@@ -709,13 +713,73 @@ export type ModelRuntimeInitParams = {
   /** Real start time of `conversationKey` (the topic's `createdAt`); "now" when omitted. */
   firstSeenMs?: number;
   installationId?: string;
+  /**
+   * Who owns this stored ChatGPT Web connection. Platform-managed credentials
+   * are shared across users; omit (or `'user'`) for BYOK.
+   */
+  managedBy?: 'platform' | 'user';
+  /**
+   * Historical platform catalog revision. Only the exact-revision runtime path
+   * sets this, so two published ChatGPT accounts under the same provider id
+   * cannot share a jar / Sentinel slot. Current (latest) platform execution
+   * omits it and stays on `platform:<providerId>`, matching the OAuth connect
+   * handle.
+   */
+  platformRevision?: number;
   requestHandler?: unknown;
   /** Overrides the payload-derived turn index (tests / replay). */
   turnIndex?: number;
   userAgentPlatform?: string;
   userId?: string;
+  workspaceId?: string;
   // Allow provider-specific construction fields without losing transport options.
   [key: string]: unknown;
+};
+
+const bindChatGPTWebRuntimeSession = ({
+  browserProfile,
+  chatgptDeviceId,
+  managedBy,
+  platformRevision,
+  provider,
+  userId,
+  workspaceId,
+}: {
+  browserProfile: BrowserDeviceProfile;
+  chatgptDeviceId?: string;
+  managedBy?: 'platform' | 'user';
+  platformRevision?: number;
+  provider: string;
+  userId?: string;
+  workspaceId?: string;
+}) => {
+  const accountId = buildChatGPTWebBrowserSessionAccountId(
+    managedBy === 'platform'
+      ? {
+          kind: 'platform',
+          providerId: provider,
+          ...(platformRevision == null ? {} : { revision: platformRevision }),
+        }
+      : {
+          kind: 'user',
+          providerId: provider,
+          userId: userId || 'anonymous',
+          ...(workspaceId ? { workspaceId } : {}),
+        },
+  );
+  const sessionContext = bindChatGPTWebBrowserSession({
+    accountId,
+    browserProfile,
+    ...(chatgptDeviceId ? { deviceId: chatgptDeviceId } : {}),
+  });
+  // Even on the degraded fallback profile (no jar), the Sentinel pool still
+  // needs an account-scoped key so two stored connections cannot share proofs.
+  if (!sessionContext) return { browserSessionAccountId: accountId };
+  return {
+    browserSessionAccountId: accountId,
+    browserSessionContextKey: sessionContext.contextId,
+    sessionContext,
+  };
 };
 
 export const initModelRuntimeWithUserPayload = (
@@ -813,7 +877,22 @@ export const initModelRuntimeWithUserPayload = (
         ...getParamsFromPayload(runtimeProvider, payload),
         ...restParams,
         ...(runtimeProvider === ModelProvider.ChatGPTWeb
-          ? { browserProfile: runtimeBrowserProfile }
+          ? {
+              browserProfile: runtimeBrowserProfile,
+              ...bindChatGPTWebRuntimeSession({
+                browserProfile: resolvedBrowserProfile,
+                chatgptDeviceId:
+                  typeof payload.chatgptDeviceId === 'string' ? payload.chatgptDeviceId : undefined,
+                managedBy: params.managedBy,
+                ...(typeof params.platformRevision === 'number'
+                  ? { platformRevision: params.platformRevision }
+                  : {}),
+                provider,
+                userId: typeof restParams.userId === 'string' ? restParams.userId : undefined,
+                workspaceId:
+                  typeof restParams.workspaceId === 'string' ? restParams.workspaceId : undefined,
+              }),
+            }
           : {}),
         ...(runtimeProvider === ModelProvider.Grok
           ? {
@@ -970,6 +1049,7 @@ const initUserModelRuntimeFromDB = async (
       browserProfile,
       ...(await resolveConversationParams(runtimeProvider, options)),
       userId,
+      ...(workspaceId ? { workspaceId } : {}),
     },
     hooks,
   );
@@ -1047,8 +1127,10 @@ export const initModelRuntimeFromDB = async (
           payload,
           {
             browserProfile,
+            managedBy: 'platform',
             ...(await resolveConversationParams(runtimeProvider, options)),
             userId,
+            ...(workspaceId ? { workspaceId } : {}),
           },
           hooks,
         ),
@@ -1115,8 +1197,11 @@ export const initPlatformExactModelRuntime = async (
       payload,
       {
         browserProfile,
+        managedBy: 'platform',
+        platformRevision: ref.providerRevision,
         ...(await resolveConversationParams(providerConfig.runtimeProvider, options)),
         userId,
+        ...(workspaceId ? { workspaceId } : {}),
       },
       hooks,
     ),

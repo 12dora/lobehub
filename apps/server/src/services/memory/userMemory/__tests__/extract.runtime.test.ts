@@ -224,10 +224,39 @@ describe('resolveRuntimeAgentConfig installation identity', () => {
       userId: 'memory-user',
     });
   });
+
+  it('scopes unmanaged ChatGPT Web account keys by workspaceId', async () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const chatgptProfile = generateBrowserDeviceProfile({ seed: 'memory-chatgptweb-workspace' });
+    const resolveBrowserProfile = vi.fn().mockResolvedValue(chatgptProfile);
+
+    await resolveRuntimeAgentConfig(
+      { model: 'gpt-5', provider: 'chatgptweb' },
+      { chatgptweb: { apiKey: 'chatgpt-user-token' } },
+      { resolveBrowserProfile, userId: 'memory-user', workspaceId: 'ws-1' },
+    );
+    await resolveRuntimeAgentConfig(
+      { model: 'gpt-5', provider: 'chatgptweb' },
+      { chatgptweb: { apiKey: 'chatgpt-user-token' } },
+      { resolveBrowserProfile, userId: 'memory-user', workspaceId: 'ws-2' },
+    );
+
+    const accountIds = spy.mock.calls.map(
+      (call) => (call[1] as Record<string, unknown>).browserSessionAccountId,
+    );
+    expect(accountIds).toEqual([
+      'user:memory-user:ws-1:chatgptweb',
+      'user:memory-user:ws-2:chatgptweb',
+    ]);
+    expect(accountIds[0]).not.toBe('user:memory-user:_:chatgptweb');
+  });
 });
 
 describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
   it('blocks unpublished managed memory models before the provider SDK', async () => {
+    const initSpy = vi.spyOn(ModelRuntimeModule, 'initModelRuntimeWithUserPayload');
     const runtime = await resolveRuntimeAgentConfig(
       { model: 'allow-memory', provider: 'openai' },
       { openai: { apiKey: 'platform-memory-secret' } },
@@ -242,6 +271,12 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
         },
         userId: 'memory-user',
       },
+    );
+    expect(initSpy).toHaveBeenCalledWith(
+      'openai',
+      expect.objectContaining({ apiKey: 'platform-memory-secret' }),
+      expect.objectContaining({ managedBy: 'platform', userId: 'memory-user' }),
+      expect.anything(),
     );
     const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
     runtime['_runtime'] = { chat: providerChat } as never;
@@ -938,6 +973,52 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
       expect(initWithPayload.mock.calls.filter((call) => call[0] === 'provider-e')).toHaveLength(1);
     } finally {
       process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('threads workspaceId so two workspaces do not share a ChatGPT Web account key', async () => {
+    const chatgptProfile = generateBrowserDeviceProfile({ seed: 'memory-chatgptweb-getRuntime' });
+    vi.spyOn(ModelRuntimeModule, 'resolvePlatformBrowserProfile').mockResolvedValue(chatgptProfile);
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    const executor = createExecutor({
+      embedding: { model: 'embed-1', provider: 'chatgptweb' },
+      agentGateKeeper: { model: 'gate-2', provider: 'chatgptweb' },
+      agentLayerExtractor: {
+        contextLimit: 2048,
+        layers: {
+          activity: 'layer-act',
+          context: 'layer-ctx',
+          experience: 'layer-exp',
+          identity: 'layer-id',
+          preference: 'layer-pref',
+        },
+        model: 'layer-1',
+        provider: 'chatgptweb',
+      },
+    });
+    const memoryServiceConfig = (executor as any).resolveUserMemoryServiceConfig();
+    const keyVaults = { chatgptweb: { apiKey: 'chatgpt-user-token' } };
+
+    try {
+      await (executor as any).getRuntime('memory-user', memoryServiceConfig, keyVaults, 'ws-1');
+      await (executor as any).getRuntime('memory-user', memoryServiceConfig, keyVaults, 'ws-2');
+
+      const accountIds = [
+        ...new Set(
+          spy.mock.calls.map(
+            (call) => (call[1] as Record<string, unknown>).browserSessionAccountId,
+          ),
+        ),
+      ];
+      expect(accountIds).toEqual([
+        'user:memory-user:ws-1:chatgptweb',
+        'user:memory-user:ws-2:chatgptweb',
+      ]);
+    } finally {
       vi.restoreAllMocks();
     }
   });

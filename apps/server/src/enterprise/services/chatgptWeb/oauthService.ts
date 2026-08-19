@@ -18,6 +18,10 @@ import type {
 import { OAuthInvalidGrantError } from '@/server/services/oauthDeviceFlow';
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
+import {
+  invalidateChatGPTWebBrowserSession,
+  rotateChatGPTWebBrowserSession,
+} from './browserSession';
 import { ChatGPTWebOAuthError } from './oauthErrors';
 import type { ChatGPTWebConnection } from './oauthService.identity';
 import { ChatGPTWebOAuthSessionOps } from './oauthService.session';
@@ -32,6 +36,10 @@ import {
 } from './pasteEnvelope';
 import { deleteCookieJar, getChatGPTWebFetch } from './transport';
 
+export {
+  buildChatGPTWebBrowserSessionAccountId,
+  type ChatGPTWebBrowserSessionOwner,
+} from './browserSession';
 export { ChatGPTWebOAuthError, type ChatGPTWebOAuthErrorCode } from './oauthErrors';
 export {
   type ChatGPTWebConnection,
@@ -52,12 +60,20 @@ export {
  * Drop the process-local Netscape jar for a ChatGPT Web connection.
  * Best-effort: disconnect / revoke must not fail because the file is already gone.
  */
-export const wipeChatGPTWebCookieJar = (deviceId: string | undefined): void => {
-  if (!deviceId) return;
-  try {
-    deleteCookieJar(deviceId);
-  } catch {
-    // unlink already swallows ENOENT; this covers unexpected fs errors.
+export const wipeChatGPTWebCookieJar = (deviceId: string | undefined, accountId?: string): void => {
+  if (deviceId) {
+    try {
+      deleteCookieJar(deviceId);
+    } catch {
+      // unlink already swallows ENOENT; this covers unexpected fs errors.
+    }
+  }
+  if (accountId) {
+    try {
+      invalidateChatGPTWebBrowserSession(accountId);
+    } catch {
+      // Best-effort: disconnect must not fail because the context is already gone.
+    }
   }
 };
 
@@ -112,6 +128,11 @@ export interface ChatGPTWebOAuthServiceOptions {
   authFetch?: typeof fetch;
   /** Installation-wide synthetic browser identity shared with runtime traffic. */
   browserProfile?: BrowserDeviceProfile;
+  /**
+   * Stable AIHub connection handle for the Browser Session Context. Never a
+   * device id — see {@link buildChatGPTWebBrowserSessionAccountId}.
+   */
+  browserSessionAccountId?: string;
   /** chatgpt.com requires the browser-fingerprinted transport. */
   transportFetch?: typeof fetch;
 }
@@ -147,7 +168,26 @@ export class ChatGPTWebOAuthService extends ChatGPTWebOAuthSessionOps {
     super();
     this.authFetch = options.authFetch ?? ((...args) => globalThis.fetch(...args));
     this.browserProfile = options.browserProfile ?? DEFAULT_BROWSER_DEVICE_PROFILE;
+    this.browserSessionAccountId = options.browserSessionAccountId;
     this.transportFetchOverride = options.transportFetch;
+  }
+
+  /** A successful connect starts a new page session; refresh must not. */
+  private rotatePageSessionAfterConnect(deviceId: string): void {
+    if (!this.browserSessionAccountId) return;
+    rotateChatGPTWebBrowserSession({
+      accountId: this.browserSessionAccountId,
+      browserProfile: this.browserProfile,
+      deviceId,
+    });
+  }
+
+  /**
+   * Rotate only after persist+commit. Mint/verify no longer promote, so a
+   * persist failure cannot leave a rotated live context beside the old vault.
+   */
+  protected override afterVerifiedSessionCommitted(deviceId: string): void {
+    this.rotatePageSessionAfterConnect(deviceId);
   }
 
   /** Resolved lazily so a deployment without the binary still boots. */
@@ -285,12 +325,14 @@ export class ChatGPTWebOAuthService extends ChatGPTWebOAuthSessionOps {
       );
     }
 
-    return this.buildConnection({
+    const connection = await this.buildConnection({
       accessToken: tokens.access_token,
       deviceId: envelope.deviceId,
       idToken: tokens.id_token,
       refreshToken: tokens.refresh_token,
     });
+    this.rotatePageSessionAfterConnect(connection.deviceId);
+    return connection;
   }
 
   /**

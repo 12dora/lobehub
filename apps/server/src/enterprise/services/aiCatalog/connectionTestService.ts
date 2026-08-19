@@ -426,6 +426,7 @@ export const createSafeAiConnectionProbe = (
       // into a user's chat session id.
       conversationKey: `platform:connection-test:${provider.providerKey}`,
       fetch: fetchAdapter,
+      managedBy: 'platform',
       // One honest attempt. The SDK's default (2 retries) multiplied every deadline by three
       // and reported the last failure, so an operator waited ~45s for a misleading verdict.
       // Non-streaming probes keep the SDK default so API-key providers do not change behavior.

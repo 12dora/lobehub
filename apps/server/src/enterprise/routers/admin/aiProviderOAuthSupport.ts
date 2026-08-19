@@ -41,6 +41,7 @@ import {
 } from '../../services/aiCatalog/sharedOAuthRefresh';
 import type { ChatGPTWebConnection } from '../../services/chatgptWeb/oauthService';
 import {
+  buildChatGPTWebBrowserSessionAccountId,
   ChatGPTWebOAuthError,
   ChatGPTWebOAuthService,
   parsePasteEnvelope,
@@ -255,10 +256,25 @@ export const acquireSharedConnectionTokens = async ({
   targetId: string;
 }): Promise<
   | { kind: 'result'; result: AdminAiProviderOAuthPollOutput }
-  | { kind: 'tokens'; tokens: SharedConnectionTokens }
+  | {
+      browserSession?: ChatGPTWebOAuthService;
+      kind: 'tokens';
+      tokens: SharedConnectionTokens;
+    }
 > => {
   const unfinished = { error: null, revision: null, stored: false };
-  const oauthService = getOAuthService(input.id, browserProfile ? { browserProfile } : undefined);
+  const oauthService = getOAuthService(
+    input.id,
+    browserProfile
+      ? {
+          browserProfile,
+          browserSessionAccountId: buildChatGPTWebBrowserSessionAccountId({
+            kind: 'platform',
+            providerId: input.id,
+          }),
+        }
+      : undefined,
+  );
   let connectionTokens: SharedConnectionTokens;
 
   if (getProviderOAuthGrantFlow(input.id) === 'authorization_code_paste') {
@@ -401,7 +417,11 @@ export const acquireSharedConnectionTokens = async ({
     };
   }
 
-  return { kind: 'tokens', tokens: connectionTokens };
+  return {
+    kind: 'tokens',
+    tokens: connectionTokens,
+    ...(oauthService instanceof ChatGPTWebOAuthService ? { browserSession: oauthService } : {}),
+  };
 };
 
 export const refreshStatusVault = async ({

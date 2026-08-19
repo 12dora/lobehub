@@ -659,6 +659,60 @@ describe('LobeChatGPTWebAI', () => {
       );
     });
 
+    it('keys the fallback-profile Sentinel pool by account id, not device id', async () => {
+      const clientA = createFakeClient();
+      const clientB = createFakeClient();
+
+      await new LobeChatGPTWebAI({
+        apiKey: 'token',
+        browserSessionAccountId: 'platform:chatgptweb',
+        client: clientA as any,
+      }).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+      await new LobeChatGPTWebAI({
+        apiKey: 'token',
+        browserSessionAccountId: 'user:alice:_:chatgptweb',
+        client: clientB as any,
+      }).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(clientA.acquireSentinelBundle.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ contextKey: 'platform:chatgptweb:fallback-profile' }),
+      );
+      expect(clientB.acquireSentinelBundle.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ contextKey: 'user:alice:_:chatgptweb:fallback-profile' }),
+      );
+    });
+
+    it('uses sessionContext.contextId as the Sentinel pool key', async () => {
+      const client = createFakeClient();
+      await new LobeChatGPTWebAI({
+        apiKey: 'token',
+        client: client as any,
+        sessionContext: {
+          contextId: 'ctx-account-scoped',
+          cookieJarKey: 'jar-digest',
+          getBootstrap: () => undefined,
+          logicalPageId: '11111111-1111-4111-8111-111111111111',
+          setBootstrap: () => {},
+        },
+      }).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(client.acquireSentinelBundle.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ contextKey: 'ctx-account-scoped' }),
+      );
+    });
+
     it('surfaces a Cloudflare challenge from the requirements handshake', async () => {
       // the protocol core already retries the handshake internally; the runtime
       // must not add a second retry layer, only a readable error

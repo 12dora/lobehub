@@ -22,6 +22,7 @@ import {
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { PlatformBrowserProfileService } from '@/server/enterprise/services/browserProfile';
 import {
+  buildChatGPTWebBrowserSessionAccountId,
   type ChatGPTWebConnection,
   ChatGPTWebOAuthError,
   ChatGPTWebOAuthService,
@@ -298,7 +299,17 @@ export const oauthDeviceFlowRouter = router({
         : undefined;
       const service = getOAuthService(
         input.providerId,
-        browserProfile ? { browserProfile } : undefined,
+        browserProfile
+          ? {
+              browserProfile,
+              browserSessionAccountId: buildChatGPTWebBrowserSessionAccountId({
+                kind: 'user',
+                providerId: input.providerId,
+                userId: ctx.userId,
+                ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}),
+              }),
+            }
+          : undefined,
       );
 
       if (isPasteFlow(input.providerId)) {
@@ -398,17 +409,28 @@ export const oauthDeviceFlowRouter = router({
           throw error;
         }
 
-        await ctx.aiProviderModel.updateConfig(
-          input.providerId,
-          { keyVaults: connectionKeyVaults(connection) },
-          ctx.gateKeeper.encrypt,
-          KeyVaultsGateKeeper.getUserKeyVaults,
-        );
+        try {
+          await ctx.aiProviderModel.updateConfig(
+            input.providerId,
+            { keyVaults: connectionKeyVaults(connection) },
+            ctx.gateKeeper.encrypt,
+            KeyVaultsGateKeeper.getUserKeyVaults,
+          );
+        } catch (error) {
+          // Persist failed: drop the staged candidate and leave the live
+          // context untouched. Promoting first would mix the new session
+          // cookie with the still-old vault credential.
+          service.discardVerifiedChatGPTWebSession();
+          throw error;
+        }
+        service.commitVerifiedChatGPTWebSession(connection.deviceId);
 
-        // A device change is a new logical browser: drop the previous jar only
-        // after the replacement is committed. A failed reconnect must leave the
-        // previously-working transport state intact.
-        if (previousDeviceId) wipeChatGPTWebCookieJar(previousDeviceId);
+        // Leftover device-id-keyed jar only. Commit+rotate have already moved
+        // this account identity onto the new context; wiping by account id here
+        // would invalidate the connection that was just stored.
+        if (previousDeviceId) {
+          wipeChatGPTWebCookieJar(previousDeviceId);
+        }
 
         return { status: 'success' as const };
       }
@@ -500,7 +522,15 @@ export const oauthDeviceFlowRouter = router({
           );
           const deviceId = (providerDetail?.keyVaults as Record<string, unknown> | undefined)
             ?.oauthDeviceId;
-          wipeChatGPTWebCookieJar(typeof deviceId === 'string' ? deviceId : undefined);
+          wipeChatGPTWebCookieJar(
+            typeof deviceId === 'string' ? deviceId : undefined,
+            buildChatGPTWebBrowserSessionAccountId({
+              kind: 'user',
+              providerId: input.providerId,
+              userId: ctx.userId,
+              ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}),
+            }),
+          );
         } catch {
           // Best-effort: a missing jar or a vault read error must not block revoke.
         }

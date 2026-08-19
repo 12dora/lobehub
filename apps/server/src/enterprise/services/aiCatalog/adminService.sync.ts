@@ -226,6 +226,7 @@ export const enumeratePlatformUpstreamModels = async (params: {
   const runtime = initModelRuntimeWithUserPayload(params.providerKey, payload, {
     ...(params.browserProfile ? { browserProfile: params.browserProfile } : {}),
     conversationKey: `platform:sync-upstream:${params.providerKey}`,
+    managedBy: 'platform',
   });
   let listed: ChatModelCard[] | undefined;
   try {

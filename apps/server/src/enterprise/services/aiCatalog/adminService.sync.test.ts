@@ -261,6 +261,11 @@ describe('AiCatalogAdminService.syncUpstream', () => {
       updated: 0,
     });
     expect(mockModels).toHaveBeenCalled();
+    expect(ModelRuntime.initModelRuntimeWithUserPayload).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ managedBy: 'platform' }),
+    );
 
     const models = await db
       .select()

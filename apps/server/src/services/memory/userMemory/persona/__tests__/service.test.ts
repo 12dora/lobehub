@@ -22,6 +22,7 @@ import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import { clearAiCatalogRuntimeCache } from '@/server/enterprise/services/aiCatalog/runtimeAdapter';
 import { deletePlatformResourceRevisionsForTest } from '@/server/enterprise/testing/deletePlatformResourceRevisions';
+import * as PlatformAiRuntimeBridge from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { resolveRuntimeAgentConfig } from '@/server/services/memory/userMemory/extract';
 
 import { UserPersonaService } from '../service';
@@ -333,6 +334,19 @@ describe('UserPersonaService', () => {
     process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
     // Published image-only catalog — chat persona model is not available.
     await seedPublishedPersonaProvider('image');
+    const runtimeState = vi
+      .spyOn(PlatformAiRuntimeBridge, 'resolvePlatformAiRuntimeState')
+      .mockImplementation(async ({ upstreamState }) => ({
+        ...upstreamState,
+        enabledAiModels: [
+          { abilities: {}, enabled: true, id: 'gpt-mock', providerId: 'openai', type: 'image' },
+        ],
+      }));
+    const listed = vi
+      .spyOn(PlatformAiRuntimeBridge, 'listPlatformPublishedModels')
+      .mockResolvedValue([
+        { abilities: {}, enabled: true, id: 'gpt-mock', providerId: 'openai', type: 'image' },
+      ] as never);
     const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
     const execution = vi.spyOn(
       AiCatalogExecutionResolver.prototype,
@@ -344,12 +358,15 @@ describe('UserPersonaService', () => {
       await expect(
         new UserPersonaService(db).composeWriting({ userId, username: 'User' }),
       ).rejects.toMatchObject({ code: 'PLATFORM_AI_MODEL_NOT_PUBLISHED' });
+      expect(listed).toHaveBeenCalled();
       expect(secretFactory).not.toHaveBeenCalled();
       expect(execution).not.toHaveBeenCalled();
       expect(initialize).not.toHaveBeenCalled();
     } finally {
       if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
       else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      runtimeState.mockRestore();
+      listed.mockRestore();
       secretFactory.mockRestore();
       execution.mockRestore();
       initialize.mockRestore();

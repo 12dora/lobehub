@@ -35,6 +35,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import type * as AiCatalogEnforcement from '@/server/enterprise/services/aiCatalog/enforcement';
+import { resetBrowserSessionRegistryForTests } from '@/server/enterprise/services/chatgptWeb/browserSession';
 import { wrapModelRuntimeWithModeration } from '@/server/enterprise/services/contentModeration/runtime';
 import { createDefaultModerationRuntimeDeps } from '@/server/enterprise/services/contentModeration/runtime/defaults';
 
@@ -1209,6 +1210,10 @@ describe('ChatGPT Web transport injection', () => {
     vi.restoreAllMocks();
   });
 
+  afterEach(() => {
+    resetBrowserSessionRegistryForTests();
+  });
+
   /**
    * chatgpt.com is behind Cloudflare bot-fight and 403s any plain-Node TLS fingerprint,
    * so this runtime cannot use the default transport. Asserted at the single construction
@@ -1226,12 +1231,101 @@ describe('ChatGPT Web transport injection', () => {
     expect(params.apiKey).toBe('oauth-token-value');
     expect(params.chatgptAccountId).toBe('account-id');
     expect(params.chatgptDeviceId).toBe('device-id');
+    expect(typeof params.browserSessionContextKey).toBe('string');
+    expect(params.sessionContext).toMatchObject({
+      contextId: params.browserSessionContextKey,
+      cookieJarKey: expect.any(String),
+      logicalPageId: expect.stringMatching(
+        /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/,
+      ),
+    });
+    expect(params.browserSessionContextKey).not.toBe('device-id');
     // The seed reconstructs the entire identity and never reaches the runtime.
     expect(params.browserProfile).toEqual(
       Object.fromEntries(Object.entries(browserProfile).filter(([key]) => key !== 'seed')),
     );
     expect(params.browserProfile).not.toHaveProperty('seed');
     expect(typeof params.fetch).toBe('function');
+  });
+
+  it('scopes the bound session by managedBy, user, workspace, and historical revision', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const browserProfile = generateBrowserDeviceProfile({ seed: 'chatgptweb-account-scope' });
+    const sameDevicePayload: ClientSecretPayload = {
+      apiKey: 'oauth-token-value',
+      chatgptDeviceId: 'shared-physical-device',
+      runtimeProvider: ModelProvider.ChatGPTWeb,
+    };
+
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, sameDevicePayload, {
+      browserProfile,
+      managedBy: 'platform',
+    });
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, sameDevicePayload, {
+      browserProfile,
+      managedBy: 'platform',
+      platformRevision: 1,
+    });
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, sameDevicePayload, {
+      browserProfile,
+      managedBy: 'platform',
+      platformRevision: 2,
+    });
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, sameDevicePayload, {
+      browserProfile,
+      userId: 'user-a',
+    });
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, sameDevicePayload, {
+      browserProfile,
+      userId: 'user-a',
+      workspaceId: 'ws-1',
+    });
+
+    const accountIds = spy.mock.calls.map(
+      (call) => (call[1] as Record<string, unknown>).browserSessionAccountId,
+    );
+    const contextIds = spy.mock.calls.map(
+      (call) => (call[1] as Record<string, unknown>).browserSessionContextKey,
+    );
+    expect(accountIds).toEqual([
+      'platform:chatgptweb',
+      'platform:chatgptweb:rev:1',
+      'platform:chatgptweb:rev:2',
+      'user:user-a:_:chatgptweb',
+      'user:user-a:ws-1:chatgptweb',
+    ]);
+    expect(new Set(contextIds).size).toBe(5);
+  });
+
+  it('still returns an account-scoped Sentinel key on the degraded fallback profile', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const sameDevicePayload: ClientSecretPayload = {
+      apiKey: 'oauth-token-value',
+      chatgptDeviceId: 'shared-physical-device',
+      runtimeProvider: ModelProvider.ChatGPTWeb,
+    };
+
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, sameDevicePayload, {
+      browserProfile: DEFAULT_BROWSER_DEVICE_PROFILE,
+      managedBy: 'platform',
+    });
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, sameDevicePayload, {
+      browserProfile: DEFAULT_BROWSER_DEVICE_PROFILE,
+      userId: 'user-a',
+    });
+
+    const first = spy.mock.calls[0][1] as Record<string, unknown>;
+    const second = spy.mock.calls[1][1] as Record<string, unknown>;
+    expect(first.sessionContext).toBeUndefined();
+    expect(second.sessionContext).toBeUndefined();
+    expect(first.browserSessionContextKey).toBeUndefined();
+    expect(first.browserSessionAccountId).toBe('platform:chatgptweb');
+    expect(second.browserSessionAccountId).toBe('user:user-a:_:chatgptweb');
+    expect(first.browserSessionAccountId).not.toBe(second.browserSessionAccountId);
   });
 
   /**

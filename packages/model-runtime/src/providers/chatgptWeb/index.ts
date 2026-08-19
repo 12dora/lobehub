@@ -57,6 +57,7 @@ import { createDebugRedactor } from './debugRedactor';
 import { describeThrownValue } from './errors';
 import { readImageDimensions, readImageMimeType } from './imageDimensions';
 import { extractSandboxFiles, resolveFileMimeType, sandboxFileName } from './interpreterFiles';
+import type { ChatGPTWebSessionContext } from './sessionContext';
 import type { TurnState } from './turnHelpers';
 import {
   describeRequestBody,
@@ -153,6 +154,12 @@ export interface LobeChatGPTWebParams {
   baseURL?: string;
   browserProfile?: RuntimeBrowserDeviceProfile;
   /**
+   * Stable AIHub connection handle (`platform:<id>` / `user:<uid>:<ws>:<id>`).
+   * Used as the Sentinel pool key when no Browser Session Context could be
+   * bound (degraded fallback profile). Never a raw device id.
+   */
+  browserSessionAccountId?: string;
+  /**
    * Opaque Browser Session Context key from C1. When omitted, a provisional
    * key is derived from the device/session/profile already on the client.
    */
@@ -163,6 +170,8 @@ export interface LobeChatGPTWebParams {
   client?: ChatGPTWebClient;
   fetch?: typeof fetch;
   id?: string;
+  /** Bound Browser Session Context. Owns page id, jar key, and bootstrap cache. */
+  sessionContext?: ChatGPTWebSessionContext;
   userId?: string;
 }
 
@@ -171,6 +180,8 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
   provider: string;
 
   private readonly client: ChatGPTWebClient;
+  /** Account-scoped Sentinel fallback when no Browser Session Context is bound. */
+  private readonly browserSessionAccountId?: string;
   /**
    * Opaque C1 context key. Conversation turns pass this into the Sentinel
    * bundle pool so a later Browser Session Context can share/invalidate it.
@@ -187,19 +198,22 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     apiKey,
     baseURL,
     browserProfile,
+    browserSessionAccountId,
     browserSessionContextKey,
     chatgptAccountId,
     chatgptDeviceId,
     client,
     fetch: customFetch,
     id,
+    sessionContext,
   }: LobeChatGPTWebParams = {}) {
     if (!client && !apiKey)
       throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey);
 
     this.provider = id || DEFAULT_PROVIDER;
     if (baseURL) this.baseURL = baseURL;
-    this.browserSessionContextKey = browserSessionContextKey;
+    this.browserSessionAccountId = browserSessionAccountId;
+    this.browserSessionContextKey = sessionContext?.contextId ?? browserSessionContextKey;
 
     this.client =
       client ??
@@ -209,18 +223,22 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         browserProfile,
         deviceId: chatgptDeviceId,
         fetch: customFetch,
+        ...(sessionContext ? { sessionContext } : {}),
       });
 
     this.uploadNamespace = uploadNamespace(chatgptAccountId ?? this.client.accountId, apiKey);
   }
 
   /**
-   * Until C1 lands, derive a stable per-device/session/profile key. Once the
-   * Browser Session Context exists, pass `browserSessionContextKey` (the
-   * registry context id) into {@link LobeChatGPTWebParams}.
+   * Prefer the Browser Session Context id so the Sentinel pool is account-scoped.
+   * On the degraded fallback profile there is no context (the jar is correctly
+   * disabled), but the Sentinel pool still needs an account-scoped key — it
+   * does not depend on cookies. Last resort: a device/session/profile key for
+   * tests that never passed an account handle.
    */
   private resolveSentinelContextKey(): string {
     if (this.browserSessionContextKey) return this.browserSessionContextKey;
+    if (this.browserSessionAccountId) return `${this.browserSessionAccountId}:fallback-profile`;
     const { browserProfile, deviceId, sessionId } = this.client;
     if (deviceId && sessionId && browserProfile?.id)
       return deriveSentinelContextKey({ deviceId, profileId: browserProfile.id, sessionId });

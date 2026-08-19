@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+import type { LobeChatDatabase } from '@/database/type';
+import * as ModelRuntimeModule from '@/server/modules/ModelRuntime';
+import * as PlatformAiRuntimeBridge from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
 import { emptyCategoryScores } from '../policy';
 import {
@@ -117,5 +121,47 @@ describe('createLlmJudgeClassifier', () => {
       name: 'AbortError',
     });
     expect(generateObjectCalled).toBe(false);
+  });
+
+  it('scopes the default platform runtime as managedBy platform', async () => {
+    const initSpy = vi
+      .spyOn(ModelRuntimeModule, 'initModelRuntimeWithUserPayload')
+      .mockReturnValue({
+        generateObject: async () => completeScores({ sexual: 0.1 }),
+      } as never);
+    const execution = vi
+      .spyOn(PlatformAiRuntimeBridge, 'resolvePlatformAiExecutionConfig')
+      .mockResolvedValue({
+        allowedModels: [{ modelKey: 'judge', type: 'chat' }],
+        config: {},
+        keyVaults: { apiKey: 'platform-judge-secret' },
+        providerKey: 'openai',
+        revision: 1,
+        runtimeProvider: 'openai',
+      });
+    vi.spyOn(PlatformAiRuntimeBridge, 'createPlatformAiModelAllowlistHooks').mockReturnValue({});
+    vi.spyOn(PlatformAiRuntimeBridge, 'createPlatformAiAuthFailureHooks').mockReturnValue({});
+    vi.spyOn(PlatformAiRuntimeBridge, 'digestPlatformAiCredential').mockReturnValue('digest');
+    vi.spyOn(ModelRuntimeModule, 'resolvePlatformBrowserProfile').mockResolvedValue(undefined);
+    vi.spyOn(ModelRuntimeModule, 'createManagedRequestModeHooks').mockReturnValue(undefined);
+
+    try {
+      const classifier = createLlmJudgeClassifier({
+        db: {} as LobeChatDatabase,
+        model: 'judge',
+        provider: 'openai',
+        timeoutMs: 1000,
+      });
+      await classifier.classify('hello');
+      expect(execution).toHaveBeenCalled();
+      expect(initSpy).toHaveBeenCalledWith(
+        'openai',
+        expect.objectContaining({ apiKey: 'platform-judge-secret' }),
+        expect.objectContaining({ managedBy: 'platform' }),
+        expect.anything(),
+      );
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

@@ -9,9 +9,13 @@ export {
   COOKIE_JAR_HEADER,
   deleteCookieJar,
   getCookieJarPath,
+  isContextCookieJarKey,
+  registerContextCookieJar,
   resetCookieJars,
+  resolveCookieJarPath,
   seedCookieJar,
   seedSessionJar,
+  unregisterContextCookieJar,
   withCookieJarHeader,
 } from './cookieJar';
 export {

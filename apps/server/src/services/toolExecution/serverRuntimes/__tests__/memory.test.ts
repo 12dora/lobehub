@@ -16,8 +16,8 @@ vi.mock('@/database/models/userMemory', () => ({
   })),
 }));
 
-vi.mock('@/database/schemas', () => ({
-  userSettings: { id: 'id' },
+vi.mock('@/database/schemas', async (importOriginal) => ({
+  ...(await importOriginal()),
 }));
 
 vi.mock('@/server/globalConfig', () => ({
@@ -29,6 +29,7 @@ vi.mock('@/server/globalConfig', () => ({
 vi.mock('@/server/modules/ModelRuntime', () => ({
   initModelRuntimeFromDB: mocks.initModelRuntimeFromDB,
   initModelRuntimeWithUserPayload: mocks.initModelRuntimeWithUserPayload,
+  resolvePlatformBrowserProfile: vi.fn(async () => undefined),
 }));
 
 vi.mock('@/server/services/agentSignal/procedure', () => ({
@@ -60,6 +61,7 @@ const createContext = (): ToolExecutionContext => ({
   } as unknown as LobeChatDatabase,
   toolManifestMap: {},
   userId: 'synthetic-user',
+  workspaceId: 'workspace-1',
 });
 
 describe('memoryRuntime', () => {
@@ -86,7 +88,7 @@ describe('memoryRuntime', () => {
         apiKey: 'server-key',
         baseURL: 'https://embedding.example.com/v1',
       },
-      { userId: 'synthetic-user' },
+      { browserProfile: undefined, userId: 'synthetic-user', workspaceId: 'workspace-1' },
     );
     expect(mocks.initModelRuntimeFromDB).not.toHaveBeenCalled();
     expect(mocks.embeddings).toHaveBeenCalledWith(

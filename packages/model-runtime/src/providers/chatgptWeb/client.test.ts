@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_BROWSER_DEVICE_PROFILE, resolveProfileTimezone } from '../../browserProfile';
 import { ChatGPTWebClient } from './client';
 import { SentinelBundlePool } from './sentinelBundlePool';
+import { createMemoryChatGPTWebSessionContext } from './sessionContext';
 import type { ChatRequirements } from './types';
 
 const jsonResponse = (body: unknown, init: ResponseInit = {}) =>
@@ -334,6 +335,72 @@ describe('ChatGPTWebClient.acquireSentinelBundle', () => {
     expect(first.requirements.token).toBe('a');
     expect(second.requirements.token).toBe('b');
     expect(first.id).not.toBe(second.id);
+  });
+});
+
+describe('ChatGPTWebClient bootstrap cache on Browser Session Context', () => {
+  it('reuses scraped build markers across reconstructed clients for the same context', async () => {
+    const sessionContext = createMemoryChatGPTWebSessionContext({
+      contextId: 'ctx-account-a',
+      cookieJarKey: 'jar-a',
+      logicalPageId: '11111111-1111-4111-8111-111111111111',
+    });
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response('<html data-build="prod-livebuild"><b>build_number\\":424242.0</b></html>', {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ prepare_token: 'prep-1' }))
+      .mockResolvedValueOnce(jsonResponse({ so_token: 'so-1', token: 'req-1' }))
+      .mockResolvedValueOnce(jsonResponse({ prepare_token: 'prep-2' }))
+      .mockResolvedValueOnce(jsonResponse({ so_token: 'so-2', token: 'req-2' }));
+
+    await createClient({ sessionContext }).getChatRequirements();
+    await createClient({ sessionContext }).getChatRequirements();
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    const secondPrepareHeaders = fetchMock.mock.calls[3][1].headers as Record<string, string>;
+    expect(secondPrepareHeaders['OAI-Client-Version']).toBe('prod-livebuild');
+    expect(secondPrepareHeaders['OAI-Client-Build-Number']).toBe('424242');
+    expect(secondPrepareHeaders['OAI-Session-Id']).toBe(sessionContext.logicalPageId);
+  });
+
+  it('does not cache an unauthenticated /unauth-mweb/ bootstrap on the context', async () => {
+    const sessionContext = createMemoryChatGPTWebSessionContext({
+      contextId: 'ctx-cold',
+      cookieJarKey: 'jar-cold',
+      logicalPageId: '22222222-2222-4222-8222-222222222222',
+    });
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          '<html data-build="prod-unauth"><script src="/unauth-mweb/assets/client.js"></script><b>build_number:1111111</b></html>',
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(jsonResponse({ prepare_token: 'prep-unauth' }))
+      .mockResolvedValueOnce(jsonResponse({ so_token: 'so-unauth', token: 'req-unauth' }))
+      .mockResolvedValueOnce(
+        new Response('<html data-build="prod-livebuild"><b>build_number\\":424242.0</b></html>', {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ prepare_token: 'prep-auth' }))
+      .mockResolvedValueOnce(jsonResponse({ so_token: 'so-auth', token: 'req-auth' }));
+
+    await createClient({ sessionContext }).getChatRequirements();
+    expect(sessionContext.getBootstrap()).toBeUndefined();
+
+    await createClient({ sessionContext }).getChatRequirements();
+    expect(sessionContext.getBootstrap()?.clientVersion).toBe('prod-livebuild');
+    expect(sessionContext.getBootstrap()?.clientBuildNumber).toBe('424242');
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    const secondBootstrap = fetchMock.mock.calls[3][0] as string;
+    expect(secondBootstrap).toBe('https://chatgpt.com/');
+    const secondPrepareHeaders = fetchMock.mock.calls[4][1].headers as Record<string, string>;
+    expect(secondPrepareHeaders['OAI-Client-Version']).toBe('prod-livebuild');
+    expect(secondPrepareHeaders['OAI-Client-Build-Number']).toBe('424242');
   });
 });
 

@@ -128,6 +128,14 @@ export interface BrowserSessionRegistry {
   acquire: (input: BrowserSessionAcquireInput) => BrowserSessionContext;
   dispose: () => void;
   get: (contextId: string) => BrowserSessionContext | undefined;
+  /**
+   * Read-only lookup by provider + account + origin. Unlike {@link acquire},
+   * this never inspects the binding digest and therefore cannot invalidate a
+   * live context just because a candidate device / credential differs.
+   */
+  getForIdentity: (
+    input: Pick<BrowserSessionAcquireInput, 'accountId' | 'origin' | 'provider'>,
+  ) => BrowserSessionContext | undefined;
   invalidate: (contextId: string) => boolean;
   invalidateForIdentity: (
     input: Pick<BrowserSessionAcquireInput, 'accountId' | 'origin' | 'provider'>,

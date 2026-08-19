@@ -150,6 +150,7 @@ export class UserPersonaService {
                 this.db,
                 execution.runtimeProvider,
               ),
+              managedBy: 'platform',
               userId: payload.userId,
             },
             mergeModelRuntimeHooks(

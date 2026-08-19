@@ -33,6 +33,7 @@ import { providerCredentialKeys } from '../../services/aiCatalog/credentialAdapt
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
 import { tryBackfillSharedAccountIdentity } from '../../services/aiCatalog/sharedOAuthIdentity';
 import { PlatformBrowserProfileService } from '../../services/browserProfile';
+import { buildChatGPTWebBrowserSessionAccountId } from '../../services/chatgptWeb/oauthService';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { assertDangerousReauth, createService, mapServiceError } from './aiCatalogSupport';
 import {
@@ -129,6 +130,10 @@ export const adminAiProviderOAuthRouter = router({
       const wipeCapturedJar = () => {
         wipeChatGPTWebJarBestEffort(
           chatgptWebDeviceId ?? readChatGPTWebPendingWipe(detail.draft.id),
+          buildChatGPTWebBrowserSessionAccountId({
+            kind: 'platform',
+            providerId: input.id,
+          }),
         );
       };
 
@@ -454,6 +459,7 @@ export const adminAiProviderOAuthRouter = router({
       });
       if (acquired.kind === 'result') return acquired.result;
       const connectionTokens = acquired.tokens;
+      const browserSession = acquired.browserSession;
 
       const { clearedLeaves: clearedIdentityLeaves, vault } = buildSharedVault(
         input.id,
@@ -473,6 +479,10 @@ export const adminAiProviderOAuthRouter = router({
           vault,
         });
       } catch {
+        // Persist failed: drop the staged candidate and leave the live context
+        // untouched. Promoting first would mix the new session cookie with the
+        // still-old vault credential.
+        browserSession?.discardVerifiedChatGPTWebSession();
         // The device grant is single-use and has already been redeemed here, so a failed
         // store must not crash the poll loop: report a terminal, non-retryable outcome and
         // let the operator start a fresh authorization. Only a stable code is surfaced —
@@ -490,11 +500,11 @@ export const adminAiProviderOAuthRouter = router({
         });
         return { ...unfinished, error: 'provider_store_failed', status: 'denied' as const };
       }
+      browserSession?.commitVerifiedChatGPTWebSession(connectionTokens.deviceId);
 
-      // A device change is a new logical browser: drop the previous jar so CF
-      // cookies and a rotated-away session cannot follow the new identity. Only
-      // after the replacement is committed — a failed reconnect must leave the
-      // previously-working transport state intact.
+      // Leftover device-id-keyed jar only. Commit+rotate have already moved
+      // this account identity onto the new context; wiping by account id here
+      // would invalidate the connection that was just stored.
       if (
         existingDeviceId &&
         connectionTokens.deviceId &&

@@ -536,6 +536,48 @@ describe('oauthDeviceFlow.getAuthStatus', () => {
   });
 });
 
+describe('oauthDeviceFlow.pollAuthStatus persist-then-commit ordering', () => {
+  it('does not promote the staged session when vault persist fails', async () => {
+    const commit = vi.spyOn(service, 'commitVerifiedChatGPTWebSession');
+    const discard = vi.spyOn(service, 'discardVerifiedChatGPTWebSession');
+    mocks.updateConfig.mockRejectedValue(new Error('provider store failed'));
+    transportFetch.mockResolvedValue(jsonResponse({ email: 'me@example.com' }));
+    const { deviceCode } = await startFlow();
+
+    await expect(
+      caller().pollAuthStatus({
+        accessToken: jwt({ exp: futureExp }),
+        deviceCode,
+        providerId: PROVIDER,
+      }),
+    ).rejects.toThrow('provider store failed');
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(discard.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+      mocks.updateConfig.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('promotes the staged session only after vault persist succeeds', async () => {
+    const commit = vi.spyOn(service, 'commitVerifiedChatGPTWebSession');
+    transportFetch.mockResolvedValue(jsonResponse({ email: 'me@example.com' }));
+    const { deviceCode } = await startFlow();
+
+    const result = await caller().pollAuthStatus({
+      accessToken: jwt({ exp: futureExp }),
+      deviceCode,
+      providerId: PROVIDER,
+    });
+
+    expect(result).toEqual({ status: 'success' });
+    expect(mocks.updateConfig).toHaveBeenCalled();
+    expect(commit).toHaveBeenCalled();
+    expect(commit.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.updateConfig.mock.invocationCallOrder[0],
+    );
+  });
+});
+
 /**
  * Every OAuth procedure shares ONE provider model, so the scope it is built with decides
  * which row connect/status/revoke touches. Built without the workspace id, a member acting
@@ -609,7 +651,10 @@ describe('oauthDeviceFlow.revokeAuth', () => {
 
     await caller().revokeAuth({ providerId: PROVIDER });
 
-    expect(mocks.wipeChatGPTWebCookieJar).toHaveBeenCalledWith('old-device-id');
+    expect(mocks.wipeChatGPTWebCookieJar).toHaveBeenCalledWith(
+      'old-device-id',
+      'user:user-1:_:chatgptweb',
+    );
     expect(mocks.updateConfig).toHaveBeenCalled();
   });
 

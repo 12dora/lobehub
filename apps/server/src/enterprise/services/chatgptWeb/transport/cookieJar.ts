@@ -63,8 +63,36 @@ export const deleteCookieJar = (connectionKey: string): void => {
 
 /** Test seam: unlink every jar this process created. */
 export const resetCookieJars = (): void => {
+  contextJarPaths.clear();
   resetBrowserCookieJars();
 };
+
+/**
+ * Context-owned jars register digest → path here so `X-AIHub-Cookie-Jar` can
+ * carry a secret-safe digest instead of a filesystem path or a raw device id.
+ * Legacy callers still send a device id; those resolve through {@link getCookieJarPath}.
+ */
+const contextJarPaths = new Map<string, string>();
+
+export const registerContextCookieJar = (digest: string, path: string): void => {
+  contextJarPaths.set(digest, path);
+};
+
+export const unregisterContextCookieJar = (digest: string): void => {
+  contextJarPaths.delete(digest);
+};
+
+/** Absolute paths, registered context digests, or the legacy device-id key. */
+export const resolveCookieJarPath = (key: string): string => {
+  const registered = contextJarPaths.get(key);
+  if (registered) return registered;
+  if (key.startsWith('/') || key.includes('/')) return key;
+  return getCookieJarPath(key);
+};
+
+/** True when `key` names a context jar (do not seed `oai-did` from the key). */
+export const isContextCookieJarKey = (key: string): boolean =>
+  contextJarPaths.has(key) || key.startsWith('/') || key.includes('/');
 
 const COOKIE_JAR_HEADER_LOWER = COOKIE_JAR_HEADER.toLowerCase();
 
@@ -89,5 +117,5 @@ export const stripCookieJarHeader = (
 
 export const withCookieJarHeader = (
   headers: Record<string, string>,
-  deviceId?: string,
-): Record<string, string> => (deviceId ? { ...headers, [COOKIE_JAR_HEADER]: deviceId } : headers);
+  jarKey?: string,
+): Record<string, string> => (jarKey ? { ...headers, [COOKIE_JAR_HEADER]: jarKey } : headers);

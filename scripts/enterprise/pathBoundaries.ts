@@ -686,6 +686,13 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
   },
   {
     file: 'apps/server/src/modules/ModelRuntime/index.ts',
+    importSpecifier: '@/server/enterprise/services/chatgptWeb/browserSession',
+    owner: 'M13',
+    reason:
+      'Single runtime-construction seam acquires the ChatGPT Web Browser Session Context (account-scoped jar, page session id, bootstrap cache); server-only, never bundled into model-runtime',
+  },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.ts',
     importSpecifier: '@/server/enterprise/services/chatgptWeb/transport',
     owner: 'M13',
     reason:
@@ -747,6 +754,13 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     owner: 'M13',
     reason:
       'getOAuthService factory resolves the authorization-code paste flow service for ChatGPT Web',
+  },
+  {
+    file: 'apps/server/src/services/oauthDeviceFlow/refresh.ts',
+    importSpecifier: '@/server/enterprise/services/chatgptWeb/browserSession',
+    owner: 'M13',
+    reason:
+      'Refresh presents the same Browser Session Context account handle the runtime and connect paths use, so /api/auth/session shares jar and OAI-Session-Id',
   },
   {
     file: 'apps/server/src/services/messenger/MessengerRouter.ts',
@@ -862,6 +876,13 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     importSpecifier: '@/server/enterprise/services/contentModeration/runtime/defaults',
     owner: 'content-moderation',
     reason: 'Uses the default initRuntime wiring to assert skipModeration on the exact-pin path',
+  },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.test.ts',
+    importSpecifier: '@/server/enterprise/services/chatgptWeb/browserSession',
+    owner: 'M13',
+    reason:
+      'Resets the ChatGPT Web Browser Session Context registry after runtime construction tests that acquire a context',
   },
   {
     file: 'apps/server/src/routers/lambda/__tests__/agentSkills.resolvePlatformPinned.test.ts',

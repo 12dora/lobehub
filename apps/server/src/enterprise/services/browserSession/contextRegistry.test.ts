@@ -174,6 +174,21 @@ describe('createBrowserSessionRegistry', () => {
     expect(registry.get(context.contextId)).toBeUndefined();
   });
 
+  it('getForIdentity peeks the live context without inspecting the binding digest', () => {
+    const registry = createBrowserSessionRegistry();
+    const context = registry.acquire(baseInput());
+
+    expect(
+      registry.getForIdentity({
+        accountId: 'conn-account-1',
+        origin: 'https://chatgpt.com',
+        provider: 'chatgptweb',
+      })?.contextId,
+    ).toBe(context.contextId);
+    expect(context.lifecycle).toBe('active');
+    expect(registry.get(context.contextId)).toBe(context);
+  });
+
   it('invalidateForIdentity drops the live context for that account', () => {
     const registry = createBrowserSessionRegistry();
     const context = registry.acquire(baseInput());

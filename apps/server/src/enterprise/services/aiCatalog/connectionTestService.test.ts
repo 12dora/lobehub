@@ -163,7 +163,11 @@ describe('createSafeAiConnectionProbe streaming drain', () => {
     expect(initRuntimeMock).toHaveBeenCalledWith(
       'chatgpt',
       expect.anything(),
-      expect.objectContaining({ fetch: expect.any(Function), maxRetries: 0 }),
+      expect.objectContaining({
+        fetch: expect.any(Function),
+        managedBy: 'platform',
+        maxRetries: 0,
+      }),
     );
   });
 
