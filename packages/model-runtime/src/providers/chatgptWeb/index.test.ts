@@ -130,7 +130,7 @@ describe('LobeChatGPTWebAI', () => {
   });
 
   describe('chat payload mapping', () => {
-    it('replays every role and streams the answer', async () => {
+    it('replays the history as user/assistant turns and streams the answer', async () => {
       const client = createFakeClient();
       const response = await createRuntime(client).chat({
         messages: [
@@ -145,12 +145,14 @@ describe('LobeChatGPTWebAI', () => {
 
       const body = bodyOf(client);
       expect(body.model).toBe('auto');
+      // NO `system` author: a browser session never sends one, so the system
+      // instruction is folded into the user turn it precedes.
       expect(body.messages.map((message: any) => message.author.role)).toEqual([
-        'system',
         'user',
         'assistant',
         'user',
       ]);
+      expect(body.messages[0].content.parts).toEqual(['be terse\n\nhi']);
       // every turn goes through the conduit path — see the `/f/` default below
       expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
       // the assistant turn is registered so the upstream echo can be dropped
@@ -160,6 +162,146 @@ describe('LobeChatGPTWebAI', () => {
       expect(sse).toContain('event: text');
       expect(sse).toContain('data: "pong"');
       expect(sse).toContain('event: stop');
+    });
+
+    it('sends a trailing system instruction as its own user turn', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [
+          { content: 'ask me', role: 'user' },
+          { content: 'sure', role: 'assistant' },
+          { content: 'wrap it up now', role: 'system' },
+        ],
+        model: 'gpt-5-6',
+        temperature: 1,
+      });
+
+      const body = bodyOf(client);
+      expect(body.messages.map((message: any) => message.author.role)).toEqual([
+        'user',
+        'assistant',
+        'user',
+      ]);
+      expect(body.messages.at(-1).content.parts).toEqual(['wrap it up now']);
+      // the prepare `partial_query` follows the last user turn
+      const prepareBody = (client.prepareConversation.mock.calls[0] as any[])[0];
+      expect(prepareBody.partial_query.content.parts).toEqual(['wrap it up now']);
+    });
+
+    /**
+     * Instructions are folded into the user turn they IMMEDIATELY precede. When
+     * the next turn is an assistant one, carrying them forward would move them
+     * behind an answer they were meant to govern, so they become their own user
+     * turn in place. `AgentDocumentMessageInjector` puts a system message after
+     * the first user turn, so this is reachable in a real conversation.
+     */
+    describe('instruction ordering', () => {
+      const rolesAndParts = async (messages: any[]) => {
+        const client = createFakeClient();
+        await createRuntime(client).chat({ messages, model: 'gpt-5-6', temperature: 1 });
+        return bodyOf(client).messages.map((message: any) => [
+          message.author.role,
+          message.content.parts.join(''),
+        ]);
+      };
+
+      it('keeps an instruction between a user and an assistant turn in place', async () => {
+        expect(
+          await rolesAndParts([
+            { content: 'U1', role: 'user' },
+            { content: 'D', role: 'system' },
+            { content: 'A1', role: 'assistant' },
+            { content: 'U2', role: 'user' },
+          ]),
+        ).toEqual([
+          ['user', 'U1'],
+          ['user', 'D'],
+          ['assistant', 'A1'],
+          ['user', 'U2'],
+        ]);
+      });
+
+      it('keeps a leading instruction before an assistant turn', async () => {
+        expect(
+          await rolesAndParts([
+            { content: 'S', role: 'system' },
+            { content: 'A', role: 'assistant' },
+          ]),
+        ).toEqual([
+          ['user', 'S'],
+          ['assistant', 'A'],
+        ]);
+      });
+
+      it('keeps an instruction between two assistant turns in place', async () => {
+        expect(
+          await rolesAndParts([
+            { content: 'A1', role: 'assistant' },
+            { content: 'S', role: 'system' },
+            { content: 'A2', role: 'assistant' },
+          ]),
+        ).toEqual([
+          ['assistant', 'A1'],
+          ['user', 'S'],
+          ['assistant', 'A2'],
+        ]);
+      });
+
+      // the empty user turn is dropped before it can absorb anything, so the
+      // instruction must not ride along to the assistant turn behind it
+      it('keeps an instruction in place when the user turn after it is empty', async () => {
+        expect(
+          await rolesAndParts([
+            { content: 'S', role: 'system' },
+            { content: '', role: 'user' },
+            { content: 'A', role: 'assistant' },
+          ]),
+        ).toEqual([
+          ['user', 'S'],
+          ['assistant', 'A'],
+        ]);
+      });
+
+      it('merges consecutive instructions into the user turn that follows', async () => {
+        expect(
+          await rolesAndParts([
+            { content: 'S1', role: 'system' },
+            { content: 'S2', role: 'system' },
+            { content: 'U', role: 'user' },
+          ]),
+        ).toEqual([['user', 'S1\n\nS2\n\nU']]);
+      });
+
+      it('sends an instruction-only payload as a single user turn', async () => {
+        expect(
+          await rolesAndParts([
+            { content: 'S1', role: 'system' },
+            { content: 'S2', role: 'system' },
+          ]),
+        ).toEqual([['user', 'S1\n\nS2']]);
+      });
+    });
+
+    it('keeps a system message that carries attachments as a user turn', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [
+          {
+            content: [
+              { text: 'context', type: 'text' },
+              { image_url: { url: `data:image/png;base64,${PNG_BASE64}` }, type: 'image_url' },
+            ] as any,
+            role: 'system',
+          },
+          { content: 'go', role: 'user' },
+        ],
+        model: 'gpt-5-6',
+        temperature: 1,
+      });
+
+      const body = bodyOf(client);
+      expect(body.messages.map((message: any) => message.author.role)).toEqual(['user', 'user']);
+      expect(body.messages[0].metadata.attachments).toHaveLength(1);
     });
 
     // upstream only accepts standard | extended | max (live 2026-08-15: low /

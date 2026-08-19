@@ -429,11 +429,27 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     const inputParts: string[] = [];
     const mimeTypes = new Set<string>();
     let imageIndex = 0;
+    /** System instructions waiting to be folded into the user turn they precede. */
+    const pendingInstructions: string[] = [];
+
+    const pushMessage = (message: ChatGPTWebMessage) => {
+      if (message.content) inputParts.push(message.content);
+      mapped.push(message);
+    };
+
+    /**
+     * Emit the buffered instructions as the user turn they now are, at the
+     * position the caller put them. Called whenever they would otherwise have to
+     * CROSS an assistant turn to reach a later user message — carrying them past
+     * it would reorder the conversation.
+     */
+    const flushInstructions = () => {
+      if (pendingInstructions.length === 0) return;
+      pushMessage({ content: pendingInstructions.join('\n\n'), role: 'user' });
+      pendingInstructions.length = 0;
+    };
 
     for (const message of messages) {
-      const role =
-        message.role === 'system' || message.role === 'assistant' ? message.role : 'user';
-
       const { attachments, text } = await this.buildContent(message.content, signal, () => {
         imageIndex += 1;
         return imageIndex;
@@ -441,16 +457,53 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
 
       if (!text && attachments.length === 0) continue;
 
+      /**
+       * A browser session NEVER authors a `system` turn. chatgpt.com's own
+       * clients carry their instructions out of band (custom instructions ride
+       * on flagged metadata, project/GPT instructions on the conversation
+       * itself), so an `author.role: "system"` message with freeform text in
+       * `content.parts` is a shape only an API/automation client produces — and
+       * every AIHub turn produced one, because the context engine always
+       * unshifts a system message (persona, date, model info, tool prompts).
+       *
+       * Fold it into the user turn it IMMEDIATELY precedes instead: the model
+       * reads the same text in the same position, and the body keeps the
+       * strictly user/assistant shape the web app sends. When no user turn
+       * follows before the next assistant turn (or before the end), the
+       * instruction is emitted as its own user turn rather than travelling
+       * forward — see {@link flushInstructions}. A system message that carries
+       * attachments is not an instruction block at all, so it falls through and
+       * becomes a normal user turn (its files must not be dropped).
+       */
+      if (message.role === 'system' && attachments.length === 0) {
+        if (text) pendingInstructions.push(text);
+        continue;
+      }
+
+      const role = message.role === 'assistant' ? 'assistant' : 'user';
+
+      // instructions may never be carried across an assistant turn
+      if (role === 'assistant') flushInstructions();
+
       for (const attachment of attachments) mimeTypes.add(attachment.mimeType);
       if (role === 'assistant' && text) echoHistory.push(text);
-      if (text) inputParts.push(text);
 
-      mapped.push({
+      let content = text;
+      if (role === 'user' && pendingInstructions.length > 0) {
+        content = [...pendingInstructions, text].filter(Boolean).join('\n\n');
+        pendingInstructions.length = 0;
+      }
+
+      pushMessage({
         attachments: attachments.length > 0 ? attachments : undefined,
-        content: text,
+        content,
         role,
       });
     }
+
+    // A trailing system message (e.g. the force-finish injector) still has to
+    // reach the model.
+    flushInstructions();
 
     return {
       echoHistory,

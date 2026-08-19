@@ -116,7 +116,13 @@ export interface AttachmentRef {
 export interface ChatGPTWebMessage {
   attachments?: AttachmentRef[];
   content: string;
-  role: 'system' | 'user' | 'assistant';
+  /**
+   * DELIBERATELY not `'system'`: chatgpt.com's own clients never author a
+   * system turn, so a `author.role: "system"` message in a conversation body is
+   * a shape only an automation client produces. System instructions are folded
+   * into the user turn they precede — see `buildMessages` in `./index.ts`.
+   */
+  role: 'user' | 'assistant';
 }
 
 export interface ConversationDocumentNode {

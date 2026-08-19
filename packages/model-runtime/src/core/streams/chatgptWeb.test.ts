@@ -118,6 +118,27 @@ describe('ChatGPTWebStream', () => {
     expect(raw).toContain('https://nodejs.org');
   });
 
+  // The upstream silently substitutes a lighter model (quota / risk), and the
+  // stream is otherwise tagged with the model we ASKED for — so the served slug
+  // has to reach the caller instead of being parsed and dropped.
+  it('reports the model the upstream actually served', async () => {
+    const onDone = vi.fn(async () => undefined);
+
+    await collect(
+      ChatGPTWebStream(
+        fromEvents([
+          { conversationId: 'conv-3', type: 'conversation.start' },
+          { modelSlug: 'gpt-5-6-mini', type: 'metadata' },
+          { delta: 'hi', text: 'hi', type: 'text.delta' },
+          { type: 'done' },
+        ]),
+        { model: 'gpt-5-6', onDone },
+      ),
+    );
+
+    expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ servedModel: 'gpt-5-6-mini' }));
+  });
+
   it('resolves image pointers into base64_image chunks', async () => {
     const resolveImage = vi.fn(async () => 'data:image/png;base64,AAAA');
 

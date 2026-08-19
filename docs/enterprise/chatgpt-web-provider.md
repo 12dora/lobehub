@@ -188,7 +188,9 @@ bun run curl-impersonate:install
 
 ## 6. 已知限制与注意事项
 
-- **上游可能按 IP / 用量静默降级模型**：SSE 的 `server_ste_metadata` 里带回真实 `model_slug`，但当前代码只解析不消费，界面**不会提示**你实际被降级到了 `gpt-5-6-mini` 之类。目录里这两张卡的说明已写明「用量达限时使用的更快更轻的 GPT-5.x 变体」，但默认关闭。
+- **上游可能按 IP / 用量静默降级模型**：SSE 的 `server_ste_metadata` 里带回真实 `model_slug`。现在它会被记录下来 —— 与请求的模型不一致时，`DEBUG=lobe-chatgptweb:stream` 打印一行 `upstream served <slug> for a turn that requested <model>`，同一个值也随 `servedModel` 进入流的 `onDone` 上下文。**界面仍然不会提示**（协议层没有「实际模型 ≠ 请求模型」的通用槽位，加一个要动 `StreamProtocolChunk` + `fetchSSE` + 消息元数据三层），所以怀疑被降级时先看这行日志。目录里两张 mini 卡的说明已写明「用量达限时使用的更快更轻的 GPT-5.x 变体」，但默认关闭。
+  - 注意 **`auto` 本来就会被上游路由**：选 `auto` 时服务到 `gpt-5-6-mini` 是上游分流器的正常行为，不是故障。拿浏览器里手选 GPT-5.6 去对比平台上的 `auto`，两边不可比。
+- **请求体里不会出现 `author.role: "system"`**：网页版自己从不发系统角色回合（自定义指令走另一套带标记的元数据），所以带自由文本的 system 回合是只有自动化客户端才会产出的形状。上下文引擎每一轮都会在 `messages[0]` 塞一条 system（人设、日期、模型信息、工具提示词），运行时会把它**并入紧随其后的那条用户消息**（`buildMessages`）；若下一条是助手回合（或已到末尾），则**就地**单独发成一条用户消息 —— 指令绝不允许跨过助手回合往后挪，否则会打乱对话顺序（`AgentDocumentMessageInjector` 会在首条用户消息之后插 system，这条路径真实可达）。`ChatGPTWebMessage['role']` 已收窄到 `'user' | 'assistant'` 钉住这条不变量。
 - **思考档位只有三档**：上游只接受 `standard` / `extended` / `max`（`low`/`medium`/`high` 会被 422 拒绝）。界面 6 档滑杆的映射是 `low|medium|standard → standard`、`high|xhigh|extended → extended`、`max → max`、`none|minimal|auto` → 不发该字段。
 - **带显式思考档位的回合几乎必然走 handoff/resume**：上游先回一个空流 + `stream_handoff`，答案在 `/f/conversation/resume` 上重放（最多链 3 次）。预算耗尽时回合标 `recoveryRequired`，运行时改为轮询会话文档最多 240 s 补齐后缀。表现为「首字慢」，不是故障。
 - **限流来自共享账号本身**：所有成员共用一个 ChatGPT 账号的配额，429 是终态错误（不重试、不回落）。图片生成配额虽然协议里能读（`limits_progress`），当前**没有做任何预检**。
@@ -209,6 +211,7 @@ bun run curl-impersonate:install
 | 生成文件保存失败                                     | §5.1：`S3_ENDPOINT` 浏览器可达性 + 桶 CORS（客户端模式的预签名 PUT）                                                     |
 | 生成文件根本没出现                                   | §5.2：服务端 `DEBUG=lobe-*` 里 `[file]` 的丢弃原因（超 32 MiB / 上传失败 / 无 userId）                                   |
 | 共享账号突然全员失效                                 | §4.4：面板 `expired` 是否为真（需重连）；是否用的是无法续期的「访问令牌」连接                                            |
+| 怀疑被降级到 mini                                    | `DEBUG=lobe-chatgptweb:stream` 里的 `upstream served …` 行；先确认请求的模型不是 `auto`（§6）                            |
 
 服务端调试：`DEBUG=lobe-chatgptweb:*`（子命名空间 `runtime` / `client` / `stream` / `image` / `image-resolve`）；`DEBUG_CHATGPTWEB_CHAT_COMPLETION=1` 打印对话请求体。日志里不会出现令牌、签名 URL 的 query 与路径。
 

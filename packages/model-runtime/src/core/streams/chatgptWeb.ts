@@ -61,6 +61,13 @@ export interface ChatGPTWebDoneContext {
   recoveryRequired: boolean;
   /** search was requested, or the upstream reported that it used its search tool */
   searchUsed: boolean;
+  /**
+   * The slug chatgpt.com actually SERVED this turn (`server_ste_metadata`), which
+   * is not necessarily the one we asked for: the upstream silently substitutes a
+   * lighter variant (`…-mini`) on quota / risk grounds, and `auto` routes by its
+   * own classifier. `undefined` when the upstream never reported one.
+   */
+  servedModel?: string;
   /** the answer text already streamed — recovery must only emit what follows it */
   text: string;
 }
@@ -180,6 +187,10 @@ export async function* transformChatGPTWebEvents(
   let outputReasoning = '';
   let sawReasoningText = false;
   let searchUsed = false;
+  /** the slug the upstream reported serving — see {@link ChatGPTWebDoneContext.servedModel} */
+  let servedModel: string | undefined;
+  /** slugs already reported in the log, so a replayed resume leg stays quiet */
+  const reportedModels = new Set<string>();
   // a stack that already reported citations must not receive a second grounding chunk
   let citationsEmitted = Boolean(stack?.returnedCitation);
   let hadOutput = false;
@@ -324,6 +335,29 @@ export async function* transformChatGPTWebEvents(
 
           case 'metadata': {
             if (event.turnUseCase === 'search' || event.toolInvoked) searchUsed = true;
+            // The turn is tagged downstream with the model we ASKED for, so a
+            // silent substitution is invisible unless it is reported here.
+            // Logged once per DISTINCT slug — a resume leg replays the metadata,
+            // and a turn can report several slugs in any order.
+            if (event.modelSlug) {
+              servedModel = event.modelSlug;
+              if (!reportedModels.has(event.modelSlug)) {
+                reportedModels.add(event.modelSlug);
+                // `auto` is routed upstream BY DESIGN: a lighter slug there is
+                // the router doing its job, not a substitution worth alarming
+                // about.
+                if (!options.model || options.model === event.modelSlug)
+                  log('upstream served %s', event.modelSlug);
+                else if (options.model === 'auto')
+                  log('upstream routed this `auto` turn to %s', event.modelSlug);
+                else
+                  log(
+                    'upstream served %s for a turn that requested %s — the answer is NOT from the requested model',
+                    event.modelSlug,
+                    options.model,
+                  );
+              }
+            }
             if (options.debug) yield { data: event, id, type: 'data' };
             break;
           }
@@ -389,6 +423,7 @@ export async function* transformChatGPTWebEvents(
           hadText: outputText.length > 0,
           recoveryRequired,
           searchUsed,
+          servedModel,
           text: outputText,
         });
 

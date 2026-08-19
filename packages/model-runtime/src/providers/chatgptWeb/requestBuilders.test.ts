@@ -106,11 +106,13 @@ describe('buildConversationBody', () => {
     ).not.toHaveProperty('thinking_effort');
   });
 
+  // The wire type has no `system` role on purpose — chatgpt.com's own clients
+  // never author one, so a system-authored turn is a shape only an automation
+  // client produces. `buildMessages` folds instructions into the user turn.
   it('replays every role as its own upstream message', () => {
     const body = buildConversationBody({
       messages: [
-        { content: 'you are helpful', role: 'system' },
-        { content: 'hi', role: 'user' },
+        { content: 'you are helpful\n\nhi', role: 'user' },
         { content: 'hello', role: 'assistant' },
         { content: 'again', role: 'user' },
       ],
@@ -118,7 +120,6 @@ describe('buildConversationBody', () => {
     });
 
     expect(body.messages.map((message: any) => message.author.role)).toEqual([
-      'system',
       'user',
       'assistant',
       'user',
