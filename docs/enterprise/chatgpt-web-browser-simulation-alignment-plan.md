@@ -20,30 +20,31 @@ but it does not require controlling the user's real Chrome for every inference.
 
 **Read this section first. Everything else is detail/history — check here before reading further.**
 
-| Task    | What it is                                            | Status                                                                                                                                                     |
-| ------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C1      | Common Browser Session Context                        | ✅ Done — `cd38ff93db`                                                                                                                                     |
-| C2      | Provider-isolated Cookie Jar                          | ✅ Done — `cd38ff93db`                                                                                                                                     |
-| G1      | Preserve ChatGPT Device Binding                       | ✅ Done — `f40d0d7bb6`                                                                                                                                     |
-| G2      | Preserve ChatGPT Session-Cookie Shape                 | ✅ Done — `f40d0d7bb6`                                                                                                                                     |
-| G3      | Authenticated ChatGPT Bootstrap                       | ✅ Done — `0a720e3370` (unauth-shell detection) + `bb3d3f48a6` (context-scoped cache)                                                                      |
-| G4      | Sentinel Bundle Manager                               | ✅ Done — `0a720e3370` (pool) + `bb3d3f48a6` (account-scoped key)                                                                                          |
-| G5      | ChatGPT Page Session ID                               | ✅ Done — `bb3d3f48a6`                                                                                                                                     |
-| G6      | Pro Turn Coordinator                                  | ✅ Done — `0a720e3370`                                                                                                                                     |
-| G7      | Route All ChatGPT Endpoints Through One Context       | ✅ Done — `bb3d3f48a6` (account-scoped, 6 codex review rounds)                                                                                             |
-| **C3**  | **Persistent Impersonated Transport**                 | 🔄 **In progress (verification pending)**                                                                                                                  |
-| **C4**  | **Context Ownership and Cleanup**                     | ✅ Done — `pending`                                                                                                                                        |
-| **CX1** | **Isolate the Cursor CLI state cache per connection** | ✅ Done — per-connection `config-seed/<sha256(accountId)[:32]>/` via `x-aihub-account`; token-digest fallback; legacy global dir left in place (`pending`) |
-| ~~GX1~~ | ~~Account-scope the Grok agent identity~~             | ❌ **Decided against — do not implement.** No browser-session-shaped risk found for Grok's CLI-proxy endpoint.                                             |
+| Task    | What it is                                            | Status                                                                                                                                                        |
+| ------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1      | Common Browser Session Context                        | ✅ Done — `cd38ff93db`                                                                                                                                        |
+| C2      | Provider-isolated Cookie Jar                          | ✅ Done — `cd38ff93db`                                                                                                                                        |
+| G1      | Preserve ChatGPT Device Binding                       | ✅ Done — `f40d0d7bb6`                                                                                                                                        |
+| G2      | Preserve ChatGPT Session-Cookie Shape                 | ✅ Done — `f40d0d7bb6`                                                                                                                                        |
+| G3      | Authenticated ChatGPT Bootstrap                       | ✅ Done — `0a720e3370` (unauth-shell detection) + `bb3d3f48a6` (context-scoped cache)                                                                         |
+| G4      | Sentinel Bundle Manager                               | ✅ Done — `0a720e3370` (pool) + `bb3d3f48a6` (account-scoped key)                                                                                             |
+| G5      | ChatGPT Page Session ID                               | ✅ Done — `bb3d3f48a6`                                                                                                                                        |
+| G6      | Pro Turn Coordinator                                  | ✅ Done — `0a720e3370`                                                                                                                                        |
+| G7      | Route All ChatGPT Endpoints Through One Context       | ✅ Done — `bb3d3f48a6` (account-scoped, 6 codex review rounds)                                                                                                |
+| C3      | Persistent Impersonated Transport                     | ✅ Done — `068109098b` (driver) + `c79b333817`/`5279f6458b` (review rounds); packaging `29c53a1b92` + `c2f88daae8`                                            |
+| C4      | Context Ownership and Cleanup                         | ✅ Done — `9bb7be8276` + `c79b333817`/`5279f6458b` (review rounds)                                                                                            |
+| **CX1** | **Isolate the Cursor CLI state cache per connection** | ✅ Done — per-connection `config-seed/<sha256(accountId)[:32]>/` via `x-aihub-account`; token-digest fallback; legacy global dir left in place (`f7a396bc85`) |
+| ~~GX1~~ | ~~Account-scope the Grok agent identity~~             | ❌ **Decided against — do not implement.** No browser-session-shaped risk found for Grok's CLI-proxy endpoint.                                                |
 
-**If you are picking this up fresh: C1/C2/G1–G7 are shipped, tested, and pushed to `main`; CX1 is
-done in this worktree.** The ChatGPT Web Pro-tier downgrade's root causes (protocol mismatches,
-device-id-only isolation, no persistent session concept) are fixed. **What's actually left is C3**
-(verification pending). C4 is implemented in this worktree (commander flips the package on merge).
-Read "C3 — Persistent Impersonated Transport" and "C4 — Context Ownership and Cleanup" in Actionable
-tasks below. You do not need to read C1/C2/G1–G7's own task descriptions to start work — they're
-kept below only as historical record of what was built and why, and as a reference for the
-acceptance-criteria style/rigor expected of C3/C4 too.
+**If you are picking this up fresh: every task in this plan (C1–C4, G1–G7, CX1) is shipped, tested,
+and pushed to `main` as of 2026-08-20.** The ChatGPT Web Pro-tier downgrade's root causes (protocol
+mismatches, device-id-only isolation, no persistent session concept, per-request curl with no HTTP/2
+continuity) are fixed. Nothing in this document is open work; what remains is the live validation
+described under "Validation policy" (only once the real Chrome control returns Pro again) and the
+follow-ups listed in the C3/C4 implementation notes (extract the ChatGPT request primitives out of
+the common driver before a second browser-simulating provider; G4 warm-after-rotate). The task
+sections below are kept as the record of what was built and why, and as the reference for the
+acceptance-criteria style/rigor expected of any future browser-simulation work.
 
 **One hard blocking constraint that carries forward into C3/C4 work:** the Browser Session Context
 registry is currently process-local (in-memory only). This is fine for AIHub's current
@@ -492,7 +493,7 @@ Retain and finish the current workspace implementation rather than returning to 
 **Priority:** P1\
 **Scope:** common infrastructure; initially consumed by ChatGPT Web
 
-**Status:** 🔄 **In progress (verification pending).**
+**Status:** ✅ **Done** — `068109098b` (driver, packaging `29c53a1b92`/`c2f88daae8`) + `c79b333817`/`5279f6458b` (four independent codex review rounds).
 
 The current one-process-per-request curl adapter cannot reproduce HTTP/2 connection continuity.
 Replace it with a long-running transport worker or sidecar that owns connection pools.
@@ -524,7 +525,7 @@ browser context + origin + proxy/egress outlet + impersonation profile revision
 #### C3 implementation notes
 
 Implemented as an **in-process libcurl-impersonate multi driver** via `koffi` (not a sidecar
-process); commander flips the package status on merge. Each pool is one `CURLM` with
+process). Each pool is one `CURLM` with
 `CURLMOPT_PIPELINING=CURLPIPE_MULTIPLEX`, keyed
 by `browser context + origin + proxy/egress outlet + impersonation profile`. While
 `curl_multi_poll.async` is outstanding, the only native call allowed from elsewhere is
