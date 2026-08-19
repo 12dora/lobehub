@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 
-import type { PlatformUserConnectorBindingItem } from '@/database/schemas/platform';
+import type {
+  PlatformConnectorOAuthStateItem,
+  PlatformUserConnectorBindingItem,
+} from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { connectorBindingSchema, connectorScopesSchema } from '../../contracts/platformConnectors';
@@ -9,6 +12,9 @@ import { PlatformAuditService } from '../platformAudit';
 import { PlatformConnectorContractError } from './errors';
 import type { ConnectorOAuthRuntimeDependencies } from './oauthRuntime';
 import { cleanupConnectorSecretRefs } from './secretCleanup';
+
+type PublishedPerUserOAuthErrorCode =
+  'PLATFORM_CONNECTOR_NOT_PUBLISHED' | 'PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID';
 
 export const hashOAuthValue = (value: string): string =>
   createHash('sha256').update(value).digest('hex');
@@ -103,3 +109,71 @@ export const toBindingProjection = (binding: PlatformUserConnectorBindingItem | 
         updatedAt: binding.updatedAt,
       })
     : null;
+
+export const assertPublishedPerUserOAuthConnector = <T>(params: {
+  code: PublishedPerUserOAuthErrorCode;
+  connector: { credentialMode: string; enabled: boolean };
+  current:
+    { enabled: boolean; publishedRevision: number | null; status: string } | null | undefined;
+  expectedRevision: number;
+  oauth: T;
+}): NonNullable<T> => {
+  if (
+    !params.current ||
+    params.current.status !== 'published' ||
+    !params.current.enabled ||
+    params.current.publishedRevision !== params.expectedRevision ||
+    !params.connector.enabled ||
+    params.connector.credentialMode !== 'per_user_oauth' ||
+    !params.oauth
+  ) {
+    throw new PlatformConnectorContractError(params.code);
+  }
+  return params.oauth;
+};
+
+export const deriveAuthorizationAttemptStatus = (params: {
+  binding: PlatformUserConnectorBindingItem;
+  now: Date;
+  state: PlatformConnectorOAuthStateItem;
+}): {
+  binding: ReturnType<typeof toBindingProjection>;
+  status: 'completed' | 'superseded' | 'expired' | 'failed' | 'pending';
+} => {
+  const { binding, now, state } = params;
+  const expired = !state.authorizationOutcome && state.expiresAt.getTime() <= now.getTime();
+  const completed =
+    !state.revokedAt &&
+    state.authorizationOutcome === 'completed' &&
+    binding.status === 'connected' &&
+    !binding.revokedAt;
+  return {
+    binding: completed ? toBindingProjection(binding) : null,
+    status: completed
+      ? 'completed'
+      : state.revokedAt
+        ? 'superseded'
+        : expired
+          ? 'expired'
+          : state.authorizationOutcome === 'failed'
+            ? 'failed'
+            : 'pending',
+  };
+};
+
+export const applyAuthorizationQuery = (
+  authorizationUrl: URL,
+  params: {
+    challenge: string;
+    oauth: { clientId: string; redirectUri: string; scopes: string[] };
+    state: string;
+  },
+): void => {
+  authorizationUrl.searchParams.set('client_id', params.oauth.clientId);
+  authorizationUrl.searchParams.set('code_challenge', params.challenge);
+  authorizationUrl.searchParams.set('code_challenge_method', 'S256');
+  authorizationUrl.searchParams.set('redirect_uri', params.oauth.redirectUri);
+  authorizationUrl.searchParams.set('response_type', 'code');
+  authorizationUrl.searchParams.set('scope', params.oauth.scopes.join(' '));
+  authorizationUrl.searchParams.set('state', params.state);
+};

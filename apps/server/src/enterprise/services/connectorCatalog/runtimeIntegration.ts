@@ -7,8 +7,6 @@ import type { LobeChatDatabase } from '@/database/type';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
-import { resolveConnectorGovernance } from '../connectorGovernance/resolve';
-import { CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER } from '../connectorGovernance/types';
 import { createEgressSafeOutboundTransport } from '../networkProxy/egress/safeOutboundTransport';
 import { PlatformAuditService } from '../platformAudit';
 import { ConnectorOutboundClient } from './connectorOutboundClient';
@@ -17,26 +15,19 @@ import { PlatformConnectorContractError } from './errors';
 import { resolveLegacyPermission } from './legacyToolPermissionOverlay';
 import { type ConnectorOAuthRuntimeEnv, getConnectorOAuthRuntime } from './oauthRuntime';
 import {
-  ConnectorOperationProofSigner,
   type ConnectorOwnedOperationProof,
-  fingerprintConnectorAgentPolicy,
   toConnectorOperationProof,
 } from './operationProofSigner';
 import type { ConnectorOperationSnapshotService } from './operationSnapshot';
 import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
 import { getConnectorPublishedIndex } from './publishedIndex';
 import { PlatformConnectorRuntimeAdapter } from './runtimeAdapter';
+import { admitManagedConnectorExecution } from './runtimeAdmission';
 import { appendConnectorRuntimeAudit } from './runtimeAudit';
-import {
-  type ConnectorRuntimeEffectiveMode,
-  getConnectorRuntimeEffectiveState,
-} from './runtimeEffectiveState';
+import type { ConnectorRuntimeEffectiveMode } from './runtimeEffectiveState';
 import { DatabaseConnectorRuntimeExecutionJournal } from './runtimeExecutionJournal';
-import { getSnapshots, type PlatformConnectorRuntimeManifest } from './runtimeManifests';
-import {
-  matchesConnectorApprovalReceipt,
-  matchesConnectorDependencySelection,
-} from './runtimeProofMatchers';
+import { getSnapshots } from './runtimeManifests';
+import { resolveConnectorRuntimeMode } from './runtimeMode';
 import { createSharedRateLimiter } from './sharedRateLimiter';
 import { UserConnectorOAuthService } from './userOAuthService';
 
@@ -45,6 +36,7 @@ export {
   buildManagedConnectorManifests,
   buildPinnedManagedConnectorManifests,
 } from './runtimeManifests';
+export { resolveConnectorRuntimeMode };
 export {
   createConnectorApprovalReceipt,
   matchesConnectorApprovalReceipt,
@@ -84,17 +76,6 @@ export const assertLegacyConnectorRuntimeAllowed = async (params: {
   throw new PlatformConnectorContractError(
     mode === 'blocked' ? 'PLATFORM_CONNECTOR_NOT_PUBLISHED' : 'PLATFORM_CONNECTOR_TOOL_DENIED',
   );
-};
-
-/** Feature-off and non-enforced modes preserve legacy behavior without catalog runtime I/O. */
-export const resolveConnectorRuntimeMode = async (params: {
-  env?: ConnectorOAuthRuntimeEnv;
-  resolveState?: () => Promise<{ mode: ConnectorRuntimeEffectiveMode; revision: number }>;
-}): Promise<ConnectorRuntimeEffectiveMode> => {
-  const env = params.env ?? process.env;
-  const flags = parseEnterpriseFeatureFlags(env);
-  if (!flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) return 'legacy';
-  return (await (params.resolveState ?? (() => getConnectorRuntimeEffectiveState(env)))()).mode;
 };
 
 const buildConnectorRuntimeAdapter = (
@@ -196,89 +177,21 @@ export const executeManagedConnectorTool = async (params: {
   userId?: string;
   workspaceId?: string;
 }): Promise<ManagedConnectorExecutionResult> => {
-  const flags = parseEnterpriseFeatureFlags(params.env ?? process.env);
-  if (!flags.ENABLE_PLATFORM_MANAGED_CONNECTORS || !params.db) return { handled: false };
-
   try {
-    const mode = await resolveConnectorRuntimeMode({ env: params.env });
-    if (mode === 'legacy') return { handled: false };
-    if (mode === 'blocked') return stableFailure('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    const admission = await admitManagedConnectorExecution(params);
+    if (admission.kind === 'bypass') return { handled: false };
+    if (admission.kind === 'deny') return stableFailure(admission.code);
 
-    if (
-      !params.userId ||
-      !params.agentId ||
-      !params.operationId ||
-      !params.toolCallId ||
-      !params.toolType
-    ) {
-      return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
-    }
-    const manifest = params.manifest as Partial<PlatformConnectorRuntimeManifest> | undefined;
-    if (manifest?.platformConnectorTombstone) {
-      return stableFailure('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-    }
-    const signer = new ConnectorOperationProofSigner(params.env ?? process.env);
-    const proof = signer.verifyProof(manifest?.platformConnectorProof);
-    const agentPolicy = manifest?.platformConnectorAgentPolicy;
-    const selection = agentPolicy?.selections.find(
-      (candidate) => candidate.connectorKey === params.identifier,
-    );
-    const agentPolicyAllowed =
-      proof.agentId === params.agentId &&
-      proof.userId === params.userId &&
-      proof.connectorKey === params.identifier &&
-      agentPolicy?.revision === proof.managedPolicyRevision &&
-      matchesConnectorDependencySelection({ apiName: params.apiName, proof, selection }) &&
-      fingerprintConnectorAgentPolicy({
-        agentId: params.agentId,
-        managedPolicyRevision: agentPolicy.revision,
-        selections: agentPolicy.selections,
-      }) === proof.agentPolicyFingerprint;
-    if (!agentPolicyAllowed) return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
-
-    if (proof.operationId !== params.operationId) {
-      return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
-    }
-    let humanApproved = false;
-    if (params.approvalReceipt) {
-      const receipt = signer.verifyApprovalReceipt(params.approvalReceipt);
-      humanApproved = matchesConnectorApprovalReceipt({
-        apiName: params.apiName,
-        arguments: params.arguments,
-        identifier: params.identifier,
-        proof,
-        receipt,
-        toolCallId: params.toolCallId,
-        toolType: params.toolType,
-      });
-    }
-
-    // Org-wide shared OAuth identity (connector governance): while the
-    // connectors managed policy is enforced with a designated owner,
-    // per_user_oauth executions load/refresh the OWNER's platform binding so
-    // every user shares that one authorization. Resolved once per execution.
-    // Unresolvable governance returns DENIED_CONNECTOR_GOVERNANCE (active +
-    // synthetic shared owner) — never fall back to the invoking user's binding.
-    // User bindings are never written from here.
-    const governance = await resolveConnectorGovernance(params.db);
-    if (
-      governance.active &&
-      governance.sharedAuthOwnerUserId === CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER
-    ) {
-      return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
-    }
-    const effectiveBindingUserId =
-      governance.active && governance.sharedAuthOwnerUserId
-        ? governance.sharedAuthOwnerUserId
-        : undefined;
-
-    const snapshots = getSnapshots(params.db);
+    const flags = parseEnterpriseFeatureFlags(params.env ?? process.env);
+    const db = params.db;
+    if (!db) return { handled: false };
+    const snapshots = getSnapshots(db);
     const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise(
       params.env ?? process.env,
       flags,
     );
     if (!secretService) return stableFailure('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-    const secrets = new PlatformConnectorSecretStore(params.db, secretService);
+    const secrets = new PlatformConnectorSecretStore(db, secretService);
     const outbound = new ConnectorOutboundClient(
       new SafeOutboundHttpClient({
         policyProvider: connectorOutboundPolicyProvider,
@@ -286,22 +199,22 @@ export const executeManagedConnectorTool = async (params: {
       }),
     );
     const adapter = buildConnectorRuntimeAdapter(
-      { db: params.db, env: params.env, workspaceId: params.workspaceId },
-      proof,
-      agentPolicyAllowed,
+      { db, env: params.env, workspaceId: params.workspaceId },
+      admission.proof,
+      true,
       { outbound, secrets, snapshots },
     );
     const result = await adapter.execute({
-      agentId: params.agentId,
-      arguments: params.arguments,
+      agentId: admission.agentId,
+      arguments: admission.arguments,
       // Shared-auth owner binding identity (see governance resolution above);
       // undefined keeps the per-user binding path byte-identical to today.
-      effectiveBindingUserId,
-      humanApproved,
-      proof: toConnectorOperationProof(proof),
-      toolCallId: params.toolCallId,
-      toolKey: params.apiName,
-      userId: params.userId,
+      effectiveBindingUserId: admission.effectiveBindingUserId,
+      humanApproved: admission.humanApproved,
+      proof: toConnectorOperationProof(admission.proof),
+      toolCallId: admission.toolCallId,
+      toolKey: admission.apiName,
+      userId: admission.userId,
     });
     return {
       handled: true,

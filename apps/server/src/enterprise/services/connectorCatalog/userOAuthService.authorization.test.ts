@@ -99,6 +99,22 @@ describe('per-user connector OAuth authorization/callback', () => {
     }
   });
 
+  it('returns invalid for an unknown authorization attempt', async () => {
+    const harness = createHarness();
+    const published = await publishOAuthConnector(harness);
+    const attemptId = 'a'.repeat(32);
+    await expect(
+      harness.userA.getAuthorizationStatus({
+        attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toEqual({
+      attemptId,
+      binding: null,
+      status: 'invalid',
+    });
+  });
+
   it('uses PKCE, stores only immutable token refs, and permits one callback winner', async () => {
     const harness = createHarness();
     const published = await publishOAuthConnector(harness);

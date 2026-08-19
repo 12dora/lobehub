@@ -1,8 +1,3 @@
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import nodePath from 'node:path';
-
-import debug from 'debug';
 import {
   getProviderOAuthGrantFlow,
   isProviderAccessTokenPasteAllowed,
@@ -14,7 +9,6 @@ import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiC
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
-import { extractOidcEmail } from '@/server/services/oauthDeviceFlow';
 import { getOAuthService } from '@/server/services/oauthDeviceFlow/providers/githubCopilot';
 
 import {
@@ -38,78 +32,30 @@ import { AiCatalogNotFoundError } from '../../services/aiCatalog/adminService';
 import { providerCredentialKeys } from '../../services/aiCatalog/credentialAdapter';
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
 import { tryBackfillSharedAccountIdentity } from '../../services/aiCatalog/sharedOAuthIdentity';
-import { readSharedOAuthReauthMarker } from '../../services/aiCatalog/sharedOAuthReauthMarker';
-import {
-  isOAuthAuthorizationExpiredError,
-  refreshSharedOAuthVault,
-} from '../../services/aiCatalog/sharedOAuthRefresh';
 import { PlatformBrowserProfileService } from '../../services/browserProfile';
-import { wipeChatGPTWebCookieJar } from '../../services/chatgptWeb/oauthService';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { assertDangerousReauth, createService, mapServiceError } from './aiCatalogSupport';
 import {
   acquireSharedConnectionTokens,
-  asVaultString,
+  applySharedConnectionVault,
   auditProvider,
   buildSharedVault,
   disconnectPermissions,
   INITIATE_REAUTH_REASON,
   maskAccountId,
-  resolveRenewalKind,
+  projectSharedConnectionStatus,
+  refreshStatusVault,
   resolveRotatingOAuthCard,
   sharedAccountPermissions,
 } from './aiProviderOAuthSupport';
-
-const log = debug('lobe-server:admin-ai-provider-oauth');
-
-/**
- * Device id for the ChatGPT Web jar, persisted beside the jar itself.
- *
- * apply commits the vault clear and then a post-commit getDetail can fail
- * because the database went away. The verification read then fails too, and a
- * retry sees an empty vault. The id has to live outside the row or the jar is
- * stranded while a historical revision can still resolve its secret version.
- */
-const CHATGPT_WEB_PENDING_WIPE_DIR = nodePath.join(tmpdir(), 'aihub-chatgptweb-jars');
-
-const chatgptWebPendingWipePath = (providerId: string) =>
-  nodePath.join(CHATGPT_WEB_PENDING_WIPE_DIR, `pending-wipe-${providerId}`);
-
-const persistChatGPTWebPendingWipe = (providerId: string, deviceId: string): void => {
-  try {
-    mkdirSync(CHATGPT_WEB_PENDING_WIPE_DIR, { mode: 0o700, recursive: true });
-    writeFileSync(chatgptWebPendingWipePath(providerId), deviceId, { mode: 0o600 });
-  } catch {
-    // Best-effort: the in-memory capture still covers this request.
-  }
-};
-
-const readChatGPTWebPendingWipe = (providerId: string): string | undefined => {
-  try {
-    const deviceId = readFileSync(chatgptWebPendingWipePath(providerId), 'utf8').trim();
-    return deviceId || undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-const clearChatGPTWebPendingWipe = (providerId: string): void => {
-  try {
-    unlinkSync(chatgptWebPendingWipePath(providerId));
-  } catch {
-    // Already gone.
-  }
-};
-
-const decryptChatGPTWebDeviceId = async (
-  ciphertext: string | null | undefined,
-): Promise<string | undefined> => {
-  if (!ciphertext) return undefined;
-  const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise();
-  if (!secrets) return undefined;
-  const keyVaults = await new AiCatalogSecretManager(secrets).decrypt(ciphertext);
-  return asVaultString(keyVaults.oauthDeviceId);
-};
+import {
+  captureChatGPTWebDeviceId,
+  clearChatGPTWebPendingWipe,
+  persistChatGPTWebPendingWipe,
+  readChatGPTWebPendingWipe,
+  recoverDisconnectAfterApplyFailure,
+  wipeChatGPTWebJarBestEffort,
+} from './chatgptWebDisconnectWipe';
 
 const adminBase = authedProcedure
   .use(serverDatabase)
@@ -174,33 +120,16 @@ export const adminAiProviderOAuthRouter = router({
       // reconstruct this from an empty vault.
       let chatgptWebDeviceId: string | undefined;
       if (input.id === 'chatgptweb') {
-        try {
-          const provider = await repo.getProvider(detail.draft.id);
-          chatgptWebDeviceId = await decryptChatGPTWebDeviceId(provider?.encryptedKeyVaults);
-          if (!chatgptWebDeviceId) {
-            const published = await repo.getLatestPublishedProviderRevision(detail.draft.id);
-            if (published?.secretFingerprint) {
-              const version = await repo.getProviderSecretVersion(
-                detail.draft.id,
-                published.secretFingerprint,
-              );
-              chatgptWebDeviceId = await decryptChatGPTWebDeviceId(version?.ciphertext);
-            }
-          }
-        } catch {
-          // Best-effort: never fail the disconnect on a vault-read error.
-        }
-        chatgptWebDeviceId ??= readChatGPTWebPendingWipe(detail.draft.id);
+        chatgptWebDeviceId = await captureChatGPTWebDeviceId({
+          draftId: detail.draft.id,
+          repo,
+        });
       }
 
       const wipeCapturedJar = () => {
-        const deviceId = chatgptWebDeviceId ?? readChatGPTWebPendingWipe(detail.draft.id);
-        if (!deviceId) return;
-        try {
-          wipeChatGPTWebCookieJar(deviceId);
-        } catch {
-          // Best-effort: never fail the disconnect on a jar unlink.
-        }
+        wipeChatGPTWebJarBestEffort(
+          chatgptWebDeviceId ?? readChatGPTWebPendingWipe(detail.draft.id),
+        );
       };
 
       // Fail-closed: a draft-only clear leaves the published revision's secret
@@ -239,33 +168,22 @@ export const adminAiProviderOAuthRouter = router({
         // The failure we recover from is usually a post-commit getDetail outage, so
         // a second database read is likely to fail too. Wipe from the id captured
         // before apply whenever we cannot prove the session is still live.
-        type ClearOutcome = { revision: number } | 'live' | 'unknown';
-        let outcome: ClearOutcome;
-        try {
-          const provider = await repo.getProvider(detail.draft.id);
-          outcome = provider?.encryptedKeyVaults
-            ? 'live'
-            : { revision: provider?.revision ?? detail.baseRevision };
-        } catch {
-          outcome = 'unknown';
-        }
+        const recovery = await recoverDisconnectAfterApplyFailure({
+          baseRevision: detail.baseRevision,
+          capturedDeviceId: chatgptWebDeviceId,
+          draftId: detail.draft.id,
+          repo,
+        });
 
-        if (outcome === 'live') {
-          clearChatGPTWebPendingWipe(detail.draft.id);
-        } else {
-          wipeCapturedJar();
-        }
-
-        if (typeof outcome === 'object') {
-          clearChatGPTWebPendingWipe(detail.draft.id);
+        if (recovery.kind === 'cleared') {
           await auditProvider(audit, {
             action: 'admin.aiProviderOAuth.disconnect',
             actorUserId: ctx.userId!,
-            afterDiff: { providerKey: input.id, revision: outcome.revision },
+            afterDiff: { providerKey: input.id, revision: recovery.revision },
             result: 'success',
             targetId: detail.draft.id,
           });
-          return { disconnected: true, revision: outcome.revision };
+          return { disconnected: true, revision: recovery.revision };
         }
 
         await auditProvider(audit, {
@@ -346,55 +264,37 @@ export const adminAiProviderOAuthRouter = router({
         });
       }
       const secretManager = new AiCatalogSecretManager(secrets);
-      let keyVaults = await secretManager.decrypt(provider.encryptedKeyVaults);
+      const keyVaults = await secretManager.decrypt(provider.encryptedKeyVaults);
 
       // Renew before projecting. Rotation used to happen ONLY on a real chat execution, so an
       // operator opening this card saw a stale (often already expired) timestamp until someone
       // chatted. This runs the same lease + CAS machinery, and is a cheap no-op while the
       // token is still fresh.
-      let expired = false;
-      if (provider.secretFingerprint) {
-        try {
-          keyVaults = await refreshSharedOAuthVault({
-            ciphertext: provider.encryptedKeyVaults,
-            db: ctx.serverDB,
-            fingerprint: provider.secretFingerprint,
-            keyVaults,
-            providerKey: input.id,
-            providerRowId: provider.id,
-            secrets: secretManager,
-          });
-        } catch (error) {
-          // Only a dead grant is actionable for the operator. Everything else (network, token
-          // endpoint 5xx, lost lease) degrades to the stored values — the card still renders.
-          if (isOAuthAuthorizationExpiredError(error)) expired = true;
-          // Stable category + provider key only. This path is polled by any admin with
-          // AI_PROVIDER_READ, and a refresh failure carries provider-controlled prose
-          // (`error_description`) that must never be copied into logs.
-          else log('status refresh for %s degraded to stored values', input.id);
-        }
-      }
+      const refreshed = await refreshStatusVault({
+        db: ctx.serverDB,
+        keyVaults,
+        provider: {
+          encryptedKeyVaults: provider.encryptedKeyVaults,
+          id: provider.id,
+          secretFingerprint: provider.secretFingerprint,
+        },
+        providerKey: input.id,
+        secretManager,
+      });
 
-      const accessToken = asVaultString(keyVaults.oauthAccessToken);
-      let accountId = asVaultString(keyVaults.oauthAccountId);
-      const expiresAt = asVaultString(keyVaults.oauthTokenExpiresAt);
-      // Raw epoch-ms string, exactly like `expiresAt`: both mirror the vault leaf type, and
-      // formatting belongs to the panel that renders them in the operator's locale.
-      const lastRefreshAt = asVaultString(keyVaults.oauthLastRefreshAt);
-      // Connections stored before the email leaf existed keep working: decode the claim from
-      // the access token we already hold, then (for x.ai / Cursor) one network fetch.
-      //
-      // Gated on the credential SHAPE. Shared-account providers that allow
-      // `oauthAccountEmail` (ChatGPT, ChatGPT Web, SuperGrok, Grok, Cursor) project it.
-      const emailProjectable = providerCredentialKeys(input.id).has('oauthAccountEmail');
-      let accountEmail = emailProjectable
-        ? (asVaultString(keyVaults.oauthAccountEmail) ??
-          extractOidcEmail(undefined, accessToken) ??
-          null)
-        : null;
+      const status = projectSharedConnectionStatus({
+        expired: refreshed.expired,
+        flow: getProviderOAuthGrantFlow(input.id),
+        keyVaults: refreshed.keyVaults,
+        providerKey: input.id,
+        secretConfigured,
+      });
 
-      const connected = !expired && Boolean(accessToken);
-      if (connected && emailProjectable && !accountEmail && accessToken) {
+      if (
+        status.connected &&
+        !status.accountEmail &&
+        providerCredentialKeys(input.id).has('oauthAccountEmail')
+      ) {
         try {
           const backfilled = await tryBackfillSharedAccountIdentity({
             db: ctx.serverDB,
@@ -402,57 +302,14 @@ export const adminAiProviderOAuthRouter = router({
             providerRowId: provider.id,
             secrets: secretManager,
           });
-          if (backfilled?.email) accountEmail = backfilled.email;
-          if (backfilled?.accountId) accountId = backfilled.accountId;
+          if (backfilled?.email) status.accountEmail = backfilled.email;
+          if (backfilled?.accountId) status.accountIdMasked = maskAccountId(backfilled.accountId);
         } catch {
           // Identity backfill must never take the status card down.
         }
       }
 
-      const refreshCredential = asVaultString(keyVaults.oauthRefreshToken);
-      /**
-       * Terminal auth failures recorded by the refresh path or by a real execution through the
-       * shared account. This is what closes the gap the operator kept hitting: a token string
-       * sitting in the vault, unexpired, that chatgpt.com has already stopped accepting — the
-       * refresh above is a no-op in that state, so presence alone said "已连接" while every
-       * member's chat came back 需要重新授权.
-       */
-      const marker = readSharedOAuthReauthMarker(keyVaults);
-
-      return {
-        accountEmail,
-        accountIdMasked: maskAccountId(accountId),
-        // A pasted access token has no renewal credential at all: it dies at `expiresAt` and
-        // only a manual reconnect brings it back. A web session counts — it mints fresh
-        // access tokens exactly like an OAuth refresh token does.
-        canRefresh: Boolean(refreshCredential),
-        connected,
-        expired,
-        expiresAt: expiresAt ?? null,
-        flow: getProviderOAuthGrantFlow(input.id),
-        // Null unless `needsReauth` — the pair is written and cleared as a unit.
-        invalidAt: expired ? (marker.invalidAt ?? String(Date.now())) : marker.invalidAt,
-        invalidReason: expired ? (marker.invalidReason ?? 'invalidGrant') : marker.invalidReason,
-        // Stamped at connect and moved forward by every successful renewal (including the
-        // one this query just ran), so an operator can tell a connection that is quietly
-        // rolling over from one nothing has touched since it was made.
-        lastRefreshAt: lastRefreshAt ?? null,
-        /**
-         * `expired` is this request's own observation (the refresh above threw `invalid_grant`);
-         * the marker is what an EARLIER observation — from any instance, including a member's
-         * failing chat — wrote down. Either one means the same thing to the operator, so they
-         * are surfaced as one state instead of two badges nobody can tell apart.
-         */
-        needsReauth: expired || Boolean(marker.invalidAt),
-        /**
-         * Names the renewal path so the panel can say WHY the connection keeps working.
-         * The stored label wins; connections made before the leaf existed are identified by
-         * the credential's shape (a next-auth session JWE is unmistakable), and anything
-         * else is the OAuth refresh token it can only be.
-         */
-        renewalKind: refreshCredential ? resolveRenewalKind(keyVaults, refreshCredential) : null,
-        secretConfigured,
-      };
+      return status;
     }),
 
   /**
@@ -598,37 +455,16 @@ export const adminAiProviderOAuthRouter = router({
 
       let result;
       try {
-        result = detail
-          ? await service.applyProviderImmediate(ctx.userId!, {
-              expectedDraftToken: detail.draftToken,
-              expectedRevision: detail.baseRevision,
-              id: detail.draft.id,
-              mode: 'update',
-              reason: input.reason,
-              secret: {
-                operation: 'merge',
-                ...(clearedIdentityLeaves.length > 0 ? { unset: clearedIdentityLeaves } : {}),
-                value: vault,
-              },
-            })
-          : await service.applyProviderImmediate(ctx.userId!, {
-              // Without a check model the admin connectivity probe cannot run at all; the
-              // builtin card already names the right default.
-              checkModel: card.checkModel ?? null,
-              description: card.description,
-              displayName: card.name,
-              // Connecting a shared account IS the activation intent, and the row is created
-              // here for the first time — so first connect lands enabled and live. The update
-              // branch above deliberately omits `enabled`: a reconnect must never re-enable a
-              // provider the admin turned off on purpose.
-              enabled: true,
-              mode: 'create',
-              providerKey: input.id,
-              reason: input.reason,
-              secret: { operation: 'replace', value: vault },
-              settings: card.settings,
-              source: 'builtin',
-            });
+        result = await applySharedConnectionVault({
+          card,
+          clearedIdentityLeaves,
+          detail,
+          providerKey: input.id,
+          reason: input.reason,
+          service,
+          userId: ctx.userId!,
+          vault,
+        });
       } catch {
         // The device grant is single-use and has already been redeemed here, so a failed
         // store must not crash the poll loop: report a terminal, non-retryable outcome and

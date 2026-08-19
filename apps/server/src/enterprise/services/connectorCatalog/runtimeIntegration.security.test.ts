@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ConnectorModel } from '@/database/models/connector';
 import { ConnectorToolModel } from '@/database/models/connectorTool';
@@ -6,6 +6,9 @@ import { checksumPayload } from '@/database/models/platform';
 import type * as PlatformConnectorCatalogModule from '@/database/repositories/platformConnectorCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { resolveConnectorGovernance } from '../connectorGovernance/resolve';
+import { CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER } from '../connectorGovernance/types';
+import type * as RuntimeAdapterModule from './runtimeAdapter';
 import type * as RuntimeEffectiveStateModule from './runtimeEffectiveState';
 import { getConnectorRuntimeEffectiveState } from './runtimeEffectiveState';
 import {
@@ -22,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   getConnectorByKey: vi.fn(),
   getCurrentPublishedRuntime: vi.fn(),
   getPublishedRuntimeRevision: vi.fn(),
+  RuntimeAdapter: vi.fn(),
 }));
 
 vi.mock('@/database/models/connector', () => ({
@@ -47,6 +51,16 @@ vi.mock('./runtimeEffectiveState', async (importOriginal) => ({
   ...(await importOriginal<typeof RuntimeEffectiveStateModule>()),
   getConnectorRuntimeEffectiveState: vi.fn(async () => ({ mode: 'enforced', revision: 8 })),
 }));
+vi.mock('./runtimeAdapter', async (importOriginal) => {
+  const actual = await importOriginal<typeof RuntimeAdapterModule>();
+  mocks.RuntimeAdapter.mockImplementation(
+    (deps) => new actual.PlatformConnectorRuntimeAdapter(deps),
+  );
+  return {
+    ...actual,
+    PlatformConnectorRuntimeAdapter: mocks.RuntimeAdapter,
+  };
+});
 vi.mock('../connectorGovernance/resolve', () => ({
   resolveConnectorGovernance: vi.fn(async () => ({
     active: false,
@@ -475,6 +489,134 @@ describe('managed Connector operation integration security', () => {
     expect(JSON.stringify(failed.result)).not.toContain(
       '"message":"PLATFORM_CONNECTOR_NOT_PUBLISHED"',
     );
+  });
+
+  describe('executeManagedConnectorTool org governance', () => {
+    const prepareAdmittedExecution = async (suffix: string) => {
+      const operationId = `operation-gov-${suffix}`;
+      const toolCallId = `tool-call-gov-${suffix}`;
+      const built = await buildManagedConnectorManifests({
+        agentId: 'agent-1',
+        connectorKeys: ['catalog'],
+        db,
+        env,
+        operationId,
+        serverAllowedConnectorKeys: ['catalog'],
+        userId: 'user-1',
+      });
+      const receipt = createConnectorApprovalReceipt({
+        agentId: 'agent-1',
+        apiName: 'search',
+        arguments: '{}',
+        env,
+        identifier: 'catalog',
+        manifest: built.manifests[0],
+        operationId,
+        toolCallId,
+        type: 'mcp',
+        userId: 'user-1',
+      });
+      return {
+        agentId: 'agent-1',
+        apiName: 'search',
+        approvalReceipt: receipt,
+        arguments: '{}',
+        db,
+        env,
+        identifier: 'catalog',
+        manifest: built.manifests[0],
+        operationId,
+        toolCallId,
+        toolType: 'mcp',
+        userId: 'user-1',
+      };
+    };
+
+    beforeEach(() => {
+      mocks.RuntimeAdapter.mockClear();
+    });
+
+    afterEach(() => {
+      mocks.RuntimeAdapter.mockClear();
+    });
+
+    it('denies execution and skips the adapter when governance is the fail-closed shared owner', async () => {
+      const params = await prepareAdmittedExecution('deny');
+      vi.mocked(resolveConnectorGovernance).mockResolvedValueOnce({
+        active: true,
+        builtinToolPolicies: {},
+        sharedAuthOwnerUserId: CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER,
+      });
+
+      const denied = await executeManagedConnectorTool(params);
+
+      expect(denied).toEqual({
+        handled: true,
+        result: {
+          content: '',
+          error: { code: 'PLATFORM_CONNECTOR_TOOL_DENIED', message: '' },
+          success: false,
+        },
+      });
+      expect(mocks.RuntimeAdapter).not.toHaveBeenCalled();
+    });
+
+    it('passes the designated shared owner as effectiveBindingUserId and keeps the invoker userId', async () => {
+      const params = await prepareAdmittedExecution('owner');
+      const execute = vi.fn().mockResolvedValue({
+        confirmation: null,
+        content: '',
+        success: true,
+      });
+      mocks.RuntimeAdapter.mockImplementationOnce(() => ({ execute }));
+      vi.mocked(resolveConnectorGovernance).mockResolvedValueOnce({
+        active: true,
+        builtinToolPolicies: {},
+        sharedAuthOwnerUserId: 'owner-1',
+      });
+
+      const admitted = await executeManagedConnectorTool(params);
+
+      expect(admitted).toEqual({
+        handled: true,
+        result: { content: '', success: true },
+      });
+      expect(execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          effectiveBindingUserId: 'owner-1',
+          userId: 'user-1',
+        }),
+      );
+    });
+
+    it('omits effectiveBindingUserId on the inactive per-user path', async () => {
+      const params = await prepareAdmittedExecution('per-user');
+      const execute = vi.fn().mockResolvedValue({
+        confirmation: null,
+        content: '',
+        success: true,
+      });
+      mocks.RuntimeAdapter.mockImplementationOnce(() => ({ execute }));
+      vi.mocked(resolveConnectorGovernance).mockResolvedValueOnce({
+        active: false,
+        builtinToolPolicies: {},
+        sharedAuthOwnerUserId: null,
+      });
+
+      const admitted = await executeManagedConnectorTool(params);
+
+      expect(admitted).toEqual({
+        handled: true,
+        result: { content: '', success: true },
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0]![0]).toEqual(
+        expect.objectContaining({
+          userId: 'user-1',
+        }),
+      );
+      expect(execute.mock.calls[0]![0].effectiveBindingUserId).toBeUndefined();
+    });
   });
 
   // CONNECTOR-EXACT: a platform Agent's Connector manifests come from its immutable pinned refs —

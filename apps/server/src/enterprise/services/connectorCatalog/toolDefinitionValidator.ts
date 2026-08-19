@@ -164,6 +164,45 @@ const isDangerousSchemaKeyword = (key: string, value: unknown, parentKeyword?: s
   );
 };
 
+const isExoticJsonArray = (value: unknown): value is unknown[] => {
+  if (!Array.isArray(value)) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const ownKeys = Reflect.ownKeys(value);
+  const indexKeys = Object.keys(descriptors).filter((key) => key !== 'length');
+  return (
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    ownKeys.some((key) => typeof key === 'symbol') ||
+    indexKeys.length !== value.length ||
+    indexKeys.some((key) => {
+      const descriptor = descriptors[key]!;
+      const index = Number(key);
+      return (
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= value.length ||
+        String(index) !== key ||
+        descriptor.enumerable !== true ||
+        descriptor.get !== undefined ||
+        descriptor.set !== undefined
+      );
+    })
+  );
+};
+
+const hasUnsafeOwnDescriptors = (value: object): boolean => {
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const ownKeys = Reflect.ownKeys(value);
+  return (
+    ownKeys.some((key) => typeof key === 'symbol') ||
+    Object.values(descriptors).some(
+      (descriptor) =>
+        descriptor.enumerable !== true ||
+        descriptor.get !== undefined ||
+        descriptor.set !== undefined,
+    )
+  );
+};
+
 const validateSchemaPair = (
   inputSchema: Record<string, unknown>,
   outputSchema: Record<string, unknown>,
@@ -217,31 +256,12 @@ const validateSchemaPair = (
     seen.add(frame.value);
 
     if (Array.isArray(frame.value)) {
-      const arrayValue = frame.value;
-      const descriptors = Object.getOwnPropertyDescriptors(arrayValue);
-      const ownKeys = Reflect.ownKeys(arrayValue);
-      const indexKeys = Object.keys(descriptors).filter((key) => key !== 'length');
-      const invalidArray =
-        Object.getPrototypeOf(arrayValue) !== Array.prototype ||
-        ownKeys.some((key) => typeof key === 'symbol') ||
-        indexKeys.length !== arrayValue.length ||
-        indexKeys.some((key) => {
-          const descriptor = descriptors[key]!;
-          const index = Number(key);
-          return (
-            !Number.isInteger(index) ||
-            index < 0 ||
-            index >= arrayValue.length ||
-            String(index) !== key ||
-            descriptor.enumerable !== true ||
-            descriptor.get !== undefined ||
-            descriptor.set !== undefined
-          );
-        });
-      if (invalidArray) {
+      if (isExoticJsonArray(frame.value)) {
         emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
         continue;
       }
+      const descriptors = Object.getOwnPropertyDescriptors(frame.value);
+      const indexKeys = Object.keys(descriptors).filter((key) => key !== 'length');
       for (const key of indexKeys) {
         stack.push({ ...frame, depth: frame.depth + 1, value: descriptors[key]!.value });
       }
@@ -252,17 +272,7 @@ const validateSchemaPair = (
       continue;
     }
 
-    const descriptors = Object.getOwnPropertyDescriptors(frame.value);
-    const ownKeys = Reflect.ownKeys(frame.value);
-    if (
-      ownKeys.some((key) => typeof key === 'symbol') ||
-      Object.values(descriptors).some(
-        (descriptor) =>
-          descriptor.enumerable !== true ||
-          descriptor.get !== undefined ||
-          descriptor.set !== undefined,
-      )
-    ) {
+    if (hasUnsafeOwnDescriptors(frame.value)) {
       emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
       continue;
     }
