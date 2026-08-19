@@ -216,6 +216,46 @@ describe('artifactManager.installFromStream', () => {
     ).rejects.toBeTruthy();
   });
 
+  it('compressed: auto gunzips a gzip-magic prefix and hashes decompressed bytes', async () => {
+    const body = Buffer.from('geodata-auto-gzip');
+    const gz = gzipSync(body);
+    stubSpec(body.length, sha256(body));
+    const installed = await artifactManager.installFromStream('geoip', Readable.from(gz), {
+      compressed: 'auto',
+      source: 'upload',
+    });
+    expect(installed.sha256).toBe(sha256(body));
+    expect(installed.pinnedDigestMatch).toBe(true);
+    expect(installed.path).toBe(path.join(dataDir, 'geodata', 'test', 'geoip.metadb'));
+  });
+
+  it('compressed: auto hashes raw bytes when the stream is not gzip', async () => {
+    const body = Buffer.from('plain-auto-payload');
+    stubSpec(body.length, sha256(body));
+    const installed = await artifactManager.installFromStream('geoip', Readable.from(body), {
+      compressed: 'auto',
+      source: 'upload',
+    });
+    expect(installed.sha256).toBe(sha256(body));
+    expect(installed.pinnedDigestMatch).toBe(true);
+  });
+
+  it('empty stream completes without hanging and mismatches a non-empty digest', async () => {
+    stubSpec(1024, '0'.repeat(64));
+    try {
+      await artifactManager.installFromStream('geoip', Readable.from([]), {
+        compressed: 'auto',
+        source: 'upload',
+      });
+      throw new Error('expected mismatch');
+    } catch (error) {
+      expect(getEnterpriseErrorBody(error)?.code).toBe('PLATFORM_NETWORK_PROXY_ARTIFACT_MISMATCH');
+    }
+    expect((await artifactManager.getStatus()).find((s) => s.kind === 'geoip')?.installed).toBe(
+      false,
+    );
+  });
+
   it('aborts a gzip bomb that exceeds the pinned decompressed size', async () => {
     const zeros = Buffer.alloc(64 * 1024, 0);
     const gz = gzipSync(zeros);

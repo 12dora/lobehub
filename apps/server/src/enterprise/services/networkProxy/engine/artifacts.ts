@@ -1,13 +1,12 @@
 import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, chmod, copyFile, lstat, open, rename } from 'node:fs/promises';
+import { access, chmod, copyFile, lstat, open } from 'node:fs/promises';
 import path from 'node:path';
-import { Readable, Transform, Writable } from 'node:stream';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { promisify } from 'node:util';
-import { createGunzip } from 'node:zlib';
 
 import debug from 'debug';
 import { fetch as undiciFetch, ProxyAgent } from 'undici';
@@ -18,23 +17,18 @@ import type {
   NetworkProxyEngineAsset,
   NetworkProxyGeodataFile,
 } from '@/const/platform/networkProxy';
-import {
-  NETWORK_PROXY_ENGINE_MANIFEST,
-  NETWORK_PROXY_ENV,
-  NETWORK_PROXY_LIMITS,
-} from '@/const/platform/networkProxy';
+import { NETWORK_PROXY_ENGINE_MANIFEST, NETWORK_PROXY_ENV } from '@/const/platform/networkProxy';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import type { ArtifactState } from '@/types/platform/networkProxy';
 
+import { installVerifiedStream } from './artifactInstall';
 import { redactUrlForDisplay } from './b1';
 import { NETWORK_PROXY_ENGINE_ERROR_CODES, throwNetworkProxyError } from './errors';
-import { ensureSecureDirectory, removeIfPresent, withInstallLock } from './fsSecure';
+import { ensureSecureDirectory, removeIfPresent } from './fsSecure';
 import { detectEnginePlatform, enginePaths, resolveDataDir } from './platform';
 
 const log = debug('lobe-server:network-proxy-artifacts');
 const execFileAsync = promisify(execFile);
-const GZIP_MAGIC_0 = 0x1f;
-const GZIP_MAGIC_1 = 0x8b;
 const SMOKE_TIMEOUT_MS = 10_000;
 
 export interface InstalledArtifact {
@@ -428,200 +422,12 @@ const isRegularFile = async (path: string): Promise<boolean> => {
   }
 };
 
-const toNodeReadable = (stream: NodeJS.ReadableStream): Readable =>
-  stream instanceof Readable ? stream : Readable.from(stream as AsyncIterable<Buffer>);
-
-const writeStreamToVerifiedFile = async (input: {
-  /** Keep the file even when the digest differs from `expectedSha256` (operator-accepted upload). */
-  acceptMismatch?: boolean;
-  compressed: 'auto' | 'gzip' | 'none';
-  expectedSha256: string;
-  maxCompressed: number;
-  maxDecompressed: number;
-  mode: number;
-  stream: NodeJS.ReadableStream;
-  tmpPath: string;
-}): Promise<{ digest: string; matched: boolean }> => {
-  const handle = await open(
-    input.tmpPath,
-    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-    0o600,
-  );
-  const hash = createHash('sha256');
-  let compressed = 0;
-  let decompressed = 0;
-  let encoding: 'gzip' | 'none' = input.compressed === 'gzip' ? 'gzip' : 'none';
-
-  const fail = async (error: unknown): Promise<never> => {
-    await handle.close().catch(() => undefined);
-    await removeIfPresent(input.tmpPath);
-    throw error;
-  };
-
-  try {
-    const source = toNodeReadable(input.stream);
-    const iterator = source[Symbol.asyncIterator]();
-    const first = await iterator.next();
-    const prefix = first.done
-      ? Buffer.alloc(0)
-      : Buffer.isBuffer(first.value)
-        ? first.value
-        : Buffer.from(first.value ?? '');
-    if (input.compressed === 'auto' && prefix.length >= 2) {
-      encoding = prefix[0] === GZIP_MAGIC_0 && prefix[1] === GZIP_MAGIC_1 ? 'gzip' : 'none';
-    }
-    const headed = Readable.from(
-      (async function* prepend() {
-        if (prefix.length) yield prefix;
-
-        while (true) {
-          const next = await iterator.next();
-          if (next.done) break;
-          yield next.value;
-        }
-      })(),
-    );
-
-    const countCompressed = new Transform({
-      transform(chunk: Buffer, _enc, callback) {
-        compressed += chunk.length;
-        if (compressed > input.maxCompressed) {
-          callback(new Error('compressed artifact exceeds the 64 MiB cap'));
-          return;
-        }
-        callback(null, chunk);
-      },
-    });
-    const countDecompressed = new Transform({
-      transform(chunk: Buffer, _enc, callback) {
-        decompressed += chunk.length;
-        if (decompressed > input.maxDecompressed) {
-          callback(new Error('decompressed artifact exceeds the pinned size cap'));
-          return;
-        }
-        hash.update(chunk);
-        callback(null, chunk);
-      },
-    });
-    const dest = new Writable({
-      write(chunk: Buffer, _enc, callback) {
-        void handle.write(chunk).then(() => callback(), callback);
-      },
-    });
-
-    if (encoding === 'gzip') {
-      await pipeline(headed, countCompressed, createGunzip(), countDecompressed, dest);
-    } else {
-      await pipeline(headed, countCompressed, countDecompressed, dest);
-    }
-
-    const digest = hash.digest('hex');
-    const matched = digest === input.expectedSha256;
-    if (!matched && !input.acceptMismatch) {
-      await handle.close().catch(() => undefined);
-      await removeIfPresent(input.tmpPath);
-      throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.ARTIFACT_MISMATCH);
-    }
-    await handle.sync();
-    await handle.chmod(input.mode);
-    await handle.close();
-    return { digest, matched };
-  } catch (error) {
-    return fail(error);
-  }
-};
-
 export interface InstallStreamOptions {
   /** Operator saw the digest-mismatch warning and chose to install the file anyway (upload only). */
   acceptMismatch?: boolean;
   compressed: 'auto' | 'gzip' | 'none';
   source: NetworkProxyArtifactSource;
 }
-
-const installVerifiedStream = async (
-  spec: ArtifactSpec,
-  stream: NodeJS.ReadableStream,
-  opts: InstallStreamOptions,
-): Promise<InstalledArtifact> => {
-  const dataDir = resolveDataDir();
-  const paths = enginePaths(dataDir);
-  return withInstallLock(
-    paths.lockPath,
-    async () => {
-      await ensureSecureDirectory(spec.destParent, { create: true, root: dataDir });
-      const dest = path.join(spec.destParent, spec.destName);
-      const tmpPath = `${dest}.${process.pid}.${randomUUID()}.tmp`;
-      const { digest, matched } = await writeStreamToVerifiedFile({
-        acceptMismatch: opts.acceptMismatch === true && opts.source === 'upload',
-        compressed: opts.compressed,
-        expectedSha256: spec.sha256,
-        maxCompressed: NETWORK_PROXY_LIMITS.UPLOAD_MAX_COMPRESSED_BYTES,
-        maxDecompressed: spec.size,
-        mode: spec.mode,
-        stream,
-        tmpPath,
-      });
-      // Smoke-test the temporary file BEFORE it replaces the working copy: an accepted-but-broken
-      // binary must not destroy a good install (and must not end up marked as accepted).
-      let smokeOutput: string | null = null;
-      let version = spec.version;
-      if (spec.kind === 'engine') {
-        try {
-          const smoked = await smokeTestEngineBinary(tmpPath);
-          smokeOutput = smoked.smokeOutput;
-          // A verified file IS the pinned version; an accepted mismatch reports what it really is.
-          if (!matched) version = smoked.version;
-          log('engine smoke test: %s', smokeOutput);
-        } catch (error) {
-          await removeIfPresent(tmpPath);
-          throw error;
-        }
-      }
-      // The acceptance marker must describe exactly the file about to sit at `dest`. It is staged
-      // next to the temp file and only swapped in after the artifact rename succeeded, so a
-      // failure leaves the previous artifact AND its marker untouched. Sealing needs the platform
-      // KEK — without one the mismatch is rejected before anything is replaced.
-      const markerTmp = matched
-        ? null
-        : `${acceptedDigestPath(dest)}.${process.pid}.${randomUUID()}.tmp`;
-      if (markerTmp) {
-        try {
-          await writeAcceptedDigest(markerTmp, {
-            digest,
-            kind: spec.kind,
-            manifestVersion: spec.version,
-            reportedVersion: version,
-          });
-        } catch (error) {
-          await removeIfPresent(tmpPath);
-          throw error;
-        }
-      }
-      try {
-        await rename(tmpPath, dest);
-      } catch (error) {
-        await removeIfPresent(tmpPath);
-        if (markerTmp) await removeIfPresent(markerTmp);
-        throw error;
-      }
-      await chmod(dest, spec.mode);
-      if (markerTmp) await rename(markerTmp, acceptedDigestPath(dest));
-      // A matching file replacing an accepted one drops the stale marker.
-      else await removeIfPresent(acceptedDigestPath(dest));
-      await rememberPinnedDigest(dest, digest);
-      return {
-        kind: spec.kind,
-        path: dest,
-        pinnedDigestMatch: matched,
-        sha256: digest,
-        smokeOutput,
-        source: opts.source,
-        version,
-      };
-    },
-    dataDir,
-  );
-};
 
 const openDownloadStream = async (
   url: string,
@@ -757,10 +563,15 @@ export const artifactManager = {
     const spec = resolveArtifactSpec(kind);
     const download = await openDownloadStream(spec.downloadUrl, opts?.proxyUrl);
     try {
-      return await installVerifiedStream(spec, download.stream, {
-        compressed: spec.compressed,
-        source: 'download',
-      });
+      return await installVerifiedStream(
+        spec,
+        download.stream,
+        {
+          compressed: spec.compressed,
+          source: 'download',
+        },
+        writeAcceptedDigest,
+      );
     } finally {
       await download.close();
     }
@@ -772,7 +583,7 @@ export const artifactManager = {
     opts: InstallStreamOptions,
   ): Promise<InstalledArtifact> => {
     const spec = resolveArtifactSpec(kind);
-    return installVerifiedStream(spec, stream, opts);
+    return installVerifiedStream(spec, stream, opts, writeAcceptedDigest);
   },
 
   resolveEngineBinary: async (
