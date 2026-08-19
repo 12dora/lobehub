@@ -2,6 +2,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { classifySubmitFailure } from './agentEditorSubmit';
 import type { AdminAgentDetailOutput } from './types';
 import { seedAgentEditorValue, suggestAgentKey, useAgentEditorForm } from './useAgentEditorForm';
 
@@ -829,5 +830,66 @@ describe('useAgentEditorForm ambiguous failure (server side effect, then transpo
     expect(result.current.resumeBlocked).toBe(false);
     // No reconcile read: a conflict is a definitive "did not commit", not an ambiguous failure.
     expect(mocks.fetchDetail).not.toHaveBeenCalled();
+  });
+});
+
+describe('classifySubmitFailure', () => {
+  const cas = { agentId: 'agent-1', draftToken: 'b'.repeat(64), revision: 7 };
+  const conflict = new Error('PLATFORM_REVISION_CONFLICT');
+  const transport = new Error('socket hang up');
+
+  it('treats a revision conflict as a definitive non-commit and does not reconcile', async () => {
+    const reconcile = vi.fn();
+    await expect(
+      classifySubmitFailure({
+        cas,
+        cause: conflict,
+        created: false,
+        identityCommitted: false,
+        reconcile,
+      }),
+    ).resolves.toBe('conflict');
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it('blocks resume when a create may have landed but reconcile cannot tell', async () => {
+    const reconcile = vi.fn().mockResolvedValue('unknown');
+    await expect(
+      classifySubmitFailure({
+        cas: null,
+        cause: transport,
+        created: true,
+        identityCommitted: false,
+        reconcile,
+      }),
+    ).resolves.toBe('resume-blocked');
+    expect(reconcile).toHaveBeenCalledWith(undefined);
+  });
+
+  it('classifies a create that reconcile found as a partial assignment', async () => {
+    const reconcile = vi.fn().mockResolvedValue('found');
+    await expect(
+      classifySubmitFailure({
+        cas,
+        cause: transport,
+        created: true,
+        identityCommitted: false,
+        reconcile,
+      }),
+    ).resolves.toBe('partial-assignment');
+    expect(reconcile).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('classifies an identity write that never committed as identity-failed', async () => {
+    const reconcile = vi.fn().mockResolvedValue('absent');
+    await expect(
+      classifySubmitFailure({
+        cas: null,
+        cause: transport,
+        created: true,
+        identityCommitted: false,
+        reconcile,
+      }),
+    ).resolves.toBe('identity-failed');
   });
 });
