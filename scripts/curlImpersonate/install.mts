@@ -78,10 +78,13 @@ export const manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as CurlI
 const TARGET_DIR = path.resolve(process.cwd(), '.cache', manifest.binaryName);
 const TARGET_PATH = path.join(TARGET_DIR, manifest.binaryName);
 
-const fail = (message: string): never => {
+// A function DECLARATION (not a const arrow): TypeScript only treats a call as an
+// assertion / never-returning control-flow exit when the callee's declared type carries
+// the explicit `never` annotation, which an inferred const type does not.
+function fail(message: string): never {
   console.error(`✖ ${message}`);
   process.exit(1);
-};
+}
 
 export const resolveAssetKey = (platform: string, arch: string): string => {
   const key = ASSET_ARCH[`${platform}:${arch}`];

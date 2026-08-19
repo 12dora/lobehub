@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { download, installLibrary, warnLibraryFailure } from './install.mts';
+import { download, installLibrary, warnLibraryFailure } from './install.mjs';
 import { LIBRARY_VERSION_MARKER, libraryFileName } from './lib';
 
 const DIRTY_URL = 'https://user:pass@mirror.example/pinned/secret.tar.gz?sig=SIGNATURE';
@@ -68,7 +68,7 @@ describe('download', () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://mirror.example/pinned/secret.tar.gz?sig=SIGNATURE');
     expect(url).not.toContain('user:pass');
     expect((init.headers as Record<string, string>).Authorization).toBe(

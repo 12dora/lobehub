@@ -257,6 +257,21 @@ COPY --from=builder /app/scripts/_shared /app/scripts/_shared
 RUN find /app/node_modules/.pnpm -maxdepth 1 -name '@vitejs+devtools*' -exec rm -rf {} + || true && \
     find /app/node_modules/.pnpm -name 'skia*.node' -type f -delete || true
 
+# koffi (FFI for the persistent ChatGPT Web transport) locates its prebuilt native
+# addon at `<koffi pkg dir>/../@koromix/koffi-<platform>`. Output tracing writes the
+# hoisted `/app/node_modules/koffi` as a REAL directory copy (the repo's is a pnpm
+# symlink), so that sibling does not exist next to it — only inside the .pnpm store
+# entry, which DOES carry `@koromix/koffi-linux-*` as a sibling. Point the hoisted
+# path back at the store copy so `require('koffi')` resolves the addon; fail the
+# build if the store entry is missing (the transport would silently fall back to CLI).
+RUN set -e && \
+    store="$(ls -d /app/node_modules/.pnpm/koffi@*/node_modules/koffi | head -n 1)" && \
+    test -f "$store/src/koffi/index.cjs" && \
+    ls -d "$store"/../@koromix/koffi-linux-* > /dev/null && \
+    rm -rf /app/node_modules/koffi && \
+    ln -s "${store#/app/node_modules/}" /app/node_modules/koffi && \
+    /bin/node -e "const k=require('/app/node_modules/koffi'); if(!k.load) throw new Error('koffi native addon missing'); console.log('koffi ok', k.version)"
+
 RUN set -e && \
     addgroup -S -g 1001 nodejs && \
     adduser -D -G nodejs -H -S -h /app -u 1001 nextjs && \
