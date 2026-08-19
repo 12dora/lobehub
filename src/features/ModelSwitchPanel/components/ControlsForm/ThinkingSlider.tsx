@@ -1,10 +1,12 @@
-import { type CreatedLevelSliderProps } from './createLevelSlider';
-import { createLevelSliderComponent } from './createLevelSlider';
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 
-const THINKING_MODES = ['disabled', 'auto', 'enabled'] as const;
-type ThinkingMode = (typeof THINKING_MODES)[number];
+import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
 
-// Display marks for the slider
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.thinking;
+type ThinkingMode = (typeof EFFORT_CONTROL_REGISTRY)['thinking']['levels'][number];
+
+// Display marks for the slider — this control reads as a mode (OFF / Auto / ON)
+// rather than a strength, so it keeps its own labels instead of the raw levels.
 const THINKING_MARKS = {
   0: 'OFF',
   1: 'Auto',
@@ -14,9 +16,9 @@ const THINKING_MARKS = {
 export type ThinkingSliderProps = CreatedLevelSliderProps<ThinkingMode>;
 
 const ThinkingSlider = createLevelSliderComponent<ThinkingMode>({
-  configKey: 'thinking',
-  defaultValue: 'auto',
-  levels: THINKING_MODES,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   marks: THINKING_MARKS,
   style: { minWidth: 200 },
 });

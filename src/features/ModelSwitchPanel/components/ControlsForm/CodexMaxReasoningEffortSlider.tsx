@@ -1,15 +1,17 @@
-import { type CreatedLevelSliderProps } from './createLevelSlider';
-import { createLevelSliderComponent } from './createLevelSlider';
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 
-const CODEX_MAX_REASONING_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const;
-type CodexMaxReasoningEffort = (typeof CODEX_MAX_REASONING_EFFORT_LEVELS)[number];
+import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
+
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.codexMaxReasoningEffort;
+type CodexMaxReasoningEffort =
+  (typeof EFFORT_CONTROL_REGISTRY)['codexMaxReasoningEffort']['levels'][number];
 
 export type CodexMaxReasoningEffortSliderProps = CreatedLevelSliderProps<CodexMaxReasoningEffort>;
 
 const CodexMaxReasoningEffortSlider = createLevelSliderComponent<CodexMaxReasoningEffort>({
-  configKey: 'codexMaxReasoningEffort',
-  defaultValue: 'medium',
-  levels: CODEX_MAX_REASONING_EFFORT_LEVELS,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   style: { minWidth: 200 },
 });
 

@@ -1,15 +1,17 @@
-import type { CreatedLevelSliderProps } from './createLevelSlider';
-import { createLevelSliderComponent } from './createLevelSlider';
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 
-const GLM52_REASONING_EFFORT_LEVELS = ['high', 'max'] as const;
-type GLM52ReasoningEffort = (typeof GLM52_REASONING_EFFORT_LEVELS)[number];
+import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
+
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.glm5_2ReasoningEffort;
+type GLM52ReasoningEffort =
+  (typeof EFFORT_CONTROL_REGISTRY)['glm5_2ReasoningEffort']['levels'][number];
 
 export type GLM52ReasoningEffortSliderProps = CreatedLevelSliderProps<GLM52ReasoningEffort>;
 
 const GLM52ReasoningEffortSlider = createLevelSliderComponent<GLM52ReasoningEffort>({
-  configKey: 'glm5_2ReasoningEffort',
-  defaultValue: 'max',
-  levels: GLM52_REASONING_EFFORT_LEVELS,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   style: { minWidth: 160 },
 });
 

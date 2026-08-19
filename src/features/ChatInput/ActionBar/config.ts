@@ -9,6 +9,7 @@ import Params from './Params';
 import Plus from './Plus';
 import PromptTransform from './PromptTransform';
 import Search from './Search';
+import ThinkingEffort from './ThinkingEffort';
 import ContextWindow from './Token';
 import Tools from './Tools';
 import Typo from './Typo';
@@ -29,6 +30,7 @@ export const actionMap = {
   promptTransform: PromptTransform,
   search: Search,
   temperature: Params,
+  thinkingEffort: ThinkingEffort,
   tools: Tools,
   typo: Typo,
 } as const;

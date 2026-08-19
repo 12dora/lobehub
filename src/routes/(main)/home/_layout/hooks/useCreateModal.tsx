@@ -30,7 +30,7 @@ import {
   trackCreateAgentModalSkillSuggestionAction,
 } from './createAgentModalAnalytics';
 
-const LEFT_ACTIONS: ActionKeys[] = ['model'];
+const LEFT_ACTIONS: ActionKeys[] = ['model', 'thinkingEffort'];
 const CREATE_MODAL_WIDTH = 'min(90vw, 760px)';
 const INSTALLED_SKILL_MODAL_WIDTH = 'min(90vw, 560px)';
 

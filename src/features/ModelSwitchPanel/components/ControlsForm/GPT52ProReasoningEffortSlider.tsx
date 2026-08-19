@@ -1,15 +1,17 @@
-import { type CreatedLevelSliderProps } from './createLevelSlider';
-import { createLevelSliderComponent } from './createLevelSlider';
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 
-const GPT52_PRO_REASONING_EFFORT_LEVELS = ['medium', 'high', 'xhigh'] as const;
-type GPT52ProReasoningEffort = (typeof GPT52_PRO_REASONING_EFFORT_LEVELS)[number];
+import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
+
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.gpt5_2ProReasoningEffort;
+type GPT52ProReasoningEffort =
+  (typeof EFFORT_CONTROL_REGISTRY)['gpt5_2ProReasoningEffort']['levels'][number];
 
 export type GPT52ProReasoningEffortSliderProps = CreatedLevelSliderProps<GPT52ProReasoningEffort>;
 
 const GPT52ProReasoningEffortSlider = createLevelSliderComponent<GPT52ProReasoningEffort>({
-  configKey: 'gpt5_2ProReasoningEffort',
-  defaultValue: 'medium',
-  levels: GPT52_PRO_REASONING_EFFORT_LEVELS,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   style: { minWidth: 160 },
 });
 

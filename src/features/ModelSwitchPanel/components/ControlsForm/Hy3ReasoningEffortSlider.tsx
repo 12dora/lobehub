@@ -1,15 +1,16 @@
-import { type CreatedLevelSliderProps } from './createLevelSlider';
-import { createLevelSliderComponent } from './createLevelSlider';
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 
-const HY3_REASONING_EFFORT_LEVELS = ['no_think', 'low', 'high'] as const;
-type Hy3ReasoningEffort = (typeof HY3_REASONING_EFFORT_LEVELS)[number];
+import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
+
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.hy3ReasoningEffort;
+type Hy3ReasoningEffort = (typeof EFFORT_CONTROL_REGISTRY)['hy3ReasoningEffort']['levels'][number];
 
 export type Hy3ReasoningEffortSliderProps = CreatedLevelSliderProps<Hy3ReasoningEffort>;
 
 const Hy3ReasoningEffortSlider = createLevelSliderComponent<Hy3ReasoningEffort>({
-  configKey: 'hy3ReasoningEffort',
-  defaultValue: 'high',
-  levels: HY3_REASONING_EFFORT_LEVELS,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   style: { minWidth: 200 },
 });
 

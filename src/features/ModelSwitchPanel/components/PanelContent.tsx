@@ -47,16 +47,20 @@ export const PanelContent: FC<PanelContentProps> = ({
   const content = (
     <>
       <Toolbar
+        showGroupModeSwitch
         groupMode={groupMode}
         searchKeyword={searchKeyword}
-        showGroupModeSwitch={isDevMode}
         onGroupModeChange={handleGroupModeChange}
         onSearchKeywordChange={setSearchKeyword}
       />
       <List
         ModelItemComponent={ModelItemComponent}
         enabledList={enabledList}
-        groupMode={isDevMode ? groupMode : 'byModel'}
+        // Always honour the user's persisted preference (default `byProvider`,
+        // i.e. provider logo + name group headers, matching the settings
+        // service-model dropdown). The switch in the toolbar lets anyone fall
+        // back to the flat `byModel` view.
+        groupMode={groupMode}
         model={modelProp}
         pricingMode={pricingMode}
         provider={providerProp}

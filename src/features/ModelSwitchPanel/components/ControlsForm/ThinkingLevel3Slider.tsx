@@ -1,15 +1,16 @@
-import { type CreatedLevelSliderProps } from './createLevelSlider';
-import { createLevelSliderComponent } from './createLevelSlider';
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 
-const THINKING_LEVELS_3 = ['low', 'medium', 'high'] as const;
-type ThinkingLevel3 = (typeof THINKING_LEVELS_3)[number];
+import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
+
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.thinkingLevel3;
+type ThinkingLevel3 = (typeof EFFORT_CONTROL_REGISTRY)['thinkingLevel3']['levels'][number];
 
 export type ThinkingLevel3SliderProps = CreatedLevelSliderProps<ThinkingLevel3>;
 
 const ThinkingLevel3Slider = createLevelSliderComponent<ThinkingLevel3>({
-  configKey: 'thinkingLevel3',
-  defaultValue: 'high',
-  levels: THINKING_LEVELS_3,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   style: { minWidth: 160 },
 });
 

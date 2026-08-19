@@ -1,15 +1,16 @@
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
+
 import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
 
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
-
-type EffortLevel = (typeof EFFORT_LEVELS)[number];
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.effort;
+type EffortLevel = (typeof EFFORT_CONTROL_REGISTRY)['effort']['levels'][number];
 
 export type EffortSliderProps = CreatedLevelSliderProps<EffortLevel>;
 
 const EffortSlider = createLevelSliderComponent<EffortLevel>({
-  configKey: 'effort',
-  defaultValue: 'high',
-  levels: EFFORT_LEVELS,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   style: { minWidth: 200 },
 });
 

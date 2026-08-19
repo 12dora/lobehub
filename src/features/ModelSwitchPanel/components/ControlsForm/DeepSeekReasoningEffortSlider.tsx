@@ -1,16 +1,17 @@
-import type { CreatedLevelSliderProps } from './createLevelSlider';
-import { createLevelSliderComponent } from './createLevelSlider';
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 
-const DEEPSEEK_REASONING_EFFORT_LEVELS = ['none', 'high', 'max'] as const;
+import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
 
-type DeepSeekReasoningEffort = (typeof DEEPSEEK_REASONING_EFFORT_LEVELS)[number];
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.deepseekV4ReasoningEffort;
+type DeepSeekReasoningEffort =
+  (typeof EFFORT_CONTROL_REGISTRY)['deepseekV4ReasoningEffort']['levels'][number];
 
 export type DeepSeekReasoningEffortSliderProps = CreatedLevelSliderProps<DeepSeekReasoningEffort>;
 
 const DeepSeekReasoningEffortSlider = createLevelSliderComponent<DeepSeekReasoningEffort>({
-  configKey: 'deepseekV4ReasoningEffort',
-  defaultValue: 'high',
-  levels: DEEPSEEK_REASONING_EFFORT_LEVELS,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   style: { minWidth: 180 },
 });
 

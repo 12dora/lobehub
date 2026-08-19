@@ -1,15 +1,17 @@
-import { type CreatedLevelSliderProps } from './createLevelSlider';
-import { createLevelSliderComponent } from './createLevelSlider';
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 
-const GROK4_3_REASONING_EFFORT_LEVELS = ['none', 'low', 'medium', 'high'] as const;
-type Grok43ReasoningEffort = (typeof GROK4_3_REASONING_EFFORT_LEVELS)[number];
+import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
+
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.grok4_3ReasoningEffort;
+type Grok43ReasoningEffort =
+  (typeof EFFORT_CONTROL_REGISTRY)['grok4_3ReasoningEffort']['levels'][number];
 
 export type Grok43ReasoningEffortSliderProps = CreatedLevelSliderProps<Grok43ReasoningEffort>;
 
 const Grok43ReasoningEffortSlider = createLevelSliderComponent<Grok43ReasoningEffort>({
-  configKey: 'grok4_3ReasoningEffort',
-  defaultValue: 'low',
-  levels: GROK4_3_REASONING_EFFORT_LEVELS,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   style: { minWidth: 200 },
 });
 

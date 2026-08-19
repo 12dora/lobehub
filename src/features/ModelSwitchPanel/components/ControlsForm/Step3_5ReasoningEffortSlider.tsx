@@ -1,15 +1,17 @@
-import { type CreatedLevelSliderProps } from './createLevelSlider';
-import { createLevelSliderComponent } from './createLevelSlider';
+import { EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 
-const STEP3_5_REASONING_EFFORT_LEVELS = ['low', 'high'] as const;
-type Step3_5ReasoningEffort = (typeof STEP3_5_REASONING_EFFORT_LEVELS)[number];
+import { type CreatedLevelSliderProps, createLevelSliderComponent } from './createLevelSlider';
+
+const { configKey, defaultLevel, levels } = EFFORT_CONTROL_REGISTRY.step3_5ReasoningEffort;
+type Step3_5ReasoningEffort =
+  (typeof EFFORT_CONTROL_REGISTRY)['step3_5ReasoningEffort']['levels'][number];
 
 export type Step3_5ReasoningEffortSliderProps = CreatedLevelSliderProps<Step3_5ReasoningEffort>;
 
 const Step3_5ReasoningEffortSlider = createLevelSliderComponent<Step3_5ReasoningEffort>({
-  configKey: 'step3_5ReasoningEffort',
-  defaultValue: 'low',
-  levels: STEP3_5_REASONING_EFFORT_LEVELS,
+  configKey,
+  defaultValue: defaultLevel,
+  levels,
   style: { minWidth: 200 },
 });
 

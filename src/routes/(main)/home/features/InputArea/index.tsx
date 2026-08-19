@@ -18,7 +18,7 @@ import MessengerBanner, { MESSENGER_BANNER_ID } from './MessengerBanner';
 import { useSend } from './useSend';
 
 const leftActions: ActionKeys[] = ['agentMode', 'plus'];
-const rightActions: ActionKeys[] = ['modelLabel'];
+const rightActions: ActionKeys[] = ['modelLabel', 'thinkingEffort'];
 
 const InputArea = () => {
   const { loading, send, agentId } = useSend();
