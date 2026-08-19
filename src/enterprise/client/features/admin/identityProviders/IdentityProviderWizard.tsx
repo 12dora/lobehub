@@ -1,27 +1,21 @@
 'use client';
 
 import { isValidDingTalkProviderKey, type PlatformIdentityProviderDraft } from '@lobechat/types';
-import { copyToClipboard, Flexbox, Text } from '@lobehub/ui';
-import { Button, toast } from '@lobehub/ui/base-ui';
+import { Flexbox, Text } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
-import { IDENTITY_PROVIDER_AUTO_REASON } from '@/enterprise/client/features/admin/audit/shared/auditReasonCodes';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
-import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
+import type { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 
-import { openReasonModal } from '../users/modals/openReasonModal';
 import {
   buildIdentityProviderTestFailureMessage,
-  IDENTITY_PROVIDER_TEST_MESSAGE_TYPE,
   type IdentityProviderCallbackUrls,
   type IdentityProviderCreateDraftSeed,
   isFixedProtocolIdentityProviderType,
   isIdentityProviderDraftWorkflowReady,
-  isIdentityProviderTestTerminal,
-  openIdentityProviderTestPopup,
   parseIdentityProviderJsonObject,
   resolveIdentityProviderRevisionRefresh,
 } from './controller';
@@ -33,25 +27,17 @@ import {
   type IdentityProviderStepState,
   IdentityProviderWizardNavigation,
 } from './IdentityProviderWizardNavigation';
-import {
-  canPersistIdentityProviderDraft,
-  formatIdentityProviderAutoSavedAt,
-  type IdentityProviderPersistRequest,
-  type IdentityProviderPersistResult,
-  resolveIdentityProviderSecretMutation,
-  shouldSkipIdentityProviderPersist,
-  toWritableIdentityProviderFields,
-} from './persist';
+import { formatIdentityProviderAutoSavedAt, type IdentityProviderPersistResult } from './persist';
 import { getIdentityProviderStatusPresentation } from './statusPresentation';
 import type { EditableDraft } from './steps';
 import { identityProviderStyles as styles } from './styles';
 import { useDingTalkCorpCapture } from './useDingTalkCorpCapture';
-import { useIdentityProviderAutosave } from './useIdentityProviderAutosave';
 import { useIdentityProviderTestResult } from './useIdentityProviders';
+import { useIdentityProviderTestWait } from './useIdentityProviderTestWait';
+import { useIdentityProviderWizardMutations } from './useIdentityProviderWizardMutations';
 import { useUnsavedIdentityProviderGuard } from './useUnsavedIdentityProviderGuard';
 import { resolveDingTalkCaptureBlockedReason } from './wizardCaptureGuard';
 import { DEFAULT_IDENTITY_PROVIDER_SEED, fromProvider, fromSeed } from './wizardDraft';
-import { resolveIdentityProviderWizardErrorMessage } from './wizardErrorMessage';
 import { WizardStepBody } from './WizardStepBody';
 import { computeIdentityProviderStepStates } from './wizardStepStates';
 
@@ -130,9 +116,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       setTestPolling(false),
     );
     const testPopupRef = useRef<Window | null>(null);
-    const testResultMutateRef = useRef(testResult.mutate);
-    testResultMutateRef.current = testResult.mutate;
-    const testWaitSettledRef = useRef(false);
     const [testWaitMessage, setTestWaitMessage] = useState<string | null>(null);
     const [conflict, setConflict] = useState(false);
     const [conflictRefreshFailed, setConflictRefreshFailed] = useState(false);
@@ -226,83 +209,15 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
 
     useUnsavedIdentityProviderGuard(dirty);
 
-    useEffect(() => {
-      if (!attempt || !testPolling) return;
-
-      let cancelled = false;
-      const watchedAttemptId = attempt.id;
-
-      const readStatus = (latest: unknown): string | undefined =>
-        latest && typeof latest === 'object' && 'status' in latest
-          ? (latest as { status?: string }).status
-          : undefined;
-
-      const finishWait = (message: string | null) => {
-        if (cancelled || testWaitSettledRef.current) return;
-        testWaitSettledRef.current = true;
-        setTestPolling(false);
-        if (!message) return;
-        setTestWaitMessage(message);
-        toast.info(message);
-      };
-
-      const stopIfTerminal = (latest: unknown): boolean => {
-        const status = readStatus(latest);
-        if (!status || !isIdentityProviderTestTerminal(status)) return false;
-        testWaitSettledRef.current = true;
-        setTestPolling(false);
-        return true;
-      };
-
-      const onMessage = (event: MessageEvent) => {
-        if (cancelled) return;
-        if (event.origin !== window.location.origin) return;
-        if (event.source !== testPopupRef.current) return;
-        const data = event.data as { type?: unknown } | null;
-        if (!data || data.type !== IDENTITY_PROVIDER_TEST_MESSAGE_TYPE) return;
-        void Promise.resolve(testResultMutateRef.current())
-          .then((latest) => {
-            if (cancelled || watchedAttemptId !== attempt.id) return;
-            stopIfTerminal(latest);
-          })
-          .catch(() => {
-            // Keep polling — a failed revalidate is not a completed login.
-          });
-      };
-
-      window.addEventListener('message', onMessage);
-
-      let closedInFlight = false;
-      const closedTimer = window.setInterval(() => {
-        const popup = testPopupRef.current;
-        if (!popup?.closed || closedInFlight || testWaitSettledRef.current || cancelled) return;
-        closedInFlight = true;
-        testPopupRef.current = null;
-        window.clearInterval(closedTimer);
-        void Promise.resolve(testResultMutateRef.current())
-          .then((latest) => {
-            if (cancelled || watchedAttemptId !== attempt.id) return;
-            if (stopIfTerminal(latest)) return;
-            finishWait(t('identityProviders.test.windowClosed'));
-          })
-          .catch(() => {
-            if (cancelled || watchedAttemptId !== attempt.id) return;
-            finishWait(t('identityProviders.test.windowClosed'));
-          });
-      }, 1000);
-
-      const remaining = Math.max(0, 120_000 - (Date.now() - attempt.startedAt));
-      const timeout = window.setTimeout(() => {
-        finishWait(t('identityProviders.test.timeout'));
-      }, remaining);
-
-      return () => {
-        cancelled = true;
-        window.removeEventListener('message', onMessage);
-        window.clearInterval(closedTimer);
-        window.clearTimeout(timeout);
-      };
-    }, [attempt, t, testPolling]);
+    const { resetWait } = useIdentityProviderTestWait({
+      attempt,
+      mutate: testResult.mutate,
+      onStopPolling: () => setTestPolling(false),
+      onWaitMessage: setTestWaitMessage,
+      t,
+      testPolling,
+      testPopupRef,
+    });
 
     const patch = <Key extends keyof EditableDraft>(key: Key, value: EditableDraft[Key]) =>
       setDraft((current) => ({ ...current, [key]: value }));
@@ -314,9 +229,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       fixedProtocol && draft.providerKey.trim() && !isValidDingTalkProviderKey(draft.providerKey)
         ? t('identityProviders.dingtalk.providerKeyInvalid')
         : null;
-
-    const friendlyError = (cause: unknown): string =>
-      resolveIdentityProviderWizardErrorMessage(cause, t);
 
     /**
      * Admin-facing explanation of a terminal safe-login / capture failure: our own instruction
@@ -349,242 +261,45 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       t,
     );
 
-    const refreshConflict = async () => {
-      setConflictRefreshFailed(false);
-      try {
-        await onRefresh();
-      } catch {
-        setConflictRefreshFailed(true);
-      }
-    };
-
-    const run = async (name: string, action: () => Promise<void>, propagate = true) => {
-      setBusy(name);
-      try {
-        await action();
-      } catch (cause) {
-        if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') {
-          setConflict(true);
-          preserveDraftOnRefreshRef.current = true;
-          await refreshConflict();
-        }
-        // Surface all operation failures as a toast; the wizard body stays about the form.
-        toast.error(friendlyError(cause));
-        if (propagate) throw cause;
-      } finally {
-        setBusy(null);
-      }
-    };
-
-    const copyUrl = async (url: string) => {
-      if (!url) return;
-      try {
-        await copyToClipboard(url);
-        toast.success(t('identityProviders.callback.copied'));
-      } catch {
-        toast.error(t('identityProviders.callback.copyFailed'));
-      }
-    };
-
-    const persistDraft = async (
-      input: IdentityProviderPersistRequest,
-    ): Promise<IdentityProviderPersistResult> => {
-      const currentProvider = providerRef.current;
-      const canWrite = currentProvider ? canUpdate : canCreate;
-      if (
-        !canWrite ||
-        !canPersistIdentityProviderDraft({
-          displayName: draft.displayName,
-          invalidJson,
-          providerKey: draft.providerKey,
-          providerKeyError,
-        })
-      ) {
-        if (!input.silent) {
-          toast.error(providerKeyError ?? t('identityProviders.errors.required'));
-        }
-        return 'blocked';
-      }
-      // Never call update when neither content nor an explicit secret mutation is dirty.
-      if (
-        shouldSkipIdentityProviderPersist({
-          contentDirty,
-          includeSecret: input.includeSecret,
-          secretDirty,
-        })
-      ) {
-        return 'clean';
-      }
-
-      const writable = toWritableIdentityProviderFields(draft);
-      const secretMutation = input.includeSecret
-        ? resolveIdentityProviderSecretMutation({
-            clearSecret,
-            isCreate: !currentProvider,
-            secret,
-          })
-        : resolveIdentityProviderSecretMutation({
-            clearSecret: false,
-            isCreate: !currentProvider,
-            secret: '',
-          });
-
-      try {
-        // Preserve local keystrokes that arrive while this request is in flight.
-        preserveDraftOnRefreshRef.current = true;
-        let saved: PlatformIdentityProviderDraft;
-        if (currentProvider) {
-          saved = await adminIdentityProvidersService.update({
-            ...writable,
-            expectedRevision: lastProviderRevisionRef.current ?? currentProvider.revision,
-            id: currentProvider.id,
-            secret: secretMutation,
-          });
-        } else {
-          saved = await adminIdentityProvidersService.create({
-            ...writable,
-            secret: secretMutation.operation === 'keep' ? { operation: 'clear' } : secretMutation,
-          });
-        }
-        lastProviderRevisionRef.current = saved.revision;
-        providerRef.current = saved;
-        if (input.includeSecret) {
-          setSecret('');
-          setClearSecret(false);
-        }
-        setConflict(false);
-        await onSaved(saved);
-        if (input.silent) {
-          setLastAutoSavedAt(new Date());
-        } else {
-          toast.success(t('identityProviders.save.success'));
-        }
-        return 'saved';
-      } catch (cause) {
-        if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') {
-          setConflict(true);
-          preserveDraftOnRefreshRef.current = true;
-          await refreshConflict();
-          toast.error(friendlyError(cause));
-          return 'conflict';
-        }
-        toast.error(friendlyError(cause));
-        return 'error';
-      }
-    };
-
-    const { enqueuePersist, scheduleAutosave, setPersist } = useIdentityProviderAutosave({
-      persistRef,
-    });
-    setPersist(persistDraft);
-
-    const save = () => {
-      void (async () => {
-        setBusy('save');
-        try {
-          await enqueuePersist({ includeSecret: true, silent: false });
-        } finally {
-          setBusy(null);
-        }
-      })();
-    };
-
-    // Discover alone validates network + endpoints; do not also call validateNetwork
-    // (that would preflight the same discovery URL a second time).
-    const discover = () =>
-      void run(
-        'discover',
-        async () => {
-          const metadata = await adminIdentityProvidersService.discover({
-            issuer: draft.issuer,
-            type: draft.type,
-          });
-          setDiscovery(metadata);
-          setNetworkValid(true);
-        },
-        false,
-      );
-
-    /**
-     * One DingTalk/OIDC login round-trip against the isolated test callback.
-     *
-     * `intent: 'capture'` is the DingTalk organisation-capture entry point in the policy step:
-     * the admin authorizes in DingTalk, picks the enterprise there, and the server reports the
-     * resulting corpId back — administrators never type one. `intent: 'test'` is the existing
-     * pre-publish safe-login test. Both are the same server flow and the same attempt record.
-     */
-    const startTest = (intent: 'capture' | 'test' = 'test') => {
-      if (!provider) return;
-      if (!draftWorkflowReady) {
-        toast.error(t('identityProviders.workflow.draftRequired'));
-        return;
-      }
-      if (intent === 'capture' && captureBlockedReason) {
-        toast.error(captureBlockedReason);
-        return;
-      }
-      // No reason prompt: this writes no configuration — it opens an isolated login window and
-      // records a claim preview. The audit still captures who started it and the outcome.
-      void run(
-        intent === 'capture' ? 'capture' : 'test',
-        async () => {
-          testWaitSettledRef.current = false;
-          setTestWaitMessage(null);
-          const { popup, result } = await openIdentityProviderTestPopup(() =>
-            adminIdentityProvidersService.testStart({
-              expectedRevision: provider.revision,
-              id: provider.id,
-            }),
-          );
-          testPopupRef.current = popup;
-          setAttempt({
-            id: result.attemptId,
-            revision: provider.revision,
-            startedAt: Date.now(),
-          });
-          setCaptureAttemptId(intent === 'capture' ? result.attemptId : null);
-          setTestPolling(true);
-        },
-        false,
-      );
-    };
-
-    const publish = () => {
-      if (!provider) return;
-      if (!draftWorkflowReady) {
-        toast.error(t('identityProviders.workflow.draftRequired'));
-        return;
-      }
-      if (!testSucceeded) {
-        toast.error(t('identityProviders.workflow.testRequired'));
-        return;
-      }
-      if (dirty) {
-        toast.error(t('identityProviders.unsaved'));
-        return;
-      }
-      openReasonModal({
+    const { copyUrl, discover, publish, refreshConflict, save, scheduleAutosave, startTest } =
+      useIdentityProviderWizardMutations({
         authMethod,
-        autoReason: IDENTITY_PROVIDER_AUTO_REASON.publish,
-        buildPayload: (reason) => ({ reason }),
-        hideReason: true,
-        impact: t('identityProviders.publish.impact'),
-        onSubmit: async (payload) =>
-          run('publish', async () => {
-            const published = await adminIdentityProvidersService.publish({
-              expectedRevision: provider.revision,
-              id: provider.id,
-              reason: (payload as { reason: string }).reason,
-              requestId: crypto.randomUUID(),
-            });
-            await onSaved(published);
-            toast.success(t('identityProviders.publish.success'));
-          }),
-        submitLabel: t('identityProviders.actions.publish'),
-        targetLabel: provider.displayName,
-        title: t('identityProviders.publish.title'),
+        canCreate,
+        canUpdate,
+        captureBlockedReason,
+        clearSecret,
+        contentDirty,
+        dirty,
+        draft,
+        draftWorkflowReady,
+        invalidJson,
+        lastProviderRevisionRef,
+        onRefresh,
+        onSaved,
+        persistRef,
+        preserveDraftOnRefreshRef,
+        provider,
+        providerKeyError,
+        providerRef,
+        resetWait,
+        secret,
+        secretDirty,
+        setAttempt,
+        setBusy,
+        setCaptureAttemptId,
+        setClearSecret,
+        setConflict,
+        setConflictRefreshFailed,
+        setDiscovery,
+        setLastAutoSavedAt,
+        setNetworkValid,
+        setSecret,
+        setTestPolling,
+        setTestWaitMessage,
+        t,
+        testPopupRef,
+        testSucceeded,
       });
-    };
 
     const goToStep = (next: IdentityProviderStep) => {
       const currentIndex = steps.indexOf(step);

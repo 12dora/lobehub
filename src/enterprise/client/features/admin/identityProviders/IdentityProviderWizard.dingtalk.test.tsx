@@ -515,6 +515,40 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
     expect((note as HTMLInputElement).value).toBe('');
   });
 
+  it('toasts timeout, stops polling, and keeps Publish gated when the login window stays open', async () => {
+    vi.useFakeTimers();
+    const { toast } = await import('@lobehub/ui/base-ui');
+    try {
+      renderWizard(baseProvider);
+      await openPolicyStep();
+      await act(async () => {
+        fireEvent.click(captureButton());
+      });
+      expect(captureButton().hasAttribute('disabled')).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120_000);
+      });
+
+      expect(toast.info).toHaveBeenCalledWith('identityProviders.test.timeout');
+      expect(screen.getByText('identityProviders.test.timeout')).toBeTruthy();
+      expect(captureButton().hasAttribute('disabled')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/identityProviders\.steps\.publish/));
+    });
+    expect(
+      (
+        screen.getByRole('button', {
+          name: 'identityProviders.actions.publish',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+
   it('stops polling and toasts when the login window is closed before completion', async () => {
     vi.useFakeTimers();
     const { toast } = await import('@lobehub/ui/base-ui');
@@ -629,6 +663,27 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
     });
 
     expect(testResultMocks.mutate).toHaveBeenCalled();
+    expect(captureButton().hasAttribute('disabled')).toBe(true);
+  });
+
+  it('keeps polling when a postMessage arrives from another origin', async () => {
+    renderWizard(baseProvider);
+    await openPolicyStep();
+    await act(async () => {
+      fireEvent.click(captureButton());
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { success: true, type: 'aihub-identity-provider-test' },
+          origin: 'https://evil.example',
+          source: popupMocks.popup as unknown as MessageEventSource,
+        }),
+      );
+    });
+
+    expect(testResultMocks.mutate).not.toHaveBeenCalled();
     expect(captureButton().hasAttribute('disabled')).toBe(true);
   });
 

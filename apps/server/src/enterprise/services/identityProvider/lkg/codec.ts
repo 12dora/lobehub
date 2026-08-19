@@ -320,28 +320,35 @@ export const decodePayload = async (input: {
   return payload;
 };
 
-export const compareSnapshots = (
+const tombstoneRejectsCandidate = (
   current: IdentityProviderLkgPayload,
   candidate: IdentityProviderLkgPayload,
-): 'rejected' | 'unchanged' | 'upgrade' => {
+): boolean => {
   const currentTombstones = new Map(
     (current.providerTombstones ?? []).map((entry) => [entry.providerId, entry.generation]),
   );
   // A delayed/stale re-materialization cannot override a newer per-provider tombstone.
   for (const provider of candidate.providers) {
     const tombGeneration = currentTombstones.get(provider.providerId);
-    if (tombGeneration && provider.generation <= tombGeneration) return 'rejected';
+    if (tombGeneration && provider.generation <= tombGeneration) return true;
   }
+  return false;
+};
 
-  const sameProviders = current.identityRevision === candidate.identityRevision;
-  const sameTombstones =
-    (current.providerTombstones ?? []).length === (candidate.providerTombstones ?? []).length &&
-    (current.providerTombstones ?? []).every((entry, index) => {
-      const other = candidate.providerTombstones?.[index];
-      return other?.providerId === entry.providerId && other.generation === entry.generation;
-    });
-  if (sameProviders && sameTombstones) return 'unchanged';
-  if (candidate.generation <= current.generation) return 'rejected';
+const sameTombstoneSet = (
+  a: IdentityProviderLkgProviderTombstone[] | undefined,
+  b: IdentityProviderLkgProviderTombstone[] | undefined,
+): boolean =>
+  (a ?? []).length === (b ?? []).length &&
+  (a ?? []).every((entry, index) => {
+    const other = b?.[index];
+    return other?.providerId === entry.providerId && other.generation === entry.generation;
+  });
+
+const providerSetDecision = (
+  current: IdentityProviderLkgPayload,
+  candidate: IdentityProviderLkgPayload,
+): 'rejected' | 'upgraded' | 'same' => {
   const candidateById = new Map(
     candidate.providers.map((provider) => [provider.providerId, provider]),
   );
@@ -370,8 +377,28 @@ export const compareSnapshots = (
   if (candidate.providers.length > current.providers.length) upgraded = true;
   // Pure removal with higher generation is still an upgrade.
   if (!upgraded && candidate.providers.length < current.providers.length) upgraded = true;
+  return upgraded ? 'upgraded' : 'same';
+};
+
+export const compareSnapshots = (
+  current: IdentityProviderLkgPayload,
+  candidate: IdentityProviderLkgPayload,
+): 'rejected' | 'unchanged' | 'upgrade' => {
+  if (tombstoneRejectsCandidate(current, candidate)) return 'rejected';
+
+  const sameProviders = current.identityRevision === candidate.identityRevision;
+  const sameTombstones = sameTombstoneSet(current.providerTombstones, candidate.providerTombstones);
+  if (sameProviders && sameTombstones) return 'unchanged';
+  if (candidate.generation <= current.generation) return 'rejected';
+
+  const providerDecision = providerSetDecision(current, candidate);
+  if (providerDecision === 'rejected') return 'rejected';
+  let upgraded = providerDecision === 'upgraded';
   // New/stronger per-provider tombstones are upgrades even when the live set is identical.
   if (!upgraded && !sameTombstones) {
+    const currentTombstones = new Map(
+      (current.providerTombstones ?? []).map((entry) => [entry.providerId, entry.generation]),
+    );
     for (const entry of candidate.providerTombstones ?? []) {
       const previous = currentTombstones.get(entry.providerId);
       if (!previous || entry.generation > previous) {

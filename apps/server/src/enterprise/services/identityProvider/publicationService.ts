@@ -1,14 +1,11 @@
-import { and, desc, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 
 import {
-  acquireIdentityProviderPublishedRevisionLock,
-  checksumPayload,
   type PlatformIdentityProviderInternalDraft,
   PlatformRevisionConflictError,
 } from '@/database/models/platform';
 import {
   platformIdentityProviders,
-  platformIdentityProviderSecrets,
   platformIdentityProviderTestAttempts,
   platformResourceRevisions,
 } from '@/database/schemas/platform';
@@ -22,116 +19,34 @@ import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../o
 import { AUDIT_ACTION } from '../audit/auditActionCatalog';
 import { disableIdentityProvider, type DisableIdentityProviderResult } from './disableService';
 import {
-  appendSuccessTerminal,
-  assertOwnerFence,
   assertReason,
   assertRequestId,
-  finalizeIdempotentFailure,
   IDEMPOTENCY_LEASE_MS,
   idempotencyContext,
   type IdempotencyRequest,
   type IdentityProviderPublicationTestHooks,
-  reserveIdempotentRequest,
   runIdempotentOwnerWork,
 } from './publicationIdempotency';
+import { commitIdentityProviderPublish } from './publicationPublish';
+import { commitIdentityProviderRollback } from './publicationRollback';
+import { IdentityProviderPublicationError } from './publishedPayload';
 import {
-  IdentityProviderPublicationError,
-  parsePublishedIdentityProviderPayload,
-  type PublishedIdentityProviderPayload,
-} from './publishedPayload';
+  selectSuccessfulPublishTest,
+  SUCCESSFUL_TEST_MAX_AGE_MS,
+  successfulTestWhere,
+} from './publishTestLookup';
 
 export type { DisableIdentityProviderResult } from './disableService';
 export type {
   IdempotencyOwnerFence,
   IdentityProviderPublicationTestHooks,
 } from './publicationIdempotency';
+export { restoredConfigFromPublishedPayload } from './publicationRollback';
 export {
   IdentityProviderPublicationError,
   parsePublishedIdentityProviderPayload,
   type PublishedIdentityProviderPayload,
 } from './publishedPayload';
-
-const SUCCESSFUL_TEST_MAX_AGE_MS = 10 * 60 * 1000;
-
-const toPublishedPayload = (
-  draft: PlatformIdentityProviderInternalDraft,
-): PublishedIdentityProviderPayload & { secretUpdatedAt: string } => {
-  if (
-    draft.migrationRequired ||
-    !draft.issuer ||
-    !draft.clientId ||
-    !draft.secret.configured ||
-    !draft.secret.fingerprint ||
-    !draft.secret.updatedAt ||
-    draft.usePkce !== true
-  ) {
-    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
-  }
-  // Distinct from INVALID_SNAPSHOT so the admin UI can say "add an organization first" instead
-  // of a generic validation failure. Runtime is fail-closed on an empty allowlist, so a
-  // DingTalk provider with none would publish a login method nobody could ever use.
-  if (draft.type === 'dingtalk' && draft.dingtalkAllowedCorps.length === 0) {
-    throw new IdentityProviderPublicationError(
-      'PLATFORM_IDENTITY_PROVIDER_CORP_ALLOWLIST_REQUIRED',
-    );
-  }
-  const payload = {
-    autoProvision: draft.autoProvision,
-    buttonLabel: draft.buttonLabel,
-    claimMapping: draft.claimMapping,
-    clientId: draft.clientId,
-    dingtalkAllowedCorps: draft.dingtalkAllowedCorps,
-    displayName: draft.displayName,
-    domainAllowlist: draft.domainAllowlist,
-    enabled: true,
-    groupRoleMapping: draft.groupRoleMapping,
-    icon: draft.icon,
-    issuer: draft.issuer,
-    providerKey: draft.providerKey,
-    scopes: draft.scopes,
-    secretFingerprint: draft.secret.fingerprint,
-    secretUpdatedAt: draft.secret.updatedAt.toISOString(),
-    type: draft.type,
-    usePkce: true,
-  };
-  const parsed = parsePublishedIdentityProviderPayload(payload);
-  if (!parsed || typeof parsed.secretUpdatedAt !== 'string') {
-    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
-  }
-  return { ...parsed, secretUpdatedAt: parsed.secretUpdatedAt };
-};
-
-/**
- * Every configuration field a rollback restores from the target published revision.
- *
- * Derived from the payload by construction (rather than field-by-field at the call site) so a
- * new published field cannot be silently left at the *current draft's* value — that bug let a
- * rollback preserve a revoked DingTalk organisation grant.
- */
-export const restoredConfigFromPublishedPayload = (
-  payload: PublishedIdentityProviderPayload,
-): Pick<
-  PublishedIdentityProviderPayload,
-  | 'autoProvision'
-  | 'buttonLabel'
-  | 'claimMapping'
-  | 'clientId'
-  | 'dingtalkAllowedCorps'
-  | 'displayName'
-  | 'domainAllowlist'
-  | 'groupRoleMapping'
-  | 'icon'
-  | 'issuer'
-  | 'providerKey'
-  | 'scopes'
-  | 'secretFingerprint'
-  | 'type'
-> => {
-  // `enabled` is decided by the caller (rollback always forks back to a disabled draft) and the
-  // secret timestamps come from the stored secret version, so both are excluded here.
-  const { enabled: _enabled, secretUpdatedAt: _secretUpdatedAt, ...config } = payload;
-  return config;
-};
 
 /** Atomic publication and rollback control plane for restart-activated OIDC providers. */
 export class IdentityProviderPublicationService {
@@ -252,158 +167,40 @@ export class IdentityProviderPublicationService {
       requestId,
       targetId: input.id,
     };
-    // Reservation is outside the observe try/catch so durable failure/conflict
-    // replays thrown from findTerminalReplay are not double-counted in metrics.
-    const reservation = await reserveIdempotentRequest(
-      this.db,
-      request,
-      this.testHooks.leaseMs ?? IDEMPOTENCY_LEASE_MS,
-      this.testHooks.now,
-    );
-    if (reservation.kind === 'replay') return reservation.response;
-    const { fence } = reservation;
-    await this.testHooks.afterReservation?.(fence);
+    // Reservation-time replays (success or durable failure/conflict) must not be
+    // observed. afterReservation only runs after this caller becomes owner.
+    let ownerReserved = false;
     try {
-      const result = await this.db.transaction(async (tx) => {
-        await this.testHooks.beforePublishedRevisionLock?.(fence);
-        await acquireIdentityProviderPublishedRevisionLock(tx);
-        await this.testHooks.afterPublishedRevisionLock?.(fence);
-        const { draft, secretRef } = await this.lockedDraft(tx, input.id);
-        await this.testHooks.afterDraftLock?.(fence);
-        await assertOwnerFence(tx, request, fence);
-        if (draft.revision !== input.expectedRevision) {
-          throw new PlatformRevisionConflictError('Identity provider revision changed', {
-            currentRevision: draft.revision,
-            expectedRevision: input.expectedRevision,
-            resourceId: input.id,
-            resourceType: 'oidc',
-          });
-        }
-        if (draft.status !== 'draft') {
-          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_DRAFT_REQUIRED');
-        }
-        const payload = toPublishedPayload(draft);
-        const [secret] = await tx
-          .select({ id: platformIdentityProviderSecrets.id })
-          .from(platformIdentityProviderSecrets)
-          .where(
-            and(
-              eq(platformIdentityProviderSecrets.providerId, input.id),
-              eq(platformIdentityProviderSecrets.ref, secretRef!),
-              eq(platformIdentityProviderSecrets.fingerprint, payload.secretFingerprint),
-              isNull(platformIdentityProviderSecrets.revokedAt),
-            ),
-          )
-          .limit(1);
-        if (!secret) {
-          throw new IdentityProviderPublicationError(
-            'PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE',
-          );
-        }
-        const testCutoff = new Date(Date.now() - SUCCESSFUL_TEST_MAX_AGE_MS);
-        const testNow = new Date();
-        const [successfulTest] = await tx
-          .select({ id: platformIdentityProviderTestAttempts.id })
-          .from(platformIdentityProviderTestAttempts)
-          .where(
-            and(
-              eq(platformIdentityProviderTestAttempts.providerId, input.id),
-              eq(platformIdentityProviderTestAttempts.providerRevision, draft.revision),
-              eq(
-                platformIdentityProviderTestAttempts.providerSecretFingerprint,
-                payload.secretFingerprint,
-              ),
-              eq(platformIdentityProviderTestAttempts.providerSecretRef, secretRef!),
-              eq(platformIdentityProviderTestAttempts.status, 'succeeded'),
-              sql`${platformIdentityProviderTestAttempts.result}->>'valid' = 'true'`,
-              gt(platformIdentityProviderTestAttempts.expiresAt, testNow),
-              gt(platformIdentityProviderTestAttempts.completedAt, testCutoff),
-              lte(platformIdentityProviderTestAttempts.completedAt, testNow),
-            ),
-          )
-          .orderBy(desc(platformIdentityProviderTestAttempts.completedAt))
-          .limit(1);
-        if (!successfulTest) {
-          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_NOT_TESTED');
-        }
-
-        const nextRevision = draft.revision + 1;
-        const now = new Date();
-        const checksum = checksumPayload(payload);
-        await tx.insert(platformResourceRevisions).values({
-          checksum,
-          comment: reason,
-          createdBy: actorUserId,
-          payload: payload as unknown as Record<string, unknown>,
-          publishedAt: now,
-          publishedBy: actorUserId,
-          resourceId: input.id,
-          resourceType: 'oidc',
-          revision: nextRevision,
-          secretFingerprint: payload.secretFingerprint,
-          status: 'published',
-        });
-        const [updated] = await tx
-          .update(platformIdentityProviders)
-          .set({
-            activationRevision: nextRevision,
-            enabled: true,
-            revision: nextRevision,
-            status: 'pending_restart',
-            updatedAt: now,
-            updatedBy: actorUserId,
-          })
-          .where(
-            and(
-              eq(platformIdentityProviders.id, input.id),
-              eq(platformIdentityProviders.revision, input.expectedRevision),
-              eq(platformIdentityProviders.status, 'draft'),
-            ),
-          )
-          .returning();
-        if (!updated) throw new PlatformRevisionConflictError();
-        const published: PlatformIdentityProviderInternalDraft = {
-          ...draft,
-          activationRevision: nextRevision,
-          enabled: true,
-          revision: nextRevision,
-          status: 'pending_restart',
-        };
-        return appendSuccessTerminal(tx, request, fence, {
-          afterDiff: {
-            activation: 'pending_restart',
-            checksum,
-            providerKey: payload.providerKey,
-            revision: nextRevision,
+      const outcome = await runIdempotentOwnerWork(
+        this.db,
+        request,
+        {
+          afterReservation: async (fence) => {
+            await this.testHooks.afterReservation?.(fence);
+            ownerReserved = true;
           },
-          beforeDiff: { revision: draft.revision, status: draft.status },
-          configRevision: nextRevision,
-          response: published,
-        });
-      });
-      this.observePublish(startedAt);
-      return result;
+          leaseMs: this.testHooks.leaseMs ?? IDEMPOTENCY_LEASE_MS,
+          now: this.testHooks.now,
+        },
+        async (tx, fence) =>
+          commitIdentityProviderPublish(tx, {
+            fence,
+            lockedDraft: this.lockedDraft,
+            request,
+            testHooks: this.testHooks,
+          }),
+      );
+      if (outcome.kind === 'owner') {
+        this.observePublish(startedAt);
+      }
+      return outcome.response;
     } catch (error) {
       if (
-        error instanceof IdentityProviderPublicationError &&
-        error.code === 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING'
+        !ownerReserved ||
+        (error instanceof IdentityProviderPublicationError &&
+          error.code === 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING')
       ) {
         throw error;
-      }
-      try {
-        const replay = await finalizeIdempotentFailure(this.db, request, fence, error);
-        if (replay) return replay;
-      } catch (auditError) {
-        if (
-          auditError instanceof IdentityProviderPublicationError &&
-          auditError.code === 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING'
-        ) {
-          throw auditError;
-        }
-        console.error('[admin.identityProviders] idempotency failure remains pending', {
-          action,
-          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-        });
       }
       this.observePublish(startedAt, error);
       throw error;
@@ -457,119 +254,18 @@ export class IdentityProviderPublicationService {
         leaseMs: this.testHooks.leaseMs ?? IDEMPOTENCY_LEASE_MS,
         now: this.testHooks.now,
       },
-      async (tx, fence) => {
-        const { draft } = await this.lockedDraft(tx, input.id);
-        await this.testHooks.afterDraftLock?.(fence);
-        await assertOwnerFence(tx, request, fence);
-        if (draft.revision !== input.expectedRevision) {
-          throw new PlatformRevisionConflictError('Identity provider revision changed', {
-            currentRevision: draft.revision,
-            expectedRevision: input.expectedRevision,
-            resourceId: input.id,
-            resourceType: 'oidc',
-          });
-        }
-        const [target] = await tx
-          .select({
-            checksum: platformResourceRevisions.checksum,
-            payload: platformResourceRevisions.payload,
-            secretFingerprint: platformResourceRevisions.secretFingerprint,
-          })
-          .from(platformResourceRevisions)
-          .where(
-            and(
-              eq(platformResourceRevisions.resourceType, 'oidc'),
-              eq(platformResourceRevisions.resourceId, input.id),
-              eq(platformResourceRevisions.revision, input.targetRevision),
-              eq(platformResourceRevisions.status, 'published'),
-            ),
-          )
-          .limit(1);
-        const payload = parsePublishedIdentityProviderPayload(target?.payload);
-        if (
-          !payload ||
-          target.checksum !== checksumPayload(target.payload) ||
-          target.secretFingerprint !== payload.secretFingerprint
-        ) {
-          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
-        }
-        const [secret] = await tx
-          .select({
-            createdAt: platformIdentityProviderSecrets.createdAt,
-            ref: platformIdentityProviderSecrets.ref,
-          })
-          .from(platformIdentityProviderSecrets)
-          .where(
-            and(
-              eq(platformIdentityProviderSecrets.providerId, input.id),
-              eq(platformIdentityProviderSecrets.fingerprint, payload.secretFingerprint),
-              isNull(platformIdentityProviderSecrets.revokedAt),
-            ),
-          )
-          .limit(1);
-        if (!secret) {
-          throw new IdentityProviderPublicationError(
-            'PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE',
-          );
-        }
-        const canonicalSecretUpdatedAt =
-          typeof payload.secretUpdatedAt === 'string'
-            ? new Date(payload.secretUpdatedAt)
-            : secret.createdAt;
-        const nextRevision = draft.revision + 1;
-        const now = new Date();
-        const restored = restoredConfigFromPublishedPayload(payload);
-        const [updated] = await tx
-          .update(platformIdentityProviders)
-          .set({
-            ...restored,
-            activationRevision: null,
-            enabled: false,
-            revision: nextRevision,
-            secretRef: secret.ref,
-            secretUpdatedAt: canonicalSecretUpdatedAt,
-            status: 'draft',
-            updatedAt: now,
-            updatedBy: actorUserId,
-            usePkce: true,
-          })
-          .where(
-            and(
-              eq(platformIdentityProviders.id, input.id),
-              eq(platformIdentityProviders.revision, input.expectedRevision),
-            ),
-          )
-          .returning();
-        if (!updated) throw new PlatformRevisionConflictError();
-        const { secretFingerprint, ...restoredDraftFields } = restored;
-        const result: PlatformIdentityProviderInternalDraft = {
-          ...draft,
-          ...restoredDraftFields,
-          activationRevision: null,
-          enabled: false,
-          revision: nextRevision,
-          secret: {
-            configured: true,
-            fingerprint: secretFingerprint,
-            updatedAt: canonicalSecretUpdatedAt,
-          },
-          status: 'draft',
-          usePkce: true,
-        };
-        return appendSuccessTerminal(tx, request, fence, {
-          afterDiff: {
-            restoredFromRevision: input.targetRevision,
-            revision: nextRevision,
-            status: 'draft',
-          },
-          beforeDiff: { revision: draft.revision, status: draft.status },
-          configRevision: nextRevision,
-          response: result,
-        });
-      },
+      async (tx, fence) =>
+        commitIdentityProviderRollback(tx, {
+          fence,
+          lockedDraft: this.lockedDraft,
+          request,
+          targetRevision: input.targetRevision,
+          testHooks: this.testHooks,
+        }),
     );
     return outcome.response;
   };
+
   hasPublishedHistory = async (id: string): Promise<boolean> => {
     const [row] = await this.db
       .select({ revision: platformResourceRevisions.revision })
@@ -617,29 +313,12 @@ export class IdentityProviderPublicationService {
   }): Promise<boolean> => {
     if (!provider.secretFingerprint || !provider.secretRef) return false;
 
-    const testCutoff = new Date(Date.now() - SUCCESSFUL_TEST_MAX_AGE_MS);
-    const testNow = new Date();
-    const [successfulTest] = await this.db
-      .select({ id: platformIdentityProviderTestAttempts.id })
-      .from(platformIdentityProviderTestAttempts)
-      .where(
-        and(
-          eq(platformIdentityProviderTestAttempts.providerId, provider.id),
-          eq(platformIdentityProviderTestAttempts.providerRevision, provider.revision),
-          eq(
-            platformIdentityProviderTestAttempts.providerSecretFingerprint,
-            provider.secretFingerprint,
-          ),
-          eq(platformIdentityProviderTestAttempts.providerSecretRef, provider.secretRef),
-          eq(platformIdentityProviderTestAttempts.status, 'succeeded'),
-          sql`${platformIdentityProviderTestAttempts.result}->>'valid' = 'true'`,
-          gt(platformIdentityProviderTestAttempts.expiresAt, testNow),
-          gt(platformIdentityProviderTestAttempts.completedAt, testCutoff),
-          lte(platformIdentityProviderTestAttempts.completedAt, testNow),
-        ),
-      )
-      .orderBy(desc(platformIdentityProviderTestAttempts.completedAt))
-      .limit(1);
+    const successfulTest = await selectSuccessfulPublishTest(this.db, {
+      id: provider.id,
+      revision: provider.revision,
+      secretFingerprint: provider.secretFingerprint,
+      secretRef: provider.secretRef,
+    });
     return Boolean(successfulTest);
   };
 
@@ -675,11 +354,7 @@ export class IdentityProviderPublicationService {
       .where(
         and(
           inArray(platformIdentityProviderTestAttempts.providerId, providerIds),
-          eq(platformIdentityProviderTestAttempts.status, 'succeeded'),
-          sql`${platformIdentityProviderTestAttempts.result}->>'valid' = 'true'`,
-          gt(platformIdentityProviderTestAttempts.expiresAt, testNow),
-          gt(platformIdentityProviderTestAttempts.completedAt, testCutoff),
-          lte(platformIdentityProviderTestAttempts.completedAt, testNow),
+          successfulTestWhere(testNow, testCutoff),
         ),
       );
 
