@@ -415,8 +415,10 @@ describe('transformCursorEvents tool-call emulation', () => {
   });
 
   it('parses a marker split across many small deltas', async () => {
-    const events = [...SEARCH_BLOCK].map((char) => assistant(char));
-    events.push(successResult(SEARCH_BLOCK));
+    const events = [
+      ...[...SEARCH_BLOCK].map((char) => assistant(char)),
+      successResult(SEARCH_BLOCK),
+    ];
     const chunks = await collectChunks(events);
 
     expect(chunks.filter((chunk) => chunk.type === 'text')).toEqual([]);

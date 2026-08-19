@@ -1173,7 +1173,7 @@ const projectSettings = (model: { modelKey: string; settings?: Record<string, un
   projectAiCatalogRuntimeState([
     {
       payload: {
-        models: [{ enabled: true, modelKey: model.modelKey, type: 'chat', ...model }],
+        models: [{ enabled: true, type: 'chat', ...model }],
         provider: {
           displayName: 'OpenAI',
           enabled: true,

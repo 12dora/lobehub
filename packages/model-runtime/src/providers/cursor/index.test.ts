@@ -400,7 +400,6 @@ describe('LobeCursorAI', () => {
 
       expect(cards).toEqual([
         {
-          abilities: { functionCall: true, reasoning: false, vision: false },
           contextWindowTokens: 200_000,
           // Follows the curated card in model-bank (renamed by the frontend round).
           displayName: 'Auto (Cursor)',
@@ -413,7 +412,6 @@ describe('LobeCursorAI', () => {
           vision: false,
         },
         {
-          abilities: { functionCall: true, reasoning: false, vision: true },
           contextWindowTokens: 200_000,
           displayName: 'Composer 2.5',
           enabled: false,
@@ -425,7 +423,6 @@ describe('LobeCursorAI', () => {
           vision: true,
         },
         {
-          abilities: { functionCall: true, reasoning: true, vision: true },
           contextWindowTokens: 1_000_000,
           displayName: 'Claude Opus 5 1M Thinking',
           enabled: false,
@@ -437,7 +434,6 @@ describe('LobeCursorAI', () => {
           vision: true,
         },
         {
-          abilities: { functionCall: true, reasoning: true, vision: true },
           contextWindowTokens: 1_000_000,
           displayName: 'GPT-5.6 Sol 1M High',
           enabled: false,
@@ -449,7 +445,6 @@ describe('LobeCursorAI', () => {
           vision: true,
         },
         {
-          abilities: undefined,
           contextWindowTokens: 1_000_000,
           displayName: 'Brand New 1M',
           enabled: false,

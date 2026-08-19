@@ -155,6 +155,23 @@ describe('EffortSelect', () => {
     expect((picker() as HTMLSelectElement).value).toBe('high');
   });
 
+  it('seeds an unset gpt-5.5 chatConfig with medium, not the registry static default', () => {
+    // gpt5_2ReasoningEffort's static default is `none`, but gpt-5.5 overrides it to `medium`.
+    // Duplicating only the thinkingLevel override here would have shown `none` and disagreed
+    // with the in-chat selector for the same model.
+    extendParamsMock.mockReturnValue(['gpt5_2ReasoningEffort']);
+    renderSelect({ chatConfig: {} as never, model: 'gpt-5.5' });
+
+    expect((picker() as HTMLSelectElement).value).toBe('medium');
+  });
+
+  it('keeps the registry static default for a model the override does not apply to', () => {
+    extendParamsMock.mockReturnValue(['gpt5_2ReasoningEffort']);
+    renderSelect({ chatConfig: {} as never, model: 'gpt-5.2' });
+
+    expect((picker() as HTMLSelectElement).value).toBe('none');
+  });
+
   it('seeds an unset chatConfig with the model-specific thinkingLevel default', () => {
     // `gemini-flash-latest` overrides the static `high` default down to `medium`.
     extendParamsMock.mockReturnValue(['thinkingLevel']);

@@ -1,17 +1,17 @@
 'use client';
 
-import {
-  clampEffortLevel,
-  type EffortLevel,
-  findEffortControl,
-  resolveDefaultThinkingLevelForModel,
-} from '@lobechat/model-runtime';
+import { type EffortLevel, findEffortControl } from '@lobechat/model-runtime';
 import type { LobeAgentChatConfig } from '@lobechat/types';
 import { Tooltip } from '@lobehub/ui';
 import { Select } from '@lobehub/ui/base-ui';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+// Single source of truth for "which level is showing", shared with the in-chat quick
+// selector and the ControlsForm sliders — it carries the model-specific default
+// overrides (Gemini flash `thinkingLevel`, gpt-5.5 `gpt5_2ReasoningEffort`) that the
+// registry's static table cannot express.
+import { resolveCurrentEffortLevel } from '@/features/ChatInput/ActionBar/ThinkingEffort/resolveEffortLevel';
 // Scoped hook: defaults to the user singleton, but resolves the published platform
 // catalog under AdminProviderSettingsStoreProvider — same source `ModelSelect` reads,
 // so the offered levels always match the model the picker next to it shows.
@@ -73,20 +73,19 @@ const EffortSelect = memo<EffortSelectProps>(
     const { configKey } = control.definition;
     const stored = chatConfig ? (chatConfig[configKey] as string | undefined) : value;
 
-    // With no "Default" option to fall back on, an unset chatConfig must display the level the
-    // model would actually use. `thinkingLevel` is the one control whose default is
-    // model-specific rather than the registry's static one.
-    const effectiveDefault =
-      control.key === 'thinkingLevel'
-        ? resolveDefaultThinkingLevelForModel(model)
-        : control.definition.defaultLevel;
-
-    // Clamp defends against a model swap that no longer offers the persisted level.
-    const selected = stored
-      ? clampEffortLevel(control.definition, stored)
-      : isChatConfigMode
-        ? effectiveDefault
-        : UNSET;
+    // Only systemAgent mode can represent "unset". chatConfig mode has no Default option to
+    // fall back on, so it must show the level the model would actually use. Either way a
+    // stored value goes through the shared resolver, which clamps a level the current model
+    // no longer offers back onto that model's real default.
+    const selected =
+      !stored && !isChatConfigMode
+        ? UNSET
+        : resolveCurrentEffortLevel({
+            config: { [configKey]: stored } as LobeAgentChatConfig,
+            definition: control.definition,
+            key: control.key,
+            model,
+          });
 
     return (
       // A bare 120px dropdown reading "Default" says nothing on its own; the base-ui Select

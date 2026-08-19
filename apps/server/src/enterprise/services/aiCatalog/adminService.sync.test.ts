@@ -179,7 +179,7 @@ describe('mapCardsToBatchUpdate', () => {
       {
         displayName: 'GPT-5.5',
         id: 'gpt-5.5',
-        settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+        settings: { extendParams: ['gpt5_6ReasoningEffort' as const] },
       },
     ];
 

@@ -41,7 +41,6 @@ export const toCursorKnownModelCard = (
   const displayName = known.displayName || remoteName || id;
   const reasoning = known.abilities?.reasoning;
   return {
-    abilities: known.abilities,
     contextWindowTokens: known.contextWindowTokens,
     displayName,
     enabled: false,
@@ -182,7 +181,6 @@ export class LobeCursorAI implements LobeRuntimeAI {
         if (known) return toCursorKnownModelCard(id, model.name, known);
         const displayName = model.name || id;
         return {
-          abilities: undefined,
           contextWindowTokens: /1m/i.test(displayName) ? 1_000_000 : undefined,
           displayName,
           enabled: false,
