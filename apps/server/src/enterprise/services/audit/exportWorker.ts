@@ -21,13 +21,8 @@
  * Terminal domain/job outcomes append a required audit event in the same DB transaction.
  */
 
-import { createReadStream } from 'node:fs';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-
+import type { PlatformAuditExportItem } from '@/database/models/platform';
 import {
-  type PlatformAuditExportItem,
   PlatformAuditExportModel,
   PlatformAuditPolicyModel,
   PlatformJobModel,
@@ -37,33 +32,23 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { assertConversationAccessEnabled } from './contentPolicy';
 import {
-  AUDIT_EXPORT_ARTIFACT_VERSION,
   AUDIT_EXPORT_DEFAULT_LEASE_MS,
   AUDIT_EXPORT_MAX_ARTIFACT_BYTES,
   parseAuditExportJobInput,
   PLATFORM_AUDIT_EXPORT_JOB_TYPE,
 } from './exportConstants';
+import type { AuditExportArtifactStorage } from './exportStorage';
 import {
-  AUDIT_EXPORT_CONTENT_TYPE,
-  type AuditExportArtifactStorage,
   AuditExportPrivateS3Storage,
   buildAuditExportAttemptStorageKey,
   buildAuditExportAttemptToken,
-  formatArtifactChecksum,
 } from './exportStorage';
-import { createArtifactWriter } from './exportWorkerArtifactWriter';
 import { settleNonRunnableExport } from './exportWorkerClaim';
-import { AuditExportCancelledError, AuditExportLeaseLostError } from './exportWorkerErrors';
+import { AuditExportLeaseLostError } from './exportWorkerErrors';
 import { settleExportJobFailure } from './exportWorkerFailure';
-import { verifyUploadedArtifact } from './exportWorkerIntegrity';
 import { resolveExportExecutionPlan } from './exportWorkerPlan';
-import { jsonlLine, runWithPeriodicLeaseMaintenance, toIso } from './exportWorkerShared';
-import { materializeExportSnapshot, streamStagingIntoArtifact } from './exportWorkerSnapshot';
-import {
-  safeDeleteOwned,
-  terminalCompleteExport,
-  terminalFailExport,
-} from './exportWorkerTerminal';
+import { runFencedExportPublication } from './exportWorkerRun';
+import { terminalFailExport } from './exportWorkerTerminal';
 
 export { AUDIT_EXPORT_MAX_ARTIFACT_BYTES } from './exportConstants';
 export { AuditExportLeaseLostError, isTerminalContractError } from './exportWorkerErrors';
@@ -223,181 +208,31 @@ export const processNextAuditExportJob = async (
         livePolicy,
       });
 
-    // Stream NDJSON to a temp file (bounded memory: one line / batch, not 1M rows).
-    const tmpDir = await mkdtemp(path.join(tmpdir(), 'audit-export-'));
-    const tmpPath = path.join(tmpDir, 'evidence.ndjson');
-    const stagingPath = path.join(tmpDir, 'snapshot.ndjson');
-    let evidenceCount = 0;
-    const artifact = createArtifactWriter({
+    return await runFencedExportPublication({
+      afterArtifactUpload: options.afterArtifactUpload,
+      afterDomainComplete: options.afterDomainComplete,
+      attemptToken,
       createArtifactWriteStream: options.createArtifactWriteStream,
+      db,
+      exportArtifactRetentionDays,
+      exportId,
+      exportRow,
+      exportsModel,
+      filter,
+      jobId: claimed.id,
+      jobs,
+      leaseMs,
+      livePolicyRevision: livePolicy.revision,
       maxArtifactBytes,
-      tmpPath,
+      maxExportRows,
+      onSnapshotModelCall: options.onSnapshotModelCall,
+      onSnapshotPageFetch: options.onSnapshotPageFetch,
+      snapshotAt,
+      snapshotWindow,
+      storage,
+      storageKey,
+      workerId: options.workerId,
     });
-
-    const assertNotCancelled = async () => {
-      const current = await exportsModel.get(exportId);
-      if (!current || current.status === 'cancelled') {
-        throw new AuditExportCancelledError();
-      }
-      // Fencing: if another attempt rebound the token, stop without cancelling.
-      const boundToken = (current.error as { attemptToken?: string } | null)?.attemptToken;
-      if (boundToken && boundToken !== attemptToken) {
-        throw new AuditExportLeaseLostError();
-      }
-      const job = await jobs.findById(claimed.id);
-      if (!job || job.status === 'cancelled') {
-        throw new AuditExportCancelledError();
-      }
-      // Renew lease + progress — null means lease loss, NOT user cancellation.
-      const cp = await jobs.checkpoint({
-        jobId: claimed.id,
-        leaseMs,
-        progressDone: Math.max(0, artifact.lineCount - 1),
-        workerId: options.workerId,
-      });
-      if (!cp) {
-        throw new AuditExportLeaseLostError();
-      }
-    };
-
-    let completedRow: Awaited<ReturnType<PlatformAuditExportModel['complete']>> | null = null;
-    const requestedBy = exportRow.requestedBy;
-
-    try {
-      await assertNotCancelled();
-
-      await artifact.writeLine(
-        jsonlLine({
-          createdAt: toIso(exportRow.createdAt),
-          exportArtifactRetentionDays,
-          exportId,
-          filterSnapshot: filter,
-          includesMessageBodies: exportRow.includesMessageBodies,
-          kind: exportRow.kind,
-          maxExportRows,
-          policyRevision: filter.policyRevision ?? livePolicy.revision,
-          snapshotAt: toIso(snapshotAt),
-          type: 'manifest',
-          version: AUDIT_EXPORT_ARTIFACT_VERSION,
-        }),
-      );
-
-      // Phase 1: materialise immutable evidence under one RR snapshot. The lease
-      // maintainer uses the outer pool while the snapshot transaction owns another
-      // connection, preventing a long scan from becoming reclaimable.
-      const snapshot = await runWithPeriodicLeaseMaintenance(
-        () =>
-          materializeExportSnapshot(db, {
-            filter,
-            includeBodies: exportRow.includesMessageBodies,
-            kind: exportRow.kind,
-            maxExportRows,
-            maxStagingBytes: Math.max(0, maxArtifactBytes - artifact.totalBytes),
-            onModelCall: options.onSnapshotModelCall,
-            onPageFetch: options.onSnapshotPageFetch,
-            stagingPath,
-            window: snapshotWindow,
-          }),
-        assertNotCancelled,
-        Math.max(1, Math.floor(leaseMs / 3)),
-      );
-      evidenceCount = snapshot.evidenceCount;
-
-      await assertNotCancelled();
-
-      // Phase 2: stream frozen staging lines into the artifact with heartbeats
-      // and batched copy (SAO-005 — no live N+1 re-reads).
-      await streamStagingIntoArtifact(stagingPath, artifact.writeLine, assertNotCancelled);
-
-      await assertNotCancelled();
-      await artifact.end();
-
-      // Incremental digest from the write path — never re-buffer the temp file (F10).
-      const localChecksum = formatArtifactChecksum(artifact.digestHex());
-
-      // Renew lease before long remote I/O (upload / metadata / hash) — SAO-002.
-      await assertNotCancelled();
-
-      // F6: durable cleanup intent for THIS attempt key only, fenced by attemptToken.
-      const intentOk = await exportsModel.recordArtifactUploadIntent(exportId, storageKey, db, {
-        attemptToken,
-      });
-      if (!intentOk) {
-        throw new AuditExportLeaseLostError();
-      }
-
-      await assertNotCancelled();
-      const uploaded = await storage.uploadArtifact({
-        artifactChecksum: localChecksum,
-        body: createReadStream(tmpPath),
-        contentLength: artifact.totalBytes,
-        contentType: AUDIT_EXPORT_CONTENT_TYPE,
-        storageKey,
-      });
-      await assertNotCancelled();
-
-      await verifyUploadedArtifact({
-        assertNotCancelled,
-        localChecksum,
-        storage,
-        storageKey,
-        totalBytes: artifact.totalBytes,
-        uploaded,
-      });
-
-      if (options.afterArtifactUpload) {
-        await options.afterArtifactUpload({
-          exportId,
-          jobId: claimed.id,
-          storageKey: uploaded.storageKey,
-        });
-      }
-
-      await assertNotCancelled();
-
-      const expiresAt = new Date(
-        Date.now() + Math.max(1, exportArtifactRetentionDays) * 24 * 60 * 60 * 1000,
-      );
-
-      // Fenced transactional publication + required audit (SAO-002 / SAO-004).
-      completedRow = await terminalCompleteExport(db, {
-        afterDomainComplete: options.afterDomainComplete
-          ? async () => {
-              await options.afterDomainComplete!({ exportId, jobId: claimed.id });
-            }
-          : undefined,
-        artifactBytes: uploaded.artifactBytes,
-        artifactChecksum: uploaded.artifactChecksum,
-        attemptToken,
-        evidenceCount,
-        exportId,
-        expiresAt,
-        jobId: claimed.id,
-        requestedBy,
-        storageKey: uploaded.storageKey,
-        workerId: options.workerId,
-      });
-    } finally {
-      await artifact.dispose();
-    }
-
-    if (!completedRow) {
-      // Lost race: cancel or another fenced attempt won. Never purge a completed
-      // row's published key — only delete our attempt-unique object (SAO-002).
-      const current = await exportsModel.get(exportId);
-      if (current?.status === 'completed') {
-        if (current.storageKey !== storageKey) {
-          await safeDeleteOwned(storage, storageKey);
-        }
-        await jobs.cancel(claimed.id);
-        return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
-      }
-      await safeDeleteOwned(storage, storageKey, exportsModel, exportId);
-      await jobs.cancel(claimed.id);
-      return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
-    }
-
-    return { claimed: true, exportId, jobId: claimed.id, outcome: 'completed' };
   } catch (error) {
     return settleExportJobFailure({
       db,

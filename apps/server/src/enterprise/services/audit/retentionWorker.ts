@@ -17,26 +17,24 @@ import {
   PlatformJobModel,
 } from '@/database/models/platform';
 import type { PlatformJobItem } from '@/database/schemas/platform';
-import type { LobeChatDatabase, Transaction } from '@/database/type';
+import type { LobeChatDatabase } from '@/database/type';
 
 import { type AuditExportArtifactStorage, AuditExportPrivateS3Storage } from './exportStorage';
 import {
   AUDIT_RETENTION_DEFAULT_LEASE_MS,
-  type AuditRetentionJobCursor,
   parseAuditRetentionJobCursor,
   parseAuditRetentionJobInput,
   PLATFORM_AUDIT_RETENTION_JOB_TYPE,
 } from './retentionConstants';
 import { processExportArtifacts } from './retentionWorkerArtifacts';
+import { createRetentionBatchCheckpoint } from './retentionWorkerCheckpoint';
 import { assertRunnableRun, settleNonRunnableRun } from './retentionWorkerClaim';
 import {
-  AuditRetentionCancelledError,
   AuditRetentionInvalidDataError,
   AuditRetentionLeaseLostError,
 } from './retentionWorkerErrors';
 import { settleRetentionJobError } from './retentionWorkerFailure';
 import { processConversations, processOperationLogs } from './retentionWorkerScopes';
-import { progressFromCounts } from './retentionWorkerShared';
 import { appendWorkerOutcome } from './retentionWorkerTerminal';
 
 export interface ProcessNextAuditRetentionOptions {
@@ -161,97 +159,25 @@ export const processNextAuditRetentionJob = async (
       throw new AuditRetentionInvalidDataError('Invalid job cursor');
     }
     let keyset: string | undefined = resumeCursor?.keyset ?? undefined;
-    let batchIndex = 0;
 
-    /** Explicit cancel only (domain or platform job status). */
-    const assertNotCancelled = async () => {
-      const current = await runsModel.get(runId);
-      if (!current || current.status === 'cancelled') {
-        throw new AuditRetentionCancelledError();
-      }
-      const job = await jobs.findById(claimed.id);
-      if (!job || job.status === 'cancelled') {
-        throw new AuditRetentionCancelledError();
-      }
-    };
-
-    /**
-     * Atomic DB checkpoint: optional destructive work + retention run counts/progress
-     * + platform job cursor/lease in one transaction.
-     * Either all commit or all roll back. Null job checkpoint → LeaseLost (not cancel).
-     * Always writes cursor for the last processed item, including final page.
-     */
-    const checkpointBatch = async (
-      nextCounts: PlatformAuditRetentionCounts,
-      nextKeyset: string,
-      destructiveWork?: (tx: Transaction) => Promise<PlatformAuditRetentionCounts | void>,
-    ): Promise<PlatformAuditRetentionCounts> => {
-      await assertNotCancelled();
-
-      let committedCounts = nextCounts;
-
-      await db.transaction(async (tx) => {
-        if (destructiveWork) {
-          const adjusted = await destructiveWork(tx);
-          if (adjusted) committedCounts = adjusted;
-        }
-
-        const runsTx = new PlatformAuditRetentionRunModel(tx);
-        const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
-
-        const updated = await runsTx.updateProgress(runId, {
-          counts: committedCounts,
-          progressDone: progressFromCounts(committedCounts),
-        });
-        if (!updated) {
-          // Domain became terminal mid-batch (explicit cancel race).
-          throw new AuditRetentionCancelledError();
-        }
-
-        const cursorPayload: AuditRetentionJobCursor = { keyset: nextKeyset, v: 1 };
-        const cp = await jobsTx.checkpoint({
-          cursor: cursorPayload,
-          jobId: claimed.id,
-          leaseMs,
-          progressDone: progressFromCounts(committedCounts),
-          workerId: options.workerId,
-        });
-        if (!cp) {
-          // Lease owner changed / lease expired — roll back progress write with the tx.
-          throw new AuditRetentionLeaseLostError();
-        }
-      });
-
-      keyset = nextKeyset;
-      counts = committedCounts;
-      batchIndex += 1;
-
-      if (options.afterBatchCheckpoint) {
-        await options.afterBatchCheckpoint({
-          batchIndex,
-          counts: committedCounts,
-          keyset: nextKeyset,
-        });
-      }
-
-      return committedCounts;
-    };
-
-    /** Heartbeat lease without advancing counts (pre-scan / between scopes). */
-    const renewLease = async () => {
-      await assertNotCancelled();
-      const cursorPayload: AuditRetentionJobCursor = { keyset: keyset ?? null, v: 1 };
-      const cp = await jobs.checkpoint({
-        cursor: cursorPayload,
-        jobId: claimed.id,
-        leaseMs,
-        progressDone: progressFromCounts(counts),
-        workerId: options.workerId,
-      });
-      if (!cp) {
-        throw new AuditRetentionLeaseLostError();
-      }
-    };
+    const { assertNotCancelled, checkpointBatch, renewLease } = createRetentionBatchCheckpoint({
+      afterBatchCheckpoint: options.afterBatchCheckpoint,
+      db,
+      getCounts: () => counts,
+      getKeyset: () => keyset,
+      jobId: claimed.id,
+      jobs,
+      leaseMs,
+      runId,
+      runsModel,
+      setCounts: (next) => {
+        counts = next;
+      },
+      setKeyset: (next) => {
+        keyset = next;
+      },
+      workerId: options.workerId,
+    });
 
     await renewLease();
 

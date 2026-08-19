@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { eq, sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { getTestDB } from '@/database/core/getTestDB';
 import { users } from '@/database/schemas';
 import {
@@ -12,6 +13,8 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
+import * as accessLog from './accessLog';
 import {
   AdminAuditExportService,
   formatArtifactChecksum,
@@ -55,6 +58,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await clearAuditLogs();
   await serverDB.delete(platformAuditExports);
   await serverDB.delete(platformJobs);
@@ -289,6 +293,119 @@ describe('AdminAuditExportService', () => {
     }
     expect(JSON.stringify(cancelled)).not.toContain('purgeStorageKey');
     expect(JSON.stringify(cancelled)).not.toContain('platform-audit-exports/');
+  });
+
+  it('pre-TX already-terminal cancel writes already_terminal failure audit', async () => {
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: EXPORT_ONLY,
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'already terminal',
+        to: window.to,
+      },
+    });
+
+    await serverDB
+      .update(platformAuditExports)
+      .set({
+        artifactBytes: 1,
+        artifactChecksum: formatArtifactChecksum(sha256Hex(Buffer.from('x'))),
+        expiresAt: new Date('2026-12-01T00:00:00.000Z'),
+        status: 'completed',
+        storageKey: `platform-audit-exports/${created.id}/evidence.ndjson`,
+      })
+      .where(eq(platformAuditExports.id, created.id));
+
+    let thrown: unknown;
+    try {
+      await service.cancel({
+        actorPermissions: EXPORT_ONLY,
+        actorUserId: actor,
+        input: { id: created.id, reason: 'stale cancel' },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(getEnterpriseErrorBody(thrown)).toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: 'export_already_terminal', status: 'completed' },
+    });
+
+    const cancelLogs = await serverDB
+      .select()
+      .from(platformAuditLogs)
+      .where(eq(platformAuditLogs.action, 'admin.audit.exports.cancel'));
+    const alreadyTerminal = cancelLogs.filter(
+      (row) =>
+        row.result === 'failure' &&
+        (row.afterDiff as { error?: string } | null)?.error === 'already_terminal',
+    );
+    expect(alreadyTerminal).toHaveLength(1);
+  });
+
+  it('conflict cancel required-audit append failure is recorded via the cancel catch path', async () => {
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: EXPORT_ONLY,
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'conflict catch audit',
+        to: window.to,
+      },
+    });
+
+    const originalAppend = accessLog.appendAuditAccessLog;
+    vi.spyOn(accessLog, 'appendAuditAccessLog').mockImplementation(async (db, params) => {
+      if (
+        params.required &&
+        params.action === 'admin.audit.exports.cancel' &&
+        (params.afterDiff as { error?: string } | undefined)?.error === 'already_terminal'
+      ) {
+        throw new Error('INJECTED_AUDIT_WRITE_FAILURE');
+      }
+      return originalAppend(db, params);
+    });
+
+    await expect(
+      service.cancel({
+        actorPermissions: EXPORT_ONLY,
+        actorUserId: actor,
+        beforeCancelTx: async ({ exportId }) => {
+          await serverDB
+            .update(platformAuditExports)
+            .set({
+              artifactBytes: 1,
+              artifactChecksum: formatArtifactChecksum(sha256Hex(Buffer.from('x'))),
+              expiresAt: new Date('2026-12-01T00:00:00.000Z'),
+              status: 'completed',
+              storageKey: `platform-audit-exports/${exportId}/evidence.ndjson`,
+            })
+            .where(eq(platformAuditExports.id, exportId));
+        },
+        input: { id: created.id, reason: 'stale cancel race' },
+      }),
+    ).rejects.toThrow(/INJECTED_AUDIT_WRITE_FAILURE/);
+
+    // Outer catch must still write the generic failure audit (return-await of the helper).
+    const cancelLogs = await serverDB
+      .select()
+      .from(platformAuditLogs)
+      .where(eq(platformAuditLogs.action, 'admin.audit.exports.cancel'));
+    expect(
+      cancelLogs.some(
+        (row) =>
+          row.result === 'failure' &&
+          (row.afterDiff as { error?: string } | null)?.error === 'failure',
+      ),
+    ).toBe(true);
   });
 
   it('rejects download when object is same-length but checksum-corrupted', async () => {
