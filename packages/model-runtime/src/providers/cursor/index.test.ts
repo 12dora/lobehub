@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { deriveCursorConversationId } from '../../browserProfile';
 import { AgentRuntimeErrorType } from '../../types/error';
-import { CURSOR_CONVERSATION_HEADER, CURSOR_TRANSPORT_ORIGIN, LobeCursorAI } from './index';
+import {
+  CURSOR_CONVERSATION_HEADER,
+  CURSOR_TRANSPORT_ORIGIN,
+  LobeCursorAI,
+  toCursorKnownModelCard,
+} from './index';
 
 const encoder = new TextEncoder();
 
@@ -30,6 +35,38 @@ const successTurn = () =>
         subtype: 'success',
         is_error: false,
         result: 'pong',
+        usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0 },
+      },
+    ]),
+    {
+      headers: { 'Content-Type': 'text/event-stream' },
+      status: 200,
+    },
+  );
+
+const TOOL_BLOCK = `<aihub:tool_calls>\n${JSON.stringify([{ name: 'search', arguments: { q: 'pong' } }])}\n</aihub:tool_calls>`;
+
+const SEARCH_TOOL = {
+  function: {
+    description: 'Search docs',
+    name: 'search',
+    parameters: { properties: { q: { type: 'string' } }, type: 'object' },
+  },
+  type: 'function' as const,
+};
+
+const markerTurn = () =>
+  new Response(
+    sseBody([
+      {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: TOOL_BLOCK }] },
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: TOOL_BLOCK,
         usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0 },
       },
     ]),
@@ -90,6 +127,112 @@ describe('LobeCursorAI', () => {
       expect(sse).toContain('event: text');
       expect(sse).toContain('pong');
       expect(sse).toContain('event: stop');
+    });
+
+    it('forwards tools into the turn body as a system tool-protocol block', async () => {
+      const fetchImpl = vi.fn<
+        (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+      >(async () => successTurn());
+      const runtime = new LobeCursorAI({ apiKey: 'jwt-token', fetch: fetchImpl });
+
+      await runtime.chat({
+        messages: [{ content: 'search docs', role: 'user' }],
+        model: 'composer-2.5',
+        tools: [
+          {
+            function: {
+              description: 'Search docs',
+              name: 'search',
+              parameters: { properties: { q: { type: 'string' } }, type: 'object' },
+            },
+            type: 'function',
+          },
+        ],
+      });
+
+      const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body));
+      expect(body.prompt).toContain('<aihub:tool_calls>');
+      expect(body.prompt).toContain('"name":"search"');
+      expect(body.prompt).toContain('search docs');
+    });
+
+    it('forwards payload tools into the turn system prefix', async () => {
+      const fetchImpl = vi.fn<
+        (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+      >(async () => successTurn());
+      const runtime = new LobeCursorAI({ apiKey: 'jwt', fetch: fetchImpl });
+
+      await runtime.chat({
+        messages: [{ content: 'search pong', role: 'user' }],
+        model: 'composer-2.5',
+        tools: [
+          {
+            function: {
+              description: 'Search docs',
+              name: 'search',
+              parameters: { properties: { q: { type: 'string' } }, type: 'object' },
+            },
+            type: 'function',
+          },
+        ],
+      });
+
+      const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body));
+      expect(body.prompt).toContain('<aihub:tool_calls>');
+      expect(body.prompt).toContain('"name":"search"');
+      expect(body.prompt).toContain('search pong');
+    });
+
+    it('parses a marker in the stream only when tools are active', async () => {
+      const fetchImpl = vi.fn<
+        (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+      >(async () => markerTurn());
+      const runtime = new LobeCursorAI({ apiKey: 'jwt', fetch: fetchImpl });
+
+      const withTools = await runtime.chat({
+        messages: [{ content: 'search', role: 'user' }],
+        model: 'composer-2.5',
+        tools: [SEARCH_TOOL],
+      });
+      const withToolsSse = await withTools.text();
+      expect(withToolsSse).toContain('event: tool_calls');
+      expect(withToolsSse).toContain('event: stop\ndata: "tool_calls"');
+      expect(withToolsSse).not.toContain('aihub:tool_calls');
+    });
+
+    it('passes a marker-literal through when the chat has no tools', async () => {
+      const fetchImpl = vi.fn<
+        (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+      >(async () => markerTurn());
+      const runtime = new LobeCursorAI({ apiKey: 'jwt', fetch: fetchImpl });
+
+      const response = await runtime.chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'composer-2.5',
+      });
+      const sse = await response.text();
+      expect(sse).not.toContain('event: tool_calls');
+      expect(sse).toContain('aihub:tool_calls');
+      expect(sse).toContain('event: stop\ndata: "stop"');
+    });
+
+    it('passes a marker-literal through when tool_choice is none', async () => {
+      const fetchImpl = vi.fn<
+        (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+      >(async () => markerTurn());
+      const runtime = new LobeCursorAI({ apiKey: 'jwt', fetch: fetchImpl });
+
+      const response = await runtime.chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'composer-2.5',
+        tool_choice: 'none',
+        tools: [SEARCH_TOOL],
+      });
+      const sse = await response.text();
+      const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body));
+      expect(body.prompt).not.toContain('<aihub:tool_calls>');
+      expect(sse).not.toContain('event: tool_calls');
+      expect(sse).toContain('aihub:tool_calls');
     });
 
     it('sends one stable conversation id for every turn of the same conversation', async () => {
@@ -257,47 +400,51 @@ describe('LobeCursorAI', () => {
 
       expect(cards).toEqual([
         {
-          abilities: { functionCall: false, reasoning: false, vision: false },
+          abilities: { functionCall: true, reasoning: false, vision: false },
           contextWindowTokens: 200_000,
           // Follows the curated card in model-bank (renamed by the frontend round).
           displayName: 'Auto (Cursor)',
           enabled: false,
-          functionCall: false,
+          functionCall: true,
           id: 'auto',
           reasoning: false,
+          settings: undefined,
           type: 'chat',
           vision: false,
         },
         {
-          abilities: { functionCall: false, reasoning: false, vision: true },
+          abilities: { functionCall: true, reasoning: false, vision: true },
           contextWindowTokens: 200_000,
           displayName: 'Composer 2.5',
           enabled: false,
-          functionCall: false,
+          functionCall: true,
           id: 'composer-2.5',
           reasoning: false,
+          settings: undefined,
           type: 'chat',
           vision: true,
         },
         {
-          abilities: { functionCall: false, reasoning: true, vision: true },
+          abilities: { functionCall: true, reasoning: true, vision: true },
           contextWindowTokens: 1_000_000,
           displayName: 'Claude Opus 5 1M Thinking',
           enabled: false,
-          functionCall: false,
+          functionCall: true,
           id: 'claude-opus-5-thinking-high',
           reasoning: true,
+          settings: undefined,
           type: 'chat',
           vision: true,
         },
         {
-          abilities: { functionCall: false, reasoning: true, vision: true },
+          abilities: { functionCall: true, reasoning: true, vision: true },
           contextWindowTokens: 1_000_000,
           displayName: 'GPT-5.6 Sol 1M High',
           enabled: false,
-          functionCall: false,
+          functionCall: true,
           id: 'gpt-5.6-sol-high',
           reasoning: true,
+          settings: undefined,
           type: 'chat',
           vision: true,
         },
@@ -311,6 +458,29 @@ describe('LobeCursorAI', () => {
           type: 'chat',
         },
       ]);
+    });
+
+    it('shallow-clones known settings so callers cannot mutate later cards', () => {
+      const known = {
+        abilities: { functionCall: true, reasoning: false, vision: false },
+        contextWindowTokens: 200_000,
+        displayName: 'Auto (Cursor)',
+        enabled: true,
+        family: 'cursor',
+        id: 'auto',
+        releasedAt: '2026-08-11',
+        settings: { extendParams: ['enableReasoning'] as ['enableReasoning'] },
+        type: 'chat' as const,
+      };
+      const first = toCursorKnownModelCard('auto', 'Auto', known);
+      const second = toCursorKnownModelCard('auto', 'Auto', known);
+
+      expect(first.settings).toEqual({ extendParams: ['enableReasoning'] });
+      expect(first.settings).not.toBe(known.settings);
+      expect(first.settings).not.toBe(second.settings);
+      if (first.settings) first.settings.extendParams = ['effort'];
+      expect(second.settings).toEqual({ extendParams: ['enableReasoning'] });
+      expect(known.settings).toEqual({ extendParams: ['enableReasoning'] });
     });
 
     it('maps a 401 on /v1/models to OAuthAuthorizationExpired', async () => {

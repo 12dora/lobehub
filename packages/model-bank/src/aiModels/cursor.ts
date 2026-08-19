@@ -4,7 +4,7 @@ const RELEASED_AT = '2026-08-11';
 
 const cursorChatModels: AIChatModelCard[] = [
   {
-    abilities: { functionCall: false, reasoning: false, vision: true },
+    abilities: { functionCall: true, reasoning: false, vision: true },
     contextWindowTokens: 200_000,
     description: "Cursor's in-house coding model.",
     displayName: 'Composer 2.5',
@@ -16,7 +16,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: false },
+    abilities: { functionCall: true, reasoning: true, vision: false },
     contextWindowTokens: 200_000,
     description: 'Cursor-hosted Grok 4.6 at high reasoning effort.',
     displayName: 'Cursor Grok 4.6',
@@ -28,7 +28,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: true },
+    abilities: { functionCall: true, reasoning: true, vision: true },
     contextWindowTokens: 1_000_000,
     description: 'Claude Opus 5 with a 1M context window and high thinking effort.',
     displayName: 'Claude Opus 5 1M Thinking',
@@ -40,7 +40,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: true },
+    abilities: { functionCall: true, reasoning: true, vision: true },
     contextWindowTokens: 1_000_000,
     description: 'Claude Sonnet 5 with a 1M context window and high thinking effort.',
     displayName: 'Claude Sonnet 5 1M Thinking',
@@ -52,7 +52,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: true },
+    abilities: { functionCall: true, reasoning: true, vision: true },
     contextWindowTokens: 1_000_000,
     description: 'GPT-5.6 Sol with a 1M context window at high reasoning effort.',
     displayName: 'GPT-5.6 Sol 1M High',
@@ -64,7 +64,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: true },
+    abilities: { functionCall: true, reasoning: true, vision: true },
     contextWindowTokens: 200_000,
     description: 'OpenAI Codex 5.3 at high reasoning effort.',
     displayName: 'Codex 5.3 High',
@@ -76,7 +76,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: true },
+    abilities: { functionCall: true, reasoning: true, vision: true },
     contextWindowTokens: 200_000,
     description: 'Gemini 3.7 Flash at high reasoning effort.',
     displayName: 'Gemini 3.7 Flash',
@@ -88,7 +88,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: false, vision: false },
+    abilities: { functionCall: true, reasoning: false, vision: false },
     contextWindowTokens: 200_000,
     description: 'Lets Cursor pick a model for each message.',
     displayName: 'Auto (Cursor)',
@@ -99,7 +99,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: false },
+    abilities: { functionCall: true, reasoning: true, vision: false },
     contextWindowTokens: 200_000,
     description: 'Cursor-hosted Grok 4.5 at high reasoning effort.',
     displayName: 'Cursor Grok 4.5',
@@ -111,7 +111,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: true },
+    abilities: { functionCall: true, reasoning: true, vision: true },
     contextWindowTokens: 1_000_000,
     description: 'Claude Opus 5 with a 1M context window and extra-high thinking effort.',
     displayName: 'Claude Opus 5 1M Extra High Thinking',
@@ -123,7 +123,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: true },
+    abilities: { functionCall: true, reasoning: true, vision: true },
     contextWindowTokens: 1_000_000,
     description: 'GPT-5.6 Sol with a 1M context window at extra-high reasoning effort.',
     displayName: 'GPT-5.6 Sol 1M Extra High',
@@ -135,7 +135,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: false, vision: true },
+    abilities: { functionCall: true, reasoning: false, vision: true },
     contextWindowTokens: 200_000,
     description: 'GPT-5.2 as served by Cursor.',
     displayName: 'GPT-5.2',
@@ -147,7 +147,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: false },
+    abilities: { functionCall: true, reasoning: true, vision: false },
     contextWindowTokens: 200_000,
     description: 'Kimi K3 at high reasoning effort.',
     displayName: 'Kimi K3 High',
@@ -159,7 +159,7 @@ const cursorChatModels: AIChatModelCard[] = [
     type: 'chat',
   },
   {
-    abilities: { functionCall: false, reasoning: true, vision: false },
+    abilities: { functionCall: true, reasoning: true, vision: false },
     contextWindowTokens: 200_000,
     description: 'GLM 5.2 at high reasoning effort.',
     displayName: 'GLM 5.2',

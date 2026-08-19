@@ -4,6 +4,12 @@ import type { OpenAIChatMessage, UserMessageContentPart } from '../../types';
 import type { ChatStreamPayload } from '../../types/chat';
 import { fileUrlPartPlaceholder, isFileUrlTypedPart } from '../../types/chat';
 import { parseDataUri } from '../../utils/uriParser';
+import {
+  buildCursorToolProtocol,
+  isCursorToolsActive,
+  serializeCursorToolCalls,
+  serializeCursorToolResult,
+} from './toolProtocol';
 
 const log = createDebug('lobe-cursor:turn');
 
@@ -83,18 +89,24 @@ const extractImages = (content: OpenAIChatMessage['content']): CursorTurnImage[]
   return images;
 };
 
-const foldAssistant = (message: OpenAIChatMessage): string => {
+const foldAssistant = (message: OpenAIChatMessage, emulateTools: boolean): string => {
   const bits = [extractText(message.content)];
-  for (const call of message.tool_calls ?? []) {
-    const name = call.function?.name || call.id || 'tool';
-    const args = call.function?.arguments ?? '';
-    bits.push(`[tool call ${name}: ${args}]`);
+  const calls = message.tool_calls ?? [];
+  if (emulateTools && calls.length > 0) {
+    bits.push(serializeCursorToolCalls(calls));
+  } else {
+    for (const call of calls) {
+      const name = call.function?.name || call.id || 'tool';
+      const args = call.function?.arguments ?? '';
+      bits.push(`[tool call ${name}: ${args}]`);
+    }
   }
   return bits.filter(Boolean).join('\n');
 };
 
-const foldTool = (message: OpenAIChatMessage): string => {
+const foldTool = (message: OpenAIChatMessage, emulateTools: boolean): string => {
   const text = extractText(message.content);
+  if (emulateTools) return serializeCursorToolResult(message, text);
   const id = message.tool_call_id ? ` ${message.tool_call_id}` : '';
   return `[tool result${id}: ${text}]`;
 };
@@ -125,12 +137,15 @@ const appendToPreviousAssistant = (history: CursorHistoryMessage[], text: string
  * Map a LobeHub chat payload onto the Cursor transport's `/v1/turn` body.
  * History is every message before the last user turn; system/developer text is
  * prepended as `<system>…</system>` onto the first history user (or the prompt
- * when there is no history user). Tool calls/results become plain text.
+ * when there is no history user). Tool calls/results become plain text, or the
+ * `<aihub:tool_calls>` prompt-protocol markup when tools are active
+ * (`tools.length > 0` and `tool_choice !== 'none'`).
  */
 export const buildCursorTurn = (
-  payload: Pick<ChatStreamPayload, 'messages' | 'model'>,
+  payload: Pick<ChatStreamPayload, 'messages' | 'model' | 'tool_choice' | 'tools'>,
 ): CursorTurnBody => {
   const messages = payload.messages ?? [];
+  const emulateTools = isCursorToolsActive(payload.tools, payload.tool_choice);
 
   let lastUserIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -157,20 +172,24 @@ export const buildCursorTurn = (
     if (dropped > 0) log('dropping %d image(s) from a non-final user message', dropped);
 
     if (isToolRole(message.role)) {
-      const folded = foldTool(message);
+      const folded = foldTool(message, emulateTools);
       if (!folded) continue;
       if (!appendToPreviousAssistant(history, folded)) history.push(userHistory(folded));
       continue;
     }
 
     if (message.role === 'assistant') {
-      const folded = foldAssistant(message);
+      const folded = foldAssistant(message, emulateTools);
       if (folded) history.push(assistantHistory(folded));
       continue;
     }
 
     const text = extractText(message.content);
     if (text) history.push(userHistory(text));
+  }
+
+  if (isCursorToolsActive(payload.tools, payload.tool_choice)) {
+    systemTexts.push(buildCursorToolProtocol(payload.tools, payload.tool_choice));
   }
 
   const systemPrefix = wrapSystem(systemTexts);

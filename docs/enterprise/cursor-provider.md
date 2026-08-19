@@ -7,7 +7,7 @@
 
 管理端把 Cursor 配成平台共享服务商后，成员聊天走服务端生成的 `cursor-agent` 子进程（伪 HTTP `https://cursor.local`），不是 Cursor 的公开 HTTP API。该 CLI 在官方镜像里烘焙在 `/opt/cursor-agent`。
 
-Cursor **没有工具调用**（`functionCall: false`）。连通性检查走普通流式 `chat`，不是 OpenAI Responses。
+Cursor CLI 没有原生 function calling（`--mode ask` 线上不传 tools）。LobeChat 在 model-runtime 层用 prompt-protocol 模拟：把 tools 写进 `<system>`，要求模型在回复末尾输出 `<aihub:tool_calls>[{"name","arguments"}]</aihub:tool_calls>`，流式解析后再发标准 `tool_calls` chunk。并行调用支持；依赖模型遵守标记，线上没有原生 FC。连通性检查走普通流式 `chat`，不是 OpenAI Responses。
 
 ## 1. 接入方式
 

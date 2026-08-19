@@ -10,6 +10,7 @@ import { AgentRuntimeErrorType } from '../../types/error';
 import { AgentRuntimeError } from '../../utils/createError';
 import { debugStream } from '../../utils/debugStream';
 import { StreamingResponse } from '../../utils/response';
+import { isCursorToolsActive } from './toolProtocol';
 import { buildCursorTurn } from './turn';
 
 const log = createDebug('lobe-cursor:runtime');
@@ -28,6 +29,30 @@ const DEFAULT_PROVIDER = 'cursor';
 const DEBUG_FLAG = 'DEBUG_CURSOR_CHAT_COMPLETION';
 const TRANSPORT_UNAVAILABLE = 'Cursor Agent transport unavailable';
 const CURSOR_CATALOG = new Map(cursorChatModels.map((model) => [model.id, model]));
+
+type CursorCatalogEntry = (typeof cursorChatModels)[number];
+
+/** Map a model-bank entry onto a chat card. Settings are shallow-cloned. */
+export const toCursorKnownModelCard = (
+  id: string,
+  remoteName: string | undefined,
+  known: Pick<CursorCatalogEntry, 'abilities' | 'contextWindowTokens' | 'displayName' | 'settings'>,
+): ChatModelCard => {
+  const displayName = known.displayName || remoteName || id;
+  const reasoning = known.abilities?.reasoning;
+  return {
+    abilities: known.abilities,
+    contextWindowTokens: known.contextWindowTokens,
+    displayName,
+    enabled: false,
+    functionCall: known.abilities?.functionCall,
+    id,
+    reasoning,
+    settings: known.settings ? { ...known.settings } : undefined,
+    type: 'chat',
+    vision: known.abilities?.vision,
+  };
+};
 
 export interface LobeCursorAIParams {
   apiKey?: string;
@@ -86,7 +111,12 @@ export class LobeCursorAI implements LobeRuntimeAI {
 
   async chat(payload: ChatStreamPayload, options?: ChatMethodOptions): Promise<Response> {
     const inputStartAt = Date.now();
-    const body = buildCursorTurn(payload);
+    const body = buildCursorTurn({
+      messages: payload.messages,
+      model: payload.model,
+      tool_choice: payload.tool_choice,
+      tools: payload.tools,
+    });
 
     const response = await this.request(`${this.baseURL}/v1/turn`, {
       body: JSON.stringify(body),
@@ -117,6 +147,7 @@ export class LobeCursorAI implements LobeRuntimeAI {
       callbacks: options?.callback,
       inputStartAt,
       model: payload.model,
+      parseToolCalls: isCursorToolsActive(payload.tools, payload.tool_choice),
       provider: this.provider,
     });
 
@@ -148,21 +179,8 @@ export class LobeCursorAI implements LobeRuntimeAI {
       .map((model) => {
         const id = model.id;
         const known = CURSOR_CATALOG.get(id);
-        const displayName = known?.displayName || model.name || id;
-        if (known) {
-          const reasoning = known.abilities?.reasoning;
-          return {
-            abilities: known.abilities,
-            contextWindowTokens: known.contextWindowTokens,
-            displayName,
-            enabled: false,
-            functionCall: known.abilities?.functionCall,
-            id,
-            reasoning,
-            type: 'chat' as const,
-            vision: known.abilities?.vision,
-          } as ChatModelCard;
-        }
+        if (known) return toCursorKnownModelCard(id, model.name, known);
+        const displayName = model.name || id;
         return {
           abilities: undefined,
           contextWindowTokens: /1m/i.test(displayName) ? 1_000_000 : undefined,

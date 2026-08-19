@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { CursorStream, iterateReadable } from './cursor';
+import {
+  CURSOR_TOOL_CALLS_CLOSE,
+  CURSOR_TOOL_CALLS_OPEN,
+} from '../../providers/cursor/toolProtocol';
+import { CursorStream, iterateReadable, transformCursorEvents } from './cursor';
+import type { StreamProtocolChunk } from './protocol';
 
 const encoder = new TextEncoder();
 
@@ -279,5 +284,309 @@ describe('CursorStream', () => {
     expect(first.done).toBe(false);
     await iter.return();
     expect(cancelled).toBe(true);
+  });
+
+  it('emits tool_calls SSE and a tool_calls stop reason', async () => {
+    const block = `${CURSOR_TOOL_CALLS_OPEN}\n${JSON.stringify([{ name: 'search', arguments: { q: 'pong' } }])}\n${CURSOR_TOOL_CALLS_CLOSE}`;
+    const raw = await collect(
+      CursorStream(
+        toSse([
+          {
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'text', text: `ok\n${block}` }] },
+          },
+          {
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: `ok\n${block}`,
+            usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0 },
+          },
+        ]),
+        { parseToolCalls: true },
+      ),
+    );
+
+    expect(eventTypes(raw)).toEqual(['text', 'tool_calls', 'usage', 'stop']);
+    expect(raw).toContain('data: "ok\\n"');
+    expect(raw).not.toContain('aihub:tool_calls');
+    expect(raw).toContain('"name":"search"');
+    expect(raw).toContain('event: stop\ndata: "tool_calls"');
+  });
+
+  it('passes a marker-literal through when parseToolCalls is omitted', async () => {
+    const block = `${CURSOR_TOOL_CALLS_OPEN}\n${JSON.stringify([{ name: 'search', arguments: { q: 'pong' } }])}\n${CURSOR_TOOL_CALLS_CLOSE}`;
+    const raw = await collect(
+      CursorStream(
+        toSse([
+          {
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'text', text: block }] },
+          },
+          {
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: block,
+            usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0 },
+          },
+        ]),
+      ),
+    );
+
+    expect(eventTypes(raw)).toEqual(['text', 'usage', 'stop']);
+    expect(raw).toContain('aihub:tool_calls');
+    expect(raw).not.toContain('event: tool_calls');
+    expect(raw).toContain('event: stop\ndata: "stop"');
+  });
+});
+
+const TOOL_CALL_ID = 'chat_tool_test';
+
+const SEARCH_BLOCK = `${CURSOR_TOOL_CALLS_OPEN}\n${JSON.stringify([{ name: 'search', arguments: { q: 'pong' } }])}\n${CURSOR_TOOL_CALLS_CLOSE}`;
+
+const PARALLEL_BLOCK = `${CURSOR_TOOL_CALLS_OPEN}\n${JSON.stringify([
+  { name: 'search', arguments: { q: 'pong' } },
+  { name: 'weather', arguments: { city: 'NYC' } },
+])}\n${CURSOR_TOOL_CALLS_CLOSE}`;
+
+async function* eventsOf(
+  events: object[],
+): AsyncGenerator<(typeof events)[number] & { type?: string }, void, undefined> {
+  for (const event of events) yield event;
+}
+
+const collectChunks = async (
+  events: object[],
+  options: { parseToolCalls?: boolean } = { parseToolCalls: true },
+): Promise<StreamProtocolChunk[]> => {
+  const chunks: StreamProtocolChunk[] = [];
+  for await (const chunk of transformCursorEvents(eventsOf(events), {
+    parseToolCalls: options.parseToolCalls,
+    streamStack: { id: TOOL_CALL_ID },
+  })) {
+    chunks.push(chunk);
+  }
+  return chunks;
+};
+
+const joinedText = (chunks: StreamProtocolChunk[]) =>
+  chunks
+    .filter((chunk) => chunk.type === 'text')
+    .map((chunk) => chunk.data)
+    .join('');
+
+const assistant = (text: string) => ({
+  message: { content: [{ text, type: 'text' }], role: 'assistant' },
+  type: 'assistant',
+});
+
+const successResult = (result: string) => ({
+  is_error: false,
+  result,
+  subtype: 'success',
+  type: 'result',
+  usage: { cacheReadTokens: 0, inputTokens: 1, outputTokens: 1 },
+});
+
+const toolCallId = (name: string, index: number) =>
+  expect.stringMatching(new RegExp(`^${name}_${index}_[0-9a-zA-Z]{8}$`));
+
+describe('transformCursorEvents tool-call emulation', () => {
+  it('parses a marker that arrives in one chunk', async () => {
+    const chunks = await collectChunks([assistant(SEARCH_BLOCK), successResult(SEARCH_BLOCK)]);
+
+    expect(chunks.filter((chunk) => chunk.type === 'text')).toEqual([]);
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toEqual([
+      {
+        data: [
+          {
+            function: { arguments: '{"q":"pong"}', name: 'search' },
+            id: toolCallId('search', 0),
+            index: 0,
+            type: 'function',
+          },
+        ],
+        id: TOOL_CALL_ID,
+        type: 'tool_calls',
+      },
+    ]);
+    expect(chunks.at(-1)).toEqual({ data: 'tool_calls', id: TOOL_CALL_ID, type: 'stop' });
+  });
+
+  it('parses a marker split across many small deltas', async () => {
+    const events = [...SEARCH_BLOCK].map((char) => assistant(char));
+    events.push(successResult(SEARCH_BLOCK));
+    const chunks = await collectChunks(events);
+
+    expect(chunks.filter((chunk) => chunk.type === 'text')).toEqual([]);
+    const calls = chunks.filter((chunk) => chunk.type === 'tool_calls');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.data).toEqual([
+      {
+        function: { arguments: '{"q":"pong"}', name: 'search' },
+        id: toolCallId('search', 0),
+        index: 0,
+        type: 'function',
+      },
+    ]);
+    expect(chunks.at(-1)?.data).toBe('tool_calls');
+  });
+
+  it('flushes a false marker prefix as normal text', async () => {
+    const chunks = await collectChunks([
+      assistant('<aihub:tool'),
+      assistant('_not_the_marker>'),
+      successResult('<aihub:tool_not_the_marker>'),
+    ]);
+
+    const text = chunks
+      .filter((chunk) => chunk.type === 'text')
+      .map((chunk) => chunk.data)
+      .join('');
+    expect(text).toBe('<aihub:tool_not_the_marker>');
+    expect(chunks.some((chunk) => chunk.type === 'tool_calls')).toBe(false);
+    expect(chunks.at(-1)?.data).toBe('stop');
+  });
+
+  it('falls back to raw text when the block JSON is malformed', async () => {
+    const block = `${CURSOR_TOOL_CALLS_OPEN}\n{not-json}\n${CURSOR_TOOL_CALLS_CLOSE}`;
+    const chunks = await collectChunks([assistant(block), successResult(block)]);
+
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toEqual([]);
+    expect(
+      chunks
+        .filter((chunk) => chunk.type === 'text')
+        .map((chunk) => chunk.data)
+        .join(''),
+    ).toBe(block);
+    expect(chunks.at(-1)?.data).toBe('stop');
+  });
+
+  it('streams text before the marker then emits the calls', async () => {
+    const full = `Let me look that up.\n${SEARCH_BLOCK}`;
+    const chunks = await collectChunks([assistant(full), successResult(full)]);
+
+    expect(chunks.filter((chunk) => chunk.type === 'text')).toEqual([
+      { data: 'Let me look that up.\n', id: TOOL_CALL_ID, type: 'text' },
+    ]);
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toHaveLength(1);
+    expect(chunks.at(-1)?.data).toBe('tool_calls');
+  });
+
+  it('emits parallel tool calls in one chunk', async () => {
+    const chunks = await collectChunks([assistant(PARALLEL_BLOCK), successResult(PARALLEL_BLOCK)]);
+    const calls = chunks.find((chunk) => chunk.type === 'tool_calls');
+
+    expect(calls?.data).toEqual([
+      {
+        function: { arguments: '{"q":"pong"}', name: 'search' },
+        id: toolCallId('search', 0),
+        index: 0,
+        type: 'function',
+      },
+      {
+        function: { arguments: '{"city":"NYC"}', name: 'weather' },
+        id: toolCallId('weather', 1),
+        index: 1,
+        type: 'function',
+      },
+    ]);
+    expect(chunks.at(-1)?.data).toBe('tool_calls');
+  });
+
+  it('does not double-emit a full-replay assistant event', async () => {
+    const chunks = await collectChunks([
+      assistant(SEARCH_BLOCK),
+      assistant(SEARCH_BLOCK),
+      successResult(SEARCH_BLOCK),
+    ]);
+
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toHaveLength(1);
+  });
+
+  it('suppresses whitespace-only result leftover after a valid terminal block', async () => {
+    const full = `Let me look that up.\n${SEARCH_BLOCK}`;
+    const chunks = await collectChunks([
+      assistant('Let me look that up.\n'),
+      assistant(SEARCH_BLOCK),
+      successResult(`${full}\n  `),
+    ]);
+
+    expect(joinedText(chunks)).toBe('Let me look that up.\n');
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toHaveLength(1);
+    expect(chunks.at(-1)?.data).toBe('tool_calls');
+  });
+
+  it('flushes an unseen non-whitespace result suffix as raw text', async () => {
+    const chunks = await collectChunks([
+      assistant(SEARCH_BLOCK),
+      successResult(`${SEARCH_BLOCK} trailing prose`),
+    ]);
+
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toEqual([]);
+    expect(joinedText(chunks)).toBe(`${SEARCH_BLOCK} trailing prose`);
+    expect(chunks.at(-1)?.data).toBe('stop');
+  });
+
+  it('completes a split marker when the close tag only arrives on result', async () => {
+    const openAndJson = `${CURSOR_TOOL_CALLS_OPEN}\n${JSON.stringify([{ name: 'search', arguments: { q: 'pong' } }])}\n`;
+    const chunks = await collectChunks([
+      assistant(openAndJson),
+      successResult(`${openAndJson}${CURSOR_TOOL_CALLS_CLOSE}`),
+    ]);
+
+    expect(chunks.filter((chunk) => chunk.type === 'text')).toEqual([]);
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toHaveLength(1);
+    expect(chunks.at(-1)?.data).toBe('tool_calls');
+  });
+
+  it('passes a marker-literal through when parseToolCalls is off', async () => {
+    const chunks = await collectChunks([assistant(SEARCH_BLOCK), successResult(SEARCH_BLOCK)], {
+      parseToolCalls: false,
+    });
+
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toEqual([]);
+    expect(joinedText(chunks)).toBe(SEARCH_BLOCK);
+    expect(chunks.at(-1)?.data).toBe('stop');
+  });
+
+  it('flushes a mid-sentence marker with trailing prose as raw text', async () => {
+    const full = `see ${SEARCH_BLOCK} in the docs`;
+    const chunks = await collectChunks([assistant(full), successResult(full)]);
+
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toEqual([]);
+    expect(joinedText(chunks)).toBe(full);
+    expect(chunks.at(-1)?.data).toBe('stop');
+  });
+
+  it('flushes two blocks as raw text', async () => {
+    const full = `${SEARCH_BLOCK}\n${SEARCH_BLOCK}`;
+    const chunks = await collectChunks([assistant(full), successResult(full)]);
+
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toEqual([]);
+    expect(joinedText(chunks)).toBe(full);
+    expect(chunks.at(-1)?.data).toBe('stop');
+  });
+
+  it('flushes a partial candidate as text when the iterator throws', async () => {
+    const partial = `${CURSOR_TOOL_CALLS_OPEN}\n[{"name":"search"`;
+    async function* aborting() {
+      yield assistant(partial);
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    }
+
+    const chunks: StreamProtocolChunk[] = [];
+    await expect(async () => {
+      for await (const chunk of transformCursorEvents(aborting(), {
+        parseToolCalls: true,
+        streamStack: { id: TOOL_CALL_ID },
+      })) {
+        chunks.push(chunk);
+      }
+    }).rejects.toThrow('aborted');
+
+    expect(chunks.filter((chunk) => chunk.type === 'tool_calls')).toEqual([]);
+    expect(joinedText(chunks)).toBe(partial);
   });
 });

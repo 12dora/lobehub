@@ -1,14 +1,19 @@
 import createDebug from 'debug';
 
+import {
+  CURSOR_TOOL_CALLS_CLOSE,
+  CURSOR_TOOL_CALLS_OPEN,
+} from '../../providers/cursor/toolProtocol';
 import type { ChatStreamCallbacks } from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
 import { nanoid } from '../../utils/uuid';
-import type { StreamContext, StreamProtocolChunk } from './protocol';
+import type { StreamContext, StreamProtocolChunk, StreamToolCallChunkData } from './protocol';
 import {
   convertIterableToStream,
   createCallbacksTransformer,
   createSSEProtocolTransformer,
   createTokenSpeedCalculator,
+  generateToolCallId,
 } from './protocol';
 
 const log = createDebug('lobe-cursor:stream');
@@ -17,6 +22,11 @@ export interface CursorStreamOptions {
   callbacks?: ChatStreamCallbacks;
   inputStartAt?: number;
   model?: string;
+  /**
+   * When true, scan assistant text for a terminal `<aihub:tool_calls>` block.
+   * Must stay off unless the request advertised tools (`toolsActive`).
+   */
+  parseToolCalls?: boolean;
   provider?: string;
   streamStack?: StreamContext;
 }
@@ -145,6 +155,139 @@ const emitError = (id: string, message: string, errorType: string): StreamProtoc
   type: 'error',
 });
 
+const longestPrefixOf = (text: string, token: string): number => {
+  const max = Math.min(text.length, token.length - 1);
+  for (let length = max; length > 0; length -= 1) {
+    if (token.startsWith(text.slice(-length))) return length;
+  }
+  return 0;
+};
+
+const parseEmulatedToolCalls = (inner: string, id: string): StreamProtocolChunk[] | undefined => {
+  const trimmed = inner.trim();
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      log('malformed tool_calls JSON: expected a non-empty array');
+      return undefined;
+    }
+
+    const calls: StreamToolCallChunkData[] = [];
+    for (const [index, item] of parsed.entries()) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        log('malformed tool_calls JSON: item %d is not an object', index);
+        return undefined;
+      }
+      const name = (item as { name?: unknown }).name;
+      if (typeof name !== 'string' || !name) {
+        log('malformed tool_calls JSON: item %d missing name', index);
+        return undefined;
+      }
+      const args = (item as { arguments?: unknown }).arguments;
+      const argumentsStr = typeof args === 'string' ? args : JSON.stringify(args ?? {});
+      calls.push({
+        function: { arguments: argumentsStr, name },
+        id: generateToolCallId(index, name),
+        index,
+        type: 'function',
+      });
+    }
+
+    return [{ data: calls, id, type: 'tool_calls' }];
+  } catch {
+    log('malformed tool_calls JSON: %s', trimmed.slice(0, 200));
+    return undefined;
+  }
+};
+
+/**
+ * Decide whether `raw` is exactly one terminal tool-call block (optional
+ * trailing whitespace only). Anything else is returned as raw text.
+ */
+const finalizeHeldMarkup = (raw: string, id: string): StreamProtocolChunk[] => {
+  if (!raw) return [];
+  if (!raw.startsWith(CURSOR_TOOL_CALLS_OPEN)) {
+    return [{ data: raw, id, type: 'text' }];
+  }
+
+  const closeAt = raw.indexOf(CURSOR_TOOL_CALLS_CLOSE);
+  if (closeAt < 0) return [{ data: raw, id, type: 'text' }];
+
+  const end = closeAt + CURSOR_TOOL_CALLS_CLOSE.length;
+  const after = raw.slice(end);
+  if (after.trim() !== '') return [{ data: raw, id, type: 'text' }];
+
+  const inner = raw.slice(CURSOR_TOOL_CALLS_OPEN.length, closeAt);
+  const calls = parseEmulatedToolCalls(inner, id);
+  return calls ?? [{ data: raw, id, type: 'text' }];
+};
+
+/**
+ * Streaming scanner for a *terminal* `<aihub:tool_calls>` block.
+ * Text before the first open tag is streamed immediately. Once a candidate
+ * open tag is seen, the block and everything after it are held until
+ * terminate: emit `tool_calls` only if there is exactly one valid block and
+ * nothing but whitespace follows it.
+ */
+const createCursorToolCallScanner = (id: string) => {
+  let hold = '';
+  let inCandidate = false;
+  let emittedToolCalls = false;
+
+  const consume = (text: string): StreamProtocolChunk[] => {
+    if (!text) return [];
+    const remaining = hold + text;
+    hold = '';
+
+    if (inCandidate) {
+      hold = remaining;
+      return [];
+    }
+
+    const openAt = remaining.indexOf(CURSOR_TOOL_CALLS_OPEN);
+    if (openAt >= 0) {
+      const before = remaining.slice(0, openAt);
+      inCandidate = true;
+      hold = remaining.slice(openAt);
+      return before ? [{ data: before, id, type: 'text' }] : [];
+    }
+
+    const prefixLen = longestPrefixOf(remaining, CURSOR_TOOL_CALLS_OPEN);
+    if (prefixLen > 0) {
+      const emit = remaining.slice(0, remaining.length - prefixLen);
+      hold = remaining.slice(-prefixLen);
+      return emit ? [{ data: emit, id, type: 'text' }] : [];
+    }
+
+    return [{ data: remaining, id, type: 'text' }];
+  };
+
+  const takeHold = (): string => {
+    const raw = hold;
+    hold = '';
+    inCandidate = false;
+    return raw;
+  };
+
+  const finalize = (): StreamProtocolChunk[] => {
+    const chunks = finalizeHeldMarkup(takeHold(), id);
+    if (chunks.some((chunk) => chunk.type === 'tool_calls')) emittedToolCalls = true;
+    return chunks;
+  };
+
+  const flushRaw = (): StreamProtocolChunk[] => {
+    const raw = takeHold();
+    return raw ? [{ data: raw, id, type: 'text' }] : [];
+  };
+
+  return {
+    consume,
+    finalize,
+    flushRaw,
+    hasToolCalls: () => emittedToolCalls,
+  };
+};
+
 /**
  * Turn Cursor CLI `stream-json` SSE frames into LobeHub {@link StreamProtocolChunk}s.
  *
@@ -157,22 +300,38 @@ export async function* transformCursorEvents(
   options: CursorStreamOptions,
 ): AsyncGenerator<StreamProtocolChunk, void, undefined> {
   const id = options.streamStack?.id || `chat_${nanoid()}`;
+  const parseToolCalls = options.parseToolCalls === true;
+  const scanner = createCursorToolCallScanner(id);
   let assistantText = '';
   let emittedAssistant = false;
   let finished = false;
 
+  const stopReason = (): string => (scanner.hasToolCalls() ? 'tool_calls' : 'stop');
+
+  const feedAssistant = (text: string): StreamProtocolChunk[] =>
+    parseToolCalls ? scanner.consume(text) : [{ data: text, id, type: 'text' }];
+
   const finishSuccess = (event: CursorCliEvent): StreamProtocolChunk[] => {
     const chunks: StreamProtocolChunk[] = [];
     const resultText = typeof event.result === 'string' ? event.result : '';
-    if (!emittedAssistant && resultText) {
-      chunks.push({ data: resultText, id, type: 'text' });
-    } else if (
+    const unseenSuffix =
       emittedAssistant &&
       resultText &&
       resultText.startsWith(assistantText) &&
       resultText.length > assistantText.length
-    ) {
-      chunks.push({ data: resultText.slice(assistantText.length), id, type: 'text' });
+        ? resultText.slice(assistantText.length)
+        : '';
+
+    if (parseToolCalls) {
+      // Reconcile by raw-input offset: leftover is only text the deltas never
+      // saw. Feed it regardless of whether a candidate is already held.
+      if (!emittedAssistant && resultText) chunks.push(...scanner.consume(resultText));
+      else if (unseenSuffix) chunks.push(...scanner.consume(unseenSuffix));
+      chunks.push(...scanner.finalize());
+    } else if (!emittedAssistant && resultText) {
+      chunks.push({ data: resultText, id, type: 'text' });
+    } else if (unseenSuffix) {
+      chunks.push({ data: unseenSuffix, id, type: 'text' });
     }
 
     const inputTokens = event.usage?.inputTokens ?? 0;
@@ -187,83 +346,93 @@ export async function* transformCursorEvents(
       id,
       type: 'usage',
     });
-    chunks.push({ data: 'stop', id, type: 'stop' });
+    chunks.push({ data: stopReason(), id, type: 'stop' });
     return chunks;
   };
 
-  for await (const event of events) {
-    switch (event.type) {
-      case 'thinking': {
-        if (event.subtype === 'completed') break;
-        const text = typeof event.text === 'string' ? event.text : '';
-        if (text) yield { data: text, id, type: 'reasoning' };
-        break;
-      }
-
-      case 'assistant': {
-        const text = extractAssistantText(event);
-        if (!text) break;
-        // Full replay of already-streamed deltas (or a prefix replay).
-        if (emittedAssistant && (text === assistantText || text.startsWith(assistantText))) break;
-        assistantText += text;
-        emittedAssistant = true;
-        yield { data: text, id, type: 'text' };
-        break;
-      }
-
-      case 'result': {
-        finished = true;
-        if (event.is_error === true || event.subtype === 'error') {
-          const message = eventMessage(event, 'Cursor Agent turn failed');
-          const unauthorized = AUTH_FAILURE_RE.test(message);
-          yield emitError(
-            id,
-            message,
-            unauthorized
-              ? AgentRuntimeErrorType.OAuthAuthorizationExpired
-              : AgentRuntimeErrorType.ProviderBizError,
-          );
-          yield { data: 'stop', id, type: 'stop' };
+  try {
+    for await (const event of events) {
+      switch (event.type) {
+        case 'thinking': {
+          if (event.subtype === 'completed') break;
+          const text = typeof event.text === 'string' ? event.text : '';
+          if (text) yield { data: text, id, type: 'reasoning' };
           break;
         }
-        for (const chunk of finishSuccess(event)) yield chunk;
-        break;
-      }
 
-      case 'transport': {
-        if (event.subtype === 'notice') {
-          log('%s', eventMessage(event, 'notice'));
+        case 'assistant': {
+          const text = extractAssistantText(event);
+          if (!text) break;
+          // Full replay of already-streamed deltas (or a prefix replay).
+          if (emittedAssistant && (text === assistantText || text.startsWith(assistantText))) break;
+          assistantText += text;
+          emittedAssistant = true;
+          for (const chunk of feedAssistant(text)) yield chunk;
           break;
         }
-        if (event.subtype === 'error' || event.is_error === true) {
+
+        case 'result': {
           finished = true;
-          const unauthorized = event.code === 'unauthorized';
-          yield emitError(
-            id,
-            eventMessage(event, 'Cursor Agent transport error'),
-            unauthorized
-              ? AgentRuntimeErrorType.OAuthAuthorizationExpired
-              : AgentRuntimeErrorType.ProviderBizError,
-          );
-          yield { data: 'stop', id, type: 'stop' };
+          if (event.is_error === true || event.subtype === 'error') {
+            for (const chunk of scanner.flushRaw()) yield chunk;
+            const message = eventMessage(event, 'Cursor Agent turn failed');
+            const unauthorized = AUTH_FAILURE_RE.test(message);
+            yield emitError(
+              id,
+              message,
+              unauthorized
+                ? AgentRuntimeErrorType.OAuthAuthorizationExpired
+                : AgentRuntimeErrorType.ProviderBizError,
+            );
+            yield { data: 'stop', id, type: 'stop' };
+            break;
+          }
+          for (const chunk of finishSuccess(event)) yield chunk;
+          break;
         }
-        break;
+
+        case 'transport': {
+          if (event.subtype === 'notice') {
+            log('%s', eventMessage(event, 'notice'));
+            break;
+          }
+          if (event.subtype === 'error' || event.is_error === true) {
+            finished = true;
+            for (const chunk of scanner.flushRaw()) yield chunk;
+            const unauthorized = event.code === 'unauthorized';
+            yield emitError(
+              id,
+              eventMessage(event, 'Cursor Agent transport error'),
+              unauthorized
+                ? AgentRuntimeErrorType.OAuthAuthorizationExpired
+                : AgentRuntimeErrorType.ProviderBizError,
+            );
+            yield { data: 'stop', id, type: 'stop' };
+          }
+          break;
+        }
+
+        case 'system':
+        case 'user': {
+          break;
+        }
+
+        default: {
+          break;
+        }
       }
 
-      case 'system':
-      case 'user': {
-        break;
-      }
-
-      default: {
-        break;
-      }
+      if (finished) return;
     }
 
-    if (finished) return;
+    if (!finished) {
+      for (const chunk of parseToolCalls ? scanner.finalize() : scanner.flushRaw()) yield chunk;
+      yield { data: stopReason(), id, type: 'stop' };
+    }
+  } catch (error) {
+    for (const chunk of scanner.flushRaw()) yield chunk;
+    throw error;
   }
-
-  if (!finished) yield { data: 'stop', id, type: 'stop' };
 }
 
 export const CursorStream = (
