@@ -1690,6 +1690,40 @@ describe('Cursor installation identity injection', () => {
     expect(params.installationId).toBeUndefined();
     expect(params.conversationKey).toMatch(/^user:user-1:op:/);
   });
+
+  it('scopes the config-seed account id by managedBy, user, workspace, and historical revision', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    initModelRuntimeWithUserPayload(ModelProvider.Cursor, payload, { managedBy: 'platform' });
+    initModelRuntimeWithUserPayload(ModelProvider.Cursor, payload, {
+      managedBy: 'platform',
+      platformRevision: 1,
+    });
+    initModelRuntimeWithUserPayload(ModelProvider.Cursor, payload, {
+      managedBy: 'platform',
+      platformRevision: 2,
+    });
+    initModelRuntimeWithUserPayload(ModelProvider.Cursor, payload, { userId: 'user-a' });
+    initModelRuntimeWithUserPayload(ModelProvider.Cursor, payload, {
+      userId: 'user-a',
+      workspaceId: 'ws-1',
+    });
+    initModelRuntimeWithUserPayload('my-cursor', payload, {
+      managedBy: 'platform',
+    });
+
+    const accountIds = spy.mock.calls.map((call) => (call[1] as Record<string, unknown>).accountId);
+    expect(accountIds).toEqual([
+      'platform:cursor',
+      'platform:cursor:rev:1',
+      'platform:cursor:rev:2',
+      'user:user-a:_:cursor',
+      'user:user-a:ws-1:cursor',
+      'platform:my-cursor',
+    ]);
+  });
 });
 
 describe('buildPayloadFromKeyVaults Cursor contract', () => {

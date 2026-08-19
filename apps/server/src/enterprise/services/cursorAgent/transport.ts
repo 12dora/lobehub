@@ -1,6 +1,9 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { spawn } from 'node:child_process';
 
+import { CURSOR_ACCOUNT_HEADER } from '@lobechat/model-runtime';
+
+import { resolveCursorAgentConfigSeedDir } from './configSeed';
 import { buildCursorAgentChildEnv, ensureCursorAgentStateDir } from './env';
 import { CursorAgentPolicyError, CursorAgentUnavailableError } from './errors';
 import { getCachedCursorModels, resetCursorModelsCache, runListModels } from './models';
@@ -49,17 +52,34 @@ const parsePositiveInt = (value: string | undefined, fallback: number): number =
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const MAX_ACCOUNT_ID_CHARS = 512;
+
+const hasControlChars = (value: string): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.codePointAt(index)!;
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+};
+
 const extractBearerToken = (headers: Headers): string | undefined => {
   const header = headers.get('authorization');
   if (!header) return undefined;
   const match = /^Bearer\s+(\S+)/i.exec(header.trim());
   const token = match?.[1];
-  if (!token) return undefined;
-  for (let index = 0; index < token.length; index += 1) {
-    const code = token.codePointAt(index)!;
-    if (code <= 0x1f || code === 0x7f) return undefined;
-  }
+  if (!token || hasControlChars(token)) return undefined;
   return token;
+};
+
+/**
+ * Private hop-by-hop account id. Ill-formed values are dropped (the seed then keys
+ * off the bearer digest) rather than failing the request. The header is never copied
+ * into env, argv, the history file, or logs.
+ */
+const extractAccountId = (headers: Headers): string | undefined => {
+  const raw = headers.get(CURSOR_ACCOUNT_HEADER)?.trim();
+  if (!raw || raw.length > MAX_ACCOUNT_ID_CHARS || hasControlChars(raw)) return undefined;
+  return raw;
 };
 
 const parseRequest = (input: RequestInfo | URL, init?: RequestInit): Request => {
@@ -175,7 +195,22 @@ export const createCursorAgentFetch = (options: CursorAgentFetchOptions = {}): t
     const token = extractBearerToken(request.headers);
     if (!token) return jsonError(401, 'unauthorized', 'missing bearer token');
 
+    const accountId = extractAccountId(request.headers);
+    // Hop-by-hop only: drop before any CLI-facing work. Request headers are not
+    // forwarded to spawn; this is belt-and-suspenders against a future copy.
+    try {
+      request.headers.delete(CURSOR_ACCOUNT_HEADER);
+    } catch {
+      // `Request.headers` is immutable in some runtimes; the CLI never sees them.
+    }
+
     const state = ensureCursorAgentStateDir();
+    const accountSeedDir = () =>
+      resolveCursorAgentConfigSeedDir({
+        seedRoot: state.configSeed,
+        token,
+        ...(accountId ? { accountId } : {}),
+      });
 
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -200,9 +235,11 @@ export const createCursorAgentFetch = (options: CursorAgentFetchOptions = {}): t
       let scratch: CursorScratch | undefined;
       // Assigned by the staging step below; the handler returns early when that throws.
       let seedGeneration: CursorConfigSeedGeneration;
+      let configSeedDir: string;
       try {
+        configSeedDir = accountSeedDir();
         scratch = createScratchRoot(state.turns);
-        seedGeneration = seedTurnConfig(state.configSeed, scratch.configDir);
+        seedGeneration = seedTurnConfig(configSeedDir, scratch.configDir);
       } catch (error) {
         gate.release();
         removeScratch(scratch?.root);
@@ -230,7 +267,7 @@ export const createCursorAgentFetch = (options: CursorAgentFetchOptions = {}): t
         }
         throw error;
       } finally {
-        copyTurnConfigSeedBack(scratch.configDir, state.configSeed, seedGeneration);
+        copyTurnConfigSeedBack(scratch.configDir, configSeedDir, seedGeneration);
         removeScratch(scratch.root);
         gate.release();
       }
@@ -251,9 +288,11 @@ export const createCursorAgentFetch = (options: CursorAgentFetchOptions = {}): t
       let scratch: TurnScratch | undefined;
       // Assigned by the staging step below; the handler returns early when that throws.
       let seedGeneration: CursorConfigSeedGeneration;
+      let configSeedDir: string;
       try {
+        configSeedDir = accountSeedDir();
         scratch = writeTurnScratch(state.turns, parsed);
-        seedGeneration = seedTurnConfig(state.configSeed, scratch.configDir);
+        seedGeneration = seedTurnConfig(configSeedDir, scratch.configDir);
       } catch (error) {
         gate.release();
         removeScratch(scratch?.root);
@@ -288,7 +327,7 @@ export const createCursorAgentFetch = (options: CursorAgentFetchOptions = {}): t
           released = true;
           gate.release();
         }
-        copyTurnConfigSeedBack(scratch.configDir, state.configSeed, seedGeneration);
+        copyTurnConfigSeedBack(scratch.configDir, configSeedDir, seedGeneration);
         removeScratch(scratch.root);
       };
 

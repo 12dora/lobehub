@@ -25,6 +25,14 @@ export const CURSOR_TRANSPORT_ORIGIN = 'https://cursor.local';
  */
 export const CURSOR_CONVERSATION_HEADER = 'x-aihub-conversation';
 
+/**
+ * Private runtime→transport header (never leaves this process: the transport strips it
+ * before spawning the CLI). Carries the stored-connection account id that keys the
+ * per-connection CLI config-seed directory. Same shape as ChatGPT Web:
+ * `platform:<providerId>[:rev:<n>]` / `user:<userId>:<workspace>:<providerId>`.
+ */
+export const CURSOR_ACCOUNT_HEADER = 'x-aihub-account';
+
 const DEFAULT_PROVIDER = 'cursor';
 const DEBUG_FLAG = 'DEBUG_CURSOR_CHAT_COMPLETION';
 const TRANSPORT_UNAVAILABLE = 'Cursor Agent transport unavailable';
@@ -54,6 +62,11 @@ export const toCursorKnownModelCard = (
 };
 
 export interface LobeCursorAIParams {
+  /**
+   * Stored-connection account id from the server/runtime seam. Hop-by-hop only —
+   * sent as {@link CURSOR_ACCOUNT_HEADER} and stripped by the transport.
+   */
+  accountId?: string;
   apiKey?: string;
   baseURL?: string;
   /** Stable per-conversation key supplied by the server/runtime seam. */
@@ -82,11 +95,13 @@ export class LobeCursorAI implements LobeRuntimeAI {
   baseURL: string;
   provider: string;
 
+  private readonly accountId?: string;
   private readonly apiKey?: string;
   private readonly conversationId?: string;
   private readonly fetchImpl: typeof fetch;
 
   constructor({
+    accountId,
     apiKey,
     baseURL,
     conversationKey,
@@ -94,6 +109,8 @@ export class LobeCursorAI implements LobeRuntimeAI {
     id,
     installationId,
   }: LobeCursorAIParams = {}) {
+    this.accountId =
+      typeof accountId === 'string' && accountId.trim() ? accountId.trim() : undefined;
     this.apiKey = apiKey;
     this.baseURL = (baseURL ?? CURSOR_TRANSPORT_ORIGIN).replace(/\/+$/, '');
     this.provider = id || DEFAULT_PROVIDER;
@@ -198,6 +215,7 @@ export class LobeCursorAI implements LobeRuntimeAI {
         ...init,
         headers: {
           ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+          ...(this.accountId ? { [CURSOR_ACCOUNT_HEADER]: this.accountId } : {}),
           ...init.headers,
         },
       });

@@ -58,6 +58,11 @@ export type CursorAgentParentEnv = Record<string, string | undefined>;
 export interface CursorAgentStatePaths {
   cache: string;
   compile: string;
+  /**
+   * Parent of per-connection seed dirs (`config-seed/account/<sha256…>/` and
+   * `config-seed/token/<sha256…>/`). The pre-isolation layout stored
+   * `cli-config.json` directly here; that path is no longer used as a live seed.
+   */
   configSeed: string;
   /** Persistent CLI HOME of THIS server instance (`home-<instanceId>`). */
   home: string;

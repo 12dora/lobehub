@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { deriveCursorConversationId } from '../../browserProfile';
 import { AgentRuntimeErrorType } from '../../types/error';
 import {
+  CURSOR_ACCOUNT_HEADER,
   CURSOR_CONVERSATION_HEADER,
   CURSOR_TRANSPORT_ORIGIN,
   LobeCursorAI,
@@ -270,6 +271,38 @@ describe('LobeCursorAI', () => {
 
       expect(idOf(installationA, 'topic-1')).not.toBe(idOf(installationA, 'topic-2'));
       expect(idOf(installationA, 'topic-1')).not.toBe(idOf(installationB, 'topic-1'));
+    });
+
+    it('sends the account id on every request and omits it when absent', async () => {
+      const fetchImpl = vi.fn<
+        (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+      >(async (url) =>
+        String(url).endsWith('/v1/models')
+          ? new Response(JSON.stringify({ models: [] }), { status: 200 })
+          : successTurn(),
+      );
+      const withAccount = new LobeCursorAI({
+        accountId: 'platform:cursor',
+        apiKey: 'jwt',
+        fetch: fetchImpl,
+      });
+      await (
+        await withAccount.chat({ messages: [{ content: 'hi', role: 'user' }], model: 'auto' })
+      ).text();
+      await withAccount.models();
+
+      const withoutAccount = new LobeCursorAI({ apiKey: 'jwt', fetch: fetchImpl });
+      await (
+        await withoutAccount.chat({ messages: [{ content: 'hi', role: 'user' }], model: 'auto' })
+      ).text();
+
+      expect(fetchImpl.mock.calls[0]![1]?.headers).toMatchObject({
+        [CURSOR_ACCOUNT_HEADER]: 'platform:cursor',
+      });
+      expect(fetchImpl.mock.calls[1]![1]?.headers).toMatchObject({
+        [CURSOR_ACCOUNT_HEADER]: 'platform:cursor',
+      });
+      expect(fetchImpl.mock.calls[2]![1]?.headers).not.toHaveProperty(CURSOR_ACCOUNT_HEADER);
     });
 
     it('omits the conversation header when either half is missing or malformed', async () => {

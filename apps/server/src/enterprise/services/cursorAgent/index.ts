@@ -1,3 +1,11 @@
+export type { CursorAgentAccountOwner, ResolveCursorAgentConfigSeedDirParams } from './configSeed';
+export {
+  buildCursorAgentAccountId,
+  cursorAgentAccountConfigSeedDir,
+  cursorAgentTokenConfigSeedDir,
+  digestCursorConfigSeedIdentity,
+  resolveCursorAgentConfigSeedDir,
+} from './configSeed';
 export {
   buildCursorAgentChildEnv,
   CURSOR_AGENT_STATE_DIR_ENV,

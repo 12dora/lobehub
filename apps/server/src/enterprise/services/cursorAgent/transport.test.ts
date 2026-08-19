@@ -14,10 +14,15 @@ import { tmpdir } from 'node:os';
 import nodePath from 'node:path';
 import { PassThrough } from 'node:stream';
 
-import { CURSOR_CONVERSATION_HEADER, LobeCursorAI } from '@lobechat/model-runtime';
+import {
+  CURSOR_ACCOUNT_HEADER,
+  CURSOR_CONVERSATION_HEADER,
+  LobeCursorAI,
+} from '@lobechat/model-runtime';
 import { deriveCursorConversationId } from '@lobechat/model-runtime/browserProfile';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { cursorAgentAccountConfigSeedDir, cursorAgentTokenConfigSeedDir } from './configSeed';
 import { CURSOR_AGENT_INSTANCE_ID_ENV, CURSOR_AGENT_STATE_DIR_ENV } from './env';
 import { CursorAgentPolicyError } from './errors';
 import { resetCursorModelsCache } from './models';
@@ -105,6 +110,10 @@ let dir: string;
 let home: string;
 let stateDir: string;
 let cursorFetch: typeof fetch;
+const seedRoot = () => join(stateDir, 'config-seed');
+const tokenSeedDir = (token = TOKEN) => cursorAgentTokenConfigSeedDir(seedRoot(), token);
+const accountSeedDir = (accountId: string) =>
+  cursorAgentAccountConfigSeedDir(seedRoot(), accountId);
 const previousHome = process.env[CURSOR_AGENT_HOME_ENV];
 const previousState = process.env[CURSOR_AGENT_STATE_DIR_ENV];
 const previousInstance = process.env[CURSOR_AGENT_INSTANCE_ID_ENV];
@@ -229,7 +238,8 @@ describe('GET /v1/models', () => {
   });
 
   it('uses isolated model-list config seeded from and copied back to the shared allowlist', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const accountId = 'platform:cursor';
+    const seedDir = accountSeedDir(accountId);
     mkdirSync(seedDir, { recursive: true });
     writeFileSync(
       join(seedDir, 'cli-config.json'),
@@ -270,7 +280,9 @@ describe('GET /v1/models', () => {
       },
     );
 
-    const response = await cursorFetch('https://cursor.local/v1/models', { headers: AUTH });
+    const response = await cursorFetch('https://cursor.local/v1/models', {
+      headers: { ...AUTH, [CURSOR_ACCOUNT_HEADER]: accountId },
+    });
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       models: [{ id: 'composer-2.5', name: 'Composer 2.5' }],
@@ -286,7 +298,7 @@ describe('GET /v1/models', () => {
   });
 
   it('takes the queue slot BEFORE staging, so a rejected request writes nothing', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(seedDir, { recursive: true });
     const seedContents = JSON.stringify({ authInfo: { userId: 7 }, version: 2 });
     writeFileSync(join(seedDir, 'cli-config.json'), seedContents);
@@ -326,7 +338,7 @@ describe('GET /v1/models', () => {
   });
 
   it('cleans model-list scratch when config seeding fails', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(join(seedDir, 'statsig-cache.json'), { recursive: true });
 
     const response = await cursorFetch('https://cursor.local/v1/models', { headers: AUTH });
@@ -903,7 +915,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
   });
 
   it('seeds only allowlisted config files into the turn config, unmodified', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(seedDir, { recursive: true });
     writeFileSync(
       join(seedDir, 'cli-config.json'),
@@ -944,7 +956,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
   });
 
   it('logs only a safe error class when malformed seed JSON is replaced', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(seedDir, { recursive: true });
     writeFileSync(join(seedDir, 'cli-config.json'), '{not-json');
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -1009,7 +1021,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
     });
     await response.text();
 
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     expect(fs.readdirSync(seedDir).sort()).toEqual(['cli-config.json', 'statsig-cache.json']);
     // Ghost mode was pinned when the seed was created; the value the CLI wrote back is
     // NOT rewritten, so the seed stops lying about a state the account may not be in.
@@ -1023,7 +1035,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
   });
 
   it('keeps the previous seed when the turn config was truncated mid-write', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(seedDir, { recursive: true });
     const warmSeed = JSON.stringify({ authInfo: { userId: 7 }, serverConfigCache: {}, version: 2 });
     writeFileSync(join(seedDir, 'cli-config.json'), warmSeed);
@@ -1055,7 +1067,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
   });
 
   it('keeps the previous seed when the turn config came back without authInfo', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(seedDir, { recursive: true });
     const warmSeed = JSON.stringify({ authInfo: { userId: 7 }, version: 2 });
     writeFileSync(join(seedDir, 'cli-config.json'), warmSeed);
@@ -1084,7 +1096,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
   });
 
   it('still copies back a config that only ADDS keys to the seed', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(seedDir, { recursive: true });
     writeFileSync(
       join(seedDir, 'cli-config.json'),
@@ -1128,7 +1140,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
    * exists — a lost update is exactly what "atomic rename" does NOT prevent.
    */
   it('skips a copy-back whose seed generation was already replaced (compare-and-swap)', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(seedDir, { recursive: true });
     writeFileSync(
       join(seedDir, 'cli-config.json'),
@@ -1176,7 +1188,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
   });
 
   it('keeps the previous seed when a required key came back with an unusable value', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(seedDir, { recursive: true });
     const warmSeed = JSON.stringify({ authInfo: { userId: '7' }, version: '2' });
     writeFileSync(join(seedDir, 'cli-config.json'), warmSeed);
@@ -1206,7 +1218,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
   });
 
   it('never lets a truncated statsig cache replace the warm one', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(seedDir, { recursive: true });
     writeFileSync(join(seedDir, 'cli-config.json'), JSON.stringify({ authInfo: {}, version: 2 }));
     const warmStatsig = '{"warm":true}';
@@ -1374,7 +1386,7 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
   });
 
   it('cleans turn scratch and releases the slot when config seeding fails', async () => {
-    const seedDir = join(stateDir, 'config-seed');
+    const seedDir = tokenSeedDir();
     mkdirSync(join(seedDir, 'statsig-cache.json'), { recursive: true });
 
     const response = await cursorFetch('https://cursor.local/v1/turn', {
@@ -1429,5 +1441,291 @@ describe('POST /v1/turn admission, argv safety, scrubbing, cleanup', () => {
     expect(hanging.kill).toHaveBeenCalledWith('SIGTERM');
     expect(JSON.parse(events.at(-2)!)).toMatchObject({ code: 'timeout', type: 'transport' });
     await vi.waitFor(() => expect(existsSync(scratchRoot)).toBe(false));
+  });
+});
+
+describe('per-connection config-seed isolation', () => {
+  const accountHeaders = (accountId: string, token = TOKEN) => ({
+    'authorization': `Bearer ${token}`,
+    'content-type': 'application/json',
+    [CURSOR_ACCOUNT_HEADER]: accountId,
+  });
+
+  it('gives two account ids two seed dirs with no cross-read or cross-write', async () => {
+    const platformId = 'platform:cursor';
+    const userId = 'user:user-a:_:cursor';
+    mkdirSync(accountSeedDir(platformId), { recursive: true });
+    writeFileSync(
+      join(accountSeedDir(platformId), 'cli-config.json'),
+      JSON.stringify({ authInfo: { userId: 1 }, owner: 'platform', version: 2 }),
+    );
+    mkdirSync(accountSeedDir(userId), { recursive: true });
+    writeFileSync(
+      join(accountSeedDir(userId), 'cli-config.json'),
+      JSON.stringify({ authInfo: { userId: 2 }, owner: 'user', version: 2 }),
+    );
+
+    spawnMock.mockImplementation(
+      (_cmd: string, _args: string[], opts: { env: Record<string, string> }) => {
+        const staged = JSON.parse(
+          readFileSync(join(opts.env.CURSOR_CONFIG_DIR, 'cli-config.json'), 'utf8'),
+        ) as { owner: string };
+        writeFileSync(
+          join(opts.env.CURSOR_CONFIG_DIR, 'cli-config.json'),
+          JSON.stringify({
+            authInfo: { userId: staged.owner === 'platform' ? 1 : 2 },
+            owner: `${staged.owner}-wrote`,
+            version: 2,
+          }),
+        );
+        const child = makeFakeChild();
+        emitThenClose(child, PRINT_STREAM_JSONL);
+        return child;
+      },
+    );
+
+    const platform = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody(),
+      headers: accountHeaders(platformId),
+      method: 'POST',
+    });
+    const user = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody(),
+      headers: accountHeaders(userId),
+      method: 'POST',
+    });
+    await platform.text();
+    await user.text();
+
+    expect(
+      JSON.parse(readFileSync(join(accountSeedDir(platformId), 'cli-config.json'), 'utf8')),
+    ).toEqual({
+      authInfo: { userId: 1 },
+      owner: 'platform-wrote',
+      version: 2,
+    });
+    expect(
+      JSON.parse(readFileSync(join(accountSeedDir(userId), 'cli-config.json'), 'utf8')),
+    ).toEqual({
+      authInfo: { userId: 2 },
+      owner: 'user-wrote',
+      version: 2,
+    });
+    expect(accountSeedDir(platformId)).not.toBe(accountSeedDir(userId));
+  });
+
+  it('reuses the same seed dir for the same account across turns and a rotated token', async () => {
+    const accountId = 'platform:cursor';
+    spawnMock.mockImplementation(
+      (_cmd: string, _args: string[], opts: { env: Record<string, string> }) => {
+        const configDir = opts.env.CURSOR_CONFIG_DIR;
+        const current = JSON.parse(readFileSync(join(configDir, 'cli-config.json'), 'utf8')) as {
+          count?: number;
+        };
+        writeFileSync(
+          join(configDir, 'cli-config.json'),
+          JSON.stringify({ authInfo: { userId: 1 }, count: (current.count ?? 0) + 1, version: 2 }),
+        );
+        const child = makeFakeChild();
+        emitThenClose(child, PRINT_STREAM_JSONL);
+        return child;
+      },
+    );
+
+    const first = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody(),
+      headers: accountHeaders(accountId, 'token-one'),
+      method: 'POST',
+    });
+    await first.text();
+    const second = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody(),
+      headers: accountHeaders(accountId, 'token-two'),
+      method: 'POST',
+    });
+    await second.text();
+
+    expect(
+      JSON.parse(readFileSync(join(accountSeedDir(accountId), 'cli-config.json'), 'utf8')),
+    ).toEqual({
+      authInfo: { userId: 1 },
+      count: 2,
+      version: 2,
+    });
+    expect(existsSync(tokenSeedDir('token-one'))).toBe(false);
+    expect(existsSync(tokenSeedDir('token-two'))).toBe(false);
+  });
+
+  it('strips the account header from the CLI env and argv', async () => {
+    const accountId = 'platform:cursor';
+    let argv: string[] = [];
+    let childEnv: Record<string, string> = {};
+    let scratchSnapshot = '';
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    spawnMock.mockImplementation(
+      (_cmd: string, args: string[], opts: { cwd: string; env: Record<string, string> }) => {
+        argv = args;
+        childEnv = opts.env;
+        const pieces: string[] = [JSON.stringify(args), JSON.stringify(opts.env), opts.cwd];
+        const walk = (dir: string): void => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const path = join(dir, entry.name);
+            pieces.push(path);
+            if (entry.isDirectory()) {
+              walk(path);
+              continue;
+            }
+            pieces.push(readFileSync(path, 'utf8'));
+          }
+        };
+        walk(opts.cwd);
+        scratchSnapshot = pieces.join('\n');
+        const child = makeFakeChild();
+        emitThenClose(child, PRINT_STREAM_JSONL);
+        return child;
+      },
+    );
+
+    try {
+      const response = await cursorFetch('https://cursor.local/v1/turn', {
+        body: turnBody(),
+        headers: accountHeaders(accountId),
+        method: 'POST',
+      });
+      await response.text();
+
+      const serializedArgv = argv.join('\0');
+      const serializedEnv = Object.entries(childEnv).flat().join('\0');
+      const logs = consoleSpy.mock.calls.flat().map(String).join('\n');
+      expect(serializedArgv).not.toContain(accountId);
+      expect(serializedArgv).not.toContain(CURSOR_ACCOUNT_HEADER);
+      expect(serializedEnv).not.toContain(accountId);
+      expect(serializedEnv).not.toContain(CURSOR_ACCOUNT_HEADER);
+      expect(scratchSnapshot).not.toContain(accountId);
+      expect(scratchSnapshot).not.toContain(CURSOR_ACCOUNT_HEADER);
+      expect(logs).not.toContain(accountId);
+      expect(childEnv.CURSOR_AUTH_TOKEN).toBe(TOKEN);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('falls back to the bearer digest so two tokens never share a seed', async () => {
+    spawnMock.mockImplementation(
+      (_cmd: string, _args: string[], opts: { env: Record<string, string> }) => {
+        writeFileSync(
+          join(opts.env.CURSOR_CONFIG_DIR, 'cli-config.json'),
+          JSON.stringify({
+            authInfo: { userId: 1 },
+            token: opts.env.CURSOR_AUTH_TOKEN,
+            version: 2,
+          }),
+        );
+        const child = makeFakeChild();
+        emitThenClose(child, PRINT_STREAM_JSONL);
+        return child;
+      },
+    );
+
+    const a = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody(),
+      headers: { 'authorization': 'Bearer token-a', 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    const b = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody(),
+      headers: { 'authorization': 'Bearer token-b', 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    await a.text();
+    await b.text();
+
+    expect(
+      JSON.parse(readFileSync(join(tokenSeedDir('token-a'), 'cli-config.json'), 'utf8')),
+    ).toEqual({
+      authInfo: { userId: 1 },
+      token: 'token-a',
+      version: 2,
+    });
+    expect(
+      JSON.parse(readFileSync(join(tokenSeedDir('token-b'), 'cli-config.json'), 'utf8')),
+    ).toEqual({
+      authInfo: { userId: 1 },
+      token: 'token-b',
+      version: 2,
+    });
+    expect(tokenSeedDir('token-a')).not.toBe(tokenSeedDir('token-b'));
+  });
+
+  it('keeps a bearer token equal to an account id out of that account seed dir', async () => {
+    spawnMock.mockImplementation(
+      (_cmd: string, _args: string[], opts: { env: Record<string, string> }) => {
+        writeFileSync(
+          join(opts.env.CURSOR_CONFIG_DIR, 'cli-config.json'),
+          JSON.stringify({ authInfo: { userId: 1 }, from: 'token-fallback', version: 2 }),
+        );
+        const child = makeFakeChild();
+        emitThenClose(child, PRINT_STREAM_JSONL);
+        return child;
+      },
+    );
+
+    const response = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody(),
+      headers: { 'authorization': 'Bearer platform:cursor', 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    await response.text();
+
+    expect(
+      JSON.parse(readFileSync(join(tokenSeedDir('platform:cursor'), 'cli-config.json'), 'utf8')),
+    ).toMatchObject({ from: 'token-fallback' });
+    expect(existsSync(join(accountSeedDir('platform:cursor'), 'cli-config.json'))).toBe(false);
+  });
+
+  it('migrates the legacy global seed into the platform connection only, and leaves it in place', async () => {
+    const legacyRoot = join(stateDir, 'config-seed');
+    mkdirSync(legacyRoot, { recursive: true });
+    writeFileSync(
+      join(legacyRoot, 'cli-config.json'),
+      JSON.stringify({ authInfo: { userId: 7 }, legacy: true, version: 2 }),
+    );
+    writeFileSync(join(legacyRoot, 'chats.json'), '{"must":"stay"}');
+
+    spawnMock.mockImplementation(() => {
+      const child = makeFakeChild();
+      emitThenClose(child, PRINT_STREAM_JSONL);
+      return child;
+    });
+
+    const platform = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody(),
+      headers: accountHeaders('platform:cursor'),
+      method: 'POST',
+    });
+    await platform.text();
+    expect(
+      JSON.parse(readFileSync(join(accountSeedDir('platform:cursor'), 'cli-config.json'), 'utf8')),
+    ).toMatchObject({
+      legacy: true,
+    });
+    expect(existsSync(join(legacyRoot, 'cli-config.json'))).toBe(true);
+    expect(existsSync(join(legacyRoot, 'chats.json'))).toBe(true);
+
+    const user = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody(),
+      headers: accountHeaders('user:u1:_:cursor'),
+      method: 'POST',
+    });
+    await user.text();
+    expect(existsSync(join(accountSeedDir('user:u1:_:cursor'), 'cli-config.json'))).toBe(true);
+    expect(
+      JSON.parse(readFileSync(join(accountSeedDir('user:u1:_:cursor'), 'cli-config.json'), 'utf8')),
+    ).not.toMatchObject({
+      legacy: true,
+    });
+    expect(JSON.parse(readFileSync(join(legacyRoot, 'cli-config.json'), 'utf8'))).toMatchObject({
+      legacy: true,
+    });
   });
 });

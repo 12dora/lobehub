@@ -48,7 +48,11 @@ export { LobeChatGPTAI } from './providers/chatGPT';
 export { LobeChatGPTWebAI } from './providers/chatgptWeb';
 export { LobeCometAPIAI } from './providers/cometapi';
 export { LobeComfyUI } from './providers/comfyui';
-export { CURSOR_CONVERSATION_HEADER, LobeCursorAI } from './providers/cursor';
+export {
+  CURSOR_ACCOUNT_HEADER,
+  CURSOR_CONVERSATION_HEADER,
+  LobeCursorAI,
+} from './providers/cursor';
 export { LobeDeepSeekAI } from './providers/deepseek';
 export { LobeGLMCodingPlanAI } from './providers/glmCodingPlan';
 export { LobeGoogleAI } from './providers/google';

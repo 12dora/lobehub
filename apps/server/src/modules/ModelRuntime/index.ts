@@ -674,6 +674,27 @@ const resolveChatGPTWebTransport = (
 };
 
 /**
+ * Stored Cursor connection handle. Same shape as ChatGPT Web's Browser Session
+ * account id (`platform:<providerId>[:rev:<n>]` / `user:<userId>:<workspace>:<providerId>`).
+ * Inlined here so this module does not statically import the Cursor Agent CLI
+ * transport (that load stays in {@link resolveCursorAgentTransport}'s dynamic import).
+ */
+const buildCursorRuntimeAccountId = (
+  provider: string,
+  init: Pick<ModelRuntimeInitParams, 'managedBy' | 'platformRevision' | 'userId' | 'workspaceId'>,
+): string => {
+  if (init.managedBy === 'platform') {
+    return init.platformRevision == null
+      ? `platform:${provider}`
+      : `platform:${provider}:rev:${init.platformRevision}`;
+  }
+  const workspace =
+    typeof init.workspaceId === 'string' && init.workspaceId.trim() ? init.workspaceId.trim() : '_';
+  const userId = typeof init.userId === 'string' && init.userId ? init.userId : 'anonymous';
+  return `user:${userId}:${workspace}:${provider}`;
+};
+
+/**
  * Cursor chat is a spawned `cursor-agent` CLI, not Node fetch. Same `??` seam as
  * ChatGPT Web: intercept `https://cursor.local` and honour the network-proxy hook.
  */
@@ -912,7 +933,13 @@ export const initModelRuntimeWithUserPayload = (
                   : resolveGrokUserAgentPlatform(),
             }
           : {}),
-        ...(runtimeProvider === ModelProvider.Cursor ? { conversationKey, installationId } : {}),
+        ...(runtimeProvider === ModelProvider.Cursor
+          ? {
+              accountId: buildCursorRuntimeAccountId(provider, params),
+              conversationKey,
+              installationId,
+            }
+          : {}),
         ...(customFetch ? { fetch: customFetch } : {}),
         ...(requestHandler ? { requestHandler: requestHandler as never } : {}),
       } as never,
