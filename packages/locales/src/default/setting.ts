@@ -932,6 +932,8 @@ export default {
   'serviceModel.contextLimit.placeholder': 'Context limit',
   'serviceModel.memoryModels.title': 'Memory Models',
   'serviceModel.optionalFeatures.title': 'Optional Features',
+  'serviceModel.reasoningEffort.default': 'Default',
+  'serviceModel.reasoningEffort.label': 'Thinking effort',
   'settingSystemTools.appEnvironment.chromium.desc': 'Chromium browser engine version',
   'settingSystemTools.appEnvironment.desc': 'Built-in runtime versions in the desktop app',
   'settingSystemTools.appEnvironment.electron.desc': 'Electron framework version',

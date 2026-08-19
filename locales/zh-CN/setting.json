@@ -687,6 +687,8 @@
   "serviceModel.memoryModels.title": "记忆模型",
   "serviceModel.modelAssignments.title": "模型分配",
   "serviceModel.optionalFeatures.title": "可选功能",
+  "serviceModel.reasoningEffort.default": "默认",
+  "serviceModel.reasoningEffort.label": "思考强度",
   "settingAgent.avatar.sizeExceeded": "图片大小超过 1MB 限制，请选择更小的图片",
   "settingAgent.avatar.title": "助理头像",
   "settingAgent.backgroundColor.title": "头像背景色",

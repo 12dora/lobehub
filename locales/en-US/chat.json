@@ -1025,6 +1025,8 @@
   "textSelection.addToConversation": "Add to conversation",
   "textSelection.added": "Added to conversation context",
   "textSelection.title": "Message selection",
+  "thinkingEffort.title": "Thinking Effort",
+  "thinkingEffort.tooltip": "Thinking effort: {{level}}",
   "thread.closeSubagentThread": "Hide Detail",
   "thread.divider": "Subtopic",
   "thread.openSubagentThread": "View Detail",

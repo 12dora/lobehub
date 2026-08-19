@@ -687,6 +687,8 @@
   "serviceModel.memoryModels.title": "Memory Models",
   "serviceModel.modelAssignments.title": "Model Assignments",
   "serviceModel.optionalFeatures.title": "Optional Features",
+  "serviceModel.reasoningEffort.default": "Default",
+  "serviceModel.reasoningEffort.label": "Thinking effort",
   "settingAgent.avatar.sizeExceeded": "Image size exceeds 1MB limit, please choose a smaller image",
   "settingAgent.avatar.title": "Avatar",
   "settingAgent.backgroundColor.title": "Background Color",
