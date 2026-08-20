@@ -8,16 +8,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ConversationTopicPage from './ConversationTopicPage';
 
+const SECRET = 'sk-abcdefghijklmnopqrstuvwxyz012345';
+
 const evidence = vi.hoisted(() => ({
   detailListeners: new Set<() => void>(),
   detailMutate: vi.fn(),
+  permissions: ['platform_audit:conversation_read:all'] as string[],
   detailSnapshot: {
     data: {
       agentId: 'agent-1',
       contentAccessMode: 'metadata_only' as 'content_allowed' | 'metadata_only',
       model: 'cached-model',
       provider: 'cached-provider',
-      redactionProfile: undefined as string | undefined,
+      redactionProfile: 'off' as string | undefined,
       title: 'Cached topic',
       updatedAt: new Date('2026-01-02T00:00:00.000Z'),
     },
@@ -38,7 +41,7 @@ const evidence = vi.hoisted(() => ({
         },
       ],
       nextCursor: null as string | null,
-      redactionProfile: undefined as string | undefined,
+      redactionProfile: 'off' as string | undefined,
     },
     error: undefined as unknown,
     isLoading: false,
@@ -101,7 +104,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
   useAdminAccess: () => ({
     authMethod: 'better-auth',
-    permissions: ['platform_audit:conversation_read:all'],
+    permissions: evidence.permissions,
     roles: [],
   }),
 }));
@@ -185,6 +188,7 @@ describe('ConversationTopicPage', () => {
     evidence.detailMutate.mockReset();
     evidence.toastError.mockReset();
     purgeMock.mockClear();
+    evidence.permissions = ['platform_audit:conversation_read:all'];
     evidence.policySnapshot.data = undefined;
     evidence.detailSnapshot = {
       data: {
@@ -192,7 +196,7 @@ describe('ConversationTopicPage', () => {
         contentAccessMode: 'metadata_only',
         model: 'cached-model',
         provider: 'cached-provider',
-        redactionProfile: undefined,
+        redactionProfile: 'off',
         title: 'Cached topic',
         updatedAt: new Date('2026-01-02T00:00:00.000Z'),
       },
@@ -213,7 +217,7 @@ describe('ConversationTopicPage', () => {
           },
         ],
         nextCursor: null,
-        redactionProfile: undefined,
+        redactionProfile: 'off',
       },
       error: undefined,
       isLoading: false,
@@ -296,5 +300,40 @@ describe('ConversationTopicPage', () => {
 
     expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
     expect(purgeMock).toHaveBeenCalled();
+  });
+
+  it('never renders a detail title secret when messages/policy are strict', () => {
+    evidence.permissions = ['platform_audit:conversation_read:all', 'platform_audit:read:all'];
+    evidence.policySnapshot.data = { redactionProfile: 'strict' };
+    evidence.detailSnapshot = {
+      data: {
+        ...evidence.detailSnapshot.data,
+        contentAccessMode: 'content_allowed',
+        redactionProfile: 'off',
+        title: SECRET,
+      },
+      error: undefined,
+      isLoading: false,
+      isValidating: false,
+    };
+    evidence.messagesSnapshot.data = {
+      contentAccessMode: 'content_allowed',
+      items: [
+        {
+          content: 'visible under strict',
+          createdAt: new Date('2026-01-02T00:00:00.000Z'),
+          hasContent: true,
+          id: 'message-1',
+          role: 'user',
+        },
+      ],
+      nextCursor: null,
+      redactionProfile: 'strict',
+    };
+
+    renderPage();
+
+    expect(screen.queryByText(SECRET)).toBeNull();
+    expect(screen.getByText('audit.conversations.topic.title')).toBeTruthy();
   });
 });

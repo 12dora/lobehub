@@ -1,119 +1,188 @@
 /**
- * Explicit redaction-profile state machine for live/topic/timeline audit views.
+ * Redaction authority (fail-closed).
  *
- * - Effective profile only ever tightens on observation (max of everything seen
- *   this mount).
- * - It loosens only after every slot that has ever reported a value currently
- *   agrees on the looser profile (converged confirmation). Evicted/in-flight
- *   slots do not count as agreement.
- * - Disagreement (a present source looser than effective) suppresses that
- *   envelope's evidence and triggers at most one global purge per epoch.
+ * R1 — `effective` is the max of every profile observed this mount
+ *      (off < standard < strict). A PRESENT envelope with a missing/unknown
+ *      profile counts as strict. NEVER loosens within a mount; loosening only
+ *      happens via remount / resetKey (navigation). An admin who turns
+ *      redaction off sees raw bodies after navigating away and back.
+ *
+ * R2 — An envelope is rendered only if its own profile ≥ effective. Missing /
+ *      unknown profiles are never renderable. Applied in the same render.
+ *
+ * R3 — When `effective` tightens (including the first render if any present
+ *      envelope is looser than effective), schedule exactly one global purge
+ *      for that new effective. Latch until the effect acknowledges. Do not
+ *      clear the latch because sources became undefined/in-flight.
+ *
+ * R4 — Stable named slots. `policy` is always passed (undefined when unread).
+ *      Seen-history is per name and never truncated.
+ *
+ * R5 — One authority per page aggregating every envelope on that page.
  */
 
 import type { AuditRedactionProfile } from './liveMessageUtils';
-import { pickMostRestrictiveRedactionProfile, rankRedactionProfile } from './liveMessageUtils';
+
+export const REDACTION_SLOT_NAMES = ['list', 'detail', 'messages', 'timeline', 'policy'] as const;
+
+export type RedactionSlotName = (typeof REDACTION_SLOT_NAMES)[number];
+
+/** Named slots. `undefined` = not loaded; always include `policy`. */
+export type RedactionSlots = Record<RedactionSlotName, string | undefined>;
+
+/** Present envelope whose profile field is missing or not off/standard/strict. */
+export const UNKNOWN_REDACTION_PROFILE = 'unknown';
+
+export const emptyRedactionSlots = (): RedactionSlots => ({
+  detail: undefined,
+  list: undefined,
+  messages: undefined,
+  policy: undefined,
+  timeline: undefined,
+});
+
+/**
+ * Map a loaded envelope to a slot value. Absent envelope → `undefined`.
+ * Present with a known profile → that profile. Present otherwise → `unknown`.
+ */
+export const envelopeSlot = (envelope: unknown): string | undefined => {
+  if (envelope == null || typeof envelope !== 'object') return undefined;
+  const profile = (envelope as { redactionProfile?: unknown }).redactionProfile;
+  if (profile === 'off' || profile === 'standard' || profile === 'strict') return profile;
+  return UNKNOWN_REDACTION_PROFILE;
+};
+
+const RANK: Record<string, number> = {
+  off: 0,
+  standard: 1,
+  strict: 2,
+};
+
+const rank = (profile: string | undefined): number | undefined => {
+  if (profile === undefined) return undefined;
+  if (profile === 'off') return RANK.off;
+  if (profile === 'standard') return RANK.standard;
+  return RANK.strict;
+};
+
+const toEffective = (value: number): AuditRedactionProfile => {
+  if (value <= RANK.off) return 'off';
+  if (value === RANK.standard) return 'standard';
+  return 'strict';
+};
 
 export interface RedactionAuthorityMemory {
-  /** Sticky floor: max observed this mount; loosened only on full convergence. */
   effective: AuditRedactionProfile | undefined;
-  /** Slot indices that have ever produced a defined profile this mount. */
-  seenSlots: boolean[];
+  seen: Record<RedactionSlotName, boolean>;
 }
 
 export interface RedactionAuthorityView {
   disagreement: boolean;
   effective: AuditRedactionProfile | undefined;
-  /** False when this envelope is looser than `effective` — suppress its items. */
-  isEnvelopeRenderable: (envelopeProfile: string | null | undefined) => boolean;
-  /** `${effective}|disagree` while sources disagree; null when converged. */
-  purgeEpoch: string | null;
+  isEnvelopeRenderable: (envelopeProfile: string | undefined) => boolean;
+  /** Set when this step should schedule a purge for `effective`. */
+  tightenTo: AuditRedactionProfile | undefined;
 }
 
 export const emptyRedactionAuthorityMemory = (): RedactionAuthorityMemory => ({
   effective: undefined,
-  seenSlots: [],
+  seen: {
+    detail: false,
+    list: false,
+    messages: false,
+    policy: false,
+    timeline: false,
+  },
 });
 
+/**
+ * R2. Missing/unknown profiles are never renderable. `undefined` means the
+ * slot is not present (no envelope) — callers should not paint its items.
+ */
 export const isRedactionEnvelopeRenderable = (
-  envelopeProfile: string | null | undefined,
+  envelopeProfile: string | undefined,
   effective: AuditRedactionProfile | undefined,
 ): boolean => {
-  if (effective == null || effective === 'off') return true;
-  const envelopeRank = rankRedactionProfile(envelopeProfile);
-  // Missing envelope profile is not "looser" — metadata-only rows, tests without a field.
-  if (envelopeRank === undefined) return true;
-  const effectiveRank = rankRedactionProfile(effective);
-  return effectiveRank !== undefined && envelopeRank >= effectiveRank;
+  if (envelopeProfile === undefined) return false;
+  if (envelopeProfile !== 'off' && envelopeProfile !== 'standard' && envelopeProfile !== 'strict') {
+    return false;
+  }
+  if (effective === undefined) return envelopeProfile === 'off';
+  const envelopeRank = rank(envelopeProfile);
+  const effectiveRank = rank(effective);
+  return envelopeRank !== undefined && effectiveRank !== undefined && envelopeRank >= effectiveRank;
 };
 
-const profilesAgree = (profiles: readonly string[]): boolean => {
-  if (profiles.length === 0) return false;
-  const first = rankRedactionProfile(profiles[0]);
-  return profiles.every((profile) => rankRedactionProfile(profile) === first);
-};
+/** R2: drop looser pages before any merge so they never commit to the tree. */
+export const selectRenderablePages = <T>(
+  pages: ReadonlyArray<{ items: readonly T[]; redactionProfile: string | undefined }>,
+  isRenderable: (profile: string | undefined) => boolean,
+): T[] =>
+  pages.filter((page) => isRenderable(page.redactionProfile)).flatMap((page) => [...page.items]);
 
 /**
- * Pure step. Callers persist `memory` across renders (ref) and reset it on
- * user/topic identity change.
+ * Pure step. Callers persist `memory` across renders and reset it on navigation.
  */
 export const reduceRedactionAuthority = (
   memory: RedactionAuthorityMemory,
-  sources: ReadonlyArray<string | null | undefined>,
+  slots: RedactionSlots,
+  extraObserved: ReadonlyArray<string | undefined> = [],
 ): { memory: RedactionAuthorityMemory; view: RedactionAuthorityView } => {
-  const seenSlots = sources.map((source, index) => {
-    const previously = memory.seenSlots[index] === true;
-    return previously || (source != null && source !== '');
-  });
+  const seen: Record<RedactionSlotName, boolean> = { ...memory.seen };
+  const observedRanks: number[] = [];
 
-  const present = sources.filter((source): source is string => source != null && source !== '');
-  const observedMax = pickMostRestrictiveRedactionProfile(present);
+  for (const name of REDACTION_SLOT_NAMES) {
+    const value = slots[name];
+    if (value === undefined) continue;
+    seen[name] = true;
+    const valueRank = rank(value);
+    if (valueRank !== undefined) observedRanks.push(valueRank);
+  }
+  for (const extra of extraObserved) {
+    if (extra === undefined) continue;
+    const extraRank = rank(extra);
+    if (extraRank !== undefined) observedRanks.push(extraRank);
+  }
 
+  const previousRank = rank(memory.effective) ?? -1;
   let effective = memory.effective;
-  if (observedMax !== undefined) {
-    const observedRank = rankRedactionProfile(observedMax);
-    const effectiveRank = rankRedactionProfile(effective);
-    if (effective === undefined || (observedRank !== undefined && effectiveRank === undefined)) {
-      effective = observedMax;
-    } else if (
-      observedRank !== undefined &&
-      effectiveRank !== undefined &&
-      observedRank > effectiveRank
-    ) {
-      effective = observedMax;
-    } else if (
-      observedRank !== undefined &&
-      effectiveRank !== undefined &&
-      observedRank < effectiveRank
-    ) {
-      const allSeenSlotsPresent = seenSlots.every((seen, index) => {
-        if (!seen) return true;
-        const source = sources[index];
-        return source != null && source !== '';
-      });
-      if (allSeenSlotsPresent && profilesAgree(present)) {
-        effective = observedMax;
-      }
+  if (observedRanks.length > 0) {
+    const maxObserved = Math.max(...observedRanks);
+    if (maxObserved > previousRank) {
+      effective = toEffective(maxObserved);
     }
   }
 
-  const effectiveRank = rankRedactionProfile(effective);
+  const effectiveRank = rank(effective);
+  const isLooserThanEffective = (value: string | undefined): boolean => {
+    if (value === undefined || effectiveRank === undefined) return false;
+    const valueRank = rank(value);
+    return valueRank !== undefined && valueRank < effectiveRank;
+  };
+  // Named slots + accumulated pages. Absent/in-flight (`undefined`) is not disagreement.
   const disagreement =
     effectiveRank !== undefined &&
-    present.some((profile) => {
-      const rank = rankRedactionProfile(profile);
-      return rank !== undefined && rank < effectiveRank;
-    });
+    (REDACTION_SLOT_NAMES.some((name) => isLooserThanEffective(slots[name])) ||
+      extraObserved.some((extra) => isLooserThanEffective(extra)));
 
-  const purgeEpoch = effective !== undefined && disagreement ? `${effective}|disagree` : null;
+  const newRank = rank(effective) ?? -1;
+  const tightened = newRank > previousRank;
+  // One purge per tightening of `effective`: rank increased while we already had a
+  // baseline (unanimous off→strict counts), or any present envelope is already
+  // looser — including the first render. The hook latches; this flag may repeat.
+  const tightenTo =
+    effective !== undefined && ((tightened && memory.effective !== undefined) || disagreement)
+      ? effective
+      : undefined;
 
   return {
-    memory: { effective, seenSlots },
+    memory: { effective, seen },
     view: {
       disagreement,
       effective,
       isEnvelopeRenderable: (envelopeProfile) =>
         isRedactionEnvelopeRenderable(envelopeProfile, effective),
-      purgeEpoch,
+      tightenTo,
     },
   };
 };

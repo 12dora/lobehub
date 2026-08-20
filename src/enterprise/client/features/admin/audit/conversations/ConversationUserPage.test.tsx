@@ -29,6 +29,7 @@ const evidence = vi.hoisted(() => ({
       },
     ],
     nextCursor: null as string | null,
+    redactionProfile: 'off' as string | undefined,
   },
   listError: undefined as unknown,
   summaryData: undefined as unknown,
@@ -45,7 +46,7 @@ const evidence = vi.hoisted(() => ({
       },
     ],
     nextCursor: 'cursor-tl-2' as string | null,
-    redactionProfile: undefined as string | undefined,
+    redactionProfile: 'off' as string | undefined,
   },
   timelineError: undefined as unknown,
   timelineMutate: vi.fn(),
@@ -245,7 +246,7 @@ describe('ConversationUserPage', () => {
         },
       ],
       nextCursor: 'cursor-tl-2',
-      redactionProfile: undefined,
+      redactionProfile: 'off',
     };
     evidence.listData = {
       items: [
@@ -259,6 +260,7 @@ describe('ConversationUserPage', () => {
         },
       ],
       nextCursor: null,
+      redactionProfile: 'off',
     };
     evidence.timelineMutate.mockReset();
     evidence.policyData = undefined;
@@ -362,6 +364,77 @@ describe('ConversationUserPage', () => {
       expect(last.to?.getMonth()).toBe(0);
       expect(last.to?.getDate()).toBe(31);
     });
+  });
+
+  it('suppresses list titles when list is off and timeline is strict', () => {
+    evidence.listData = {
+      items: [
+        {
+          id: 'topic-secret',
+          model: 'gpt',
+          provider: 'openai',
+          status: 'active',
+          title: 'sk-abcdefghijklmnopqrstuvwxyz012345',
+          updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        },
+      ],
+      nextCursor: null,
+      redactionProfile: 'off',
+    };
+    evidence.timelineData = {
+      items: [
+        {
+          id: 'tl-ok',
+          kind: 'topic' as const,
+          title: 'Event 1',
+          topicId: 'topic-1',
+          updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        },
+      ],
+      nextCursor: null,
+      redactionProfile: 'strict',
+    };
+
+    renderPage();
+
+    expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
+    expect(screen.getByText('Event 1')).toBeTruthy();
+  });
+
+  it('suppresses timeline titles when list is strict and timeline is off', () => {
+    evidence.listData = {
+      items: [
+        {
+          id: 'topic-1',
+          model: 'gpt',
+          provider: 'openai',
+          status: 'active',
+          title: 'Hello',
+          updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        },
+      ],
+      nextCursor: null,
+      redactionProfile: 'strict',
+    };
+    evidence.timelineData = {
+      items: [
+        {
+          id: 'tl-secret',
+          kind: 'topic' as const,
+          title: 'sk-abcdefghijklmnopqrstuvwxyz012345',
+          topicId: 'topic-1',
+          updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        },
+      ],
+      nextCursor: null,
+      redactionProfile: 'off',
+    };
+
+    renderPage();
+
+    expect(screen.getByText('Hello')).toBeTruthy();
+    expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
+    expect(screen.getByText('tl-secret')).toBeTruthy();
   });
 
   it('suppresses stale off timeline titles when policy is strict', () => {

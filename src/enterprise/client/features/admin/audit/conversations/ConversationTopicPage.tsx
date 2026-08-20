@@ -21,6 +21,7 @@ import {
   useFetchAuditPolicy,
 } from '../hooks/useAdminAudit';
 import { formatAdminDateTime, hasPermission } from '../shared/format';
+import { emptyRedactionSlots, envelopeSlot } from '../shared/redactionAuthority';
 import { useRedactionAuthority } from '../shared/useRedactionAuthority';
 import ContentAccessDisabledState from './ContentAccessDisabledState';
 
@@ -141,18 +142,21 @@ const ConversationTopicPage = memo(() => {
     (canAuditRead ? policy.data?.contentAccessMode : undefined);
 
   const redaction = useRedactionAuthority(
-    [
-      messages.data?.redactionProfile,
-      detail.data?.redactionProfile,
-      canAuditRead ? policy.data?.redactionProfile : undefined,
-    ],
+    {
+      ...emptyRedactionSlots(),
+      detail: envelopeSlot(detail.data),
+      messages: envelopeSlot(messages.data),
+      policy: canAuditRead ? envelopeSlot(policy.data) : undefined,
+    },
+    [],
     `${userId}:${topicId}`,
   );
-  const messagesRenderable = redaction.isEnvelopeRenderable(messages.data?.redactionProfile);
+  const detailRenderable = redaction.isEnvelopeRenderable(envelopeSlot(detail.data));
+  const messagesRenderable = redaction.isEnvelopeRenderable(envelopeSlot(messages.data));
   useEffect(() => {
     if (!redaction.shouldPurge) return;
     setCursorStack([]);
-  }, [redaction.purgeEpoch, redaction.shouldPurge]);
+  }, [redaction.shouldPurge]);
 
   const onToggleBody = useCallback(
     (checked: boolean) => {
@@ -179,11 +183,14 @@ const ConversationTopicPage = memo(() => {
 
   const topic = detail.data;
   const items = messages.data?.items ?? [];
+  const pageTitle = detailRenderable
+    ? topic?.title || t('audit.conversations.topic.title')
+    : t('audit.conversations.topic.title');
 
   return (
     <AdminPageTemplate
       description={t('audit.conversations.topic.desc')}
-      title={topic?.title || t('audit.conversations.topic.title')}
+      title={pageTitle}
       actions={
         <Flexbox horizontal gap={8}>
           <Button

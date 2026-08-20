@@ -3,13 +3,8 @@
 import type { TFunction } from 'i18next';
 import { useEffect, useMemo, useRef } from 'react';
 
-import {
-  type AuditContentAccessMode,
-  type AuditRedactionProfile,
-  resolveLiveBodyAccess,
-} from '../shared/liveMessageUtils';
+import { type AuditContentAccessMode, resolveLiveBodyAccess } from '../shared/liveMessageUtils';
 import { purgeAuditConversationEvidenceCaches } from '../shared/purgeConversationEvidence';
-import { useRedactionAuthority } from '../shared/useRedactionAuthority';
 
 export interface LiveFeedSWR<T = unknown> {
   data: T | undefined;
@@ -25,7 +20,6 @@ const isForbiddenError = (err: unknown) =>
 
 type PolledAuditEnvelope = {
   contentAccessMode?: AuditContentAccessMode;
-  redactionProfile?: AuditRedactionProfile;
 };
 
 export const useLiveAuditAccess = ({
@@ -46,7 +40,7 @@ export const useLiveAuditAccess = ({
   t: TFunction<'admin'>;
   topicDetail: LiveFeedSWR<PolledAuditEnvelope>;
   topicId?: string;
-  topics: LiveFeedSWR<PolledAuditEnvelope>;
+  topics: LiveFeedSWR;
   userId?: string;
 }) => {
   // policy.get requires AUDIT_READ — do not gate on conversation-only permission.
@@ -72,39 +66,19 @@ export const useLiveAuditAccess = ({
     topicDetail.data?.contentAccessMode ??
     policy.data?.contentAccessMode;
 
-  const redaction = useRedactionAuthority(
-    [
-      messagesLive.data?.redactionProfile,
-      topicDetail.data?.redactionProfile,
-      topics.data?.redactionProfile,
-      policy.data?.redactionProfile,
-    ],
-    `${userId ?? ''}:${topicId ?? ''}`,
-  );
-  const redactionProfile = redaction.effective;
-
   // Re-check authorization on every render/poll: permission + contentAccessMode.
   const liveAccess = resolveLiveBodyAccess({
     canConversationRead,
     contentAccessMode,
   });
-  const { includeBody } = liveAccess;
-  const messagesEnvelopeRenderable = redaction.isEnvelopeRenderable(
-    messagesLive.data?.redactionProfile,
-  );
-  const topicsEnvelopeRenderable = redaction.isEnvelopeRenderable(topics.data?.redactionProfile);
-  const topicDetailEnvelopeRenderable = redaction.isEnvelopeRenderable(
-    topicDetail.data?.redactionProfile,
-  );
-  // Hide bodies when policy forbids them OR this envelope is looser than effective.
-  const bodyHidden = liveAccess.bodyHidden || !messagesEnvelopeRenderable;
+  const { bodyHidden, includeBody } = liveAccess;
   const messagesAccessDenied = !canConversationRead;
 
   // Request epoch: discard in-flight pagination that started under a prior access mode.
   const accessEpochRef = useRef(0);
   useEffect(() => {
     accessEpochRef.current += 1;
-  }, [canConversationRead, contentAccessMode, includeBody, redactionProfile]);
+  }, [canConversationRead, contentAccessMode, includeBody]);
 
   // Drop evidence caches when conversation content access is lost. Redaction
   // disagreement purges are latched inside useRedactionAuthority (once per epoch).
@@ -140,10 +114,6 @@ export const useLiveAuditAccess = ({
     isForbidden,
     liveAccess,
     messagesAccessDenied,
-    messagesEnvelopeRenderable,
-    redactionProfile,
     showPolicyBanner,
-    topicDetailEnvelopeRenderable,
-    topicsEnvelopeRenderable,
   };
 };

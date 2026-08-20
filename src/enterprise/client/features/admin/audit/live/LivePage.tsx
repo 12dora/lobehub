@@ -3,7 +3,7 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { Button, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
@@ -21,7 +21,15 @@ import {
 } from '../hooks/useAdminAudit';
 import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
 import { formatAdminDateTime, hasPermission } from '../shared/format';
+import { mergeMessagePages, stripMessageBodies } from '../shared/liveMessageUtils';
+import {
+  emptyRedactionSlots,
+  envelopeSlot,
+  selectRenderablePages,
+} from '../shared/redactionAuthority';
+import { mergeTopicPages } from '../shared/topicListUtils';
 import { AUDIT_LIST_POLL_MS } from '../shared/useCursorPagination';
+import { useRedactionAuthority } from '../shared/useRedactionAuthority';
 import MessagePane from './MessagePane';
 import TopicListPane from './TopicListPane';
 import { useLiveAuditAccess } from './useLiveAuditAccess';
@@ -204,10 +212,7 @@ const LivePage = memo(() => {
     isForbidden,
     liveAccess,
     messagesAccessDenied,
-    redactionProfile,
     showPolicyBanner,
-    topicDetailEnvelopeRenderable,
-    topicsEnvelopeRenderable,
   } = useLiveAuditAccess({
     canAuditRead,
     canConversationRead,
@@ -220,23 +225,29 @@ const LivePage = memo(() => {
     userId,
   });
 
-  const { loadMoreTopics, loadingMoreTopics, orderedTopics, topicNextCursor, topicPageError } =
-    useLiveTopicPagination({
-      accessEpochRef,
-      canConversationRead,
-      redactionProfile,
-      t,
-      topics,
-      userId,
-    });
+  const {
+    loadMoreTopics,
+    loadingMoreTopics,
+    pageProfiles: topicPageProfiles,
+    topicNextCursor,
+    topicOlderPages,
+    topicPageError,
+  } = useLiveTopicPagination({
+    accessEpochRef,
+    canConversationRead,
+    t,
+    topics,
+    userId,
+  });
 
   const {
-    allMessages,
     loadOlderMessages,
     loadingOlder,
     messageGap,
     messagePageError,
     olderNextCursor,
+    olderPages: messageOlderPages,
+    pageProfiles: messagePageProfiles,
     reloadMessages,
   } = useLiveMessageFeed({
     accessEpochRef,
@@ -247,11 +258,63 @@ const LivePage = memo(() => {
     messagesAccessDenied,
     messagesLive,
     mustPurgeCachedBodies: liveAccess.mustPurgeCachedBodies,
-    redactionProfile,
     t,
     topicId,
     userId,
   });
+
+  const extraObserved = useMemo(
+    () => [...messagePageProfiles, ...topicPageProfiles],
+    [messagePageProfiles, topicPageProfiles],
+  );
+  const redaction = useRedactionAuthority(
+    {
+      ...emptyRedactionSlots(),
+      detail: envelopeSlot(topicDetail.data),
+      list: envelopeSlot(topics.data),
+      messages: envelopeSlot(messagesLive.data),
+      policy: canAuditRead ? envelopeSlot(policy.data) : undefined,
+    },
+    extraObserved,
+    `${userId ?? ''}:${topicId ?? ''}`,
+  );
+
+  // Discard in-flight pagination that started under a looser profile.
+  useEffect(() => {
+    if (redaction.effective === undefined) return;
+    accessEpochRef.current += 1;
+  }, [accessEpochRef, redaction.effective]);
+
+  // R2: drop looser pages in this render, before merge, so they never commit.
+  const orderedTopics = useMemo(() => {
+    const headRenderable = redaction.isEnvelopeRenderable(envelopeSlot(topics.data));
+    return mergeTopicPages(
+      headRenderable ? (topics.data?.items ?? []) : [],
+      topicOlderPages
+        .filter((page) => redaction.isEnvelopeRenderable(page.redactionProfile))
+        .map((page) => page.items),
+    );
+  }, [redaction, topicOlderPages, topics.data]);
+
+  const allMessages = useMemo(() => {
+    if (messagesAccessDenied) return [];
+    const pages = [
+      { items: messagesLive.data?.items ?? [], redactionProfile: envelopeSlot(messagesLive.data) },
+      ...messageOlderPages,
+    ];
+    const merged = mergeMessagePages(
+      selectRenderablePages(pages, redaction.isEnvelopeRenderable),
+      [],
+    );
+    return bodyHidden ? stripMessageBodies(merged) : merged;
+  }, [bodyHidden, messageOlderPages, messagesAccessDenied, messagesLive.data, redaction]);
+
+  const topicForPane = useMemo(() => {
+    const topic = topicDetail.data;
+    if (!topic) return undefined;
+    if (redaction.isEnvelopeRenderable(envelopeSlot(topic))) return topic;
+    return { ...topic, description: null, title: null };
+  }, [redaction, topicDetail.data]);
 
   const { lastRefreshedAt, refreshAllFeeds } = useLiveFeedRefresh({
     messagesLive,
@@ -340,7 +403,7 @@ const LivePage = memo(() => {
           <div className={styles.left}>
             <TopicListPane
               hasMore={Boolean(topicNextCursor)}
-              items={topicsEnvelopeRenderable ? orderedTopics : []}
+              items={orderedTopics}
               loading={(topics.isLoading && !topics.data) || loadingMoreTopics}
               selectedTopicId={topicId}
               onLoadMore={() => void loadMoreTopics()}
@@ -378,7 +441,7 @@ const LivePage = memo(() => {
               loading={messagesLive.isLoading && !messagesLive.data}
               loadingOlder={loadingOlder}
               messages={allMessages}
-              topic={topicDetailEnvelopeRenderable ? topicDetail.data : undefined}
+              topic={topicForPane}
               userId={userId}
               onLoadOlder={() => void loadOlderMessages()}
             />

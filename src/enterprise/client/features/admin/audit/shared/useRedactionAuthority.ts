@@ -6,42 +6,52 @@ import { purgeAuditConversationEvidenceCaches } from './purgeConversationEvidenc
 import {
   emptyRedactionAuthorityMemory,
   type RedactionAuthorityView,
+  type RedactionSlots,
   reduceRedactionAuthority,
 } from './redactionAuthority';
 
 /**
- * Mount-scoped redaction authority. Tightens immediately, loosens only on
- * converged confirmation, purges once per (effective, disagreement) epoch.
+ * Mount-scoped authority. R1 never loosens (resetKey / remount only).
+ * R3: one purge per tightening of `effective`; latch until the effect
+ * acknowledges; never cleared because a slot went in-flight.
  */
 export const useRedactionAuthority = (
-  sources: ReadonlyArray<string | null | undefined>,
+  slots: RedactionSlots,
+  extraObserved: ReadonlyArray<string | undefined> = [],
   resetKey?: string,
 ): RedactionAuthorityView & { shouldPurge: boolean } => {
   const memoryRef = useRef(emptyRedactionAuthorityMemory());
-  const latchedEpochRef = useRef<string | null>(null);
+  const pendingTightenRef = useRef<string | undefined>(undefined);
+  const acknowledgedTightenRef = useRef<string | undefined>(undefined);
   const resetKeyRef = useRef(resetKey);
 
   if (resetKeyRef.current !== resetKey) {
     resetKeyRef.current = resetKey;
     memoryRef.current = emptyRedactionAuthorityMemory();
-    latchedEpochRef.current = null;
+    pendingTightenRef.current = undefined;
+    acknowledgedTightenRef.current = undefined;
   }
 
-  const reduced = reduceRedactionAuthority(memoryRef.current, sources);
+  const reduced = reduceRedactionAuthority(memoryRef.current, slots, extraObserved);
   memoryRef.current = reduced.memory;
 
-  const { purgeEpoch } = reduced.view;
-  const shouldPurge = purgeEpoch !== null && purgeEpoch !== latchedEpochRef.current;
+  if (
+    reduced.view.tightenTo !== undefined &&
+    reduced.view.tightenTo !== acknowledgedTightenRef.current
+  ) {
+    pendingTightenRef.current = reduced.view.tightenTo;
+  }
+
+  const shouldPurge =
+    pendingTightenRef.current !== undefined &&
+    pendingTightenRef.current !== acknowledgedTightenRef.current;
 
   useEffect(() => {
-    if (!purgeEpoch) {
-      latchedEpochRef.current = null;
-      return;
-    }
-    if (latchedEpochRef.current === purgeEpoch) return;
-    latchedEpochRef.current = purgeEpoch;
+    const pending = pendingTightenRef.current;
+    if (pending === undefined || pending === acknowledgedTightenRef.current) return;
+    acknowledgedTightenRef.current = pending;
     void purgeAuditConversationEvidenceCaches();
-  }, [purgeEpoch]);
+  }, [shouldPurge, reduced.view.effective]);
 
   return { ...reduced.view, shouldPurge };
 };

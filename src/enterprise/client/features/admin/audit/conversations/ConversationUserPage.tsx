@@ -18,14 +18,17 @@ import {
   useFetchAuditConversationsList,
   useFetchAuditPolicy,
   useFetchAuditUserSummary,
+  useFetchAuditUserTimeline,
 } from '../hooks/useAdminAudit';
 import { displayAuditUserLabel, formatAdminDateTime, hasPermission } from '../shared/format';
+import { emptyRedactionSlots, envelopeSlot } from '../shared/redactionAuthority';
 import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
 import { useCursorPagination } from '../shared/useCursorPagination';
+import { useRedactionAuthority } from '../shared/useRedactionAuthority';
 import ContentAccessDisabledState from './ContentAccessDisabledState';
 import { endOfDay, firstFilterValue, parseIsoDay, sameCalendarDay, startOfDay } from './dayFilters';
 import { useConversationColumns } from './useConversationColumns';
-import UserTimelinePane from './UserTimelinePane';
+import UserTimelinePane, { TIMELINE_PAGE_SIZE } from './UserTimelinePane';
 
 const styles = createStaticStyles(({ css }) => ({
   summary: css`
@@ -74,8 +77,15 @@ const ConversationUserPage = memo(() => {
     onPrevious,
     reset: resetCursor,
   } = useCursorPagination();
-  const [timelineError, setTimelineError] = useState<unknown>();
   const summaryFailureNotifiedRef = useRef(false);
+  const {
+    currentCursor: timelineCursor,
+    hasPrevious: timelineHasPrevious,
+    limit: timelineLimit,
+    onNext: onTimelineNext,
+    onPrevious: onTimelinePrevious,
+    reset: resetTimeline,
+  } = useCursorPagination({ initialLimit: TIMELINE_PAGE_SIZE });
 
   const applyTitleQuery = useCallback(
     (next: string) => {
@@ -139,11 +149,38 @@ const ConversationUserPage = memo(() => {
     },
     canConversationRead && !!userId,
   );
+  const timeline = useFetchAuditUserTimeline(
+    { cursor: timelineCursor, from, limit: timelineLimit, to, userId },
+    canConversationRead && !!userId,
+  );
+
+  // Reset timeline pagination when the evidence window or subject changes.
+  useEffect(() => {
+    resetTimeline();
+  }, [from, resetTimeline, to, userId]);
+
+  const redaction = useRedactionAuthority(
+    {
+      ...emptyRedactionSlots(),
+      list: envelopeSlot(list.data),
+      policy: canAuditRead ? envelopeSlot(policy.data) : undefined,
+      timeline: envelopeSlot(timeline.data),
+    },
+    [],
+    userId,
+  );
+  const listRenderable = redaction.isEnvelopeRenderable(envelopeSlot(list.data));
+  const timelineRenderable = redaction.isEnvelopeRenderable(envelopeSlot(timeline.data));
+  useEffect(() => {
+    if (!redaction.shouldPurge) return;
+    resetCursor();
+    resetTimeline();
+  }, [redaction.shouldPurge, resetCursor, resetTimeline]);
 
   // Only conversation evidence failures deny the page — not optional AUDIT_READ summary.
   const isForbidden = useMemo(() => {
-    return [list.error, timelineError].some(isForbiddenError);
-  }, [list.error, timelineError]);
+    return [list.error, timeline.error].some(isForbiddenError);
+  }, [list.error, timeline.error]);
   const summaryFailed = Boolean(summary.error);
 
   useEffect(() => {
@@ -168,6 +205,18 @@ const ConversationUserPage = memo(() => {
   }
 
   const user = summary.data;
+  const listItems = (list.data?.items ?? []).map((item) =>
+    listRenderable ? item : { ...item, description: null, title: null },
+  );
+  const timelineItems = (timeline.data?.items ?? []).map((item) =>
+    timelineRenderable ? item : { ...item, title: null },
+  );
+  const timelineFailed = Boolean(timeline.error) && !timeline.data;
+  const timelineEmpty =
+    !timeline.isLoading &&
+    !timelineFailed &&
+    timeline.data !== undefined &&
+    timelineItems.length === 0;
 
   return (
     <AdminPageTemplate
@@ -220,7 +269,7 @@ const ConversationUserPage = memo(() => {
           <Text style={{ fontWeight: 600 }}>{t('audit.conversations.user.topicsList')}</Text>
           <DataTable<AdminAuditConversationListItem>
             columns={columns}
-            dataSource={list.data?.items ?? []}
+            dataSource={listItems}
             emptyDescription={t('audit.conversations.user.emptyTopics')}
             error={Boolean(list.error) && !list.data}
             loading={list.isLoading && !list.data}
@@ -242,12 +291,18 @@ const ConversationUserPage = memo(() => {
           />
         </div>
         <UserTimelinePane
-          canFetch={canConversationRead && !!userId}
-          from={from}
-          peerRedactionProfiles={canAuditRead ? [policy.data?.redactionProfile] : []}
-          to={to}
+          empty={timelineEmpty}
+          failed={timelineFailed}
+          hasNext={Boolean(timeline.data?.nextCursor)}
+          hasPrevious={timelineHasPrevious}
+          isValidating={timeline.isValidating}
+          items={timelineItems}
+          loading={timeline.isLoading && !timeline.data}
+          stale={Boolean(timeline.error) && Boolean(timeline.data)}
           userId={userId}
-          onErrorChange={setTimelineError}
+          onNext={() => onTimelineNext(timeline.data?.nextCursor)}
+          onPrevious={onTimelinePrevious}
+          onRetry={() => void timeline.mutate()}
         />
       </Flexbox>
     </AdminPageTemplate>

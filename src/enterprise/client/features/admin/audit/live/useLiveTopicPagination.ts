@@ -7,22 +7,26 @@ import type { AdminAuditConversationListItem } from '@/enterprise/client/service
 import { adminAuditService } from '@/enterprise/client/services/adminAudit';
 
 import type { AuditRedactionProfile } from '../shared/liveMessageUtils';
+import { envelopeSlot } from '../shared/redactionAuthority';
 import { mergeTopicPages } from '../shared/topicListUtils';
 import type { LiveFeedSWR } from './useLiveAuditAccess';
 
 export const TOPIC_LIST_LIMIT = 30;
 
+export interface ProfiledTopicPage {
+  items: AdminAuditConversationListItem[];
+  redactionProfile: string | undefined;
+}
+
 export const useLiveTopicPagination = ({
   accessEpochRef,
   canConversationRead,
-  redactionProfile,
   t,
   topics,
   userId,
 }: {
   accessEpochRef: { current: number };
   canConversationRead: boolean;
-  redactionProfile: AuditRedactionProfile | undefined;
   t: TFunction<'admin'>;
   topics: LiveFeedSWR<{
     items?: AdminAuditConversationListItem[];
@@ -32,7 +36,7 @@ export const useLiveTopicPagination = ({
   userId?: string;
 }) => {
   // Topics: always poll head (no cursor); accumulate older pages for "load more".
-  const [topicOlderPages, setTopicOlderPages] = useState<AdminAuditConversationListItem[][]>([]);
+  const [topicOlderPages, setTopicOlderPages] = useState<ProfiledTopicPage[]>([]);
   const [topicNextCursor, setTopicNextCursor] = useState<string | null>(null);
   const [loadingMoreTopics, setLoadingMoreTopics] = useState(false);
   const [topicPageError, setTopicPageError] = useState<string | null>(null);
@@ -44,7 +48,7 @@ export const useLiveTopicPagination = ({
 
   useEffect(() => {
     resetTopicPagination();
-  }, [redactionProfile, resetTopicPagination, userId]);
+  }, [resetTopicPagination, userId]);
 
   // Sync topic next cursor from head when no older pages accumulated.
   useEffect(() => {
@@ -65,15 +69,11 @@ export const useLiveTopicPagination = ({
         limit: TOPIC_LIST_LIMIT,
         userId,
       });
-      if (
-        epoch !== accessEpochRef.current ||
-        (page.redactionProfile !== undefined &&
-          redactionProfile !== undefined &&
-          page.redactionProfile !== redactionProfile)
-      ) {
-        return;
-      }
-      setTopicOlderPages((p) => [...p, page.items]);
+      if (epoch !== accessEpochRef.current) return;
+      setTopicOlderPages((p) => [
+        ...p,
+        { items: page.items, redactionProfile: envelopeSlot(page) },
+      ]);
       setTopicNextCursor(page.nextCursor);
     } catch {
       setTopicPageError(
@@ -84,26 +84,28 @@ export const useLiveTopicPagination = ({
     } finally {
       setLoadingMoreTopics(false);
     }
-  }, [
-    accessEpochRef,
-    canConversationRead,
-    loadingMoreTopics,
-    redactionProfile,
-    t,
-    topicNextCursor,
-    userId,
-  ]);
+  }, [accessEpochRef, canConversationRead, loadingMoreTopics, t, topicNextCursor, userId]);
+
+  const pageProfiles = useMemo(
+    () => topicOlderPages.map((page) => page.redactionProfile),
+    [topicOlderPages],
+  );
 
   const orderedTopics = useMemo(() => {
     const head = topics.data?.items ?? [];
-    return mergeTopicPages(head, topicOlderPages);
+    return mergeTopicPages(
+      head,
+      topicOlderPages.map((page) => page.items),
+    );
   }, [topicOlderPages, topics.data?.items]);
 
   return {
     loadMoreTopics,
     loadingMoreTopics,
     orderedTopics,
+    pageProfiles,
     topicNextCursor,
+    topicOlderPages,
     topicPageError,
     topics,
   };

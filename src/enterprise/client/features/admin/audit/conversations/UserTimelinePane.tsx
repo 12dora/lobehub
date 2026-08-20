@@ -3,16 +3,15 @@
 import { Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useEffect, useLayoutEffect } from 'react';
+import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
-import { useFetchAuditUserTimeline } from '../hooks/useAdminAudit';
-import { formatAdminDateTime } from '../shared/format';
-import { useCursorPagination } from '../shared/useCursorPagination';
-import { useRedactionAuthority } from '../shared/useRedactionAuthority';
+import type { AdminAuditUsersTimelineItem } from '@/enterprise/client/services/adminAudit';
 
-const TIMELINE_PAGE_SIZE = 30;
+import { formatAdminDateTime } from '../shared/format';
+
+export const TIMELINE_PAGE_SIZE = 30;
 
 const styles = createStaticStyles(({ css }) => ({
   timeline: css`
@@ -46,78 +45,55 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 export interface UserTimelinePaneProps {
-  canFetch: boolean;
-  from: Date;
-  onErrorChange?: (error: unknown) => void;
-  /** Extra envelopes (e.g. policy) so a stale timeline `'off'` cannot outrank `'strict'`. */
-  peerRedactionProfiles?: Array<string | null | undefined>;
-  to: Date;
+  empty: boolean;
+  failed: boolean;
+  hasNext: boolean;
+  hasPrevious: boolean;
+  isValidating?: boolean;
+  items: AdminAuditUsersTimelineItem[];
+  loading: boolean;
+  onNext: () => void;
+  onPrevious: () => void;
+  onRetry: () => void;
+  stale: boolean;
   userId: string;
 }
 
 const UserTimelinePane = memo<UserTimelinePaneProps>(
-  ({ canFetch, from, onErrorChange, peerRedactionProfiles, to, userId }) => {
+  ({
+    empty,
+    failed,
+    hasNext,
+    hasPrevious,
+    isValidating,
+    items,
+    loading,
+    onNext,
+    onPrevious,
+    onRetry,
+    stale,
+    userId,
+  }) => {
     const { t } = useTranslation('admin');
     const navigate = useNavigate();
-    const { currentCursor, hasPrevious, limit, onNext, onPrevious, reset } = useCursorPagination({
-      initialLimit: TIMELINE_PAGE_SIZE,
-    });
-
-    // Reset timeline pagination when the evidence window or subject changes.
-    useEffect(() => {
-      reset();
-    }, [from, reset, to, userId]);
-
-    const timeline = useFetchAuditUserTimeline(
-      { cursor: currentCursor, from, limit, to, userId },
-      canFetch,
-    );
-
-    const redaction = useRedactionAuthority(
-      [timeline.data?.redactionProfile, ...(peerRedactionProfiles ?? [])],
-      userId,
-    );
-    const timelineRenderable = redaction.isEnvelopeRenderable(timeline.data?.redactionProfile);
-    useEffect(() => {
-      if (!redaction.shouldPurge) return;
-      reset();
-    }, [redaction.purgeEpoch, redaction.shouldPurge, reset]);
-
-    // Report before paint so a timeline-only FORBIDDEN still gates the parent page
-    // (same as when both fetches lived in ConversationUserPage). Do not clear on
-    // unmount — that would flip the parent gate off and remount us in a loop.
-    useLayoutEffect(() => {
-      onErrorChange?.(timeline.error);
-    }, [onErrorChange, timeline.error]);
-
-    const timelineItems = (timeline.data?.items ?? []).map((item) =>
-      timelineRenderable ? item : { ...item, title: null },
-    );
-    const timelineFailed = Boolean(timeline.error) && !timeline.data;
-    const timelineEmpty =
-      !timeline.isLoading &&
-      !timelineFailed &&
-      timeline.data !== undefined &&
-      timelineItems.length === 0;
-    const timelineHasNext = Boolean(timeline.data?.nextCursor);
 
     return (
       <div style={{ flex: '0 1 320px', minWidth: 260 }}>
         <Text style={{ fontWeight: 600 }}>{t('audit.conversations.user.timeline')}</Text>
         <div className={styles.timeline}>
-          {timeline.isLoading && !timeline.data ? (
+          {loading ? (
             <Text type="secondary">{t('audit.conversations.user.timelineLoading')}</Text>
           ) : null}
-          {timelineFailed ? (
+          {failed ? (
             <div className={styles.timelineFooter}>
               <Text type="secondary">{t('audit.conversations.user.timelineError')}</Text>
-              <Button type="default" onClick={() => void timeline.mutate()}>
+              <Button type="default" onClick={onRetry}>
                 {t('audit.conversations.user.timelineRetry')}
               </Button>
             </div>
           ) : null}
-          {!timelineFailed
-            ? timelineItems.map((item) => (
+          {!failed
+            ? items.map((item) => (
                 <div
                   className={styles.timelineItem}
                   key={`${item.kind}-${item.id}`}
@@ -143,27 +119,22 @@ const UserTimelinePane = memo<UserTimelinePaneProps>(
                 </div>
               ))
             : null}
-          {timelineEmpty ? (
+          {empty ? (
             <Text type="secondary">{t('audit.conversations.user.emptyTimeline')}</Text>
           ) : null}
-          {!timelineFailed && (hasPrevious || timelineHasNext) ? (
+          {!failed && (hasPrevious || hasNext) ? (
             <div className={styles.timelineFooter}>
               <Flexbox horizontal gap={8}>
                 <Button disabled={!hasPrevious} type="default" onClick={onPrevious}>
                   {t('audit.conversations.user.timelinePrevious')}
                 </Button>
-                <Button
-                  disabled={!timelineHasNext}
-                  loading={timeline.isValidating}
-                  type="default"
-                  onClick={() => onNext(timeline.data?.nextCursor)}
-                >
+                <Button disabled={!hasNext} loading={isValidating} type="default" onClick={onNext}>
                   {t('audit.conversations.user.timelineNext')}
                 </Button>
               </Flexbox>
             </div>
           ) : null}
-          {!timelineFailed && timeline.error && timeline.data ? (
+          {stale ? (
             <Text type="secondary">{t('audit.conversations.user.timelineStale')}</Text>
           ) : null}
         </div>

@@ -12,10 +12,16 @@ import {
   mergeMessagePages,
   stripMessageBodies,
 } from '../shared/liveMessageUtils';
+import { envelopeSlot } from '../shared/redactionAuthority';
 import { idSetsDisjoint } from '../shared/topicListUtils';
 import type { LiveFeedSWR } from './useLiveAuditAccess';
 
 export const MSG_LIMIT = 100;
+
+export interface ProfiledMessagePage {
+  items: AdminAuditConversationMessage[];
+  redactionProfile: string | undefined;
+}
 
 export const useLiveMessageFeed = ({
   accessEpochRef,
@@ -26,7 +32,6 @@ export const useLiveMessageFeed = ({
   messagesAccessDenied,
   messagesLive,
   mustPurgeCachedBodies,
-  redactionProfile,
   t,
   topicId,
   userId,
@@ -44,13 +49,12 @@ export const useLiveMessageFeed = ({
     redactionProfile?: AuditRedactionProfile;
   }>;
   mustPurgeCachedBodies: boolean;
-  redactionProfile: AuditRedactionProfile | undefined;
   t: TFunction<'admin'>;
   topicId?: string;
   userId?: string;
 }) => {
-  // Messages: poll head; accumulate older pages.
-  const [olderPages, setOlderPages] = useState<AdminAuditConversationMessage[][]>([]);
+  // Messages: poll head; accumulate older pages with the envelope they were loaded under.
+  const [olderPages, setOlderPages] = useState<ProfiledMessagePage[]>([]);
   const [olderNextCursor, setOlderNextCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [messageGap, setMessageGap] = useState(false);
@@ -66,7 +70,7 @@ export const useLiveMessageFeed = ({
 
   useEffect(() => {
     resetMessagePagination();
-  }, [redactionProfile, resetMessagePagination, topicId, userId]);
+  }, [resetMessagePagination, topicId, userId]);
 
   // Drop cached body-bearing pages when policy or conversation permission is lost
   // so previously loaded content cannot outlive authorization.
@@ -134,14 +138,11 @@ export const useLiveMessageFeed = ({
         !canConversationRead ||
         bodyHidden ||
         page.contentAccessMode === 'metadata_only' ||
-        page.contentAccessMode === 'disabled' ||
-        (page.redactionProfile !== undefined &&
-          redactionProfile !== undefined &&
-          page.redactionProfile !== redactionProfile)
+        page.contentAccessMode === 'disabled'
       ) {
         return;
       }
-      setOlderPages((p) => [...p, page.items]);
+      setOlderPages((p) => [...p, { items: page.items, redactionProfile: envelopeSlot(page) }]);
       setOlderNextCursor(page.nextCursor);
     } catch {
       setMessagePageError(
@@ -159,17 +160,20 @@ export const useLiveMessageFeed = ({
     includeBody,
     loadingOlder,
     olderNextCursor,
-    redactionProfile,
     t,
     topicId,
     userId,
   ]);
 
+  const pageProfiles = useMemo(() => olderPages.map((page) => page.redactionProfile), [olderPages]);
+
   const allMessages = useMemo(() => {
     if (messagesAccessDenied) return [];
     const latest = messagesLive.data?.items ?? [];
-    const merged = mergeMessagePages(olderPages.flat(), latest);
-    // Strip bodies if policy/permission revoked while pages still hold cached content.
+    const merged = mergeMessagePages(
+      olderPages.flatMap((page) => page.items),
+      latest,
+    );
     return bodyHidden ? stripMessageBodies(merged) : merged;
   }, [bodyHidden, messagesAccessDenied, messagesLive.data?.items, olderPages]);
 
@@ -180,6 +184,8 @@ export const useLiveMessageFeed = ({
     messageGap,
     messagePageError,
     olderNextCursor,
+    olderPages,
+    pageProfiles,
     reloadMessages,
   };
 };
