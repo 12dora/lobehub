@@ -1,5 +1,7 @@
 'use client';
 
+import type { EffortControlKey } from '@lobechat/model-runtime';
+import { EFFORT_CONTROL_KEYS } from '@lobechat/model-runtime';
 import isEqual from 'fast-deep-equal';
 import { memo } from 'react';
 
@@ -44,8 +46,8 @@ export const DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS = [
 ] as const;
 
 /**
- * Fixed-length hook sequence (rules-of-hooks). A locked/hidden effort leaf disables
- * or hides the default-assistant cluster the same way model/provider metas do.
+ * Fixed-length hook sequence (rules-of-hooks). Only the selected model's key is
+ * applied to the effort picker — inactive family leaves must not gate the row.
  */
 const useDefaultAgentChatConfigEffortMetas = () =>
   [
@@ -124,12 +126,11 @@ const ModelAssignmentsForm = memo(() => {
   const saveState = useSaveState();
   const defaultAgentModelMeta = usePlatformSettingMeta('defaultAgent.config.model');
   const defaultAgentProviderMeta = usePlatformSettingMeta('defaultAgent.config.provider');
-  const defaultAgentEffortMetas = useDefaultAgentChatConfigEffortMetas();
-  const defaultAgentMetas = [
-    defaultAgentModelMeta,
-    defaultAgentProviderMeta,
-    ...defaultAgentEffortMetas,
-  ];
+  const defaultAgentEffortMetaList = useDefaultAgentChatConfigEffortMetas();
+  const defaultAgentMetas = [defaultAgentModelMeta, defaultAgentProviderMeta] as const;
+  const defaultAgentEffortMetas = Object.fromEntries(
+    EFFORT_CONTROL_KEYS.map((key, index) => [key, defaultAgentEffortMetaList[index]]),
+  ) as Partial<Record<EffortControlKey, (typeof defaultAgentEffortMetaList)[number]>>;
   const systemAgentMetas: Partial<Record<UserServiceModelConfigKey, SystemAgentPolicyMetas>> = {
     agentMeta: {
       modelProvider: [
@@ -219,6 +220,7 @@ const ModelAssignmentsForm = memo(() => {
     <ModelAssignmentsFormView
       canManage={canManageServiceModel}
       defaultAgent={defaultAgent}
+      defaultAgentEffortMetas={defaultAgentEffortMetas}
       defaultAgentMetas={defaultAgentMetas}
       disabledReason={reason}
       initError={isUserStateInitError as Error | undefined}
@@ -231,12 +233,12 @@ const ModelAssignmentsForm = memo(() => {
       onUpdateDefaultAgent={({ model, provider }) =>
         updateDefaultAgent({ config: { model, provider } })
       }
-      // User settings still merge onto chatConfig; platform lock/hide is driven by the
-      // per-key `defaultAgent.config.chatConfig.<configKey>` leaves. `level` is always
-      // concrete: chatConfig fields are strict level unions, so the picker offers no clear.
-      onUpdateDefaultAgentEffort={({ configKey, level }) =>
-        updateDefaultAgent({ config: { chatConfig: { [configKey]: level } } })
-      }
+      // User settings still merge onto chatConfig. A clear is not representable here
+      // (merge drops `undefined`), so the wrapper no-ops `level === undefined`.
+      onUpdateDefaultAgentEffort={({ configKey, level }) => {
+        if (level === undefined) return;
+        return updateDefaultAgent({ config: { chatConfig: { [configKey]: level } } });
+      }}
     />
   );
 });

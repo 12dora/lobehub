@@ -93,5 +93,6 @@ describe('ServiceModelSettingsPage default-assistant effort', () => {
   it('passes onUpdateDefaultAgentEffort through to the form', () => {
     render(<ServiceModelSettingsPage />, { wrapper });
     expect(mocks.formProps?.onUpdateDefaultAgentEffort).toBe(mocks.scope.updateDefaultAgentEffort);
+    expect(mocks.formProps?.defaultAgentEffortClearable).toBe(true);
   });
 });

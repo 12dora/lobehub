@@ -125,7 +125,15 @@ export const applySettingsPatch = async (
       ]);
     }
 
-    const validated = settingsRegistry.validateValue(path, params.patch[path]);
+    const rawValue = params.patch[path];
+    // Null on a non-nullable schema is an explicit row delete (restore provider/model
+    // default). Nullable leaves (e.g. systemAgent.*.reasoningEffort) still store null.
+    if (rawValue === null && !entry.schema.safeParse(null).success) {
+      delete nextDraft[path];
+      continue;
+    }
+
+    const validated = settingsRegistry.validateValue(path, rawValue);
     if (!validated.ok) {
       throw new SettingsDraftValidationError([
         { code: 'MANAGED_SETTING_INVALID_VALUE', message: validated.message, path },

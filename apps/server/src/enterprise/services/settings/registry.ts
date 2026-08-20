@@ -27,7 +27,7 @@ import type {
 } from '@/types/platform/settings';
 
 /** Bump when registered paths / schemas change in a breaking way for cache keys. */
-export const SETTINGS_REGISTRY_VERSION = 4;
+export const SETTINGS_REGISTRY_VERSION = 5;
 
 /** Appearance / preference leaves used only in user UI clients (B6-R2). */
 const UI_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile'];
@@ -109,7 +109,15 @@ export const DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS = EFFORT_CONTROL_KEYS.map(
 
 type Def = SettingDefinition;
 
-const def = <T>(entry: SettingDefinition<T>): Def => entry as Def;
+/**
+ * `builtInDefault` is optional so a leaf can stay absent until a policy (or user
+ * override) exists. The resolver skips `undefined` effective values (`setByPath`).
+ */
+type RegistryEntry<T> = Omit<SettingDefinition<T>, 'builtInDefault'> & {
+  builtInDefault?: T;
+};
+
+const def = <T>(entry: RegistryEntry<T>): Def => entry as Def;
 
 /**
  * Ordered registry entries. Keep leaf paths only; no secret / credential paths.
@@ -578,13 +586,15 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
   // One select leaf per discrete thinking-effort chatConfig key. Shared title/desc;
   // per-key schema is `z.enum(definition.levels)` so a gpt-5.2-pro leaf rejects `low`.
+  // No builtInDefault: materializing registry defaults (e.g. gpt5_2ReasoningEffort:'none')
+  // would override model-specific runtime defaults in resolveEffortLevel. The leaf is
+  // only present in chatConfig when a policy or user override exists.
   // Do not prefix-own `defaultAgent.config.chatConfig.*` — streaming/historyCount stay
   // on the settings-policy editor.
   ...EFFORT_CONTROL_KEYS.map((key) => {
     const definition = EFFORT_CONTROL_REGISTRY[key];
     return def({
       applicableClients: RUNTIME_CLIENTS,
-      builtInDefault: definition.defaultLevel,
       control: 'select',
       descriptionKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.effort.desc',
       group: 'defaultAgent',

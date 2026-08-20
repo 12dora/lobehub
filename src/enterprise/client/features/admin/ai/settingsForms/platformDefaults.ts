@@ -54,12 +54,15 @@ export const buildDefaultAgentFromPolicies = (policies: PolicyMap): LobeAgentSet
   };
 };
 
-/** Always a concrete level — default-assistant chatConfig effort leaves are non-null. */
+/**
+ * Concrete level → publish that leaf. `undefined` → `null` in the patch so
+ * applyImmediate deletes the policy row (schema is non-null; null is not stored).
+ */
 export const defaultAgentEffortPatch = (
   configKey: keyof LobeAgentChatConfig,
-  level: string,
+  level: string | undefined,
 ): Record<string, unknown> => ({
-  [`defaultAgent.config.chatConfig.${String(configKey)}`]: level,
+  [`defaultAgent.config.chatConfig.${String(configKey)}`]: level ?? null,
 });
 
 export const buildSystemAgentFromPolicies = (policies: PolicyMap): UserServiceModelConfig => {

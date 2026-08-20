@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { EFFORT_CONTROL_KEYS } from '@lobechat/model-runtime';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,7 +7,8 @@ import {
   resolveEffectiveSettings,
   resolveSettingPath,
 } from './effectiveResolver';
-import { settingsRegistry } from './registry';
+import { getByPath } from './pathUtils';
+import { DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS, settingsRegistry } from './registry';
 
 describe('resolveSettingPath', () => {
   const builtin = 14;
@@ -334,6 +336,44 @@ describe('resolveEffectiveSettings truth table', () => {
     });
     expect(result.effectiveValues['systemAgent.topic.reasoningEffort']).toBeNull();
     expect(result.pathMeta['systemAgent.topic.reasoningEffort']?.source).toBe('user');
+  });
+
+  it('does not materialize defaultAgent chatConfig effort keys with an empty policy set', () => {
+    const result = resolveEffectiveSettings({
+      platformPolicyEnabled: true,
+    });
+    const chatConfig = getByPath(result.effectiveSettings, 'defaultAgent.config.chatConfig') as
+      Record<string, unknown> | undefined;
+
+    expect(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).toHaveLength(EFFORT_CONTROL_KEYS.length);
+    for (const key of EFFORT_CONTROL_KEYS) {
+      expect(chatConfig?.[key]).toBeUndefined();
+      expect(result.effectiveValues[`defaultAgent.config.chatConfig.${key}`]).toBeUndefined();
+    }
+    expect(chatConfig?.enableStreaming).not.toBeUndefined();
+  });
+
+  it('flows a published defaultAgent chatConfig effort policy into chatConfig', () => {
+    const result = resolveEffectiveSettings({
+      platformPolicyEnabled: true,
+      policies: {
+        'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 'high',
+          visibility: 'visible',
+        },
+      },
+    });
+    const chatConfig = getByPath(result.effectiveSettings, 'defaultAgent.config.chatConfig') as
+      Record<string, unknown> | undefined;
+
+    expect(chatConfig?.gpt5_6ReasoningEffort).toBe('high');
+    expect(result.effectiveValues['defaultAgent.config.chatConfig.gpt5_6ReasoningEffort']).toBe(
+      'high',
+    );
+    expect(chatConfig?.thinking).toBeUndefined();
+    expect(chatConfig?.gpt5_2ReasoningEffort).toBeUndefined();
   });
 });
 

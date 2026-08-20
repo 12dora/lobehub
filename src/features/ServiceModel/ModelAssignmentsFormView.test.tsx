@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PlatformSettingMetaState } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import type { SystemAgentItem, UserServiceModelConfigKey } from '@/types/user/settings';
@@ -10,6 +10,15 @@ import ModelAssignmentsFormView, {
   type ModelAssignmentsFormViewProps,
   type SystemAgentPolicyMetas,
 } from './ModelAssignmentsFormView';
+
+const { extendParamsMock } = vi.hoisted(() => ({
+  extendParamsMock: vi.fn<() => string[] | undefined>(() => ['reasoningEffort']),
+}));
+
+vi.mock('@/store/aiInfra', () => ({
+  aiModelSelectors: { modelExtendParams: () => () => extendParamsMock() },
+  useScopedAiInfraStore: (selector: (state: unknown) => unknown) => selector({}),
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -228,6 +237,10 @@ const renderView = (
 };
 
 describe('ModelAssignmentsFormView managed leaves', () => {
+  beforeEach(() => {
+    extendParamsMock.mockReturnValue(['reasoningEffort']);
+  });
+
   it('disables a locked model/provider pair and never invokes its update', () => {
     const { onUpdateSystemAgent } = renderView({
       agentMeta: { modelProvider: [meta({ locked: true }), meta()] },
@@ -317,6 +330,79 @@ describe('ModelAssignmentsFormView managed leaves', () => {
       configKey: 'reasoningEffort',
       level: 'high',
     });
+  });
+
+  it('forwards Default as an unset when the admin row is clearable', () => {
+    const onUpdateDefaultAgentEffort = vi.fn();
+    renderView({}, { defaultAgentEffortClearable: true, onUpdateDefaultAgentEffort });
+
+    const row = screen.getByTestId('form-item-defaultAgent.title');
+    fireEvent.click(within(row).getByTestId('effort-clear'));
+
+    expect(onUpdateDefaultAgentEffort).toHaveBeenCalledWith({
+      configKey: 'reasoningEffort',
+      level: undefined,
+    });
+  });
+
+  it('does not forward Default when the user chatConfig row is not clearable', () => {
+    const onUpdateDefaultAgentEffort = vi.fn();
+    renderView({}, { onUpdateDefaultAgentEffort });
+
+    const row = screen.getByTestId('form-item-defaultAgent.title');
+    fireEvent.click(within(row).getByTestId('effort-clear'));
+
+    expect(onUpdateDefaultAgentEffort).not.toHaveBeenCalled();
+  });
+
+  it('locks only the active effort key, leaving model/provider and inactive keys editable', () => {
+    const onUpdateDefaultAgentEffort = vi.fn();
+    renderView(
+      {},
+      {
+        defaultAgentEffortMetas: { reasoningEffort: meta({ locked: true }) },
+        defaultAgentMetas: [meta(), meta()],
+        onUpdateDefaultAgentEffort,
+      },
+    );
+
+    const row = screen.getByTestId('form-item-defaultAgent.title');
+    expect(screen.getByTestId('model-default')).not.toBeDisabled();
+    expect(within(row).getByTestId('effort-select')).toBeDisabled();
+    fireEvent.click(within(row).getByTestId('effort-select'));
+    expect(onUpdateDefaultAgentEffort).not.toHaveBeenCalled();
+  });
+
+  it('ignores a locked or hidden inactive effort family', () => {
+    renderView(
+      {},
+      {
+        defaultAgentEffortMetas: {
+          gpt5_6ReasoningEffort: meta({ hidden: true, locked: true }),
+        },
+        defaultAgentMetas: [meta(), meta()],
+        onUpdateDefaultAgentEffort: vi.fn(),
+      },
+    );
+
+    const row = screen.getByTestId('form-item-defaultAgent.title');
+    expect(screen.getByTestId('model-default')).not.toBeDisabled();
+    expect(within(row).getByTestId('effort-select')).not.toBeDisabled();
+  });
+
+  it('hides only the effort picker when the active effort leaf is hidden', () => {
+    renderView(
+      {},
+      {
+        defaultAgentEffortMetas: { reasoningEffort: meta({ hidden: true }) },
+        defaultAgentMetas: [meta(), meta()],
+        onUpdateDefaultAgentEffort: vi.fn(),
+      },
+    );
+
+    expect(screen.getByTestId('model-default')).toBeTruthy();
+    const row = screen.getByTestId('form-item-defaultAgent.title');
+    expect(within(row).queryByTestId('effort-select')).toBeNull();
   });
 
   it('locks only contextLimit while leaving the memory model/provider selector editable', () => {

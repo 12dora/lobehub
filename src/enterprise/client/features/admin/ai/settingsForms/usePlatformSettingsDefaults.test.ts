@@ -71,4 +71,20 @@ describe('usePlatformSettingsDefaults — default agent effort', () => {
       reason: undefined,
     });
   });
+
+  it('updateDefaultAgentEffort(undefined) patches null to delete the policy row', async () => {
+    const { result } = renderHook(() => usePlatformSettingsDefaults());
+
+    await act(async () => {
+      await result.current.updateDefaultAgentEffort({
+        configKey: 'gpt5_6ReasoningEffort',
+        level: undefined,
+      });
+    });
+
+    expect(mocks.applyImmediate).toHaveBeenCalledWith({
+      patch: { 'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort': null },
+      reason: undefined,
+    });
+  });
 });

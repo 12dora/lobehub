@@ -305,6 +305,9 @@ describe('AdminSettingsService.applyImmediate', () => {
         'medium',
       ).ok,
     ).toBe(true);
+    expect(
+      settingsRegistry.get('defaultAgent.config.chatConfig.gpt5_6ReasoningEffort')?.builtInDefault,
+    ).toBeUndefined();
   });
 
   it('publishes systemAgent reasoningEffort via applyImmediate', async () => {
@@ -357,6 +360,32 @@ describe('AdminSettingsService.applyImmediate', () => {
     expect(userState.effectiveValues['defaultAgent.config.chatConfig.gpt5_6ReasoningEffort']).toBe(
       'high',
     );
+  });
+
+  it('unsets defaultAgent chatConfig effort by deleting the published and draft row', async () => {
+    const path = 'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort';
+    await service.applyImmediate({
+      actorUserId: 'admin-1',
+      patch: { [path]: 'high' },
+      reason: 'set default assistant thinking effort',
+    });
+
+    await service.applyImmediate({
+      actorUserId: 'admin-1',
+      patch: { [path]: null },
+      reason: 'restore default assistant thinking effort',
+    });
+
+    const policies = await serverDB.select().from(platformSettingPolicies);
+    expect(policies.filter((row) => row.path === path)).toEqual([]);
+
+    const draft = await service.getDraft();
+    expect(draft.publishedPolicies[path]).toBeUndefined();
+    expect(draft.draft[path]).toBeUndefined();
+
+    const effective = new EffectiveSettingsService(serverDB);
+    const userState = await effective.getEffectiveSettings({ userId: 'user-1' });
+    expect(userState.effectiveValues[path]).toBeUndefined();
   });
 
   it('rejects invalid defaultAgent chatConfig effort via applyImmediate', async () => {

@@ -80,6 +80,7 @@ const ServiceModelSettingsBody = memo(() => {
         />
       )}
       <ModelAssignmentsFormView
+        defaultAgentEffortClearable
         canManage={canWrite}
         defaultAgent={defaultAgent}
         disabledReason={disabledReason}

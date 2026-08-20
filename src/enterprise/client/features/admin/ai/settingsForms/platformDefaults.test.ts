@@ -25,9 +25,9 @@ describe('defaultAgentEffortPatch', () => {
     });
   });
 
-  it('never emits null — chatConfig effort leaves are non-null', () => {
-    expect(defaultAgentEffortPatch('thinking', 'auto')).toEqual({
-      'defaultAgent.config.chatConfig.thinking': 'auto',
+  it('encodes a clear as null so applyImmediate can delete the row', () => {
+    expect(defaultAgentEffortPatch('thinking', undefined)).toEqual({
+      'defaultAgent.config.chatConfig.thinking': null,
     });
   });
 });

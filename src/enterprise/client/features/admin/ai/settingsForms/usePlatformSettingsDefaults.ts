@@ -99,7 +99,7 @@ export const usePlatformSettingsDefaults = () => {
   );
 
   const updateDefaultAgentEffort = useCallback(
-    async (value: { configKey: keyof LobeAgentChatConfig; level: EffortLevel }) => {
+    async (value: { configKey: keyof LobeAgentChatConfig; level: EffortLevel | undefined }) => {
       await applyPatch(defaultAgentEffortPatch(value.configKey, value.level));
     },
     [applyPatch],

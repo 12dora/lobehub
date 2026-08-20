@@ -1,12 +1,13 @@
 'use client';
 
-import type { EffortLevel } from '@lobechat/model-runtime';
+import type { EffortControlKey, EffortLevel } from '@lobechat/model-runtime';
+import { findEffortControl } from '@lobechat/model-runtime';
 import type { LobeAgentChatConfig } from '@lobechat/types';
 import type { FormGroupItemType, FormItemProps } from '@lobehub/ui';
 import { Flexbox, Form, InputNumber, Skeleton, Tooltip } from '@lobehub/ui';
 import { Switch } from '@lobehub/ui/base-ui';
 import { ConfigProvider } from 'antd';
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncError from '@/components/AsyncError';
@@ -19,12 +20,15 @@ import {
   type PlatformSettingMetaState,
 } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import type { useSaveState } from '@/hooks/useSaveState';
+import { aiModelSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import type { LobeAgentSettings } from '@/types/session';
 import type { SystemAgentItem, UserServiceModelConfigKey } from '@/types/user/settings';
 
 import EffortSelect from './EffortSelect';
 
-/** Leaves the model picker + its effort picker edit as one atomic control cluster. */
+const EMPTY_EFFORT_METAS: Partial<Record<EffortControlKey, PlatformSettingMetaState>> = {};
+
+/** Default-assistant model + effort sit on one row; they are gated independently. */
 const ROW_STYLE = { width: 'min(100%, 448px)' } as const;
 const MODEL_SELECT_STYLE = { minWidth: 0, width: '100%' } as const;
 
@@ -133,7 +137,15 @@ export const MEMORY_MODEL_ITEMS: SystemAgentModelItem[] = [
 export interface ModelAssignmentsFormViewProps {
   canManage: boolean;
   defaultAgent: LobeAgentSettings;
-  /** Platform-managed meta for composite fields (optional — omit on admin pages). */
+  /**
+   * When true, EffortSelect runs in value mode (shows "Default") and `level: undefined`
+   * is forwarded so admin can delete the policy row. User settings omit this — chatConfig
+   * cannot persist a clear.
+   */
+  defaultAgentEffortClearable?: boolean;
+  /** Per EffortControlKey platform meta — only the selected model's key gates the picker. */
+  defaultAgentEffortMetas?: Partial<Record<EffortControlKey, PlatformSettingMetaState>>;
+  /** Platform-managed meta for the model/provider composite (optional — omit on admin). */
   defaultAgentMetas?: readonly PlatformSettingMetaState[];
   disabledReason?: string;
   initError?: Error | null;
@@ -148,8 +160,8 @@ export interface ModelAssignmentsFormViewProps {
    */
   onUpdateDefaultAgentEffort?: (value: {
     configKey: keyof LobeAgentChatConfig;
-    /** Always a concrete level — chatConfig mode offers no clear. */
-    level: EffortLevel;
+    /** `undefined` only when `defaultAgentEffortClearable` — deletes the policy row. */
+    level: EffortLevel | undefined;
   }) => Promise<void> | void;
   onUpdateSystemAgent: (
     key: UserServiceModelConfigKey,
@@ -167,6 +179,8 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
   ({
     canManage,
     defaultAgent,
+    defaultAgentEffortClearable = false,
+    defaultAgentEffortMetas = EMPTY_EFFORT_METAS,
     defaultAgentMetas = [],
     disabledReason,
     initError,
@@ -183,6 +197,15 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
     const [loadingKey, setLoadingKey] = useState<LoadingKey>();
     const [savingGroup, setSavingGroup] = useState<SavingGroup>();
     const { status: saveStatus, lastSavedAt, save, retry } = saveState;
+    const extendParams = useAiInfraStore(
+      aiModelSelectors.modelExtendParams(
+        defaultAgent.config.model,
+        defaultAgent.config.provider ?? '',
+      ),
+    );
+    const effortControl = useMemo(() => findEffortControl(extendParams), [extendParams]);
+    const activeEffortMeta = effortControl ? defaultAgentEffortMetas[effortControl.key] : undefined;
+    const activeEffortMetas = activeEffortMeta ? [activeEffortMeta] : [];
 
     useEffect(() => {
       if (loadingKey === 'defaultAgent') setLoadingKey(undefined);
@@ -222,20 +245,19 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
     };
 
     /**
-     * Unlike the systemAgent leaves — which persist an explicit `null` to clear — the default
-     * assistant stores its level on `chatConfig`, whose fields are strict level unions with no
-     * null member, and the settings merge drops `undefined`. A clear is therefore not
-     * representable, so `EffortSelect` omits the "Default" option in chatConfig mode and only
-     * ever emits a concrete level here. The guard below keeps that contract enforced rather
-     * than assumed: a clear would silently no-op, which is worse than not offering it.
+     * User chatConfig cannot persist a clear (merge drops `undefined`). Admin
+     * `defaultAgentEffortClearable` forwards `undefined` so applyImmediate can delete
+     * the policy row. Effort lock/hide is the active model's key only — inactive
+     * family leaves must not disable this picker.
      */
     const updateDefaultAgentEffort = async (
       level: EffortLevel | undefined,
       configKey: keyof LobeAgentChatConfig,
     ) => {
-      if (!onUpdateDefaultAgentEffort || level === undefined) return;
-      if (!canManage || defaultAgentMetas.some((meta) => !isPlatformSettingMetaWritable(meta)))
-        return;
+      if (!onUpdateDefaultAgentEffort) return;
+      if (level === undefined && !defaultAgentEffortClearable) return;
+      if (!canManage) return;
+      if (activeEffortMeta && !isPlatformSettingMetaWritable(activeEffortMeta)) return;
 
       setSavingGroup('assignments');
       setLoadingKey('defaultAgent');
@@ -285,13 +307,29 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
                       onChange={updateDefaultAgentModel}
                     />
                     {onUpdateDefaultAgentEffort && (
-                      <EffortSelect
-                        chatConfig={defaultAgent.config.chatConfig}
-                        disabled={disabled || !canManage}
-                        model={defaultAgent.config.model}
-                        provider={defaultAgent.config.provider ?? ''}
-                        onChange={updateDefaultAgentEffort}
-                      />
+                      <ManagedCompositeSettingFieldContent metas={activeEffortMetas}>
+                        {({ disabled: effortDisabled }) => {
+                          const stored = effortControl
+                            ? (defaultAgent.config.chatConfig?.[
+                                effortControl.definition.configKey
+                              ] as string | undefined)
+                            : undefined;
+                          return (
+                            <EffortSelect
+                              disabled={effortDisabled || !canManage}
+                              model={defaultAgent.config.model}
+                              provider={defaultAgent.config.provider ?? ''}
+                              value={defaultAgentEffortClearable ? (stored ?? null) : undefined}
+                              chatConfig={
+                                defaultAgentEffortClearable
+                                  ? undefined
+                                  : defaultAgent.config.chatConfig
+                              }
+                              onChange={updateDefaultAgentEffort}
+                            />
+                          );
+                        }}
+                      </ManagedCompositeSettingFieldContent>
                     )}
                   </Flexbox>
                 </Tooltip>
