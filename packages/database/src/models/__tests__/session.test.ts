@@ -135,9 +135,9 @@ describe('SessionModel', () => {
       });
       expect(page1).toHaveLength(1);
       expect(page1[0].id).toBe('s-group-multi');
-      expect(page1[0].agentsToSessions.map((link: { agent: { id: string } }) => link.agent.id)).toEqual(
-        ['m-keep'],
-      );
+      expect(
+        page1[0].agentsToSessions.map((link: { agent: { id: string } }) => link.agent.id),
+      ).toEqual(['m-keep']);
 
       const page2 = await sessionModel.query({
         current: 1,

@@ -157,9 +157,7 @@ export class SessionModel {
     if (ids.length === 0) return [];
 
     const visibleAgentMatch =
-      params.visibleAgentIds.length > 0
-        ? inArray(agents.id, params.visibleAgentIds)
-        : sql`false`;
+      params.visibleAgentIds.length > 0 ? inArray(agents.id, params.visibleAgentIds) : sql`false`;
 
     const result = await this.db
       .select({
@@ -169,10 +167,7 @@ export class SessionModel {
       })
       .from(sessions)
       .leftJoin(agentsToSessions, eq(sessions.id, agentsToSessions.sessionId))
-      .leftJoin(
-        agents,
-        and(eq(agentsToSessions.agentId, agents.id), visibleAgentMatch),
-      )
+      .leftJoin(agents, and(eq(agentsToSessions.agentId, agents.id), visibleAgentMatch))
       .leftJoin(sessionGroups, eq(sessions.groupId, sessionGroups.id))
       .where(and(this.ownership(), inArray(sessions.id, ids)))
       .orderBy(desc(sessions.updatedAt), desc(sessions.id));
