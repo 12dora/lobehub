@@ -31,6 +31,10 @@ services:
       - 'INTERNAL_APP_URL=http://localhost:3210'
       - 'DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${LOBE_DB_NAME:-lobechat}'
       - 'KEY_VAULTS_SECRET=${KEY_VAULTS_SECRET}'
+      # Required for official CLI device-code login (`lh login --server`). Unset → OIDC off,
+      # POST /oidc/device/auth returns 404, and tRPC ignores `Oidc-Auth`. Generate with
+      # `node scripts/generate-oidc-jwk.mjs` and set JWKS_KEY in .env (see README).
+      - 'JWKS_KEY=${JWKS_KEY}'
       - 'AUTH_SECRET=${AUTH_SECRET}'
       # Namespaces session cookies — required when several instances share a host/domain.
       - 'AUTH_COOKIE_PREFIX=${AUTH_COOKIE_PREFIX:-lobehub-enhanced}'

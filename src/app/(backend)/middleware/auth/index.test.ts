@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { assertOIDCUserActive } from '@/libs/oidc-provider/access-control';
 import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
+import { validateApiKeyAuth } from '@/libs/trpc/lambda/context';
 import { createErrorResponse } from '@/utils/errorResponse';
 
 import { checkAuth, type RequestHandler } from './index';
@@ -21,7 +22,7 @@ vi.mock('@lobechat/types', () => ({
   },
 }));
 
-const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+const _consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 const consoleInfoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
 vi.mock('@/utils/errorResponse', () => ({
@@ -59,6 +60,11 @@ vi.mock('@/libs/oidc-provider/access-control', () => ({
 
 vi.mock('@/envs/auth', () => ({
   LOBE_CHAT_OIDC_AUTH_HEADER: 'Oidc-Auth',
+}));
+
+vi.mock('@/libs/trpc/lambda/context', () => ({
+  LOBE_CHAT_API_KEY_HEADER: 'X-API-Key',
+  validateApiKeyAuth: vi.fn(),
 }));
 
 describe('checkAuth', () => {
@@ -209,6 +215,54 @@ describe('checkAuth', () => {
     await checkAuth(mockHandler)(mockRequest, mockOptions);
 
     expect(consoleInfoSpy).not.toHaveBeenCalled();
+  });
+
+  describe('X-API-Key', () => {
+    it('should authenticate with X-API-Key using the shared tRPC helper and skip OIDC/session', async () => {
+      const apiKeyRequest = new Request('https://example.com/webapi/chat/openai', {
+        headers: {
+          'Oidc-Auth': 'should-not-be-used',
+          'X-API-Key': 'sk-lh-aaaaaaaaaaaaaaaa',
+        },
+      });
+      vi.mocked(validateApiKeyAuth).mockResolvedValueOnce({
+        credentialIssuedAt: new Date('2024-01-01T00:00:00.000Z'),
+        userId: 'api-user',
+      });
+      vi.mocked(mockHandler).mockResolvedValueOnce(new Response('ok'));
+
+      await checkAuth(mockHandler)(apiKeyRequest, mockOptions);
+
+      expect(validateApiKeyAuth).toHaveBeenCalledWith('sk-lh-aaaaaaaaaaaaaaaa');
+      expect(validateOIDCJWT).not.toHaveBeenCalled();
+      expect(mockHandler).toHaveBeenCalledWith(
+        expect.any(Request),
+        expect.objectContaining({
+          jwtPayload: { userId: 'api-user' },
+          userId: 'api-user',
+        }),
+      );
+    });
+
+    it('should reject an invalid X-API-Key without falling back to OIDC or session', async () => {
+      const apiKeyRequest = new Request('https://example.com/webapi/tts/openai', {
+        headers: {
+          'Oidc-Auth': 'oidc-token',
+          'X-API-Key': 'sk-lh-bbbbbbbbbbbbbbbb',
+        },
+      });
+      vi.mocked(validateApiKeyAuth).mockResolvedValueOnce(null);
+
+      await checkAuth(mockHandler)(apiKeyRequest, mockOptions);
+
+      expect(validateOIDCJWT).not.toHaveBeenCalled();
+      expect(AgentRuntimeError.createError).toHaveBeenCalledWith(ChatErrorType.Unauthorized);
+      expect(createErrorResponse).toHaveBeenCalledWith(ChatErrorType.Unauthorized, {
+        error: { errorType: ChatErrorType.Unauthorized },
+        provider: 'mock',
+      });
+      expect(mockHandler).not.toHaveBeenCalled();
+    });
   });
 
   describe('mock dev user', () => {

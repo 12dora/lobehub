@@ -12,7 +12,12 @@ openssl rand -base64 32 # KEY_VAULTS_SECRET
 openssl rand -base64 32 # AUTH_SECRET
 openssl rand -base64 32 # PLATFORM_MASTER_KEY
 
-# edit .env: APP_URL, the secrets above, POSTGRES_PASSWORD, RUSTFS_SECRET_KEY,
+# OIDC / official CLI device-code login (`lh login --server <url>`). Without JWKS_KEY
+# the app leaves ENABLE_OIDC off: POST /oidc/device/auth is 404 and Oidc-Auth is ignored.
+# From the repo root (prints a one-line JWKS JSON; paste as JWKS_KEY, not OIDC_JWKS_KEY):
+node scripts/generate-oidc-jwk.mjs
+
+# edit .env: APP_URL, the secrets above, JWKS_KEY, POSTGRES_PASSWORD, RUSTFS_SECRET_KEY,
 # S3_ENDPOINT / S3_PUBLIC_DOMAIN and BOOTSTRAP_SUPER_ADMIN_EMAIL
 docker compose up -d
 ```
@@ -78,6 +83,48 @@ Notes worth reading before you go to production:
   `platform-oidc-lkg-init` service hands that volume to UID 1001 with mode `0700` before the app
   starts — the identity store rejects any directory it does not own. If you ever recreate the volume
   by hand, reapply `chown 1001:1001` + `chmod 0700`.
+- **`JWKS_KEY` enables OIDC**, which the official npm `@lobehub/cli` needs for `lh login`.
+  `KEY_VAULTS_SECRET` is also required (OIDC cookies / key vault). Leave `JWKS_KEY` empty only
+  if you do not need device-code login; API-key tRPC (`LOBEHUB_CLI_API_KEY`) still works.
+
+## Official CLI (`@lobehub/cli`) / 官方 CLI
+
+Use the **published** package — do not fork `apps/cli`. Point it at this host:
+
+```bash
+# Device-code login (requires JWKS_KEY so OIDC is on)
+npx -y @lobehub/cli@latest login --server http://<your-host>:3210
+
+# Or API key (Settings → API keys). Enough for tRPC reads (agent list, topic, file, user).
+export LOBEHUB_SERVER=http://<your-host>:3210
+export LOBEHUB_CLI_API_KEY=sk-lh-...
+npx -y @lobehub/cli@latest agent list --json
+```
+
+Keep `LOBE_MODULE_PRESET=full` (the compose default) on any host that must support the official
+CLI. Disabled modules stay mounted but return `FORBIDDEN` / `PLATFORM_MODULE_DISABLED` — never
+404. Module → CLI command map:
+
+| Module          | CLI commands                                              |
+| --------------- | --------------------------------------------------------- |
+| `knowledgeBase` | `lh kb *`                                                 |
+| `imageGen`      | `lh generate image/video`                                 |
+| `speech`        | `lh generate asr`                                         |
+| `webSearch`     | `lh search` web/crawl                                     |
+| `market`        | `lh skill import` from market                             |
+| `memory`        | `lh memory *`                                             |
+| `bots`          | `lh bot *`                                                |
+| `agentSignal`   | `lh agent-signal`                                         |
+
+**平台托管 (platform takeover)** is policy, not a missing route. Once an admin publishes
+enforced 托管 for agents / AI / skills, `lh agent create|edit|delete`, `lh provider create|update|remove`,
+and `lh skill create|update|import*` are denied (`FORBIDDEN`). Use the published platform
+catalog instead of personal CRUD.
+
+中文摘要：必须设置 `JWKS_KEY`（`node scripts/generate-oidc-jwk.mjs` 生成，写入 `.env` 的
+`JWKS_KEY=`，并保证 `KEY_VAULTS_SECRET` 已转发）官方 CLI 才能 `lh login --server <url>`。
+也可用 `LOBEHUB_SERVER` + `LOBEHUB_CLI_API_KEY` 走 API Key。模块关闭会让对应命令
+`FORBIDDEN`；发布托管策略后 `agent` / `provider` / `skill` 的个人 CRUD 按设计拒绝。
 
 All variables are documented in [`.env.example`](./.env.example) and in the root
 [`.env.example`](../../.env.example).

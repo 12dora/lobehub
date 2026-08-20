@@ -26,6 +26,7 @@ import { withManagedResourceGuard } from '@/server/enterprise/guards/managedReso
 import {
   assertLocalAgentReadableUnderTakeover,
   isPlatformAgentTakeoverActive,
+  PlatformAgentEffectiveResolver,
   PlatformAgentUserListService,
 } from '@/server/enterprise/services/agentCatalog';
 import { AgentService } from '@/server/services/agent';
@@ -383,6 +384,36 @@ export const agentRouter = router({
       }),
     )
     .query(async ({ input, ctx }) => {
+      // Same encoded-id seam execAgent uses (`decodePlatformAgentListId` + effective
+      // catalog). `lh agent view <id-from-list>` under takeover otherwise looks up
+      // `platform-agent:<uuid>` as a local row and returns not-found. Read path only
+      // — does not materialize.
+      const platformAgentId = decodePlatformAgentListId(input.agentId);
+      if (platformAgentId) {
+        const effective = await new PlatformAgentEffectiveResolver(ctx.serverDB).getEffectiveAgent(
+          ctx.userId,
+          platformAgentId,
+        );
+        if (!effective) return null;
+        return {
+          ...DEFAULT_AGENT_CONFIG,
+          avatar: effective.config.avatar,
+          backgroundColor: effective.config.backgroundColor ?? undefined,
+          description: effective.config.description,
+          id: input.agentId,
+          openingMessage: effective.config.openingMessage ?? undefined,
+          openingQuestions: effective.config.openingQuestions,
+          platform: {
+            distribution: effective.distribution,
+            managed: true as const,
+            source: 'platform' as const,
+          },
+          slug: null,
+          systemRole: effective.config.systemRole,
+          title: effective.config.displayName,
+        };
+      }
+
       const agent = await ctx.agentService.getAgentConfigById(input.agentId);
       if (agent) {
         await assertLocalAgentReadableUnderTakeover({

@@ -242,6 +242,41 @@ A disabled module does **not** unmount its router.
 
 Permissions are orthogonal: turning a module off never revokes RBAC.
 
+## Official CLI compatibility
+
+The published npm package `@lobehub/cli` talks to this fork over the same
+tRPC / OIDC / `/webapi` surface as upstream. Do not fork the CLI.
+
+- **Login**: `lh login --server <APP_URL>` (device code) needs `JWKS_KEY` so
+  OIDC is on (`ENABLE_OIDC` is `!!JWKS_KEY`). Also set `KEY_VAULTS_SECRET`.
+  Generate the key with `node scripts/generate-oidc-jwk.mjs` and put the
+  one-line JSON in compose `.env` as `JWKS_KEY`. Alternative:
+  `LOBEHUB_SERVER` + `LOBEHUB_CLI_API_KEY` (tRPC + `/api/v1`; chat/TTS over
+  `/webapi` also accept `X-API-Key` on this fork).
+- **Preset**: keep `LOBE_MODULE_PRESET=full` (default) on hosts that must
+  support the official CLI. Disabled modules return `FORBIDDEN` /
+  `PLATFORM_MODULE_DISABLED`, never `NOT_FOUND`.
+- **Module → CLI command** (off in `minimal` unless noted):
+
+  | Module          | CLI commands                                  |
+  | --------------- | --------------------------------------------- |
+  | `knowledgeBase` | `lh kb *`                                     |
+  | `imageGen`      | `lh generate image/video`                     |
+  | `speech`        | `lh generate asr`                             |
+  | `webSearch`     | `lh search` web/crawl                         |
+  | `market`        | `lh skill import` from market                 |
+  | `memory`        | `lh memory *`                                 |
+  | `bots`          | `lh bot *`                                    |
+  | `agentSignal`   | `lh agent-signal`                             |
+
+  Core (`agent` / `user` / `file` / `topic` / `message` / `task` / `device` /
+  `aiProvider` reads) is not a module and stays on.
+- **平台托管 (takeover)**: when an admin publishes enforced managed agents /
+  AI / skills, `lh agent|provider|skill` **CRUD is denied by design**
+  (`FORBIDDEN`). List/view still work against the published catalog
+  (`platform-agent:` ids). This is policy, not a missing endpoint.
+
+
 ## Background workers
 
 The six `platform_jobs` pollers (`auditExport`, `auditRetention`, `agentRollout`,

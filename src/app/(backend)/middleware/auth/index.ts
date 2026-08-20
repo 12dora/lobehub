@@ -11,6 +11,7 @@ import { LOBE_CHAT_OIDC_AUTH_HEADER } from '@/envs/auth';
 import { extractTraceContext, injectActiveTraceHeaders } from '@/libs/observability/traceparent';
 import { assertOIDCUserActive } from '@/libs/oidc-provider/access-control';
 import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
+import { LOBE_CHAT_API_KEY_HEADER, validateApiKeyAuth } from '@/libs/trpc/lambda/context';
 import { createErrorResponse } from '@/utils/errorResponse';
 
 type RequestOptions = { params: Promise<{ provider?: string }> };
@@ -46,8 +47,7 @@ const getOIDCClientDebugInfo = (token?: string | null): OIDCClientDebugInfo => {
   try {
     const normalizedPayload = payload.replaceAll('-', '+').replaceAll('_', '/');
     const decodedPayload = JSON.parse(Buffer.from(normalizedPayload, 'base64').toString('utf8')) as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
 
     const clientId =
       typeof decodedPayload?.client_id === 'string' ? decodedPayload.client_id : undefined;
@@ -84,23 +84,34 @@ export const checkAuth =
     let userId: string;
 
     try {
-      // OIDC authentication (CLI)
-      const oidcAuthorization = req.headers.get(LOBE_CHAT_OIDC_AUTH_HEADER);
-      if (oidcAuthorization) {
-        const oidc = await validateOIDCJWT(oidcAuthorization);
-        userId = oidc.userId;
-        await assertOIDCUserActive(serverDB, userId);
-      } else {
-        // Better Auth session authentication (web)
-        const session = await auth.api.getSession({
-          headers: req.headers,
-        });
-
-        if (!session?.user?.id) {
+      // API key (official CLI `X-API-Key`) — same helper and exclusive-no-fallback
+      // semantics as tRPC `createLambdaContext`. Must run before OIDC / session.
+      const apiKeyToken = req.headers.get(LOBE_CHAT_API_KEY_HEADER)?.trim();
+      if (apiKeyToken) {
+        const apiKeyAuth = await validateApiKeyAuth(apiKeyToken);
+        if (!apiKeyAuth) {
           throw AgentRuntimeError.createError(ChatErrorType.Unauthorized);
         }
+        userId = apiKeyAuth.userId;
+      } else {
+        // OIDC authentication (CLI)
+        const oidcAuthorization = req.headers.get(LOBE_CHAT_OIDC_AUTH_HEADER);
+        if (oidcAuthorization) {
+          const oidc = await validateOIDCJWT(oidcAuthorization);
+          userId = oidc.userId;
+          await assertOIDCUserActive(serverDB, userId);
+        } else {
+          // Better Auth session authentication (web)
+          const session = await auth.api.getSession({
+            headers: req.headers,
+          });
 
-        userId = session.user.id;
+          if (!session?.user?.id) {
+            throw AgentRuntimeError.createError(ChatErrorType.Unauthorized);
+          }
+
+          userId = session.user.id;
+        }
       }
     } catch (e) {
       const params = await options.params;
@@ -108,7 +119,8 @@ export const checkAuth =
 
       // Only log OIDC auth failures — better-auth session failures are a common
       // baseline (unauthenticated browser hits) and would otherwise flood logs.
-      if (oidcAuthorization) {
+      // Skip when X-API-Key was present: that path is exclusive (no OIDC fallback).
+      if (oidcAuthorization && !req.headers.get(LOBE_CHAT_API_KEY_HEADER)?.trim()) {
         const oidcDebugInfo = getOIDCClientDebugInfo(oidcAuthorization);
 
         console.info('[auth] OIDC authentication failed', {
