@@ -26,7 +26,10 @@ vi.mock('@/database/models/message', () => ({
 
 describe('threadRouter takeover off', () => {
   const userId = 'thread-user';
-  let threadModelMock: { query: ReturnType<typeof vi.fn>; queryByTopicId: ReturnType<typeof vi.fn> };
+  let threadModelMock: {
+    query: ReturnType<typeof vi.fn>;
+    queryByTopicId: ReturnType<typeof vi.fn>;
+  };
   let topicModelMock: { findById: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {

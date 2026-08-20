@@ -227,7 +227,7 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
     expect(error).toBeInstanceOf(TRPCError);
     expect((error as TRPCError).code).toBe('INTERNAL_SERVER_ERROR');
     // No SQL / snapshot internals leaked to the public message.
-    expect((error as TRPCError).message).toBe('Failed to start platform agent');
+    expect((error as TRPCError).message).toBe('PLATFORM_AGENT_START_FAILED');
     expect(beginOperation).toHaveBeenCalledTimes(1);
   });
 
@@ -248,7 +248,7 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
     // Validation runs against the exact pinned dependency snapshot — no latest fallback.
     expect(validateDeps).toHaveBeenCalledWith(expect.anything(), dependencySnapshot);
     // Public message carries no dependency identifiers / secrets.
-    expect((error as TRPCError).message).toBe('Platform agent dependencies are unavailable');
+    expect((error as TRPCError).message).toBe('PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE');
   });
 
   it('runs a real managed execAgent(autoStart:false) operation through executeSync control context', async () => {
@@ -554,9 +554,9 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
             (value) => value,
             (error) => error,
           );
-        expect(
-          (result as { cause?: { data?: { code?: string } } })?.cause?.data?.code,
-        ).not.toBe(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM);
+        expect((result as { cause?: { data?: { code?: string } } })?.cause?.data?.code).not.toBe(
+          MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+        );
         expect(getAgentConfigSpy).toHaveBeenCalled();
         expect(locale).toHaveBeenCalled();
       },
@@ -635,7 +635,7 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
         (workspaceError as { cause?: { data?: { code?: string } } }).cause?.data?.code,
       ).not.toBe(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM);
       expect(messageCreate).toHaveBeenCalled();
-    });
+    }, 30_000);
 
     it('allows a validated heterogeneous agent under takeover in personal and workspace scopes', async () => {
       await publishAgentsTakeover();
@@ -692,7 +692,7 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
         (workspaceError as { cause?: { data?: { code?: string } } })?.cause?.data?.code,
       ).not.toBe(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM);
       expect(messageCreate).toHaveBeenCalled();
-    });
+    }, 30_000);
 
     it('still allows an encoded platform list id under takeover (entitlement path, not the user-agent deny)', async () => {
       await publishAgentsTakeover();

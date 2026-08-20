@@ -2210,9 +2210,7 @@ describe('AgentModel', () => {
 
       expect(await agentModel.countAgents({ excludeAgentIds: [excluded.id] })).toBe(1);
       expect(await agentModel.countAgents({ excludeAgentIds: [] })).toBe(2);
-      expect(
-        await agentModel.countAgents({ excludeAgentIds: [kept.id, excluded.id] }),
-      ).toBe(0);
+      expect(await agentModel.countAgents({ excludeAgentIds: [kept.id, excluded.id] })).toBe(0);
     });
   });
 

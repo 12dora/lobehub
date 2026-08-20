@@ -367,9 +367,7 @@ export const topicRouter = router({
         await topicAgentService(ctx).assertAgentReadable(effectiveAgentId);
       }
 
-      const visibleAgentIds = effectiveAgentId
-        ? undefined
-        : await takeoverVisibleAgentIds(ctx);
+      const visibleAgentIds = effectiveAgentId ? undefined : await takeoverVisibleAgentIds(ctx);
 
       const result = await ctx.topicModel.query({
         ...rest,
