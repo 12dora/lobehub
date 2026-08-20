@@ -1,9 +1,9 @@
 import type { CreateThreadParams } from '@lobechat/types';
 import { RequestTrigger, ThreadStatus } from '@lobechat/types';
-import { and, desc, eq, notExists, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, not, notExists, or, sql } from 'drizzle-orm';
 
 import type { ThreadItem } from '../schemas';
-import { agentOperations, messages, threads } from '../schemas';
+import { agentOperations, messages, threads, topics } from '../schemas';
 import type { LobeChatDatabase } from '../type';
 import { buildWorkspacePayload, buildWorkspaceWhere } from '../utils/workspace';
 
@@ -79,6 +79,22 @@ export class ThreadModel {
   private ownership = () =>
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, threads);
 
+  /**
+   * Parent topic must be a group topic or a visible local agent. A non-null
+   * `threads.agentId` must also be in the visible set.
+   */
+  private visibleThreadPredicate = (visibleAgentIds: string[]) => {
+    const topicVisible =
+      visibleAgentIds.length > 0
+        ? or(not(isNull(topics.groupId)), inArray(topics.agentId, visibleAgentIds))
+        : not(isNull(topics.groupId));
+    const threadAgentVisible =
+      visibleAgentIds.length > 0
+        ? or(isNull(threads.agentId), inArray(threads.agentId, visibleAgentIds))
+        : isNull(threads.agentId);
+    return and(topicVisible, threadAgentVisible);
+  };
+
   create = async (params: CreateThreadParams) => {
     // @ts-ignore
     const [result] = await this.db
@@ -103,11 +119,22 @@ export class ThreadModel {
     return this.db.delete(threads).where(this.ownership());
   };
 
-  query = async () => {
+  query = async (params?: { visibleAgentIds?: string[] }) => {
+    if (!params?.visibleAgentIds) {
+      const data = await this.db
+        .select(queryColumns)
+        .from(threads)
+        .where(this.ownership())
+        .orderBy(desc(threads.updatedAt));
+
+      return data as ThreadItem[];
+    }
+
     const data = await this.db
       .select(queryColumns)
       .from(threads)
-      .where(this.ownership())
+      .innerJoin(topics, eq(threads.topicId, topics.id))
+      .where(and(this.ownership(), this.visibleThreadPredicate(params.visibleAgentIds)))
       .orderBy(desc(threads.updatedAt));
 
     return data as ThreadItem[];

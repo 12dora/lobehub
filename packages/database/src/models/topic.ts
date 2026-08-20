@@ -93,10 +93,12 @@ interface QueryTopicParams {
    */
   sortBy?: TopicQuerySortBy;
   timing?: ModelTimingContext;
-  /**
-   * Include only topics matching the given trigger types (positive filter)
-   */
   triggers?: string[];
+  /**
+   * Optional takeover filter. `undefined` keeps legacy SQL. When present,
+   * unscoped queries keep group topics and topics whose `agentId` is in the set.
+   */
+  visibleAgentIds?: string[];
   /**
    * When true, the SELECT also returns the heavier card-detail columns used
    * by the per-agent Topics management page: `firstUserMessage` (subquery),
@@ -124,6 +126,7 @@ export interface TopicKeywordScope {
    */
   containerId?: string | null;
   groupId?: string | null;
+  visibleAgentIds?: string[];
 }
 
 export interface ListTopicsForMemoryExtractorCursor {
@@ -172,6 +175,17 @@ export class TopicModel {
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, topics);
   private messageOwnership = () =>
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, messages);
+
+  /**
+   * Optional takeover filter. `undefined` keeps legacy SQL. When present, keep
+   * group topics and topics whose agentId is in the set.
+   */
+  private visibleAgentOrGroup = (visibleAgentIds?: string[]) => {
+    if (!visibleAgentIds) return undefined;
+    if (visibleAgentIds.length === 0) return not(isNull(topics.groupId));
+    return or(not(isNull(topics.groupId)), inArray(topics.agentId, visibleAgentIds));
+  };
+
   // **************** Query *************** //
 
   query = async ({
@@ -187,6 +201,7 @@ export class TopicModel {
     sortBy,
     timing,
     triggers,
+    visibleAgentIds,
     withDetails = false,
   }: QueryTopicParams = {}) => {
     const queryStartedAt = Date.now();
@@ -413,6 +428,7 @@ export class TopicModel {
       excludeTriggerCondition,
       triggerCondition,
       excludeStatusCondition,
+      this.visibleAgentOrGroup(visibleAgentIds),
     );
 
     const [items, totalResult] = await Promise.all([
@@ -525,7 +541,10 @@ export class TopicModel {
   queryTopics = async ({
     statuses,
     pageSize = 200,
-  }: { pageSize?: number; statuses?: string[] } = {}): Promise<TopicItem[]> => {
+    visibleAgentIds,
+  }: { pageSize?: number; statuses?: string[]; visibleAgentIds?: string[] } = {}): Promise<
+    TopicItem[]
+  > => {
     return this.db
       .select()
       .from(topics)
@@ -535,6 +554,7 @@ export class TopicModel {
           statuses && statuses.length > 0
             ? inArray(topics.status, statuses as ChatTopicStatus[])
             : undefined,
+          this.visibleAgentOrGroup(visibleAgentIds),
         ),
       )
       .orderBy(desc(topics.updatedAt))
@@ -552,6 +572,9 @@ export class TopicModel {
     const scopeOptions: TopicKeywordScope =
       scope && typeof scope === 'object' ? scope : { containerId: scope ?? null };
     const scopeCondition = this.matchKeywordScope(scopeOptions);
+    const visibility = scopeOptions.groupId
+      ? undefined
+      : this.visibleAgentOrGroup(scopeOptions.visibleAgentIds);
 
     const bm25Query = sanitizeBm25Query(keyword);
 
@@ -561,7 +584,9 @@ export class TopicModel {
       this.db
         .select()
         .from(topics)
-        .where(and(this.ownership(), scopeCondition, sql`${topics.title} @@@ ${bm25Query}`))
+        .where(
+          and(this.ownership(), scopeCondition, visibility, sql`${topics.title} @@@ ${bm25Query}`),
+        )
         .orderBy(desc(topics.updatedAt)),
       // Query topic IDs matching by message content (BM25)
       this.db
@@ -574,6 +599,7 @@ export class TopicModel {
             sql`${messages.content} @@@ ${bm25Query}`,
             this.ownership(),
             scopeCondition,
+            visibility,
           ),
         )
         .groupBy(messages.topicId),
@@ -614,6 +640,7 @@ export class TopicModel {
     endDate?: string;
     range?: [string, string];
     startDate?: string;
+    visibleAgentIds?: string[];
   }): Promise<number> => {
     // Build agent-specific condition if agentId is provided
     const agentCondition: SQL | undefined = params?.agentId
@@ -630,6 +657,7 @@ export class TopicModel {
           this.ownership(),
           agentCondition,
           params?.containerId ? this.matchContainer(params.containerId) : undefined,
+          params?.agentId ? undefined : this.visibleAgentOrGroup(params?.visibleAgentIds),
           params?.range
             ? genRangeWhere(params.range, topics.createdAt, (date) => date.toDate())
             : undefined,
@@ -645,7 +673,7 @@ export class TopicModel {
     return result[0].count;
   };
 
-  rank = async (limit: number = 10): Promise<TopicRankItem[]> => {
+  rank = async (limit: number = 10, visibleAgentIds?: string[]): Promise<TopicRankItem[]> => {
     return this.db
       .select({
         agentId: topics.agentId,
@@ -654,7 +682,7 @@ export class TopicModel {
         title: topics.title,
       })
       .from(topics)
-      .where(and(this.ownership()))
+      .where(and(this.ownership(), this.visibleAgentOrGroup(visibleAgentIds)))
       .leftJoin(messages, eq(topics.id, messages.topicId))
       .groupBy(topics.id)
       .orderBy(desc(sql`count`))
@@ -669,7 +697,7 @@ export class TopicModel {
    * - For group topics: includes topics with groupId
    * - For inbox: includes topics with slug='inbox'
    */
-  queryRecent = async (limit: number = 12) => {
+  queryRecent = async (limit: number = 12, visibleAgentIds?: string[]) => {
     const latestMessageAtSubquery = this.db
       .select({ value: messages.updatedAt })
       .from(messages)
@@ -681,6 +709,7 @@ export class TopicModel {
         topics.updatedAt,
       );
 
+    const visibility = this.visibleAgentOrGroup(visibleAgentIds);
     const result = await this.db
       .select({
         agentId: topics.agentId,
@@ -695,14 +724,15 @@ export class TopicModel {
       .where(
         and(
           this.ownership(),
-          or(
-            // Group topics: has groupId
-            not(isNull(topics.groupId)),
-            // Inbox agent topics
-            eq(agents.slug, 'inbox'),
-            // Agent topics: exclude virtual agents
-            and(isNull(topics.groupId), ne(agents.virtual, true)),
-          ),
+          visibility ??
+            or(
+              // Group topics: has groupId
+              not(isNull(topics.groupId)),
+              // Inbox agent topics
+              eq(agents.slug, 'inbox'),
+              // Agent topics: exclude virtual agents
+              and(isNull(topics.groupId), ne(agents.virtual, true)),
+            ),
         ),
       )
       .orderBy(desc(topicActivityAt))

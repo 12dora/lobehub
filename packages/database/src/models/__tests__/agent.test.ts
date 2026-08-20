@@ -2203,6 +2203,17 @@ describe('AgentModel', () => {
       expect(await agentModel.countAgents({ startDate: '2024-07-01' })).toBe(1);
       expect(await agentModel.countAgents({ range: ['2024-05-01', '2024-07-01'] })).toBe(1);
     });
+
+    it('should apply excludeAgentIds the same way as queryAgents (COUNT, not load)', async () => {
+      const kept = await agentModel.create({ title: 'Kept Count', virtual: false });
+      const excluded = await agentModel.create({ title: 'Excluded Count', virtual: false });
+
+      expect(await agentModel.countAgents({ excludeAgentIds: [excluded.id] })).toBe(1);
+      expect(await agentModel.countAgents({ excludeAgentIds: [] })).toBe(2);
+      expect(
+        await agentModel.countAgents({ excludeAgentIds: [kept.id, excluded.id] }),
+      ).toBe(0);
+    });
   });
 
   describe('checkByMarketIdentifier', () => {

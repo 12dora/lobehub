@@ -255,12 +255,12 @@ export const agentGroupRouter = router({
   getGroupAgents: agentGroupProcedure
     .input(z.object({ groupId: z.string() }))
     .query(async ({ input, ctx }) => {
-      const members = await ctx.chatGroupModel.getGroupAgents(input.groupId);
       const visible = await new AgentService(
         ctx.serverDB,
         ctx.userId,
         ctx.workspaceId ?? undefined,
       ).getTakeoverVisibleLocalAgentIds();
+      const members = await ctx.chatGroupModel.getGroupAgents(input.groupId);
       if (!visible) return members;
       return members.filter(
         (member) => visible.has(member.agentId) || member.role === 'supervisor',
@@ -284,6 +284,11 @@ export const agentGroupRouter = router({
   getGroupDetail: agentGroupProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ input, ctx }) => {
+      const visible = await new AgentService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).getTakeoverVisibleLocalAgentIds();
       const [defaultAgentConfig, detail] = await Promise.all([
         getEffectiveDefaultAgentConfig({ db: ctx.serverDB, userId: ctx.userId }),
         ctx.agentGroupService.getGroupDetail(input.id),
@@ -295,11 +300,6 @@ export const agentGroupRouter = router({
         defaultAgentConfig,
         detail.agents,
       );
-      const visible = await new AgentService(
-        ctx.serverDB,
-        ctx.userId,
-        ctx.workspaceId ?? undefined,
-      ).getTakeoverVisibleLocalAgentIds();
       return {
         ...detail,
         agents: visible
@@ -309,16 +309,15 @@ export const agentGroupRouter = router({
     }),
 
   getGroups: agentGroupProcedure.query(async ({ ctx }) => {
-    const [defaultAgentConfig, groups] = await Promise.all([
-      getEffectiveDefaultAgentConfig({ db: ctx.serverDB, userId: ctx.userId }),
-      ctx.agentGroupService.getGroups(),
-    ]);
-
     const visible = await new AgentService(
       ctx.serverDB,
       ctx.userId,
       ctx.workspaceId ?? undefined,
     ).getTakeoverVisibleLocalAgentIds();
+    const [defaultAgentConfig, groups] = await Promise.all([
+      getEffectiveDefaultAgentConfig({ db: ctx.serverDB, userId: ctx.userId }),
+      ctx.agentGroupService.getGroups(),
+    ]);
 
     return groups.map((group) => {
       const agents = ctx.agentGroupService.mergeAgentsDefaultConfig(

@@ -64,6 +64,7 @@ describe('agentRouter', () => {
     vi.clearAllMocks();
 
     agentModelMock = {
+      countAgents: vi.fn().mockResolvedValue(4),
       createAgentFiles: vi.fn(),
       createAgentKnowledgeBase: vi.fn(),
       deleteAgentFile: vi.fn(),
@@ -98,6 +99,7 @@ describe('agentRouter', () => {
     vi.mocked(KnowledgeBaseModel).mockImplementation(() => knowledgeBaseModelMock);
 
     agentServiceMock = {
+      countAvailableAgents: vi.fn(),
       createInbox: vi.fn(),
     };
     vi.mocked(AgentService).mockImplementation(() => agentServiceMock);
@@ -523,6 +525,17 @@ describe('agentRouter', () => {
 
         expect(publishResourceEventMock).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('takeover off', () => {
+    it('countAgents uses the local model and never the takeover projection', async () => {
+      const caller = agentRouter.createCaller(mockCtx);
+      const result = await caller.countAgents();
+
+      expect(result).toBe(4);
+      expect(agentModelMock.countAgents).toHaveBeenCalled();
+      expect(agentServiceMock.countAvailableAgents).not.toHaveBeenCalled();
     });
   });
 });

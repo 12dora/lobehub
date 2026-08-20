@@ -118,7 +118,9 @@ const isBuiltinAgentIdentity = (value: string | null | undefined): boolean =>
   typeof value === 'string' && (value === INBOX_SESSION_ID || BUILTIN_SLUGS.has(value));
 
 const workspaceOwner = (workspaceId: string | undefined) =>
-  workspaceId ? eq(chatGroupsAgents.workspaceId, workspaceId) : isNull(chatGroupsAgents.workspaceId);
+  workspaceId
+    ? eq(chatGroupsAgents.workspaceId, workspaceId)
+    : isNull(chatGroupsAgents.workspaceId);
 
 const agentsWorkspaceOwner = (workspaceId: string | undefined) =>
   workspaceId ? eq(agents.workspaceId, workspaceId) : isNull(agents.workspaceId);

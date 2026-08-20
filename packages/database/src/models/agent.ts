@@ -369,6 +369,7 @@ export class AgentModel {
    */
   countAgents = async (params?: {
     endDate?: string;
+    excludeAgentIds?: string[];
     keyword?: string;
     range?: [string, string];
     startDate?: string;
@@ -378,7 +379,7 @@ export class AgentModel {
       .from(agents)
       .where(
         genWhere([
-          this.buildQueryAgentsWhere(params?.keyword),
+          this.buildQueryAgentsWhere(params?.keyword, params?.excludeAgentIds),
           params?.range
             ? genRangeWhere(params.range, agents.createdAt, (date) => date.toDate())
             : undefined,

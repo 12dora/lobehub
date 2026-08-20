@@ -72,6 +72,41 @@ describe('SessionModel', () => {
       expect(result2).toHaveLength(1);
       expect(result2[0].id).toBe('2');
     });
+
+    it('applies visibleAgentIds before LIMIT/OFFSET and keeps group sessions', async () => {
+      await serverDB.transaction(async (trx) => {
+        await trx.insert(sessions).values([
+          { id: 's-hidden-new', type: 'agent', userId, updatedAt: new Date('2024-03-01') },
+          { id: 's-visible', type: 'agent', userId, updatedAt: new Date('2024-01-01') },
+          { id: 's-group', type: 'group', userId, updatedAt: new Date('2024-02-01') },
+        ]);
+        await trx.insert(agents).values([
+          { id: 'agt-hidden', title: 'Hidden', userId },
+          { id: 'agt-visible', title: 'Visible', userId },
+        ]);
+        await trx.insert(agentsToSessions).values([
+          { agentId: 'agt-hidden', sessionId: 's-hidden-new', userId },
+          { agentId: 'agt-visible', sessionId: 's-visible', userId },
+        ]);
+      });
+
+      const page = await sessionModel.query({
+        current: 0,
+        pageSize: 1,
+        visibleAgentIds: ['agt-visible'],
+      });
+      expect(page.map((row) => row.id)).toEqual(['s-group']);
+
+      const rest = await sessionModel.query({
+        current: 1,
+        pageSize: 1,
+        visibleAgentIds: ['agt-visible'],
+      });
+      expect(rest.map((row) => row.id)).toEqual(['s-visible']);
+
+      const unfiltered = await sessionModel.query({ current: 0, pageSize: 1 });
+      expect(unfiltered[0].id).toBe('s-hidden-new');
+    });
   });
 
   describe('queryWithGroups', () => {
@@ -280,6 +315,27 @@ describe('SessionModel', () => {
 
       const endResult = await sessionModel.count({ endDate: '2024-07-01' });
       expect(endResult).toBe(2);
+    });
+
+    it('counts only visible agent sessions plus group sessions when visibleAgentIds is set', async () => {
+      await serverDB.transaction(async (trx) => {
+        await trx.insert(sessions).values([
+          { id: 'c-hidden', type: 'agent', userId },
+          { id: 'c-visible', type: 'agent', userId },
+          { id: 'c-group', type: 'group', userId },
+        ]);
+        await trx.insert(agents).values([
+          { id: 'c-agt-h', title: 'H', userId },
+          { id: 'c-agt-v', title: 'V', userId },
+        ]);
+        await trx.insert(agentsToSessions).values([
+          { agentId: 'c-agt-h', sessionId: 'c-hidden', userId },
+          { agentId: 'c-agt-v', sessionId: 'c-visible', userId },
+        ]);
+      });
+
+      expect(await sessionModel.count()).toBe(3);
+      expect(await sessionModel.count({ visibleAgentIds: ['c-agt-v'] })).toBe(2);
     });
   });
 

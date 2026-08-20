@@ -205,9 +205,8 @@ export class PlatformAgentUserListService {
     }) => Promise<UnifiedAvailableAgentItem[]>,
     loadLegacy: () => Promise<UnifiedAvailableAgentItem[]>,
   ): Promise<UnifiedAvailableAgentItem[]> =>
-    (
-      await this.mergeAvailableAgentsPage(userId, params, loadLocal, loadLegacy, async () => 0)
-    ).items;
+    (await this.mergeAvailableAgentsPage(userId, params, loadLocal, loadLegacy, async () => 0))
+      .items;
 
   /**
    * Same filtered population as {@link mergeAvailableAgents}, with a `total` that
@@ -260,9 +259,7 @@ export class PlatformAgentUserListService {
             offset: localOffset,
           })
         : Promise.resolve([]),
-      countLocal
-        ? countLocal({ excludeAgentIds, keyword: params.keyword })
-        : Promise.resolve(0),
+      countLocal ? countLocal({ excludeAgentIds, keyword: params.keyword }) : Promise.resolve(0),
     ]);
 
     return { items: [...platformWindow, ...local], total: platform.length + localTotal };

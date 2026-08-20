@@ -250,14 +250,10 @@ export class AgentService {
       excludeAgentIds: string[];
       keyword?: string;
     }) =>
-      (
-        await this.agentModel.queryAgents({
-          excludeAgentIds: localParams.excludeAgentIds,
-          keyword: localParams.keyword,
-          limit: 9999,
-          offset: 0,
-        })
-      ).length;
+      this.agentModel.countAgents({
+        excludeAgentIds: localParams.excludeAgentIds,
+        keyword: localParams.keyword,
+      });
 
     return new PlatformAgentUserListService(this.db, this.workspaceId).mergeAvailableAgentsPage(
       this.userId,
@@ -292,10 +288,7 @@ export class AgentService {
     });
   }
 
-  async assertAgentMutationAllowed(
-    procedure: ManagedResourceMutationProcedure,
-    agentId?: string,
-  ) {
+  async assertAgentMutationAllowed(procedure: ManagedResourceMutationProcedure, agentId?: string) {
     await enforceManagedResourceMutation({
       db: this.db,
       principal: { userId: this.userId },

@@ -20,7 +20,7 @@ import { TopicModel } from '@/database/models/topic';
 import { TopicShareModel } from '@/database/models/topicShare';
 import { AgentMigrationRepo } from '@/database/repositories/agentMigration';
 import { TopicImporterRepo } from '@/database/repositories/topicImporter';
-import { chatGroups, topics } from '@/database/schemas';
+import { chatGroups } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
@@ -40,6 +40,13 @@ const topicAgentService = (ctx: {
   userId: string;
   workspaceId?: string | null;
 }) => new AgentService(ctx.serverDB, ctx.userId, ctx.workspaceId ?? undefined);
+
+const takeoverVisibleAgentIds = async (
+  ctx: Parameters<typeof topicAgentService>[0],
+): Promise<string[] | undefined> => {
+  const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
+  return visible ? [...visible] : undefined;
+};
 
 const topicProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
@@ -213,7 +220,11 @@ export const topicRouter = router({
         .optional(),
     )
     .query(async ({ ctx, input }) => {
-      return ctx.topicModel.count(input);
+      if (input?.agentId) return ctx.topicModel.count(input);
+      return ctx.topicModel.count({
+        ...input,
+        visibleAgentIds: await takeoverVisibleAgentIds(ctx),
+      });
     }),
 
   createTopic: topicProcedure
@@ -278,15 +289,11 @@ export const topicRouter = router({
         .optional(),
     )
     .query(async ({ input, ctx }) => {
-      const items = await ctx.topicModel.queryTopics({
+      return ctx.topicModel.queryTopics({
         pageSize: input?.pageSize,
         statuses: input?.statuses,
+        visibleAgentIds: await takeoverVisibleAgentIds(ctx),
       });
-      const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
-      if (!visible) return items;
-      return items.filter(
-        (topic) => topic.groupId || (topic.agentId ? visible.has(topic.agentId) : false),
-      );
     }),
 
   getShareInfo: topicProcedure
@@ -360,6 +367,10 @@ export const topicRouter = router({
         await topicAgentService(ctx).assertAgentReadable(effectiveAgentId);
       }
 
+      const visibleAgentIds = effectiveAgentId
+        ? undefined
+        : await takeoverVisibleAgentIds(ctx);
+
       const result = await ctx.topicModel.query({
         ...rest,
         agentId: effectiveAgentId,
@@ -368,6 +379,7 @@ export const topicRouter = router({
         includeTriggers,
         isInbox,
         triggers,
+        visibleAgentIds,
       });
 
       // Runtime migration: backfill agentId for ALL legacy topics and messages under this agent
@@ -400,37 +412,15 @@ export const topicRouter = router({
       // Use Next.js after() for non-blocking execution
       after(runMigration);
 
-      if (!effectiveAgentId) {
-        const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
-        if (visible && result.items.length > 0) {
-          const rows = await ctx.serverDB
-            .select({ agentId: topics.agentId, groupId: topics.groupId, id: topics.id })
-            .from(topics)
-            .where(
-              inArray(
-                topics.id,
-                result.items.map((item) => item.id),
-              ),
-            );
-          const keep = new Set(
-            rows
-              .filter(
-                (row) => row.groupId || (row.agentId ? visible.has(row.agentId) : false),
-              )
-              .map((row) => row.id),
-          );
-          return {
-            items: result.items.filter((item) => keep.has(item.id)),
-            total: result.total,
-          };
-        }
-      }
-
       return { items: result.items, total: result.total };
     }),
 
   hasTopics: topicProcedure.query(async ({ ctx }) => {
-    return (await ctx.topicModel.count()) === 0;
+    return (
+      (await ctx.topicModel.count({
+        visibleAgentIds: await takeoverVisibleAgentIds(ctx),
+      })) === 0
+    );
   }),
 
   importTopic: topicProcedure
@@ -457,16 +447,14 @@ export const topicRouter = router({
   }),
 
   rankTopics: topicProcedure.input(z.number().max(50).optional()).query(async ({ ctx, input }) => {
-    const ranked = await ctx.topicModel.rank(input);
-    const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
-    if (!visible) return ranked;
-    return ranked.filter((topic) => !topic.agentId || visible.has(topic.agentId));
+    return ctx.topicModel.rank(input, await takeoverVisibleAgentIds(ctx));
   }),
 
   recentTopics: topicProcedure
     .input(z.object({ limit: z.number().max(50).optional() }).optional())
     .query(async ({ ctx, input }): Promise<RecentTopic[]> => {
-      const recentTopics = await ctx.topicModel.queryRecent(input?.limit ?? 12);
+      const visibleAgentIds = await takeoverVisibleAgentIds(ctx);
+      const recentTopics = await ctx.topicModel.queryRecent(input?.limit ?? 12, visibleAgentIds);
 
       // Separate agent topics and group topics
       const agentTopics = recentTopics.filter((t) => t.type === 'agent');
@@ -558,10 +546,8 @@ export const topicRouter = router({
       // Use Next.js after() for non-blocking execution
       after(runMigration);
 
-      const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
-
       // Assemble final result
-      const assembled = recentTopics.map((topic) => {
+      return recentTopics.map((topic) => {
         if (topic.type === 'group' && topic.groupId) {
           const groupInfo = groupInfoMap.get(topic.groupId);
           return {
@@ -590,13 +576,6 @@ export const topicRouter = router({
           type: 'agent' as const,
           updatedAt: topic.updatedAt,
         };
-      });
-
-      if (!visible) return assembled;
-      return assembled.filter((item) => {
-        if (item.type === 'group') return true;
-        const agentId = item.agent && 'id' in item.agent ? item.agent.id : undefined;
-        return typeof agentId === 'string' && visible.has(agentId);
       });
     }),
 
@@ -638,16 +617,13 @@ export const topicRouter = router({
       // topic — the cause of "no topics match" in the per-agent Topics search.
       // `containerId` is only the fallback for legacy callers that pass no
       // agentId/groupId.
-      const found = await ctx.topicModel.queryByKeyword(input.keywords, {
+      return ctx.topicModel.queryByKeyword(input.keywords, {
         agentId: input.agentId,
         containerId: resolved.sessionId,
         groupId: input.groupId,
+        visibleAgentIds:
+          input.groupId || input.agentId ? undefined : await takeoverVisibleAgentIds(ctx),
       });
-      const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
-      if (!visible || input.groupId) return found;
-      return found.filter(
-        (topic) => !topic.agentId || visible.has(topic.agentId) || Boolean(topic.groupId),
-      );
     }),
 
   /**

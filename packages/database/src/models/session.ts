@@ -5,7 +5,7 @@ import type {
   LobeAgentSession,
   LobeGroupSession,
 } from '@lobechat/types';
-import { and, asc, count, desc, eq, inArray, not, or, sql } from 'drizzle-orm';
+import { and, asc, count, countDistinct, desc, eq, inArray, not, or, sql } from 'drizzle-orm';
 import type { PartialDeep } from 'type-fest';
 
 import { merge } from '@/utils/merge';
@@ -37,9 +37,24 @@ export class SessionModel {
 
   private agentsToSessionsOwnership = () =>
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, agentsToSessions);
+
+  /**
+   * Optional takeover filter. `undefined` keeps legacy SQL. When present, keep
+   * group sessions and agent sessions whose joined agent id is in the set.
+   */
+  private visibleSessionPredicate = (visibleAgentIds?: string[]) => {
+    if (!visibleAgentIds) return undefined;
+    if (visibleAgentIds.length === 0) return eq(sessions.type, 'group');
+    return or(eq(sessions.type, 'group'), inArray(agents.id, visibleAgentIds));
+  };
+
   // **************** Query *************** //
 
-  query = async ({ current = 0, pageSize = 9999 } = {}) => {
+  query = async ({
+    current = 0,
+    pageSize = 9999,
+    visibleAgentIds,
+  }: { current?: number; pageSize?: number; visibleAgentIds?: string[] } = {}) => {
     const offset = current * pageSize;
 
     // Use leftJoin instead of nested with for better performance
@@ -56,7 +71,13 @@ export class SessionModel {
       .leftJoin(agentsToSessions, eq(sessions.id, agentsToSessions.sessionId))
       .leftJoin(agents, eq(agentsToSessions.agentId, agents.id))
       .leftJoin(sessionGroups, eq(sessions.groupId, sessionGroups.id))
-      .where(and(this.ownership(), not(eq(sessions.slug, INBOX_SESSION_ID))))
+      .where(
+        and(
+          this.ownership(),
+          not(eq(sessions.slug, INBOX_SESSION_ID)),
+          this.visibleSessionPredicate(visibleAgentIds),
+        ),
+      )
       .orderBy(desc(sessions.updatedAt))
       .limit(pageSize)
       .offset(offset);
@@ -82,9 +103,9 @@ export class SessionModel {
     return Array.from(groupedResults.values());
   };
 
-  queryWithGroups = async (): Promise<ChatSessionList> => {
+  queryWithGroups = async (params?: { visibleAgentIds?: string[] }): Promise<ChatSessionList> => {
     // Query all sessions
-    const result = await this.query();
+    const result = await this.query({ visibleAgentIds: params?.visibleAgentIds });
 
     const groups = await this.db.query.sessionGroups.findMany({
       orderBy: [asc(sessionGroups.sort), desc(sessionGroups.createdAt)],
@@ -99,12 +120,15 @@ export class SessionModel {
     };
   };
 
-  queryByKeyword = async (keyword: string) => {
+  queryByKeyword = async (keyword: string, params?: { visibleAgentIds?: string[] }) => {
     if (!keyword) return [];
 
     const keywordLowerCase = keyword.toLowerCase();
 
-    const data = await this.findSessionsByKeywords({ keyword: keywordLowerCase });
+    const data = await this.findSessionsByKeywords({
+      keyword: keywordLowerCase,
+      visibleAgentIds: params?.visibleAgentIds,
+    });
 
     return data.map((item) => this.mapSessionItem(item as any));
   };
@@ -135,26 +159,41 @@ export class SessionModel {
     endDate?: string;
     range?: [string, string];
     startDate?: string;
+    visibleAgentIds?: string[];
   }): Promise<number> => {
+    const visibility = this.visibleSessionPredicate(params?.visibleAgentIds);
+    const dateWhere = genWhere([
+      this.ownership(),
+      params?.range
+        ? genRangeWhere(params.range, sessions.createdAt, (date) => date.toDate())
+        : undefined,
+      params?.endDate
+        ? genEndDateWhere(params.endDate, sessions.createdAt, (date) => date.toDate())
+        : undefined,
+      params?.startDate
+        ? genStartDateWhere(params.startDate, sessions.createdAt, (date) => date.toDate())
+        : undefined,
+    ]);
+
+    if (!visibility) {
+      const result = await this.db
+        .select({
+          count: count(sessions.id),
+        })
+        .from(sessions)
+        .where(dateWhere);
+
+      return result[0].count;
+    }
+
     const result = await this.db
       .select({
-        count: count(sessions.id),
+        count: countDistinct(sessions.id),
       })
       .from(sessions)
-      .where(
-        genWhere([
-          this.ownership(),
-          params?.range
-            ? genRangeWhere(params.range, sessions.createdAt, (date) => date.toDate())
-            : undefined,
-          params?.endDate
-            ? genEndDateWhere(params.endDate, sessions.createdAt, (date) => date.toDate())
-            : undefined,
-          params?.startDate
-            ? genStartDateWhere(params.startDate, sessions.createdAt, (date) => date.toDate())
-            : undefined,
-        ]),
-      );
+      .leftJoin(agentsToSessions, eq(sessions.id, agentsToSessions.sessionId))
+      .leftJoin(agents, eq(agentsToSessions.agentId, agents.id))
+      .where(and(dateWhere, visibility));
 
     return result[0].count;
   };
@@ -600,11 +639,14 @@ export class SessionModel {
     current?: number;
     keyword: string;
     pageSize?: number;
+    visibleAgentIds?: string[];
   }) => {
-    const { keyword, pageSize = 9999, current = 0 } = params;
+    const { keyword, pageSize = 9999, current = 0, visibleAgentIds } = params;
     const offset = current * pageSize;
 
     try {
+      if (visibleAgentIds && visibleAgentIds.length === 0) return [];
+
       const bm25Query = sanitizeBm25Query(keyword);
 
       const results = await this.db.query.agents.findMany({
@@ -615,6 +657,7 @@ export class SessionModel {
         where: and(
           this.agentsOwnership(),
           sql`(${agents.title} @@@ ${bm25Query} OR ${agents.description} @@@ ${bm25Query})`,
+          visibleAgentIds ? inArray(agents.id, visibleAgentIds) : undefined,
         ),
         with: { agentsToSessions: { columns: {}, with: { session: true } } },
       });

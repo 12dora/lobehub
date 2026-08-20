@@ -147,6 +147,43 @@ describe('TopicModel', () => {
       expect(items.map((t) => t.id)).toEqual(['t-fav', 't-new', 't-old']);
     });
 
+    it('applies visibleAgentIds before LIMIT and matches total to the filtered population', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'agt-vis', userId },
+        { id: 'agt-hid', userId },
+      ]);
+      await serverDB.insert(topics).values([
+        {
+          agentId: 'agt-hid',
+          id: 't-hid-new',
+          title: 'hidden new',
+          updatedAt: minutesAgo(1),
+          userId,
+        },
+        {
+          agentId: 'agt-vis',
+          id: 't-vis-new',
+          title: 'visible new',
+          updatedAt: minutesAgo(5),
+          userId,
+        },
+        {
+          agentId: 'agt-vis',
+          id: 't-vis-old',
+          title: 'visible old',
+          updatedAt: minutesAgo(20),
+          userId,
+        },
+      ]);
+
+      const page = await topicModel.query({
+        pageSize: 1,
+        visibleAgentIds: ['agt-vis'],
+      });
+      expect(page.total).toBe(2);
+      expect(page.items.map((t) => t.id)).toEqual(['t-vis-new']);
+    });
+
     it('adopts orphan rows for the inbox agent only', async () => {
       await serverDB.insert(agents).values({ id: 'agent-inbox', slug: 'inbox', userId });
       await serverDB.insert(topics).values([
@@ -324,6 +361,23 @@ describe('TopicModel', () => {
       const result = await topicModel.queryTopics();
       expect(result.map((t) => t.id).sort()).toEqual(['t1', 't2']);
     });
+
+    it('filters by visibleAgentIds before ordering/limit', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'qt-vis', userId },
+        { id: 'qt-hid', userId },
+      ]);
+      await serverDB.insert(topics).values([
+        { agentId: 'qt-hid', id: 'qt-h', status: 'running', title: 'h', userId },
+        { agentId: 'qt-vis', id: 'qt-v', status: 'running', title: 'v', userId },
+      ]);
+
+      const result = await topicModel.queryTopics({
+        statuses: ['running'],
+        visibleAgentIds: ['qt-vis'],
+      });
+      expect(result.map((t) => t.id)).toEqual(['qt-v']);
+    });
   });
 
   describe('count', () => {
@@ -337,6 +391,7 @@ describe('TopicModel', () => {
 
       expect(await topicModel.count()).toBe(2);
       expect(await topicModel.count({ agentId: 'agent-c' })).toBe(1);
+      expect(await topicModel.count({ visibleAgentIds: ['agent-c'] })).toBe(1);
     });
   });
 
@@ -601,6 +656,40 @@ describe('TopicModel', () => {
       expect(result.map((t) => t.id)).toEqual(['r-group', 'r-agent']);
       expect(result.find((t) => t.id === 'r-group')?.type).toBe('group');
       expect(result.find((t) => t.id === 'r-agent')?.type).toBe('agent');
+    });
+
+    it('keeps group topics and only visible agents when visibleAgentIds is set', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'agent-keep', slug: 'inbox', userId },
+        { id: 'agent-drop', userId, virtual: false },
+      ]);
+      await serverDB.insert(chatGroups).values({ id: 'group-keep', userId });
+      await serverDB.insert(topics).values([
+        {
+          agentId: 'agent-drop',
+          id: 'r-drop',
+          title: 'drop',
+          updatedAt: minutesAgo(1),
+          userId,
+        },
+        {
+          agentId: 'agent-keep',
+          id: 'r-keep',
+          title: 'keep',
+          updatedAt: minutesAgo(5),
+          userId,
+        },
+        {
+          groupId: 'group-keep',
+          id: 'r-gkeep',
+          title: 'g',
+          updatedAt: minutesAgo(2),
+          userId,
+        },
+      ]);
+
+      const result = await topicModel.queryRecent(12, ['agent-keep']);
+      expect(result.map((t) => t.id)).toEqual(['r-gkeep', 'r-keep']);
     });
   });
 

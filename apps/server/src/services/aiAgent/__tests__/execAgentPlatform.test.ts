@@ -13,6 +13,7 @@
  * @vitest-environment node
  */
 import type { AgentRuntimeContext } from '@lobechat/agent-runtime';
+import { BUILTIN_AGENT_SLUGS } from '@lobechat/builtin-agents';
 import { fingerprintResumeToolCall } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import type { MockInstance } from 'vitest';
@@ -78,7 +79,8 @@ vi.mock('@/database/repositories/platformAgentCatalog', async (importOriginal) =
 // The resume path resolves the trusted anchor message via MessageModel.findById; stub the model so
 // the RR2-1 pin-resolution can be driven deterministically (findById is an instance property, not a
 // prototype method, so it can't be vi.spyOn'd). Only findById is exercised before the assertions.
-const { messageFindById, messageFindPlugin } = vi.hoisted(() => ({
+const { messageCreate, messageFindById, messageFindPlugin } = vi.hoisted(() => ({
+  messageCreate: vi.fn(async () => ({ id: 'asst-new' })),
   messageFindById: vi.fn(),
   messageFindPlugin: vi.fn(),
 }));
@@ -100,7 +102,7 @@ vi.mock('@/database/models/message', () => ({
   MessageModel: class {
     findById = messageFindById;
     findMessagePlugin = messageFindPlugin;
-    create = vi.fn(async () => ({ id: 'asst-new' }));
+    create = messageCreate;
     getLatestNonToolMessageId = vi.fn(async () => undefined);
     getLatestSpineMessageId = vi.fn(async () => undefined);
     query = vi.fn(async () => []);
@@ -528,23 +530,37 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       );
     });
 
-    it('still allows the builtin inbox under takeover', async () => {
-      await publishAgentsTakeover();
-      getAgentConfigSpy.mockResolvedValue({
-        chatConfig: {},
-        id: 'inbox-uuid',
-        model: 'gpt-4',
-        plugins: [],
-        provider: 'openai',
-        slug: 'inbox',
-        systemRole: '',
-      });
+    it.each(Object.values(BUILTIN_AGENT_SLUGS))(
+      'allows builtin slug %s under takeover and reaches builtin runtime merge',
+      async (slug) => {
+        await publishAgentsTakeover();
+        getAgentConfigSpy.mockResolvedValue({
+          chatConfig: {},
+          id: `agt_${slug}`,
+          model: 'gpt-4',
+          plugins: [],
+          provider: 'openai',
+          slug,
+          systemRole: '',
+        });
+        const { UserModel } = await import('@/database/models/user');
+        const locale = vi
+          .spyOn(UserModel, 'getInfoForAIGeneration')
+          .mockResolvedValue({ responseLanguage: 'en-US' } as never);
 
-      const error = await run({ slug: 'inbox' });
-      expect((error as { cause?: { data?: { code?: string } } }).cause?.data?.code).not.toBe(
-        MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
-      );
-    });
+        const result = await service()
+          .execAgent({ prompt: 'hi', slug } as never)
+          .then(
+            (value) => value,
+            (error) => error,
+          );
+        expect(
+          (result as { cause?: { data?: { code?: string } } })?.cause?.data?.code,
+        ).not.toBe(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM);
+        expect(getAgentConfigSpy).toHaveBeenCalled();
+        expect(locale).toHaveBeenCalled();
+      },
+    );
 
     it('allows a group supervisor (membership role) under takeover in personal and workspace scopes', async () => {
       await publishAgentsTakeover();
@@ -571,9 +587,10 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
         systemRole: '',
       });
       const personal = await run({ agentId: 'agt_sup' });
-      expect((personal as { cause?: { data?: { code?: string } } }).cause?.data?.code).not.toBe(
+      expect((personal as { cause?: { data?: { code?: string } } })?.cause?.data?.code).not.toBe(
         MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
       );
+      expect(messageCreate).toHaveBeenCalled();
 
       const [workspace] = await db
         .insert(workspaces)
@@ -617,6 +634,7 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       expect(
         (workspaceError as { cause?: { data?: { code?: string } } }).cause?.data?.code,
       ).not.toBe(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM);
+      expect(messageCreate).toHaveBeenCalled();
     });
 
     it('allows a validated heterogeneous agent under takeover in personal and workspace scopes', async () => {
@@ -638,9 +656,10 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
         systemRole: '',
       });
       const personal = await run({ agentId: 'agt_hetero' });
-      expect((personal as { cause?: { data?: { code?: string } } }).cause?.data?.code).not.toBe(
+      expect((personal as { cause?: { data?: { code?: string } } })?.cause?.data?.code).not.toBe(
         MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
       );
+      expect(messageCreate).toHaveBeenCalled();
 
       const [workspace] = await db
         .insert(workspaces)
@@ -670,8 +689,9 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
           (e) => e,
         );
       expect(
-        (workspaceError as { cause?: { data?: { code?: string } } }).cause?.data?.code,
+        (workspaceError as { cause?: { data?: { code?: string } } })?.cause?.data?.code,
       ).not.toBe(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM);
+      expect(messageCreate).toHaveBeenCalled();
     });
 
     it('still allows an encoded platform list id under takeover (entitlement path, not the user-agent deny)', async () => {

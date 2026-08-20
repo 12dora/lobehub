@@ -291,6 +291,34 @@ describe('agentGroupRouter', () => {
       expect(chatGroupServiceMock.getGroups).toHaveBeenCalled();
       expect(result).toEqual(mockGroups);
     });
+
+    it('does not query takeover visibility extras when the predicate is off', async () => {
+      const { AgentService } = await import('@/server/services/agent');
+      const getVisible = vi.spyOn(AgentService.prototype, 'getTakeoverVisibleLocalAgentIds');
+      chatGroupServiceMock.getGroups.mockResolvedValue([
+        { agents: [{ id: 'agent-1', isSupervisor: false }], id: 'group-1', title: 'Group 1' },
+      ]);
+      chatGroupServiceMock.getGroupDetail.mockResolvedValue({
+        agents: [{ id: 'agent-1', isSupervisor: false }],
+        id: 'group-1',
+      });
+      chatGroupModelMock.getGroupAgents.mockResolvedValue([
+        { agentId: 'agent-1', role: 'participant' },
+      ]);
+
+      const caller = agentGroupRouter.createCaller(mockCtx);
+      const groups = await caller.getGroups();
+      const members = await caller.getGroupAgents({ groupId: 'group-1' });
+      const detail = await caller.getGroupDetail({ id: 'group-1' });
+
+      expect(getVisible.mock.calls.length).toBeGreaterThan(0);
+      for (const result of getVisible.mock.results) {
+        expect(await result.value).toBeNull();
+      }
+      expect(groups[0]?.agents).toEqual([{ id: 'agent-1', isSupervisor: false }]);
+      expect(members).toEqual([{ agentId: 'agent-1', role: 'participant' }]);
+      expect(detail?.agents).toEqual([{ id: 'agent-1', isSupervisor: false }]);
+    });
   });
 
   describe('addAgentsToGroup', () => {

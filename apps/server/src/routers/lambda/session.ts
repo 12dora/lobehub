@@ -15,30 +15,17 @@ import { LobeMetaDataSchema } from '@/types/meta';
 import { type BatchTaskResult } from '@/types/service';
 import { type ChatSessionList, type LobeGroupSession } from '@/types/session';
 
-const sessionAgentId = (session: {
-  agentsToSessions?: Array<{ agent?: { id?: string } }>;
-  config?: { id?: string };
-  type?: string;
-}): string | undefined => {
-  if (session.type === 'group') return undefined;
-  return session.config?.id ?? session.agentsToSessions?.[0]?.agent?.id;
-};
-
-const filterSessionsForTakeover = async <T extends { type?: string }>(
-  ctx: { serverDB: LobeChatDatabase; userId: string; workspaceId?: string | null },
-  sessions: T[],
-): Promise<T[]> => {
+const takeoverVisibleAgentIds = async (ctx: {
+  serverDB: LobeChatDatabase;
+  userId: string;
+  workspaceId?: string | null;
+}): Promise<string[] | undefined> => {
   const visible = await new AgentService(
     ctx.serverDB,
     ctx.userId,
     ctx.workspaceId ?? undefined,
   ).getTakeoverVisibleLocalAgentIds();
-  if (!visible) return sessions;
-  return sessions.filter((session) => {
-    if (session.type === 'group') return true;
-    const agentId = sessionAgentId(session);
-    return typeof agentId === 'string' && visible.has(agentId);
-  });
+  return visible ? [...visible] : undefined;
 };
 
 const sessionProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
@@ -108,7 +95,8 @@ export const sessionRouter = router({
         .optional(),
     )
     .query(async ({ ctx, input }) => {
-      return ctx.sessionModel.count(input);
+      const visibleAgentIds = await takeoverVisibleAgentIds(ctx);
+      return ctx.sessionModel.count({ ...input, visibleAgentIds });
     }),
 
   /** @deprecated Use agent.createAgent instead */
@@ -146,8 +134,9 @@ export const sessionRouter = router({
       const sessionModel = new SessionModel(serverDB, userId, wsId);
       const chatGroupModel = new ChatGroupModel(serverDB, userId, wsId);
 
+      const visibleAgentIds = await takeoverVisibleAgentIds(ctx);
       const [{ sessions, sessionGroups }, chatGroups] = await Promise.all([
-        sessionModel.queryWithGroups(),
+        sessionModel.queryWithGroups({ visibleAgentIds }),
         chatGroupModel.queryWithMemberDetails(),
       ]);
 
@@ -167,7 +156,7 @@ export const sessionRouter = router({
 
       return {
         sessionGroups,
-        sessions: await filterSessionsForTakeover(ctx, allSessions),
+        sessions: allSessions,
       };
     }),
 
@@ -180,8 +169,9 @@ export const sessionRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const { current, pageSize } = input;
+      const visibleAgentIds = await takeoverVisibleAgentIds(ctx);
 
-      return filterSessionsForTakeover(ctx, await ctx.sessionModel.query({ current, pageSize }));
+      return ctx.sessionModel.query({ current, pageSize, visibleAgentIds });
     }),
 
   removeSession: sessionProcedure
@@ -194,7 +184,8 @@ export const sessionRouter = router({
   searchSessions: sessionProcedure
     .input(z.object({ keywords: z.string() }))
     .query(async ({ input, ctx }) => {
-      return filterSessionsForTakeover(ctx, await ctx.sessionModel.queryByKeyword(input.keywords));
+      const visibleAgentIds = await takeoverVisibleAgentIds(ctx);
+      return ctx.sessionModel.queryByKeyword(input.keywords, { visibleAgentIds });
     }),
 
   updateSession: sessionProcedure

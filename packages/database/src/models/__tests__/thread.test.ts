@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { agentOperations, messages, sessions, threads, topics, users } from '../../schemas';
+import { agentOperations, agents, messages, sessions, threads, topics, users } from '../../schemas';
 import type { LobeChatDatabase } from '../../type';
 import { ThreadModel } from '../thread';
 
@@ -144,6 +144,52 @@ describe('ThreadModel', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('thread-1');
+    });
+
+    it('joins the parent topic and requires the topic agent (and non-null thread agent) to be visible', async () => {
+      await serverDB.transaction(async (tx) => {
+        await tx.insert(agents).values([
+          { id: 'agt-vis', userId },
+          { id: 'agt-hid', userId },
+        ]);
+        await tx.insert(topics).values([
+          { agentId: 'agt-vis', id: 'topic-vis', sessionId, userId },
+          { agentId: 'agt-hid', id: 'topic-hid', sessionId, userId },
+        ]);
+        await tx.insert(threads).values([
+          {
+            agentId: null,
+            id: 'thd-parent-visible',
+            status: ThreadStatus.Active,
+            topicId: 'topic-vis',
+            type: ThreadType.Standalone,
+            userId,
+          },
+          {
+            agentId: 'agt-hid',
+            id: 'thd-thread-hidden',
+            status: ThreadStatus.Active,
+            topicId: 'topic-vis',
+            type: ThreadType.Standalone,
+            userId,
+          },
+          {
+            id: 'thd-parent-hidden',
+            status: ThreadStatus.Active,
+            topicId: 'topic-hid',
+            type: ThreadType.Standalone,
+            userId,
+          },
+        ]);
+      });
+
+      const unfiltered = await threadModel.query();
+      expect(unfiltered.map((row) => row.id).sort()).toEqual(
+        ['thd-parent-hidden', 'thd-parent-visible', 'thd-thread-hidden'].sort(),
+      );
+
+      const filtered = await threadModel.query({ visibleAgentIds: ['agt-vis'] });
+      expect(filtered.map((row) => row.id)).toEqual(['thd-parent-visible']);
     });
   });
 

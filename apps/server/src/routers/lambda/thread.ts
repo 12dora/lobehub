@@ -51,6 +51,12 @@ const threadProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) =
   });
 });
 
+const threadAgentService = (ctx: {
+  serverDB: LobeChatDatabase;
+  userId: string;
+  workspaceId?: string | null;
+}) => new AgentService(ctx.serverDB, ctx.userId, ctx.workspaceId ?? undefined);
+
 const assertThreadTopicVisible = async (
   ctx: {
     serverDB: LobeChatDatabase;
@@ -60,11 +66,13 @@ const assertThreadTopicVisible = async (
   },
   topicId: string,
 ) => {
+  const visible = await threadAgentService(ctx).getTakeoverVisibleLocalAgentIds();
+  if (!visible) return;
+
   const topic = await ctx.topicModel.findById(topicId);
+  if (topic?.groupId) return;
   if (topic?.agentId) {
-    await new AgentService(ctx.serverDB, ctx.userId, ctx.workspaceId ?? undefined).assertAgentReadable(
-      topic.agentId,
-    );
+    await threadAgentService(ctx).assertAgentReadable(topic.agentId);
   }
 };
 
@@ -114,14 +122,9 @@ export const threadRouter = router({
       return { messageId: message?.id, threadId: thread.id };
     }),
   getThread: threadProcedure.query(async ({ ctx }): Promise<ThreadItem[]> => {
-    const threads = (await ctx.threadModel.query()) as ThreadItem[];
-    const visible = await new AgentService(
-      ctx.serverDB,
-      ctx.userId,
-      ctx.workspaceId ?? undefined,
-    ).getTakeoverVisibleLocalAgentIds();
-    if (!visible) return threads;
-    return threads.filter((thread) => !thread.agentId || visible.has(thread.agentId));
+    const visible = await threadAgentService(ctx).getTakeoverVisibleLocalAgentIds();
+    if (!visible) return ctx.threadModel.query() as Promise<ThreadItem[]>;
+    return ctx.threadModel.query({ visibleAgentIds: [...visible] }) as Promise<ThreadItem[]>;
   }),
 
   getThreads: threadProcedure
