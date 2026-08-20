@@ -74,6 +74,9 @@ const SECTION_ALIASES: Record<string, string> = {
   discover: 'community',
   evalBench: 'eval',
   resourceLibrary: 'resource',
+  // `/task/:id` is the detail view of `/tasks`, and NavPanel keeps the home
+  // sidebar on both — so they are one place, not two.
+  task: 'tasks',
   video: 'image',
 };
 

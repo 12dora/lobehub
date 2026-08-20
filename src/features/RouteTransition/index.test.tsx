@@ -6,7 +6,6 @@ import RouteTransition from './index';
 import { FULL_CLIP_PATH, MAIN_REVEAL_INSET_PERCENT, SECTION_TRANSITION_S } from './timing';
 
 const state = vi.hoisted(() => ({
-  onAnimationComplete: null as (() => void) | null,
   pathname: '/',
   reduceMotion: false as boolean | null,
   slug: null as string | null,
@@ -27,22 +26,12 @@ interface MotionDivProps {
   className?: string;
   exit?: unknown;
   initial?: unknown;
-  onAnimationComplete?: () => void;
   transition?: unknown;
 }
 
 vi.mock('motion/react', () => ({
   m: {
-    div: ({
-      animate,
-      children,
-      exit,
-      initial,
-      onAnimationComplete,
-      transition,
-      ...rest
-    }: MotionDivProps) => {
-      state.onAnimationComplete = onAnimationComplete ?? null;
+    div: ({ animate, children, exit, initial, transition, ...rest }: MotionDivProps) => {
       return (
         <div
           {...(rest as Record<string, unknown>)}
@@ -80,7 +69,6 @@ describe('RouteTransition', () => {
     state.pathname = '/';
     state.slug = null;
     state.reduceMotion = false;
-    state.onAnimationComplete = null;
   });
 
   afterEach(() => {
@@ -158,6 +146,7 @@ describe('RouteTransition', () => {
     expect(readProp(container, 'data-animate')).toEqual({
       clipPath: FULL_CLIP_PATH,
       opacity: 1,
+      transitionEnd: { clipPath: 'none' },
     });
   });
 
@@ -233,7 +222,7 @@ describe('RouteTransition', () => {
     expect(readProp(container, 'data-animate')).toEqual({ opacity: 1 });
   });
 
-  it('drops the finished clip so it cannot clip fixed descendants forever', () => {
+  it('hands the clip back to the UA when the reveal lands', () => {
     const { container, rerender } = renderTransition();
 
     state.pathname = '/image';
@@ -243,13 +232,11 @@ describe('RouteTransition', () => {
       </RouteTransition>,
     );
 
-    const node = layer(container)!;
-    node.style.clipPath = FULL_CLIP_PATH;
-    expect(state.onAnimationComplete).toBeTypeOf('function');
-
-    state.onAnimationComplete?.();
-
-    expect(node.style.clipPath).toBe('');
+    // `transitionEnd` clears it inside motion's own state — see
+    // `index.motion.test.tsx` for the same contract against the real runtime.
+    expect(readProp(container, 'data-animate')).toMatchObject({
+      transitionEnd: { clipPath: 'none' },
+    });
   });
 
   it('runs on the shared section clock', () => {

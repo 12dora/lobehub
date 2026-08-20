@@ -80,6 +80,38 @@ describe('getSectionDirection', () => {
     // Deep sub-layouts register their own nav keys.
     expect(getSectionDirection('eval', 'evalBench')).toBe(0);
     expect(getSectionDirection('resource', 'resourceLibrary')).toBe(0);
+
+    // `/task/:id` is the detail view of `/tasks`; NavPanel keeps the home sidebar
+    // on both, so they must resolve to the same place.
+    expect(getSectionDirection('tasks', 'task')).toBe(0);
+    expect(getSectionDirection('task', 'tasks')).toBe(0);
+  });
+
+  it('treats a task detail route as a peer of home, like the task list', () => {
+    expect(getSectionDirection('home', 'task')).toBe(1);
+    expect(getSectionDirection('task', 'home')).toBe(-1);
+    expect(getSectionDirection('task', 'agent')).toBe(1);
+    expect(getSectionDirection('settings', 'task')).toBe(-1);
+  });
+
+  it('reads the same direction off a workspace-prefixed path as off a bare one', () => {
+    const bare = getSectionDirection(
+      getMainRouteSegment('/', null),
+      getMainRouteSegment('/task/task-1', null),
+    );
+    const prefixed = getSectionDirection(
+      getMainRouteSegment('/lobe-team', 'lobe-team'),
+      getMainRouteSegment('/lobe-team/task/task-1', 'lobe-team'),
+    );
+
+    expect(bare).toBe(1);
+    expect(prefixed).toBe(bare);
+    expect(
+      getSectionDirection(
+        getMainRouteSegment('/lobe-team/tasks', 'lobe-team'),
+        getMainRouteSegment('/lobe-team/task/task-1', 'lobe-team'),
+      ),
+    ).toBe(0);
   });
 
   it('gives no directional cue for keys outside the table', () => {

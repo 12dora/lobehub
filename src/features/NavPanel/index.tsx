@@ -59,8 +59,12 @@ const RESOURCE_NAV_KEY = 'resource';
 const MEMORY_NAV_KEY = 'memory';
 const EVAL_NAV_KEY = 'eval';
 const PAGE_NAV_KEY = 'page';
+// `/image` and `/video` deliberately share one nav key: the video route's own
+// `NavPanelPortal` registers `image` too (see
+// `src/routes/(main)/(create)/video/_layout/Sidebar/index.tsx`). Keying the video
+// fallback as `video` would make the portal's layout effect immediately re-key the
+// sidebar layer video → image, cutting the entering section transition in half.
 const IMAGE_NAV_KEY = 'image';
-const VIDEO_NAV_KEY = 'video';
 
 const DEDICATED_ROUTE_NAV_SEGMENTS = new Set([
   'community',
@@ -178,7 +182,7 @@ const NavPanel = memo(() => {
   const videoFallback =
     mainRouteSegment === 'video'
       ? {
-          key: VIDEO_NAV_KEY,
+          key: IMAGE_NAV_KEY,
           node: <VideoSidebarContent />,
         }
       : null;

@@ -177,6 +177,29 @@ describe('NavPanel', () => {
     expect(screen.getByTestId('nav-panel')).not.toHaveAttribute('data-nav-key', 'home');
   });
 
+  it.each([
+    ['/image', 'Image sidebar'],
+    ['/video', 'Video sidebar'],
+    ['/lobe-team/video', 'Video sidebar'],
+  ])(
+    'keys %s with the canonical image nav key its portal also registers',
+    async (route, sidebar) => {
+      pathname = route;
+      const { default: NavPanel } = await import('./index');
+
+      render(<NavPanel />);
+
+      // `src/routes/(main)/(create)/video/_layout/Sidebar/index.tsx` portals with
+      // navKey="image". If the fallback keyed itself `video`, the portal's layout
+      // effect would immediately re-key the sidebar layer and cut the entering
+      // section transition in half.
+      await waitFor(() => {
+        expect(screen.getByTestId('nav-panel')).toHaveAttribute('data-nav-key', 'image');
+      });
+      expect(screen.getByText(sidebar)).toBeInTheDocument();
+    },
+  );
+
   it.each(['/group/group-1', '/group/group-1/profile', '/lobe-team/group/group-1/profile'])(
     'uses the group sidebar fallback instead of a stale home snapshot on %s',
     async (route) => {

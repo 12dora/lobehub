@@ -2,7 +2,7 @@
 
 import { createStaticStyles } from 'antd-style';
 import { m, useReducedMotion } from 'motion/react';
-import { memo, type ReactNode, useCallback, useEffect, useRef } from 'react';
+import { memo, type ReactNode, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router';
 
 import { useActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
@@ -82,14 +82,6 @@ const RouteTransition = memo<RouteTransitionProps>(({ children }) => {
     hasRenderedSectionRef.current = true;
   }, []);
 
-  const layerRef = useRef<HTMLDivElement>(null);
-  // `clip-path` clips *every* descendant, `position: fixed` ones included — so the
-  // finished `inset(0 0 0 0)` must not be left behind on the wrapper, or the save
-  // bar / upload dock / PDF chrome would stay clipped to the outlet box forever.
-  const dropFinishedClip = useCallback(() => {
-    if (layerRef.current) layerRef.current.style.clipPath = '';
-  }, []);
-
   if (reduceMotion)
     return (
       <div className={styles.layer} data-route-key={transitionKey} key={transitionKey}>
@@ -107,14 +99,31 @@ const RouteTransition = memo<RouteTransitionProps>(({ children }) => {
 
   return (
     <m.div
-      animate={revealFrom ? { clipPath: FULL_CLIP_PATH, opacity: 1 } : { opacity: 1 }}
       className={styles.layer}
       data-route-key={transitionKey}
       initial={shouldAnimate ? { ...(revealFrom && { clipPath: revealFrom }), opacity: 0 } : false}
       key={transitionKey}
-      ref={layerRef}
       transition={{ duration: SECTION_TRANSITION_S, ease: SECTION_TRANSITION_EASE }}
-      onAnimationComplete={dropFinishedClip}
+      animate={
+        revealFrom
+          ? {
+              clipPath: FULL_CLIP_PATH,
+              opacity: 1,
+              // `clip-path` clips *every* descendant, `position: fixed` ones
+              // included (unlike `overflow: hidden`) — so the finished
+              // `inset(0 0 0 0)` must not survive the animation, or the settings
+              // save bar / upload dock / PDF chrome would stay clipped to the
+              // outlet box for as long as the route is mounted.
+              //
+              // `transitionEnd` is the supported way to say that: motion drops
+              // the clip from its own retained visual state when the animation
+              // lands. Clearing `style.clipPath` imperatively from
+              // `onAnimationComplete` would only patch the DOM while motion still
+              // believes it owns an `inset(...)` for this element.
+              transitionEnd: { clipPath: 'none' },
+            }
+          : { opacity: 1 }
+      }
     >
       {children}
     </m.div>

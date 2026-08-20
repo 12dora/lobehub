@@ -133,16 +133,28 @@ describe('NavPanelDraggable', () => {
     });
   });
 
-  it('folds nav keys and route keys onto one section, so aliases do not slide', () => {
-    const { container, rerender } = render(
-      <NavPanelDraggable activeContent={section('community')} />,
-    );
+  it('survives the video route handing its fallback over to its portal', () => {
+    const { container, rerender } = render(<NavPanelDraggable activeContent={section('home')} />);
 
-    // Community's portal registers `discover` after the route fallback rendered
-    // `community` — same place, so there is no direction to show.
-    rerender(<NavPanelDraggable activeContent={section('discover')} />);
+    // `/video` renders NavPanel's route fallback first…
+    rerender(<NavPanelDraggable activeContent={section('image')} />);
 
-    expect(readProp(container, 'data-initial')).toEqual({ opacity: 0, x: 0 });
+    const sliding = layer(container);
+    expect(readProp(container, 'data-initial')).toEqual({
+      opacity: 0,
+      x: NAV_SECTION_TRAVEL_PX,
+    });
+
+    // …and its `NavPanelPortal` registers `image` a layout effect later. Both
+    // sides must agree on the key, or the portal would re-key the layer mid-slide
+    // and replace the directional entrance with a direction-less fade.
+    rerender(<NavPanelDraggable activeContent={section('image')} />);
+
+    expect(layer(container)).toBe(sliding);
+    expect(readProp(container, 'data-initial')).toEqual({
+      opacity: 0,
+      x: NAV_SECTION_TRAVEL_PX,
+    });
   });
 
   it('runs on the shared section clock', () => {
