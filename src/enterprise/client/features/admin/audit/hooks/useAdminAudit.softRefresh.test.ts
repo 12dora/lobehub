@@ -7,10 +7,12 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ADMIN_AUDIT_CONVERSATIONS_MESSAGES_KEY,
   ADMIN_AUDIT_EXPORTS_LIST_KEY,
   ADMIN_AUDIT_HOLDS_LIST_KEY,
   ADMIN_AUDIT_POLICY_KEY,
   ADMIN_AUDIT_RETENTION_RUNS_KEY,
+  ADMIN_AUDIT_USERS_TIMELINE_KEY,
 } from '../swrKeys';
 import { useAdminAuditMutations } from './useAdminAudit';
 
@@ -156,5 +158,36 @@ describe('useAdminAuditMutations soft refresh', () => {
     const policyPred = mutateMock.mock.calls[0]![0] as (key: unknown) => boolean;
     expect(policyPred([ADMIN_AUDIT_POLICY_KEY])).toBe(true);
     expect(policyPred([ADMIN_AUDIT_EXPORTS_LIST_KEY])).toBe(false);
+    expect(mutateMock.mock.calls).toHaveLength(1);
+  });
+
+  it('purges every conversation-evidence key family after a redactionProfile policy update', async () => {
+    updatePolicyMock.mockResolvedValue({ redactionProfile: 'strict', revision: 3 });
+    mutateMock.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useAdminAuditMutations());
+    await act(async () => {
+      await result.current.updatePolicy({
+        expectedRevision: 2,
+        reason: 'tighten redaction',
+        redactionProfile: 'strict',
+      } as never);
+    });
+
+    expect(mutateMock.mock.calls).toHaveLength(2);
+    const preds = mutateMock.mock.calls.map((call) => call[0] as (key: unknown) => boolean);
+    expect(preds.some((pred) => pred([ADMIN_AUDIT_POLICY_KEY]))).toBe(true);
+    const evidencePred = preds.find((pred) => pred([ADMIN_AUDIT_CONVERSATIONS_MESSAGES_KEY]));
+    expect(evidencePred).toBeDefined();
+    expect(
+      evidencePred!([ADMIN_AUDIT_CONVERSATIONS_MESSAGES_KEY, 'u1', 't1', '1', 'c-older']),
+    ).toBe(true);
+    expect(evidencePred!([ADMIN_AUDIT_USERS_TIMELINE_KEY, 'u1', '', '', 'c-2'])).toBe(true);
+    expect(evidencePred!([ADMIN_AUDIT_POLICY_KEY])).toBe(false);
+    expect(
+      mutateMock.mock.calls.some(
+        (call) => (call[2] as { revalidate?: boolean } | undefined)?.revalidate === true,
+      ),
+    ).toBe(true);
   });
 });

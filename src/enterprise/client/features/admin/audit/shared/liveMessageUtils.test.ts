@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isNearBottom,
+  isRedactionProfileTightening,
   LIVE_SCROLL_BOTTOM_THRESHOLD_PX,
   mergeMessagePages,
+  pickMostRestrictiveRedactionProfile,
   relativeTimeMs,
   resolveLiveBodyAccess,
   sortMessagesChronological,
@@ -98,5 +100,18 @@ describe('liveMessageUtils', () => {
       { content: 'secret-2', createdAt: '2026-01-01T00:01:00.000Z', id: 'm2' },
     ]);
     expect(purged.every((m) => m.content == null)).toBe(true);
+  });
+
+  it('picks the most restrictive observed redaction profile and fail-closes unknown', () => {
+    expect(pickMostRestrictiveRedactionProfile(['off', 'strict'])).toBe('strict');
+    expect(pickMostRestrictiveRedactionProfile(['off', undefined, 'standard'])).toBe('standard');
+    expect(pickMostRestrictiveRedactionProfile([undefined, null, 'off'])).toBe('off');
+    expect(pickMostRestrictiveRedactionProfile(['off', 'loose'])).toBe('strict');
+    expect(pickMostRestrictiveRedactionProfile([undefined, null])).toBeUndefined();
+    expect(isRedactionProfileTightening('off', 'strict')).toBe(true);
+    expect(isRedactionProfileTightening('off', 'standard')).toBe(true);
+    expect(isRedactionProfileTightening('standard', 'strict')).toBe(true);
+    expect(isRedactionProfileTightening('strict', 'off')).toBe(false);
+    expect(isRedactionProfileTightening(undefined, 'strict')).toBe(true);
   });
 });

@@ -9,6 +9,8 @@ import { useNavigate } from 'react-router';
 
 import { useFetchAuditUserTimeline } from '../hooks/useAdminAudit';
 import { formatAdminDateTime } from '../shared/format';
+import { isRedactionProfileTightening } from '../shared/liveMessageUtils';
+import { purgeAuditConversationEvidenceCaches } from '../shared/purgeConversationEvidence';
 import { useCursorPagination } from '../shared/useCursorPagination';
 
 const TIMELINE_PAGE_SIZE = 30;
@@ -73,15 +75,15 @@ const UserTimelinePane = memo<UserTimelinePaneProps>(
     const prevRedactionProfileRef = useRef<
       NonNullable<(typeof timeline)['data']>['redactionProfile'] | undefined
     >(undefined);
-    const mutateTimeline = timeline.mutate;
     useEffect(() => {
       const profile = timeline.data?.redactionProfile;
       const prev = prevRedactionProfileRef.current;
       if (profile) prevRedactionProfileRef.current = profile;
-      if (!prev || !profile || prev === profile) return;
+      if (!prev || !profile) return;
+      if (!isRedactionProfileTightening(prev, profile)) return;
       reset();
-      void mutateTimeline(undefined, { revalidate: true });
-    }, [mutateTimeline, reset, timeline.data?.redactionProfile]);
+      void purgeAuditConversationEvidenceCaches();
+    }, [reset, timeline.data?.redactionProfile]);
 
     // Report before paint so a timeline-only FORBIDDEN still gates the parent page
     // (same as when both fetches lived in ConversationUserPage). Do not clear on

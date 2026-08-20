@@ -22,6 +22,7 @@ import {
 } from '@/enterprise/client/services/adminAudit';
 import { mutate, useClientDataSWR } from '@/libs/swr';
 
+import { purgeAuditConversationEvidenceCaches } from '../shared/purgeConversationEvidence';
 import {
   ADMIN_AUDIT_EXPORTS_LIST_KEY,
   ADMIN_AUDIT_HOLDS_LIST_KEY,
@@ -307,7 +308,13 @@ const softRefresh = async (tasks: Array<() => Promise<unknown>>) => {
 export const useAdminAuditMutations = () => {
   const updatePolicy = useCallback(async (input: AdminAuditPolicyUpdateInput) => {
     const result = await adminAuditService.updatePolicy(input);
-    await softRefresh([() => refreshAuditPolicy()]);
+    const evidencePolicyChanged =
+      input.redactionProfile !== undefined || input.contentAccessMode !== undefined;
+    await softRefresh(
+      evidencePolicyChanged
+        ? [() => refreshAuditPolicy(), () => purgeAuditConversationEvidenceCaches()]
+        : [() => refreshAuditPolicy()],
+    );
     return result;
   }, []);
 

@@ -360,7 +360,6 @@ describe('LivePage access / feed characterization', () => {
       };
     });
 
-    expect(evidence.messages.mutate).toHaveBeenCalledWith(undefined, { revalidate: false });
     expect(screen.queryByTestId('msg-old-1')).not.toBeInTheDocument();
   });
 
@@ -390,10 +389,6 @@ describe('LivePage access / feed characterization', () => {
       'sk-abcdefghijklmnopqrstuvwxyz012345',
     );
 
-    evidence.messages.mutate.mockClear();
-    evidence.topics.mutate.mockClear();
-    evidence.topicDetail.mutate.mockClear();
-
     await emit(() => {
       evidence.messages.data = {
         contentAccessMode: 'content_allowed',
@@ -403,9 +398,40 @@ describe('LivePage access / feed characterization', () => {
       };
     });
 
-    expect(evidence.messages.mutate).toHaveBeenCalledWith(undefined, { revalidate: true });
-    expect(evidence.topics.mutate).toHaveBeenCalledWith(undefined, { revalidate: true });
-    expect(evidence.topicDetail.mutate).toHaveBeenCalledWith(undefined, { revalidate: true });
+    expect(screen.queryByTestId('msg-old-1')).not.toBeInTheDocument();
+  });
+
+  it('purges cached raw bodies when messages stay off but topics/policy report strict', async () => {
+    evidence.policy = { contentAccessMode: 'content_allowed', redactionProfile: 'off' };
+    evidence.topics.data = { items: [], nextCursor: null, redactionProfile: 'off' };
+    evidence.messages.data = {
+      contentAccessMode: 'content_allowed',
+      items: [msg('head-1')],
+      nextCursor: 'c-older',
+      redactionProfile: 'off',
+    };
+    evidence.listConversationMessages.mockResolvedValue({
+      contentAccessMode: 'content_allowed',
+      items: [msg('old-1', 'sk-abcdefghijklmnopqrstuvwxyz012345')],
+      nextCursor: null,
+      redactionProfile: 'off',
+    });
+
+    renderLive('/admin/audit/live?userId=u1&topicId=t1');
+
+    fireEvent.click(screen.getByTestId('load-older'));
+    await waitFor(() => {
+      expect(screen.getByTestId('msg-old-1')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('msg-old-1').getAttribute('data-content')).toBe(
+      'sk-abcdefghijklmnopqrstuvwxyz012345',
+    );
+
+    await emit(() => {
+      evidence.policy = { contentAccessMode: 'content_allowed', redactionProfile: 'strict' };
+      evidence.topics.data = { items: [], nextCursor: null, redactionProfile: 'strict' };
+    });
+
     expect(screen.queryByTestId('msg-old-1')).not.toBeInTheDocument();
   });
 

@@ -6,8 +6,12 @@ import { useEffect, useMemo, useRef } from 'react';
 import {
   type AuditContentAccessMode,
   type AuditRedactionProfile,
+  isRedactionProfileTightening,
+  pickMostRestrictiveRedactionProfile,
+  rankRedactionProfile,
   resolveLiveBodyAccess,
 } from '../shared/liveMessageUtils';
+import { purgeAuditConversationEvidenceCaches } from '../shared/purgeConversationEvidence';
 
 export interface LiveFeedSWR<T = unknown> {
   data: T | undefined;
@@ -62,18 +66,6 @@ export const useLiveAuditAccess = ({
     if (polled) lastPolledModeRef.current = polled;
   }, [messagesLive.data?.contentAccessMode]);
 
-  useEffect(() => {
-    const polled =
-      messagesLive.data?.redactionProfile ??
-      topicDetail.data?.redactionProfile ??
-      topics.data?.redactionProfile;
-    if (polled) lastPolledProfileRef.current = polled;
-  }, [
-    messagesLive.data?.redactionProfile,
-    topicDetail.data?.redactionProfile,
-    topics.data?.redactionProfile,
-  ]);
-
   // Reset sticky mode when the operator switches topic/user so we re-resolve fresh.
   useEffect(() => {
     lastPolledModeRef.current = undefined;
@@ -87,12 +79,19 @@ export const useLiveAuditAccess = ({
     topicDetail.data?.contentAccessMode ??
     policy.data?.contentAccessMode;
 
-  const redactionProfile =
-    messagesLive.data?.redactionProfile ??
-    lastPolledProfileRef.current ??
-    topicDetail.data?.redactionProfile ??
-    topics.data?.redactionProfile ??
-    policy.data?.redactionProfile;
+  // Most restrictive observed profile across every envelope. A stale messages
+  // `'off'` must not outrank a topics/policy `'strict'` (fail closed).
+  const observedRedactionProfile = pickMostRestrictiveRedactionProfile([
+    messagesLive.data?.redactionProfile,
+    topicDetail.data?.redactionProfile,
+    topics.data?.redactionProfile,
+    policy.data?.redactionProfile,
+  ]);
+  const redactionProfile = observedRedactionProfile ?? lastPolledProfileRef.current;
+
+  useEffect(() => {
+    if (observedRedactionProfile) lastPolledProfileRef.current = observedRedactionProfile;
+  }, [observedRedactionProfile]);
 
   // Re-check authorization on every render/poll: permission + contentAccessMode.
   const liveAccess = resolveLiveBodyAccess({
@@ -108,37 +107,43 @@ export const useLiveAuditAccess = ({
     accessEpochRef.current += 1;
   }, [canConversationRead, contentAccessMode, includeBody, redactionProfile]);
 
-  const mutateMessages = messagesLive.mutate;
-  const mutateMessagesRef = useRef(mutateMessages);
-  mutateMessagesRef.current = mutateMessages;
-  const mutateTopics = topics.mutate;
-  const mutateTopicsRef = useRef(mutateTopics);
-  mutateTopicsRef.current = mutateTopics;
-  const mutateTopicDetail = topicDetail.mutate;
-  const mutateTopicDetailRef = useRef(mutateTopicDetail);
-  mutateTopicDetailRef.current = mutateTopicDetail;
-
-  // Drop cached body-bearing pages + SWR head when policy or conversation
-  // permission is lost so previously loaded content cannot outlive authorization.
+  // Drop every conversation-evidence SWR key (all cursors/topics, not just the
+  // active bound mutate) when policy or conversation permission is lost.
   useEffect(() => {
     if (liveAccess.mustPurgeCachedBodies) {
-      // Clear SWR head so revoked permission/policy cannot keep serving prior bodies.
-      void mutateMessagesRef.current(undefined, { revalidate: false });
+      void purgeAuditConversationEvidenceCaches();
     }
-    // messagesLive.mutate identity is stable enough for access-edge effects.
   }, [canConversationRead, contentAccessMode, includeBody, liveAccess.mustPurgeCachedBodies]);
 
-  // Drop + revalidate message/topic/detail caches when the live redaction profile
-  // changes so previously loaded raw credentials cannot outlive a tighten to strict/standard.
+  // Observed tightening, or a source still reporting a looser profile than the
+  // computed authority (stale messages `'off'` vs topics/policy `'strict'`).
   useEffect(() => {
     const prev = prevRedactionProfileRef.current;
     if (redactionProfile) prevRedactionProfileRef.current = redactionProfile;
-    if (!prev || !redactionProfile || prev === redactionProfile) return;
-    const revalidate = { revalidate: true } as const;
-    void mutateMessagesRef.current(undefined, revalidate);
-    void mutateTopicsRef.current(undefined, revalidate);
-    void mutateTopicDetailRef.current(undefined, revalidate);
-  }, [redactionProfile]);
+
+    const computedRank = rankRedactionProfile(redactionProfile);
+    const staleLooseSource = [
+      messagesLive.data?.redactionProfile,
+      topicDetail.data?.redactionProfile,
+      topics.data?.redactionProfile,
+      policy.data?.redactionProfile,
+    ].some((profile) => {
+      const rank = rankRedactionProfile(profile);
+      return rank !== undefined && computedRank !== undefined && computedRank > rank;
+    });
+    const tightened =
+      Boolean(prev) &&
+      Boolean(redactionProfile) &&
+      isRedactionProfileTightening(prev, redactionProfile);
+    if (!tightened && !staleLooseSource) return;
+    void purgeAuditConversationEvidenceCaches();
+  }, [
+    messagesLive.data?.redactionProfile,
+    policy.data?.redactionProfile,
+    redactionProfile,
+    topicDetail.data?.redactionProfile,
+    topics.data?.redactionProfile,
+  ]);
 
   // Only conversation-domain FORBIDDEN means policy disabled (not policy.get failures).
   const isForbidden = useMemo(() => {

@@ -5,6 +5,53 @@ export type AuditContentAccessMode = 'content_allowed' | 'metadata_only' | 'disa
 
 export type AuditRedactionProfile = 'strict' | 'standard' | 'off';
 
+/** Higher rank is more restrictive. Unknown values fail closed as strict. */
+const REDACTION_PROFILE_RANK: Record<AuditRedactionProfile, number> = {
+  off: 0,
+  standard: 1,
+  strict: 2,
+};
+
+/**
+ * Rank a live-view redaction profile. Missing values are unobserved (`undefined`);
+ * unknown strings fail closed as strict so a stale `'off'` cannot win a mix-in.
+ */
+export const rankRedactionProfile = (profile: string | null | undefined): number | undefined => {
+  if (profile == null || profile === '') return undefined;
+  if (profile === 'off') return REDACTION_PROFILE_RANK.off;
+  if (profile === 'standard') return REDACTION_PROFILE_RANK.standard;
+  return REDACTION_PROFILE_RANK.strict;
+};
+
+/**
+ * Most restrictive observed profile (`off` < `standard` < `strict`).
+ * Skips missing sources; unknown values count as `'strict'`.
+ */
+export const pickMostRestrictiveRedactionProfile = (
+  profiles: ReadonlyArray<string | null | undefined>,
+): AuditRedactionProfile | undefined => {
+  let bestRank = -1;
+  for (const profile of profiles) {
+    const rank = rankRedactionProfile(profile);
+    if (rank === undefined) continue;
+    if (rank > bestRank) bestRank = rank;
+  }
+  if (bestRank < 0) return undefined;
+  if (bestRank === REDACTION_PROFILE_RANK.off) return 'off';
+  if (bestRank === REDACTION_PROFILE_RANK.standard) return 'standard';
+  return 'strict';
+};
+
+/** True when `next` is strictly more aggressive than `prev` (secrets must be dropped). */
+export const isRedactionProfileTightening = (
+  prev: string | null | undefined,
+  next: string | null | undefined,
+): boolean => {
+  const prevRank = rankRedactionProfile(prev) ?? -1;
+  const nextRank = rankRedactionProfile(next);
+  return nextRank !== undefined && nextRank > prevRank;
+};
+
 export interface TimedMessage {
   createdAt: Date | string | number;
   id: string;
