@@ -22,6 +22,16 @@ import { useActionsBarConfig } from './useActionsBarConfig';
 import { useGroupContext } from './useGroupContext';
 
 interface ConversationAreaProps {
+  /**
+   * Skip the group route's `ChatHydration`.
+   *
+   * That hydrator reads `:gid` / `:topicId` off the **path**, so a host that
+   * addresses the conversation some other way (the home shell's
+   * `/?group=…&topic=…`) must opt out: with no path params it would reset
+   * `activeTopicId` to null and blank the conversation the host just selected.
+   * Defaults to `false` — the group route keeps hydrating from its own params.
+   */
+  disableRouteHydration?: boolean;
   mobile?: boolean;
 }
 
@@ -31,62 +41,64 @@ interface ConversationAreaProps {
  * Main conversation area component using the new ConversationStore architecture.
  * Uses ChatList from @/features/Conversation and MainChatInput for custom features.
  */
-const Conversation = memo<ConversationAreaProps>(({ mobile = false }) => {
-  const context = useGroupContext();
+const Conversation = memo<ConversationAreaProps>(
+  ({ disableRouteHydration = false, mobile = false }) => {
+    const context = useGroupContext();
 
-  // Get raw dbMessages from ChatStore for this context
-  // ConversationStore will parse them internally to generate displayMessages
-  const chatKey = useMemo(
-    () => messageMapKey(context),
-    [context.agentId, context.topicId, context.threadId],
-  );
-  const replaceMessages = useChatStore((s) => s.replaceMessages);
-  const messages = useChatStore((s) => s.dbMessagesMap[chatKey]);
+    // Get raw dbMessages from ChatStore for this context
+    // ConversationStore will parse them internally to generate displayMessages
+    const chatKey = useMemo(
+      () => messageMapKey(context),
+      [context.agentId, context.topicId, context.threadId],
+    );
+    const replaceMessages = useChatStore((s) => s.replaceMessages);
+    const messages = useChatStore((s) => s.dbMessagesMap[chatKey]);
 
-  // Get operation state from ChatStore for reactive updates
-  const operationState = useOperationState(context);
+    // Get operation state from ChatStore for reactive updates
+    const operationState = useOperationState(context);
 
-  const actionsBarConfig = useActionsBarConfig();
+    const actionsBarConfig = useActionsBarConfig();
 
-  return (
-    <ConversationProvider
-      actionsBar={actionsBarConfig}
-      context={context}
-      hasInitMessages={!!messages}
-      messages={messages}
-      operationState={operationState}
-      onMessagesChange={(messages, ctx) => {
-        replaceMessages(messages, { context: ctx });
-      }}
-    >
-      <Flexbox
-        flex={1}
-        width={'100%'}
-        style={{
-          overflowX: 'hidden',
-          overflowY: 'auto',
-          position: 'relative',
+    return (
+      <ConversationProvider
+        actionsBar={actionsBarConfig}
+        context={context}
+        hasInitMessages={!!messages}
+        messages={messages}
+        operationState={operationState}
+        onMessagesChange={(messages, ctx) => {
+          replaceMessages(messages, { context: ctx });
         }}
       >
-        <ChatList welcome={<WelcomeChatItem />} />
-      </Flexbox>
-      <MessageForwardFooter>
-        <MainChatInput />
-      </MessageForwardFooter>
-      <ChatHydration />
-      <ThreadHydration />
-      <ForwardMessageDispatcher />
-      {!mobile && (
-        <>
-          <ChatMiniMap />
-          <Suspense>
-            <MessageFromUrl />
-          </Suspense>
-        </>
-      )}
-    </ConversationProvider>
-  );
-});
+        <Flexbox
+          flex={1}
+          width={'100%'}
+          style={{
+            overflowX: 'hidden',
+            overflowY: 'auto',
+            position: 'relative',
+          }}
+        >
+          <ChatList welcome={<WelcomeChatItem />} />
+        </Flexbox>
+        <MessageForwardFooter>
+          <MainChatInput />
+        </MessageForwardFooter>
+        {!disableRouteHydration && <ChatHydration />}
+        <ThreadHydration />
+        <ForwardMessageDispatcher />
+        {!mobile && (
+          <>
+            <ChatMiniMap />
+            <Suspense>
+              <MessageFromUrl />
+            </Suspense>
+          </>
+        )}
+      </ConversationProvider>
+    );
+  },
+);
 
 Conversation.displayName = 'ConversationArea';
 

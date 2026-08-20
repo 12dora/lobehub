@@ -4,6 +4,7 @@ import { memo, useLayoutEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
 
 import { useClearActiveTopicUnread } from '@/features/Conversation/hooks';
+import { useQueryState } from '@/hooks/useQueryParam';
 import { useAgentStore } from '@/store/agent';
 import { useAgentGroupStore } from '@/store/agentGroup';
 import { useChatStore } from '@/store/chat';
@@ -27,6 +28,17 @@ const Hydration = memo<HomeConversationParams>(({ agentId, groupId, topicId }) =
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+
+  /**
+   * `?thread=` is part of the conversation's identity, exactly as on the agent
+   * route. Without it a stale `activeThreadId` survives from an earlier visit,
+   * `useAgentContext` builds a `scope: 'thread'` context, and every load/send in
+   * the home right column silently targets that dead thread.
+   *
+   * `useQueryState` writes through `setSearchParams`, so it only ever touches
+   * the query string — the home pathname is preserved.
+   */
+  const [thread, setThread] = useQueryState('thread', { history: 'replace', throttleMs: 500 });
 
   // Hydration writes `activeTopicId` directly (below) instead of going through
   // `switchTopic`, so clear any lingering persisted unread once the topic loads.
@@ -134,6 +146,16 @@ const Hydration = memo<HomeConversationParams>(({ agentId, groupId, topicId }) =
     };
   }, [groupId, homeRouter]);
 
+  useLayoutEffect(() => {
+    const target = thread ?? null;
+    if (useChatStore.getState().activeThreadId !== target)
+      useChatStore.setState(
+        { activeThreadId: target! },
+        false,
+        'HomeConversationHydration/syncThreadFromUrl',
+      );
+  }, [thread]);
+
   // Search params → store.
   useLayoutEffect(() => {
     const target = topicId ?? null;
@@ -165,8 +187,16 @@ const Hydration = memo<HomeConversationParams>(({ agentId, groupId, topicId }) =
       },
     );
 
-    return unsubscribe;
-  }, [navigate]);
+    const unsubscribeThread = useChatStore.subscribe(
+      (s) => s.activeThreadId,
+      (nextThreadId) => setThread(nextThreadId || null),
+    );
+
+    return () => {
+      unsubscribe();
+      unsubscribeThread();
+    };
+  }, [navigate, setThread]);
 
   // Declared *after* the subscription on purpose: React destroys layout effects
   // in creation order, so the unsubscribe above runs first and this final clear
@@ -175,7 +205,7 @@ const Hydration = memo<HomeConversationParams>(({ agentId, groupId, topicId }) =
   useLayoutEffect(
     () => () => {
       useChatStore.setState(
-        { activeTopicId: undefined },
+        { activeThreadId: undefined, activeTopicId: undefined },
         false,
         'HomeConversationHydration/clearTopicId',
       );

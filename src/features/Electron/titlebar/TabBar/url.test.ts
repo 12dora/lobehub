@@ -78,4 +78,64 @@ describe('parseAgentTabContext', () => {
   it('returns null for non-agent urls', () => {
     expect(parseAgentTabContext('/group/g1')).toBeNull();
   });
+
+  describe('home-context conversation urls', () => {
+    it('parses a personal home conversation', () => {
+      expect(parseAgentTabContext('/?agent=abc&topic=tpc_xyz')).toEqual({
+        agentId: 'abc',
+        topicId: 'tpc_xyz',
+      });
+    });
+
+    it('parses a personal home conversation without a topic', () => {
+      expect(parseAgentTabContext('/?agent=abc')).toEqual({ agentId: 'abc', topicId: null });
+    });
+
+    it('parses a workspace home conversation', () => {
+      expect(parseAgentTabContext('/acme?agent=abc&topic=tpc_xyz')).toEqual({
+        agentId: 'abc',
+        topicId: 'tpc_xyz',
+        workspaceSlug: 'acme',
+      });
+    });
+
+    it('parses a workspace home conversation with a trailing slash', () => {
+      expect(parseAgentTabContext('/acme/?agent=abc&topic=tpc_xyz')).toEqual({
+        agentId: 'abc',
+        topicId: 'tpc_xyz',
+        workspaceSlug: 'acme',
+      });
+    });
+
+    it('resolves to the same context as the canonical agent url', () => {
+      expect(parseAgentTabContext('/?agent=abc&topic=tpc_xyz')).toEqual(
+        parseAgentTabContext('/agent/abc/tpc_xyz'),
+      );
+      expect(parseAgentTabContext('/acme?agent=abc&topic=tpc_xyz')).toEqual(
+        parseAgentTabContext('/acme/agent/abc/tpc_xyz'),
+      );
+    });
+
+    it('ignores the hash fragment', () => {
+      expect(parseAgentTabContext('/?agent=abc&topic=tpc_xyz#msg_1')).toEqual({
+        agentId: 'abc',
+        topicId: 'tpc_xyz',
+      });
+    });
+
+    it('keeps the home landing page unparsed', () => {
+      expect(parseAgentTabContext('/')).toBeNull();
+      expect(parseAgentTabContext('/acme')).toBeNull();
+    });
+
+    it('leaves group home conversations null, same as canonical group urls', () => {
+      expect(parseAgentTabContext('/?group=g1&topic=tpc_xyz')).toBeNull();
+      expect(parseAgentTabContext('/acme?group=g1&topic=tpc_xyz')).toBeNull();
+    });
+
+    it('does not mistake another top-level route for a workspace home', () => {
+      expect(parseAgentTabContext('/image')).toBeNull();
+      expect(parseAgentTabContext('/settings/profile')).toBeNull();
+    });
+  });
 });

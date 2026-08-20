@@ -8,7 +8,7 @@ import { type ChatInputActionsProps } from '@lobehub/editor/react';
 import { Alert, Button, Flexbox } from '@lobehub/ui';
 import { memo, type ReactNode, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import urlJoin from 'url-join';
 
 import { useHeteroAgentCloudConfig } from '@/business/client/hooks/useHeteroAgentCloudConfig';
@@ -18,6 +18,7 @@ import HeteroModel from '@/features/ChatInput/ControlBar/HeteroModel';
 import { ChatInput } from '@/features/Conversation';
 import { contextSelectors, useConversationStore } from '@/features/Conversation/store';
 import WideScreenContainer from '@/features/WideScreenContainer';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { resolveExecutionTarget } from '@/helpers/executionTarget';
 import { useRemoteAgentDeviceGuard } from '@/hooks/useRemoteAgentDeviceGuard';
 import { useAgentStore } from '@/store/agent';
@@ -102,7 +103,7 @@ const HeterogeneousChatInput = memo(() => {
     status: cloudCredStatus,
   } = useHeteroAgentCloudConfig(agentId);
   const params = useParams<{ aid: string }>();
-  const navigate = useNavigate();
+  const navigate = useWorkspaceAwareNavigate();
 
   const agencyConfig = useAgentStore(
     (s) => agentSelectors.getAgentConfigById(agentId)(s)?.agencyConfig,
@@ -148,7 +149,11 @@ const HeterogeneousChatInput = memo(() => {
   const { status, refresh } = useRemoteAgentDeviceGuard({ agentId, enabled: isDeviceExecution });
 
   const goToAgentProfile = () => {
-    if (params.aid) navigate(urlJoin('/agent', params.aid, 'profile'));
+    // Prefer the conversation's own agent id: this input also renders outside
+    // the `/agent/:aid` route (the home shell's in-place conversation), where
+    // `params.aid` is undefined and the button would silently do nothing.
+    const targetAgentId = agentId || params.aid;
+    if (targetAgentId) navigate(urlJoin('/agent', targetAgentId, 'profile'));
   };
 
   const deviceBlocked =
