@@ -5,7 +5,7 @@ import type {
   LobeAgentSession,
   LobeGroupSession,
 } from '@lobechat/types';
-import { and, asc, count, countDistinct, desc, eq, inArray, not, or, sql } from 'drizzle-orm';
+import { and, asc, count, countDistinct, desc, eq, exists, inArray, not, or, sql } from 'drizzle-orm';
 import type { PartialDeep } from 'type-fest';
 
 import { merge } from '@/utils/merge';
@@ -39,13 +39,34 @@ export class SessionModel {
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, agentsToSessions);
 
   /**
-   * Optional takeover filter. `undefined` keeps legacy SQL. When present, keep
-   * group sessions and agent sessions whose joined agent id is in the set.
+   * Optional takeover filter for joined queries. `undefined` keeps legacy SQL.
+   * When present, keep group sessions and agent sessions whose joined agent id
+   * is in the set.
    */
   private visibleSessionPredicate = (visibleAgentIds?: string[]) => {
     if (!visibleAgentIds) return undefined;
     if (visibleAgentIds.length === 0) return eq(sessions.type, 'group');
     return or(eq(sessions.type, 'group'), inArray(agents.id, visibleAgentIds));
+  };
+
+  /**
+   * Takeover eligibility without joining members, so LIMIT/OFFSET counts
+   * sessions rather than member rows.
+   */
+  private visibleSessionExistsPredicate = (visibleAgentIds: string[]) => {
+    if (visibleAgentIds.length === 0) return eq(sessions.type, 'group');
+    return or(
+      eq(sessions.type, 'group'),
+      exists(
+        this.db
+          .select({ id: agentsToSessions.agentId })
+          .from(agentsToSessions)
+          .innerJoin(agents, eq(agentsToSessions.agentId, agents.id))
+          .where(
+            and(eq(agentsToSessions.sessionId, sessions.id), inArray(agents.id, visibleAgentIds)),
+          ),
+      ),
+    );
   };
 
   // **************** Query *************** //
@@ -56,6 +77,10 @@ export class SessionModel {
     visibleAgentIds,
   }: { current?: number; pageSize?: number; visibleAgentIds?: string[] } = {}) => {
     const offset = current * pageSize;
+
+    if (visibleAgentIds) {
+      return this.queryVisiblePaged({ offset, pageSize, visibleAgentIds });
+    }
 
     // Use leftJoin instead of nested with for better performance
     const result = await this.db
@@ -71,13 +96,7 @@ export class SessionModel {
       .leftJoin(agentsToSessions, eq(sessions.id, agentsToSessions.sessionId))
       .leftJoin(agents, eq(agentsToSessions.agentId, agents.id))
       .leftJoin(sessionGroups, eq(sessions.groupId, sessionGroups.id))
-      .where(
-        and(
-          this.ownership(),
-          not(eq(sessions.slug, INBOX_SESSION_ID)),
-          this.visibleSessionPredicate(visibleAgentIds),
-        ),
-      )
+      .where(and(this.ownership(), not(eq(sessions.slug, INBOX_SESSION_ID))))
       .orderBy(desc(sessions.updatedAt))
       .limit(pageSize)
       .offset(offset);
@@ -101,6 +120,62 @@ export class SessionModel {
     }
 
     return Array.from(groupedResults.values());
+  };
+
+  private queryVisiblePaged = async (params: {
+    offset: number;
+    pageSize: number;
+    visibleAgentIds: string[];
+  }) => {
+    const idRows = await this.db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(
+        and(
+          this.ownership(),
+          not(eq(sessions.slug, INBOX_SESSION_ID)),
+          this.visibleSessionExistsPredicate(params.visibleAgentIds),
+        ),
+      )
+      .orderBy(desc(sessions.updatedAt))
+      .limit(params.pageSize)
+      .offset(params.offset);
+
+    const ids = idRows.map((row) => row.id);
+    if (ids.length === 0) return [];
+
+    const result = await this.db
+      .select({
+        agent: agents,
+        group: sessionGroups,
+        session: sessions,
+      })
+      .from(sessions)
+      .leftJoin(agentsToSessions, eq(sessions.id, agentsToSessions.sessionId))
+      .leftJoin(agents, eq(agentsToSessions.agentId, agents.id))
+      .leftJoin(sessionGroups, eq(sessions.groupId, sessionGroups.id))
+      .where(and(this.ownership(), inArray(sessions.id, ids)))
+      .orderBy(desc(sessions.updatedAt));
+
+    const groupedResults = new Map<string, any>();
+    for (const id of ids) {
+      groupedResults.set(id, null);
+    }
+    for (const row of result) {
+      const sessionId = row.session.id;
+      const existing = groupedResults.get(sessionId);
+      if (!existing) {
+        groupedResults.set(sessionId, {
+          ...row.session,
+          agentsToSessions: row.agent ? [{ agent: row.agent }] : [],
+          group: row.group,
+        });
+      } else if (row.agent) {
+        existing.agentsToSessions.push({ agent: row.agent });
+      }
+    }
+
+    return ids.map((id) => groupedResults.get(id)).filter(Boolean);
   };
 
   queryWithGroups = async (params?: { visibleAgentIds?: string[] }): Promise<ChatSessionList> => {
@@ -645,7 +720,14 @@ export class SessionModel {
     const offset = current * pageSize;
 
     try {
-      if (visibleAgentIds && visibleAgentIds.length === 0) return [];
+      if (visibleAgentIds) {
+        return this.findSessionsByKeywordsVisible({
+          keyword,
+          offset,
+          pageSize,
+          visibleAgentIds,
+        });
+      }
 
       const bm25Query = sanitizeBm25Query(keyword);
 
@@ -657,7 +739,6 @@ export class SessionModel {
         where: and(
           this.agentsOwnership(),
           sql`(${agents.title} @@@ ${bm25Query} OR ${agents.description} @@@ ${bm25Query})`,
-          visibleAgentIds ? inArray(agents.id, visibleAgentIds) : undefined,
         ),
         with: { agentsToSessions: { columns: {}, with: { session: true } } },
       });
@@ -674,5 +755,46 @@ export class SessionModel {
       console.error('findSessionsByKeywords error:', e, { keyword });
       return [];
     }
+  };
+
+  /**
+   * Keyword hits are matched on agents, then kept at the **session** level:
+   * group sessions (even when the hit is a hidden member) or sessions whose
+   * matched agent is visible. Deduped before pagination.
+   */
+  private findSessionsByKeywordsVisible = async (params: {
+    keyword: string;
+    offset: number;
+    pageSize: number;
+    visibleAgentIds: string[];
+  }) => {
+    const bm25Query = sanitizeBm25Query(params.keyword);
+    const visible = new Set(params.visibleAgentIds);
+
+    const rows = await this.db
+      .select({
+        agentId: agents.id,
+        session: sessions,
+      })
+      .from(agents)
+      .innerJoin(agentsToSessions, eq(agentsToSessions.agentId, agents.id))
+      .innerJoin(sessions, eq(sessions.id, agentsToSessions.sessionId))
+      .where(
+        and(
+          this.agentsOwnership(),
+          sql`(${agents.title} @@@ ${bm25Query} OR ${agents.description} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(asc(agents.id));
+
+    const unique = new Map<string, (typeof rows)[number]['session']>();
+    for (const row of rows) {
+      if (!row.session || unique.has(row.session.id)) continue;
+      if (row.session.type === 'group' || visible.has(row.agentId)) {
+        unique.set(row.session.id, row.session);
+      }
+    }
+
+    return [...unique.values()].slice(params.offset, params.offset + params.pageSize);
   };
 }

@@ -135,15 +135,19 @@ export const sessionRouter = router({
       const chatGroupModel = new ChatGroupModel(serverDB, userId, wsId);
 
       const visibleAgentIds = await takeoverVisibleAgentIds(ctx);
+      const visible = visibleAgentIds ? new Set(visibleAgentIds) : null;
       const [{ sessions, sessionGroups }, chatGroups] = await Promise.all([
         sessionModel.queryWithGroups({ visibleAgentIds }),
         chatGroupModel.queryWithMemberDetails(),
       ]);
 
       const groupSessions: LobeGroupSession[] = chatGroups.map((group) => {
-        const { title, description, avatar, backgroundColor, groupId, ...rest } = group;
+        const { title, description, avatar, backgroundColor, groupId, agents, ...rest } = group;
         return {
           ...rest,
+          agents: visible
+            ? (agents ?? []).filter((agent: { id: string }) => visible.has(agent.id))
+            : agents,
           group: groupId, // Map groupId to group for consistent API
           meta: { avatar, backgroundColor, description, title },
           type: 'group',

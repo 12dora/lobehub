@@ -591,6 +591,7 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
         MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
       );
       expect(messageCreate).toHaveBeenCalled();
+      messageCreate.mockClear();
 
       const [workspace] = await db
         .insert(workspaces)
@@ -660,6 +661,7 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
         MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
       );
       expect(messageCreate).toHaveBeenCalled();
+      messageCreate.mockClear();
 
       const [workspace] = await db
         .insert(workspaces)

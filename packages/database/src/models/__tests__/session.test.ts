@@ -107,6 +107,43 @@ describe('SessionModel', () => {
       const unfiltered = await sessionModel.query({ current: 0, pageSize: 1 });
       expect(unfiltered[0].id).toBe('s-hidden-new');
     });
+
+    it('pages distinct session ids so a multi-member group fills one LIMIT slot', async () => {
+      await serverDB.transaction(async (trx) => {
+        await trx.insert(sessions).values([
+          { id: 's-group-multi', type: 'group', userId, updatedAt: new Date('2024-06-01') },
+          { id: 's-agent-old', type: 'agent', userId, updatedAt: new Date('2024-01-01') },
+        ]);
+        await trx.insert(agents).values([
+          { id: 'm-a', title: 'A', userId },
+          { id: 'm-b', title: 'B', userId },
+          { id: 'm-c', title: 'C', userId },
+          { id: 'm-visible', title: 'Visible', userId },
+        ]);
+        await trx.insert(agentsToSessions).values([
+          { agentId: 'm-a', sessionId: 's-group-multi', userId },
+          { agentId: 'm-b', sessionId: 's-group-multi', userId },
+          { agentId: 'm-c', sessionId: 's-group-multi', userId },
+          { agentId: 'm-visible', sessionId: 's-agent-old', userId },
+        ]);
+      });
+
+      const page1 = await sessionModel.query({
+        current: 0,
+        pageSize: 1,
+        visibleAgentIds: ['m-visible'],
+      });
+      expect(page1).toHaveLength(1);
+      expect(page1[0].id).toBe('s-group-multi');
+      expect(page1[0].agentsToSessions).toHaveLength(3);
+
+      const page2 = await sessionModel.query({
+        current: 1,
+        pageSize: 1,
+        visibleAgentIds: ['m-visible'],
+      });
+      expect(page2.map((row) => row.id)).toEqual(['s-agent-old']);
+    });
   });
 
   describe('queryWithGroups', () => {
@@ -366,6 +403,27 @@ describe('SessionModel', () => {
       const result = await sessionModel.queryByKeyword('hello');
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('1');
+    });
+
+    it('keeps a group session when the keyword only matches a hidden member', async () => {
+      await serverDB.insert(sessions).values([
+        { id: 'kw-group', type: 'group', userId },
+        { id: 'kw-hidden-agent', type: 'agent', userId },
+      ]);
+      await serverDB.insert(agents).values([
+        { description: 'secret hidden member', id: 'kw-hidden', title: 'HiddenMember', userId },
+        { id: 'kw-visible', title: 'VisibleAgent', userId },
+      ]);
+      await serverDB.insert(agentsToSessions).values([
+        { agentId: 'kw-hidden', sessionId: 'kw-group', userId },
+        { agentId: 'kw-visible', sessionId: 'kw-group', userId },
+        { agentId: 'kw-hidden', sessionId: 'kw-hidden-agent', userId },
+      ]);
+
+      const result = await sessionModel.queryByKeyword('HiddenMember', {
+        visibleAgentIds: ['kw-visible'],
+      });
+      expect(result.map((row) => row.id)).toEqual(['kw-group']);
     });
 
     it('should return sessions with matching description', async () => {

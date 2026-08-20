@@ -17,7 +17,7 @@ import {
   createUnmanagedResourcePolicyMap,
   PlatformManagedResourcePolicyModel,
 } from '@/database/models/platform';
-import { agents, users } from '@/database/schemas';
+import { agents, topics, users } from '@/database/schemas';
 import { platformManagedResourcePolicies } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
@@ -26,6 +26,7 @@ import { getEnterpriseErrorBody } from '@/server/enterprise/guards/enterpriseErr
 import { agentRouter } from '@/server/routers/lambda/agent';
 import { homeRouter } from '@/server/routers/lambda/home';
 import { messengerRouter } from '@/server/routers/lambda/messenger';
+import { topicRouter } from '@/server/routers/lambda/topic';
 
 import { resetPlatformAgentTakeoverCacheForTest } from './enforcement';
 
@@ -157,5 +158,31 @@ describe('user list replace under published enforced agents policy', () => {
       .where(eq(agents.id, inboxId))
       .limit(1);
     expect(row?.slug).toBe(INBOX_SESSION_ID);
+  });
+
+  it('topic.countTopics({ agentId }) denies a hidden local agent under takeover', async () => {
+    await publishAgentsTakeover();
+    const caller = createCallerFactory(topicRouter)(await ctx());
+
+    const error = await caller.countTopics({ agentId: USER_AGENT_ID }).then(
+      () => {
+        throw new Error('expected countTopics to deny the user-owned agent');
+      },
+      (e) => e,
+    );
+
+    expect((error as { code?: string }).code).toBe('FORBIDDEN');
+    expect(getEnterpriseErrorBody(error)?.code).toBe(
+      MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+    );
+  });
+
+  it('agent.rankAgents omits user-owned local agents under takeover', async () => {
+    await db.insert(topics).values({ agentId: USER_AGENT_ID, id: 'tp_user_rank', userId: USER });
+    await publishAgentsTakeover();
+    const caller = createCallerFactory(agentRouter)(await ctx());
+    const ranked = await caller.rankAgents();
+
+    expect(ranked.map((item) => item.id)).not.toContain(USER_AGENT_ID);
   });
 });

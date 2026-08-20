@@ -504,7 +504,8 @@ export const agentRouter = router({
     }),
 
   rankAgents: agentProcedure.input(z.number().max(50).optional()).query(async ({ ctx, input }) => {
-    return ctx.agentModel.rank(input);
+    const visible = await ctx.agentService.getTakeoverVisibleLocalAgentIds();
+    return ctx.agentModel.rank(input, visible ? [...visible] : undefined);
   }),
 
   /**

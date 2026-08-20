@@ -81,7 +81,9 @@ export class AgentModel {
    * directly via `topics.agentId`, so it is agent-native — no sessionId. Mirrors
    * the recents filter: real agents plus the inbox, excluding other virtual agents.
    */
-  rank = async (limit: number = 10): Promise<AgentRankItem[]> => {
+  rank = async (limit: number = 10, visibleAgentIds?: string[]): Promise<AgentRankItem[]> => {
+    if (visibleAgentIds && visibleAgentIds.length === 0) return [];
+
     const rows = await this.db
       .select({
         avatar: agents.avatar,
@@ -93,7 +95,13 @@ export class AgentModel {
       })
       .from(agents)
       .leftJoin(topics, eq(topics.agentId, agents.id))
-      .where(and(this.ownership(), or(eq(agents.slug, INBOX_SESSION_ID), ne(agents.virtual, true))))
+      .where(
+        and(
+          this.ownership(),
+          or(eq(agents.slug, INBOX_SESSION_ID), ne(agents.virtual, true)),
+          visibleAgentIds ? inArray(agents.id, visibleAgentIds) : undefined,
+        ),
+      )
       .groupBy(agents.id)
       .having(({ count }) => gt(count, 0))
       .orderBy(desc(sql`count`))

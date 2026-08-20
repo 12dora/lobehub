@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPermission';
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
+import { MANAGED_ERROR_CODES } from '@/const/platform/errorCodes';
 import { MessageModel } from '@/database/models/message';
 import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
@@ -10,10 +11,13 @@ import { insertThreadSchema } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { throwEnterpriseError } from '@/server/enterprise/guards/enterpriseErrors';
 import { AgentService } from '@/server/services/agent';
 import { type ThreadItem } from '@/types/topic/thread';
 import { createThreadSchema } from '@/types/topic/thread';
 import { markdownToTxt } from '@/utils/markdownToTxt';
+
+import { resolveAgentIdFromSession } from './_helpers/resolveContext';
 
 /**
  * `ThreadModel.create` uses `onConflictDoNothing()` and returns undefined when
@@ -70,10 +74,30 @@ const assertThreadTopicVisible = async (
   if (!visible) return;
 
   const topic = await ctx.topicModel.findById(topicId);
-  if (topic?.groupId) return;
-  if (topic?.agentId) {
+  if (!topic) return;
+  if (topic.groupId) return;
+  if (topic.agentId) {
     await threadAgentService(ctx).assertAgentReadable(topic.agentId);
+    return;
   }
+  if (topic.sessionId) {
+    const agentId = await resolveAgentIdFromSession(
+      topic.sessionId,
+      ctx.serverDB,
+      ctx.userId,
+      ctx.workspaceId ?? undefined,
+    );
+    if (agentId) {
+      await threadAgentService(ctx).assertAgentReadable(agentId);
+      return;
+    }
+  }
+  throwEnterpriseError({
+    code: MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+    details: { resource: 'agents' },
+    httpCode: 'FORBIDDEN',
+    message: MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+  });
 };
 
 export const threadRouter = router({

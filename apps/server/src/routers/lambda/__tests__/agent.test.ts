@@ -72,6 +72,7 @@ describe('agentRouter', () => {
       findBySessionId: vi.fn(),
       getAgentAssignedKnowledge: vi.fn(),
       getAgentVisibility: vi.fn().mockResolvedValue(null),
+      rank: vi.fn().mockResolvedValue([]),
       toggleFile: vi.fn(),
       toggleKnowledgeBase: vi.fn(),
       update: vi.fn(),
@@ -101,6 +102,7 @@ describe('agentRouter', () => {
     agentServiceMock = {
       countAvailableAgents: vi.fn(),
       createInbox: vi.fn(),
+      getTakeoverVisibleLocalAgentIds: vi.fn(async () => null),
     };
     vi.mocked(AgentService).mockImplementation(() => agentServiceMock);
 
@@ -536,6 +538,13 @@ describe('agentRouter', () => {
       expect(result).toBe(4);
       expect(agentModelMock.countAgents).toHaveBeenCalled();
       expect(agentServiceMock.countAvailableAgents).not.toHaveBeenCalled();
+    });
+
+    it('rankAgents uses the unfiltered model rank', async () => {
+      const caller = agentRouter.createCaller(mockCtx);
+      await caller.rankAgents(5);
+
+      expect(agentModelMock.rank).toHaveBeenCalledWith(5, undefined);
     });
   });
 });

@@ -220,7 +220,10 @@ export const topicRouter = router({
         .optional(),
     )
     .query(async ({ ctx, input }) => {
-      if (input?.agentId) return ctx.topicModel.count(input);
+      if (input?.agentId) {
+        await topicAgentService(ctx).assertAgentReadable(input.agentId);
+        return ctx.topicModel.count(input);
+      }
       return ctx.topicModel.count({
         ...input,
         visibleAgentIds: await takeoverVisibleAgentIds(ctx),

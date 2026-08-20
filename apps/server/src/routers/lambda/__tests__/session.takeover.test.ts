@@ -4,10 +4,11 @@
  *
  * @vitest-environment node
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatGroupModel } from '@/database/models/chatGroup';
 import { SessionModel } from '@/database/models/session';
+import { AgentService } from '@/server/services/agent';
 
 import { sessionRouter } from '../session';
 
@@ -31,6 +32,10 @@ describe('sessionRouter takeover off', () => {
     queryByKeyword: ReturnType<typeof vi.fn>;
     queryWithGroups: ReturnType<typeof vi.fn>;
   };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -69,5 +74,37 @@ describe('sessionRouter takeover off', () => {
     expect(sessionModelMock.queryWithGroups).toHaveBeenCalledWith({
       visibleAgentIds: undefined,
     });
+  });
+
+  it('filters chat-group members to the visible set and keeps the group', async () => {
+    vi.spyOn(AgentService.prototype, 'getTakeoverVisibleLocalAgentIds').mockResolvedValue(
+      new Set(['agt-keep']),
+    );
+    const queryWithMemberDetails = vi.fn(async () => [
+      {
+        agents: [
+          { id: 'agt-keep', title: 'Keep' },
+          { id: 'agt-hide', title: 'Hide' },
+        ],
+        avatar: null,
+        backgroundColor: null,
+        description: null,
+        groupId: null,
+        id: 'grp-1',
+        title: 'Team',
+        updatedAt: new Date('2024-01-01'),
+      },
+    ]);
+    vi.mocked(ChatGroupModel).mockImplementation(
+      () => ({ queryWithMemberDetails }) as never,
+    );
+
+    const caller = sessionRouter.createCaller({ serverDB: {}, userId } as never);
+    const result = await caller.getGroupedSessions();
+    const group = result.sessions.find((session) => session.id === 'grp-1') as {
+      agents?: Array<{ id: string }>;
+    };
+
+    expect(group?.agents?.map((agent) => agent.id)).toEqual(['agt-keep']);
   });
 });

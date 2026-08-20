@@ -2715,6 +2715,22 @@ describe('AgentModel', () => {
 
       expect(result).toHaveLength(1);
     });
+
+    it('restricts rank to visibleAgentIds when provided and is unchanged when omitted', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'rk-keep', title: 'Keep', userId },
+        { id: 'rk-drop', title: 'Drop', userId },
+      ]);
+      await serverDB.insert(topics).values([
+        { agentId: 'rk-keep', id: 'rkt1', userId },
+        { agentId: 'rk-drop', id: 'rkt2', userId },
+        { agentId: 'rk-drop', id: 'rkt3', userId },
+      ]);
+
+      expect((await agentModel.rank()).map((row) => row.id)).toEqual(['rk-drop', 'rk-keep']);
+      expect((await agentModel.rank(10, ['rk-keep'])).map((row) => row.id)).toEqual(['rk-keep']);
+      expect(await agentModel.rank(10, [])).toEqual([]);
+    });
   });
 
   describe('listMessengerBindableAgents', () => {
