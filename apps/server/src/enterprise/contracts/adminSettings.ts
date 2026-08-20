@@ -92,6 +92,17 @@ export const adminSettingsApplyImmediateInputSchema = z
   .strict()
   .refine((value) => Object.keys(value.patch ?? {}).length + (value.removePaths?.length ?? 0) > 0, {
     message: 'patch or removePaths must include at least one path',
+  })
+  .superRefine((value, ctx) => {
+    const patched = new Set(Object.keys(value.patch ?? {}));
+    const overlap = (value.removePaths ?? []).filter((path) => patched.has(path));
+    if (overlap.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `paths cannot appear in both patch and removePaths: ${overlap.join(', ')}`,
+        path: ['removePaths'],
+      });
+    }
   });
 
 export const adminSettingsApplyImmediateOutputSchema = z.object({

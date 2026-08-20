@@ -42,6 +42,21 @@ describe('admin settings save contract', () => {
     ).toBe(false);
   });
 
+  it('rejects a path that appears in both patch and removePaths', () => {
+    const path = 'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort';
+    const result = adminSettingsApplyImmediateInputSchema.safeParse({
+      patch: { [path]: 'high' },
+      removePaths: [path],
+    });
+    expect(result.success).toBe(false);
+    expect(
+      adminSettingsApplyImmediateInputSchema.safeParse({
+        patch: { 'defaultAgent.config.model': 'gpt-5.6' },
+        removePaths: [path],
+      }).success,
+    ).toBe(true);
+  });
+
   it('rejects secret material in save reasons and comments', () => {
     expect(
       adminSettingsSaveInputSchema.safeParse({ ...baseSave, reason: secretReason }).success,
