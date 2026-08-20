@@ -69,19 +69,22 @@ const DataStatistics = memo<Omit<FlexboxProps, 'children'>>(({ style, ...rest })
 
   const loading = <NeuralNetworkLoading size={20} />;
 
+  // Only show the loader on a cold read. SWR keeps `isLoading` true while it
+  // revalidates a warm cache, and swapping the counts back to a spinner on
+  // every panel re-open is the flash users see.
   const items = [
     {
-      count: agentsLoading || isUndefined(agents) ? loading : agents,
+      count: agentsLoading && isUndefined(agents) ? loading : agents,
       key: 'sessions',
       title: t('dataStatistics.sessions'),
     },
     {
-      count: topicsLoading || isUndefined(topics) ? loading : topics,
+      count: topicsLoading && isUndefined(topics) ? loading : topics,
       key: 'topics',
       title: t('dataStatistics.topics'),
     },
     {
-      count: messagesLoading || isUndefined(messages) ? loading : messages,
+      count: messagesLoading && isUndefined(messages) ? loading : messages,
       countToady: messagesToday,
       key: 'messages',
       title: t('dataStatistics.messages'),

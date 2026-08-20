@@ -1,9 +1,10 @@
 /**
  * @vitest-environment happy-dom
  */
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useAgentStore } from '@/store/agent';
 import { initialState as initialChatState } from '@/store/chat/initialState';
 import { PortalViewType } from '@/store/chat/slices/portal/initialState';
 import { useChatStore } from '@/store/chat/store';
@@ -46,6 +47,8 @@ describe('AgentIdSync', () => {
       },
       false,
     );
+
+    useAgentStore.setState({ activeAgentId: undefined, builtinAgentIdMap: {} }, false);
   });
 
   it('clears portal state when switching to another agent without a topic in the URL', () => {
@@ -92,5 +95,63 @@ describe('AgentIdSync', () => {
     expect(useChatStore.getState().portalStack).toEqual([]);
     expect(useChatStore.getState().showPortal).toBe(false);
     expect(useChatStore.getState().activeTopicId).toBe('topic-1');
+  });
+});
+
+describe('AgentIdSync activeAgentId ownership', () => {
+  beforeEach(() => {
+    useParamsMock.mockReturnValue({ aid: 'agent-1' });
+    useSearchParamsMock.mockReturnValue([new URLSearchParams(''), vi.fn()]);
+    useLocationMock.mockReturnValue({ pathname: '/agent/agent-1' });
+  });
+
+  it('adopts the routed id on mount', () => {
+    render(<AgentIdSync />);
+
+    expect(useAgentStore.getState().activeAgentId).toBe('agent-1');
+  });
+
+  it('restores the routed id when another tree clears it after the navigation commit', () => {
+    render(<AgentIdSync />);
+
+    // e.g. the home layout's delayed <Activity> teardown, ~180ms later
+    act(() => {
+      useAgentStore.setState({ activeAgentId: undefined }, false);
+    });
+
+    expect(useAgentStore.getState().activeAgentId).toBe('agent-1');
+  });
+
+  it('restores the routed id when another tree overwrites it with a different agent', () => {
+    render(<AgentIdSync />);
+
+    act(() => {
+      useAgentStore.setState({ activeAgentId: 'inbox-agent' }, false);
+    });
+
+    expect(useAgentStore.getState().activeAgentId).toBe('agent-1');
+  });
+
+  it('does not pin an unresolved builtin slug into the store', () => {
+    useParamsMock.mockReturnValue({ aid: 'inbox' });
+    useLocationMock.mockReturnValue({ pathname: '/agent/inbox' });
+
+    render(<AgentIdSync />);
+
+    act(() => {
+      useAgentStore.setState({ activeAgentId: 'real-inbox-id' }, false);
+    });
+
+    expect(useAgentStore.getState().activeAgentId).toBe('real-inbox-id');
+  });
+
+  it('still clears the id on unmount (the restore guard must not resurrect it)', () => {
+    const { unmount } = render(<AgentIdSync />);
+
+    expect(useAgentStore.getState().activeAgentId).toBe('agent-1');
+
+    unmount();
+
+    expect(useAgentStore.getState().activeAgentId).toBeUndefined();
   });
 });

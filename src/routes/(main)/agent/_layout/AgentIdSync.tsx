@@ -54,6 +54,32 @@ const AgentIdSync = () => {
       useChatStore.setState({ activeAgentId: activeId }, false, 'AgentIdSync/syncAgentId');
   }, [activeId]);
 
+  // Defense in depth: while this route is mounted it owns `activeAgentId`, but
+  // another tree can still write to the store *after* the sync above ran — the
+  // home layout stays mounted under React 19 `<Activity>` and its teardown
+  // (which clears the inbox id) fires ~180ms after the navigation commit, long
+  // after our layout effect. Re-apply the routed id whenever the store drifts,
+  // so nothing downstream is left reading `undefined` forever.
+  //
+  // Declared BEFORE the unmount-clear effect below on purpose: React runs
+  // layout cleanups in declaration order, so this unsubscribes first and cannot
+  // resurrect the id that cleanup is about to clear.
+  //
+  // Only armed once the routed id is a real agent id — while a builtin slug
+  // (`/agent/inbox`) is still unresolved we must not pin the slug into the store.
+  const isResolvedRouteId = !isBuiltinSlug || !!resolvedId;
+
+  useLayoutEffect(() => {
+    if (!activeId || !isResolvedRouteId) return;
+
+    return useAgentStore.subscribe((state, previous) => {
+      if (state.activeAgentId === previous.activeAgentId) return;
+      if (state.activeAgentId === activeId) return;
+
+      useAgentStore.setState({ activeAgentId: activeId }, false, 'AgentIdSync/restoreAgentId');
+    });
+  }, [activeId, isResolvedRouteId]);
+
   // Reset activeTopicId when switching to a different agent
   // This prevents messages from being saved to the wrong topic bucket
   useEffect(() => {
