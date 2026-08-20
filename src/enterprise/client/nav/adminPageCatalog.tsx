@@ -61,8 +61,8 @@ const SystemGeneralPage = lazy(
   () => import('@/enterprise/client/features/admin/systemGeneral/SystemGeneralPage'),
 );
 const ModulesPage = lazy(() => import('@/enterprise/client/features/admin/modules/ModulesPage'));
-const TaskTemplateListPage = lazy(
-  () => import('@/enterprise/client/features/admin/taskTemplates/TaskTemplateListPage'),
+const TemplatesManagementPage = lazy(
+  () => import('@/enterprise/client/features/admin/templates/TemplatesManagementPage'),
 );
 const GlobalStatsPage = lazy(
   () => import('@/enterprise/client/features/admin/stats/GlobalStatsPage'),
@@ -189,8 +189,8 @@ export const ADMIN_PAGE_BY_ID: Readonly<
   'system-status': { componentId: 'SystemPage', element: withLazy(<SystemPage />) },
   'modules': { componentId: 'ModulesPage', element: withLazy(<ModulesPage />) },
   'task-templates': {
-    componentId: 'TaskTemplateListPage',
-    element: withLazy(<TaskTemplateListPage />),
+    componentId: 'TemplatesManagementPage',
+    element: withLazy(<TemplatesManagementPage />),
   },
   'stats': { componentId: 'GlobalStatsPage', element: withLazy(<GlobalStatsPage />) },
   'ai': { componentId: 'AiIndexRedirect', element: withLazy(<GroupIndexRedirect groupId="ai" />) },

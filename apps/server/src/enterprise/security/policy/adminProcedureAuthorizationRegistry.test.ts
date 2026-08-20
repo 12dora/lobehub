@@ -81,6 +81,9 @@ describe('admin procedure authorization registry', () => {
     // setEnabled,delete,importRecommendations}), reusing the platform-agent permission codes.
     // +1 mutation since: admin.taskTemplates.reorder (drag-and-drop display order replaced the
     // numeric sort field in the editor).
+    // +1 query / +6 mutations since: 助理模板 (admin.agentTemplates.{list,create,update,
+    // setEnabled,delete,importBuiltins,reorder}), reusing the platform-agent permission codes
+    // and the taskTemplates module id.
     // +5 queries / +5 mutations since: content moderation (admin.contentModeration.{getSettings,
     // getOverview, getStats, listRecords, getRecord, updateSettings, testClassifier,
     // revealRecordPrompt, deleteRecords, clearDecisionCache}).
@@ -95,14 +98,14 @@ describe('admin procedure authorization registry', () => {
     // +1 mutation since: admin.aiModels.syncUpstream (pull the catalog from the upstream account).
     // +1 query / +1 mutation since: admin.browserProfile.{options,update} (a chosen fingerprint).
     // +2 mutations since: admin.users.{setPassword,disableTwoFactor} (admin credential takeover).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(226);
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(233);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(104);
+    ).toHaveLength(105);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(122);
-    expect(mutationPaths).toHaveLength(122);
+    ).toHaveLength(128);
+    expect(mutationPaths).toHaveLength(128);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

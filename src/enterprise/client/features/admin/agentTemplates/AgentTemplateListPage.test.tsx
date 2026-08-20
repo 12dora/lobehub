@@ -7,23 +7,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
-import TaskTemplateListPage from './TaskTemplateListPage';
+import AgentTemplateListPage from './AgentTemplateListPage';
 
 const item = {
-  category: 'engineering',
-  connectors: [],
-  cronPattern: '0 9 * * *',
-  description: 'Daily digest',
+  avatar: null,
+  backgroundColor: null,
+  description: 'Turns raw numbers into a weekly brief',
   enabled: true,
-  icon: null,
   id: 'tpl-1',
-  identifier: 'daily-digest',
-  instruction: 'Summarize',
-  interests: [],
+  identifier: 'data-analyst',
   revision: 3,
   sortOrder: 0,
   source: 'manual',
-  title: 'Engineering digest',
+  systemRole: 'You are a data analyst.',
+  tags: [],
+  title: 'Data analyst',
   updatedAt: new Date('2026-08-16T00:00:00Z'),
 };
 
@@ -33,7 +31,7 @@ const mocks = vi.hoisted(() => ({
   /** Server-side filtering stand-in: the rows the list returns for the current query. */
   dataFor: undefined as ((input: { query?: string }) => unknown) | undefined,
   deleteTemplate: vi.fn(),
-  importRecommendations: vi.fn(),
+  importBuiltins: vi.fn(),
   mutate: vi.fn(),
   listInput: undefined as unknown,
   openEditor: vi.fn(),
@@ -74,22 +72,22 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
   useAdminAccess: () => ({ authMethod: null, permissions: mocks.permissions }),
 }));
 
-vi.mock('@/enterprise/client/services/adminTaskTemplates', () => ({
-  adminTaskTemplatesService: {
+vi.mock('@/enterprise/client/services/adminAgentTemplates', () => ({
+  adminAgentTemplatesService: {
     delete: (...args: unknown[]) => mocks.deleteTemplate(...args),
-    importRecommendations: (...args: unknown[]) => mocks.importRecommendations(...args),
+    importBuiltins: (...args: unknown[]) => mocks.importBuiltins(...args),
     reorder: (...args: unknown[]) => mocks.reorder(...args),
     setEnabled: (...args: unknown[]) => mocks.setEnabled(...args),
   },
 }));
 
-vi.mock('./openTaskTemplateEditorModal', () => ({
-  openTaskTemplateEditorModal: (...args: unknown[]) => mocks.openEditor(...args),
+vi.mock('./openAgentTemplateEditorModal', () => ({
+  openAgentTemplateEditorModal: (...args: unknown[]) => mocks.openEditor(...args),
 }));
 
-vi.mock('./useAdminTaskTemplates', () => ({
-  refreshAdminTaskTemplateLists: () => mocks.refreshLists(),
-  useFetchAdminTaskTemplates: (input: { query?: string }) => {
+vi.mock('./useAdminAgentTemplates', () => ({
+  refreshAdminAgentTemplateLists: () => mocks.refreshLists(),
+  useFetchAdminAgentTemplates: (input: { query?: string }) => {
     mocks.listInput = input;
     return {
       data: mocks.dataFor ? mocks.dataFor(input) : mocks.data,
@@ -106,7 +104,7 @@ vi.mock('./SortableRow', () => ({
     mocks.reorderProps = { ids, onReorder };
     return <div>{children}</div>;
   },
-  TaskTemplateDragHandle: ({ label }: { label: string }) => (
+  AgentTemplateDragHandle: ({ label }: { label: string }) => (
     <button aria-label={label} type="button" />
   ),
 }));
@@ -117,10 +115,12 @@ vi.mock('../primitives/DangerConfirm', () => ({
 
 vi.mock('@lobehub/ui', () => ({
   Alert: ({ message }: { message?: ReactNode }) => <div role="alert">{message}</div>,
+  Avatar: ({ alt }: { alt?: string }) => <img alt={alt} />,
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Input: ({ allowClear: _allowClear, ...props }: any) => <input {...props} />,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  Tooltip: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
@@ -247,7 +247,7 @@ vi.mock('../primitives/DataTable', () => ({
 const renderPage = (props: { embedded?: boolean } = {}) =>
   render(
     <MemoryRouter>
-      <TaskTemplateListPage {...props} />
+      <AgentTemplateListPage {...props} />
     </MemoryRouter>,
   );
 
@@ -286,14 +286,14 @@ beforeEach(() => {
   ];
 });
 
-describe('TaskTemplateListPage', () => {
+describe('AgentTemplateListPage', () => {
   it('renders the empty state with both entry points when the module was never used', () => {
     mocks.data = { items: [], totalAll: 0, totalFiltered: 0 };
     renderPage();
 
-    expect(screen.getByText('taskTemplateCatalog.list.empty.default')).toBeTruthy();
-    expect(screen.getByText('taskTemplateCatalog.actions.create')).toBeTruthy();
-    expect(screen.getByText('taskTemplateCatalog.actions.import')).toBeTruthy();
+    expect(screen.getByText('agentTemplateCatalog.list.empty.default')).toBeTruthy();
+    expect(screen.getByText('agentTemplateCatalog.actions.create')).toBeTruthy();
+    expect(screen.getByText('agentTemplateCatalog.actions.import')).toBeTruthy();
   });
 
   it('flips the switch optimistically and refreshes after a successful toggle', async () => {
@@ -301,7 +301,7 @@ describe('TaskTemplateListPage', () => {
     renderPage();
 
     const toggle = screen.getByLabelText(
-      'taskTemplateCatalog.list.columns.enabled',
+      'agentTemplateCatalog.list.columns.enabled',
     ) as HTMLInputElement;
     expect(toggle.checked).toBe(true);
 
@@ -313,7 +313,7 @@ describe('TaskTemplateListPage', () => {
       id: 'tpl-1',
     });
     await waitFor(() => expect(mocks.refreshLists).toHaveBeenCalled());
-    expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.disabled');
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('agentTemplateCatalog.toast.disabled');
   });
 
   it('rolls the switch back and toasts when the toggle fails', async () => {
@@ -321,17 +321,17 @@ describe('TaskTemplateListPage', () => {
     renderPage();
 
     const toggle = screen.getByLabelText(
-      'taskTemplateCatalog.list.columns.enabled',
+      'agentTemplateCatalog.list.columns.enabled',
     ) as HTMLInputElement;
     fireEvent.click(toggle);
 
     await waitFor(() =>
-      expect(mocks.toastError).toHaveBeenCalledWith('taskTemplateCatalog.toast.error'),
+      expect(mocks.toastError).toHaveBeenCalledWith('agentTemplateCatalog.toast.error'),
     );
     // Generic toggle failures keep the current page: only a revision conflict reloads.
     expect(mocks.refreshLists).not.toHaveBeenCalled();
     expect(
-      (screen.getByLabelText('taskTemplateCatalog.list.columns.enabled') as HTMLInputElement)
+      (screen.getByLabelText('agentTemplateCatalog.list.columns.enabled') as HTMLInputElement)
         .checked,
     ).toBe(true);
   });
@@ -340,13 +340,13 @@ describe('TaskTemplateListPage', () => {
     mocks.deleteTemplate.mockResolvedValue({ id: 'tpl-1' });
     renderPage();
 
-    fireEvent.click(screen.getByText('taskTemplateCatalog.actions.delete'));
+    fireEvent.click(screen.getByText('agentTemplateCatalog.actions.delete'));
     expect(mocks.confirm).toHaveBeenCalled();
     expect(mocks.deleteTemplate).not.toHaveBeenCalled();
 
     await mocks.confirm.mock.calls[0][0].onConfirm();
     expect(mocks.deleteTemplate).toHaveBeenCalledWith({ expectedRevision: 3, id: 'tpl-1' });
-    expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.deleted');
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('agentTemplateCatalog.toast.deleted');
   });
 
   it('persists a drag with each row CAS token and confirms it', async () => {
@@ -365,7 +365,7 @@ describe('TaskTemplateListPage', () => {
         { expectedRevision: 3, id: 'tpl-1' },
       ],
     });
-    expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.reordered');
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('agentTemplateCatalog.toast.reordered');
   });
 
   it('rolls the order back and reports a conflict when the drag was stale', async () => {
@@ -377,7 +377,7 @@ describe('TaskTemplateListPage', () => {
     mocks.reorderProps!.onReorder(['tpl-2', 'tpl-1']);
 
     await waitFor(() =>
-      expect(mocks.toastError).toHaveBeenCalledWith('taskTemplateCatalog.toast.conflict'),
+      expect(mocks.toastError).toHaveBeenCalledWith('agentTemplateCatalog.toast.conflict'),
     );
     // Rollback is a refetch: the server order is authoritative again.
     expect(mocks.refreshLists).toHaveBeenCalled();
@@ -387,18 +387,18 @@ describe('TaskTemplateListPage', () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_CREATE];
     renderPage();
 
-    expect(screen.getByText('taskTemplateCatalog.actions.create')).toBeTruthy();
-    expect(screen.queryByText('taskTemplateCatalog.actions.import')).toBeNull();
+    expect(screen.getByText('agentTemplateCatalog.actions.create')).toBeTruthy();
+    expect(screen.queryByText('agentTemplateCatalog.actions.import')).toBeNull();
   });
 
   it('reports a stale toggle as a conflict and refreshes instead of a generic failure', async () => {
     mocks.setEnabled.mockRejectedValue(trpcError('PLATFORM_REVISION_CONFLICT'));
     renderPage();
 
-    fireEvent.click(screen.getByLabelText('taskTemplateCatalog.list.columns.enabled'));
+    fireEvent.click(screen.getByLabelText('agentTemplateCatalog.list.columns.enabled'));
 
     await waitFor(() =>
-      expect(mocks.toastError).toHaveBeenCalledWith('taskTemplateCatalog.toast.conflict'),
+      expect(mocks.toastError).toHaveBeenCalledWith('agentTemplateCatalog.toast.conflict'),
     );
     expect(mocks.refreshLists).toHaveBeenCalled();
   });
@@ -407,33 +407,33 @@ describe('TaskTemplateListPage', () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ];
     renderPage();
 
-    expect(screen.queryByText('taskTemplateCatalog.actions.create')).toBeNull();
-    expect(screen.queryByText('taskTemplateCatalog.actions.import')).toBeNull();
-    expect(screen.queryByText('taskTemplateCatalog.actions.edit')).toBeNull();
-    expect(screen.queryByText('taskTemplateCatalog.actions.delete')).toBeNull();
+    expect(screen.queryByText('agentTemplateCatalog.actions.create')).toBeNull();
+    expect(screen.queryByText('agentTemplateCatalog.actions.import')).toBeNull();
+    expect(screen.queryByText('agentTemplateCatalog.actions.edit')).toBeNull();
+    expect(screen.queryByText('agentTemplateCatalog.actions.delete')).toBeNull();
     expect(
-      (screen.getByLabelText('taskTemplateCatalog.list.columns.enabled') as HTMLInputElement)
+      (screen.getByLabelText('agentTemplateCatalog.list.columns.enabled') as HTMLInputElement)
         .disabled,
     ).toBe(true);
   });
 
-  it('confirms the market import and reports what changed', async () => {
-    mocks.importRecommendations.mockResolvedValue({ created: 2, skipped: 0, updated: 1 });
+  it('confirms the built-in import and reports what changed', async () => {
+    mocks.importBuiltins.mockResolvedValue({ created: 2, skipped: 0, updated: 1 });
     renderPage();
 
-    fireEvent.click(screen.getByText('taskTemplateCatalog.actions.import'));
+    fireEvent.click(screen.getByText('agentTemplateCatalog.actions.import'));
     await mocks.confirm.mock.calls[0][0].onConfirm();
 
-    expect(mocks.importRecommendations).toHaveBeenCalledWith({ locale: 'en-US' });
-    expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.imported');
+    expect(mocks.importBuiltins).toHaveBeenCalledWith({ locale: 'en-US' });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('agentTemplateCatalog.toast.imported');
     expect(mocks.refreshLists).toHaveBeenCalled();
   });
 
   it('keeps search in the table toolbar and applies the enabled header filter', async () => {
     renderPage();
 
-    expect(screen.getByLabelText('taskTemplateCatalog.list.filters.query')).toBeTruthy();
-    expect(screen.queryByLabelText('taskTemplateCatalog.list.filters.enabled')).toBeNull();
+    expect(screen.getByLabelText('agentTemplateCatalog.list.filters.query')).toBeTruthy();
+    expect(screen.queryByLabelText('agentTemplateCatalog.list.filters.enabled')).toBeNull();
     expect(mocks.tablePagination).toEqual({
       current: 1,
       pageSize: 20,
@@ -459,7 +459,7 @@ describe('TaskTemplateListPage', () => {
     expect(mocks.tableColumns?.[2]?.key).toBe('template');
     expect(mocks.tableRowSelection?.columnWidth).toBe(40);
     // The checkbox column widens the fixed table layout instead of squeezing the others.
-    expect(mocks.tableScroll?.x).toBe(1166);
+    expect(mocks.tableScroll?.x).toBe(1216);
   });
 
   it('offers no selection column to an operator who cannot delete', () => {
@@ -475,14 +475,14 @@ describe('TaskTemplateListPage', () => {
     mocks.data = { items: [item, second], totalAll: 2, totalFiltered: 2 };
     renderPage();
 
-    expect(screen.queryByText(/taskTemplateCatalog\.list\.selectedCount/)).toBeNull();
+    expect(screen.queryByText(/agentTemplateCatalog\.list\.selectedCount/)).toBeNull();
 
     fireEvent.click(screen.getByLabelText('select-tpl-1'));
-    expect(screen.getByText('taskTemplateCatalog.list.selectedCount:1')).toBeTruthy();
-    expect(screen.getByText('taskTemplateCatalog.list.bulk.delete')).toBeTruthy();
+    expect(screen.getByText('agentTemplateCatalog.list.selectedCount:1')).toBeTruthy();
+    expect(screen.getByText('agentTemplateCatalog.list.bulk.delete')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('select-tpl-2'));
-    expect(screen.getByText('taskTemplateCatalog.list.selectedCount:2')).toBeTruthy();
+    expect(screen.getByText('agentTemplateCatalog.list.selectedCount:2')).toBeTruthy();
   });
 
   it('confirms once, deletes every selected row with its own CAS token, then clears', async () => {
@@ -493,11 +493,13 @@ describe('TaskTemplateListPage', () => {
 
     fireEvent.click(screen.getByLabelText('select-tpl-1'));
     fireEvent.click(screen.getByLabelText('select-tpl-2'));
-    fireEvent.click(screen.getByText('taskTemplateCatalog.list.bulk.delete'));
+    fireEvent.click(screen.getByText('agentTemplateCatalog.list.bulk.delete'));
 
     expect(mocks.confirm).toHaveBeenCalledTimes(1);
     // The confirmation names the size of the selection, not just its copy key.
-    expect(mocks.confirm.mock.calls[0][0].content).toBe('taskTemplateCatalog.bulkDelete.content:2');
+    expect(mocks.confirm.mock.calls[0][0].content).toBe(
+      'agentTemplateCatalog.bulkDelete.content:2',
+    );
     expect(mocks.deleteTemplate).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -507,11 +509,11 @@ describe('TaskTemplateListPage', () => {
     expect(mocks.deleteTemplate).toHaveBeenCalledTimes(2);
     expect(mocks.deleteTemplate).toHaveBeenNthCalledWith(1, { expectedRevision: 3, id: 'tpl-1' });
     expect(mocks.deleteTemplate).toHaveBeenNthCalledWith(2, { expectedRevision: 5, id: 'tpl-2' });
-    expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.bulkDeleted:2');
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('agentTemplateCatalog.toast.bulkDeleted:2');
     expect(mocks.refreshLists).toHaveBeenCalled();
 
     await waitFor(() =>
-      expect(screen.queryByText(/taskTemplateCatalog\.list\.selectedCount/)).toBeNull(),
+      expect(screen.queryByText(/agentTemplateCatalog\.list\.selectedCount/)).toBeNull(),
     );
   });
 
@@ -525,7 +527,7 @@ describe('TaskTemplateListPage', () => {
 
     fireEvent.click(screen.getByLabelText('select-tpl-1'));
     fireEvent.click(screen.getByLabelText('select-tpl-2'));
-    fireEvent.click(screen.getByText('taskTemplateCatalog.list.bulk.delete'));
+    fireEvent.click(screen.getByText('agentTemplateCatalog.list.bulk.delete'));
 
     let finished = false;
     const run = mocks.confirm.mock.calls[0][0].onConfirm().then(() => {
@@ -551,7 +553,7 @@ describe('TaskTemplateListPage', () => {
       await run;
     });
     expect(finished).toBe(true);
-    expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.bulkDeleted:2');
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('agentTemplateCatalog.toast.bulkDeleted:2');
   });
 
   it('keeps a row selected after a search drops it from the current page', async () => {
@@ -568,9 +570,9 @@ describe('TaskTemplateListPage', () => {
       renderPage();
 
       fireEvent.click(screen.getByLabelText('select-tpl-1'));
-      expect(screen.getByText('taskTemplateCatalog.list.selectedCount:1')).toBeTruthy();
+      expect(screen.getByText('agentTemplateCatalog.list.selectedCount:1')).toBeTruthy();
 
-      fireEvent.change(screen.getByLabelText('taskTemplateCatalog.list.filters.query'), {
+      fireEvent.change(screen.getByLabelText('agentTemplateCatalog.list.filters.query'), {
         target: { value: 'Second' },
       });
       // Search is debounced; let it land so the row genuinely leaves the dataSource.
@@ -581,16 +583,16 @@ describe('TaskTemplateListPage', () => {
       expect(screen.queryByLabelText('select-tpl-1')).toBeNull();
       expect(screen.getByLabelText('select-tpl-2')).toBeTruthy();
       // The selection outlives the page it was made on — count and target both survive.
-      expect(screen.getByText('taskTemplateCatalog.list.selectedCount:1')).toBeTruthy();
+      expect(screen.getByText('agentTemplateCatalog.list.selectedCount:1')).toBeTruthy();
 
       // Picking a row on the new result must not drop the off-page row: the table only ever
       // hands back the rows it can see, so the remembered one has to be merged back in.
       fireEvent.click(screen.getByLabelText('select-tpl-2'));
-      expect(screen.getByText('taskTemplateCatalog.list.selectedCount:2')).toBeTruthy();
+      expect(screen.getByText('agentTemplateCatalog.list.selectedCount:2')).toBeTruthy();
 
-      fireEvent.click(screen.getByText('taskTemplateCatalog.list.bulk.delete'));
+      fireEvent.click(screen.getByText('agentTemplateCatalog.list.bulk.delete'));
       expect(mocks.confirm.mock.calls[0][0].content).toBe(
-        'taskTemplateCatalog.bulkDelete.content:2',
+        'agentTemplateCatalog.bulkDelete.content:2',
       );
 
       await act(async () => {
@@ -615,7 +617,7 @@ describe('TaskTemplateListPage', () => {
 
     fireEvent.click(screen.getByLabelText('select-tpl-1'));
     fireEvent.click(screen.getByLabelText('select-tpl-2'));
-    fireEvent.click(screen.getByText('taskTemplateCatalog.list.bulk.delete'));
+    fireEvent.click(screen.getByText('agentTemplateCatalog.list.bulk.delete'));
     await act(async () => {
       await mocks.confirm.mock.calls[0][0].onConfirm();
     });
@@ -624,21 +626,21 @@ describe('TaskTemplateListPage', () => {
     // The failed row is named with the reason the production error mapper derived from the
     // tRPC payload — a translated string, never a raw error code.
     expect(mocks.toastWarning).toHaveBeenCalledWith(
-      'taskTemplateCatalog.toast.bulkSummary — taskTemplateCatalog.toast.bulkFailureDetail:taskTemplateCatalog.bulkDelete.reason.conflict',
+      'agentTemplateCatalog.toast.bulkSummary — agentTemplateCatalog.toast.bulkFailureDetail:agentTemplateCatalog.bulkDelete.reason.conflict',
     );
     expect(mocks.refreshLists).toHaveBeenCalled();
   });
 
-  it('warns instead of claiming success when upstream rows were discarded', async () => {
-    mocks.importRecommendations.mockResolvedValue({ created: 2, skipped: 3, updated: 0 });
+  it('warns instead of claiming success when built-in rows were discarded', async () => {
+    mocks.importBuiltins.mockResolvedValue({ created: 2, skipped: 3, updated: 0 });
     renderPage();
 
-    fireEvent.click(screen.getByText('taskTemplateCatalog.actions.import'));
+    fireEvent.click(screen.getByText('agentTemplateCatalog.actions.import'));
     await mocks.confirm.mock.calls[0][0].onConfirm();
 
-    // Silently dropping invalid market rows would misreport a partial import as a full one.
+    // Silently dropping invalid built-in rows would misreport a partial import as a full one.
     expect(mocks.toastWarning).toHaveBeenCalledWith(
-      'taskTemplateCatalog.toast.importedWithSkipped',
+      'agentTemplateCatalog.toast.importedWithSkipped',
     );
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
   });

@@ -2,6 +2,7 @@
 export const AUDIT_LOG_TARGET_TYPES = [
   'agent',
   'agent_dependency_validation',
+  'agent_template',
   'audit_event',
   'audit_export',
   'audit_policy',

@@ -1,7 +1,7 @@
-import { ActionIcon, Block, Flexbox, Text } from '@lobehub/ui';
+import { ActionIcon, Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { cssVar } from 'antd-style';
-import { Blocks, CheckCircle2, Lightbulb, PencilLineIcon, RefreshCw, X } from 'lucide-react';
+import { Blocks, CheckCircle2, PencilLineIcon, X } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -12,7 +12,7 @@ import {
   ChatInputProvider,
   DesktopChatInput,
 } from '@/features/ChatInput';
-import { useRandomQuestions } from '@/routes/(main)/home/features/SuggestQuestions/useRandomQuestions';
+import CreateAgentExamples from '@/features/CreateAgentExamples';
 import { agentSkillService } from '@/services/skill';
 import { useToolStore } from '@/store/tool';
 import type { DiscoverSkillItem } from '@/types/discover';
@@ -221,86 +221,6 @@ const SkillInstalledPanel = memo<SkillInstalledPanelProps>(({ onClose, onOpenSki
         <Button type={'primary'} onClick={onClose}>
           {t('createModal.skillSuggestion.actions.tryInLobeAI')}
         </Button>
-      </Flexbox>
-    </Flexbox>
-  );
-});
-
-interface ExampleItemProps {
-  description: string;
-  onClick: (prompt: string) => void;
-  prompt: string;
-  title: string;
-}
-
-const ExampleItem = memo<ExampleItemProps>(({ title, description, onClick, prompt }) => {
-  return (
-    <Block
-      clickable
-      variant={'outlined'}
-      style={{
-        borderRadius: cssVar.borderRadiusLG,
-        cursor: 'pointer',
-      }}
-      onClick={() => onClick(prompt)}
-    >
-      <Flexbox gap={4} paddingBlock={12} paddingInline={14}>
-        <Text ellipsis fontSize={14} style={{ fontWeight: 500 }}>
-          {title}
-        </Text>
-        <Text color={cssVar.colorTextTertiary} ellipsis={{ rows: 2 }} fontSize={12}>
-          {description}
-        </Text>
-      </Flexbox>
-    </Block>
-  );
-});
-
-interface ExamplesProps {
-  onExampleClick: (prompt: string) => void;
-  suggestMode: 'agent' | 'group';
-}
-
-const Examples = memo<ExamplesProps>(({ suggestMode, onExampleClick }) => {
-  const { t: tCommon } = useTranslation('common');
-  const { t: tSuggest } = useTranslation('suggestQuestions');
-  const { questions, refresh } = useRandomQuestions(suggestMode);
-
-  if (questions.length === 0) return null;
-
-  return (
-    <Flexbox gap={16}>
-      <Flexbox horizontal align={'center'} justify={'space-between'}>
-        <Flexbox horizontal align={'center'} gap={8}>
-          <Lightbulb color={cssVar.colorTextDescription} size={18} />
-          <Text color={cssVar.colorTextSecondary}>{tCommon('home.suggestQuestions')}</Text>
-        </Flexbox>
-        <Flexbox
-          horizontal
-          align={'center'}
-          gap={4}
-          style={{ cursor: 'pointer' }}
-          onClick={refresh}
-        >
-          <ActionIcon icon={RefreshCw} size={'small'} />
-          <Text color={cssVar.colorTextSecondary} fontSize={12}>
-            {tCommon('switch')}
-          </Text>
-        </Flexbox>
-      </Flexbox>
-      <Flexbox gap={12} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)' }}>
-        {questions.map((item) => {
-          const prompt = tSuggest(item.promptKey as any);
-          return (
-            <ExampleItem
-              description={prompt}
-              key={item.id}
-              prompt={prompt}
-              title={tSuggest(item.titleKey as any)}
-              onClick={onExampleClick}
-            />
-          );
-        })}
       </Flexbox>
     </Flexbox>
   );
@@ -617,7 +537,7 @@ export const CreateAgentModal = memo<CreateAgentModalProps>(
 
             {/* Examples */}
             {!skillSuggestion && (
-              <Examples suggestMode={type} onExampleClick={handleExampleClick} />
+              <CreateAgentExamples suggestMode={type} onExampleClick={handleExampleClick} />
             )}
           </Flexbox>
         )}

@@ -1282,6 +1282,9 @@ export default {
   'settingsPolicy.paths.defaultAgent.config.systemRole.title': 'Default system role',
   'settingsPolicy.paths.defaultAgent.config.systemRole.desc':
     'Default system prompt for new agents.',
+  'settingsPolicy.paths.defaultAgent.config.chatConfig.effort.title': 'Thinking effort',
+  'settingsPolicy.paths.defaultAgent.config.chatConfig.effort.desc':
+    "Default thinking-effort level for new agents, stored on the default assistant's chatConfig under the key the selected model uses.",
   'settingsPolicy.paths.defaultAgent.config.chatConfig.enableStreaming.title': 'Streaming replies',
   'settingsPolicy.paths.defaultAgent.config.chatConfig.enableStreaming.desc':
     'Stream tokens for the default agent.',
@@ -2416,6 +2419,12 @@ export default {
   'audit.logs.columns.reason': 'Reason',
   'audit.logs.columns.requestId': 'Request ID',
   // Human labels for audit action + target-type enum values (fallback humanizes unknowns).
+  'audit.logs.action.admin.agentTemplates.create': 'Create agent template',
+  'audit.logs.action.admin.agentTemplates.delete': 'Delete agent template',
+  'audit.logs.action.admin.agentTemplates.importBuiltins': 'Import built-in agent templates',
+  'audit.logs.action.admin.agentTemplates.reorder': 'Reorder agent templates',
+  'audit.logs.action.admin.agentTemplates.setEnabled': 'Toggle agent template',
+  'audit.logs.action.admin.agentTemplates.update': 'Update agent template',
   'audit.logs.action.admin.agents.archive': 'Archive agent',
   'audit.logs.action.admin.agents.assignments.create': 'Create agent assignment',
   'audit.logs.action.admin.agents.assignments.remove': 'Remove agent assignment',
@@ -2607,6 +2616,7 @@ export default {
   'audit.logs.action.user.connectors.oauthCallback': 'Complete connector OAuth callback',
   'audit.logs.targetType.agent': 'Agent',
   'audit.logs.targetType.agent_dependency_validation': 'Agent dependency validation',
+  'audit.logs.targetType.agent_template': 'Agent template',
   'audit.logs.targetType.audit_event': 'Audit entry',
   'audit.logs.targetType.audit_export': 'Audit export',
   'audit.logs.targetType.audit_policy': 'Audit settings',
@@ -3137,6 +3147,105 @@ export default {
   'taskTemplateCatalog.toast.bulkDeleted_other': '{{count}} task templates deleted.',
   'taskTemplateCatalog.toast.bulkSummary': '{{succeeded}} deleted, {{failed}} failed',
   'taskTemplateCatalog.toast.bulkFailureDetail': '{{title}}: {{reason}}',
+
+  // 助理模板 / 模板管理 (platform agent templates + the merged Template management page)
+  'nav.templates': 'Template management',
+  'templates.tabs.tasks': 'Task templates',
+  'templates.tabs.agents': 'Agent templates',
+  'page.templates.desc':
+    'Scheduled-task recommendations and the example cards users see when creating an assistant.',
+  'agentTemplateCatalog.title': 'Agent templates',
+  'agentTemplateCatalog.desc':
+    'Example cards shown when a user creates an assistant. While this list is empty, users keep seeing the built-in examples.',
+  'agentTemplateCatalog.actions.create': 'New template',
+  'agentTemplateCatalog.actions.import': 'Import built-in examples',
+  'agentTemplateCatalog.actions.edit': 'Edit',
+  'agentTemplateCatalog.actions.delete': 'Delete',
+  'agentTemplateCatalog.actions.retry': 'Retry',
+  'agentTemplateCatalog.list.columns.order': 'Order',
+  'agentTemplateCatalog.list.columns.template': 'Title',
+  'agentTemplateCatalog.list.columns.description': 'Description',
+  'agentTemplateCatalog.list.columns.tags': 'Tags',
+  'agentTemplateCatalog.list.columns.enabled': 'Status',
+  'agentTemplateCatalog.list.columns.source': 'Source',
+  'agentTemplateCatalog.list.columns.updatedAt': 'Updated',
+  'agentTemplateCatalog.list.columns.actions': 'Actions',
+  'agentTemplateCatalog.list.filters.query': 'Search title or identifier',
+  'agentTemplateCatalog.list.empty.default':
+    'No agent templates yet. Import the built-in examples or create your own.',
+  'agentTemplateCatalog.list.empty.filtered': 'No template matches these filters.',
+  'agentTemplateCatalog.list.error.page': 'Could not load agent templates.',
+  'agentTemplateCatalog.list.tags.none': 'None',
+  'agentTemplateCatalog.list.dragHandle': 'Drag to reorder {{title}}',
+  'agentTemplateCatalog.list.reorderHint': 'Clear the filters to reorder by dragging.',
+  'agentTemplateCatalog.list.selectedCount': '{{count}} selected',
+  'agentTemplateCatalog.list.bulk.delete': 'Delete',
+  'agentTemplateCatalog.boolean.true': 'Enabled',
+  'agentTemplateCatalog.boolean.false': 'Disabled',
+  'agentTemplateCatalog.source.manual': 'Manual',
+  'agentTemplateCatalog.source.builtin': 'Built-in',
+  'agentTemplateCatalog.create.title': 'New agent template',
+  'agentTemplateCatalog.edit.title': 'Edit agent template',
+  'agentTemplateCatalog.form.submit': 'Save',
+  'agentTemplateCatalog.form.cancel': 'Cancel',
+  'agentTemplateCatalog.form.title': 'Title',
+  'agentTemplateCatalog.form.description': 'Description',
+  'agentTemplateCatalog.form.descriptionHint':
+    'Subtitle on the card. The prompt is shown instead while this is empty.',
+  'agentTemplateCatalog.form.systemRole': 'Prompt',
+  'agentTemplateCatalog.form.systemRoleHint':
+    'Filled into the input when a user picks this example.',
+  'agentTemplateCatalog.form.avatar': 'Avatar',
+  'agentTemplateCatalog.form.backgroundColor': 'Background color',
+  'agentTemplateCatalog.form.tags': 'Tags',
+  'agentTemplateCatalog.form.tagsPlaceholder': 'Type a tag and press Enter',
+  'agentTemplateCatalog.form.enabled': 'Show to users',
+  'agentTemplateCatalog.form.errors.title': 'Enter a title.',
+  'agentTemplateCatalog.form.errors.systemRole': 'Enter a prompt.',
+  'agentTemplateCatalog.form.errors.tagLimit': 'A template can carry at most {{max}} tags.',
+  'agentTemplateCatalog.form.errors.tagLength': 'Each tag can be at most {{max}} characters.',
+  'agentTemplateCatalog.form.errors.identifierTaken':
+    'That identifier is already used by another template.',
+  'agentTemplateCatalog.form.conflict':
+    'Another administrator changed this template while it was open. Reload to see the current version before saving.',
+  'agentTemplateCatalog.form.conflictReload': 'Reload',
+  'agentTemplateCatalog.form.conflictDeleted':
+    'This template no longer exists — another administrator deleted it. Close the editor and create a new one if you still need it.',
+  'agentTemplateCatalog.form.conflictReloadFailed':
+    'Could not load the current version. Check your connection and try again.',
+  'agentTemplateCatalog.delete.title': 'Delete this agent template?',
+  'agentTemplateCatalog.delete.content':
+    '“{{title}}” disappears from the create-assistant examples immediately. This cannot be undone.',
+  'agentTemplateCatalog.delete.confirm': 'Delete',
+  'agentTemplateCatalog.import.title': 'Import built-in examples?',
+  'agentTemplateCatalog.import.content':
+    'Adds the built-in create-assistant examples to this list, in your console language. Templates you already manage keep their status and order; only their content is refreshed.',
+  'agentTemplateCatalog.import.confirm': 'Import',
+  'agentTemplateCatalog.toast.created': 'Agent template created.',
+  'agentTemplateCatalog.toast.updated': 'Agent template saved.',
+  'agentTemplateCatalog.toast.deleted': 'Agent template deleted.',
+  'agentTemplateCatalog.toast.enabled': 'Agent template is now visible to users.',
+  'agentTemplateCatalog.toast.disabled': 'Agent template is now hidden.',
+  'agentTemplateCatalog.toast.reordered': 'Order saved.',
+  'agentTemplateCatalog.toast.imported': 'Imported: {{created}} added, {{updated}} refreshed.',
+  'agentTemplateCatalog.toast.importedWithSkipped':
+    'Imported: {{created}} added, {{updated}} refreshed, {{skipped}} skipped.',
+  'agentTemplateCatalog.toast.error': 'The change could not be saved. Please try again.',
+  'agentTemplateCatalog.toast.conflict':
+    'Another administrator changed this template. The list has been refreshed.',
+  'agentTemplateCatalog.bulkDelete.title': 'Delete selected agent templates?',
+  'agentTemplateCatalog.bulkDelete.content_one':
+    '{{count}} agent template disappears from the create-assistant examples immediately. This cannot be undone.',
+  'agentTemplateCatalog.bulkDelete.content_other':
+    '{{count}} agent templates disappear from the create-assistant examples immediately. This cannot be undone.',
+  'agentTemplateCatalog.bulkDelete.confirm': 'Delete',
+  'agentTemplateCatalog.bulkDelete.reason.conflict': 'Changed by another administrator',
+  'agentTemplateCatalog.bulkDelete.reason.notFound': 'Already deleted',
+  'agentTemplateCatalog.bulkDelete.reason.failed': 'Could not be deleted',
+  'agentTemplateCatalog.toast.bulkDeleted_one': '{{count}} agent template deleted.',
+  'agentTemplateCatalog.toast.bulkDeleted_other': '{{count}} agent templates deleted.',
+  'agentTemplateCatalog.toast.bulkSummary': '{{succeeded}} deleted, {{failed}} failed',
+  'agentTemplateCatalog.toast.bulkFailureDetail': '{{title}}: {{reason}}',
   'nav.contentModeration': 'Content moderation',
   'contentModeration.page.title': 'Content moderation',
   'contentModeration.page.desc':
@@ -4058,8 +4167,8 @@ export default {
   'modules.items.speech.desc': 'Text-to-speech and speech-to-text.',
   'modules.items.speech.title': 'Speech',
   'modules.items.taskTemplates.desc':
-    'Authored recommendations that create a scheduled task in one click.',
-  'modules.items.taskTemplates.title': 'Task templates',
+    'Authored scheduled-task recommendations and create-agent example templates.',
+  'modules.items.taskTemplates.title': 'Templates',
   'modules.items.webSearch.desc':
     'Search providers and the web browsing tool; may need a search engine.',
   'modules.items.webSearch.title': 'Web search',

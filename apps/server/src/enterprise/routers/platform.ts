@@ -1,7 +1,11 @@
 import { TASK_TEMPLATE_RECOMMEND_MAX_COUNT } from '@lobechat/const';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { PlatformSidebarLayoutModel, PlatformTaskTemplateModel } from '@/database/models/platform';
+import {
+  PlatformAgentTemplateModel,
+  PlatformSidebarLayoutModel,
+  PlatformTaskTemplateModel,
+} from '@/database/models/platform';
 import { RbacModel } from '@/database/models/rbac';
 import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
@@ -11,6 +15,11 @@ import {
   sidebarLayoutPolicySchema,
 } from '@/types/platform/sidebarLayout';
 
+import {
+  AGENT_TEMPLATE_DISPLAY_MAX,
+  EMPTY_PLATFORM_AGENT_TEMPLATE_LIST,
+  platformAgentTemplateListOutputSchema,
+} from '../contracts/adminAgentTemplates';
 import {
   EMPTY_PLATFORM_TASK_TEMPLATE_LIST,
   platformTaskTemplateListOutputSchema,
@@ -30,6 +39,7 @@ import {
 } from '../services/managedResourceCapabilities';
 import { getModuleSettingsSnapshot, isModuleEnabled } from '../services/moduleSettings';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
+import { isRenderableAgentTemplate, toPlatformAgentTemplate } from './admin/agentTemplatesSupport';
 import { isRenderableTaskTemplate, toPlatformTaskTemplate } from './admin/taskTemplatesSupport';
 import { withActiveUserWhenManaged } from './managedActiveUser';
 import { platformAgentsRouter } from './platformAgents';
@@ -59,6 +69,36 @@ export const platformRouter = router({
   }),
 
   skills: platformSkillsRouter,
+
+  agentTemplates: router({
+    /**
+     * Platform-managed 助理模板 for the current user (create-agent modal examples).
+     *
+     * Emptiness is meaningful: `managed: false` (flag off, or zero rows in the table) tells the
+     * client to keep using the locale-driven built-in examples. Once the table holds any row the
+     * platform list is authoritative and only enabled rows are returned.
+     */
+    list: authedProcedure
+      .use(serverDatabase)
+      .output(platformAgentTemplateListOutputSchema)
+      .query(async ({ ctx }) => {
+        const flags = parseEnterpriseFeatureFlags(process.env);
+        if (!flags.ENABLE_PLATFORM_ADMIN || !(await isModuleEnabled('taskTemplates')))
+          return { ...EMPTY_PLATFORM_AGENT_TEMPLATE_LIST };
+
+        const model = new PlatformAgentTemplateModel(ctx.serverDB);
+        const total = await model.count();
+        if (total === 0) return { ...EMPTY_PLATFORM_AGENT_TEMPLATE_LIST };
+
+        const rows = await model.listEnabled(AGENT_TEMPLATE_DISPLAY_MAX);
+        return {
+          managed: true,
+          templates: rows
+            .filter((row) => isRenderableAgentTemplate(row))
+            .map((row) => toPlatformAgentTemplate(row)),
+        };
+      }),
+  }),
 
   taskTemplates: router({
     /**

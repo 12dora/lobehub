@@ -597,7 +597,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     workers: [],
   }),
   taskTemplates: def({
-    adminRouterKeys: ['taskTemplates'],
+    adminRouterKeys: ['taskTemplates', 'agentTemplates'],
     asyncRouterKeys: [],
     cost: {
       backgroundJobs: 0,

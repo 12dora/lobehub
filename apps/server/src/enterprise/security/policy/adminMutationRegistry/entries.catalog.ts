@@ -59,6 +59,26 @@ const taskTemplateImportAudit = enforced(
   'Router persists per-identifier bounded sanitized before/after row summaries, plus batch counts, in the write transaction.',
 );
 
+/**
+ * Agent-template rows are ordinary authored content: the before/after state is fully captured by
+ * the audit diff, so no separate operator justification is collected on every edit or toggle.
+ */
+const agentTemplateContentReason = notApplicable(
+  'Agent-template edits are recorded with their own before/after audit diff instead of an operator reason.',
+);
+
+const agentTemplateContentAudit = enforced(
+  'Router persists a bounded sanitized before/after row summary in the same transaction as the write.',
+);
+
+const agentTemplateOrderAudit = enforced(
+  'Router persists the resulting identifier order and slot assignment in the write transaction.',
+);
+
+const agentTemplateImportAudit = enforced(
+  'Router persists per-identifier bounded sanitized before/after row summaries, plus batch counts, in the write transaction.',
+);
+
 export const ADMIN_MUTATION_ENTRIES_CATALOG = {
   'admin.agents.archive': dangerousMutation(
     'admin.agents.archive',
@@ -271,6 +291,42 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'low',
     'Validate a stored platform skill version.',
     { reason: optionalReasonInput },
+  ),
+  'admin.agentTemplates.create': regularMutation(
+    'admin.agentTemplates.create',
+    'medium',
+    'Create a platform agent template that users see as a create-agent example.',
+    { audit: agentTemplateContentAudit, reason: agentTemplateContentReason },
+  ),
+  'admin.agentTemplates.delete': regularMutation(
+    'admin.agentTemplates.delete',
+    'medium',
+    'Hard delete a platform agent template row; the example disappears for every user.',
+    { audit: agentTemplateContentAudit, reason: agentTemplateContentReason },
+  ),
+  'admin.agentTemplates.importBuiltins': regularMutation(
+    'admin.agentTemplates.importBuiltins',
+    'medium',
+    'Import the built-in create-agent examples and upsert them by identifier.',
+    { audit: agentTemplateImportAudit, reason: agentTemplateContentReason },
+  ),
+  'admin.agentTemplates.reorder': regularMutation(
+    'admin.agentTemplates.reorder',
+    'low',
+    'Change the display order of platform agent templates on the create-agent modal.',
+    { audit: agentTemplateOrderAudit, reason: agentTemplateContentReason },
+  ),
+  'admin.agentTemplates.setEnabled': regularMutation(
+    'admin.agentTemplates.setEnabled',
+    'low',
+    'Show or hide a single platform agent template without deleting its content.',
+    { audit: agentTemplateContentAudit, reason: agentTemplateContentReason },
+  ),
+  'admin.agentTemplates.update': regularMutation(
+    'admin.agentTemplates.update',
+    'medium',
+    'Change the content or visibility of a platform agent template.',
+    { audit: agentTemplateContentAudit, reason: agentTemplateContentReason },
   ),
   'admin.taskTemplates.create': regularMutation(
     'admin.taskTemplates.create',

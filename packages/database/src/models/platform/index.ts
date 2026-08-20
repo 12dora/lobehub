@@ -1,5 +1,6 @@
 export * from './accessStatus';
 export * from './adminMutationRate';
+export * from './agentTemplate';
 export * from './aiCatalog';
 export * from './auditConversation';
 export * from './auditCredentialMask';

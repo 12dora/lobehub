@@ -326,8 +326,48 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
     path: 'admin.skills.validate',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_UPDATE] },
   },
-  // 任务模板 deliberately reuses the platform-agent permission codes so that an already
-  // provisioned deployment does not have to re-seed RBAC for this module.
+  // 助理模板 / 任务模板 deliberately reuse the platform-agent permission codes so that an
+  // already provisioned deployment does not have to re-seed RBAC for this module. Both
+  // routers are gated by the `taskTemplates` module id.
+  {
+    kind: 'mutation',
+    path: 'admin.agentTemplates.create',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_CREATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.agentTemplates.delete',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_DELETE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.agentTemplates.importBuiltins',
+    // Import creates new rows AND overwrites the content of existing ones — both are required.
+    permission: {
+      mode: 'all',
+      permissions: [PLATFORM_PERMISSIONS.AGENT_CREATE, PLATFORM_PERMISSIONS.AGENT_UPDATE],
+    },
+  },
+  {
+    kind: 'query',
+    path: 'admin.agentTemplates.list',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.agentTemplates.reorder',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.agentTemplates.setEnabled',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.agentTemplates.update',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE] },
+  },
   {
     kind: 'mutation',
     path: 'admin.taskTemplates.create',

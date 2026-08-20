@@ -17,6 +17,7 @@ import { assertRecentReauth } from '../guards/reauth';
 import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserService';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
 import { adminAgentsRouter } from './admin/agents';
+import { adminAgentTemplatesRouter } from './admin/agentTemplates';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
 import { adminAiProviderOAuthRouter } from './admin/aiProviderOAuth';
 import { adminAuditRouter } from './admin/audit';
@@ -191,6 +192,7 @@ export const adminRouter = router({
   skills: adminSkillsRouter,
   stats: adminStatsRouter,
   system: adminSystemRouter,
+  agentTemplates: adminAgentTemplatesRouter,
   taskTemplates: adminTaskTemplatesRouter,
   users: adminUsersRouter,
 });

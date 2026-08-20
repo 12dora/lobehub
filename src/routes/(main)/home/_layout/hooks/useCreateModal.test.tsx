@@ -15,6 +15,9 @@ const skillServiceMocks = vi.hoisted(() => ({
 const toolStoreMocks = vi.hoisted(() => ({
   refreshAgentSkills: vi.fn(),
 }));
+const platformAgentTemplates = vi.hoisted(() => ({
+  state: { managed: false, resolved: true, templates: [] as unknown[] },
+}));
 const chatInputState = vi.hoisted(() => {
   interface Editor {
     focus: () => void;
@@ -53,6 +56,9 @@ vi.mock('@lobehub/analytics', () => ({
 vi.mock('@lobehub/ui', () => ({
   ActionIcon: ({ onClick }: { onClick?: () => void }) => (
     <button aria-label="icon action" type="button" onClick={onClick} />
+  ),
+  Avatar: ({ alt, avatar }: { alt?: string; avatar?: string }) => (
+    <img alt={alt} data-avatar={avatar} />
   ),
   Block: ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) => (
     <button type="button" onClick={onClick}>
@@ -223,6 +229,10 @@ vi.mock('@/features/ChatInput', () => ({
   ),
 }));
 
+vi.mock('@/enterprise/client/hooks/usePlatformAgentTemplates', () => ({
+  usePlatformAgentTemplates: () => platformAgentTemplates.state,
+}));
+
 vi.mock('@/routes/(main)/home/features/SuggestQuestions/useRandomQuestions', () => ({
   useRandomQuestions: () => ({
     questions: [
@@ -312,6 +322,7 @@ describe('CreateAgentModal analytics', () => {
       status: 'created',
     });
     telemetryState.enabled = true;
+    platformAgentTemplates.state = { managed: false, resolved: true, templates: [] };
     chatInputState.onMarkdownContentChange = undefined;
     chatInputState.onSend = undefined;
     toolStoreMocks.refreshAgentSkills.mockReset();
@@ -742,5 +753,128 @@ describe('CreateAgentModal analytics', () => {
     expect(
       await screen.findByText("Skill wasn't added. Retry, or create an Agent anyway."),
     ).toBeInTheDocument();
+  });
+});
+
+describe('CreateAgentModal platform-managed examples', () => {
+  beforeEach(() => {
+    analyticsTrack.mockReset();
+    marketApiMocks.searchSkill.mockReset();
+    marketApiMocks.searchSkill.mockResolvedValue({
+      currentPage: 1,
+      items: [],
+      pageSize: 3,
+      totalCount: 0,
+      totalPages: 0,
+    });
+    telemetryState.enabled = true;
+    platformAgentTemplates.state = { managed: false, resolved: true, templates: [] };
+    chatInputState.onMarkdownContentChange = undefined;
+    chatInputState.onSend = undefined;
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('renders nothing while the platform answer is still unknown', () => {
+    // Showing the built-ins here would flash them at a tenant whose operator replaced them.
+    platformAgentTemplates.state = { managed: false, resolved: false, templates: [] };
+    renderModal();
+
+    expect(screen.queryByText('Example title')).not.toBeInTheDocument();
+    expect(screen.queryByText('Try these examples')).not.toBeInTheDocument();
+  });
+
+  it('keeps the shuffled built-in examples when no operator manages the catalog', () => {
+    renderModal();
+
+    expect(screen.getByText('Example title')).toBeInTheDocument();
+    // The refresh control belongs to the shuffled pool.
+    expect(screen.getByText('Switch')).toBeInTheDocument();
+  });
+
+  it('hides the section when the operator manages the catalog but enabled nothing', () => {
+    platformAgentTemplates.state = { managed: true, resolved: true, templates: [] };
+    renderModal();
+
+    expect(screen.queryByText('Example title')).not.toBeInTheDocument();
+    expect(screen.queryByText('Try these examples')).not.toBeInTheDocument();
+  });
+
+  it('renders every managed template in admin order, without a refresh control', () => {
+    platformAgentTemplates.state = {
+      managed: true,
+      resolved: true,
+      templates: [
+        {
+          avatar: '\u{1F4CA}',
+          backgroundColor: null,
+          description: 'Turns raw numbers into a weekly brief',
+          id: 'tpl-1',
+          identifier: 'agent-01',
+          systemRole: 'You are a data analyst.',
+          tags: [],
+          title: 'Data analyst',
+        },
+        {
+          avatar: null,
+          backgroundColor: null,
+          description: '',
+          id: 'tpl-2',
+          identifier: 'agent-02',
+          systemRole: 'You are a meticulous code reviewer who explains every suggestion.',
+          tags: [],
+          title: 'Code reviewer',
+        },
+      ],
+    };
+    renderModal();
+
+    expect(screen.getByText('Data analyst')).toBeInTheDocument();
+    expect(screen.getByText('Code reviewer')).toBeInTheDocument();
+    // The locale pool must not leak in alongside the authored list.
+    expect(screen.queryByText('Example title')).not.toBeInTheDocument();
+    // Order is the product here, so there is nothing to reshuffle.
+    expect(screen.queryByText('Switch')).not.toBeInTheDocument();
+    // A template without its own description falls back to its prompt, like the locale cards.
+    expect(
+      screen.getByText('You are a meticulous code reviewer who explains every suggestion.'),
+    ).toBeInTheDocument();
+  });
+
+  it('prefills the input with the template prompt, not its description', async () => {
+    platformAgentTemplates.state = {
+      managed: true,
+      resolved: true,
+      templates: [
+        {
+          avatar: null,
+          backgroundColor: null,
+          description: 'Turns raw numbers into a weekly brief',
+          id: 'tpl-1',
+          identifier: 'agent-01',
+          systemRole: 'You are a data analyst.',
+          tags: [],
+          title: 'Data analyst',
+        },
+      ],
+    };
+    const { onSubmit } = renderModal();
+
+    fireEvent.click(screen.getByText('Data analyst'));
+    fireEvent.click(screen.getByText('Send'));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith('You are a data analyst.');
+    });
+  });
+
+  it('leaves the group examples on the locale pool', () => {
+    platformAgentTemplates.state = { managed: true, resolved: true, templates: [] };
+    renderModal('group');
+
+    // The agent catalog must never take over the group half of the same modal.
+    expect(screen.getByText('Example title')).toBeInTheDocument();
   });
 });

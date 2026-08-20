@@ -99,7 +99,7 @@ describe('createAdminRouteTree', () => {
     expect(componentIdOf('users/:id')).toBe('UserDetailPage');
     expect(componentIdOf('agents')).toBe('AgentListPage');
     expect(componentIdOf('branding')).toBe('BrandingPage');
-    expect(componentIdOf('ai/task-templates')).toBe('TaskTemplateListPage');
+    expect(componentIdOf('ai/task-templates')).toBe('TemplatesManagementPage');
     expect(componentIdOf('system/status')).toBe('SystemPage');
     expect(componentIdOf('system/general')).toBe('SystemGeneralPage');
 

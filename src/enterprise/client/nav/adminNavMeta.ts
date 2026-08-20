@@ -44,7 +44,8 @@ export type AdminNavLabelKey =
   | 'nav.systemGeneral'
   | 'nav.systemStatus'
   | 'nav.modules'
-  | 'nav.taskTemplates';
+  | 'nav.taskTemplates'
+  | 'nav.templates';
 
 /**
  * Single source of truth for admin nav + route permission declarations.
@@ -170,10 +171,12 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
       },
       {
-        // 任务模板 — authored recommendations that create a scheduled task on the inbox agent,
-        // so they reuse the platform-agent permission codes (no extra RBAC seeding).
+        // 模板管理 — one surface with two tabs: 任务模板 (authored recommendations that create a
+        // scheduled task on the inbox agent) and 助理模板 (create-agent example cards). Both
+        // reuse the platform-agent permission codes (no extra RBAC seeding). The id and path
+        // stay `task-templates` so existing deep links keep working.
         id: 'task-templates',
-        labelKey: 'nav.taskTemplates',
+        labelKey: 'nav.templates',
         moduleId: 'taskTemplates',
         path: '/admin/ai/task-templates',
         requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],

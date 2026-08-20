@@ -7,6 +7,12 @@
  */
 
 export const AUDIT_ACTIONS = [
+  'admin.agentTemplates.create',
+  'admin.agentTemplates.delete',
+  'admin.agentTemplates.importBuiltins',
+  'admin.agentTemplates.reorder',
+  'admin.agentTemplates.setEnabled',
+  'admin.agentTemplates.update',
   'admin.agents.archive',
   'admin.agents.assignments.create',
   'admin.agents.assignments.remove',
@@ -255,6 +261,7 @@ export const isAuditRequestBaseAction = (value: string): value is AuditRequestBa
 export const AUDIT_TARGET_TYPES = [
   'agent',
   'agent_dependency_validation',
+  'agent_template',
   'audit_event',
   'audit_export',
   'audit_policy',
