@@ -40,6 +40,9 @@ export const params = {
           reasoning = {
             max_tokens: thinking?.budget_tokens,
           };
+        } else if (reasoning_effort === 'no_think') {
+          // HY3-style "no_think" has no OpenRouter effort tier — it means "do not reason".
+          reasoning = { enabled: false };
         } else if (reasoning_effort) {
           reasoning = { effort: reasoning_effort };
         } else if (thinkingLevel) {
