@@ -5,10 +5,10 @@ import { Suspense } from 'react';
 import { Outlet, useLocation } from 'react-router';
 
 import WorkspaceContextSlot from '@/business/client/WorkspaceContextSlot';
-import Loading from '@/components/Loading/BrandTextLoading';
 import { RouteMetaBridge } from '@/features/RouteMeta';
 import dynamic from '@/libs/next/dynamic';
 import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
+import { RouteFallback } from '@/utils/routerBootPhase';
 
 import NavBar from './NavBar';
 
@@ -33,7 +33,7 @@ const MobileMainLayout: FC = () => {
     <WorkspaceContextSlot>
       <RouteMetaBridge />
       <Suspense fallback={null}>{showCloudPromotion && <CloudBanner mobile />}</Suspense>
-      <Suspense fallback={<Loading debugId="MobileMainLayout > Outlet" variant={'inline'} />}>
+      <Suspense fallback={<RouteFallback debugId="MobileMainLayout > Outlet" />}>
         <Outlet />
         {showNav && <NavBar />}
       </Suspense>

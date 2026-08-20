@@ -10,7 +10,6 @@ import { HotkeysProvider } from 'react-hotkeys-hook';
 import { Outlet } from 'react-router';
 
 import WorkspaceContextSlot from '@/business/client/WorkspaceContextSlot';
-import Loading from '@/components/Loading/BrandTextLoading';
 import { isDesktop } from '@/const/version';
 import { BANNER_HEIGHT } from '@/features/AlertBanner/CloudBanner';
 import DesktopFileMenuBridge from '@/features/DesktopFileMenuBridge';
@@ -31,6 +30,7 @@ import CmdkLazy from '@/layout/GlobalProvider/CmdkLazy';
 import dynamic from '@/libs/next/dynamic';
 import { DndContextWrapper } from '@/routes/(main)/resource/features/DndContextWrapper';
 import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
+import { RouteFallback } from '@/utils/routerBootPhase';
 
 import DesktopHome from '../home';
 import DesktopHomeLayout from '../home/_layout';
@@ -83,9 +83,7 @@ const Layout: FC = () => {
                 <DesktopHome />
               </DesktopHomeLayout>
               <RouteTransition>
-                <Suspense
-                  fallback={<Loading debugId="DesktopMainLayout > Outlet" variant={'inline'} />}
-                >
+                <Suspense fallback={<RouteFallback debugId="DesktopMainLayout > Outlet" />}>
                   <Outlet />
                 </Suspense>
               </RouteTransition>

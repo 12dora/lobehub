@@ -2,9 +2,9 @@
 
 import { DraggablePanel } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { AnimatePresence, m, useReducedMotion } from 'motion/react';
+import { m, useReducedMotion } from 'motion/react';
 import { type ReactNode } from 'react';
-import { memo, Suspense, useMemo, useRef } from 'react';
+import { memo, Suspense, useEffect, useMemo, useRef } from 'react';
 
 import NavPanelUpgradeEntry from '@/business/client/features/NavPanelUpgradeEntry';
 import { isDesktop } from '@/const/version';
@@ -100,8 +100,8 @@ const draggableStyles = createStaticStyles(({ css, cssVar }) => ({
   `,
 }));
 
-/** ~150ms crossfade between sidebar sections. */
-const NAV_CROSSFADE_DURATION = 0.15;
+/** ~150ms fade-in when the sidebar swaps sections. */
+const NAV_FADE_DURATION = 0.15;
 
 interface NavPanelDraggableProps {
   activeContent: {
@@ -122,6 +122,13 @@ export const NavPanelDraggable = memo<NavPanelDraggableProps>(({ activeContent }
   ]);
   const handleSizeChange = useNavPanelSizeChangeHandler();
   const reduceMotion = useReducedMotion();
+
+  // The panel's very first section must appear without a fade (it is part of the
+  // app's first paint, not a section swap).
+  const hasRenderedSectionRef = useRef(false);
+  useEffect(() => {
+    hasRenderedSectionRef.current = true;
+  }, []);
 
   // Defer DraggablePanel mount until system status hydrates; otherwise defaultSize
   // captures the pre-hydration default and the DOM drifts off NavigationBar's live width.
@@ -161,23 +168,23 @@ export const NavPanelDraggable = memo<NavPanelDraggableProps>(({ activeContent }
       onSizeDragging={handleSizeChange}
     >
       <div className={draggableStyles.inner}>
-        {/* Crossfade instead of a hard remount: both layers are `position: absolute;
-            inset: 0`, so the outgoing sidebar stays painted underneath while the
-            incoming one fades in — no empty flash between sections. The `key` is
-            still `activeContent.key`, so mount/unmount (state) semantics are
-            unchanged; only the visual swap is softened. */}
-        <AnimatePresence initial={false}>
-          <m.div
-            animate={{ opacity: 1 }}
-            className={draggableStyles.layer}
-            exit={{ opacity: 0 }}
-            initial={{ opacity: 0 }}
-            key={activeContent.key}
-            transition={{ duration: reduceMotion ? 0 : NAV_CROSSFADE_DURATION }}
-          >
-            {activeContent.node}
-          </m.div>
-        </AnimatePresence>
+        {/* Enter-only fade, deliberately NOT an `AnimatePresence` crossfade: an exit
+            animation would keep the outgoing sidebar subtree mounted and live for the
+            duration of the fade, so two sidebars would overlap in the accessibility
+            tree (duplicate controls and duplicate DOM ids) and their effects/cleanup
+            would run late. Keying on `activeContent.key` therefore unmounts the old
+            section immediately — exactly the pre-existing remount semantics — and only
+            the incoming section is animated, fading up over the panel's own opaque
+            background. */}
+        <m.div
+          animate={{ opacity: 1 }}
+          className={draggableStyles.layer}
+          initial={hasRenderedSectionRef.current && !reduceMotion ? { opacity: 0 } : false}
+          key={activeContent.key}
+          transition={{ duration: reduceMotion ? 0 : NAV_FADE_DURATION }}
+        >
+          {activeContent.node}
+        </m.div>
       </div>
       <Suspense fallback={null}>
         <NavPanelUpgradeEntry />

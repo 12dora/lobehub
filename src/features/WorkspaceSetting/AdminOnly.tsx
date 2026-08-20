@@ -4,17 +4,19 @@ import { Flexbox, FluentEmoji } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { memo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router';
 
 import { useIsWorkspaceLoading } from '@/business/client/hooks/useIsWorkspaceLoading';
 import { useIsWorkspaceOwner } from '@/business/client/hooks/useIsWorkspaceOwner';
 import { MAX_WIDTH } from '@/const/layoutTokens';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 
 const Forbidden = memo(() => {
   const { t } = useTranslation('error');
   // Workspace settings only render inside the main SPA, so leaving is a
-  // client-side navigation — no document reload needed.
-  const navigate = useNavigate();
+  // client-side navigation — no document reload needed. Workspace-aware so a
+  // non-owner lands on the workspace home instead of being kicked out of the
+  // workspace.
+  const navigate = useWorkspaceAwareNavigate();
   return (
     <Flexbox align={'center'} justify={'center'} style={{ minHeight: '100%', width: '100%' }}>
       <h1

@@ -9,30 +9,19 @@ import { createBrowserRouter, Navigate, Outlet, useNavigate, useRouteError } fro
 
 import BusinessGlobalProvider from '@/business/client/BusinessGlobalProvider';
 import ErrorCapture from '@/components/Error';
-import Loading from '@/components/Loading/BrandTextLoading';
 import { useIsDark } from '@/hooks/useIsDark';
 import SPAGlobalProvider from '@/layout/SPAGlobalProvider';
 import AppLayer from '@/spa/AppLayer';
 import { useGlobalStore } from '@/store/global';
 import { createNavigationRef } from '@/store/global/initialState';
 import { isChunkLoadError, notifyChunkError } from '@/utils/chunkError';
-
-/**
- * False until the SPA's first lazy route chunk has resolved.
- *
- * The boot window is visually continuous with `index.html`'s static brand
- * splash, so the outermost route keeps the 100dvh `BrandTextLoading`. Every
- * suspension after that is an in-app navigation and must NOT re-show a
- * full-viewport boot splash — that is what made leaving the home page feel like
- * a full page reload. Those get the inline fallback, which fills the outlet
- * (chrome, sidebar and window frame stay put) instead of the viewport.
- */
-let bootChunkResolved = false;
-
-/** Fallback for lazily-loaded route elements. See {@link bootChunkResolved}. */
-function RouteFallback({ debugId }: { debugId: string }) {
-  return <Loading debugId={debugId} variant={bootChunkResolved ? 'inline' : 'fullscreen'} />;
-}
+import {
+  BootPhaseRouteMarker,
+  createRouterBootPhase,
+  RouteFallback,
+  type RouterBootPhase,
+  RouterBootPhaseContext,
+} from '@/utils/routerBootPhase';
 
 async function importModule<T>(importFn: () => Promise<T>): Promise<T> {
   return importFn();
@@ -71,15 +60,16 @@ export function dynamicElement<P = NonNullable<unknown>>(
 ): ReactElement {
   const LazyComponent = lazy(async () => {
     const mod = await importModule(importFn);
-    bootChunkResolved = true;
     return resolveLazyModule(mod);
   });
 
   // @ts-ignore
   return (
     <Suspense fallback={<RouteFallback debugId={debugId || 'dynamicElement'} />}>
-      {/* @ts-ignore */}
-      <LazyComponent {...({} as P)} />
+      <BootPhaseRouteMarker>
+        {/* @ts-ignore */}
+        <LazyComponent {...({} as P)} />
+      </BootPhaseRouteMarker>
     </Suspense>
   );
 }
@@ -94,15 +84,16 @@ export function dynamicLayout<P = NonNullable<unknown>>(
 ): ReactElement {
   const LazyComponent = lazy(async () => {
     const mod = await importModule(importFn);
-    bootChunkResolved = true;
     return resolveLazyModule(mod);
   });
 
   // @ts-ignore
   return (
     <Suspense fallback={<RouteFallback debugId={debugId || 'dynamicLayout'} />}>
-      {/* @ts-ignore */}
-      <LazyComponent {...({} as P)} />
+      <BootPhaseRouteMarker>
+        {/* @ts-ignore */}
+        <LazyComponent {...({} as P)} />
+      </BootPhaseRouteMarker>
     </Suspense>
   );
 }
@@ -156,15 +147,17 @@ export interface CreateAppRouterOptions {
   basename?: string;
 }
 
-const RouterRoot = memo(() => (
-  <SPAGlobalProvider>
-    <BusinessGlobalProvider>
-      <NavigatorRegistrar />
-      <AppLayer>
-        <Outlet />
-      </AppLayer>
-    </BusinessGlobalProvider>
-  </SPAGlobalProvider>
+const RouterRoot = memo<{ bootPhase: RouterBootPhase }>(({ bootPhase }) => (
+  <RouterBootPhaseContext value={bootPhase}>
+    <SPAGlobalProvider>
+      <BusinessGlobalProvider>
+        <NavigatorRegistrar />
+        <AppLayer>
+          <Outlet />
+        </AppLayer>
+      </BusinessGlobalProvider>
+    </SPAGlobalProvider>
+  </RouterBootPhaseContext>
 ));
 
 RouterRoot.displayName = 'RouterRoot';
@@ -180,11 +173,16 @@ RouterRoot.displayName = 'RouterRoot';
  * );
  */
 export function createAppRouter(routes: RouteObject[], options?: CreateAppRouterOptions) {
+  // One boot phase per router instance — recreating the router (HMR, a second
+  // desktop window, tests) must restore the boot splash rather than inherit a
+  // settled module-global latch.
+  const bootPhase = createRouterBootPhase();
+
   return createBrowserRouter(
     [
       {
         children: routes,
-        element: <RouterRoot />,
+        element: <RouterRoot bootPhase={bootPhase} />,
         errorElement: <ErrorBoundary />,
         path: '/',
       },

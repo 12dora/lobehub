@@ -4,9 +4,9 @@ import { Button, Flexbox, FluentEmoji } from '@lobehub/ui';
 import { type ReactNode } from 'react';
 import { memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router';
 
 import { MAX_WIDTH } from '@/const/layoutTokens';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { authSpaRoutes } from '@/libs/next/nextjsOnlyRoutes';
 
 /**
@@ -25,7 +25,9 @@ const NotFound = memo<{
   title?: string;
 }>(({ extra, status = 404, title, desc }) => {
   const { t } = useTranslation('error');
-  const navigate = useNavigate();
+  // Workspace-aware: on `/:workspaceSlug/...` "back home" must land on the
+  // workspace home, not drop the user out of the workspace entirely.
+  const navigate = useWorkspaceAwareNavigate();
 
   const backHome = useCallback(() => {
     if (typeof window !== 'undefined' && isAuthSpaPathname(window.location.pathname)) {

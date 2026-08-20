@@ -12,9 +12,9 @@ import {
 import type { Key } from 'react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router';
 
 import { MAX_WIDTH } from '@/const/layoutTokens';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 
 export type ErrorType = Error & { digest?: string };
 
@@ -27,7 +27,10 @@ interface ErrorCaptureProps {
 const ErrorCapture = ({ error, resetPath = '/' }: ErrorCaptureProps) => {
   const { t } = useTranslation('error');
   // Only rendered as a router `errorElement`, so react-router context exists.
-  const navigate = useNavigate();
+  // Workspace-aware so an absolute `resetPath` keeps the active workspace;
+  // relative ones (`..`, `../tasks`) are passed through untouched by
+  // `buildWorkspaceAwarePath` and still resolve against the current route.
+  const navigate = useWorkspaceAwareNavigate();
   const hasStack = !!error?.stack;
   const defaultExpandedKeys: Key[] = typeof __CI__ !== 'undefined' && __CI__ ? ['stack'] : [];
   const [expandedKeys, setExpandedKeys] = useState<Key[]>(defaultExpandedKeys);
