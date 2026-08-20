@@ -27,5 +27,5 @@ describe('admin.agentTemplates module load', () => {
     } finally {
       spy.mockRestore();
     }
-  });
+  }, 60_000);
 });

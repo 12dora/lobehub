@@ -121,12 +121,10 @@ describe('refreshAdminTaskTemplateLists against a real SWR cache', () => {
     expect(
       beforeTheFetchLands.some((frame) => frame.templates[0]?.title === 'Before the edit'),
     ).toBe(false);
-    // Characterization, not an endorsement: SWR reports `isLoading: false` on the very first
-    // render (it decides to revalidate in an effect), so this one frame still says
-    // "resolved, unmanaged" and the caller shows the built-in locale examples for a frame. That
-    // belongs to `usePlatformTaskTemplates`, not to this invalidation — see the report. Pinned
-    // here so fixing the hook has to update this line deliberately rather than silently.
-    expect(beforeTheFetchLands[0]!.resolved).toBe(true);
+    // SWR reports `isLoading: false` on the very first render (it decides to revalidate in an
+    // effect); `usePlatformTaskTemplates` must still report "unknown" for that frame so a
+    // managed tenant never flashes the market recommendations.
+    expect(beforeTheFetchLands.every((frame) => frame.resolved === false)).toBe(true);
 
     await waitFor(() => expect(current().templates).toHaveLength(1));
     expect(current().templates[0]!.title).toBe('After the edit');

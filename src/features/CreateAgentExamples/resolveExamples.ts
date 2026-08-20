@@ -47,7 +47,7 @@ export type CreateAgentExamplesView =
 export const EXAMPLE_SUBTITLE_MAX = 160;
 
 const truncate = (value: string, max = EXAMPLE_SUBTITLE_MAX): string => {
-  const collapsed = value.replace(/\s+/g, ' ').trim();
+  const collapsed = value.replaceAll(/\s+/g, ' ').trim();
   return collapsed.length <= max ? collapsed : `${collapsed.slice(0, max).trimEnd()}…`;
 };
 
