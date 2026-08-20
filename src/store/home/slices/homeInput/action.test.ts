@@ -20,6 +20,16 @@ const createDocumentMock = vi.hoisted(() => vi.fn());
 
 const agentState = vi.hoisted(() => ({
   agentConfigMap: {
+    agentBuilder: {
+      chatConfig: {} as Record<string, unknown>,
+      model: 'gpt-4o-mini',
+      provider: 'openai',
+    },
+    groupAgentBuilder: {
+      chatConfig: {} as Record<string, unknown>,
+      model: 'gpt-4o-mini',
+      provider: 'openai',
+    },
     inbox: {
       chatConfig: {} as Record<string, unknown>,
       model: 'gpt-4o-mini',
@@ -136,6 +146,15 @@ describe('HomeInputActionImpl', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     agentState.agentConfigMap.inbox.chatConfig = {};
+    agentState.agentConfigMap.agentBuilder.chatConfig = {};
+    agentState.agentConfigMap.groupAgentBuilder.chatConfig = {};
+    // The store action writes through `updateAgentConfigById`; mirror the merge onto the
+    // mock builder rows so a second create-with-AI run sees the first run's state.
+    updateAgentConfigByIdMock.mockImplementation((id: string, config: Record<string, any>) => {
+      const row = agentState.agentConfigMap[id as keyof typeof agentState.agentConfigMap];
+      if (!row || !config.chatConfig) return;
+      Object.assign(row.chatConfig, config.chatConfig);
+    });
     createAgentMock.mockResolvedValue({ agentId: 'agent-new' });
     createGroupMock.mockResolvedValue({
       group: {
@@ -222,6 +241,28 @@ describe('HomeInputActionImpl', () => {
       );
     });
 
+    it('clears a stale builder effort when the next inbox no longer sets one', async () => {
+      // Run 1: inbox carries a level, so the builder row inherits it.
+      agentState.agentConfigMap.inbox.chatConfig = { gpt5_6ReasoningEffort: 'high' };
+      await createAction().sendAsAgent({ message: 'first assistant' });
+
+      expect(agentState.agentConfigMap.agentBuilder.chatConfig).toEqual({
+        gpt5_6ReasoningEffort: 'high',
+      });
+
+      // Run 2: a fresh inbox at its default must not launch on the builder's stale level.
+      vi.clearAllMocks();
+      agentState.agentConfigMap.inbox.chatConfig = {};
+      await createAction().sendAsAgent({ message: 'second assistant' });
+
+      expect(updateAgentConfigByIdMock).toHaveBeenCalledWith('agentBuilder', {
+        // `merge()` skips undefined, so the clear has to be an explicit null.
+        chatConfig: { gpt5_6ReasoningEffort: null },
+        model: 'gpt-4o-mini',
+        provider: 'openai',
+      });
+    });
+
     it('omits chatConfig when the inbox agent has no effort level set', async () => {
       agentState.agentConfigMap.inbox.chatConfig = { searchMode: 'auto' };
 
@@ -287,6 +328,25 @@ describe('HomeInputActionImpl', () => {
       expect(updateAgentConfigByIdMock.mock.invocationCallOrder[0]).toBeLessThan(
         sendMessageMock.mock.invocationCallOrder[0],
       );
+    });
+
+    it('clears a stale group builder effort when the next inbox no longer sets one', async () => {
+      agentState.agentConfigMap.inbox.chatConfig = { thinkingLevel: 'low' };
+      await createAction().sendAsGroup({ message: 'first group' });
+
+      expect(agentState.agentConfigMap.groupAgentBuilder.chatConfig).toEqual({
+        thinkingLevel: 'low',
+      });
+
+      vi.clearAllMocks();
+      agentState.agentConfigMap.inbox.chatConfig = {};
+      await createAction().sendAsGroup({ message: 'second group' });
+
+      expect(updateAgentConfigByIdMock).toHaveBeenCalledWith('groupAgentBuilder', {
+        chatConfig: { thinkingLevel: null },
+        model: 'gpt-4o-mini',
+        provider: 'openai',
+      });
     });
   });
 

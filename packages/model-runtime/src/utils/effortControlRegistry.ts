@@ -198,28 +198,56 @@ export const clampEffortLevel = (
     ? (level as EffortLevel)
     : definition.defaultLevel;
 
+/** Every `LobeAgentChatConfig` field the registry can write a level into. */
+export type EffortConfigKey = (typeof EFFORT_CONTROL_REGISTRY)[EffortControlKey]['configKey'];
+
+export const EFFORT_CONFIG_KEYS = EFFORT_CONTROL_KEYS.map(
+  (key) => EFFORT_CONTROL_REGISTRY[key].configKey,
+) as EffortConfigKey[];
+
 /**
- * Copy only the discrete effort-level fields out of a chatConfig.
+ * Build the patch that makes a target agent's thinking effort match `source` exactly,
+ * for the merge-based agent-config update path.
  *
- * Used when one agent inherits another's thinking level (e.g. the create-with-AI
- * flow seeding the Agent Builder row from the inbox agent): the model family is
- * inherited in the same write, so every registry `configKey` present is copied
- * and `applyModelExtendParams` still only emits the key the target model declares.
- * Search / history / memory / token-budget settings are intentionally left behind.
+ * Both layers of that path deep-merge and **cannot drop keys**: the optimistic store
+ * dispatch and `AgentModel.updateConfig` both run `merge()` (es-toolkit/compat), which
+ * *skips* `undefined` source values. So copying only the keys the source carries would
+ * leave a previously selected level on the target — e.g. a long-lived Agent Builder row
+ * keeping last week's `high` while the fresh inbox it is being reseeded from shows the
+ * default. Every registry key the target holds but the source does not is therefore
+ * emitted as an explicit `null`, the same "stored clear" `EffortSelect` already accepts:
+ * every reader (`applyModelExtendParams`, `resolveCurrentEffortLevel`, the ControlsForm
+ * level sliders) requires `typeof value === 'string'` or truthiness, so `null` reads
+ * exactly like "never set".
+ *
+ * Only registry effort keys appear in the result — the target's search / history /
+ * memory / token-budget config is preserved by the merge.
+ *
+ * @param source chatConfig to inherit the level from (e.g. the inbox agent)
+ * @param target the chatConfig being overwritten (e.g. the builder agent), used to keep
+ *   the patch minimal: only keys that are actually set there need clearing
  */
-export const pickChatConfigEffortFields = (
-  chatConfig: Partial<LobeAgentChatConfig> | undefined | null,
+export const buildChatConfigEffortReplacement = (
+  source: Partial<LobeAgentChatConfig> | undefined | null,
+  target?: Partial<LobeAgentChatConfig> | null,
 ): Partial<LobeAgentChatConfig> => {
-  if (!chatConfig) return {};
+  const from = (source ?? {}) as Record<string, unknown>;
+  const onto = (target ?? {}) as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
 
-  const source = chatConfig as Record<string, unknown>;
-  const picked: Record<string, unknown> = {};
+  for (const configKey of EFFORT_CONFIG_KEYS) {
+    const value = from[configKey];
 
-  for (const key of EFFORT_CONTROL_KEYS) {
-    const { configKey } = EFFORT_CONTROL_REGISTRY[key];
-    const value = source[configKey];
-    if (value !== undefined) picked[configKey] = value;
+    if (value !== undefined && value !== null) {
+      patch[configKey] = value;
+      continue;
+    }
+
+    // Nothing to inherit: clear the key only when the target actually carries one.
+    if (onto[configKey] !== undefined && onto[configKey] !== null) patch[configKey] = null;
   }
 
-  return picked as Partial<LobeAgentChatConfig>;
+  // `null` is not in the strict level unions, but it is the only value this update path
+  // can use to clear a key — see the doc comment above.
+  return patch as Partial<LobeAgentChatConfig>;
 };

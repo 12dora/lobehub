@@ -1,7 +1,7 @@
 import { BUILTIN_AGENT_SLUGS } from '@lobechat/builtin-agents';
 import { CUSTOM_DOCUMENT_FILE_TYPE } from '@lobechat/const';
-import { pickChatConfigEffortFields } from '@lobechat/model-runtime';
-import type { ContextSelection, PageSelection } from '@lobechat/types';
+import { buildChatConfigEffortReplacement } from '@lobechat/model-runtime';
+import type { ContextSelection, LobeAgentChatConfig, PageSelection } from '@lobechat/types';
 
 import { stableWorkspaceAwareNavigate } from '@/features/Workspace/stableWorkspaceAwareNavigate';
 import { chatGroupService } from '@/services/chatGroup';
@@ -48,6 +48,36 @@ const ensureBuiltinAgentHydrated = async (slug: string): Promise<string | undefi
   return getAgentStoreState().builtinAgentIdMap[slug];
 };
 
+/**
+ * Config patch that seeds a builtin builder agent (agent-builder / group-agent-builder)
+ * from the inbox agent at the start of a create-with-AI flow.
+ *
+ * Model / provider are inherited so the first builder turn runs on what the user picked in
+ * the home composer, and the thinking-effort subset is *replaced* rather than merged: the
+ * builder is a long-lived row whose pill may still hold last week's level, and the update
+ * path deep-merges (see `buildChatConfigEffortReplacement`), so keys the inbox no longer
+ * sets are explicitly cleared. Non-effort builder chat config is left untouched.
+ */
+const buildBuilderInheritanceConfig = (
+  builderId: string,
+  inboxConfig: { chatConfig?: LobeAgentChatConfig } | null,
+  model: string,
+  provider: string,
+) => {
+  // Re-read the store: the builder row may have only just been hydrated above.
+  const builderConfig = agentSelectors.getAgentConfigById(builderId)(getAgentStoreState());
+  const chatConfig = buildChatConfigEffortReplacement(
+    inboxConfig?.chatConfig,
+    builderConfig?.chatConfig,
+  );
+
+  return {
+    model,
+    provider,
+    ...(Object.keys(chatConfig).length > 0 && { chatConfig }),
+  };
+};
+
 type Setter = StoreSetter<HomeStore>;
 export const createHomeInputSlice = (set: Setter, get: () => HomeStore, _api?: unknown) =>
   new HomeInputActionImpl(set, get, _api);
@@ -86,12 +116,6 @@ export class HomeInputActionImpl {
         : null;
       const model = inboxConfig?.model;
       const provider = inboxConfig?.provider;
-      // The builder conversation carries its own thinking-effort pill, but its row is
-      // seeded here — without this the very first create-with-AI turn would run at the
-      // builder's default level instead of the one picked in the home / create-modal
-      // composer. Only EFFORT_CONTROL_REGISTRY keys ride along; inbox search / history /
-      // memory settings must not leak onto the builder.
-      const effortConfig = pickChatConfigEffortFields(inboxConfig?.chatConfig);
 
       // 2. Create new Agent with inherited model/provider
       const result = await agentState.createAgent({
@@ -137,14 +161,13 @@ export class HomeInputActionImpl {
         // navigation completes, which would otherwise race with sendMessage.
         const agentBuilderId = await ensureBuiltinAgentHydrated(BUILTIN_AGENT_SLUGS.agentBuilder);
 
-        // Update agentBuilder's model (and inherited thinking effort) to match inbox
-        // selection. Awaited before sendMessage so the first LLM call already sees it.
+        // Update agentBuilder's model and thinking effort to match the inbox selection.
+        // Awaited before sendMessage so the first LLM call already sees both.
         if (agentBuilderId && model && provider) {
-          await agentState.updateAgentConfigById(agentBuilderId, {
-            model,
-            provider,
-            ...(Object.keys(effortConfig).length > 0 && { chatConfig: effortConfig }),
-          });
+          await agentState.updateAgentConfigById(
+            agentBuilderId,
+            buildBuilderInheritanceConfig(agentBuilderId, inboxConfig, model, provider),
+          );
         }
 
         if (agentBuilderId) {
@@ -191,8 +214,6 @@ export class HomeInputActionImpl {
         : null;
       const model = inboxConfig?.model;
       const provider = inboxConfig?.provider;
-      // Same inheritance as sendAsAgent — see the comment there.
-      const effortConfig = pickChatConfigEffortFields(inboxConfig?.chatConfig);
 
       // 2. Create new Group with inherited model/provider for orchestrator
       const { group } = await chatGroupService.createGroup({
@@ -224,14 +245,13 @@ export class HomeInputActionImpl {
       );
 
       if (groupAgentBuilderId) {
-        // Update groupAgentBuilder's model (and inherited thinking effort) to match inbox
-        // selection. Awaited before sendMessage so the first LLM call already sees it.
+        // Update groupAgentBuilder's model and thinking effort to match the inbox
+        // selection. Awaited before sendMessage so the first LLM call already sees both.
         if (model && provider) {
-          await agentState.updateAgentConfigById(groupAgentBuilderId, {
-            model,
-            provider,
-            ...(Object.keys(effortConfig).length > 0 && { chatConfig: effortConfig }),
-          });
+          await agentState.updateAgentConfigById(
+            groupAgentBuilderId,
+            buildBuilderInheritanceConfig(groupAgentBuilderId, inboxConfig, model, provider),
+          );
         }
 
         const { sendMessage } = useChatStore.getState();
