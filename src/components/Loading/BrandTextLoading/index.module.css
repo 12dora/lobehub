@@ -15,6 +15,15 @@
   gap: 12px;
 }
 
+/* Inline route/Suspense fallback: fill the outlet, never the viewport, so a
+   client-side navigation does not look like an app reboot. */
+.container.inline {
+  flex: 1;
+
+  min-height: 0;
+  height: 100%;
+}
+
 [data-theme='dark'] .container {
   --brand-text-color: var(--colorText, #f0f0f0);
   --brand-muted-color: var(--colorTextSecondary, #a6a6a6);

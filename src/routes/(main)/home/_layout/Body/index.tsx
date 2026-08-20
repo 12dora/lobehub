@@ -37,6 +37,41 @@ export enum GroupKey {
 
 const ACCORDION_KEYS = new Set<string>([GroupKey.Recents, GroupKey.Agent, GroupKey.Private]);
 
+/**
+ * Hover prefetch for the two heaviest sidebar destinations. Their route chunks
+ * are lazy (`dynamicElement` / `dynamicLayout`), so a cold first click suspends
+ * and shows the outlet fallback. Warming the exact same module ids the router
+ * imports means the click usually resolves from cache instead.
+ *
+ * Keep in sync with `src/spa/router/desktopRouter.config*.tsx`; a stale entry
+ * only wastes a prefetch, it can never break navigation.
+ */
+const ROUTE_CHUNK_PREFETCHERS: Record<string, () => Promise<unknown>[]> = {
+  '/community': () => [
+    import('@/routes/(main)/community/_layout'),
+    import('@/routes/(main)/community/(list)/_layout'),
+    import('@/routes/(main)/community/(list)/(home)'),
+  ],
+  '/image': () => [
+    import('@/routes/(main)/(create)/image/_layout'),
+    import('@/routes/(main)/(create)/image'),
+  ],
+};
+
+const prefetchedRoutes = new Set<string>();
+
+const prefetchRouteChunks = (url: string) => {
+  const loadChunks = ROUTE_CHUNK_PREFETCHERS[url];
+  if (!loadChunks || prefetchedRoutes.has(url)) return;
+
+  prefetchedRoutes.add(url);
+  for (const chunk of loadChunks()) {
+    // A failed prefetch must stay silent (offline, deploy skew): let the real
+    // navigation surface the error, and allow a later hover to retry.
+    void chunk.catch(() => prefetchedRoutes.delete(url));
+  }
+};
+
 /** Keys rendered in the header — must be excluded from the body to avoid duplicates
  * when migrating users whose persisted sidebarItems still include them. */
 const HEADER_KEYS = new Set<string>(['home', 'search']);
@@ -153,6 +188,7 @@ const Body = memo(() => {
         <WorkspaceLink
           key={key}
           to={navItem.url!}
+          onMouseEnter={() => prefetchRouteChunks(navItem.url!)}
           onClick={(e) => {
             if (isModifierClick(e)) return;
             e.preventDefault();

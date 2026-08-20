@@ -33,7 +33,7 @@ const MobileMainLayout: FC = () => {
     <WorkspaceContextSlot>
       <RouteMetaBridge />
       <Suspense fallback={null}>{showCloudPromotion && <CloudBanner mobile />}</Suspense>
-      <Suspense fallback={<Loading debugId="MobileMainLayout > Outlet" />}>
+      <Suspense fallback={<Loading debugId="MobileMainLayout > Outlet" variant={'inline'} />}>
         <Outlet />
         {showNav && <NavBar />}
       </Suspense>

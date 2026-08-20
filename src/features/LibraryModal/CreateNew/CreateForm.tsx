@@ -2,6 +2,7 @@ import { Button, Flexbox, Input, TextArea } from '@lobehub/ui';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useResourceManagerStore } from '@/routes/(main)/resource/features/store';
 import { useKnowledgeBaseStore } from '@/store/library';
 
@@ -14,6 +15,7 @@ interface CreateFormProps {
 
 const CreateForm = memo<CreateFormProps>(({ id, initialValues, onClose, onSuccess }) => {
   const { t } = useTranslation('knowledgeBase');
+  const navigate = useWorkspaceAwareNavigate();
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState(initialValues?.name || '');
   const [description, setDescription] = useState(initialValues?.description || '');
@@ -51,7 +53,9 @@ const CreateForm = memo<CreateFormProps>(({ id, initialValues, onClose, onSucces
           onSuccess(newId);
           onClose?.();
         } else {
-          window.location.href = `/resource/library/${newId}`;
+          // Client-side navigation: a full document load here threw away the
+          // whole SPA (and the debug-proxy basename) just to open the new library.
+          navigate(`/resource/library/${newId}`);
         }
       }
     } catch (e) {

@@ -2,10 +2,21 @@
 
 import { Button, Flexbox, FluentEmoji } from '@lobehub/ui';
 import { type ReactNode } from 'react';
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router';
 
 import { MAX_WIDTH } from '@/const/layoutTokens';
+import { authSpaRoutes } from '@/libs/next/nextjsOnlyRoutes';
+
+/**
+ * This screen is rendered from both SPAs. The standalone auth SPA
+ * (`/signin`, `/oauth/...`, …) has no `/` route of its own, so "back home"
+ * there has to stay a document load that hands off to the main app; inside the
+ * main SPA it is a client-side navigation.
+ */
+const isAuthSpaPathname = (pathname: string) =>
+  authSpaRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`));
 
 const NotFound = memo<{
   desc?: string;
@@ -14,6 +25,17 @@ const NotFound = memo<{
   title?: string;
 }>(({ extra, status = 404, title, desc }) => {
   const { t } = useTranslation('error');
+  const navigate = useNavigate();
+
+  const backHome = useCallback(() => {
+    if (typeof window !== 'undefined' && isAuthSpaPathname(window.location.pathname)) {
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- cross-SPA hop: the auth bundle cannot render `/` itself
+      window.location.href = '/';
+      return;
+    }
+    navigate('/');
+  }, [navigate]);
+
   return (
     <Flexbox align={'center'} justify={'center'} style={{ minHeight: '100%', width: '100%' }}>
       <h1
@@ -38,7 +60,7 @@ const NotFound = memo<{
         <div style={{ marginTop: '0.5em' }}>{t('notFound.check')}</div>
       </div>
       {extra || (
-        <Button type={'primary'} onClick={() => (window.location.href = '/')}>
+        <Button type={'primary'} onClick={backHome}>
           {t('notFound.backHome')}
         </Button>
       )}

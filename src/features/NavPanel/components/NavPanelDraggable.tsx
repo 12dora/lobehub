@@ -2,6 +2,7 @@
 
 import { DraggablePanel } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { type ReactNode } from 'react';
 import { memo, Suspense, useMemo, useRef } from 'react';
 
@@ -99,6 +100,9 @@ const draggableStyles = createStaticStyles(({ css, cssVar }) => ({
   `,
 }));
 
+/** ~150ms crossfade between sidebar sections. */
+const NAV_CROSSFADE_DURATION = 0.15;
+
 interface NavPanelDraggableProps {
   activeContent: {
     key: string;
@@ -117,6 +121,7 @@ export const NavPanelDraggable = memo<NavPanelDraggableProps>(({ activeContent }
     systemStatusSelectors.isStatusInit(s),
   ]);
   const handleSizeChange = useNavPanelSizeChangeHandler();
+  const reduceMotion = useReducedMotion();
 
   // Defer DraggablePanel mount until system status hydrates; otherwise defaultSize
   // captures the pre-hydration default and the DOM drifts off NavigationBar's live width.
@@ -156,9 +161,23 @@ export const NavPanelDraggable = memo<NavPanelDraggableProps>(({ activeContent }
       onSizeDragging={handleSizeChange}
     >
       <div className={draggableStyles.inner}>
-        <div className={draggableStyles.layer} key={activeContent.key}>
-          {activeContent.node}
-        </div>
+        {/* Crossfade instead of a hard remount: both layers are `position: absolute;
+            inset: 0`, so the outgoing sidebar stays painted underneath while the
+            incoming one fades in — no empty flash between sections. The `key` is
+            still `activeContent.key`, so mount/unmount (state) semantics are
+            unchanged; only the visual swap is softened. */}
+        <AnimatePresence initial={false}>
+          <m.div
+            animate={{ opacity: 1 }}
+            className={draggableStyles.layer}
+            exit={{ opacity: 0 }}
+            initial={{ opacity: 0 }}
+            key={activeContent.key}
+            transition={{ duration: reduceMotion ? 0 : NAV_CROSSFADE_DURATION }}
+          >
+            {activeContent.node}
+          </m.div>
+        </AnimatePresence>
       </div>
       <Suspense fallback={null}>
         <NavPanelUpgradeEntry />

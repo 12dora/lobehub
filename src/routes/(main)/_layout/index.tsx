@@ -25,6 +25,7 @@ import TitleBar from '@/features/Electron/titlebar/TitleBar';
 import HotkeyHelperPanel from '@/features/HotkeyHelperPanel';
 import NavPanel from '@/features/NavPanel';
 import { RouteMetaBridge } from '@/features/RouteMeta';
+import RouteTransition from '@/features/RouteTransition';
 import { usePlatform } from '@/hooks/usePlatform';
 import CmdkLazy from '@/layout/GlobalProvider/CmdkLazy';
 import dynamic from '@/libs/next/dynamic';
@@ -39,9 +40,7 @@ import RegisterHotkeys from './RegisterHotkeys';
 import { styles } from './style';
 
 const CloudBanner = dynamic(() => import('@/features/AlertBanner/CloudBanner'));
-const GlobalApprovalNotification = dynamic(
-  () => import('@/features/GlobalApprovalNotification'),
-);
+const GlobalApprovalNotification = dynamic(() => import('@/features/GlobalApprovalNotification'));
 
 const Layout: FC = () => {
   const { isPWA } = usePlatform();
@@ -83,9 +82,13 @@ const Layout: FC = () => {
               <DesktopHomeLayout>
                 <DesktopHome />
               </DesktopHomeLayout>
-              <Suspense fallback={<Loading debugId="DesktopMainLayout > Outlet" />}>
-                <Outlet />
-              </Suspense>
+              <RouteTransition>
+                <Suspense
+                  fallback={<Loading debugId="DesktopMainLayout > Outlet" variant={'inline'} />}
+                >
+                  <Outlet />
+                </Suspense>
+              </RouteTransition>
             </DesktopLayoutContainer>
           </Flexbox>
         </DndContextWrapper>

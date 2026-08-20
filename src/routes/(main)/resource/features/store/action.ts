@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand/vanilla';
 
 import type { ResourceManagerMode } from '@/features/ResourceManager';
+import { stableWorkspaceAwareNavigate } from '@/features/Workspace/stableWorkspaceAwareNavigate';
 import { useFileStore } from '@/store/file';
 import type { StoreSetter } from '@/store/types';
 import { flattenActions } from '@/store/utils/flattenActions';
@@ -110,9 +111,10 @@ export class ResourceManagerStoreActionImpl {
 
         await kbStore.removeKnowledgeBase(libraryId);
 
-        if (typeof window !== 'undefined') {
-          window.location.href = '/knowledge';
-        }
+        // `/knowledge` is a stale path with no SPA route: it used to full-load
+        // the app only for the catch-all to bounce back to `/`. The library list
+        // lives at `/resource`, and this is a client-side navigation now.
+        stableWorkspaceAwareNavigate('/resource');
       }
     }
   };

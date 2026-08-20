@@ -1,5 +1,5 @@
 import { Flexbox } from '@lobehub/ui';
-import { useTheme } from 'antd-style';
+import { cx, useTheme } from 'antd-style';
 import { Activity, type FC, type ReactNode, useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation } from 'react-router';
 
@@ -44,11 +44,14 @@ const Layout: FC<LayoutProps> = ({ children }) => {
   return (
     <Activity mode={isHomeRoute ? 'visible' : 'hidden'} name="DesktopHomeLayout">
       {/* `position: absolute; inset: 0` keeps overlaying the outlet when Activity is hidden,
-        because Activity preserves state but doesn't visually hide the DOM. Force-hide here. */}
+        because Activity preserves state but doesn't visually hide the DOM. Hide it here —
+        via an opacity/visibility fade rather than `display: none`, so leaving home
+        crossfades with the incoming route instead of snapping to a blank shell.
+        `pointer-events: none` + delayed `visibility: hidden` keep the faded-out home
+        from covering or capturing clicks meant for the outlet. */}
       <Flexbox
-        className={styles.absoluteContainer}
+        className={cx(styles.absoluteContainer, isHomeRoute ? styles.visible : styles.hidden)}
         height={'100%'}
-        style={isHomeRoute ? undefined : { display: 'none' }}
         width={'100%'}
       >
         <Sidebar />

@@ -17,6 +17,23 @@ import { useGlobalStore } from '@/store/global';
 import { createNavigationRef } from '@/store/global/initialState';
 import { isChunkLoadError, notifyChunkError } from '@/utils/chunkError';
 
+/**
+ * False until the SPA's first lazy route chunk has resolved.
+ *
+ * The boot window is visually continuous with `index.html`'s static brand
+ * splash, so the outermost route keeps the 100dvh `BrandTextLoading`. Every
+ * suspension after that is an in-app navigation and must NOT re-show a
+ * full-viewport boot splash — that is what made leaving the home page feel like
+ * a full page reload. Those get the inline fallback, which fills the outlet
+ * (chrome, sidebar and window frame stay put) instead of the viewport.
+ */
+let bootChunkResolved = false;
+
+/** Fallback for lazily-loaded route elements. See {@link bootChunkResolved}. */
+function RouteFallback({ debugId }: { debugId: string }) {
+  return <Loading debugId={debugId} variant={bootChunkResolved ? 'inline' : 'fullscreen'} />;
+}
+
 async function importModule<T>(importFn: () => Promise<T>): Promise<T> {
   return importFn();
 }
@@ -54,12 +71,13 @@ export function dynamicElement<P = NonNullable<unknown>>(
 ): ReactElement {
   const LazyComponent = lazy(async () => {
     const mod = await importModule(importFn);
+    bootChunkResolved = true;
     return resolveLazyModule(mod);
   });
 
   // @ts-ignore
   return (
-    <Suspense fallback={<Loading debugId={debugId || 'dynamicElement'} />}>
+    <Suspense fallback={<RouteFallback debugId={debugId || 'dynamicElement'} />}>
       {/* @ts-ignore */}
       <LazyComponent {...({} as P)} />
     </Suspense>
@@ -76,12 +94,13 @@ export function dynamicLayout<P = NonNullable<unknown>>(
 ): ReactElement {
   const LazyComponent = lazy(async () => {
     const mod = await importModule(importFn);
+    bootChunkResolved = true;
     return resolveLazyModule(mod);
   });
 
   // @ts-ignore
   return (
-    <Suspense fallback={<Loading debugId={debugId || 'dynamicLayout'} />}>
+    <Suspense fallback={<RouteFallback debugId={debugId || 'dynamicLayout'} />}>
       {/* @ts-ignore */}
       <LazyComponent {...({} as P)} />
     </Suspense>

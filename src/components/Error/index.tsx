@@ -12,6 +12,7 @@ import {
 import type { Key } from 'react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router';
 
 import { MAX_WIDTH } from '@/const/layoutTokens';
 
@@ -25,6 +26,8 @@ interface ErrorCaptureProps {
 
 const ErrorCapture = ({ error, resetPath = '/' }: ErrorCaptureProps) => {
   const { t } = useTranslation('error');
+  // Only rendered as a router `errorElement`, so react-router context exists.
+  const navigate = useNavigate();
   const hasStack = !!error?.stack;
   const defaultExpandedKeys: Key[] = typeof __CI__ !== 'undefined' && __CI__ ? ['stack'] : [];
   const [expandedKeys, setExpandedKeys] = useState<Key[]>(defaultExpandedKeys);
@@ -51,8 +54,12 @@ const ErrorCapture = ({ error, resetPath = '/' }: ErrorCaptureProps) => {
       </h2>
       <p style={{ marginBottom: '2em' }}>{t('error.desc')}</p>
       <Flexbox horizontal gap={12} style={{ marginBottom: '2em' }}>
+        {/* Retry stays a hard reload on purpose: the most common cause here is a
+            chunk-load failure after a deploy (see `utils/chunkError`), which only
+            a document load can recover from. "Back home" is an ordinary
+            in-app hop, so it navigates client-side. */}
         <Button onClick={() => window.location.reload()}>{t('error.retry')}</Button>
-        <Button type={'primary'} onClick={() => (window.location.href = resetPath)}>
+        <Button type={'primary'} onClick={() => navigate(resetPath)}>
           {t('error.backHome')}
         </Button>
       </Flexbox>
