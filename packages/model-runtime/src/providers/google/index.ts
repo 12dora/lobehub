@@ -447,7 +447,12 @@ export class LobeGoogleAI implements LobeRuntimeAI {
     if (payload.tools && payload.tools.length > 0) {
       return createGoogleGenerateObjectWithTools(
         this.client,
-        { contents, model: requestPayload.model, tools: payload.tools },
+        {
+          contents,
+          model: requestPayload.model,
+          thinkingLevel: payload.thinkingLevel,
+          tools: payload.tools,
+        },
         options,
         pricing,
       );
@@ -457,7 +462,12 @@ export class LobeGoogleAI implements LobeRuntimeAI {
     if (payload.schema) {
       return createGoogleGenerateObject(
         this.client,
-        { contents, model: requestPayload.model, schema: payload.schema },
+        {
+          contents,
+          model: requestPayload.model,
+          schema: payload.schema,
+          thinkingLevel: payload.thinkingLevel,
+        },
         options,
         pricing,
       );

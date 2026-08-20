@@ -1,5 +1,6 @@
 import { TRACING_SCENARIOS } from '@lobechat/const';
 import type { TracingOptions } from '@lobechat/llm-generation-tracing';
+import { pickGenerateObjectEffortParams } from '@lobechat/model-runtime';
 import {
   chainGenerateBrief,
   chainJudgeBriefEmit,
@@ -538,10 +539,11 @@ export class TaskLifecycleService {
     currentTask: any,
   ): Promise<void> {
     try {
-      const [{ model, provider }, responseLanguage] = await Promise.all([
-        (this.systemAgentService as any).getTaskModelConfig('topic'),
+      const [topicConfig, responseLanguage] = await Promise.all([
+        this.systemAgentService.getTaskModelConfig('topic'),
         this.systemAgentService.getUserLocale(),
       ]);
+      const { model, provider, ...effortParams } = topicConfig;
 
       const payload = chainTaskTopicHandoff({
         lastAssistantContent,
@@ -561,6 +563,7 @@ export class TaskLifecycleService {
           messages: payload.messages as any[],
           model,
           schema: { name: TASK_TOPIC_HANDOFF_SCHEMA_NAME, schema: TASK_TOPIC_HANDOFF_SCHEMA },
+          ...pickGenerateObjectEffortParams(effortParams),
         },
         {
           metadata: { trigger: 'task_handoff' },
@@ -647,10 +650,11 @@ export class TaskLifecycleService {
       const artifacts: BriefArtifacts = { documents: pinnedDocs };
       const handoff = (topicLink?.handoff as TaskTopicHandoff | null) ?? null;
 
-      const [{ model, provider }, responseLanguage] = await Promise.all([
-        (this.systemAgentService as any).getTaskModelConfig('topic'),
+      const [topicConfig, responseLanguage] = await Promise.all([
+        this.systemAgentService.getTaskModelConfig('topic'),
         this.systemAgentService.getUserLocale(),
       ]);
+      const { model, provider, ...effortParams } = topicConfig;
 
       let decision: BriefDecision;
       if (ruleVerdict.emit === 'unknown') {
@@ -675,6 +679,7 @@ export class TaskLifecycleService {
             messages: judgePayload.messages as any[],
             model,
             schema: { name: JUDGE_BRIEF_EMIT_SCHEMA_NAME, schema: JUDGE_BRIEF_EMIT_SCHEMA },
+            ...pickGenerateObjectEffortParams(effortParams),
           },
           {
             metadata: { trigger: 'task_brief_judge' },
@@ -740,6 +745,7 @@ export class TaskLifecycleService {
           messages: payload.messages as any[],
           model,
           schema: { name: GENERATE_BRIEF_SCHEMA_NAME, schema: GENERATE_BRIEF_SCHEMA },
+          ...pickGenerateObjectEffortParams(effortParams),
         },
         {
           metadata: { trigger: 'task_brief' },

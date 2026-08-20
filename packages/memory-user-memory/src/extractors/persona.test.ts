@@ -72,11 +72,37 @@ describe('UserPersonaExtractor', () => {
 
     const call = (runtimeMock.generateObject as any).mock.calls[0][0];
     expect(call.model).toBe('gpt-mock');
+    expect(call).not.toHaveProperty('reasoning_effort');
     expect(call.messages[0].content).toBe(
       renderPlaceholderTemplate(userPersonaPrompt, {
         language: 'English',
         topK: 10,
         username: 'User',
+      }),
+    );
+  });
+
+  it('spreads generateObjectParams onto the toolCall payload', async () => {
+    const extractor = new UserPersonaExtractor({
+      ...extractorConfig,
+      generateObjectParams: { reasoning_effort: 'high' },
+    });
+    await extractor.ensurePromptTemplate();
+
+    runtimeMock.generateObject = vi.fn().mockResolvedValue([
+      {
+        arguments: JSON.stringify({ persona: '# Persona' }),
+        name: 'commit_user_persona',
+      },
+    ]);
+
+    await extractor.toolCall(templateOptions);
+
+    const call = (runtimeMock.generateObject as any).mock.calls[0][0];
+    expect(call).toEqual(
+      expect.objectContaining({
+        model: 'gpt-mock',
+        reasoning_effort: 'high',
       }),
     );
   });

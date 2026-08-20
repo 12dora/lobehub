@@ -49,6 +49,7 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'apps/server/src/services/systemAgent/index.ts',
   'apps/server/src/services/taskReview/index.ts',
   'apps/server/src/services/memory/userMemory/persona/service.ts',
+  'apps/server/src/services/memory/userMemory/extract.ts',
   'apps/server/src/services/aiAgent/index.ts',
   'apps/server/src/services/connector/sync.ts',
   'apps/server/src/services/toolExecution/index.ts',
@@ -679,6 +680,13 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
       'Ordinary consumer of the platform task-template policy hook; fails open to the market recommendations',
   },
   {
+    file: 'src/features/CreateAgentExamples/index.tsx',
+    importSpecifier: '@/enterprise/client/hooks/usePlatformAgentTemplates',
+    owner: 'M06',
+    reason:
+      'Ordinary consumer of the platform agent-template policy hook; fails open to the built-in locale examples',
+  },
+  {
     file: 'apps/server/src/services/toolExecution/builtin.ts',
     importSpecifier: '@/server/enterprise/services/connectorGovernance/resolve',
     owner: 'M09',
@@ -844,6 +852,13 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     owner: 'M06',
     reason:
       'vi.mock target for the platform task-template policy hook the recommendation hook consults',
+  },
+  {
+    file: 'src/routes/(main)/home/_layout/hooks/useCreateModal.test.tsx',
+    importSpecifier: '@/enterprise/client/hooks/usePlatformAgentTemplates',
+    owner: 'M06',
+    reason:
+      'vi.mock target for the platform agent-template policy hook the create-agent examples consult',
   },
   {
     file: 'apps/server/src/services/memory/userMemory/persona/__tests__/service.test.ts',

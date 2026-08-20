@@ -2,6 +2,7 @@
 import { type LobeChatDatabase } from '@lobechat/database';
 import { users, userSettings } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
+import { UserPersonaExtractor } from '@lobechat/memory-user-memory';
 import { ModelRuntime } from '@lobechat/model-runtime';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -381,6 +382,45 @@ describe('UserPersonaService', () => {
     expect(toolCall).toHaveBeenLastCalledWith(
       expect.objectContaining({
         existingPersona: '# Persona',
+      }),
+    );
+  });
+
+  it('projects persona writer reasoningEffort onto generateObject params', async () => {
+    await db.insert(userSettings).values({
+      id: userId,
+      systemAgent: {
+        userMemoryPersonaWriter: {
+          model: 'gpt-mock',
+          provider: 'openai',
+          reasoningEffort: 'high',
+        },
+      },
+    });
+    aiInfraMocks.getAiProviderRuntimeState.mockResolvedValue({
+      enabledAiModels: [
+        {
+          abilities: {},
+          enabled: true,
+          id: 'gpt-mock',
+          providerId: 'openai',
+          settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+          type: 'chat',
+        },
+      ],
+      enabledAiProviders: [],
+      enabledChatAiProviders: [],
+      enabledImageAiProviders: [],
+      runtimeConfig: {},
+    });
+
+    const service = new UserPersonaService(db);
+    await service.composeWriting({ userId, username: 'User' });
+
+    expect(UserPersonaExtractor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        generateObjectParams: { reasoning_effort: 'high' },
+        model: 'gpt-mock',
       }),
     );
   });

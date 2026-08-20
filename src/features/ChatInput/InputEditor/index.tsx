@@ -23,6 +23,7 @@ import { useEnterToSend } from '@/hooks/useEnterToSend';
 import { useIMECompositionEvent } from '@/hooks/useIMECompositionEvent';
 import { usePermission } from '@/hooks/usePermission';
 import { aiChatService } from '@/services/aiChat';
+import { resolveSystemAgentEffortParams } from '@/services/chat/mecha/systemAgentEffort';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
@@ -262,7 +263,12 @@ const InputEditor = memo<{
 
   useEffect(() => {
     storeApi.getState().clearInputCompletionError();
-  }, [inputCompletionConfig.model, inputCompletionConfig.provider, storeApi]);
+  }, [
+    inputCompletionConfig.model,
+    inputCompletionConfig.provider,
+    inputCompletionConfig.reasoningEffort,
+    storeApi,
+  ]);
 
   const getMessagesRef = useRef(storeApi.getState().getMessages);
   useEffect(() => {
@@ -319,6 +325,7 @@ const InputEditor = memo<{
             model: config.model,
             provider: config.provider,
             schema,
+            ...resolveSystemAgentEffortParams(config),
             tracing: {
               agentId,
               // Use the user's actual typed text as the row's `input_hint`

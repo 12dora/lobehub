@@ -1,10 +1,12 @@
 import { renderPlaceholderTemplate } from '@lobechat/context-engine';
 import type {
   ChatCompletionTool,
+  GenerateObjectEffortParams,
   GenerateObjectPayload,
   GenerateObjectSchema,
   ModelRuntime,
 } from '@lobechat/model-runtime';
+import { pickGenerateObjectEffortParams } from '@lobechat/model-runtime';
 import { SpanStatusCode } from '@lobechat/observability-otel/api';
 import {
   ATTR_GEN_AI_OPERATION_NAME,
@@ -37,6 +39,7 @@ const serializeForSpan = (value: unknown, limit = 4000) => {
 
 export interface BaseMemoryExtractorConfig {
   agent: MemoryExtractionAgent;
+  generateObjectParams?: GenerateObjectEffortParams;
   model: string;
   modelRuntime: ModelRuntime;
 }
@@ -49,6 +52,7 @@ export abstract class BaseMemoryExtractor<
   protected readonly model: string;
   protected readonly agent: MemoryExtractionAgent;
   protected readonly runtime: ModelRuntime;
+  protected readonly generateObjectParams: GenerateObjectEffortParams;
 
   protected promptTemplate: string | undefined;
 
@@ -56,6 +60,7 @@ export abstract class BaseMemoryExtractor<
     this.model = config.model;
     this.agent = config.agent;
     this.runtime = config.modelRuntime;
+    this.generateObjectParams = config.generateObjectParams ?? {};
   }
 
   protected abstract getPrompt(): string;
@@ -119,6 +124,7 @@ export abstract class BaseMemoryExtractor<
         model: this.model,
         schema: this.getSchema(options as unknown as TExtractorTemplateProps),
         tools: this.getTools(options as unknown as TExtractorTemplateProps),
+        ...pickGenerateObjectEffortParams(this.generateObjectParams),
       };
 
       span.setAttributes({

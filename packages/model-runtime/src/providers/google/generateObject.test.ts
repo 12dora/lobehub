@@ -578,6 +578,40 @@ describe('Google generateObject', () => {
       expect(result).toEqual({ age: 30, name: 'John' });
     });
 
+    it('should send thinkingLevel when provided', async () => {
+      const mockClient = {
+        models: {
+          generateContent: vi.fn().mockResolvedValue({
+            text: '{"name": "John"}',
+          }),
+        },
+      };
+
+      const contents = [{ parts: [{ text: 'Generate a person object' }], role: 'user' }];
+
+      await createGoogleGenerateObject(mockClient as any, {
+        contents,
+        model: 'gemini-3-pro-preview',
+        schema: {
+          name: 'person',
+          schema: {
+            properties: { name: { type: 'string' } },
+            type: 'object' as const,
+          },
+        },
+        thinkingLevel: 'high',
+      });
+
+      expect(mockClient.models.generateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            thinkingConfig: { thinkingLevel: 'high' },
+          }),
+          model: 'gemini-3-pro-preview',
+        }),
+      );
+    });
+
     it('should handle options correctly', async () => {
       const mockClient = {
         models: {
@@ -894,6 +928,52 @@ describe('Google generateObject', () => {
       expect(result).toEqual([
         { arguments: { city: 'New York', unit: 'celsius' }, name: 'get_weather' },
       ]);
+    });
+
+    it('should send thinkingLevel when provided', async () => {
+      const mockClient = {
+        models: {
+          generateContent: vi.fn().mockResolvedValue({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      functionCall: {
+                        args: { city: 'New York' },
+                        name: 'get_weather',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        },
+      };
+
+      await createGoogleGenerateObjectWithTools(mockClient as any, {
+        contents: [{ parts: [{ text: 'Weather?' }], role: 'user' }],
+        model: 'gemini-3-pro-preview',
+        thinkingLevel: 'medium',
+        tools: [
+          {
+            function: {
+              name: 'get_weather',
+              parameters: { properties: { city: { type: 'string' } }, type: 'object' as const },
+            },
+            type: 'function' as const,
+          },
+        ],
+      });
+
+      expect(mockClient.models.generateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            thinkingConfig: { thinkingLevel: 'medium' },
+          }),
+        }),
+      );
     });
 
     it('should call onUsage callback with usage data', async () => {

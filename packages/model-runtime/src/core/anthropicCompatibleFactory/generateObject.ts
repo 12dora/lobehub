@@ -85,12 +85,19 @@ export const buildAnthropicGenerateObjectRequest = async (
     throw new Error('tools or schema is required');
   }
 
+  // Payload effort/thinking first; factory `requestParams` (e.g. DeepSeek) can override.
+  const payloadThinkingParams: AnthropicGenerateObjectConfig['requestParams'] = {
+    ...(payload.effort ? { output_config: { effort: payload.effort } } : {}),
+    ...(payload.thinking ? { thinking: payload.thinking } : {}),
+  };
+
   return {
     requestParams: {
       max_tokens: config?.maxTokens ?? 64_000,
       messages: anthropicMessages,
       model,
       system: systemPrompts,
+      ...payloadThinkingParams,
       ...config?.requestParams,
       tool_choice,
       tools: finalTools,

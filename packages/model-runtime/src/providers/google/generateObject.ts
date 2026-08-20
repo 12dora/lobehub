@@ -60,13 +60,13 @@ const convertType = (type: string): SchemaType => {
  */
 export const convertOpenAISchemaToGoogleSchema = (openAISchema: GenerateObjectSchema): any => {
   // Check whether a schema type is (or includes) STRING / OBJECT.
-// Handles both `type: 'string'` and nullable `type: ['string', 'null']`.
-const isStringType = (t: unknown): boolean =>
-  typeof t === 'string' ? t === 'string' : Array.isArray(t) && t.includes('string');
-const isObjectType = (t: unknown): boolean =>
-  typeof t === 'string' ? t === 'object' : Array.isArray(t) && t.includes('object');
+  // Handles both `type: 'string'` and nullable `type: ['string', 'null']`.
+  const isStringType = (t: unknown): boolean =>
+    typeof t === 'string' ? t === 'string' : Array.isArray(t) && t.includes('string');
+  const isObjectType = (t: unknown): boolean =>
+    typeof t === 'string' ? t === 'object' : Array.isArray(t) && t.includes('object');
 
-const convertSchema = (schema: any): any => {
+  const convertSchema = (schema: any): any => {
     if (!schema) return schema;
 
     // convertType handles single string types; for array types (nullable)
@@ -125,11 +125,12 @@ export const createGoogleGenerateObject = async (
     contents: any[];
     model: string;
     schema: GenerateObjectSchema;
+    thinkingLevel?: string;
   },
   options?: GenerateObjectOptions,
   pricing?: Pricing,
 ) => {
-  const { schema, contents, model } = payload;
+  const { schema, contents, model, thinkingLevel } = payload;
 
   debug('createGoogleGenerateObject started', {
     contentsLength: contents.length,
@@ -148,6 +149,7 @@ export const createGoogleGenerateObject = async (
     abortSignal: options?.signal,
     responseMimeType: 'application/json',
     responseSchema,
+    ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
     // avoid wide sensitive words
     safetySettings: [
       {
@@ -210,12 +212,13 @@ export const createGoogleGenerateObjectWithTools = async (
   payload: {
     contents: any[];
     model: string;
+    thinkingLevel?: string;
     tools: ChatCompletionTool[];
   },
   options?: GenerateObjectOptions,
   pricing?: Pricing,
 ) => {
-  const { tools, contents, model } = payload;
+  const { tools, contents, model, thinkingLevel } = payload;
 
   debug('createGoogleGenerateObjectWithTools started', {
     contentsLength: contents.length,
@@ -229,6 +232,7 @@ export const createGoogleGenerateObjectWithTools = async (
 
   const config: GenerateContentConfig = {
     abortSignal: options?.signal,
+    ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
     // avoid wide sensitive words
     safetySettings: [
       {

@@ -1,4 +1,4 @@
-import type { ChatStreamPayload } from '@lobechat/model-runtime';
+import type { ChatStreamPayload, ModelExtendParams } from '@lobechat/model-runtime';
 import type { LobeAgentChatConfig, LobeAgentConfig, UserSystemAgentConfig } from '@lobechat/types';
 import { RequestTrigger } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
@@ -6,6 +6,7 @@ import { and, eq } from 'drizzle-orm';
 import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
 import { DEFAULT_AGENT_CHAT_CONFIG, DEFAULT_SYSTEM_AGENT_CONFIG } from '@/const/settings';
 import { UserModel } from '@/database/models/user';
+import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { agents, agentsToSessions, aiModels, aiProviders } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
@@ -13,6 +14,7 @@ import {
   initModelRuntimeWithUserPayload,
   resolvePlatformBrowserProfile,
 } from '@/server/modules/ModelRuntime';
+import { resolveServiceModelEffortParams } from '@/server/services/systemAgent/effort';
 import { resolveSystemAgentModelConfig } from '@/server/services/systemAgent/modelConfig';
 
 import { BaseService } from '../common/base.service';
@@ -94,7 +96,11 @@ export class ChatService extends BaseService {
   /**
    * Get the translation model config from system settings (with default fallback)
    */
-  private async getSystemTranslationModelConfig(): Promise<{ model: string; provider: string }> {
+  private async getSystemTranslationModelConfig(): Promise<{
+    model: string;
+    provider: string;
+    reasoningEffort?: string | null;
+  }> {
     const defaults = DEFAULT_SYSTEM_AGENT_CONFIG.translation;
     if (!this.userId) {
       return { model: defaults.model, provider: defaults.provider };
@@ -105,11 +111,12 @@ export class ChatService extends BaseService {
       const userSettings = await userModel.getUserSettings();
       const systemAgent = userSettings?.systemAgent as Partial<UserSystemAgentConfig> | undefined;
       const translationConfig = systemAgent?.translation;
-
-      return resolveSystemAgentModelConfig({
+      const { model, provider } = await resolveSystemAgentModelConfig({
         taskConfig: translationConfig,
         taskKey: 'translation',
       });
+
+      return { model, provider, reasoningEffort: translationConfig?.reasoningEffort };
     } catch (error) {
       this.log('warn', '读取系统翻译模型配置失败，使用默认配置', {
         error: this.extractErrorMessage(error),
@@ -118,6 +125,36 @@ export class ChatService extends BaseService {
 
       return { model: defaults.model, provider: defaults.provider };
     }
+  }
+
+  private async resolveTranslationEffortParams(
+    model: string,
+    provider: string,
+    reasoningEffort?: string | null,
+  ): Promise<ModelExtendParams> {
+    if (!this.userId || !reasoningEffort) return {};
+
+    let runtimeState;
+    try {
+      const aiInfraRepos = new AiInfraRepos(this.db, this.userId, {}, this.workspaceId);
+      runtimeState = await aiInfraRepos.getAiProviderRuntimeState(
+        KeyVaultsGateKeeper.getUserKeyVaults,
+      );
+    } catch (error) {
+      this.log('warn', '读取翻译模型 extendParams 失败', {
+        error: this.extractErrorMessage(error),
+        model,
+        provider,
+        userId: this.userId,
+      });
+    }
+
+    return resolveServiceModelEffortParams({
+      model,
+      provider,
+      reasoningEffort,
+      runtimeState,
+    });
   }
 
   /**
@@ -500,7 +537,13 @@ export class ChatService extends BaseService {
         temperature: 0.3, // Lower temperature to ensure translation consistency
       };
 
-      const response = await this.chat(chatParams);
+      const effortParams = await this.resolveTranslationEffortParams(
+        finalModel,
+        finalProvider,
+        systemTranslationConfig.reasoningEffort,
+      );
+
+      const response = await this.chat(chatParams, effortParams as Partial<ChatStreamPayload>);
 
       this.log('info', '翻译文本完成', {
         model: finalModel,

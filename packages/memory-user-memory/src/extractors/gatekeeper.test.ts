@@ -98,4 +98,30 @@ describe('UserMemoryGateKeeper', () => {
       expect.objectContaining({ metadata: { trigger: 'memory' } }),
     );
   });
+
+  it('spreads generateObjectParams onto the structuredCall payload', async () => {
+    const extractor = new UserMemoryGateKeeper({
+      ...extractorConfig,
+      generateObjectParams: { reasoning_effort: 'high' },
+    });
+    await extractor.ensurePromptTemplate();
+
+    runtimeMock.generateObject = vi.fn().mockResolvedValue({
+      activity: { reasoning: 'reasoning', shouldExtract: true },
+      context: { reasoning: 'reasoning', shouldExtract: true },
+      experience: { reasoning: 'reasoning', shouldExtract: false },
+      identity: { reasoning: 'reasoning', shouldExtract: true },
+      preference: { reasoning: 'reasoning', shouldExtract: true },
+    }) as any;
+
+    await extractor.check(templateOptions);
+
+    expect(runtimeMock.generateObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-mock',
+        reasoning_effort: 'high',
+      }),
+      expect.any(Object),
+    );
+  });
 });

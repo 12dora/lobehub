@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { GenerateObjectEffortParams } from './aiChat';
+import { GenerateObjectEffortParamsSchema } from './aiChat';
 import { type OnboardingPhase, OnboardingPhaseSchema } from './user/agentOnboarding';
 
 export interface FollowUpChip {
@@ -11,7 +13,7 @@ export interface FollowUpChip {
 
 export type FollowUpHint = { kind: 'onboarding'; phase: OnboardingPhase } | { kind: 'chat' };
 
-export interface FollowUpModelConfig {
+export interface FollowUpModelConfig extends GenerateObjectEffortParams {
   model: string;
   provider: string;
 }
@@ -39,7 +41,7 @@ export const FollowUpHintSchema = z.union([
   }),
 ]);
 
-export const FollowUpModelConfigSchema = z.object({
+export const FollowUpModelConfigSchema = GenerateObjectEffortParamsSchema.extend({
   model: z.string().min(1),
   provider: z.string().min(1),
 });

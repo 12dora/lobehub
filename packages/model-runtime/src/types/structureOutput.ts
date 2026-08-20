@@ -22,14 +22,21 @@ export interface GenerateObjectSchema {
 }
 
 export interface GenerateObjectPayload {
+  effort?: ChatStreamPayload['effort'];
   messages: GenerateObjectMessage[];
   model: string;
   reasoning_effort?: ChatStreamPayload['reasoning_effort'];
   responseApi?: boolean;
   schema?: GenerateObjectSchema;
   thinking?: ChatStreamPayload['thinking'];
+  thinkingLevel?: ChatStreamPayload['thinkingLevel'];
   tools?: ChatCompletionTool[];
 }
+
+export type GenerateObjectEffortParams = Pick<
+  GenerateObjectPayload,
+  'effort' | 'reasoning_effort' | 'thinking' | 'thinkingLevel'
+>;
 
 export interface GenerateObjectOptions {
   /**

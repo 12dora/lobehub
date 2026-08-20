@@ -101,6 +101,50 @@ describe('FollowUpActionService.extract', () => {
     );
   });
 
+  it('forwards projected effort fields from modelConfig onto generateObject', async () => {
+    queryFindFirstSpy.mockResolvedValue({
+      id: FOUND_MSG,
+      content: 'What would you like to call me?',
+    });
+    runtimeMock.generateObject.mockResolvedValue({ chips: [] });
+
+    await svc.extract({
+      topicId: TEST_TOPIC,
+      modelConfig: {
+        model: 'custom-scene-model',
+        provider: 'custom-provider',
+        reasoning_effort: 'high',
+      },
+    });
+
+    expect(runtimeMock.generateObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'custom-scene-model',
+        reasoning_effort: 'high',
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it('omits effort fields when modelConfig does not include them', async () => {
+    queryFindFirstSpy.mockResolvedValue({
+      id: FOUND_MSG,
+      content: 'What would you like to call me?',
+    });
+    runtimeMock.generateObject.mockResolvedValue({ chips: [] });
+
+    await svc.extract({
+      topicId: TEST_TOPIC,
+      modelConfig: MODEL_CONFIG,
+    });
+
+    const payload = runtimeMock.generateObject.mock.calls[0][0];
+    expect(payload).not.toHaveProperty('effort');
+    expect(payload).not.toHaveProperty('reasoning_effort');
+    expect(payload).not.toHaveProperty('thinking');
+    expect(payload).not.toHaveProperty('thinkingLevel');
+  });
+
   it('truncates more than 4 chips', async () => {
     queryFindFirstSpy.mockResolvedValue({ id: FOUND_MSG, content: 'choose' });
     runtimeMock.generateObject.mockResolvedValue({

@@ -1,14 +1,16 @@
 import type {
   ChatCompletionTool,
+  GenerateObjectEffortParams,
   GenerateObjectPayload,
   GenerateObjectSchema,
 } from '@lobechat/model-runtime';
+import { pickGenerateObjectEffortParams } from '@lobechat/model-runtime';
 import type { OpenAIChatMessage } from '@lobechat/types';
 
 import type { LobeChatDatabase } from '@/database/type';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
-export interface AiGenerationObjectInput {
+export interface AiGenerationObjectInput extends GenerateObjectEffortParams {
   messages: OpenAIChatMessage[] | GenerateObjectPayload['messages'];
   model: string;
   provider: string;
@@ -68,6 +70,7 @@ export class AiGenerationService {
         model: input.model,
         schema: input.schema,
         tools: input.tools,
+        ...pickGenerateObjectEffortParams(input),
       },
       { metadata: options.metadata, signal: options.signal, tracing: options.tracing },
     )) as T;

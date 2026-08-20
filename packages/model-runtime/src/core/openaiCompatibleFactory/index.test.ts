@@ -3092,6 +3092,50 @@ describe('LobeOpenAICompatibleFactory', () => {
         expect(result).toEqual([{ arguments: { result: 8 }, name: 'calculate' }]);
       });
 
+      it('should forward Responses reasoning params on generateObject with tools', async () => {
+        const mockResponse = {
+          output: [
+            {
+              arguments: '{"city":"Tokyo"}',
+              name: 'get_weather',
+              type: 'function_call',
+            },
+          ],
+        };
+
+        vi.spyOn(instance['client'].responses, 'create').mockResolvedValue(mockResponse as any);
+
+        const payload = {
+          messages: [{ content: 'What is the weather in Tokyo?', role: 'user' as const }],
+          model: 'gpt-5.4-mini',
+          reasoning_effort: 'high' as const,
+          tools: [
+            {
+              function: {
+                description: 'Get weather information',
+                name: 'get_weather',
+                parameters: {
+                  properties: { city: { type: 'string' } },
+                  required: ['city'],
+                  type: 'object' as const,
+                },
+              },
+              type: 'function' as const,
+            },
+          ],
+        };
+
+        await instance.generateObject(payload);
+
+        expect(instance['client'].responses.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            model: 'gpt-5.4-mini',
+            reasoning: { effort: 'high' },
+          }),
+          expect.anything(),
+        );
+      });
+
       it('should throw error when neither tools nor schema is provided', async () => {
         const payload = {
           messages: [{ content: 'Generate data', role: 'user' as const }],

@@ -1,6 +1,7 @@
 import { type LobeAgentChatConfig } from '@lobechat/types';
 import { useMemo } from 'react';
 
+import { resolveSystemAgentEffortParams } from '@/services/chat/mecha/systemAgentEffort';
 import { useFollowUpActionStore } from '@/store/followUpAction';
 import { useUserStore } from '@/store/user';
 import { systemAgentSelectors } from '@/store/user/slices/settings/selectors/systemAgent';
@@ -58,7 +59,11 @@ export const useChatFollowUp = ({
         if (reason === 'stopped') return;
         await useFollowUpActionStore.getState().fetchFor(conversationKey, {
           hint: { kind: 'chat' },
-          modelConfig: { model: globalConfig.model, provider: globalConfig.provider },
+          modelConfig: {
+            model: globalConfig.model,
+            provider: globalConfig.provider,
+            ...resolveSystemAgentEffortParams(globalConfig),
+          },
           threadId,
           topicId,
         });
@@ -73,5 +78,13 @@ export const useChatFollowUp = ({
         clearSlot();
       },
     };
-  }, [effective, conversationKey, globalConfig.model, globalConfig.provider, threadId, topicId]);
+  }, [
+    effective,
+    conversationKey,
+    globalConfig.model,
+    globalConfig.provider,
+    globalConfig.reasoningEffort,
+    threadId,
+    topicId,
+  ]);
 };

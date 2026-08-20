@@ -1,4 +1,5 @@
 import type {
+  GenerateObjectEffortParams,
   GenerateObjectPayload,
   ModelRuntime,
   OpenAIChatMessage,
@@ -78,6 +79,7 @@ export type GatekeeperOptions = Pick<ExtractorOptions, 'retrievedContexts' | 'to
 
 export interface BaseExtractorDependencies {
   agent: MemoryExtractionAgent;
+  generateObjectParams?: GenerateObjectEffortParams;
   model: string;
   modelRuntime: ModelRuntime;
 }

@@ -37,7 +37,9 @@ const mocks = vi.hoisted(() => {
       enabled: false,
       model: 'gpt-4o-mini',
       provider: 'openai',
+      reasoningEffort: undefined as string | undefined,
     },
+    resolveSystemAgentEffortParams: vi.fn(() => ({})),
     recordTracingFeedback: vi.fn(),
   };
 });
@@ -157,6 +159,9 @@ vi.mock('@/services/aiChat', () => ({
     recordTracingFeedback: mocks.recordTracingFeedback,
   },
 }));
+vi.mock('@/services/chat/mecha/systemAgentEffort', () => ({
+  resolveSystemAgentEffortParams: mocks.resolveSystemAgentEffortParams,
+}));
 vi.mock('@/store/chat', () => ({
   useChatStore: Object.assign(<T,>(selector: StoreSelector<T>) => selector({}), {
     getState: () => ({ activeTopicId: undefined }),
@@ -251,6 +256,8 @@ describe('ChatInput InputEditor', () => {
     mocks.inputCompletionConfig.enabled = false;
     mocks.inputCompletionConfig.model = 'gpt-4o-mini';
     mocks.inputCompletionConfig.provider = 'openai';
+    mocks.inputCompletionConfig.reasoningEffort = undefined;
+    mocks.resolveSystemAgentEffortParams.mockReturnValue({});
     mocks.chatInputState.inputCompletionError = undefined;
     mocks.chatInputState.inputCompletionErrorDismissed = false;
     mocks.chainInputCompletion.mockReturnValue({
@@ -283,6 +290,47 @@ describe('ChatInput InputEditor', () => {
     render(<InputEditor />);
 
     expect((await getEditorStyle())?.fontSize).toBeUndefined();
+  });
+
+  it('forwards projected effort params on autocomplete generateJSON', async () => {
+    permission.allowed = true;
+    mocks.inputCompletionConfig.enabled = true;
+    mocks.inputCompletionConfig.reasoningEffort = 'high';
+    mocks.resolveSystemAgentEffortParams.mockReturnValue({ reasoning_effort: 'high' });
+    mocks.generateJSON.mockResolvedValueOnce({
+      data: { completion: ' world' },
+      tracingId: '11111111-1111-4111-8111-111111111111',
+    });
+
+    render(<InputEditor />);
+
+    const autoCompleteProps = await getAutoCompleteProps();
+    const abortController = new AbortController();
+
+    await expect(
+      autoCompleteProps.onAutoComplete({
+        abortSignal: abortController.signal,
+        afterText: '',
+        input: 'hello',
+        suggestionId: 'suggestion-effort',
+      }),
+    ).resolves.toBe(' world');
+
+    expect(mocks.resolveSystemAgentEffortParams).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-4o-mini',
+        provider: 'openai',
+        reasoningEffort: 'high',
+      }),
+    );
+    expect(mocks.generateJSON).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-4o-mini',
+        provider: 'openai',
+        reasoning_effort: 'high',
+      }),
+      expect.any(AbortController),
+    );
   });
 
   it('pauses autocomplete after a non-abort generation error', async () => {

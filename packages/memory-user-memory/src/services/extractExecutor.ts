@@ -1,5 +1,5 @@
 import type { LobeChatDatabase } from '@lobechat/database';
-import type { ModelRuntime } from '@lobechat/model-runtime';
+import type { GenerateObjectEffortParams, ModelRuntime } from '@lobechat/model-runtime';
 import { SpanStatusCode } from '@lobechat/observability-otel/api';
 import {
   gateKeeperCallDurationHistogram,
@@ -58,6 +58,11 @@ export interface MemoryExtractionServiceOptions {
   callbacks?: ExtractorOptions['callbacks'];
   config: MemoryExtractionLLMConfig;
   db: LobeChatDatabase;
+  /**
+   * Projected effort params keyed by model id. Gatekeeper and layer extractors
+   * may use different env models; each is looked up independently.
+   */
+  generateObjectParamsByModel?: Record<string, GenerateObjectEffortParams>;
   language?: string;
   runtimes: MemoryExtractionRuntimeOptions;
 }
@@ -95,6 +100,7 @@ export class MemoryExtractionService<RO> {
 
     const gatekeeperConfig: BaseExtractorDependencies = {
       agent: 'gatekeeper',
+      generateObjectParams: options.generateObjectParamsByModel?.[this.config.gateModel],
       model: this.config.gateModel,
       modelRuntime: this.gatekeeperRuntime,
     };
@@ -112,6 +118,7 @@ export class MemoryExtractionService<RO> {
 
       return {
         agent,
+        generateObjectParams: options.generateObjectParamsByModel?.[model],
         model,
         modelRuntime: this.layerRuntime,
       } satisfies BaseExtractorDependencies;
@@ -362,32 +369,27 @@ export class MemoryExtractionService<RO> {
       switch (layer) {
         case LayersEnum.Context: {
           outputs.context = result as
-            | { data: MemoryExtractionLayerOutputTypes[typeof layer] }
-            | { error: unknown };
+            { data: MemoryExtractionLayerOutputTypes[typeof layer] } | { error: unknown };
           break;
         }
         case LayersEnum.Activity: {
           outputs.activity = result as
-            | { data: MemoryExtractionLayerOutputTypes[typeof layer] }
-            | { error: unknown };
+            { data: MemoryExtractionLayerOutputTypes[typeof layer] } | { error: unknown };
           break;
         }
         case LayersEnum.Experience: {
           outputs.experience = result as
-            | { data: MemoryExtractionLayerOutputTypes[typeof layer] }
-            | { error: unknown };
+            { data: MemoryExtractionLayerOutputTypes[typeof layer] } | { error: unknown };
           break;
         }
         case LayersEnum.Preference: {
           outputs.preference = result as
-            | { data: MemoryExtractionLayerOutputTypes[typeof layer] }
-            | { error: unknown };
+            { data: MemoryExtractionLayerOutputTypes[typeof layer] } | { error: unknown };
           break;
         }
         case LayersEnum.Identity: {
           outputs.identity = result as
-            | { data: MemoryExtractionLayerOutputTypes[typeof layer] }
-            | { error: unknown };
+            { data: MemoryExtractionLayerOutputTypes[typeof layer] } | { error: unknown };
           break;
         }
         default: {

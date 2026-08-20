@@ -196,7 +196,33 @@ export const StructureSchema = z.object({
   strict: z.boolean().optional(),
 });
 
-export const StructureOutputSchema = z.object({
+/**
+ * Provider-shaped effort fields projected from a service model's stored
+ * `reasoningEffort`. Never include the settings-only key `reasoningEffort`.
+ */
+export const GenerateObjectEffortParamsSchema = z.object({
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  reasoning_effort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  thinking: z
+    .object({
+      budget_tokens: z.number().optional(),
+      type: z.string().optional(),
+    })
+    .optional(),
+  thinkingLevel: z.enum(['minimal', 'low', 'medium', 'high']).optional(),
+});
+
+export interface GenerateObjectEffortParams {
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  thinking?: {
+    budget_tokens?: number;
+    type?: string;
+  };
+  thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+}
+
+export const StructureOutputSchema = GenerateObjectEffortParamsSchema.extend({
   /**
    * Free-form context forwarded to non-tracing hooks (e.g. billing). Use
    * `tracing` for `llm_generation_tracing` config.
@@ -235,7 +261,7 @@ interface IStructureSchema {
   strict?: boolean;
 }
 
-export interface StructureOutputParams {
+export interface StructureOutputParams extends GenerateObjectEffortParams {
   messages: OpenAIChatMessage[];
   /**
    * Free-form context forwarded to non-tracing hooks (e.g. billing). Use

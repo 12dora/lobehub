@@ -1,4 +1,5 @@
 import { renderPlaceholderTemplate } from '@lobechat/context-engine';
+import { pickGenerateObjectEffortParams } from '@lobechat/model-runtime';
 import { RequestTrigger } from '@lobechat/types';
 import { z } from 'zod';
 
@@ -121,6 +122,7 @@ export class UserPersonaExtractor extends BaseMemoryExtractor<
         messages,
         model: this.model,
         tools: this.getTools(options || {}),
+        ...pickGenerateObjectEffortParams(this.generateObjectParams),
       },
       { metadata: { trigger: RequestTrigger.Memory } },
     )) as unknown;

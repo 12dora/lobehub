@@ -121,4 +121,9 @@ export {
   resolveDefaultThinkingLevelForModel,
 } from './utils/modelExtendParams';
 export { isDeepSeekThinkingEligibleModel, isDeepSeekV4FamilyModel } from './utils/modelParse';
+export {
+  pickGenerateObjectEffortParams,
+  projectServiceModelEffort,
+  type ProjectServiceModelEffortParams,
+} from './utils/serviceModelEffort';
 export { parseDataUri } from './utils/uriParser';

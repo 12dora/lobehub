@@ -22,8 +22,16 @@ const TOPIC_ID = 'topic-1';
 
 type Mock = ReturnType<typeof vi.fn>;
 
+const effortMocks = vi.hoisted(() => ({
+  resolveSystemAgentEffortParams: vi.fn(() => ({})),
+}));
+
 vi.mock('@/store/user', () => ({
   useUserStore: vi.fn(),
+}));
+
+vi.mock('@/services/chat/mecha/systemAgentEffort', () => ({
+  resolveSystemAgentEffortParams: effortMocks.resolveSystemAgentEffortParams,
 }));
 
 describe('useChatFollowUp', () => {
@@ -33,6 +41,7 @@ describe('useChatFollowUp', () => {
   beforeEach(() => {
     fetchFor = vi.fn().mockResolvedValue(undefined);
     clear = vi.fn();
+    effortMocks.resolveSystemAgentEffortParams.mockReturnValue({});
 
     vi.spyOn(useFollowUpActionStore, 'getState').mockReturnValue({
       fetchFor,
@@ -204,6 +213,31 @@ describe('useChatFollowUp', () => {
         threadId: 'thread-1',
         topicId: TOPIC_ID,
       });
+    });
+
+    it('spreads projected effort params onto follow-up modelConfig', async () => {
+      effortMocks.resolveSystemAgentEffortParams.mockReturnValue({ reasoning_effort: 'high' });
+      (useUserStore as unknown as Mock).mockImplementation((selector: any) =>
+        selector({
+          settings: {
+            systemAgent: { followUpAction: { ...VALID_GLOBAL, reasoningEffort: 'high' } },
+          },
+        }),
+      );
+
+      const { result } = renderEnabled();
+      await result.current.onAssistantTurnSettled?.('m', { reason: 'completed' });
+
+      expect(fetchFor).toHaveBeenCalledWith(
+        CONVERSATION_KEY,
+        expect.objectContaining({
+          modelConfig: {
+            model: VALID_GLOBAL.model,
+            provider: VALID_GLOBAL.provider,
+            reasoning_effort: 'high',
+          },
+        }),
+      );
     });
 
     it('onAssistantTurnSettled with reason=regenerated fires fetchFor', async () => {

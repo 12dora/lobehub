@@ -1048,6 +1048,39 @@ describe('aiChatRouter', () => {
       expect(result.tracingId).toMatch(/^[0-9a-f-]{36}$/);
     });
 
+    it('forwards optional reasoning_effort onto generateObject', async () => {
+      const { initModelRuntimeFromDB } = await import('@/server/modules/ModelRuntime');
+
+      const mockGenerateObject = vi.fn().mockResolvedValue({ ok: true });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValue({
+        generateObject: mockGenerateObject,
+      } as any);
+
+      const caller = aiChatRouter.createCaller({ ...mockCtx, serverDB: {} } as any);
+
+      await caller.outputJSON({
+        messages: [{ content: 'test', role: 'user' }],
+        model: 'gpt-5.6',
+        provider: 'openai',
+        reasoning_effort: 'high',
+        schema: {
+          name: 'Person',
+          schema: {
+            type: 'object' as const,
+            properties: { name: { type: 'string' } },
+          },
+        },
+      });
+
+      expect(mockGenerateObject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'gpt-5.6',
+          reasoning_effort: 'high',
+        }),
+        expect.any(Object),
+      );
+    });
+
     it('maps provider auth runtime errors to UNAUTHORIZED instead of leaking as internal errors', async () => {
       const { initModelRuntimeFromDB } = await import('@/server/modules/ModelRuntime');
       const runtimeError = {

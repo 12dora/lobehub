@@ -20,13 +20,14 @@ import {
 } from '@lobechat/memory-user-memory';
 import {
   type Embeddings,
+  type GenerateObjectEffortParams,
   type GenerateObjectPayload,
   type LLMRoleType,
   mergeModelRuntimeHooks,
   type ModelRuntimeHooks,
   type OpenAIChatMessage,
 } from '@lobechat/model-runtime';
-import { ModelRuntime } from '@lobechat/model-runtime';
+import { ModelRuntime, projectServiceModelEffort } from '@lobechat/model-runtime';
 import { SpanStatusCode } from '@lobechat/observability-otel/api';
 import {
   ATTR_GEN_AI_OPERATION_NAME,
@@ -70,6 +71,7 @@ import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { getServerDB } from '@/database/server';
 import { buildWorkspaceWhere } from '@/database/utils/workspace';
 import { OtelWorkflowClient } from '@/libs/qstash';
+import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
@@ -90,6 +92,7 @@ import {
   resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { S3 } from '@/server/modules/S3';
+import { readExtendParamsFromRuntimeState } from '@/server/services/systemAgent/effort';
 import {
   AsyncTaskError,
   type AsyncTaskErrorBody,
@@ -911,7 +914,44 @@ export class MemoryExtractionExecutor {
       language: fallback.language,
       model: override?.model || fallback.model,
       provider,
+      reasoningEffort: override?.reasoningEffort,
     };
+  }
+
+  private buildGenerateObjectParamsByModel(
+    memoryServiceConfig: ResolvedMemoryServiceConfig,
+    runtimeState: AiProviderRuntimeState,
+  ): Record<string, GenerateObjectEffortParams> {
+    const params: Record<string, GenerateObjectEffortParams> = {};
+
+    const project = (
+      model: string | undefined,
+      provider: string | undefined,
+      reasoningEffort?: string | null,
+    ) => {
+      if (!model) return;
+      params[model] = projectServiceModelEffort({
+        extendParams: readExtendParamsFromRuntimeState(runtimeState, model, provider ?? ''),
+        model,
+        reasoningEffort,
+      }) as GenerateObjectEffortParams;
+    };
+
+    project(
+      memoryServiceConfig.modelConfig.gateModel,
+      memoryServiceConfig.agents.gatekeeper.provider,
+      memoryServiceConfig.agents.gatekeeper.reasoningEffort,
+    );
+
+    for (const layerModel of Object.values(memoryServiceConfig.modelConfig.layerModels)) {
+      project(
+        layerModel,
+        memoryServiceConfig.agents.layerExtractor.provider,
+        memoryServiceConfig.agents.layerExtractor.reasoningEffort,
+      );
+    }
+
+    return params;
   }
 
   private resolveUserMemoryServiceConfig(
@@ -1737,12 +1777,13 @@ export class MemoryExtractionExecutor {
           };
 
           const userModel = new UserModel(db, job.userId);
-          const [userState, aiProviderRuntimeState] = await Promise.all([
+          const [userState, aiProviderRuntimeState, effectiveSystemAgent] = await Promise.all([
             userModel.getUserState(KeyVaultsGateKeeper.getUserKeyVaults),
             this.getAiProviderRuntimeState(job.userId, job.workspaceId),
+            getEffectiveSystemAgentConfig({ db, userId: job.userId }),
           ]);
           const memoryServiceConfig = this.resolveUserMemoryServiceConfig(
-            userState.settings?.systemAgent as Partial<UserServiceModelConfig> | undefined,
+            effectiveSystemAgent as Partial<UserServiceModelConfig> | undefined,
           );
           const keyVaults = await this.resolveRuntimeKeyVaults(
             aiProviderRuntimeState,
@@ -1946,6 +1987,10 @@ export class MemoryExtractionExecutor {
           const service = new MemoryExtractionService({
             config: memoryServiceConfig.modelConfig,
             db,
+            generateObjectParamsByModel: this.buildGenerateObjectParamsByModel(
+              memoryServiceConfig,
+              aiProviderRuntimeState,
+            ),
             language,
             runtimes,
           });
@@ -2862,12 +2907,13 @@ export class MemoryExtractionExecutor {
         try {
           const db = await this.db;
           const userModel = new UserModel(db, params.userId);
-          const [userState, aiProviderRuntimeState] = await Promise.all([
+          const [userState, aiProviderRuntimeState, effectiveSystemAgent] = await Promise.all([
             userModel.getUserState(KeyVaultsGateKeeper.getUserKeyVaults),
             this.getAiProviderRuntimeState(params.userId),
+            getEffectiveSystemAgentConfig({ db, userId: params.userId }),
           ]);
           const memoryServiceConfig = this.resolveUserMemoryServiceConfig(
-            userState.settings?.systemAgent as Partial<UserServiceModelConfig> | undefined,
+            effectiveSystemAgent as Partial<UserServiceModelConfig> | undefined,
           );
           const keyVaults = await this.resolveRuntimeKeyVaults(
             aiProviderRuntimeState,
@@ -2944,6 +2990,10 @@ export class MemoryExtractionExecutor {
           const service = new MemoryExtractionService({
             config: memoryServiceConfig.modelConfig,
             db,
+            generateObjectParamsByModel: this.buildGenerateObjectParamsByModel(
+              memoryServiceConfig,
+              aiProviderRuntimeState,
+            ),
             language,
             runtimes,
           });

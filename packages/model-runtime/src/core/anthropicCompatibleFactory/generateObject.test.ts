@@ -248,6 +248,41 @@ describe('Anthropic generateObject', () => {
       expect(result).toEqual({ data: 'test' });
     });
 
+    it('should map payload effort onto output_config', async () => {
+      const mockClient = {
+        messages: {
+          create: vi.fn().mockResolvedValue({
+            content: [
+              {
+                input: { data: 'test' },
+                name: 'data_extractor',
+                type: 'tool_use',
+              },
+            ],
+          }),
+        },
+      };
+
+      const payload = {
+        effort: 'high' as const,
+        messages: [{ content: 'Generate data', role: 'user' as const }],
+        model: 'claude-opus-4-6',
+        schema: {
+          name: 'data_extractor',
+          schema: { properties: { data: { type: 'string' } }, type: 'object' as const },
+        },
+      };
+
+      await createAnthropicGenerateObject(mockClient as any, payload);
+
+      expect(mockClient.messages.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          output_config: { effort: 'high' },
+        }),
+        expect.any(Object),
+      );
+    });
+
     it('should forward configured request params when provided', async () => {
       const mockClient = {
         messages: {

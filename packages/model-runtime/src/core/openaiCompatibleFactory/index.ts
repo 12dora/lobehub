@@ -1715,6 +1715,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           {
             input,
             model,
+            ...getGenerateObjectResponsesReasoningParams(payload),
             ...this.resolvePromptCacheKeyParams(model, options?.user),
             tool_choice: 'required',
             tools: tools!.map((tool) => this.convertChatCompletionToolToResponseTool(tool)),

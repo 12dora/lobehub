@@ -51,7 +51,13 @@ export const createDeepSeekAnthropicGenerateObject = async (
     },
   } as Anthropic;
 
-  return createAnthropicGenerateObject(sanitizedClient, payload, options, pricing, {
+  // Strip `thinking` from the payload so the shared Anthropic generateObject
+  // builder does not re-emit `{ thinking: { type: 'enabled' } }` — DeepSeek's
+  // Anthropic-compatible endpoint defaults thinking on server-side and only
+  // wants an explicit `thinking: disabled` (already in `requestParams`).
+  const { thinking: _thinking, ...payloadWithoutThinking } = payload;
+
+  return createAnthropicGenerateObject(sanitizedClient, payloadWithoutThinking, options, pricing, {
     requestModel: config?.requestModel,
     requestParams,
     schemaToolChoice: thinkingDisabled ? 'tool' : 'any',

@@ -56,20 +56,24 @@ export class FollowUpActionService {
     if (!text) return EMPTY_RESULT(row.id);
 
     const { system, user } = buildSuggestionPrompt({ assistantText: text, hint });
-    const { model, provider } = modelConfig;
+    const { model, provider, effort, reasoning_effort, thinking, thinkingLevel } = modelConfig;
 
     const ai = new AiGenerationService(this.db, this.userId, this.workspaceId);
     let raw: unknown;
     try {
       raw = await ai.generateObject(
         {
+          effort,
           messages: [
             { content: system, role: 'system' as const },
             { content: user, role: 'user' as const },
           ],
           model,
           provider,
+          reasoning_effort,
           schema: SUGGESTION_RESPONSE_JSON_SCHEMA,
+          thinking,
+          thinkingLevel,
         },
         {
           tracing: {

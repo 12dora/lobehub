@@ -575,6 +575,8 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
       model: 'analysis-1',
       provider: 'provider-analysis',
     });
+    expect(memoryServiceConfig.agents.gatekeeper.reasoningEffort).toBeUndefined();
+    expect(memoryServiceConfig.agents.layerExtractor.reasoningEffort).toBeUndefined();
     expect(memoryServiceConfig.agents.gatekeeper.apiKey).toBeUndefined();
     expect(memoryServiceConfig.agents.layerExtractor.apiKey).toBeUndefined();
     expect(memoryServiceConfig.modelConfig.gateModel).toBe('analysis-1');
@@ -585,6 +587,37 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
       identity: 'analysis-1',
       preference: 'analysis-1',
     });
+  });
+
+  it('copies reasoningEffort onto gatekeeper and layer extractor from memory analysis config', () => {
+    const executor = createExecutor({
+      agentGateKeeper: {
+        model: 'gate-1',
+        provider: 'provider-gate',
+      },
+      agentLayerExtractor: {
+        layers: {
+          activity: 'layer-act',
+          context: 'layer-ctx',
+          experience: 'layer-exp',
+          identity: 'layer-id',
+          preference: 'layer-pref',
+        },
+        model: 'layer-1',
+        provider: 'provider-layer',
+      },
+    });
+
+    const memoryServiceConfig = (executor as any).resolveUserMemoryServiceConfig({
+      memoryAnalysisAgentConfig: {
+        model: 'analysis-1',
+        provider: 'provider-analysis',
+        reasoningEffort: 'high',
+      },
+    });
+
+    expect(memoryServiceConfig.agents.gatekeeper.reasoningEffort).toBe('high');
+    expect(memoryServiceConfig.agents.layerExtractor.reasoningEffort).toBe('high');
   });
 
   it('uses ServiceModel provider before env preferred providers when provider is overridden', async () => {

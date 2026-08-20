@@ -1,5 +1,6 @@
 import { DEFAULT_MINI_PROVIDER } from '@lobechat/business-const';
 import { DEFAULT_MINI_MODEL, DEFAULT_USER_MEMORY_EMBEDDING_MODEL_ITEM } from '@lobechat/const';
+import type { SystemAgentReasoningEffort } from '@lobechat/types';
 
 import {
   type GlobalMemoryExtractionConfig,
@@ -56,6 +57,7 @@ export type MemoryAgentConfig = MemoryAgentPublicConfig & {
   apiKey?: string;
   language?: string;
   model: string;
+  reasoningEffort?: SystemAgentReasoningEffort | null;
 };
 
 export type MemoryLayerExtractorConfig = MemoryLayerExtractorPublicConfig &

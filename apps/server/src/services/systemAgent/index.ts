@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { TRACING_SCENARIOS } from '@lobechat/const';
 import type { TracingOptions } from '@lobechat/llm-generation-tracing';
+import type { ModelExtendParams } from '@lobechat/model-runtime';
+import { pickGenerateObjectEffortParams } from '@lobechat/model-runtime';
 import {
   chainGenerateSkillMeta,
   chainSummaryTitle,
@@ -14,10 +16,14 @@ import { RequestTrigger } from '@lobechat/types';
 import debug from 'debug';
 
 import { UserModel } from '@/database/models/user';
+import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import type { LobeChatDatabase } from '@/database/type';
 import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
+import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
+import type { RuntimeStateForEffort } from './effort';
+import { resolveServiceModelEffortParams } from './effort';
 import { resolveSystemAgentModelConfig } from './modelConfig';
 
 const log = debug('lobe-server:system-agent-service');
@@ -48,6 +54,7 @@ export class SystemAgentService {
   private readonly db: LobeChatDatabase;
   private readonly userId: string;
   private readonly workspaceId?: string;
+  private runtimeStatePromise?: Promise<RuntimeStateForEffort | undefined>;
 
   constructor(db: LobeChatDatabase, userId: string, workspaceId?: string) {
     this.db = db;
@@ -67,7 +74,7 @@ export class SystemAgentService {
     const { userPrompt, lastAssistantContent } = params;
 
     try {
-      const { model, provider } = await this.getTaskModelConfig('topic');
+      const { model, provider, ...effortParams } = await this.getTaskModelConfig('topic');
       const locale = await this.getUserLocale();
 
       log('generateTopicTitle: locale=%s, model=%s, provider=%s', locale, model, provider);
@@ -90,6 +97,7 @@ export class SystemAgentService {
           messages: payload.messages as any[],
           model,
           schema: TOPIC_TITLE_SCHEMA,
+          ...pickGenerateObjectEffortParams(effortParams),
         },
         { metadata: { trigger: RequestTrigger.Topic } },
       );
@@ -126,7 +134,7 @@ export class SystemAgentService {
     if (!content.trim()) return null;
 
     try {
-      const { model, provider } = await this.getTaskModelConfig('agentMeta');
+      const { model, provider, ...effortParams } = await this.getTaskModelConfig('agentMeta');
       const locale = await this.getUserLocale();
 
       log('generateSkillMeta: locale=%s, model=%s, provider=%s', locale, model, provider);
@@ -145,6 +153,7 @@ export class SystemAgentService {
           messages: payload.messages as any[],
           model,
           schema: GENERATE_SKILL_META_SCHEMA,
+          ...pickGenerateObjectEffortParams(effortParams),
         },
         {
           metadata: { trigger: RequestTrigger.Api },
@@ -179,12 +188,13 @@ export class SystemAgentService {
   // ============== Private Helpers ============== //
 
   /**
-   * Get the model/provider config for a specific systemAgent task type.
+   * Get the model/provider config for a specific systemAgent task type,
+   * plus projected effort wire params for the selected model.
    * Falls back to DEFAULT_SYSTEM_AGENT_CONFIG when user has no custom settings.
    */
-  private async getTaskModelConfig(
+  async getTaskModelConfig(
     taskKey: UserSystemAgentConfigKey,
-  ): Promise<{ model: string; provider: string }> {
+  ): Promise<{ model: string; provider: string } & ModelExtendParams> {
     // M05: effective systemAgent via resolver when policy flag is ON
     const systemAgent = (await getEffectiveSystemAgentConfig({
       db: this.db,
@@ -192,7 +202,32 @@ export class SystemAgentService {
     })) as Partial<UserSystemAgentConfig> | undefined;
 
     const taskConfig = systemAgent?.[taskKey];
-    return resolveSystemAgentModelConfig({ taskConfig, taskKey });
+    const { model, provider } = await resolveSystemAgentModelConfig({ taskConfig, taskKey });
+    const runtimeState = await this.getRuntimeStateForEffort();
+    const effortParams = await resolveServiceModelEffortParams({
+      model,
+      provider,
+      reasoningEffort: taskConfig?.reasoningEffort,
+      runtimeState,
+    });
+
+    return { model, provider, ...effortParams };
+  }
+
+  private async getRuntimeStateForEffort(): Promise<RuntimeStateForEffort | undefined> {
+    if (!this.runtimeStatePromise) {
+      this.runtimeStatePromise = (async () => {
+        try {
+          const aiInfraRepos = new AiInfraRepos(this.db, this.userId, {}, this.workspaceId);
+          return await aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
+        } catch (error) {
+          log('failed to load AI provider runtime state for effort lookup: %O', error);
+          return undefined;
+        }
+      })();
+    }
+
+    return this.runtimeStatePromise;
   }
 
   /**

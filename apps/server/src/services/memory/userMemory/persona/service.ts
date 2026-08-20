@@ -9,7 +9,8 @@ import {
   RetrievalUserMemoryIdentitiesProvider,
   UserPersonaExtractor,
 } from '@lobechat/memory-user-memory';
-import { mergeModelRuntimeHooks } from '@lobechat/model-runtime';
+import type { GenerateObjectEffortParams } from '@lobechat/model-runtime';
+import { mergeModelRuntimeHooks, projectServiceModelEffort } from '@lobechat/model-runtime';
 import type { UserServiceModelConfig } from '@lobechat/types';
 import { desc, eq } from 'drizzle-orm';
 
@@ -40,6 +41,7 @@ import {
   withProviderRuntimeProviders,
 } from '@/server/services/memory/userMemory/extract';
 import { resolveRuntimeAgentConfig } from '@/server/services/memory/userMemory/extract';
+import { readExtendParamsFromRuntimeState } from '@/server/services/systemAgent/effort';
 import { LayersEnum } from '@/types/userMemory';
 import { trimBasedOnBatchProbe } from '@/utils/chunkers';
 
@@ -105,6 +107,7 @@ export class UserPersonaService {
       language: this.agentConfig.language,
       model: userMemoryPersonaWriter?.model || this.agentConfig.model,
       provider,
+      reasoningEffort: userMemoryPersonaWriter?.reasoningEffort,
     };
   }
 
@@ -190,6 +193,11 @@ export class UserPersonaService {
 
     const extractor = new UserPersonaExtractor({
       agent: 'user-persona',
+      generateObjectParams: projectServiceModelEffort({
+        extendParams: readExtendParamsFromRuntimeState(runtimeState, agentConfig.model, providerId),
+        model: agentConfig.model,
+        reasoningEffort: agentConfig.reasoningEffort,
+      }) as GenerateObjectEffortParams,
       model: agentConfig.model,
       modelRuntime: runtime,
     });
