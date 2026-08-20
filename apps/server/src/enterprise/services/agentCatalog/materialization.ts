@@ -70,6 +70,42 @@ const mapModelParameters = (config: PlatformAgentVersionConfig): LLMParams => {
 };
 
 /**
+ * Shared runtime projection used by materialization (exec) and encoded-id view.
+ * Pinned model/provider/params/tags come from the exact version — never fork DEFAULT_AGENT_CONFIG
+ * model defaults (e.g. deepseek).
+ */
+export const buildPlatformAgentRuntimeConfig = (
+  agentId: string,
+  snapshot: Pick<PlatformAgentOperationSnapshot, 'config'>,
+  dependencySnapshot: PlatformAgentDependencySnapshot,
+): AgentConfigWithId => {
+  const { config } = snapshot;
+  const model = dependencySnapshot.model;
+  return {
+    ...DEFAULT_AGENT_CONFIG,
+    avatar: config.avatar,
+    backgroundColor: config.backgroundColor ?? undefined,
+    description: config.description,
+    id: agentId,
+    model: model.modelKey,
+    openingMessage: config.openingMessage ?? undefined,
+    openingQuestions: config.openingQuestions,
+    params: { ...DEFAULT_AGENT_CONFIG.params, ...mapModelParameters(config) },
+    platform: {
+      managed: true,
+      source: 'platform',
+    },
+    plugins: [],
+    provider: model.providerKey,
+    // Not a builtin slug — keeps the builtin runtime-config merge in execAgent inert.
+    slug: null,
+    systemRole: config.systemRole,
+    tags: config.tags,
+    title: config.displayName,
+  } as AgentConfigWithId;
+};
+
+/**
  * Delayed materialization of a platform Agent into a local user-owned Agent row (M10 PR-049 · B).
  *
  * The local row is ONLY a persistence/FK-compatible attribution identity: messages and operations
@@ -150,6 +186,20 @@ export class PlatformAgentMaterializationService {
         versionId: pin.versionId,
       });
     });
+
+  /**
+   * Read-only runtime projection for CLI/list view. Fetches the exact pinned version
+   * (fail-closed on checksum / malformed refs) and maps it with the same helper as
+   * {@link materializeForOperation}. Does not create or update a local Agent row.
+   */
+  projectRuntimeConfig = async (
+    agentId: string,
+    snapshot: PlatformAgentOperationSnapshot,
+  ): Promise<AgentConfigWithId> => {
+    const fetched = await this.getExactVersion(snapshot);
+    const version = this.resolveExactVersion(fetched, snapshot);
+    return this.buildRuntimeConfig(agentId, snapshot, version.dependencySnapshot);
+  };
 
   /** Exact paused-resume replay while preserving the builtin inbox attribution id. */
   resolveFromPinForExistingAgent = async (
@@ -314,29 +364,5 @@ export class PlatformAgentMaterializationService {
     agentId: string,
     snapshot: PlatformAgentOperationSnapshot,
     dependencySnapshot: PlatformAgentDependencySnapshot,
-  ): AgentConfigWithId => {
-    const { config } = snapshot;
-    const model = dependencySnapshot.model;
-    const platform = {
-      managed: true,
-      source: 'platform',
-    } as const;
-    return {
-      ...DEFAULT_AGENT_CONFIG,
-      avatar: config.avatar,
-      backgroundColor: config.backgroundColor ?? undefined,
-      id: agentId,
-      model: model.modelKey,
-      openingMessage: config.openingMessage ?? undefined,
-      openingQuestions: config.openingQuestions,
-      params: { ...DEFAULT_AGENT_CONFIG.params, ...mapModelParameters(config) },
-      platform,
-      plugins: [],
-      provider: model.providerKey,
-      // Not a builtin slug — keeps the builtin runtime-config merge in execAgent inert.
-      slug: null,
-      systemRole: config.systemRole,
-      title: config.displayName,
-    };
-  };
+  ): AgentConfigWithId => buildPlatformAgentRuntimeConfig(agentId, snapshot, dependencySnapshot);
 }

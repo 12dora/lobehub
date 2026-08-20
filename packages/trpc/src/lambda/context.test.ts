@@ -306,6 +306,25 @@ describe('createLambdaContext', () => {
     expect(mockGetSession).not.toHaveBeenCalled();
   });
 
+  it.each(['', '   '])(
+    'should reject a present empty/whitespace X-API-Key (%j) without OIDC/session fallback',
+    async (value) => {
+      const request = new NextRequest('https://example.com/trpc/lambda', {
+        headers: {
+          'Oidc-Auth': 'oidc-token',
+          'X-API-Key': value,
+        },
+      });
+
+      const context = await createLambdaContext(request);
+
+      expect(context.userId).toBeNull();
+      expect(mockFindByKey).not.toHaveBeenCalled();
+      expect(mockValidateOIDCJWT).not.toHaveBeenCalled();
+      expect(mockGetSession).not.toHaveBeenCalled();
+    },
+  );
+
   it('should use session auth when no API key header is present', async () => {
     const request = new NextRequest('https://example.com/trpc/lambda');
 

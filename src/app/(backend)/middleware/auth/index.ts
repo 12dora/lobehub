@@ -86,9 +86,11 @@ export const checkAuth =
     try {
       // API key (official CLI `X-API-Key`) — same helper and exclusive-no-fallback
       // semantics as tRPC `createLambdaContext`. Must run before OIDC / session.
-      const apiKeyToken = req.headers.get(LOBE_CHAT_API_KEY_HEADER)?.trim();
-      if (apiKeyToken) {
-        const apiKeyAuth = await validateApiKeyAuth(apiKeyToken);
+      // Presence (`!== null`) is the exclusivity key: empty/whitespace still 401,
+      // never fall through to OIDC/session.
+      const apiKeyHeader = req.headers.get(LOBE_CHAT_API_KEY_HEADER);
+      if (apiKeyHeader !== null) {
+        const apiKeyAuth = await validateApiKeyAuth(apiKeyHeader.trim());
         if (!apiKeyAuth) {
           throw AgentRuntimeError.createError(ChatErrorType.Unauthorized);
         }
@@ -120,7 +122,7 @@ export const checkAuth =
       // Only log OIDC auth failures — better-auth session failures are a common
       // baseline (unauthenticated browser hits) and would otherwise flood logs.
       // Skip when X-API-Key was present: that path is exclusive (no OIDC fallback).
-      if (oidcAuthorization && !req.headers.get(LOBE_CHAT_API_KEY_HEADER)?.trim()) {
+      if (oidcAuthorization && req.headers.get(LOBE_CHAT_API_KEY_HEADER) === null) {
         const oidcDebugInfo = getOIDCClientDebugInfo(oidcAuthorization);
 
         console.info('[auth] OIDC authentication failed', {

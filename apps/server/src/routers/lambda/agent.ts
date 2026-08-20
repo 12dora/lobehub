@@ -27,6 +27,7 @@ import {
   assertLocalAgentReadableUnderTakeover,
   isPlatformAgentTakeoverActive,
   PlatformAgentEffectiveResolver,
+  PlatformAgentMaterializationService,
   PlatformAgentUserListService,
 } from '@/server/enterprise/services/agentCatalog';
 import { AgentService } from '@/server/services/agent';
@@ -378,6 +379,7 @@ export const agentRouter = router({
     }),
 
   getAgentConfigById: agentProcedure
+    .use(withActiveUserWhenManagedAgents())
     .input(
       z.object({
         agentId: z.string(),
@@ -395,22 +397,22 @@ export const agentRouter = router({
           platformAgentId,
         );
         if (!effective) return null;
+        const config = await new PlatformAgentMaterializationService(
+          ctx.serverDB,
+          ctx.userId,
+        ).projectRuntimeConfig(input.agentId, {
+          checksum: effective.checksum,
+          config: effective.config,
+          platformAgentId: effective.platformAgentId,
+          versionId: effective.versionId,
+        });
         return {
-          ...DEFAULT_AGENT_CONFIG,
-          avatar: effective.config.avatar,
-          backgroundColor: effective.config.backgroundColor ?? undefined,
-          description: effective.config.description,
-          id: input.agentId,
-          openingMessage: effective.config.openingMessage ?? undefined,
-          openingQuestions: effective.config.openingQuestions,
+          ...config,
           platform: {
             distribution: effective.distribution,
             managed: true as const,
             source: 'platform' as const,
           },
-          slug: null,
-          systemRole: effective.config.systemRole,
-          title: effective.config.displayName,
         };
       }
 

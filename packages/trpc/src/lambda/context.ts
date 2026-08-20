@@ -17,7 +17,7 @@ import { isApiKeyExpired, validateApiKeyFormat } from '@/utils/apiKey';
 
 // Create context logger namespace
 const log = debug('lobe-trpc:lambda:context');
-const LOBE_CHAT_API_KEY_HEADER = 'X-API-Key';
+export const LOBE_CHAT_API_KEY_HEADER = 'X-API-Key';
 
 /**
  * How the principal authenticated. Used for M04 reauth gates:
@@ -73,7 +73,7 @@ export const extractOidcCredentialIssuedAt = (
   return null;
 };
 
-const validateApiKeyAuth = async (
+export const validateApiKeyAuth = async (
   apiKey: string,
 ): Promise<{ credentialIssuedAt: Date | null; userId: string } | null> => {
   if (!validateApiKeyFormat(apiKey)) return null;
@@ -241,11 +241,12 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
 
   const securityOn = isPlatformAdminSecurityOn();
 
-  const apiKeyToken = request.headers.get(LOBE_CHAT_API_KEY_HEADER)?.trim();
-  log('X-API-Key header: %s', apiKeyToken ? 'exists' : 'not found');
+  const apiKeyHeader = request.headers.get(LOBE_CHAT_API_KEY_HEADER);
+  log('X-API-Key header: %s', apiKeyHeader !== null ? 'exists' : 'not found');
 
-  if (apiKeyToken) {
-    const apiKeyAuth = await validateApiKeyAuth(apiKeyToken);
+  // Presence (`!== null`) is exclusive: empty/whitespace still rejects without OIDC/session fallback.
+  if (apiKeyHeader !== null) {
+    const apiKeyAuth = await validateApiKeyAuth(apiKeyHeader.trim());
 
     if (!apiKeyAuth) {
       log('API key authentication failed; rejecting request without fallback auth');

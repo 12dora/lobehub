@@ -177,6 +177,27 @@ describe('PlatformAgentMaterializationService', () => {
     expect(materializationEvents()).toEqual([]);
   });
 
+  it('projectRuntimeConfig maps pinned model/provider/params/tags without materializing', async () => {
+    const materializeLocalAgent = vi.fn();
+    const service = makeService({
+      getExactVersion: vi.fn(async () => exactVersion()),
+      materializeLocalAgent,
+    });
+
+    const runtime = await service.projectRuntimeConfig('platform-agent:pagt_1', snapshot());
+
+    expect(materializeLocalAgent).not.toHaveBeenCalled();
+    expect(runtime).toMatchObject({
+      id: 'platform-agent:pagt_1',
+      model: 'chat-model',
+      provider: 'internal-provider',
+      tags: ['t1'],
+      title: 'Research Agent',
+    });
+    expect(runtime.params).toMatchObject({ max_tokens: 4096, temperature: 0.4, top_p: 0.9 });
+    expect(materializationEvents()).toEqual([]);
+  });
+
   it('keeps a null avatar as an authoritative managed clear', async () => {
     const service = makeService({ getExactVersion: vi.fn(async () => exactVersion()) });
     const resolved = await service.resolveForExistingAgent(

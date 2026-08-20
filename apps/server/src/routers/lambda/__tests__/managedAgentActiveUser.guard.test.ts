@@ -26,7 +26,14 @@ vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(async () => db
 
 // Spy the enterprise list adapter so we can prove the guard rejects BEFORE any platform catalog
 // access. The guard's active-user determination still runs against real banned / epoch DB rows.
-const { mergeAvailableAgents, mergeSidebarList, mergeSearchResults, listCtor } = vi.hoisted(() => ({
+const {
+  getEffectiveAgentSpy,
+  mergeAvailableAgents,
+  mergeSidebarList,
+  mergeSearchResults,
+  listCtor,
+} = vi.hoisted(() => ({
+  getEffectiveAgentSpy: vi.fn(async () => null),
   listCtor: vi.fn(),
   mergeAvailableAgents: vi.fn(
     async (
@@ -44,6 +51,9 @@ vi.mock('@/server/enterprise/services/agentCatalog', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
+    PlatformAgentEffectiveResolver: class {
+      getEffectiveAgent = getEffectiveAgentSpy;
+    },
     PlatformAgentUserListService: class {
       mergeAvailableAgents = mergeAvailableAgents;
       mergeSearchResults = mergeSearchResults;
@@ -157,6 +167,12 @@ describe('REWORK-3 — managed flag ON (ADMIN=0, MANAGED_AGENTS=1) rejects befor
     const caller = createCallerFactory(agentRouter)(await ctx(IDS.active));
     await caller.queryAgents({ limit: 10 });
     expect(mergeAvailableAgents).toHaveBeenCalledTimes(1);
+  });
+
+  it('agent.getAgentConfigById rejects a banned caller before getEffectiveAgent', async () => {
+    const caller = createCallerFactory(agentRouter)(await ctx(IDS.banned));
+    await rejects(() => caller.getAgentConfigById({ agentId: 'platform-agent:pagt_1' }));
+    expect(getEffectiveAgentSpy).not.toHaveBeenCalled();
   });
 
   it('home.getSidebarAgentList rejects a banned caller before the sidebar merge', async () => {

@@ -2,6 +2,7 @@ import { AgentRuntimeError } from '@lobechat/model-runtime';
 import { ChatErrorType } from '@lobechat/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { auth } from '@/auth';
 import { assertOIDCUserActive } from '@/libs/oidc-provider/access-control';
 import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
 import { validateApiKeyAuth } from '@/libs/trpc/lambda/context';
@@ -17,8 +18,8 @@ vi.mock('@lobechat/model-runtime', () => ({
 
 vi.mock('@lobechat/types', () => ({
   ChatErrorType: {
-    InternalServerError: 'InternalServerError',
-    Unauthorized: 'Unauthorized',
+    InternalServerError: 500,
+    Unauthorized: 401,
   },
 }));
 
@@ -26,7 +27,10 @@ const _consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => und
 const consoleInfoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
 vi.mock('@/utils/errorResponse', () => ({
-  createErrorResponse: vi.fn(),
+  createErrorResponse: vi.fn((errorType: unknown) => {
+    const status = errorType === 401 || errorType === 'Unauthorized' ? 401 : 500;
+    return new Response(JSON.stringify({ errorType }), { status });
+  }),
 }));
 
 vi.mock('@/auth', () => ({
@@ -253,9 +257,13 @@ describe('checkAuth', () => {
       });
       vi.mocked(validateApiKeyAuth).mockResolvedValueOnce(null);
 
-      await checkAuth(mockHandler)(apiKeyRequest, mockOptions);
+      const response = await checkAuth(mockHandler)(apiKeyRequest, mockOptions);
 
+      expect(response).toBeInstanceOf(Response);
+      expect((response as Response).status).toBe(401);
+      expect(validateApiKeyAuth).toHaveBeenCalledWith('sk-lh-bbbbbbbbbbbbbbbb');
       expect(validateOIDCJWT).not.toHaveBeenCalled();
+      expect(auth.api.getSession).not.toHaveBeenCalled();
       expect(AgentRuntimeError.createError).toHaveBeenCalledWith(ChatErrorType.Unauthorized);
       expect(createErrorResponse).toHaveBeenCalledWith(ChatErrorType.Unauthorized, {
         error: { errorType: ChatErrorType.Unauthorized },
@@ -263,6 +271,27 @@ describe('checkAuth', () => {
       });
       expect(mockHandler).not.toHaveBeenCalled();
     });
+
+    it.each(['', '   '])(
+      'should reject a present empty/whitespace X-API-Key (%j) with 401 and no OIDC/session fallback',
+      async (value) => {
+        const apiKeyRequest = new Request('https://example.com/webapi/chat/openai', {
+          headers: {
+            'Oidc-Auth': 'oidc-token',
+            'X-API-Key': value,
+          },
+        });
+        vi.mocked(validateApiKeyAuth).mockResolvedValueOnce(null);
+
+        const response = await checkAuth(mockHandler)(apiKeyRequest, mockOptions);
+
+        expect((response as Response).status).toBe(401);
+        expect(validateApiKeyAuth).toHaveBeenCalledWith('');
+        expect(validateOIDCJWT).not.toHaveBeenCalled();
+        expect(auth.api.getSession).not.toHaveBeenCalled();
+        expect(mockHandler).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('mock dev user', () => {
