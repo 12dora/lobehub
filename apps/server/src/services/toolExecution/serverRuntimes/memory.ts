@@ -47,6 +47,11 @@ import {
   resolvePlatformBrowserProfile,
 } from '@/server/modules/ModelRuntime';
 import {
+  createPlatformAiModelAllowlistHooks,
+  isPlatformAiModelTakeoverActive,
+  listPlatformCatalogModels,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
+import {
   emitToolOutcomeSafely,
   resolveToolOutcomeScope,
 } from '@/server/services/agentSignal/procedure';
@@ -214,6 +219,15 @@ class MemoryServerRuntimeService implements MemoryRuntimeService {
     const defaultEmbeddingConfig =
       getServerDefaultFilesConfig().embeddingModel || DEFAULT_USER_MEMORY_EMBEDDING_MODEL_ITEM;
     const embeddingModel = this.memoryEmbeddingRuntime?.model ?? defaultEmbeddingConfig.model;
+    const embeddingProvider =
+      this.memoryEmbeddingRuntime?.provider ?? defaultEmbeddingConfig.provider;
+    const modelAllowlistHooks = (await isPlatformAiModelTakeoverActive(this.serverDB))
+      ? createPlatformAiModelAllowlistHooks(
+          ((await listPlatformCatalogModels(this.serverDB, embeddingProvider)) ?? []).map(
+            (model) => ({ modelKey: model.id, type: model.type }),
+          ),
+        )
+      : undefined;
     const modelRuntime = this.memoryEmbeddingRuntime
       ? initModelRuntimeWithUserPayload(
           this.memoryEmbeddingRuntime.provider,
@@ -229,6 +243,7 @@ class MemoryServerRuntimeService implements MemoryRuntimeService {
             userId: this.userId,
             ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
           },
+          modelAllowlistHooks,
         )
       : await initModelRuntimeFromDB(
           this.serverDB,

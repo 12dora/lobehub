@@ -181,28 +181,52 @@ describe('platform AI takeover flags', () => {
     expect(readinessMocks.resolveManagedResourceReadiness).not.toHaveBeenCalled();
   });
 
-  it('memoizes per db for a bounded window and re-reads once it expires', async () => {
+  it('memoizes a POSITIVE model-takeover for a bounded window and re-reads once it expires', async () => {
     // The window only bounds staleness on instances that did NOT process the publish; the
     // publishing instance drops the memo synchronously (see the reset test below).
     expect(PLATFORM_AI_TAKEOVER_MEMO_TTL_MS).toBeLessThanOrEqual(2000);
-    await publish({ aiProviders: enforced });
+    await publish({ aiModels: enforced, aiProviders: enforced });
     const now = vi.fn<() => number>().mockReturnValue(1000);
 
-    expect(await isPlatformAiTakeoverActive(db, flagsOn, now)).toBe(true);
-    expect(await isPlatformAiModelTakeoverActive(db, flagsOn, now)).toBe(false);
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn, now)).toEqual({
+      models: true,
+      providers: true,
+    });
 
-    // Policy flipped underneath (as if by another instance): memoized answer inside the TTL …
+    // Policy flipped underneath (as if by another instance): memoized POSITIVE stays inside TTL.
     const model = new PlatformManagedResourcePolicyModel(db);
     await model.materializePublished({
       policies: createUnmanagedResourcePolicyMap(),
       revision: 2,
     });
-    expect(await isPlatformAiTakeoverActive(db, flagsOn, now)).toBe(true);
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn, now)).toEqual({
+      models: true,
+      providers: true,
+    });
 
-    // … and re-read once it expires, so ending enforcement is not delayed.
     now.mockReturnValue(1000 + PLATFORM_AI_TAKEOVER_MEMO_TTL_MS + 1);
-    expect(await isPlatformAiTakeoverActive(db, flagsOn, now)).toBe(false);
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn, now)).toEqual({
+      models: false,
+      providers: false,
+    });
+  });
+
+  it('does not cache a negative model-takeover so a second instance sees publish immediately', async () => {
+    await publish({ aiProviders: enforced });
+    const now = vi.fn<() => number>().mockReturnValue(1000);
+
     expect(await isPlatformAiModelTakeoverActive(db, flagsOn, now)).toBe(false);
+
+    // Another instance published model hosting; this instance did not reset its memo.
+    const policies = createUnmanagedResourcePolicyMap();
+    policies.aiModels = enforced;
+    policies.aiProviders = enforced;
+    await new PlatformManagedResourcePolicyModel(db).materializePublished({
+      policies,
+      revision: 2,
+    });
+
+    expect(await isPlatformAiModelTakeoverActive(db, flagsOn, now)).toBe(true);
   });
 
   it('resetPlatformAiTakeoverCache makes the very next read observe the new policy', async () => {

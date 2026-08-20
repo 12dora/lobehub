@@ -197,6 +197,7 @@ const ModelItem = memo<ModelItemProps>(
 
     const Actions =
       modelEditable &&
+      !aiModelsManaged &&
       ((style?: React.CSSProperties) => (
         <Flexbox horizontal className={styles.config} style={style}>
           <ActionIcon

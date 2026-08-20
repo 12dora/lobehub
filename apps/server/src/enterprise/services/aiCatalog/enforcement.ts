@@ -56,7 +56,10 @@ export const getPlatformAiTakeoverFlags = async (
 
   const at = now();
   const cached = takeoverMemo.get(db as object);
-  if (cached && cached.expiresAt > at)
+  // Never reuse a cached `models: false`: another instance may have just published model
+  // hosting, and the 2s TTL would otherwise keep this instance fail-open. Positive model
+  // takeover is fail-closed-safe to cache. Flag-off returns above with zero reads.
+  if (cached && cached.expiresAt > at && cached.models)
     return { models: cached.models, providers: cached.providers };
 
   const snapshot = await new PlatformManagedResourcePolicyModel(db).getSnapshot();

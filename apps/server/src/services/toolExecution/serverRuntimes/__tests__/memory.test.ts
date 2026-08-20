@@ -32,6 +32,12 @@ vi.mock('@/server/modules/ModelRuntime', () => ({
   resolvePlatformBrowserProfile: vi.fn(async () => undefined),
 }));
 
+vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', () => ({
+  createPlatformAiModelAllowlistHooks: vi.fn(() => undefined),
+  isPlatformAiModelTakeoverActive: vi.fn(async () => false),
+  listPlatformCatalogModels: vi.fn(async () => null),
+}));
+
 vi.mock('@/server/services/agentSignal/procedure', () => ({
   emitToolOutcomeSafely: vi.fn(),
   resolveToolOutcomeScope: vi.fn(() => ({ scope: 'user', scopeKey: 'user-1' })),
@@ -89,6 +95,7 @@ describe('memoryRuntime', () => {
         baseURL: 'https://embedding.example.com/v1',
       },
       { browserProfile: undefined, userId: 'synthetic-user', workspaceId: 'workspace-1' },
+      undefined,
     );
     expect(mocks.initModelRuntimeFromDB).not.toHaveBeenCalled();
     expect(mocks.embeddings).toHaveBeenCalledWith(

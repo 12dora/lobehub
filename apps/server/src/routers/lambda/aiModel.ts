@@ -20,7 +20,7 @@ import { getServerGlobalConfig } from '@/server/globalConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import {
   isPlatformAiModelTakeoverActive,
-  listPlatformPublishedModels,
+  listPlatformCatalogModels,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { type ProviderConfig } from '@/types/user/settings';
 
@@ -160,7 +160,7 @@ export const aiModelRouter = router({
       // the sole base list. User `ai_models` rows are not merged — they cannot hide, edit, or
       // resurrect unpublished ids. Without model takeover this is the vanilla BYOK list.
       const publishedModels = (await isPlatformAiModelTakeoverActive(ctx.serverDB))
-        ? await listPlatformPublishedModels(ctx.serverDB, input.id)
+        ? await listPlatformCatalogModels(ctx.serverDB, input.id)
         : null;
 
       return ctx.aiInfraRepos.getAiProviderModelList(input.id, {

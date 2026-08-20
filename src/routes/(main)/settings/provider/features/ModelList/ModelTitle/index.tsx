@@ -6,6 +6,7 @@ import { CircleX, EllipsisVertical, LucideRefreshCcwDot, PlusIcon } from 'lucide
 import { memo, use, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useManagedResource } from '@/features/ManagedResources';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePermission } from '@/hooks/usePermission';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
@@ -30,6 +31,8 @@ const ModelTitle = memo<ModelFetcherProps>(
     const { t: tSetting } = useTranslation('setting');
     const { message } = App.useApp();
     const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
+    const { managed: aiModelsManaged } = useManagedResource('aiModels');
+    const canMutateModels = canManageProvider && !aiModelsManaged;
     const aiInfraStoreApi = useAiInfraStoreApi();
     const [
       searchKeyword,
@@ -95,15 +98,15 @@ const ModelTitle = memo<ModelFetcherProps>(
               <Text style={{ fontSize: 12 }} type={'secondary'}>
                 <div style={{ display: 'flex', lineHeight: '24px' }}>
                   {t('providerModels.list.total', { count: totalModels })}
-                  {hasRemoteModels && (
+                  {hasRemoteModels && !aiModelsManaged && (
                     <ActionIcon
-                      disabled={!canManageProvider}
+                      disabled={!canMutateModels}
                       icon={CircleX}
                       loading={clearRemoteModelsLoading}
                       size={'small'}
-                      title={canManageProvider ? t('providerModels.list.fetcher.clear') : undefined}
+                      title={canMutateModels ? t('providerModels.list.fetcher.clear') : undefined}
                       onClick={async () => {
-                        if (!canManageProvider) return;
+                        if (!canMutateModels) return;
                         setClearRemoteModelsLoading(true);
                         try {
                           await clearObtainedModels(provider);
@@ -130,101 +133,103 @@ const ModelTitle = memo<ModelFetcherProps>(
                   }}
                 />
               )}
-              <Space.Compact>
-                {showModelFetcher && (
-                  <Tooltip title={canManageProvider ? '' : reason}>
-                    <Button
-                      disabled={!canManageProvider}
-                      icon={LucideRefreshCcwDot}
-                      loading={fetchRemoteModelsLoading}
-                      size={'small'}
-                      onClick={async () => {
-                        if (!canManageProvider) return;
-                        setFetchRemoteModelsLoading(true);
-                        try {
-                          await fetchRemoteModelList(provider);
-                        } catch (error) {
-                          console.error(error);
+              {!aiModelsManaged && (
+                <Space.Compact>
+                  {showModelFetcher && (
+                    <Tooltip title={canManageProvider ? '' : reason}>
+                      <Button
+                        disabled={!canMutateModels}
+                        icon={LucideRefreshCcwDot}
+                        loading={fetchRemoteModelsLoading}
+                        size={'small'}
+                        onClick={async () => {
+                          if (!canMutateModels) return;
+                          setFetchRemoteModelsLoading(true);
+                          try {
+                            await fetchRemoteModelList(provider);
+                          } catch (error) {
+                            console.error(error);
 
-                          message.error(
-                            t('providerModels.list.fetcher.error', {
-                              message: resolveFetchFailureMessage(error, t, tSetting),
-                            }),
-                          );
-                        } finally {
-                          setFetchRemoteModelsLoading(false);
-                        }
-                      }}
-                    >
-                      {fetchRemoteModelsLoading
-                        ? t('providerModels.list.fetcher.fetching')
-                        : t('providerModels.list.fetcher.fetch')}
-                    </Button>
-                  </Tooltip>
-                )}
-                {showAddNewModel && (
-                  <Tooltip title={canManageProvider ? '' : reason}>
-                    <Button
-                      disabled={!canManageProvider}
-                      icon={PlusIcon}
-                      size={'small'}
-                      onClick={() => {
-                        if (!canManageProvider) return;
-                        createCreateNewModelModal({
-                          existingModelIds: aiInfraStoreApi
-                            .getState()
-                            .aiProviderModelList.map((model) => model.id),
-                          showDeployName,
-                          store: aiInfraStoreApi,
-                        });
-                      }}
-                    />
-                  </Tooltip>
-                )}
-                <DropdownMenu
-                  items={[
-                    {
-                      disabled: syncUpstreamDisabled || isSyncing,
-                      key: 'syncUpstream',
-                      // The reason rides in the label rather than a tooltip: a disabled menu
-                      // item swallows pointer events, so a tooltip on it would never open and
-                      // the operator would be left with a dead row and no explanation.
-                      label: (
-                        <Flexbox gap={2}>
-                          {isSyncing
-                            ? t('providerModels.list.syncUpstream.syncing')
-                            : t('providerModels.list.syncUpstream.action')}
-                          {syncUpstreamDisabledReason && (
-                            <Text style={{ fontSize: 12 }} type={'secondary'}>
-                              {syncUpstreamDisabledReason}
-                            </Text>
-                          )}
-                        </Flexbox>
-                      ),
-                      onClick: syncUpstream,
-                    },
-                    {
-                      disabled: !canManageProvider,
-                      key: 'reset',
-                      label: t('providerModels.list.resetAll.title'),
-                      onClick: async () => {
-                        if (!canManageProvider) return;
-                        confirmModal({
-                          content: t('providerModels.list.resetAll.conform'),
-                          onOk: async () => {
-                            await clearModelsByProvider(provider);
-                            message.success(t('providerModels.list.resetAll.success'));
-                          },
-                          title: t('providerModels.list.resetAll.title'),
-                        });
+                            message.error(
+                              t('providerModels.list.fetcher.error', {
+                                message: resolveFetchFailureMessage(error, t, tSetting),
+                              }),
+                            );
+                          } finally {
+                            setFetchRemoteModelsLoading(false);
+                          }
+                        }}
+                      >
+                        {fetchRemoteModelsLoading
+                          ? t('providerModels.list.fetcher.fetching')
+                          : t('providerModels.list.fetcher.fetch')}
+                      </Button>
+                    </Tooltip>
+                  )}
+                  {showAddNewModel && (
+                    <Tooltip title={canManageProvider ? '' : reason}>
+                      <Button
+                        disabled={!canMutateModels}
+                        icon={PlusIcon}
+                        size={'small'}
+                        onClick={() => {
+                          if (!canMutateModels) return;
+                          createCreateNewModelModal({
+                            existingModelIds: aiInfraStoreApi
+                              .getState()
+                              .aiProviderModelList.map((model) => model.id),
+                            showDeployName,
+                            store: aiInfraStoreApi,
+                          });
+                        }}
+                      />
+                    </Tooltip>
+                  )}
+                  <DropdownMenu
+                    items={[
+                      {
+                        disabled: syncUpstreamDisabled || isSyncing,
+                        key: 'syncUpstream',
+                        // The reason rides in the label rather than a tooltip: a disabled menu
+                        // item swallows pointer events, so a tooltip on it would never open and
+                        // the operator would be left with a dead row and no explanation.
+                        label: (
+                          <Flexbox gap={2}>
+                            {isSyncing
+                              ? t('providerModels.list.syncUpstream.syncing')
+                              : t('providerModels.list.syncUpstream.action')}
+                            {syncUpstreamDisabledReason && (
+                              <Text style={{ fontSize: 12 }} type={'secondary'}>
+                                {syncUpstreamDisabledReason}
+                              </Text>
+                            )}
+                          </Flexbox>
+                        ),
+                        onClick: syncUpstream,
                       },
-                    },
-                  ]}
-                >
-                  {/* The menu closes on click, so the trigger carries the sync's in-flight state. */}
-                  <Button icon={EllipsisVertical} loading={isSyncing} size={'small'} />
-                </DropdownMenu>
-              </Space.Compact>
+                      {
+                        disabled: !canMutateModels,
+                        key: 'reset',
+                        label: t('providerModels.list.resetAll.title'),
+                        onClick: async () => {
+                          if (!canMutateModels) return;
+                          confirmModal({
+                            content: t('providerModels.list.resetAll.conform'),
+                            onOk: async () => {
+                              await clearModelsByProvider(provider);
+                              message.success(t('providerModels.list.resetAll.success'));
+                            },
+                            title: t('providerModels.list.resetAll.title'),
+                          });
+                        },
+                      },
+                    ]}
+                  >
+                    {/* The menu closes on click, so the trigger carries the sync's in-flight state. */}
+                    <Button icon={EllipsisVertical} loading={isSyncing} size={'small'} />
+                  </DropdownMenu>
+                </Space.Compact>
+              )}
             </Flexbox>
           )}
         </Flexbox>

@@ -34,6 +34,8 @@ import {
 import {
   assertPlatformPublishedModel,
   createPlatformAiModelAllowlistHooks,
+  isPlatformAiModelTakeoverActive,
+  listPlatformCatalogModels,
   listPlatformPublishedModels,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiRuntimeState,
@@ -133,15 +135,21 @@ export class UserPersonaService {
       label: 'persona writer',
       modelId: agentConfig.model,
     });
-    // The platform governs only the providers it publishes as enabled. `null` means "not
-    // actively managed" (never published, disabled, archived, or no 平台托管 at all), in which
-    // case this provider is the user's own and runs on their credentials.
-    const managed = (await listPlatformPublishedModels(this.db, providerId)) !== null;
+    // Credentials follow provider takeover (`listPlatformPublishedModels` is ownership).
+    // The model allowlist is independent: when `aiModels` is hosted, unpublished ids fail
+    // closed even on the user's own credential path.
+    const providerOwned = (await listPlatformPublishedModels(this.db, providerId)) !== null;
+    const modelTakeover = await isPlatformAiModelTakeoverActive(this.db);
+    if (modelTakeover) {
+      assertPlatformPublishedModel(runtimeState, providerId, agentConfig.model, 'chat');
+    }
 
     const hooks = getBusinessModelRuntimeHooks(payload.userId, 'lobehub');
-    const runtime = managed
+    const runtime = providerOwned
       ? await (async () => {
-          assertPlatformPublishedModel(runtimeState, providerId, agentConfig.model, 'chat');
+          if (!modelTakeover) {
+            assertPlatformPublishedModel(runtimeState, providerId, agentConfig.model, 'chat');
+          }
           const execution = await resolvePlatformAiExecutionConfig(this.db, providerId);
           const secretPayload = buildPayloadFromKeyVaults(
             execution.keyVaults,
@@ -181,6 +189,9 @@ export class UserPersonaService {
               apiKey: agentConfig.apiKey,
               baseURL: agentConfig.baseURL,
             },
+            listCatalogModels: modelTakeover
+              ? (providerKey) => listPlatformCatalogModels(this.db, providerKey)
+              : undefined,
             preferred: { providerIds: [providerId] },
             // Only queried when the selected provider presents an installation identity.
             resolveBrowserProfile: (runtimeProvider) =>

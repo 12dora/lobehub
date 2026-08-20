@@ -84,16 +84,18 @@ const EnabledModelList = ({ activeTab }: EnabledModelListProps) => {
                 />
               )}
 
-              <ActionIcon
-                disabled={!canManageProvider}
-                icon={ArrowDownUpIcon}
-                size={'small'}
-                title={canManageProvider ? t('providerModels.list.enabledActions.sort') : reason}
-                onClick={() => {
-                  if (!canManageProvider) return;
-                  setOpen(true);
-                }}
-              />
+              {!aiModelsManaged && (
+                <ActionIcon
+                  disabled={!canManageProvider}
+                  icon={ArrowDownUpIcon}
+                  size={'small'}
+                  title={canManageProvider ? t('providerModels.list.enabledActions.sort') : reason}
+                  onClick={() => {
+                    if (!canManageProvider) return;
+                    setOpen(true);
+                  }}
+                />
+              )}
             </Flexbox>
           </TooltipGroup>
         )}

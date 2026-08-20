@@ -59,6 +59,7 @@ import { type FlowControl } from '@upstash/qstash';
 import type { Client } from '@upstash/workflow';
 import debug from 'debug';
 import { and, asc, eq, inArray } from 'drizzle-orm';
+import type { EnabledAiModel } from 'model-bank';
 import { join } from 'pathe';
 import { z } from 'zod';
 
@@ -90,6 +91,9 @@ import {
 import {
   assertPlatformPublishedModel,
   createPlatformAiModelAllowlistHooks,
+  isPlatformAiModelTakeoverActive,
+  isPlatformAiTakeoverActive,
+  listPlatformCatalogModels,
   listPlatformPublishedModels,
   type PlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfig,
@@ -593,6 +597,12 @@ export type RuntimeResolveOptions = {
    * provider only — never the first hit from a shared multi-role execution map.
    */
   managedExecution?: PlatformAiExecutionConfig;
+  /**
+   * When model takeover is on, look up the published catalog for the provider this
+   * unmanaged path actually selected so the allowlist attaches on the user-credential
+   * runtime. Independent of `managedExecution` (provider ownership).
+   */
+  listCatalogModels?: (providerKey: string) => Promise<EnabledAiModel[] | null>;
   userId?: string;
   /**
    * Workspace that owns this extraction. Threaded into ChatGPT Web's Browser
@@ -612,6 +622,17 @@ export type RuntimeResolveOptions = {
  * error. They go through the seam with the resolved profile; every other provider keeps
  * the original construction byte for byte.
  */
+const catalogAllowlistHooks = async (
+  options: RuntimeResolveOptions | undefined,
+  provider: string,
+): Promise<ModelRuntimeHooks | undefined> => {
+  if (!options?.listCatalogModels) return undefined;
+  const published = await options.listCatalogModels(provider);
+  return createPlatformAiModelAllowlistHooks(
+    (published ?? []).map((model) => ({ modelKey: model.id, type: model.type })),
+  );
+};
+
 const initUnmanagedMemoryRuntime = async (
   provider: string,
   credential: ProviderCredential,
@@ -622,30 +643,49 @@ const initUnmanagedMemoryRuntime = async (
    * chatgpt-web is still recognised here.
    */
   runtimeProvider: string = provider,
+  hooks?: ModelRuntimeHooks,
 ): Promise<ModelRuntime> => {
-  if (!runtimePresentsInstallationIdentity(runtimeProvider))
+  const allowlistHooks = await catalogAllowlistHooks(options, provider);
+  const composedHooks = mergeModelRuntimeHooks(allowlistHooks, hooks);
+  if (!runtimePresentsInstallationIdentity(runtimeProvider)) {
+    if (composedHooks) {
+      return ModelRuntime.initializeWithProvider(
+        provider,
+        {
+          apiKey: credential.apiKey,
+          baseURL: credential.baseURL,
+          userId: options?.userId,
+        },
+        composedHooks,
+      );
+    }
     return ModelRuntime.initializeWithProvider(provider, {
       apiKey: credential.apiKey,
       baseURL: credential.baseURL,
       userId: options?.userId,
     });
+  }
 
   if (!options?.resolveBrowserProfile)
     throw new Error(
       `Memory agent provider "${provider}" needs the installation browser profile; select another provider for this agent or run it through a platform-managed provider.`,
     );
 
-  return initModelRuntimeWithUserPayload(
-    // Catalog id stays the caller-facing provider (scoping, egress, hooks); the payload
-    // carries the runtime provider so the correct SDK is constructed for a custom row.
-    provider,
-    { apiKey: credential.apiKey, baseURL: credential.baseURL, runtimeProvider },
-    {
-      browserProfile: await options.resolveBrowserProfile(runtimeProvider),
-      userId: options.userId,
-      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
-    },
-  );
+  const identityPayload = {
+    apiKey: credential.apiKey,
+    baseURL: credential.baseURL,
+    runtimeProvider,
+  };
+  const identityOptions = {
+    browserProfile: await options.resolveBrowserProfile(runtimeProvider),
+    userId: options.userId,
+    ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+  };
+  // Catalog id stays the caller-facing provider (scoping, egress, hooks); the payload
+  // carries the runtime provider so the correct SDK is constructed for a custom row.
+  return composedHooks
+    ? initModelRuntimeWithUserPayload(provider, identityPayload, identityOptions, composedHooks)
+    : initModelRuntimeWithUserPayload(provider, identityPayload, identityOptions);
 };
 
 export const resolveRuntimeAgentConfig = async (
@@ -689,7 +729,13 @@ export const resolveRuntimeAgentConfig = async (
         source: 'user-vault' as const,
       });
 
-      return ModelRuntime.initializeWithProvider(provider, { userId: options?.userId }, hooks);
+      const lobehubHooks = mergeModelRuntimeHooks(
+        await catalogAllowlistHooks(options, provider),
+        hooks,
+      );
+      return lobehubHooks
+        ? ModelRuntime.initializeWithProvider(provider, { userId: options?.userId }, lobehubHooks)
+        : ModelRuntime.initializeWithProvider(provider, { userId: options?.userId }, hooks);
     }
 
     const { apiKey: userApiKey, baseURL: userBaseURL } = extractCredentialsFromVault(
@@ -716,6 +762,7 @@ export const resolveRuntimeAgentConfig = async (
       { apiKey: userApiKey, baseURL: userBaseURL },
       options,
       readRuntimeProvider(keyVaults, provider),
+      hooks,
     );
   }
 
@@ -736,6 +783,7 @@ export const resolveRuntimeAgentConfig = async (
     },
     options,
     readRuntimeProvider(keyVaults, normalizeProvider(fallbackProvider)),
+    hooks,
   );
 };
 
@@ -2693,19 +2741,23 @@ export class MemoryExtractionExecutor {
       layerSelectedProviders[0] ??
       normalizeProvider(memoryServiceConfig.agents.layerExtractor.provider || 'openai');
 
-    // The platform governs ONLY the providers it publishes as enabled. `null` means "not
-    // actively managed" (never published, disabled, archived, or 平台托管 not published at all),
-    // in which case the provider is the user's own and keeps their credentials — the same
-    // BYOK boundary `initModelRuntimeFromDB` and the chat picker use.
+    // Credentials follow *provider* takeover (`listPlatformPublishedModels` is null unless
+    // the provider is platform-owned). The model allowlist is independent (`aiModels` hosting).
     const db = await this.db;
+    const [providerTakeover, modelTakeover] = await Promise.all([
+      isPlatformAiTakeoverActive(db),
+      isPlatformAiModelTakeoverActive(db),
+    ]);
     const platformOwned = new Set(
-      (
-        await Promise.all(
-          [...selectedProviders].map(async (providerId) =>
-            (await listPlatformPublishedModels(db, providerId)) === null ? null : providerId,
-          ),
-        )
-      ).filter((providerId): providerId is string => providerId !== null),
+      providerTakeover
+        ? (
+            await Promise.all(
+              [...selectedProviders].map(async (providerId) =>
+                (await listPlatformPublishedModels(db, providerId)) === null ? null : providerId,
+              ),
+            )
+          ).filter((providerId): providerId is string => providerId !== null)
+        : [],
     );
 
     const keyVaults: ManagedProviderKeyVaultMap = {};
@@ -2718,16 +2770,29 @@ export class MemoryExtractionExecutor {
     // RUNTIME provider (a custom row backed by grok/cursor still needs the identity seam).
     withProviderRuntimeProviders(keyVaults, normalizedRuntimeConfig);
 
+    if (modelTakeover) {
+      for (const requirement of managedRequirements) {
+        assertPlatformPublishedModel(
+          runtimeState,
+          requirement.providerKey,
+          requirement.modelKey,
+          requirement.type,
+        );
+      }
+    }
+
     if (platformOwned.size === 0) return keyVaults;
 
-    for (const requirement of managedRequirements) {
-      if (!platformOwned.has(requirement.providerKey)) continue;
-      assertPlatformPublishedModel(
-        runtimeState,
-        requirement.providerKey,
-        requirement.modelKey,
-        requirement.type,
-      );
+    if (!modelTakeover) {
+      for (const requirement of managedRequirements) {
+        if (!platformOwned.has(requirement.providerKey)) continue;
+        assertPlatformPublishedModel(
+          runtimeState,
+          requirement.providerKey,
+          requirement.modelKey,
+          requirement.type,
+        );
+      }
     }
     const executions: Record<string, PlatformAiExecutionConfig> = {};
     await Promise.all(
@@ -2807,12 +2872,19 @@ export class MemoryExtractionExecutor {
     const gatekeeperExecution = executionFor('gatekeeper');
     const layerExtractorExecution = executionFor('layerExtractor');
 
+    const db = await this.db;
+    const modelTakeover = await isPlatformAiModelTakeoverActive(db);
+    const listCatalogModels = modelTakeover
+      ? (providerKey: string) => listPlatformCatalogModels(db, providerKey)
+      : undefined;
+
     const embeddingOptions: RuntimeResolveOptions = {
       browserProfile: await browserProfileFor(embeddingExecution),
       fallback: {
         apiKey: memoryServiceConfig.agents.embedding.apiKey,
         baseURL: memoryServiceConfig.agents.embedding.baseURL,
       },
+      listCatalogModels,
       preferred: {
         providerIds: memoryServiceConfig.overrides.embedding.provider
           ? undefined
@@ -2830,6 +2902,7 @@ export class MemoryExtractionExecutor {
         apiKey: memoryServiceConfig.agents.gatekeeper.apiKey,
         baseURL: memoryServiceConfig.agents.gatekeeper.baseURL,
       },
+      listCatalogModels,
       preferred: {
         providerIds: memoryServiceConfig.overrides.gatekeeper.provider
           ? undefined
@@ -2847,6 +2920,7 @@ export class MemoryExtractionExecutor {
         apiKey: memoryServiceConfig.agents.layerExtractor.apiKey,
         baseURL: memoryServiceConfig.agents.layerExtractor.baseURL,
       },
+      listCatalogModels,
       preferred: {
         providerIds: memoryServiceConfig.overrides.layerExtractor.provider
           ? undefined

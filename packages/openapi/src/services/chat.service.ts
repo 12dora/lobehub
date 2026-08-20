@@ -3,16 +3,12 @@ import type { LobeAgentChatConfig, LobeAgentConfig } from '@lobechat/types';
 import { RequestTrigger } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
 
-import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
 import { DEFAULT_AGENT_CHAT_CONFIG, DEFAULT_SYSTEM_AGENT_CONFIG } from '@/const/settings';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
-import { agents, agentsToSessions, aiModels, aiProviders } from '@/database/schemas';
+import { agents, agentsToSessions, aiModels } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
-import {
-  initModelRuntimeWithUserPayload,
-  resolvePlatformBrowserProfile,
-} from '@/server/modules/ModelRuntime';
+import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { SystemAgentService } from '@/server/services/systemAgent';
 import { resolveServiceModelEffortParams } from '@/server/services/systemAgent/effort';
 import { resolveSystemAgentModelConfig } from '@/server/services/systemAgent/modelConfig';
@@ -204,33 +200,6 @@ export class ChatService extends BaseService {
   }
 
   /**
-   * Get the API Key for an AI Provider
-   * @param provider Provider ID
-   * @returns API Key
-   */
-  private async getApiKey(provider: string) {
-    const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
-
-    const aiProviderConfigs = await this.db.query.aiProviders.findMany({
-      where: and(eq(aiProviders.id, provider), this.buildWorkspaceWhere(aiProviders)),
-    });
-
-    if (!aiProviderConfigs || aiProviderConfigs.length === 0) {
-      this.log('info', '未找到有效的AI Provider配置，使用兜底环境变量配置', {
-        provider,
-        userId: this.userId,
-      });
-
-      return '{}';
-    }
-
-    const providerConfig = aiProviderConfigs[0];
-    const { plaintext } = await gateKeeper.decrypt(providerConfig.keyVaults!);
-
-    return plaintext;
-  }
-
-  /**
    * Parse SSE-format response content
    * @param text SSE-format text
    * @returns Parsed content
@@ -355,20 +324,14 @@ export class ChatService extends BaseService {
     });
 
     try {
-      const { apiKey } = JSON.parse(await this.getApiKey(provider));
-
-      // Create AgentRuntime instance
-      const hooks = getBusinessModelRuntimeHooks(this.userId!, provider);
-      const modelRuntime = await initModelRuntimeWithUserPayload(
+      // Same seam as the product chat path: provider credentials AND the model allowlist
+      // (fail-closed under `aiModels` hosting). Do not construct via user payload here —
+      // that would skip the published-model guard on the BYOK path.
+      const modelRuntime = await initModelRuntimeFromDB(
+        this.db,
+        this.userId!,
         provider,
-        { apiKey, userId: this.userId! },
-        {
-          // Same installation identity as the chat path: a runtime that presents a
-          // browser/CLI device must never be built from the bundled fallback here.
-          browserProfile: await resolvePlatformBrowserProfile(this.db, provider),
-          userId: this.userId!,
-        },
-        hooks,
+        this.workspaceId,
       );
 
       // Build ChatStreamPayload

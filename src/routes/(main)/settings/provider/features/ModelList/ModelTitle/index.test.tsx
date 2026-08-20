@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelTitle from './index';
 
 const mocks = vi.hoisted(() => ({
+  managed: false,
   permission: { allowed: true, reason: 'no permission to manage provider keys' },
   sync: {
     disabled: false,
@@ -51,6 +52,9 @@ vi.mock('antd', () => ({
 
 vi.mock('antd-style', () => ({ cssVar: new Proxy({}, { get: () => 'var(--x)' }) }));
 
+vi.mock('@/features/ManagedResources', () => ({
+  useManagedResource: () => ({ managed: mocks.managed }),
+}));
 vi.mock('@/hooks/useIsMobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/hooks/usePermission', () => ({ usePermission: () => mocks.permission }));
 
@@ -94,6 +98,7 @@ const syncItem = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.managed = false;
   mocks.permission = { allowed: true, reason: 'no permission to manage provider keys' };
   mocks.sync = {
     disabled: false,
@@ -137,6 +142,15 @@ describe('ModelTitle sync upstream action', () => {
 
     expect(syncItem()).toHaveAttribute('data-disabled', 'true');
     expect(syncItem()).toHaveTextContent('providerModels.list.syncUpstream.managed');
+  });
+
+  it('hides fetch/add/sync/reset when aiModels is managed and keeps search', () => {
+    mocks.managed = true;
+    render(<ModelTitle provider="cursor" showModelFetcher={true} />);
+
+    expect(screen.getByTestId('search')).toBeInTheDocument();
+    expect(screen.queryByText('providerModels.list.fetcher.fetch')).toBeNull();
+    expect(screen.queryByTestId('dropdown-items')).toBeNull();
   });
 
   it('keeps the reset item after it, unchanged', () => {

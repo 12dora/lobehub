@@ -10,12 +10,14 @@ import { aiModelRouter } from '../aiModel';
 const bridgeMocks = vi.hoisted(() => ({
   isPlatformAiModelTakeoverActive: vi.fn(),
   isPlatformAiTakeoverActive: vi.fn(),
+  listPlatformCatalogModels: vi.fn(),
   listPlatformPublishedModels: vi.fn(),
 }));
 vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => ({
   ...(await importOriginal<typeof PlatformAiRuntimeBridge>()),
   isPlatformAiModelTakeoverActive: bridgeMocks.isPlatformAiModelTakeoverActive,
   isPlatformAiTakeoverActive: bridgeMocks.isPlatformAiTakeoverActive,
+  listPlatformCatalogModels: bridgeMocks.listPlatformCatalogModels,
   listPlatformPublishedModels: bridgeMocks.listPlatformPublishedModels,
 }));
 
@@ -44,6 +46,7 @@ describe('aiModelRouter', () => {
   beforeEach(() => {
     bridgeMocks.isPlatformAiModelTakeoverActive.mockResolvedValue(false);
     bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(false);
+    bridgeMocks.listPlatformCatalogModels.mockReset();
     bridgeMocks.listPlatformPublishedModels.mockReset();
   });
 
@@ -184,7 +187,7 @@ describe('aiModelRouter', () => {
 
     await aiModelRouter.createCaller(mockCtx).getAiProviderModelList({ id: 'chatgpt' });
 
-    expect(bridgeMocks.listPlatformPublishedModels).not.toHaveBeenCalled();
+    expect(bridgeMocks.listPlatformCatalogModels).not.toHaveBeenCalled();
     expect(mockGetList).toHaveBeenCalledWith(
       'chatgpt',
       expect.not.objectContaining({ publishedModels: expect.anything() }),
@@ -193,7 +196,7 @@ describe('aiModelRouter', () => {
 
   it('overlays the admin-published set as the sole base once models are hosted', async () => {
     bridgeMocks.isPlatformAiModelTakeoverActive.mockResolvedValue(true);
-    bridgeMocks.listPlatformPublishedModels.mockResolvedValue([
+    bridgeMocks.listPlatformCatalogModels.mockResolvedValue([
       { abilities: {}, enabled: true, id: 'gpt-5.6-sol', providerId: 'chatgpt', type: 'chat' },
     ]);
     const mockGetList = vi.fn().mockResolvedValue([]);

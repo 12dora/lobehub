@@ -33,17 +33,28 @@ vi.mock('@/server/enterprise/services/aiCatalog/enforcement', async (importOrigi
 }));
 vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => ({
   ...(await importOriginal<typeof PlatformAiRuntimeBridge>()),
-  isPlatformAiTakeoverActive: vi.fn(async () =>
-    ['1', 'true', 'yes', 'on'].includes(
-      (process.env.ENABLE_PLATFORM_MANAGED_AI ?? '').trim().toLowerCase(),
-    ),
+  isPlatformAiModelTakeoverActive: vi.fn(
+    async () => process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER === '1',
+  ),
+  isPlatformAiTakeoverActive: vi.fn(
+    async () =>
+      ['1', 'true', 'yes', 'on'].includes(
+        (process.env.ENABLE_PLATFORM_MANAGED_AI ?? '').trim().toLowerCase(),
+      ) && process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER !== '0',
   ),
   // `null` = "not actively managed" → the provider is the user's own (BYOK). Default: every
   // provider is platform-owned while the flag is on, matching this suite's convention.
+  listPlatformCatalogModels: vi.fn(async (_db: unknown, providerKey: string) =>
+    process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER === '1' && !userOnlyProviders.has(providerKey)
+      ? [{ enabled: true, id: `${providerKey}-published`, providerId: providerKey, type: 'chat' }]
+      : null,
+  ),
   listPlatformPublishedModels: vi.fn(async (_db: unknown, providerKey: string) =>
     ['1', 'true', 'yes', 'on'].includes(
       (process.env.ENABLE_PLATFORM_MANAGED_AI ?? '').trim().toLowerCase(),
-    ) && !userOnlyProviders.has(providerKey)
+    ) &&
+    process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER !== '0' &&
+    !userOnlyProviders.has(providerKey)
       ? []
       : null,
   ),
@@ -443,6 +454,124 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
       expect(initialize).not.toHaveBeenCalled();
     } finally {
       process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('model-only takeover rejects an unpublished model on the user-credential path', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    const previousProvider = process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER;
+    const previousModel = process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER = '0';
+    process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER = '1';
+    const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
+    const execution = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [{ abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'image' }],
+      { 'provider-b': { apiKey: 'user-key' } },
+    );
+
+    try {
+      await expect(resolveRuntimeKeyVaults(executor, runtimeState)).rejects.toMatchObject({
+        code: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+      });
+      expect(secretFactory).not.toHaveBeenCalled();
+      expect(execution).not.toHaveBeenCalled();
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      if (previousProvider === undefined) delete process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER;
+      else process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER = previousProvider;
+      if (previousModel === undefined) delete process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER;
+      else process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER = previousModel;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('model-only takeover keeps user credentials for published models (providers not hosted)', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    const previousProvider = process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER;
+    const previousModel = process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER = '0';
+    process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER = '1';
+    const execution = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'chat' },
+        {
+          abilities: {},
+          enabled: true,
+          id: 'embed-1',
+          providerId: 'provider-e',
+          type: 'embedding',
+        },
+        ...['layer-act', 'layer-ctx', 'layer-exp', 'layer-id', 'layer-pref'].map((id) => ({
+          abilities: {},
+          enabled: true,
+          id,
+          providerId: 'provider-l',
+          type: 'chat' as const,
+        })),
+      ],
+      {
+        'provider-b': { apiKey: 'user-gate-key' },
+        'provider-e': { apiKey: 'user-embedding-key' },
+        'provider-l': { apiKey: 'user-layer-key' },
+      },
+    );
+
+    try {
+      expect(await resolveRuntimeKeyVaults(executor, runtimeState)).toEqual({
+        'provider-b': { apiKey: 'user-gate-key' },
+        'provider-e': { apiKey: 'user-embedding-key' },
+        'provider-l': { apiKey: 'user-layer-key' },
+      });
+      expect(execution).not.toHaveBeenCalled();
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      if (previousProvider === undefined) delete process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER;
+      else process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER = previousProvider;
+      if (previousModel === undefined) delete process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER;
+      else process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER = previousModel;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('both hosted uses platform credentials and still rejects unpublished models', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    const previousModel = process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER = '1';
+    const execution = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+    const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [{ abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'image' }],
+      { 'provider-b': { apiKey: 'user-key' } },
+    );
+
+    try {
+      await expect(resolveRuntimeKeyVaults(executor, runtimeState)).rejects.toMatchObject({
+        code: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+      });
+      expect(execution).not.toHaveBeenCalled();
+      expect(secretFactory).not.toHaveBeenCalled();
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      if (previousModel === undefined) delete process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER;
+      else process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER = previousModel;
       vi.restoreAllMocks();
     }
   });

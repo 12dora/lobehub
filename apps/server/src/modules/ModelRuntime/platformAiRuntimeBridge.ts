@@ -93,9 +93,19 @@ export interface PlatformAiRuntimeImplementation {
    */
   isTakeoverActive: (db: LobeChatDatabase) => Promise<boolean>;
   /**
-   * Published model set of an ACTIVELY managed provider, or `null` when the provider is not
-   * platform-managed right now (never published, disabled, or archived) — `null` and `[]` are
-   * different answers: `[]` means "managed, nothing published yet".
+   * Published catalog models for this provider while MODEL takeover is on. `null` when model
+   * takeover is off (caller keeps the user's own list). Empty array = hosted, nothing published
+   * for this provider — fail closed, do not fall back to BYOK overlay.
+   */
+  listCatalogModels: (
+    db: LobeChatDatabase,
+    providerKey: string,
+  ) => Promise<EnabledAiModel[] | null>;
+  /**
+   * Published model set of an ACTIVELY managed *provider* (provider takeover), or `null` when
+   * the provider is not platform-owned right now (never published, disabled, archived, or
+   * provider takeover off). `null` and `[]` are different: `[]` means "owned, nothing published
+   * yet". Used for credential ownership, not the model-allowlist overlay.
    */
   listPublishedModels: (
     db: LobeChatDatabase,
@@ -247,6 +257,15 @@ export const listPlatformPublishedModels = (
   db: LobeChatDatabase,
   providerKey: string,
 ): Promise<EnabledAiModel[] | null> => requireImplementation().listPublishedModels(db, providerKey);
+
+/**
+ * Model-catalog overlay: the published `(providerKey, modelKey, type)` set while `aiModels`
+ * hosting is enforced. Independent of `listPlatformPublishedModels` (provider ownership).
+ */
+export const listPlatformCatalogModels = (
+  db: LobeChatDatabase,
+  providerKey: string,
+): Promise<EnabledAiModel[] | null> => requireImplementation().listCatalogModels(db, providerKey);
 
 /**
  * Apply the optional enterprise runtime wrap (content moderation). Identity when the

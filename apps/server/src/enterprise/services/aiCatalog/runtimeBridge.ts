@@ -34,10 +34,9 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
     isEnabled: () => parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AI,
     isModelTakeoverActive: (db) => isPlatformAiModelTakeoverActive(db),
     isTakeoverActive: (db) => isPlatformAiTakeoverActive(db),
-    listPublishedModels: async (db, providerKey) => {
-      // Overlay is keyed on MODEL takeover: without it the settings list stays the user's
-      // own (BYOK) view. With it, return the published set for this provider even when
-      // provider takeover is off (user credentials, platform model catalog).
+    listCatalogModels: async (db, providerKey) => {
+      // Model-catalog overlay: independent of provider credentials. `null` when models are
+      // not hosted; an array (possibly empty) when they are.
       if (!(await isPlatformAiModelTakeoverActive(db))) return null;
       const state = await resolveAiCatalogRuntimeState({
         db,
@@ -50,6 +49,25 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
           runtimeConfig: {},
         },
       });
+      return state.enabledAiModels.filter((model) => model.providerId === providerKey);
+    },
+    listPublishedModels: async (db, providerKey) => {
+      // Provider ownership: `null` unless 平台托管 for providers is published AND this
+      // provider is in the published catalog. Memory / persona pick credentials from this.
+      if (!(await isPlatformAiTakeoverActive(db))) return null;
+      const state = await resolveAiCatalogRuntimeState({
+        db,
+        upstreamState: {
+          enabledAiModels: [],
+          enabledAiProviders: [],
+          enabledChatAiProviders: [],
+          enabledImageAiProviders: [],
+          enabledVideoAiProviders: [],
+          runtimeConfig: {},
+        },
+      });
+      const managed = state.enabledAiProviders.some((provider) => provider.id === providerKey);
+      if (!managed) return null;
       return state.enabledAiModels.filter((model) => model.providerId === providerKey);
     },
     /**

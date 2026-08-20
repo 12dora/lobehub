@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import EmptyModels from './EmptyModels';
 
 const mocks = vi.hoisted(() => ({
+  managed: false,
   store: {
     fetchRemoteModelList: vi.fn(),
     supportsUpstreamSync: false,
@@ -40,6 +41,10 @@ vi.mock('antd-style', () => ({
   createStaticStyles: () => new Proxy({}, { get: () => 'style' }),
 }));
 
+vi.mock('@/features/ManagedResources', () => ({
+  useManagedResource: () => ({ managed: mocks.managed }),
+}));
+
 vi.mock('@/hooks/usePermission', () => ({
   usePermission: () => ({ allowed: true, reason: 'no permission to manage provider keys' }),
 }));
@@ -63,9 +68,19 @@ vi.mock('./useSyncUpstreamModels', () => ({
 describe('EmptyModels', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.managed = false;
     mocks.store.supportsUpstreamSync = false;
     mocks.sync.disabled = false;
     mocks.sync.isSyncing = false;
+  });
+
+  it('hides add/fetch/sync when aiModels is managed', () => {
+    mocks.managed = true;
+    render(<EmptyModels provider="openai" />);
+    expect(screen.getByText('providerModels.list.empty.title')).toBeInTheDocument();
+    expect(screen.queryByText('providerModels.list.addNew')).not.toBeInTheDocument();
+    expect(screen.queryByText('providerModels.list.fetcher.fetch')).not.toBeInTheDocument();
+    expect(screen.queryByText('providerModels.list.syncUpstream.action')).not.toBeInTheDocument();
   });
 
   it('offers the BYOK fetch when the panel cannot sync upstream', () => {

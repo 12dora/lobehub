@@ -6,6 +6,7 @@ import EnabledModelList from './index';
 const mocks = vi.hoisted(() => ({
   batchToggleAiModels: vi.fn(),
   canManageProvider: true,
+  managed: false,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -16,7 +17,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/features/ManagedResources', () => ({
-  useManagedResource: () => ({ managed: false }),
+  useManagedResource: () => ({ managed: mocks.managed }),
 }));
 
 vi.mock('@/hooks/usePermission', () => ({
@@ -47,6 +48,13 @@ describe('EnabledModelList disable-all', () => {
   beforeEach(() => {
     mocks.batchToggleAiModels.mockReset();
     mocks.canManageProvider = true;
+    mocks.managed = false;
+  });
+
+  it('hides disable-all and sort when aiModels is managed', () => {
+    mocks.managed = true;
+    render(<EnabledModelList activeTab="all" />);
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 
   it('batch-disables every togglable model', async () => {

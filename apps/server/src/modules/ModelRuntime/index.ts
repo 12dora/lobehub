@@ -52,7 +52,7 @@ import {
   digestPlatformAiCredential,
   isPlatformAiModelTakeoverActive,
   isPlatformManagedAiEnabled,
-  listPlatformPublishedModels,
+  listPlatformCatalogModels,
   type PlatformAiExactModelRef,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfigAtRevision,
@@ -1196,7 +1196,7 @@ export const initModelRuntimeFromDB = async (
   // set is the exclusive allowlist. Empty / unknown provider → fail closed (no escape).
   const modelAllowlistHooks = (await isPlatformAiModelTakeoverActive(db))
     ? createPlatformAiModelAllowlistHooks(
-        ((await listPlatformPublishedModels(db, provider)) ?? []).map((model) => ({
+        ((await listPlatformCatalogModels(db, provider)) ?? []).map((model) => ({
           modelKey: model.id,
           type: model.type,
         })),

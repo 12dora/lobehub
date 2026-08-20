@@ -284,9 +284,89 @@ describe('UserPersonaService', () => {
     }
   });
 
+  it('model-only takeover rejects unpublished models on the user-credential path', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    const listed = vi
+      .spyOn(PlatformAiRuntimeBridge, 'listPlatformPublishedModels')
+      .mockResolvedValue(null);
+    const modelTakeover = vi
+      .spyOn(PlatformAiRuntimeBridge, 'isPlatformAiModelTakeoverActive')
+      .mockResolvedValue(true);
+    const execution = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+    const runtimeState = vi
+      .spyOn(PlatformAiRuntimeBridge, 'resolvePlatformAiRuntimeState')
+      .mockImplementation(async ({ upstreamState }) => ({
+        ...upstreamState,
+        enabledAiModels: [
+          { abilities: {}, enabled: true, id: 'gpt-mock', providerId: 'openai', type: 'image' },
+        ],
+      }));
+
+    try {
+      await expect(
+        new UserPersonaService(db).composeWriting({ userId, username: 'User' }),
+      ).rejects.toMatchObject({ code: 'PLATFORM_AI_MODEL_NOT_PUBLISHED' });
+      expect(listed).toHaveBeenCalled();
+      expect(modelTakeover).toHaveBeenCalled();
+      expect(execution).not.toHaveBeenCalled();
+    } finally {
+      listed.mockRestore();
+      modelTakeover.mockRestore();
+      execution.mockRestore();
+      runtimeState.mockRestore();
+    }
+  });
+
+  it('model-only takeover runs published models on user credentials (providers not hosted)', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    const listed = vi
+      .spyOn(PlatformAiRuntimeBridge, 'listPlatformPublishedModels')
+      .mockResolvedValue(null);
+    const modelTakeover = vi
+      .spyOn(PlatformAiRuntimeBridge, 'isPlatformAiModelTakeoverActive')
+      .mockResolvedValue(true);
+    const runtimeState = vi
+      .spyOn(PlatformAiRuntimeBridge, 'resolvePlatformAiRuntimeState')
+      .mockImplementation(async ({ upstreamState }) => upstreamState);
+    const execution = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+
+    try {
+      const result = await new UserPersonaService(db).composeWriting({ userId, username: 'User' });
+      expect(result.document.persona).toBe('# Persona');
+      expect(execution).not.toHaveBeenCalled();
+      expect(vi.mocked(resolveRuntimeAgentConfig)).toHaveBeenCalled();
+    } finally {
+      listed.mockRestore();
+      modelTakeover.mockRestore();
+      runtimeState.mockRestore();
+      execution.mockRestore();
+    }
+  });
+
   it('runs a user-only provider on the user credentials while 平台托管 is published', async () => {
     const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
     process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    const modelTakeover = vi
+      .spyOn(PlatformAiRuntimeBridge, 'isPlatformAiModelTakeoverActive')
+      .mockResolvedValue(false);
+    const runtimeStateSpy = vi
+      .spyOn(PlatformAiRuntimeBridge, 'resolvePlatformAiRuntimeState')
+      .mockImplementation(async ({ upstreamState }) => ({
+        ...upstreamState,
+        runtimeConfig: {
+          openai: { config: {}, keyVaults: {}, settings: {} },
+          ...upstreamState.runtimeConfig,
+        },
+      }));
+    const listed = vi
+      .spyOn(PlatformAiRuntimeBridge, 'listPlatformPublishedModels')
+      .mockResolvedValue(null);
     // The platform publishes `openai`; the persona writer resolves to a provider the platform
     // does not publish as enabled, so it stays the user's own (BYOK) — the same boundary the
     // chat runtime and the picker use.
@@ -325,6 +405,9 @@ describe('UserPersonaService', () => {
     } finally {
       if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
       else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      modelTakeover.mockRestore();
+      runtimeStateSpy.mockRestore();
+      listed.mockRestore();
       secretFactory.mockRestore();
       execution.mockRestore();
     }

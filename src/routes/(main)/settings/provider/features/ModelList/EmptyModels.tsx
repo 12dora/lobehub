@@ -5,6 +5,7 @@ import { BrainIcon, LucideRefreshCcwDot, PlusIcon } from 'lucide-react';
 import { memo, use, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useManagedResource } from '@/features/ManagedResources';
 import { usePermission } from '@/hooks/usePermission';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
@@ -56,6 +57,8 @@ const EmptyState = memo<{ provider: string }>(({ provider }) => {
   const { t: tSetting } = useTranslation('setting');
   const { message } = App.useApp();
   const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
+  const { managed: aiModelsManaged } = useManagedResource('aiModels');
+  const canMutateModels = canManageProvider && !aiModelsManaged;
 
   const [fetchRemoteModelList, supportsUpstreamSync] = useAiInfraStore((s) => [
     s.fetchRemoteModelList,
@@ -77,24 +80,26 @@ const EmptyState = memo<{ provider: string }>(({ provider }) => {
       </Flexbox>
 
       <Flexbox horizontal gap={8}>
-        <Tooltip title={canManageProvider ? '' : reason}>
-          <Button
-            disabled={!canManageProvider}
-            icon={PlusIcon}
-            onClick={() => {
-              if (!canManageProvider) return;
-              createCreateNewModelModal({
-                existingModelIds: aiInfraStoreApi
-                  .getState()
-                  .aiProviderModelList.map((model) => model.id),
-                showDeployName,
-                store: aiInfraStoreApi,
-              });
-            }}
-          >
-            {t('providerModels.list.addNew')}
-          </Button>
-        </Tooltip>
+        {!aiModelsManaged && (
+          <Tooltip title={canManageProvider ? '' : reason}>
+            <Button
+              disabled={!canMutateModels}
+              icon={PlusIcon}
+              onClick={() => {
+                if (!canMutateModels) return;
+                createCreateNewModelModal({
+                  existingModelIds: aiInfraStoreApi
+                    .getState()
+                    .aiProviderModelList.map((model) => model.id),
+                  showDeployName,
+                  store: aiInfraStoreApi,
+                });
+              }}
+            >
+              {t('providerModels.list.addNew')}
+            </Button>
+          </Tooltip>
+        )}
         {/*
          * An empty list is where discovery matters most, and the panel that administers a shared
          * platform account cannot use the BYOK fetch below at all — it reads the signed-in
@@ -102,51 +107,52 @@ const EmptyState = memo<{ provider: string }>(({ provider }) => {
          * replaces the fetch button rather than crowding a third one beside it; on a member's own
          * provider the two are the same call and one button is the honest count.
          */}
-        {supportsUpstreamSync ? (
-          <Tooltip title={sync.disabledReason ?? ''}>
-            <Button
-              disabled={sync.disabled}
-              icon={<Icon icon={LucideRefreshCcwDot} />}
-              loading={sync.isSyncing}
-              type={'primary'}
-              onClick={sync.syncUpstream}
-            >
-              {sync.isSyncing
-                ? t('providerModels.list.syncUpstream.syncing')
-                : t('providerModels.list.syncUpstream.action')}
-            </Button>
-          </Tooltip>
-        ) : (
-          <Tooltip title={canManageProvider ? '' : reason}>
-            <Button
-              disabled={!canManageProvider}
-              icon={<Icon icon={LucideRefreshCcwDot} />}
-              loading={fetchRemoteModelsLoading}
-              type={'primary'}
-              onClick={async () => {
-                if (!canManageProvider) return;
-                setFetchRemoteModelsLoading(true);
-                try {
-                  await fetchRemoteModelList(provider);
-                } catch (error) {
-                  console.error(error);
+        {!aiModelsManaged &&
+          (supportsUpstreamSync ? (
+            <Tooltip title={sync.disabledReason ?? ''}>
+              <Button
+                disabled={sync.disabled}
+                icon={<Icon icon={LucideRefreshCcwDot} />}
+                loading={sync.isSyncing}
+                type={'primary'}
+                onClick={sync.syncUpstream}
+              >
+                {sync.isSyncing
+                  ? t('providerModels.list.syncUpstream.syncing')
+                  : t('providerModels.list.syncUpstream.action')}
+              </Button>
+            </Tooltip>
+          ) : (
+            <Tooltip title={canManageProvider ? '' : reason}>
+              <Button
+                disabled={!canMutateModels}
+                icon={<Icon icon={LucideRefreshCcwDot} />}
+                loading={fetchRemoteModelsLoading}
+                type={'primary'}
+                onClick={async () => {
+                  if (!canMutateModels) return;
+                  setFetchRemoteModelsLoading(true);
+                  try {
+                    await fetchRemoteModelList(provider);
+                  } catch (error) {
+                    console.error(error);
 
-                  message.error(
-                    t('providerModels.list.fetcher.error', {
-                      message: resolveFetchFailureMessage(error, t, tSetting),
-                    }),
-                  );
-                } finally {
-                  setFetchRemoteModelsLoading(false);
-                }
-              }}
-            >
-              {fetchRemoteModelsLoading
-                ? t('providerModels.list.fetcher.fetching')
-                : t('providerModels.list.fetcher.fetch')}
-            </Button>
-          </Tooltip>
-        )}
+                    message.error(
+                      t('providerModels.list.fetcher.error', {
+                        message: resolveFetchFailureMessage(error, t, tSetting),
+                      }),
+                    );
+                  } finally {
+                    setFetchRemoteModelsLoading(false);
+                  }
+                }}
+              >
+                {fetchRemoteModelsLoading
+                  ? t('providerModels.list.fetcher.fetching')
+                  : t('providerModels.list.fetcher.fetch')}
+              </Button>
+            </Tooltip>
+          ))}
       </Flexbox>
     </Center>
   );

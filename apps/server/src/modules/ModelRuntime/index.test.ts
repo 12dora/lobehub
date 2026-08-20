@@ -91,7 +91,7 @@ vi.mock('@/server/enterprise/services/aiCatalog/enforcement', async (importOrigi
 vi.mock('./platformAiRuntimeBridge', async (importOriginal) => ({
   ...(await importOriginal<typeof platformAiRuntimeBridge>()),
   isPlatformAiModelTakeoverActive: vi.fn(async () => enforcementMocks.modelTakeover),
-  listPlatformPublishedModels: vi.fn(async () => enforcementMocks.publishedModels),
+  listPlatformCatalogModels: vi.fn(async () => enforcementMocks.publishedModels),
 }));
 
 // 模拟依赖项
