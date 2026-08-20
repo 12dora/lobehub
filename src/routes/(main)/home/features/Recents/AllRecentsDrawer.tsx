@@ -2,10 +2,10 @@
 
 import { Empty, Flexbox, SearchBar } from '@lobehub/ui';
 import { SearchIcon } from 'lucide-react';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { taskDetailPath } from '@/features/AgentTasks/shared/taskDetailPath';
+import { useActiveHomeConversation } from '@/features/HomeConversation/useHomeConversation';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 import SideBarDrawer from '@/features/NavPanel/SideBarDrawer';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
@@ -15,6 +15,7 @@ import { useCacheScope } from '@/libs/swr/useCacheScope';
 import { recentService } from '@/services/recent';
 
 import RecentListItem from './Item';
+import { getRecentRoute } from './recentRoute';
 
 interface AllRecentsDrawerProps {
   onClose: () => void;
@@ -38,13 +39,7 @@ const AllRecentsDrawer = memo<AllRecentsDrawerProps>(({ open, onClose }) => {
     return recents.filter((item) => item.title.toLowerCase().includes(keyword));
   }, [recents, searchKeyword]);
 
-  const getRecentRoute = useCallback((item: (typeof filteredRecents)[number]) => {
-    if (item.type !== 'task') return item.routePath;
-    const taskId = item.id;
-    if (!taskId) return item.routePath;
-
-    return taskDetailPath(taskId, item.agentId ?? undefined);
-  }, []);
+  const activeTopicId = useActiveHomeConversation()?.topicId;
 
   return (
     <SideBarDrawer
@@ -81,7 +76,10 @@ const AllRecentsDrawer = memo<AllRecentsDrawerProps>(({ open, onClose }) => {
               style={{ color: 'inherit', textDecoration: 'none' }}
               to={getRecentRoute(item)}
             >
-              <RecentListItem {...item} />
+              <RecentListItem
+                {...item}
+                active={item.type === 'topic' && item.id === activeTopicId}
+              />
             </WorkspaceLink>
           ))
         )}

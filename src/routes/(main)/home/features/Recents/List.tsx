@@ -1,10 +1,10 @@
 import { Flexbox } from '@lobehub/ui';
 import { MoreHorizontalIcon } from 'lucide-react';
-import { memo, useCallback, useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
-import { taskDetailPath } from '@/features/AgentTasks/shared/taskDetailPath';
+import { useActiveHomeConversation } from '@/features/HomeConversation/useHomeConversation';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
@@ -15,6 +15,7 @@ import { homeRecentSelectors } from '@/store/home/selectors';
 
 import AllRecentsDrawer from './AllRecentsDrawer';
 import RecentListItem from './Item';
+import { getRecentRoute } from './recentRoute';
 
 interface RecentsListProps {
   /** Thrown error from the recents SWR — surfaced as a failure state. */
@@ -36,13 +37,9 @@ const RecentsList = memo<RecentsListProps>(({ error, onRetry }) => {
   const displayItems = useMemo(() => recents.slice(0, recentPageSize), [recents, recentPageSize]);
   const hasMore = recents.length > recentPageSize;
 
-  const getRecentRoute = useCallback((item: (typeof displayItems)[number]) => {
-    if (item.type !== 'task') return item.routePath;
-    const taskId = item.id;
-    if (!taskId) return item.routePath;
-
-    return taskDetailPath(taskId, item.agentId ?? undefined);
-  }, []);
+  // Same highlight contract as the agent sidebar's topic list: the open
+  // conversation's topic renders as a filled `NavItem`.
+  const activeTopicId = useActiveHomeConversation()?.topicId;
 
   // Error gated ahead of the skeleton so a failed recents fetch shows Retry
   // instead of a permanent skeleton (`isRecentsInit` only flips on success —
@@ -63,7 +60,7 @@ const RecentsList = memo<RecentsListProps>(({ error, onRetry }) => {
             style={{ color: 'inherit', textDecoration: 'none' }}
             to={getRecentRoute(item)}
           >
-            <RecentListItem {...item} />
+            <RecentListItem {...item} active={item.type === 'topic' && item.id === activeTopicId} />
           </WorkspaceLink>
         ))}
         {hasMore && (

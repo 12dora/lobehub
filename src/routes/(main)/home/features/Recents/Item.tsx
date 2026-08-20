@@ -18,7 +18,16 @@ const TYPE_ICON_MAP: Partial<Record<'document' | 'task' | 'topic', typeof FileTe
   topic: HashIcon,
 };
 
-const RecentListItem = memo<RecentItem>((item) => {
+interface RecentListItemProps extends RecentItem {
+  /**
+   * Selected state, driven by the conversation open in the home right column.
+   * `NavItem` renders it as a filled `Block` — the exact same highlight the
+   * agent chat sidebar's topic rows use.
+   */
+  active?: boolean;
+}
+
+const RecentListItem = memo<RecentListItemProps>(({ active, ...item }) => {
   const { title, type, agentId, id, metadata, status } = item;
   const IconComponent = TYPE_ICON_MAP[type] || FileTextIcon;
   const [editing, setEditing] = useState(false);
@@ -48,9 +57,13 @@ const RecentListItem = memo<RecentItem>((item) => {
   return (
     <Flexbox style={{ position: 'relative' }}>
       <NavItem
+        active={active}
         contextMenuItems={dropdownMenu}
         disabled={editing}
         title={title}
+        // Match the agent sidebar's topic rows: conversation titles stay fully
+        // emphasized even when the row is not selected.
+        titleColor={cssVar.colorText}
         actions={
           <DropdownMenu items={dropdownMenu()} nativeButton={false}>
             <ActionIcon icon={MoreHorizontalIcon} size={'small'} style={{ flex: 'none' }} />

@@ -13,6 +13,17 @@ import HomeAgentIdSync from './HomeAgentIdSync';
 
 let currentScope = 'user-a:workspace-a';
 
+const route = vi.hoisted(() => ({ pathname: '/', search: '', slug: null as string | null }));
+
+vi.mock('react-router', () => ({
+  useLocation: () => ({ pathname: route.pathname }),
+  useSearchParams: () => [new URLSearchParams(route.search), vi.fn()],
+}));
+
+vi.mock('@/business/client/hooks/useActiveWorkspaceSlug', () => ({
+  useActiveWorkspaceSlug: () => route.slug,
+}));
+
 vi.mock('@/libs/swr/useCacheScope', () => ({
   useCacheScope: () => currentScope,
 }));
@@ -35,6 +46,9 @@ const ScopeHarness = ({ scope }: { scope: string }) => {
 
 describe('HomeAgentIdSync', () => {
   beforeEach(() => {
+    route.pathname = '/';
+    route.search = '';
+    route.slug = null;
     currentScope = 'user-a:workspace-a';
     useAgentStore.setState(
       {
@@ -86,5 +100,82 @@ describe('HomeAgentIdSync', () => {
     rerender(<ScopeHarness scope="user-a:workspace-b" />);
 
     expect(useAgentStore.getState().activeAgentId).toBe('regular-agent');
+  });
+});
+
+describe('HomeAgentIdSync route + conversation gates', () => {
+  beforeEach(() => {
+    route.pathname = '/';
+    route.search = '';
+    route.slug = null;
+    currentScope = 'user-a:workspace-a';
+    useAgentStore.setState(
+      {
+        ...initialAgentState,
+        activeAgentId: undefined,
+        activeInboxScope: currentScope,
+        agentMap: { 'inbox-agent-a': { id: 'inbox-agent-a', title: 'Workspace A' } },
+        builtinAgentIdMap: { [INBOX_SESSION_ID]: 'inbox-agent-a' },
+        inboxProjectionScope: currentScope,
+      },
+      false,
+    );
+  });
+
+  it('syncs the inbox on the bare home route', () => {
+    render(<ScopeHarness scope="user-a:workspace-a" />);
+
+    expect(useAgentStore.getState().activeAgentId).toBe('inbox-agent-a');
+  });
+
+  it('syncs the inbox on the workspace home route', () => {
+    route.pathname = '/acme';
+    route.slug = 'acme';
+
+    render(<ScopeHarness scope="user-a:workspace-a" />);
+
+    expect(useAgentStore.getState().activeAgentId).toBe('inbox-agent-a');
+  });
+
+  it('does not force the inbox while a home conversation is open', () => {
+    route.search = 'agent=agt_conversation&topic=tpc_1';
+    useAgentStore.setState({ activeAgentId: 'agt_conversation' });
+
+    render(<ScopeHarness scope="user-a:workspace-a" />);
+
+    expect(useAgentStore.getState().activeAgentId).toBe('agt_conversation');
+  });
+
+  it('does not force the inbox while a home group conversation is open', () => {
+    route.search = 'group=grp_1&topic=tpc_1';
+
+    render(<ScopeHarness scope="user-a:workspace-a" />);
+
+    expect(useAgentStore.getState().activeAgentId).toBeUndefined();
+  });
+
+  it('releases the inbox id in the navigation commit, not when Activity hides', () => {
+    const { rerender } = render(<ScopeHarness scope="user-a:workspace-a" />);
+    expect(useAgentStore.getState().activeAgentId).toBe('inbox-agent-a');
+
+    // Same commit as the route change — the component (still mounted inside the
+    // home <Activity>) must render null right away so its cleanup runs now.
+    route.pathname = '/agent/agt_routed';
+    rerender(<ScopeHarness scope="user-a:workspace-a" />);
+
+    expect(useAgentStore.getState().activeAgentId).toBeUndefined();
+  });
+
+  it('never overwrites an agent the route already claimed', () => {
+    const { rerender } = render(<ScopeHarness scope="user-a:workspace-a" />);
+
+    act(() => {
+      useAgentStore.setState({ activeAgentId: 'agt_routed' });
+    });
+
+    route.pathname = '/agent/agt_routed';
+    rerender(<ScopeHarness scope="user-a:workspace-a" />);
+
+    expect(useAgentStore.getState().activeAgentId).toBe('agt_routed');
   });
 });
