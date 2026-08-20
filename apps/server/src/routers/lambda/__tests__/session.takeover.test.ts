@@ -95,9 +95,7 @@ describe('sessionRouter takeover off', () => {
         updatedAt: new Date('2024-01-01'),
       },
     ]);
-    vi.mocked(ChatGroupModel).mockImplementation(
-      () => ({ queryWithMemberDetails }) as never,
-    );
+    vi.mocked(ChatGroupModel).mockImplementation(() => ({ queryWithMemberDetails }) as never);
 
     const caller = sessionRouter.createCaller({ serverDB: {}, userId } as never);
     const result = await caller.getGroupedSessions();

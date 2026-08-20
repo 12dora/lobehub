@@ -5,7 +5,19 @@ import type {
   LobeAgentSession,
   LobeGroupSession,
 } from '@lobechat/types';
-import { and, asc, count, countDistinct, desc, eq, exists, inArray, not, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  countDistinct,
+  desc,
+  eq,
+  exists,
+  inArray,
+  not,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { PartialDeep } from 'type-fest';
 
 import { merge } from '@/utils/merge';
