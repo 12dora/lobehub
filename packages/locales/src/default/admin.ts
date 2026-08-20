@@ -2862,6 +2862,8 @@ export default {
   'audit.retention.policy.contentAllowedWarnTitle': 'Allow full message content?',
   'audit.retention.policy.contentAllowedWarn':
     'Allowing content lets authorized auditors load full message bodies (credentials stay masked). This increases exposure of conversation content.',
+  'audit.retention.policy.contentAllowedWarnUnmasked':
+    'Allowing content lets authorized auditors load full message bodies. Content redaction is off, so any credentials left in those messages (API keys, tokens, passwords) are readable in full.',
   'audit.retention.policy.helpFor': 'About {{field}}',
   'audit.retention.policy.redactionProfileHint.strict':
     'Strict: masks credentials (API keys, tokens, passwords) in audit views.',

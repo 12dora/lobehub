@@ -41,6 +41,14 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     gap: 6px;
     align-items: center;
   `,
+  riskList: css`
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    margin: 0;
+    padding-inline-start: 20px;
+  `,
 }));
 
 /**
@@ -192,14 +200,24 @@ const PolicyEditModal = memo<{
 
     // One acknowledgement per save, not one per risky field: an operator who widens both
     // content access and redaction in the same edit sees both consequences in one dialog.
-    const risks: string[] = [];
-    if (
+    const turningRedactionOff =
+      fields.redactionProfile === 'off' && policy.redactionProfile !== 'off';
+    const allowingContent =
       fields.contentAccessMode === 'content_allowed' &&
-      policy.contentAccessMode !== 'content_allowed'
-    ) {
-      risks.push(t('audit.retention.policy.contentAllowedWarn'));
+      policy.contentAccessMode !== 'content_allowed';
+
+    const risks: string[] = [];
+    if (allowingContent) {
+      // The stock warning promises credentials stay masked. That is only true while a mask
+      // still runs, so the copy follows the profile this save will leave in place — which
+      // also covers a policy that was already 'off' before this edit.
+      risks.push(
+        fields.redactionProfile === 'off'
+          ? t('audit.retention.policy.contentAllowedWarnUnmasked')
+          : t('audit.retention.policy.contentAllowedWarn'),
+      );
     }
-    if (fields.redactionProfile === 'off' && policy.redactionProfile !== 'off') {
+    if (turningRedactionOff) {
       risks.push(t('audit.retention.policy.redactionOffConfirmBody'));
     }
 
@@ -209,12 +227,22 @@ const PolicyEditModal = memo<{
     }
 
     openDangerConfirm({
-      content: risks.join('\n\n'),
+      // Several consequences need real block elements: newlines inside one string collapse.
+      content:
+        risks.length > 1 ? (
+          <ul className={styles.riskList}>
+            {risks.map((risk) => (
+              <li key={risk}>{risk}</li>
+            ))}
+          </ul>
+        ) : (
+          risks[0]
+        ),
       // A single risk keeps its own specific heading; both together need a neutral one.
       title:
         risks.length > 1
           ? t('audit.retention.policy.riskConfirmTitle')
-          : fields.redactionProfile === 'off' && policy.redactionProfile !== 'off'
+          : turningRedactionOff
             ? t('audit.retention.policy.redactionOffConfirmTitle')
             : t('audit.retention.policy.contentAllowedWarnTitle'),
       onConfirm: apply,

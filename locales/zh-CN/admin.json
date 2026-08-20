@@ -907,6 +907,7 @@
   "audit.retention.policy.contentAccessMode": "内容访问模式",
   "audit.retention.policy.contentAllowedWarn": "开启“允许正文”后，有权限的审计员可查看完整消息正文（凭据仍会脱敏），会扩大会话内容的暴露范围。",
   "audit.retention.policy.contentAllowedWarnTitle": "允许完整消息正文？",
+  "audit.retention.policy.contentAllowedWarnUnmasked": "开启“允许正文”后，有权限的审计员可查看完整消息正文。内容脱敏当前为「关闭」，消息中残留的凭据（API 密钥、令牌、密码）将原样可读。",
   "audit.retention.policy.conversationDays": "会话保留天数",
   "audit.retention.policy.edit": "编辑策略",
   "audit.retention.policy.exportArtifactDays": "导出产物保留天数",

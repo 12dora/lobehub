@@ -2,13 +2,18 @@
 
 import { confirmModal } from '@lobehub/ui/base-ui';
 import i18n from 'i18next';
+import type { ReactNode } from 'react';
 
 export interface DangerConfirmOptions {
   /** Optional custom cancel label */
   cancelText?: string;
   /** Optional custom confirm label */
   confirmText?: string;
-  content: string;
+  /**
+   * Body copy. A plain string is the common case; a node lets a caller list several
+   * consequences as real block elements (newlines inside a string collapse to spaces).
+   */
+  content: ReactNode;
   onConfirm: () => void | Promise<void>;
   title: string;
 }
