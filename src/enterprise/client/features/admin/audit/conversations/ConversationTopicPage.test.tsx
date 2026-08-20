@@ -14,9 +14,10 @@ const evidence = vi.hoisted(() => ({
   detailSnapshot: {
     data: {
       agentId: 'agent-1',
-      contentAccessMode: 'metadata_only' as const,
+      contentAccessMode: 'metadata_only' as 'content_allowed' | 'metadata_only',
       model: 'cached-model',
       provider: 'cached-provider',
+      redactionProfile: undefined as string | undefined,
       title: 'Cached topic',
       updatedAt: new Date('2026-01-02T00:00:00.000Z'),
     },
@@ -24,8 +25,32 @@ const evidence = vi.hoisted(() => ({
     isLoading: false,
     isValidating: false,
   },
+  messagesSnapshot: {
+    data: {
+      contentAccessMode: 'metadata_only' as 'content_allowed' | 'metadata_only',
+      items: [
+        {
+          content: 'Cached message evidence',
+          createdAt: new Date('2026-01-02T00:00:00.000Z'),
+          hasContent: true,
+          id: 'message-1',
+          role: 'user',
+        },
+      ],
+      nextCursor: null as string | null,
+      redactionProfile: undefined as string | undefined,
+    },
+    error: undefined as unknown,
+    isLoading: false,
+    isValidating: false,
+  },
+  policySnapshot: {
+    data: undefined as { redactionProfile?: string } | undefined,
+  },
   toastError: vi.fn(),
 }));
+
+const purgeMock = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -96,26 +121,11 @@ vi.mock('../hooks/useAdminAudit', async () => {
       return { ...snapshot, mutate: evidence.detailMutate };
     },
     useFetchAuditConversationMessages: () => ({
-      data: {
-        contentAccessMode: 'metadata_only',
-        items: [
-          {
-            content: 'Cached message evidence',
-            createdAt: new Date('2026-01-02T00:00:00.000Z'),
-            hasContent: true,
-            id: 'message-1',
-            role: 'user',
-          },
-        ],
-        nextCursor: null,
-      },
-      error: undefined,
-      isLoading: false,
-      isValidating: false,
+      ...evidence.messagesSnapshot,
       mutate: vi.fn(),
     }),
     useFetchAuditPolicy: () => ({
-      data: undefined,
+      data: evidence.policySnapshot.data,
       error: undefined,
       isLoading: false,
       isValidating: false,
@@ -140,6 +150,10 @@ vi.mock('../../primitives/AdminPageTemplate', () => ({
       {children}
     </div>
   ),
+}));
+
+vi.mock('../shared/purgeConversationEvidence', () => ({
+  purgeAuditConversationEvidenceCaches: () => purgeMock(),
 }));
 
 vi.mock('../../primitives/DangerConfirm', () => ({
@@ -170,16 +184,38 @@ describe('ConversationTopicPage', () => {
   beforeEach(() => {
     evidence.detailMutate.mockReset();
     evidence.toastError.mockReset();
+    purgeMock.mockClear();
+    evidence.policySnapshot.data = undefined;
     evidence.detailSnapshot = {
       data: {
         agentId: 'agent-1',
         contentAccessMode: 'metadata_only',
         model: 'cached-model',
         provider: 'cached-provider',
+        redactionProfile: undefined,
         title: 'Cached topic',
         updatedAt: new Date('2026-01-02T00:00:00.000Z'),
       },
       error: new Error('detail refresh failed'),
+      isLoading: false,
+      isValidating: false,
+    };
+    evidence.messagesSnapshot = {
+      data: {
+        contentAccessMode: 'metadata_only',
+        items: [
+          {
+            content: 'Cached message evidence',
+            createdAt: new Date('2026-01-02T00:00:00.000Z'),
+            hasContent: true,
+            id: 'message-1',
+            role: 'user',
+          },
+        ],
+        nextCursor: null,
+        redactionProfile: undefined,
+      },
+      error: undefined,
       isLoading: false,
       isValidating: false,
     };
@@ -228,5 +264,37 @@ describe('ConversationTopicPage', () => {
     const { container } = renderPage();
 
     expect(container.textContent).toContain('cached-provider · cached-model · agent-1');
+  });
+
+  it('suppresses cached raw message bodies when detail is strict and messages are off', () => {
+    evidence.detailSnapshot = {
+      data: {
+        ...evidence.detailSnapshot.data,
+        contentAccessMode: 'content_allowed',
+        redactionProfile: 'strict',
+      },
+      error: undefined,
+      isLoading: false,
+      isValidating: false,
+    };
+    evidence.messagesSnapshot.data = {
+      contentAccessMode: 'content_allowed',
+      items: [
+        {
+          content: 'sk-abcdefghijklmnopqrstuvwxyz012345',
+          createdAt: new Date('2026-01-02T00:00:00.000Z'),
+          hasContent: true,
+          id: 'message-1',
+          role: 'user',
+        },
+      ],
+      nextCursor: null,
+      redactionProfile: 'off',
+    };
+
+    renderPage();
+
+    expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
+    expect(purgeMock).toHaveBeenCalled();
   });
 });

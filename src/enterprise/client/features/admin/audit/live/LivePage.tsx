@@ -206,6 +206,8 @@ const LivePage = memo(() => {
     messagesAccessDenied,
     redactionProfile,
     showPolicyBanner,
+    topicDetailEnvelopeRenderable,
+    topicsEnvelopeRenderable,
   } = useLiveAuditAccess({
     canAuditRead,
     canConversationRead,
@@ -338,7 +340,7 @@ const LivePage = memo(() => {
           <div className={styles.left}>
             <TopicListPane
               hasMore={Boolean(topicNextCursor)}
-              items={orderedTopics}
+              items={topicsEnvelopeRenderable ? orderedTopics : []}
               loading={(topics.isLoading && !topics.data) || loadingMoreTopics}
               selectedTopicId={topicId}
               onLoadMore={() => void loadMoreTopics()}
@@ -376,7 +378,7 @@ const LivePage = memo(() => {
               loading={messagesLive.isLoading && !messagesLive.data}
               loadingOlder={loadingOlder}
               messages={allMessages}
-              topic={topicDetail.data}
+              topic={topicDetailEnvelopeRenderable ? topicDetail.data : undefined}
               userId={userId}
               onLoadOlder={() => void loadOlderMessages()}
             />

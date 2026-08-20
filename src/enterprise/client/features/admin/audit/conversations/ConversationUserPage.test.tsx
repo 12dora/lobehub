@@ -45,9 +45,11 @@ const evidence = vi.hoisted(() => ({
       },
     ],
     nextCursor: 'cursor-tl-2' as string | null,
+    redactionProfile: undefined as string | undefined,
   },
   timelineError: undefined as unknown,
   timelineMutate: vi.fn(),
+  policyData: undefined as { redactionProfile?: string } | undefined,
   isLoadingTimeline: false,
   isValidatingTimeline: false,
   toastError: vi.fn(),
@@ -148,6 +150,13 @@ vi.mock('../hooks/useAdminAudit', () => ({
       mutate: evidence.timelineMutate,
     };
   },
+  useFetchAuditPolicy: () => ({
+    data: evidence.policyData,
+    error: undefined,
+    isLoading: false,
+    isValidating: false,
+    mutate: vi.fn(),
+  }),
 }));
 
 vi.mock('../../primitives/AdminPageTemplate', () => ({
@@ -236,6 +245,7 @@ describe('ConversationUserPage', () => {
         },
       ],
       nextCursor: 'cursor-tl-2',
+      redactionProfile: undefined,
     };
     evidence.listData = {
       items: [
@@ -251,6 +261,7 @@ describe('ConversationUserPage', () => {
       nextCursor: null,
     };
     evidence.timelineMutate.mockReset();
+    evidence.policyData = undefined;
     evidence.toastError.mockReset();
     evidence.isLoadingTimeline = false;
     evidence.isValidatingTimeline = false;
@@ -353,8 +364,29 @@ describe('ConversationUserPage', () => {
     });
   });
 
+  it('suppresses stale off timeline titles when policy is strict', () => {
+    evidence.actorPermissions = ['platform_audit:conversation_read:all', 'platform_audit:read:all'];
+    evidence.policyData = { redactionProfile: 'strict' };
+    evidence.timelineData = {
+      items: [
+        {
+          id: 'tl-secret',
+          kind: 'topic' as const,
+          title: 'sk-abcdefghijklmnopqrstuvwxyz012345',
+          topicId: 'topic-1',
+          updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        },
+      ],
+      nextCursor: null,
+      redactionProfile: 'off',
+    };
+    renderPage();
+    expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
+    expect(screen.getByText('tl-secret')).toBeTruthy();
+  });
+
   it('shows emptyTimeline only after a successful empty response', () => {
-    evidence.timelineData = { items: [], nextCursor: null };
+    evidence.timelineData = { items: [], nextCursor: null, redactionProfile: undefined };
     evidence.timelineError = undefined;
     renderPage();
     expect(screen.getByText('audit.conversations.user.emptyTimeline')).toBeTruthy();

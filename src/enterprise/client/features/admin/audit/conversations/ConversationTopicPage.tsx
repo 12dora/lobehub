@@ -21,11 +21,7 @@ import {
   useFetchAuditPolicy,
 } from '../hooks/useAdminAudit';
 import { formatAdminDateTime, hasPermission } from '../shared/format';
-import {
-  isRedactionProfileTightening,
-  pickMostRestrictiveRedactionProfile,
-} from '../shared/liveMessageUtils';
-import { purgeAuditConversationEvidenceCaches } from '../shared/purgeConversationEvidence';
+import { useRedactionAuthority } from '../shared/useRedactionAuthority';
 import ContentAccessDisabledState from './ContentAccessDisabledState';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -144,20 +140,19 @@ const ConversationTopicPage = memo(() => {
     detail.data?.contentAccessMode ??
     (canAuditRead ? policy.data?.contentAccessMode : undefined);
 
-  const redactionProfile = pickMostRestrictiveRedactionProfile([
-    messages.data?.redactionProfile,
-    detail.data?.redactionProfile,
-    canAuditRead ? policy.data?.redactionProfile : undefined,
-  ]);
-  const prevRedactionProfileRef = useRef<typeof redactionProfile>(undefined);
+  const redaction = useRedactionAuthority(
+    [
+      messages.data?.redactionProfile,
+      detail.data?.redactionProfile,
+      canAuditRead ? policy.data?.redactionProfile : undefined,
+    ],
+    `${userId}:${topicId}`,
+  );
+  const messagesRenderable = redaction.isEnvelopeRenderable(messages.data?.redactionProfile);
   useEffect(() => {
-    const prev = prevRedactionProfileRef.current;
-    if (redactionProfile) prevRedactionProfileRef.current = redactionProfile;
-    if (!prev || !redactionProfile) return;
-    if (!isRedactionProfileTightening(prev, redactionProfile)) return;
+    if (!redaction.shouldPurge) return;
     setCursorStack([]);
-    void purgeAuditConversationEvidenceCaches();
-  }, [redactionProfile]);
+  }, [redaction.purgeEpoch, redaction.shouldPurge]);
 
   const onToggleBody = useCallback(
     (checked: boolean) => {
@@ -266,7 +261,7 @@ const ConversationTopicPage = memo(() => {
                 {formatAdminDateTime(msg.createdAt)}
               </Text>
             </Flexbox>
-            {msg.content != null && msg.content !== '' ? (
+            {messagesRenderable && msg.content != null && msg.content !== '' ? (
               <div className={styles.body}>{renderBody(msg.content)}</div>
             ) : msg.hasContent ? (
               <Text type="secondary">{t('audit.conversations.topic.bodyNotLoaded')}</Text>

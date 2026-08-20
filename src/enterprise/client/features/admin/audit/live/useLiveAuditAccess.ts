@@ -6,12 +6,10 @@ import { useEffect, useMemo, useRef } from 'react';
 import {
   type AuditContentAccessMode,
   type AuditRedactionProfile,
-  isRedactionProfileTightening,
-  pickMostRestrictiveRedactionProfile,
-  rankRedactionProfile,
   resolveLiveBodyAccess,
 } from '../shared/liveMessageUtils';
 import { purgeAuditConversationEvidenceCaches } from '../shared/purgeConversationEvidence';
+import { useRedactionAuthority } from '../shared/useRedactionAuthority';
 
 export interface LiveFeedSWR<T = unknown> {
   data: T | undefined;
@@ -58,19 +56,14 @@ export const useLiveAuditAccess = ({
   // Sticky polled mode: after SWR head purge we must not fall back to a stale
   // policy.get snapshot and re-enable body serving until the next authorized poll.
   const lastPolledModeRef = useRef<AuditContentAccessMode | undefined>(undefined);
-  const lastPolledProfileRef = useRef<AuditRedactionProfile | undefined>(undefined);
-  const prevRedactionProfileRef = useRef<AuditRedactionProfile | undefined>(undefined);
 
   useEffect(() => {
     const polled = messagesLive.data?.contentAccessMode;
     if (polled) lastPolledModeRef.current = polled;
   }, [messagesLive.data?.contentAccessMode]);
 
-  // Reset sticky mode when the operator switches topic/user so we re-resolve fresh.
   useEffect(() => {
     lastPolledModeRef.current = undefined;
-    lastPolledProfileRef.current = undefined;
-    prevRedactionProfileRef.current = undefined;
   }, [userId, topicId]);
 
   const contentAccessMode =
@@ -79,26 +72,32 @@ export const useLiveAuditAccess = ({
     topicDetail.data?.contentAccessMode ??
     policy.data?.contentAccessMode;
 
-  // Most restrictive observed profile across every envelope. A stale messages
-  // `'off'` must not outrank a topics/policy `'strict'` (fail closed).
-  const observedRedactionProfile = pickMostRestrictiveRedactionProfile([
-    messagesLive.data?.redactionProfile,
-    topicDetail.data?.redactionProfile,
-    topics.data?.redactionProfile,
-    policy.data?.redactionProfile,
-  ]);
-  const redactionProfile = observedRedactionProfile ?? lastPolledProfileRef.current;
-
-  useEffect(() => {
-    if (observedRedactionProfile) lastPolledProfileRef.current = observedRedactionProfile;
-  }, [observedRedactionProfile]);
+  const redaction = useRedactionAuthority(
+    [
+      messagesLive.data?.redactionProfile,
+      topicDetail.data?.redactionProfile,
+      topics.data?.redactionProfile,
+      policy.data?.redactionProfile,
+    ],
+    `${userId ?? ''}:${topicId ?? ''}`,
+  );
+  const redactionProfile = redaction.effective;
 
   // Re-check authorization on every render/poll: permission + contentAccessMode.
   const liveAccess = resolveLiveBodyAccess({
     canConversationRead,
     contentAccessMode,
   });
-  const { bodyHidden, includeBody } = liveAccess;
+  const { includeBody } = liveAccess;
+  const messagesEnvelopeRenderable = redaction.isEnvelopeRenderable(
+    messagesLive.data?.redactionProfile,
+  );
+  const topicsEnvelopeRenderable = redaction.isEnvelopeRenderable(topics.data?.redactionProfile);
+  const topicDetailEnvelopeRenderable = redaction.isEnvelopeRenderable(
+    topicDetail.data?.redactionProfile,
+  );
+  // Hide bodies when policy forbids them OR this envelope is looser than effective.
+  const bodyHidden = liveAccess.bodyHidden || !messagesEnvelopeRenderable;
   const messagesAccessDenied = !canConversationRead;
 
   // Request epoch: discard in-flight pagination that started under a prior access mode.
@@ -107,43 +106,13 @@ export const useLiveAuditAccess = ({
     accessEpochRef.current += 1;
   }, [canConversationRead, contentAccessMode, includeBody, redactionProfile]);
 
-  // Drop every conversation-evidence SWR key (all cursors/topics, not just the
-  // active bound mutate) when policy or conversation permission is lost.
+  // Drop evidence caches when conversation content access is lost. Redaction
+  // disagreement purges are latched inside useRedactionAuthority (once per epoch).
   useEffect(() => {
     if (liveAccess.mustPurgeCachedBodies) {
       void purgeAuditConversationEvidenceCaches();
     }
   }, [canConversationRead, contentAccessMode, includeBody, liveAccess.mustPurgeCachedBodies]);
-
-  // Observed tightening, or a source still reporting a looser profile than the
-  // computed authority (stale messages `'off'` vs topics/policy `'strict'`).
-  useEffect(() => {
-    const prev = prevRedactionProfileRef.current;
-    if (redactionProfile) prevRedactionProfileRef.current = redactionProfile;
-
-    const computedRank = rankRedactionProfile(redactionProfile);
-    const staleLooseSource = [
-      messagesLive.data?.redactionProfile,
-      topicDetail.data?.redactionProfile,
-      topics.data?.redactionProfile,
-      policy.data?.redactionProfile,
-    ].some((profile) => {
-      const rank = rankRedactionProfile(profile);
-      return rank !== undefined && computedRank !== undefined && computedRank > rank;
-    });
-    const tightened =
-      Boolean(prev) &&
-      Boolean(redactionProfile) &&
-      isRedactionProfileTightening(prev, redactionProfile);
-    if (!tightened && !staleLooseSource) return;
-    void purgeAuditConversationEvidenceCaches();
-  }, [
-    messagesLive.data?.redactionProfile,
-    policy.data?.redactionProfile,
-    redactionProfile,
-    topicDetail.data?.redactionProfile,
-    topics.data?.redactionProfile,
-  ]);
 
   // Only conversation-domain FORBIDDEN means policy disabled (not policy.get failures).
   const isForbidden = useMemo(() => {
@@ -171,7 +140,10 @@ export const useLiveAuditAccess = ({
     isForbidden,
     liveAccess,
     messagesAccessDenied,
+    messagesEnvelopeRenderable,
     redactionProfile,
     showPolicyBanner,
+    topicDetailEnvelopeRenderable,
+    topicsEnvelopeRenderable,
   };
 };

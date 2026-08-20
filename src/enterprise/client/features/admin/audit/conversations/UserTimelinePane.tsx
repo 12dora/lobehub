@@ -3,15 +3,14 @@
 import { Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useEffect, useLayoutEffect, useRef } from 'react';
+import { memo, useEffect, useLayoutEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
 import { useFetchAuditUserTimeline } from '../hooks/useAdminAudit';
 import { formatAdminDateTime } from '../shared/format';
-import { isRedactionProfileTightening } from '../shared/liveMessageUtils';
-import { purgeAuditConversationEvidenceCaches } from '../shared/purgeConversationEvidence';
 import { useCursorPagination } from '../shared/useCursorPagination';
+import { useRedactionAuthority } from '../shared/useRedactionAuthority';
 
 const TIMELINE_PAGE_SIZE = 30;
 
@@ -50,12 +49,14 @@ export interface UserTimelinePaneProps {
   canFetch: boolean;
   from: Date;
   onErrorChange?: (error: unknown) => void;
+  /** Extra envelopes (e.g. policy) so a stale timeline `'off'` cannot outrank `'strict'`. */
+  peerRedactionProfiles?: Array<string | null | undefined>;
   to: Date;
   userId: string;
 }
 
 const UserTimelinePane = memo<UserTimelinePaneProps>(
-  ({ canFetch, from, onErrorChange, to, userId }) => {
+  ({ canFetch, from, onErrorChange, peerRedactionProfiles, to, userId }) => {
     const { t } = useTranslation('admin');
     const navigate = useNavigate();
     const { currentCursor, hasPrevious, limit, onNext, onPrevious, reset } = useCursorPagination({
@@ -72,18 +73,15 @@ const UserTimelinePane = memo<UserTimelinePaneProps>(
       canFetch,
     );
 
-    const prevRedactionProfileRef = useRef<
-      NonNullable<(typeof timeline)['data']>['redactionProfile'] | undefined
-    >(undefined);
+    const redaction = useRedactionAuthority(
+      [timeline.data?.redactionProfile, ...(peerRedactionProfiles ?? [])],
+      userId,
+    );
+    const timelineRenderable = redaction.isEnvelopeRenderable(timeline.data?.redactionProfile);
     useEffect(() => {
-      const profile = timeline.data?.redactionProfile;
-      const prev = prevRedactionProfileRef.current;
-      if (profile) prevRedactionProfileRef.current = profile;
-      if (!prev || !profile) return;
-      if (!isRedactionProfileTightening(prev, profile)) return;
+      if (!redaction.shouldPurge) return;
       reset();
-      void purgeAuditConversationEvidenceCaches();
-    }, [reset, timeline.data?.redactionProfile]);
+    }, [redaction.purgeEpoch, redaction.shouldPurge, reset]);
 
     // Report before paint so a timeline-only FORBIDDEN still gates the parent page
     // (same as when both fetches lived in ConversationUserPage). Do not clear on
@@ -92,7 +90,9 @@ const UserTimelinePane = memo<UserTimelinePaneProps>(
       onErrorChange?.(timeline.error);
     }, [onErrorChange, timeline.error]);
 
-    const timelineItems = timeline.data?.items ?? [];
+    const timelineItems = (timeline.data?.items ?? []).map((item) =>
+      timelineRenderable ? item : { ...item, title: null },
+    );
     const timelineFailed = Boolean(timeline.error) && !timeline.data;
     const timelineEmpty =
       !timeline.isLoading &&

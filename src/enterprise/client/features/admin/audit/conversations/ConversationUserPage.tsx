@@ -14,7 +14,11 @@ import type { AdminAuditConversationListItem } from '@/enterprise/client/service
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import DataTable, { type AdminTableChangeMeta } from '../../primitives/DataTable';
-import { useFetchAuditConversationsList, useFetchAuditUserSummary } from '../hooks/useAdminAudit';
+import {
+  useFetchAuditConversationsList,
+  useFetchAuditPolicy,
+  useFetchAuditUserSummary,
+} from '../hooks/useAdminAudit';
 import { displayAuditUserLabel, formatAdminDateTime, hasPermission } from '../shared/format';
 import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
 import { useCursorPagination } from '../shared/useCursorPagination';
@@ -123,6 +127,7 @@ const ConversationUserPage = memo(() => {
   );
 
   const summary = useFetchAuditUserSummary(userId, canAuditRead && !!userId);
+  const policy = useFetchAuditPolicy(canAuditRead);
   const list = useFetchAuditConversationsList(
     {
       cursor: currentCursor,
@@ -239,6 +244,7 @@ const ConversationUserPage = memo(() => {
         <UserTimelinePane
           canFetch={canConversationRead && !!userId}
           from={from}
+          peerRedactionProfiles={canAuditRead ? [policy.data?.redactionProfile] : []}
           to={to}
           userId={userId}
           onErrorChange={setTimelineError}
