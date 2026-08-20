@@ -10,6 +10,7 @@ import { adminTaskTemplatesService } from '@/enterprise/client/services/adminTas
 import { openDangerConfirm } from '../primitives/DangerConfirm';
 import { runTaskTemplateBulkDelete, toastTaskTemplateBulkSummary } from './bulkDelete';
 import { openTaskTemplateEditorModal } from './openTaskTemplateEditorModal';
+import { reloadTaskTemplate } from './reloadTaskTemplate';
 import type { AdminTaskTemplateItem } from './types';
 import { refreshAdminTaskTemplateLists } from './useAdminTaskTemplates';
 
@@ -149,11 +150,15 @@ export const useTaskTemplateActions = (items?: AdminTaskTemplateItem[]) => {
     (item?: AdminTaskTemplateItem) => {
       openTaskTemplateEditorModal({
         item,
-        // Conflict path: refresh the table and hand the editor the current server row. Errors and
-        // a deleted row both propagate to the modal, which stays open and reports them there.
+        // Two separate reads on purpose. The editor needs an *authoritative* row, which the cache
+        // refresh cannot give: a matcher mutation resolves out of the SWR cache, and the admin
+        // table's pages are filtered and paginated, so a row that still exists can be missing from
+        // them and read as "deleted". The refresh is a side effect for the table, and its failure
+        // must not downgrade a successful row read to "could not verify".
         onReload: async (stale: AdminTaskTemplateItem) => {
-          const refreshed = await refreshAdminTaskTemplateLists();
-          return refreshed.find((row) => row.id === stale.id);
+          const result = await reloadTaskTemplate(stale);
+          await refreshAdminTaskTemplateLists().catch(() => undefined);
+          return result;
         },
         // `current` is the row the editor is bound to *now*. After a conflict reload the modal
         // reopens against the refreshed row, so replaying the revision captured when the editor

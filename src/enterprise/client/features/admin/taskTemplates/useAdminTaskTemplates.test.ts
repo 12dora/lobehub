@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PLATFORM_AGENT_TEMPLATES_KEY } from '@/enterprise/client/hooks/usePlatformAgentTemplates';
+import { PLATFORM_TASK_TEMPLATES_KEY } from '@/enterprise/client/hooks/usePlatformTaskTemplates';
 
-import { ADMIN_AGENT_TEMPLATE_LIST_KEY } from './swrKeys';
+import { ADMIN_TASK_TEMPLATE_LIST_KEY } from './swrKeys';
 
 const mocks = vi.hoisted(() => ({ mutate: vi.fn() }));
 
@@ -12,8 +12,8 @@ vi.mock('@/libs/swr', () => ({
   useClientDataSWR: vi.fn(),
 }));
 
-vi.mock('@/enterprise/client/services/adminAgentTemplates', () => ({
-  adminAgentTemplatesService: { list: vi.fn() },
+vi.mock('@/enterprise/client/services/adminTaskTemplates', () => ({
+  adminTaskTemplatesService: { list: vi.fn() },
 }));
 
 type Predicate = (key: unknown) => boolean;
@@ -25,8 +25,8 @@ const page = {
   totalFiltered: 1,
 };
 
-const adminKey = [ADMIN_AGENT_TEMPLATE_LIST_KEY, '', 20, 0, ''];
-const platformKey = [PLATFORM_AGENT_TEMPLATES_KEY];
+const adminKey = [ADMIN_TASK_TEMPLATE_LIST_KEY, '', 20, 0, ''];
+const platformKey = [PLATFORM_TASK_TEMPLATES_KEY];
 
 /** `augmentKey` appends the active workspace id to array keys, so both shapes must match. */
 const workspaceScoped = (key: unknown[]) => [...key, 'ws-1'];
@@ -43,11 +43,11 @@ beforeEach(() => {
 /** Both invalidations must *evict*, not merely revalidate — see the integration suite. */
 const evictionArgs = () => mocks.mutate.mock.calls.map((call) => [call[1], call[2]]);
 
-describe('refreshAdminAgentTemplateLists', () => {
+describe('refreshAdminTaskTemplateLists', () => {
   it('invalidates every cached admin page', async () => {
-    const { refreshAdminAgentTemplateLists } = await import('./useAdminAgentTemplates');
+    const { refreshAdminTaskTemplateLists } = await import('./useAdminTaskTemplates');
 
-    await refreshAdminAgentTemplateLists();
+    await refreshAdminTaskTemplateLists();
 
     const [matchesAdmin] = predicates();
     expect(matchesAdmin!(adminKey)).toBe(true);
@@ -55,9 +55,9 @@ describe('refreshAdminAgentTemplateLists', () => {
   });
 
   it('clears the matched entries instead of only revalidating mounted subscribers', async () => {
-    const { refreshAdminAgentTemplateLists } = await import('./useAdminAgentTemplates');
+    const { refreshAdminTaskTemplateLists } = await import('./useAdminTaskTemplates');
 
-    await refreshAdminAgentTemplateLists();
+    await refreshAdminTaskTemplateLists();
 
     // `mutate(predicate)` alone never reaches an unmounted reader's cache entry.
     expect(evictionArgs()).toEqual([
@@ -67,17 +67,17 @@ describe('refreshAdminAgentTemplateLists', () => {
   });
 
   it('returns nothing, so no caller can mistake a cache round trip for an authoritative read', async () => {
-    const { refreshAdminAgentTemplateLists } = await import('./useAdminAgentTemplates');
+    const { refreshAdminTaskTemplateLists } = await import('./useAdminTaskTemplates');
 
-    await expect(refreshAdminAgentTemplateLists()).resolves.toBeUndefined();
+    await expect(refreshAdminTaskTemplateLists()).resolves.toBeUndefined();
   });
 
   it('also drops the user-facing example cache the operator sees in the same session', async () => {
     // Without this the operator's own create-agent modal keeps serving the pre-edit templates
     // until a reload: the admin table and the modal read two different SWR keys.
-    const { refreshAdminAgentTemplateLists } = await import('./useAdminAgentTemplates');
+    const { refreshAdminTaskTemplateLists } = await import('./useAdminTaskTemplates');
 
-    await refreshAdminAgentTemplateLists();
+    await refreshAdminTaskTemplateLists();
 
     expect(mocks.mutate).toHaveBeenCalledTimes(2);
     const matchesPlatform = predicates().find((predicate) => predicate(platformKey));
@@ -86,15 +86,15 @@ describe('refreshAdminAgentTemplateLists', () => {
   });
 
   it('keeps the two invalidations disjoint so neither key steals the other rows', async () => {
-    const { refreshAdminAgentTemplateLists } = await import('./useAdminAgentTemplates');
+    const { refreshAdminTaskTemplateLists } = await import('./useAdminTaskTemplates');
 
-    await refreshAdminAgentTemplateLists();
+    await refreshAdminTaskTemplateLists();
 
     const [matchesAdmin, matchesPlatform] = predicates();
     expect(matchesAdmin!(platformKey)).toBe(false);
     expect(matchesPlatform!(adminKey)).toBe(false);
     // A non-array key (SWR allows plain strings) must not blow up either predicate.
-    expect(matchesAdmin!(ADMIN_AGENT_TEMPLATE_LIST_KEY)).toBe(false);
-    expect(matchesPlatform!(PLATFORM_AGENT_TEMPLATES_KEY)).toBe(false);
+    expect(matchesAdmin!(ADMIN_TASK_TEMPLATE_LIST_KEY)).toBe(false);
+    expect(matchesPlatform!(PLATFORM_TASK_TEMPLATES_KEY)).toBe(false);
   });
 });

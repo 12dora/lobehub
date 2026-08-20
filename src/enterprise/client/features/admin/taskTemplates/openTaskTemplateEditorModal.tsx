@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { TASK_TEMPLATE_MAX_CONNECTORS } from '@/server/enterprise/contracts/adminTaskTemplates';
 
+import type { TaskTemplateReloadResult } from './reloadTaskTemplate';
 import TaskTemplateEditorForm from './TaskTemplateEditorForm';
 import type { AdminTaskTemplateItem } from './types';
 import { toTaskTemplatePayload, useTaskTemplateForm } from './useTaskTemplateForm';
@@ -18,11 +19,13 @@ export interface TaskTemplateEditorModalProps {
   /** Omitted for create; the existing row (with its CAS revision) for edit. */
   item?: AdminTaskTemplateItem;
   /**
-   * Refresh the list and resolve the row's current server state.
-   * `undefined` means the row is gone (deleted by whoever won the conflict); a rejection means
-   * the refresh itself failed. Both are reported in place — the editor stays open either way.
+   * Re-read the row's current server state.
+   *
+   * Three outcomes, all reported in place — the editor stays open and keeps the draft either way:
+   * `found` swaps the editor onto the fresh row, `deleted` says so, and `unverified` (the read
+   * failed, or could not prove absence) offers another try instead of claiming a deletion.
    */
-  onReload?: (item: AdminTaskTemplateItem) => Promise<AdminTaskTemplateItem | undefined>;
+  onReload?: (item: AdminTaskTemplateItem) => Promise<TaskTemplateReloadResult>;
   /**
    * @param item the row this editor is bound to right now — `undefined` for create.
    *   A conflict reload reopens the modal against the *refreshed* row, so the caller must save
@@ -88,13 +91,19 @@ const TaskTemplateEditorContent = memo<TaskTemplateEditorModalProps>(
       setReloading(true);
       setReloadError(undefined);
       try {
-        const current = await onReload(item);
-        if (!current) {
+        const result = await onReload(item);
+        if (result.status === 'deleted') {
           setReloadError(t('taskTemplateCatalog.form.conflictDeleted'));
           return;
         }
+        // Could not prove anything: offer the retry rather than tell the operator to give up on
+        // a draft whose row may well still be there.
+        if (result.status === 'unverified') {
+          setReloadError(t('taskTemplateCatalog.form.conflictReloadFailed'));
+          return;
+        }
         close();
-        openTaskTemplateEditorModal({ item: current, onReload, onSubmit });
+        openTaskTemplateEditorModal({ item: result.item, onReload, onSubmit });
       } catch {
         setReloadError(t('taskTemplateCatalog.form.conflictReloadFailed'));
       } finally {

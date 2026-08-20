@@ -90,7 +90,7 @@ describe('openTaskTemplateEditorModal', () => {
     const onSubmit = vi
       .fn()
       .mockRejectedValue(Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }));
-    const onReload = vi.fn().mockResolvedValue(item);
+    const onReload = vi.fn().mockResolvedValue({ item, status: 'found' });
     await renderModal({ item, onReload, onSubmit });
 
     fireEvent.click(screen.getByText('submit'));
@@ -124,11 +124,35 @@ describe('openTaskTemplateEditorModal', () => {
     expect(mocks.created).toHaveLength(1);
   });
 
-  it('explains that the row is gone when the refresh cannot find it', async () => {
+  it('offers another try, not a deletion notice, when the re-read could not verify the row', async () => {
+    // A failed or truncated re-read proves nothing. Saying "deleted" here would push the operator
+    // to throw away a draft whose row is probably still there.
     const onSubmit = vi
       .fn()
       .mockRejectedValue(Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }));
-    const onReload = vi.fn().mockResolvedValue(undefined);
+    const onReload = vi.fn().mockResolvedValue({ status: 'unverified' });
+    await renderModal({ item, onReload, onSubmit });
+
+    fireEvent.click(screen.getByText('submit'));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('reload'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('reload-error').textContent).toBe(
+        'taskTemplateCatalog.form.conflictReloadFailed',
+      ),
+    );
+    // The draft survives and no replacement editor was built.
+    expect(mocks.close).not.toHaveBeenCalled();
+    expect(mocks.created).toHaveLength(1);
+  });
+
+  it('explains that the row is gone when the re-read proves it was deleted', async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }));
+    const onReload = vi.fn().mockResolvedValue({ status: 'deleted' });
     await renderModal({ item, onReload, onSubmit });
 
     fireEvent.click(screen.getByText('submit'));
@@ -149,7 +173,7 @@ describe('openTaskTemplateEditorModal', () => {
       .fn()
       .mockRejectedValue(Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }));
     const fresh = { ...item, revision: 9, title: 'Renamed by someone else' };
-    const onReload = vi.fn().mockResolvedValue(fresh);
+    const onReload = vi.fn().mockResolvedValue({ item: fresh, status: 'found' });
     await renderModal({ item, onReload, onSubmit });
 
     fireEvent.click(screen.getByText('submit'));
@@ -173,7 +197,7 @@ describe('openTaskTemplateEditorModal', () => {
       )
       .mockResolvedValue(undefined);
     const fresh = { ...item, revision: 9, title: 'Renamed by someone else' };
-    const onReload = vi.fn().mockResolvedValue(fresh);
+    const onReload = vi.fn().mockResolvedValue({ item: fresh, status: 'found' });
     await renderModal({ item, onReload, onSubmit });
 
     fireEvent.click(screen.getByText('submit'));

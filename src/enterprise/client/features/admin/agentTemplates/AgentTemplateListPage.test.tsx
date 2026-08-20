@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   openEditor: vi.fn(),
   permissions: [] as string[],
   refreshLists: vi.fn(),
+  reloadTemplate: vi.fn(),
   reorder: vi.fn(),
   reorderProps: undefined as { ids: string[]; onReorder: (ids: string[]) => void } | undefined,
   setEnabled: vi.fn(),
@@ -100,6 +101,10 @@ vi.mock('./useAdminAgentTemplates', () => ({
       mutate: mocks.mutate,
     };
   },
+}));
+
+vi.mock('./reloadAgentTemplate', () => ({
+  reloadAgentTemplate: (...args: unknown[]) => mocks.reloadTemplate(...args),
 }));
 
 vi.mock('./SortableRow', () => ({
@@ -691,5 +696,35 @@ describe('AgentTemplateListPage', () => {
     expect(mocks.createTemplate).toHaveBeenCalledWith({ title: 'Brand new' });
     expect(mocks.updateTemplate).not.toHaveBeenCalled();
     expect(mocks.toastSuccess).toHaveBeenCalledWith('agentTemplateCatalog.toast.created');
+  });
+  it('recovers a conflict from an authoritative row read, not from the cache refresh', async () => {
+    // The refreshed admin page is filtered and paginated and comes back through SWR, so it can
+    // omit a row that still exists — recovering from it reopened the dead revision or claimed a
+    // deletion. The editor must be handed a row read straight from the server instead.
+    const fresh = { ...item, revision: 9 };
+    mocks.reloadTemplate.mockResolvedValue({ item: fresh, status: 'found' });
+    renderPage();
+
+    fireEvent.click(screen.getByText('agentTemplateCatalog.actions.edit'));
+    const result = await mocks.openEditor.mock.calls[0]![0].onReload(item);
+
+    expect(mocks.reloadTemplate).toHaveBeenCalledWith(item);
+    expect(result).toEqual({ item: fresh, status: 'found' });
+    // The table still catches up — that is a side effect, not the source of the recovered row.
+    expect(mocks.refreshLists).toHaveBeenCalled();
+  });
+
+  it('keeps a verified row read even when the cache refresh fails', async () => {
+    mocks.reloadTemplate.mockResolvedValue({ item, status: 'found' });
+    mocks.refreshLists.mockRejectedValue(new Error('offline'));
+    renderPage();
+
+    fireEvent.click(screen.getByText('agentTemplateCatalog.actions.edit'));
+
+    // A failed refresh must not downgrade a successful read into "could not verify".
+    await expect(mocks.openEditor.mock.calls[0]![0].onReload(item)).resolves.toEqual({
+      item,
+      status: 'found',
+    });
   });
 });
