@@ -120,7 +120,9 @@ export class ThreadModel {
   };
 
   create = async (params: CreateThreadParams, trx?: Transaction) => {
-    const run = async (db: LobeChatDatabase | Transaction) => {
+    // Always runs inside a transaction (caller's or our own), so the narrower
+    // type keeps drizzle's insert().returning() overload unambiguous.
+    const run = async (db: Transaction) => {
       await this.assertOwnedTopic(params.topicId, db);
 
       const [result] = await db
