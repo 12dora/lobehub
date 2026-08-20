@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { Type as SchemaType } from '@google/genai';
+import { ThinkingLevel, Type as SchemaType } from '@google/genai';
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildGoogleTool, sanitizeGeminiSchema } from '../../core/contextBuilders/google';
@@ -605,7 +605,7 @@ describe('Google generateObject', () => {
       expect(mockClient.models.generateContent).toHaveBeenCalledWith(
         expect.objectContaining({
           config: expect.objectContaining({
-            thinkingConfig: { thinkingLevel: 'high' },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
           }),
           model: 'gemini-3-pro-preview',
         }),
@@ -970,7 +970,7 @@ describe('Google generateObject', () => {
       expect(mockClient.models.generateContent).toHaveBeenCalledWith(
         expect.objectContaining({
           config: expect.objectContaining({
-            thinkingConfig: { thinkingLevel: 'medium' },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
           }),
         }),
       );

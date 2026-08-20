@@ -86,10 +86,28 @@ export const buildAnthropicGenerateObjectRequest = async (
   }
 
   // Payload effort/thinking first; factory `requestParams` (e.g. DeepSeek) can override.
-  const payloadThinkingParams: AnthropicGenerateObjectConfig['requestParams'] = {
-    ...(payload.effort ? { output_config: { effort: payload.effort } } : {}),
-    ...(payload.thinking ? { thinking: payload.thinking } : {}),
-  };
+  // Anthropic `output_config.effort` has no `xhigh` — map it onto `max`.
+  const payloadThinkingParams: NonNullable<AnthropicGenerateObjectConfig['requestParams']> = {};
+  const anthropicEffort = payload.effort === 'xhigh' ? 'max' : payload.effort;
+  if (
+    anthropicEffort === 'low' ||
+    anthropicEffort === 'medium' ||
+    anthropicEffort === 'high' ||
+    anthropicEffort === 'max'
+  ) {
+    payloadThinkingParams.output_config = { effort: anthropicEffort };
+  }
+
+  if (payload.thinking?.type === 'enabled') {
+    payloadThinkingParams.thinking = {
+      budget_tokens: payload.thinking.budget_tokens ?? 1024,
+      type: 'enabled',
+    };
+  } else if (payload.thinking?.type === 'disabled') {
+    payloadThinkingParams.thinking = { type: 'disabled' };
+  } else if (payload.thinking?.type === 'adaptive') {
+    payloadThinkingParams.thinking = { type: 'adaptive' };
+  }
 
   return {
     requestParams: {

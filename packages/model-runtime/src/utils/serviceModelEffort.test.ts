@@ -92,4 +92,29 @@ describe('pickGenerateObjectEffortParams', () => {
       reasoning_effort: 'high',
     });
   });
+
+  it('drops unknown enum values instead of forwarding them', () => {
+    expect(
+      pickGenerateObjectEffortParams({
+        effort: 'turbo',
+        reasoning_effort: 'ludicrous',
+        thinking: { type: 'maybe' },
+        thinkingLevel: 'ultra',
+      }),
+    ).toEqual({});
+  });
+
+  it('keeps a valid thinking type and drops an unknown one', () => {
+    expect(
+      pickGenerateObjectEffortParams({
+        thinking: { budget_tokens: 2048, type: 'enabled' },
+      }),
+    ).toEqual({ thinking: { budget_tokens: 2048, type: 'enabled' } });
+
+    expect(
+      pickGenerateObjectEffortParams({
+        thinking: { budget_tokens: 512, type: 'bogus' },
+      }),
+    ).toEqual({ thinking: { budget_tokens: 512 } });
+  });
 });

@@ -9,8 +9,11 @@ import {
   RetrievalUserMemoryIdentitiesProvider,
   UserPersonaExtractor,
 } from '@lobechat/memory-user-memory';
-import type { GenerateObjectEffortParams } from '@lobechat/model-runtime';
-import { mergeModelRuntimeHooks, projectServiceModelEffort } from '@lobechat/model-runtime';
+import {
+  mergeModelRuntimeHooks,
+  pickGenerateObjectEffortParams,
+  projectServiceModelEffort,
+} from '@lobechat/model-runtime';
 import type { UserServiceModelConfig } from '@lobechat/types';
 import { desc, eq } from 'drizzle-orm';
 
@@ -193,11 +196,17 @@ export class UserPersonaService {
 
     const extractor = new UserPersonaExtractor({
       agent: 'user-persona',
-      generateObjectParams: projectServiceModelEffort({
-        extendParams: readExtendParamsFromRuntimeState(runtimeState, agentConfig.model, providerId),
-        model: agentConfig.model,
-        reasoningEffort: agentConfig.reasoningEffort,
-      }) as GenerateObjectEffortParams,
+      generateObjectParams: pickGenerateObjectEffortParams(
+        projectServiceModelEffort({
+          extendParams: readExtendParamsFromRuntimeState(
+            runtimeState,
+            agentConfig.model,
+            providerId,
+          ),
+          model: agentConfig.model,
+          reasoningEffort: agentConfig.reasoningEffort,
+        }),
+      ),
       model: agentConfig.model,
       modelRuntime: runtime,
     });

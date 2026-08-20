@@ -283,6 +283,72 @@ describe('Anthropic generateObject', () => {
       );
     });
 
+    it('should map payload xhigh effort onto Anthropic max', async () => {
+      const mockClient = {
+        messages: {
+          create: vi.fn().mockResolvedValue({
+            content: [
+              {
+                input: { data: 'test' },
+                name: 'data_extractor',
+                type: 'tool_use',
+              },
+            ],
+          }),
+        },
+      };
+
+      await createAnthropicGenerateObject(mockClient as any, {
+        effort: 'xhigh',
+        messages: [{ content: 'Generate data', role: 'user' as const }],
+        model: 'claude-opus-4-6',
+        schema: {
+          name: 'data_extractor',
+          schema: { properties: { data: { type: 'string' } }, type: 'object' as const },
+        },
+      });
+
+      expect(mockClient.messages.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          output_config: { effort: 'max' },
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it('should map enabled thinking onto Anthropic thinking with a default budget', async () => {
+      const mockClient = {
+        messages: {
+          create: vi.fn().mockResolvedValue({
+            content: [
+              {
+                input: { data: 'test' },
+                name: 'data_extractor',
+                type: 'tool_use',
+              },
+            ],
+          }),
+        },
+      };
+
+      await createAnthropicGenerateObject(mockClient as any, {
+        messages: [{ content: 'Generate data', role: 'user' as const }],
+        model: 'claude-opus-4-6',
+        schema: {
+          name: 'data_extractor',
+          schema: { properties: { data: { type: 'string' } }, type: 'object' as const },
+        },
+        thinking: { type: 'enabled' },
+      });
+
+      expect(mockClient.messages.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thinking: { budget_tokens: 1024, type: 'enabled' },
+        }),
+        expect.any(Object),
+      );
+    });
+
     it('should forward configured request params when provided', async () => {
       const mockClient = {
         messages: {

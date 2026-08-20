@@ -27,7 +27,11 @@ import {
   type ModelRuntimeHooks,
   type OpenAIChatMessage,
 } from '@lobechat/model-runtime';
-import { ModelRuntime, projectServiceModelEffort } from '@lobechat/model-runtime';
+import {
+  ModelRuntime,
+  pickGenerateObjectEffortParams,
+  projectServiceModelEffort,
+} from '@lobechat/model-runtime';
 import { SpanStatusCode } from '@lobechat/observability-otel/api';
 import {
   ATTR_GEN_AI_OPERATION_NAME,
@@ -930,11 +934,13 @@ export class MemoryExtractionExecutor {
       reasoningEffort?: string | null,
     ) => {
       if (!model) return;
-      params[model] = projectServiceModelEffort({
-        extendParams: readExtendParamsFromRuntimeState(runtimeState, model, provider ?? ''),
-        model,
-        reasoningEffort,
-      }) as GenerateObjectEffortParams;
+      params[model] = pickGenerateObjectEffortParams(
+        projectServiceModelEffort({
+          extendParams: readExtendParamsFromRuntimeState(runtimeState, model, provider ?? ''),
+          model,
+          reasoningEffort,
+        }),
+      );
     };
 
     project(

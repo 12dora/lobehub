@@ -4,6 +4,22 @@ import type { GenerateObjectEffortParams } from '../types/structureOutput';
 import { clampEffortLevel, findEffortControl } from './effortControlRegistry';
 import { applyModelExtendParams, type ModelExtendParams } from './modelExtendParams';
 
+const GENERATE_OBJECT_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const GENERATE_OBJECT_REASONING_EFFORT_LEVELS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
+const GENERATE_OBJECT_THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'] as const;
+const GENERATE_OBJECT_THINKING_TYPES = ['enabled', 'disabled', 'adaptive'] as const;
+
+const isOneOf = <T extends string>(value: string, allowed: readonly T[]): value is T =>
+  (allowed as readonly string[]).includes(value);
+
 export interface ProjectServiceModelEffortParams {
   extendParams: readonly string[] | undefined;
   model: string;
@@ -46,23 +62,48 @@ export const projectServiceModelEffort = (
 };
 
 /**
- * Copy only defined effort wire fields so callers can spread onto generateObject
- * without emitting `effort: undefined` keys that strict equality tests (and some
- * serializers) treat as present.
+ * Copy only defined, wire-valid effort fields so callers can spread onto
+ * generateObject without leaking settings-only keys or unknown enum values.
  */
 export const pickGenerateObjectEffortParams = (
   source: Pick<ModelExtendParams, 'effort' | 'reasoning_effort' | 'thinking' | 'thinkingLevel'>,
-): GenerateObjectEffortParams => ({
-  ...(source.effort !== undefined
-    ? { effort: source.effort as GenerateObjectEffortParams['effort'] }
-    : {}),
-  ...(source.reasoning_effort !== undefined
-    ? {
-        reasoning_effort: source.reasoning_effort as GenerateObjectEffortParams['reasoning_effort'],
-      }
-    : {}),
-  ...(source.thinking !== undefined ? { thinking: source.thinking } : {}),
-  ...(source.thinkingLevel !== undefined
-    ? { thinkingLevel: source.thinkingLevel as GenerateObjectEffortParams['thinkingLevel'] }
-    : {}),
-});
+): GenerateObjectEffortParams => {
+  const params: GenerateObjectEffortParams = {};
+
+  if (typeof source.effort === 'string' && isOneOf(source.effort, GENERATE_OBJECT_EFFORT_LEVELS)) {
+    params.effort = source.effort;
+  }
+
+  if (
+    typeof source.reasoning_effort === 'string' &&
+    isOneOf(source.reasoning_effort, GENERATE_OBJECT_REASONING_EFFORT_LEVELS)
+  ) {
+    params.reasoning_effort = source.reasoning_effort;
+  }
+
+  if (source.thinking) {
+    const thinkingType =
+      typeof source.thinking.type === 'string' &&
+      isOneOf(source.thinking.type, GENERATE_OBJECT_THINKING_TYPES)
+        ? source.thinking.type
+        : undefined;
+
+    if (thinkingType !== undefined || source.thinking.budget_tokens !== undefined) {
+      params.thinking = {
+        ...(source.thinking.budget_tokens !== undefined
+          ? { budget_tokens: source.thinking.budget_tokens }
+          : {}),
+        ...(thinkingType !== undefined ? { type: thinkingType } : {}),
+      };
+    }
+  }
+
+  if (
+    typeof source.thinkingLevel === 'string' &&
+    isOneOf(source.thinkingLevel, GENERATE_OBJECT_THINKING_LEVELS)
+  ) {
+    params.thinkingLevel = source.thinkingLevel;
+  }
+
+  return params;
+};

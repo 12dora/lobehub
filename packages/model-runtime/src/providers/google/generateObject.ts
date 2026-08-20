@@ -1,13 +1,37 @@
 import type { GenerateContentConfig, GoogleGenAI } from '@google/genai';
-import { FunctionCallingConfigMode, Type as SchemaType } from '@google/genai';
+import { FunctionCallingConfigMode, ThinkingLevel, Type as SchemaType } from '@google/genai';
 import Debug from 'debug';
 import type { Pricing } from 'model-bank';
 
 import { buildGoogleTool } from '../../core/contextBuilders/google';
 import { convertGoogleAIUsage } from '../../core/usageConverters/google-ai';
-import type { ChatCompletionTool, GenerateObjectOptions, GenerateObjectSchema } from '../../types';
+import type {
+  ChatCompletionTool,
+  ChatStreamPayload,
+  GenerateObjectOptions,
+  GenerateObjectSchema,
+} from '../../types';
 
 const debug = Debug('lobe-mode-runtime:google:generateObject');
+
+const toGoogleSdkThinkingLevel = (
+  thinkingLevel: NonNullable<ChatStreamPayload['thinkingLevel']>,
+): ThinkingLevel => {
+  switch (thinkingLevel) {
+    case 'minimal': {
+      return ThinkingLevel.MINIMAL;
+    }
+    case 'low': {
+      return ThinkingLevel.LOW;
+    }
+    case 'medium': {
+      return ThinkingLevel.MEDIUM;
+    }
+    case 'high': {
+      return ThinkingLevel.HIGH;
+    }
+  }
+};
 
 enum HarmCategory {
   HARM_CATEGORY_DANGEROUS_CONTENT = 'HARM_CATEGORY_DANGEROUS_CONTENT',
@@ -125,7 +149,7 @@ export const createGoogleGenerateObject = async (
     contents: any[];
     model: string;
     schema: GenerateObjectSchema;
-    thinkingLevel?: string;
+    thinkingLevel?: ChatStreamPayload['thinkingLevel'];
   },
   options?: GenerateObjectOptions,
   pricing?: Pricing,
@@ -149,7 +173,9 @@ export const createGoogleGenerateObject = async (
     abortSignal: options?.signal,
     responseMimeType: 'application/json',
     responseSchema,
-    ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
+    ...(thinkingLevel
+      ? { thinkingConfig: { thinkingLevel: toGoogleSdkThinkingLevel(thinkingLevel) } }
+      : {}),
     // avoid wide sensitive words
     safetySettings: [
       {
@@ -212,7 +238,7 @@ export const createGoogleGenerateObjectWithTools = async (
   payload: {
     contents: any[];
     model: string;
-    thinkingLevel?: string;
+    thinkingLevel?: ChatStreamPayload['thinkingLevel'];
     tools: ChatCompletionTool[];
   },
   options?: GenerateObjectOptions,
@@ -232,7 +258,9 @@ export const createGoogleGenerateObjectWithTools = async (
 
   const config: GenerateContentConfig = {
     abortSignal: options?.signal,
-    ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
+    ...(thinkingLevel
+      ? { thinkingConfig: { thinkingLevel: toGoogleSdkThinkingLevel(thinkingLevel) } }
+      : {}),
     // avoid wide sensitive words
     safetySettings: [
       {

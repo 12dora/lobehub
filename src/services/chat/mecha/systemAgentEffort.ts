@@ -1,5 +1,5 @@
-import type { ModelExtendParams } from '@lobechat/model-runtime';
-import { projectServiceModelEffort } from '@lobechat/model-runtime';
+import type { GenerateObjectEffortParams, ModelExtendParams } from '@lobechat/model-runtime';
+import { pickGenerateObjectEffortParams, projectServiceModelEffort } from '@lobechat/model-runtime';
 
 import { aiModelSelectors, getAiInfraStoreState } from '@/store/aiInfra';
 import type { SystemAgentItem } from '@/types/user/settings';
@@ -13,14 +13,16 @@ import type { SystemAgentItem } from '@/types/user/settings';
  */
 export const resolveSystemAgentEffortParams = (
   item: Pick<SystemAgentItem, 'model' | 'provider' | 'reasoningEffort'> | undefined,
-): ModelExtendParams => {
+): GenerateObjectEffortParams => {
   // `null` is a stored clear ("use the provider default") and reads exactly like absent.
   if (!item?.reasoningEffort) return {};
 
   const { model, provider, reasoningEffort } = item;
   const extendParams = aiModelSelectors.modelExtendParams(model, provider)(getAiInfraStoreState());
 
-  return projectServiceModelEffort({ extendParams, model, reasoningEffort });
+  return pickGenerateObjectEffortParams(
+    projectServiceModelEffort({ extendParams, model, reasoningEffort }),
+  );
 };
 
 /**

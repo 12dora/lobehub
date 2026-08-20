@@ -206,7 +206,7 @@ export const GenerateObjectEffortParamsSchema = z.object({
   thinking: z
     .object({
       budget_tokens: z.number().optional(),
-      type: z.string().optional(),
+      type: z.enum(['enabled', 'disabled', 'adaptive']).optional(),
     })
     .optional(),
   thinkingLevel: z.enum(['minimal', 'low', 'medium', 'high']).optional(),
@@ -217,7 +217,7 @@ export interface GenerateObjectEffortParams {
   reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   thinking?: {
     budget_tokens?: number;
-    type?: string;
+    type?: 'enabled' | 'disabled' | 'adaptive';
   };
   thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
 }
