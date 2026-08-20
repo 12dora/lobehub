@@ -44,6 +44,7 @@ import {
 import { resetBrowserSessionRegistryForTests } from '@/server/enterprise/services/chatgptWeb/browserSession';
 import { wrapModelRuntimeWithModeration } from '@/server/enterprise/services/contentModeration/runtime';
 import { createDefaultModerationRuntimeDeps } from '@/server/enterprise/services/contentModeration/runtime/defaults';
+import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 
 import {
   buildPayloadFromKeyVaults,
@@ -90,6 +91,10 @@ vi.mock('@/server/enterprise/services/aiCatalog/enforcement', async (importOrigi
 }));
 vi.mock('./platformAiRuntimeBridge', async (importOriginal) => ({
   ...(await importOriginal<typeof platformAiRuntimeBridge>()),
+  getPlatformAiTakeoverFlags: vi.fn(async () => ({
+    models: enforcementMocks.modelTakeover,
+    providers: enforcementMocks.takeover,
+  })),
   isPlatformAiModelTakeoverActive: vi.fn(async () => enforcementMocks.modelTakeover),
   listPlatformCatalogModels: vi.fn(async () => enforcementMocks.publishedModels),
 }));
@@ -617,6 +622,10 @@ describe('initModelRuntimeFromDB managed model guard', () => {
     enforcementMocks.modelTakeover = false;
     enforcementMocks.publishedModels = null;
     enforcementMocks.takeover = true;
+    vi.mocked(platformAiRuntimeBridge.getPlatformAiTakeoverFlags).mockImplementation(async () => ({
+      models: enforcementMocks.modelTakeover,
+      providers: enforcementMocks.takeover,
+    }));
   });
 
   it('falls back to the user runtime when the catalog hits but 平台托管 is not published', async () => {
@@ -1074,6 +1083,131 @@ describe('initModelRuntimeFromDB managed model guard', () => {
       );
     } finally {
       vi.restoreAllMocks();
+    }
+  });
+
+  it('reads the policy snapshot once on the unhosted path', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    enforcementMocks.takeover = false;
+    enforcementMocks.modelTakeover = false;
+    vi.mocked(platformAiRuntimeBridge.getPlatformAiTakeoverFlags).mockClear();
+
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'openai',
+      keyVaults: null,
+      settings: {},
+      source: 'builtin',
+    };
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [providerRow] }) }) }),
+    };
+    const resolveSpy = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+
+    try {
+      await initModelRuntimeFromDB(db as never, 'user-1', 'openai');
+      expect(platformAiRuntimeBridge.getPlatformAiTakeoverFlags).toHaveBeenCalledOnce();
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(platformAiRuntimeBridge.listPlatformCatalogModels).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
+  it('does not read the policy table while the feature flag is off', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '0';
+    vi.mocked(platformAiRuntimeBridge.getPlatformAiTakeoverFlags).mockClear();
+
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'openai',
+      keyVaults: null,
+      settings: {},
+      source: 'builtin',
+    };
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [providerRow] }) }) }),
+    };
+
+    try {
+      await initModelRuntimeFromDB(db as never, 'user-1', 'openai');
+      expect(platformAiRuntimeBridge.getPlatformAiTakeoverFlags).not.toHaveBeenCalled();
+    } finally {
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
+  it('rejects a corrupt user vault under strictKeyVaults and never reaches the env fallback', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    // Flag off: isolate the user-vault path from platform catalog reads.
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '0';
+
+    vi.spyOn(KeyVaultsGateKeeper, 'getUserKeyVaultsStrict').mockImplementation(async () => {
+      JSON.parse('');
+      return {};
+    });
+    const initSpy = vi.spyOn(ModelRuntime, 'initializeWithProvider');
+
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'openai',
+      keyVaults: 'corrupt-ciphertext',
+      settings: {},
+      source: 'builtin',
+    };
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [providerRow] }) }) }),
+    };
+
+    try {
+      await expect(
+        initModelRuntimeFromDB(db as never, 'user-1', 'openai', undefined, {
+          strictKeyVaults: true,
+        }),
+      ).rejects.toBeInstanceOf(SyntaxError);
+      expect(initSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
+  it('still allows env fallback under strictKeyVaults when no credentials are stored', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '0';
+
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'openai',
+      keyVaults: null,
+      settings: {},
+      source: 'builtin',
+    };
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [providerRow] }) }) }),
+    };
+
+    try {
+      const runtime = await initModelRuntimeFromDB(db as never, 'user-1', 'openai', undefined, {
+        strictKeyVaults: true,
+      });
+      expect(runtime['_runtime']).toBeInstanceOf(LobeOpenAI);
+    } finally {
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
     }
   });
 });

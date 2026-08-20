@@ -332,6 +332,7 @@ export class ChatService extends BaseService {
         this.userId!,
         provider,
         this.workspaceId,
+        { strictKeyVaults: true },
       );
 
       // Build ChatStreamPayload

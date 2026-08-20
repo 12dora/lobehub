@@ -7,7 +7,11 @@ import {
   registerPlatformAiRuntime,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
-import { isPlatformAiModelTakeoverActive, isPlatformAiTakeoverActive } from './enforcement';
+import {
+  getPlatformAiTakeoverFlags,
+  isPlatformAiModelTakeoverActive,
+  isPlatformAiTakeoverActive,
+} from './enforcement';
 import { AiCatalogNotFoundError } from './errors';
 import {
   AiCatalogExecutionResolver,
@@ -31,6 +35,7 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
     // (the managed-resource readiness probe imports it lazily on the request path), reading
     // the binding here during evaluation is a TDZ ReferenceError; a closure reads it at call time.
     createModelAllowlistHooks: (allowedModels) => createAiCatalogModelAllowlistHooks(allowedModels),
+    getTakeoverFlags: (db) => getPlatformAiTakeoverFlags(db),
     isEnabled: () => parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AI,
     isModelTakeoverActive: (db) => isPlatformAiModelTakeoverActive(db),
     isTakeoverActive: (db) => isPlatformAiTakeoverActive(db),

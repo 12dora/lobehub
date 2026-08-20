@@ -122,4 +122,26 @@ If you don't have it, please run \`openssl rand -base64 32\` to create one.
 
     return decryptKeyVaults as UserKeyVaults;
   };
+
+  /**
+   * Same contract as the historical OpenAPI `JSON.parse(await getApiKey(...))` path:
+   * missing ciphertext → `{}` (no stored credentials, env fallback is allowed);
+   * stored ciphertext that fails to authenticate or parse → throw `SyntaxError`
+   * and never degrade to `{}`.
+   */
+  static getUserKeyVaultsStrict = async (
+    encryptedKeyVaults: string | null,
+  ): Promise<UserKeyVaults> => {
+    if (!encryptedKeyVaults) return {};
+
+    const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
+    const { wasAuthentic, plaintext } = await gateKeeper.decrypt(encryptedKeyVaults);
+
+    if (!wasAuthentic) {
+      // Decrypt-auth failure used to yield empty plaintext; JSON.parse('') is SyntaxError.
+      JSON.parse('');
+    }
+
+    return JSON.parse(plaintext) as UserKeyVaults;
+  };
 }

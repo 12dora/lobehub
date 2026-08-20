@@ -211,6 +211,7 @@ export class AiProviderModel {
   getAiProviderById = async (
     id: string,
     decryptor?: DecryptUserKeyVaults,
+    options?: { failOnDecryptError?: boolean },
   ): Promise<AiProviderDetailItem | undefined> => {
     const query = this.db
       .select({
@@ -253,10 +254,17 @@ export class AiProviderModel {
     let keyVaults = {};
 
     if (!!result.keyVaults) {
-      try {
+      if (options?.failOnDecryptError) {
+        // Distinguish "no stored credentials" (null/empty → `{}`) from "stored
+        // ciphertext failed to decrypt/parse". Callers that must not fall through
+        // to the deployment env API key (OpenAPI) opt in here.
         keyVaults = await decrypt(result.keyVaults);
-      } catch {
-        /* empty */
+      } else {
+        try {
+          keyVaults = await decrypt(result.keyVaults);
+        } catch {
+          /* empty */
+        }
       }
     }
 

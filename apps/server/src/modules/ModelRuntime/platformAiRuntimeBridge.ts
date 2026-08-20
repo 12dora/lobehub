@@ -79,8 +79,25 @@ export interface PlatformAiExactModelRef {
   providerRevision: number;
 }
 
+export interface PlatformAiTakeoverFlags {
+  /** Published `aiModels` `{managed, enforced}` — picker + execution allowlist. */
+  models: boolean;
+  /** Published `aiProviders` `{managed, enforced}` — credentials + provider list. */
+  providers: boolean;
+}
+
+const INACTIVE_PLATFORM_AI_TAKEOVER_FLAGS: PlatformAiTakeoverFlags = {
+  models: false,
+  providers: false,
+};
+
 export interface PlatformAiRuntimeImplementation {
   createModelAllowlistHooks: (models: PlatformAiExecutionModel[]) => ModelRuntimeHooks;
+  /**
+   * One policy-table snapshot for both AI-catalog kinds. Callers that need both
+   * decisions (chat init) must use this rather than the two predicates in sequence.
+   */
+  getTakeoverFlags: (db: LobeChatDatabase) => Promise<PlatformAiTakeoverFlags>;
   isEnabled: () => boolean;
   /**
    * True only while the administrator has PUBLISHED 平台托管 for AI models. Governs the
@@ -164,6 +181,18 @@ export const registerPlatformAiRuntime = (next: PlatformAiRuntimeImplementation)
 
 export const isPlatformManagedAiEnabled = (): boolean =>
   implementation?.isEnabled() ?? envFlagEnabled();
+
+/**
+ * One request-local snapshot of both AI-catalog takeover decisions. Feature flag off →
+ * both false with no table read. Prefer this over calling the two predicates in sequence
+ * (each predicate used to re-read when models were unpublished).
+ */
+export const getPlatformAiTakeoverFlags = async (
+  db: LobeChatDatabase,
+): Promise<PlatformAiTakeoverFlags> => {
+  if (!isPlatformManagedAiEnabled()) return INACTIVE_PLATFORM_AI_TAKEOVER_FLAGS;
+  return requireImplementation().getTakeoverFlags(db);
+};
 
 /**
  * Stable seam for upstream (`src/`) and non-enterprise server code: "is the platform AI

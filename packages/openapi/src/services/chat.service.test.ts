@@ -121,6 +121,7 @@ describe('ChatService.chat model takeover', () => {
       'user-1',
       'openai',
       undefined,
+      { strictKeyVaults: true },
     );
     expect(runtimeMocks.initModelRuntimeWithUserPayload).not.toHaveBeenCalled();
     expect(providerChat).not.toHaveBeenCalled();

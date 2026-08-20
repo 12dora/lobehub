@@ -6,7 +6,9 @@ import { checkAuth } from '@/app/(backend)/middleware/auth';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import {
   getEmptyPlatformAiRuntimeState,
+  isPlatformAiModelTakeoverActive,
   isPlatformAiTakeoverActive,
+  listPlatformCatalogModels,
   listPlatformPublishedModels,
   resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
@@ -60,11 +62,19 @@ export const GET = checkAuth(async (req, { params, userId, serverDB }) => {
   const provider = (await params)!.provider!;
 
   try {
+    // Model takeover is independent of provider credentials: the published catalog is
+    // the exclusive list even when aiProviders is unhosted (user BYOK). Checking this
+    // first prevents `models()` from returning unpublished upstream models.
+    if (await isPlatformAiModelTakeoverActive(serverDB)) {
+      return NextResponse.json((await listPlatformCatalogModels(serverDB, provider)) ?? []);
+    }
+
     if (await isPlatformAiTakeoverActive(serverDB)) {
-      // Platform catalog membership (enabled published providers) while 平台托管 is published.
-      // Equivalent to PLATFORM_NOT_FOUND on resolve: missing/disabled providers — and every
-      // provider while the platform has not taken over — are not listed here.
-      // Platform hit → return published models (may be empty). Miss → user BYOK path.
+      // Provider-ownership overlay while only aiProviders is hosted: platform catalog
+      // membership (enabled published providers). Equivalent to PLATFORM_NOT_FOUND on
+      // resolve: missing/disabled providers — and every provider while the platform has
+      // not taken over — are not listed here. Hit → published models (may be empty).
+      // Miss → user BYOK path.
       const platformState = await resolvePlatformAiRuntimeState({
         db: serverDB,
         upstreamState: getEmptyPlatformAiRuntimeState(),

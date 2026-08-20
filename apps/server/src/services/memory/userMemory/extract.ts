@@ -2838,7 +2838,15 @@ export class MemoryExtractionExecutor {
     // One-shot platform credentials are present ⇔ at least one selected provider is
     // platform-owned. Never cache a bundle that holds them.
     const managed = Boolean(managedExecutions && roleBindings);
-    if (!managed) {
+    const db = await this.db;
+    // Model-takeover runtimes carry a catalog allowlist that is not part of `managed`
+    // (that flag only tracks platform credentials). Resolve the predicate BEFORE the
+    // cache lookup and skip the cache while hosting is on, otherwise:
+    //   - a cached pre-hosting runtime bypasses the allowlist after activation
+    //   - a cached hosted runtime keeps an obsolete allowlist after republish/unhost
+    const modelTakeover = await isPlatformAiModelTakeoverActive(db);
+    const cacheable = !managed && !modelTakeover;
+    if (cacheable) {
       const cached = this.runtimeCache.get(cacheKey);
       if (cached) return cached;
     }
@@ -2872,8 +2880,6 @@ export class MemoryExtractionExecutor {
     const gatekeeperExecution = executionFor('gatekeeper');
     const layerExtractorExecution = executionFor('layerExtractor');
 
-    const db = await this.db;
-    const modelTakeover = await isPlatformAiModelTakeoverActive(db);
     const listCatalogModels = modelTakeover
       ? (providerKey: string) => listPlatformCatalogModels(db, providerKey)
       : undefined;
@@ -2955,7 +2961,7 @@ export class MemoryExtractionExecutor {
       ),
     };
 
-    if (!managed) this.runtimeCache.set(cacheKey, runtimes);
+    if (cacheable) this.runtimeCache.set(cacheKey, runtimes);
 
     return runtimes;
   }

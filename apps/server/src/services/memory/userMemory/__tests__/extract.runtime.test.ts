@@ -9,7 +9,7 @@ import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatal
 import type * as AiCatalogEnforcement from '@/server/enterprise/services/aiCatalog/enforcement';
 import { type MemoryExtractionPrivateConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import * as ModelRuntimeModule from '@/server/modules/ModelRuntime';
-import type * as PlatformAiRuntimeBridge from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
+import * as PlatformAiRuntimeBridge from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
 import {
   makeTaskErrorItem,
@@ -1183,6 +1183,124 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+});
+
+describe('MemoryExtractionExecutor.getRuntime model-takeover cache', () => {
+  const userVaults = {
+    'provider-b': { apiKey: 'b-key' },
+    'provider-e': { apiKey: 'e-key' },
+    'provider-l': { apiKey: 'l-key' },
+  };
+
+  afterEach(() => {
+    delete process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER;
+    delete process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER;
+    delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    vi.restoreAllMocks();
+  });
+
+  it('does not reuse a cached pre-hosting runtime after model takeover activates', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '0';
+    process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER = '0';
+    const initSpy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    const executor = createExecutor();
+    const config = (executor as any).resolveUserMemoryServiceConfig();
+
+    await (executor as any).getRuntime('memory-user', config, userVaults);
+    const firstInits = initSpy.mock.calls.length;
+    expect(firstInits).toBeGreaterThan(0);
+
+    await (executor as any).getRuntime('memory-user', config, userVaults);
+    expect(initSpy.mock.calls.length).toBe(firstInits);
+
+    process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER = '1';
+    await (executor as any).getRuntime('memory-user', config, userVaults);
+
+    expect(initSpy.mock.calls.length).toBeGreaterThan(firstInits);
+    expect(PlatformAiRuntimeBridge.listPlatformCatalogModels).toHaveBeenCalled();
+  });
+
+  it('rebuilds the runtime when the published catalog is replaced', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER = '0';
+    process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER = '1';
+
+    const initSpy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    vi.mocked(PlatformAiRuntimeBridge.listPlatformCatalogModels).mockImplementation(
+      async (_db, providerKey) => [
+        {
+          abilities: {},
+          enabled: true,
+          id: `${providerKey}-rev-1`,
+          providerId: providerKey,
+          type: 'chat',
+        },
+      ],
+    );
+
+    const executor = createExecutor();
+    const config = (executor as any).resolveUserMemoryServiceConfig();
+
+    await (executor as any).getRuntime('memory-user', config, userVaults);
+    const firstInits = initSpy.mock.calls.length;
+    expect(firstInits).toBeGreaterThan(0);
+    expect(PlatformAiRuntimeBridge.listPlatformCatalogModels).toHaveBeenCalled();
+    const firstCatalogCalls = vi.mocked(PlatformAiRuntimeBridge.listPlatformCatalogModels).mock
+      .calls.length;
+
+    vi.mocked(PlatformAiRuntimeBridge.listPlatformCatalogModels).mockImplementation(
+      async (_db, providerKey) => [
+        {
+          abilities: {},
+          enabled: true,
+          id: `${providerKey}-rev-2`,
+          providerId: providerKey,
+          type: 'chat',
+        },
+      ],
+    );
+
+    await (executor as any).getRuntime('memory-user', config, userVaults);
+    expect(initSpy.mock.calls.length).toBeGreaterThan(firstInits);
+    expect(
+      vi.mocked(PlatformAiRuntimeBridge.listPlatformCatalogModels).mock.calls.length,
+    ).toBeGreaterThan(firstCatalogCalls);
+  });
+
+  it('does not keep a hosted allowlist after model takeover deactivates', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER = '0';
+    process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER = '1';
+
+    const initSpy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    const executor = createExecutor();
+    const config = (executor as any).resolveUserMemoryServiceConfig();
+
+    await (executor as any).getRuntime('memory-user', config, userVaults);
+    const hostedInits = initSpy.mock.calls.length;
+    expect(hostedInits).toBeGreaterThan(0);
+    expect(PlatformAiRuntimeBridge.listPlatformCatalogModels).toHaveBeenCalled();
+
+    vi.mocked(PlatformAiRuntimeBridge.listPlatformCatalogModels).mockClear();
+    delete process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER;
+
+    await (executor as any).getRuntime('memory-user', config, userVaults);
+    expect(initSpy.mock.calls.length).toBeGreaterThan(hostedInits);
+    expect(PlatformAiRuntimeBridge.listPlatformCatalogModels).not.toHaveBeenCalled();
+
+    const unhostedInits = initSpy.mock.calls.length;
+    await (executor as any).getRuntime('memory-user', config, userVaults);
+    expect(initSpy.mock.calls.length).toBe(unhostedInits);
   });
 });
 

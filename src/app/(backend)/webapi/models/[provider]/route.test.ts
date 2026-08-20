@@ -18,7 +18,9 @@ const bridgeMocks = vi.hoisted(() => ({
     enabledVideoAiProviders: [],
     runtimeConfig: {},
   })),
+  isPlatformAiModelTakeoverActive: vi.fn(),
   isPlatformAiTakeoverActive: vi.fn(),
+  listPlatformCatalogModels: vi.fn(),
   listPlatformPublishedModels: vi.fn(),
   resolvePlatformAiRuntimeState: vi.fn(),
 }));
@@ -48,6 +50,7 @@ beforeEach(() => {
   request = new Request(new URL('https://test.com'), {
     method: 'GET',
   });
+  bridgeMocks.isPlatformAiModelTakeoverActive.mockResolvedValue(false);
   bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(false);
 
   // Default: valid session
@@ -312,6 +315,35 @@ describe('GET handler', () => {
       expect(await response.json()).toEqual(mockModelList);
       expect(initModelRuntimeFromDB).toHaveBeenCalled();
       expect(bridgeMocks.listPlatformPublishedModels).not.toHaveBeenCalled();
+    });
+
+    it('returns the published catalog when only models are hosted', async () => {
+      // aiModels hosted, aiProviders unhosted: must not call the user provider's models().
+      bridgeMocks.isPlatformAiModelTakeoverActive.mockResolvedValue(true);
+      bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(false);
+      bridgeMocks.listPlatformCatalogModels.mockResolvedValue([
+        {
+          abilities: {},
+          enabled: true,
+          id: 'catalog-only',
+          providerId: 'openai',
+          type: 'chat',
+        },
+      ]);
+
+      const response = await GET(request, { params: Promise.resolve({ provider: 'openai' }) });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual([
+        expect.objectContaining({ id: 'catalog-only', providerId: 'openai' }),
+      ]);
+      expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+      expect(bridgeMocks.listPlatformPublishedModels).not.toHaveBeenCalled();
+      expect(bridgeMocks.resolvePlatformAiRuntimeState).not.toHaveBeenCalled();
+      expect(bridgeMocks.listPlatformCatalogModels).toHaveBeenCalledWith(
+        expect.any(Object),
+        'openai',
+      );
     });
 
     it('should return model list on success', async () => {

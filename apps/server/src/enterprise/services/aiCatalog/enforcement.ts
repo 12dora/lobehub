@@ -47,6 +47,14 @@ const isPublishedEnforcedManaged = (
  * `enforced → unmanaged` when catalog readiness is false, which would make enforcement
  * silently lapse and hand users back their own credentials during a catalog outage.
  */
+const readCachedTakeover = (
+  db: LobeChatDatabase,
+  at: number,
+): ({ expiresAt: number } & PlatformAiTakeoverFlags) | undefined => {
+  const cached = takeoverMemo.get(db as object);
+  if (cached && cached.expiresAt > at) return cached;
+};
+
 export const getPlatformAiTakeoverFlags = async (
   db: LobeChatDatabase,
   flags: EnterpriseFeatureFlags = parseEnterpriseFeatureFlags(process.env),
@@ -55,12 +63,12 @@ export const getPlatformAiTakeoverFlags = async (
   if (!flags.ENABLE_PLATFORM_MANAGED_AI) return INACTIVE_TAKEOVER_FLAGS;
 
   const at = now();
-  const cached = takeoverMemo.get(db as object);
+  const cached = readCachedTakeover(db, at);
   // Never reuse a cached `models: false`: another instance may have just published model
   // hosting, and the 2s TTL would otherwise keep this instance fail-open. Positive model
   // takeover is fail-closed-safe to cache. Flag-off returns above with zero reads.
-  if (cached && cached.expiresAt > at && cached.models)
-    return { models: cached.models, providers: cached.providers };
+  // The provider dimension is independently reusable (see `isPlatformAiTakeoverActive`).
+  if (cached?.models) return { models: cached.models, providers: cached.providers };
 
   const snapshot = await new PlatformManagedResourcePolicyModel(db).getSnapshot();
   const value: PlatformAiTakeoverFlags = {
@@ -84,7 +92,14 @@ export const isPlatformAiTakeoverActive = async (
   db: LobeChatDatabase,
   flags: EnterpriseFeatureFlags = parseEnterpriseFeatureFlags(process.env),
   now: () => number = Date.now,
-): Promise<boolean> => (await getPlatformAiTakeoverFlags(db, flags, now)).providers;
+): Promise<boolean> => {
+  if (!flags.ENABLE_PLATFORM_MANAGED_AI) return false;
+  // Provider takeover is safe to reuse for the memo window even when models are
+  // unpublished (the models negative must not pin this whole snapshot).
+  const cached = readCachedTakeover(db, now());
+  if (cached) return cached.providers;
+  return (await getPlatformAiTakeoverFlags(db, flags, now)).providers;
+};
 
 /**
  * True only when the administrator has PUBLISHED 平台托管 for AI models.

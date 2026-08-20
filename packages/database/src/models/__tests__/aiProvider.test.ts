@@ -580,6 +580,28 @@ describe('AiProviderModel', () => {
       expect(provider?.keyVaults).toEqual({});
       expect(failingDecryptor).toHaveBeenCalledWith('invalid-encrypted-data');
     });
+
+    it('propagates decryption failure when failOnDecryptError is set', async () => {
+      const providerId = 'aihubmix';
+      await serverDB.insert(aiProviders).values({
+        id: providerId,
+        keyVaults: 'invalid-encrypted-data',
+        name: 'AiHubMix',
+        source: 'custom',
+        userId,
+      });
+
+      const failingDecryptor = vi.fn().mockImplementation(() => {
+        throw new SyntaxError('Unexpected end of JSON input');
+      });
+
+      await expect(
+        aiProviderModel.getAiProviderById(providerId, failingDecryptor, {
+          failOnDecryptError: true,
+        }),
+      ).rejects.toBeInstanceOf(SyntaxError);
+      expect(failingDecryptor).toHaveBeenCalledWith('invalid-encrypted-data');
+    });
   });
 
   describe('getAiProviderRuntimeConfig', () => {

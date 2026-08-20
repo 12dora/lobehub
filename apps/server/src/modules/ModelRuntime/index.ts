@@ -50,7 +50,7 @@ import {
   createPlatformAiAuthFailureHooks,
   createPlatformAiModelAllowlistHooks,
   digestPlatformAiCredential,
-  isPlatformAiModelTakeoverActive,
+  getPlatformAiTakeoverFlags,
   isPlatformManagedAiEnabled,
   listPlatformCatalogModels,
   type PlatformAiExactModelRef,
@@ -1037,10 +1037,16 @@ const initUserModelRuntimeFromDB = async (
   // 1. Get user's provider configuration from database
   const aiProviderModel = new AiProviderModel(db, userId, workspaceId);
 
-  // Use getAiProviderById with KeyVaultsGateKeeper.getUserKeyVaults as decryptor
+  // Strict mode: stored ciphertext that fails to decrypt/parse must reject the
+  // request (same SyntaxError class as the historical `JSON.parse(await getApiKey)`
+  // path) and never degrade to `{}` → env API-key fallback.
+  const decryptor = options?.strictKeyVaults
+    ? KeyVaultsGateKeeper.getUserKeyVaultsStrict
+    : KeyVaultsGateKeeper.getUserKeyVaults;
   const providerConfig = await aiProviderModel.getAiProviderById(
     provider,
-    KeyVaultsGateKeeper.getUserKeyVaults,
+    decryptor,
+    options?.strictKeyVaults ? { failOnDecryptError: true } : undefined,
   );
 
   // 2. Resolve the runtime provider for custom providers
@@ -1115,6 +1121,13 @@ export interface InitModelRuntimeFromDBOptions {
    */
   resolveConversation?: () => Promise<ModelRuntimeConversation>;
   skipModeration?: boolean;
+  /**
+   * Fail the user-credential path when a stored vault ciphertext exists but cannot
+   * be decrypted or parsed. Default (`false`) keeps the historical swallow-to-`{}`
+   * behaviour so other callers still fall back to the deployment env key. OpenAPI
+   * opts in so a corrupt user vault cannot bill the operator.
+   */
+  strictKeyVaults?: boolean;
 }
 
 export const initModelRuntimeFromDB = async (
@@ -1133,7 +1146,13 @@ export const initModelRuntimeFromDB = async (
       workspaceId,
     });
 
-  if (isPlatformManagedAiEnabled()) {
+  // One snapshot for both catalog kinds. Sequential predicate calls each re-read the
+  // policy table when models are unpublished (negative model-takeover is not cached).
+  const takeoverFlags = isPlatformManagedAiEnabled()
+    ? await getPlatformAiTakeoverFlags(db)
+    : { models: false, providers: false };
+
+  if (takeoverFlags.providers) {
     try {
       const providerConfig = await resolvePlatformAiExecutionConfig(db, provider);
       const runtimeProvider = providerConfig.runtimeProvider;
@@ -1194,7 +1213,7 @@ export const initModelRuntimeFromDB = async (
 
   // Model hosting is independent of credentials: even on the BYOK path the published
   // set is the exclusive allowlist. Empty / unknown provider → fail closed (no escape).
-  const modelAllowlistHooks = (await isPlatformAiModelTakeoverActive(db))
+  const modelAllowlistHooks = takeoverFlags.models
     ? createPlatformAiModelAllowlistHooks(
         ((await listPlatformCatalogModels(db, provider)) ?? []).map((model) => ({
           modelKey: model.id,

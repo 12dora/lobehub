@@ -211,6 +211,24 @@ describe('platform AI takeover flags', () => {
     });
   });
 
+  it('reuses the cached provider decision within TTL even when models are unpublished', async () => {
+    await publish({ aiProviders: enforced });
+    const now = vi.fn<() => number>().mockReturnValue(1000);
+
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn, now)).toEqual({
+      models: false,
+      providers: true,
+    });
+
+    const selectSpy = vi.spyOn(db, 'select');
+    expect(await isPlatformAiTakeoverActive(db, flagsOn, now)).toBe(true);
+    expect(selectSpy).not.toHaveBeenCalled();
+
+    // Negative models is not reusable: the next models predicate re-reads.
+    expect(await isPlatformAiModelTakeoverActive(db, flagsOn, now)).toBe(false);
+    expect(selectSpy).toHaveBeenCalled();
+  });
+
   it('does not cache a negative model-takeover so a second instance sees publish immediately', async () => {
     await publish({ aiProviders: enforced });
     const now = vi.fn<() => number>().mockReturnValue(1000);
