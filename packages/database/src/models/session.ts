@@ -149,12 +149,17 @@ export class SessionModel {
           this.visibleSessionExistsPredicate(params.visibleAgentIds),
         ),
       )
-      .orderBy(desc(sessions.updatedAt))
+      .orderBy(desc(sessions.updatedAt), desc(sessions.id))
       .limit(params.pageSize)
       .offset(params.offset);
 
     const ids = idRows.map((row) => row.id);
     if (ids.length === 0) return [];
+
+    const visibleAgentMatch =
+      params.visibleAgentIds.length > 0
+        ? inArray(agents.id, params.visibleAgentIds)
+        : sql`false`;
 
     const result = await this.db
       .select({
@@ -164,11 +169,15 @@ export class SessionModel {
       })
       .from(sessions)
       .leftJoin(agentsToSessions, eq(sessions.id, agentsToSessions.sessionId))
-      .leftJoin(agents, eq(agentsToSessions.agentId, agents.id))
+      .leftJoin(
+        agents,
+        and(eq(agentsToSessions.agentId, agents.id), visibleAgentMatch),
+      )
       .leftJoin(sessionGroups, eq(sessions.groupId, sessionGroups.id))
       .where(and(this.ownership(), inArray(sessions.id, ids)))
-      .orderBy(desc(sessions.updatedAt));
+      .orderBy(desc(sessions.updatedAt), desc(sessions.id));
 
+    const visible = new Set(params.visibleAgentIds);
     const groupedResults = new Map<string, any>();
     for (const id of ids) {
       groupedResults.set(id, null);
@@ -176,14 +185,15 @@ export class SessionModel {
     for (const row of result) {
       const sessionId = row.session.id;
       const existing = groupedResults.get(sessionId);
+      const visibleAgent = row.agent && visible.has(row.agent.id) ? row.agent : null;
       if (!existing) {
         groupedResults.set(sessionId, {
           ...row.session,
-          agentsToSessions: row.agent ? [{ agent: row.agent }] : [],
+          agentsToSessions: visibleAgent ? [{ agent: visibleAgent }] : [],
           group: row.group,
         });
-      } else if (row.agent) {
-        existing.agentsToSessions.push({ agent: row.agent });
+      } else if (visibleAgent) {
+        existing.agentsToSessions.push({ agent: visibleAgent });
       }
     }
 
@@ -733,7 +743,7 @@ export class SessionModel {
 
     try {
       if (visibleAgentIds) {
-        return this.findSessionsByKeywordsVisible({
+        return await this.findSessionsByKeywordsVisible({
           keyword,
           offset,
           pageSize,

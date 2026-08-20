@@ -117,13 +117,13 @@ describe('SessionModel', () => {
         await trx.insert(agents).values([
           { id: 'm-a', title: 'A', userId },
           { id: 'm-b', title: 'B', userId },
-          { id: 'm-c', title: 'C', userId },
+          { id: 'm-keep', title: 'Keep', userId },
           { id: 'm-visible', title: 'Visible', userId },
         ]);
         await trx.insert(agentsToSessions).values([
           { agentId: 'm-a', sessionId: 's-group-multi', userId },
           { agentId: 'm-b', sessionId: 's-group-multi', userId },
-          { agentId: 'm-c', sessionId: 's-group-multi', userId },
+          { agentId: 'm-keep', sessionId: 's-group-multi', userId },
           { agentId: 'm-visible', sessionId: 's-agent-old', userId },
         ]);
       });
@@ -131,18 +131,52 @@ describe('SessionModel', () => {
       const page1 = await sessionModel.query({
         current: 0,
         pageSize: 1,
-        visibleAgentIds: ['m-visible'],
+        visibleAgentIds: ['m-keep', 'm-visible'],
       });
       expect(page1).toHaveLength(1);
       expect(page1[0].id).toBe('s-group-multi');
-      expect(page1[0].agentsToSessions).toHaveLength(3);
+      expect(page1[0].agentsToSessions.map((link: { agent: { id: string } }) => link.agent.id)).toEqual(
+        ['m-keep'],
+      );
 
       const page2 = await sessionModel.query({
         current: 1,
         pageSize: 1,
-        visibleAgentIds: ['m-visible'],
+        visibleAgentIds: ['m-keep', 'm-visible'],
       });
       expect(page2.map((row) => row.id)).toEqual(['s-agent-old']);
+    });
+
+    it('pages consecutive takeover results with tied timestamps without duplicates or omissions', async () => {
+      const tied = new Date('2024-05-01T00:00:00Z');
+      await serverDB.transaction(async (trx) => {
+        await trx.insert(sessions).values([
+          { id: 's-d', pinned: true, type: 'agent', updatedAt: tied, userId },
+          { id: 's-c', type: 'group', updatedAt: tied, userId },
+          { id: 's-b', type: 'agent', updatedAt: tied, userId },
+          { id: 's-a', type: 'agent', updatedAt: tied, userId },
+        ]);
+        await trx.insert(agents).values([
+          { id: 't-d', title: 'D', userId },
+          { id: 't-c', title: 'C', userId },
+          { id: 't-b', title: 'B', userId },
+          { id: 't-a', title: 'A', userId },
+        ]);
+        await trx.insert(agentsToSessions).values([
+          { agentId: 't-d', sessionId: 's-d', userId },
+          { agentId: 't-c', sessionId: 's-c', userId },
+          { agentId: 't-b', sessionId: 's-b', userId },
+          { agentId: 't-a', sessionId: 's-a', userId },
+        ]);
+      });
+
+      const visibleAgentIds = ['t-d', 't-c', 't-b', 't-a'];
+      const page1 = await sessionModel.query({ current: 0, pageSize: 2, visibleAgentIds });
+      const page2 = await sessionModel.query({ current: 1, pageSize: 2, visibleAgentIds });
+      const ids = [...page1, ...page2].map((row) => row.id);
+
+      expect(ids).toEqual(['s-d', 's-c', 's-b', 's-a']);
+      expect(new Set(ids).size).toBe(4);
     });
   });
 
