@@ -1,10 +1,12 @@
 import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import RouteTransition, { getRouteTransitionKey } from './index';
+import RouteTransition from './index';
+import { FULL_CLIP_PATH, MAIN_REVEAL_INSET_PERCENT, SECTION_TRANSITION_S } from './timing';
 
 const state = vi.hoisted(() => ({
+  onAnimationComplete: null as (() => void) | null,
   pathname: '/',
   reduceMotion: false as boolean | null,
   slug: null as string | null,
@@ -25,131 +27,244 @@ interface MotionDivProps {
   className?: string;
   exit?: unknown;
   initial?: unknown;
+  onAnimationComplete?: () => void;
   transition?: unknown;
 }
 
 vi.mock('motion/react', () => ({
   m: {
     div: ({
-      animate: _animate,
+      animate,
       children,
-      exit: _exit,
-      initial: _initial,
-      transition: _transition,
+      exit,
+      initial,
+      onAnimationComplete,
+      transition,
       ...rest
-    }: MotionDivProps) => (
-      <div {...(rest as Record<string, unknown>)} data-animated="true">
-        {children}
-      </div>
-    ),
+    }: MotionDivProps) => {
+      state.onAnimationComplete = onAnimationComplete ?? null;
+      return (
+        <div
+          {...(rest as Record<string, unknown>)}
+          data-animate={JSON.stringify(animate ?? null)}
+          data-animated="true"
+          data-exit={JSON.stringify(exit ?? null)}
+          data-initial={JSON.stringify(initial ?? null)}
+          data-transition={JSON.stringify(transition ?? null)}
+        >
+          {children}
+        </div>
+      );
+    },
   },
   useReducedMotion: () => state.reduceMotion,
 }));
 
-describe('getRouteTransitionKey', () => {
-  it('maps the root path to the home key', () => {
-    expect(getRouteTransitionKey('/', null)).toBe('home');
-    expect(getRouteTransitionKey('', null)).toBe('home');
-  });
+const Page = () => <div data-testid="outlet">page</div>;
 
-  it('uses the first path segment', () => {
-    expect(getRouteTransitionKey('/image', null)).toBe('image');
-    expect(getRouteTransitionKey('/community/mcp', null)).toBe('community');
-    expect(getRouteTransitionKey('/agent/abc-123', null)).toBe('agent');
-  });
+const renderTransition = () =>
+  render(
+    <RouteTransition>
+      <Page />
+    </RouteTransition>,
+  );
 
-  it('skips the active workspace slug', () => {
-    expect(getRouteTransitionKey('/lobe-team', 'lobe-team')).toBe('home');
-    expect(getRouteTransitionKey('/lobe-team/', 'lobe-team')).toBe('home');
-    expect(getRouteTransitionKey('/lobe-team/image', 'lobe-team')).toBe('image');
-    expect(getRouteTransitionKey('/lobe-team/agent/abc', 'lobe-team')).toBe('agent');
-  });
+const layer = (container: HTMLElement) =>
+  container.querySelector('[data-route-key]') as HTMLElement | null;
 
-  it('does not strip a segment that only looks like the slug', () => {
-    expect(getRouteTransitionKey('/image', 'lobe-team')).toBe('image');
-  });
-});
+const readProp = (container: HTMLElement, attribute: string): unknown =>
+  JSON.parse(layer(container)?.getAttribute(attribute) ?? 'null');
 
 describe('RouteTransition', () => {
   beforeEach(() => {
     state.pathname = '/';
     state.slug = null;
     state.reduceMotion = false;
+    state.onAnimationComplete = null;
+  });
+
+  afterEach(() => {
+    document.documentElement.dir = '';
   });
 
   it('renders its children', () => {
-    render(
-      <RouteTransition>
-        <div data-testid="outlet">page</div>
-      </RouteTransition>,
-    );
+    renderTransition();
 
     expect(screen.getByTestId('outlet')).toBeInTheDocument();
   });
 
   it('changes the transition key when the top-level segment changes', () => {
-    const { rerender, container } = render(
-      <RouteTransition>
-        <div>page</div>
-      </RouteTransition>,
-    );
+    const { container, rerender } = renderTransition();
 
-    expect(container.querySelector('[data-route-key]')?.getAttribute('data-route-key')).toBe(
-      'home',
-    );
+    expect(layer(container)?.getAttribute('data-route-key')).toBe('home');
 
     state.pathname = '/image';
     rerender(
       <RouteTransition>
-        <div>page</div>
+        <Page />
       </RouteTransition>,
     );
 
-    expect(container.querySelector('[data-route-key]')?.getAttribute('data-route-key')).toBe(
-      'image',
-    );
+    expect(layer(container)?.getAttribute('data-route-key')).toBe('image');
   });
 
   it('keeps the same key while navigating inside one section', () => {
     state.pathname = '/community';
-    const { rerender, container } = render(
-      <RouteTransition>
-        <div>page</div>
-      </RouteTransition>,
-    );
+    const { container, rerender } = renderTransition();
+    const before = layer(container);
 
     state.pathname = '/community/mcp';
     rerender(
       <RouteTransition>
-        <div>page</div>
+        <Page />
       </RouteTransition>,
     );
 
-    expect(container.querySelector('[data-route-key]')?.getAttribute('data-route-key')).toBe(
-      'community',
-    );
+    expect(layer(container)?.getAttribute('data-route-key')).toBe('community');
+    // Same key ⇒ same element instance ⇒ motion never replays `initial`.
+    expect(layer(container)).toBe(before);
   });
 
   it('renders a plain, unanimated wrapper when reduced motion is requested', () => {
     state.reduceMotion = true;
-    const { container } = render(
-      <RouteTransition>
-        <div data-testid="outlet">page</div>
-      </RouteTransition>,
-    );
+    const { container } = renderTransition();
 
     expect(screen.getByTestId('outlet')).toBeInTheDocument();
     expect(container.querySelector('[data-animated]')).toBeNull();
-    expect(container.querySelector('[data-route-key]')).not.toBeNull();
+    expect(layer(container)).not.toBeNull();
   });
 
-  it('animates when reduced motion is not requested', () => {
-    const { container } = render(
+  it('does not animate the very first paint after boot', () => {
+    const { container } = renderTransition();
+
+    expect(container.querySelector('[data-animated]')).not.toBeNull();
+    expect(readProp(container, 'data-initial')).toBe(false);
+  });
+
+  it('reveals from the inline-end when moving deeper', () => {
+    const { container, rerender } = renderTransition();
+
+    state.pathname = '/image';
+    rerender(
       <RouteTransition>
-        <div>page</div>
+        <Page />
       </RouteTransition>,
     );
 
-    expect(container.querySelector('[data-animated]')).not.toBeNull();
+    expect(readProp(container, 'data-initial')).toEqual({
+      clipPath: `inset(0% 0% 0% ${MAIN_REVEAL_INSET_PERCENT}%)`,
+      opacity: 0,
+    });
+    expect(readProp(container, 'data-animate')).toEqual({
+      clipPath: FULL_CLIP_PATH,
+      opacity: 1,
+    });
+  });
+
+  it('reveals from the inline-start when moving back up', () => {
+    state.pathname = '/settings/common';
+    const { container, rerender } = renderTransition();
+
+    state.pathname = '/';
+    rerender(
+      <RouteTransition>
+        <Page />
+      </RouteTransition>,
+    );
+
+    expect(readProp(container, 'data-initial')).toEqual({
+      clipPath: `inset(0% ${MAIN_REVEAL_INSET_PERCENT}% 0% 0%)`,
+      opacity: 0,
+    });
+  });
+
+  it('mirrors the reveal under rtl', () => {
+    document.documentElement.dir = 'rtl';
+    const { container, rerender } = renderTransition();
+
+    state.pathname = '/image';
+    rerender(
+      <RouteTransition>
+        <Page />
+      </RouteTransition>,
+    );
+
+    expect(readProp(container, 'data-initial')).toEqual({
+      clipPath: `inset(0% ${MAIN_REVEAL_INSET_PERCENT}% 0% 0%)`,
+      opacity: 0,
+    });
+  });
+
+  it('never puts a transform on the wrapper', () => {
+    const { container, rerender } = renderTransition();
+
+    state.pathname = '/settings';
+    rerender(
+      <RouteTransition>
+        <Page />
+      </RouteTransition>,
+    );
+
+    const initial = readProp(container, 'data-initial') as Record<string, unknown>;
+    const animate = readProp(container, 'data-animate') as Record<string, unknown>;
+    const transformKeys = ['x', 'y', 'scale', 'rotate', 'transform', 'translateX'];
+
+    for (const key of transformKeys) {
+      expect(initial).not.toHaveProperty(key);
+      expect(animate).not.toHaveProperty(key);
+    }
+    // No exit either: an outgoing layer would keep two panes in flow.
+    expect(readProp(container, 'data-exit')).toBeNull();
+  });
+
+  it('writes no clip at all when there is no direction to show', () => {
+    state.pathname = '/image';
+    const { container, rerender } = renderTransition();
+
+    // `/image` and `/video` share one sidebar — same place, nothing to point at.
+    state.pathname = '/video';
+    rerender(
+      <RouteTransition>
+        <Page />
+      </RouteTransition>,
+    );
+
+    expect(readProp(container, 'data-initial')).toEqual({ opacity: 0 });
+    expect(readProp(container, 'data-animate')).toEqual({ opacity: 1 });
+  });
+
+  it('drops the finished clip so it cannot clip fixed descendants forever', () => {
+    const { container, rerender } = renderTransition();
+
+    state.pathname = '/image';
+    rerender(
+      <RouteTransition>
+        <Page />
+      </RouteTransition>,
+    );
+
+    const node = layer(container)!;
+    node.style.clipPath = FULL_CLIP_PATH;
+    expect(state.onAnimationComplete).toBeTypeOf('function');
+
+    state.onAnimationComplete?.();
+
+    expect(node.style.clipPath).toBe('');
+  });
+
+  it('runs on the shared section clock', () => {
+    const { container, rerender } = renderTransition();
+
+    state.pathname = '/image';
+    rerender(
+      <RouteTransition>
+        <Page />
+      </RouteTransition>,
+    );
+
+    expect(readProp(container, 'data-transition')).toEqual({
+      duration: SECTION_TRANSITION_S,
+      ease: [0.32, 0.72, 0, 1],
+    });
   });
 });

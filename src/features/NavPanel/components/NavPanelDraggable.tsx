@@ -9,6 +9,14 @@ import { memo, Suspense, useEffect, useMemo, useRef } from 'react';
 import NavPanelUpgradeEntry from '@/business/client/features/NavPanelUpgradeEntry';
 import { isDesktop } from '@/const/version';
 import { TOGGLE_BUTTON_ID } from '@/features/NavPanel/ToggleLeftPanelButton';
+import {
+  getInlineSign,
+  getSectionDirection,
+  NAV_SECTION_TRAVEL_PX,
+  SECTION_TRANSITION_EASE,
+  SECTION_TRANSITION_S,
+  type SectionDirection,
+} from '@/features/RouteTransition/timing';
 import Footer from '@/routes/(main)/home/_layout/Footer';
 import { USER_DROPDOWN_ICON_ID } from '@/routes/(main)/home/_layout/Header/components/User';
 import { useGlobalStore } from '@/store/global';
@@ -100,9 +108,6 @@ const draggableStyles = createStaticStyles(({ css, cssVar }) => ({
   `,
 }));
 
-/** ~150ms fade-in when the sidebar swaps sections. */
-const NAV_FADE_DURATION = 0.15;
-
 interface NavPanelSectionContent {
   key: string;
   node: ReactNode;
@@ -121,28 +126,54 @@ interface NavPanelDraggableProps {
 const NavPanelSection = memo<{ activeContent: NavPanelSectionContent }>(({ activeContent }) => {
   const reduceMotion = useReducedMotion();
 
-  // The panel's very first section must appear without a fade (it is part of the
+  // The panel's very first section must appear without motion (it is part of the
   // app's first paint, not a section swap).
   const hasRenderedSectionRef = useRef(false);
   useEffect(() => {
     hasRenderedSectionRef.current = true;
   }, []);
 
+  // Hierarchy direction from the shared depth/peer table (`RouteTransition/timing`),
+  // never from `history` — a refresh, a workspace-prefixed URL or a `replace` all
+  // produce histories that do not describe the level the user perceives.
+  const previousKeyRef = useRef<string | null>(null);
+  const directionRef = useRef<SectionDirection>(0);
+  if (previousKeyRef.current !== activeContent.key) {
+    directionRef.current =
+      previousKeyRef.current === null
+        ? 0
+        : getSectionDirection(previousKeyRef.current, activeContent.key);
+    previousKeyRef.current = activeContent.key;
+  }
+
+  const shouldAnimate = hasRenderedSectionRef.current && !reduceMotion;
+
   return (
-    // Enter-only fade, deliberately NOT an `AnimatePresence` crossfade: an exit
-    // animation would keep the outgoing sidebar subtree mounted and live for the
-    // duration of the fade, so two sidebars would overlap in the accessibility
-    // tree (duplicate controls and duplicate DOM ids) and their effects/cleanup
-    // would run late. Keying on `activeContent.key` therefore unmounts the old
-    // section immediately — exactly the pre-existing remount semantics — and only
-    // the incoming section is animated, fading up over the panel's own opaque
-    // background.
+    // Enter-only directional slide, deliberately NOT an `AnimatePresence`
+    // crossfade: an exit animation would keep the outgoing sidebar subtree mounted
+    // and live for the duration of the transition, so two sidebars would overlap
+    // in the accessibility tree (duplicate controls and duplicate DOM ids) and
+    // their effects/cleanup would run late. Keying on `activeContent.key`
+    // therefore unmounts the old section immediately — exactly the pre-existing
+    // remount semantics — and only the incoming section is animated, sliding up
+    // over the panel's own opaque background.
+    //
+    // A transform is safe *here* (unlike on the main outlet): this layer is
+    // already `position: absolute` inside an `overflow: hidden` clip, and the
+    // footer / upgrade entry are siblings outside it.
     <m.div
-      animate={{ opacity: 1 }}
+      animate={{ opacity: 1, x: 0 }}
       className={draggableStyles.layer}
-      initial={hasRenderedSectionRef.current && !reduceMotion ? { opacity: 0 } : false}
       key={activeContent.key}
-      transition={{ duration: reduceMotion ? 0 : NAV_FADE_DURATION }}
+      initial={
+        shouldAnimate
+          ? { opacity: 0, x: directionRef.current * NAV_SECTION_TRAVEL_PX * getInlineSign() }
+          : false
+      }
+      transition={{
+        duration: reduceMotion ? 0 : SECTION_TRANSITION_S,
+        ease: SECTION_TRANSITION_EASE,
+      }}
     >
       {activeContent.node}
     </m.div>

@@ -6,6 +6,7 @@ import { useLocation } from 'react-router';
 
 import { useActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
 import PageSidebarContent from '@/features/Pages/PageLayout/SidebarContent';
+import { getMainRouteSegment } from '@/features/RouteTransition/timing';
 import WorkspaceSettingsSideBarContent from '@/features/WorkspaceSetting/SideBar/Content';
 import ImageSidebarContent from '@/routes/(main)/(create)/image/_layout/Sidebar/Content';
 import VideoSidebarContent from '@/routes/(main)/(create)/video/_layout/Sidebar/Content';
@@ -77,12 +78,6 @@ const getActiveNavKey = () => currentSnapshot?.key ?? FALLBACK_NAV_KEY;
 
 export const useActiveNavKey = () =>
   useSyncExternalStore(subscribeNavPanel, getActiveNavKey, getActiveNavKey);
-
-const getMainRouteSegment = (pathname: string, activeSlug: string | null) => {
-  const segments = pathname.split('/').filter(Boolean);
-  if (activeSlug && segments[0] === activeSlug) return segments[1];
-  return segments[0];
-};
 
 const NavPanel = memo(() => {
   const { pathname } = useLocation();
@@ -199,7 +194,7 @@ const NavPanel = memo(() => {
     pageFallback ||
     imageFallback ||
     videoFallback;
-  const hasDedicatedRouteNavPanel = DEDICATED_ROUTE_NAV_SEGMENTS.has(mainRouteSegment ?? '');
+  const hasDedicatedRouteNavPanel = DEDICATED_ROUTE_NAV_SEGMENTS.has(mainRouteSegment);
   const isStaleHomeSnapshot =
     panelContent?.key === FALLBACK_NAV_KEY && hasDedicatedRouteNavPanel && !isHomeRoute;
 
