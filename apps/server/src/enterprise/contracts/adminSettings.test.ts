@@ -30,6 +30,18 @@ describe('admin settings save contract', () => {
     ).toBe('review global settings change');
   });
 
+  it('accepts removePaths-only applyImmediate and rejects an empty write', () => {
+    expect(
+      adminSettingsApplyImmediateInputSchema.parse({
+        removePaths: ['defaultAgent.config.chatConfig.gpt5_6ReasoningEffort'],
+      }).removePaths,
+    ).toEqual(['defaultAgent.config.chatConfig.gpt5_6ReasoningEffort']);
+    expect(adminSettingsApplyImmediateInputSchema.safeParse({}).success).toBe(false);
+    expect(
+      adminSettingsApplyImmediateInputSchema.safeParse({ patch: {}, removePaths: [] }).success,
+    ).toBe(false);
+  });
+
   it('rejects secret material in save reasons and comments', () => {
     expect(
       adminSettingsSaveInputSchema.safeParse({ ...baseSave, reason: secretReason }).success,
