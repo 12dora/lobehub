@@ -181,11 +181,9 @@ const ConversationTopicPage = memo(() => {
     return <ContentAccessDisabledState />;
   }
 
-  const topic = detail.data;
-  const items = messages.data?.items ?? [];
-  const pageTitle = detailRenderable
-    ? topic?.title || t('audit.conversations.topic.title')
-    : t('audit.conversations.topic.title');
+  const topic = detailRenderable ? detail.data : undefined;
+  const items = messagesRenderable ? (messages.data?.items ?? []) : [];
+  const pageTitle = topic?.title || t('audit.conversations.topic.title');
 
   return (
     <AdminPageTemplate
@@ -239,20 +237,22 @@ const ConversationTopicPage = memo(() => {
           }
         />
       ) : null}
-      <Flexbox gap={8} style={{ marginBlockEnd: 12 }}>
-        <Text type="secondary">
-          {[
-            providerLabel(topic?.provider),
-            getModelDisplayName(topic?.model, topic?.provider),
-            topic?.agentId,
-          ]
-            .filter(Boolean)
-            .join(' · ') || '—'}
-        </Text>
-        <Text type="secondary">
-          {t('audit.conversations.columns.updatedAt')}: {formatAdminDateTime(topic?.updatedAt)}
-        </Text>
-      </Flexbox>
+      {topic ? (
+        <Flexbox gap={8} style={{ marginBlockEnd: 12 }}>
+          <Text type="secondary">
+            {[
+              providerLabel(topic.provider),
+              getModelDisplayName(topic.model, topic.provider),
+              topic.agentId,
+            ]
+              .filter(Boolean)
+              .join(' · ') || '—'}
+          </Text>
+          <Text type="secondary">
+            {t('audit.conversations.columns.updatedAt')}: {formatAdminDateTime(topic.updatedAt)}
+          </Text>
+        </Flexbox>
+      ) : null}
 
       <div className={styles.stream}>
         {messages.isLoading && !messages.data ? (
@@ -268,7 +268,7 @@ const ConversationTopicPage = memo(() => {
                 {formatAdminDateTime(msg.createdAt)}
               </Text>
             </Flexbox>
-            {messagesRenderable && msg.content != null && msg.content !== '' ? (
+            {msg.content != null && msg.content !== '' ? (
               <div className={styles.body}>{renderBody(msg.content)}</div>
             ) : msg.hasContent ? (
               <Text type="secondary">{t('audit.conversations.topic.bodyNotLoaded')}</Text>

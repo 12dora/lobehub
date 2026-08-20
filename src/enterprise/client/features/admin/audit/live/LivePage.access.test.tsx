@@ -51,7 +51,18 @@ const evidence = vi.hoisted(() => {
       mutate: vi.fn(),
     },
     topicDetail: {
-      data: undefined as { contentAccessMode?: string; redactionProfile?: string } | undefined,
+      data: undefined as
+        | {
+            agentId?: string | null;
+            contentAccessMode?: string;
+            createdAt?: Date;
+            id?: string;
+            model?: string | null;
+            provider?: string | null;
+            redactionProfile?: string;
+            title?: string | null;
+          }
+        | undefined,
       error: undefined as unknown,
       isLoading: false,
       isValidating: false,
@@ -211,20 +222,69 @@ vi.mock('../conversations/ContentAccessDisabledState', () => ({
 }));
 
 vi.mock('./TopicListPane', () => ({
-  default: () => <div data-testid="topic-list" />,
+  default: ({
+    hasMore,
+    items,
+    onLoadMore,
+  }: {
+    hasMore?: boolean;
+    items?: Array<{ id: string }>;
+    onLoadMore?: () => void;
+  }) => (
+    <div data-has-more={hasMore ? '1' : '0'} data-testid="topic-list">
+      {(items ?? []).map((item) => (
+        <div data-testid={`live-topic-${item.id}`} key={item.id}>
+          {item.id}
+        </div>
+      ))}
+      <button data-testid="load-more-topics" type="button" onClick={() => onLoadMore?.()}>
+        load-more-topics
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('./MessagePane', () => ({
   default: ({
     bodyHidden,
+    hasOlder,
     messages,
     onLoadOlder,
+    topic,
   }: {
     bodyHidden?: boolean;
+    hasOlder?: boolean;
     messages?: Array<{ content?: string | null; id: string }>;
     onLoadOlder?: () => void;
+    topic?: {
+      agentId?: string | null;
+      createdAt?: Date;
+      id?: string;
+      model?: string | null;
+      provider?: string | null;
+      title?: string | null;
+    };
   }) => (
-    <div data-body-hidden={bodyHidden ? '1' : '0'} data-testid="message-pane">
+    <div
+      data-body-hidden={bodyHidden ? '1' : '0'}
+      data-has-older={hasOlder ? '1' : '0'}
+      data-testid="message-pane"
+      data-topic-id={topic?.id ?? ''}
+    >
+      {topic ? (
+        <>
+          <span data-testid="topic-title">{topic.title}</span>
+          <span data-testid="topic-provider">{topic.provider}</span>
+          <span data-testid="topic-model">{topic.model}</span>
+          <span data-testid="topic-agent">{topic.agentId}</span>
+          <a
+            data-testid="topic-evidence-link"
+            href={`/admin/audit/conversations/u1/topics/${topic.id}`}
+          >
+            open-evidence
+          </a>
+        </>
+      ) : null}
       {(messages ?? []).map((m) => (
         <div data-content={m.content ?? ''} data-testid={`msg-${m.id}`} key={m.id}>
           {m.id}
@@ -556,5 +616,139 @@ describe('LivePage access / feed characterization', () => {
     renderLive('/admin/audit/live');
     expect(screen.queryByTestId('content-disabled')).not.toBeInTheDocument();
     expect(screen.getByText('audit.live.empty.noConversationPermission')).toBeInTheDocument();
+  });
+
+  it('does not commit topic detail metadata or the evidence link when the detail envelope is looser', () => {
+    evidence.policy = { contentAccessMode: 'content_allowed', redactionProfile: 'strict' };
+    evidence.topics.data = { items: [], nextCursor: null, redactionProfile: 'strict' };
+    evidence.messages.data = {
+      contentAccessMode: 'content_allowed',
+      items: [msg('head-1')],
+      nextCursor: null,
+      redactionProfile: 'strict',
+    };
+    evidence.topicDetail.data = {
+      agentId: 'agent-secret',
+      contentAccessMode: 'content_allowed',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      id: 't1',
+      model: 'secret-model',
+      provider: 'secret-provider',
+      redactionProfile: 'off',
+      title: 'sk-abcdefghijklmnopqrstuvwxyz012345',
+    };
+
+    renderLive('/admin/audit/live?userId=u1&topicId=t1');
+
+    expect(screen.getByTestId('message-pane').getAttribute('data-topic-id')).toBe('');
+    expect(screen.queryByTestId('topic-evidence-link')).toBeNull();
+    expect(screen.queryByTestId('topic-title')).toBeNull();
+    expect(screen.queryByTestId('topic-provider')).toBeNull();
+    expect(screen.queryByTestId('topic-model')).toBeNull();
+    expect(screen.queryByTestId('topic-agent')).toBeNull();
+    expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
+    expect(screen.queryByText('secret-provider')).toBeNull();
+    expect(screen.queryByText('secret-model')).toBeNull();
+    expect(screen.queryByText('agent-secret')).toBeNull();
+  });
+
+  it('restarts load-older from the strict head cursor after a tightening reset', async () => {
+    evidence.policy = { contentAccessMode: 'content_allowed', redactionProfile: 'off' };
+    evidence.topics.data = {
+      items: [{ id: 'topic-head' }],
+      nextCursor: 't-c1',
+      redactionProfile: 'off',
+    };
+    evidence.messages.data = {
+      contentAccessMode: 'content_allowed',
+      items: [msg('head-1')],
+      nextCursor: 'c1',
+      redactionProfile: 'off',
+    };
+    evidence.listConversationMessages.mockResolvedValue({
+      contentAccessMode: 'content_allowed',
+      items: [msg('old-1', 'sk-abcdefghijklmnopqrstuvwxyz012345')],
+      nextCursor: 'c2',
+      redactionProfile: 'off',
+    });
+    evidence.listConversations.mockResolvedValue({
+      items: [{ id: 'topic-old' }],
+      nextCursor: 't-c2',
+      redactionProfile: 'off',
+    });
+
+    renderLive('/admin/audit/live?userId=u1&topicId=t1');
+
+    fireEvent.click(screen.getByTestId('load-older'));
+    fireEvent.click(screen.getByTestId('load-more-topics'));
+    await waitFor(() => {
+      expect(screen.getByTestId('msg-old-1')).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(evidence.listConversations).toHaveBeenCalled();
+    });
+    expect(evidence.listConversationMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ cursor: 'c1' }),
+    );
+    expect(evidence.listConversations).toHaveBeenCalledWith(
+      expect.objectContaining({ cursor: 't-c1' }),
+    );
+
+    await emit(() => {
+      evidence.messages.data = {
+        contentAccessMode: 'content_allowed',
+        items: [msg('head-1')],
+        nextCursor: 'c1',
+        redactionProfile: 'strict',
+      };
+      evidence.topics.data = {
+        items: [{ id: 'topic-head' }],
+        nextCursor: 't-c1',
+        redactionProfile: 'strict',
+      };
+    });
+
+    expect(screen.queryByTestId('msg-old-1')).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('message-pane').getAttribute('data-has-older')).toBe('1');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('topic-list').getAttribute('data-has-more')).toBe('1');
+    });
+
+    evidence.listConversationMessages.mockClear();
+    evidence.listConversations.mockClear();
+    evidence.listConversationMessages.mockResolvedValue({
+      contentAccessMode: 'content_allowed',
+      items: [msg('old-1-strict')],
+      nextCursor: 'c2',
+      redactionProfile: 'strict',
+    });
+    evidence.listConversations.mockResolvedValue({
+      items: [{ id: 'topic-old-strict' }],
+      nextCursor: 't-c2',
+      redactionProfile: 'strict',
+    });
+
+    fireEvent.click(screen.getByTestId('load-older'));
+    fireEvent.click(screen.getByTestId('load-more-topics'));
+
+    await waitFor(() => {
+      expect(evidence.listConversationMessages).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: 'c1' }),
+      );
+    });
+    await waitFor(() => {
+      expect(evidence.listConversations).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: 't-c1' }),
+      );
+    });
+    expect(evidence.listConversationMessages).not.toHaveBeenCalledWith(
+      expect.objectContaining({ cursor: 'c2' }),
+    );
+    expect(evidence.listConversations).not.toHaveBeenCalledWith(
+      expect.objectContaining({ cursor: 't-c2' }),
+    );
   });
 });

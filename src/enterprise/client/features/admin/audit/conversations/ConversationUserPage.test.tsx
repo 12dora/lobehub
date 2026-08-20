@@ -366,7 +366,7 @@ describe('ConversationUserPage', () => {
     });
   });
 
-  it('suppresses list titles when list is off and timeline is strict', () => {
+  it('does not render the list envelope when list is off and timeline is strict', () => {
     evidence.listData = {
       items: [
         {
@@ -398,10 +398,11 @@ describe('ConversationUserPage', () => {
     renderPage();
 
     expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
+    expect(screen.queryByTestId('topic-topic-secret')).toBeNull();
     expect(screen.getByText('Event 1')).toBeTruthy();
   });
 
-  it('suppresses timeline titles when list is strict and timeline is off', () => {
+  it('does not render the timeline envelope when list is strict and timeline is off', () => {
     evidence.listData = {
       items: [
         {
@@ -434,10 +435,11 @@ describe('ConversationUserPage', () => {
 
     expect(screen.getByText('Hello')).toBeTruthy();
     expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
-    expect(screen.getByText('tl-secret')).toBeTruthy();
+    expect(screen.queryByText('tl-secret')).toBeNull();
+    expect(screen.getByText('audit.conversations.user.emptyTimeline')).toBeTruthy();
   });
 
-  it('suppresses stale off timeline titles when policy is strict', () => {
+  it('does not render a stale off timeline envelope when policy is strict', () => {
     evidence.actorPermissions = ['platform_audit:conversation_read:all', 'platform_audit:read:all'];
     evidence.policyData = { redactionProfile: 'strict' };
     evidence.timelineData = {
@@ -455,7 +457,8 @@ describe('ConversationUserPage', () => {
     };
     renderPage();
     expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
-    expect(screen.getByText('tl-secret')).toBeTruthy();
+    expect(screen.queryByText('tl-secret')).toBeNull();
+    expect(screen.getByText('audit.conversations.user.emptyTimeline')).toBeTruthy();
   });
 
   it('shows emptyTimeline only after a successful empty response', () => {

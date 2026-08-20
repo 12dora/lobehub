@@ -299,6 +299,9 @@ describe('ConversationTopicPage', () => {
     renderPage();
 
     expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
+    expect(screen.queryByText('user')).toBeNull();
+    expect(screen.queryByText('message-1')).toBeNull();
+    expect(screen.getByText('audit.conversations.topic.emptyMessages')).toBeTruthy();
     expect(purgeMock).toHaveBeenCalled();
   });
 
@@ -334,6 +337,10 @@ describe('ConversationTopicPage', () => {
     renderPage();
 
     expect(screen.queryByText(SECRET)).toBeNull();
+    expect(screen.queryByText(/cached-provider/)).toBeNull();
+    expect(screen.queryByText(/cached-model/)).toBeNull();
+    expect(screen.queryByText(/agent-1/)).toBeNull();
     expect(screen.getByText('audit.conversations.topic.title')).toBeTruthy();
+    expect(screen.getByText('visible under strict')).toBeTruthy();
   });
 });

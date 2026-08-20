@@ -187,5 +187,6 @@ export const useLiveMessageFeed = ({
     olderPages,
     pageProfiles,
     reloadMessages,
+    resetMessagePagination,
   };
 };

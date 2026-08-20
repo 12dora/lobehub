@@ -104,6 +104,7 @@ export const useLiveTopicPagination = ({
     loadingMoreTopics,
     orderedTopics,
     pageProfiles,
+    resetTopicPagination,
     topicNextCursor,
     topicOlderPages,
     topicPageError,

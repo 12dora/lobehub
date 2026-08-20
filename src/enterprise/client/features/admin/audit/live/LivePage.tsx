@@ -229,6 +229,7 @@ const LivePage = memo(() => {
     loadMoreTopics,
     loadingMoreTopics,
     pageProfiles: topicPageProfiles,
+    resetTopicPagination,
     topicNextCursor,
     topicOlderPages,
     topicPageError,
@@ -249,6 +250,7 @@ const LivePage = memo(() => {
     olderPages: messageOlderPages,
     pageProfiles: messagePageProfiles,
     reloadMessages,
+    resetMessagePagination,
   } = useLiveMessageFeed({
     accessEpochRef,
     bodyHidden,
@@ -285,6 +287,14 @@ const LivePage = memo(() => {
     accessEpochRef.current += 1;
   }, [accessEpochRef, redaction.effective]);
 
+  // Same latched tightening event as the purge: drop hook-local pages/cursors so
+  // the next load-more starts from the (now stricter) head cursor, not c2.
+  useEffect(() => {
+    if (!redaction.shouldPurge) return;
+    resetMessagePagination();
+    resetTopicPagination();
+  }, [redaction.shouldPurge, resetMessagePagination, resetTopicPagination]);
+
   // R2: drop looser pages in this render, before merge, so they never commit.
   const orderedTopics = useMemo(() => {
     const headRenderable = redaction.isEnvelopeRenderable(envelopeSlot(topics.data));
@@ -309,12 +319,9 @@ const LivePage = memo(() => {
     return bodyHidden ? stripMessageBodies(merged) : merged;
   }, [bodyHidden, messageOlderPages, messagesAccessDenied, messagesLive.data, redaction]);
 
-  const topicForPane = useMemo(() => {
-    const topic = topicDetail.data;
-    if (!topic) return undefined;
-    if (redaction.isEnvelopeRenderable(envelopeSlot(topic))) return topic;
-    return { ...topic, description: null, title: null };
-  }, [redaction, topicDetail.data]);
+  const topicForPane = redaction.isEnvelopeRenderable(envelopeSlot(topicDetail.data))
+    ? topicDetail.data
+    : undefined;
 
   const { lastRefreshedAt, refreshAllFeeds } = useLiveFeedRefresh({
     messagesLive,

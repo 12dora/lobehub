@@ -205,12 +205,8 @@ const ConversationUserPage = memo(() => {
   }
 
   const user = summary.data;
-  const listItems = (list.data?.items ?? []).map((item) =>
-    listRenderable ? item : { ...item, description: null, title: null },
-  );
-  const timelineItems = (timeline.data?.items ?? []).map((item) =>
-    timelineRenderable ? item : { ...item, title: null },
-  );
+  const listItems = listRenderable ? (list.data?.items ?? []) : [];
+  const timelineItems = timelineRenderable ? (timeline.data?.items ?? []) : [];
   const timelineFailed = Boolean(timeline.error) && !timeline.data;
   const timelineEmpty =
     !timeline.isLoading &&
