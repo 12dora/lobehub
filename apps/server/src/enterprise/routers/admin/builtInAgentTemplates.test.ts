@@ -5,7 +5,36 @@ import { fetchBuiltInAgentTemplatesForImport } from './agentTemplatesSupport';
 import {
   builtInAgentTemplatesForImport,
   builtInAgentTemplatesFromCatalog,
+  resolveBuiltInAgentTemplateLocale,
 } from './builtInAgentTemplates';
+
+const EN_US_AGENT_01_TITLE = 'Help me become a better writer';
+const ZH_CN_AGENT_01_TITLE = '帮助我成为更好的写作者';
+const ZH_TW_AGENT_01_TITLE = '幫助我成為更好的作家';
+const JA_JP_AGENT_01_TITLE = 'もっと上手に書けるようになりたい';
+
+describe('resolveBuiltInAgentTemplateLocale', () => {
+  it('matches an exact catalog tag and a language-region tag', () => {
+    expect(resolveBuiltInAgentTemplateLocale('ja-JP')).toBe('ja-JP');
+    expect(resolveBuiltInAgentTemplateLocale('zh-TW')).toBe('zh-TW');
+    expect(resolveBuiltInAgentTemplateLocale('zh_cn')).toBe('zh-CN');
+    expect(resolveBuiltInAgentTemplateLocale('zh-Hant-TW')).toBe('zh-TW');
+  });
+
+  it('matches by language with Chinese script/region hints', () => {
+    expect(resolveBuiltInAgentTemplateLocale('zh')).toBe('zh-CN');
+    expect(resolveBuiltInAgentTemplateLocale('zh-Hant')).toBe('zh-TW');
+    expect(resolveBuiltInAgentTemplateLocale('zh-HK')).toBe('zh-TW');
+    expect(resolveBuiltInAgentTemplateLocale('pt')).toBe('pt-BR');
+    expect(resolveBuiltInAgentTemplateLocale('en-GB')).toBe('en-US');
+  });
+
+  it('falls back to en-US when the locale is missing or unknown', () => {
+    expect(resolveBuiltInAgentTemplateLocale()).toBe('en-US');
+    expect(resolveBuiltInAgentTemplateLocale('  ')).toBe('en-US');
+    expect(resolveBuiltInAgentTemplateLocale('zz-ZZ')).toBe('en-US');
+  });
+});
 
 describe('builtInAgentTemplatesForImport', () => {
   it('loads 40 en-US examples from the suggestQuestions source without duplicating copy', () => {
@@ -14,21 +43,28 @@ describe('builtInAgentTemplatesForImport', () => {
     expect(rows[0]).toMatchObject({
       description: '',
       identifier: 'agent-01',
-      title: 'Help me become a better writer',
+      title: EN_US_AGENT_01_TITLE,
     });
     expect(rows[0]?.systemRole.length).toBeGreaterThan(20);
     expect(rows[39]?.identifier).toBe('agent-40');
   });
 
-  it('resolves zh-CN copy and falls back to en-US for unknown locales', () => {
-    const zh = builtInAgentTemplatesForImport('zh-CN');
+  it('resolves ja-JP, zh-TW, zh, and unknown locales onto the matching catalog', () => {
     const en = builtInAgentTemplatesForImport('en-US');
-    const fallback = builtInAgentTemplatesForImport('fr-FR');
+    const ja = builtInAgentTemplatesForImport('ja-JP');
+    const tw = builtInAgentTemplatesForImport('zh-TW');
+    const zh = builtInAgentTemplatesForImport('zh');
+    const cn = builtInAgentTemplatesForImport('zh-CN');
+    const unknown = builtInAgentTemplatesForImport('zz-ZZ');
 
-    expect(zh).toHaveLength(40);
-    expect(zh[0]?.identifier).toBe('agent-01');
-    expect(zh[0]?.title).not.toBe(en[0]?.title);
-    expect(fallback[0]?.title).toBe(en[0]?.title);
+    expect(ja[0]?.title).toBe(JA_JP_AGENT_01_TITLE);
+    expect(tw[0]?.title).toBe(ZH_TW_AGENT_01_TITLE);
+    expect(zh[0]?.title).toBe(ZH_CN_AGENT_01_TITLE);
+    expect(cn[0]?.title).toBe(ZH_CN_AGENT_01_TITLE);
+    expect(unknown[0]?.title).toBe(EN_US_AGENT_01_TITLE);
+    expect(unknown[0]?.title).toBe(en[0]?.title);
+    expect(ja[0]?.title).not.toBe(en[0]?.title);
+    expect(tw[0]?.title).not.toBe(cn[0]?.title);
   });
 
   it('keeps a slot for every agent.NN when copy is missing so skipped can be counted', () => {
@@ -53,5 +89,22 @@ describe('fetchBuiltInAgentTemplatesForImport', () => {
     });
     expect(fetchBuiltInAgentTemplatesForImport({ locale: 'en-US' }).rows).toHaveLength(40);
     expect(fetchBuiltInAgentTemplatesForImport({ locale: 'zh-CN' }).rows).toHaveLength(40);
+    expect(fetchBuiltInAgentTemplatesForImport({ locale: 'ja-JP' }).rows).toHaveLength(40);
+    expect(fetchBuiltInAgentTemplatesForImport({ locale: 'zh-TW' }).rows).toHaveLength(40);
+  });
+
+  it('uses the same locale resolution as preview for importBuiltins', () => {
+    expect(fetchBuiltInAgentTemplatesForImport({ locale: 'ja-JP' }).rows[0]?.title).toBe(
+      JA_JP_AGENT_01_TITLE,
+    );
+    expect(fetchBuiltInAgentTemplatesForImport({ locale: 'zh-TW' }).rows[0]?.title).toBe(
+      ZH_TW_AGENT_01_TITLE,
+    );
+    expect(fetchBuiltInAgentTemplatesForImport({ locale: 'zh' }).rows[0]?.title).toBe(
+      ZH_CN_AGENT_01_TITLE,
+    );
+    expect(fetchBuiltInAgentTemplatesForImport({ locale: 'zz-ZZ' }).rows[0]?.title).toBe(
+      EN_US_AGENT_01_TITLE,
+    );
   });
 });

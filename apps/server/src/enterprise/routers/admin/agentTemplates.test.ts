@@ -617,16 +617,26 @@ describe('admin.agentTemplates list unmanaged preview', () => {
     expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
   });
 
-  it('resolves zh-CN titles independently of en-US', async () => {
+  it('resolves ja-JP, zh-TW, zh, and unknown locales onto the matching catalog', async () => {
     const caller = await adminCaller();
-    const [zh, en] = await Promise.all([
-      caller.list({ limit: 1, locale: 'zh-CN', offset: 0 }),
+    const [ja, tw, zh, unknown, en, cn] = await Promise.all([
+      caller.list({ limit: 1, locale: 'ja-JP', offset: 0 }),
+      caller.list({ limit: 1, locale: 'zh-TW', offset: 0 }),
+      caller.list({ limit: 1, locale: 'zh', offset: 0 }),
+      caller.list({ limit: 1, locale: 'zz-ZZ', offset: 0 }),
       caller.list({ limit: 1, locale: 'en-US', offset: 0 }),
+      caller.list({ limit: 1, locale: 'zh-CN', offset: 0 }),
     ]);
 
-    expect(zh.origin).toBe('unmanaged');
-    expect(zh.items[0]?.identifier).toBe(en.items[0]?.identifier);
-    expect(zh.items[0]?.title).not.toBe(en.items[0]?.title);
+    expect(ja.origin).toBe('unmanaged');
+    expect(ja.items[0]?.title).toBe('もっと上手に書けるようになりたい');
+    expect(tw.items[0]?.title).toBe('幫助我成為更好的作家');
+    expect(zh.items[0]?.title).toBe('帮助我成为更好的写作者');
+    expect(cn.items[0]?.title).toBe(zh.items[0]?.title);
+    expect(unknown.items[0]?.title).toBe(en.items[0]?.title);
+    expect(unknown.items[0]?.title).toBe('Help me become a better writer');
+    expect(tw.items[0]?.title).not.toBe(cn.items[0]?.title);
+    expect(ja.items[0]?.identifier).toBe(en.items[0]?.identifier);
   });
 
   it('filters preview rows by query in memory', async () => {
