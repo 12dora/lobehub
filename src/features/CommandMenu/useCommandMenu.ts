@@ -5,7 +5,9 @@ import useSWR from 'swr';
 
 import { isDesktop } from '@/const/version';
 import { type SearchResult } from '@/database/repositories/search';
+import { isAgentCreationAllowed } from '@/features/HomeSidebarPolicy';
 import { useCreateNewModal } from '@/features/LibraryModal';
+import { useManagedResource } from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { usePermission } from '@/hooks/usePermission';
 import { useGroupWizard } from '@/layout/GlobalProvider/GroupWizardProvider';
@@ -46,6 +48,12 @@ export const useCommandMenu = () => {
 
   const navigate = useWorkspaceAwareNavigate();
   const { allowed: canCreate } = usePermission('create_content');
+  // When the org hosts the agent catalog, every agent-definition create is denied server-side
+  // (`agent.createAgent` / `agentGroup.createGroup*` are `deny` in the managed-resource mutation
+  // registry). Fail closed exactly like `CreateAgentButton` / `useCreateMenuItems`: while the
+  // capability payload is loading or errored, `blocked` is true and the commands stay hidden.
+  const { blocked: agentCreationBlocked } = useManagedResource('agents');
+  const agentCreationAllowed = isAgentCreationAllowed({ agentCreationBlocked, canCreate });
   const { setTheme } = useNextThemesTheme();
   const createAgent = useAgentStore((s) => s.createAgent);
   const refreshAgentList = useHomeStore((s) => s.refreshAgentList);
@@ -159,7 +167,7 @@ export const useCommandMenu = () => {
   }, [selectedAgent, search, navigate, setSelectedAgent, onClose]);
 
   const handleCreateSession = useCallback(async () => {
-    if (!canCreate) return;
+    if (!agentCreationAllowed) return;
 
     const result = await createAgent({});
     await refreshAgentList();
@@ -170,7 +178,7 @@ export const useCommandMenu = () => {
     }
 
     onClose();
-  }, [canCreate, createAgent, refreshAgentList, navigate, onClose]);
+  }, [agentCreationAllowed, createAgent, refreshAgentList, navigate, onClose]);
 
   const openNewTopicOrSaveTopic = useChatStore((s) => s.openNewTopicOrSaveTopic);
 
@@ -204,7 +212,7 @@ export const useCommandMenu = () => {
   }, [canCreate, createPage, onClose]);
 
   const handleCreateAgentTeam = useCallback(() => {
-    if (!canCreate) return;
+    if (!agentCreationAllowed) return;
 
     onClose();
     openGroupWizard({
@@ -215,9 +223,16 @@ export const useCommandMenu = () => {
         await createGroupFromTemplate(templateId, selectedMemberTitles);
       },
     });
-  }, [canCreate, onClose, openGroupWizard, createGroupWithMembers, createGroupFromTemplate]);
+  }, [
+    agentCreationAllowed,
+    onClose,
+    openGroupWizard,
+    createGroupWithMembers,
+    createGroupFromTemplate,
+  ]);
 
   return {
+    agentCreationAllowed,
     closeCommandMenu,
     handleAIPainting,
     handleAskLobeAI,

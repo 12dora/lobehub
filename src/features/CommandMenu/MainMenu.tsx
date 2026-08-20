@@ -42,6 +42,7 @@ const MainMenu = memo(() => {
     handleNavigate,
     handleExternalLink,
     handleCreateAgentTeam,
+    agentCreationAllowed,
   } = useCommandMenu();
 
   return (
@@ -49,25 +50,34 @@ const MainMenu = memo(() => {
       <ContextCommands />
 
       <Command.Group>
-        <CommandItem
-          disabled={!canCreate}
-          icon={<Bot />}
-          unpinned={menuContext === 'agent' || menuContext === 'page'}
-          value="create new agent assistant"
-          onSelect={handleCreateSession}
-        >
-          {t('cmdk.newAgent')}
-        </CommandItem>
+        {/*
+          Both entries create an agent definition (the team wizard creates a supervisor agent +
+          members), which the server denies once agents are org-hosted. Omit them entirely rather
+          than render commands that always 403 — same treatment as the sidebar + button and the
+          create menu. `agentCreationAllowed` already folds in `canCreate` and fails closed while
+          the capability payload is loading or errored.
+        */}
+        {agentCreationAllowed && (
+          <CommandItem
+            icon={<Bot />}
+            unpinned={menuContext === 'agent' || menuContext === 'page'}
+            value="create new agent assistant"
+            onSelect={handleCreateSession}
+          >
+            {t('cmdk.newAgent')}
+          </CommandItem>
+        )}
 
-        <CommandItem
-          disabled={!canCreate}
-          icon={<Bot />}
-          unpinned={menuContext === 'agent' || menuContext === 'page'}
-          value="create new agent team"
-          onSelect={handleCreateAgentTeam}
-        >
-          {t('cmdk.newAgentTeam')}
-        </CommandItem>
+        {agentCreationAllowed && (
+          <CommandItem
+            icon={<Bot />}
+            unpinned={menuContext === 'agent' || menuContext === 'page'}
+            value="create new agent team"
+            onSelect={handleCreateAgentTeam}
+          >
+            {t('cmdk.newAgentTeam')}
+          </CommandItem>
+        )}
 
         {menuContext === 'agent' && (
           <CommandItem

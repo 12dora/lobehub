@@ -68,9 +68,16 @@ export const ManagedResourceNotice = memo<ManagedResourceNoticeProps>(({ resourc
           <Button type="primary" onClick={() => navigate('/')}>
             {t('managedResources.notice.back')}
           </Button>
-          <Button onClick={() => navigate(getManagedResourceBrowseRoute(resource))}>
-            {t('managedResources.notice.browse')}
-          </Button>
+          {/*
+            Browsing the community is a dead end for a hosted agent catalog: every "Add" there is
+            `agent.createAgent`, which the server denies while agents are org-hosted. Offer the
+            escape hatch only for the resources where the community catalog is still actionable.
+          */}
+          {resource !== 'agents' && (
+            <Button onClick={() => navigate(getManagedResourceBrowseRoute(resource))}>
+              {t('managedResources.notice.browse')}
+            </Button>
+          )}
         </Flexbox>
       </Flexbox>
     </Center>

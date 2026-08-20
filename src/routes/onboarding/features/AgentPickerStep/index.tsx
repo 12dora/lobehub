@@ -12,6 +12,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 
+import { useManagedResource } from '@/features/ManagedResources';
 import { useOnboardingAgentTemplates } from '@/hooks/useOnboardingAgentTemplates';
 import { installMarketplaceAgents } from '@/services/installMarketplaceAgents';
 import {
@@ -48,6 +49,16 @@ const AgentPickerStep = memo<AgentPickerStepProps>(({ onBack }) => {
 
   const finishOnboarding = useUserStore((s) => s.finishOnboarding);
   const interests = useUserStore(userProfileSelectors.interests);
+
+  // Org-hosted agent catalog: every marketplace install is `agent.createAgent`, which the server
+  // denies under takeover — the picker's Continue would 403 on each pick. Skip the whole step.
+  // Waiting for `loading` to settle first matters here: `blocked` is optimistically true while the
+  // capability payload is in flight, and auto-skipping on that flicker would end onboarding for
+  // everybody. Once settled, an error still counts as blocked (fail closed, like
+  // `CreateAgentButton`) — the worst case is an unmanaged user losing an optional picker.
+  const { blocked: agentCreationBlocked, loading: managedResourceLoading } =
+    useManagedResource('agents');
+  const skipMarketplace = !managedResourceLoading && agentCreationBlocked;
 
   const categoryHints = useMemo(() => interestsToCategoryHints(interests), [interests]);
   const [requestId] = useState(() => Math.random().toString(36).slice(2));
@@ -94,10 +105,11 @@ const AgentPickerStep = memo<AgentPickerStepProps>(({ onBack }) => {
 
   const shownRef = useRef(false);
   useEffect(() => {
+    if (managedResourceLoading || skipMarketplace) return;
     if (shownRef.current) return;
     shownRef.current = true;
     trackOnboardingMarketplaceShown({ categoryHints, requestId });
-  }, [categoryHints, requestId]);
+  }, [categoryHints, managedResourceLoading, requestId, skipMarketplace]);
 
   const finish = useCallback(
     async (action: 'continue' | 'skip', selectedCount: number) => {
@@ -126,7 +138,7 @@ const AgentPickerStep = memo<AgentPickerStepProps>(({ onBack }) => {
   }, [finish]);
 
   const handleContinue = useCallback(async () => {
-    if (pendingRef.current || selected.size === 0) return;
+    if (pendingRef.current || selected.size === 0 || agentCreationBlocked) return;
     pendingRef.current = true;
     setPending('continue');
 
@@ -138,7 +150,16 @@ const AgentPickerStep = memo<AgentPickerStepProps>(({ onBack }) => {
       console.error('[AgentPickerStep] install failed', installError);
     }
     await finish('continue', selectedTemplateIds.length);
-  }, [categoryHints, finish, requestId, selected]);
+  }, [agentCreationBlocked, categoryHints, finish, requestId, selected]);
+
+  // Auto-complete onboarding for managed orgs instead of parking the user on a picker that can
+  // only fail. Recorded as a `skip` so the funnel keeps a single completion shape.
+  const autoSkippedRef = useRef(false);
+  useEffect(() => {
+    if (!skipMarketplace || autoSkippedRef.current) return;
+    autoSkippedRef.current = true;
+    void handleSkip();
+  }, [handleSkip, skipMarketplace]);
 
   const handleBack = useCallback(() => {
     if (pendingRef.current) return;
@@ -147,6 +168,16 @@ const AgentPickerStep = memo<AgentPickerStepProps>(({ onBack }) => {
 
   const showLoading = isLoading && allTemplates.length === 0;
   const showEmpty = !isLoading && visibleTemplates.length === 0;
+
+  // Don't flash the marketplace grid while we still don't know whether it is reachable, and don't
+  // render it at all once we know it isn't — the auto-skip effect above is already navigating away.
+  if (managedResourceLoading || skipMarketplace) {
+    return (
+      <Flexbox gap={16}>
+        <AgentPickerSkeleton />
+      </Flexbox>
+    );
+  }
 
   return (
     <Flexbox gap={16}>

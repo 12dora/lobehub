@@ -52,13 +52,17 @@ vi.mock(
         isDesktop: true,
       },
       {
+        // `then` must stay undefined: vitest awaits the mock factory's result, and a Proxy that
+        // answers `'then' in ns` with a value looks like a thenable, so the await never settles
+        // and the whole file hangs before a single test runs.
         get: (target, property: string) => {
+          if (property === 'then') return undefined;
           if (property in target) return target[property as keyof typeof target];
           if (/(?:KEYS|MIME_TYPES|SKILLS|TYPES)$/.test(property)) return [];
           if (property.startsWith('DEFAULT_')) return {};
           return undefined;
         },
-        has: () => true,
+        has: (_target, property) => property !== 'then',
       },
     ),
 );
@@ -94,11 +98,13 @@ vi.mock(
     new Proxy(
       { Icon: () => null },
       {
+        // See the `@lobechat/const` mock above — `then` must not be answered by the Proxy.
         get: (target, property: string) => {
+          if (property === 'then') return undefined;
           if (property in target) return target[property as keyof typeof target];
           return ({ children }: { children?: unknown }) => children;
         },
-        has: () => true,
+        has: (_target, property) => property !== 'then',
       },
     ),
 );
@@ -221,11 +227,15 @@ describe('useCreateMenuItems', () => {
     expect(result.current.createAgentMenuItem()).toBeNull();
     expect(result.current.createMarketAgentMenuItem()).toBeNull();
     expect(result.current.createHeterogeneousAgentMenuItems()).toEqual([]);
+    // Group chat is an agent create too — the wizard writes a supervisor agent and
+    // `agentGroup.createGroup` is `deny` in the managed-resource mutation registry — so
+    // `createGroupChatMenuItem()` nulls out as well and only the non-agent page action survives.
+    expect(result.current.createGroupChatMenuItem()).toBeNull();
     expect(
       result.current
         .createTopLevelMenuItems()
         .flatMap((item) => (isActionItem(item) ? [item.key] : [])),
-    ).toEqual(['newGroupChat', 'newPage']);
+    ).toEqual(['newPage']);
   });
 
   it('adds the market agent entry to the top-level create menu', async () => {

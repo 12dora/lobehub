@@ -69,6 +69,17 @@ vi.mock('@/services/agentMarketplace', () => ({
   fetchOnboardingAgentTemplates: vi.fn(),
 }));
 
+const managedAgents = { blocked: false, loading: false };
+vi.mock('@/features/ManagedResources', () => ({
+  useManagedResource: () => ({
+    blocked: managedAgents.blocked,
+    error: null,
+    loading: managedAgents.loading,
+    managed: managedAgents.blocked && !managedAgents.loading,
+    refresh: vi.fn(),
+  }),
+}));
+
 vi.mock('@/services/installMarketplaceAgents', () => ({
   installMarketplaceAgents: (...args: unknown[]) => installMarketplaceAgents(...args),
 }));
@@ -98,6 +109,8 @@ beforeEach(() => {
   metrics.trackOnboardingStepCompleted.mockClear();
   swrReturn = { data: templates, error: undefined, isLoading: false };
   searchParams = new URLSearchParams();
+  managedAgents.blocked = false;
+  managedAgents.loading = false;
   sessionStorage.clear();
 });
 
@@ -170,6 +183,41 @@ describe('AgentPickerStep', () => {
       targetUrl: '/agent/abc?message=hi',
     });
     expect(peekOnboardingCallbackUrl()).toBeUndefined();
+  });
+
+  describe('when the org hosts the agent catalog', () => {
+    it('skips the marketplace step instead of offering installs that always 403', async () => {
+      managedAgents.blocked = true;
+      render(<AgentPickerStep onBack={vi.fn()} />);
+
+      // No picker, and onboarding auto-completes as a `skip` so the user is not parked on a
+      // dead-end step.
+      expect(screen.queryByText('Code Reviewer')).not.toBeInTheDocument();
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/'));
+      expect(installMarketplaceAgents).not.toHaveBeenCalled();
+      expect(finishOnboarding).toHaveBeenCalledTimes(1);
+      expect(metrics.trackOnboardingMarketplaceShown).not.toHaveBeenCalled();
+      expect(metrics.trackOnboardingStepCompleted).toHaveBeenCalledWith({
+        action: 'skip',
+        entry: 'classic',
+        flow: 'classic',
+        selectedCount: 0,
+        step: 'agentpicker',
+        stepIndex: 4,
+      });
+    });
+
+    it('waits for the capability payload before deciding (no auto-skip on the loading flicker)', () => {
+      // `blocked` is optimistically true while loading — auto-skipping then would end onboarding
+      // for every user, managed or not.
+      managedAgents.blocked = true;
+      managedAgents.loading = true;
+      render(<AgentPickerStep onBack={vi.fn()} />);
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(finishOnboarding).not.toHaveBeenCalled();
+      expect(screen.queryByText('Code Reviewer')).not.toBeInTheDocument();
+    });
   });
 
   it('shows a Back button that calls onBack for a normal classic entry', () => {

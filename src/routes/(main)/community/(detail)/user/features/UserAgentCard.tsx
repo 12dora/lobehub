@@ -31,6 +31,8 @@ import urlJoin from 'url-join';
 
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import PublishedTime from '@/components/PublishedTime';
+import { isAgentCreationAllowed } from '@/features/HomeSidebarPolicy';
+import { useManagedResource } from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
 import { usePermission } from '@/hooks/usePermission';
@@ -140,6 +142,12 @@ const UserAgentCard = memo<UserAgentCardProps>(
     const { isOwner, onStatusChange } = useUserDetailContext();
     const { allowed: canCreate } = usePermission('create_content');
     const { allowed: canEdit } = usePermission('edit_own_content');
+    // "Edit" installs the market agent locally when the user has no local copy yet, i.e.
+    // `agent.createAgent` — denied while the org hosts the agent catalog. Drop the entry instead
+    // of offering an action that either 403s or silently does nothing. Fails closed while the
+    // capability payload is loading or errored, like `CreateAgentButton`.
+    const { blocked: agentCreationBlocked } = useManagedResource('agents');
+    const agentCreationAllowed = isAgentCreationAllowed({ agentCreationBlocked, canCreate });
     const activeWorkspaceId = useActiveWorkspaceId();
 
     const [, setIsEditLoading] = useState(false);
@@ -162,7 +170,7 @@ const UserAgentCard = memo<UserAgentCardProps>(
     }, [identifier]);
 
     const handleEdit = useCallback(async () => {
-      if (!canEdit || !canCreate) return;
+      if (!canEdit || !agentCreationAllowed) return;
       setIsEditLoading(true);
       try {
         // First, try to find the local agent by market identifier
@@ -212,7 +220,17 @@ const UserAgentCard = memo<UserAgentCardProps>(
       } finally {
         setIsEditLoading(false);
       }
-    }, [canCreate, canEdit, identifier, navigate, createAgent, refreshAgentList, message, t]);
+    }, [
+      agentCreationAllowed,
+      activeWorkspaceId,
+      canEdit,
+      identifier,
+      navigate,
+      createAgent,
+      refreshAgentList,
+      message,
+      t,
+    ]);
 
     const handleStatusAction = useCallback(
       (action: 'deprecate') => {
@@ -230,13 +248,17 @@ const UserAgentCard = memo<UserAgentCardProps>(
             label: t('setting:myAgents.actions.viewDetail'),
             onClick: handleViewDetail,
           },
-          {
-            disabled: !canEdit || !canCreate,
-            icon: <Icon icon={Pencil} />,
-            key: 'edit',
-            label: t('setting:myAgents.actions.edit'),
-            onClick: handleEdit,
-          },
+          ...(agentCreationBlocked
+            ? []
+            : [
+                {
+                  disabled: !canEdit || !canCreate,
+                  icon: <Icon icon={Pencil} />,
+                  key: 'edit',
+                  label: t('setting:myAgents.actions.edit'),
+                  onClick: handleEdit,
+                },
+              ]),
           {
             type: 'divider' as const,
           },

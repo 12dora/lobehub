@@ -10,6 +10,8 @@ import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
+import { isAgentCreationAllowed } from '@/features/HomeSidebarPolicy';
+import { useManagedResource } from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { usePermission } from '@/hooks/usePermission';
 import { useMarketAuth } from '@/layout/AuthProvider/MarketAuth';
@@ -87,6 +89,11 @@ const ForkAndChat = memo<{ mobile?: boolean }>(({ mobile }) => {
   const { t } = useTranslation('discover');
   const { isAuthenticated, signIn } = useMarketAuth();
   const { allowed: canCreate } = usePermission('create_content');
+  // A fork ends in `createAgent` (`agent.createAgent`), denied while the org hosts the agent
+  // catalog — and it would burn a Market fork first. Hide the CTA entirely; fails closed while the
+  // capability payload is loading or errored, like `CreateAgentButton`.
+  const { blocked: agentCreationBlocked } = useManagedResource('agents');
+  const agentCreationAllowed = isAgentCreationAllowed({ agentCreationBlocked, canCreate });
   const activeWorkspaceId = useActiveWorkspaceId();
   const [visibility, setVisibility] = useState<ForkTarget>('private');
 
@@ -104,7 +111,7 @@ const ForkAndChat = memo<{ mobile?: boolean }>(({ mobile }) => {
   // newly-grabbed agents don't surface to teammates before the user has
   // had a chance to vet them.
   const handleForkAndChat = async (target: ForkTarget = 'private') => {
-    if (!canCreate || isLoading) return;
+    if (!agentCreationAllowed || isLoading) return;
     // Check if user is authenticated
     if (!isAuthenticated) {
       try {
@@ -212,6 +219,8 @@ const ForkAndChat = memo<{ mobile?: boolean }>(({ mobile }) => {
       setIsLoading(false);
     }
   };
+
+  if (agentCreationBlocked) return null;
 
   // Personal mode has no Private/Public split — render the plain primary
   // button so users don't see a meaningless dropdown.

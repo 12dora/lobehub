@@ -25,6 +25,7 @@ import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspace
 import { useAgentTransferMenuItem } from '@/business/client/hooks/useAgentTransferMenuItem';
 import { useIsWorkspaceOwner } from '@/business/client/hooks/useIsWorkspaceOwner';
 import { openEditingPopover } from '@/features/EditingPopover/store';
+import { useManagedResource } from '@/features/ManagedResources';
 import VisibilityConfirmContent from '@/features/VisibilityConfirmContent';
 import { usePermission } from '@/hooks/usePermission';
 import { agentService } from '@/services/agent';
@@ -117,6 +118,15 @@ export const useAgentDropdownMenu = ({
   const { allowed: canEdit } = usePermission('edit_own_content');
   const { allowed: canCreate } = usePermission('create_content');
 
+  // Org-hosted agent catalog: the managed-resource mutation registry marks every entry that
+  // rewrites an agent definition as `deny` — rename (`agent.updateAgentConfig`),
+  // `agent.duplicateAgent`, move-to-group (`home.updateAgentSessionGroupId`),
+  // `agent.transferAgent`, `agent.publishAgentToWorkspace`, `agent.setAgentVisibility` and
+  // `agent.removeAgent`. Only `agent.updateAgentPinned` stays `exempt` (a per-user presentation
+  // preference) and "open in new window" is a pure read, so those two survive. Fails closed while
+  // the capability payload is loading or errored, like `CreateAgentButton`.
+  const { blocked: agentMutationBlocked } = useManagedResource('agents');
+
   // Cross-workspace Transfer to… / Copy to… items (null when workspace feature is off)
   const transferMenuItems = useAgentTransferMenuItem(id, {
     avatar,
@@ -144,6 +154,21 @@ export const useAgentDropdownMenu = ({
       // render dead, always-failing (and previously false-success) affordances. Only the pure-read
       // "open in new window" stays.
       if (managed) return [openInNewWindowItem] as MenuProps['items'];
+
+      // Same reasoning one level up: while the platform hosts the agent catalog, a *local* row
+      // can still be listed (until the server-side list replace lands) but every definition edit
+      // is refused. Keep only pin (exempt) + the read-only "open in new window".
+      if (agentMutationBlocked)
+        return [
+          {
+            disabled: !canEdit,
+            icon: <Icon icon={pinned ? PinOff : Pin} />,
+            key: 'pin',
+            label: t(pinned ? 'pinOff' : 'pin'),
+            onClick: () => pinAgent(id, !pinned),
+          },
+          openInNewWindowItem,
+        ] as MenuProps['items'];
 
       return [
         {
@@ -307,6 +332,7 @@ export const useAgentDropdownMenu = ({
       ] as MenuProps['items'];
     },
     [
+      agentMutationBlocked,
       anchor,
       canCreate,
       canEdit,

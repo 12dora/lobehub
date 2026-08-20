@@ -10,6 +10,8 @@ import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
+import { isAgentCreationAllowed } from '@/features/HomeSidebarPolicy';
+import { useManagedResource } from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { usePermission } from '@/hooks/usePermission';
 import { agentService } from '@/services/agent';
@@ -44,6 +46,12 @@ const AddAgent = memo<{ mobile?: boolean }>(({ mobile }) => {
   const navigate = useWorkspaceAwareNavigate();
   const { t } = useTranslation('discover');
   const { allowed: canCreate } = usePermission('create_content');
+  // Adding a community agent is `agent.createAgent`, which the server denies while the org hosts
+  // the agent catalog. Hide the whole button group instead of leaving a primary CTA that always
+  // 403s — market add is a dead end under takeover. Fails closed while the capability payload is
+  // loading or errored, like `CreateAgentButton`.
+  const { blocked: agentCreationBlocked } = useManagedResource('agents');
+  const agentCreationAllowed = isAgentCreationAllowed({ agentCreationBlocked, canCreate });
   const activeWorkspaceId = useActiveWorkspaceId();
 
   const meta = {
@@ -71,7 +79,7 @@ const AddAgent = memo<{ mobile?: boolean }>(({ mobile }) => {
   };
 
   const createAgentWithMarketIdentifier = async (shouldNavigate = true) => {
-    if (!canCreate || !config) return;
+    if (!agentCreationAllowed || !config) return;
 
     // Note: agentService.createAgent automatically normalizes market config (handles model as object)
     // In workspace mode, default the new agent to the user's Private bucket
@@ -104,7 +112,7 @@ const AddAgent = memo<{ mobile?: boolean }>(({ mobile }) => {
   };
 
   const handleCreateAndConverse = async () => {
-    if (!canCreate) return;
+    if (!agentCreationAllowed) return;
     setIsLoading(true);
     try {
       const result = await createAgentWithMarketIdentifier(true);
@@ -116,7 +124,7 @@ const AddAgent = memo<{ mobile?: boolean }>(({ mobile }) => {
   };
 
   const handleCreate = async () => {
-    if (!canCreate) return;
+    if (!agentCreationAllowed) return;
     setIsLoading(true);
     try {
       await createAgentWithMarketIdentifier(false);
@@ -127,7 +135,7 @@ const AddAgent = memo<{ mobile?: boolean }>(({ mobile }) => {
   };
 
   const handleAddAgentAndConverse = async () => {
-    if (!canCreate || !config) return;
+    if (!agentCreationAllowed || !config) return;
 
     const isDuplicate = await checkDuplicateAgent();
     if (isDuplicate) {
@@ -138,7 +146,7 @@ const AddAgent = memo<{ mobile?: boolean }>(({ mobile }) => {
   };
 
   const handleAddAgent = async () => {
-    if (!canCreate || !config) return;
+    if (!agentCreationAllowed || !config) return;
 
     const isDuplicate = await checkDuplicateAgent();
     if (isDuplicate) {
@@ -147,6 +155,8 @@ const AddAgent = memo<{ mobile?: boolean }>(({ mobile }) => {
       await handleCreate();
     }
   };
+
+  if (agentCreationBlocked) return null;
 
   const menuItems = [
     {

@@ -1004,6 +1004,12 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     reason: 'Mocks effective settings adapter at runtime path test',
   },
   {
+    file: 'apps/server/src/services/systemAgent/index.effectiveTaskAgent.test.ts',
+    importSpecifier: '@/server/enterprise/services/settings/runtimeSettingsAdapter',
+    owner: 'M05',
+    reason: 'Mocks the effective settings resolver to assert policy-on fail-closed vs policy-off raw fallback for task agents',
+  },
+  {
     file: 'apps/server/src/services/aiAgent/__tests__/execAgent.modelOverride.test.ts',
     importSpecifier: '@/server/enterprise/services/agentCatalog',
     owner: 'M10',
