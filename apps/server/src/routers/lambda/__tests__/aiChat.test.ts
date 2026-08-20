@@ -2,7 +2,7 @@
 import type { CreateMessageParams } from '@lobechat/types';
 import { AgentRuntimeErrorType, ThreadType } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentModel } from '@/database/models/agent';
 import { MessageModel } from '@/database/models/message';
@@ -28,6 +28,16 @@ vi.mock('@/server/modules/ModelRuntime', () => ({
 
 describe('aiChatRouter', () => {
   const mockCtx = { userId: 'u1' };
+
+  beforeEach(() => {
+    vi.mocked(TopicModel).mockImplementation(
+      () =>
+        ({
+          create: vi.fn(),
+          findById: vi.fn().mockResolvedValue({ id: 'owned-topic' }),
+        }) as any,
+    );
+  });
   const mockMessageModel = (
     mockCreateMessage: ReturnType<typeof vi.fn>,
     // spine head returned by the server-authoritative parentId resolution;
@@ -179,6 +189,31 @@ describe('aiChatRouter', () => {
     );
     expect(res.isCreateNewTopic).toBe(false);
     expect(res.topicId).toBe('t-exist');
+  });
+
+  it("rejects sendMessageInServer with another user's topicId and inserts nothing", async () => {
+    const mockFindById = vi.fn().mockResolvedValue(undefined);
+    const mockCreateMessage = vi.fn();
+    vi.mocked(TopicModel).mockImplementation(() => ({ findById: mockFindById }) as any);
+    const mockCreateUserAndAssistantMessages = mockMessageModel(mockCreateMessage);
+    const mockGet = vi.fn();
+    vi.mocked(AiChatService).mockImplementation(() => ({ getMessagesAndTopics: mockGet }) as any);
+
+    const caller = aiChatRouter.createCaller(mockCtx as any);
+
+    await expect(
+      caller.sendMessageInServer({
+        newAssistantMessage: { model: 'gpt-4o', provider: 'openai' },
+        newUserMessage: { content: 'hi' },
+        sessionId: 's1',
+        topicId: 'foreign-topic',
+      } as any),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    expect(mockFindById).toHaveBeenCalledWith('foreign-topic');
+    expect(mockCreateMessage).not.toHaveBeenCalled();
+    expect(mockCreateUserAndAssistantMessages).not.toHaveBeenCalled();
+    expect(mockGet).not.toHaveBeenCalled();
   });
 
   it('should override the client parentId with the server-resolved spine head for an existing-topic append', async () => {

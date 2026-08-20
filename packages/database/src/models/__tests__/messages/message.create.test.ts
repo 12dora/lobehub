@@ -67,6 +67,40 @@ afterEach(async () => {
 
 describe('MessageModel Create Tests', () => {
   describe('createMessage', () => {
+    it('creates a message on an owned topic', async () => {
+      await serverDB.insert(topics).values({ id: 'owned-topic', sessionId: '1', userId });
+
+      const result = await messageModel.create({
+        content: 'on my topic',
+        role: 'user',
+        sessionId: '1',
+        topicId: 'owned-topic',
+      });
+
+      expect(result.topicId).toBe('owned-topic');
+      const rows = await serverDB.select().from(messages).where(eq(messages.id, result.id));
+      expect(rows).toHaveLength(1);
+    });
+
+    it("refuses to attach a message to another user's topic", async () => {
+      await serverDB.insert(topics).values({ id: 'foreign-topic', userId: otherUserId });
+
+      await expect(
+        messageModel.create({
+          content: 'graft',
+          role: 'user',
+          sessionId: '1',
+          topicId: 'foreign-topic',
+        }),
+      ).rejects.toThrow('Topic not found');
+
+      const grafted = await serverDB
+        .select()
+        .from(messages)
+        .where(eq(messages.topicId, 'foreign-topic'));
+      expect(grafted).toHaveLength(0);
+    });
+
     it('should create a new message', async () => {
       // Call createMessage method
       await messageModel.create({ role: 'user', content: 'new message', sessionId: '1' });

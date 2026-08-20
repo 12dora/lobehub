@@ -255,6 +255,19 @@ export const aiChatRouter = router({
         }
       }
 
+      // Refuse to attach to a topic the caller cannot see. Ownership-scoped
+      // `findById` 404s the same way as a missing id so we never leak existence.
+      if (input.topicId && !input.newTopic) {
+        const existingTopic = await runTimedStage(
+          timingContext,
+          'lambda.aiChat.topic.findById',
+          () => ctx.topicModel.findById(input.topicId!),
+        );
+        if (!existingTopic) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Topic not found' });
+        }
+      }
+
       // create thread if there should be a new thread
       if (input.newThread) {
         log(

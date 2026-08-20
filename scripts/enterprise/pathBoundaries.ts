@@ -657,6 +657,13 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     reason: 'Ordinary UI consumer of the managed sidebar-layout policy hook',
   },
   {
+    file: 'src/routes/(main)/settings/stats/features/rankings/TopicsRank.tsx',
+    importSpecifier: '@/enterprise/client/providers/AdminAccessProvider',
+    owner: 'M08',
+    reason:
+      'Ordinary consumer of useOptionalAdminAccess (returns null off the admin shell) so the audit-policy banner only offers the retention shortcut to actors who hold it',
+  },
+  {
     file: 'src/routes/(main)/home/_layout/Body/index.tsx',
     importSpecifier: '@/enterprise/client/hooks/useSidebarLayoutPolicy',
     owner: 'M06',
@@ -841,6 +848,12 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
     owner: 'M12',
     reason: 'vi.mock target for runtime branding in the brand-leak regression test',
+  },
+  {
+    file: 'src/routes/(main)/settings/stats/features/rankings/TopicsRank.test.tsx',
+    importSpecifier: '@/enterprise/client/providers/AdminAccessProvider',
+    owner: 'M08',
+    reason: 'vi.mock target for admin access in the topic-ranking audit-policy regression test',
   },
   {
     file: 'apps/server/src/services/messenger/MessengerRouter.test.ts',

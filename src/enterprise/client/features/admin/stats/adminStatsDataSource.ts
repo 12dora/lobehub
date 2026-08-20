@@ -95,7 +95,10 @@ export const adminGlobalStatsDataSource: StatsDataSource = {
   rankAgents: (limit, params) => adminStatsService.rankAgents(limit, params),
   // Server default limit (10); no limit param on StatsDataSource.rankModels.
   rankModels: (params) => adminStatsService.rankModels(params),
-  rankTopics: (limit, params) => adminStatsService.rankTopics(limit, params),
+  // `admin.stats.rankTopics` answers with an envelope ({ contentAccessMode, items }) because
+  // the audit policy travels with the rows; the shared widget contract stays a bare array, and
+  // a `disabled` policy never reaches here — the procedure throws FORBIDDEN instead.
+  rankTopics: async (limit, params) => (await adminStatsService.rankTopics(limit, params)).items,
   rankUsers: (limit, params) => adminStatsService.rankUsers(limit, params),
   scopeKey: ADMIN_GLOBAL_STATS_SCOPE,
   usageDailyTokenTotals: (params) => adminStatsService.usageDailyTokenTotals(params),

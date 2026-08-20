@@ -275,6 +275,11 @@ export interface TopicRankItem {
   count: number;
   id: string;
   title: string | null;
+  /**
+   * Topic owner. Present on platform-global admin rankings (`admin.stats.rankTopics`);
+   * omitted on personal `topic.rankTopics`.
+   */
+  userId?: string;
 }
 
 export interface RecentTopicAgent {

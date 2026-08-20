@@ -1228,9 +1228,12 @@ describe('PlatformGlobalStatsModel', () => {
 
       const rankedTopics = await globalStats.rankTopics(10, WINDOW);
       expect(rankedTopics.map((row) => row.id).sort()).toEqual(['rt-a1', 'rt-b1']);
+      expect(rankedTopics.find((row) => row.id === 'rt-a1')?.userId).toBe(USER_A);
+      expect(rankedTopics.find((row) => row.id === 'rt-b1')?.userId).toBe(USER_B);
 
       const aliceTopics = await globalStats.rankTopics(10, { ...WINDOW, userId: USER_A });
       expect(aliceTopics.map((row) => row.id)).toEqual(['rt-a1']);
+      expect(aliceTopics[0]?.userId).toBe(USER_A);
     });
 
     it('ranks users by token usage inside the window', async () => {

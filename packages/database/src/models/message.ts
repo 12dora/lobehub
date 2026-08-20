@@ -69,6 +69,7 @@ import {
   messageTranslates,
   messageTTS,
   threads,
+  topics,
   users,
 } from '../schemas';
 import type { LobeChatDatabase, Transaction } from '../type';
@@ -330,6 +331,9 @@ export class MessageModel {
 
   private ownership = () =>
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, messages);
+
+  private topicOwnership = () =>
+    buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, topics);
 
   private pluginsOwnership = () =>
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, messagePlugins);
@@ -2115,6 +2119,20 @@ export class MessageModel {
     }
   };
 
+  /**
+   * Ownership-scoped topic existence check. Missing / foreign / other-workspace
+   * topics fail the same way so callers cannot probe existence.
+   */
+  private assertOwnedTopic = async (topicId: string, trx: Transaction): Promise<void> => {
+    const [row] = await trx
+      .select({ id: topics.id })
+      .from(topics)
+      .where(and(eq(topics.id, topicId), this.topicOwnership()))
+      .limit(1);
+
+    if (!row) throw new Error('Topic not found');
+  };
+
   private createInTransaction = async (
     trx: Transaction,
     params: CreateMessageParams,
@@ -2122,6 +2140,10 @@ export class MessageModel {
     timing?: ModelTimingContext,
     timingPrefix: string = 'db.message.create',
   ): Promise<DBMessageItem> => {
+    if (params.topicId) {
+      await this.assertOwnedTopic(params.topicId, trx);
+    }
+
     const { insert, relations } = this.splitCreateMessageParams(params);
 
     const [item] = (await runTimedStage(
@@ -2202,6 +2224,10 @@ export class MessageModel {
       'db.message.createUserAndAssistant.transaction',
       () =>
         this.db.transaction(async (trx) => {
+          for (const topicId of topicIds) {
+            await this.assertOwnedTopic(topicId, trx);
+          }
+
           const userPayload = this.splitCreateMessageParams(userMessageWithTimestamp);
           const assistantPayload = this.splitCreateMessageParams(assistantMessageWithParent);
           const insertedMessages = (await runTimedStage(

@@ -5,6 +5,7 @@
  * arguments/results). Full redacted month results are returned so daily analytics
  * that aggregate `records` stay accurate; SQL-level bounds live in globalStats.
  */
+import type { TopicRankItem } from '@lobechat/types';
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import { z } from 'zod';
@@ -21,6 +22,7 @@ import {
 
 import { userIdSchema } from '../../contracts/adminAudit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
+import { maskOptionalText } from '../../services/audit/adminAuditServiceShared';
 
 dayjs.extend(customParseFormat);
 
@@ -182,6 +184,42 @@ export const userRankOutput = z.array(
     })
     .strict(),
 );
+
+/**
+ * Successful `admin.stats.rankTopics` payload. `disabled` is not a success mode —
+ * it throws before this schema runs. Never includes conversation bodies.
+ */
+export const topicRankItemOutput = z
+  .object({
+    agentId: z.string().nullable(),
+    count: z.coerce.number(),
+    id: z.string(),
+    title: z.string().nullable(),
+    userId: z.string(),
+  })
+  .strict();
+
+export const topicRankOutput = z
+  .object({
+    contentAccessMode: z.enum(['metadata_only', 'content_allowed']),
+    items: z.array(topicRankItemOutput),
+  })
+  .strict();
+
+export type SafeTopicRankItem = z.infer<typeof topicRankItemOutput>;
+export type SafeTopicRankResult = z.infer<typeof topicRankOutput>;
+
+/** Project a global rank row to the public contract; credential-mask titles. */
+export const toSafeTopicRankItem = (
+  row: Pick<TopicRankItem, 'agentId' | 'count' | 'id' | 'title'> & { userId: string },
+  redactionProfile: Parameters<typeof maskOptionalText>[1],
+): SafeTopicRankItem => ({
+  agentId: row.agentId,
+  count: Number(row.count),
+  id: row.id,
+  title: maskOptionalText(row.title, redactionProfile) ?? null,
+  userId: row.userId,
+});
 
 /**
  * Map an invalid / oversized window from the model layer to HTTP 400. An unknown IANA

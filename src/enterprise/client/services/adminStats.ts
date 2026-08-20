@@ -79,7 +79,10 @@ class AdminStatsService {
   rankModels = async (params?: AdminStatsRangeParams) =>
     lambdaClient.admin.stats.rankModels.query({ ...params });
 
-  rankTopics = async (limit?: number, params?: AdminStatsRangeParams) =>
+  rankTopics = async (
+    limit?: number,
+    params?: AdminStatsRangeParams,
+  ): Promise<AdminStatsTopicRankResult> =>
     lambdaClient.admin.stats.rankTopics.query({ limit, ...params });
 
   /**
@@ -125,4 +128,22 @@ export interface AdminStatsUserRankItem {
   outputTokens: number;
   totalTokens: number;
   userId: string;
+}
+
+/** One ranked topic from `admin.stats.rankTopics` (titles are credential-masked). */
+export interface AdminStatsTopicRankItem {
+  agentId: string | null;
+  count: number;
+  id: string;
+  title: string | null;
+  userId: string;
+}
+
+/**
+ * Envelope of `admin.stats.rankTopics`. `disabled` is not a success mode — the
+ * procedure throws FORBIDDEN / `audit_content_access_disabled` instead.
+ */
+export interface AdminStatsTopicRankResult {
+  contentAccessMode: 'content_allowed' | 'metadata_only';
+  items: AdminStatsTopicRankItem[];
 }

@@ -11,8 +11,12 @@ import { getTestDB } from '@/database/core/getTestDB';
 import {
   messages,
   permissions,
+  PLATFORM_AUDIT_POLICY_DEFAULTS,
+  PLATFORM_AUDIT_POLICY_ID,
+  platformAuditPolicies,
   rolePermissions,
   roles,
+  topics,
   userRoles,
   users,
 } from '@/database/schemas';
@@ -43,6 +47,8 @@ const SECRET_PAYLOAD = 'SUPER_SECRET_LOCAL_FILE_CONTENTS_xyzzy';
 
 const cleanup = async () => {
   await db.delete(messages);
+  await db.delete(topics);
+  await db.delete(platformAuditPolicies);
   await db.delete(userRoles);
   await db.delete(rolePermissions);
   await db.delete(roles);
@@ -193,6 +199,39 @@ describe('admin.stats redacts sensitive metadata', () => {
 });
 
 describe('admin.stats conversation title authorization', () => {
+  const SECRET_TITLE_KEY = 'sk-abcdefghijklmnopqrstuvwxyz012345';
+
+  const setContentAccessMode = async (
+    contentAccessMode: 'content_allowed' | 'disabled' | 'metadata_only',
+  ) => {
+    await db.delete(platformAuditPolicies);
+    await db.insert(platformAuditPolicies).values({
+      ...PLATFORM_AUDIT_POLICY_DEFAULTS,
+      contentAccessMode,
+      id: PLATFORM_AUDIT_POLICY_ID,
+    });
+  };
+
+  const seedRankedTopic = async (opts: {
+    messageId: string;
+    title: string;
+    topicId: string;
+    userId: string;
+  }) => {
+    await db.insert(topics).values({
+      id: opts.topicId,
+      title: opts.title,
+      userId: opts.userId,
+    });
+    await db.insert(messages).values({
+      content: 'hello',
+      id: opts.messageId,
+      role: 'user',
+      topicId: opts.topicId,
+      userId: opts.userId,
+    });
+  };
+
   it('denies rankTopics for STATS_READ-only roles (F4)', async () => {
     const caller = await callerFor(ids.reader);
     await expect(caller.rankTopics()).rejects.toMatchObject({ code: 'FORBIDDEN' });
@@ -200,7 +239,77 @@ describe('admin.stats conversation title authorization', () => {
 
   it('allows rankTopics when the actor also holds conversation audit read', async () => {
     const caller = await callerFor(ids.superAdmin);
-    await expect(caller.rankTopics({ limit: 5 })).resolves.toEqual(expect.any(Array));
+    await expect(caller.rankTopics({ limit: 5 })).resolves.toEqual({
+      contentAccessMode: 'metadata_only',
+      items: expect.any(Array),
+    });
+  });
+
+  it('denies rankTopics when content access is disabled, even for super admins', async () => {
+    await setContentAccessMode('disabled');
+    const caller = await callerFor(ids.superAdmin);
+
+    await expect(caller.rankTopics({ limit: 5 })).rejects.toMatchObject({
+      cause: {
+        data: {
+          code: 'PLATFORM_FEATURE_DISABLED',
+          details: { reason: 'audit_content_access_disabled' },
+        },
+      },
+      code: 'FORBIDDEN',
+    });
+  });
+
+  it('returns masked titles, userId, and no bodies under metadata_only', async () => {
+    await setContentAccessMode('metadata_only');
+    await seedRankedTopic({
+      messageId: 'stats-rank-msg-meta',
+      title: `paste ${SECRET_TITLE_KEY} into chat`,
+      topicId: 'stats-rank-topic-meta',
+      userId: ids.reader,
+    });
+
+    const caller = await callerFor(ids.superAdmin);
+    const result = await caller.rankTopics({ limit: 5 });
+
+    expect(result.contentAccessMode).toBe('metadata_only');
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        id: 'stats-rank-topic-meta',
+        userId: ids.reader,
+      }),
+    ]);
+    expect(result.items[0]?.title).toContain('[REDACTED]');
+    expect(result.items[0]?.title).not.toContain(SECRET_TITLE_KEY);
+    expect(result.items[0]).not.toHaveProperty('content');
+    expect(result.items[0]).not.toHaveProperty('editorData');
+    expect(result.items[0]).not.toHaveProperty('historySummary');
+    expect(JSON.stringify(result)).not.toContain(SECRET_TITLE_KEY);
+  });
+
+  it('returns titles and userId under content_allowed (still credential-masked)', async () => {
+    await setContentAccessMode('content_allowed');
+    await seedRankedTopic({
+      messageId: 'stats-rank-msg-full',
+      title: `paste ${SECRET_TITLE_KEY} into chat`,
+      topicId: 'stats-rank-topic-full',
+      userId: ids.reader,
+    });
+
+    const caller = await callerFor(ids.superAdmin);
+    const result = await caller.rankTopics({ limit: 5 });
+
+    expect(result).toEqual({
+      contentAccessMode: 'content_allowed',
+      items: [
+        expect.objectContaining({
+          id: 'stats-rank-topic-full',
+          userId: ids.reader,
+        }),
+      ],
+    });
+    expect(result.items[0]?.title).toContain('[REDACTED]');
+    expect(JSON.stringify(result)).not.toContain(SECRET_TITLE_KEY);
   });
 });
 

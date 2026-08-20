@@ -8,6 +8,7 @@
 import { z } from 'zod';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { PlatformAuditPolicyModel } from '@/database/models/platform';
 import { PlatformGlobalStatsModel } from '@/database/models/platform/globalStats';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
@@ -18,6 +19,7 @@ import {
   withAllPlatformPermissions,
   withPlatformPermission,
 } from '../../guards/platformPermission';
+import { assertConversationAccessEnabled } from '../../services/audit/contentPolicy';
 import {
   activitySeriesInput,
   activitySeriesOutput,
@@ -30,6 +32,8 @@ import {
   rankUsersInput,
   refineRange,
   statsRangeInput,
+  topicRankOutput,
+  toSafeTopicRankItem,
   toSafeUsageLogs,
   toSafeUsageRecord,
   usageLogOutputSchema,
@@ -114,10 +118,23 @@ export const adminStatsRouter = router({
     return withRangeErrors(() => model.rankModels(input?.limit, input));
   }),
 
-  rankTopics: statsTopicRankProcedure.input(rankInput).query(async ({ ctx, input }) => {
-    const model = new PlatformGlobalStatsModel(ctx.serverDB);
-    return withRangeErrors(() => model.rankTopics(input?.limit, input));
-  }),
+  rankTopics: statsTopicRankProcedure
+    .input(rankInput)
+    .output(topicRankOutput)
+    .query(async ({ ctx, input }) => {
+      const policy = await new PlatformAuditPolicyModel(ctx.serverDB).getOrCreate();
+      assertConversationAccessEnabled(policy.contentAccessMode);
+
+      const model = new PlatformGlobalStatsModel(ctx.serverDB);
+      const rows = await withRangeErrors(() => model.rankTopics(input?.limit, input));
+      const contentAccessMode =
+        policy.contentAccessMode === 'content_allowed' ? 'content_allowed' : 'metadata_only';
+
+      return {
+        contentAccessMode,
+        items: rows.map((row) => toSafeTopicRankItem(row, policy.redactionProfile)),
+      };
+    }),
 
   /**
    * Users ranked by token usage in the window (admin 用户排行).

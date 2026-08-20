@@ -374,7 +374,7 @@ export class PlatformGlobalStatsModel {
   rankTopics = async (
     limit: number = 10,
     options?: StatsFilterParams,
-  ): Promise<TopicRankItem[]> => {
+  ): Promise<Array<TopicRankItem & { userId: string }>> => {
     const joinWhere = genWhere([
       eq(topics.id, messages.topicId),
       explicitRangeWhere(options, messages.createdAt),
@@ -386,6 +386,7 @@ export class PlatformGlobalStatsModel {
         count: count(messages.id).as('count'),
         id: topics.id,
         title: topics.title,
+        userId: topics.userId,
       })
       .from(topics)
       .leftJoin(messages, joinWhere)

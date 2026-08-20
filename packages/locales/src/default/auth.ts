@@ -363,6 +363,8 @@ export default {
   'stats.modelsRank.title': 'Model Usage Rank',
   'stats.share.title': 'My AI Activity Index',
   'stats.topics': 'Topics',
+  'stats.topicsRank.contentAccessDisabled': 'Content access is disabled by audit policy',
+  'stats.topicsRank.contentAccessDisabledAction': 'Audit settings',
   'stats.topicsRank.left': 'Topic',
   'stats.topicsRank.right': 'Messages',
   'stats.topicsRank.title': 'Topic Content Rank',
