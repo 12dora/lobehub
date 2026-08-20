@@ -491,6 +491,7 @@ describe('admin.taskTemplates.importRecommendations', () => {
   it('serializes concurrent imports of the same identifier onto one row', async () => {
     const caller = await adminCaller();
     listDailyRecommendSpy.mockResolvedValue([marketTemplate()]);
+    appendSpy.mockClear();
 
     const results = await Promise.all([
       caller.importRecommendations({}),
@@ -502,6 +503,24 @@ describe('admin.taskTemplates.importRecommendations', () => {
     // One import created the row, the other refreshed it — neither batch rolled back.
     expect(results.reduce((sum, result) => sum + result.created, 0)).toBe(1);
     expect(results.reduce((sum, result) => sum + result.updated, 0)).toBe(1);
+
+    const importAudits = appendSpy.mock.calls
+      .map(([params]) => params)
+      .filter((params) => params.action === 'admin.taskTemplates.importRecommendations');
+    expect(importAudits).toHaveLength(2);
+
+    const createAudit = importAudits.find((params) => params.afterDiff.created === 1);
+    const updateAudit = importAudits.find((params) => params.afterDiff.updated === 1);
+    expect(createAudit?.afterDiff.rows).toEqual([
+      expect.objectContaining({ identifier: 'market-daily', inserted: true }),
+    ]);
+    expect(createAudit?.beforeDiff.rows).toEqual([]);
+    expect(updateAudit?.afterDiff.rows).toEqual([
+      expect.objectContaining({ identifier: 'market-daily', inserted: false }),
+    ]);
+    expect(updateAudit?.beforeDiff.rows).toEqual([
+      expect.objectContaining({ identifier: 'market-daily', title: 'Market title' }),
+    ]);
   });
 });
 
