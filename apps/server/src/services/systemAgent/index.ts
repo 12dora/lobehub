@@ -19,11 +19,13 @@ import type {
 import { RequestTrigger } from '@lobechat/types';
 import debug from 'debug';
 
-import { isEnterpriseFlagEnabled } from '@/const/platform/featureFlags';
 import { UserModel } from '@/database/models/user';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import type { LobeChatDatabase } from '@/database/type';
-import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
+import {
+  getEffectiveSystemAgentConfig,
+  isSettingsPolicyEnabled,
+} from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
@@ -207,9 +209,11 @@ export class SystemAgentService {
 
       return systemAgent?.[taskKey];
     } catch (error) {
-      // Policy ON: a resolver/DB failure must not fail-open to unrestricted
-      // defaults (that would bypass a locked translation/system-agent model).
-      if (isEnterpriseFlagEnabled(process.env.ENABLE_PLATFORM_SETTINGS_POLICY)) {
+      // Policy ON (env flag AND hot `settingsPolicy` module): a resolver/DB
+      // failure must not fail-open to unrestricted defaults (that would bypass
+      // a locked translation/system-agent model). Env-on/module-off is treated
+      // as OFF — same predicate as `runtimeSettingsAdapter`.
+      if (await isSettingsPolicyEnabled()) {
         throw error;
       }
 

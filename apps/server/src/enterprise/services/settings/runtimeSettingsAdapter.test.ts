@@ -2,11 +2,21 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LobeChatDatabase } from '@/database/type';
 
-import { getRawUserSettings, loadEffectiveUserSettings } from './runtimeSettingsAdapter';
+import {
+  getEffectiveSystemAgentConfig,
+  getRawUserSettings,
+  isSettingsPolicyEnabled,
+  loadEffectiveUserSettings,
+} from './runtimeSettingsAdapter';
+
+const { policyState, isModuleEnabled } = vi.hoisted(() => ({
+  isModuleEnabled: vi.fn(async (_id: string) => true),
+  policyState: { enabled: false },
+}));
 
 vi.mock('../../featureFlags', async (importOriginal) => {
   const actual = (await importOriginal()) as {
@@ -16,10 +26,14 @@ vi.mock('../../featureFlags', async (importOriginal) => {
     ...actual,
     getEnterpriseFeatureFlags: () => ({
       ...actual.getDefaultEnterpriseFeatureFlags(),
-      ENABLE_PLATFORM_SETTINGS_POLICY: false,
+      ENABLE_PLATFORM_SETTINGS_POLICY: policyState.enabled,
     }),
   };
 });
+
+vi.mock('../moduleSettings', () => ({
+  isModuleEnabled: (id: string) => isModuleEnabled(id),
+}));
 
 const getUserSettings = vi.hoisted(() => vi.fn());
 
@@ -30,6 +44,12 @@ vi.mock('@/database/models/user', () => ({
 }));
 
 describe('runtimeSettingsAdapter', () => {
+  beforeEach(() => {
+    policyState.enabled = false;
+    isModuleEnabled.mockReset().mockResolvedValue(true);
+    getUserSettings.mockReset();
+  });
+
   it('dedupes getUserSettings only inside one execAgent memo slot', async () => {
     const row = { general: { timezone: 'Asia/Shanghai' }, memory: { enabled: true } };
     getUserSettings.mockReset().mockResolvedValue(row);
@@ -81,6 +101,46 @@ describe('runtimeSettingsAdapter', () => {
     expect(settings).toEqual(legacy);
     expect(effective.platformRevision).toBe(0);
     expect(Object.keys(effective.pathMeta)).toHaveLength(0);
+  });
+
+  it('treats env-on / module-off as policy off (same predicate as withModule)', async () => {
+    policyState.enabled = true;
+    isModuleEnabled.mockResolvedValue(false);
+
+    expect(await isSettingsPolicyEnabled()).toBe(false);
+    expect(isModuleEnabled).toHaveBeenCalledWith('settingsPolicy');
+
+    const db = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('platform tables accessed while settingsPolicy module is off');
+        },
+      },
+    ) as LobeChatDatabase;
+    const rawSystemAgent = { translation: { model: 'raw-model', provider: 'openai' } };
+    getUserSettings.mockResolvedValue({ systemAgent: rawSystemAgent });
+
+    await expect(getEffectiveSystemAgentConfig({ db, userId: 'u-module-off' })).resolves.toEqual(
+      rawSystemAgent,
+    );
+    expect(getUserSettings).toHaveBeenCalled();
+  });
+
+  it('is on only when the env flag and settingsPolicy module are both on', async () => {
+    policyState.enabled = true;
+    isModuleEnabled.mockResolvedValue(true);
+
+    expect(await isSettingsPolicyEnabled()).toBe(true);
+    expect(isModuleEnabled).toHaveBeenCalledWith('settingsPolicy');
+  });
+
+  it('does not consult module state when the env flag is off', async () => {
+    policyState.enabled = false;
+    isModuleEnabled.mockResolvedValue(true);
+
+    expect(await isSettingsPolicyEnabled()).toBe(false);
+    expect(isModuleEnabled).not.toHaveBeenCalled();
   });
 
   it('catches direct defaultAgent/systemAgent/tool/memory raw settings bypasses', () => {

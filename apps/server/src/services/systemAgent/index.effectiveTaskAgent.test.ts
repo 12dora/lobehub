@@ -5,6 +5,7 @@ import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/sett
 import { SystemAgentService } from './index';
 
 const getUserSettings = vi.hoisted(() => vi.fn());
+const isSettingsPolicyEnabledMock = vi.hoisted(() => vi.fn(async () => false));
 
 vi.mock('@/database/models/user', () => ({
   UserModel: class {
@@ -15,6 +16,7 @@ vi.mock('@/database/models/user', () => ({
 
 vi.mock('@/server/enterprise/services/settings/runtimeSettingsAdapter', () => ({
   getEffectiveSystemAgentConfig: vi.fn(),
+  isSettingsPolicyEnabled: isSettingsPolicyEnabledMock,
 }));
 
 describe('SystemAgentService.getEffectiveTaskAgentItem', () => {
@@ -24,6 +26,7 @@ describe('SystemAgentService.getEffectiveTaskAgentItem', () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     getUserSettings.mockReset();
+    isSettingsPolicyEnabledMock.mockReset().mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -40,10 +43,12 @@ describe('SystemAgentService.getEffectiveTaskAgentItem', () => {
       provider: 'openai',
       reasoningEffort: 'high',
     });
+    expect(isSettingsPolicyEnabledMock).not.toHaveBeenCalled();
   });
 
   it('falls back to raw user settings when policy is off and the resolver fails', async () => {
     vi.stubEnv('ENABLE_PLATFORM_SETTINGS_POLICY', '0');
+    isSettingsPolicyEnabledMock.mockResolvedValue(false);
     vi.mocked(getEffectiveSystemAgentConfig).mockRejectedValue(new Error('resolver down'));
     getUserSettings.mockResolvedValue({
       systemAgent: {
@@ -57,8 +62,26 @@ describe('SystemAgentService.getEffectiveTaskAgentItem', () => {
     });
   });
 
+  it('falls back to raw user settings when env is on but settingsPolicy module is off', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_SETTINGS_POLICY', '1');
+    isSettingsPolicyEnabledMock.mockResolvedValue(false);
+    vi.mocked(getEffectiveSystemAgentConfig).mockRejectedValue(new Error('resolver down'));
+    getUserSettings.mockResolvedValue({
+      systemAgent: {
+        translation: { model: 'raw-model', provider: 'openai' },
+      },
+    });
+
+    await expect(service.getEffectiveTaskAgentItem('translation')).resolves.toEqual({
+      model: 'raw-model',
+      provider: 'openai',
+    });
+    expect(getUserSettings).toHaveBeenCalled();
+  });
+
   it('propagates resolver failures when the settings policy module is on', async () => {
     vi.stubEnv('ENABLE_PLATFORM_SETTINGS_POLICY', '1');
+    isSettingsPolicyEnabledMock.mockResolvedValue(true);
     vi.mocked(getEffectiveSystemAgentConfig).mockRejectedValue(new Error('resolver down'));
 
     await expect(service.getEffectiveTaskAgentItem('translation')).rejects.toThrow('resolver down');

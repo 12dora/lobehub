@@ -17,6 +17,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import type { EffectiveSettingsResult } from '@/types/platform/settings';
 
 import { getEnterpriseFeatureFlags } from '../../featureFlags';
+import { isModuleEnabled } from '../moduleSettings';
 import { EffectiveSettingsService } from './effectiveSettingsService';
 import { settingsRegistry } from './registry';
 
@@ -29,6 +30,24 @@ export interface LoadEffectiveUserSettingsParams {
   legacySettings?: Record<string, unknown> | null;
   userId: string;
 }
+
+/**
+ * Settings Policy is on only when the env flag is on *and* the hot module
+ * state has `settingsPolicy` enabled.
+ *
+ * `withModule` / `assertModuleEnabled` gate on `isModuleEnabled` alone; that
+ * snapshot already folds `ENABLE_PLATFORM_SETTINGS_POLICY=0` into
+ * `envDisabled`. The flag stays a cheap additional precondition so an
+ * explicit off never consults module settings (same pattern as other
+ * runtime gates: flag AND `isModuleEnabled`).
+ *
+ * Admin → Modules (or `LOBE_MODULES_DISABLED`) can therefore turn the
+ * resolver off while the env flag remains on.
+ */
+export const isSettingsPolicyEnabled = async (): Promise<boolean> => {
+  if (!getEnterpriseFeatureFlags().ENABLE_PLATFORM_SETTINGS_POLICY) return false;
+  return isModuleEnabled('settingsPolicy');
+};
 
 const isPolicyEnabled = () => getEnterpriseFeatureFlags().ENABLE_PLATFORM_SETTINGS_POLICY;
 
@@ -198,13 +217,13 @@ export const getEffectiveMemorySettings = async (params: {
 
 /**
  * Effective systemAgent config for SystemAgentService.
- * Flag OFF: raw getUserSettings().systemAgent (parent behavior).
+ * Policy OFF (env flag or `settingsPolicy` module): raw getUserSettings().systemAgent.
  */
 export const getEffectiveSystemAgentConfig = async (params: {
   db: LobeChatDatabase;
   userId: string;
 }): Promise<unknown> => {
-  if (!isPolicyEnabled()) {
+  if (!(await isSettingsPolicyEnabled())) {
     const userModel = new UserModel(params.db, params.userId);
     const settings = await userModel.getUserSettings();
     return settings?.systemAgent;
