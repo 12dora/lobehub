@@ -11,7 +11,11 @@ import {
   GENERATE_SKILL_META_SCHEMA,
   GENERATE_SKILL_META_SCHEMA_NAME,
 } from '@lobechat/prompts';
-import type { UserSystemAgentConfig, UserSystemAgentConfigKey } from '@lobechat/types';
+import type {
+  SystemAgentItem,
+  UserSystemAgentConfig,
+  UserSystemAgentConfigKey,
+} from '@lobechat/types';
 import { RequestTrigger } from '@lobechat/types';
 import debug from 'debug';
 
@@ -188,6 +192,21 @@ export class SystemAgentService {
   // ============== Private Helpers ============== //
 
   /**
+   * Effective systemAgent item for a task key (policy-aware when the settings
+   * policy module is on; raw user settings when it is off).
+   */
+  async getEffectiveTaskAgentItem(
+    taskKey: UserSystemAgentConfigKey,
+  ): Promise<Partial<SystemAgentItem> | undefined> {
+    const systemAgent = (await getEffectiveSystemAgentConfig({
+      db: this.db,
+      userId: this.userId,
+    })) as Partial<UserSystemAgentConfig> | undefined;
+
+    return systemAgent?.[taskKey];
+  }
+
+  /**
    * Get the model/provider config for a specific systemAgent task type,
    * plus projected effort wire params for the selected model.
    * Falls back to DEFAULT_SYSTEM_AGENT_CONFIG when user has no custom settings.
@@ -195,13 +214,7 @@ export class SystemAgentService {
   async getTaskModelConfig(
     taskKey: UserSystemAgentConfigKey,
   ): Promise<{ model: string; provider: string } & ModelExtendParams> {
-    // M05: effective systemAgent via resolver when policy flag is ON
-    const systemAgent = (await getEffectiveSystemAgentConfig({
-      db: this.db,
-      userId: this.userId,
-    })) as Partial<UserSystemAgentConfig> | undefined;
-
-    const taskConfig = systemAgent?.[taskKey];
+    const taskConfig = await this.getEffectiveTaskAgentItem(taskKey);
     const { model, provider } = await resolveSystemAgentModelConfig({ taskConfig, taskKey });
     const runtimeState = await this.getRuntimeStateForEffort();
     const effortParams = await resolveServiceModelEffortParams({

@@ -1,17 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as aiInfraStore from '@/store/aiInfra';
-import * as aiModelSelectors from '@/store/aiInfra/slices/aiModel/selectors';
 
 import { resolveSystemAgentEffortParams, withSystemAgentEffortParams } from './systemAgentEffort';
-
-const mockAiInfraStoreState = { someState: true };
-
-const mockExtendParams = (extendParams: string[] | undefined) => {
-  vi.spyOn(aiModelSelectors.aiModelSelectors, 'modelExtendParams').mockReturnValue(
-    () => extendParams as never,
-  );
-};
 
 const item = (reasoningEffort?: string | null) => ({
   model: 'gpt-5.6',
@@ -19,27 +10,37 @@ const item = (reasoningEffort?: string | null) => ({
   reasoningEffort: reasoningEffort as never,
 });
 
+const mockEnabledAiModels = (
+  enabledAiModels: Array<{
+    id: string;
+    providerId: string;
+    settings?: { extendParams?: string[] };
+  }>,
+) => {
+  vi.spyOn(aiInfraStore, 'getAiInfraStoreState').mockReturnValue({ enabledAiModels } as never);
+};
+
+const openaiCard = (extendParams: string[] | undefined) => ({
+  id: 'gpt-5.6',
+  providerId: 'openai',
+  settings: extendParams ? { extendParams } : undefined,
+});
+
 describe('resolveSystemAgentEffortParams', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(aiInfraStore, 'getAiInfraStoreState').mockReturnValue(mockAiInfraStoreState as never);
+    mockEnabledAiModels([openaiCard(['gpt5_6ReasoningEffort'])]);
   });
 
   it('returns {} when the service model stores no level', () => {
-    mockExtendParams(['gpt5_6ReasoningEffort']);
-
     expect(resolveSystemAgentEffortParams(item())).toEqual({});
   });
 
   it('returns {} for an explicit null clear', () => {
-    mockExtendParams(['gpt5_6ReasoningEffort']);
-
     expect(resolveSystemAgentEffortParams(item(null))).toEqual({});
   });
 
   it('drops a null level rather than putting it on the wire', () => {
-    mockExtendParams(['gpt5_6ReasoningEffort']);
-
     expect(withSystemAgentEffortParams({ ...item(null), model: 'gpt-5.6' })).toEqual({
       model: 'gpt-5.6',
       provider: 'openai',
@@ -51,39 +52,47 @@ describe('resolveSystemAgentEffortParams', () => {
   });
 
   it('returns {} when the model exposes no discrete effort control', () => {
-    mockExtendParams(['enableReasoning', 'reasoningBudgetToken']);
+    mockEnabledAiModels([openaiCard(['enableReasoning', 'reasoningBudgetToken'])]);
 
     expect(resolveSystemAgentEffortParams(item('high'))).toEqual({});
   });
 
   it('returns {} when the model has no extend params at all', () => {
-    mockExtendParams(undefined);
+    mockEnabledAiModels([openaiCard(undefined)]);
 
     expect(resolveSystemAgentEffortParams(item('high'))).toEqual({});
   });
 
   it('maps the stored level onto the wire param the control declares', () => {
-    mockExtendParams(['gpt5_6ReasoningEffort']);
-
     expect(resolveSystemAgentEffortParams(item('xhigh'))).toEqual({ reasoning_effort: 'xhigh' });
   });
 
   it('clamps a level the current model no longer offers back to the control default', () => {
-    // grok4_5ReasoningEffort offers low|medium|high (default high) — `max` is not offered.
-    mockExtendParams(['grok4_5ReasoningEffort']);
+    mockEnabledAiModels([
+      {
+        id: 'gpt-5.6',
+        providerId: 'openai',
+        settings: { extendParams: ['grok4_5ReasoningEffort'] },
+      },
+    ]);
 
     expect(resolveSystemAgentEffortParams(item('max'))).toEqual({ reasoning_effort: 'high' });
   });
 
   it('emits only the resolved control, never params for options it did not configure', () => {
-    // Claude-shaped card: `enableReasoning` is absent from the synthetic chatConfig, which the
-    // projector would otherwise read as "reasoning explicitly off" and pair a contradictory
-    // `thinking: { type: 'disabled' }` with the effort we asked for.
-    mockExtendParams([
-      'enableAdaptiveThinking',
-      'enableReasoning',
-      'reasoningBudgetToken',
-      'effort',
+    mockEnabledAiModels([
+      {
+        id: 'gpt-5.6',
+        providerId: 'openai',
+        settings: {
+          extendParams: [
+            'enableAdaptiveThinking',
+            'enableReasoning',
+            'reasoningBudgetToken',
+            'effort',
+          ],
+        },
+      },
     ]);
 
     const result = resolveSystemAgentEffortParams(item('high'));
@@ -93,9 +102,44 @@ describe('resolveSystemAgentEffortParams', () => {
   });
 
   it('routes through the control the registry prioritises when several are present', () => {
-    // Real effort keys win over the tri-state `thinking` toggle.
-    mockExtendParams(['thinking', 'thinkingLevel']);
+    mockEnabledAiModels([
+      {
+        id: 'gpt-5.6',
+        providerId: 'openai',
+        settings: { extendParams: ['thinking', 'thinkingLevel'] },
+      },
+    ]);
 
     expect(resolveSystemAgentEffortParams(item('low'))).toEqual({ thinkingLevel: 'low' });
+  });
+
+  it('falls back to a canonical same-id card for an empty aggregator (lobehub) card', () => {
+    mockEnabledAiModels([
+      openaiCard(['gpt5_6ReasoningEffort']),
+      { id: 'gpt-5.6', providerId: 'lobehub', settings: { extendParams: [] } },
+    ]);
+
+    expect(
+      resolveSystemAgentEffortParams({
+        model: 'gpt-5.6',
+        provider: 'lobehub',
+        reasoningEffort: 'xhigh' as never,
+      }),
+    ).toEqual({ reasoning_effort: 'xhigh' });
+  });
+
+  it("does not inherit another provider's controls for a non-aggregator empty card", () => {
+    mockEnabledAiModels([
+      openaiCard(['gpt5_6ReasoningEffort']),
+      { id: 'gpt-5.6', providerId: 'cometapi', settings: { extendParams: [] } },
+    ]);
+
+    expect(
+      resolveSystemAgentEffortParams({
+        model: 'gpt-5.6',
+        provider: 'cometapi',
+        reasoningEffort: 'xhigh' as never,
+      }),
+    ).toEqual({});
   });
 });

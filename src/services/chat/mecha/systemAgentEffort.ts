@@ -1,7 +1,11 @@
 import type { GenerateObjectEffortParams, ModelExtendParams } from '@lobechat/model-runtime';
-import { pickGenerateObjectEffortParams, projectServiceModelEffort } from '@lobechat/model-runtime';
+import {
+  pickGenerateObjectEffortParams,
+  projectServiceModelEffort,
+  readExtendParamsFromModelCards,
+} from '@lobechat/model-runtime';
 
-import { aiModelSelectors, getAiInfraStoreState } from '@/store/aiInfra';
+import { getAiInfraStoreState } from '@/store/aiInfra';
 import type { SystemAgentItem } from '@/types/user/settings';
 
 /**
@@ -18,7 +22,11 @@ export const resolveSystemAgentEffortParams = (
   if (!item?.reasoningEffort) return {};
 
   const { model, provider, reasoningEffort } = item;
-  const extendParams = aiModelSelectors.modelExtendParams(model, provider)(getAiInfraStoreState());
+  const extendParams = readExtendParamsFromModelCards(
+    getAiInfraStoreState().enabledAiModels,
+    model,
+    provider,
+  );
 
   return pickGenerateObjectEffortParams(
     projectServiceModelEffort({ extendParams, model, reasoningEffort }),

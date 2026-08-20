@@ -1,4 +1,5 @@
 import type { LobeAgentChatConfig } from '@lobechat/types';
+import { ModelProvider } from 'model-bank';
 
 import type { GenerateObjectEffortParams } from '../types/structureOutput';
 import { clampEffortLevel, findEffortControl } from './effortControlRegistry';
@@ -7,6 +8,7 @@ import { applyModelExtendParams, type ModelExtendParams } from './modelExtendPar
 const GENERATE_OBJECT_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 const GENERATE_OBJECT_REASONING_EFFORT_LEVELS = [
   'none',
+  'no_think',
   'minimal',
   'low',
   'medium',
@@ -19,6 +21,49 @@ const GENERATE_OBJECT_THINKING_TYPES = ['enabled', 'disabled', 'adaptive'] as co
 
 const isOneOf = <T extends string>(value: string, allowed: readonly T[]): value is T =>
   (allowed as readonly string[]).includes(value);
+
+/**
+ * Providers that re-host origin model cards without copying `settings.extendParams`.
+ * Mirrors `serverCallLlmContextHints` using `ModelProvider.LobeHub` for the
+ * canonical-id fallback — not CometAPI / custom / OpenRouter cards.
+ */
+export const isAggregationProviderForEffortLookup = (provider: string): boolean =>
+  provider === ModelProvider.LobeHub;
+
+export interface EffortModelCard {
+  id: string;
+  providerId: string;
+  settings?: { extendParams?: string[] };
+}
+
+const readCardExtendParams = (card: EffortModelCard | undefined): string[] | undefined => {
+  const params = card?.settings?.extendParams;
+  return params?.length ? params : undefined;
+};
+
+/**
+ * Look up `settings.extendParams` from a runtime/model-bank card list.
+ *
+ * 1. Exact `(id, providerId)` match with a non-empty list.
+ * 2. Aggregation providers only: first same-id card with a non-empty list.
+ *    Ordinary providers with an empty/missing card stay unsupported.
+ */
+export const readExtendParamsFromModelCards = (
+  models: readonly EffortModelCard[] | undefined,
+  model: string,
+  provider: string,
+): string[] | undefined => {
+  if (!models?.length) return undefined;
+
+  const providerMatch = models.find((item) => item.id === model && item.providerId === provider);
+  const fromProvider = readCardExtendParams(providerMatch);
+  if (fromProvider) return fromProvider;
+
+  if (!isAggregationProviderForEffortLookup(provider)) return undefined;
+
+  const idMatch = models.find((item) => item.id === model && !!readCardExtendParams(item));
+  return readCardExtendParams(idMatch);
+};
 
 export interface ProjectServiceModelEffortParams {
   extendParams: readonly string[] | undefined;
@@ -103,6 +148,16 @@ export const pickGenerateObjectEffortParams = (
     isOneOf(source.thinkingLevel, GENERATE_OBJECT_THINKING_LEVELS)
   ) {
     params.thinkingLevel = source.thinkingLevel;
+  }
+
+  // Crafted payloads can send `thinking: disabled` alongside a discrete effort
+  // control. Keep the effort family and drop the contradictory disable — DeepSeek
+  // still coexists with `thinking: enabled` + `reasoning_effort`.
+  if (
+    params.thinking?.type === 'disabled' &&
+    (params.effort || params.reasoning_effort || params.thinkingLevel)
+  ) {
+    delete params.thinking;
   }
 
   return params;

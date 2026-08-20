@@ -81,6 +81,28 @@ describe('AiGenerationService.generateObject', () => {
     });
   });
 
+  it('drops thinking: disabled when a discrete effort control is also present', async () => {
+    generateObject.mockResolvedValue({});
+    const ai = new AiGenerationService({} as any, 'user-1');
+    await ai.generateObject({
+      effort: 'high',
+      messages: [],
+      model: 'claude-opus-4-6',
+      provider: 'anthropic',
+      thinking: { type: 'disabled' },
+    });
+
+    const [payload] = generateObject.mock.calls[0];
+    expect(payload).toEqual({
+      effort: 'high',
+      messages: [],
+      model: 'claude-opus-4-6',
+      schema: undefined,
+      tools: undefined,
+    });
+    expect(payload).not.toHaveProperty('thinking');
+  });
+
   it('returns the runtime result with the typed cast applied', async () => {
     generateObject.mockResolvedValue({ completion: 'hello world' });
     const ai = new AiGenerationService({} as any, 'user-1');

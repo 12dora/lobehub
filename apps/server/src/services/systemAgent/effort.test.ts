@@ -29,10 +29,25 @@ describe('readExtendParamsFromRuntimeState', () => {
     ]);
   });
 
-  it('falls back to id-only when the provider card has empty extendParams', () => {
+  it('falls back to id-only when the aggregator card has empty extendParams', () => {
     expect(readExtendParamsFromRuntimeState(runtimeState, 'gpt-5.6', 'lobehub')).toEqual([
       'gpt5_6ReasoningEffort',
     ]);
+  });
+
+  it("does not inherit another provider's controls for a non-aggregator empty card", () => {
+    const state = {
+      enabledAiModels: [
+        ...runtimeState.enabledAiModels,
+        {
+          id: 'gpt-5.6',
+          providerId: 'cometapi',
+          settings: { extendParams: [] },
+        },
+      ],
+    };
+
+    expect(readExtendParamsFromRuntimeState(state, 'gpt-5.6', 'cometapi')).toBeUndefined();
   });
 
   it('returns undefined when the model is missing', () => {

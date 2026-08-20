@@ -202,7 +202,9 @@ export const StructureSchema = z.object({
  */
 export const GenerateObjectEffortParamsSchema = z.object({
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
-  reasoning_effort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  reasoning_effort: z
+    .enum(['none', 'no_think', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    .optional(),
   thinking: z
     .object({
       budget_tokens: z.number().optional(),
@@ -214,7 +216,7 @@ export const GenerateObjectEffortParamsSchema = z.object({
 
 export interface GenerateObjectEffortParams {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  reasoning_effort?: 'none' | 'no_think' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   thinking?: {
     budget_tokens?: number;
     type?: 'enabled' | 'disabled' | 'adaptive';

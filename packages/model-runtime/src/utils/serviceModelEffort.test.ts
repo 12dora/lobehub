@@ -1,6 +1,11 @@
+import { GenerateObjectEffortParamsSchema } from '@lobechat/types';
 import { describe, expect, it } from 'vitest';
 
-import { pickGenerateObjectEffortParams, projectServiceModelEffort } from './serviceModelEffort';
+import {
+  pickGenerateObjectEffortParams,
+  projectServiceModelEffort,
+  readExtendParamsFromModelCards,
+} from './serviceModelEffort';
 
 describe('projectServiceModelEffort', () => {
   it('returns {} when the service model stores no level', () => {
@@ -83,6 +88,19 @@ describe('projectServiceModelEffort', () => {
       }),
     ).toEqual({ thinkingLevel: 'low' });
   });
+
+  it('projects Hunyuan HY3 no_think onto reasoning_effort and passes the wire schema', () => {
+    const projected = pickGenerateObjectEffortParams(
+      projectServiceModelEffort({
+        extendParams: ['hy3ReasoningEffort'],
+        model: 'hunyuan-hy3',
+        reasoningEffort: 'no_think',
+      }),
+    );
+
+    expect(projected).toEqual({ reasoning_effort: 'no_think' });
+    expect(GenerateObjectEffortParamsSchema.parse(projected)).toEqual(projected);
+  });
 });
 
 describe('pickGenerateObjectEffortParams', () => {
@@ -116,5 +134,63 @@ describe('pickGenerateObjectEffortParams', () => {
         thinking: { budget_tokens: 512, type: 'bogus' },
       }),
     ).toEqual({ thinking: { budget_tokens: 512 } });
+  });
+
+  it('drops thinking: disabled when a discrete effort control is also present', () => {
+    expect(
+      pickGenerateObjectEffortParams({
+        effort: 'high',
+        thinking: { type: 'disabled' },
+      }),
+    ).toEqual({ effort: 'high' });
+  });
+
+  it('keeps thinking: enabled alongside reasoning_effort (DeepSeek coexistence)', () => {
+    expect(
+      pickGenerateObjectEffortParams({
+        reasoning_effort: 'high',
+        thinking: { type: 'enabled' },
+      }),
+    ).toEqual({ reasoning_effort: 'high', thinking: { type: 'enabled' } });
+  });
+});
+
+const cards = [
+  {
+    id: 'gpt-5.6',
+    providerId: 'openai',
+    settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+  },
+  {
+    id: 'gpt-5.6',
+    providerId: 'lobehub',
+    settings: { extendParams: [] as string[] },
+  },
+  {
+    id: 'gpt-5.6',
+    providerId: 'cometapi',
+    settings: { extendParams: [] as string[] },
+  },
+];
+
+describe('readExtendParamsFromModelCards', () => {
+  it('matches by model id and provider id', () => {
+    expect(readExtendParamsFromModelCards(cards, 'gpt-5.6', 'openai')).toEqual([
+      'gpt5_6ReasoningEffort',
+    ]);
+  });
+
+  it('falls back to a same-id canonical card for aggregation providers', () => {
+    expect(readExtendParamsFromModelCards(cards, 'gpt-5.6', 'lobehub')).toEqual([
+      'gpt5_6ReasoningEffort',
+    ]);
+  });
+
+  it("does not inherit another provider's controls for a non-aggregator empty card", () => {
+    expect(readExtendParamsFromModelCards(cards, 'gpt-5.6', 'cometapi')).toBeUndefined();
+  });
+
+  it('returns undefined when the model is missing', () => {
+    expect(readExtendParamsFromModelCards(cards, 'unknown-model', 'openai')).toBeUndefined();
   });
 });

@@ -1,47 +1,22 @@
-import type { ModelExtendParams } from '@lobechat/model-runtime';
-import { projectServiceModelEffort } from '@lobechat/model-runtime';
+import type { EffortModelCard, ModelExtendParams } from '@lobechat/model-runtime';
+import { projectServiceModelEffort, readExtendParamsFromModelCards } from '@lobechat/model-runtime';
 
 /**
  * Look up a model's `settings.extendParams` from provider runtime state.
  *
- * Mirrors the client `aiModelSelectors.modelExtendParams` lookup, plus the
- * aggregator fallback used by `serverCallLlmContextHints`: when the provider
- * card has empty extendParams (e.g. `lobehub` hosting a GPT/Claude id), fall
- * back to the first card with the same model id.
+ * Delegates to the store-agnostic `readExtendParamsFromModelCards` helper so
+ * client and server share the aggregator-only fallback rule.
  */
 export interface RuntimeStateForEffort {
-  enabledAiModels?: Array<{
-    id: string;
-    providerId: string;
-    settings?: { extendParams?: string[] };
-  }>;
+  enabledAiModels?: EffortModelCard[];
 }
-
-const readExtendParams = (
-  model:
-    | {
-        settings?: { extendParams?: string[] };
-      }
-    | undefined,
-): string[] | undefined => model?.settings?.extendParams;
 
 export function readExtendParamsFromRuntimeState(
   runtimeState: RuntimeStateForEffort | null | undefined,
   model: string,
   provider: string,
 ): string[] | undefined {
-  const models = runtimeState?.enabledAiModels;
-  if (!models?.length) return undefined;
-
-  const providerMatch = models.find((item) => item.id === model && item.providerId === provider);
-  const fromProvider = readExtendParams(providerMatch);
-  if (fromProvider?.length) return fromProvider;
-
-  // Aggregation providers (lobehub) may serve a model without copying origin
-  // `settings.extendParams`. Match by id only, skipping empty lists, same as
-  // serverCallLlmContextHints falling back to the canonical card.
-  const idMatch = models.find((item) => item.id === model && !!readExtendParams(item)?.length);
-  return readExtendParams(idMatch);
+  return readExtendParamsFromModelCards(runtimeState?.enabledAiModels, model, provider);
 }
 
 /**

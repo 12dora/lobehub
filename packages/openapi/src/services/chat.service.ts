@@ -1,11 +1,10 @@
 import type { ChatStreamPayload, ModelExtendParams } from '@lobechat/model-runtime';
-import type { LobeAgentChatConfig, LobeAgentConfig, UserSystemAgentConfig } from '@lobechat/types';
+import type { LobeAgentChatConfig, LobeAgentConfig } from '@lobechat/types';
 import { RequestTrigger } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
 
 import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
 import { DEFAULT_AGENT_CHAT_CONFIG, DEFAULT_SYSTEM_AGENT_CONFIG } from '@/const/settings';
-import { UserModel } from '@/database/models/user';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { agents, agentsToSessions, aiModels, aiProviders } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
@@ -14,6 +13,7 @@ import {
   initModelRuntimeWithUserPayload,
   resolvePlatformBrowserProfile,
 } from '@/server/modules/ModelRuntime';
+import { SystemAgentService } from '@/server/services/systemAgent';
 import { resolveServiceModelEffortParams } from '@/server/services/systemAgent/effort';
 import { resolveSystemAgentModelConfig } from '@/server/services/systemAgent/modelConfig';
 
@@ -107,10 +107,11 @@ export class ChatService extends BaseService {
     }
 
     try {
-      const userModel = new UserModel(this.db, this.userId);
-      const userSettings = await userModel.getUserSettings();
-      const systemAgent = userSettings?.systemAgent as Partial<UserSystemAgentConfig> | undefined;
-      const translationConfig = systemAgent?.translation;
+      // Policy-aware when ENABLE_PLATFORM_SETTINGS_POLICY is on; raw user
+      // settings when the module is off — same helper SystemAgentService uses.
+      // OpenAPI must not import the enterprise adapter directly (pathBoundaries).
+      const systemAgentService = new SystemAgentService(this.db, this.userId, this.workspaceId);
+      const translationConfig = await systemAgentService.getEffectiveTaskAgentItem('translation');
       const { model, provider } = await resolveSystemAgentModelConfig({
         taskConfig: translationConfig,
         taskKey: 'translation',

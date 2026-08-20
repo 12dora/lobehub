@@ -122,8 +122,11 @@ export {
 } from './utils/modelExtendParams';
 export { isDeepSeekThinkingEligibleModel, isDeepSeekV4FamilyModel } from './utils/modelParse';
 export {
+  type EffortModelCard,
+  isAggregationProviderForEffortLookup,
   pickGenerateObjectEffortParams,
   projectServiceModelEffort,
   type ProjectServiceModelEffortParams,
+  readExtendParamsFromModelCards,
 } from './utils/serviceModelEffort';
 export { parseDataUri } from './utils/uriParser';
