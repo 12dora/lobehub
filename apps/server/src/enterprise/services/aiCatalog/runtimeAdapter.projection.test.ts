@@ -707,16 +707,22 @@ describe('AiCatalogRuntimeAdapter', () => {
   });
 
   describe('resolveAiCatalogRuntimeState enforcement gate', () => {
-    const publishAiProviderPolicy = async (managed: boolean) => {
+    const publishTakeover = async (params: { models?: boolean; providers?: boolean }) => {
       const model = new PlatformManagedResourcePolicyModel(db);
       await model.ensureRows();
       const policies = createUnmanagedResourcePolicyMap();
-      if (managed) {
+      if (params.providers) {
         policies.aiProviders = { enforcementMode: 'enforced', managed: true };
+      }
+      if (params.models) {
         policies.aiModels = { enforcementMode: 'enforced', managed: true };
       }
       await model.materializePublished({ policies, revision: 1 });
       resetPlatformAiTakeoverCacheForTest();
+    };
+
+    const publishAiProviderPolicy = async (managed: boolean) => {
+      await publishTakeover(managed ? { models: true, providers: true } : {});
     };
 
     beforeEach(async () => {
@@ -753,22 +759,57 @@ describe('AiCatalogRuntimeAdapter', () => {
       expect(await resolveAiCatalogRuntimeState({ db, flags, upstreamState })).toBe(upstreamState);
     });
 
-    it('overrides with the platform catalog once 平台托管 is published', async () => {
+    it('provider-only takeover keeps the current BYOK-extras merge (byte-identical)', async () => {
       await createPublishedProvider();
       clearAiCatalogRuntimeCache();
-      await publishAiProviderPolicy(true);
+      await publishTakeover({ providers: true });
 
       const state = await resolveAiCatalogRuntimeState({ db, flags, upstreamState });
 
       expect(state).not.toBe(upstreamState);
       expect(state.enabledAiProviders.map((item) => item.id)).toEqual(['alpha', 'user-provider']);
+      expect(state.enabledAiModels.some((item) => item.providerId === 'user-provider')).toBe(true);
       // Managed provider is credential-free; the caller's own provider keeps its config.
       expect(state.runtimeConfig.alpha?.keyVaults).toEqual({});
       expect(state.runtimeConfig['user-provider']?.keyVaults).toEqual({ apiKey: 'user-only' });
     });
 
+    it('model-only takeover swaps published models but keeps upstream runtimeConfig', async () => {
+      await createPublishedProvider();
+      clearAiCatalogRuntimeCache();
+      await publishTakeover({ models: true });
+
+      const state = await resolveAiCatalogRuntimeState({ db, flags, upstreamState });
+
+      expect(state.enabledAiProviders.map((item) => item.id)).toEqual(['alpha', 'user-provider']);
+      expect(state.runtimeConfig).toEqual(upstreamState.runtimeConfig);
+      expect(state.runtimeConfig.alpha?.keyVaults).toEqual({ apiKey: 'user-key-must-not-win' });
+      expect(state.enabledAiModels.some((item) => item.id === 'user-only')).toBe(false);
+      expect(state.enabledAiModels).toEqual([
+        expect.objectContaining({
+          enabled: true,
+          id: 'chat',
+          providerId: 'alpha',
+          type: 'chat',
+        }),
+      ]);
+    });
+
+    it('both hosted uses the published catalog with no unmanaged models', async () => {
+      await createPublishedProvider();
+      clearAiCatalogRuntimeCache();
+      await publishTakeover({ models: true, providers: true });
+
+      const state = await resolveAiCatalogRuntimeState({ db, flags, upstreamState });
+
+      expect(state.enabledAiProviders.map((item) => item.id)).toEqual(['alpha']);
+      expect(state.enabledAiModels.some((item) => item.providerId === 'user-provider')).toBe(false);
+      expect(state.runtimeConfig.alpha?.keyVaults).toEqual({});
+      expect(state.runtimeConfig).not.toHaveProperty('user-provider');
+    });
+
     it('never reads the catalog while the feature flag is off', async () => {
-      await publishAiProviderPolicy(true);
+      await publishTakeover({ models: true, providers: true });
       const failOnRead = new Proxy(
         {},
         {

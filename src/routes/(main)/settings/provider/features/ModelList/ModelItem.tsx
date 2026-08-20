@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 
 import { ModelInfoTags } from '@/components/ModelSelect';
 import NewModelBadge from '@/components/ModelSelect/NewModelBadge';
+import { useManagedResource } from '@/features/ManagedResources';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePermission } from '@/hooks/usePermission';
 import {
@@ -87,6 +88,7 @@ const ModelItem = memo<ModelItemProps>(
     const { t } = useTranslation(['modelProvider', 'components', 'models', 'common']);
     const { modelEditable, showDeployName } = use(ProviderSettingsContext);
     const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
+    const { managed: aiModelsManaged } = useManagedResource('aiModels');
     const aiInfraStoreApi = useAiInfraStoreApi();
 
     const [activeAiProvider, isModelLoading, toggleModelEnabled, removeAiModel] = useAiInfraStore(
@@ -177,7 +179,7 @@ const ModelItem = memo<ModelItemProps>(
       </Tag>
     );
 
-    const canToggle = modelEditable || type !== 'embedding';
+    const canToggle = !aiModelsManaged && (modelEditable || type !== 'embedding');
 
     const EnableSwitch = canToggle ? (
       <Switch

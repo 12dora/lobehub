@@ -86,6 +86,27 @@ describe('AiInfraRepos', () => {
       expect(disabledOnly.map((model) => model.id)).toEqual(['gpt-5.6-sol']);
     });
 
+    it('skips the user-row overlay when overlayUserModels is false', async () => {
+      const providerId = 'openai';
+      const publishedModels = [
+        { enabled: true, id: 'gpt-5.5', type: 'chat' },
+        { enabled: true, id: 'gpt-5.6-sol', type: 'chat' },
+      ] as AiProviderModelListItem[];
+      const userList = vi.spyOn(repo.aiModelModel, 'getModelListByProviderId').mockResolvedValue([
+        { enabled: false, id: 'gpt-5.6-sol', type: 'chat' },
+        { enabled: true, id: 'never-published', type: 'chat' },
+      ] as AiProviderModelListItem[]);
+
+      const result = await repo.getAiProviderModelList(providerId, {
+        overlayUserModels: false,
+        publishedModels,
+      });
+
+      expect(userList).not.toHaveBeenCalled();
+      expect(result.map((model) => model.id).sort()).toEqual(['gpt-5.5', 'gpt-5.6-sol']);
+      expect(result).toContainEqual(expect.objectContaining({ enabled: true, id: 'gpt-5.6-sol' }));
+    });
+
     it('falls back to model-bank defaults when the provider is not platform-managed', async () => {
       const mockUserModels = [
         { enabled: false, id: 'gpt-4', type: 'chat' },

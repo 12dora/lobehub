@@ -360,6 +360,30 @@ describe('useEnterprisePlatformData', () => {
       expect(mutate).toHaveBeenCalledTimes(2);
     });
 
+    it('invalidates aiInfra caches when only aiModels hosting flips', () => {
+      const modelsUser = capabilitiesWith({
+        aiModelTakeover: false,
+        configRevision: '10',
+        managedResources: { ...capabilities.managedResources, aiModels: false },
+      });
+      const modelsHosted = capabilitiesWith({
+        aiModelTakeover: true,
+        configRevision: '11',
+        managedResources: { ...capabilities.managedResources, aiModels: true },
+      });
+
+      const { rerender } = renderWith(modelsUser);
+      expect(mutate).not.toHaveBeenCalled();
+
+      mockCapabilities(modelsHosted);
+      rerender();
+      expect(mutate).toHaveBeenCalledExactlyOnceWith(isAiInfraPlatformSensitiveSwrKey);
+
+      mockCapabilities(modelsUser);
+      rerender();
+      expect(mutate).toHaveBeenCalledTimes(2);
+    });
+
     it('detects enforced → ui-only and ui-only → enforced, which the UI boolean cannot', () => {
       const { rerender } = renderWith(takenOver);
       expect(mutate).not.toHaveBeenCalled();

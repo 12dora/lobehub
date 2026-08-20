@@ -18,6 +18,7 @@ import { PluginModel } from '@/database/models/plugin';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import {
+  isPlatformAiModelTakeoverActive,
   isPlatformAiTakeoverActive,
   resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
@@ -54,8 +55,11 @@ export const agentBuilderRuntime: ServerRuntimeRegistration = {
         params: GetAvailableModelsParams,
       ): Promise<ToolExecutionResult> => {
         try {
-          // Authorized by the published 平台托管 policy, not by the feature flag alone.
-          const managed = await isPlatformAiTakeoverActive(context.serverDB!);
+          // Authorized by either published 平台托管 kind: provider takeover still unions
+          // BYOK extras; model takeover swaps the usable set to the published catalog.
+          const managed =
+            (await isPlatformAiTakeoverActive(context.serverDB!)) ||
+            (await isPlatformAiModelTakeoverActive(context.serverDB!));
           let enabledProviders: Array<{ id: string; name?: string; sort?: number | null }>;
           let getEnabledChatModels: (providerId: string) => Promise<
             Array<{

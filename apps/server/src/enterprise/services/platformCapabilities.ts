@@ -16,6 +16,11 @@ export interface BuildPlatformCapabilitiesInput {
    */
   adminAccess?: boolean;
   /**
+   * Server-resolved platform-AI *model* takeover (`isPlatformAiModelTakeoverActive`).
+   * Requires ENABLE_PLATFORM_MANAGED_AI, so it is forced false when the flag is off.
+   */
+  aiModelTakeover?: boolean;
+  /**
    * Server-resolved platform-AI takeover (`isPlatformAiTakeoverActive`). Requires
    * ENABLE_PLATFORM_MANAGED_AI, so it is forced false when the flag is off.
    */
@@ -51,6 +56,7 @@ export const buildPlatformCapabilities = (
 
   return {
     adminAccess,
+    aiModelTakeover: Boolean(input.aiModelTakeover) && flags.ENABLE_PLATFORM_MANAGED_AI,
     aiTakeover: Boolean(input.aiTakeover) && flags.ENABLE_PLATFORM_MANAGED_AI,
     brandingRevision: input.revisions?.brandingRevision ?? null,
     configRevision:

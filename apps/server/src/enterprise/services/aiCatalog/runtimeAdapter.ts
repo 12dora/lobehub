@@ -23,7 +23,7 @@ import {
   reportPlatformRuntimeMaterializationSafely,
 } from '../platformInstance/runtimeReporter';
 import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
-import { isPlatformAiTakeoverActive } from './enforcement';
+import { getPlatformAiTakeoverFlags } from './enforcement';
 import {
   AiCatalogModelNotPublishedError,
   AiCatalogNotFoundError,
@@ -499,12 +499,40 @@ export const mergeUnmanagedUpstreamProviders = (
 };
 
 /**
- * Platform-managed runtime state, or the caller's own state verbatim when the platform has
- * not taken over.
+ * When models are hosted the usable set is exactly the published catalog. Providers that
+ * are NOT hosted keep the caller's own list and credentials; only the model lists and
+ * type-filtered provider lists are replaced.
  *
- * The feature flag alone is NOT authorization: an admin who merely connects a shared account
- * or publishes a provider must not silently replace every user's configuration. Only the
- * published 平台托管 policy (`isPlatformAiTakeoverActive`) does that.
+ * MUST stay outside `AiCatalogRuntimeAdapter.loadRuntimeState`: that snapshot is cached
+ * process-wide and must never hold a per-user `runtimeConfig`.
+ */
+export const projectModelTakeoverRuntimeState = (
+  catalog: AiProviderRuntimeState,
+  upstream: AiProviderRuntimeState,
+  providersHosted: boolean,
+): AiProviderRuntimeState => {
+  if (providersHosted) return catalog;
+  return {
+    enabledAiModels: catalog.enabledAiModels,
+    enabledAiProviders: upstream.enabledAiProviders,
+    enabledChatAiProviders: catalog.enabledChatAiProviders,
+    enabledImageAiProviders: catalog.enabledImageAiProviders,
+    enabledVideoAiProviders: catalog.enabledVideoAiProviders,
+    runtimeConfig: upstream.runtimeConfig,
+  };
+};
+
+/**
+ * Platform-managed runtime state, or the caller's own state verbatim when the platform has
+ * not taken over either kind.
+ *
+ * The feature flag alone is NOT authorization. Provider takeover (`aiProviders` published
+ * managed+enforced) replaces credentials / the provider list and still unions BYOK extras.
+ * Model takeover (`aiModels` published managed+enforced) replaces enabled model lists with
+ * the published catalog and does not append unmanaged upstream models.
+ *
+ * Either predicate loads the catalog; both false returns `upstreamState` with no catalog
+ * read, decrypt, or cache access.
  */
 export const resolveAiCatalogRuntimeState = async (params: {
   db: LobeChatDatabase;
@@ -513,10 +541,14 @@ export const resolveAiCatalogRuntimeState = async (params: {
 }): Promise<AiProviderRuntimeState> => {
   const flags = params.flags ?? parseEnterpriseFeatureFlags(process.env);
   if (!flags.ENABLE_PLATFORM_MANAGED_AI) return params.upstreamState;
-  if (!(await isPlatformAiTakeoverActive(params.db, flags))) return params.upstreamState;
-  const state = await new AiCatalogRuntimeAdapter(params.db).resolve({
+  const takeover = await getPlatformAiTakeoverFlags(params.db, flags);
+  if (!takeover.providers && !takeover.models) return params.upstreamState;
+  const catalog = await new AiCatalogRuntimeAdapter(params.db).resolve({
     flags,
     upstreamState: params.upstreamState,
   });
-  return mergeUnmanagedUpstreamProviders(state, params.upstreamState);
+  if (takeover.models) {
+    return projectModelTakeoverRuntimeState(catalog, params.upstreamState, takeover.providers);
+  }
+  return mergeUnmanagedUpstreamProviders(catalog, params.upstreamState);
 };

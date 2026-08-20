@@ -30,7 +30,7 @@ import { resolveAccessStatus } from '../guards/accessGrant';
 import {
   AiCatalogReadService,
   getEmptyPublishedAiCatalog,
-  isPlatformAiTakeoverActive,
+  getPlatformAiTakeoverFlags,
 } from '../services/aiCatalog';
 import { resolvePlatformPublicSnapshot } from '../services/branding';
 import {
@@ -158,12 +158,14 @@ export const platformRouter = router({
     });
 
     const modules = (await getModuleSettingsSnapshot()).effective;
+    const takeover = await getPlatformAiTakeoverFlags(ctx.serverDB, flags);
 
     return buildPlatformCapabilities({
       adminAccess,
-      // Explicit runtime-takeover signal: `managedResources.aiProviders` is also true for
-      // `ui-only`, where the UI is blocked but the runtime is NOT platform-governed.
-      aiTakeover: await isPlatformAiTakeoverActive(ctx.serverDB, flags),
+      // Explicit runtime-takeover signals: `managedResources.aiProviders` / `aiModels` are
+      // also true for `ui-only`, where the UI is blocked but the runtime is NOT taken over.
+      aiModelTakeover: takeover.models,
+      aiTakeover: takeover.providers,
       flags,
       managedResources: managed.publicCapabilities,
       modules,

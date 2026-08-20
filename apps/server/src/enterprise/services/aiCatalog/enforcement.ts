@@ -4,6 +4,7 @@ import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 // SQL fragments at module scope.
 import { PlatformManagedResourcePolicyModel } from '@/database/models/platform/managedResourcePolicy';
 import type { LobeChatDatabase } from '@/database/type';
+import type { ManagedResourcePolicyItem } from '@/types/platform/managedResources';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 
@@ -18,47 +19,82 @@ import { parseEnterpriseFeatureFlags } from '../../featureFlags';
  */
 export const PLATFORM_AI_TAKEOVER_MEMO_TTL_MS = 2_000;
 
-let takeoverMemo = new WeakMap<object, { expiresAt: number; value: boolean }>();
+export interface PlatformAiTakeoverFlags {
+  /** Published `aiModels` `{managed, enforced}` — picker + execution allowlist. */
+  models: boolean;
+  /** Published `aiProviders` `{managed, enforced}` — credentials + provider list. */
+  providers: boolean;
+}
+
+const INACTIVE_TAKEOVER_FLAGS: PlatformAiTakeoverFlags = { models: false, providers: false };
+
+let takeoverMemo = new WeakMap<object, { expiresAt: number } & PlatformAiTakeoverFlags>();
+
+const isPublishedEnforcedManaged = (
+  status: string,
+  item: ManagedResourcePolicyItem | undefined,
+): boolean =>
+  status === 'published' && item?.managed === true && item.enforcementMode === 'enforced';
 
 /**
- * True only when the administrator has PUBLISHED 平台托管 for AI providers.
- *
- * This — not catalog membership — is what authorizes the platform AI catalog to override a
- * user's own provider configuration (runtime state, settings model list, chat credentials,
- * the published-model allowlist). Connecting a shared account or publishing a provider has
- * zero user-visible effect until this predicate is true.
- *
- * Reads the PUBLISHED policy directly rather than `effectiveModes`: the latter downgrades
- * `enforced → unmanaged` when catalog readiness is false, which would make enforcement
- * silently lapse and hand users back their own credentials during a catalog outage.
- * Enforcement can only be published while ready (`prepareLockedPublish`), so honouring the
- * published policy is fail-closed. `resolvePublishedManagedResourcePolicies` mirrors this for
- * `aiProviders`/`aiModels` so the client blocks the UI exactly when the server takes over.
+ * One `getSnapshot()` for both AI-catalog kinds. Feature flag off → both false with no
+ * table read. A snapshot failure propagates (fail closed) instead of degrading to unmanaged.
  *
  * Never calls `resolveManagedResourceReadiness()` — for `aiProviders` that probe loads the
  * whole catalog and decrypts every provider secret, which must not sit on the chat hot path.
  *
- * A `getSnapshot()` failure propagates (fail closed) instead of degrading to "not managed".
+ * Reads the PUBLISHED policy directly rather than `effectiveModes`: the latter downgrades
+ * `enforced → unmanaged` when catalog readiness is false, which would make enforcement
+ * silently lapse and hand users back their own credentials during a catalog outage.
+ */
+export const getPlatformAiTakeoverFlags = async (
+  db: LobeChatDatabase,
+  flags: EnterpriseFeatureFlags = parseEnterpriseFeatureFlags(process.env),
+  now: () => number = Date.now,
+): Promise<PlatformAiTakeoverFlags> => {
+  if (!flags.ENABLE_PLATFORM_MANAGED_AI) return INACTIVE_TAKEOVER_FLAGS;
+
+  const at = now();
+  const cached = takeoverMemo.get(db as object);
+  if (cached && cached.expiresAt > at)
+    return { models: cached.models, providers: cached.providers };
+
+  const snapshot = await new PlatformManagedResourcePolicyModel(db).getSnapshot();
+  const value: PlatformAiTakeoverFlags = {
+    models: isPublishedEnforcedManaged(snapshot.status, snapshot.published.aiModels),
+    providers: isPublishedEnforcedManaged(snapshot.status, snapshot.published.aiProviders),
+  };
+
+  takeoverMemo.set(db as object, { expiresAt: at + PLATFORM_AI_TAKEOVER_MEMO_TTL_MS, ...value });
+  return value;
+};
+
+/**
+ * True only when the administrator has PUBLISHED 平台托管 for AI providers.
+ *
+ * Authorizes the platform catalog to override a user's own *provider* configuration
+ * (credentials, provider list, runtimeConfig). Connecting a shared account or publishing a
+ * provider has zero user-visible effect until this predicate is true. Model-set governance
+ * is the sibling `isPlatformAiModelTakeoverActive`.
  */
 export const isPlatformAiTakeoverActive = async (
   db: LobeChatDatabase,
   flags: EnterpriseFeatureFlags = parseEnterpriseFeatureFlags(process.env),
   now: () => number = Date.now,
-): Promise<boolean> => {
-  if (!flags.ENABLE_PLATFORM_MANAGED_AI) return false;
+): Promise<boolean> => (await getPlatformAiTakeoverFlags(db, flags, now)).providers;
 
-  const at = now();
-  const cached = takeoverMemo.get(db as object);
-  if (cached && cached.expiresAt > at) return cached.value;
-
-  const snapshot = await new PlatformManagedResourcePolicyModel(db).getSnapshot();
-  const item = snapshot.published.aiProviders;
-  const value =
-    snapshot.status === 'published' && item.managed && item.enforcementMode === 'enforced';
-
-  takeoverMemo.set(db as object, { expiresAt: at + PLATFORM_AI_TAKEOVER_MEMO_TTL_MS, value });
-  return value;
-};
+/**
+ * True only when the administrator has PUBLISHED 平台托管 for AI models.
+ *
+ * Authorizes the published catalog `(providerKey, modelKey, type)` as the exclusive usable
+ * set: pickers, settings overlay, and the execution allowlist (including the BYOK credential
+ * path). Credentials still follow `isPlatformAiTakeoverActive`.
+ */
+export const isPlatformAiModelTakeoverActive = async (
+  db: LobeChatDatabase,
+  flags: EnterpriseFeatureFlags = parseEnterpriseFeatureFlags(process.env),
+  now: () => number = Date.now,
+): Promise<boolean> => (await getPlatformAiTakeoverFlags(db, flags, now)).models;
 
 /**
  * Drop the memo so the very next read observes the freshly published policy.

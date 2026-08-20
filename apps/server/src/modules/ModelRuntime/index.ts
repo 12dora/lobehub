@@ -50,7 +50,9 @@ import {
   createPlatformAiAuthFailureHooks,
   createPlatformAiModelAllowlistHooks,
   digestPlatformAiCredential,
+  isPlatformAiModelTakeoverActive,
   isPlatformManagedAiEnabled,
+  listPlatformPublishedModels,
   type PlatformAiExactModelRef,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfigAtRevision,
@@ -1020,7 +1022,9 @@ export const createManagedRequestModeHooks = (
 
 /**
  * User-owned (BYOK / self-built) provider path: reads the user's AiProvider row +
- * keyVaults. Never attaches platform allowlist hooks or platform secrets.
+ * keyVaults. Never attaches platform secrets. Platform model-allowlist hooks may be
+ * composed by the caller when `aiModels` hosting is active (fail-closed on the user
+ * credential path; no BYOK escape hatch).
  */
 const initUserModelRuntimeFromDB = async (
   db: LobeChatDatabase,
@@ -1028,6 +1032,7 @@ const initUserModelRuntimeFromDB = async (
   provider: string,
   workspaceId?: string,
   options?: InitModelRuntimeFromDBOptions,
+  extraHooks?: ModelRuntimeHooks,
 ): Promise<ModelRuntime> => {
   // 1. Get user's provider configuration from database
   const aiProviderModel = new AiProviderModel(db, userId, workspaceId);
@@ -1078,7 +1083,10 @@ const initUserModelRuntimeFromDB = async (
   // 5. Compose with the per-call llm_generation_tracing hook (no-op when the
   //    service is unconfigured, so OSS / self-hosted setups pay nothing for it).
   const tracingHooks = createLLMGenerationTracingHook(userId, provider, workspaceId);
-  const hooks = mergeModelRuntimeHooks(businessHooks, tracingHooks);
+  const hooks = mergeModelRuntimeHooks(
+    extraHooks,
+    mergeModelRuntimeHooks(businessHooks, tracingHooks),
+  );
   // 6. Initialize ModelRuntime with the payload and hooks
   // Note: providerConfig.config (e.g. enableResponseApi) is returned by getAiProviderById
   // and remains available to callers that read runtime state elsewhere; this path does not
@@ -1184,7 +1192,27 @@ export const initModelRuntimeFromDB = async (
     }
   }
 
-  return wrap(await initUserModelRuntimeFromDB(db, userId, provider, workspaceId, options));
+  // Model hosting is independent of credentials: even on the BYOK path the published
+  // set is the exclusive allowlist. Empty / unknown provider → fail closed (no escape).
+  const modelAllowlistHooks = (await isPlatformAiModelTakeoverActive(db))
+    ? createPlatformAiModelAllowlistHooks(
+        ((await listPlatformPublishedModels(db, provider)) ?? []).map((model) => ({
+          modelKey: model.id,
+          type: model.type,
+        })),
+      )
+    : undefined;
+
+  return wrap(
+    await initUserModelRuntimeFromDB(
+      db,
+      userId,
+      provider,
+      workspaceId,
+      options,
+      modelAllowlistHooks,
+    ),
+  );
 };
 
 /**

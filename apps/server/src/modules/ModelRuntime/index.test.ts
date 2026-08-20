@@ -69,10 +69,29 @@ interface InspectableBedrockRuntime {
 
 // The published 平台托管 policy — not the feature flag — authorizes the platform takeover.
 // The catalog runtime bridge imports `./enforcement` directly, so the mock must target it.
-const enforcementMocks = vi.hoisted(() => ({ takeover: true }));
+const enforcementMocks = vi.hoisted(() => ({
+  modelTakeover: false,
+  publishedModels: null as Array<{
+    enabled: boolean;
+    id: string;
+    providerId: string;
+    type: string;
+  }> | null,
+  takeover: true,
+}));
 vi.mock('@/server/enterprise/services/aiCatalog/enforcement', async (importOriginal) => ({
   ...(await importOriginal<typeof AiCatalogEnforcement>()),
+  getPlatformAiTakeoverFlags: vi.fn(async () => ({
+    models: enforcementMocks.modelTakeover,
+    providers: enforcementMocks.takeover,
+  })),
+  isPlatformAiModelTakeoverActive: vi.fn(async () => enforcementMocks.modelTakeover),
   isPlatformAiTakeoverActive: vi.fn(async () => enforcementMocks.takeover),
+}));
+vi.mock('./platformAiRuntimeBridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof platformAiRuntimeBridge>()),
+  isPlatformAiModelTakeoverActive: vi.fn(async () => enforcementMocks.modelTakeover),
+  listPlatformPublishedModels: vi.fn(async () => enforcementMocks.publishedModels),
 }));
 
 // 模拟依赖项
@@ -595,6 +614,8 @@ describe('initModelRuntimeWithUserPayload method', () => {
 
 describe('initModelRuntimeFromDB managed model guard', () => {
   beforeEach(() => {
+    enforcementMocks.modelTakeover = false;
+    enforcementMocks.publishedModels = null;
     enforcementMocks.takeover = true;
   });
 
@@ -843,6 +864,97 @@ describe('initModelRuntimeFromDB managed model guard', () => {
         runtime.chat({ messages: [], model: 'any-custom-model' }),
       ).resolves.toBeInstanceOf(Response);
       expect(providerChat).toHaveBeenCalledOnce();
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
+  it('composes the published-model allowlist on the BYOK path when only models are hosted', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    enforcementMocks.takeover = false;
+    enforcementMocks.modelTakeover = true;
+    const notFound = Object.assign(new Error('PLATFORM_NOT_FOUND'), {
+      code: 'PLATFORM_NOT_FOUND',
+    });
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockRejectedValue(notFound);
+    enforcementMocks.publishedModels = [
+      { enabled: true, id: 'allow-chat', providerId: 'openai', type: 'chat' },
+    ];
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'openai',
+      keyVaults: null,
+      settings: {},
+      source: 'builtin',
+    };
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [providerRow] }) }) }),
+    };
+
+    try {
+      const runtime = await initModelRuntimeFromDB(db as never, 'user-1', 'openai');
+      const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+      runtime['_runtime'] = { chat: providerChat } as never;
+
+      await expect(runtime.chat({ messages: [], model: 'user-own-model' })).rejects.toMatchObject({
+        errorType: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+      });
+      expect(providerChat).not.toHaveBeenCalled();
+
+      await expect(runtime.chat({ messages: [], model: 'allow-chat' })).resolves.toBeInstanceOf(
+        Response,
+      );
+      expect(providerChat).toHaveBeenCalledOnce();
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
+  it('rejects an unpublished provider with an empty allowlist under model takeover (no BYOK escape)', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    enforcementMocks.takeover = false;
+    enforcementMocks.modelTakeover = true;
+    const notFound = Object.assign(new Error('PLATFORM_NOT_FOUND'), {
+      code: 'PLATFORM_NOT_FOUND',
+    });
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockRejectedValue(notFound);
+    enforcementMocks.publishedModels = [];
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'custom-gateway',
+      keyVaults: null,
+      settings: { sdkType: 'openai' },
+      source: 'custom',
+    };
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [providerRow] }) }) }),
+    };
+
+    try {
+      const runtime = await initModelRuntimeFromDB(db as never, 'user-1', 'custom-gateway');
+      const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+      runtime['_runtime'] = { chat: providerChat } as never;
+
+      await expect(runtime.chat({ messages: [], model: 'any-custom-model' })).rejects.toMatchObject(
+        {
+          errorType: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+        },
+      );
+      expect(providerChat).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();
       if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;

@@ -26,6 +26,7 @@ import {
   resetPlatformAgentTakeoverCacheForTest,
 } from './agentCatalog/enforcement';
 import {
+  isPlatformAiModelTakeoverActive,
   isPlatformAiTakeoverActive,
   resetPlatformAiTakeoverCacheForTest,
 } from './aiCatalog/enforcement';
@@ -237,10 +238,12 @@ describe('ManagedResourcePolicyService', () => {
     const service = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
     const initial = await service.get();
     const draft = createUnmanagedResourcePolicyMap();
+    draft.aiModels = { enforcementMode: 'enforced', managed: true };
     draft.aiProviders = { enforcementMode: 'enforced', managed: true };
 
     // Warm the memo with the pre-save answer, then save.
     expect(await isPlatformAiTakeoverActive(serverDB, flags)).toBe(false);
+    expect(await isPlatformAiModelTakeoverActive(serverDB, flags)).toBe(false);
     await service.save({
       actorUserId: 'admin-1',
       draft,
@@ -251,6 +254,7 @@ describe('ManagedResourcePolicyService', () => {
 
     // No TTL wait: the very next read sees the freshly published policy.
     expect(await isPlatformAiTakeoverActive(serverDB, flags)).toBe(true);
+    expect(await isPlatformAiModelTakeoverActive(serverDB, flags)).toBe(true);
   });
 
   it('drops the platform-agent takeover memo after the save transaction commits', async () => {

@@ -376,15 +376,13 @@ export const MANAGED_RESOURCE_MUTATION_REGISTRY = {
     resource: 'skills',
   },
 
-  // Enable/disable is a PERSONAL VIEW overlay under managed AI: the user's `ai_models.enabled`
-  // flag decides only whether an admin-published model appears in that user's own list and
-  // picker. It never publishes, unpublishes, or changes what anyone else sees, and the
-  // execution allowlist stays published-only. Denying it made models vanish from the settings
-  // page with no way to bring them back. Create/delete/edit stay denied — those would change
-  // the catalog itself.
+  // Under `aiModels` hosting the picker is the published catalog (`enabled: true`), not the
+  // user's `ai_models.enabled` overlay. Toggle would 403 after that overlay stopped affecting
+  // the picker, and would still let a user hide a published model from settings. Deny it the
+  // same as create/update — users may select among published models, not enable/disable them.
   'aiModel.batchToggleAiModels': {
-    classification: 'allow',
-    reason: 'Personal visibility overlay: hides or shows published models for this user only.',
+    classification: 'deny',
+    reason: 'Enable/disable is not a personal overlay while the platform hosts the model catalog.',
     resource: 'aiModels',
   },
   'aiModel.batchUpdateAiModels': {
@@ -413,8 +411,8 @@ export const MANAGED_RESOURCE_MUTATION_REGISTRY = {
     resource: 'aiModels',
   },
   'aiModel.toggleModelEnabled': {
-    classification: 'allow',
-    reason: 'Personal visibility overlay: hides or shows a published model for this user only.',
+    classification: 'deny',
+    reason: 'Enable/disable is not a personal overlay while the platform hosts the model catalog.',
     resource: 'aiModels',
   },
   'aiModel.updateAiModel': {

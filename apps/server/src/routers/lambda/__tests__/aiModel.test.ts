@@ -8,11 +8,13 @@ import { aiModelRouter } from '../aiModel';
 
 // The published 平台托管 policy — not the feature flag — authorizes the platform takeover.
 const bridgeMocks = vi.hoisted(() => ({
+  isPlatformAiModelTakeoverActive: vi.fn(),
   isPlatformAiTakeoverActive: vi.fn(),
   listPlatformPublishedModels: vi.fn(),
 }));
 vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => ({
   ...(await importOriginal<typeof PlatformAiRuntimeBridge>()),
+  isPlatformAiModelTakeoverActive: bridgeMocks.isPlatformAiModelTakeoverActive,
   isPlatformAiTakeoverActive: bridgeMocks.isPlatformAiTakeoverActive,
   listPlatformPublishedModels: bridgeMocks.listPlatformPublishedModels,
 }));
@@ -40,6 +42,7 @@ describe('aiModelRouter', () => {
   };
 
   beforeEach(() => {
+    bridgeMocks.isPlatformAiModelTakeoverActive.mockResolvedValue(false);
     bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(false);
     bridgeMocks.listPlatformPublishedModels.mockReset();
   });
@@ -171,11 +174,13 @@ describe('aiModelRouter', () => {
     });
   });
 
-  it('applies no published-model overlay while the platform has not taken over', async () => {
+  it('applies no published-model overlay while the platform has not taken over models', async () => {
     const mockGetList = vi.fn().mockResolvedValue([]);
     vi.mocked(AiInfraRepos).mockImplementation(
       () => ({ getAiProviderModelList: mockGetList }) as any,
     );
+    // Provider takeover alone must not overlay — the settings list stays the user's own.
+    bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(true);
 
     await aiModelRouter.createCaller(mockCtx).getAiProviderModelList({ id: 'chatgpt' });
 
@@ -186,8 +191,8 @@ describe('aiModelRouter', () => {
     );
   });
 
-  it('overlays the admin-published set once 平台托管 is published', async () => {
-    bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(true);
+  it('overlays the admin-published set as the sole base once models are hosted', async () => {
+    bridgeMocks.isPlatformAiModelTakeoverActive.mockResolvedValue(true);
     bridgeMocks.listPlatformPublishedModels.mockResolvedValue([
       { abilities: {}, enabled: true, id: 'gpt-5.6-sol', providerId: 'chatgpt', type: 'chat' },
     ]);
@@ -201,6 +206,7 @@ describe('aiModelRouter', () => {
     expect(mockGetList).toHaveBeenCalledWith(
       'chatgpt',
       expect.objectContaining({
+        overlayUserModels: false,
         publishedModels: [
           expect.objectContaining({ enabled: true, id: 'gpt-5.6-sol', type: 'chat' }),
         ],

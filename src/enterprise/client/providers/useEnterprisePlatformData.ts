@@ -164,17 +164,20 @@ export const useEnterprisePlatformData = ({
   // would keep seeing (and the picker keep offering) the previous regime's providers until a
   // reload.
   //
-  // The signal is `aiTakeover` — the server's own runtime-takeover predicate — plus the
-  // managed-resource policy REVISION (`configRevision`) and the UI-blocking `aiProviders`
-  // flag. `aiTakeover` is the precise trigger (`managedResources.aiProviders` is also true for
-  // `ui-only`, where the UI is blocked but the runtime is NOT taken over, so `enforced →
-  // ui-only` would otherwise be invisible); the revision and the flag are kept so any other
-  // policy or readiness-driven capability change also refreshes. Only fire on a real
-  // transition, never on the first observed value.
+  // The signal is the server's runtime-takeover predicates (`aiTakeover` for providers,
+  // `aiModelTakeover` for the model catalog) plus the managed-resource policy REVISION
+  // (`configRevision`) and the UI-blocking `aiProviders` / `aiModels` flags. The runtime
+  // bits are the precise trigger (`managedResources.*` is also true for `ui-only`, where
+  // the UI is blocked but the runtime is NOT taken over, so `enforced → ui-only` would
+  // otherwise be invisible); the revision and the flags are kept so any other policy or
+  // readiness-driven capability change also refreshes. Only fire on a real transition,
+  // never on the first observed value.
   const capabilitySignal = capabilitiesSWR.data
     ? [
         capabilitiesSWR.data.aiTakeover === true,
+        capabilitiesSWR.data.aiModelTakeover === true,
         capabilitiesSWR.data.managedResources?.aiProviders === true,
+        capabilitiesSWR.data.managedResources?.aiModels === true,
         capabilitiesSWR.data.configRevision,
       ].join('|')
     : null;

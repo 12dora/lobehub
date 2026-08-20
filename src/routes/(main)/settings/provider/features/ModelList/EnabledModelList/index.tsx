@@ -4,6 +4,7 @@ import { ArrowDownUpIcon, ToggleLeft } from 'lucide-react';
 import { use, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useManagedResource } from '@/features/ManagedResources';
 import { usePermission } from '@/hooks/usePermission';
 import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { aiModelSelectors } from '@/store/aiInfra/selectors';
@@ -20,6 +21,7 @@ const EnabledModelList = ({ activeTab }: EnabledModelListProps) => {
   const { t } = useTranslation('modelProvider');
   const { modelEditable } = use(ProviderSettingsContext);
   const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
+  const { managed: aiModelsManaged } = useManagedResource('aiModels');
 
   const enabledModels = useAiInfraStore(aiModelSelectors.enabledAiProviderModelList, isEqual);
   const batchToggleAiModels = useAiInfraStore((s) => s.batchToggleAiModels);
@@ -51,7 +53,7 @@ const EnabledModelList = ({ activeTab }: EnabledModelListProps) => {
         {!isEmpty && (
           <TooltipGroup>
             <Flexbox horizontal>
-              {togglableModels.length > 0 && (
+              {togglableModels.length > 0 && !aiModelsManaged && (
                 <ActionIcon
                   disabled={!canManageProvider}
                   icon={ToggleLeft}

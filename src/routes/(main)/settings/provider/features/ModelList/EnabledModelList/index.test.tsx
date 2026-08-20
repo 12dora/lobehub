@@ -15,6 +15,10 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+vi.mock('@/features/ManagedResources', () => ({
+  useManagedResource: () => ({ managed: false }),
+}));
+
 vi.mock('@/hooks/usePermission', () => ({
   usePermission: () => ({ allowed: mocks.canManageProvider, reason: 'requires owner' }),
 }));

@@ -52,19 +52,26 @@ describe('buildPlatformCapabilities', () => {
     expect(caps).not.toHaveProperty('enforcementMode');
   });
 
-  it('exposes aiTakeover only with the managed-AI flag and a resolved server verdict', () => {
+  it('exposes aiTakeover and aiModelTakeover only with the managed-AI flag and a resolved server verdict', () => {
     const flagOff = buildPlatformCapabilities({
+      aiModelTakeover: true,
       aiTakeover: true,
       flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
     });
     expect(flagOff.aiTakeover).toBe(false);
+    expect(flagOff.aiModelTakeover).toBe(false);
 
     const flagOn = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
     expect(buildPlatformCapabilities({ flags: flagOn }).aiTakeover).toBe(false);
+    expect(buildPlatformCapabilities({ flags: flagOn }).aiModelTakeover).toBe(false);
     expect(buildPlatformCapabilities({ aiTakeover: true, flags: flagOn }).aiTakeover).toBe(true);
+    expect(
+      buildPlatformCapabilities({ aiModelTakeover: true, flags: flagOn }).aiModelTakeover,
+    ).toBe(true);
 
     // `ui-only` blocks the UI without a runtime takeover: the two signals must be independent.
     const uiOnly = buildPlatformCapabilities({
+      aiModelTakeover: false,
       aiTakeover: false,
       flags: flagOn,
       managedResources: {
@@ -76,7 +83,9 @@ describe('buildPlatformCapabilities', () => {
       },
     });
     expect(uiOnly.managedResources.aiProviders).toBe(true);
+    expect(uiOnly.managedResources.aiModels).toBe(true);
     expect(uiOnly.aiTakeover).toBe(false);
+    expect(uiOnly.aiModelTakeover).toBe(false);
   });
 
   it('sets adminAccess only when flag on and caller marks access', () => {

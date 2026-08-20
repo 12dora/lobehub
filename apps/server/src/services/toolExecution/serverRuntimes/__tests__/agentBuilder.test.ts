@@ -9,6 +9,7 @@ const {
   mockGetAiProviderList,
   mockGetAiProviderModelList,
   mockGetAiProviderRuntimeState,
+  mockIsPlatformAiModelTakeoverActive,
   mockIsPlatformAiTakeoverActive,
   mockResolveAiCatalogRuntimeState,
   mockUpdateConfig,
@@ -19,6 +20,7 @@ const {
   mockGetAiProviderList: vi.fn(),
   mockGetAiProviderModelList: vi.fn(),
   mockGetAiProviderRuntimeState: vi.fn(),
+  mockIsPlatformAiModelTakeoverActive: vi.fn(),
   mockIsPlatformAiTakeoverActive: vi.fn(),
   mockResolveAiCatalogRuntimeState: vi.fn(),
   mockUpdateConfig: vi.fn(),
@@ -57,6 +59,7 @@ vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', () => ({
     enabledVideoAiProviders: [],
     runtimeConfig: {},
   }),
+  isPlatformAiModelTakeoverActive: mockIsPlatformAiModelTakeoverActive,
   isPlatformAiTakeoverActive: mockIsPlatformAiTakeoverActive,
   resolvePlatformAiRuntimeState: mockResolveAiCatalogRuntimeState,
 }));
@@ -93,6 +96,7 @@ describe('agentBuilderRuntime', () => {
   beforeEach(() => {
     delete process.env.ENABLE_PLATFORM_MANAGED_AI;
     vi.clearAllMocks();
+    mockIsPlatformAiModelTakeoverActive.mockResolvedValue(false);
     mockIsPlatformAiTakeoverActive.mockResolvedValue(false);
   });
 
@@ -150,6 +154,29 @@ describe('agentBuilderRuntime', () => {
       );
       expect(mockGetAiProviderList).not.toHaveBeenCalled();
       expect(mockGetAiProviderModelList).not.toHaveBeenCalled();
+    });
+
+    it('uses the platform runtime state when only models are hosted', async () => {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      mockIsPlatformAiModelTakeoverActive.mockResolvedValue(true);
+      mockGetAiProviderRuntimeState.mockResolvedValue(userOnlyUpstreamState);
+      mockResolveAiCatalogRuntimeState.mockResolvedValue({
+        enabledAiModels: [
+          { enabled: true, id: 'published-chat', providerId: 'alpha', type: 'chat' },
+        ],
+        enabledAiProviders: [{ id: 'alpha', name: 'Alpha' }],
+      });
+
+      const result = await createRuntime().getAvailableModels({});
+
+      expect(result.success).toBe(true);
+      expect(result.state).toMatchObject({
+        providers: [{ id: 'alpha', models: [{ id: 'published-chat' }] }],
+      });
+      expect(mockResolveAiCatalogRuntimeState).toHaveBeenCalledWith(
+        expect.objectContaining({ upstreamState: userOnlyUpstreamState }),
+      );
+      expect(mockGetAiProviderList).not.toHaveBeenCalled();
     });
 
     it('keeps a user-only provider alongside the platform catalog under takeover', async () => {

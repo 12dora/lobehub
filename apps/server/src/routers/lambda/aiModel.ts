@@ -19,7 +19,7 @@ import { withManagedResourceGuard } from '@/server/enterprise/guards/managedReso
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import {
-  isPlatformAiTakeoverActive,
+  isPlatformAiModelTakeoverActive,
   listPlatformPublishedModels,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { type ProviderConfig } from '@/types/user/settings';
@@ -156,12 +156,10 @@ export const aiModelRouter = router({
       }),
     )
     .query(async ({ ctx, input }): Promise<AiProviderModelListItem[]> => {
-      // Actively platform-managed provider (published 平台托管 + published catalog entry):
-      // the admin's published set replaces the model-bank defaults as the base list, and the
-      // user's own rows still overlay their enabled flags. A personally-disabled model
-      // therefore lands in the disabled slice instead of vanishing, and a model the admin
-      // never published never shows up at all. Without takeover this is the vanilla BYOK list.
-      const publishedModels = (await isPlatformAiTakeoverActive(ctx.serverDB))
+      // Model takeover (published `aiModels` managed+enforced): the admin's published set is
+      // the sole base list. User `ai_models` rows are not merged — they cannot hide, edit, or
+      // resurrect unpublished ids. Without model takeover this is the vanilla BYOK list.
+      const publishedModels = (await isPlatformAiModelTakeoverActive(ctx.serverDB))
         ? await listPlatformPublishedModels(ctx.serverDB, input.id)
         : null;
 
@@ -170,7 +168,10 @@ export const aiModelRouter = router({
         limit: input.limit,
         offset: input.offset,
         ...(publishedModels
-          ? { publishedModels: publishedModels.map(toProviderModelListItem) }
+          ? {
+              overlayUserModels: false,
+              publishedModels: publishedModels.map(toProviderModelListItem),
+            }
           : {}),
         type: input.type,
       });

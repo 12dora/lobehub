@@ -83,6 +83,11 @@ export interface PlatformAiRuntimeImplementation {
   createModelAllowlistHooks: (models: PlatformAiExecutionModel[]) => ModelRuntimeHooks;
   isEnabled: () => boolean;
   /**
+   * True only while the administrator has PUBLISHED 平台托管 for AI models. Governs the
+   * usable model set (picker + execution allowlist), independently of provider credentials.
+   */
+  isModelTakeoverActive: (db: LobeChatDatabase) => Promise<boolean>;
+  /**
    * True only while the administrator has PUBLISHED 平台托管 for AI providers. The feature
    * flag alone never authorizes the platform to override a user's own configuration.
    */
@@ -158,6 +163,16 @@ export const isPlatformManagedAiEnabled = (): boolean =>
 export const isPlatformAiTakeoverActive = async (db: LobeChatDatabase): Promise<boolean> => {
   if (!isPlatformManagedAiEnabled()) return false;
   return requireImplementation().isTakeoverActive(db);
+};
+
+/**
+ * Sibling of `isPlatformAiTakeoverActive`: "is the published model catalog the exclusive
+ * usable set?". Independent of provider-credential takeover. Never true without the feature
+ * flag AND a published `aiModels` `{managed, enforced}` policy.
+ */
+export const isPlatformAiModelTakeoverActive = async (db: LobeChatDatabase): Promise<boolean> => {
+  if (!isPlatformManagedAiEnabled()) return false;
+  return requireImplementation().isModelTakeoverActive(db);
 };
 
 export const resolvePlatformAiExecutionConfig = (

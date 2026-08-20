@@ -305,23 +305,33 @@ export class AiInfraRepos {
       limit?: number;
       offset?: number;
       /**
+       * When false, skip merging the user's `ai_models` rows on top of `publishedModels`
+       * (or builtin defaults). Default true — today's merge. Model hosting uses this so
+       * personal enabled/params cannot hide or resurrect unpublished ids.
+       */
+      overlayUserModels?: boolean;
+      /**
        * Base model set for an actively platform-managed provider: what the administrator
        * published, used INSTEAD of the model-bank defaults. The user's own rows still overlay
-       * their `enabled` flags on top, so a personally-disabled model moves to the disabled
-       * slice rather than vanishing, and a model the admin never published never appears.
-       * Omit (or pass undefined) for BYOK providers — behaviour is unchanged there.
+       * their `enabled` flags on top unless `overlayUserModels` is false. A model the admin
+       * never published never appears. Omit (or pass undefined) for BYOK providers —
+       * behaviour is unchanged there.
        */
       publishedModels?: AiProviderModelListItem[];
       type?: string;
     },
   ) => {
-    const aiModels = await this.aiModelModel.getModelListByProviderId(providerId);
+    const overlayUserModels = options?.overlayUserModels !== false;
+    const aiModels = overlayUserModels
+      ? await this.aiModelModel.getModelListByProviderId(providerId)
+      : [];
     const defaultModels: AiProviderModelListItem[] =
       options?.publishedModels ?? ((await this.fetchBuiltinModels(providerId)) || []);
 
     // Under the published overlay the admin's set is the whole world: a personal row for a
     // model that was never published (or was unpublished later) must not resurrect it as a
-    // list entry. Personal rows survive only as flags on published models.
+    // list entry. Personal rows survive only as flags on published models (and only when
+    // overlay is on).
     const publishedIds = options?.publishedModels
       ? new Set(options.publishedModels.map((model) => model.id))
       : null;

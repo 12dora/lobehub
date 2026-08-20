@@ -35,8 +35,20 @@ export interface PlatformCapabilities {
    */
   adminAccess: boolean;
   /**
+   * Whether the published model catalog currently OVERRIDES users' own usable model set
+   * (picker, settings overlay, execution allowlist). Independent of `aiTakeover`
+   * (credentials still follow `aiProviders`).
+   *
+   * True only for `ENABLE_PLATFORM_MANAGED_AI` + a PUBLISHED `aiModels`
+   * `{managed: true, enforcementMode: 'enforced'}` policy — the server-side
+   * `isPlatformAiModelTakeoverActive` predicate. Distinct from
+   * `managedResources.aiModels`, which is also true for `ui-only`.
+   */
+  aiModelTakeover: boolean;
+  /**
    * Whether the platform AI catalog currently OVERRIDES users' own provider configuration
-   * (runtime state, settings model list, chat credentials, published-model allowlist).
+   * (runtime state, credentials, provider list). Distinct from the model-set takeover
+   * (`aiModelTakeover`).
    *
    * True only for `ENABLE_PLATFORM_MANAGED_AI` + a PUBLISHED `aiProviders`
    * `{managed: true, enforcementMode: 'enforced'}` policy — the server-side
@@ -65,6 +77,7 @@ export interface PlatformCapabilities {
 /** Safe empty snapshot when all enterprise flags are off. */
 export const DISABLED_PLATFORM_CAPABILITIES: PlatformCapabilities = {
   adminAccess: false,
+  aiModelTakeover: false,
   aiTakeover: false,
   brandingRevision: null,
   configRevision: '0',

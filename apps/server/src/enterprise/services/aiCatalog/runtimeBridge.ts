@@ -7,7 +7,7 @@ import {
   registerPlatformAiRuntime,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
-import { isPlatformAiTakeoverActive } from './enforcement';
+import { isPlatformAiModelTakeoverActive, isPlatformAiTakeoverActive } from './enforcement';
 import { AiCatalogNotFoundError } from './errors';
 import {
   AiCatalogExecutionResolver,
@@ -32,8 +32,13 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
     // the binding here during evaluation is a TDZ ReferenceError; a closure reads it at call time.
     createModelAllowlistHooks: (allowedModels) => createAiCatalogModelAllowlistHooks(allowedModels),
     isEnabled: () => parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AI,
+    isModelTakeoverActive: (db) => isPlatformAiModelTakeoverActive(db),
     isTakeoverActive: (db) => isPlatformAiTakeoverActive(db),
     listPublishedModels: async (db, providerKey) => {
+      // Overlay is keyed on MODEL takeover: without it the settings list stays the user's
+      // own (BYOK) view. With it, return the published set for this provider even when
+      // provider takeover is off (user credentials, platform model catalog).
+      if (!(await isPlatformAiModelTakeoverActive(db))) return null;
       const state = await resolveAiCatalogRuntimeState({
         db,
         upstreamState: {
@@ -45,12 +50,6 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
           runtimeConfig: {},
         },
       });
-      // Not in the published snapshot ⇒ not actively managed; the caller must fall back to
-      // the user's own (BYOK) view rather than treat the provider as an empty catalog.
-      // `resolveAiCatalogRuntimeState` returns the (empty) upstream state whenever the
-      // platform has not taken over, so this is `null` for every provider then.
-      const managed = state.enabledAiProviders.some((provider) => provider.id === providerKey);
-      if (!managed) return null;
       return state.enabledAiModels.filter((model) => model.providerId === providerKey);
     },
     /**

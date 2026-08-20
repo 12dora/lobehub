@@ -13,6 +13,8 @@ import type { ManagedResourcePolicyItem } from '@/types/platform/managedResource
 
 import type * as ManagedResourceReadinessModule from '../managedResourceReadiness';
 import {
+  getPlatformAiTakeoverFlags,
+  isPlatformAiModelTakeoverActive,
   isPlatformAiTakeoverActive,
   PLATFORM_AI_TAKEOVER_MEMO_TTL_MS,
   resetPlatformAiTakeoverCache,
@@ -30,23 +32,33 @@ vi.mock('../managedResourceReadiness', async (importOriginal) => ({
 const db: LobeChatDatabase = await getTestDB();
 const flagsOn = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
 
-const publish = async (aiProviders: ManagedResourcePolicyItem) => {
+const publish = async (params: {
+  aiModels?: ManagedResourcePolicyItem;
+  aiProviders?: ManagedResourcePolicyItem;
+}) => {
   const model = new PlatformManagedResourcePolicyModel(db);
   await model.ensureRows();
   const policies = createUnmanagedResourcePolicyMap();
-  policies.aiProviders = aiProviders;
+  if (params.aiProviders) policies.aiProviders = params.aiProviders;
+  if (params.aiModels) policies.aiModels = params.aiModels;
   await model.materializePublished({ policies, revision: 1 });
   resetPlatformAiTakeoverCacheForTest();
 };
 
-const saveDraftOnly = async (aiProviders: ManagedResourcePolicyItem) => {
+const saveDraftOnly = async (params: {
+  aiModels?: ManagedResourcePolicyItem;
+  aiProviders?: ManagedResourcePolicyItem;
+}) => {
   const model = new PlatformManagedResourcePolicyModel(db);
   await model.ensureRows();
   const draft = createUnmanagedResourcePolicyMap();
-  draft.aiProviders = aiProviders;
+  if (params.aiProviders) draft.aiProviders = params.aiProviders;
+  if (params.aiModels) draft.aiModels = params.aiModels;
   await model.replaceDraft({ draft });
   resetPlatformAiTakeoverCacheForTest();
 };
+
+const enforced = { enforcementMode: 'enforced' as const, managed: true };
 
 beforeEach(async () => {
   resetPlatformAiTakeoverCacheForTest();
@@ -59,9 +71,9 @@ afterEach(async () => {
   await db.delete(platformManagedResourcePolicies);
 });
 
-describe('isPlatformAiTakeoverActive', () => {
+describe('platform AI takeover flags', () => {
   it('is false without the feature flag, and never reads the policy table', async () => {
-    await publish({ enforcementMode: 'enforced', managed: true });
+    await publish({ aiModels: enforced, aiProviders: enforced });
     const failOnRead = new Proxy(
       {},
       {
@@ -74,44 +86,98 @@ describe('isPlatformAiTakeoverActive', () => {
     expect(await isPlatformAiTakeoverActive(failOnRead, DISABLED_ENTERPRISE_FEATURE_FLAGS)).toBe(
       false,
     );
+    expect(
+      await isPlatformAiModelTakeoverActive(failOnRead, DISABLED_ENTERPRISE_FEATURE_FLAGS),
+    ).toBe(false);
+    expect(await getPlatformAiTakeoverFlags(failOnRead, DISABLED_ENTERPRISE_FEATURE_FLAGS)).toEqual(
+      { models: false, providers: false },
+    );
   });
 
   it('is false while the enforced policy is only a draft', async () => {
-    await saveDraftOnly({ enforcementMode: 'enforced', managed: true });
+    await saveDraftOnly({ aiModels: enforced, aiProviders: enforced });
 
-    expect(await isPlatformAiTakeoverActive(db, flagsOn)).toBe(false);
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn)).toEqual({
+      models: false,
+      providers: false,
+    });
   });
 
   it('is false for the 用户自配 (observe) published policy', async () => {
-    await publish({ enforcementMode: 'observe', managed: false });
+    await publish({
+      aiModels: { enforcementMode: 'observe', managed: false },
+      aiProviders: { enforcementMode: 'observe', managed: false },
+    });
 
-    expect(await isPlatformAiTakeoverActive(db, flagsOn)).toBe(false);
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn)).toEqual({
+      models: false,
+      providers: false,
+    });
   });
 
   it('is false for observe-with-managed and for ui-only (UI hiding is not a runtime takeover)', async () => {
-    await publish({ enforcementMode: 'observe', managed: true });
-    expect(await isPlatformAiTakeoverActive(db, flagsOn)).toBe(false);
+    await publish({
+      aiModels: { enforcementMode: 'observe', managed: true },
+      aiProviders: { enforcementMode: 'observe', managed: true },
+    });
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn)).toEqual({
+      models: false,
+      providers: false,
+    });
 
-    await publish({ enforcementMode: 'ui-only', managed: true });
-    expect(await isPlatformAiTakeoverActive(db, flagsOn)).toBe(false);
+    await publish({
+      aiModels: { enforcementMode: 'ui-only', managed: true },
+      aiProviders: { enforcementMode: 'ui-only', managed: true },
+    });
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn)).toEqual({
+      models: false,
+      providers: false,
+    });
   });
 
   it('is false for enforced-but-not-managed', async () => {
-    await publish({ enforcementMode: 'enforced', managed: false });
+    await publish({
+      aiModels: { enforcementMode: 'enforced', managed: false },
+      aiProviders: { enforcementMode: 'enforced', managed: false },
+    });
 
-    expect(await isPlatformAiTakeoverActive(db, flagsOn)).toBe(false);
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn)).toEqual({
+      models: false,
+      providers: false,
+    });
   });
 
-  it('is true only for a published managed+enforced policy', async () => {
-    await publish({ enforcementMode: 'enforced', managed: true });
+  it('splits independently: models-only, providers-only, and both', async () => {
+    await publish({ aiModels: enforced });
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn)).toEqual({
+      models: true,
+      providers: false,
+    });
+    expect(await isPlatformAiModelTakeoverActive(db, flagsOn)).toBe(true);
+    expect(await isPlatformAiTakeoverActive(db, flagsOn)).toBe(false);
 
+    await publish({ aiProviders: enforced });
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn)).toEqual({
+      models: false,
+      providers: true,
+    });
+    expect(await isPlatformAiModelTakeoverActive(db, flagsOn)).toBe(false);
     expect(await isPlatformAiTakeoverActive(db, flagsOn)).toBe(true);
+
+    await publish({ aiModels: enforced, aiProviders: enforced });
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn)).toEqual({
+      models: true,
+      providers: true,
+    });
   });
 
   it('never consults managed-resource readiness (that probe decrypts every secret)', async () => {
-    await publish({ enforcementMode: 'enforced', managed: true });
+    await publish({ aiModels: enforced, aiProviders: enforced });
 
-    expect(await isPlatformAiTakeoverActive(db, flagsOn)).toBe(true);
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn)).toEqual({
+      models: true,
+      providers: true,
+    });
     expect(readinessMocks.resolveManagedResourceReadiness).not.toHaveBeenCalled();
   });
 
@@ -119,10 +185,11 @@ describe('isPlatformAiTakeoverActive', () => {
     // The window only bounds staleness on instances that did NOT process the publish; the
     // publishing instance drops the memo synchronously (see the reset test below).
     expect(PLATFORM_AI_TAKEOVER_MEMO_TTL_MS).toBeLessThanOrEqual(2000);
-    await publish({ enforcementMode: 'enforced', managed: true });
+    await publish({ aiProviders: enforced });
     const now = vi.fn<() => number>().mockReturnValue(1000);
 
     expect(await isPlatformAiTakeoverActive(db, flagsOn, now)).toBe(true);
+    expect(await isPlatformAiModelTakeoverActive(db, flagsOn, now)).toBe(false);
 
     // Policy flipped underneath (as if by another instance): memoized answer inside the TTL …
     const model = new PlatformManagedResourcePolicyModel(db);
@@ -135,12 +202,16 @@ describe('isPlatformAiTakeoverActive', () => {
     // … and re-read once it expires, so ending enforcement is not delayed.
     now.mockReturnValue(1000 + PLATFORM_AI_TAKEOVER_MEMO_TTL_MS + 1);
     expect(await isPlatformAiTakeoverActive(db, flagsOn, now)).toBe(false);
+    expect(await isPlatformAiModelTakeoverActive(db, flagsOn, now)).toBe(false);
   });
 
   it('resetPlatformAiTakeoverCache makes the very next read observe the new policy', async () => {
-    await publish({ enforcementMode: 'enforced', managed: true });
+    await publish({ aiModels: enforced, aiProviders: enforced });
     const now = vi.fn<() => number>().mockReturnValue(1000);
-    expect(await isPlatformAiTakeoverActive(db, flagsOn, now)).toBe(true);
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn, now)).toEqual({
+      models: true,
+      providers: true,
+    });
 
     await new PlatformManagedResourcePolicyModel(db).materializePublished({
       policies: createUnmanagedResourcePolicyMap(),
@@ -149,7 +220,10 @@ describe('isPlatformAiTakeoverActive', () => {
     // Publication calls this after the transaction commits — no TTL wait on this instance.
     resetPlatformAiTakeoverCache();
 
-    expect(await isPlatformAiTakeoverActive(db, flagsOn, now)).toBe(false);
+    expect(await getPlatformAiTakeoverFlags(db, flagsOn, now)).toEqual({
+      models: false,
+      providers: false,
+    });
   });
 
   it('fails closed: a policy read failure propagates instead of degrading to unmanaged', async () => {
@@ -160,6 +234,9 @@ describe('isPlatformAiTakeoverActive', () => {
     } as unknown as LobeChatDatabase;
 
     await expect(isPlatformAiTakeoverActive(brokenDb, flagsOn)).rejects.toThrow(
+      'policy table unavailable',
+    );
+    await expect(isPlatformAiModelTakeoverActive(brokenDb, flagsOn)).rejects.toThrow(
       'policy table unavailable',
     );
   });
