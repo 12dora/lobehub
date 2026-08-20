@@ -120,12 +120,12 @@ export class ThreadModel {
   };
 
   create = async (params: CreateThreadParams, trx?: Transaction) => {
-    // Always runs inside a transaction (caller's or our own), so the narrower
-    // type keeps drizzle's insert().returning() overload unambiguous.
     const run = async (db: Transaction) => {
       await this.assertOwnedTopic(params.topicId, db);
 
-      const [result] = await db
+      // `Transaction` is a union over the supported drivers, so `.returning()` widens to
+      // `any[] | QueryResult`; the insert always returns thread rows.
+      const rows = (await db
         .insert(threads)
         .values(
           buildWorkspacePayload(
@@ -145,9 +145,9 @@ export class ThreadModel {
           ),
         )
         .onConflictDoNothing()
-        .returning();
+        .returning()) as ThreadItem[];
 
-      return result;
+      return rows[0];
     };
 
     if (trx) return run(trx);
