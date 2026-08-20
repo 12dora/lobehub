@@ -7,6 +7,13 @@
     <link rel="shortcut icon" href="/favicon-32x32.ico" />
     <!--SEO_META-->
     <style>
+      :root {
+        --lobe-boot-bg: #f8f8f8;
+      }
+      html[data-theme='dark'] {
+        --lobe-boot-bg: #000;
+      }
+
       html body {
         background: #f8f8f8;
       }
@@ -18,15 +25,17 @@
       window.__LOBE_BOOT_T_HTML__ = performance.now();
     </script>
     <script>
-      (function(){
-        var O=globalThis.Worker;
-        globalThis.Worker=function(u,o){
-          var h=typeof u==='string'?u:u instanceof URL?u.href:'';
-          if(h.startsWith('http')&&!h.startsWith(location.origin)){
-            var b=new Blob(['import "'+h+'";'],{type:'application/javascript'});
-            return new O(URL.createObjectURL(b),Object.assign({},o,{type:'module'}));
-          }return new O(u,o)};
-        globalThis.Worker.prototype=O.prototype;
+      (function () {
+        var O = globalThis.Worker;
+        globalThis.Worker = function (u, o) {
+          var h = typeof u === 'string' ? u : u instanceof URL ? u.href : '';
+          if (h.startsWith('http') && !h.startsWith(location.origin)) {
+            var b = new Blob(['import "' + h + '";'], { type: 'application/javascript' });
+            return new O(URL.createObjectURL(b), Object.assign({}, o, { type: 'module' }));
+          }
+          return new O(u, o);
+        };
+        globalThis.Worker.prototype = O.prototype;
       })();
     </script>
     <script>

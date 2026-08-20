@@ -179,7 +179,7 @@ export function createAppRouter(routes: RouteObject[], options?: CreateAppRouter
   // settled module-global latch.
   const bootPhase = createRouterBootPhase();
 
-  return createBrowserRouter(
+  const router = createBrowserRouter(
     [
       {
         children: routes,
@@ -190,6 +190,12 @@ export function createAppRouter(routes: RouteObject[], options?: CreateAppRouter
     ],
     { basename: options?.basename },
   );
+
+  // Lets the boot phase see a redirect the router has already accepted but React
+  // has not rendered yet (`/settings` → `/settings/profile`).
+  bootPhase.attachRouter(router);
+
+  return router;
 }
 
 /**

@@ -1,8 +1,13 @@
 /*
- * Continuation of `index.html`'s `#loading-screen` (same colours, one z-index
- * below it) so the handoff from the static markup to the React boot splash is
- * invisible. Fixed to the viewport on purpose: this must cover the whole app
- * shell, not just a route outlet.
+ * Continuation of the host shell's `#loading-screen` (one z-index below it) so the
+ * handoff from static markup to the React boot splash is invisible. Fixed to the
+ * viewport on purpose: this must cover the whole app shell, not just a route outlet.
+ *
+ * The background comes from `--lobe-boot-bg`, which a host shell may declare on
+ * `:root` (see `index.html`, `index.mobile.html`, `index.auth.html`,
+ * `apps/desktop/*.html`). When no shell declares it, the component resolves the
+ * shell's own painted background at runtime; the literals below are the last-resort
+ * web-shell defaults.
  */
 .overlay {
   position: fixed;
@@ -17,12 +22,12 @@
 
   color: #1f1f1f;
 
-  background: #f8f8f8;
+  background: var(--lobe-boot-bg, #f8f8f8);
 }
 
 [data-theme='dark'] .overlay {
   color: #f0f0f0;
-  background: #000;
+  background: var(--lobe-boot-bg, #000);
 }
 
 .brand {

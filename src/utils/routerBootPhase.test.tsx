@@ -1,14 +1,46 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { lazy, type ReactNode, Suspense } from 'react';
 import { createMemoryRouter, Navigate, Outlet, RouterProvider } from 'react-router';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  type BootFrameScheduler,
   BootPhaseOutletMarker,
   createRouterBootPhase,
   RouteFallback,
+  RouterBootPhaseContext,
   RouterBootRoot,
+  setBootFrameScheduler,
 } from './routerBootPhase';
+
+/**
+ * Deterministic replacement for `requestAnimationFrame`: nothing runs until the
+ * test flushes a frame, so the two-frame settlement window is observable.
+ */
+const createManualFrames = () => {
+  let queue: { callback: () => void; cancelled: boolean }[] = [];
+
+  const scheduler: BootFrameScheduler = (callback) => {
+    const entry = { callback, cancelled: false };
+    queue.push(entry);
+    return () => {
+      entry.cancelled = true;
+    };
+  };
+
+  /** Runs the callbacks queued so far; anything they queue waits for the next flush. */
+  const flushFrame = () => {
+    const current = queue;
+    queue = [];
+    for (const entry of current) if (!entry.cancelled) entry.callback();
+  };
+
+  const flushFrames = (count: number) => {
+    for (let i = 0; i < count; i += 1) act(() => flushFrame());
+  };
+
+  return { flushFrame, flushFrames, scheduler };
+};
 
 vi.mock('@/components/Loading/BootSplashOverlay', () => ({
   default: () => <div data-testid="boot-splash" />,
@@ -74,7 +106,9 @@ const renderApp = (
     { initialEntries: [initialEntry] },
   );
 
-  return { ...render(<RouterProvider router={router} />), bootPhase };
+  bootPhase.attachRouter(router);
+
+  return { ...render(<RouterProvider router={router} />), bootPhase, router };
 };
 
 const splash = () => screen.queryByTestId('boot-splash');
@@ -182,7 +216,7 @@ describe('boot splash topology', () => {
     const leaf = deferredRoute('leaf');
     const later = deferredRoute('later');
 
-    const { bootPhase } = renderApp(
+    const { bootPhase, router } = renderApp(
       [
         { element: leaf.element, path: 'a' },
         { element: later.element, path: 'b' },
@@ -194,8 +228,32 @@ describe('boot splash topology', () => {
     await screen.findByTestId('leaf');
     await waitFor(() => expect(bootPhase.isBooting()).toBe(false));
 
-    // A later suspension must never bring the boot overlay back.
+    // Real post-boot navigation into a route whose chunk is not loaded yet.
+    await act(async () => {
+      await router.navigate('/b');
+    });
+
+    expect(router.state.location.pathname).toBe('/b');
+    // `RouterProvider` wraps navigations in `startTransition`, so React holds the
+    // previous route on screen instead of committing a fallback. What must hold
+    // either way: the boot overlay never comes back and boot stays settled.
     expect(splash()).not.toBeInTheDocument();
+    expect(bootPhase.isBooting()).toBe(false);
+
+    // Any route fallback rendered under this (settled) phase is the inline
+    // loader, never the boot splash.
+    const { getByTestId, unmount } = render(
+      <RouterBootPhaseContext value={bootPhase}>
+        <RouteFallback debugId="post-boot" />
+      </RouterBootPhaseContext>,
+    );
+    expect(getByTestId('route-fallback').dataset.variant).toBe('inline');
+    unmount();
+
+    later.resolve();
+    await screen.findByTestId('later');
+    expect(splash()).not.toBeInTheDocument();
+    expect(bootPhase.isBooting()).toBe(false);
   });
 
   it('is per router instance, so a recreated router boots again', async () => {
@@ -205,6 +263,115 @@ describe('boot splash topology', () => {
 
     const second = createRouterBootPhase();
     expect(second.isBooting()).toBe(true);
+  });
+});
+
+describe('two-frame settlement window (deterministic frames)', () => {
+  afterEach(() => {
+    setBootFrameScheduler(null);
+  });
+
+  it('does not settle across a synchronous redirect while the redirected leaf is unresolved', async () => {
+    const frames = createManualFrames();
+    setBootFrameScheduler(frames.scheduler);
+
+    const settingsLayout = deferredRoute('settings-layout');
+    const profile = deferredRoute('profile');
+
+    const { bootPhase } = renderApp(
+      [
+        {
+          children: [
+            { element: <Navigate replace to="/settings/profile" />, index: true },
+            { element: profile.element, path: 'profile' },
+          ],
+          element: settingsLayout.element,
+          path: 'settings',
+        },
+      ],
+      '/settings',
+    );
+
+    frames.flushFrames(2);
+    expect(bootPhase.isBooting()).toBe(true);
+
+    // The layout commits `<Navigate>` in the very commit that releases its own
+    // fallback. Advance explicit frames with the redirected leaf still pending.
+    settingsLayout.resolve();
+    await screen.findByTestId('settings-layout');
+
+    frames.flushFrames(2);
+    expect(bootPhase.isBooting()).toBe(true);
+    expect(splash()).toBeInTheDocument();
+
+    frames.flushFrames(4);
+    expect(bootPhase.isBooting()).toBe(true);
+    expect(screen.queryByTestId('profile')).not.toBeInTheDocument();
+
+    profile.resolve();
+    await screen.findByTestId('profile');
+
+    frames.flushFrames(2);
+    await waitFor(() => expect(splash()).not.toBeInTheDocument());
+    expect(bootPhase.isBooting()).toBe(false);
+  });
+
+  it('re-arms the full two-frame window when settlement is requested again', () => {
+    const frames = createManualFrames();
+    setBootFrameScheduler(frames.scheduler);
+
+    const phase = createRouterBootPhase();
+    phase.markOutletReady();
+
+    // One frame of the first window has elapsed…
+    frames.flushFrames(1);
+    expect(phase.isBooting()).toBe(true);
+
+    // …a committed location change re-requests settlement, which must restart the
+    // window rather than let the half-elapsed one fire.
+    phase.requestSettle();
+    frames.flushFrames(1);
+    expect(phase.isBooting()).toBe(true);
+
+    frames.flushFrames(1);
+    expect(phase.isBooting()).toBe(false);
+  });
+
+  it('cancels an armed window on holdSettle and can be re-armed', () => {
+    const frames = createManualFrames();
+    setBootFrameScheduler(frames.scheduler);
+
+    const phase = createRouterBootPhase();
+    phase.markOutletReady();
+
+    frames.flushFrames(1);
+    phase.holdSettle();
+
+    frames.flushFrames(4);
+    expect(phase.isBooting()).toBe(true);
+
+    phase.requestSettle();
+    frames.flushFrames(2);
+    expect(phase.isBooting()).toBe(false);
+  });
+
+  it('cancels an armed window when a route boundary suspends again', () => {
+    const frames = createManualFrames();
+    setBootFrameScheduler(frames.scheduler);
+
+    const phase = createRouterBootPhase();
+    phase.markOutletReady();
+
+    frames.flushFrames(1);
+
+    // A nested boundary suspends before the window closes.
+    const release = phase.retainFallback();
+    frames.flushFrames(4);
+    expect(phase.isBooting()).toBe(true);
+
+    release();
+    frames.flushFrames(2);
+    expect(phase.isBooting()).toBe(false);
   });
 });
 

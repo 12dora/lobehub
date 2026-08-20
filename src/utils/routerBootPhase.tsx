@@ -33,13 +33,28 @@ import Loading from '@/components/Loading/BrandTextLoading';
  * desktop window, tests) restores the splash instead of inheriting a settled
  * module-global latch.
  */
+/**
+ * Structural view of the data router (`createBrowserRouter` / `createMemoryRouter`).
+ * Only the live navigation state and committed location are needed.
+ */
+export interface BootRouterLike {
+  state: {
+    location: { key: string };
+    navigation: { state: string };
+  };
+}
+
 export interface RouterBootPhase {
+  /** Give the phase the live router, so settlement can see redirects React has not rendered yet. */
+  attachRouter: (router: BootRouterLike) => void;
   /** Cancel any armed settlement check (a navigation is in flight). */
   holdSettle: () => void;
   /** True until the initially matched leaf route has committed. */
   isBooting: () => boolean;
   /** The router outlet is mounted and rendering route content. */
   markOutletReady: () => void;
+  /** The location React has actually rendered, from the settler. */
+  markRenderedLocation: (key: string) => void;
   /** (Re-)arm the settlement check. */
   requestSettle: () => void;
   /** Ref-count a pending route fallback. Returns the release function. */
@@ -47,31 +62,45 @@ export interface RouterBootPhase {
   subscribe: (listener: () => void) => () => void;
 }
 
-/**
- * Two frames, not one: React commits a redirect-driven route in a scheduler
- * task whose ordering against a single `requestAnimationFrame` is not
- * guaranteed. Falls back to timers where `requestAnimationFrame` is absent.
- */
-const scheduleStableFrames = (callback: () => void): (() => void) => {
+/** Schedules `callback` for the next frame; the returned function cancels it. */
+export type BootFrameScheduler = (callback: () => void) => () => void;
+
+const defaultFrameScheduler: BootFrameScheduler = (callback) => {
   if (typeof requestAnimationFrame !== 'function') {
-    const outer = setTimeout(() => {
-      inner = setTimeout(callback, 0);
-    }, 0);
-    let inner: ReturnType<typeof setTimeout> | undefined;
-    return () => {
-      clearTimeout(outer);
-      if (inner) clearTimeout(inner);
-    };
+    const timer = setTimeout(callback, 0);
+    return () => clearTimeout(timer);
   }
 
-  let innerFrame: number | undefined;
-  const outerFrame = requestAnimationFrame(() => {
-    innerFrame = requestAnimationFrame(callback);
+  const frame = requestAnimationFrame(callback);
+  return () => cancelAnimationFrame(frame);
+};
+
+let frameScheduler: BootFrameScheduler = defaultFrameScheduler;
+
+/**
+ * Test seam. Real `requestAnimationFrame` implementations differ wildly in test
+ * environments (Happy DOM's is `setImmediate`-based and fires before the next
+ * promise-driven commit), which makes the two-frame window unobservable. Pass
+ * `null` to restore the default.
+ */
+export const setBootFrameScheduler = (scheduler: BootFrameScheduler | null): void => {
+  frameScheduler = scheduler ?? defaultFrameScheduler;
+};
+
+/**
+ * Two frames, not one: React commits a redirect-driven route in a scheduler
+ * task whose ordering against a single frame is not guaranteed.
+ */
+const scheduleStableFrames = (callback: () => void): (() => void) => {
+  let cancelInner: (() => void) | null = null;
+
+  const cancelOuter = frameScheduler(() => {
+    cancelInner = frameScheduler(callback);
   });
 
   return () => {
-    cancelAnimationFrame(outerFrame);
-    if (innerFrame !== undefined) cancelAnimationFrame(innerFrame);
+    cancelOuter();
+    cancelInner?.();
   };
 };
 
@@ -80,7 +109,22 @@ export const createRouterBootPhase = (): RouterBootPhase => {
   let pending = 0;
   let outletReady = false;
   let cancelArmed: (() => void) | null = null;
+  let router: BootRouterLike | null = null;
+  let renderedLocationKey: string | null = null;
   const listeners = new Set<() => void>();
+
+  /**
+   * A synchronous redirect route (`/settings` → `/settings/profile`) calls
+   * `router.navigate()` from an effect in the very commit that releases the
+   * layout's fallback. The router's location therefore moves ahead of the one
+   * React has rendered, and boot must not settle in that window — waiting on
+   * frames alone is a timing heuristic, this is the actual signal.
+   */
+  const isRouteSettled = () => {
+    if (!router) return true;
+    if (router.state.navigation.state !== 'idle') return false;
+    return renderedLocationKey === null || router.state.location.key === renderedLocationKey;
+  };
 
   const holdSettle = () => {
     cancelArmed?.();
@@ -99,17 +143,23 @@ export const createRouterBootPhase = (): RouterBootPhase => {
 
     cancelArmed = scheduleStableFrames(() => {
       cancelArmed = null;
-      if (!booting || !outletReady || pending > 0) return;
+      if (!booting || !outletReady || pending > 0 || !isRouteSettled()) return;
       finish();
     });
   };
 
   return {
+    attachRouter: (next) => {
+      router = next;
+    },
     holdSettle,
     isBooting: () => booting,
     markOutletReady: () => {
       outletReady = true;
       requestSettle();
+    },
+    markRenderedLocation: (key) => {
+      renderedLocationKey = key;
     },
     requestSettle,
     retainFallback: () => {
@@ -139,9 +189,11 @@ export const createRouterBootPhase = (): RouterBootPhase => {
  * Storybook): already settled, so nothing can paint a stray boot splash.
  */
 const SETTLED_BOOT_PHASE: RouterBootPhase = {
+  attachRouter: () => {},
   holdSettle: () => {},
   isBooting: () => false,
   markOutletReady: () => {},
+  markRenderedLocation: () => {},
   requestSettle: () => {},
   retainFallback: () => () => {},
   subscribe: () => () => {},
@@ -184,6 +236,8 @@ export const RouterBootSettler = () => {
   const navigation = useNavigation();
 
   useEffect(() => {
+    bootPhase.markRenderedLocation(location.key);
+
     if (navigation.state !== 'idle') {
       bootPhase.holdSettle();
       return;
