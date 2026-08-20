@@ -1,0 +1,69 @@
+/*
+ * Continuation of `index.html`'s `#loading-screen` (same colours, one z-index
+ * below it) so the handoff from the static markup to the React boot splash is
+ * invisible. Fixed to the viewport on purpose: this must cover the whole app
+ * shell, not just a route outlet.
+ */
+.overlay {
+  position: fixed;
+  z-index: 99998;
+  inset: 0;
+
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+
+  color: #1f1f1f;
+
+  background: #f8f8f8;
+}
+
+[data-theme='dark'] .overlay {
+  color: #f0f0f0;
+  background: #000;
+}
+
+.brand {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+
+  opacity: 0.6;
+  color: inherit;
+}
+
+.brand :global(.lobe-brand-loading) {
+  display: block;
+  color: inherit;
+}
+
+/*
+ * Custom-branding builds have no brand mark to draw here, and this overlay
+ * renders outside every provider (no i18n, no ThemeProvider), so the spinner is
+ * plain CSS with no component dependencies and no copy.
+ */
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 2px solid currentcolor;
+  border-block-start-color: transparent;
+  border-radius: 50%;
+
+  opacity: 0.45;
+
+  animation: boot-splash-spin 0.8s linear infinite;
+}
+
+@keyframes boot-splash-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}

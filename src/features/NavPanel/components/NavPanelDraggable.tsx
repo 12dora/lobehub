@@ -103,12 +103,53 @@ const draggableStyles = createStaticStyles(({ css, cssVar }) => ({
 /** ~150ms fade-in when the sidebar swaps sections. */
 const NAV_FADE_DURATION = 0.15;
 
-interface NavPanelDraggableProps {
-  activeContent: {
-    key: string;
-    node: ReactNode;
-  };
+interface NavPanelSectionContent {
+  key: string;
+  node: ReactNode;
 }
+
+interface NavPanelDraggableProps {
+  activeContent: NavPanelSectionContent;
+}
+
+/**
+ * Extracted so its first render is the first *real* section: the parent returns
+ * a bare placeholder until the persisted panel width hydrates, and a mount flag
+ * living up there would already be set by that placeholder — making the first
+ * genuine section fade in as if it were a section swap.
+ */
+const NavPanelSection = memo<{ activeContent: NavPanelSectionContent }>(({ activeContent }) => {
+  const reduceMotion = useReducedMotion();
+
+  // The panel's very first section must appear without a fade (it is part of the
+  // app's first paint, not a section swap).
+  const hasRenderedSectionRef = useRef(false);
+  useEffect(() => {
+    hasRenderedSectionRef.current = true;
+  }, []);
+
+  return (
+    // Enter-only fade, deliberately NOT an `AnimatePresence` crossfade: an exit
+    // animation would keep the outgoing sidebar subtree mounted and live for the
+    // duration of the fade, so two sidebars would overlap in the accessibility
+    // tree (duplicate controls and duplicate DOM ids) and their effects/cleanup
+    // would run late. Keying on `activeContent.key` therefore unmounts the old
+    // section immediately — exactly the pre-existing remount semantics — and only
+    // the incoming section is animated, fading up over the panel's own opaque
+    // background.
+    <m.div
+      animate={{ opacity: 1 }}
+      className={draggableStyles.layer}
+      initial={hasRenderedSectionRef.current && !reduceMotion ? { opacity: 0 } : false}
+      key={activeContent.key}
+      transition={{ duration: reduceMotion ? 0 : NAV_FADE_DURATION }}
+    >
+      {activeContent.node}
+    </m.div>
+  );
+});
+
+NavPanelSection.displayName = 'NavPanelSection';
 
 const classNames = {
   content: draggableStyles.content,
@@ -121,14 +162,6 @@ export const NavPanelDraggable = memo<NavPanelDraggableProps>(({ activeContent }
     systemStatusSelectors.isStatusInit(s),
   ]);
   const handleSizeChange = useNavPanelSizeChangeHandler();
-  const reduceMotion = useReducedMotion();
-
-  // The panel's very first section must appear without a fade (it is part of the
-  // app's first paint, not a section swap).
-  const hasRenderedSectionRef = useRef(false);
-  useEffect(() => {
-    hasRenderedSectionRef.current = true;
-  }, []);
 
   // Defer DraggablePanel mount until system status hydrates; otherwise defaultSize
   // captures the pre-hydration default and the DOM drifts off NavigationBar's live width.
@@ -168,23 +201,7 @@ export const NavPanelDraggable = memo<NavPanelDraggableProps>(({ activeContent }
       onSizeDragging={handleSizeChange}
     >
       <div className={draggableStyles.inner}>
-        {/* Enter-only fade, deliberately NOT an `AnimatePresence` crossfade: an exit
-            animation would keep the outgoing sidebar subtree mounted and live for the
-            duration of the fade, so two sidebars would overlap in the accessibility
-            tree (duplicate controls and duplicate DOM ids) and their effects/cleanup
-            would run late. Keying on `activeContent.key` therefore unmounts the old
-            section immediately — exactly the pre-existing remount semantics — and only
-            the incoming section is animated, fading up over the panel's own opaque
-            background. */}
-        <m.div
-          animate={{ opacity: 1 }}
-          className={draggableStyles.layer}
-          initial={hasRenderedSectionRef.current && !reduceMotion ? { opacity: 0 } : false}
-          key={activeContent.key}
-          transition={{ duration: reduceMotion ? 0 : NAV_FADE_DURATION }}
-        >
-          {activeContent.node}
-        </m.div>
+        <NavPanelSection activeContent={activeContent} />
       </div>
       <Suspense fallback={null}>
         <NavPanelUpgradeEntry />

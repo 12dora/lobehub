@@ -16,11 +16,11 @@ import { useGlobalStore } from '@/store/global';
 import { createNavigationRef } from '@/store/global/initialState';
 import { isChunkLoadError, notifyChunkError } from '@/utils/chunkError';
 import {
-  BootPhaseRouteMarker,
+  BootPhaseOutletMarker,
   createRouterBootPhase,
   RouteFallback,
   type RouterBootPhase,
-  RouterBootPhaseContext,
+  RouterBootRoot,
 } from '@/utils/routerBootPhase';
 
 async function importModule<T>(importFn: () => Promise<T>): Promise<T> {
@@ -66,10 +66,8 @@ export function dynamicElement<P = NonNullable<unknown>>(
   // @ts-ignore
   return (
     <Suspense fallback={<RouteFallback debugId={debugId || 'dynamicElement'} />}>
-      <BootPhaseRouteMarker>
-        {/* @ts-ignore */}
-        <LazyComponent {...({} as P)} />
-      </BootPhaseRouteMarker>
+      {/* @ts-ignore */}
+      <LazyComponent {...({} as P)} />
     </Suspense>
   );
 }
@@ -90,10 +88,8 @@ export function dynamicLayout<P = NonNullable<unknown>>(
   // @ts-ignore
   return (
     <Suspense fallback={<RouteFallback debugId={debugId || 'dynamicLayout'} />}>
-      <BootPhaseRouteMarker>
-        {/* @ts-ignore */}
-        <LazyComponent {...({} as P)} />
-      </BootPhaseRouteMarker>
+      {/* @ts-ignore */}
+      <LazyComponent {...({} as P)} />
     </Suspense>
   );
 }
@@ -148,16 +144,21 @@ export interface CreateAppRouterOptions {
 }
 
 const RouterRoot = memo<{ bootPhase: RouterBootPhase }>(({ bootPhase }) => (
-  <RouterBootPhaseContext value={bootPhase}>
+  // `RouterBootRoot` sits outside `SPAGlobalProvider` on purpose: the boot splash
+  // has to cover the app while `CacheHydrationGate` is still blocking, and the
+  // settler has to observe navigation even then.
+  <RouterBootRoot bootPhase={bootPhase}>
     <SPAGlobalProvider>
       <BusinessGlobalProvider>
         <NavigatorRegistrar />
         <AppLayer>
+          {/* Inside the hydration gate: signals that route content is live. */}
+          <BootPhaseOutletMarker />
           <Outlet />
         </AppLayer>
       </BusinessGlobalProvider>
     </SPAGlobalProvider>
-  </RouterBootPhaseContext>
+  </RouterBootRoot>
 ));
 
 RouterRoot.displayName = 'RouterRoot';
