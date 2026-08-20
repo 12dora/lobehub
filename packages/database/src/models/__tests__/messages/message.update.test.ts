@@ -1,3 +1,4 @@
+import { UpdateMessageParamsSchema } from '@lobechat/types';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -73,6 +74,17 @@ afterEach(async () => {
 
 describe('MessageModel Update Tests', () => {
   describe('updateMessage', () => {
+    it('rejects association fields on UpdateMessageParamsSchema', () => {
+      expect(() =>
+        UpdateMessageParamsSchema.parse({ content: 'x', topicId: 'foreign-topic' }),
+      ).toThrow();
+      expect(() => UpdateMessageParamsSchema.parse({ content: 'x', userId: 'other' })).toThrow();
+      expect(UpdateMessageParamsSchema.parse({ content: 'ok', tools: [] })).toEqual({
+        content: 'ok',
+        tools: [],
+      });
+    });
+
     it('should update message content', async () => {
       // Create test data
       await serverDB
@@ -99,6 +111,37 @@ describe('MessageModel Update Tests', () => {
       // Assert result
       const result = await serverDB.select().from(messages).where(eq(messages.id, '1'));
       expect(result[0].content).toBe('message 1');
+    });
+
+    it('ignores topicId / userId / threadId re-association on generic update', async () => {
+      await serverDB.insert(topics).values({ id: 'foreign-topic', userId: otherUserId });
+      await serverDB.insert(messages).values({
+        content: 'hi',
+        id: 'owned-msg',
+        role: 'user',
+        userId,
+      });
+
+      await messageModel.update('owned-msg', {
+        content: 'updated',
+        topicId: 'foreign-topic',
+        userId: otherUserId,
+        threadId: 'thd-foreign',
+        sessionId: 'session-foreign',
+        agentId: 'agent-foreign',
+        groupId: 'group-foreign',
+        workspaceId,
+      } as never);
+
+      const [row] = await serverDB.select().from(messages).where(eq(messages.id, 'owned-msg'));
+      expect(row.content).toBe('updated');
+      expect(row.topicId).toBeNull();
+      expect(row.userId).toBe(userId);
+      expect(row.threadId).toBeNull();
+      expect(row.sessionId).toBeNull();
+      expect(row.agentId).toBeNull();
+      expect(row.groupId).toBeNull();
+      expect(row.workspaceId).toBeNull();
     });
 
     it('should update message tools', async () => {

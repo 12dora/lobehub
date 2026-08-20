@@ -145,3 +145,21 @@ export const createThreadSchema = z.object({
     ThreadType.Isolation,
   ]),
 });
+
+/**
+ * Allowlisted thread patch. Identity / association columns (`topicId`,
+ * `userId`, `workspaceId`, `agentId`, `groupId`, `parentThreadId`,
+ * `sourceMessageId`, `id`) are not updatable through the generic path.
+ * Extra metadata keys (eval scores, operation ids) are preserved.
+ */
+export const updateThreadSchema = z
+  .object({
+    content: z.string().nullish(),
+    lastActiveAt: z.coerce.date().optional(),
+    metadata: threadMetadataSchema.passthrough().optional(),
+    status: z.nativeEnum(ThreadStatus).optional(),
+    title: z.string().nullish(),
+  })
+  .strict();
+
+export type UpdateThreadParams = z.infer<typeof updateThreadSchema>;

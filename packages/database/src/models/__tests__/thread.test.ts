@@ -3,8 +3,18 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { agentOperations, agents, messages, sessions, threads, topics, users } from '../../schemas';
+import {
+  agentOperations,
+  agents,
+  messages,
+  sessions,
+  threads,
+  topics,
+  users,
+  workspaces,
+} from '../../schemas';
 import type { LobeChatDatabase } from '../../type';
+import { MessageModel } from '../message';
 import { ThreadModel } from '../thread';
 
 const userId = 'thread-user-test';
@@ -86,6 +96,70 @@ describe('ThreadModel', () => {
         type: ThreadType.Standalone,
       });
       expect(second).toBeUndefined();
+    });
+
+    it("refuses to create a thread on another user's topic", async () => {
+      await serverDB.insert(topics).values({ id: 'foreign-topic', userId: otherUserId });
+
+      await expect(
+        threadModel.create({
+          topicId: 'foreign-topic',
+          type: ThreadType.Standalone,
+        }),
+      ).rejects.toThrow('Topic not found');
+
+      const leftover = await serverDB.select().from(threads);
+      expect(leftover).toHaveLength(0);
+    });
+
+    it('refuses to create a thread on a topic from another workspace', async () => {
+      const workspaceId = 'thread-ws';
+      await serverDB.insert(workspaces).values({
+        id: workspaceId,
+        name: 'Thread WS',
+        primaryOwnerId: userId,
+        slug: workspaceId,
+      });
+      await serverDB.insert(topics).values({
+        id: 'ws-topic',
+        userId,
+        workspaceId,
+      });
+
+      await expect(
+        threadModel.create({
+          topicId: 'ws-topic',
+          type: ThreadType.Standalone,
+        }),
+      ).rejects.toThrow('Topic not found');
+
+      const workspaceThreadModel = new ThreadModel(serverDB, userId, workspaceId);
+      const created = await workspaceThreadModel.create({
+        topicId: 'ws-topic',
+        type: ThreadType.Standalone,
+      });
+      expect(created.topicId).toBe('ws-topic');
+      expect(created.workspaceId).toBe(workspaceId);
+    });
+
+    it('rolls back the thread when the follow-up message insert is rejected', async () => {
+      await serverDB.insert(topics).values({ id: 'foreign-topic', userId: otherUserId });
+      const messageModel = new MessageModel(serverDB, userId);
+
+      await expect(
+        serverDB.transaction(async (trx) => {
+          const thread = await threadModel.create({ topicId, type: ThreadType.Standalone }, trx);
+          await messageModel.createWithTransaction(trx, {
+            content: 'graft',
+            role: 'user',
+            threadId: thread.id,
+            topicId: 'foreign-topic',
+          });
+        }),
+      ).rejects.toThrow('Topic not found');
+
+      const leftover = await serverDB.select().from(threads).where(eq(threads.topicId, topicId));
+      expect(leftover).toHaveLength(0);
     });
   });
 
@@ -413,6 +487,34 @@ describe('ThreadModel', () => {
       });
 
       expect(unchanged?.title).toBe('Original Title');
+    });
+
+    it('ignores topicId / userId / workspaceId on generic update', async () => {
+      await serverDB.insert(topics).values({ id: 'foreign-topic', userId: otherUserId });
+      await serverDB.insert(threads).values({
+        id: 'thread-1',
+        topicId,
+        type: ThreadType.Standalone,
+        status: ThreadStatus.Active,
+        userId,
+        title: 'Original Title',
+      });
+
+      await threadModel.update('thread-1', {
+        title: 'Updated Title',
+        topicId: 'foreign-topic',
+        userId: otherUserId,
+        workspaceId: 'ws-foreign',
+      } as never);
+
+      const updated = await serverDB.query.threads.findFirst({
+        where: eq(threads.id, 'thread-1'),
+      });
+
+      expect(updated?.title).toBe('Updated Title');
+      expect(updated?.topicId).toBe(topicId);
+      expect(updated?.userId).toBe(userId);
+      expect(updated?.workspaceId).toBeNull();
     });
   });
 

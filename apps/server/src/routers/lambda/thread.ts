@@ -7,14 +7,13 @@ import { MANAGED_ERROR_CODES } from '@/const/platform/errorCodes';
 import { MessageModel } from '@/database/models/message';
 import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
-import { insertThreadSchema } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { throwEnterpriseError } from '@/server/enterprise/guards/enterpriseErrors';
 import { AgentService } from '@/server/services/agent';
-import { type ThreadItem } from '@/types/topic/thread';
-import { createThreadSchema } from '@/types/topic/thread';
+import type { ThreadItem } from '@/types/topic/thread';
+import { createThreadSchema, updateThreadSchema } from '@/types/topic/thread';
 import { markdownToTxt } from '@/utils/markdownToTxt';
 
 import { resolveAgentIdFromSession } from './_helpers/resolveContext';
@@ -128,22 +127,31 @@ export const threadRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const thread = ensureThreadCreated(
-        await ctx.threadModel.create({
-          id: input.id,
-          metadata: input.metadata,
-          parentThreadId: input.parentThreadId,
-          sourceMessageId: input.sourceMessageId,
-          title: markdownToTxt(input.message.content).slice(0, 80),
+      return ctx.serverDB.transaction(async (trx) => {
+        const thread = ensureThreadCreated(
+          await ctx.threadModel.create(
+            {
+              id: input.id,
+              metadata: input.metadata,
+              parentThreadId: input.parentThreadId,
+              sourceMessageId: input.sourceMessageId,
+              title: markdownToTxt(input.message.content).slice(0, 80),
+              topicId: input.topicId,
+              type: input.type,
+            },
+            trx,
+          ),
+          input.id,
+        );
+
+        const message = await ctx.messageModel.createWithTransaction(trx, {
+          ...input.message,
+          threadId: thread.id,
           topicId: input.topicId,
-          type: input.type,
-        }),
-        input.id,
-      );
+        });
 
-      const message = await ctx.messageModel.create({ ...input.message, threadId: thread.id });
-
-      return { messageId: message?.id, threadId: thread.id };
+        return { messageId: message?.id, threadId: thread.id };
+      });
     }),
   getThread: threadProcedure.query(async ({ ctx }): Promise<ThreadItem[]> => {
     const visible = await threadAgentService(ctx).getTakeoverVisibleLocalAgentIds();
@@ -176,7 +184,7 @@ export const threadRouter = router({
     .input(
       z.object({
         id: z.string(),
-        value: insertThreadSchema.partial(),
+        value: updateThreadSchema,
       }),
     )
     .mutation(async ({ input, ctx }) => {

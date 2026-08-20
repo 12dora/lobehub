@@ -1,13 +1,22 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { adminStatsService } from '@/enterprise/client/services/adminStats';
 
 import {
   ADMIN_STATS_USER_DISPLAY_CACHE_MAX,
+  adminGlobalStatsDataSource,
   getAdminStatsCurrentUserDisplaySize,
   getAdminStatsUserDisplayCacheSize,
   rememberCurrentUsersFromUsage,
   resetAdminStatsUserDisplayCache,
   resolveAdminStatsUser,
 } from './adminStatsDataSource';
+
+vi.mock('@/enterprise/client/services/adminStats', () => ({
+  adminStatsService: {
+    rankTopics: vi.fn(),
+  },
+}));
 
 const unknownUserLabel = (index: number) => `Unknown user ${index}`;
 
@@ -75,5 +84,35 @@ describe('adminStatsDataSource user display cache', () => {
       avatar: null,
       name: 'Unknown user 1',
     });
+  });
+});
+
+describe('adminGlobalStatsDataSource.rankTopics', () => {
+  afterEach(() => {
+    vi.mocked(adminStatsService.rankTopics).mockReset();
+  });
+
+  it('unwraps the policy envelope into ranked items', async () => {
+    const items = [
+      { agentId: 'agt-1', count: 3, id: 'topic-1', title: 'Secret chat', userId: 'u-other' },
+    ];
+    vi.mocked(adminStatsService.rankTopics).mockResolvedValue({
+      contentAccessMode: 'metadata_only',
+      items,
+    });
+
+    await expect(adminGlobalStatsDataSource.rankTopics(5, { userId: 'u-other' })).resolves.toEqual(
+      items,
+    );
+    expect(adminStatsService.rankTopics).toHaveBeenCalledWith(5, { userId: 'u-other' });
+  });
+
+  it('propagates a disabled-policy rejection', async () => {
+    const error = Object.assign(new Error('Audit conversation content access is disabled'), {
+      code: 'FORBIDDEN',
+    });
+    vi.mocked(adminStatsService.rankTopics).mockRejectedValue(error);
+
+    await expect(adminGlobalStatsDataSource.rankTopics()).rejects.toBe(error);
   });
 });

@@ -123,6 +123,12 @@ export interface NewMessageQueryParams {
 
 // ========== Zod Schemas ========== //
 
+/**
+ * Allowlisted message-content patch. Identity / association columns
+ * (`topicId`, `userId`, `workspaceId`, `sessionId`, `agentId`, `groupId`,
+ * `threadId`, `parentId`, …) must never appear here — re-association goes
+ * through a dedicated ownership-checked method.
+ */
 export const UpdateMessageParamsSchema = z
   .object({
     content: z.string().optional(),
@@ -141,4 +147,4 @@ export const UpdateMessageParamsSchema = z
     traceId: z.string().optional(),
     usage: ModelUsageSchema.optional(),
   })
-  .passthrough();
+  .strict();

@@ -2169,6 +2169,19 @@ export class MessageModel {
     return item;
   };
 
+  /**
+   * Same as {@link create} but uses a caller-owned transaction so thread+message
+   * (or other composite) writes can roll back together.
+   */
+  createWithTransaction = async (
+    trx: Transaction,
+    params: CreateMessageParams,
+    id: string = this.genId(),
+    timing?: ModelTimingContext,
+  ): Promise<DBMessageItem> => {
+    return this.createInTransaction(trx, params, id, timing);
+  };
+
   create = async (
     params: CreateMessageParams,
     id: string = this.genId(),
@@ -2306,11 +2319,37 @@ export class MessageModel {
   };
   // **************** Update *************** //
 
+  /**
+   * Columns a generic content patch may write. Identity / association FKs are
+   * intentionally absent — moving a message onto another topic/thread/user
+   * requires a dedicated ownership-checked method.
+   */
+  private static readonly UPDATE_SQL_KEYS = [
+    'content',
+    'editorData',
+    'error',
+    'model',
+    'observationId',
+    'provider',
+    'reasoning',
+    'role',
+    'search',
+    'tools',
+    'traceId',
+  ] as const satisfies ReadonlyArray<keyof UpdateMessageParams>;
+
   update = async (
     id: string,
-    { imageList, metadata, usage, ...message }: Partial<UpdateMessageParams>,
+    { imageList, metadata, usage, ...rest }: Partial<UpdateMessageParams>,
     timing?: ModelTimingContext,
   ): Promise<{ success: boolean }> => {
+    const message: Partial<UpdateMessageParams> = {};
+    for (const key of MessageModel.UPDATE_SQL_KEYS) {
+      const value = rest[key];
+      if (value !== undefined) {
+        (message as Record<string, unknown>)[key] = value;
+      }
+    }
     // Promote token usage into the dedicated `usage` column. Prefer a top-level
     // `usage` payload, falling back to `metadata.usage` so existing writers
     // (Gateway / hetero-agent executors) keep populating the column without

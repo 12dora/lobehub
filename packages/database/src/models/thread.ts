@@ -1,10 +1,10 @@
-import type { CreateThreadParams } from '@lobechat/types';
+import type { CreateThreadParams, UpdateThreadParams } from '@lobechat/types';
 import { RequestTrigger, ThreadStatus } from '@lobechat/types';
 import { and, desc, eq, inArray, isNull, not, notExists, or, sql } from 'drizzle-orm';
 
 import type { ThreadItem } from '../schemas';
 import { agentOperations, messages, threads, topics } from '../schemas';
-import type { LobeChatDatabase } from '../type';
+import type { LobeChatDatabase, Transaction } from '../type';
 import { buildWorkspacePayload, buildWorkspaceWhere } from '../utils/workspace';
 
 /**
@@ -79,6 +79,30 @@ export class ThreadModel {
   private ownership = () =>
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, threads);
 
+  private topicOwnership = () =>
+    buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, topics);
+
+  private assertOwnedTopic = async (
+    topicId: string,
+    db: LobeChatDatabase | Transaction = this.db,
+  ): Promise<void> => {
+    const [row] = await db
+      .select({ id: topics.id })
+      .from(topics)
+      .where(and(eq(topics.id, topicId), this.topicOwnership()))
+      .limit(1);
+
+    if (!row) throw new Error('Topic not found');
+  };
+
+  private static readonly UPDATE_SQL_KEYS = [
+    'content',
+    'lastActiveAt',
+    'metadata',
+    'status',
+    'title',
+  ] as const satisfies ReadonlyArray<keyof UpdateThreadParams>;
+
   /**
    * Parent topic must be a group topic or a visible local agent. A non-null
    * `threads.agentId` must also be in the visible set.
@@ -95,20 +119,37 @@ export class ThreadModel {
     return and(topicVisible, threadAgentVisible);
   };
 
-  create = async (params: CreateThreadParams) => {
-    // @ts-ignore
-    const [result] = await this.db
-      .insert(threads)
-      .values(
-        buildWorkspacePayload(
-          { userId: this.userId, workspaceId: this.workspaceId },
-          { status: ThreadStatus.Active, ...params },
-        ),
-      )
-      .onConflictDoNothing()
-      .returning();
+  create = async (params: CreateThreadParams, trx?: Transaction) => {
+    const run = async (db: LobeChatDatabase | Transaction) => {
+      await this.assertOwnedTopic(params.topicId, db);
 
-    return result;
+      const [result] = await db
+        .insert(threads)
+        .values(
+          buildWorkspacePayload(
+            { userId: this.userId, workspaceId: this.workspaceId },
+            {
+              agentId: params.agentId,
+              groupId: params.groupId,
+              id: params.id,
+              metadata: params.metadata,
+              parentThreadId: params.parentThreadId,
+              sourceMessageId: params.sourceMessageId,
+              status: params.status ?? ThreadStatus.Active,
+              title: params.title,
+              topicId: params.topicId,
+              type: params.type,
+            },
+          ),
+        )
+        .onConflictDoNothing()
+        .returning();
+
+      return result;
+    };
+
+    if (trx) return run(trx);
+    return this.db.transaction((tx) => run(tx));
   };
 
   delete = async (id: string) => {
@@ -183,10 +224,17 @@ export class ThreadModel {
     });
   };
 
-  update = async (id: string, value: Partial<ThreadItem>) => {
+  update = async (id: string, value: UpdateThreadParams) => {
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    for (const key of ThreadModel.UPDATE_SQL_KEYS) {
+      if (value[key] !== undefined) {
+        patch[key] = value[key];
+      }
+    }
+
     return this.db
       .update(threads)
-      .set({ ...value, updatedAt: new Date() })
+      .set(patch as Partial<ThreadItem>)
       .where(and(eq(threads.id, id), this.ownership()));
   };
 }

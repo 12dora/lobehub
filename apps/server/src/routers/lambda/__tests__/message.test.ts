@@ -10,6 +10,8 @@ import { MessageModel } from '@/database/models/message';
 import { TopicShareModel } from '@/database/models/topicShare';
 import { FileService } from '@/server/services/file';
 
+import { messageRouter } from '../message';
+
 vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn(),
 }));
@@ -200,6 +202,20 @@ describe('messageRouter', () => {
     await ctx.messageModel.deleteMessage(input.id);
 
     expect(mockDelete).toHaveBeenCalledWith(input.id);
+  });
+
+  it('rejects association fields on message.update input', async () => {
+    const caller = messageRouter.createCaller({
+      serverDB: {},
+      userId: 'user1',
+    } as never);
+
+    await expect(
+      caller.update({
+        id: 'msg1',
+        value: { content: 'x', topicId: 'foreign-topic' } as never,
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
   });
 
   it('should handle updateMessage', async () => {
