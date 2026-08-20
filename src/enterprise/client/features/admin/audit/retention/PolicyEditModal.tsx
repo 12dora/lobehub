@@ -1,7 +1,9 @@
 'use client';
 
-import { Alert, InputNumber, Text } from '@lobehub/ui';
+import { Alert, Icon, InputNumber, Text, Tooltip } from '@lobehub/ui';
 import { Modal, Select, Switch } from '@lobehub/ui/base-ui';
+import { createStaticStyles } from 'antd-style';
+import { CircleHelp } from 'lucide-react';
 import { memo, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -15,6 +17,57 @@ import { openDangerConfirm } from '../../primitives/DangerConfirm';
 import { openAuditReasonModal } from '../shared/openAuditReasonModal';
 import { clampField, clampInt, POLICY_BOUNDS } from './policyBounds';
 
+const styles = createStaticStyles(({ css, cssVar }) => ({
+  helpButton: css`
+    cursor: help;
+
+    display: inline-flex;
+    align-items: center;
+
+    padding: 0;
+    border: none;
+
+    color: ${cssVar.colorTextTertiary};
+
+    background: none;
+
+    &:hover,
+    &:focus-visible {
+      color: ${cssVar.colorTextSecondary};
+    }
+  `,
+  labelRow: css`
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  `,
+}));
+
+/**
+ * Help icon + tooltip for a policy field. Keyboard users reach the copy by focusing the
+ * button (hover alone would hide it from them), same contract as the other admin fields.
+ */
+const FieldHelp = memo<{ hint: React.ReactNode; label: string }>(({ hint, label }) => {
+  const { t } = useTranslation('admin');
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Tooltip open={open} title={hint} onOpenChange={setOpen}>
+      <button
+        aria-label={t('audit.retention.policy.helpFor', { field: label })}
+        className={styles.helpButton}
+        type="button"
+        onBlur={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+      >
+        <Icon icon={CircleHelp} size={14} />
+      </button>
+    </Tooltip>
+  );
+});
+
+FieldHelp.displayName = 'AuditPolicyFieldHelp';
+
 const PolicyEditModal = memo<{
   authMethod?: AdminReauthAuthMethod | null;
   onClose: () => void;
@@ -25,8 +78,10 @@ const PolicyEditModal = memo<{
   const { t } = useTranslation('admin');
   const [contentAccessMode, setContentAccessMode] =
     useState<AdminAuditPolicy['contentAccessMode']>('metadata_only');
+  // Matches the DB default (PLATFORM_AUDIT_POLICY_DEFAULTS.redactionProfile) so a save
+  // fired before the policy hydrates cannot silently weaken redaction.
   const [redactionProfile, setRedactionProfile] =
-    useState<AdminAuditPolicy['redactionProfile']>('standard');
+    useState<AdminAuditPolicy['redactionProfile']>('strict');
   const [conversationRetentionDays, setConversationRetentionDays] = useState(90);
   const [operationLogRetentionDays, setOperationLogRetentionDays] = useState(90);
   const [exportArtifactRetentionDays, setExportArtifactRetentionDays] = useState(30);
@@ -69,9 +124,16 @@ const PolicyEditModal = memo<{
     }
   }, [open, policy]);
 
-  const field = (label: string, control: React.ReactNode) => (
+  /**
+   * `hint` is static guidance only — it sits in a tooltip behind a help icon so the
+   * rows stay aligned and the modal does not grow a paragraph per field.
+   */
+  const field = (label: string, control: React.ReactNode, hint?: React.ReactNode) => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBlockEnd: 12 }}>
-      <Text>{label}</Text>
+      <div className={styles.labelRow}>
+        <Text>{label}</Text>
+        {hint ? <FieldHelp hint={hint} label={label} /> : null}
+      </div>
       {control}
     </div>
   );
@@ -128,18 +190,35 @@ const PolicyEditModal = memo<{
       });
     };
 
+    // One acknowledgement per save, not one per risky field: an operator who widens both
+    // content access and redaction in the same edit sees both consequences in one dialog.
+    const risks: string[] = [];
     if (
       fields.contentAccessMode === 'content_allowed' &&
       policy.contentAccessMode !== 'content_allowed'
     ) {
-      openDangerConfirm({
-        content: t('audit.retention.policy.contentAllowedWarn'),
-        title: t('audit.retention.policy.contentAllowedWarnTitle'),
-        onConfirm: apply,
-      });
-    } else {
-      apply();
+      risks.push(t('audit.retention.policy.contentAllowedWarn'));
     }
+    if (fields.redactionProfile === 'off' && policy.redactionProfile !== 'off') {
+      risks.push(t('audit.retention.policy.redactionOffConfirmBody'));
+    }
+
+    if (risks.length === 0) {
+      apply();
+      return;
+    }
+
+    openDangerConfirm({
+      content: risks.join('\n\n'),
+      // A single risk keeps its own specific heading; both together need a neutral one.
+      title:
+        risks.length > 1
+          ? t('audit.retention.policy.riskConfirmTitle')
+          : fields.redactionProfile === 'off' && policy.redactionProfile !== 'off'
+            ? t('audit.retention.policy.redactionOffConfirmTitle')
+            : t('audit.retention.policy.contentAllowedWarnTitle'),
+      onConfirm: apply,
+    });
   };
 
   return (
@@ -181,9 +260,15 @@ const PolicyEditModal = memo<{
           options={[
             { label: t('audit.retention.redaction.strict'), value: 'strict' },
             { label: t('audit.retention.redaction.standard'), value: 'standard' },
+            { label: t('audit.retention.redaction.off'), value: 'off' },
           ]}
           onChange={(v) => setRedactionProfile(v as AdminAuditPolicy['redactionProfile'])}
         />,
+        <>
+          <div>{t('audit.retention.policy.redactionProfileHint.strict')}</div>
+          <div>{t('audit.retention.policy.redactionProfileHint.standard')}</div>
+          <div>{t('audit.retention.policy.redactionProfileHint.off')}</div>
+        </>,
       )}
       {field(
         t('audit.retention.policy.conversationDays'),

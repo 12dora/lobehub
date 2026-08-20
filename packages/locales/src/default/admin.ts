@@ -2862,6 +2862,17 @@ export default {
   'audit.retention.policy.contentAllowedWarnTitle': 'Allow full message content?',
   'audit.retention.policy.contentAllowedWarn':
     'Allowing content lets authorized auditors load full message bodies (credentials stay masked). This increases exposure of conversation content.',
+  'audit.retention.policy.helpFor': 'About {{field}}',
+  'audit.retention.policy.redactionProfileHint.strict':
+    'Strict: masks credentials (API keys, tokens, passwords) in audit views.',
+  'audit.retention.policy.redactionProfileHint.standard':
+    'Standard: same credential masking as Strict; ordinary text is kept.',
+  'audit.retention.policy.redactionProfileHint.off':
+    'Off: no masking — conversation content is shown as stored. Exports are always masked.',
+  'audit.retention.policy.redactionOffConfirmTitle': 'Turn off content redaction?',
+  'audit.retention.policy.riskConfirmTitle': 'Confirm these policy changes?',
+  'audit.retention.policy.redactionOffConfirmBody':
+    'Audit views will show conversation content exactly as stored, including any credentials left in messages. Export files stay masked.',
   'audit.retention.cleanup.title': 'Manual cleanup',
   'audit.retention.cleanup.dryRun': 'Dry run',
   'audit.retention.cleanup.execute': 'Run cleanup',
@@ -2907,6 +2918,7 @@ export default {
   'audit.retention.runs.countMetric': 'Metric',
   'audit.retention.redaction.strict': 'Strict',
   'audit.retention.redaction.standard': 'Standard',
+  'audit.retention.redaction.off': 'Off',
   'audit.retention.runs.metric.operationLogs': 'Operation logs',
   'audit.retention.runs.metric.conversations': 'Conversations',
   'audit.retention.runs.metric.messages': 'Messages',

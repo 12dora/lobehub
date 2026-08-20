@@ -61,6 +61,7 @@ vi.mock('@lobehub/ui', () => ({
     </div>
   ),
   Flexbox: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  Icon: () => null,
   InputNumber: ({ onChange, value }: { onChange?: (value: number) => void; value?: number }) => (
     <input
       data-testid="input-number"
@@ -70,6 +71,7 @@ vi.mock('@lobehub/ui', () => ({
   ),
   Tag: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
+  Tooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
