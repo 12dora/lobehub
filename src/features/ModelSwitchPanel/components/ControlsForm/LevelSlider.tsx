@@ -4,7 +4,10 @@ import type { SliderSingleProps } from 'antd/es/slider';
 import { createStaticStyles, cx } from 'antd-style';
 import type { CSSProperties, ReactNode } from 'react';
 import { memo, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import useMergeState from 'use-merge-value';
+
+import { effortLevelLabelKey } from '@/features/ServiceModel/effortLevelLabel';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   label: css`
@@ -95,7 +98,8 @@ export interface LevelSliderProps<T extends string = string> {
    */
   levels: readonly T[];
   /**
-   * Optional custom marks. If not provided, uses level values as marks.
+   * Optional custom marks. When absent, each level is named through the shared
+   * `serviceModel.reasoningEffort.options.*` copy, falling back to the raw level.
    */
   marks?: SliderSingleProps['marks'];
   /**
@@ -153,6 +157,10 @@ function LevelSlider<T extends string = string>({
   style,
   disabled,
 }: LevelSliderProps<T>) {
+  // Effort levels are named once, in the `setting` namespace, so the slider ticks read
+  // the same as the in-chat pill and the service-model picker. Levels outside that
+  // vocabulary (image resolutions, …) have no key and fall back to the raw value.
+  const { t } = useTranslation('setting');
   const defaultLevel = defaultValue ?? levels[Math.floor(levels.length / 2)];
 
   const [currentLevel, setCurrentLevel] = useMergeState<T>(defaultLevel, {
@@ -164,10 +172,13 @@ function LevelSlider<T extends string = string>({
   const options = useMemo(
     () =>
       levels.map<LevelOption<T>>((level, index) => ({
-        ...resolveMark(customMarks?.[index], level),
+        ...resolveMark(
+          customMarks?.[index],
+          t(effortLevelLabelKey(level), { defaultValue: level }),
+        ),
         value: level,
       })),
-    [customMarks, levels],
+    [customMarks, levels, t],
   );
 
   const currentIndex = levels.indexOf(currentLevel);

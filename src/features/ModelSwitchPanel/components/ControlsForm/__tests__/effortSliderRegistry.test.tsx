@@ -74,7 +74,10 @@ describe('effort sliders follow EFFORT_CONTROL_REGISTRY', () => {
     unmount();
   });
 
-  it('thinking keeps its OFF / Auto / ON marks over the raw registry levels', () => {
+  // The tri-state used to carry its own hardcoded English OFF / Auto / ON marks, which
+  // both skipped i18n and gave the same three values a third wording. It now goes through
+  // the shared level copy like every other effort control.
+  it('thinking names its registry levels with the shared level copy, not private marks', () => {
     const { levels, defaultLevel } = EFFORT_CONTROL_REGISTRY.thinking;
 
     expect([...levels]).toEqual(['disabled', 'auto', 'enabled']);
@@ -86,7 +89,9 @@ describe('effort sliders follow EFFORT_CONTROL_REGISTRY', () => {
       (node) => node.textContent,
     );
 
-    expect(labels).toEqual(['OFF', 'Auto', 'ON']);
-    expect(screen.getByText('Auto')).toHaveAttribute('aria-current', 'true');
+    // No `setting` resources are loaded in tests, so each label falls back to its raw level.
+    expect(labels).toEqual([...levels]);
+    expect(labels).not.toContain('OFF');
+    expect(screen.getByText(defaultLevel)).toHaveAttribute('aria-current', 'true');
   });
 });

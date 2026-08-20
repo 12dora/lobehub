@@ -50,6 +50,9 @@ const renderSelect = (props: Partial<Parameters<typeof EffortSelect>[0]> = {}) =
 
 const picker = () => screen.getByRole('combobox');
 
+/** Locale key a level renders as; the `t` mock above echoes keys back verbatim. */
+const label = (level: string) => `serviceModel.reasoningEffort.options.${level}`;
+
 describe('EffortSelect', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -76,9 +79,9 @@ describe('EffortSelect', () => {
 
     expect([...picker().querySelectorAll('option')].map((option) => option.textContent)).toEqual([
       'serviceModel.reasoningEffort.default',
-      'low',
-      'medium',
-      'high',
+      label('low'),
+      label('medium'),
+      label('high'),
     ]);
   });
 
@@ -141,9 +144,9 @@ describe('EffortSelect', () => {
     renderSelect({ chatConfig: {} as never });
 
     expect([...picker().querySelectorAll('option')].map((option) => option.textContent)).toEqual([
-      'low',
-      'medium',
-      'high',
+      label('low'),
+      label('medium'),
+      label('high'),
     ]);
   });
 
@@ -187,6 +190,21 @@ describe('EffortSelect', () => {
     expect([...picker().querySelectorAll('option')].map((option) => option.textContent)).toContain(
       'serviceModel.reasoningEffort.default',
     );
+  });
+
+  it('localizes option labels while keeping raw levels as the persisted values', () => {
+    extendParamsMock.mockReturnValue(['grok4_5ReasoningEffort']);
+    const { onChange } = renderSelect({ chatConfig: {} as never });
+
+    expect([...picker().querySelectorAll('option')].map((option) => option.value)).toEqual([
+      'low',
+      'medium',
+      'high',
+    ]);
+
+    fireEvent.change(picker(), { target: { value: 'low' } });
+
+    expect(onChange).toHaveBeenCalledWith('low', 'grok4_5ReasoningEffort');
   });
 
   it('is disabled when the managed cluster is disabled', () => {

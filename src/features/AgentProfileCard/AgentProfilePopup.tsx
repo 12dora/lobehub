@@ -1,6 +1,7 @@
 'use client';
 
-import { type AgentItem } from '@lobechat/types';
+import { type EffortLevel } from '@lobechat/model-runtime';
+import { type AgentItem, type LobeAgentChatConfig } from '@lobechat/types';
 import { ModelIcon } from '@lobehub/icons';
 import { ActionIcon, Flexbox, Icon, Popover, Skeleton, Text } from '@lobehub/ui';
 import { SkillsIcon } from '@lobehub/ui/icons';
@@ -11,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
 import ModelSelect from '@/features/ModelSelect';
+import EffortSelect from '@/features/ServiceModel/EffortSelect';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { agentProfileKeys } from '@/libs/swr/keys';
 import { agentService } from '@/services/agent';
@@ -50,7 +52,16 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
 type AgentPreview = Pick<
   AgentItem,
-  'avatar' | 'backgroundColor' | 'description' | 'model' | 'provider' | 'title'
+  | 'avatar'
+  | 'backgroundColor'
+  // `chatConfig` carries the persisted thinking-effort level. Without it the picker would
+  // seed itself with the registry default and silently overwrite the stored level on the
+  // first change, so it has to travel with the fetched agent rather than be re-derived.
+  | 'chatConfig'
+  | 'description'
+  | 'model'
+  | 'provider'
+  | 'title'
 >;
 
 interface FetchedAgent extends Partial<AgentPreview> {
@@ -87,6 +98,7 @@ const AgentProfilePopup = memo<AgentProfilePopupProps>(
     const merged: Partial<AgentPreview> = {
       avatar: fetched?.avatar ?? agent?.avatar,
       backgroundColor: fetched?.backgroundColor ?? agent?.backgroundColor,
+      chatConfig: fetched?.chatConfig ?? agent?.chatConfig,
       description: fetched?.description ?? agent?.description,
       model: fetched?.model ?? agent?.model,
       provider: fetched?.provider ?? agent?.provider,
@@ -101,6 +113,19 @@ const AgentProfilePopup = memo<AgentProfilePopupProps>(
           model: props.model,
           provider: props.provider,
         });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    const handleEffortChange = async (
+      level: EffortLevel | undefined,
+      configKey: keyof LobeAgentChatConfig,
+    ) => {
+      if (!groupId || level === undefined) return;
+      setLoading(true);
+      try {
+        await updateMemberAgentConfig(groupId, agentId, { chatConfig: { [configKey]: level } });
       } finally {
         setLoading(false);
       }
@@ -136,6 +161,17 @@ const AgentProfilePopup = memo<AgentProfilePopupProps>(
             value={{ model: merged.model, provider: merged.provider ?? undefined }}
             onChange={handleModelChange}
           />
+          {/* Waits for the fetch: seeding from an absent chatConfig would clobber the
+              persisted level. Hidden for models with no discrete effort control. */}
+          {fetched && (
+            <EffortSelect
+              chatConfig={merged.chatConfig ?? {}}
+              disabled={loading}
+              model={merged.model}
+              provider={merged.provider ?? ''}
+              onChange={handleEffortChange}
+            />
+          )}
         </Flexbox>
       )
     ) : footerLoading ? (

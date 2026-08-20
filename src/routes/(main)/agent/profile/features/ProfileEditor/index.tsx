@@ -10,6 +10,7 @@ import React, { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import ModelSelect from '@/features/ModelSelect';
+import EffortSelect from '@/features/ServiceModel/EffortSelect';
 import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
@@ -150,6 +151,20 @@ const ProfileEditor = memo(() => {
                     if (!canEdit) return;
 
                     updateConfig(value);
+                  }}
+                />
+                {/* Renders only for models that expose a discrete effort control, and writes
+                    the level to the same chatConfig field the in-chat pill writes — so the
+                    profile and the conversation always agree. */}
+                <EffortSelect
+                  chatConfig={config.chatConfig}
+                  disabled={!canEdit}
+                  model={config.model}
+                  provider={config.provider ?? ''}
+                  onChange={(level, configKey) => {
+                    if (!canEdit || level === undefined) return;
+
+                    updateConfig({ chatConfig: { [configKey]: level } });
                   }}
                 />
                 <AgentTool />

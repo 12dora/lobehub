@@ -11,14 +11,18 @@ import ThinkingEffort from './index';
 interface MenuItemProbe {
   closeOnClick?: boolean;
   key: string;
+  label?: ReactNode;
   onClick: () => void;
 }
+
+/** Locale key a level renders as; the `t` mock below echoes keys back verbatim. */
+const label = (level: string) => `serviceModel.reasoningEffort.options.${level}`;
 
 const mocks = vi.hoisted(() => ({
   agentId: 'agent-1',
   chatConfigByAgent: {} as Record<string, Record<string, unknown>>,
   extendParams: undefined as string[] | undefined,
-  menuItems: [] as { closeOnClick?: boolean; key: string; onClick: () => void }[],
+  menuItems: [] as { closeOnClick?: boolean; key: string; label?: unknown; onClick: () => void }[],
   model: 'gpt-5.5',
   permission: { allowed: true, reason: undefined as string | undefined },
   provider: 'openai',
@@ -127,7 +131,7 @@ describe('ThinkingEffort', () => {
 
       render(<ThinkingEffort />);
 
-      expect(screen.getByText('medium')).toBeInTheDocument();
+      expect(screen.getByText(label('medium'))).toBeInTheDocument();
     });
 
     it('renders the persisted level', () => {
@@ -136,7 +140,7 @@ describe('ThinkingEffort', () => {
 
       render(<ThinkingEffort />);
 
-      expect(screen.getByText('xhigh')).toBeInTheDocument();
+      expect(screen.getByText(label('xhigh'))).toBeInTheDocument();
     });
 
     it('prefers a real effort key over the tri-state thinking toggle', () => {
@@ -144,7 +148,24 @@ describe('ThinkingEffort', () => {
 
       render(<ThinkingEffort />);
 
-      expect(screen.getByText('medium')).toBeInTheDocument();
+      expect(screen.getByText(label('medium'))).toBeInTheDocument();
+    });
+
+    it('names the level through the shared setting namespace, never the raw level', () => {
+      mocks.extendParams = ['gpt5_2ReasoningEffort'];
+      mocks.chatConfigByAgent = { 'agent-1': { gpt5_2ReasoningEffort: 'xhigh' } };
+
+      render(<ThinkingEffort />);
+
+      expect(screen.queryByText('xhigh')).toBeNull();
+    });
+
+    it('renders a text-only trigger with no icon', () => {
+      mocks.extendParams = ['reasoningEffort'];
+
+      const { container } = render(<ThinkingEffort />);
+
+      expect(container.querySelector('svg')).toBeNull();
     });
   });
 
@@ -162,6 +183,25 @@ describe('ThinkingEffort', () => {
         'xhigh',
       ]);
       expect(mocks.menuItems.every((item) => item.closeOnClick === true)).toBe(true);
+    });
+
+    it('labels every menu entry with the shared level key, keeping the raw level as the item key', () => {
+      mocks.extendParams = ['gpt5_2ReasoningEffort'];
+
+      render(<ThinkingEffort />);
+
+      const rendered = mocks.menuItems.map((item) => {
+        const { container } = render(<>{item.label as ReactNode}</>);
+        return container.textContent;
+      });
+
+      expect(rendered).toEqual([
+        label('none'),
+        label('low'),
+        label('medium'),
+        label('high'),
+        label('xhigh'),
+      ]);
     });
 
     it('writes exactly the chosen level to the control config key', () => {
@@ -205,7 +245,7 @@ describe('ThinkingEffort', () => {
 
       expect(screen.getByTestId('tooltip')).toHaveAttribute(
         'data-title',
-        'thinkingEffort.tooltip:low',
+        `thinkingEffort.tooltip:${label('low')}`,
       );
     });
 
@@ -221,7 +261,7 @@ describe('ThinkingEffort', () => {
         'Your role cannot create content',
       );
       // The level is still readable, it just cannot be changed.
-      expect(screen.getByText('medium')).toBeInTheDocument();
+      expect(screen.getByText(label('medium'))).toBeInTheDocument();
     });
   });
 
@@ -237,12 +277,12 @@ describe('ThinkingEffort', () => {
     // element reproduces the same "new agent is active" observation.
     const { rerender } = render(<ThinkingEffort key={mocks.agentId} />);
 
-    expect(screen.getByText('low')).toBeInTheDocument();
+    expect(screen.getByText(label('low'))).toBeInTheDocument();
 
     mocks.agentId = 'agent-2';
     rerender(<ThinkingEffort key={mocks.agentId} />);
 
-    expect(screen.getByText('high')).toBeInTheDocument();
-    expect(screen.queryByText('low')).toBeNull();
+    expect(screen.getByText(label('high'))).toBeInTheDocument();
+    expect(screen.queryByText(label('low'))).toBeNull();
   });
 });

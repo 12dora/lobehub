@@ -17,6 +17,8 @@ import { resolveCurrentEffortLevel } from '@/features/ChatInput/ActionBar/Thinki
 // so the offered levels always match the model the picker next to it shows.
 import { aiModelSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
+import { effortLevelLabelKey } from './effortLevelLabel';
+
 /** Sentinel option value for "unset" — base-ui Select cannot carry `undefined` as a value. */
 const UNSET = '__provider_default__';
 
@@ -63,7 +65,11 @@ const EffortSelect = memo<EffortSelectProps>(
         ...(isChatConfigMode
           ? []
           : [{ label: t('serviceModel.reasoningEffort.default'), value: UNSET }]),
-        ...(control?.definition.levels ?? []).map((level) => ({ label: level, value: level })),
+        // Values stay the raw registry levels — only the label is localized.
+        ...(control?.definition.levels ?? []).map((level) => ({
+          label: t(effortLevelLabelKey(level)),
+          value: level,
+        })),
       ],
       [control, isChatConfigMode, t],
     );

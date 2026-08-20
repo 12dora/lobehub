@@ -4,10 +4,11 @@ import { findEffortControl } from '@lobechat/model-runtime';
 import { Center, Flexbox, Icon, Tooltip } from '@lobehub/ui';
 import { createStaticStyles, cx } from 'antd-style';
 import isEqual from 'fast-deep-equal';
-import { BrainIcon, CheckIcon } from 'lucide-react';
+import { CheckIcon } from 'lucide-react';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { effortLevelLabelKey } from '@/features/ServiceModel/effortLevelLabel';
 import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors, chatConfigByIdSelectors } from '@/store/agent/selectors';
@@ -25,7 +26,6 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     font-size: 12px;
     line-height: 1;
     color: ${cssVar.colorTextSecondary};
-    text-transform: lowercase;
   `,
   trigger: css`
     cursor: pointer;
@@ -53,10 +53,11 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
  * field as the corresponding slider under `ModelSwitchPanel/ControlsForm`.
  */
 const ThinkingEffort = memo(() => {
-  const { t } = useTranslation('chat');
+  // Levels are named in the `setting` namespace so the pill, the service-model
+  // picker and the ControlsForm sliders all read the same words.
+  const { t } = useTranslation(['chat', 'setting']);
   const { actionSize, dropdownPlacement } = useActionBarContext();
   const blockSize = actionSize?.blockSize ?? 32;
-  const iconSize = actionSize?.size ?? 18;
   const { allowed: canCreateContent, reason } = usePermission('create_content');
 
   const agentId = useAgentId();
@@ -94,7 +95,7 @@ const ThinkingEffort = memo(() => {
       key: level,
       label: (
         <Flexbox horizontal align={'center'} gap={12} justify={'space-between'} width={'100%'}>
-          <span>{level}</span>
+          <span>{t(effortLevelLabelKey(level), { ns: 'setting' })}</span>
           {level === currentLevel && <Icon icon={CheckIcon} size={14} />}
         </Flexbox>
       ),
@@ -103,21 +104,21 @@ const ThinkingEffort = memo(() => {
         updateAgentChatConfig({ [configKey]: level });
       },
     }));
-  }, [control, currentLevel, updateAgentChatConfig]);
+  }, [control, currentLevel, t, updateAgentChatConfig]);
 
   if (!control || !currentLevel) return null;
+
+  const currentLabel = t(effortLevelLabelKey(currentLevel), { ns: 'setting' });
 
   const trigger = (
     <Center
       horizontal
-      aria-label={t('thinkingEffort.title')}
+      aria-label={t('thinkingEffort.title', { ns: 'chat' })}
       className={cx(styles.trigger, !canCreateContent && styles.triggerDisabled)}
-      gap={4}
       height={blockSize}
       paddingInline={6}
     >
-      <Icon icon={BrainIcon} size={iconSize} />
-      <span className={styles.level}>{currentLevel}</span>
+      <span className={styles.level}>{currentLabel}</span>
     </Center>
   );
 
@@ -130,7 +131,9 @@ const ThinkingEffort = memo(() => {
 
   return (
     <ActionDropdown menu={{ items }} minWidth={140} placement={dropdownPlacement ?? 'topLeft'}>
-      <Tooltip title={t('thinkingEffort.tooltip', { level: currentLevel })}>{trigger}</Tooltip>
+      <Tooltip title={t('thinkingEffort.tooltip', { level: currentLabel, ns: 'chat' })}>
+        {trigger}
+      </Tooltip>
     </ActionDropdown>
   );
 });

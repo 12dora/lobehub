@@ -1,5 +1,7 @@
 'use client';
 
+import type { EffortLevel } from '@lobechat/model-runtime';
+import type { LobeAgentChatConfig } from '@lobechat/types';
 import { Alert, Button, Flexbox, Icon } from '@lobehub/ui';
 import { Divider } from 'antd';
 import isEqual from 'fast-deep-equal';
@@ -11,6 +13,7 @@ import urlJoin from 'url-join';
 
 import { EditorCanvas } from '@/features/EditorCanvas';
 import ModelSelect from '@/features/ModelSelect';
+import EffortSelect from '@/features/ServiceModel/EffortSelect';
 import { usePermission } from '@/hooks/usePermission';
 import { useQueryRoute } from '@/hooks/useQueryRoute';
 import { useAgentStore } from '@/store/agent';
@@ -98,6 +101,17 @@ const MemberProfile = memo(() => {
     [canEdit, updateAgentConfigById, agentId],
   );
 
+  // Thinking effort lands on the same chatConfig field the in-chat pill writes, so the
+  // member profile and the group conversation never disagree about the level.
+  const updateEffort = useCallback(
+    async (level: EffortLevel | undefined, configKey: keyof LobeAgentChatConfig) => {
+      if (!canEdit || level === undefined) return;
+
+      await updateAgentConfigById(agentId, { chatConfig: { [configKey]: level } });
+    },
+    [canEdit, updateAgentConfigById, agentId],
+  );
+
   // Watch for agent builder content updates and apply them directly to the editor
   useEffect(() => {
     if (!editor || !agentBuilderContentUpdate) return;
@@ -151,6 +165,14 @@ const MemberProfile = memo(() => {
               provider: config?.provider,
             }}
             onChange={updateAgentConfig}
+          />
+          {/* Hidden for models with no discrete effort control. */}
+          <EffortSelect
+            chatConfig={config?.chatConfig ?? {}}
+            disabled={!canEdit}
+            model={config?.model ?? ''}
+            provider={config?.provider ?? ''}
+            onChange={updateEffort}
           />
         </Flexbox>
         <AgentTool />
