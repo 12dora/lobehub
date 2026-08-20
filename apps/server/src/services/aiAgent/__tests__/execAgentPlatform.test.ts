@@ -18,9 +18,16 @@ import { TRPCError } from '@trpc/server';
 import type { MockInstance } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { MANAGED_ERROR_CODES } from '@/const/platform/errorCodes';
 import { getTestDB } from '@/database/core/getTestDB';
+import {
+  createUnmanagedResourcePolicyMap,
+  PlatformManagedResourcePolicyModel,
+} from '@/database/models/platform';
 import { agents, users } from '@/database/schemas';
+import { platformManagedResourcePolicies } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
+import { resetPlatformAgentTakeoverCacheForTest } from '@/server/enterprise/services/agentCatalog';
 import type { AgentRuntimeService } from '@/server/services/agentRuntime';
 
 const {
@@ -482,6 +489,72 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       expect(result.pin).toBe(pin);
       expect(result.config.slug).toBe('inbox');
       expect(beginOperation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('agent takeover deny', () => {
+    const publishAgentsTakeover = async () => {
+      const model = new PlatformManagedResourcePolicyModel(db);
+      await model.ensureRows();
+      const policies = createUnmanagedResourcePolicyMap();
+      policies.agents = { enforcementMode: 'enforced', managed: true };
+      await model.materializePublished({ policies, revision: 1 });
+      resetPlatformAgentTakeoverCacheForTest();
+    };
+
+    beforeEach(async () => {
+      await db.delete(platformManagedResourcePolicies);
+      resetPlatformAgentTakeoverCacheForTest();
+    });
+
+    it('refuses a user-owned local agent under takeover', async () => {
+      await publishAgentsTakeover();
+      getPlatformAgentIdByMaterializedAgentId.mockResolvedValue(null);
+      getAgentConfigSpy.mockResolvedValue({
+        chatConfig: {},
+        id: 'agt_ordinary',
+        model: 'gpt-4',
+        plugins: [],
+        provider: 'openai',
+        slug: null,
+        systemRole: '',
+      });
+
+      const error = await run({ agentId: 'agt_ordinary' });
+      expect(error).toBeInstanceOf(TRPCError);
+      expect((error as TRPCError).code).toBe('FORBIDDEN');
+      expect((error as { cause?: { data?: { code?: string } } }).cause?.data?.code).toBe(
+        MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+      );
+    });
+
+    it('still allows the builtin inbox under takeover', async () => {
+      await publishAgentsTakeover();
+      getAgentConfigSpy.mockResolvedValue({
+        chatConfig: {},
+        id: 'inbox-uuid',
+        model: 'gpt-4',
+        plugins: [],
+        provider: 'openai',
+        slug: 'inbox',
+        systemRole: '',
+      });
+
+      const error = await run({ slug: 'inbox' });
+      expect((error as { cause?: { data?: { code?: string } } }).cause?.data?.code).not.toBe(
+        MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+      );
+    });
+
+    it('still allows an encoded platform list id under takeover (entitlement path, not the user-agent deny)', async () => {
+      await publishAgentsTakeover();
+      beginOperation.mockResolvedValue(null);
+      const error = await run({ agentId: 'platform-agent:pagt_1' });
+      expect((error as TRPCError).code).toBe('NOT_FOUND');
+      expect((error as { cause?: { data?: { code?: string } } }).cause?.data?.code).not.toBe(
+        MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+      );
+      expect(beginOperation).toHaveBeenCalledTimes(1);
     });
   });
 });

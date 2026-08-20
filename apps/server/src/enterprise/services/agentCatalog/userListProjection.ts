@@ -17,6 +17,7 @@ import { AgentService } from '@/server/services/agent';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { PlatformAgentEffectiveResolver } from './effectiveResolver';
+import { isPlatformAgentTakeoverActive } from './enforcement';
 
 /**
  * A platform Agent as it appears in an ordinary user's unified Agent list — the user-safe subset
@@ -63,6 +64,12 @@ interface BuiltinInboxListSource {
 
 interface PlatformAgentUserListServiceOptions {
   flags?: EnterpriseFeatureFlags;
+  /**
+   * Override for tests. Production default is {@link isPlatformAgentTakeoverActive}
+   * (published + managed + enforced). When true, lists contain ONLY the builtin
+   * inbox and assigned platform agents — local user rows are not merged.
+   */
+  isTakeoverActive?: () => Promise<boolean>;
   loadBuiltinInbox?: (
     userId: string,
     workspaceId?: string,
@@ -107,6 +114,9 @@ export class PlatformAgentUserListService {
 
   private flags = (): EnterpriseFeatureFlags =>
     this.options.flags ?? parseEnterpriseFeatureFlags(process.env);
+
+  private isTakeoverActive = (): Promise<boolean> =>
+    this.options.isTakeoverActive?.() ?? isPlatformAgentTakeoverActive(this.db, this.flags());
 
   private repository = (): PlatformAgentCatalogRepository =>
     this.options.repository ?? new PlatformAgentCatalogRepository(this.db);
@@ -213,6 +223,8 @@ export class PlatformAgentUserListService {
     ];
 
     const platformWindow = platform.slice(params.offset, params.offset + params.limit);
+    if (await this.isTakeoverActive()) return platformWindow;
+
     const remaining = params.limit - platformWindow.length;
     const local =
       remaining > 0
@@ -241,6 +253,16 @@ export class PlatformAgentUserListService {
     if (!this.flags().ENABLE_PLATFORM_MANAGED_AGENTS) return base;
 
     const { builtinInbox, entries, materializedAgentIds } = await this.getVisibleProjection(userId);
+    if (await this.isTakeoverActive()) {
+      return {
+        groups: [],
+        pinned: [],
+        privateGroups: [],
+        privateUngrouped: [],
+        ungrouped: [this.builtinToSidebarItem(builtinInbox), ...entries.map(this.toSidebarItem)],
+      };
+    }
+
     const excludedIds = new Set([...materializedAgentIds, builtinInbox.id]);
 
     const strip = (items: SidebarAgentItem[]): SidebarAgentItem[] =>
@@ -269,15 +291,17 @@ export class PlatformAgentUserListService {
 
     const { builtinInbox, entries, materializedAgentIds } = await this.getVisibleProjection(userId);
     const matched = entries.filter((entry) => matchesKeyword(entry, keyword));
-    const excludedIds = new Set([...materializedAgentIds, builtinInbox.id]);
-    const local = base.filter((item) => !excludedIds.has(item.id));
-    return [
+    const platformHits = [
       ...(matchesUnifiedKeyword(builtinInbox, keyword)
         ? [this.builtinToSidebarItem(builtinInbox)]
         : []),
       ...matched.map(this.toSidebarItem),
-      ...local,
     ];
+    if (await this.isTakeoverActive()) return platformHits;
+
+    const excludedIds = new Set([...materializedAgentIds, builtinInbox.id]);
+    const local = base.filter((item) => !excludedIds.has(item.id));
+    return [...platformHits, ...local];
   };
 
   private toPickerItem = (entry: PlatformAgentUserListEntry): UnifiedAvailableAgentItem => ({

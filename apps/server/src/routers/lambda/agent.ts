@@ -23,7 +23,10 @@ import {
   withManagedLocalAgentGuard,
 } from '@/server/enterprise/guards/managedPlatformAgent';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
-import { PlatformAgentUserListService } from '@/server/enterprise/services/agentCatalog';
+import {
+  assertLocalAgentReadableUnderTakeover,
+  PlatformAgentUserListService,
+} from '@/server/enterprise/services/agentCatalog';
 import { AgentService } from '@/server/services/agent';
 import { EditLockService } from '@/server/services/editLock';
 import { publishResourceEvent } from '@/server/services/resourceEvents';
@@ -355,7 +358,17 @@ export const agentRouter = router({
       if (!session) throw new Error(`Session [${input.sessionId}] not found`);
       const sessionId = session.id;
 
-      return ctx.agentModel.findBySessionId(sessionId);
+      const agent = await ctx.agentModel.findBySessionId(sessionId);
+      if (agent?.id) {
+        await assertLocalAgentReadableUnderTakeover({
+          db: ctx.serverDB,
+          identifier: agent.id,
+          slug: agent.slug,
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId ?? undefined,
+        });
+      }
+      return agent;
     }),
 
   getAgentConfigById: agentProcedure
@@ -365,7 +378,16 @@ export const agentRouter = router({
       }),
     )
     .query(async ({ input, ctx }) => {
-      return ctx.agentService.getAgentConfigById(input.agentId);
+      const agent = await ctx.agentService.getAgentConfigById(input.agentId);
+      if (agent) {
+        await assertLocalAgentReadableUnderTakeover({
+          db: ctx.serverDB,
+          identifier: agent.id ?? input.agentId,
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId ?? undefined,
+        });
+      }
+      return agent;
     }),
 
   /**

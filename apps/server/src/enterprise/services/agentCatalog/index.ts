@@ -2,6 +2,7 @@ export * from './adminService';
 export * from './defaultInbox';
 export * from './dependencyValidator';
 export * from './effectiveResolver';
+export * from './enforcement';
 export * from './errors';
 export * from './materialization';
 export * from './platformAgentExecutionResolver';

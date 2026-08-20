@@ -49,6 +49,7 @@ const makeService = (params: {
   builtinInboxId?: string;
   effective?: ReturnType<typeof effectiveAgent>[];
   flags?: typeof flagsOn;
+  isTakeoverActive?: boolean;
   materialized?: string[];
   workspaceId?: string;
 }) => {
@@ -75,6 +76,8 @@ const makeService = (params: {
   }));
   const service = new PlatformAgentUserListService({} as LobeChatDatabase, params.workspaceId, {
     flags: params.flags ?? flagsOn,
+    // Existing union tests stay on the non-takeover path unless opted in.
+    isTakeoverActive: async () => params.isTakeoverActive ?? false,
     loadBuiltinInbox,
     repository: { listMaterializedAgentIds } as unknown as PlatformAgentCatalogRepository,
     resolver: { getEffectiveList } as unknown as Pick<
@@ -488,6 +491,84 @@ describe('PlatformAgentUserListService', () => {
         'clone',
       );
       expect(search.map((i) => i.id)).toEqual(['agt_x']);
+    });
+  });
+
+  describe('takeover (published managed+enforced agents)', () => {
+    const sidebarLocal = (id: string): SidebarAgentItem => ({
+      id,
+      pinned: false,
+      title: id,
+      type: 'agent',
+      updatedAt: new Date('2024-01-01T00:00:00Z'),
+    });
+
+    it('sidebar returns only inbox + platform; groups/pinned/private empty; no user ids', async () => {
+      const { service } = makeService({
+        effective: [effectiveAgent('p1', 'mandatory')],
+        isTakeoverActive: true,
+        materialized: ['agt_dup'],
+      });
+      const base = {
+        groups: [
+          { id: 'g', items: [sidebarLocal('agt_dup'), sidebarLocal('agt_g')], name: 'G', sort: 0 },
+        ],
+        pinned: [sidebarLocal('agt_dup')],
+        privateGroups: [{ id: 'pg', items: [sidebarLocal('agt_priv')], name: 'P', sort: 0 }],
+        privateUngrouped: [sidebarLocal('agt_dup')],
+        ungrouped: [sidebarLocal('agt_dup'), sidebarLocal('agt_u')],
+      };
+      const merged = await service.mergeSidebarList('u', base);
+
+      expect(merged.ungrouped.map((i) => i.id)).toEqual([
+        'builtin-inbox-id',
+        encodePlatformAgentListId('p1'),
+      ]);
+      expect(merged.groups).toEqual([]);
+      expect(merged.pinned).toEqual([]);
+      expect(merged.privateGroups).toEqual([]);
+      expect(merged.privateUngrouped).toEqual([]);
+    });
+
+    it('picker does not call loadLocal and returns no local ids', async () => {
+      const { service } = makeService({
+        effective: [effectiveAgent('p1', 'optional')],
+        isTakeoverActive: true,
+      });
+      const loadLocal = vi.fn(localLoader([localItem('agt_keep', 'Keep')]));
+      const result = await service.mergeAvailableAgents(
+        'u',
+        { limit: 10, offset: 0 },
+        loadLocal,
+        unusedLegacyLoader,
+      );
+
+      expect(loadLocal).not.toHaveBeenCalled();
+      expect(result.map((r) => r.id)).toEqual([
+        'builtin-inbox-id',
+        encodePlatformAgentListId('p1'),
+      ]);
+    });
+
+    it('search returns no user-owned ids', async () => {
+      const { service } = makeService({
+        effective: [effectiveAgent('p1', 'optional', 'Research Bot')],
+        isTakeoverActive: true,
+      });
+      const merged = await service.mergeSearchResults('u', [sidebarLocal('agt_x')], 'research');
+      expect(merged.map((i) => i.id)).toEqual([encodePlatformAgentListId('p1')]);
+    });
+
+    it('empty assignment set yields inbox only (replace, not a second bug)', async () => {
+      const { service } = makeService({ effective: [], isTakeoverActive: true });
+      const merged = await service.mergeSidebarList('u', {
+        groups: [],
+        pinned: [],
+        privateGroups: [],
+        privateUngrouped: [],
+        ungrouped: [sidebarLocal('agt_u')],
+      });
+      expect(merged.ungrouped.map((i) => i.id)).toEqual(['builtin-inbox-id']);
     });
   });
 });

@@ -20,6 +20,7 @@ import {
 
 import { AgentModel } from '@/database/models/agent';
 import { PluginModel } from '@/database/models/plugin';
+import { AgentService } from '@/server/services/agent';
 import { DiscoverService } from '@/server/services/discover';
 
 import { type ToolExecutionContext, type ToolExecutionResult } from '../types';
@@ -33,6 +34,20 @@ const handleError = (error: unknown, message: string): ToolExecutionResult => {
 /** Max results per searchAgent call (mirrored in the tool manifest: "max: 20") */
 const MAX_SEARCH_AGENT_LIMIT = 20;
 
+const SEARCH_AGENT_HETERO_TYPES = new Set([
+  'amp',
+  'claude-code',
+  'codex',
+  'hermes',
+  'openclaw',
+  'opencode',
+]);
+
+const isSearchAgentHeteroType = (
+  value: string | undefined,
+): value is HeterogeneousProviderConfig['type'] =>
+  typeof value === 'string' && SEARCH_AGENT_HETERO_TYPES.has(value);
+
 export const agentManagementRuntime: ServerRuntimeRegistration = {
   factory: (context) => {
     if (!context.userId || !context.serverDB) {
@@ -40,6 +55,7 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
     }
 
     const agentModel = new AgentModel(context.serverDB, context.userId, context.workspaceId);
+    const agentService = new AgentService(context.serverDB, context.userId, context.workspaceId);
     const pluginModel = new PluginModel(context.serverDB, context.userId, context.workspaceId);
     const discoverService = new DiscoverService();
 
@@ -289,11 +305,27 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
 
           if (source === 'user' || source === 'all') {
             const [userAgents, total] = await Promise.all([
-              agentModel.queryAgents({ keyword: params.keyword, limit, offset }),
-              agentModel.countAgents({ keyword: params.keyword }),
+              agentService.queryAvailableAgents({
+                keyword: params.keyword,
+                limit,
+                offset,
+              }),
+              agentService.countAvailableAgents(params.keyword),
             ]);
             userTotal = total;
-            results.push(...userAgents.map((a) => ({ ...a, isMarket: false })));
+            results.push(
+              ...userAgents.map((agent) => ({
+                avatar: agent.avatar,
+                backgroundColor: agent.backgroundColor,
+                description: agent.description,
+                id: agent.id,
+                isMarket: false,
+                title: agent.title,
+                ...(isSearchAgentHeteroType(agent.heteroType)
+                  ? { heteroType: agent.heteroType }
+                  : {}),
+              })),
+            );
           }
 
           // Marketplace search returns the first page only — offset does not apply

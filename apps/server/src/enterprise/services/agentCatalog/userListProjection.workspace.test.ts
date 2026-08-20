@@ -18,8 +18,9 @@ const userId = 'managed-inbox-workspace-user';
 let db: LobeChatDatabase;
 let workspaceId: string;
 
-const options = () => ({
+const options = (takeover = false) => ({
   flags: { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true },
+  isTakeoverActive: async () => takeover,
   repository: {
     listMaterializedAgentIds: vi.fn(async () => new Set<string>()),
   } as unknown as PlatformAgentCatalogRepository,
@@ -104,5 +105,39 @@ describe('PlatformAgentUserListService — real DB workspace scope', () => {
     expect(workspaceConfig?.slug).toBe(INBOX_SESSION_ID);
     expect(await personalRuntime.getAgentConfigById(workspaceInboxId)).toBeNull();
     expect(await workspaceRuntime.getAgentConfigById(personalInboxId)).toBeNull();
+  });
+
+  it('takeover skips local loads and hides owner-scoped user agents in both scopes', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const personalModel = new AgentModel(db, userId);
+    const workspaceModel = new AgentModel(db, userId, workspaceId);
+    const personalLocal = await personalModel.create({ title: 'Personal local' });
+    const workspaceLocal = await workspaceModel.create({ title: 'Workspace local' });
+    const personalList = new PlatformAgentUserListService(db, undefined, options(true));
+    const workspaceList = new PlatformAgentUserListService(db, workspaceId, options(true));
+
+    const loadPersonal = vi.fn((params) => personalModel.queryAgents(params));
+    const loadWorkspace = vi.fn((params) => workspaceModel.queryAgents(params));
+
+    const personalPicker = await personalList.mergeAvailableAgents(
+      userId,
+      { limit: 20, offset: 0 },
+      loadPersonal,
+      () => personalModel.queryAgents(),
+    );
+    const workspacePicker = await workspaceList.mergeAvailableAgents(
+      userId,
+      { limit: 20, offset: 0 },
+      loadWorkspace,
+      () => workspaceModel.queryAgents(),
+    );
+
+    expect(loadPersonal).not.toHaveBeenCalled();
+    expect(loadWorkspace).not.toHaveBeenCalled();
+    expect(personalPicker.map(({ id }) => id)).not.toContain(personalLocal.id);
+    expect(workspacePicker.map(({ id }) => id)).not.toContain(workspaceLocal.id);
+    expect(personalPicker).toHaveLength(1);
+    expect(workspacePicker).toHaveLength(1);
+    expect(personalPicker[0].id).not.toBe(workspacePicker[0].id);
   });
 });

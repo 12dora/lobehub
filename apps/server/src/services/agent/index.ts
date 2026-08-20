@@ -2,7 +2,8 @@ import { type BuiltinAgentSlug } from '@lobechat/builtin-agents';
 import { BUILTIN_AGENTS } from '@lobechat/builtin-agents';
 import { DEFAULT_AGENT_CONFIG, DEFAULT_INBOX_TITLE, INBOX_SESSION_ID } from '@lobechat/const';
 import { type LobeChatDatabase } from '@lobechat/database';
-import { type AgentItem, type LobeAgentConfig } from '@lobechat/types';
+import type { AgentItem, LobeAgentConfig } from '@lobechat/types';
+import { decodePlatformAgentListId } from '@lobechat/types';
 import { cleanObject, merge } from '@lobechat/utils';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
@@ -20,6 +21,10 @@ import {
   RedisKeyNamespace,
   RedisKeys,
 } from '@/libs/redis';
+import {
+  isPlatformAgentTakeoverActive,
+  PlatformAgentUserListService,
+} from '@/server/enterprise/services/agentCatalog';
 import { PlatformDefaultInboxService } from '@/server/enterprise/services/agentCatalog/defaultInbox';
 import { resolveServerRuntimeBranding } from '@/server/enterprise/services/branding/runtimeBranding';
 import { getEffectiveDefaultAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
@@ -221,7 +226,50 @@ export class AgentService {
     return branding.defaultAgentDisplayName?.trim() || DEFAULT_INBOX_TITLE;
   };
 
+  /**
+   * Unified picker list: platform items first, then local (materialized clones
+   * stripped). Under agent takeover this is inbox + assigned platform agents
+   * only — `loadLocal` is not called.
+   */
+  async queryAvailableAgents(params: { keyword?: string; limit: number; offset: number }) {
+    return new PlatformAgentUserListService(this.db, this.workspaceId).mergeAvailableAgents(
+      this.userId,
+      params,
+      (localParams) => this.agentModel.queryAgents(localParams),
+      () => this.agentModel.queryAgents(params),
+    );
+  }
+
+  /** Matching total for {@link queryAvailableAgents} pagination. */
+  async countAvailableAgents(keyword?: string) {
+    if (await isPlatformAgentTakeoverActive(this.db)) {
+      const items = await this.queryAvailableAgents({ keyword, limit: 1001, offset: 0 });
+      return items.length;
+    }
+    return this.agentModel.countAgents({ keyword });
+  }
+
   async listMessengerBindableAgents(options?: { fallbackTitle?: string | null }) {
+    if (await isPlatformAgentTakeoverActive(this.db)) {
+      const items = await new PlatformAgentUserListService(
+        this.db,
+        this.workspaceId,
+      ).mergeAvailableAgents(
+        this.userId,
+        { limit: 9999, offset: 0 },
+        async () => [],
+        async () => [],
+      );
+      return items.map((item) => ({
+        avatar: item.avatar,
+        backgroundColor: item.backgroundColor,
+        id: item.id,
+        // Under takeover the only non-encoded identity is the stable builtin inbox.
+        isInbox: decodePlatformAgentListId(item.id) === null,
+        title: item.title,
+      }));
+    }
+
     const inboxTitleFallback = await this.resolveInboxTitleFallback();
     const rows = await this.agentModel.listMessengerBindableAgents({
       ...options,

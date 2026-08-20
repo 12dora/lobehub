@@ -1257,6 +1257,17 @@ export class AiAgentService {
         agentConfig = await this.agentService.getAgentConfig(identifier);
       }
     }
+    if (agentConfig && !platformAgentId) {
+      const { assertLocalAgentReadableUnderTakeover } =
+        await import('@/server/enterprise/services/agentCatalog');
+      await assertLocalAgentReadableUnderTakeover({
+        db: this.db,
+        identifier: agentConfig.id,
+        slug: agentConfig.slug,
+        userId: this.userId,
+        workspaceId: this.workspaceId,
+      });
+    }
     if (!agentConfig) {
       // `agentService.getAgentConfig` already routes through `AgentModel`'s
       // workspace + visibility ownership predicate, so a cross-user private
@@ -3469,8 +3480,9 @@ export class AiAgentService {
       // so the model has no exposure to its own id and cannot self-delegate)
       // and +1 to detect overflow for the `hasMore` flag.
       const AVAILABLE_AGENTS_LIMIT = 10;
-      const recentAgents = await this.agentModel.queryAgents({
+      const recentAgents = await this.agentService.queryAvailableAgents({
         limit: AVAILABLE_AGENTS_LIMIT + 2,
+        offset: 0,
       });
 
       // Exclude the current agent from `availableAgents` — the model is the current

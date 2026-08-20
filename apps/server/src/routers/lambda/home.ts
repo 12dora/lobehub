@@ -14,7 +14,10 @@ import {
   withManagedLocalAgentGuard,
 } from '@/server/enterprise/guards/managedPlatformAgent';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
-import { PlatformAgentUserListService } from '@/server/enterprise/services/agentCatalog';
+import {
+  isPlatformAgentTakeoverActive,
+  PlatformAgentUserListService,
+} from '@/server/enterprise/services/agentCatalog';
 import { type HomeBriefData, HomeService } from '@/server/services/home';
 
 const homeProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
@@ -42,7 +45,11 @@ export const homeRouter = router({
   getSidebarAgentList: homeProcedure
     .use(withActiveUserWhenManagedAgents())
     .query(async ({ ctx }) => {
-      const base = await ctx.homeRepository.getSidebarAgentList();
+      // Under takeover the merge drops every local bucket; skip the local query.
+      const takeover = await isPlatformAgentTakeoverActive(ctx.serverDB);
+      const base = takeover
+        ? { groups: [], pinned: [], privateGroups: [], privateUngrouped: [], ungrouped: [] }
+        : await ctx.homeRepository.getSidebarAgentList();
       // Merge effective platform agents into the main sidebar list (never materializes).
       const result = await ctx.platformAgentListService.mergeSidebarList(ctx.userId, base);
 
@@ -65,7 +72,8 @@ export const homeRouter = router({
     .use(withActiveUserWhenManagedAgents())
     .input(z.object({ keyword: z.string() }))
     .query(async ({ input, ctx }) => {
-      const base = await ctx.homeRepository.searchAgents(input.keyword);
+      const takeover = await isPlatformAgentTakeoverActive(ctx.serverDB);
+      const base = takeover ? [] : await ctx.homeRepository.searchAgents(input.keyword);
       return ctx.platformAgentListService.mergeSearchResults(ctx.userId, base, input.keyword);
     }),
 

@@ -22,6 +22,10 @@ import {
 import { deletePlatformAuditLogsForTest } from '../testing/deletePlatformAuditLogs';
 import { deletePlatformResourceRevisionsForTest } from '../testing/deletePlatformResourceRevisions';
 import {
+  isPlatformAgentTakeoverActive,
+  resetPlatformAgentTakeoverCacheForTest,
+} from './agentCatalog/enforcement';
+import {
   isPlatformAiTakeoverActive,
   resetPlatformAiTakeoverCacheForTest,
 } from './aiCatalog/enforcement';
@@ -247,6 +251,26 @@ describe('ManagedResourcePolicyService', () => {
 
     // No TTL wait: the very next read sees the freshly published policy.
     expect(await isPlatformAiTakeoverActive(serverDB, flags)).toBe(true);
+  });
+
+  it('drops the platform-agent takeover memo after the save transaction commits', async () => {
+    resetPlatformAgentTakeoverCacheForTest();
+    const flags = { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
+    const service = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
+    const initial = await service.get();
+    const draft = createUnmanagedResourcePolicyMap();
+    draft.agents = { enforcementMode: 'enforced', managed: true };
+
+    expect(await isPlatformAgentTakeoverActive(serverDB, flags)).toBe(false);
+    await service.save({
+      actorUserId: 'admin-1',
+      draft,
+      expectedDraftToken: initial.draftToken,
+      expectedRevision: initial.baseRevision,
+      reason: 'apply policy',
+    });
+
+    expect(await isPlatformAgentTakeoverActive(serverDB, flags)).toBe(true);
   });
 
   it('rejects a stale expected revision without changing the published snapshot', async () => {

@@ -32,6 +32,13 @@ vi.mock('@/database/models/agent', () => ({
   })),
 }));
 
+vi.mock('@/server/services/agent', () => ({
+  AgentService: vi.fn(() => ({
+    countAvailableAgents: mockCountAgents,
+    queryAvailableAgents: mockQueryAgents,
+  })),
+}));
+
 vi.mock('@/database/models/plugin', () => ({
   PluginModel: vi.fn(() => ({
     create: mockCreatePlugin,
