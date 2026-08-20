@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ADMIN_AUDIT_LIST_MAX_LIMIT,
+  adminAuditConversationsGetOutputSchema,
   adminAuditConversationsListInputSchema,
+  adminAuditConversationsListOutputSchema,
+  adminAuditConversationsMessagesOutputSchema,
   adminAuditEventsListInputSchema,
   adminAuditExportItemSchema,
   adminAuditExportsCreateInputSchema,
@@ -12,6 +15,7 @@ import {
   adminAuditPolicyUpdateInputSchema,
   adminAuditRetentionRunItemSchema,
   adminAuditUsersSearchInputSchema,
+  adminAuditUsersTimelineOutputSchema,
   dateInputSchema,
 } from './adminAudit';
 
@@ -48,6 +52,83 @@ describe('adminAudit contracts', () => {
       reason: 'Tighten list window for SOC review',
     });
     expect(ok.maxListWindowDays).toBe(30);
+  });
+
+  it('accepts redactionProfile off and rejects unknown profiles', () => {
+    const ok = adminAuditPolicyUpdateInputSchema.parse({
+      expectedRevision: 0,
+      reason: 'disable conversation credential masking for incident review',
+      redactionProfile: 'off',
+    });
+    expect(ok.redactionProfile).toBe('off');
+
+    expect(() =>
+      adminAuditPolicyUpdateInputSchema.parse({
+        expectedRevision: 0,
+        reason: 'invalid redaction profile',
+        redactionProfile: 'loose',
+      }),
+    ).toThrow();
+  });
+
+  it('conversation and timeline envelopes require a known redactionProfile', () => {
+    const now = new Date();
+    const listItem = {
+      agentId: null,
+      createdAt: now,
+      description: null,
+      id: 't1',
+      model: null,
+      provider: null,
+      sessionId: null,
+      status: null,
+      title: 'memo',
+      updatedAt: now,
+      userId: 'u1',
+    };
+
+    expect(
+      adminAuditConversationsListOutputSchema.safeParse({ items: [], nextCursor: null }).success,
+    ).toBe(false);
+    expect(
+      adminAuditConversationsListOutputSchema.parse({
+        items: [listItem],
+        nextCursor: null,
+        redactionProfile: 'off',
+      }).redactionProfile,
+    ).toBe('off');
+    expect(
+      adminAuditConversationsListOutputSchema.safeParse({
+        items: [],
+        nextCursor: null,
+        redactionProfile: 'loose',
+      }).success,
+    ).toBe(false);
+
+    expect(
+      adminAuditConversationsGetOutputSchema.parse({
+        ...listItem,
+        contentAccessMode: 'content_allowed',
+        redactionProfile: 'strict',
+      }).redactionProfile,
+    ).toBe('strict');
+
+    expect(
+      adminAuditConversationsMessagesOutputSchema.parse({
+        contentAccessMode: 'content_allowed',
+        items: [],
+        nextCursor: null,
+        redactionProfile: 'standard',
+      }).redactionProfile,
+    ).toBe('standard');
+
+    expect(
+      adminAuditUsersTimelineOutputSchema.parse({
+        items: [],
+        nextCursor: null,
+        redactionProfile: 'off',
+      }).redactionProfile,
+    ).toBe('off');
   });
 
   it('normalizes user search q and never allows empty', () => {

@@ -3,7 +3,7 @@
 import { Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useEffect, useLayoutEffect } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
@@ -69,6 +69,19 @@ const UserTimelinePane = memo<UserTimelinePaneProps>(
       { cursor: currentCursor, from, limit, to, userId },
       canFetch,
     );
+
+    const prevRedactionProfileRef = useRef<
+      NonNullable<(typeof timeline)['data']>['redactionProfile'] | undefined
+    >(undefined);
+    const mutateTimeline = timeline.mutate;
+    useEffect(() => {
+      const profile = timeline.data?.redactionProfile;
+      const prev = prevRedactionProfileRef.current;
+      if (profile) prevRedactionProfileRef.current = profile;
+      if (!prev || !profile || prev === profile) return;
+      reset();
+      void mutateTimeline(undefined, { revalidate: true });
+    }, [mutateTimeline, reset, timeline.data?.redactionProfile]);
 
     // Report before paint so a timeline-only FORBIDDEN still gates the parent page
     // (same as when both fetches lived in ConversationUserPage). Do not clear on

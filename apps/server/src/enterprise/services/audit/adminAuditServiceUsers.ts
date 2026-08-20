@@ -141,7 +141,7 @@ export const listUserTimeline = async (
       targetId: params.input.userId,
       targetType: 'user',
     });
-    return { items, nextCursor: page.nextCursor };
+    return { items, nextCursor: page.nextCursor, redactionProfile: policy.redactionProfile };
   } catch (error) {
     await appendAuditAccessLog(host.db, {
       action: 'admin.audit.users.timeline',

@@ -8,6 +8,7 @@ import { adminAuditService } from '@/enterprise/client/services/adminAudit';
 
 import {
   type AuditContentAccessMode,
+  type AuditRedactionProfile,
   mergeMessagePages,
   stripMessageBodies,
 } from '../shared/liveMessageUtils';
@@ -25,6 +26,7 @@ export const useLiveMessageFeed = ({
   messagesAccessDenied,
   messagesLive,
   mustPurgeCachedBodies,
+  redactionProfile,
   t,
   topicId,
   userId,
@@ -39,8 +41,10 @@ export const useLiveMessageFeed = ({
     contentAccessMode?: AuditContentAccessMode;
     items?: AdminAuditConversationMessage[];
     nextCursor?: string | null;
+    redactionProfile?: AuditRedactionProfile;
   }>;
   mustPurgeCachedBodies: boolean;
+  redactionProfile: AuditRedactionProfile | undefined;
   t: TFunction<'admin'>;
   topicId?: string;
   userId?: string;
@@ -62,11 +66,7 @@ export const useLiveMessageFeed = ({
 
   useEffect(() => {
     resetMessagePagination();
-  }, [userId, resetMessagePagination]);
-
-  useEffect(() => {
-    resetMessagePagination();
-  }, [topicId, resetMessagePagination]);
+  }, [redactionProfile, resetMessagePagination, topicId, userId]);
 
   // Drop cached body-bearing pages when policy or conversation permission is lost
   // so previously loaded content cannot outlive authorization.
@@ -134,7 +134,10 @@ export const useLiveMessageFeed = ({
         !canConversationRead ||
         bodyHidden ||
         page.contentAccessMode === 'metadata_only' ||
-        page.contentAccessMode === 'disabled'
+        page.contentAccessMode === 'disabled' ||
+        (page.redactionProfile !== undefined &&
+          redactionProfile !== undefined &&
+          page.redactionProfile !== redactionProfile)
       ) {
         return;
       }
@@ -156,6 +159,7 @@ export const useLiveMessageFeed = ({
     includeBody,
     loadingOlder,
     olderNextCursor,
+    redactionProfile,
     t,
     topicId,
     userId,

@@ -68,7 +68,7 @@ export const listConversations = async (
       targetId: params.input.userId,
       targetType: 'user',
     });
-    return { items, nextCursor: page.nextCursor };
+    return { items, nextCursor: page.nextCursor, redactionProfile: policy.redactionProfile };
   } catch (error) {
     await appendAuditAccessLog(host.db, {
       action: 'admin.audit.conversations.list',
@@ -126,6 +126,7 @@ export const getConversation = async (
       id: topic.id,
       model: topic.model,
       provider: topic.provider,
+      redactionProfile: policy.redactionProfile,
       sessionId: topic.sessionId,
       status: topic.status,
       title: maskOptionalText(topic.title, policy.redactionProfile) ?? null,
@@ -230,6 +231,7 @@ export const listConversationMessages = async (
 
       return {
         contentAccessMode: access.mode,
+        redactionProfile: policy.redactionProfile,
         items: page.items.map((row) => ({
           agentId: row.agentId,
           content:
@@ -285,6 +287,7 @@ export const listConversationMessages = async (
         contentAccessMode: access.mode,
       })),
       nextCursor: page.nextCursor,
+      redactionProfile: policy.redactionProfile,
     };
   } catch (error) {
     await appendAuditAccessLog(host.db, {

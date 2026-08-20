@@ -6,6 +6,7 @@ import {
   dateInputSchema,
   limitSchema,
   platformAuditContentAccessModeSchema,
+  platformAuditRedactionProfileSchema,
   titleQuerySchema,
   topicIdSchema,
   userIdSchema,
@@ -49,6 +50,8 @@ export const adminAuditConversationsListOutputSchema = z
   .object({
     items: z.array(adminAuditConversationListItemSchema),
     nextCursor: z.string().nullable(),
+    /** Live-view credential mask in force for this response (fail-closed if missing). */
+    redactionProfile: platformAuditRedactionProfileSchema,
   })
   .strict();
 
@@ -66,6 +69,8 @@ export const adminAuditConversationsGetOutputSchema = adminAuditConversationList
     contentAccessMode: platformAuditContentAccessModeSchema,
     editorData: z.unknown().optional(),
     historySummary: z.string().nullable().optional(),
+    /** Live-view credential mask in force for this response (fail-closed if missing). */
+    redactionProfile: platformAuditRedactionProfileSchema,
   })
   .strict();
 
@@ -74,8 +79,10 @@ export const adminAuditConversationsMessagesInputSchema = z
     cursor: adminAuditCursorSchema.optional(),
     from: dateInputSchema.optional(),
     /**
-     * When true and policy allows, return full message bodies (credential-masked only).
-     * Default false → list projection without body for performance.
+     * When true and policy allows, return full message bodies.
+     * Credentials are masked unless live-view `redactionProfile` is `'off'`
+     * (fail-closed: missing/unknown still mask). Default false → list projection
+     * without body for performance.
      */
     includeBody: z.boolean().optional(),
     limit: limitSchema,
@@ -116,6 +123,8 @@ export const adminAuditConversationsMessagesOutputSchema = z
     contentAccessMode: platformAuditContentAccessModeSchema,
     items: z.array(adminAuditConversationMessageListItemSchema),
     nextCursor: z.string().nullable(),
+    /** Live-view credential mask in force for this response (fail-closed if missing). */
+    redactionProfile: platformAuditRedactionProfileSchema,
   })
   .strict();
 

@@ -3,6 +3,8 @@ export const LIVE_SCROLL_BOTTOM_THRESHOLD_PX = 80;
 
 export type AuditContentAccessMode = 'content_allowed' | 'metadata_only' | 'disabled';
 
+export type AuditRedactionProfile = 'strict' | 'standard' | 'off';
+
 export interface TimedMessage {
   createdAt: Date | string | number;
   id: string;

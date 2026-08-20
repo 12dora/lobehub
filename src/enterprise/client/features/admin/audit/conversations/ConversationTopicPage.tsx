@@ -139,6 +139,22 @@ const ConversationTopicPage = memo(() => {
     detail.data?.contentAccessMode ??
     (canAuditRead ? policy.data?.contentAccessMode : undefined);
 
+  const redactionProfile =
+    messages.data?.redactionProfile ??
+    detail.data?.redactionProfile ??
+    (canAuditRead ? policy.data?.redactionProfile : undefined);
+  const prevRedactionProfileRef = useRef<typeof redactionProfile>(undefined);
+  const mutateMessages = messages.mutate;
+  const mutateDetail = detail.mutate;
+  useEffect(() => {
+    const prev = prevRedactionProfileRef.current;
+    if (redactionProfile) prevRedactionProfileRef.current = redactionProfile;
+    if (!prev || !redactionProfile || prev === redactionProfile) return;
+    setCursorStack([]);
+    void mutateMessages(undefined, { revalidate: true });
+    void mutateDetail(undefined, { revalidate: true });
+  }, [mutateDetail, mutateMessages, redactionProfile]);
+
   const onToggleBody = useCallback(
     (checked: boolean) => {
       if (!checked) {

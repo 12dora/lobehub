@@ -6,6 +6,7 @@ import {
   adminAuditCursorSchema,
   dateInputSchema,
   limitSchema,
+  platformAuditRedactionProfileSchema,
   userIdSchema,
 } from './common';
 
@@ -91,6 +92,8 @@ export const adminAuditUsersTimelineOutputSchema = z
   .object({
     items: z.array(adminAuditUsersTimelineItemSchema),
     nextCursor: z.string().nullable(),
+    /** Live-view credential mask in force for this response (fail-closed if missing). */
+    redactionProfile: platformAuditRedactionProfileSchema,
   })
   .strict();
 

@@ -198,6 +198,110 @@ describe('AdminAuditService', () => {
     expect(item.content).toContain('sk-abcdefghijklmnopqrstuvwxyz012345');
   });
 
+  it.each([
+    ['off', true],
+    ['strict', false],
+  ] as const)(
+    'applies redactionProfile %s to every live-read conversation projection',
+    async (profile, preserveSecret) => {
+      const secret = 'sk-abcdefghijklmnopqrstuvwxyz012345';
+      const current = await service.getPolicy({ actorUserId: actor });
+      await service.updatePolicy({
+        actorUserId: actor,
+        input: {
+          contentAccessMode: 'content_allowed',
+          expectedRevision: current.revision,
+          reason: `set live projections under ${profile}`,
+          redactionProfile: profile,
+        },
+      });
+
+      const topicId = `t-proj-${profile}`;
+      const messageId = `m-proj-${profile}`;
+      const createdAt = new Date(Date.now() - 60_000);
+      await serverDB.insert(topics).values({
+        content: `Topic body ${secret} keep ACME`,
+        createdAt,
+        description: `Desc ${secret} keep ACME`,
+        editorData: { text: `Topic editor ${secret} keep ACME` },
+        historySummary: `History ${secret} keep ACME`,
+        id: topicId,
+        title: `Title ${secret} keep ACME`,
+        updatedAt: createdAt,
+        userId: userA,
+      });
+      await serverDB.insert(messages).values({
+        content: `Msg ${secret} keep ACME`,
+        createdAt,
+        editorData: { text: `Msg editor ${secret} keep ACME` },
+        error: { message: `Msg error ${secret} keep ACME` },
+        id: messageId,
+        role: 'user',
+        topicId,
+        updatedAt: createdAt,
+        userId: userA,
+      });
+
+      const expectProjection = (value: unknown) => {
+        const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+        expect(serialized).toContain('ACME');
+        if (preserveSecret) {
+          expect(serialized).toContain(secret);
+        } else {
+          expect(serialized).not.toContain(secret);
+          expect(serialized).toContain('[REDACTED]');
+        }
+      };
+
+      const listed = await service.listConversations({
+        actorUserId: actor,
+        input: { limit: 10, userId: userA },
+      });
+      expect(listed.redactionProfile).toBe(profile);
+      const listedTopic = listed.items.find((row) => row.id === topicId);
+      expect(listedTopic).toBeDefined();
+      expectProjection(listedTopic!.title);
+      expectProjection(listedTopic!.description);
+
+      const detail = await service.getConversation({
+        actorUserId: actor,
+        input: { topicId, userId: userA },
+      });
+      expect(detail.redactionProfile).toBe(profile);
+      expectProjection(detail.title);
+      expectProjection(detail.description);
+      if (!('content' in detail) || !('editorData' in detail) || !('historySummary' in detail)) {
+        throw new Error('expected content_allowed topic detail with bodies');
+      }
+      expectProjection(detail.content);
+      expectProjection(detail.editorData);
+      expectProjection(detail.historySummary);
+
+      const page = await service.listConversationMessages({
+        actorUserId: actor,
+        input: { includeBody: true, limit: 5, topicId, userId: userA },
+      });
+      expect(page.redactionProfile).toBe(profile);
+      const item = page.items[0];
+      expect(item).toBeDefined();
+      if (!item || !('content' in item)) {
+        throw new Error('expected content_allowed message item with body');
+      }
+      expectProjection(item.content);
+      expectProjection(item.editorData);
+      expectProjection(item.error);
+
+      const timeline = await service.listUserTimeline({
+        actorUserId: actor,
+        input: { limit: 10, userId: userA },
+      });
+      expect(timeline.redactionProfile).toBe(profile);
+      const timelineItem = timeline.items.find((row) => row.id === topicId);
+      expect(timelineItem).toBeDefined();
+      expectProjection(timelineItem!.title);
+    },
+  );
+
   it('records redactionProfile in policy-update access-log diffs', async () => {
     const before = await service.getPolicy({ actorUserId: actor });
     expect(before.redactionProfile).toBe('strict');
@@ -297,12 +401,21 @@ describe('AdminAuditService', () => {
       });
     }
 
-    await serverDB.insert(topics).values({ id: 't-live', title: 'Live', userId: userA });
+    const liveAt = new Date(Date.now() - 60_000);
+    await serverDB.insert(topics).values({
+      createdAt: liveAt,
+      id: 't-live',
+      title: 'Live',
+      updatedAt: liveAt,
+      userId: userA,
+    });
     await serverDB.insert(messages).values({
       content: 'body-while-authorized',
+      createdAt: liveAt,
       id: 'm-live',
       role: 'user',
       topicId: 't-live',
+      updatedAt: liveAt,
       userId: userA,
     });
 

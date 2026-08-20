@@ -16,6 +16,7 @@ import ContentAccessDisabledState from '../conversations/ContentAccessDisabledSt
 import {
   useFetchAuditConversation,
   useFetchAuditConversationMessages,
+  useFetchAuditConversationsList,
   useFetchAuditPolicy,
 } from '../hooks/useAdminAudit';
 import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
@@ -26,7 +27,7 @@ import TopicListPane from './TopicListPane';
 import { useLiveAuditAccess } from './useLiveAuditAccess';
 import { useLiveFeedRefresh } from './useLiveFeedRefresh';
 import { MSG_LIMIT, useLiveMessageFeed } from './useLiveMessageFeed';
-import { useLiveTopicPagination } from './useLiveTopicPagination';
+import { TOPIC_LIST_LIMIT, useLiveTopicPagination } from './useLiveTopicPagination';
 
 const styles = createStaticStyles(({ css }) => ({
   layout: css`
@@ -163,14 +164,14 @@ const LivePage = memo(() => {
     setTopicId(undefined);
   }, []);
 
-  const {
-    loadMoreTopics,
-    loadingMoreTopics,
-    orderedTopics,
-    topicNextCursor,
-    topicPageError,
-    topics,
-  } = useLiveTopicPagination({ canConversationRead, poll, t, userId });
+  const topics = useFetchAuditConversationsList(
+    {
+      limit: TOPIC_LIST_LIMIT,
+      userId: userId!,
+    },
+    canConversationRead && !!userId,
+    { refreshInterval: poll && !!userId ? AUDIT_LIST_POLL_MS : 0 },
+  );
 
   // policy.get requires AUDIT_READ — do not gate on conversation-only permission.
   const policy = useFetchAuditPolicy(canAuditRead);
@@ -203,6 +204,7 @@ const LivePage = memo(() => {
     isForbidden,
     liveAccess,
     messagesAccessDenied,
+    redactionProfile,
     showPolicyBanner,
   } = useLiveAuditAccess({
     canAuditRead,
@@ -215,6 +217,16 @@ const LivePage = memo(() => {
     topics,
     userId,
   });
+
+  const { loadMoreTopics, loadingMoreTopics, orderedTopics, topicNextCursor, topicPageError } =
+    useLiveTopicPagination({
+      accessEpochRef,
+      canConversationRead,
+      redactionProfile,
+      t,
+      topics,
+      userId,
+    });
 
   const {
     allMessages,
@@ -233,6 +245,7 @@ const LivePage = memo(() => {
     messagesAccessDenied,
     messagesLive,
     mustPurgeCachedBodies: liveAccess.mustPurgeCachedBodies,
+    redactionProfile,
     t,
     topicId,
     userId,

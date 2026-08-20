@@ -18,10 +18,15 @@ const evidence = vi.hoisted(() => {
     version: 0,
     permissions: ['platform_audit:conversation_read:all', 'platform_audit:read:all'] as string[],
     policy: { contentAccessMode: 'content_allowed' as string | undefined } as
-      { contentAccessMode: string } | undefined,
+      { contentAccessMode: string; redactionProfile?: string } | undefined,
     topics: {
       data: { items: [] as Array<{ id: string }>, nextCursor: null as string | null } as
-        { items: Array<{ id: string }>; nextCursor: string | null } | undefined,
+        | {
+            items: Array<{ id: string }>;
+            nextCursor: string | null;
+            redactionProfile?: string;
+          }
+        | undefined,
       error: undefined as unknown,
       isLoading: false,
       isValidating: false,
@@ -37,6 +42,7 @@ const evidence = vi.hoisted(() => {
             contentAccessMode: string;
             items: Array<Record<string, unknown>>;
             nextCursor: string | null;
+            redactionProfile?: string;
           }
         | undefined,
       error: undefined as unknown,
@@ -45,7 +51,7 @@ const evidence = vi.hoisted(() => {
       mutate: vi.fn(),
     },
     topicDetail: {
-      data: undefined as { contentAccessMode?: string } | undefined,
+      data: undefined as { contentAccessMode?: string; redactionProfile?: string } | undefined,
       error: undefined as unknown,
       isLoading: false,
       isValidating: false,
@@ -278,8 +284,8 @@ describe('LivePage access / feed characterization', () => {
   beforeEach(() => {
     evidence.version = 0;
     evidence.permissions = ['platform_audit:conversation_read:all', 'platform_audit:read:all'];
-    evidence.policy = { contentAccessMode: 'content_allowed' };
-    evidence.topics.data = { items: [], nextCursor: null };
+    evidence.policy = { contentAccessMode: 'content_allowed', redactionProfile: 'strict' };
+    evidence.topics.data = { items: [], nextCursor: null, redactionProfile: 'strict' };
     evidence.topics.error = undefined;
     evidence.topics.isLoading = false;
     evidence.topics.isValidating = false;
@@ -288,6 +294,7 @@ describe('LivePage access / feed characterization', () => {
       contentAccessMode: 'content_allowed',
       items: [msg('head-1')],
       nextCursor: 'c-older',
+      redactionProfile: 'strict',
     };
     evidence.messages.error = undefined;
     evidence.messages.isLoading = false;
@@ -304,6 +311,7 @@ describe('LivePage access / feed characterization', () => {
       contentAccessMode: 'content_allowed',
       items: [msg('old-1')],
       nextCursor: null,
+      redactionProfile: 'strict',
     });
   });
 
@@ -353,6 +361,51 @@ describe('LivePage access / feed characterization', () => {
     });
 
     expect(evidence.messages.mutate).toHaveBeenCalledWith(undefined, { revalidate: false });
+    expect(screen.queryByTestId('msg-old-1')).not.toBeInTheDocument();
+  });
+
+  it('purges older pages and revalidates caches when redactionProfile tightens off → strict', async () => {
+    evidence.policy = { contentAccessMode: 'content_allowed', redactionProfile: 'off' };
+    evidence.topics.data = { items: [], nextCursor: null, redactionProfile: 'off' };
+    evidence.messages.data = {
+      contentAccessMode: 'content_allowed',
+      items: [msg('head-1')],
+      nextCursor: 'c-older',
+      redactionProfile: 'off',
+    };
+    evidence.listConversationMessages.mockResolvedValue({
+      contentAccessMode: 'content_allowed',
+      items: [msg('old-1', 'sk-abcdefghijklmnopqrstuvwxyz012345')],
+      nextCursor: null,
+      redactionProfile: 'off',
+    });
+
+    renderLive('/admin/audit/live?userId=u1&topicId=t1');
+
+    fireEvent.click(screen.getByTestId('load-older'));
+    await waitFor(() => {
+      expect(screen.getByTestId('msg-old-1')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('msg-old-1').getAttribute('data-content')).toBe(
+      'sk-abcdefghijklmnopqrstuvwxyz012345',
+    );
+
+    evidence.messages.mutate.mockClear();
+    evidence.topics.mutate.mockClear();
+    evidence.topicDetail.mutate.mockClear();
+
+    await emit(() => {
+      evidence.messages.data = {
+        contentAccessMode: 'content_allowed',
+        items: [msg('head-1')],
+        nextCursor: 'c-older',
+        redactionProfile: 'strict',
+      };
+    });
+
+    expect(evidence.messages.mutate).toHaveBeenCalledWith(undefined, { revalidate: true });
+    expect(evidence.topics.mutate).toHaveBeenCalledWith(undefined, { revalidate: true });
+    expect(evidence.topicDetail.mutate).toHaveBeenCalledWith(undefined, { revalidate: true });
     expect(screen.queryByTestId('msg-old-1')).not.toBeInTheDocument();
   });
 

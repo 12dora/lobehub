@@ -6,8 +6,11 @@
  *
  * Data contract:
  * - Operation event detail returns stored before/after diffs (write-time redaction only).
- * - Conversation/message body is full and unlimited when content_allowed + permission;
- *   only credentials are masked — no PII/business-text redaction or length truncation.
+ * - Conversation/message body is full and unlimited when content_allowed + permission.
+ *   Credentials are masked unless live-view `redactionProfile` is `'off'` (fail-closed:
+ *   missing/unknown still mask). No PII/business-text redaction or length truncation.
+ *   Conversation list/get/messages and user-timeline envelopes expose the active profile
+ *   so clients can drop cached raw evidence when it tightens.
  * - Export artifacts store operation diffs exactly; conversation bodies only when allowed,
  *   with credential-only masking (no generic redaction / summarization / body truncation).
  * - Lists may omit large detail fields; detail preserves full non-credential evidence.
