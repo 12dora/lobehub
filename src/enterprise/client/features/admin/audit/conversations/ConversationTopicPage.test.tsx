@@ -51,6 +51,7 @@ const evidence = vi.hoisted(() => ({
     data: undefined as { redactionProfile?: string } | undefined,
   },
   toastError: vi.fn(),
+  messagesCursors: [] as Array<string | null | undefined>,
 }));
 
 const purgeMock = vi.hoisted(() => vi.fn(async () => undefined));
@@ -123,10 +124,13 @@ vi.mock('../hooks/useAdminAudit', async () => {
       );
       return { ...snapshot, mutate: evidence.detailMutate };
     },
-    useFetchAuditConversationMessages: () => ({
-      ...evidence.messagesSnapshot,
-      mutate: vi.fn(),
-    }),
+    useFetchAuditConversationMessages: (params?: { cursor?: string | null }) => {
+      evidence.messagesCursors.push(params?.cursor ?? null);
+      return {
+        ...evidence.messagesSnapshot,
+        mutate: vi.fn(),
+      };
+    },
     useFetchAuditPolicy: () => ({
       data: evidence.policySnapshot.data,
       error: undefined,
@@ -187,6 +191,7 @@ describe('ConversationTopicPage', () => {
   beforeEach(() => {
     evidence.detailMutate.mockReset();
     evidence.toastError.mockReset();
+    evidence.messagesCursors.length = 0;
     purgeMock.mockClear();
     evidence.permissions = ['platform_audit:conversation_read:all'];
     evidence.policySnapshot.data = undefined;
@@ -342,5 +347,41 @@ describe('ConversationTopicPage', () => {
     expect(screen.queryByText(/agent-1/)).toBeNull();
     expect(screen.getByText('audit.conversations.topic.title')).toBeTruthy();
     expect(screen.getByText('visible under strict')).toBeTruthy();
+  });
+
+  it('disables message pagination when the messages envelope is rejected', () => {
+    evidence.detailSnapshot = {
+      data: {
+        ...evidence.detailSnapshot.data,
+        contentAccessMode: 'content_allowed',
+        redactionProfile: 'strict',
+      },
+      error: undefined,
+      isLoading: false,
+      isValidating: false,
+    };
+    evidence.messagesSnapshot.data = {
+      contentAccessMode: 'content_allowed',
+      items: [
+        {
+          content: 'sk-abcdefghijklmnopqrstuvwxyz012345',
+          createdAt: new Date('2026-01-02T00:00:00.000Z'),
+          hasContent: true,
+          id: 'message-1',
+          role: 'user',
+        },
+      ],
+      nextCursor: 'msg-c2',
+      redactionProfile: 'off',
+    };
+
+    renderPage();
+
+    const next = screen.getByText('primitives.dataTable.next') as HTMLButtonElement;
+    expect(next.disabled).toBe(true);
+    const calls = evidence.messagesCursors.length;
+    fireEvent.click(next);
+    expect(evidence.messagesCursors.length).toBe(calls);
+    expect(evidence.messagesCursors.every((cursor) => cursor == null)).toBe(true);
   });
 });

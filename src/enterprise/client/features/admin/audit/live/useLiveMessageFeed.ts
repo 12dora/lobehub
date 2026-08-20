@@ -23,6 +23,11 @@ export interface ProfiledMessagePage {
   redactionProfile: string | undefined;
 }
 
+export interface PaginationSeed {
+  cursor: string | null;
+  redactionProfile?: string;
+}
+
 export const useLiveMessageFeed = ({
   accessEpochRef,
   bodyHidden,
@@ -56,14 +61,29 @@ export const useLiveMessageFeed = ({
   // Messages: poll head; accumulate older pages with the envelope they were loaded under.
   const [olderPages, setOlderPages] = useState<ProfiledMessagePage[]>([]);
   const [olderNextCursor, setOlderNextCursor] = useState<string | null>(null);
+  const [olderNextCursorProfile, setOlderNextCursorProfile] = useState<string | undefined>(
+    undefined,
+  );
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [messageGap, setMessageGap] = useState(false);
   const [messagePageError, setMessagePageError] = useState<string | null>(null);
   const prevHeadIdsRef = useRef<Set<string>>(new Set());
+  const messagesHeadRef = useRef(messagesLive.data);
+  messagesHeadRef.current = messagesLive.data;
 
-  const resetMessagePagination = useCallback(() => {
+  const resetMessagePagination = useCallback((seed?: PaginationSeed) => {
     setOlderPages([]);
-    setOlderNextCursor(null);
+    // Reseed atomically from the (renderable) head. Never park at null when
+    // the head cursor is unchanged — the sync effect would not re-run.
+    // Keep this callback stable: it is an effect dep for topic/user changes.
+    const head = messagesHeadRef.current;
+    if (seed) {
+      setOlderNextCursor(seed.cursor);
+      setOlderNextCursorProfile(seed.redactionProfile);
+    } else {
+      setOlderNextCursor(head?.nextCursor ?? null);
+      setOlderNextCursorProfile(envelopeSlot(head));
+    }
     setMessageGap(false);
     prevHeadIdsRef.current = new Set();
   }, []);
@@ -93,6 +113,7 @@ export const useLiveMessageFeed = ({
 
     if (olderPages.length === 0) {
       setOlderNextCursor(messagesLive.data?.nextCursor ?? null);
+      setOlderNextCursorProfile(envelopeSlot(messagesLive.data));
       prevHeadIdsRef.current = headIds;
       setMessageGap(false);
       return;
@@ -111,7 +132,8 @@ export const useLiveMessageFeed = ({
 
   const reloadMessages = useCallback(() => {
     setOlderPages([]);
-    setOlderNextCursor(null);
+    setOlderNextCursor(messagesLive.data?.nextCursor ?? null);
+    setOlderNextCursorProfile(envelopeSlot(messagesLive.data));
     setMessageGap(false);
     prevHeadIdsRef.current = new Set();
     void messagesLive.mutate();
@@ -144,6 +166,7 @@ export const useLiveMessageFeed = ({
       }
       setOlderPages((p) => [...p, { items: page.items, redactionProfile: envelopeSlot(page) }]);
       setOlderNextCursor(page.nextCursor);
+      setOlderNextCursorProfile(envelopeSlot(page));
     } catch {
       setMessagePageError(
         t('audit.live.errors.loadMoreMessages', {
@@ -184,6 +207,7 @@ export const useLiveMessageFeed = ({
     messageGap,
     messagePageError,
     olderNextCursor,
+    olderNextCursorProfile,
     olderPages,
     pageProfiles,
     reloadMessages,

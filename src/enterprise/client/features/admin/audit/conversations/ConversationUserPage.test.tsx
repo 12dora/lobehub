@@ -184,10 +184,15 @@ interface MockColumn {
 vi.mock('../../primitives/DataTable', () => ({
   default: ({
     columns,
+    cursorPagination,
     dataSource,
     onChange,
   }: {
     columns?: MockColumn[];
+    cursorPagination?: {
+      hasNext?: boolean;
+      onNext?: () => void;
+    };
     dataSource?: MockRow[];
     onChange?: (meta: { filters: Record<string, unknown> }) => void;
   }) => {
@@ -203,6 +208,14 @@ vi.mock('../../primitives/DataTable', () => ({
             </span>
           </div>
         ))}
+        <button
+          data-testid="list-next"
+          disabled={!cursorPagination?.hasNext}
+          type="button"
+          onClick={() => cursorPagination?.onNext?.()}
+        >
+          list-next
+        </button>
       </div>
     );
   },
@@ -437,6 +450,49 @@ describe('ConversationUserPage', () => {
     expect(screen.queryByText('sk-abcdefghijklmnopqrstuvwxyz012345')).toBeNull();
     expect(screen.queryByText('tl-secret')).toBeNull();
     expect(screen.getByText('audit.conversations.user.emptyTimeline')).toBeTruthy();
+  });
+
+  it('disables list and timeline pagination when those envelopes are rejected', () => {
+    evidence.listData = {
+      items: [
+        {
+          id: 'topic-secret',
+          model: 'gpt',
+          provider: 'openai',
+          status: 'active',
+          title: 'secret-title',
+          updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        },
+      ],
+      nextCursor: 'list-c2',
+      redactionProfile: 'off',
+    };
+    evidence.timelineData = {
+      items: [
+        {
+          id: 'tl-secret',
+          kind: 'topic' as const,
+          title: 'Event secret',
+          topicId: 'topic-1',
+          updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        },
+      ],
+      nextCursor: 'cursor-tl-2',
+      redactionProfile: 'off',
+    };
+    evidence.policyData = { redactionProfile: 'strict' };
+    evidence.actorPermissions = ['platform_audit:conversation_read:all', 'platform_audit:read:all'];
+
+    renderPage();
+
+    expect((screen.getByTestId('list-next') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('audit.conversations.user.timelineNext')).toBeNull();
+
+    const listCalls = evidence.listInputs.length;
+    const timelineCalls = evidence.timelineInputs.length;
+    fireEvent.click(screen.getByTestId('list-next'));
+    expect(evidence.listInputs.length).toBe(listCalls);
+    expect(evidence.timelineInputs.length).toBe(timelineCalls);
   });
 
   it('does not render a stale off timeline envelope when policy is strict', () => {

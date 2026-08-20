@@ -292,4 +292,23 @@ describe('useRedactionAuthority', () => {
     await waitFor(() => expect(frames.some((frame) => frame.head === 'unknown')).toBe(true));
     expect(frames.every((frame) => !frame.bodies.includes(SECRET))).toBe(true);
   });
+
+  it('invokes onTighten exactly once per acknowledged event under StrictMode', async () => {
+    const onTighten = vi.fn();
+    const Probe = () => {
+      useRedactionAuthority(
+        slotsOf({ messages: 'off', policy: 'strict' }),
+        [],
+        'strict-mode',
+        onTighten,
+      );
+      return null;
+    };
+
+    mount(<Probe />, { strict: true });
+
+    await waitFor(() => expect(onTighten).toHaveBeenCalledTimes(1));
+    expect(onTighten).toHaveBeenCalledWith('strict');
+    expect(purgeSpy).toHaveBeenCalledTimes(1);
+  });
 });

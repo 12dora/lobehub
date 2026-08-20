@@ -549,6 +549,7 @@ describe('LivePage access / feed characterization', () => {
         contentAccessMode: 'content_allowed',
         items: disjointHead,
         nextCursor: 'c-2',
+        redactionProfile: 'strict',
       };
     });
 
@@ -750,5 +751,101 @@ describe('LivePage access / feed characterization', () => {
     expect(evidence.listConversations).not.toHaveBeenCalledWith(
       expect.objectContaining({ cursor: 't-c2' }),
     );
+  });
+
+  it('reseeds load-more from the head cursor when tightening before any older page was loaded', async () => {
+    evidence.policy = { contentAccessMode: 'content_allowed', redactionProfile: 'off' };
+    evidence.topics.data = {
+      items: [{ id: 'topic-head' }],
+      nextCursor: 't-c1',
+      redactionProfile: 'off',
+    };
+    evidence.messages.data = {
+      contentAccessMode: 'content_allowed',
+      items: [msg('head-1')],
+      nextCursor: 'c1',
+      redactionProfile: 'off',
+    };
+
+    renderLive('/admin/audit/live?userId=u1&topicId=t1');
+
+    expect(screen.getByTestId('message-pane').getAttribute('data-has-older')).toBe('1');
+    expect(screen.getByTestId('topic-list').getAttribute('data-has-more')).toBe('1');
+
+    await emit(() => {
+      evidence.messages.data = {
+        contentAccessMode: 'content_allowed',
+        items: [msg('head-1')],
+        nextCursor: 'c1',
+        redactionProfile: 'strict',
+      };
+      evidence.topics.data = {
+        items: [{ id: 'topic-head' }],
+        nextCursor: 't-c1',
+        redactionProfile: 'strict',
+      };
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('message-pane').getAttribute('data-has-older')).toBe('1');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('topic-list').getAttribute('data-has-more')).toBe('1');
+    });
+
+    evidence.listConversationMessages.mockClear();
+    evidence.listConversations.mockClear();
+    evidence.listConversationMessages.mockResolvedValue({
+      contentAccessMode: 'content_allowed',
+      items: [msg('old-1-strict')],
+      nextCursor: 'c2',
+      redactionProfile: 'strict',
+    });
+    evidence.listConversations.mockResolvedValue({
+      items: [{ id: 'topic-old-strict' }],
+      nextCursor: 't-c2',
+      redactionProfile: 'strict',
+    });
+
+    fireEvent.click(screen.getByTestId('load-older'));
+    fireEvent.click(screen.getByTestId('load-more-topics'));
+
+    await waitFor(() => {
+      expect(evidence.listConversationMessages).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: 'c1' }),
+      );
+    });
+    await waitFor(() => {
+      expect(evidence.listConversations).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: 't-c1' }),
+      );
+    });
+  });
+
+  it('disables load-more for a rejected envelope and does not call the service', async () => {
+    evidence.policy = { contentAccessMode: 'content_allowed', redactionProfile: 'strict' };
+    evidence.topics.data = {
+      items: [{ id: 'topic-off' }],
+      nextCursor: 't-c1',
+      redactionProfile: 'off',
+    };
+    evidence.messages.data = {
+      contentAccessMode: 'content_allowed',
+      items: [msg('head-1')],
+      nextCursor: 'c1',
+      redactionProfile: 'off',
+    };
+
+    renderLive('/admin/audit/live?userId=u1&topicId=t1');
+
+    expect(screen.getByTestId('message-pane').getAttribute('data-has-older')).toBe('0');
+    expect(screen.getByTestId('topic-list').getAttribute('data-has-more')).toBe('0');
+
+    evidence.listConversationMessages.mockClear();
+    evidence.listConversations.mockClear();
+    fireEvent.click(screen.getByTestId('load-older'));
+    fireEvent.click(screen.getByTestId('load-more-topics'));
+    expect(evidence.listConversationMessages).not.toHaveBeenCalled();
+    expect(evidence.listConversations).not.toHaveBeenCalled();
   });
 });

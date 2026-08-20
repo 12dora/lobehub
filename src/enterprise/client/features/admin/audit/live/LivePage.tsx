@@ -25,6 +25,7 @@ import { mergeMessagePages, stripMessageBodies } from '../shared/liveMessageUtil
 import {
   emptyRedactionSlots,
   envelopeSlot,
+  isRedactionEnvelopeRenderable,
   selectRenderablePages,
 } from '../shared/redactionAuthority';
 import { mergeTopicPages } from '../shared/topicListUtils';
@@ -231,6 +232,7 @@ const LivePage = memo(() => {
     pageProfiles: topicPageProfiles,
     resetTopicPagination,
     topicNextCursor,
+    topicNextCursorProfile,
     topicOlderPages,
     topicPageError,
   } = useLiveTopicPagination({
@@ -247,6 +249,7 @@ const LivePage = memo(() => {
     messageGap,
     messagePageError,
     olderNextCursor,
+    olderNextCursorProfile,
     olderPages: messageOlderPages,
     pageProfiles: messagePageProfiles,
     reloadMessages,
@@ -279,21 +282,26 @@ const LivePage = memo(() => {
     },
     extraObserved,
     `${userId ?? ''}:${topicId ?? ''}`,
+    (effective) => {
+      const ok = (profile: string | undefined) => isRedactionEnvelopeRenderable(profile, effective);
+      const messagesProfile = envelopeSlot(messagesLive.data);
+      const topicsProfile = envelopeSlot(topics.data);
+      resetMessagePagination(
+        ok(messagesProfile)
+          ? { cursor: messagesLive.data?.nextCursor ?? null, redactionProfile: messagesProfile }
+          : { cursor: null },
+      );
+      resetTopicPagination(
+        ok(topicsProfile)
+          ? { cursor: topics.data?.nextCursor ?? null, redactionProfile: topicsProfile }
+          : { cursor: null },
+      );
+      accessEpochRef.current += 1;
+    },
   );
 
-  // Discard in-flight pagination that started under a looser profile.
-  useEffect(() => {
-    if (redaction.effective === undefined) return;
-    accessEpochRef.current += 1;
-  }, [accessEpochRef, redaction.effective]);
-
-  // Same latched tightening event as the purge: drop hook-local pages/cursors so
-  // the next load-more starts from the (now stricter) head cursor, not c2.
-  useEffect(() => {
-    if (!redaction.shouldPurge) return;
-    resetMessagePagination();
-    resetTopicPagination();
-  }, [redaction.shouldPurge, resetMessagePagination, resetTopicPagination]);
+  const messagesCursorRenderable = redaction.isEnvelopeRenderable(olderNextCursorProfile);
+  const topicsCursorRenderable = redaction.isEnvelopeRenderable(topicNextCursorProfile);
 
   // R2: drop looser pages in this render, before merge, so they never commit.
   const orderedTopics = useMemo(() => {
@@ -409,17 +417,27 @@ const LivePage = memo(() => {
         <div className={styles.layout}>
           <div className={styles.left}>
             <TopicListPane
-              hasMore={Boolean(topicNextCursor)}
+              hasMore={topicsCursorRenderable && Boolean(topicNextCursor)}
               items={orderedTopics}
               loading={(topics.isLoading && !topics.data) || loadingMoreTopics}
               selectedTopicId={topicId}
-              onLoadMore={() => void loadMoreTopics()}
               onSelect={setTopicId}
+              onLoadMore={() => {
+                if (!topicsCursorRenderable) return;
+                void loadMoreTopics();
+              }}
             />
             {topicPageError ? (
               <div className={styles.gapBanner} role="alert">
                 <Text>{topicPageError}</Text>
-                <Button size="small" type="primary" onClick={() => void loadMoreTopics()}>
+                <Button
+                  size="small"
+                  type="primary"
+                  onClick={() => {
+                    if (!topicsCursorRenderable) return;
+                    void loadMoreTopics();
+                  }}
+                >
                   {t('audit.live.errors.retry', { defaultValue: 'Retry' })}
                 </Button>
               </div>
@@ -429,7 +447,14 @@ const LivePage = memo(() => {
             {messagePageError ? (
               <div className={styles.gapBanner} role="alert">
                 <Text>{messagePageError}</Text>
-                <Button size="small" type="primary" onClick={() => void loadOlderMessages()}>
+                <Button
+                  size="small"
+                  type="primary"
+                  onClick={() => {
+                    if (!messagesCursorRenderable) return;
+                    void loadOlderMessages();
+                  }}
+                >
                   {t('audit.live.errors.retry', { defaultValue: 'Retry' })}
                 </Button>
               </div>
@@ -444,13 +469,16 @@ const LivePage = memo(() => {
             ) : null}
             <MessagePane
               bodyHidden={bodyHidden}
-              hasOlder={Boolean(olderNextCursor) && canConversationRead}
               loading={messagesLive.isLoading && !messagesLive.data}
               loadingOlder={loadingOlder}
               messages={allMessages}
               topic={topicForPane}
               userId={userId}
-              onLoadOlder={() => void loadOlderMessages()}
+              hasOlder={messagesCursorRenderable && Boolean(olderNextCursor) && canConversationRead}
+              onLoadOlder={() => {
+                if (!messagesCursorRenderable) return;
+                void loadOlderMessages();
+              }}
             />
           </div>
         </div>

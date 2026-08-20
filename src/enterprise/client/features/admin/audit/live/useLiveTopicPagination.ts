@@ -1,7 +1,7 @@
 'use client';
 
 import type { TFunction } from 'i18next';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { AdminAuditConversationListItem } from '@/enterprise/client/services/adminAudit';
 import { adminAuditService } from '@/enterprise/client/services/adminAudit';
@@ -16,6 +16,11 @@ export const TOPIC_LIST_LIMIT = 30;
 export interface ProfiledTopicPage {
   items: AdminAuditConversationListItem[];
   redactionProfile: string | undefined;
+}
+
+export interface TopicPaginationSeed {
+  cursor: string | null;
+  redactionProfile?: string;
 }
 
 export const useLiveTopicPagination = ({
@@ -38,12 +43,24 @@ export const useLiveTopicPagination = ({
   // Topics: always poll head (no cursor); accumulate older pages for "load more".
   const [topicOlderPages, setTopicOlderPages] = useState<ProfiledTopicPage[]>([]);
   const [topicNextCursor, setTopicNextCursor] = useState<string | null>(null);
+  const [topicNextCursorProfile, setTopicNextCursorProfile] = useState<string | undefined>(
+    undefined,
+  );
   const [loadingMoreTopics, setLoadingMoreTopics] = useState(false);
   const [topicPageError, setTopicPageError] = useState<string | null>(null);
+  const topicsHeadRef = useRef(topics.data);
+  topicsHeadRef.current = topics.data;
 
-  const resetTopicPagination = useCallback(() => {
+  const resetTopicPagination = useCallback((seed?: TopicPaginationSeed) => {
     setTopicOlderPages([]);
-    setTopicNextCursor(null);
+    const head = topicsHeadRef.current;
+    if (seed) {
+      setTopicNextCursor(seed.cursor);
+      setTopicNextCursorProfile(seed.redactionProfile);
+    } else {
+      setTopicNextCursor(head?.nextCursor ?? null);
+      setTopicNextCursorProfile(envelopeSlot(head));
+    }
   }, []);
 
   useEffect(() => {
@@ -54,6 +71,7 @@ export const useLiveTopicPagination = ({
   useEffect(() => {
     if (topicOlderPages.length === 0) {
       setTopicNextCursor(topics.data?.nextCursor ?? null);
+      setTopicNextCursorProfile(envelopeSlot(topics.data));
     }
   }, [topicOlderPages.length, topics.data?.nextCursor]);
 
@@ -75,6 +93,7 @@ export const useLiveTopicPagination = ({
         { items: page.items, redactionProfile: envelopeSlot(page) },
       ]);
       setTopicNextCursor(page.nextCursor);
+      setTopicNextCursorProfile(envelopeSlot(page));
     } catch {
       setTopicPageError(
         t('audit.live.errors.loadMoreTopics', {
@@ -106,6 +125,7 @@ export const useLiveTopicPagination = ({
     pageProfiles,
     resetTopicPagination,
     topicNextCursor,
+    topicNextCursorProfile,
     topicOlderPages,
     topicPageError,
     topics,

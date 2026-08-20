@@ -168,14 +168,13 @@ const ConversationUserPage = memo(() => {
     },
     [],
     userId,
+    () => {
+      resetCursor();
+      resetTimeline();
+    },
   );
   const listRenderable = redaction.isEnvelopeRenderable(envelopeSlot(list.data));
   const timelineRenderable = redaction.isEnvelopeRenderable(envelopeSlot(timeline.data));
-  useEffect(() => {
-    if (!redaction.shouldPurge) return;
-    resetCursor();
-    resetTimeline();
-  }, [redaction.shouldPurge, resetCursor, resetTimeline]);
 
   // Only conversation evidence failures deny the page — not optional AUDIT_READ summary.
   const isForbidden = useMemo(() => {
@@ -272,10 +271,13 @@ const ConversationUserPage = memo(() => {
             pagination={false}
             rowKey="id"
             cursorPagination={{
-              hasNext: Boolean(list.data?.nextCursor),
-              hasPrevious,
-              onNext: () => onNext(list.data?.nextCursor),
-              onPrevious,
+              hasNext: listRenderable && Boolean(list.data?.nextCursor),
+              hasPrevious: listRenderable && hasPrevious,
+              onNext: () => {
+                if (!listRenderable) return;
+                onNext(list.data?.nextCursor);
+              },
+              onPrevious: listRenderable ? onPrevious : () => undefined,
               pageSize: limit,
               onPageSizeChange,
             }}
@@ -289,16 +291,19 @@ const ConversationUserPage = memo(() => {
         <UserTimelinePane
           empty={timelineEmpty}
           failed={timelineFailed}
-          hasNext={Boolean(timeline.data?.nextCursor)}
-          hasPrevious={timelineHasPrevious}
+          hasNext={timelineRenderable && Boolean(timeline.data?.nextCursor)}
+          hasPrevious={timelineRenderable && timelineHasPrevious}
           isValidating={timeline.isValidating}
           items={timelineItems}
           loading={timeline.isLoading && !timeline.data}
           stale={Boolean(timeline.error) && Boolean(timeline.data)}
           userId={userId}
-          onNext={() => onTimelineNext(timeline.data?.nextCursor)}
-          onPrevious={onTimelinePrevious}
+          onPrevious={timelineRenderable ? onTimelinePrevious : () => undefined}
           onRetry={() => void timeline.mutate()}
+          onNext={() => {
+            if (!timelineRenderable) return;
+            onTimelineNext(timeline.data?.nextCursor);
+          }}
         />
       </Flexbox>
     </AdminPageTemplate>

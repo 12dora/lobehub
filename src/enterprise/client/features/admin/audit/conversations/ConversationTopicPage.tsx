@@ -150,13 +150,12 @@ const ConversationTopicPage = memo(() => {
     },
     [],
     `${userId}:${topicId}`,
+    () => {
+      setCursorStack([]);
+    },
   );
   const detailRenderable = redaction.isEnvelopeRenderable(envelopeSlot(detail.data));
   const messagesRenderable = redaction.isEnvelopeRenderable(envelopeSlot(messages.data));
-  useEffect(() => {
-    if (!redaction.shouldPurge) return;
-    setCursorStack([]);
-  }, [redaction.shouldPurge]);
 
   const onToggleBody = useCallback(
     (checked: boolean) => {
@@ -294,16 +293,20 @@ const ConversationTopicPage = memo(() => {
 
       <Flexbox horizontal gap={8} style={{ marginBlockStart: 12 }}>
         <Button
-          disabled={cursorStack.length === 0}
+          disabled={!messagesRenderable || cursorStack.length === 0}
           size="small"
-          onClick={() => setCursorStack((p) => p.slice(0, -1))}
+          onClick={() => {
+            if (!messagesRenderable) return;
+            setCursorStack((p) => p.slice(0, -1));
+          }}
         >
           {t('primitives.dataTable.previous')}
         </Button>
         <Button
-          disabled={!messages.data?.nextCursor}
+          disabled={!messagesRenderable || !messages.data?.nextCursor}
           size="small"
           onClick={() => {
+            if (!messagesRenderable) return;
             const next = messages.data?.nextCursor;
             if (next) setCursorStack((p) => [...p, next]);
           }}
