@@ -119,6 +119,8 @@ export const adminTaskTemplateListInputSchema = z
   .object({
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).default(20),
+    /** Console locale; used only for the unmanaged library preview (falls back to en-US). */
+    locale: z.string().trim().min(2).max(32).optional(),
     offset: z.number().int().min(0).max(100_000).default(0),
     query: z.string().trim().max(200).optional(),
   })
@@ -128,7 +130,12 @@ export type AdminTaskTemplateListInput = z.input<typeof adminTaskTemplateListInp
 export const adminTaskTemplateListOutputSchema = z
   .object({
     items: z.array(adminTaskTemplateItemSchema),
-    /** Row count ignoring filters — zero means the module has never been used. */
+    /**
+     * `managed` — DB rows (`totalAll > 0`). `unmanaged` — table empty; `items` are a read-only
+     * preview of the bundled library users currently see (`totalAll` is 0).
+     */
+    origin: z.enum(['managed', 'unmanaged']),
+    /** Row count ignoring filters — zero means users still see the bundled library. */
     totalAll: z.number().int().nonnegative(),
     totalFiltered: z.number().int().nonnegative(),
   })

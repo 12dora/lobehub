@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_AGENT_TEMPLATES_KEY } from '@/enterprise/client/hooks/usePlatformAgentTemplates';
 
-import { ADMIN_AGENT_TEMPLATE_LIST_KEY } from './swrKeys';
+import { ADMIN_AGENT_TEMPLATE_LIST_KEY, buildAdminAgentTemplateListKey } from './swrKeys';
 
 const mocks = vi.hoisted(() => ({ mutate: vi.fn() }));
 
@@ -25,7 +25,7 @@ const page = {
   totalFiltered: 1,
 };
 
-const adminKey = [ADMIN_AGENT_TEMPLATE_LIST_KEY, '', 20, 0, ''];
+const adminKey = [...buildAdminAgentTemplateListKey({ limit: 20, locale: 'en-US', offset: 0 })];
 const platformKey = [PLATFORM_AGENT_TEMPLATES_KEY];
 
 /** `augmentKey` appends the active workspace id to array keys, so both shapes must match. */
@@ -96,5 +96,35 @@ describe('refreshAdminAgentTemplateLists', () => {
     // A non-array key (SWR allows plain strings) must not blow up either predicate.
     expect(matchesAdmin!(ADMIN_AGENT_TEMPLATE_LIST_KEY)).toBe(false);
     expect(matchesPlatform!(PLATFORM_AGENT_TEMPLATES_KEY)).toBe(false);
+  });
+});
+
+describe('buildAdminAgentTemplateListKey', () => {
+  it('separates two console languages: each renders its own library preview', () => {
+    expect(buildAdminAgentTemplateListKey({ limit: 20, locale: 'zh-CN', offset: 0 })).not.toEqual(
+      buildAdminAgentTemplateListKey({ limit: 20, locale: 'en-US', offset: 0 }),
+    );
+  });
+
+  it('still keys on the filters, so one page never serves the rows of another', () => {
+    const base = { limit: 20, locale: 'en-US', offset: 0 };
+
+    expect(buildAdminAgentTemplateListKey({ ...base, offset: 20 })).not.toEqual(
+      buildAdminAgentTemplateListKey(base),
+    );
+    expect(buildAdminAgentTemplateListKey({ ...base, enabled: false })).not.toEqual(
+      buildAdminAgentTemplateListKey(base),
+    );
+    expect(buildAdminAgentTemplateListKey({ ...base, query: 'digest' })).not.toEqual(
+      buildAdminAgentTemplateListKey(base),
+    );
+  });
+
+  it('is stable for the same query, so SWR reuses the cached page', () => {
+    expect(
+      buildAdminAgentTemplateListKey({ limit: 20, locale: 'en-US', offset: 0, query: 'digest' }),
+    ).toEqual(
+      buildAdminAgentTemplateListKey({ limit: 20, locale: 'en-US', offset: 0, query: 'digest' }),
+    );
   });
 });

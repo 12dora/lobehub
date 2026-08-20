@@ -3000,6 +3000,8 @@ export default {
   'taskTemplateCatalog.list.empty.default':
     'No task templates yet. Import the built-in recommendations or create your own.',
   'taskTemplateCatalog.list.empty.filtered': 'No template matches these filters.',
+  'taskTemplateCatalog.list.unmanagedPreview':
+    'These are the built-in templates users currently see. Import them or create your own to start managing the catalog — once the catalog has any entry it replaces the built-in list for all users.',
   'taskTemplateCatalog.list.error.page': 'Could not load task templates.',
   'taskTemplateCatalog.list.connectors.none': 'None',
   'taskTemplateCatalog.boolean.true': 'Enabled',
@@ -3158,7 +3160,7 @@ export default {
   'agentTemplateCatalog.desc':
     'Example cards shown when a user creates an assistant. While this list is empty, users keep seeing the built-in examples.',
   'agentTemplateCatalog.actions.create': 'New template',
-  'agentTemplateCatalog.actions.import': 'Import built-in examples',
+  'agentTemplateCatalog.actions.import': 'Import recommendations',
   'agentTemplateCatalog.actions.edit': 'Edit',
   'agentTemplateCatalog.actions.delete': 'Delete',
   'agentTemplateCatalog.actions.retry': 'Retry',
@@ -3174,6 +3176,8 @@ export default {
   'agentTemplateCatalog.list.empty.default':
     'No agent templates yet. Import the built-in examples or create your own.',
   'agentTemplateCatalog.list.empty.filtered': 'No template matches these filters.',
+  'agentTemplateCatalog.list.unmanagedPreview':
+    'These are the built-in templates users currently see. Import them or create your own to start managing the catalog — once the catalog has any entry it replaces the built-in list for all users.',
   'agentTemplateCatalog.list.error.page': 'Could not load agent templates.',
   'agentTemplateCatalog.list.tags.none': 'None',
   'agentTemplateCatalog.list.dragHandle': 'Drag to reorder {{title}}',
@@ -3217,7 +3221,7 @@ export default {
   'agentTemplateCatalog.delete.content':
     '“{{title}}” disappears from the create-assistant examples immediately. This cannot be undone.',
   'agentTemplateCatalog.delete.confirm': 'Delete',
-  'agentTemplateCatalog.import.title': 'Import built-in examples?',
+  'agentTemplateCatalog.import.title': 'Import recommendations?',
   'agentTemplateCatalog.import.content':
     'Adds the built-in create-assistant examples to this list, in your console language. Templates you already manage keep their status and order; only their content is refreshed.',
   'agentTemplateCatalog.import.confirm': 'Import',

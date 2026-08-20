@@ -24,6 +24,7 @@ import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/se
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 import type * as TaskTemplateModuleTypes from '@/server/services/taskTemplate';
+import { listTaskTemplateLibrary } from '@/server/services/taskTemplate';
 
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
@@ -233,6 +234,7 @@ describe('admin.taskTemplates lifecycle', () => {
     );
 
     const listed = await caller.list({ limit: 20, offset: 0 });
+    expect(listed.origin).toBe('managed');
     expect(listed.totalAll).toBe(1);
     expect(listed.totalFiltered).toBe(1);
     expect(listed.items[0]?.title).toBe('Engineering digest');
@@ -672,6 +674,130 @@ describe('admin.taskTemplates.reorder', () => {
     await expect(
       (await adminCaller(ids.viewer)).reorder({ items: [{ expectedRevision: 1, id: 'x' }] }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
+describe('admin.taskTemplates list unmanaged preview', () => {
+  it('previews the bundled library without importing it', async () => {
+    const library = listTaskTemplateLibrary('en-US');
+    const listed = await (await adminCaller()).list({ limit: 100, locale: 'en-US', offset: 0 });
+
+    expect(listed.origin).toBe('unmanaged');
+    expect(listed.totalAll).toBe(0);
+    expect(listed.totalFiltered).toBe(library.length);
+    expect(listed.items).toHaveLength(library.length);
+    expect(listed.items[0]).toMatchObject({
+      enabled: true,
+      id: `preview:${library[0]!.identifier}`,
+      identifier: library[0]!.identifier,
+      revision: 0,
+      sortOrder: 0,
+      source: 'market',
+      title: library[0]!.title,
+    });
+    expect(listed.items.every((item) => item.id.startsWith('preview:'))).toBe(true);
+    expect(await db.select().from(platformTaskTemplates)).toHaveLength(0);
+    expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+  });
+
+  it('resolves zh-CN titles independently of en-US', async () => {
+    const caller = await adminCaller();
+    const [zh, en] = await Promise.all([
+      caller.list({ limit: 1, locale: 'zh-CN', offset: 0 }),
+      caller.list({ limit: 1, locale: 'en-US', offset: 0 }),
+    ]);
+
+    expect(zh.origin).toBe('unmanaged');
+    expect(zh.items[0]?.identifier).toBe(en.items[0]?.identifier);
+    expect(zh.items[0]?.title).not.toBe(en.items[0]?.title);
+    expect(zh.items[0]?.title).toBe(listTaskTemplateLibrary('zh-CN')[0]!.title);
+    expect(en.items[0]?.title).toBe(listTaskTemplateLibrary('en-US')[0]!.title);
+  });
+
+  it('filters preview rows by query in memory', async () => {
+    const listed = await (
+      await adminCaller()
+    ).list({
+      limit: 100,
+      locale: 'en-US',
+      offset: 0,
+      query: 'yield tracking',
+    });
+
+    expect(listed.origin).toBe('unmanaged');
+    expect(listed.totalAll).toBe(0);
+    expect(listed.totalFiltered).toBeGreaterThan(0);
+    expect(listed.totalFiltered).toBeLessThan(listTaskTemplateLibrary().length);
+    expect(
+      listed.items.every(
+        (item) =>
+          item.title.toLowerCase().includes('yield tracking') ||
+          item.identifier.toLowerCase().includes('yield tracking') ||
+          item.description.toLowerCase().includes('yield tracking'),
+      ),
+    ).toBe(true);
+  });
+
+  it('returns an empty preview when enabled is false', async () => {
+    const listed = await (await adminCaller()).list({ enabled: false, limit: 20, offset: 0 });
+
+    expect(listed).toEqual({ items: [], origin: 'unmanaged', totalAll: 0, totalFiltered: 0 });
+  });
+
+  it('slices the preview by offset and limit', async () => {
+    const library = listTaskTemplateLibrary('en-US');
+    const caller = await adminCaller();
+    const page1 = await caller.list({ limit: 10, locale: 'en-US', offset: 0 });
+    const page2 = await caller.list({ limit: 10, locale: 'en-US', offset: 10 });
+
+    expect(page1.origin).toBe('unmanaged');
+    expect(page1.totalAll).toBe(0);
+    expect(page1.totalFiltered).toBe(library.length);
+    expect(page1.items).toHaveLength(10);
+    expect(page2.items).toHaveLength(10);
+    expect(page1.items[0]?.identifier).toBe(library[0]!.identifier);
+    expect(page2.items[0]?.identifier).toBe(library[10]!.identifier);
+    expect(page1.items.map((item) => item.id)).not.toEqual(page2.items.map((item) => item.id));
+  });
+
+  it('switches to managed after create and never returns preview ids', async () => {
+    const caller = await adminCaller();
+    await caller.create(draft());
+
+    const listed = await caller.list({ limit: 20, offset: 0 });
+    expect(listed.origin).toBe('managed');
+    expect(listed.totalAll).toBe(1);
+    expect(listed.items.every((item) => !item.id.startsWith('preview:'))).toBe(true);
+  });
+
+  it('switches to managed after import and never returns preview ids', async () => {
+    listDailyRecommendSpy.mockResolvedValue([marketTemplate()]);
+    const caller = await adminCaller();
+    await caller.importRecommendations({});
+
+    const listed = await caller.list({ limit: 20, offset: 0 });
+    expect(listed.origin).toBe('managed');
+    expect(listed.totalAll).toBe(1);
+    expect(listed.items.every((item) => !item.id.startsWith('preview:'))).toBe(true);
+    expect(listed.items[0]?.source).toBe('market');
+  });
+
+  it('rejects mutations against a preview id as NOT_FOUND rather than 500', async () => {
+    const caller = await adminCaller();
+    const id = `preview:${listTaskTemplateLibrary()[0]!.identifier}`;
+
+    await expect(caller.delete({ expectedRevision: 0, id })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await expect(
+      caller.setEnabled({ enabled: false, expectedRevision: 0, id }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(caller.reorder({ items: [{ expectedRevision: 0, id }] })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await expect(caller.update({ ...draft(), expectedRevision: 0, id })).rejects.toMatchObject({
+      code: expect.stringMatching(/^(NOT_FOUND|CONFLICT)$/),
+    });
   });
 });
 

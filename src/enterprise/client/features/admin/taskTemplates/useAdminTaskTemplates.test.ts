@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_TASK_TEMPLATES_KEY } from '@/enterprise/client/hooks/usePlatformTaskTemplates';
 
-import { ADMIN_TASK_TEMPLATE_LIST_KEY } from './swrKeys';
+import { ADMIN_TASK_TEMPLATE_LIST_KEY, buildAdminTaskTemplateListKey } from './swrKeys';
 
 const mocks = vi.hoisted(() => ({ mutate: vi.fn() }));
 
@@ -25,7 +25,7 @@ const page = {
   totalFiltered: 1,
 };
 
-const adminKey = [ADMIN_TASK_TEMPLATE_LIST_KEY, '', 20, 0, ''];
+const adminKey = [...buildAdminTaskTemplateListKey({ limit: 20, locale: 'en-US', offset: 0 })];
 const platformKey = [PLATFORM_TASK_TEMPLATES_KEY];
 
 /** `augmentKey` appends the active workspace id to array keys, so both shapes must match. */
@@ -96,5 +96,35 @@ describe('refreshAdminTaskTemplateLists', () => {
     // A non-array key (SWR allows plain strings) must not blow up either predicate.
     expect(matchesAdmin!(ADMIN_TASK_TEMPLATE_LIST_KEY)).toBe(false);
     expect(matchesPlatform!(PLATFORM_TASK_TEMPLATES_KEY)).toBe(false);
+  });
+});
+
+describe('buildAdminTaskTemplateListKey', () => {
+  it('separates two console languages: each renders its own library preview', () => {
+    expect(buildAdminTaskTemplateListKey({ limit: 20, locale: 'zh-CN', offset: 0 })).not.toEqual(
+      buildAdminTaskTemplateListKey({ limit: 20, locale: 'en-US', offset: 0 }),
+    );
+  });
+
+  it('still keys on the filters, so one page never serves the rows of another', () => {
+    const base = { limit: 20, locale: 'en-US', offset: 0 };
+
+    expect(buildAdminTaskTemplateListKey({ ...base, offset: 20 })).not.toEqual(
+      buildAdminTaskTemplateListKey(base),
+    );
+    expect(buildAdminTaskTemplateListKey({ ...base, enabled: false })).not.toEqual(
+      buildAdminTaskTemplateListKey(base),
+    );
+    expect(buildAdminTaskTemplateListKey({ ...base, query: 'digest' })).not.toEqual(
+      buildAdminTaskTemplateListKey(base),
+    );
+  });
+
+  it('is stable for the same query, so SWR reuses the cached page', () => {
+    expect(
+      buildAdminTaskTemplateListKey({ limit: 20, locale: 'en-US', offset: 0, query: 'digest' }),
+    ).toEqual(
+      buildAdminTaskTemplateListKey({ limit: 20, locale: 'en-US', offset: 0, query: 'digest' }),
+    );
   });
 });

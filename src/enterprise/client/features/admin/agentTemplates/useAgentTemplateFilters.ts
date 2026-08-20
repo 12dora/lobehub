@@ -2,6 +2,7 @@
 
 import type { FilterValue } from 'antd/es/table/interface';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
 import type { AdminTableChangeMeta } from '../primitives/DataTable';
@@ -17,7 +18,12 @@ const firstFilterValue = (value: FilterValue | null | undefined): string | undef
 };
 
 export const useAgentTemplateFilters = () => {
+  const { i18n } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // The list resolves the bundled-library preview rows in the console language, the same way
+  // the import action does — so the operator previews exactly the copy an import would write.
+  const locale = i18n.resolvedLanguage || i18n.language;
 
   const query = searchParams.get('q') ?? '';
   const normalizedQuery = query.trim();
@@ -33,10 +39,11 @@ export const useAgentTemplateFilters = () => {
     () => ({
       enabled,
       limit: pageSize,
+      locale,
       offset: (page - 1) * pageSize,
       query: normalizedQuery || undefined,
     }),
-    [enabled, normalizedQuery, page, pageSize],
+    [enabled, locale, normalizedQuery, page, pageSize],
   );
 
   const filtered = Boolean(normalizedQuery || enabled !== undefined);

@@ -28,6 +28,7 @@ import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAudi
 import { adminRouter } from '../admin';
 import { platformRouter } from '../platform';
 import { deriveAgentTemplateIdentifier } from './agentTemplatesSupport';
+import type * as BuiltInAgentTemplatesModule from './builtInAgentTemplates';
 
 const db: LobeChatDatabase = await getTestDB();
 const createAdminCaller = createCallerFactory(adminRouter);
@@ -205,6 +206,7 @@ describe('admin.agentTemplates lifecycle', () => {
     );
 
     const listed = await caller.list({ limit: 20, offset: 0 });
+    expect(listed.origin).toBe('managed');
     expect(listed.totalAll).toBe(1);
     expect(listed.totalFiltered).toBe(1);
     expect(listed.items[0]?.title).toBe('Writing mentor');
@@ -585,6 +587,131 @@ describe('admin.agentTemplates.reorder', () => {
     await expect(
       (await adminCaller(ids.viewer)).reorder({ items: [{ expectedRevision: 1, id: 'x' }] }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
+describe('admin.agentTemplates list unmanaged preview', () => {
+  beforeEach(async () => {
+    const actual =
+      await vi.importActual<typeof BuiltInAgentTemplatesModule>('./builtInAgentTemplates');
+    builtInSpy.mockImplementation(actual.builtInAgentTemplatesForImport);
+  });
+
+  it('previews the 40 built-in examples without importing them', async () => {
+    const listed = await (await adminCaller()).list({ limit: 100, offset: 0 });
+
+    expect(listed.origin).toBe('unmanaged');
+    expect(listed.totalAll).toBe(0);
+    expect(listed.totalFiltered).toBe(40);
+    expect(listed.items).toHaveLength(40);
+    expect(listed.items[0]).toMatchObject({
+      enabled: true,
+      id: 'preview:agent-01',
+      identifier: 'agent-01',
+      revision: 0,
+      sortOrder: 0,
+      source: 'builtin',
+    });
+    expect(listed.items.every((item) => item.id.startsWith('preview:'))).toBe(true);
+    expect(await db.select().from(platformAgentTemplates)).toHaveLength(0);
+    expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+  });
+
+  it('resolves zh-CN titles independently of en-US', async () => {
+    const caller = await adminCaller();
+    const [zh, en] = await Promise.all([
+      caller.list({ limit: 1, locale: 'zh-CN', offset: 0 }),
+      caller.list({ limit: 1, locale: 'en-US', offset: 0 }),
+    ]);
+
+    expect(zh.origin).toBe('unmanaged');
+    expect(zh.items[0]?.identifier).toBe(en.items[0]?.identifier);
+    expect(zh.items[0]?.title).not.toBe(en.items[0]?.title);
+  });
+
+  it('filters preview rows by query in memory', async () => {
+    const listed = await (
+      await adminCaller()
+    ).list({
+      limit: 100,
+      locale: 'en-US',
+      offset: 0,
+      query: 'better writer',
+    });
+
+    expect(listed.origin).toBe('unmanaged');
+    expect(listed.totalAll).toBe(0);
+    expect(listed.totalFiltered).toBeGreaterThan(0);
+    expect(listed.totalFiltered).toBeLessThan(40);
+    expect(
+      listed.items.every(
+        (item) =>
+          item.title.toLowerCase().includes('better writer') ||
+          item.identifier.toLowerCase().includes('better writer') ||
+          item.description.toLowerCase().includes('better writer'),
+      ),
+    ).toBe(true);
+  });
+
+  it('returns an empty preview when enabled is false', async () => {
+    const listed = await (await adminCaller()).list({ enabled: false, limit: 20, offset: 0 });
+
+    expect(listed).toEqual({ items: [], origin: 'unmanaged', totalAll: 0, totalFiltered: 0 });
+  });
+
+  it('slices the preview by offset and limit', async () => {
+    const caller = await adminCaller();
+    const page1 = await caller.list({ limit: 10, offset: 0 });
+    const page2 = await caller.list({ limit: 10, offset: 10 });
+
+    expect(page1.origin).toBe('unmanaged');
+    expect(page1.totalAll).toBe(0);
+    expect(page1.totalFiltered).toBe(40);
+    expect(page1.items).toHaveLength(10);
+    expect(page2.items).toHaveLength(10);
+    expect(page1.items[0]?.identifier).toBe('agent-01');
+    expect(page2.items[0]?.identifier).toBe('agent-11');
+    expect(page1.items.map((item) => item.id)).not.toEqual(page2.items.map((item) => item.id));
+  });
+
+  it('switches to managed after create and never returns preview ids', async () => {
+    const caller = await adminCaller();
+    await caller.create(draft());
+
+    const listed = await caller.list({ limit: 20, offset: 0 });
+    expect(listed.origin).toBe('managed');
+    expect(listed.totalAll).toBe(1);
+    expect(listed.items.every((item) => !item.id.startsWith('preview:'))).toBe(true);
+  });
+
+  it('switches to managed after import and never returns preview ids', async () => {
+    builtInSpy.mockImplementation(() => [builtinRow()]);
+    const caller = await adminCaller();
+    await caller.importBuiltins({});
+
+    const listed = await caller.list({ limit: 20, offset: 0 });
+    expect(listed.origin).toBe('managed');
+    expect(listed.totalAll).toBe(1);
+    expect(listed.items.every((item) => !item.id.startsWith('preview:'))).toBe(true);
+    expect(listed.items[0]?.id).not.toMatch(/^preview:/);
+  });
+
+  it('rejects mutations against a preview id as NOT_FOUND rather than 500', async () => {
+    const caller = await adminCaller();
+    const id = 'preview:agent-01';
+
+    await expect(caller.delete({ expectedRevision: 0, id })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await expect(
+      caller.setEnabled({ enabled: false, expectedRevision: 0, id }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(caller.reorder({ items: [{ expectedRevision: 0, id }] })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await expect(caller.update({ ...draft(), expectedRevision: 0, id })).rejects.toMatchObject({
+      code: expect.stringMatching(/^(NOT_FOUND|CONFLICT)$/),
+    });
   });
 });
 

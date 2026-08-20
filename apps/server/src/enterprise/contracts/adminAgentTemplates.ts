@@ -69,6 +69,8 @@ export const adminAgentTemplateListInputSchema = z
   .object({
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).default(20),
+    /** Console locale; used only for the unmanaged built-in preview (falls back to en-US). */
+    locale: z.string().trim().min(2).max(32).optional(),
     offset: z.number().int().min(0).max(100_000).default(0),
     query: z.string().trim().max(200).optional(),
   })
@@ -78,6 +80,11 @@ export type AdminAgentTemplateListInput = z.input<typeof adminAgentTemplateListI
 export const adminAgentTemplateListOutputSchema = z
   .object({
     items: z.array(adminAgentTemplateItemSchema),
+    /**
+     * `managed` — DB rows (`totalAll > 0`). `unmanaged` — table empty; `items` are a read-only
+     * preview of the locale examples users currently see (`totalAll` is 0).
+     */
+    origin: z.enum(['managed', 'unmanaged']),
     /** Row count ignoring filters — zero means users still see the built-in locale examples. */
     totalAll: z.number().int().nonnegative(),
     totalFiltered: z.number().int().nonnegative(),

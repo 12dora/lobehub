@@ -13,7 +13,7 @@ import { buildAgentTemplateColumns } from './agentTemplateColumns';
 import AgentTemplateListToolbar from './AgentTemplateListToolbar';
 import { deriveAgentTemplatePermissions } from './controller';
 import { createSortableRow, SortableTable } from './SortableRow';
-import type { AdminAgentTemplateItem } from './types';
+import type { AdminAgentTemplateItem, AdminAgentTemplateOrigin } from './types';
 import { useFetchAdminAgentTemplates } from './useAdminAgentTemplates';
 import { useAgentTemplateActions } from './useAgentTemplateActions';
 import { useAgentTemplateFilters } from './useAgentTemplateFilters';
@@ -62,12 +62,17 @@ const AgentTemplateListPage = memo<AgentTemplateListPageProps>(({ embedded }) =>
     pendingOrder,
   } = useAgentTemplateActions(data?.items);
   const { clearSelection, rowSelection, selectedRows } = useAgentTemplateSelection();
+  // While the catalog is empty the list previews the bundled library users are actually being
+  // served. Those rows are not catalog entries — there is nothing to toggle, edit, delete or
+  // reorder — so every write affordance is withdrawn until an import or a create takes it over.
+  const origin: AdminAgentTemplateOrigin = data?.origin ?? 'managed';
+  const unmanaged = origin === 'unmanaged';
   // Bulk delete is the only bulk action, so the checkbox column is dead weight without it.
-  const selectable = canDelete;
+  const selectable = canDelete && !unmanaged;
 
   // Dragging reassigns the sort slots of the rows on screen. Under a filter the visible rows are
   // not contiguous, so the result would be meaningless — reorder is offered on the plain list only.
-  const canReorder = canUpdate && !filtered && (data?.items.length ?? 0) > 1;
+  const canReorder = canUpdate && !filtered && !unmanaged && (data?.items.length ?? 0) > 1;
 
   const rows = useMemo(() => {
     const items = data?.items ?? [];
@@ -84,8 +89,8 @@ const AgentTemplateListPage = memo<AgentTemplateListPageProps>(({ embedded }) =>
   const columns = useMemo(
     () =>
       buildAgentTemplateColumns({
-        canDelete,
-        canUpdate,
+        canDelete: canDelete && !unmanaged,
+        canUpdate: canUpdate && !unmanaged,
         enabledParam,
         handleDelete,
         handleToggle,
@@ -98,6 +103,7 @@ const AgentTemplateListPage = memo<AgentTemplateListPageProps>(({ embedded }) =>
       canDelete,
       canUpdate,
       enabledParam,
+      unmanaged,
       handleDelete,
       handleToggle,
       openEditor,
@@ -129,8 +135,11 @@ const AgentTemplateListPage = memo<AgentTemplateListPageProps>(({ embedded }) =>
       hideTitle={embedded}
       title={t('agentTemplateCatalog.title')}
     >
-      {canUpdate && filtered && (data?.items.length ?? 0) > 1 ? (
+      {canUpdate && filtered && !unmanaged && (data?.items.length ?? 0) > 1 ? (
         <Text type="secondary">{t('agentTemplateCatalog.list.reorderHint')}</Text>
+      ) : null}
+      {unmanaged ? (
+        <Alert showIcon message={t('agentTemplateCatalog.list.unmanagedPreview')} type="info" />
       ) : null}
       <SortableTable ids={rows.map((row) => row.id)} onReorder={(next) => void handleReorder(next)}>
         <DataTable<AdminAgentTemplateItem>
@@ -142,7 +151,9 @@ const AgentTemplateListPage = memo<AgentTemplateListPageProps>(({ embedded }) =>
           rowKey="id"
           rowSelection={selectable ? rowSelection : undefined}
           emptyDescription={
-            filtered
+            // "Import them or create your own" is the banner's job now: while the catalog is
+            // unmanaged there are always preview rows, so an empty table can only be a filter miss.
+            filtered || unmanaged
               ? t('agentTemplateCatalog.list.empty.filtered')
               : t('agentTemplateCatalog.list.empty.default')
           }
@@ -162,7 +173,7 @@ const AgentTemplateListPage = memo<AgentTemplateListPageProps>(({ embedded }) =>
           }}
           toolbar={
             <AgentTemplateListToolbar
-              canDelete={canDelete}
+              canDelete={selectable}
               query={queryDraft}
               selectedCount={selectedRows.length}
               onBulkDelete={() => handleBulkDelete(selectedRows, clearSelection)}

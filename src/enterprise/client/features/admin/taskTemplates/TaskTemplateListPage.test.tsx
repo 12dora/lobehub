@@ -27,6 +27,26 @@ const item = {
   updatedAt: new Date('2026-08-16T00:00:00Z'),
 };
 
+/**
+ * What the list answers with while the catalog is still empty: read-only PREVIEW rows of the
+ * bundled recommendations users are being served right now (`preview:<identifier>`, revision 0).
+ */
+const preview = {
+  ...item,
+  id: 'preview:daily-briefing',
+  identifier: 'daily-briefing',
+  revision: 0,
+  source: 'market',
+  title: 'Daily briefing',
+};
+
+const secondPreview = {
+  ...preview,
+  id: 'preview:weekly-report',
+  identifier: 'weekly-report',
+  title: 'Weekly report',
+};
+
 const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
   data: undefined as unknown,
@@ -43,6 +63,7 @@ const mocks = vi.hoisted(() => ({
   reloadTemplate: vi.fn(),
   reorder: vi.fn(),
   reorderProps: undefined as { ids: string[]; onReorder: (ids: string[]) => void } | undefined,
+  sortableDisabled: undefined as boolean | undefined,
   setEnabled: vi.fn(),
   updateTemplate: vi.fn(),
   tableColumns: undefined as { key?: string }[] | undefined,
@@ -110,7 +131,10 @@ vi.mock('./reloadTaskTemplate', () => ({
 }));
 
 vi.mock('./SortableRow', () => ({
-  createSortableRow: () => (props: Record<string, unknown>) => <tr {...props} />,
+  createSortableRow: (disabled: boolean) => {
+    mocks.sortableDisabled = disabled;
+    return (props: Record<string, unknown>) => <tr {...props} />;
+  },
   SortableTable: ({ children, ids, onReorder }: any) => {
     mocks.reorderProps = { ids, onReorder };
     return <div>{children}</div>;
@@ -277,11 +301,12 @@ const deferred = <T,>() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.data = { items: [item], totalAll: 1, totalFiltered: 1 };
+  mocks.data = { items: [item], origin: 'managed', totalAll: 1, totalFiltered: 1 };
   mocks.dataFor = undefined;
   mocks.listInput = undefined;
   mocks.refreshLists.mockResolvedValue([item]);
   mocks.reorderProps = undefined;
+  mocks.sortableDisabled = undefined;
   mocks.tableColumns = undefined;
   mocks.tableOnChange = undefined;
   mocks.tablePagination = undefined;
@@ -449,7 +474,7 @@ describe('TaskTemplateListPage', () => {
       total: 1,
     });
     expect(mocks.listInput).toEqual(
-      expect.objectContaining({ enabled: undefined, limit: 20, offset: 0 }),
+      expect.objectContaining({ enabled: undefined, limit: 20, locale: 'en-US', offset: 0 }),
     );
 
     mocks.tableOnChange?.({ filters: { enabled: ['false'] } });
@@ -724,5 +749,93 @@ describe('TaskTemplateListPage', () => {
       item,
       status: 'found',
     });
+  });
+});
+
+describe('taskTemplateCatalog while the catalog is unmanaged', () => {
+  /** The list previews the library and reports it: no rows of our own, `totalAll: 0`. */
+  const renderPreview = (items: unknown[] = [preview, secondPreview]) => {
+    mocks.data = {
+      items,
+      origin: 'unmanaged',
+      totalAll: 0,
+      totalFiltered: items.length,
+    };
+    return renderPage();
+  };
+
+  it('shows what users see today instead of the "import first" empty state', () => {
+    renderPreview();
+
+    expect(screen.getByText('Daily briefing')).toBeTruthy();
+    // The old copy told the operator the list was empty; it is not — it is just not ours yet.
+    expect(screen.queryByText('taskTemplateCatalog.list.empty.default')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toBe('taskTemplateCatalog.list.unmanagedPreview');
+  });
+
+  it('keeps both entry points, the only two writes a preview row allows', () => {
+    renderPreview();
+
+    expect(screen.getByText('taskTemplateCatalog.actions.import')).toBeTruthy();
+    expect(screen.getByText('taskTemplateCatalog.actions.create')).toBeTruthy();
+  });
+
+  it('withdraws every per-row write: a preview row is not a catalog entry', () => {
+    renderPreview();
+
+    expect(screen.queryByText('taskTemplateCatalog.actions.edit')).toBeNull();
+    expect(screen.queryByText('taskTemplateCatalog.actions.delete')).toBeNull();
+    expect(
+      screen
+        .getAllByLabelText('taskTemplateCatalog.list.columns.enabled')
+        .every((toggle) => (toggle as HTMLInputElement).disabled),
+    ).toBe(true);
+  });
+
+  it('offers neither bulk selection nor drag reorder over preview rows', () => {
+    renderPreview();
+
+    expect(mocks.tableColumns?.includes(Table.SELECTION_COLUMN as never)).toBe(false);
+    expect(mocks.tableRowSelection).toBeUndefined();
+    expect(screen.queryByText('taskTemplateCatalog.list.bulk.delete')).toBeNull();
+    // Two rows and full permissions would enable dragging on a managed catalog.
+    expect(mocks.sortableDisabled).toBe(true);
+  });
+
+  it('still filters, and reports a filter miss as a filter miss', async () => {
+    renderPreview();
+
+    expect(screen.getByLabelText('taskTemplateCatalog.list.filters.query')).toBeTruthy();
+    mocks.tableOnChange?.({ filters: { enabled: ['false'] } });
+    await waitFor(() =>
+      expect(mocks.listInput).toEqual(expect.objectContaining({ enabled: false, offset: 0 })),
+    );
+  });
+
+  it('paginates the preview like any other page', () => {
+    renderPreview();
+
+    expect(mocks.tablePagination).toEqual({ current: 1, pageSize: 20, total: 2 });
+  });
+
+  it('names a filter miss instead of the empty-catalog copy', () => {
+    renderPreview([]);
+
+    expect(screen.getByText('taskTemplateCatalog.list.empty.filtered')).toBeTruthy();
+    expect(screen.queryByText('taskTemplateCatalog.list.empty.default')).toBeNull();
+  });
+
+  it('resolves the preview in the console language, exactly like an import would', () => {
+    renderPreview();
+
+    expect(mocks.listInput).toEqual(expect.objectContaining({ locale: 'en-US' }));
+  });
+
+  it('drops the banner again once the catalog is managed', () => {
+    renderPage();
+
+    expect(screen.queryByText('taskTemplateCatalog.list.unmanagedPreview')).toBeNull();
+    expect(screen.getByText('taskTemplateCatalog.actions.edit')).toBeTruthy();
+    expect(mocks.tableColumns?.includes(Table.SELECTION_COLUMN as never)).toBe(true);
   });
 });

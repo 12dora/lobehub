@@ -5,6 +5,7 @@ import type {
 
 import type {
   AdminAgentTemplateItem,
+  AdminAgentTemplateListOutput,
   PlatformAgentTemplate,
 } from '../../contracts/adminAgentTemplates';
 import {
@@ -12,6 +13,12 @@ import {
   AGENT_TEMPLATE_IDENTIFIER_MAX,
 } from '../../contracts/adminAgentTemplates';
 import { builtInAgentTemplatesForImport } from './builtInAgentTemplates';
+
+/** Prefix for read-only preview ids synthesized from the bundled library. */
+export const AGENT_TEMPLATE_PREVIEW_ID_PREFIX = 'preview:';
+
+/** Fixed timestamp so preview rows stay type-valid without pretending they were written. */
+const PREVIEW_UPDATED_AT = new Date(0);
 
 const writableShape = adminAgentTemplateCreateInputSchema.omit({ identifier: true });
 
@@ -157,4 +164,56 @@ export const fetchBuiltInAgentTemplatesForImport = (params: {
   }
 
   return { rows, skipped };
+};
+
+const matchesPreviewQuery = (haystacks: string[], query?: string): boolean => {
+  const needle = query?.trim().toLowerCase();
+  if (!needle) return true;
+  return haystacks.some((value) => value.toLowerCase().includes(needle));
+};
+
+/**
+ * Read-only admin preview of the locale examples users currently see.
+ *
+ * Does **not** import: an empty table stays unmanaged (`platform.agentTemplates.list` keeps
+ * serving `suggestQuestions`). Preview ids are `preview:<identifier>` so a mutation against
+ * them misses the table and follows the existing NOT_FOUND path.
+ */
+export const listUnmanagedAgentTemplatePreview = (params: {
+  enabled?: boolean;
+  limit: number;
+  locale?: string;
+  offset: number;
+  query?: string;
+}): AdminAgentTemplateListOutput => {
+  if (params.enabled === false) {
+    return { items: [], origin: 'unmanaged', totalAll: 0, totalFiltered: 0 };
+  }
+
+  const matched = builtInAgentTemplatesForImport(params.locale)
+    .map((row, sortOrder): AdminAgentTemplateItem => ({
+      avatar: null,
+      backgroundColor: null,
+      description: row.description,
+      enabled: true,
+      id: `${AGENT_TEMPLATE_PREVIEW_ID_PREFIX}${row.identifier}`,
+      identifier: row.identifier,
+      revision: 0,
+      sortOrder,
+      source: 'builtin',
+      systemRole: row.systemRole,
+      tags: [],
+      title: row.title,
+      updatedAt: PREVIEW_UPDATED_AT,
+    }))
+    .filter((item) =>
+      matchesPreviewQuery([item.title, item.identifier, item.description], params.query),
+    );
+
+  return {
+    items: matched.slice(params.offset, params.offset + params.limit),
+    origin: 'unmanaged',
+    totalAll: 0,
+    totalFiltered: matched.length,
+  };
 };

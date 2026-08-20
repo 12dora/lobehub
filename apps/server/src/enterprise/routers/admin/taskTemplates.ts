@@ -38,6 +38,7 @@ import { PlatformAuditService } from '../../services/platformAudit';
 import {
   deriveTaskTemplateIdentifier,
   fetchLibraryTaskTemplatesForImport,
+  listUnmanagedTaskTemplatePreview,
   toAdminTaskTemplateItem,
   toTaskTemplateAuditDiff,
 } from './taskTemplatesSupport';
@@ -260,18 +261,21 @@ export const adminTaskTemplatesRouter = router({
     .output(adminTaskTemplateListOutputSchema)
     .query(async ({ ctx, input }) => {
       const model = new PlatformTaskTemplateModel(ctx.serverDB);
-      const [page, totalAll] = await Promise.all([
-        model.list({
-          enabled: input.enabled,
-          limit: input.limit,
-          offset: input.offset,
-          query: input.query,
-        }),
-        model.count(),
-      ]);
+      const totalAll = await model.count();
+      // Empty table: show the bundled library users currently see. Do not auto-import —
+      // that would flip `managed: true` and change the user-facing catalog.
+      if (totalAll === 0) return listUnmanagedTaskTemplatePreview(input);
+
+      const page = await model.list({
+        enabled: input.enabled,
+        limit: input.limit,
+        offset: input.offset,
+        query: input.query,
+      });
 
       return {
         items: page.items.map((row) => toAdminTaskTemplateItem(row)),
+        origin: 'managed',
         totalAll,
         totalFiltered: page.total,
       };
