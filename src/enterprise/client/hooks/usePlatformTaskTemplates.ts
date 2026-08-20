@@ -35,7 +35,7 @@ export const usePlatformTaskTemplates = (): PlatformTaskTemplatesState => {
   );
   const enabled = serverConfigInit && platformAdmin;
 
-  const { data, error, isLoading } = useClientDataSWR<PlatformTaskTemplateListOutput>(
+  const { data, error } = useClientDataSWR<PlatformTaskTemplateListOutput>(
     enabled ? [PLATFORM_TASK_TEMPLATES_KEY] : null,
     () => fetchPlatformTaskTemplates(),
     { revalidateOnFocus: false },
@@ -45,7 +45,10 @@ export const usePlatformTaskTemplates = (): PlatformTaskTemplatesState => {
   if (!serverConfigInit) return { ...UNMANAGED, resolved: false };
   // Flag known-off, or the read failed: the market list is the answer (fail open).
   if (!platformAdmin || error) return { ...UNMANAGED, resolved: true };
-  if (!data) return { ...UNMANAGED, resolved: !isLoading };
+  // Enabled but no data and no error yet: SWR reports `isLoading: false` on the very first
+  // committed frame before the fetch starts, so `!isLoading` would flash the unmanaged
+  // fallback at a managed tenant. Until data or error arrives the answer is unknown.
+  if (!data) return { ...UNMANAGED, resolved: false };
 
   return { ...data, resolved: true };
 };

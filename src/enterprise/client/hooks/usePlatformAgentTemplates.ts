@@ -35,7 +35,7 @@ export const usePlatformAgentTemplates = (): PlatformAgentTemplatesState => {
   );
   const enabled = serverConfigInit && platformAdmin;
 
-  const { data, error, isLoading } = useClientDataSWR<PlatformAgentTemplateListOutput>(
+  const { data, error } = useClientDataSWR<PlatformAgentTemplateListOutput>(
     enabled ? [PLATFORM_AGENT_TEMPLATES_KEY] : null,
     () => fetchPlatformAgentTemplates(),
     { revalidateOnFocus: false },
@@ -45,7 +45,10 @@ export const usePlatformAgentTemplates = (): PlatformAgentTemplatesState => {
   if (!serverConfigInit) return { ...UNMANAGED, resolved: false };
   // Flag known-off, or the read failed: the locale examples are the answer (fail open).
   if (!platformAdmin || error) return { ...UNMANAGED, resolved: true };
-  if (!data) return { ...UNMANAGED, resolved: !isLoading };
+  // Enabled but no data and no error yet: SWR reports `isLoading: false` on the very first
+  // committed frame before the fetch starts, so `!isLoading` would flash the unmanaged
+  // fallback at a managed tenant. Until data or error arrives the answer is unknown.
+  if (!data) return { ...UNMANAGED, resolved: false };
 
   return { ...data, resolved: true };
 };
