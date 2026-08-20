@@ -138,6 +138,51 @@ describe('HomeConversationHydration', () => {
     expect(navigateMock).toHaveBeenCalledWith('/acme?agent=agt_1&topic=tpc_2', { replace: true });
   });
 
+  it('writes thread switches to the URL synchronously, leaving no pending timer', async () => {
+    atHome('agent=agt_1&topic=tpc_1');
+
+    const { unmount } = render(<HomeConversationHydration />);
+    await waitFor(() => expect(useChatStore.getState().activeTopicId).toBe('tpc_1'));
+    setSearchParamsMock.mockClear();
+
+    vi.useFakeTimers();
+    try {
+      // Two switches inside one throttle window. A throttled binding would defer
+      // the second into a trailing timer, and `useQueryParam` only cancels that
+      // timer from a *passive* cleanup — which runs after this component's
+      // *layout* cleanup has already unsubscribed. The deferred write would then
+      // land on whatever route the user navigated to.
+      act(() => {
+        useChatStore.setState({ activeThreadId: 'thd_1' }, false);
+      });
+      act(() => {
+        useChatStore.setState({ activeThreadId: 'thd_2' }, false);
+      });
+
+      // Both writes must already have happened, while still mounted, with
+      // nothing left queued. These two assertions are the real guard: RTL's
+      // `unmount()` flushes passive effects synchronously, so `useQueryParam`'s
+      // own timer cleanup always wins *in a test* — the hazard only exists in a
+      // real navigation commit. Pinning "no timer was ever scheduled" is what
+      // actually fails if throttling comes back.
+      expect(setSearchParamsMock).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+
+      setSearchParamsMock.mockClear();
+      unmount();
+
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+
+      // Nothing may touch the query string after the hydrator is gone — not on
+      // unmount, and not from a timer that outlived it.
+      expect(setSearchParamsMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does nothing off the home pathname', () => {
     useLocationMock.mockReturnValue({
       hash: '',

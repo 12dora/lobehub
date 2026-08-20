@@ -37,8 +37,17 @@ const Hydration = memo<HomeConversationParams>(({ agentId, groupId, topicId }) =
    *
    * `useQueryState` writes through `setSearchParams`, so it only ever touches
    * the query string — the home pathname is preserved.
+   *
+   * Deliberately **unthrottled**, unlike the agent route's `ChatHydration`.
+   * `useQueryParam` only clears a pending trailing timer from a *passive*
+   * cleanup, while this component releases the store from *layout* cleanups —
+   * so a timer that came due during a navigation commit would fire after the
+   * unsubscribe, writing the previous thread id into the destination's query
+   * (and re-hydrating the next conversation with it). Thread switches are a
+   * deliberate, low-frequency user action, so there is nothing to throttle;
+   * `history: 'replace'` already keeps them out of the history stack.
    */
-  const [thread, setThread] = useQueryState('thread', { history: 'replace', throttleMs: 500 });
+  const [thread, setThread] = useQueryState('thread', { history: 'replace' });
 
   // Hydration writes `activeTopicId` directly (below) instead of going through
   // `switchTopic`, so clear any lingering persisted unread once the topic loads.
