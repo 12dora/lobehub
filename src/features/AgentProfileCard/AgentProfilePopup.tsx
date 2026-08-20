@@ -89,11 +89,43 @@ const AgentProfilePopup = memo<AgentProfilePopupProps>(
 
     const updateMemberAgentConfig = useAgentGroupStore((s) => s.updateMemberAgentConfig);
 
-    const { data: fetched, isLoading } = useSWR(
+    const {
+      data: fetched,
+      error,
+      isLoading,
+      mutate,
+    } = useSWR(
       open ? agentProfileKeys.detail(agentId) : null,
       () => agentService.getAgentConfigById(agentId) as Promise<FetchedAgent | null>,
       { revalidateOnFocus: false },
     );
+
+    /**
+     * This SWR snapshot is the popup's only source for the model and the stored
+     * thinking-effort level, and both pickers are controlled by it — so a write that
+     * leaves the cache untouched visibly reverts: the effort picker snaps back to the
+     * old level, and after a model switch it keeps offering the previous model's levels
+     * and writes that model's chatConfig field. Every write therefore goes through
+     * `mutate`: optimistic for instant feedback, then refetched for the real row.
+     */
+    const persist = async (
+      patch: Parameters<typeof updateMemberAgentConfig>[2],
+      optimistic: (current?: FetchedAgent | null) => FetchedAgent,
+    ) => {
+      if (!groupId) return;
+      setLoading(true);
+      try {
+        await mutate(
+          async () => {
+            await updateMemberAgentConfig(groupId, agentId, patch);
+            return (await agentService.getAgentConfigById(agentId)) as FetchedAgent | null;
+          },
+          { optimisticData: optimistic, revalidate: false, rollbackOnError: true },
+        );
+      } finally {
+        setLoading(false);
+      }
+    };
 
     const merged: Partial<AgentPreview> = {
       avatar: fetched?.avatar ?? agent?.avatar,
@@ -105,30 +137,23 @@ const AgentProfilePopup = memo<AgentProfilePopupProps>(
       title: fetched?.title ?? agent?.title,
     };
 
-    const handleModelChange = async (props: { model: string; provider: string }) => {
-      if (!groupId) return;
-      setLoading(true);
-      try {
-        await updateMemberAgentConfig(groupId, agentId, {
-          model: props.model,
-          provider: props.provider,
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
+    const handleModelChange = async (props: { model: string; provider: string }) =>
+      persist({ model: props.model, provider: props.provider }, (current) => ({
+        ...current,
+        model: props.model,
+        provider: props.provider,
+      }));
 
     const handleEffortChange = async (
       level: EffortLevel | undefined,
       configKey: keyof LobeAgentChatConfig,
     ) => {
-      if (!groupId || level === undefined) return;
-      setLoading(true);
-      try {
-        await updateMemberAgentConfig(groupId, agentId, { chatConfig: { [configKey]: level } });
-      } finally {
-        setLoading(false);
-      }
+      if (level === undefined) return;
+
+      await persist({ chatConfig: { [configKey]: level } }, (current) => ({
+        ...current,
+        chatConfig: { ...current?.chatConfig, [configKey]: level },
+      }));
     };
 
     const handleSettings = () => {
@@ -152,6 +177,16 @@ const AgentProfilePopup = memo<AgentProfilePopupProps>(
 
     const footerLoading = !groupId && isLoading && !fetched;
 
+    /**
+     * The effort picker is controlled by the fetched `chatConfig`, so showing it before the
+     * request settles would seed it from an absent config and clobber the stored level on
+     * the first change. Presence of `data` is the wrong gate though — a rejected or empty
+     * fetch would hide the control forever — so wait for the request to *settle*: either
+     * `data` or `error` has arrived. A failed load then falls back to whatever the caller
+     * prefilled, which is the best config available.
+     */
+    const agentConfigSettled = !isLoading && (fetched !== undefined || error !== undefined);
+
     const modelSection = groupId ? (
       merged.model && (
         <Flexbox className={styles.section} gap={4}>
@@ -161,9 +196,8 @@ const AgentProfilePopup = memo<AgentProfilePopupProps>(
             value={{ model: merged.model, provider: merged.provider ?? undefined }}
             onChange={handleModelChange}
           />
-          {/* Waits for the fetch: seeding from an absent chatConfig would clobber the
-              persisted level. Hidden for models with no discrete effort control. */}
-          {fetched && (
+          {/* Hidden for models with no discrete effort control. */}
+          {agentConfigSettled && (
             <EffortSelect
               chatConfig={merged.chatConfig ?? {}}
               disabled={loading}

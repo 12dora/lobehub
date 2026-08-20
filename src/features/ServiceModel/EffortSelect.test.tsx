@@ -1,13 +1,24 @@
 // @vitest-environment happy-dom
+import type { EffortLevel } from '@lobechat/model-runtime';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import settingCopy from '@/locales/default/setting';
+
 import EffortSelect from './EffortSelect';
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
-}));
+/**
+ * Resolves against the REAL `setting` dictionary rather than echoing keys, so a lost or
+ * misspelled namespace surfaces as "raw key vs real copy" instead of passing silently.
+ */
+vi.mock('react-i18next', async () => {
+  const setting = (await import('@/locales/default/setting')).default as Record<string, string>;
+
+  return {
+    useTranslation: () => ({ t: (key: string) => setting[key] ?? key }),
+  };
+});
 
 vi.mock('@lobehub/ui', () => ({
   Tooltip: ({ children }: { children?: ReactNode }) => <>{children}</>,
@@ -50,8 +61,11 @@ const renderSelect = (props: Partial<Parameters<typeof EffortSelect>[0]> = {}) =
 
 const picker = () => screen.getByRole('combobox');
 
-/** Locale key a level renders as; the `t` mock above echoes keys back verbatim. */
-const label = (level: string) => `serviceModel.reasoningEffort.options.${level}`;
+/**
+ * The copy a level must render as, read from the same source the component translates
+ * through — so a missing key shows up as the raw key here too.
+ */
+const label = (level: EffortLevel) => settingCopy[`serviceModel.reasoningEffort.options.${level}`];
 
 describe('EffortSelect', () => {
   beforeEach(() => {
@@ -78,7 +92,7 @@ describe('EffortSelect', () => {
     renderSelect();
 
     expect([...picker().querySelectorAll('option')].map((option) => option.textContent)).toEqual([
-      'serviceModel.reasoningEffort.default',
+      settingCopy['serviceModel.reasoningEffort.default'],
       label('low'),
       label('medium'),
       label('high'),
@@ -188,8 +202,19 @@ describe('EffortSelect', () => {
     renderSelect();
 
     expect([...picker().querySelectorAll('option')].map((option) => option.textContent)).toContain(
-      'serviceModel.reasoningEffort.default',
+      settingCopy['serviceModel.reasoningEffort.default'],
     );
+  });
+
+  it('renders the real localized copy, not a key and not the raw level', () => {
+    extendParamsMock.mockReturnValue(['grok4_5ReasoningEffort']);
+    renderSelect({ chatConfig: {} as never });
+
+    expect([...picker().querySelectorAll('option')].map((option) => option.textContent)).toEqual([
+      'Low',
+      'Medium',
+      'High',
+    ]);
   });
 
   it('localizes option labels while keeping raw levels as the persisted values', () => {

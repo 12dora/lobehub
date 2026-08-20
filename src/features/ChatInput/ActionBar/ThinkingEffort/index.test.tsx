@@ -1,9 +1,12 @@
 /**
  * @vitest-environment happy-dom
  */
+import type { EffortLevel } from '@lobechat/model-runtime';
 import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import settingCopy from '@/locales/default/setting';
 
 import ThinkingEffort from './index';
 
@@ -15,8 +18,11 @@ interface MenuItemProbe {
   onClick: () => void;
 }
 
-/** Locale key a level renders as; the `t` mock below echoes keys back verbatim. */
-const label = (level: string) => `serviceModel.reasoningEffort.options.${level}`;
+/**
+ * The copy a level must render as. Read from the same source the component translates
+ * through, so losing the `setting` namespace shows up as "raw key vs real copy".
+ */
+const label = (level: EffortLevel) => settingCopy[`serviceModel.reasoningEffort.options.${level}`];
 
 const mocks = vi.hoisted(() => ({
   agentId: 'agent-1',
@@ -29,12 +35,31 @@ const mocks = vi.hoisted(() => ({
   updateAgentChatConfig: vi.fn(),
 }));
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string, options?: Record<string, unknown>) =>
-      options?.level ? `${key}:${options.level}` : key,
-  }),
-}));
+/**
+ * A miniature i18next over the REAL default dictionaries: it honours the requested
+ * namespace and interpolates `{{vars}}`, falling back to the raw key on a miss. Echoing
+ * keys back instead would have passed even if this component asked the wrong namespace or
+ * dropped the tooltip interpolation, which is exactly what regressed here before.
+ */
+vi.mock('react-i18next', async () => {
+  const chat = (await import('@/locales/default/chat')).default as Record<string, string>;
+  const setting = (await import('@/locales/default/setting')).default as Record<string, string>;
+  const dictionaries: Record<string, Record<string, string> | undefined> = { chat, setting };
+
+  return {
+    useTranslation: (ns?: string | string[]) => ({
+      t: (key: string, options?: Record<string, unknown>) => {
+        const namespaces = options?.ns ? [options.ns as string] : ([] as string[]).concat(ns ?? []);
+        const template = namespaces.map((name) => dictionaries[name]?.[key]).find(Boolean);
+        if (!template) return key;
+
+        return template.replaceAll(/\{\{(\w+)\}\}/g, (_match, name: string) =>
+          String(options?.[name] ?? ''),
+        );
+      },
+    }),
+  };
+});
 
 vi.mock('@/hooks/usePermission', () => ({
   usePermission: () => mocks.permission,
@@ -160,6 +185,17 @@ describe('ThinkingEffort', () => {
       expect(screen.queryByText('xhigh')).toBeNull();
     });
 
+    it('renders the real localized copy, not a key and not the raw level', () => {
+      mocks.extendParams = ['gpt5_2ReasoningEffort'];
+      mocks.chatConfigByAgent = { 'agent-1': { gpt5_2ReasoningEffort: 'low' } };
+
+      render(<ThinkingEffort />);
+
+      expect(screen.getByText('Low')).toBeInTheDocument();
+      expect(screen.queryByText('low')).toBeNull();
+      expect(screen.queryByText(/serviceModel\./)).toBeNull();
+    });
+
     it('renders a text-only trigger with no icon', () => {
       mocks.extendParams = ['reasoningEffort'];
 
@@ -243,10 +279,7 @@ describe('ThinkingEffort', () => {
 
       render(<ThinkingEffort />);
 
-      expect(screen.getByTestId('tooltip')).toHaveAttribute(
-        'data-title',
-        `thinkingEffort.tooltip:${label('low')}`,
-      );
+      expect(screen.getByTestId('tooltip')).toHaveAttribute('data-title', 'Thinking effort: Low');
     });
 
     it('drops the dropdown and shows the denial reason when create_content is denied', () => {
