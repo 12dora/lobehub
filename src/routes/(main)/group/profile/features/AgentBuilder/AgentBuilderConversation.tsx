@@ -12,7 +12,11 @@ import TopicSelector from './TopicSelector';
 interface AgentBuilderConversationProps {
   agentId: string;
 }
-const actions: ActionKeys[] = ['model'];
+// Mirror the main chat composer's leading actions so the builder conversation can pick a
+// thinking level too. The pill writes chatConfig onto the builder agent row (useAgentId
+// resolves to the builtin builder id here), which the runtime already maps to
+// reasoning_effort / thinking via applyModelExtendParams.
+const actions: ActionKeys[] = ['model', 'thinkingEffort'];
 const rightActions: ActionKeys[] = [];
 
 /**

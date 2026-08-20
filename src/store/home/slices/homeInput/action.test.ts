@@ -21,6 +21,7 @@ const createDocumentMock = vi.hoisted(() => vi.fn());
 const agentState = vi.hoisted(() => ({
   agentConfigMap: {
     inbox: {
+      chatConfig: {} as Record<string, unknown>,
       model: 'gpt-4o-mini',
       provider: 'openai',
     },
@@ -69,7 +70,9 @@ vi.mock('@/store/agent/selectors', () => ({
   agentSelectors: {
     getAgentConfigById:
       (id: string) =>
-      (state: typeof agentState): { model: string; provider: string } | undefined =>
+      (
+        state: typeof agentState,
+      ): { chatConfig?: Record<string, unknown>; model: string; provider: string } | undefined =>
         state.agentConfigMap[id as keyof typeof state.agentConfigMap],
   },
   builtinAgentSelectors: {
@@ -132,6 +135,7 @@ const createAction = () => {
 describe('HomeInputActionImpl', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    agentState.agentConfigMap.inbox.chatConfig = {};
     createAgentMock.mockResolvedValue({ agentId: 'agent-new' });
     createGroupMock.mockResolvedValue({
       group: {
@@ -191,6 +195,45 @@ describe('HomeInputActionImpl', () => {
         }),
       );
     });
+
+    it('seeds the agent builder with the inbox thinking effort before the first turn', async () => {
+      agentState.agentConfigMap.inbox.chatConfig = {
+        // A registry effort key for the inherited model family…
+        gpt5_6ReasoningEffort: 'high',
+        // …plus unrelated inbox settings that must NOT leak onto the builder row.
+        enableHistoryCount: true,
+        historyCount: 42,
+        searchMode: 'auto',
+      };
+
+      const action = createAction();
+
+      await action.sendAsAgent({ message: 'build a support agent' });
+
+      expect(updateAgentConfigByIdMock).toHaveBeenCalledWith('agentBuilder', {
+        chatConfig: { gpt5_6ReasoningEffort: 'high' },
+        model: 'gpt-4o-mini',
+        provider: 'openai',
+      });
+
+      // The builder's first LLM call must already see the level.
+      expect(updateAgentConfigByIdMock.mock.invocationCallOrder[0]).toBeLessThan(
+        sendMessageMock.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('omits chatConfig when the inbox agent has no effort level set', async () => {
+      agentState.agentConfigMap.inbox.chatConfig = { searchMode: 'auto' };
+
+      const action = createAction();
+
+      await action.sendAsAgent({ message: 'build a support agent' });
+
+      expect(updateAgentConfigByIdMock).toHaveBeenCalledWith('agentBuilder', {
+        model: 'gpt-4o-mini',
+        provider: 'openai',
+      });
+    });
   });
 
   describe('sendAsGroup', () => {
@@ -222,6 +265,27 @@ describe('HomeInputActionImpl', () => {
             workspaceSlug: 'team',
           },
         }),
+      );
+    });
+
+    it('seeds the group agent builder with the inbox thinking effort before the first turn', async () => {
+      agentState.agentConfigMap.inbox.chatConfig = {
+        searchMode: 'auto',
+        thinkingLevel: 'low',
+      };
+
+      const action = createAction();
+
+      await action.sendAsGroup({ message: 'build a research group' });
+
+      expect(updateAgentConfigByIdMock).toHaveBeenCalledWith('groupAgentBuilder', {
+        chatConfig: { thinkingLevel: 'low' },
+        model: 'gpt-4o-mini',
+        provider: 'openai',
+      });
+
+      expect(updateAgentConfigByIdMock.mock.invocationCallOrder[0]).toBeLessThan(
+        sendMessageMock.mock.invocationCallOrder[0],
       );
     });
   });

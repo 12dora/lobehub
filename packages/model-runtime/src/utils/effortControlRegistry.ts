@@ -197,3 +197,29 @@ export const clampEffortLevel = (
   level && (definition.levels as readonly string[]).includes(level)
     ? (level as EffortLevel)
     : definition.defaultLevel;
+
+/**
+ * Copy only the discrete effort-level fields out of a chatConfig.
+ *
+ * Used when one agent inherits another's thinking level (e.g. the create-with-AI
+ * flow seeding the Agent Builder row from the inbox agent): the model family is
+ * inherited in the same write, so every registry `configKey` present is copied
+ * and `applyModelExtendParams` still only emits the key the target model declares.
+ * Search / history / memory / token-budget settings are intentionally left behind.
+ */
+export const pickChatConfigEffortFields = (
+  chatConfig: Partial<LobeAgentChatConfig> | undefined | null,
+): Partial<LobeAgentChatConfig> => {
+  if (!chatConfig) return {};
+
+  const source = chatConfig as Record<string, unknown>;
+  const picked: Record<string, unknown> = {};
+
+  for (const key of EFFORT_CONTROL_KEYS) {
+    const { configKey } = EFFORT_CONTROL_REGISTRY[key];
+    const value = source[configKey];
+    if (value !== undefined) picked[configKey] = value;
+  }
+
+  return picked as Partial<LobeAgentChatConfig>;
+};

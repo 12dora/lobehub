@@ -109,6 +109,7 @@ export {
   type EffortLevel,
   findEffortControl,
   isEffortControlKey,
+  pickChatConfigEffortFields,
 } from './utils/effortControlRegistry';
 export { createFetchRequestHandler } from './utils/fetchRequestHandler';
 export { getModelPropertyWithFallback } from './utils/getFallbackModelProperty';
