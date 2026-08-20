@@ -51,14 +51,23 @@ const AgentPickerStep = memo<AgentPickerStepProps>(({ onBack }) => {
   const interests = useUserStore(userProfileSelectors.interests);
 
   // Org-hosted agent catalog: every marketplace install is `agent.createAgent`, which the server
-  // denies under takeover — the picker's Continue would 403 on each pick. Skip the whole step.
-  // Waiting for `loading` to settle first matters here: `blocked` is optimistically true while the
-  // capability payload is in flight, and auto-skipping on that flicker would end onboarding for
-  // everybody. Once settled, an error still counts as blocked (fail closed, like
-  // `CreateAgentButton`) — the worst case is an unmanaged user losing an optional picker.
-  const { blocked: agentCreationBlocked, loading: managedResourceLoading } =
-    useManagedResource('agents');
-  const skipMarketplace = !managedResourceLoading && agentCreationBlocked;
+  // denies under takeover — the picker's Continue would 403 on each pick, so skip the whole step.
+  //
+  // Two different gates, on purpose:
+  //  - `skipMarketplace` ends onboarding, an irreversible side effect (`finishOnboarding()`), so it
+  //    requires *positive knowledge* that the org hosts agents: settled, no error, `managed`.
+  //    `blocked` is unusable here because it is also true while loading and on a transient
+  //    capabilities failure — an unmanaged user hitting one flaky request would silently have
+  //    onboarding completed out from under them.
+  //  - `agentCreationBlocked` still gates the mutation itself (below), fail-closed as everywhere
+  //    else: unknown state never attempts an install we may not be allowed to make.
+  const {
+    blocked: agentCreationBlocked,
+    error: managedResourceError,
+    loading: managedResourceLoading,
+    managed: agentsManaged,
+  } = useManagedResource('agents');
+  const skipMarketplace = !managedResourceLoading && managedResourceError === null && agentsManaged;
 
   const categoryHints = useMemo(() => interestsToCategoryHints(interests), [interests]);
   const [requestId] = useState(() => Math.random().toString(36).slice(2));
@@ -138,16 +147,21 @@ const AgentPickerStep = memo<AgentPickerStepProps>(({ onBack }) => {
   }, [finish]);
 
   const handleContinue = useCallback(async () => {
-    if (pendingRef.current || selected.size === 0 || agentCreationBlocked) return;
+    if (pendingRef.current || selected.size === 0) return;
     pendingRef.current = true;
     setPending('continue');
 
     const selectedTemplateIds = [...selected];
     trackOnboardingMarketplacePicked({ categoryHints, requestId, selectedTemplateIds });
-    try {
-      await installMarketplaceAgents(selectedTemplateIds);
-    } catch (installError) {
-      console.error('[AgentPickerStep] install failed', installError);
+    // Fail closed on the write while still letting the user out of onboarding: when the capability
+    // state is unknown (loading / errored) we skip the install rather than fire a request the
+    // server may refuse, but the step still completes so nobody gets stranded on a dead button.
+    if (!agentCreationBlocked) {
+      try {
+        await installMarketplaceAgents(selectedTemplateIds);
+      } catch (installError) {
+        console.error('[AgentPickerStep] install failed', installError);
+      }
     }
     await finish('continue', selectedTemplateIds.length);
   }, [agentCreationBlocked, categoryHints, finish, requestId, selected]);
@@ -171,6 +185,8 @@ const AgentPickerStep = memo<AgentPickerStepProps>(({ onBack }) => {
 
   // Don't flash the marketplace grid while we still don't know whether it is reachable, and don't
   // render it at all once we know it isn't — the auto-skip effect above is already navigating away.
+  // A settled *error* deliberately falls through to the normal picker: the user keeps the step and
+  // just doesn't get an install attempt.
   if (managedResourceLoading || skipMarketplace) {
     return (
       <Flexbox gap={16}>

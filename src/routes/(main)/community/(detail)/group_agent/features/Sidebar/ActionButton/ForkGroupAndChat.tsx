@@ -10,6 +10,8 @@ import { useTranslation } from 'react-i18next';
 import urlJoin from 'url-join';
 
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
+import { isAgentCreationAllowed } from '@/features/HomeSidebarPolicy';
+import { useManagedResource } from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { usePermission } from '@/hooks/usePermission';
 import { useMarketAuth } from '@/layout/AuthProvider/MarketAuth';
@@ -93,6 +95,13 @@ const ForkGroupAndChat = memo<{ mobile?: boolean }>(() => {
   const loadGroups = useAgentGroupStore((s) => s.loadGroups);
   const { isAuthenticated, signIn } = useMarketAuth();
   const { allowed: canCreate } = usePermission('create_content');
+  // A group fork ends in `chatGroupService.createGroupWithMembers`
+  // (`agentGroup.createGroupWithMembers`, `deny` in the managed-resource mutation registry) — and
+  // it forks *publicly in Market first*, so an ungated click leaves an orphaned public Market fork
+  // behind before the local write is refused. Hide the CTA entirely; fails closed while the
+  // capability payload is loading or errored, like `CreateAgentButton`.
+  const { blocked: agentCreationBlocked } = useManagedResource('agents');
+  const agentCreationAllowed = isAgentCreationAllowed({ agentCreationBlocked, canCreate });
   const activeWorkspaceId = useActiveWorkspaceId();
   const [visibility, setVisibility] = useState<ForkTarget>('private');
 
@@ -105,7 +114,7 @@ const ForkGroupAndChat = memo<{ mobile?: boolean }>(() => {
   };
 
   const handleForkAndChat = async (target: ForkTarget = 'private') => {
-    if (!canCreate || isLoading) return;
+    if (!agentCreationAllowed || isLoading) return;
     // Check if user is authenticated
     if (!isAuthenticated) {
       try {
@@ -272,6 +281,8 @@ const ForkGroupAndChat = memo<{ mobile?: boolean }>(() => {
       setIsLoading(false);
     }
   };
+
+  if (agentCreationBlocked) return null;
 
   // Personal mode: plain primary button, no Private/Public choice to make.
   if (!activeWorkspaceId) {

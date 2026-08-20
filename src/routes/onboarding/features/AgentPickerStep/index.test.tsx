@@ -69,13 +69,21 @@ vi.mock('@/services/agentMarketplace', () => ({
   fetchOnboardingAgentTemplates: vi.fn(),
 }));
 
-const managedAgents = { blocked: false, loading: false };
+// `managed`, `error` and `loading` are modeled independently so the tests can hit the states the
+// real hook produces — in particular "settled, errored, NOT managed", where `blocked` is true but
+// auto-skipping onboarding would be wrong.
+const managedAgents = {
+  error: null as Error | null,
+  loading: false,
+  managed: false,
+};
 vi.mock('@/features/ManagedResources', () => ({
   useManagedResource: () => ({
-    blocked: managedAgents.blocked,
-    error: null,
+    // Mirrors the real `useManagedResource`: blocked === loading || error || managed.
+    blocked: managedAgents.loading || managedAgents.error !== null || managedAgents.managed,
+    error: managedAgents.error,
     loading: managedAgents.loading,
-    managed: managedAgents.blocked && !managedAgents.loading,
+    managed: managedAgents.managed,
     refresh: vi.fn(),
   }),
 }));
@@ -109,8 +117,9 @@ beforeEach(() => {
   metrics.trackOnboardingStepCompleted.mockClear();
   swrReturn = { data: templates, error: undefined, isLoading: false };
   searchParams = new URLSearchParams();
-  managedAgents.blocked = false;
+  managedAgents.error = null;
   managedAgents.loading = false;
+  managedAgents.managed = false;
   sessionStorage.clear();
 });
 
@@ -187,7 +196,7 @@ describe('AgentPickerStep', () => {
 
   describe('when the org hosts the agent catalog', () => {
     it('skips the marketplace step instead of offering installs that always 403', async () => {
-      managedAgents.blocked = true;
+      managedAgents.managed = true;
       render(<AgentPickerStep onBack={vi.fn()} />);
 
       // No picker, and onboarding auto-completes as a `skip` so the user is not parked on a
@@ -210,13 +219,69 @@ describe('AgentPickerStep', () => {
     it('waits for the capability payload before deciding (no auto-skip on the loading flicker)', () => {
       // `blocked` is optimistically true while loading — auto-skipping then would end onboarding
       // for every user, managed or not.
-      managedAgents.blocked = true;
       managedAgents.loading = true;
       render(<AgentPickerStep onBack={vi.fn()} />);
 
       expect(navigate).not.toHaveBeenCalled();
       expect(finishOnboarding).not.toHaveBeenCalled();
       expect(screen.queryByText('Code Reviewer')).not.toBeInTheDocument();
+    });
+
+    it('never auto-skips on a settled capabilities ERROR for an unmanaged user', async () => {
+      // Regression: `blocked` is also true on error. Treating that as "managed" would silently and
+      // irreversibly finish onboarding for an ordinary user whose capabilities request flaked.
+      managedAgents.error = new Error('capabilities unreachable');
+      const { rerender } = render(<AgentPickerStep onBack={vi.fn()} />);
+
+      expect(screen.getByText('Code Reviewer')).toBeInTheDocument();
+      expect(finishOnboarding).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+
+      // Give the auto-skip effect every chance to fire on a re-render before asserting.
+      rerender(<AgentPickerStep onBack={vi.fn()} />);
+      await waitFor(() => expect(finishOnboarding).not.toHaveBeenCalled());
+    });
+
+    it('still refuses the install mutation while the capability state is unknown', async () => {
+      // Fail closed on the write, but do not strand the user: the step completes without firing a
+      // request the server might refuse.
+      managedAgents.error = new Error('capabilities unreachable');
+      render(<AgentPickerStep onBack={vi.fn()} />);
+
+      fireEvent.click(screen.getByText('Code Reviewer'));
+      fireEvent.click(screen.getByRole('button', { name: 'agentPicker.continue (1)' }));
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/'));
+      expect(installMarketplaceAgents).not.toHaveBeenCalled();
+      expect(finishOnboarding).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not auto-skip when loading settles to an unmanaged, healthy state', async () => {
+      managedAgents.loading = true;
+      const { rerender } = render(<AgentPickerStep onBack={vi.fn()} />);
+      expect(finishOnboarding).not.toHaveBeenCalled();
+
+      managedAgents.loading = false;
+      managedAgents.managed = false;
+      rerender(<AgentPickerStep onBack={vi.fn()} />);
+
+      expect(screen.getByText('Code Reviewer')).toBeInTheDocument();
+      await waitFor(() => expect(finishOnboarding).not.toHaveBeenCalled());
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('auto-skips once loading settles to a KNOWN managed state', async () => {
+      managedAgents.loading = true;
+      const { rerender } = render(<AgentPickerStep onBack={vi.fn()} />);
+      expect(finishOnboarding).not.toHaveBeenCalled();
+
+      managedAgents.loading = false;
+      managedAgents.managed = true;
+      rerender(<AgentPickerStep onBack={vi.fn()} />);
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/'));
+      expect(finishOnboarding).toHaveBeenCalledTimes(1);
+      expect(installMarketplaceAgents).not.toHaveBeenCalled();
     });
   });
 

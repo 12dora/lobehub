@@ -9,6 +9,8 @@ import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import urlJoin from 'url-join';
 
+import { isAgentCreationAllowed } from '@/features/HomeSidebarPolicy';
+import { useManagedResource } from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { usePermission } from '@/hooks/usePermission';
 import { chatGroupService } from '@/services/chatGroup';
@@ -49,6 +51,12 @@ const AddGroupAgent = memo<{ mobile?: boolean }>(() => {
   const navigate = useWorkspaceAwareNavigate();
   const loadGroups = useAgentGroupStore((s) => s.loadGroups);
   const { allowed: canCreate } = usePermission('create_content');
+  // Same denial as the group fork: `chatGroupService.createGroupWithMembers` maps to
+  // `agentGroup.createGroupWithMembers`, `deny` under an org-hosted agent catalog. Hide the CTA
+  // rather than leave a primary button that always 403s. Fails closed while the capability payload
+  // is loading or errored, like `CreateAgentButton`.
+  const { blocked: agentCreationBlocked } = useManagedResource('agents');
+  const agentCreationAllowed = isAgentCreationAllowed({ agentCreationBlocked, canCreate });
 
   const meta = {
     avatar,
@@ -83,7 +91,7 @@ const AddGroupAgent = memo<{ mobile?: boolean }>(() => {
   };
 
   const createGroupFromMarket = async (shouldNavigate = true) => {
-    if (!canCreate) return;
+    if (!agentCreationAllowed) return;
     if (!config) {
       message.error(
         t('groupAgents.noConfig', { defaultValue: 'Group configuration not available' }),
@@ -209,7 +217,7 @@ const AddGroupAgent = memo<{ mobile?: boolean }>(() => {
   };
 
   const handleAddAndConverse = async () => {
-    if (!canCreate) return;
+    if (!agentCreationAllowed) return;
     setIsLoading(true);
     try {
       const isDuplicate = await checkDuplicateGroup();
@@ -224,7 +232,7 @@ const AddGroupAgent = memo<{ mobile?: boolean }>(() => {
   };
 
   const handleAdd = async () => {
-    if (!canCreate) return;
+    if (!agentCreationAllowed) return;
     setIsLoading(true);
     try {
       const isDuplicate = await checkDuplicateGroup();
@@ -237,6 +245,8 @@ const AddGroupAgent = memo<{ mobile?: boolean }>(() => {
       setIsLoading(false);
     }
   };
+
+  if (agentCreationBlocked) return null;
 
   const menuItems = [
     {
