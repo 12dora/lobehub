@@ -130,18 +130,26 @@ If you don't have it, please run \`openssl rand -base64 32\` to create one.
    * and never degrade to `{}`.
    */
   static getUserKeyVaultsStrict = async (
-    encryptedKeyVaults: string | null,
+    encryptedKeyVaults: string | null | undefined,
   ): Promise<UserKeyVaults> => {
     if (!encryptedKeyVaults) return {};
 
-    const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
-    const { wasAuthentic, plaintext } = await gateKeeper.decrypt(encryptedKeyVaults);
+    try {
+      const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
+      const { wasAuthentic, plaintext } = await gateKeeper.decrypt(encryptedKeyVaults);
 
-    if (!wasAuthentic) {
-      // Decrypt-auth failure used to yield empty plaintext; JSON.parse('') is SyntaxError.
-      JSON.parse('');
+      if (!wasAuthentic) {
+        // Decrypt-auth failure used to yield empty plaintext; JSON.parse('') is SyntaxError.
+        JSON.parse('');
+      }
+
+      return JSON.parse(plaintext) as UserKeyVaults;
+    } catch (error) {
+      if (error instanceof SyntaxError) throw error;
+      // Malformed ciphertext (raw '{}', garbage, missing iv/tag) throws
+      // Error('Invalid encrypted data format') from decrypt — wrap so the
+      // OpenAPI path still fails as SyntaxError and never degrades to {}.
+      throw new SyntaxError('Invalid encrypted data format', { cause: error });
     }
-
-    return JSON.parse(plaintext) as UserKeyVaults;
   };
 }

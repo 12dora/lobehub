@@ -208,30 +208,64 @@ export class AiProviderModel {
     });
   };
 
+  /**
+   * Decrypt a stored vault. Missing ciphertext → `{}`. Strict mode (`failOnDecryptError`)
+   * distinguishes that from "stored credentials failed to decrypt/parse" so callers
+   * never fall through to the deployment env API key.
+   */
+  private decryptStoredKeyVaults = async (
+    encrypted: string | null | undefined,
+    decryptor?: DecryptUserKeyVaults,
+    failOnDecryptError?: boolean,
+  ): Promise<Record<string, unknown>> => {
+    if (!encrypted) return {};
+    const decrypt = decryptor ?? JSON.parse;
+    if (failOnDecryptError) return decrypt(encrypted);
+    try {
+      return await decrypt(encrypted);
+    } catch {
+      return {};
+    }
+  };
+
+  private toAiProviderDetail = (
+    result: { fetchOnClient: boolean | null; settings: unknown },
+    keyVaults: Record<string, unknown>,
+  ): AiProviderDetailItem =>
+    ({
+      ...result,
+      fetchOnClient: typeof result.fetchOnClient === 'boolean' ? result.fetchOnClient : undefined,
+      keyVaults,
+      settings: isEmpty(result.settings) ? undefined : result.settings,
+    }) as AiProviderDetailItem;
+
   getAiProviderById = async (
     id: string,
     decryptor?: DecryptUserKeyVaults,
     options?: { failOnDecryptError?: boolean },
   ): Promise<AiProviderDetailItem | undefined> => {
-    const query = this.db
-      .select({
-        checkModel: aiProviders.checkModel,
-        config: aiProviders.config,
-        description: aiProviders.description,
-        enabled: aiProviders.enabled,
-        fetchOnClient: aiProviders.fetchOnClient,
-        id: aiProviders.id,
-        keyVaults: aiProviders.keyVaults,
-        logo: aiProviders.logo,
-        name: aiProviders.name,
-        settings: aiProviders.settings,
-        source: aiProviders.source,
-      })
-      .from(aiProviders)
-      .where(and(eq(aiProviders.id, id), this.scopeWhere()))
-      .limit(1);
+    const fetchRow = async () => {
+      const [row] = await this.db
+        .select({
+          checkModel: aiProviders.checkModel,
+          config: aiProviders.config,
+          description: aiProviders.description,
+          enabled: aiProviders.enabled,
+          fetchOnClient: aiProviders.fetchOnClient,
+          id: aiProviders.id,
+          keyVaults: aiProviders.keyVaults,
+          logo: aiProviders.logo,
+          name: aiProviders.name,
+          settings: aiProviders.settings,
+          source: aiProviders.source,
+        })
+        .from(aiProviders)
+        .where(and(eq(aiProviders.id, id), this.scopeWhere()))
+        .limit(1);
+      return row;
+    };
 
-    const [result] = await query;
+    const result = await fetchRow();
 
     if (!result) {
       // if the provider is builtin but not init, we will insert it to the db
@@ -241,39 +275,29 @@ export class AiProviderModel {
           .values(this.values({ id, source: 'builtin' }))
           .onConflictDoNothing();
 
-        const resultAgain = await query;
+        const resultAgain = await fetchRow();
+        if (!resultAgain) return;
 
-        return { ...resultAgain[0] } as unknown as AiProviderDetailItem;
+        // Another request may have inserted this builtin with stored credentials
+        // between the empty SELECT and onConflictDoNothing — decrypt that row
+        // the same way as the hit path (including failOnDecryptError).
+        const keyVaults = await this.decryptStoredKeyVaults(
+          resultAgain.keyVaults,
+          decryptor,
+          options?.failOnDecryptError,
+        );
+        return this.toAiProviderDetail(resultAgain, keyVaults);
       }
 
       return;
     }
 
-    const decrypt = decryptor ?? JSON.parse;
-
-    let keyVaults = {};
-
-    if (!!result.keyVaults) {
-      if (options?.failOnDecryptError) {
-        // Distinguish "no stored credentials" (null/empty → `{}`) from "stored
-        // ciphertext failed to decrypt/parse". Callers that must not fall through
-        // to the deployment env API key (OpenAPI) opt in here.
-        keyVaults = await decrypt(result.keyVaults);
-      } else {
-        try {
-          keyVaults = await decrypt(result.keyVaults);
-        } catch {
-          /* empty */
-        }
-      }
-    }
-
-    return {
-      ...result,
-      fetchOnClient: typeof result.fetchOnClient === 'boolean' ? result.fetchOnClient : undefined,
-      keyVaults,
-      settings: isEmpty(result.settings) ? undefined : result.settings,
-    } as AiProviderDetailItem;
+    const keyVaults = await this.decryptStoredKeyVaults(
+      result.keyVaults,
+      decryptor,
+      options?.failOnDecryptError,
+    );
+    return this.toAiProviderDetail(result, keyVaults);
   };
 
   getAiProviderRuntimeConfig = async (decryptor?: DecryptUserKeyVaults) => {

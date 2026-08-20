@@ -581,6 +581,58 @@ describe('AiProviderModel', () => {
       expect(failingDecryptor).toHaveBeenCalledWith('invalid-encrypted-data');
     });
 
+    it('decrypts the post-conflict builtin row when another insert raced the lazy init', async () => {
+      // First SELECT empty (builtin not yet in DB); after onConflictDoNothing the retry
+      // SELECT sees another request's row with stored credentials.
+      const builtinId = ModelProvider.OpenAI;
+      const corruptCiphertext = 'corrupt-ciphertext';
+      const racedRow = {
+        checkModel: null,
+        config: {},
+        description: null,
+        enabled: true,
+        fetchOnClient: null,
+        id: builtinId,
+        keyVaults: corruptCiphertext,
+        logo: null,
+        name: 'OpenAI',
+        settings: {},
+        source: 'builtin',
+      };
+
+      let selectCalls = 0;
+      const db = {
+        insert: () => ({
+          values: () => ({
+            onConflictDoNothing: async () => undefined,
+          }),
+        }),
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: async () => (selectCalls++ === 0 ? [] : [racedRow]),
+            }),
+          }),
+        }),
+      };
+
+      const model = new AiProviderModel(db as never, userId);
+
+      const failingDecryptor = vi.fn().mockImplementation(() => {
+        throw new SyntaxError('Unexpected end of JSON input');
+      });
+      await expect(
+        model.getAiProviderById(builtinId, failingDecryptor, { failOnDecryptError: true }),
+      ).rejects.toBeInstanceOf(SyntaxError);
+      expect(failingDecryptor).toHaveBeenCalledWith(corruptCiphertext);
+
+      selectCalls = 0;
+      const okDecryptor = vi.fn().mockResolvedValue({ apiKey: 'decrypted-from-race' });
+      const provider = await model.getAiProviderById(builtinId, okDecryptor);
+      expect(provider?.keyVaults).toEqual({ apiKey: 'decrypted-from-race' });
+      expect(okDecryptor).toHaveBeenCalledWith(corruptCiphertext);
+    });
+
     it('propagates decryption failure when failOnDecryptError is set', async () => {
       const providerId = 'aihubmix';
       await serverDB.insert(aiProviders).values({

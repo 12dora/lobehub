@@ -91,11 +91,11 @@ import {
 import {
   assertPlatformPublishedModel,
   createPlatformAiModelAllowlistHooks,
-  isPlatformAiModelTakeoverActive,
-  isPlatformAiTakeoverActive,
+  getPlatformAiTakeoverFlags,
   listPlatformCatalogModels,
   listPlatformPublishedModels,
   type PlatformAiExecutionConfig,
+  type PlatformAiTakeoverFlags,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
@@ -1839,18 +1839,13 @@ export class MemoryExtractionExecutor {
           const memoryServiceConfig = this.resolveUserMemoryServiceConfig(
             effectiveSystemAgent as Partial<UserServiceModelConfig> | undefined,
           );
-          const keyVaults = await this.resolveRuntimeKeyVaults(
-            aiProviderRuntimeState,
+          const { runtimes } = await this.loadExtractionRuntimes({
             memoryServiceConfig,
-          );
+            runtimeState: aiProviderRuntimeState,
+            userId: job.userId,
+            workspaceId: job.workspaceId,
+          });
           const language = userState.settings?.general?.responseLanguage;
-
-          const runtimes = await this.getRuntime(
-            job.userId,
-            memoryServiceConfig,
-            keyVaults,
-            job.workspaceId,
-          );
 
           const conversations = await this.listConversationsForTopic(
             job.userId,
@@ -2650,9 +2645,38 @@ export class MemoryExtractionExecutor {
     return resolvePlatformAiRuntimeState({ db, upstreamState });
   }
 
+  /**
+   * Production extraction sequence: one policy snapshot, then credentials, then
+   * runtimes. `resolveRuntimeKeyVaults` and `getRuntime` both need the model
+   * takeover decision; fetching it twice re-reads the policy table when models
+   * are unpublished (negative model-takeover is not cached).
+   */
+  private async loadExtractionRuntimes(params: {
+    memoryServiceConfig: ResolvedMemoryServiceConfig;
+    runtimeState: AiProviderRuntimeState;
+    userId: string;
+    workspaceId?: string;
+  }): Promise<{ keyVaults: ProviderKeyVaultMap; runtimes: RuntimeBundle }> {
+    const takeoverFlags = await getPlatformAiTakeoverFlags(await this.db);
+    const keyVaults = await this.resolveRuntimeKeyVaults(
+      params.runtimeState,
+      params.memoryServiceConfig,
+      takeoverFlags,
+    );
+    const runtimes = await this.getRuntime(
+      params.userId,
+      params.memoryServiceConfig,
+      keyVaults,
+      params.workspaceId,
+      takeoverFlags,
+    );
+    return { keyVaults, runtimes };
+  }
+
   private async resolveRuntimeKeyVaults(
     runtimeState: AiProviderRuntimeState,
     memoryServiceConfig: ResolvedMemoryServiceConfig,
+    takeoverFlags?: PlatformAiTakeoverFlags,
   ): Promise<ProviderKeyVaultMap> {
     const normalizedRuntimeConfig = Object.fromEntries(
       Object.entries(runtimeState.runtimeConfig || {}).map(([providerId, config]) => [
@@ -2744,10 +2768,9 @@ export class MemoryExtractionExecutor {
     // Credentials follow *provider* takeover (`listPlatformPublishedModels` is null unless
     // the provider is platform-owned). The model allowlist is independent (`aiModels` hosting).
     const db = await this.db;
-    const [providerTakeover, modelTakeover] = await Promise.all([
-      isPlatformAiTakeoverActive(db),
-      isPlatformAiModelTakeoverActive(db),
-    ]);
+    const flags = takeoverFlags ?? (await getPlatformAiTakeoverFlags(db));
+    const providerTakeover = flags.providers;
+    const modelTakeover = flags.models;
     const platformOwned = new Set(
       providerTakeover
         ? (
@@ -2818,6 +2841,7 @@ export class MemoryExtractionExecutor {
     memoryServiceConfig: ResolvedMemoryServiceConfig,
     keyVaults?: ProviderKeyVaultMap,
     workspaceId?: string,
+    takeoverFlags?: PlatformAiTakeoverFlags,
   ): Promise<RuntimeBundle> {
     // TODO: implement a better cache eviction strategy
     // TODO: make cache size configurable
@@ -2844,7 +2868,7 @@ export class MemoryExtractionExecutor {
     // cache lookup and skip the cache while hosting is on, otherwise:
     //   - a cached pre-hosting runtime bypasses the allowlist after activation
     //   - a cached hosted runtime keeps an obsolete allowlist after republish/unhost
-    const modelTakeover = await isPlatformAiModelTakeoverActive(db);
+    const modelTakeover = takeoverFlags?.models ?? (await getPlatformAiTakeoverFlags(db)).models;
     const cacheable = !managed && !modelTakeover;
     if (cacheable) {
       const cached = this.runtimeCache.get(cacheKey);
@@ -3001,13 +3025,12 @@ export class MemoryExtractionExecutor {
           const memoryServiceConfig = this.resolveUserMemoryServiceConfig(
             effectiveSystemAgent as Partial<UserServiceModelConfig> | undefined,
           );
-          const keyVaults = await this.resolveRuntimeKeyVaults(
-            aiProviderRuntimeState,
+          const { runtimes } = await this.loadExtractionRuntimes({
             memoryServiceConfig,
-          );
+            runtimeState: aiProviderRuntimeState,
+            userId: params.userId,
+          });
           const language = params.language || userState.settings?.general?.responseLanguage;
-
-          const runtimes = await this.getRuntime(params.userId, memoryServiceConfig, keyVaults);
           const contextProvider =
             params.contextProvider ||
             new BenchmarkLocomoContextProvider({

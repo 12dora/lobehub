@@ -101,16 +101,40 @@ If you don't have it, please run \`openssl rand -base64 32\` to create one.
   });
 
   describe('getUserKeyVaultsStrict', () => {
-    it('returns an empty object when encrypted key vaults are missing', async () => {
-      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict(null)).resolves.toEqual({});
+    it.each([
+      ['null', null],
+      ['undefined', undefined],
+      ['empty string', ''],
+    ] as const)('returns {} for %s (no stored credentials)', async (_label, value) => {
+      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict(value)).resolves.toEqual({});
     });
 
-    it('decrypts and parses valid key vaults json', async () => {
-      const encrypted = await gateKeeper.encrypt(JSON.stringify({ openai: 'sk-test' }));
+    it("throws SyntaxError with cause for malformed '{}' ciphertext", async () => {
+      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict('{}')).rejects.toSatisfy(
+        (error: unknown) =>
+          error instanceof SyntaxError &&
+          error.message === 'Invalid encrypted data format' &&
+          error.cause instanceof Error &&
+          (error.cause as Error).message === 'Invalid encrypted data format',
+      );
+    });
 
-      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict(encrypted)).resolves.toEqual({
-        openai: 'sk-test',
-      });
+    it('throws SyntaxError with cause for garbage ciphertext', async () => {
+      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict('not-a-vault')).rejects.toSatisfy(
+        (error: unknown) =>
+          error instanceof SyntaxError &&
+          error.cause instanceof Error &&
+          (error.cause as Error).message === 'Invalid encrypted data format',
+      );
+    });
+
+    it('throws SyntaxError when the auth tag does not authenticate', async () => {
+      const encrypted = await gateKeeper.encrypt(JSON.stringify({ openai: 'sk-test' }));
+      process.env.KEY_VAULTS_SECRET = 'ofQiJCXLF8mYemwfMWLOHoHimlPu91YmLfU7YZ4lreQ=';
+
+      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict(encrypted)).rejects.toBeInstanceOf(
+        SyntaxError,
+      );
     });
 
     it('throws SyntaxError when decrypted plaintext is empty', async () => {
@@ -121,21 +145,20 @@ If you don't have it, please run \`openssl rand -base64 32\` to create one.
       );
     });
 
-    it('throws SyntaxError when ciphertext is not authentic', async () => {
-      const encrypted = await gateKeeper.encrypt(JSON.stringify({ openai: 'sk-test' }));
-      process.env.KEY_VAULTS_SECRET = 'ofQiJCXLF8mYemwfMWLOHoHimlPu91YmLfU7YZ4lreQ=';
+    it('throws SyntaxError for decrypted non-json plaintext', async () => {
+      const encrypted = await gateKeeper.encrypt('not-json');
 
       await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict(encrypted)).rejects.toBeInstanceOf(
         SyntaxError,
       );
     });
 
-    it('throws SyntaxError for non-json plaintext', async () => {
-      const encrypted = await gateKeeper.encrypt('not-json');
+    it('decrypts and parses valid key vaults json', async () => {
+      const encrypted = await gateKeeper.encrypt(JSON.stringify({ openai: 'sk-test' }));
 
-      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict(encrypted)).rejects.toBeInstanceOf(
-        SyntaxError,
-      );
+      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict(encrypted)).resolves.toEqual({
+        openai: 'sk-test',
+      });
     });
   });
 });

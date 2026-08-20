@@ -21,6 +21,14 @@ import {
 /** Providers the platform does NOT publish as enabled — i.e. the caller's own (BYOK). */
 const userOnlyProviders = vi.hoisted(() => new Set<string>());
 
+const takeoverFromEnv = vi.hoisted(() => () => ({
+  models: process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER === '1',
+  providers:
+    ['1', 'true', 'yes', 'on'].includes(
+      (process.env.ENABLE_PLATFORM_MANAGED_AI ?? '').trim().toLowerCase(),
+    ) && process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER !== '0',
+}));
+
 // Platform takeover is authorized by the published 平台托管 policy, which lives in the DB; the
 // executor holds a lazy server DB handle these unit cases do not stand up. Mock just that
 // predicate and keep the suite's existing convention that ENABLE_PLATFORM_MANAGED_AI means
@@ -33,15 +41,9 @@ vi.mock('@/server/enterprise/services/aiCatalog/enforcement', async (importOrigi
 }));
 vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => ({
   ...(await importOriginal<typeof PlatformAiRuntimeBridge>()),
-  isPlatformAiModelTakeoverActive: vi.fn(
-    async () => process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER === '1',
-  ),
-  isPlatformAiTakeoverActive: vi.fn(
-    async () =>
-      ['1', 'true', 'yes', 'on'].includes(
-        (process.env.ENABLE_PLATFORM_MANAGED_AI ?? '').trim().toLowerCase(),
-      ) && process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER !== '0',
-  ),
+  getPlatformAiTakeoverFlags: vi.fn(async () => takeoverFromEnv()),
+  isPlatformAiModelTakeoverActive: vi.fn(async () => takeoverFromEnv().models),
+  isPlatformAiTakeoverActive: vi.fn(async () => takeoverFromEnv().providers),
   // `null` = "not actively managed" → the provider is the user's own (BYOK). Default: every
   // provider is platform-owned while the flag is on, matching this suite's convention.
   listPlatformCatalogModels: vi.fn(async (_db: unknown, providerKey: string) =>
@@ -1301,6 +1303,65 @@ describe('MemoryExtractionExecutor.getRuntime model-takeover cache', () => {
     const unhostedInits = initSpy.mock.calls.length;
     await (executor as any).getRuntime('memory-user', config, userVaults);
     expect(initSpy.mock.calls.length).toBe(unhostedInits);
+  });
+});
+
+describe('MemoryExtractionExecutor.loadExtractionRuntimes snapshot', () => {
+  afterEach(() => {
+    delete process.env.TEST_PLATFORM_AI_MODEL_TAKEOVER;
+    delete process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER;
+    delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    vi.restoreAllMocks();
+  });
+
+  it('reads the policy snapshot once through the production extraction sequence', async () => {
+    // Flag on + models unpublished: each predicate would re-read the policy table.
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    process.env.TEST_PLATFORM_AI_PROVIDER_TAKEOVER = '0';
+
+    vi.spyOn(ModelRuntime, 'initializeWithProvider').mockReturnValue({} as unknown as ModelRuntime);
+
+    const flagsSpy = vi.mocked(PlatformAiRuntimeBridge.getPlatformAiTakeoverFlags);
+    flagsSpy.mockImplementation(async () => takeoverFromEnv());
+    flagsSpy.mockClear();
+    vi.mocked(PlatformAiRuntimeBridge.isPlatformAiModelTakeoverActive).mockClear();
+    vi.mocked(PlatformAiRuntimeBridge.isPlatformAiTakeoverActive).mockClear();
+
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [
+        {
+          abilities: {},
+          enabled: true,
+          id: 'embed-1',
+          providerId: 'provider-e',
+          type: 'embedding',
+        },
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'chat' },
+        ...['layer-act', 'layer-ctx', 'layer-exp', 'layer-id', 'layer-pref'].map((id) => ({
+          abilities: {},
+          enabled: true,
+          id,
+          providerId: 'provider-l',
+          type: 'chat' as const,
+        })),
+      ],
+      {
+        'provider-b': { apiKey: 'b-key' },
+        'provider-e': { apiKey: 'e-key' },
+        'provider-l': { apiKey: 'l-key' },
+      },
+    );
+
+    await (executor as any).loadExtractionRuntimes({
+      memoryServiceConfig: (executor as any).resolveUserMemoryServiceConfig(),
+      runtimeState,
+      userId: 'memory-user',
+    });
+
+    expect(flagsSpy).toHaveBeenCalledOnce();
+    expect(PlatformAiRuntimeBridge.isPlatformAiModelTakeoverActive).not.toHaveBeenCalled();
+    expect(PlatformAiRuntimeBridge.isPlatformAiTakeoverActive).not.toHaveBeenCalled();
   });
 });
 
