@@ -142,6 +142,10 @@ export const materializeConversations = async (
       // listTopics already selects every field written to staging — no
       // per-topic getTopic (SAO-005 N+1). Same-RR visibility makes a second
       // probe redundant; write straight from the list row + mask.
+      //
+      // Durable NDJSON artifacts always credential-mask, even when live-view
+      // `redactionProfile` is `'off'`. Completed objects leave the system until
+      // artifact retention, so this path never honors `'off'`.
       await writeStaging({
         agentId: topic.agentId,
         createdAt: toIso(topic.createdAt),

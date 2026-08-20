@@ -10,6 +10,7 @@
  * such as `tokenCount` or `tokenizer` are not wiped.
  */
 
+import type { PlatformAuditRedactionProfile } from '../../schemas/platform';
 import { REDACTED_PLACEHOLDER, redactSensitive } from './redact';
 import {
   AWS_ACCESS_KEY_GLOBAL,
@@ -188,6 +189,19 @@ export const maskCredentialsDeep = <T>(input: T): T => {
  * Uses deep key+value credential masking (not generic PII redaction profiles).
  */
 export const maskAuditConversationEvidence = <T>(input: T): T => maskCredentialsDeep(input);
+
+/**
+ * Profile-aware live-view wrapper. Only `'off'` skips masking; `'strict'`,
+ * `'standard'`, missing, and unknown profiles fail closed to credential mask.
+ * Durable exports must keep calling `maskAuditConversationEvidence` directly.
+ */
+export const applyAuditConversationRedaction = <T>(
+  input: T,
+  profile: PlatformAuditRedactionProfile | null | undefined,
+): T => {
+  if (profile === 'off') return input;
+  return maskAuditConversationEvidence(input);
+};
 
 /**
  * Re-export write-path redactor for callers that need structured secret stripping

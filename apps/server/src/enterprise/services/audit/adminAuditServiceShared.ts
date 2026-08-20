@@ -3,12 +3,12 @@
  */
 
 import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import {
-  maskAuditConversationEvidence,
-  type PlatformAuditLegalHoldItem,
-  type PlatformAuditLogItem,
-  type PlatformAuditPolicyItem,
+import type {
+  PlatformAuditLegalHoldItem,
+  PlatformAuditLogItem,
+  PlatformAuditPolicyItem,
 } from '@/database/models/platform';
+import { applyAuditConversationRedaction } from '@/database/models/platform';
 
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import { toPublicPlatformAuditItem } from '../platformAudit';
@@ -105,7 +105,10 @@ export const accessLogResultForError = (error: unknown): 'denied' | 'failure' =>
   isDeniedError(error) ? 'denied' : 'failure';
 
 /** Credential-mask free-text metadata that may contain pasted secrets. */
-export const maskOptionalText = (value: string | null | undefined): string | null | undefined => {
+export const maskOptionalText = (
+  value: string | null | undefined,
+  profile: PlatformAuditPolicyItem['redactionProfile'] | null | undefined,
+): string | null | undefined => {
   if (value == null) return value;
-  return maskAuditConversationEvidence(value);
+  return applyAuditConversationRedaction(value, profile);
 };

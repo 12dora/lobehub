@@ -347,6 +347,64 @@ describe('audit export worker', () => {
     expect(String(msg!.content)).not.toContain('sk-abcdefghijklmnopqrstuvwxyz012345');
   });
 
+  it('still credential-masks conversation exports when redactionProfile is off', async () => {
+    await serverDB.insert(platformAuditPolicies).values({
+      id: 'global',
+      contentAccessMode: 'content_allowed',
+      messageBodyInExport: true,
+      redactionProfile: 'off',
+      revision: 0,
+    });
+    await serverDB.insert(topics).values({
+      createdAt: new Date('2026-01-06T00:00:00.000Z'),
+      id: 'topic-export-off',
+      title: 'Title Only Search Hit Off',
+      userId: userA,
+    });
+    const ordinary = `Business memo for ACME Corp: ${'paragraph '.repeat(50)} end.`;
+    await serverDB.insert(messages).values({
+      content: `${ordinary} password=super-secret-value-xyz Bearer sk-abcdefghijklmnopqrstuvwxyz012345`,
+      createdAt: new Date('2026-01-06T01:00:00.000Z'),
+      id: 'msg-export-off',
+      role: 'user',
+      topicId: 'topic-export-off',
+      userId: userA,
+    });
+
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: ['platform_audit:export:all', 'platform_audit:conversation_read:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: true,
+        kind: 'conversations',
+        q: 'Title Only',
+        reason: 'conversation export with bodies under off',
+        to: window.to,
+        userId: userA,
+      },
+    });
+
+    const result = await processNextAuditExportJob(serverDB, {
+      storage,
+      workerId: 'test-worker-conv-off',
+    });
+    expect(result.outcome).toBe('completed');
+
+    const convKey = await publishedKey(created.id);
+    const body = storage.objects.get(convKey ?? '')?.toString('utf8') ?? '';
+    const lines = body
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const msg = lines.find((l) => l.type === 'conversation_message');
+    expect(msg).toBeTruthy();
+    expect(String(msg!.content)).toContain('Business memo for ACME Corp');
+    expect(String(msg!.content)).not.toContain('super-secret-value-xyz');
+    expect(String(msg!.content)).not.toContain('sk-abcdefghijklmnopqrstuvwxyz012345');
+  });
+
   it('cancels both export row and platform job', async () => {
     const service = new AdminAuditExportService(serverDB, { storage });
     const created = await service.create({

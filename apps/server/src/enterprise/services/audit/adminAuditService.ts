@@ -132,11 +132,13 @@ export class AdminAuditService {
           afterDiff: {
             contentAccessMode: next.contentAccessMode,
             maxListWindowDays: next.maxListWindowDays,
+            redactionProfile: next.redactionProfile,
             revision: next.revision,
           },
           beforeDiff: {
             contentAccessMode: before.contentAccessMode,
             maxListWindowDays: before.maxListWindowDays,
+            redactionProfile: before.redactionProfile,
             revision: before.revision,
           },
           filterSummary,

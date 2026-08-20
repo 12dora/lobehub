@@ -4,11 +4,12 @@
  * Data contract:
  * - Operation event detail and exports recursively remove fingerprint-named fields at read time
  *   while preserving all other non-credential evidence in stored before/after diffs.
- * - Conversation/message body is full and unlimited when content_allowed + permission;
- *   only credentials are masked — no PII/business-text redaction or length truncation.
+ * - Conversation/message body is full and unlimited when content_allowed + permission.
+ *   Credentials are masked unless `redactionProfile` is `'off'` (fail-closed: missing/unknown
+ *   still mask). No PII/business-text redaction or length truncation.
  * - Export artifacts preserve non-fingerprint operation evidence; conversation bodies are
- *   included only when allowed, with credential-only masking and no generic summarization or
- *   length truncation.
+ *   included only when allowed, with credential-only masking always (even when live-view
+ *   `redactionProfile` is `'off'`) and no generic summarization or length truncation.
  * - Lists may omit large detail fields; detail preserves full non-credential evidence.
  * - Access-log filter summaries never include free-text `q`, message bodies, or download URLs.
  * - Export list/get never expose storageKey; only download returns a short-lived signed URL.
@@ -49,7 +50,7 @@ export const platformAuditContentAccessModeSchema = z.enum([
   'metadata_only',
   'content_allowed',
 ]);
-export const platformAuditRedactionProfileSchema = z.enum(['strict', 'standard']);
+export const platformAuditRedactionProfileSchema = z.enum(['strict', 'standard', 'off']);
 export const platformAuditLegalHoldScopeTypeSchema = z.enum([
   'user',
   'session',

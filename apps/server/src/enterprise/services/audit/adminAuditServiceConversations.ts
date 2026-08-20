@@ -3,7 +3,7 @@
  */
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import { maskAuditConversationEvidence } from '@/database/models/platform';
+import { applyAuditConversationRedaction } from '@/database/models/platform';
 
 import type {
   AdminAuditConversationsListInputParsed,
@@ -56,8 +56,8 @@ export const listConversations = async (
 
     const items = page.items.map((row) => ({
       ...row,
-      description: maskOptionalText(row.description) ?? null,
-      title: maskOptionalText(row.title) ?? null,
+      description: maskOptionalText(row.description, policy.redactionProfile) ?? null,
+      title: maskOptionalText(row.title, policy.redactionProfile) ?? null,
     }));
 
     await appendAuditAccessLog(host.db, {
@@ -122,13 +122,13 @@ export const getConversation = async (
       agentId: topic.agentId,
       contentAccessMode: access.mode,
       createdAt: topic.createdAt,
-      description: maskOptionalText(topic.description) ?? null,
+      description: maskOptionalText(topic.description, policy.redactionProfile) ?? null,
       id: topic.id,
       model: topic.model,
       provider: topic.provider,
       sessionId: topic.sessionId,
       status: topic.status,
-      title: maskOptionalText(topic.title) ?? null,
+      title: maskOptionalText(topic.title, policy.redactionProfile) ?? null,
       updatedAt: topic.updatedAt,
       userId: topic.userId,
     };
@@ -136,13 +136,18 @@ export const getConversation = async (
     const result = access.allowBody
       ? {
           ...base,
-          content: topic.content == null ? null : maskAuditConversationEvidence(topic.content),
+          content:
+            topic.content == null
+              ? null
+              : applyAuditConversationRedaction(topic.content, policy.redactionProfile),
           editorData:
-            topic.editorData == null ? undefined : maskAuditConversationEvidence(topic.editorData),
+            topic.editorData == null
+              ? undefined
+              : applyAuditConversationRedaction(topic.editorData, policy.redactionProfile),
           historySummary:
             topic.historySummary == null
               ? null
-              : maskAuditConversationEvidence(topic.historySummary),
+              : applyAuditConversationRedaction(topic.historySummary, policy.redactionProfile),
         }
       : base;
 
@@ -227,11 +232,20 @@ export const listConversationMessages = async (
         contentAccessMode: access.mode,
         items: page.items.map((row) => ({
           agentId: row.agentId,
-          content: row.content == null ? null : maskAuditConversationEvidence(row.content),
+          content:
+            row.content == null
+              ? null
+              : applyAuditConversationRedaction(row.content, policy.redactionProfile),
           contentAccessMode: access.mode,
           createdAt: row.createdAt,
-          editorData: row.editorData == null ? null : maskAuditConversationEvidence(row.editorData),
-          error: row.error == null ? null : maskAuditConversationEvidence(row.error),
+          editorData:
+            row.editorData == null
+              ? null
+              : applyAuditConversationRedaction(row.editorData, policy.redactionProfile),
+          error:
+            row.error == null
+              ? null
+              : applyAuditConversationRedaction(row.error, policy.redactionProfile),
           id: row.id,
           model: row.model,
           parentId: row.parentId,

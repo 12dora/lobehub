@@ -161,6 +161,65 @@ describe('AdminAuditService', () => {
     expect(item.content).toContain('[REDACTED]');
   });
 
+  it('preserves credentials in message body when content_allowed and redactionProfile is off', async () => {
+    const current = await service.getPolicy({ actorUserId: actor });
+    await service.updatePolicy({
+      actorUserId: actor,
+      input: {
+        contentAccessMode: 'content_allowed',
+        expectedRevision: current.revision,
+        reason: 'enable content with redaction off',
+        redactionProfile: 'off',
+      },
+    });
+
+    const body =
+      'Please use sk-abcdefghijklmnopqrstuvwxyz012345 for the demo and keep ACME Corp name.';
+    await serverDB.insert(topics).values({ id: 't-off', title: 'Keys', userId: userA });
+    await serverDB.insert(messages).values({
+      content: body,
+      id: 'm-off',
+      role: 'user',
+      topicId: 't-off',
+      userId: userA,
+    });
+
+    const page = await service.listConversationMessages({
+      actorUserId: actor,
+      input: { includeBody: true, limit: 5, topicId: 't-off', userId: userA },
+    });
+    expect(page.contentAccessMode).toBe('content_allowed');
+    const item = page.items[0];
+    expect(item).toBeDefined();
+    if (!item || !('content' in item)) {
+      throw new Error('expected content_allowed message item with body');
+    }
+    expect(item.content).toBe(body);
+    expect(item.content).toContain('sk-abcdefghijklmnopqrstuvwxyz012345');
+  });
+
+  it('records redactionProfile in policy-update access-log diffs', async () => {
+    const before = await service.getPolicy({ actorUserId: actor });
+    expect(before.redactionProfile).toBe('strict');
+
+    await service.updatePolicy({
+      actorUserId: actor,
+      input: {
+        expectedRevision: before.revision,
+        reason: 'disable conversation credential masking',
+        redactionProfile: 'off',
+      },
+    });
+
+    const logs = await serverDB.select().from(platformAuditLogs);
+    const updateLog = logs.find(
+      (row) => row.action === 'admin.audit.policy.update' && row.result === 'success',
+    );
+    expect(updateLog).toBeDefined();
+    expect(updateLog!.beforeDiff).toMatchObject({ redactionProfile: 'strict' });
+    expect(updateLog!.afterDiff).toMatchObject({ redactionProfile: 'off' });
+  });
+
   it('denies conversation access when policy is disabled and self-audits as denied', async () => {
     const current = await service.getPolicy({ actorUserId: actor });
     await service.updatePolicy({

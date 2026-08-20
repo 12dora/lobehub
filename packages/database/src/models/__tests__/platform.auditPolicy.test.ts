@@ -63,6 +63,19 @@ describe('PlatformAuditPolicyModel', () => {
       expect(updated.updatedBy).toBe('admin-1');
     });
 
+    it('accepts redactionProfile off via CAS (CHECK admits off; default remains strict)', async () => {
+      const created = await model.getOrCreate();
+      expect(created.redactionProfile).toBe('strict');
+
+      const updated = await model.updateCAS({
+        expectedRevision: created.revision,
+        redactionProfile: 'off',
+      });
+
+      expect(updated.redactionProfile).toBe('off');
+      expect(updated.revision).toBe(created.revision + 1);
+    });
+
     it('throws PlatformRevisionConflictError on stale expectedRevision', async () => {
       const created = await model.getOrCreate();
       await model.updateCAS({

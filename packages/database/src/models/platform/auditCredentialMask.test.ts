@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyAuditConversationRedaction,
   isCredentialKey,
   maskAuditConversationEvidence,
   maskCredentialsDeep,
@@ -145,5 +146,24 @@ describe('maskCredentialsDeep / maskAuditConversationEvidence', () => {
     expect(masked.blocks[0]!.text).toContain('[REDACTED]');
     expect(masked.blocks[0]!.text).not.toContain('sk-abcdefghijklmnopqrstuvwxyz012345');
     expect(masked.blocks[0]!.text).toContain('deploy with');
+  });
+});
+
+describe('applyAuditConversationRedaction', () => {
+  const input = 'Use sk-abcdefghijklmnopqrstuvwxyz012345 and keep ACME Corp';
+
+  it('returns input untouched when profile is off', () => {
+    expect(applyAuditConversationRedaction(input, 'off')).toBe(input);
+  });
+
+  it.each([
+    ['strict', 'strict' as const],
+    ['standard', 'standard' as const],
+    ['undefined', undefined],
+  ] as const)('masks credentials when profile is %s', (_label, profile) => {
+    const masked = applyAuditConversationRedaction(input, profile);
+    expect(masked).not.toContain('sk-abcdefghijklmnopqrstuvwxyz012345');
+    expect(masked).toContain('[REDACTED]');
+    expect(masked).toContain('ACME Corp');
   });
 });

@@ -22,8 +22,12 @@ export const PLATFORM_AUDIT_POLICY_ID = 'global';
 /** How conversation / message body content may be accessed by admin audit tooling. */
 export type PlatformAuditContentAccessMode = 'disabled' | 'metadata_only' | 'content_allowed';
 
-/** Redaction aggressiveness applied before diffs / exports leave the system. */
-export type PlatformAuditRedactionProfile = 'strict' | 'standard';
+/**
+ * Live-view conversation credential masking. `'off'` returns raw message text;
+ * `'strict'` / `'standard'` (and missing/unknown) mask credentials. Durable
+ * exports always credential-mask regardless of this profile. Default `'strict'`.
+ */
+export type PlatformAuditRedactionProfile = 'strict' | 'standard' | 'off';
 
 /**
  * Numeric / enum column defaults for the audit policy singleton.
@@ -206,7 +210,7 @@ export const platformAuditPolicies = pgTable(
     ),
     check(
       'platform_audit_policies_redaction_profile_check',
-      sql`${t.redactionProfile} IN ('strict', 'standard')`,
+      sql`${t.redactionProfile} IN ('strict', 'standard', 'off')`,
     ),
   ],
 );

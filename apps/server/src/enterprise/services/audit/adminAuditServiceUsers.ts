@@ -131,7 +131,7 @@ export const listUserTimeline = async (
     });
     const items = page.items.map((row) => ({
       ...row,
-      title: maskOptionalText(row.title) ?? null,
+      title: maskOptionalText(row.title, policy.redactionProfile) ?? null,
     }));
     await appendAuditAccessLog(host.db, {
       action: 'admin.audit.users.timeline',
