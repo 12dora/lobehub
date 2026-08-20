@@ -3,10 +3,13 @@ import { usePrevious } from 'ahooks';
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useLocation, useParams, useSearchParams } from 'react-router';
 
+import { useActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useAgentStore } from '@/store/agent';
 import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
+
+import { buildPrefixedAgentRoutePath, parseAgentPathname } from './Sidebar/utils/agentPathname';
 
 const BUILTIN_SLUG_SET = new Set<string>(Object.values(BUILTIN_AGENT_SLUGS));
 
@@ -24,14 +27,42 @@ const AgentIdSync = () => {
     builtinAgentSelectors.getBuiltinAgentId(isBuiltinSlug ? params.aid! : ''),
   );
 
-  // Redirect slug URL to real agent ID URL, preserving child path and query string
+  const agentRoute = useMemo(() => parseAgentPathname(location.pathname), [location.pathname]);
+  const activeWorkspaceSlug = useActiveWorkspaceSlug();
+
+  // Redirect slug URL to real agent ID URL, preserving the path prefix, the
+  // child path, the query string and the hash.
+  //
+  // Only the agent-id segment may be rewritten: a naive
+  // `pathname.replace('/agent/<slug>', '')` treats everything *before* the
+  // agent segment as a suffix, so `/acme/agent/inbox` used to redirect to
+  // `/agent/<id>/acme` — the workspace slug re-read as a topic id (same for the
+  // `/_dangerous_local_dev_proxy` prefix). `buildPrefixedAgentRoutePath` keeps
+  // the literal prefix only when workspace-aware navigation cannot restore it.
   useEffect(() => {
-    if (isBuiltinSlug && resolvedId) {
-      const suffix = location.pathname.replace(`/agent/${params.aid}`, '');
-      const qs = searchParams.toString();
-      navigate(`/agent/${resolvedId}${suffix}${qs ? `?${qs}` : ''}`, { replace: true });
-    }
-  }, [isBuiltinSlug, resolvedId, navigate, searchParams, location.pathname, params.aid]);
+    if (!isBuiltinSlug || !resolvedId) return;
+
+    const childPath = agentRoute?.segmentsAfterAgent.length
+      ? `/${agentRoute.segmentsAfterAgent.join('/')}`
+      : '';
+    const target = buildPrefixedAgentRoutePath(
+      `/agent/${resolvedId}${childPath}`,
+      agentRoute,
+      activeWorkspaceSlug,
+    );
+    const qs = searchParams.toString();
+    const hash = location.hash || '';
+
+    navigate(`${target}${qs ? `?${qs}` : ''}${hash}`, { replace: true });
+  }, [
+    isBuiltinSlug,
+    resolvedId,
+    navigate,
+    searchParams,
+    agentRoute,
+    activeWorkspaceSlug,
+    location.hash,
+  ]);
 
   // Use resolved ID when available, fall back to URL param (e.g. anonymous mode)
   const activeId = useMemo(

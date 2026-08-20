@@ -11,6 +11,12 @@ import { useChatStore } from '@/store/chat/store';
 
 import AgentIdSync from './AgentIdSync';
 
+const workspaceSlug = vi.hoisted(() => ({ current: null as string | null }));
+
+vi.mock('@/business/client/hooks/useActiveWorkspaceSlug', () => ({
+  useActiveWorkspaceSlug: () => workspaceSlug.current,
+}));
+
 const useParamsMock = vi.hoisted(() => vi.fn());
 const useSearchParamsMock = vi.hoisted(() => vi.fn());
 const useNavigateMock = vi.hoisted(() => vi.fn());
@@ -35,7 +41,8 @@ describe('AgentIdSync', () => {
     useSearchParamsMock.mockReset();
     useNavigateMock.mockReset();
     useLocationMock.mockReset();
-    useLocationMock.mockReturnValue({ pathname: '/agent/agent-1' });
+    useLocationMock.mockReturnValue({ hash: '', pathname: '/agent/agent-1' });
+    workspaceSlug.current = null;
 
     useChatStore.setState(
       {
@@ -100,9 +107,12 @@ describe('AgentIdSync', () => {
 
 describe('AgentIdSync activeAgentId ownership', () => {
   beforeEach(() => {
+    useNavigateMock.mockReset();
+    workspaceSlug.current = null;
     useParamsMock.mockReturnValue({ aid: 'agent-1' });
     useSearchParamsMock.mockReturnValue([new URLSearchParams(''), vi.fn()]);
-    useLocationMock.mockReturnValue({ pathname: '/agent/agent-1' });
+    useLocationMock.mockReturnValue({ hash: '', pathname: '/agent/agent-1' });
+    useAgentStore.setState({ activeAgentId: undefined, builtinAgentIdMap: {} }, false);
   });
 
   it('adopts the routed id on mount', () => {
@@ -153,5 +163,106 @@ describe('AgentIdSync activeAgentId ownership', () => {
     unmount();
 
     expect(useAgentStore.getState().activeAgentId).toBeUndefined();
+  });
+});
+
+describe('AgentIdSync builtin slug redirect', () => {
+  const INBOX_ID = 'inbox-agent-id';
+
+  const renderAt = (pathname: string, search = '', hash = '') => {
+    useParamsMock.mockReturnValue({ aid: 'inbox' });
+    useSearchParamsMock.mockReturnValue([new URLSearchParams(search), vi.fn()]);
+    useLocationMock.mockReturnValue({ hash, pathname });
+
+    return render(<AgentIdSync />);
+  };
+
+  beforeEach(() => {
+    useNavigateMock.mockReset();
+    workspaceSlug.current = null;
+    useAgentStore.setState(
+      { activeAgentId: undefined, builtinAgentIdMap: { inbox: INBOX_ID } },
+      false,
+    );
+  });
+
+  it('rewrites only the agent id segment on an unprefixed URL', () => {
+    renderAt('/agent/inbox');
+
+    expect(useNavigateMock).toHaveBeenCalledWith(`/agent/${INBOX_ID}`, { replace: true });
+  });
+
+  it('keeps a workspace prefix instead of appending the slug as a topic id', () => {
+    workspaceSlug.current = 'acme';
+
+    renderAt('/acme/agent/inbox');
+
+    expect(useNavigateMock).toHaveBeenCalledWith(`/acme/agent/${INBOX_ID}`, { replace: true });
+    // regression: the old `pathname.replace('/agent/inbox', '')` treated the
+    // workspace prefix as a suffix and re-prefixed it, duplicating the slug
+    expect(useNavigateMock).not.toHaveBeenCalledWith(`/acme/agent/${INBOX_ID}/acme`, {
+      replace: true,
+    });
+  });
+
+  it('preserves a workspace prefix even before the active slug hydrates', () => {
+    workspaceSlug.current = null;
+
+    renderAt('/acme/agent/inbox');
+
+    expect(useNavigateMock).toHaveBeenCalledWith(`/acme/agent/${INBOX_ID}`, { replace: true });
+  });
+
+  it('preserves a topic child path under a workspace prefix', () => {
+    workspaceSlug.current = 'acme';
+
+    renderAt('/acme/agent/inbox/topic-9');
+
+    expect(useNavigateMock).toHaveBeenCalledWith(`/acme/agent/${INBOX_ID}/topic-9`, {
+      replace: true,
+    });
+  });
+
+  it('preserves a sub-route child path under a workspace prefix', () => {
+    workspaceSlug.current = 'acme';
+
+    renderAt('/acme/agent/inbox/profile');
+
+    expect(useNavigateMock).toHaveBeenCalledWith(`/acme/agent/${INBOX_ID}/profile`, {
+      replace: true,
+    });
+  });
+
+  it('preserves the debug-proxy prefix and its child path', () => {
+    renderAt('/_dangerous_local_dev_proxy/agent/inbox/profile');
+
+    expect(useNavigateMock).toHaveBeenCalledWith(
+      `/_dangerous_local_dev_proxy/agent/${INBOX_ID}/profile`,
+      { replace: true },
+    );
+  });
+
+  it('preserves the query string alongside a workspace prefix', () => {
+    workspaceSlug.current = 'acme';
+
+    renderAt('/acme/agent/inbox', 'topic=topic-9');
+
+    expect(useNavigateMock).toHaveBeenCalledWith(`/acme/agent/${INBOX_ID}?topic=topic-9`, {
+      replace: true,
+    });
+  });
+
+  it('preserves the hash', () => {
+    renderAt('/agent/inbox', '', '#section');
+
+    expect(useNavigateMock).toHaveBeenCalledWith(`/agent/${INBOX_ID}#section`, { replace: true });
+  });
+
+  it('does not redirect while the builtin slug is unresolved', () => {
+    useAgentStore.setState({ builtinAgentIdMap: {} }, false);
+
+    renderAt('/acme/agent/inbox');
+
+    expect(useNavigateMock).not.toHaveBeenCalled();
   });
 });
