@@ -13,6 +13,68 @@ import type { UserServiceModelConfigKey } from '@/types/user/settings';
 import ModelAssignmentsFormView, { type SystemAgentPolicyMetas } from './ModelAssignmentsFormView';
 
 /**
+ * One path literal per EffortControlKey. Must be written as complete strings —
+ * `controlWiring.test.ts` greps this file for each registry path (`toContain`),
+ * so template strings like `` `defaultAgent.config.chatConfig.${key}` `` do not count.
+ */
+export const DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS = [
+  'defaultAgent.config.chatConfig.codexMaxReasoningEffort',
+  'defaultAgent.config.chatConfig.deepseekV4ReasoningEffort',
+  'defaultAgent.config.chatConfig.effort',
+  'defaultAgent.config.chatConfig.glm5_2ReasoningEffort',
+  'defaultAgent.config.chatConfig.gpt5ReasoningEffort',
+  'defaultAgent.config.chatConfig.gpt5_1ReasoningEffort',
+  'defaultAgent.config.chatConfig.gpt5_2ProReasoningEffort',
+  'defaultAgent.config.chatConfig.gpt5_2ReasoningEffort',
+  'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort',
+  'defaultAgent.config.chatConfig.grok4_20ReasoningEffort',
+  'defaultAgent.config.chatConfig.grok4_3ReasoningEffort',
+  'defaultAgent.config.chatConfig.grok4_5ReasoningEffort',
+  'defaultAgent.config.chatConfig.hy3ReasoningEffort',
+  'defaultAgent.config.chatConfig.kimiK3ReasoningEffort',
+  'defaultAgent.config.chatConfig.opus47Effort',
+  'defaultAgent.config.chatConfig.reasoningEffort',
+  'defaultAgent.config.chatConfig.ring2_6ReasoningEffort',
+  'defaultAgent.config.chatConfig.step3_5ReasoningEffort',
+  'defaultAgent.config.chatConfig.thinkingLevel',
+  'defaultAgent.config.chatConfig.thinkingLevel2',
+  'defaultAgent.config.chatConfig.thinkingLevel3',
+  'defaultAgent.config.chatConfig.thinkingLevel4',
+  'defaultAgent.config.chatConfig.thinking',
+] as const;
+
+/**
+ * Fixed-length hook sequence (rules-of-hooks). A locked/hidden effort leaf disables
+ * or hides the default-assistant cluster the same way model/provider metas do.
+ */
+const useDefaultAgentChatConfigEffortMetas = () =>
+  [
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.codexMaxReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.deepseekV4ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.effort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.glm5_2ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.gpt5ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.gpt5_1ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.gpt5_2ProReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.gpt5_2ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.gpt5_6ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.grok4_20ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.grok4_3ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.grok4_5ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.hy3ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.kimiK3ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.opus47Effort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.reasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.ring2_6ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.step3_5ReasoningEffort'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.thinkingLevel'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.thinkingLevel2'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.thinkingLevel3'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.thinkingLevel4'),
+    usePlatformSettingMeta('defaultAgent.config.chatConfig.thinking'),
+  ] as const;
+
+/**
  * `reasoningEffort` is absent for `userMemoryEmbedding` on purpose: embedding models expose
  * no thinking budget, so that row renders no effort picker and registering the leaf would
  * declare a control surface that does not exist.
@@ -62,7 +124,12 @@ const ModelAssignmentsForm = memo(() => {
   const saveState = useSaveState();
   const defaultAgentModelMeta = usePlatformSettingMeta('defaultAgent.config.model');
   const defaultAgentProviderMeta = usePlatformSettingMeta('defaultAgent.config.provider');
-  const defaultAgentMetas = [defaultAgentModelMeta, defaultAgentProviderMeta] as const;
+  const defaultAgentEffortMetas = useDefaultAgentChatConfigEffortMetas();
+  const defaultAgentMetas = [
+    defaultAgentModelMeta,
+    defaultAgentProviderMeta,
+    ...defaultAgentEffortMetas,
+  ];
   const systemAgentMetas: Partial<Record<UserServiceModelConfigKey, SystemAgentPolicyMetas>> = {
     agentMeta: {
       modelProvider: [
@@ -164,10 +231,9 @@ const ModelAssignmentsForm = memo(() => {
       onUpdateDefaultAgent={({ model, provider }) =>
         updateDefaultAgent({ config: { model, provider } })
       }
-      // The default assistant has no registry leaf for effort — it rides the agent's own
-      // chatConfig under the key the model's effort control declares, exactly like the
-      // in-chat controls write it. `level` is always concrete: chatConfig fields are strict
-      // level unions, so the picker offers no clear here.
+      // User settings still merge onto chatConfig; platform lock/hide is driven by the
+      // per-key `defaultAgent.config.chatConfig.<configKey>` leaves. `level` is always
+      // concrete: chatConfig fields are strict level unions, so the picker offers no clear.
       onUpdateDefaultAgentEffort={({ configKey, level }) =>
         updateDefaultAgent({ config: { chatConfig: { [configKey]: level } } })
       }

@@ -21,6 +21,24 @@ describe('settingsPolicyController', () => {
     expect(
       isServiceModelManaged({ group: 'defaultAgent', path: 'defaultAgent.config.model' }),
     ).toBe(true);
+    expect(
+      isServiceModelManaged({
+        group: 'defaultAgent',
+        path: 'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort',
+      }),
+    ).toBe(true);
+    expect(
+      isServiceModelManaged({
+        group: 'defaultAgent',
+        path: 'defaultAgent.config.chatConfig.thinking',
+      }),
+    ).toBe(true);
+    expect(
+      isServiceModelManaged({
+        group: 'defaultAgent',
+        path: 'defaultAgent.config.chatConfig.enableStreaming',
+      }),
+    ).toBe(false);
     expect(isServiceModelManaged({ group: 'general', path: 'general.fontSize' })).toBe(false);
     expect(SETTINGS_POLICY_GROUPS).not.toContain('image');
     expect(SETTINGS_POLICY_GROUPS).toContain('general');

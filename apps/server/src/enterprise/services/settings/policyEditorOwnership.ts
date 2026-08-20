@@ -11,7 +11,7 @@
 
 import type { SettingsDraftPolicyMap } from '@/database/models/platform';
 
-import { settingsRegistry } from './registry';
+import { DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS, settingsRegistry } from './registry';
 
 /** Groups wholly owned by /admin/ai/service-model. */
 export const SERVICE_MODEL_MANAGED_GROUPS = new Set(['image', 'systemAgent']);
@@ -21,6 +21,9 @@ export const SERVICE_MODEL_MANAGED_PATHS = new Set([
   'defaultAgent.config.model',
   'defaultAgent.config.provider',
   'tts.openAI.ttsModel',
+  // Path-by-path: do not prefix-own `defaultAgent.config.chatConfig.*` or
+  // enableStreaming / historyCount would leave the policy editor.
+  ...DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS,
 ]);
 
 /**

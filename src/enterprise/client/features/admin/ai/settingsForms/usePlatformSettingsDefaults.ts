@@ -1,5 +1,7 @@
 'use client';
 
+import type { EffortLevel } from '@lobechat/model-runtime';
+import type { LobeAgentChatConfig } from '@lobechat/types';
 import { toast } from '@lobehub/ui/base-ui';
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -16,6 +18,7 @@ import {
   buildMemoryFromPolicies,
   buildSystemAgentFromPolicies,
   buildTtsFromPolicies,
+  defaultAgentEffortPatch,
   isUnpublishedSettingsDraftError,
   systemAgentPatch,
 } from './platformDefaults';
@@ -95,6 +98,13 @@ export const usePlatformSettingsDefaults = () => {
     [applyPatch],
   );
 
+  const updateDefaultAgentEffort = useCallback(
+    async (value: { configKey: keyof LobeAgentChatConfig; level: EffortLevel }) => {
+      await applyPatch(defaultAgentEffortPatch(value.configKey, value.level));
+    },
+    [applyPatch],
+  );
+
   const updateSystemAgent = useCallback(
     async (
       key: Parameters<typeof systemAgentPatch>[0],
@@ -151,6 +161,7 @@ export const usePlatformSettingsDefaults = () => {
     mutate,
     systemAgent,
     tts,
+    updateDefaultAgentEffort,
     updateDefaultAgentModel,
     updateImage,
     updateMemory,

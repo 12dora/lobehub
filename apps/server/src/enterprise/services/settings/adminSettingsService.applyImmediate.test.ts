@@ -18,7 +18,7 @@ import {
   EffectiveSettingsService,
   resetEffectiveSettingsCacheForTest,
 } from './effectiveSettingsService';
-import { settingsRegistry } from './registry';
+import { DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS, settingsRegistry } from './registry';
 
 vi.mock('../../featureFlags', async (importOriginal) => {
   const actual = (await importOriginal()) as {
@@ -262,6 +262,7 @@ describe('AdminSettingsService.applyImmediate', () => {
       'systemAgent.userMemoryEmbedding.model',
       'systemAgent.userMemoryEmbedding.provider',
       'systemAgent.userMemoryEmbedding.contextLimit',
+      ...DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS,
     ];
     for (const path of required) {
       expect(settingsRegistry.has(path), path).toBe(true);
@@ -270,6 +271,9 @@ describe('AdminSettingsService.applyImmediate', () => {
       ).toBeNull();
     }
 
+    expect(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).toHaveLength(23);
+    expect(settingsRegistry.has('defaultAgent.config.chatConfig.thinking')).toBe(true);
+    expect(settingsRegistry.has('defaultAgent.config.chatConfig.enableStreaming')).toBe(true);
     expect(settingsRegistry.has('systemAgent.userMemoryEmbedding.reasoningEffort')).toBe(false);
     expect(settingsRegistry.has('systemAgent.thread.reasoningEffort')).toBe(false);
     expect(settingsRegistry.validateValue('systemAgent.topic.reasoningEffort', 'high').ok).toBe(
@@ -279,6 +283,28 @@ describe('AdminSettingsService.applyImmediate', () => {
     expect(settingsRegistry.validateValue('systemAgent.topic.reasoningEffort', 'bogus').ok).toBe(
       false,
     );
+    expect(
+      settingsRegistry.validateValue('defaultAgent.config.chatConfig.gpt5_6ReasoningEffort', 'high')
+        .ok,
+    ).toBe(true);
+    expect(
+      settingsRegistry.validateValue(
+        'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort',
+        'bogus',
+      ).ok,
+    ).toBe(false);
+    expect(
+      settingsRegistry.validateValue(
+        'defaultAgent.config.chatConfig.gpt5_2ProReasoningEffort',
+        'low',
+      ).ok,
+    ).toBe(false);
+    expect(
+      settingsRegistry.validateValue(
+        'defaultAgent.config.chatConfig.gpt5_2ProReasoningEffort',
+        'medium',
+      ).ok,
+    ).toBe(true);
   });
 
   it('publishes systemAgent reasoningEffort via applyImmediate', async () => {
@@ -304,6 +330,49 @@ describe('AdminSettingsService.applyImmediate', () => {
     const effective = new EffectiveSettingsService(serverDB);
     const userState = await effective.getEffectiveSettings({ userId: 'user-1' });
     expect(userState.effectiveValues['systemAgent.topic.reasoningEffort']).toBe('high');
+  });
+
+  it('publishes defaultAgent.config.chatConfig.gpt5_6ReasoningEffort via applyImmediate', async () => {
+    const result = await service.applyImmediate({
+      actorUserId: 'admin-1',
+      patch: { 'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort': 'high' },
+      reason: 'set default assistant thinking effort',
+    });
+
+    expect(result.paths).toEqual(['defaultAgent.config.chatConfig.gpt5_6ReasoningEffort']);
+
+    const policies = await serverDB.select().from(platformSettingPolicies);
+    expect(policies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mode: 'default',
+          path: 'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort',
+          value: 'high',
+        }),
+      ]),
+    );
+
+    const effective = new EffectiveSettingsService(serverDB);
+    const userState = await effective.getEffectiveSettings({ userId: 'user-1' });
+    expect(userState.effectiveValues['defaultAgent.config.chatConfig.gpt5_6ReasoningEffort']).toBe(
+      'high',
+    );
+  });
+
+  it('rejects invalid defaultAgent chatConfig effort via applyImmediate', async () => {
+    await expect(
+      service.applyImmediate({
+        actorUserId: 'admin-1',
+        patch: { 'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort': 'bogus' },
+      }),
+    ).rejects.toBeInstanceOf(SettingsDraftValidationError);
+
+    await expect(
+      service.applyImmediate({
+        actorUserId: 'admin-1',
+        patch: { 'defaultAgent.config.chatConfig.gpt5_2ProReasoningEffort': 'low' },
+      }),
+    ).rejects.toBeInstanceOf(SettingsDraftValidationError);
   });
 
   it('rejects invalid systemAgent reasoningEffort via applyImmediate', async () => {

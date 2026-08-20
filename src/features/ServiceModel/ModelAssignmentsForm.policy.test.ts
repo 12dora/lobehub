@@ -1,10 +1,14 @@
+import { EFFORT_CONTROL_KEYS } from '@lobechat/model-runtime';
 import { describe, expect, it } from 'vitest';
 
 import type { PlatformSettingMetaState } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { isPlatformSettingMetaWritable } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import type { SystemAgentItem } from '@/types/user/settings';
 
-import { SYSTEM_AGENT_POLICY_PATHS } from './ModelAssignmentsForm';
+import {
+  DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS,
+  SYSTEM_AGENT_POLICY_PATHS,
+} from './ModelAssignmentsForm';
 import {
   getSystemAgentPatchMetas,
   isSystemAgentPolicyRowHidden,
@@ -83,6 +87,14 @@ describe('Service Model managed policy coverage', () => {
 
   it('omits reasoningEffort for the embedding row, which renders no effort picker', () => {
     expect(SYSTEM_AGENT_POLICY_PATHS.userMemoryEmbedding).not.toContain('reasoningEffort');
+  });
+
+  it('covers every EffortControlKey as a default-assistant chatConfig path literal', () => {
+    expect(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).toHaveLength(23);
+    expect(new Set(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).size).toBe(23);
+    expect([...DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS]).toEqual(
+      EFFORT_CONTROL_KEYS.map((key) => `defaultAgent.config.chatConfig.${key}`),
+    );
   });
 
   it.each([

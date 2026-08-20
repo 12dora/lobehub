@@ -2,6 +2,8 @@
  * Pure controller helpers for admin settings policy UI (testable without React).
  */
 
+import { EFFORT_CONTROL_KEYS } from '@lobechat/model-runtime';
+
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 
@@ -17,6 +19,9 @@ export const SERVICE_MODEL_MANAGED_PATHS = new Set([
   'defaultAgent.config.model',
   'defaultAgent.config.provider',
   'tts.openAI.ttsModel',
+  // Path-by-path: do not prefix-own `defaultAgent.config.chatConfig.*` or
+  // enableStreaming / historyCount would leave the policy editor.
+  ...EFFORT_CONTROL_KEYS.map((key) => `defaultAgent.config.chatConfig.${key}`),
 ]);
 
 export const isServiceModelManaged = (entry: { group: string; path: string }): boolean =>

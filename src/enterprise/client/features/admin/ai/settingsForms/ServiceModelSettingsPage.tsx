@@ -56,6 +56,7 @@ const ServiceModelSettingsBody = memo(() => {
     mutate,
     systemAgent,
     tts,
+    updateDefaultAgentEffort,
     updateDefaultAgentModel,
     updateImage,
     updateSystemAgent,
@@ -88,6 +89,7 @@ const ServiceModelSettingsBody = memo(() => {
         systemAgentSettings={systemAgent}
         onRetryInit={() => void mutate()}
         onUpdateDefaultAgent={updateDefaultAgentModel}
+        onUpdateDefaultAgentEffort={updateDefaultAgentEffort}
         onUpdateSystemAgent={updateSystemAgent}
       />
       {enableSTT && (

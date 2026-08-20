@@ -9,7 +9,8 @@ import {
   DEFAULT_SYSTEM_AGENT_CONFIG,
   DEFAULT_TTS_CONFIG,
 } from '@lobechat/const';
-import type { UserImageConfig, UserMemorySettings } from '@lobechat/types';
+import { EFFORT_CONTROL_KEYS } from '@lobechat/model-runtime';
+import type { LobeAgentChatConfig, UserImageConfig, UserMemorySettings } from '@lobechat/types';
 
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 import type { LobeAgentSettings } from '@/types/session';
@@ -28,13 +29,37 @@ const policyValue = <T>(policies: PolicyMap, path: string, fallback: T): T => {
 
 const SYSTEM_AGENT_KEYS = Object.keys(DEFAULT_SYSTEM_AGENT_CONFIG) as UserServiceModelConfigKey[];
 
-export const buildDefaultAgentFromPolicies = (policies: PolicyMap): LobeAgentSettings => ({
-  ...DEFAULT_AGENT,
-  config: {
-    ...DEFAULT_AGENT.config,
-    model: policyValue(policies, 'defaultAgent.config.model', DEFAULT_AGENT.config.model),
-    provider: policyValue(policies, 'defaultAgent.config.provider', DEFAULT_AGENT.config.provider),
-  },
+export const buildDefaultAgentFromPolicies = (policies: PolicyMap): LobeAgentSettings => {
+  const chatConfig: LobeAgentChatConfig = { ...DEFAULT_AGENT.config.chatConfig };
+
+  for (const key of EFFORT_CONTROL_KEYS) {
+    const path = `defaultAgent.config.chatConfig.${key}`;
+    if (!Object.prototype.hasOwnProperty.call(policies, path)) continue;
+    const value = policies[path]?.value;
+    if (typeof value === 'string') Object.assign(chatConfig, { [key]: value });
+  }
+
+  return {
+    ...DEFAULT_AGENT,
+    config: {
+      ...DEFAULT_AGENT.config,
+      chatConfig,
+      model: policyValue(policies, 'defaultAgent.config.model', DEFAULT_AGENT.config.model),
+      provider: policyValue(
+        policies,
+        'defaultAgent.config.provider',
+        DEFAULT_AGENT.config.provider,
+      ),
+    },
+  };
+};
+
+/** Always a concrete level — default-assistant chatConfig effort leaves are non-null. */
+export const defaultAgentEffortPatch = (
+  configKey: keyof LobeAgentChatConfig,
+  level: string,
+): Record<string, unknown> => ({
+  [`defaultAgent.config.chatConfig.${String(configKey)}`]: level,
 });
 
 export const buildSystemAgentFromPolicies = (policies: PolicyMap): UserServiceModelConfig => {

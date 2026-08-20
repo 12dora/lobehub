@@ -15,6 +15,8 @@ import {
   DEFAULT_SYSTEM_AGENT_CONFIG,
   DEFAULT_TTS_CONFIG,
 } from '@lobechat/const';
+import type { EffortLevel } from '@lobechat/model-runtime';
+import { EFFORT_CONTROL_KEYS, EFFORT_CONTROL_REGISTRY } from '@lobechat/model-runtime';
 import type { SystemAgentReasoningEffort } from '@lobechat/types';
 import { z } from 'zod';
 
@@ -25,7 +27,7 @@ import type {
 } from '@/types/platform/settings';
 
 /** Bump when registered paths / schemas change in a breaking way for cache keys. */
-export const SETTINGS_REGISTRY_VERSION = 3;
+export const SETTINGS_REGISTRY_VERSION = 4;
 
 /** Appearance / preference leaves used only in user UI clients (B6-R2). */
 const UI_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile'];
@@ -83,6 +85,27 @@ const SYSTEM_AGENT_REASONING_EFFORT_OPTIONS = SYSTEM_AGENT_REASONING_EFFORT_LEVE
   labelKey: `settingsPolicy.options.systemAgent.reasoningEffort.${value}`,
   value,
 }));
+
+/** Per-key enum — not the full EffortLevel union, not nullable. */
+const effortLevelSchema = (levels: readonly EffortLevel[]) => {
+  const [first, ...rest] = levels;
+  if (!first) throw new Error('Effort control levels must be non-empty');
+  return z.enum([first, ...rest]);
+};
+
+const effortSelectOptions = (levels: readonly EffortLevel[]) =>
+  levels.map((value) => ({
+    labelKey: `settingsPolicy.options.systemAgent.reasoningEffort.${value}`,
+    value,
+  }));
+
+/**
+ * One primitive leaf per EffortControlKey. Path strings stay discoverable for tests
+ * even though the registry entries themselves are generated from the model-runtime table.
+ */
+export const DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS = EFFORT_CONTROL_KEYS.map(
+  (key) => `defaultAgent.config.chatConfig.${key}`,
+);
 
 type Def = SettingDefinition;
 
@@ -551,6 +574,32 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     sensitivity: 'public',
     step: 0.1,
     titleKey: 'settingsPolicy.paths.defaultAgent.config.params.temperature.title',
+  }),
+
+  // One select leaf per discrete thinking-effort chatConfig key. Shared title/desc;
+  // per-key schema is `z.enum(definition.levels)` so a gpt-5.2-pro leaf rejects `low`.
+  // Do not prefix-own `defaultAgent.config.chatConfig.*` — streaming/historyCount stay
+  // on the settings-policy editor.
+  ...EFFORT_CONTROL_KEYS.map((key) => {
+    const definition = EFFORT_CONTROL_REGISTRY[key];
+    return def({
+      applicableClients: RUNTIME_CLIENTS,
+      builtInDefault: definition.defaultLevel,
+      control: 'select',
+      descriptionKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.effort.desc',
+      group: 'defaultAgent',
+      options: effortSelectOptions(definition.levels),
+      path: `defaultAgent.config.chatConfig.${definition.configKey}`,
+      userControlSurface: {
+        kind: 'surface',
+        surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
+      },
+      platformPolicyEligible: true,
+      schema: effortLevelSchema(definition.levels),
+      schemaVersion: 1,
+      sensitivity: 'public',
+      titleKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.effort.title',
+    });
   }),
 
   // ── systemAgent (model/provider/enabled/contextLimit/reasoningEffort — no secrets) ──

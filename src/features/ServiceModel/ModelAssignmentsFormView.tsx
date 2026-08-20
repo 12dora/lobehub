@@ -142,8 +142,9 @@ export interface ModelAssignmentsFormViewProps {
   onUpdateDefaultAgent: (value: { model: string; provider: string }) => Promise<void> | void;
   /**
    * Default-assistant thinking effort. Stored on the agent's own `chatConfig` under the
-   * model's registry `configKey`, so there is no platform leaf for it — admin platform
-   * defaults simply omit this prop and the picker is not rendered there.
+   * model's registry `configKey`. User settings write via `updateDefaultAgent`; admin
+   * platform defaults write via `applyImmediate` on `defaultAgent.config.chatConfig.<configKey>`.
+   * Omit this prop to hide the picker (tests / surfaces that cannot persist effort).
    */
   onUpdateDefaultAgentEffort?: (value: {
     configKey: keyof LobeAgentChatConfig;

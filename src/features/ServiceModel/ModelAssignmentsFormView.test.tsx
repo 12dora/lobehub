@@ -202,14 +202,15 @@ const systemAgentSettings = Object.fromEntries(
 
 const renderView = (
   systemAgentMetas: Partial<Record<UserServiceModelConfigKey, SystemAgentPolicyMetas>>,
+  extra: Partial<ModelAssignmentsFormViewProps> = {},
 ) => {
-  const onUpdateSystemAgent = vi.fn();
+  const onUpdateSystemAgent = extra.onUpdateSystemAgent ?? vi.fn();
+  const onUpdateDefaultAgentEffort = extra.onUpdateDefaultAgentEffort;
   const props: ModelAssignmentsFormViewProps = {
     canManage: true,
     defaultAgent: { config: { model: 'default', provider: 'provider' } } as never,
     isInit: true,
     onUpdateDefaultAgent: vi.fn(),
-    onUpdateSystemAgent,
     saveState: {
       lastSavedAt: null,
       retry: vi.fn(),
@@ -218,9 +219,12 @@ const renderView = (
     } as never,
     systemAgentMetas,
     systemAgentSettings,
+    ...extra,
+    onUpdateDefaultAgentEffort,
+    onUpdateSystemAgent,
   };
   render(<ModelAssignmentsFormView {...props} />);
-  return { onUpdateSystemAgent };
+  return { onUpdateDefaultAgentEffort, onUpdateSystemAgent };
 };
 
 describe('ModelAssignmentsFormView managed leaves', () => {
@@ -300,6 +304,19 @@ describe('ModelAssignmentsFormView managed leaves', () => {
     expect(
       within(screen.getByTestId('form-item-defaultAgent.title')).queryByTestId('effort-select'),
     ).toBeNull();
+  });
+
+  it('writes default-assistant effort through the dedicated writer', () => {
+    const onUpdateDefaultAgentEffort = vi.fn();
+    renderView({}, { onUpdateDefaultAgentEffort });
+
+    const row = screen.getByTestId('form-item-defaultAgent.title');
+    fireEvent.click(within(row).getByTestId('effort-select'));
+
+    expect(onUpdateDefaultAgentEffort).toHaveBeenCalledWith({
+      configKey: 'reasoningEffort',
+      level: 'high',
+    });
   });
 
   it('locks only contextLimit while leaving the memory model/provider selector editable', () => {

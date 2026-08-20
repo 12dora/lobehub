@@ -1,10 +1,12 @@
-import { DEFAULT_SYSTEM_AGENT_CONFIG } from '@lobechat/const';
+import { DEFAULT_AGENT, DEFAULT_SYSTEM_AGENT_CONFIG } from '@lobechat/const';
 import { describe, expect, it } from 'vitest';
 
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 
 import {
+  buildDefaultAgentFromPolicies,
   buildSystemAgentFromPolicies,
+  defaultAgentEffortPatch,
   isUnpublishedSettingsDraftError,
   systemAgentPatch,
 } from './platformDefaults';
@@ -15,6 +17,61 @@ const policies = (entries: Record<string, unknown>): PolicyMap =>
   Object.fromEntries(
     Object.entries(entries).map(([path, value]) => [path, { value }]),
   ) as PolicyMap;
+
+describe('defaultAgentEffortPatch', () => {
+  it('encodes a concrete chatConfig effort level onto the matching registry path', () => {
+    expect(defaultAgentEffortPatch('gpt5_6ReasoningEffort', 'high')).toEqual({
+      'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort': 'high',
+    });
+  });
+
+  it('never emits null — chatConfig effort leaves are non-null', () => {
+    expect(defaultAgentEffortPatch('thinking', 'auto')).toEqual({
+      'defaultAgent.config.chatConfig.thinking': 'auto',
+    });
+  });
+});
+
+describe('buildDefaultAgentFromPolicies — effort read-back', () => {
+  it('copies published effort leaves onto defaultAgent.config.chatConfig', () => {
+    const result = buildDefaultAgentFromPolicies(
+      policies({
+        'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort': 'high',
+        'defaultAgent.config.model': 'gpt-5.6',
+        'defaultAgent.config.provider': 'openai',
+      }),
+    );
+
+    expect(result.config.model).toBe('gpt-5.6');
+    expect(result.config.provider).toBe('openai');
+    expect(result.config.chatConfig?.gpt5_6ReasoningEffort).toBe('high');
+  });
+
+  it('leaves effort keys unset when no policy exists for them', () => {
+    const result = buildDefaultAgentFromPolicies(policies({}));
+
+    expect(result.config.model).toBe(DEFAULT_AGENT.config.model);
+    expect(result.config.chatConfig?.gpt5_6ReasoningEffort).toBeUndefined();
+    expect(result.config.chatConfig?.enableStreaming).toBe(
+      DEFAULT_AGENT.config.chatConfig?.enableStreaming,
+    );
+  });
+
+  it('round-trips a patch back onto chatConfig without stealing streaming/historyCount', () => {
+    const patch = defaultAgentEffortPatch('grok4_5ReasoningEffort', 'medium');
+    const result = buildDefaultAgentFromPolicies(
+      policies({
+        ...patch,
+        'defaultAgent.config.chatConfig.enableStreaming': false,
+      }),
+    );
+
+    expect(result.config.chatConfig?.grok4_5ReasoningEffort).toBe('medium');
+    expect(result.config.chatConfig?.enableStreaming).toBe(
+      DEFAULT_AGENT.config.chatConfig?.enableStreaming,
+    );
+  });
+});
 
 describe('systemAgentPatch', () => {
   it('maps explicit contextLimit clear (undefined) to null', () => {

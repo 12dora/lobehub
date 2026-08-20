@@ -14,6 +14,12 @@ describe('policyEditorOwnership', () => {
     expect(isServiceModelManagedPath('tts.openAI.ttsModel')).toBe(true);
     expect(isServiceModelManagedPath('systemAgent.topic.model')).toBe(true);
     expect(isServiceModelManagedPath('image.defaultModel')).toBe(true);
+    expect(isServiceModelManagedPath('defaultAgent.config.chatConfig.gpt5_6ReasoningEffort')).toBe(
+      true,
+    );
+    expect(isServiceModelManagedPath('defaultAgent.config.chatConfig.thinking')).toBe(true);
+    expect(isServiceModelManagedPath('defaultAgent.config.chatConfig.enableStreaming')).toBe(false);
+    expect(isServiceModelManagedPath('defaultAgent.config.chatConfig.historyCount')).toBe(false);
     expect(isServiceModelManagedPath('general.fontSize')).toBe(false);
     expect(isServiceModelManagedPath('memory.enabled')).toBe(false);
   });
