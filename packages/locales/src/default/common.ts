@@ -31,8 +31,6 @@ export default {
   'back': 'Back',
   'batchDelete': 'Batch Delete',
   'blog': 'Product Blog',
-  'messengerBanner.dismiss': 'Dismiss',
-  'messengerBanner.title': 'Talk to {{name}} on your favorite messaging apps',
   'branching': 'Create Subtopic',
   'branchingDisable':
     'The "Sub-topic" feature is unavailable in the current mode. To use this feature, please switch to Postgres/Pglite DB mode or use {{platformName}} Cloud.',

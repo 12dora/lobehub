@@ -357,8 +357,6 @@
   "makePrivate.confirm.title": "Make this private?",
   "makePrivate.error": "Failed to make private",
   "makePrivate.success": "Made private",
-  "messengerBanner.dismiss": "Dismiss",
-  "messengerBanner.title": "Talk to {{name}} on your favorite messaging apps",
   "moderation.category.hate_harassment": "Hate & harassment",
   "moderation.category.illicit": "Illegal activity",
   "moderation.category.jailbreak": "Jailbreak & prompt injection",

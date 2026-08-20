@@ -356,8 +356,6 @@
   "makePrivate.confirm.title": "Сделать это приватным?",
   "makePrivate.error": "Не удалось сделать приватным",
   "makePrivate.success": "Сделано приватным",
-  "messengerBanner.dismiss": "Закрыть",
-  "messengerBanner.title": "Общайтесь с Lobe AI в ваших любимых мессенджерах",
   "more": "Ещё",
   "navPanel.agent": "Агент",
   "navPanel.bottomDivider": "Элементы ниже привязываются к нижней части",

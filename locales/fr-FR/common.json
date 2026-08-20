@@ -356,8 +356,6 @@
   "makePrivate.confirm.title": "Rendre ceci privé ?",
   "makePrivate.error": "Échec de la mise en privé",
   "makePrivate.success": "Rendu privé",
-  "messengerBanner.dismiss": "Fermer",
-  "messengerBanner.title": "Discutez avec Lobe AI sur vos applications de messagerie préférées",
   "more": "Plus",
   "navPanel.agent": "Agent",
   "navPanel.bottomDivider": "Les éléments ci-dessous s'ancrent en bas",

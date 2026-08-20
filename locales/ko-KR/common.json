@@ -356,8 +356,6 @@
   "makePrivate.confirm.title": "비공개로 설정하시겠습니까?",
   "makePrivate.error": "비공개로 설정하지 못했습니다",
   "makePrivate.success": "비공개로 설정되었습니다",
-  "messengerBanner.dismiss": "닫기",
-  "messengerBanner.title": "선호하는 메시징 앱에서 Lobe AI와 대화하세요",
   "more": "더보기",
   "navPanel.agent": "도우미",
   "navPanel.bottomDivider": "아래 항목은 하단에 고정됩니다",

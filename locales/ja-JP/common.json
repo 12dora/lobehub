@@ -356,8 +356,6 @@
   "makePrivate.confirm.title": "これを非公開にしますか？",
   "makePrivate.error": "非公開にすることに失敗しました",
   "makePrivate.success": "非公開にしました",
-  "messengerBanner.dismiss": "閉じる",
-  "messengerBanner.title": "お好きなメッセージングアプリでLobe AIと話しましょう",
   "more": "もっと見る",
   "navPanel.agent": "アシスタント",
   "navPanel.bottomDivider": "以下の項目は下部に固定されます",

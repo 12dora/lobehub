@@ -357,8 +357,6 @@
   "makePrivate.confirm.title": "确定改为私有？",
   "makePrivate.error": "改为私有失败",
   "makePrivate.success": "已改为私有",
-  "messengerBanner.dismiss": "关闭",
-  "messengerBanner.title": "在你喜爱的聊天应用中，与 {{name}} 畅聊",
   "moderation.category.hate_harassment": "仇恨与骚扰",
   "moderation.category.illicit": "违法犯罪",
   "moderation.category.jailbreak": "越狱与提示注入",

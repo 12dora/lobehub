@@ -736,6 +736,13 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
   },
   {
     file: 'apps/server/src/modules/ModelRuntime/index.ts',
+    importSpecifier: '@/server/enterprise/services/browserSession/types',
+    owner: 'C4',
+    reason:
+      'Runtime-construction seam classifies browser-session reset errors (isBrowserSessionResettingError) to surface an explicit retryable failure; type-level helper only',
+  },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.ts',
     importSpecifier: '@/server/enterprise/services/browserProfile',
     owner: 'D1',
     reason:
@@ -880,6 +887,13 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
   {
     file: 'apps/server/src/modules/ModelRuntime/index.test.ts',
     importSpecifier: '@/server/enterprise/services/chatgptWeb/browserSession',
+    owner: 'M13',
+    reason:
+      'Resets the ChatGPT Web Browser Session Context registry after runtime construction tests that acquire a context',
+  },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.test.ts',
+    importSpecifier: '@/server/enterprise/services/browserSession/contextRegistry',
     owner: 'M13',
     reason:
       'Resets the ChatGPT Web Browser Session Context registry after runtime construction tests that acquire a context',
@@ -1332,12 +1346,6 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
   },
   {
     file: 'src/routes/(main)/home/_layout/Footer/index.test.tsx',
-    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
-    owner: 'M12',
-    reason: 'Mocks/asserts runtime branding provider at consumer surface',
-  },
-  {
-    file: 'src/routes/(main)/home/features/InputArea/MessengerBanner.test.tsx',
     importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
     owner: 'M12',
     reason: 'Mocks/asserts runtime branding provider at consumer surface',
