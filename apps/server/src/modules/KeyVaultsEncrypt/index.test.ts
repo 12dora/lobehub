@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { KeyVaultsGateKeeper } from './index';
+import { InvalidEncryptedDataFormatError, KeyVaultsGateKeeper } from './index';
 
 describe('KeyVaultsGateKeeper', () => {
   let gateKeeper: KeyVaultsGateKeeper;
@@ -57,8 +57,8 @@ If you don't have it, please run \`openssl rand -base64 32\` to create one.
   });
 
   it('should throw an error for invalid encrypted data format', async () => {
-    await expect(gateKeeper.decrypt('invalid-format')).rejects.toThrow(
-      'Invalid encrypted data format',
+    await expect(gateKeeper.decrypt('invalid-format')).rejects.toBeInstanceOf(
+      InvalidEncryptedDataFormatError,
     );
   });
 
@@ -114,17 +114,38 @@ If you don't have it, please run \`openssl rand -base64 32\` to create one.
         (error: unknown) =>
           error instanceof SyntaxError &&
           error.message === 'Invalid encrypted data format' &&
-          error.cause instanceof Error &&
-          (error.cause as Error).message === 'Invalid encrypted data format',
+          error.cause instanceof InvalidEncryptedDataFormatError,
       );
     });
 
     it('throws SyntaxError with cause for garbage ciphertext', async () => {
       await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict('not-a-vault')).rejects.toSatisfy(
         (error: unknown) =>
-          error instanceof SyntaxError &&
-          error.cause instanceof Error &&
-          (error.cause as Error).message === 'Invalid encrypted data format',
+          error instanceof SyntaxError && error.cause instanceof InvalidEncryptedDataFormatError,
+      );
+    });
+
+    it('propagates a missing KEY_VAULTS_SECRET as a deployment error, not SyntaxError', async () => {
+      process.env.KEY_VAULTS_SECRET = '';
+
+      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict('{}')).rejects.toSatisfy(
+        (error: unknown) =>
+          error instanceof Error &&
+          !(error instanceof SyntaxError) &&
+          error.message.includes('KEY_VAULTS_SECRET') &&
+          error.message.includes('is not set'),
+      );
+    });
+
+    it('propagates an unsupported-length KEY_VAULTS_SECRET as a deployment error, not SyntaxError', async () => {
+      process.env.KEY_VAULTS_SECRET = Buffer.from('short').toString('base64');
+
+      await expect(KeyVaultsGateKeeper.getUserKeyVaultsStrict('{}')).rejects.toSatisfy(
+        (error: unknown) =>
+          error instanceof Error &&
+          !(error instanceof SyntaxError) &&
+          error.message.includes('KEY_VAULTS_SECRET') &&
+          error.message.includes('must be 16, 24, or 32 bytes'),
       );
     });
 

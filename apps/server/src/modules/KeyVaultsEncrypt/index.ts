@@ -6,6 +6,16 @@ interface DecryptionResult {
   wasAuthentic: boolean;
 }
 
+/** Ciphertext that is not `iv:authTag:payload`. Distinct from KEY_VAULTS_SECRET / WebCrypto init failures. */
+export class InvalidEncryptedDataFormatError extends Error {
+  readonly code = 'INVALID_ENCRYPTED_DATA_FORMAT' as const;
+
+  constructor() {
+    super('Invalid encrypted data format');
+    this.name = 'InvalidEncryptedDataFormatError';
+  }
+}
+
 export class KeyVaultsGateKeeper {
   private aesKey: CryptoKey;
 
@@ -68,7 +78,7 @@ If you don't have it, please run \`openssl rand -base64 32\` to create one.
   decrypt = async (encryptedData: string): Promise<DecryptionResult> => {
     const parts = encryptedData.split(':');
     if (parts.length !== 3) {
-      throw new Error('Invalid encrypted data format');
+      throw new InvalidEncryptedDataFormatError();
     }
 
     const iv = Buffer.from(parts[0], 'hex');
@@ -134,8 +144,11 @@ If you don't have it, please run \`openssl rand -base64 32\` to create one.
   ): Promise<UserKeyVaults> => {
     if (!encryptedKeyVaults) return {};
 
+    // Deployment failures (missing/invalid KEY_VAULTS_SECRET, WebCrypto init) must
+    // propagate as themselves — wrapping them as SyntaxError would make OpenAPI
+    // report corrupt user data for an operator misconfiguration.
+    const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
     try {
-      const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
       const { wasAuthentic, plaintext } = await gateKeeper.decrypt(encryptedKeyVaults);
 
       if (!wasAuthentic) {
@@ -146,10 +159,10 @@ If you don't have it, please run \`openssl rand -base64 32\` to create one.
       return JSON.parse(plaintext) as UserKeyVaults;
     } catch (error) {
       if (error instanceof SyntaxError) throw error;
-      // Malformed ciphertext (raw '{}', garbage, missing iv/tag) throws
-      // Error('Invalid encrypted data format') from decrypt — wrap so the
-      // OpenAPI path still fails as SyntaxError and never degrades to {}.
-      throw new SyntaxError('Invalid encrypted data format', { cause: error });
+      if (error instanceof InvalidEncryptedDataFormatError) {
+        throw new SyntaxError('Invalid encrypted data format', { cause: error });
+      }
+      throw error;
     }
   };
 }
