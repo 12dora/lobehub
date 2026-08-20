@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   data: undefined as unknown,
   /** Server-side filtering stand-in: the rows the list returns for the current query. */
   dataFor: undefined as ((input: { query?: string }) => unknown) | undefined,
+  createTemplate: vi.fn(),
   deleteTemplate: vi.fn(),
   importBuiltins: vi.fn(),
   mutate: vi.fn(),
@@ -40,6 +41,7 @@ const mocks = vi.hoisted(() => ({
   reorder: vi.fn(),
   reorderProps: undefined as { ids: string[]; onReorder: (ids: string[]) => void } | undefined,
   setEnabled: vi.fn(),
+  updateTemplate: vi.fn(),
   tableColumns: undefined as { key?: string }[] | undefined,
   tableOnChange: undefined as ((meta: { filters: Record<string, unknown> }) => void) | undefined,
   tablePagination: undefined as { current?: number; pageSize?: number; total?: number } | undefined,
@@ -74,10 +76,12 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 
 vi.mock('@/enterprise/client/services/adminAgentTemplates', () => ({
   adminAgentTemplatesService: {
+    create: (...args: unknown[]) => mocks.createTemplate(...args),
     delete: (...args: unknown[]) => mocks.deleteTemplate(...args),
     importBuiltins: (...args: unknown[]) => mocks.importBuiltins(...args),
     reorder: (...args: unknown[]) => mocks.reorder(...args),
     setEnabled: (...args: unknown[]) => mocks.setEnabled(...args),
+    update: (...args: unknown[]) => mocks.updateTemplate(...args),
   },
 }));
 
@@ -652,5 +656,40 @@ describe('AgentTemplateListPage', () => {
 
     renderPage({ embedded: true });
     expect(screen.getByRole('main').dataset.hideTitle).toBe('true');
+  });
+  it('saves an edit against the row the editor is bound to, not a captured revision', async () => {
+    // Regression: after a conflict reload the editor is reopened against the refreshed row, so
+    // saving must use *that* revision — replaying the original one conflicted forever.
+    mocks.updateTemplate.mockResolvedValue({ ...item, revision: 10 });
+    renderPage();
+
+    fireEvent.click(screen.getByText('agentTemplateCatalog.actions.edit'));
+    const props = mocks.openEditor.mock.calls[0]![0];
+    expect(props.item).toEqual(item);
+
+    await props.onSubmit({ title: 'Renamed' }, { ...item, revision: 9 });
+
+    expect(mocks.updateTemplate).toHaveBeenCalledWith({
+      expectedRevision: 9,
+      id: 'tpl-1',
+      title: 'Renamed',
+    });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('agentTemplateCatalog.toast.updated');
+    expect(mocks.refreshLists).toHaveBeenCalled();
+  });
+
+  it('creates instead of updating when the editor is bound to no row', async () => {
+    mocks.createTemplate.mockResolvedValue(item);
+    renderPage();
+
+    fireEvent.click(screen.getByText('agentTemplateCatalog.actions.create'));
+    const props = mocks.openEditor.mock.calls[0]![0];
+    expect(props.item).toBeUndefined();
+
+    await props.onSubmit({ title: 'Brand new' }, undefined);
+
+    expect(mocks.createTemplate).toHaveBeenCalledWith({ title: 'Brand new' });
+    expect(mocks.updateTemplate).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('agentTemplateCatalog.toast.created');
   });
 });

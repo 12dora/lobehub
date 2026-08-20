@@ -155,12 +155,15 @@ export const useTaskTemplateActions = (items?: AdminTaskTemplateItem[]) => {
           const refreshed = await refreshAdminTaskTemplateLists();
           return refreshed.find((row) => row.id === stale.id);
         },
-        onSubmit: async (payload) => {
-          if (item) {
+        // `current` is the row the editor is bound to *now*. After a conflict reload the modal
+        // reopens against the refreshed row, so replaying the revision captured when the editor
+        // first opened would lose to the same conflict on every retry.
+        onSubmit: async (payload, current) => {
+          if (current) {
             await adminTaskTemplatesService.update({
               ...payload,
-              expectedRevision: item.revision,
-              id: item.id,
+              expectedRevision: current.revision,
+              id: current.id,
             });
             toast.success(t('taskTemplateCatalog.toast.updated'));
           } else {

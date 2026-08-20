@@ -26,7 +26,13 @@ export interface AgentTemplateEditorModalProps {
    * the refresh itself failed. Both are reported in place — the editor stays open either way.
    */
   onReload?: (item: AdminAgentTemplateItem) => Promise<AdminAgentTemplateItem | undefined>;
-  onSubmit: (payload: AgentTemplateEditorPayload) => Promise<void>;
+  /**
+   * @param item the row this editor is bound to right now — `undefined` for create.
+   *   A conflict reload reopens the modal against the *refreshed* row, so the caller must save
+   *   against this one and never against whatever it captured when it first opened the editor,
+   *   or the stale CAS token conflicts forever.
+   */
+  onSubmit: (payload: AgentTemplateEditorPayload, item?: AdminAgentTemplateItem) => Promise<void>;
 }
 
 const AgentTemplateEditorContent = memo<AgentTemplateEditorModalProps>(
@@ -54,7 +60,7 @@ const AgentTemplateEditorContent = memo<AgentTemplateEditorModalProps>(
       form.setSubmitting(true);
       form.setSubmitError(undefined);
       try {
-        await onSubmit(toAgentTemplatePayload(form.state));
+        await onSubmit(toAgentTemplatePayload(form.state), item);
         close();
       } catch (error) {
         const mapped = mapEnterpriseError(error);

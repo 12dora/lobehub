@@ -23,7 +23,13 @@ export interface TaskTemplateEditorModalProps {
    * the refresh itself failed. Both are reported in place — the editor stays open either way.
    */
   onReload?: (item: AdminTaskTemplateItem) => Promise<AdminTaskTemplateItem | undefined>;
-  onSubmit: (payload: TaskTemplateEditorPayload) => Promise<void>;
+  /**
+   * @param item the row this editor is bound to right now — `undefined` for create.
+   *   A conflict reload reopens the modal against the *refreshed* row, so the caller must save
+   *   against this one and never against whatever it captured when it first opened the editor,
+   *   or the stale CAS token conflicts forever.
+   */
+  onSubmit: (payload: TaskTemplateEditorPayload, item?: AdminTaskTemplateItem) => Promise<void>;
 }
 
 const TaskTemplateEditorContent = memo<TaskTemplateEditorModalProps>(
@@ -53,7 +59,7 @@ const TaskTemplateEditorContent = memo<TaskTemplateEditorModalProps>(
       form.setSubmitting(true);
       form.setSubmitError(undefined);
       try {
-        await onSubmit(toTaskTemplatePayload(form.state));
+        await onSubmit(toTaskTemplatePayload(form.state), item);
         close();
       } catch (error) {
         const mapped = mapEnterpriseError(error);

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -161,6 +161,34 @@ describe('openAgentTemplateEditorModal', () => {
     expect(onReload).toHaveBeenCalledWith(item);
   });
 
+  it('hands the reloaded row to the next save, not the one the editor first opened with', async () => {
+    // Regression: the editor used to submit against whatever the caller captured when it opened,
+    // so every retry after a conflict replayed the dead revision and conflicted again forever.
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }),
+      )
+      .mockResolvedValue(undefined);
+    const fresh = { ...item, revision: 9, title: 'Renamed by someone else' };
+    const onReload = vi.fn().mockResolvedValue(fresh);
+    await renderModal({ item, onReload, onSubmit });
+
+    fireEvent.click(screen.getByText('submit'));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(onSubmit).toHaveBeenNthCalledWith(1, expect.anything(), item);
+
+    fireEvent.click(screen.getByText('reload'));
+    await waitFor(() => expect(mocks.created).toHaveLength(2));
+
+    cleanup();
+    render(<>{mocks.created[1]!.content}</>);
+    fireEvent.click(screen.getByText('submit'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    expect(onSubmit).toHaveBeenNthCalledWith(2, expect.anything(), fresh);
+  });
+
   it('reports a taken identifier with its own message', async () => {
     const onSubmit = vi
       .fn()
@@ -183,7 +211,12 @@ describe('openAgentTemplateEditorModal', () => {
     fireEvent.click(screen.getByText('submit'));
 
     await waitFor(() => expect(mocks.close).toHaveBeenCalled());
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ title: 'Data analyst' }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Data analyst' }),
+      // The row the editor is bound to travels with the payload so the caller cannot
+      // save against a revision it captured earlier.
+      item,
+    );
   });
 
   it('offers no reload action for a create flow (there is nothing to reload)', async () => {
