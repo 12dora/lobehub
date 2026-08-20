@@ -118,9 +118,10 @@ export const AGENT_TEMPLATE_IMPORT_MAX_ROWS = 200;
 /**
  * Resolve the built-in create-agent examples for 导入内置示例.
  *
- * Rows are validated **individually** against the local write contract: a row with an empty
- * title/prompt, an oversized field, or a duplicate identifier is counted as `skipped` instead
- * of failing the whole import.
+ * The loader always yields 40 slots (`agent-01` … `agent-40`). Rows are then validated
+ * **individually** against the local write contract: an empty title/prompt (missing locale
+ * copy), an oversized field, or a duplicate identifier is counted as `skipped` instead of
+ * failing the whole import.
  */
 export const fetchBuiltInAgentTemplatesForImport = (params: {
   locale?: string;

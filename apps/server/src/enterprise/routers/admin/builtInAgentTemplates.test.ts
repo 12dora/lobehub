@@ -1,7 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { builtInAgentTemplatesForImport } from './builtInAgentTemplates';
+import { fetchBuiltInAgentTemplatesForImport } from './agentTemplatesSupport';
+import {
+  builtInAgentTemplatesForImport,
+  builtInAgentTemplatesFromCatalog,
+} from './builtInAgentTemplates';
 
 describe('builtInAgentTemplatesForImport', () => {
   it('loads 40 en-US examples from the suggestQuestions source without duplicating copy', () => {
@@ -25,5 +29,29 @@ describe('builtInAgentTemplatesForImport', () => {
     expect(zh[0]?.identifier).toBe('agent-01');
     expect(zh[0]?.title).not.toBe(en[0]?.title);
     expect(fallback[0]?.title).toBe(en[0]?.title);
+  });
+
+  it('keeps a slot for every agent.NN when copy is missing so skipped can be counted', () => {
+    const rows = builtInAgentTemplatesFromCatalog({
+      'agent.01.prompt': 'You are a writer.',
+      'agent.01.title': 'Writer',
+    });
+    expect(rows).toHaveLength(40);
+    expect(rows[0]).toMatchObject({
+      identifier: 'agent-01',
+      systemRole: 'You are a writer.',
+      title: 'Writer',
+    });
+    expect(rows.filter((row) => !row.title || !row.systemRole)).toHaveLength(39);
+  });
+});
+
+describe('fetchBuiltInAgentTemplatesForImport', () => {
+  it('imports the real 40-slot catalogs with skipped 0', () => {
+    expect(fetchBuiltInAgentTemplatesForImport({ locale: 'en-US' })).toMatchObject({
+      skipped: 0,
+    });
+    expect(fetchBuiltInAgentTemplatesForImport({ locale: 'en-US' }).rows).toHaveLength(40);
+    expect(fetchBuiltInAgentTemplatesForImport({ locale: 'zh-CN' }).rows).toHaveLength(40);
   });
 });

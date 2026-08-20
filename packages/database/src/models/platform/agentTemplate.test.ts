@@ -287,4 +287,35 @@ describe('PlatformAgentTemplateModel', () => {
     });
     expect(await model.count()).toBe(2);
   });
+
+  it('serializes first-time concurrent imports so the loser sees the winner as before', async () => {
+    const run = () =>
+      db.transaction(async (tx) => {
+        const inner = new PlatformAgentTemplateModel(tx);
+        return inner.importByIdentifier({
+          actorUserId: 'admin-a',
+          nextId: () => crypto.randomUUID(),
+          rows: [
+            {
+              description: '',
+              identifier: 'agent-01',
+              systemRole: 'You are a writer.',
+              title: 'Writer',
+            },
+          ],
+        });
+      });
+
+    const [first, second] = await Promise.all([run(), run()]);
+    expect(await model.count()).toBe(1);
+    expect(first.created + second.created).toBe(1);
+    expect(first.updated + second.updated).toBe(1);
+
+    const winner = first.created === 1 ? first : second;
+    const loser = first.updated === 1 ? first : second;
+    expect(winner.changes[0]?.inserted).toBe(true);
+    expect(winner.changes[0]?.before).toBeUndefined();
+    expect(loser.changes[0]?.inserted).toBe(false);
+    expect(loser.changes[0]?.before).toMatchObject({ identifier: 'agent-01', title: 'Writer' });
+  });
 });

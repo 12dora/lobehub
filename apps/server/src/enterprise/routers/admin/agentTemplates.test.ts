@@ -375,16 +375,22 @@ describe('admin.agentTemplates.importBuiltins', () => {
 
   it('skips invalid built-in rows per row instead of failing the whole batch', async () => {
     const caller = await adminCaller();
-    builtInSpy.mockImplementation(() => [
-      builtinRow({ identifier: 'agent-01' }),
-      builtinRow({ identifier: 'agent-02', title: '' }),
-      builtinRow({ identifier: 'agent-03', systemRole: '' }),
-      builtinRow({ identifier: 'agent-04', title: 'x'.repeat(500) }),
-    ]);
+    // The real loader always emits 40 slots (empty title/prompt stay on the row). The mock
+    // must do the same — otherwise missing locale keys would be dropped before `skipped`.
+    builtInSpy.mockImplementation(() =>
+      Array.from({ length: 40 }, (_, index) => {
+        const nn = String(index + 1).padStart(2, '0');
+        if (index === 0) return builtinRow({ identifier: `agent-${nn}` });
+        if (index === 1) return builtinRow({ identifier: `agent-${nn}`, title: '' });
+        if (index === 2) return builtinRow({ identifier: `agent-${nn}`, systemRole: '' });
+        if (index === 3) return builtinRow({ identifier: `agent-${nn}`, title: 'x'.repeat(500) });
+        return builtinRow({ identifier: `agent-${nn}`, title: '', systemRole: '' });
+      }),
+    );
 
     expect(await caller.importBuiltins({})).toEqual({
       created: 1,
-      skipped: 3,
+      skipped: 39,
       updated: 0,
     });
     const rows = await db.select().from(platformAgentTemplates);
@@ -430,6 +436,7 @@ describe('admin.agentTemplates.importBuiltins', () => {
 
   it('serializes concurrent imports of the same identifier onto one row', async () => {
     const caller = await adminCaller();
+    appendSpy.mockClear();
 
     const results = await Promise.all([caller.importBuiltins({}), caller.importBuiltins({})]);
 
@@ -437,6 +444,24 @@ describe('admin.agentTemplates.importBuiltins', () => {
     expect(rows).toHaveLength(1);
     expect(results.reduce((sum, result) => sum + result.created, 0)).toBe(1);
     expect(results.reduce((sum, result) => sum + result.updated, 0)).toBe(1);
+
+    const importAudits = appendSpy.mock.calls
+      .map(([params]) => params)
+      .filter((params) => params.action === 'admin.agentTemplates.importBuiltins');
+    expect(importAudits).toHaveLength(2);
+
+    const createAudit = importAudits.find((params) => params.afterDiff.created === 1);
+    const updateAudit = importAudits.find((params) => params.afterDiff.updated === 1);
+    expect(createAudit?.afterDiff.rows).toEqual([
+      expect.objectContaining({ identifier: 'agent-01', inserted: true }),
+    ]);
+    expect(createAudit?.beforeDiff.rows).toEqual([]);
+    expect(updateAudit?.afterDiff.rows).toEqual([
+      expect.objectContaining({ identifier: 'agent-01', inserted: false }),
+    ]);
+    expect(updateAudit?.beforeDiff.rows).toEqual([
+      expect.objectContaining({ identifier: 'agent-01', title: 'Writer' }),
+    ]);
   });
 });
 

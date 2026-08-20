@@ -16,6 +16,9 @@ import { platformAgentTemplates } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { PlatformRevisionConflictError } from './errors';
 
+/** Namespace for per-identifier import locks (`hashtext` key of `${ns}:${identifier}`). */
+const AGENT_TEMPLATE_IMPORT_LOCK_NAMESPACE = 'aihub:platform-agent-templates-import:v1';
+
 export interface PlatformAgentTemplateRecord {
   avatar: string | null;
   backgroundColor: string | null;
@@ -443,9 +446,10 @@ export class PlatformAgentTemplateModel {
    * whole batch back. `xmax = 0` is true only for a freshly inserted tuple, which is how
    * created/updated are told apart without a second read.
    *
-   * Each row also reports the state it replaced (`before`, locked `FOR UPDATE` in the same
-   * transaction so a concurrent import cannot slip between the read and the upsert) and the state
-   * it produced (`after`), which is what makes the import auditable at row granularity.
+   * `FOR UPDATE` cannot lock a row that does not exist yet, so two first-time importers of the
+   * same identifier would both observe `before === undefined` even though the loser's upsert
+   * reports `inserted: false`. A transaction-scoped advisory lock on the identifier serializes
+   * the read+upsert so the loser always sees the winner's committed row as `before`.
    */
   importByIdentifier = async (params: {
     actorUserId: string | null;
@@ -464,8 +468,12 @@ export class PlatformAgentTemplateModel {
     let updated = 0;
 
     for (const row of params.rows) {
-      // Advisory read for the audit trail; the upsert below is what actually decides the write.
-      // FOR UPDATE holds the existing row until this transaction commits.
+      // FOR UPDATE is a no-op when the identifier has no row yet. Serialize first-time
+      // importers on a transaction-scoped advisory lock so the loser of the race reads the
+      // winner's committed row as `before` instead of reporting an unaudited overwrite.
+      await this.db.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${`${AGENT_TEMPLATE_IMPORT_LOCK_NAMESPACE}:${row.identifier}`})::bigint)`,
+      );
       const [locked] = await this.db
         .select()
         .from(platformAgentTemplates)
