@@ -54,16 +54,21 @@ export const buildDefaultAgentFromPolicies = (policies: PolicyMap): LobeAgentSet
   };
 };
 
-/**
- * Concrete level → publish that leaf. `undefined` → `null` in the patch so
- * applyImmediate deletes the policy row (schema is non-null; null is not stored).
- */
+export const defaultAgentEffortPath = (configKey: keyof LobeAgentChatConfig) =>
+  `defaultAgent.config.chatConfig.${String(configKey)}`;
+
+/** Concrete level → publish that leaf. */
 export const defaultAgentEffortPatch = (
   configKey: keyof LobeAgentChatConfig,
-  level: string | undefined,
+  level: string,
 ): Record<string, unknown> => ({
-  [`defaultAgent.config.chatConfig.${String(configKey)}`]: level ?? null,
+  [defaultAgentEffortPath(configKey)]: level,
 });
+
+/** Explicit applyImmediate deletion of the effort policy row. */
+export const defaultAgentEffortRemovePaths = (
+  configKey: keyof LobeAgentChatConfig,
+): readonly string[] => [defaultAgentEffortPath(configKey)];
 
 export const buildSystemAgentFromPolicies = (policies: PolicyMap): UserServiceModelConfig => {
   const result = { ...DEFAULT_SYSTEM_AGENT_CONFIG } as UserServiceModelConfig;

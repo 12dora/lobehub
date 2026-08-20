@@ -372,8 +372,8 @@ describe('AdminSettingsService.applyImmediate', () => {
 
     await service.applyImmediate({
       actorUserId: 'admin-1',
-      patch: { [path]: null },
       reason: 'restore default assistant thinking effort',
+      removePaths: [path],
     });
 
     const policies = await serverDB.select().from(platformSettingPolicies);
@@ -385,7 +385,27 @@ describe('AdminSettingsService.applyImmediate', () => {
 
     const effective = new EffectiveSettingsService(serverDB);
     const userState = await effective.getEffectiveSettings({ userId: 'user-1' });
-    expect(userState.effectiveValues[path]).toBeUndefined();
+    expect(Object.hasOwn(userState.effectiveValues, path)).toBe(false);
+  });
+
+  it('rejects null on a non-nullable leaf instead of deleting the row', async () => {
+    await expect(
+      service.applyImmediate({
+        actorUserId: 'admin-1',
+        patch: { 'memory.enabled': null },
+      }),
+    ).rejects.toBeInstanceOf(SettingsDraftValidationError);
+
+    expect(await serverDB.select().from(platformSettingPolicies)).toEqual([]);
+  });
+
+  it('rejects removePaths for a policy-editor-owned leaf', async () => {
+    await expect(
+      service.applyImmediate({
+        actorUserId: 'admin-1',
+        removePaths: ['general.fontSize'],
+      }),
+    ).rejects.toBeInstanceOf(SettingsDraftValidationError);
   });
 
   it('rejects invalid defaultAgent chatConfig effort via applyImmediate', async () => {
@@ -400,6 +420,13 @@ describe('AdminSettingsService.applyImmediate', () => {
       service.applyImmediate({
         actorUserId: 'admin-1',
         patch: { 'defaultAgent.config.chatConfig.gpt5_2ProReasoningEffort': 'low' },
+      }),
+    ).rejects.toBeInstanceOf(SettingsDraftValidationError);
+
+    await expect(
+      service.applyImmediate({
+        actorUserId: 'admin-1',
+        patch: { 'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort': null },
       }),
     ).rejects.toBeInstanceOf(SettingsDraftValidationError);
   });

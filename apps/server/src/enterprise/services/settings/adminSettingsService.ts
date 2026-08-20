@@ -315,8 +315,9 @@ export class AdminSettingsService {
    */
   applyImmediate = async (params: {
     actorUserId: string;
-    patch: Record<string, unknown>;
+    patch?: Record<string, unknown>;
     reason?: string;
+    removePaths?: readonly string[];
   }) =>
     applySettingsPatch(
       {

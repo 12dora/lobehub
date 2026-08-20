@@ -126,7 +126,10 @@ export const adminSettingsRouter = router({
 
       const reason =
         input.reason ??
-        `applyImmediate: ${Object.keys(input.patch).sort().slice(0, 12).join(', ')}`;
+        `applyImmediate: ${[...Object.keys(input.patch ?? {}), ...(input.removePaths ?? [])]
+          .sort()
+          .slice(0, 12)
+          .join(', ')}`;
 
       await assertSettingsDangerousReauth({
         action: 'admin.settings.applyImmediate',
@@ -143,6 +146,7 @@ export const adminSettingsRouter = router({
           actorUserId: ctx.userId!,
           patch: input.patch,
           reason: input.reason,
+          removePaths: input.removePaths,
         });
       } catch (error) {
         if (error instanceof SettingsDirtyDraftError) {

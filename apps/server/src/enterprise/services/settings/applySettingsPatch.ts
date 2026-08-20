@@ -25,6 +25,7 @@ import {
 import type { AppendPlatformAuditLogParams, PlatformAuditLogItem } from '../platformAudit';
 import { collectDirtyDraftPaths } from './draftValidation';
 import { SettingsDirtyDraftError, SettingsDraftValidationError } from './errors';
+import { isServiceModelManagedPath } from './policyEditorOwnership';
 import { settingsRegistry } from './registry';
 
 /** The slice of `AdminSettingsService` this body needs. */
@@ -63,26 +64,33 @@ export interface ApplySettingsPatchDeps {
  * Visibility comes from published (fallback draft/visible). schemaVersion from registry.
  *
  * The resulting map is whole-table authoritative (`ownership: 'full'`): it always carries
- * every published path forward, so nothing outside the patch is deleted. It is applied in
- * the SAME single transaction as `save` — CAS'd on the snapshot this body read, so a
- * concurrent write makes it fail with a revision conflict and nothing is half-applied.
+ * every published path forward except `removePaths` (explicit service-model deletions).
+ * It is applied in the SAME single transaction as `save` — CAS'd on the snapshot this
+ * body read, so a concurrent write fails with a revision conflict and nothing is half-applied.
  */
 export const applySettingsPatch = async (
   deps: ApplySettingsPatchDeps,
-  params: { actorUserId: string; patch: Record<string, unknown>; reason?: string },
+  params: {
+    actorUserId: string;
+    patch?: Record<string, unknown>;
+    reason?: string;
+    removePaths?: readonly string[];
+  },
 ) => {
-  const patchPaths = Object.keys(params.patch);
-  if (patchPaths.length === 0) {
+  const patch = params.patch ?? {};
+  const patchPaths = Object.keys(patch);
+  const removePaths = [...new Set(params.removePaths ?? [])];
+  if (patchPaths.length === 0 && removePaths.length === 0) {
     throw new SettingsDraftValidationError([
       {
         code: 'MANAGED_SETTING_INVALID_VALUE',
-        message: 'patch must include at least one path',
+        message: 'patch or removePaths must include at least one path',
         path: '',
       },
     ]);
   }
 
-  const sortedPaths = [...patchPaths].sort();
+  const sortedPaths = [...new Set([...patchPaths, ...removePaths])].sort();
   const reason =
     params.reason?.trim() ||
     `applyImmediate: ${sortedPaths.slice(0, 12).join(', ')}${sortedPaths.length > 12 ? ` (+${sortedPaths.length - 12})` : ''}`;
@@ -95,7 +103,7 @@ export const applySettingsPatch = async (
   // the draft column with published inside its own transaction, so this can only fire on
   // residue left by the removed draft workflow — it stays as a fail-closed guard against
   // silently publishing someone else's stranded edits.
-  const dirtyPaths = collectDirtyDraftPaths({ draft, exemptPaths: patchPaths, published });
+  const dirtyPaths = collectDirtyDraftPaths({ draft, exemptPaths: sortedPaths, published });
   if (dirtyPaths.length > 0) {
     await deps.appendAudit(deps.db, {
       action: 'admin.settings.applyImmediate',
@@ -114,6 +122,30 @@ export const applySettingsPatch = async (
   // paths remain present so the whole-table write does not wipe non-patched policies.
   const nextDraft: SettingsDraftPolicyMap = { ...published, ...draft };
 
+  for (const path of removePaths) {
+    if (Object.hasOwn(patch, path)) {
+      throw new SettingsDraftValidationError([
+        {
+          code: 'MANAGED_SETTING_INVALID_VALUE',
+          message: 'path cannot appear in both patch and removePaths',
+          path,
+        },
+      ]);
+    }
+    const gate = settingsRegistry.assertPathWritable({ path, requirePlatformEligible: true });
+    if (gate) throw new SettingsDraftValidationError([{ code: gate, message: gate, path }]);
+    if (!isServiceModelManagedPath(path)) {
+      throw new SettingsDraftValidationError([
+        {
+          code: 'MANAGED_SETTING_INVALID_VALUE',
+          message: 'removePaths is limited to service-model managed paths',
+          path,
+        },
+      ]);
+    }
+    delete nextDraft[path];
+  }
+
   for (const path of patchPaths) {
     const gate = settingsRegistry.assertPathWritable({ path, requirePlatformEligible: true });
     if (gate) throw new SettingsDraftValidationError([{ code: gate, message: gate, path }]);
@@ -125,14 +157,7 @@ export const applySettingsPatch = async (
       ]);
     }
 
-    const rawValue = params.patch[path];
-    // Null on a non-nullable schema is an explicit row delete (restore provider/model
-    // default). Nullable leaves (e.g. systemAgent.*.reasoningEffort) still store null.
-    if (rawValue === null && !entry.schema.safeParse(null).success) {
-      delete nextDraft[path];
-      continue;
-    }
-
+    const rawValue = patch[path];
     const validated = settingsRegistry.validateValue(path, rawValue);
     if (!validated.ok) {
       throw new SettingsDraftValidationError([
@@ -166,7 +191,9 @@ export const applySettingsPatch = async (
       paths: Object.fromEntries(
         sortedPaths.map((path) => [
           path,
-          { mode: nextDraft[path]?.mode, visibility: nextDraft[path]?.visibility },
+          nextDraft[path]
+            ? { mode: nextDraft[path]?.mode, visibility: nextDraft[path]?.visibility }
+            : { removed: true },
         ]),
       ),
       revision,

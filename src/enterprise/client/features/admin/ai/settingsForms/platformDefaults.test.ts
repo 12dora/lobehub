@@ -7,6 +7,7 @@ import {
   buildDefaultAgentFromPolicies,
   buildSystemAgentFromPolicies,
   defaultAgentEffortPatch,
+  defaultAgentEffortRemovePaths,
   isUnpublishedSettingsDraftError,
   systemAgentPatch,
 } from './platformDefaults';
@@ -25,10 +26,10 @@ describe('defaultAgentEffortPatch', () => {
     });
   });
 
-  it('encodes a clear as null so applyImmediate can delete the row', () => {
-    expect(defaultAgentEffortPatch('thinking', undefined)).toEqual({
-      'defaultAgent.config.chatConfig.thinking': null,
-    });
+  it('encodes a clear as removePaths so applyImmediate can delete the row', () => {
+    expect(defaultAgentEffortRemovePaths('thinking')).toEqual([
+      'defaultAgent.config.chatConfig.thinking',
+    ]);
   });
 });
 

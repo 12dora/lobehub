@@ -72,7 +72,7 @@ describe('usePlatformSettingsDefaults — default agent effort', () => {
     });
   });
 
-  it('updateDefaultAgentEffort(undefined) patches null to delete the policy row', async () => {
+  it('updateDefaultAgentEffort(undefined) sends removePaths to delete the policy row', async () => {
     const { result } = renderHook(() => usePlatformSettingsDefaults());
 
     await act(async () => {
@@ -83,8 +83,7 @@ describe('usePlatformSettingsDefaults — default agent effort', () => {
     });
 
     expect(mocks.applyImmediate).toHaveBeenCalledWith({
-      patch: { 'defaultAgent.config.chatConfig.gpt5_6ReasoningEffort': null },
-      reason: undefined,
+      removePaths: ['defaultAgent.config.chatConfig.gpt5_6ReasoningEffort'],
     });
   });
 });

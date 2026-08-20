@@ -347,8 +347,10 @@ describe('resolveEffectiveSettings truth table', () => {
 
     expect(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).toHaveLength(EFFORT_CONTROL_KEYS.length);
     for (const key of EFFORT_CONTROL_KEYS) {
+      const path = `defaultAgent.config.chatConfig.${key}`;
       expect(chatConfig?.[key]).toBeUndefined();
-      expect(result.effectiveValues[`defaultAgent.config.chatConfig.${key}`]).toBeUndefined();
+      expect(Object.hasOwn(result.effectiveValues, path)).toBe(false);
+      expect(result.pathMeta[path]).toBeDefined();
     }
     expect(chatConfig?.enableStreaming).not.toBeUndefined();
   });

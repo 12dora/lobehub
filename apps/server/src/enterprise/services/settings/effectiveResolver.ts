@@ -244,7 +244,6 @@ export const resolveEffectiveSettings = (
 
     const source: SettingValueSource = resolved.source;
 
-    effectiveValues[path] = resolved.effectiveValue;
     pathMeta[path] = {
       canOverride: resolved.canOverride,
       hidden: resolved.hidden,
@@ -256,8 +255,9 @@ export const resolveEffectiveSettings = (
       visibility: resolved.visibility,
     };
 
-    // Apply registered effective value into nested settings object (skip unset optionals)
+    // Skip unset optionals: no own-property in effectiveValues and no nested write.
     if (resolved.effectiveValue !== undefined) {
+      effectiveValues[path] = resolved.effectiveValue;
       effectiveSettings = setByPath(effectiveSettings, path, resolved.effectiveValue);
     }
   }

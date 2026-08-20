@@ -78,17 +78,21 @@ export const adminSettingsSaveOutputSchema = z.object({
 });
 
 /**
- * Merge a path→value patch into the settings draft and publish immediately.
- * Rejects when the draft has unpublished diffs outside the patch paths.
+ * Merge path→value writes and/or explicit path deletions into the settings draft
+ * and publish immediately. Rejects when the draft has unpublished diffs outside
+ * the patched / removed paths. `removePaths` is the only deletion op — a `null`
+ * patch value is still a stored value (or a validation error).
  */
 export const adminSettingsApplyImmediateInputSchema = z
   .object({
-    patch: z.record(z.unknown()).refine((value) => Object.keys(value).length > 0, {
-      message: 'patch must include at least one path',
-    }),
+    patch: z.record(z.unknown()).optional(),
     reason: settingsAuditReasonSchema.optional(),
+    removePaths: z.array(z.string().min(1)).optional(),
   })
-  .strict();
+  .strict()
+  .refine((value) => Object.keys(value.patch ?? {}).length + (value.removePaths?.length ?? 0) > 0, {
+    message: 'patch or removePaths must include at least one path',
+  });
 
 export const adminSettingsApplyImmediateOutputSchema = z.object({
   auditId: z.string(),

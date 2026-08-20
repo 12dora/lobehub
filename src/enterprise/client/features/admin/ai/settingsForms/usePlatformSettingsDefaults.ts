@@ -19,6 +19,7 @@ import {
   buildSystemAgentFromPolicies,
   buildTtsFromPolicies,
   defaultAgentEffortPatch,
+  defaultAgentEffortRemovePaths,
   isUnpublishedSettingsDraftError,
   systemAgentPatch,
 } from './platformDefaults';
@@ -55,15 +56,15 @@ export const usePlatformSettingsDefaults = () => {
 
   const clearDirtyDraftBlocked = useCallback(() => setDirtyDraftBlocked(false), []);
 
-  const applyPatch = useCallback(
-    async (patch: Record<string, unknown>, reason?: string) => {
+  const applyImmediateWrite = useCallback(
+    async (input: { patch?: Record<string, unknown>; reason?: string; removePaths?: string[] }) => {
       if (!canWrite) {
         throw new Error('PLATFORM_PERMISSION_DENIED');
       }
       try {
         // Commit and cache refresh are separate outcomes (XT-003): a refresh
         // failure must not be reported as a write failure / force a re-write.
-        const result = await adminSettingsService.applyImmediate({ patch, reason });
+        const result = await adminSettingsService.applyImmediate(input);
         setDirtyDraftBlocked(false);
         try {
           await mutate();
@@ -88,6 +89,12 @@ export const usePlatformSettingsDefaults = () => {
     [canWrite, mutate, t],
   );
 
+  const applyPatch = useCallback(
+    async (patch: Record<string, unknown>, reason?: string) =>
+      applyImmediateWrite({ patch, reason }),
+    [applyImmediateWrite],
+  );
+
   const updateDefaultAgentModel = useCallback(
     async (value: { model: string; provider: string }) => {
       await applyPatch({
@@ -100,9 +107,15 @@ export const usePlatformSettingsDefaults = () => {
 
   const updateDefaultAgentEffort = useCallback(
     async (value: { configKey: keyof LobeAgentChatConfig; level: EffortLevel | undefined }) => {
+      if (value.level === undefined) {
+        await applyImmediateWrite({
+          removePaths: [...defaultAgentEffortRemovePaths(value.configKey)],
+        });
+        return;
+      }
       await applyPatch(defaultAgentEffortPatch(value.configKey, value.level));
     },
-    [applyPatch],
+    [applyImmediateWrite, applyPatch],
   );
 
   const updateSystemAgent = useCallback(
