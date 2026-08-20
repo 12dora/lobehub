@@ -19,6 +19,7 @@ import type {
 import { RequestTrigger } from '@lobechat/types';
 import debug from 'debug';
 
+import { isEnterpriseFlagEnabled } from '@/const/platform/featureFlags';
 import { UserModel } from '@/database/models/user';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import type { LobeChatDatabase } from '@/database/type';
@@ -198,12 +199,30 @@ export class SystemAgentService {
   async getEffectiveTaskAgentItem(
     taskKey: UserSystemAgentConfigKey,
   ): Promise<Partial<SystemAgentItem> | undefined> {
-    const systemAgent = (await getEffectiveSystemAgentConfig({
-      db: this.db,
-      userId: this.userId,
-    })) as Partial<UserSystemAgentConfig> | undefined;
+    try {
+      const systemAgent = (await getEffectiveSystemAgentConfig({
+        db: this.db,
+        userId: this.userId,
+      })) as Partial<UserSystemAgentConfig> | undefined;
 
-    return systemAgent?.[taskKey];
+      return systemAgent?.[taskKey];
+    } catch (error) {
+      // Policy ON: a resolver/DB failure must not fail-open to unrestricted
+      // defaults (that would bypass a locked translation/system-agent model).
+      if (isEnterpriseFlagEnabled(process.env.ENABLE_PLATFORM_SETTINGS_POLICY)) {
+        throw error;
+      }
+
+      log('failed to load systemAgent config with policy off, using raw settings: %O', error);
+
+      try {
+        const settings = await new UserModel(this.db, this.userId).getUserSettings();
+        return (settings?.systemAgent as Partial<UserSystemAgentConfig> | undefined)?.[taskKey];
+      } catch (rawError) {
+        log('raw systemAgent settings fallback also failed: %O', rawError);
+        return undefined;
+      }
+    }
   }
 
   /**

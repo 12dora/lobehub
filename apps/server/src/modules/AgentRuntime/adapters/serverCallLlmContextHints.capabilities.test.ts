@@ -68,3 +68,57 @@ describe('resolveServerCallLlmContextHints — capabilities', () => {
     expect(capabilities.isCanUseFiles('gemini-3.1-pro', 'a-custom-provider')).toBe(false);
   });
 });
+
+describe('resolveServerCallLlmContextHints — extendParams', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('does not inherit origin effort controls onto a non-aggregator empty card', async () => {
+    loadModels.mockResolvedValue([
+      {
+        id: 'hunyuan-t1',
+        providerId: 'hunyuan',
+        settings: { extendParams: ['hy3ReasoningEffort'] },
+      },
+      {
+        id: 'hunyuan-t1',
+        providerId: 'cometapi',
+        settings: { extendParams: [] },
+      },
+    ]);
+
+    const hints = await resolveServerCallLlmContextHints({
+      ctx: { agentConfig: { chatConfig: { hy3ReasoningEffort: 'no_think' } } } as any,
+      llmPayload: { messages: [] } as any,
+      model: 'hunyuan-t1',
+      provider: 'cometapi',
+    });
+
+    expect(hints.resolvedExtendParams?.reasoning_effort).toBeUndefined();
+  });
+
+  it('still copies origin effort controls onto an empty LobeHub aggregator card', async () => {
+    loadModels.mockResolvedValue([
+      {
+        id: 'hunyuan-t1',
+        providerId: 'hunyuan',
+        settings: { extendParams: ['hy3ReasoningEffort'] },
+      },
+      {
+        id: 'hunyuan-t1',
+        providerId: 'lobehub',
+        settings: { extendParams: [] },
+      },
+    ]);
+
+    const hints = await resolveServerCallLlmContextHints({
+      ctx: { agentConfig: { chatConfig: { hy3ReasoningEffort: 'no_think' } } } as any,
+      llmPayload: { messages: [] } as any,
+      model: 'hunyuan-t1',
+      provider: 'lobehub',
+    });
+
+    expect(hints.resolvedExtendParams?.reasoning_effort).toBe('no_think');
+  });
+});

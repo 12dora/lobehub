@@ -106,26 +106,16 @@ export class ChatService extends BaseService {
       return { model: defaults.model, provider: defaults.provider };
     }
 
-    try {
-      // Policy-aware when ENABLE_PLATFORM_SETTINGS_POLICY is on; raw user
-      // settings when the module is off — same helper SystemAgentService uses.
-      // OpenAPI must not import the enterprise adapter directly (pathBoundaries).
-      const systemAgentService = new SystemAgentService(this.db, this.userId, this.workspaceId);
-      const translationConfig = await systemAgentService.getEffectiveTaskAgentItem('translation');
-      const { model, provider } = await resolveSystemAgentModelConfig({
-        taskConfig: translationConfig,
-        taskKey: 'translation',
-      });
+    // Failure handling lives in SystemAgentService.getEffectiveTaskAgentItem:
+    // policy OFF falls back to raw settings / defaults; policy ON propagates.
+    const systemAgentService = new SystemAgentService(this.db, this.userId, this.workspaceId);
+    const translationConfig = await systemAgentService.getEffectiveTaskAgentItem('translation');
+    const { model, provider } = await resolveSystemAgentModelConfig({
+      taskConfig: translationConfig,
+      taskKey: 'translation',
+    });
 
-      return { model, provider, reasoningEffort: translationConfig?.reasoningEffort };
-    } catch (error) {
-      this.log('warn', '读取系统翻译模型配置失败，使用默认配置', {
-        error: this.extractErrorMessage(error),
-        userId: this.userId,
-      });
-
-      return { model: defaults.model, provider: defaults.provider };
-    }
+    return { model, provider, reasoningEffort: translationConfig?.reasoningEffort };
   }
 
   private async resolveTranslationEffortParams(

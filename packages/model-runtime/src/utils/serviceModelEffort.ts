@@ -31,6 +31,7 @@ export const isAggregationProviderForEffortLookup = (provider: string): boolean 
   provider === ModelProvider.LobeHub;
 
 export interface EffortModelCard {
+  config?: { deploymentName?: string };
   id: string;
   providerId: string;
   settings?: { extendParams?: string[] };
@@ -40,6 +41,9 @@ const readCardExtendParams = (card: EffortModelCard | undefined): string[] | und
   const params = card?.settings?.extendParams;
   return params?.length ? params : undefined;
 };
+
+const matchesModelId = (item: EffortModelCard, model: string): boolean =>
+  item.id === model || item.config?.deploymentName === model;
 
 /**
  * Look up `settings.extendParams` from a runtime/model-bank card list.
@@ -55,13 +59,17 @@ export const readExtendParamsFromModelCards = (
 ): string[] | undefined => {
   if (!models?.length) return undefined;
 
-  const providerMatch = models.find((item) => item.id === model && item.providerId === provider);
+  const providerMatch = models.find(
+    (item) => matchesModelId(item, model) && item.providerId === provider,
+  );
   const fromProvider = readCardExtendParams(providerMatch);
   if (fromProvider) return fromProvider;
 
   if (!isAggregationProviderForEffortLookup(provider)) return undefined;
 
-  const idMatch = models.find((item) => item.id === model && !!readCardExtendParams(item));
+  const idMatch = models.find(
+    (item) => matchesModelId(item, model) && !!readCardExtendParams(item),
+  );
   return readCardExtendParams(idMatch);
 };
 

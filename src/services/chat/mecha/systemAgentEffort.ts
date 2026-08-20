@@ -22,8 +22,11 @@ export const resolveSystemAgentEffortParams = (
   if (!item?.reasoningEffort) return {};
 
   const { model, provider, reasoningEffort } = item;
+  const { enabledAiModels, builtinAiModelList } = getAiInfraStoreState();
+  // Enabled first, then builtin — same order as `getModelCard`. When only
+  // LobeHub is enabled the origin card lives in the builtin catalog.
   const extendParams = readExtendParamsFromModelCards(
-    getAiInfraStoreState().enabledAiModels,
+    [...(enabledAiModels ?? []), ...(builtinAiModelList ?? [])],
     model,
     provider,
   );

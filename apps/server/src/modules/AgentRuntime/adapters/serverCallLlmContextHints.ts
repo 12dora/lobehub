@@ -6,6 +6,7 @@ import {
   isDeepSeekV4FamilyModel,
   isKimiAlwaysPreserveThinkingModel,
   type ModelExtendParams,
+  readExtendParamsFromModelCards,
 } from '@lobechat/model-runtime';
 import type { UIChatMessage } from '@lobechat/types';
 import { type ExtendParamsType, ModelProvider } from 'model-bank';
@@ -55,17 +56,6 @@ export const resolveServerCallLlmContextHints = async ({
       : undefined;
   const preserveThinkingRequested = preserveThinkingConfigured === true;
 
-  const readExtendParams = (
-    card: (typeof builtinModels)[number] | undefined,
-  ): string[] | undefined =>
-    card &&
-    'settings' in card &&
-    card.settings &&
-    typeof card.settings === 'object' &&
-    'extendParams' in card.settings
-      ? (card.settings as { extendParams?: string[] }).extendParams
-      : undefined;
-
   const modelCard = builtinModels.find(
     (item) =>
       item.providerId === provider && (item.id === model || item.config?.deploymentName === model),
@@ -93,16 +83,9 @@ export const resolveServerCallLlmContextHints = async ({
     }
   }
 
-  let modelExtendParams = readExtendParams(modelCard);
-
-  // Aggregation providers (e.g. `lobehub`) may serve a model without copying
-  // its origin `settings.extendParams`. Fall back to the canonical model card
-  // (matched by id across any provider) so reasoning/thinking params like
-  // `thinkingLevel` still reach the model. Mirrors the client-side
-  // `transformToAiModelList` re-namespacing behavior.
-  if (!modelExtendParams || modelExtendParams.length === 0) {
-    modelExtendParams = readExtendParams(canonicalModelCard);
-  }
+  // LobeHub-only same-id fallback — a CometAPI/custom empty card must not
+  // inherit origin `hy3ReasoningEffort` (or similar) and emit unsupported params.
+  const modelExtendParams = readExtendParamsFromModelCards(builtinModels, model, provider);
 
   const modelSupportsPreserveThinkingFromCard =
     Array.isArray(modelExtendParams) && modelExtendParams.includes('preserveThinking');

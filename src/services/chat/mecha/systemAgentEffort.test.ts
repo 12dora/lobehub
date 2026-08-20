@@ -10,6 +10,27 @@ const item = (reasoningEffort?: string | null) => ({
   reasoningEffort: reasoningEffort as never,
 });
 
+const mockCatalog = ({
+  builtinAiModelList = [],
+  enabledAiModels = [],
+}: {
+  builtinAiModelList?: Array<{
+    id: string;
+    providerId: string;
+    settings?: { extendParams?: string[] };
+  }>;
+  enabledAiModels?: Array<{
+    id: string;
+    providerId: string;
+    settings?: { extendParams?: string[] };
+  }>;
+}) => {
+  vi.spyOn(aiInfraStore, 'getAiInfraStoreState').mockReturnValue({
+    builtinAiModelList,
+    enabledAiModels,
+  } as never);
+};
+
 const mockEnabledAiModels = (
   enabledAiModels: Array<{
     id: string;
@@ -17,7 +38,7 @@ const mockEnabledAiModels = (
     settings?: { extendParams?: string[] };
   }>,
 ) => {
-  vi.spyOn(aiInfraStore, 'getAiInfraStoreState').mockReturnValue({ enabledAiModels } as never);
+  mockCatalog({ enabledAiModels });
 };
 
 const openaiCard = (extendParams: string[] | undefined) => ({
@@ -118,6 +139,21 @@ describe('resolveSystemAgentEffortParams', () => {
       openaiCard(['gpt5_6ReasoningEffort']),
       { id: 'gpt-5.6', providerId: 'lobehub', settings: { extendParams: [] } },
     ]);
+
+    expect(
+      resolveSystemAgentEffortParams({
+        model: 'gpt-5.6',
+        provider: 'lobehub',
+        reasoningEffort: 'xhigh' as never,
+      }),
+    ).toEqual({ reasoning_effort: 'xhigh' });
+  });
+
+  it('falls back to a builtin canonical card when only the LobeHub card is enabled', () => {
+    mockCatalog({
+      builtinAiModelList: [openaiCard(['gpt5_6ReasoningEffort'])],
+      enabledAiModels: [{ id: 'gpt-5.6', providerId: 'lobehub', settings: { extendParams: [] } }],
+    });
 
     expect(
       resolveSystemAgentEffortParams({
