@@ -95,6 +95,8 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'apps/server/src/routers/lambda/connector.ts',
   'apps/server/src/routers/lambda/home.ts',
   'apps/server/src/routers/lambda/oauthDeviceFlow.ts',
+  // Takeover-on thread parent-topic visibility check (batch 2026-08-20b).
+  'apps/server/src/routers/lambda/thread.ts',
   // M11: Better Auth + instrumentation identity / observability runtime seams
   'src/auth.ts',
   'src/instrumentation.ts',
