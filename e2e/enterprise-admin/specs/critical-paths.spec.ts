@@ -386,7 +386,7 @@ test('managed resources confirmation: reason required and cancel does not publis
     const page = await context.newPage();
     await page.goto('/admin/managed-resources');
     await assertStableAdminSurface(page, {
-      heading: 'Managed resources',
+      heading: 'Hosting policy',
       requiredTexts: ['Change reason'],
     });
 
@@ -413,7 +413,7 @@ test('managed resources confirmation: reason required and cancel does not publis
     await expect(page.getByRole('dialog')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText('Unsaved managed resource changes', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Keep editing' }).click();
-    await expect(page.getByRole('heading', { name: 'Managed resources' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Hosting policy' })).toBeVisible();
     await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible();
 
     // Leave dialog: Leave without saving
@@ -434,7 +434,7 @@ test('managed resources confirmation: reason required and cancel does not publis
     // Never mutate/remove the product key — re-enter and assert real recovery behavior.
     await page.goto('/admin/managed-resources');
     await assertStableAdminSurface(page, {
-      heading: 'Managed resources',
+      heading: 'Hosting policy',
       requiredTexts: ['Change reason'],
     });
     // Recovery draft rehydrates dirty state (product intentional crash-recovery contract).
@@ -447,7 +447,7 @@ test('managed resources confirmation: reason required and cancel does not publis
     expect(recoveryKeyPresent).toBe(true);
 
     await captureEvidence(page, 'managed-resources-confirmation', {
-      heading: 'Managed resources',
+      heading: 'Hosting policy',
       requiredTexts: ['Unsaved changes', 'Change reason'],
     });
     // Server revision still unchanged (no publish).

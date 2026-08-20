@@ -6,7 +6,7 @@ export const ADMIN_COPY = {
   accessDeniedTitle: 'Admin access denied',
   backHome: 'Back to home',
   featureOffTitle: 'Admin console unavailable',
-  managedResourcesTitle: 'Managed resources',
+  managedResourcesTitle: 'Hosting policy',
   mobileUnsupportedTitle: 'Desktop required',
   systemJobsReadOnly: 'You can inspect jobs, but only system operators can retry or cancel.',
   // 「系统」is the nav group header; the status page is its own child entry.
