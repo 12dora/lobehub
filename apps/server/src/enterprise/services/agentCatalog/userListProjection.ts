@@ -204,11 +204,32 @@ export class PlatformAgentUserListService {
       offset: number;
     }) => Promise<UnifiedAvailableAgentItem[]>,
     loadLegacy: () => Promise<UnifiedAvailableAgentItem[]>,
-  ): Promise<UnifiedAvailableAgentItem[]> => {
-    // The disabled path is deliberately the original loader call, not a reconstruction through
-    // the managed pagination contract. Preserve its exact arguments, ordering, result identity,
-    // and query count while touching no builtin/catalog service.
-    if (!this.flags().ENABLE_PLATFORM_MANAGED_AGENTS) return loadLegacy();
+  ): Promise<UnifiedAvailableAgentItem[]> =>
+    (
+      await this.mergeAvailableAgentsPage(userId, params, loadLocal, loadLegacy, async () => 0)
+    ).items;
+
+  /**
+   * Same filtered population as {@link mergeAvailableAgents}, with a `total` that
+   * matches that population so pagination `hasMore` cannot drift.
+   */
+  mergeAvailableAgentsPage = async (
+    userId: string,
+    params: { keyword?: string; limit: number; offset: number },
+    loadLocal: (localParams: {
+      excludeAgentIds: string[];
+      keyword?: string;
+      limit: number;
+      offset: number;
+    }) => Promise<UnifiedAvailableAgentItem[]>,
+    loadLegacy: () => Promise<UnifiedAvailableAgentItem[]>,
+    countLegacy: () => Promise<number>,
+    countLocal?: (localParams: { excludeAgentIds: string[]; keyword?: string }) => Promise<number>,
+  ): Promise<{ items: UnifiedAvailableAgentItem[]; total: number }> => {
+    if (!this.flags().ENABLE_PLATFORM_MANAGED_AGENTS) {
+      const [items, total] = await Promise.all([loadLegacy(), countLegacy()]);
+      return { items, total };
+    }
 
     const { builtinInbox, entries, materializedAgentIds } = await this.getVisibleProjection(userId);
     const builtinMatches = params.keyword
@@ -223,22 +244,28 @@ export class PlatformAgentUserListService {
     ];
 
     const platformWindow = platform.slice(params.offset, params.offset + params.limit);
-    if (await this.isTakeoverActive()) return platformWindow;
+    if (await this.isTakeoverActive()) {
+      return { items: platformWindow, total: platform.length };
+    }
 
+    const excludeAgentIds = [...new Set([...materializedAgentIds, builtinInbox.id])];
     const remaining = params.limit - platformWindow.length;
-    const local =
+    const localOffset = Math.max(0, params.offset - platform.length);
+    const [local, localTotal] = await Promise.all([
       remaining > 0
-        ? await loadLocal({
-            excludeAgentIds: [...new Set([...materializedAgentIds, builtinInbox.id])],
+        ? loadLocal({
+            excludeAgentIds,
             keyword: params.keyword,
             limit: remaining,
-            // Once platform items are exhausted, continue into the local list from where the
-            // combined window falls (never negative).
-            offset: Math.max(0, params.offset - platform.length),
+            offset: localOffset,
           })
-        : [];
+        : Promise.resolve([]),
+      countLocal
+        ? countLocal({ excludeAgentIds, keyword: params.keyword })
+        : Promise.resolve(0),
+    ]);
 
-    return [...platformWindow, ...local];
+    return { items: [...platformWindow, ...local], total: platform.length + localTotal };
   };
 
   /**

@@ -17,6 +17,7 @@ import {
   parsePluginEntry,
   upsertPluginMode,
 } from '@lobechat/types';
+import { TRPCError } from '@trpc/server';
 
 import { AgentModel } from '@/database/models/agent';
 import { PluginModel } from '@/database/models/plugin';
@@ -27,6 +28,13 @@ import { type ToolExecutionContext, type ToolExecutionResult } from '../types';
 import { type ServerRuntimeRegistration } from './types';
 
 const handleError = (error: unknown, message: string): ToolExecutionResult => {
+  if (error instanceof TRPCError) {
+    return {
+      content: `${message}: ${error.message}`,
+      error: { code: error.message, message: error.message },
+      success: false,
+    };
+  }
   const err = error as Error;
   return { content: `${message}: ${err.message}`, success: false };
 };
@@ -93,6 +101,12 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
           };
         }
 
+        try {
+          await agentService.assertAgentReadable(agentId);
+        } catch (error) {
+          return handleError(error, 'Failed to call agent');
+        }
+
         const description = taskTitle || `Call agent ${agentId}`;
         const { started, error, subOperationId, threadId } = await ctx.subAgent.run({
           agentId,
@@ -126,6 +140,7 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
 
       createAgent: async (params: CreateAgentParams): Promise<ToolExecutionResult> => {
         try {
+          await agentService.assertAgentMutationAllowed('agent.createAgent');
           // Guard against LLM double-encoding: if array fields are JSON strings, parse them.
           const parseArrayParam = (v: any): string[] | undefined => {
             if (typeof v === 'string') {
@@ -164,6 +179,7 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
 
       deleteAgent: async (params: DeleteAgentParams): Promise<ToolExecutionResult> => {
         try {
+          await agentService.assertAgentMutationAllowed('agent.removeAgent', params.agentId);
           await agentModel.delete(params.agentId);
           return {
             content: `Successfully deleted agent ${params.agentId}`,
@@ -177,6 +193,7 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
 
       duplicateAgent: async (params: DuplicateAgentParams): Promise<ToolExecutionResult> => {
         try {
+          await agentService.assertAgentMutationAllowed('agent.duplicateAgent', params.agentId);
           const result = await agentModel.duplicate(params.agentId, params.newTitle);
           if (!result) {
             return { content: `Agent "${params.agentId}" not found.`, success: false };
@@ -193,6 +210,7 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
 
       getAgentDetail: async (params: GetAgentDetailParams): Promise<ToolExecutionResult> => {
         try {
+          await agentService.assertAgentReadable(params.agentId);
           const agent = await agentModel.getAgentConfigById(params.agentId);
           if (!agent) {
             return { content: `Agent "${params.agentId}" not found.`, success: false };
@@ -250,6 +268,7 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
       installPlugin: async (params: InstallPluginParams): Promise<ToolExecutionResult> => {
         try {
           const { agentId, identifier } = params;
+          await agentService.assertAgentMutationAllowed('agent.updateAgentConfig', agentId);
           const agent = await agentModel.getAgentConfigById(agentId);
           if (!agent) {
             return { content: `Agent "${agentId}" not found.`, success: false };
@@ -304,15 +323,13 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
           let marketTotal = 0;
 
           if (source === 'user' || source === 'all') {
-            const [userAgents, total] = await Promise.all([
-              agentService.queryAvailableAgents({
-                keyword: params.keyword,
-                limit,
-                offset,
-              }),
-              agentService.countAvailableAgents(params.keyword),
-            ]);
-            userTotal = total;
+            const page = await agentService.queryAvailableAgentsPage({
+              keyword: params.keyword,
+              limit,
+              offset,
+            });
+            const userAgents = page.items;
+            userTotal = page.total;
             results.push(
               ...userAgents.map((agent) => ({
                 avatar: agent.avatar,
@@ -392,6 +409,7 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
       updateAgent: async (params: UpdateAgentParams): Promise<ToolExecutionResult> => {
         try {
           const { agentId } = params;
+          await agentService.assertAgentMutationAllowed('agent.updateAgentConfig', agentId);
           let { config, meta } = params;
 
           // Guard against LLM double-encoding: parse strings if needed
@@ -439,6 +457,7 @@ export const agentManagementRuntime: ServerRuntimeRegistration = {
       updatePrompt: async (params: UpdatePromptParams): Promise<ToolExecutionResult> => {
         try {
           const { agentId, prompt } = params;
+          await agentService.assertAgentMutationAllowed('agent.updateAgentConfig', agentId);
           await agentModel.update(agentId, { editorData: null, systemRole: prompt } as Record<
             string,
             unknown

@@ -25,6 +25,7 @@ import {
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import {
   assertLocalAgentReadableUnderTakeover,
+  isPlatformAgentTakeoverActive,
   PlatformAgentUserListService,
 } from '@/server/enterprise/services/agentCatalog';
 import { AgentService } from '@/server/services/agent';
@@ -69,6 +70,7 @@ export const agentRouter = router({
    * conditions of queryAgents. Lets paginated callers report real totals.
    */
   countAgents: agentProcedure
+    .use(withActiveUserWhenManagedAgents())
     .input(
       z
         .object({
@@ -80,6 +82,9 @@ export const agentRouter = router({
         .optional(),
     )
     .query(async ({ input, ctx }) => {
+      if (await isPlatformAgentTakeoverActive(ctx.serverDB)) {
+        return ctx.agentService.countAvailableAgents(input?.keyword);
+      }
       return ctx.agentModel.countAgents(input);
     }),
 

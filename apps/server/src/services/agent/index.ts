@@ -21,9 +21,14 @@ import {
   RedisKeyNamespace,
   RedisKeys,
 } from '@/libs/redis';
+import { assertAgentNotPlatformManaged } from '@/server/enterprise/guards/managedPlatformAgent';
+import { enforceManagedResourceMutation } from '@/server/enterprise/guards/managedResource';
+import type { ManagedResourceMutationProcedure } from '@/server/enterprise/guards/managedResourceMutationRegistry';
 import {
+  assertLocalAgentReadableUnderTakeover,
   isPlatformAgentTakeoverActive,
   PlatformAgentUserListService,
+  resolveTakeoverVisibleLocalAgentIds,
 } from '@/server/enterprise/services/agentCatalog';
 import { PlatformDefaultInboxService } from '@/server/enterprise/services/agentCatalog/defaultInbox';
 import { resolveServerRuntimeBranding } from '@/server/enterprise/services/branding/runtimeBranding';
@@ -232,21 +237,78 @@ export class AgentService {
    * only — `loadLocal` is not called.
    */
   async queryAvailableAgents(params: { keyword?: string; limit: number; offset: number }) {
-    return new PlatformAgentUserListService(this.db, this.workspaceId).mergeAvailableAgents(
+    return (await this.queryAvailableAgentsPage(params)).items;
+  }
+
+  /**
+   * Same filtered population as {@link queryAvailableAgents}, with a matching
+   * total so pagination `hasMore` cannot drift (inbox is counted when it is
+   * in the merged list).
+   */
+  async queryAvailableAgentsPage(params: { keyword?: string; limit: number; offset: number }) {
+    const excludeAndCountLocal = async (localParams: {
+      excludeAgentIds: string[];
+      keyword?: string;
+    }) =>
+      (
+        await this.agentModel.queryAgents({
+          excludeAgentIds: localParams.excludeAgentIds,
+          keyword: localParams.keyword,
+          limit: 9999,
+          offset: 0,
+        })
+      ).length;
+
+    return new PlatformAgentUserListService(this.db, this.workspaceId).mergeAvailableAgentsPage(
       this.userId,
       params,
       (localParams) => this.agentModel.queryAgents(localParams),
       () => this.agentModel.queryAgents(params),
+      () => this.agentModel.countAgents({ keyword: params.keyword }),
+      excludeAndCountLocal,
     );
   }
 
   /** Matching total for {@link queryAvailableAgents} pagination. */
   async countAvailableAgents(keyword?: string) {
-    if (await isPlatformAgentTakeoverActive(this.db)) {
-      const items = await this.queryAvailableAgents({ keyword, limit: 1001, offset: 0 });
-      return items.length;
-    }
-    return this.agentModel.countAgents({ keyword });
+    return (await this.queryAvailableAgentsPage({ keyword, limit: 1, offset: 0 })).total;
+  }
+
+  /** `null` when takeover is off — callers must not filter. */
+  async getTakeoverVisibleLocalAgentIds() {
+    return resolveTakeoverVisibleLocalAgentIds({
+      db: this.db,
+      userId: this.userId,
+      workspaceId: this.workspaceId,
+    });
+  }
+
+  async assertAgentReadable(agentId: string) {
+    await assertLocalAgentReadableUnderTakeover({
+      db: this.db,
+      identifier: agentId,
+      userId: this.userId,
+      workspaceId: this.workspaceId,
+    });
+  }
+
+  async assertAgentMutationAllowed(
+    procedure: ManagedResourceMutationProcedure,
+    agentId?: string,
+  ) {
+    await enforceManagedResourceMutation({
+      db: this.db,
+      principal: { userId: this.userId },
+      procedure,
+    });
+    if (!agentId) return;
+    await assertAgentNotPlatformManaged({
+      agentId,
+      db: this.db,
+      userId: this.userId,
+      workspaceId: this.workspaceId,
+    });
+    await this.assertAgentReadable(agentId);
   }
 
   async listMessengerBindableAgents(options?: { fallbackTitle?: string | null }) {

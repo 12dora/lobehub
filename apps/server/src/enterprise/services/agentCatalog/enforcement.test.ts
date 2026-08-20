@@ -10,7 +10,7 @@ import {
   createUnmanagedResourcePolicyMap,
   PlatformManagedResourcePolicyModel,
 } from '@/database/models/platform';
-import { agents, users } from '@/database/schemas';
+import { agents, chatGroups, chatGroupsAgents, users, workspaces } from '@/database/schemas';
 import { platformManagedResourcePolicies } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import type { ManagedResourcePolicyItem } from '@/types/platform/managedResources';
@@ -24,8 +24,9 @@ import {
   resetPlatformAgentTakeoverCacheForTest,
 } from './enforcement';
 
-const { getPlatformAgentIdByMaterializedAgentId } = vi.hoisted(() => ({
+const { getPlatformAgentIdByMaterializedAgentId, listMaterializedAgentIds } = vi.hoisted(() => ({
   getPlatformAgentIdByMaterializedAgentId: vi.fn(async () => null as string | null),
+  listMaterializedAgentIds: vi.fn(async () => new Set<string>()),
 }));
 
 vi.mock('@/database/repositories/platformAgentCatalog', async (importOriginal) => {
@@ -34,6 +35,7 @@ vi.mock('@/database/repositories/platformAgentCatalog', async (importOriginal) =
     ...actual,
     PlatformAgentCatalogRepository: class {
       getPlatformAgentIdByMaterializedAgentId = getPlatformAgentIdByMaterializedAgentId;
+      listMaterializedAgentIds = listMaterializedAgentIds;
     },
   };
 });
@@ -63,16 +65,23 @@ const saveDraftOnly = async (agentsPolicy: ManagedResourcePolicyItem) => {
 beforeEach(async () => {
   resetPlatformAgentTakeoverCacheForTest();
   getPlatformAgentIdByMaterializedAgentId.mockResolvedValue(null);
+  listMaterializedAgentIds.mockResolvedValue(new Set());
+  await db.delete(chatGroupsAgents);
+  await db.delete(chatGroups);
   await db.delete(platformManagedResourcePolicies);
   await db.delete(agents);
+  await db.delete(workspaces);
   await db.delete(users);
   await db.insert(users).values({ id: USER });
 });
 
 afterEach(async () => {
   resetPlatformAgentTakeoverCacheForTest();
+  await db.delete(chatGroupsAgents);
+  await db.delete(chatGroups);
   await db.delete(platformManagedResourcePolicies);
   await db.delete(agents);
+  await db.delete(workspaces);
   await db.delete(users);
 });
 
@@ -168,6 +177,27 @@ describe('isPlatformAgentTakeoverActive', () => {
       'policy table unavailable',
     );
   });
+
+  it('does not cache a snapshot that completed after a publish reset', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const unpublished = {
+      draft: createUnmanagedResourcePolicyMap(),
+      published: createUnmanagedResourcePolicyMap(),
+      revision: 0,
+      status: 'draft' as const,
+    };
+    const pending = isPlatformAgentTakeoverActive(db, flagsOn, Date.now, async () => {
+      await gate;
+      return unpublished;
+    });
+    await publish({ enforcementMode: 'enforced', managed: true });
+    release();
+    expect(await pending).toBe(false);
+    expect(await isPlatformAgentTakeoverActive(db, flagsOn)).toBe(true);
+  });
 });
 
 describe('assertLocalAgentReadableUnderTakeover', () => {
@@ -180,12 +210,13 @@ describe('assertLocalAgentReadableUnderTakeover', () => {
     vi.unstubAllEnvs();
   });
 
-  const deny = (params: { identifier: string; slug?: string | null }) =>
+  const deny = (params: { identifier: string; slug?: string | null; workspaceId?: string }) =>
     assertLocalAgentReadableUnderTakeover({
       db,
       identifier: params.identifier,
       slug: params.slug,
       userId: USER,
+      workspaceId: params.workspaceId,
     });
 
   it('is a no-op when takeover is not active', async () => {
@@ -227,5 +258,77 @@ describe('assertLocalAgentReadableUnderTakeover', () => {
     expect(getEnterpriseErrorBody(error)?.code).toBe(
       MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
     );
+  });
+
+  it('allows a group supervisor identified by membership role (personal and workspace)', async () => {
+    await publish({ enforcementMode: 'enforced', managed: true });
+    await db.insert(agents).values({
+      id: 'agt_sup',
+      title: 'Supervisor',
+      userId: USER,
+      virtual: true,
+    });
+    await db.insert(chatGroups).values({ id: 'grp_1', title: 'G', userId: USER });
+    await db.insert(chatGroupsAgents).values({
+      agentId: 'agt_sup',
+      chatGroupId: 'grp_1',
+      role: 'supervisor',
+      userId: USER,
+    });
+    await expect(deny({ identifier: 'agt_sup', slug: null })).resolves.toBeUndefined();
+
+    const [workspace] = await db
+      .insert(workspaces)
+      .values({ name: 'WS', primaryOwnerId: USER, slug: 'takeover-ws' })
+      .returning();
+    await db.insert(agents).values({
+      id: 'agt_sup_ws',
+      title: 'WS Supervisor',
+      userId: USER,
+      virtual: true,
+      workspaceId: workspace.id,
+    });
+    await db.insert(chatGroups).values({
+      id: 'grp_ws',
+      title: 'G',
+      userId: USER,
+      workspaceId: workspace.id,
+    });
+    await db.insert(chatGroupsAgents).values({
+      agentId: 'agt_sup_ws',
+      chatGroupId: 'grp_ws',
+      role: 'supervisor',
+      userId: USER,
+      workspaceId: workspace.id,
+    });
+    await expect(
+      deny({ identifier: 'agt_sup_ws', slug: null, workspaceId: workspace.id }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('allows a validated heterogeneous agent (personal and workspace)', async () => {
+    await publish({ enforcementMode: 'enforced', managed: true });
+    await db.insert(agents).values({
+      agencyConfig: { heterogeneousProvider: { type: 'claude-code' } },
+      id: 'agt_hetero',
+      title: 'CC',
+      userId: USER,
+    });
+    await expect(deny({ identifier: 'agt_hetero' })).resolves.toBeUndefined();
+
+    const [workspace] = await db
+      .insert(workspaces)
+      .values({ name: 'WS2', primaryOwnerId: USER, slug: 'takeover-ws2' })
+      .returning();
+    await db.insert(agents).values({
+      agencyConfig: { heterogeneousProvider: { type: 'codex' } },
+      id: 'agt_hetero_ws',
+      title: 'Codex',
+      userId: USER,
+      workspaceId: workspace.id,
+    });
+    await expect(
+      deny({ identifier: 'agt_hetero_ws', workspaceId: workspace.id }),
+    ).resolves.toBeUndefined();
   });
 });

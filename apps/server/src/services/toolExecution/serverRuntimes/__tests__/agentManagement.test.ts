@@ -34,8 +34,17 @@ vi.mock('@/database/models/agent', () => ({
 
 vi.mock('@/server/services/agent', () => ({
   AgentService: vi.fn(() => ({
+    assertAgentMutationAllowed: vi.fn(async () => undefined),
+    assertAgentReadable: vi.fn(async () => undefined),
     countAvailableAgents: mockCountAgents,
     queryAvailableAgents: mockQueryAgents,
+    queryAvailableAgentsPage: vi.fn(
+      async (params: { keyword?: string; limit: number; offset: number }) => {
+        const items = await mockQueryAgents(params);
+        const total = await mockCountAgents({ keyword: params.keyword });
+        return { items, total };
+      },
+    ),
   })),
 }));
 

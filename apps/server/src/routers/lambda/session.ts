@@ -6,12 +6,40 @@ import { ChatGroupModel } from '@/database/models/chatGroup';
 import { SessionModel } from '@/database/models/session';
 import { SessionGroupModel } from '@/database/models/sessionGroup';
 import { insertAgentSchema, insertSessionSchema } from '@/database/schemas';
+import type { LobeChatDatabase } from '@/database/type';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { AgentService } from '@/server/services/agent';
 import { AgentChatConfigSchema } from '@/types/agent';
 import { LobeMetaDataSchema } from '@/types/meta';
 import { type BatchTaskResult } from '@/types/service';
 import { type ChatSessionList, type LobeGroupSession } from '@/types/session';
+
+const sessionAgentId = (session: {
+  agentsToSessions?: Array<{ agent?: { id?: string } }>;
+  config?: { id?: string };
+  type?: string;
+}): string | undefined => {
+  if (session.type === 'group') return undefined;
+  return session.config?.id ?? session.agentsToSessions?.[0]?.agent?.id;
+};
+
+const filterSessionsForTakeover = async <T extends { type?: string }>(
+  ctx: { serverDB: LobeChatDatabase; userId: string; workspaceId?: string | null },
+  sessions: T[],
+): Promise<T[]> => {
+  const visible = await new AgentService(
+    ctx.serverDB,
+    ctx.userId,
+    ctx.workspaceId ?? undefined,
+  ).getTakeoverVisibleLocalAgentIds();
+  if (!visible) return sessions;
+  return sessions.filter((session) => {
+    if (session.type === 'group') return true;
+    const agentId = sessionAgentId(session);
+    return typeof agentId === 'string' && visible.has(agentId);
+  });
+};
 
 const sessionProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
@@ -137,7 +165,10 @@ export const sessionRouter = router({
         (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
       );
 
-      return { sessionGroups, sessions: allSessions };
+      return {
+        sessionGroups,
+        sessions: await filterSessionsForTakeover(ctx, allSessions),
+      };
     }),
 
   getSessions: sessionProcedure
@@ -150,7 +181,7 @@ export const sessionRouter = router({
     .query(async ({ input, ctx }) => {
       const { current, pageSize } = input;
 
-      return ctx.sessionModel.query({ current, pageSize });
+      return filterSessionsForTakeover(ctx, await ctx.sessionModel.query({ current, pageSize }));
     }),
 
   removeSession: sessionProcedure
@@ -163,7 +194,7 @@ export const sessionRouter = router({
   searchSessions: sessionProcedure
     .input(z.object({ keywords: z.string() }))
     .query(async ({ input, ctx }) => {
-      return ctx.sessionModel.queryByKeyword(input.keywords);
+      return filterSessionsForTakeover(ctx, await ctx.sessionModel.queryByKeyword(input.keywords));
     }),
 
   updateSession: sessionProcedure

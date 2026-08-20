@@ -283,6 +283,32 @@ describe('PlatformAgentUserListService', () => {
       expect(page3.map((r) => r.id)).toEqual(['agt_2', 'agt_3']);
     });
 
+    it('page total matches inbox + platform + local from one projection', async () => {
+      const { service } = makeService({
+        effective: [effectiveAgent('p1', 'mandatory')],
+      });
+      const loadLocal = vi.fn(localLoader([localItem('agt_1', 'L1'), localItem('agt_2', 'L2')]));
+      const countLocal = vi.fn(async () => 2);
+      const page = await service.mergeAvailableAgentsPage(
+        'u',
+        { limit: 10, offset: 0 },
+        loadLocal,
+        unusedLegacyLoader,
+        async () => 99,
+        countLocal,
+      );
+      expect(page.total).toBe(4);
+      expect(page.items.map((item) => item.id)).toEqual([
+        'builtin-inbox-id',
+        encodePlatformAgentListId('p1'),
+        'agt_1',
+        'agt_2',
+      ]);
+      expect(countLocal).toHaveBeenCalledWith(
+        expect.objectContaining({ excludeAgentIds: expect.arrayContaining(['builtin-inbox-id']) }),
+      );
+    });
+
     it('filters platform items by keyword and passes the keyword down to the local loader', async () => {
       const { service } = makeService({
         effective: [
@@ -528,6 +554,28 @@ describe('PlatformAgentUserListService', () => {
       expect(merged.pinned).toEqual([]);
       expect(merged.privateGroups).toEqual([]);
       expect(merged.privateUngrouped).toEqual([]);
+    });
+
+    it('page total matches the takeover population from one projection', async () => {
+      const { service } = makeService({
+        effective: [effectiveAgent('p1', 'optional'), effectiveAgent('p2', 'optional')],
+        isTakeoverActive: true,
+      });
+      const loadLocal = vi.fn(localLoader([localItem('agt_keep', 'Keep')]));
+      const page = await service.mergeAvailableAgentsPage(
+        'u',
+        { limit: 10, offset: 0 },
+        loadLocal,
+        unusedLegacyLoader,
+        async () => 99,
+      );
+      expect(loadLocal).not.toHaveBeenCalled();
+      expect(page.total).toBe(3);
+      expect(page.items.map((item) => item.id)).toEqual([
+        'builtin-inbox-id',
+        encodePlatformAgentListId('p1'),
+        encodePlatformAgentListId('p2'),
+      ]);
     });
 
     it('picker does not call loadLocal and returns no local ids', async () => {

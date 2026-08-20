@@ -24,7 +24,7 @@ import {
   createUnmanagedResourcePolicyMap,
   PlatformManagedResourcePolicyModel,
 } from '@/database/models/platform';
-import { agents, users } from '@/database/schemas';
+import { agents, chatGroups, chatGroupsAgents, users, workspaces } from '@/database/schemas';
 import { platformManagedResourcePolicies } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import { resetPlatformAgentTakeoverCacheForTest } from '@/server/enterprise/services/agentCatalog';
@@ -544,6 +544,134 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       expect((error as { cause?: { data?: { code?: string } } }).cause?.data?.code).not.toBe(
         MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
       );
+    });
+
+    it('allows a group supervisor (membership role) under takeover in personal and workspace scopes', async () => {
+      await publishAgentsTakeover();
+      await db.insert(agents).values({
+        id: 'agt_sup',
+        title: 'Supervisor',
+        userId: 'user-a',
+        virtual: true,
+      });
+      await db.insert(chatGroups).values({ id: 'grp_exec', title: 'G', userId: 'user-a' });
+      await db.insert(chatGroupsAgents).values({
+        agentId: 'agt_sup',
+        chatGroupId: 'grp_exec',
+        role: 'supervisor',
+        userId: 'user-a',
+      });
+      getAgentConfigSpy.mockResolvedValue({
+        chatConfig: {},
+        id: 'agt_sup',
+        model: 'gpt-4',
+        plugins: [],
+        provider: 'openai',
+        slug: null,
+        systemRole: '',
+      });
+      const personal = await run({ agentId: 'agt_sup' });
+      expect((personal as { cause?: { data?: { code?: string } } }).cause?.data?.code).not.toBe(
+        MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+      );
+
+      const [workspace] = await db
+        .insert(workspaces)
+        .values({ name: 'Exec WS', primaryOwnerId: 'user-a', slug: 'exec-ws' })
+        .returning();
+      await db.insert(agents).values({
+        id: 'agt_sup_ws',
+        title: 'WS Supervisor',
+        userId: 'user-a',
+        virtual: true,
+        workspaceId: workspace.id,
+      });
+      await db.insert(chatGroups).values({
+        id: 'grp_exec_ws',
+        title: 'G',
+        userId: 'user-a',
+        workspaceId: workspace.id,
+      });
+      await db.insert(chatGroupsAgents).values({
+        agentId: 'agt_sup_ws',
+        chatGroupId: 'grp_exec_ws',
+        role: 'supervisor',
+        userId: 'user-a',
+        workspaceId: workspace.id,
+      });
+      getAgentConfigSpy.mockResolvedValue({
+        chatConfig: {},
+        id: 'agt_sup_ws',
+        model: 'gpt-4',
+        plugins: [],
+        provider: 'openai',
+        slug: null,
+        systemRole: '',
+      });
+      const workspaceError = await new AiAgentService(db, 'user-a', { workspaceId: workspace.id })
+        .execAgent({ prompt: 'hi', agentId: 'agt_sup_ws' } as never)
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(
+        (workspaceError as { cause?: { data?: { code?: string } } }).cause?.data?.code,
+      ).not.toBe(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM);
+    });
+
+    it('allows a validated heterogeneous agent under takeover in personal and workspace scopes', async () => {
+      await publishAgentsTakeover();
+      await db.insert(agents).values({
+        agencyConfig: { heterogeneousProvider: { type: 'claude-code' } },
+        id: 'agt_hetero',
+        title: 'CC',
+        userId: 'user-a',
+      });
+      getAgentConfigSpy.mockResolvedValue({
+        agencyConfig: { heterogeneousProvider: { type: 'claude-code' } },
+        chatConfig: {},
+        id: 'agt_hetero',
+        model: 'gpt-4',
+        plugins: [],
+        provider: 'openai',
+        slug: null,
+        systemRole: '',
+      });
+      const personal = await run({ agentId: 'agt_hetero' });
+      expect((personal as { cause?: { data?: { code?: string } } }).cause?.data?.code).not.toBe(
+        MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+      );
+
+      const [workspace] = await db
+        .insert(workspaces)
+        .values({ name: 'Hetero WS', primaryOwnerId: 'user-a', slug: 'hetero-ws' })
+        .returning();
+      await db.insert(agents).values({
+        agencyConfig: { heterogeneousProvider: { type: 'codex' } },
+        id: 'agt_hetero_ws',
+        title: 'Codex',
+        userId: 'user-a',
+        workspaceId: workspace.id,
+      });
+      getAgentConfigSpy.mockResolvedValue({
+        agencyConfig: { heterogeneousProvider: { type: 'codex' } },
+        chatConfig: {},
+        id: 'agt_hetero_ws',
+        model: 'gpt-4',
+        plugins: [],
+        provider: 'openai',
+        slug: null,
+        systemRole: '',
+      });
+      const workspaceError = await new AiAgentService(db, 'user-a', { workspaceId: workspace.id })
+        .execAgent({ prompt: 'hi', agentId: 'agt_hetero_ws' } as never)
+        .then(
+          () => null,
+          (e) => e,
+        );
+      expect(
+        (workspaceError as { cause?: { data?: { code?: string } } }).cause?.data?.code,
+      ).not.toBe(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM);
     });
 
     it('still allows an encoded platform list id under takeover (entitlement path, not the user-agent deny)', async () => {

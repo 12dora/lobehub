@@ -20,9 +20,11 @@ import { TopicModel } from '@/database/models/topic';
 import { TopicShareModel } from '@/database/models/topicShare';
 import { AgentMigrationRepo } from '@/database/repositories/agentMigration';
 import { TopicImporterRepo } from '@/database/repositories/topicImporter';
-import { chatGroups } from '@/database/schemas';
+import { chatGroups, topics } from '@/database/schemas';
+import type { LobeChatDatabase } from '@/database/type';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { AgentService } from '@/server/services/agent';
 import { type BatchTaskResult } from '@/types/service';
 
 import {
@@ -32,6 +34,12 @@ import {
 } from './_helpers/resolveContext';
 import { basicContextSchema } from './_schema/context';
 import { workingDirConfigSchema } from './workingDirSchema';
+
+const topicAgentService = (ctx: {
+  serverDB: LobeChatDatabase;
+  userId: string;
+  workspaceId?: string | null;
+}) => new AgentService(ctx.serverDB, ctx.userId, ctx.workspaceId ?? undefined);
 
 const topicProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
@@ -56,6 +64,7 @@ export const topicRouter = router({
     .query(async ({ input, ctx }) => {
       const topic = await ctx.topicModel.findById(input.id);
       if (!topic) return null;
+      if (topic.agentId) await topicAgentService(ctx).assertAgentReadable(topic.agentId);
       return topic;
     }),
 
@@ -67,6 +76,7 @@ export const topicRouter = router({
       if (!topic) {
         return { content: `Topic not found: ${input.topicId}`, success: false };
       }
+      if (topic.agentId) await topicAgentService(ctx).assertAgentReadable(topic.agentId);
 
       const title = topic.title || 'Untitled';
 
@@ -268,7 +278,15 @@ export const topicRouter = router({
         .optional(),
     )
     .query(async ({ input, ctx }) => {
-      return ctx.topicModel.queryTopics({ pageSize: input?.pageSize, statuses: input?.statuses });
+      const items = await ctx.topicModel.queryTopics({
+        pageSize: input?.pageSize,
+        statuses: input?.statuses,
+      });
+      const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
+      if (!visible) return items;
+      return items.filter(
+        (topic) => topic.groupId || (topic.agentId ? visible.has(topic.agentId) : false),
+      );
     }),
 
   getShareInfo: topicProcedure
@@ -338,6 +356,9 @@ export const topicRouter = router({
           ctx.workspaceId ?? undefined,
         );
       }
+      if (effectiveAgentId) {
+        await topicAgentService(ctx).assertAgentReadable(effectiveAgentId);
+      }
 
       const result = await ctx.topicModel.query({
         ...rest,
@@ -379,6 +400,32 @@ export const topicRouter = router({
       // Use Next.js after() for non-blocking execution
       after(runMigration);
 
+      if (!effectiveAgentId) {
+        const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
+        if (visible && result.items.length > 0) {
+          const rows = await ctx.serverDB
+            .select({ agentId: topics.agentId, groupId: topics.groupId, id: topics.id })
+            .from(topics)
+            .where(
+              inArray(
+                topics.id,
+                result.items.map((item) => item.id),
+              ),
+            );
+          const keep = new Set(
+            rows
+              .filter(
+                (row) => row.groupId || (row.agentId ? visible.has(row.agentId) : false),
+              )
+              .map((row) => row.id),
+          );
+          return {
+            items: result.items.filter((item) => keep.has(item.id)),
+            total: result.total,
+          };
+        }
+      }
+
       return { items: result.items, total: result.total };
     }),
 
@@ -410,7 +457,10 @@ export const topicRouter = router({
   }),
 
   rankTopics: topicProcedure.input(z.number().max(50).optional()).query(async ({ ctx, input }) => {
-    return ctx.topicModel.rank(input);
+    const ranked = await ctx.topicModel.rank(input);
+    const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
+    if (!visible) return ranked;
+    return ranked.filter((topic) => !topic.agentId || visible.has(topic.agentId));
   }),
 
   recentTopics: topicProcedure
@@ -508,8 +558,10 @@ export const topicRouter = router({
       // Use Next.js after() for non-blocking execution
       after(runMigration);
 
+      const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
+
       // Assemble final result
-      return recentTopics.map((topic) => {
+      const assembled = recentTopics.map((topic) => {
         if (topic.type === 'group' && topic.groupId) {
           const groupInfo = groupInfoMap.get(topic.groupId);
           return {
@@ -539,6 +591,13 @@ export const topicRouter = router({
           updatedAt: topic.updatedAt,
         };
       });
+
+      if (!visible) return assembled;
+      return assembled.filter((item) => {
+        if (item.type === 'group') return true;
+        const agentId = item.agent && 'id' in item.agent ? item.agent.id : undefined;
+        return typeof agentId === 'string' && visible.has(agentId);
+      });
     }),
 
   removeAllTopics: topicProcedure
@@ -564,6 +623,8 @@ export const topicRouter = router({
       }),
     )
     .query(async ({ input, ctx }) => {
+      if (input.agentId) await topicAgentService(ctx).assertAgentReadable(input.agentId);
+
       const resolved = await resolveContext(
         { agentId: input.agentId, sessionId: input.sessionId },
         ctx.serverDB,
@@ -577,11 +638,16 @@ export const topicRouter = router({
       // topic — the cause of "no topics match" in the per-agent Topics search.
       // `containerId` is only the fallback for legacy callers that pass no
       // agentId/groupId.
-      return ctx.topicModel.queryByKeyword(input.keywords, {
+      const found = await ctx.topicModel.queryByKeyword(input.keywords, {
         agentId: input.agentId,
         containerId: resolved.sessionId,
         groupId: input.groupId,
       });
+      const visible = await topicAgentService(ctx).getTakeoverVisibleLocalAgentIds();
+      if (!visible || input.groupId) return found;
+      return found.filter(
+        (topic) => !topic.agentId || visible.has(topic.agentId) || Boolean(topic.groupId),
+      );
     }),
 
   /**

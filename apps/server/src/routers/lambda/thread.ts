@@ -5,9 +5,12 @@ import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPer
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { MessageModel } from '@/database/models/message';
 import { ThreadModel } from '@/database/models/thread';
+import { TopicModel } from '@/database/models/topic';
 import { insertThreadSchema } from '@/database/schemas';
+import type { LobeChatDatabase } from '@/database/type';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { AgentService } from '@/server/services/agent';
 import { type ThreadItem } from '@/types/topic/thread';
 import { createThreadSchema } from '@/types/topic/thread';
 import { markdownToTxt } from '@/utils/markdownToTxt';
@@ -43,9 +46,27 @@ const threadProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) =
     ctx: {
       messageModel: new MessageModel(ctx.serverDB, ctx.userId, wsId),
       threadModel: new ThreadModel(ctx.serverDB, ctx.userId, wsId),
+      topicModel: new TopicModel(ctx.serverDB, ctx.userId, wsId),
     },
   });
 });
+
+const assertThreadTopicVisible = async (
+  ctx: {
+    serverDB: LobeChatDatabase;
+    topicModel: TopicModel;
+    userId: string;
+    workspaceId?: string | null;
+  },
+  topicId: string,
+) => {
+  const topic = await ctx.topicModel.findById(topicId);
+  if (topic?.agentId) {
+    await new AgentService(ctx.serverDB, ctx.userId, ctx.workspaceId ?? undefined).assertAgentReadable(
+      topic.agentId,
+    );
+  }
+};
 
 export const threadRouter = router({
   createThread: threadProcedure
@@ -93,12 +114,20 @@ export const threadRouter = router({
       return { messageId: message?.id, threadId: thread.id };
     }),
   getThread: threadProcedure.query(async ({ ctx }): Promise<ThreadItem[]> => {
-    return ctx.threadModel.query() as any;
+    const threads = (await ctx.threadModel.query()) as ThreadItem[];
+    const visible = await new AgentService(
+      ctx.serverDB,
+      ctx.userId,
+      ctx.workspaceId ?? undefined,
+    ).getTakeoverVisibleLocalAgentIds();
+    if (!visible) return threads;
+    return threads.filter((thread) => !thread.agentId || visible.has(thread.agentId));
   }),
 
   getThreads: threadProcedure
     .input(z.object({ topicId: z.string() }))
     .query(async ({ input, ctx }) => {
+      await assertThreadTopicVisible(ctx, input.topicId);
       return ctx.threadModel.queryByTopicId(input.topicId);
     }),
 

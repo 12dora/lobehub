@@ -18,6 +18,7 @@ import {
 } from '@/server/enterprise/guards/managedPlatformAgent';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { getEffectiveDefaultAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
+import { AgentService } from '@/server/services/agent';
 import { AgentGroupService } from '@/server/services/agentGroup';
 import { EditLockService } from '@/server/services/editLock';
 import { publishResourceEvent } from '@/server/services/resourceEvents';
@@ -254,7 +255,16 @@ export const agentGroupRouter = router({
   getGroupAgents: agentGroupProcedure
     .input(z.object({ groupId: z.string() }))
     .query(async ({ input, ctx }) => {
-      return ctx.chatGroupModel.getGroupAgents(input.groupId);
+      const members = await ctx.chatGroupModel.getGroupAgents(input.groupId);
+      const visible = await new AgentService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).getTakeoverVisibleLocalAgentIds();
+      if (!visible) return members;
+      return members.filter(
+        (member) => visible.has(member.agentId) || member.role === 'supervisor',
+      );
     }),
 
   /**
@@ -281,9 +291,20 @@ export const agentGroupRouter = router({
 
       if (!detail) return null;
 
+      const agents = ctx.agentGroupService.mergeAgentsDefaultConfig(
+        defaultAgentConfig,
+        detail.agents,
+      );
+      const visible = await new AgentService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).getTakeoverVisibleLocalAgentIds();
       return {
         ...detail,
-        agents: ctx.agentGroupService.mergeAgentsDefaultConfig(defaultAgentConfig, detail.agents),
+        agents: visible
+          ? agents.filter((agent) => visible.has(agent.id) || agent.isSupervisor)
+          : agents,
       };
     }),
 
@@ -293,10 +314,24 @@ export const agentGroupRouter = router({
       ctx.agentGroupService.getGroups(),
     ]);
 
-    return groups.map((group) => ({
-      ...group,
-      agents: ctx.agentGroupService.mergeAgentsDefaultConfig(defaultAgentConfig, group.agents),
-    }));
+    const visible = await new AgentService(
+      ctx.serverDB,
+      ctx.userId,
+      ctx.workspaceId ?? undefined,
+    ).getTakeoverVisibleLocalAgentIds();
+
+    return groups.map((group) => {
+      const agents = ctx.agentGroupService.mergeAgentsDefaultConfig(
+        defaultAgentConfig,
+        group.agents,
+      );
+      return {
+        ...group,
+        agents: visible
+          ? agents.filter((agent) => visible.has(agent.id) || agent.isSupervisor)
+          : agents,
+      };
+    });
   }),
 
   /**
