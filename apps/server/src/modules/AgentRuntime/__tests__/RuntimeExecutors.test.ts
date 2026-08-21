@@ -86,6 +86,8 @@ vi.mock('@lobechat/model-runtime', async () => {
     await import('../../../../../../packages/model-runtime/src/errors/modelEmptyCompletion');
   const { ModelRefusalError } =
     await import('../../../../../../packages/model-runtime/src/errors/modelRefusal');
+  const { EFFORT_CONTROL_KEYS, EFFORT_CONTROL_REGISTRY } =
+    await import('../../../../../../packages/model-runtime/src/utils/effortControlRegistry');
   const errorCodeSpecs = {
     ModelEmptyCompletion: { code: 'ModelEmptyCompletion', retryable: false },
     ModelRefusal: { code: 'ModelRefusal', retryable: false },
@@ -95,6 +97,8 @@ vi.mock('@lobechat/model-runtime', async () => {
     // the runtime payload unchanged, matching this suite's pre-existing behavior.
     applyModelExtendParams: vi.fn(() => ({})),
     consumeStreamUntilDone: vi.fn().mockResolvedValue(undefined),
+    EFFORT_CONTROL_KEYS,
+    EFFORT_CONTROL_REGISTRY,
     ERROR_CODE_SPECS: errorCodeSpecs,
     getErrorCodeSpec: (code: keyof typeof errorCodeSpecs) => errorCodeSpecs[code],
     isDeepSeekThinkingEligibleModel: (model: string) =>
@@ -1326,6 +1330,45 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
 
       expect(result.newState.messages.at(-1)).toEqual(
         expect.objectContaining({ content: 'I cannot help with that request.' }),
+      );
+    });
+
+    it('persists a length finishReason on stream_end and message metadata', async () => {
+      const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+        await options?.callback?.onText?.('Partial answer that hits the token cap');
+        await options?.callback?.onCompletion?.({
+          finishReason: 'length',
+          usage: { totalInputTokens: 10, totalOutputTokens: 8, totalTokens: 18 },
+        });
+        return new Response('done');
+      });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+      await createRuntimeExecutors(ctx).call_llm!(
+        {
+          payload: {
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'gpt-4',
+            provider: 'openai',
+            tools: [],
+          },
+          type: 'call_llm' as const,
+        },
+        createMockState(),
+      );
+
+      expect(mockStreamManager.publishStreamEvent).toHaveBeenCalledWith(
+        ctx.operationId,
+        expect.objectContaining({
+          data: expect.objectContaining({ finishReason: 'length' }),
+          type: 'stream_end',
+        }),
+      );
+      expect(mockMessageModel.update).toHaveBeenCalledWith(
+        'msg-123',
+        expect.objectContaining({
+          metadata: expect.objectContaining({ finishReason: 'length' }),
+        }),
       );
     });
 

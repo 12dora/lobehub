@@ -42,7 +42,10 @@ import { formatErrorEventData } from '../formatErrorEventData';
 import { classifyLLMError } from '../llmErrorClassification';
 import { createConversationParentMissingError } from '../messagePersistErrors';
 import { VISIBLE_OUTPUT_END_PUBLISHED_STEP_INDEX_METADATA_KEY } from '../visibleOutputEnd';
-import { initOperationModelRuntime } from './operationModelRuntime';
+import {
+  initOperationModelRuntime,
+  resolveOperationPlatformExecution,
+} from './operationModelRuntime';
 import { buildServerCallLlmContext } from './serverCallLlmContextBuilder';
 import {
   createGeneratedFileDedupeStore,
@@ -188,6 +191,16 @@ export const callLlm =
     }
 
     try {
+      // One catalog lookup for this step, shared by context engineering and runtime
+      // init. A one-shot transient snapshot failure retries here instead of aborting
+      // before init would have looked up the same revision.
+      const resolvedExecution = await resolveOperationPlatformExecution(
+        ctx,
+        provider,
+        model,
+        state,
+      );
+
       const {
         preserveThinkingForPayload,
         processedMessages,
@@ -198,6 +211,7 @@ export const callLlm =
         llmPayload,
         model,
         provider,
+        resolvedExecution: resolvedExecution.execution,
         state,
         tooling,
       });
@@ -220,7 +234,7 @@ export const callLlm =
 
       // Initialize ModelRuntime (read user's keyVaults from database). For a managed platform
       // operation this binds the EXACT historical provider revision the operation pinned.
-      const modelRuntime = await initOperationModelRuntime(ctx, provider, model);
+      const modelRuntime = await initOperationModelRuntime(ctx, provider, model, resolvedExecution);
 
       // Construct ChatStreamPayload
       const stream = ctx.stream ?? true;
@@ -664,6 +678,7 @@ export const callLlm =
               await streamManager.publishStreamEvent(operationId, {
                 data: {
                   finalContent: streamSink.content,
+                  ...(currentStepFinishReason && { finishReason: currentStepFinishReason }),
                   grounding,
                   ...(stepLabel && { stepLabel }),
                   imageList: imageList.length > 0 ? imageList : undefined,
@@ -749,6 +764,9 @@ export const callLlm =
                 }
                 if (answerSalvagedFromReasoning) {
                   metadata.answerSalvagedFromReasoning = true;
+                }
+                if (currentStepFinishReason) {
+                  metadata.finishReason = currentStepFinishReason;
                 }
 
                 // Sanitize tool_call `arguments` before persisting to DB so malformed
@@ -872,7 +890,7 @@ export const callLlm =
                 },
               };
             } catch (error) {
-              streamSink.clearBuffers();
+              await streamSink.cancelAndDrain();
 
               const classified = classifyLLMError(error);
               const interrupted = await isOperationInterrupted(ctx);

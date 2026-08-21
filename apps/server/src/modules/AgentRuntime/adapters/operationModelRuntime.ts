@@ -7,8 +7,16 @@ import {
   initPlatformExactModelRuntime,
   rememberModelRuntimeConversationStartMs,
 } from '@/server/modules/ModelRuntime';
+import {
+  isPlatformManagedAiEnabled,
+  type PlatformAiExecutionConfig,
+  resolvePlatformAiExecutionConfig,
+  resolvePlatformAiExecutionConfigAtRevision,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
 import type { RuntimeExecutorContext } from '../context';
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * Thrown when a platform-managed operation cannot run on its EXACT pinned model revision — a missing
@@ -132,28 +140,108 @@ export const resolveVerifiedPlatformModelPin = async (
   return null;
 };
 
+const TRANSIENT_CATALOG_RESOLUTION_CODES = new Set([
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+]);
+
+const TRANSIENT_CATALOG_RESOLUTION_BACKOFF_MS = 10;
+
+export const isTransientCatalogResolutionError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === 'string' && TRANSIENT_CATALOG_RESOLUTION_CODES.has(code)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /ECONNRESET|connection reset|ECONNREFUSED|ETIMEDOUT/i.test(message);
+};
+
+const isPlatformNotFoundError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const errCode = (error as { code?: unknown }).code;
+  if (errCode === 'PLATFORM_NOT_FOUND') return true;
+  return error instanceof Error && error.message === 'PLATFORM_NOT_FOUND';
+};
+
+const withTransientCatalogRetry = async <T>(run: () => Promise<T>): Promise<T> => {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isTransientCatalogResolutionError(error)) throw error;
+    await sleep(TRANSIENT_CATALOG_RESOLUTION_BACKOFF_MS);
+    return run();
+  }
+};
+
+export interface ResolvedOperationPlatformExecution {
+  execution: PlatformAiExecutionConfig | null;
+  pin: Awaited<ReturnType<typeof resolveVerifiedPlatformModelPin>>;
+  state?: AgentState | null;
+}
+
+/**
+ * One catalog lookup per LLM step: the verified pin (complete platform ops) or the
+ * current published pointer. Transient snapshot failures (connection reset) retry
+ * once with a short backoff. `PLATFORM_NOT_FOUND` is the stable unmanaged/BYOK miss
+ * and becomes `execution: null`; every other error propagates.
+ *
+ * The executor shares this result with context engineering and runtime init so a
+ * one-shot flake cannot abort the step before the runtime path would have succeeded.
+ */
+export const resolveOperationPlatformExecution = async (
+  ctx: RuntimeExecutorContext,
+  provider: string,
+  model: string,
+  state?: AgentState | null,
+): Promise<ResolvedOperationPlatformExecution> => {
+  const resolvedState = state === undefined ? await ctx.loadAgentState?.(ctx.operationId) : state;
+  if (!ctx.serverDB) return { execution: null, pin: null, state: resolvedState };
+
+  const pin = await resolveVerifiedPlatformModelPin(ctx, provider, model, resolvedState);
+
+  if (pin) {
+    const execution = await withTransientCatalogRetry(() =>
+      resolvePlatformAiExecutionConfigAtRevision(ctx.serverDB, pin),
+    );
+    return { execution, pin, state: resolvedState };
+  }
+
+  if (!isPlatformManagedAiEnabled()) return { execution: null, pin, state: resolvedState };
+
+  try {
+    const execution = await withTransientCatalogRetry(() =>
+      resolvePlatformAiExecutionConfig(ctx.serverDB, provider),
+    );
+    return { execution, pin, state: resolvedState };
+  } catch (error) {
+    if (isPlatformNotFoundError(error)) return { execution: null, pin, state: resolvedState };
+    throw error;
+  }
+};
+
 export const initOperationModelRuntime = async (
   ctx: RuntimeExecutorContext,
   provider: string,
   model: string,
+  resolved?: ResolvedOperationPlatformExecution,
 ): Promise<ModelRuntime> => {
-  const state = await ctx.loadAgentState?.(ctx.operationId);
-  const pin = await resolveVerifiedPlatformModelPin(ctx, provider, model, state);
+  const state =
+    resolved && 'state' in resolved ? resolved.state : await ctx.loadAgentState?.(ctx.operationId);
+  const pin =
+    resolved && 'pin' in resolved
+      ? resolved.pin
+      : await resolveVerifiedPlatformModelPin(ctx, provider, model, state);
   if (pin) {
-    return initPlatformExactModelRuntime(
-      ctx.serverDB,
-      ctx.userId!,
-      pin,
-      ctx.workspaceId,
-      conversationOptions(ctx, state),
-    );
+    return initPlatformExactModelRuntime(ctx.serverDB, ctx.userId!, pin, ctx.workspaceId, {
+      ...conversationOptions(ctx, state),
+      ...(resolved?.execution ? { executionConfig: resolved.execution } : {}),
+    });
   }
 
-  return initModelRuntimeFromDB(
-    ctx.serverDB,
-    ctx.userId!,
-    provider,
-    ctx.workspaceId,
-    conversationOptions(ctx, state),
-  );
+  return initModelRuntimeFromDB(ctx.serverDB, ctx.userId!, provider, ctx.workspaceId, {
+    ...conversationOptions(ctx, state),
+    ...(resolved ? { executionConfig: resolved.execution } : {}),
+  });
 };

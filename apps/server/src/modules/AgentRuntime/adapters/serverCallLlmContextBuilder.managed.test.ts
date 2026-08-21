@@ -177,6 +177,12 @@ describe('buildServerCallLlmContext — runtime provider classification', () => 
   beforeEach(() => {
     vi.clearAllMocks();
     isPlatformManagedAiEnabled.mockReturnValue(true);
+    findPlatformOperationRef.mockResolvedValue({
+      classification: 'ordinary',
+      isPlatformOperation: false,
+      modelPin: null,
+      platformStart: null,
+    });
   });
 
   it('resolves a complete platform op from its pinned Cursor revision after the current runtime or feature flag changes', async () => {

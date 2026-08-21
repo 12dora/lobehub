@@ -34,11 +34,7 @@ import { PluginModel } from '@/database/models/plugin';
 import { TopicModel } from '@/database/models/topic';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
-import {
-  isPlatformManagedAiEnabled,
-  resolvePlatformAiExecutionConfig,
-  resolvePlatformAiExecutionConfigAtRevision,
-} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
+import type { PlatformAiExecutionConfig } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { MarketService } from '@/server/services/market';
 import { OnboardingService } from '@/server/services/onboarding';
@@ -46,68 +42,23 @@ import { toAgentContextDocuments } from '@/utils/agentDocumentContextMapping';
 
 import type { RuntimeExecutorContext } from '../context';
 import { log, resolveRuntimeHistoryCount } from '../executorHelpers';
-import {
-  PlatformExactModelUnavailableError,
-  resolveVerifiedPlatformModelPin,
-} from './operationModelRuntime';
+import { resolveOperationPlatformExecution } from './operationModelRuntime';
 import {
   resolveServerCallLlmContextHints,
   type ServerCallLlmContextHints,
 } from './serverCallLlmContextHints';
 import type { ServerCallLlmTooling } from './serverCallLlmTooling';
 
-const isPlatformNotFoundError = (error: unknown): boolean => {
-  if (!error || typeof error !== 'object') return false;
-  const code = (error as { code?: unknown }).code;
-  if (code === 'PLATFORM_NOT_FOUND') return true;
-  return error instanceof Error && error.message === 'PLATFORM_NOT_FOUND';
-};
-
-/**
- * Classify the actual runtime (cursor / openai / …) so context engineering can skip
- * generic injections for web-app runtimes, including managed aliases.
- *
- * Complete platform operations always resolve the verified model pin via the same
- * `resolvePlatformAiExecutionConfigAtRevision` path runtime initialization uses —
- * independent of the current managed-AI feature flag, so a Cursor v1 pin stays Cursor
- * after v2 publishes openai or after rollback disables managed AI.
- *
- * Ordinary calls look up the current catalog pointer. Only the stable
- * `PLATFORM_NOT_FOUND` miss (unmanaged / BYOK) maps to `undefined`; every other
- * resolution error propagates so we never dispatch with an uncertain classification.
- */
-const resolveActualRuntimeProvider = async (
-  ctx: RuntimeExecutorContext,
-  provider: string,
-  model: string,
-  isManagedPlatformOperation: boolean,
-  state: AgentState,
-): Promise<string | undefined> => {
-  if (!ctx.serverDB) return undefined;
-
-  if (isManagedPlatformOperation) {
-    const pin = await resolveVerifiedPlatformModelPin(ctx, provider, model, state);
-    if (!pin) throw new PlatformExactModelUnavailableError();
-    const execution = await resolvePlatformAiExecutionConfigAtRevision(ctx.serverDB, pin);
-    return execution.runtimeProvider;
-  }
-
-  if (!isPlatformManagedAiEnabled()) return undefined;
-
-  try {
-    const execution = await resolvePlatformAiExecutionConfig(ctx.serverDB, provider);
-    return execution.runtimeProvider;
-  } catch (error) {
-    if (isPlatformNotFoundError(error)) return undefined;
-    throw error;
-  }
-};
-
 interface BuildServerCallLlmContextInput {
   ctx: RuntimeExecutorContext;
   llmPayload: CallLLMPayload;
   model: string;
   provider: string;
+  /**
+   * Catalog execution already resolved for this step. `null` is the stable
+   * unmanaged/BYOK miss; omit the field to look up (unit tests / other callers).
+   */
+  resolvedExecution?: PlatformAiExecutionConfig | null;
   state: AgentState;
   tooling: ServerCallLlmTooling;
 }
@@ -124,6 +75,7 @@ export const buildServerCallLlmContext = async ({
   llmPayload,
   model,
   provider,
+  resolvedExecution,
   state,
   tooling,
 }: BuildServerCallLlmContextInput): Promise<ServerCallLlmContextBuildResult> => {
@@ -502,13 +454,11 @@ export const buildServerCallLlmContext = async ({
     }
   }
 
-  const runtimeProvider = await resolveActualRuntimeProvider(
-    ctx,
-    provider,
-    model,
-    isManagedPlatformOperation,
-    state,
-  );
+  const runtimeProvider =
+    resolvedExecution !== undefined
+      ? resolvedExecution?.runtimeProvider
+      : (await resolveOperationPlatformExecution(ctx, provider, model, state)).execution
+          ?.runtimeProvider;
 
   const contextEngineInput = {
     agentDocuments,

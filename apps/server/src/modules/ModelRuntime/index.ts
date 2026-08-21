@@ -54,6 +54,7 @@ import {
   isPlatformManagedAiEnabled,
   listPlatformCatalogModels,
   type PlatformAiExactModelRef,
+  type PlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfigAtRevision,
   wrapPlatformModelRuntime,
@@ -1112,6 +1113,12 @@ const initUserModelRuntimeFromDB = async (
 
 export interface InitModelRuntimeFromDBOptions {
   conversationKey?: string;
+  /**
+   * Pre-resolved platform execution config for this call. `null` means a prior
+   * lookup already returned the stable unmanaged/BYOK miss — skip the catalog
+   * resolve. Omit the field to look up as before.
+   */
+  executionConfig?: PlatformAiExecutionConfig | null;
   firstSeenMs?: number;
   /**
    * Lazily resolve the conversation identity, invoked ONLY when the resolved runtime
@@ -1146,78 +1153,107 @@ export const initModelRuntimeFromDB = async (
       workspaceId,
     });
 
-  // One snapshot for both catalog kinds. Sequential predicate calls each re-read the
-  // policy table when models are unpublished (negative model-takeover is not cached).
+  const initFromExecutionConfig = async (providerConfig: PlatformAiExecutionConfig) => {
+    const runtimeProvider = providerConfig.runtimeProvider;
+    const payload = buildPayloadFromKeyVaults(
+      providerConfig.keyVaults as ProviderKeyVaults,
+      runtimeProvider,
+    );
+    const businessHooks = getBusinessModelRuntimeHooks(userId, provider, workspaceId);
+    const tracingHooks = createLLMGenerationTracingHook(userId, provider, workspaceId);
+    const requestModeHooks = createManagedRequestModeHooks(
+      providerConfig.config?.enableResponseApi,
+    );
+    /**
+     * Platform credentials are shared: a rejection on THIS call is the only place the
+     * platform learns that a stored (still unexpired) token stopped being accepted. The
+     * digest pins the observation to the credential this runtime is built with, so a
+     * reconnect between here and the 401 cannot make the new one look dead.
+     */
+    const authFailureHooks = createPlatformAiAuthFailureHooks(
+      db,
+      provider,
+      digestPlatformAiCredential(providerConfig.keyVaults.oauthAccessToken as string | undefined),
+    );
+    const hooks = mergeModelRuntimeHooks(
+      createPlatformAiModelAllowlistHooks(providerConfig.allowedModels),
+      mergeModelRuntimeHooks(
+        requestModeHooks,
+        mergeModelRuntimeHooks(
+          authFailureHooks,
+          mergeModelRuntimeHooks(businessHooks, tracingHooks),
+        ),
+      ),
+    );
+    const browserProfile = runtimePresentsInstallationIdentity(runtimeProvider)
+      ? await new PlatformBrowserProfileService(db).getOrFallback()
+      : undefined;
+    return wrap(
+      await initModelRuntimeWithUserPayload(
+        provider,
+        payload,
+        {
+          browserProfile,
+          managedBy: 'platform',
+          ...(await resolveConversationParams(runtimeProvider, options)),
+          userId,
+          ...(workspaceId ? { workspaceId } : {}),
+        },
+        hooks,
+      ),
+    );
+  };
+
+  if (options && 'executionConfig' in options) {
+    if (options.executionConfig) return initFromExecutionConfig(options.executionConfig);
+  } else {
+    // One snapshot for both catalog kinds. Sequential predicate calls each re-read the
+    // policy table when models are unpublished (negative model-takeover is not cached).
+    const takeoverFlags = isPlatformManagedAiEnabled()
+      ? await getPlatformAiTakeoverFlags(db)
+      : { models: false, providers: false };
+
+    if (takeoverFlags.providers) {
+      try {
+        return await initFromExecutionConfig(await resolvePlatformAiExecutionConfig(db, provider));
+      } catch (error) {
+        // Platform catalog governs platform providers only. User self-built / BYOK providers
+        // are absent from the catalog → fall back to the user's own config. Other platform
+        // errors (secrets, allowlist, etc.) still fail closed.
+        if (!isPlatformNotFoundError(error)) throw error;
+      }
+    }
+
+    const modelAllowlistHooks = takeoverFlags.models
+      ? createPlatformAiModelAllowlistHooks(
+          ((await listPlatformCatalogModels(db, provider)) ?? []).map((catalogModel) => ({
+            modelKey: catalogModel.id,
+            type: catalogModel.type,
+          })),
+        )
+      : undefined;
+
+    return wrap(
+      await initUserModelRuntimeFromDB(
+        db,
+        userId,
+        provider,
+        workspaceId,
+        options,
+        modelAllowlistHooks,
+      ),
+    );
+  }
+
+  // Pre-resolved unmanaged/BYOK miss (`executionConfig: null`). Model-hosting overlay still applies.
   const takeoverFlags = isPlatformManagedAiEnabled()
     ? await getPlatformAiTakeoverFlags(db)
     : { models: false, providers: false };
-
-  if (takeoverFlags.providers) {
-    try {
-      const providerConfig = await resolvePlatformAiExecutionConfig(db, provider);
-      const runtimeProvider = providerConfig.runtimeProvider;
-      const payload = buildPayloadFromKeyVaults(
-        providerConfig.keyVaults as ProviderKeyVaults,
-        runtimeProvider,
-      );
-      const businessHooks = getBusinessModelRuntimeHooks(userId, provider, workspaceId);
-      const tracingHooks = createLLMGenerationTracingHook(userId, provider, workspaceId);
-      const requestModeHooks = createManagedRequestModeHooks(
-        providerConfig.config?.enableResponseApi,
-      );
-      /**
-       * Platform credentials are shared: a rejection on THIS call is the only place the
-       * platform learns that a stored (still unexpired) token stopped being accepted. The
-       * digest pins the observation to the credential this runtime is built with, so a
-       * reconnect between here and the 401 cannot make the new one look dead.
-       */
-      const authFailureHooks = createPlatformAiAuthFailureHooks(
-        db,
-        provider,
-        digestPlatformAiCredential(providerConfig.keyVaults.oauthAccessToken as string | undefined),
-      );
-      const hooks = mergeModelRuntimeHooks(
-        createPlatformAiModelAllowlistHooks(providerConfig.allowedModels),
-        mergeModelRuntimeHooks(
-          requestModeHooks,
-          mergeModelRuntimeHooks(
-            authFailureHooks,
-            mergeModelRuntimeHooks(businessHooks, tracingHooks),
-          ),
-        ),
-      );
-      const browserProfile = runtimePresentsInstallationIdentity(runtimeProvider)
-        ? await new PlatformBrowserProfileService(db).getOrFallback()
-        : undefined;
-      return wrap(
-        await initModelRuntimeWithUserPayload(
-          provider,
-          payload,
-          {
-            browserProfile,
-            managedBy: 'platform',
-            ...(await resolveConversationParams(runtimeProvider, options)),
-            userId,
-            ...(workspaceId ? { workspaceId } : {}),
-          },
-          hooks,
-        ),
-      );
-    } catch (error) {
-      // Platform catalog governs platform providers only. User self-built / BYOK providers
-      // are absent from the catalog → fall back to the user's own config. Other platform
-      // errors (secrets, allowlist, etc.) still fail closed.
-      if (!isPlatformNotFoundError(error)) throw error;
-    }
-  }
-
-  // Model hosting is independent of credentials: even on the BYOK path the published
-  // set is the exclusive allowlist. Empty / unknown provider → fail closed (no escape).
   const modelAllowlistHooks = takeoverFlags.models
     ? createPlatformAiModelAllowlistHooks(
-        ((await listPlatformCatalogModels(db, provider)) ?? []).map((model) => ({
-          modelKey: model.id,
-          type: model.type,
+        ((await listPlatformCatalogModels(db, provider)) ?? []).map((catalogModel) => ({
+          modelKey: catalogModel.id,
+          type: catalogModel.type,
         })),
       )
     : undefined;
@@ -1252,7 +1288,8 @@ export const initPlatformExactModelRuntime = async (
   workspaceId?: string,
   options?: InitModelRuntimeFromDBOptions,
 ): Promise<ModelRuntime> => {
-  const providerConfig = await resolvePlatformAiExecutionConfigAtRevision(db, ref);
+  const providerConfig =
+    options?.executionConfig ?? (await resolvePlatformAiExecutionConfigAtRevision(db, ref));
   const payload = buildPayloadFromKeyVaults(
     providerConfig.keyVaults as ProviderKeyVaults,
     providerConfig.runtimeProvider,
