@@ -270,11 +270,13 @@ describe('GatewayStreamNotifier', () => {
         expect(started).toEqual(['error', 'agent_runtime_end']);
         expect(delivered).toEqual(['error', 'agent_runtime_end']);
         expect(
-          (notifier as { opPushQueues: Map<string, Promise<void>> }).opPushQueues.has('op-1'),
+          (notifier as unknown as { opPushQueues: Map<string, Promise<void>> }).opPushQueues.has(
+            'op-1',
+          ),
         ).toBe(false);
-        expect((notifier as { mirrorTargets: Map<string, string> }).mirrorTargets.has('op-1')).toBe(
-          false,
-        );
+        expect(
+          (notifier as unknown as { mirrorTargets: Map<string, string> }).mirrorTargets.has('op-1'),
+        ).toBe(false);
       } finally {
         mockFetch.mockReset();
         mockFetch.mockResolvedValue({ ok: true, text: () => Promise.resolve('') });
@@ -307,7 +309,9 @@ describe('GatewayStreamNotifier', () => {
         });
         expect(types).toEqual(['error', 'agent_runtime_end']);
         expect(
-          (notifier as { opPushQueues: Map<string, Promise<void>> }).opPushQueues.has('op-1'),
+          (notifier as unknown as { opPushQueues: Map<string, Promise<void>> }).opPushQueues.has(
+            'op-1',
+          ),
         ).toBe(false);
       } finally {
         mockFetch.mockReset();
