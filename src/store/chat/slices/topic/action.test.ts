@@ -2236,6 +2236,167 @@ describe('topic action', () => {
       expect(next.total).toBe(1);
     });
 
+    it('counts a retained row into the stored total after a stale list response', async () => {
+      // 1 topic in the bucket + 1 registered row = 2 rows / total 2. A stale
+      // response carrying only the original row must not push the stored total
+      // back to 1 — the bucket would then claim fewer rows than it holds.
+      const agentId = 'agent-total-a';
+      const key = topicMapKey({ agentId });
+      const { result } = renderHook(() => useChatStore());
+
+      act(() => {
+        seedBucket(agentId, [{ id: 'tpc_old_c', title: 'Older' } as ChatTopic], 1);
+      });
+
+      act(() => {
+        result.current.internal_pinRegisteredTopic('tpc_new_c');
+        result.current.internal_dispatchTopic({
+          agentId,
+          type: 'addTopic',
+          value: { id: 'tpc_new_c', sessionId: agentId, title: 'Registered' },
+        });
+      });
+      expect(useChatStore.getState().topicDataMap[key].total).toBe(2);
+
+      // The retitled row is the marker that `onData` actually ran — the
+      // pre-fetch bucket is otherwise indistinguishable from the fixed result.
+      (topicService.getTopics as Mock).mockResolvedValue({
+        items: [{ id: 'tpc_old_c', title: 'Older (from server)' }],
+        total: 1,
+      });
+
+      const useFetchTopics = useChatStore.getState().useFetchTopics;
+      renderHook(() => useFetchTopics(true, { agentId, pageSize: 20 }));
+
+      await waitFor(() => {
+        const data = useChatStore.getState().topicDataMap[key];
+        expect(data.items.map((i) => i.title)).toEqual(['Registered', 'Older (from server)']);
+      });
+
+      const data = useChatStore.getState().topicDataMap[key];
+      expect(data.items.map((i) => i.id)).toEqual(['tpc_new_c', 'tpc_old_c']);
+      expect(data.total).toBe(2);
+      expect(data.hasMore).toBe(false);
+    });
+
+    it('counts a retained row into the agent topics view total too', async () => {
+      const agentId = 'agent-total-view';
+      const key = topicMapKey({ agentId });
+      const { result } = renderHook(() => useChatStore());
+
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: agentId,
+          agentTopicsViewMap: {
+            [key]: {
+              currentPage: 0,
+              hasMore: false,
+              isExpandingPageSize: false,
+              isLoadingMore: false,
+              items: [{ id: 'tpc_old_v', title: 'Older' } as ChatTopic],
+              pageSize: 30,
+              total: 1,
+            },
+          },
+          topicDataMap: {},
+        });
+      });
+
+      // The registration mirrors into the view bucket through
+      // `internal_dispatchTopic`, so both maps start at 2 rows / total 2.
+      act(() => {
+        result.current.internal_pinRegisteredTopic('tpc_new_v');
+        result.current.internal_dispatchTopic({
+          agentId,
+          type: 'addTopic',
+          value: { id: 'tpc_new_v', sessionId: agentId, title: 'Registered' },
+        });
+      });
+      expect(useChatStore.getState().agentTopicsViewMap[key].total).toBe(2);
+
+      (topicService.getTopics as Mock).mockResolvedValue({
+        items: [{ id: 'tpc_old_v', title: 'Older (from server)' }],
+        total: 1,
+      });
+
+      const useFetchAgentTopicsView = useChatStore.getState().useFetchAgentTopicsView;
+      renderHook(() => useFetchAgentTopicsView(true, { agentId }));
+
+      await waitFor(() => {
+        const data = useChatStore.getState().agentTopicsViewMap[key];
+        expect(data.items.map((i) => i.title)).toEqual(['Registered', 'Older (from server)']);
+      });
+
+      const data = useChatStore.getState().agentTopicsViewMap[key];
+      expect(data.items.map((i) => i.id)).toEqual(['tpc_new_v', 'tpc_old_v']);
+      expect(data.total).toBe(2);
+      expect(data.hasMore).toBe(false);
+    });
+
+    it('does not drop an older loaded row from an expanded list when a row is retained', async () => {
+      // The expanded-list branch slices to `min(loadedRows, total)`. With the
+      // stale server total that limit is smaller than the number of rows
+      // actually held, so the last loaded page silently loses its tail.
+      const agentId = 'agent-total-expanded';
+      const key = topicMapKey({ agentId });
+      const { result } = renderHook(() => useChatStore());
+
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: agentId,
+          topicDataMap: {
+            [key]: {
+              currentPage: 1,
+              excludeTriggers: ['cron', 'eval'],
+              hasMore: false,
+              isInbox: false,
+              isExpandingPageSize: false,
+              isLoadingMore: false,
+              items: [
+                { id: 'topic-1', title: 'Topic 1' },
+                { id: 'topic-2', title: 'Topic 2' },
+              ] as ChatTopic[],
+              pageSize: 2,
+              total: 2,
+            },
+          },
+        });
+      });
+
+      act(() => {
+        result.current.internal_pinRegisteredTopic('tpc_new_e');
+        result.current.internal_dispatchTopic({
+          agentId,
+          type: 'addTopic',
+          value: { id: 'tpc_new_e', sessionId: agentId, title: 'Registered' },
+        });
+      });
+
+      (topicService.getTopics as Mock).mockResolvedValue({
+        items: [
+          { id: 'topic-1', title: 'Topic 1 (from server)' },
+          { id: 'topic-2', title: 'Topic 2 (from server)' },
+        ],
+        total: 2,
+      });
+
+      const useFetchTopics = useChatStore.getState().useFetchTopics;
+      renderHook(() =>
+        useFetchTopics(true, { agentId, excludeTriggers: ['cron', 'eval'], pageSize: 2 }),
+      );
+
+      // Wait for the response to land (the retitled first row is the marker).
+      await waitFor(() => {
+        expect(useChatStore.getState().topicDataMap[key].items[1]?.title).toBe(
+          'Topic 1 (from server)',
+        );
+      });
+
+      const data = useChatStore.getState().topicDataMap[key];
+      expect(data.items.map((i) => i.id)).toEqual(['tpc_new_e', 'topic-1', 'topic-2']);
+      expect(data.total).toBe(3);
+    });
+
     it('survives a list response that predates it, then yields to one that carries it', () => {
       const agentId = 'agent-registered-b';
       const key = topicMapKey({ agentId });

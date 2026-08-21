@@ -709,15 +709,25 @@ export class ConversationLifecycleActionImpl {
       // unhandled rejection.
       preparing.catch(() => {});
 
+      // The listener has to come back off the signal on EVERY exit from the
+      // race, not just when it fires: `{ once: true }` only detaches on abort,
+      // so a send that completes (or rejects) normally would leave one behind
+      // on the operation's signal for as long as the operation is retained.
+      let releaseCancelled: () => void = () => {};
       const whenCancelled = new Promise<typeof CANCELLED>((resolve) => {
-        if (abortController.signal.aborted) {
-          resolve(CANCELLED);
-          return;
-        }
-        abortController.signal.addEventListener('abort', () => resolve(CANCELLED), { once: true });
+        releaseCancelled = () => resolve(CANCELLED);
       });
+      const handleAbort = () => releaseCancelled();
 
-      const outcome = await Promise.race([preparing, whenCancelled]);
+      if (abortController.signal.aborted) releaseCancelled();
+      else abortController.signal.addEventListener('abort', handleAbort);
+
+      let outcome: PreparedSkills | typeof CANCELLED;
+      try {
+        outcome = await Promise.race([preparing, whenCancelled]);
+      } finally {
+        abortController.signal.removeEventListener('abort', handleAbort);
+      }
 
       if ('cancelled' in outcome || isSendCancelled()) {
         // `cancelOperation` already set the terminal status; only the bubbles

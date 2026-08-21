@@ -57,7 +57,23 @@ const STALE_RUNNING_TOPIC_TIMEOUT = 2 * 60 * 60 * 1000;
  * that a server-side delete is never suppressed for a user-visible duration.
  */
 const PINNED_REGISTERED_TOPIC_TTL = 30_000;
+
 const STALE_RUNNING_TOPIC_QUERY_PAGE_SIZE = 500;
+
+interface ReconciledTopics {
+  /** Rows to store — retained local rows first, then the response's own rows. */
+  items: ChatTopic[];
+  /**
+   * How many of `items` were retained from the local bucket rather than coming
+   * from the response. Retained rows are by construction absent from the
+   * response, so the server `total` does not count them: every caller has to
+   * add this back before storing `total`, deriving `hasMore`, or slicing an
+   * expanded list. Storing the raw server total instead leaves the bucket
+   * holding more rows than `total` claims — which makes `hasMore` read false
+   * too early and makes the expanded-list slice limit drop an older loaded row.
+   */
+  retainedCount: number;
+}
 
 type CronTopicsGroupWithJobInfo = {
   cronJob: unknown;
@@ -428,8 +444,9 @@ export class ChatTopicActionImpl {
    */
   #pinnedRegisteredTopicIds = new Map<string, number>();
 
-  #reconcileFetchedTopics = (items: ChatTopic[], currentItems?: ChatTopic[]): ChatTopic[] => {
+  #reconcileFetchedTopics = (items: ChatTopic[], currentItems?: ChatTopic[]): ReconciledTopics => {
     let next = items;
+    let retainedCount = 0;
 
     if (this.#pendingTopicStatusWrites.size > 0) {
       next = next.map((item) => {
@@ -454,7 +471,10 @@ export class ChatTopicActionImpl {
       if (optimisticRows.length > 0) {
         const fetchedIds = new Set(next.map((item) => item.id));
         const surviving = optimisticRows.filter((item) => !fetchedIds.has(item.id));
-        if (surviving.length > 0) next = [...surviving, ...next];
+        if (surviving.length > 0) {
+          next = [...surviving, ...next];
+          retainedCount += surviving.length;
+        }
       }
     }
 
@@ -476,10 +496,13 @@ export class ChatTopicActionImpl {
         if (pinned) survivors.push(pinned);
       }
 
-      if (survivors.length > 0) next = [...survivors, ...next];
+      if (survivors.length > 0) {
+        next = [...survivors, ...next];
+        retainedCount += survivors.length;
+      }
     }
 
-    return next;
+    return { items: next, retainedCount };
   };
 
   /**
@@ -794,7 +817,15 @@ export class ChatTopicActionImpl {
           const { total: totalCount } = result;
 
           const currentData = this.#get().topicDataMap[containerKey];
-          const topics = this.#reconcileFetchedTopics(result.items, currentData?.items);
+          const { items: topics, retainedCount } = this.#reconcileFetchedTopics(
+            result.items,
+            currentData?.items,
+          );
+          // Retained local rows are not in the server's count — see
+          // `ReconciledTopics.retainedCount`. Every use of the total below
+          // (slice limit, hasMore, stored total) has to be the effective one or
+          // the bucket ends up holding more rows than it claims.
+          const effectiveTotal = totalCount + retainedCount;
 
           const isRefreshingExpandedList =
             !!currentData &&
@@ -806,7 +837,7 @@ export class ChatTopicActionImpl {
 
           const nextItems = isRefreshingExpandedList
             ? (() => {
-                const visibleCount = Math.min(currentData.items.length, totalCount);
+                const visibleCount = Math.min(currentData.items.length, effectiveTotal);
                 const topicIds = new Set(topics.map((item) => item.id));
 
                 return [
@@ -816,13 +847,13 @@ export class ChatTopicActionImpl {
               })()
             : topics;
 
-          const hasMore = totalCount > nextItems.length;
+          const hasMore = effectiveTotal > nextItems.length;
 
           // no need to update map if the current key's data exists and is the same
           if (
             currentData &&
             isEqual(nextItems, currentData.items) &&
-            currentData.total === totalCount &&
+            currentData.total === effectiveTotal &&
             isEqual(currentData.excludeStatuses, effectiveExcludeStatuses) &&
             isEqual(currentData.excludeTriggers, effectiveExcludeTriggers)
           ) {
@@ -844,7 +875,7 @@ export class ChatTopicActionImpl {
                   loadMoreError: undefined,
                   items: nextItems,
                   pageSize,
-                  total: totalCount,
+                  total: effectiveTotal,
                   withDetails,
                 },
               },
@@ -902,7 +933,12 @@ export class ChatTopicActionImpl {
           const { total: totalCount } = result;
 
           const currentData = this.#get().agentTopicsViewMap[containerKey];
-          const topics = this.#reconcileFetchedTopics(result.items, currentData?.items);
+          const { items: topics, retainedCount } = this.#reconcileFetchedTopics(
+            result.items,
+            currentData?.items,
+          );
+          // Same effective-total rule as `useFetchTopics`.
+          const effectiveTotal = totalCount + retainedCount;
 
           // Preserve appended pages on refresh — same convention as
           // `useFetchTopics` so the user keeps their scroll position after
@@ -912,7 +948,7 @@ export class ChatTopicActionImpl {
 
           const nextItems = isRefreshingExpandedList
             ? (() => {
-                const visibleCount = Math.min(currentData.items.length, totalCount);
+                const visibleCount = Math.min(currentData.items.length, effectiveTotal);
                 const topicIds = new Set(topics.map((item) => item.id));
                 return [
                   ...topics,
@@ -921,12 +957,12 @@ export class ChatTopicActionImpl {
               })()
             : topics;
 
-          const hasMore = totalCount > nextItems.length;
+          const hasMore = effectiveTotal > nextItems.length;
 
           if (
             currentData &&
             isEqual(nextItems, currentData.items) &&
-            currentData.total === totalCount
+            currentData.total === effectiveTotal
           ) {
             return;
           }
@@ -943,7 +979,7 @@ export class ChatTopicActionImpl {
                   loadMoreError: undefined,
                   items: nextItems,
                   pageSize,
-                  total: totalCount,
+                  total: effectiveTotal,
                   withDetails,
                 },
               },
@@ -1138,7 +1174,7 @@ export class ChatTopicActionImpl {
           // pending status writes here too (no tmp-row re-prepend: optimistic
           // rows don't belong in search results).
           this.#set(
-            { searchTopics: this.#reconcileFetchedTopics(data), isSearchingTopic: false },
+            { searchTopics: this.#reconcileFetchedTopics(data).items, isSearchingTopic: false },
             false,
             n('useSearchTopics(success)', { keywords }),
           );
@@ -1601,10 +1637,13 @@ export class ChatTopicActionImpl {
     const currentData = this.#get().topicDataMap[key];
     // Append mode keeps the existing items (optimistic rows included) in front,
     // so only pass them for reconciliation on full replacement.
-    const items = this.#reconcileFetchedTopics(
+    const { items, retainedCount } = this.#reconcileFetchedTopics(
       params.items,
       append ? undefined : currentData?.items,
     );
+    // Same effective-total rule as `useFetchTopics`. Append mode passes no
+    // current items, so nothing is ever retained there and this is a no-op.
+    const effectiveTotal = total + retainedCount;
 
     const nextItems = append ? [...(currentData?.items || []), ...items] : items;
 
@@ -1616,13 +1655,13 @@ export class ChatTopicActionImpl {
             currentPage,
             excludeStatuses: currentData?.excludeStatuses,
             excludeTriggers: currentData?.excludeTriggers,
-            hasMore: total > nextItems.length,
+            hasMore: effectiveTotal > nextItems.length,
             isInbox: currentData?.isInbox,
             isExpandingPageSize: false,
             isLoadingMore: false,
             items: nextItems,
             pageSize,
-            total,
+            total: effectiveTotal,
           },
         },
       },

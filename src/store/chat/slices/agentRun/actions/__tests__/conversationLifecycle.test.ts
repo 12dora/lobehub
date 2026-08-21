@@ -391,6 +391,149 @@ describe('ConversationLifecycle actions', () => {
         });
       });
 
+      describe('abort listener lifecycle', () => {
+        /**
+         * The preparation window races the operation's abort signal. That
+         * listener must come off the signal on EVERY exit, not just on abort —
+         * `{ once: true }` alone leaks one listener per completed send onto a
+         * signal that lives as long as the operation.
+         */
+        const instrumentAbortControllers = () => {
+          const log: { kind: 'add' | 'remove'; signal: AbortSignal; type: string }[] = [];
+          const RealAbortController = globalThis.AbortController;
+
+          vi.spyOn(globalThis, 'AbortController').mockImplementation(() => {
+            const controller = new RealAbortController();
+            const { signal } = controller;
+            const add = signal.addEventListener.bind(signal);
+            const remove = signal.removeEventListener.bind(signal);
+
+            signal.addEventListener = (type: any, ...rest: any[]) => {
+              log.push({ kind: 'add', signal, type });
+              return add(type, ...(rest as [any]));
+            };
+            signal.removeEventListener = (type: any, ...rest: any[]) => {
+              log.push({ kind: 'remove', signal, type });
+              return remove(type, ...(rest as [any]));
+            };
+
+            return controller;
+          });
+
+          return log;
+        };
+
+        const abortListenerBalance = (
+          log: { kind: 'add' | 'remove'; signal: AbortSignal; type: string }[],
+          signal: AbortSignal,
+        ) => {
+          const forSignal = log.filter((e) => e.signal === signal && e.type === 'abort');
+          return {
+            added: forSignal.filter((e) => e.kind === 'add').length,
+            removed: forSignal.filter((e) => e.kind === 'remove').length,
+          };
+        };
+
+        const readySkillCatalog = () => {
+          vi.spyOn(toolStoreModule, 'getToolStoreState').mockReturnValue({
+            agentSkillDetailMap: {},
+            agentSkills: [],
+            builtinSkills: [],
+            platformSkillCatalog: { revision: 3, skills: [] },
+            platformSkillRuntimeStatus: 'ready',
+          } as any);
+        };
+
+        const sendOperationSignal = () => {
+          const operation = Object.values(useChatStore.getState().operations).find(
+            (op) => op.type === 'sendMessage',
+          );
+          expect(operation).toBeDefined();
+          return operation!.abortController.signal;
+        };
+
+        it('removes the abort listener after a normal completion', async () => {
+          const log = instrumentAbortControllers();
+          readySkillCatalog();
+          vi.spyOn(agentSkillService, 'beginPlatformSkillOperation').mockResolvedValue({
+            refs: [],
+          } as any);
+          vi.spyOn(aiChatService, 'sendMessageInServer').mockResolvedValue({
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            messages: [],
+            topics: undefined,
+            userMessageId: TEST_IDS.USER_MESSAGE_ID,
+          } as any);
+
+          const { result } = renderHook(() => useChatStore());
+          await act(async () => {
+            await result.current.sendMessage({
+              context: createTestContext(),
+              message: TEST_CONTENT.USER_MESSAGE,
+            });
+          });
+
+          expect(abortListenerBalance(log, sendOperationSignal())).toEqual({
+            added: 1,
+            removed: 1,
+          });
+        });
+
+        it('removes the abort listener after the preparation rejects', async () => {
+          const log = instrumentAbortControllers();
+          readySkillCatalog();
+          vi.spyOn(agentSkillService, 'beginPlatformSkillOperation').mockRejectedValue(
+            new Error('catalog offline'),
+          );
+
+          const { result } = renderHook(() => useChatStore());
+          await act(async () => {
+            await expect(
+              result.current.sendMessage({
+                context: createTestContext(),
+                message: TEST_CONTENT.USER_MESSAGE,
+              }),
+            ).rejects.toThrow('catalog offline');
+          });
+
+          expect(abortListenerBalance(log, sendOperationSignal())).toEqual({
+            added: 1,
+            removed: 1,
+          });
+        });
+
+        it('removes the abort listener after a cancellation', async () => {
+          const log = instrumentAbortControllers();
+          readySkillCatalog();
+          vi.spyOn(agentSkillService, 'beginPlatformSkillOperation').mockReturnValue(
+            new Promise(() => {}) as any,
+          );
+
+          const { result } = renderHook(() => useChatStore());
+          let sending: Promise<unknown> | undefined;
+          await act(async () => {
+            sending = result.current.sendMessage({
+              context: createTestContext(),
+              message: TEST_CONTENT.USER_MESSAGE,
+            });
+            await Promise.resolve();
+          });
+
+          const operation = Object.values(useChatStore.getState().operations).find(
+            (op) => op.type === 'sendMessage',
+          );
+          const { signal } = operation!.abortController;
+          expect(abortListenerBalance(log, signal)).toMatchObject({ added: 1, removed: 0 });
+
+          await act(async () => {
+            result.current.cancelOperation(operation!.id, 'User cancelled');
+            await sending;
+          });
+
+          expect(abortListenerBalance(log, signal)).toEqual({ added: 1, removed: 1 });
+        });
+      });
+
       it('honours a Stop landing while the managed-catalog request is still pending', async () => {
         // The operation and both bubbles now exist BEFORE this window, so a
         // cancel inside it has to clean up after itself — and must not depend
