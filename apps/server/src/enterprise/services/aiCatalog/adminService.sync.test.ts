@@ -1,7 +1,6 @@
 // @vitest-environment node
 import { LobeChatGPTAI } from '@lobechat/model-runtime';
 import { eq, sql } from 'drizzle-orm';
-import type { ChatModelCard } from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';

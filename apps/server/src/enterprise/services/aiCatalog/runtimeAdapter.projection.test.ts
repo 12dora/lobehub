@@ -1281,9 +1281,9 @@ describe('projectAiCatalogRuntimeState settings merge', () => {
       enabled: true,
       settings: { extendParams: ['chatgptWebThinkingEffort'] },
     });
-    expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6-thinking')?.visible).not.toBe(
-      false,
-    );
+    expect(
+      state.enabledAiModels.find((model) => model.id === 'gpt-5-6-thinking')?.visible,
+    ).not.toBe(false);
   });
 
   it('rewrites published gpt5_6ReasoningEffort and keeps auto/pro visible', () => {

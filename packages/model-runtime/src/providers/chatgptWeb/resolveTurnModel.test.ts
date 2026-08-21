@@ -37,10 +37,12 @@ describe('resolveChatGPTWebTurn', () => {
         model: 'gpt-5-6-thinking',
         thinkingEffort: 'standard',
       });
-      expect(resolveChatGPTWebTurn({ model: 'gpt-5-6-thinking', thinkingEffort: 'xhigh' })).toEqual({
-        model: 'gpt-5-6-thinking',
-        thinkingEffort: 'extended',
-      });
+      expect(resolveChatGPTWebTurn({ model: 'gpt-5-6-thinking', thinkingEffort: 'xhigh' })).toEqual(
+        {
+          model: 'gpt-5-6-thinking',
+          thinkingEffort: 'extended',
+        },
+      );
     });
 
     it('never puts instant or pro on the wire as thinking_effort', () => {

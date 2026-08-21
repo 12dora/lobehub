@@ -157,15 +157,15 @@ export interface OpenAIChatMessage {
 export interface ChatStreamPayload {
   apiMode?: 'chatCompletion' | 'responses';
   /**
-   * ChatGPT Web `*-thinking` SKUs: `thinking_effort` ∈ standard | extended | max.
-   * Dedicated field so OpenAI / OpenRouter never forward it as `reasoning_effort`.
-   */
-  chatgptWebThinkingEffort?: 'standard' | 'extended' | 'max';
-  /**
    * ChatGPT Web `*-pro` SKUs. The runtime always sends `thinking_effort: standard`
    * regardless of this value; the field exists so the 1-level control can persist.
    */
   chatgptWebProThinkingEffort?: 'standard';
+  /**
+   * ChatGPT Web `*-thinking` SKUs: `thinking_effort` ∈ standard | extended | max.
+   * Dedicated field so OpenAI / OpenRouter never forward it as `reasoning_effort`.
+   */
+  chatgptWebThinkingEffort?: 'standard' | 'extended' | 'max';
   /**
    * @title Provider deployment name
    */
