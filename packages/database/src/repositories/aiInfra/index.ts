@@ -25,6 +25,9 @@ type DecryptUserKeyVaults = (encryptKeyVaultsStr: string | null) => Promise<any>
 const normalizeProvider = (provider: string) => provider.toLowerCase();
 
 const applyChatGPTWebReadPolicy = (item: EnabledAiModel): EnabledAiModel => {
+  // User-created (custom) rows are the user's own contract — never rewritten,
+  // even when their id collides with a ChatGPT Web SKU name.
+  if (item.source === AiModelSourceEnum.Custom) return item;
   const policy = applyChatGPTWebModelPolicy({
     abilities: item.abilities,
     modelId: item.id,

@@ -1089,6 +1089,47 @@ describe('AiInfraRepos', () => {
       });
     });
 
+    it('leaves custom ChatGPT Web rows untouched even when the id collides with a SKU', async () => {
+      const mockProviders = [
+        { enabled: true, id: 'chatgptweb', name: 'ChatGPT Web', source: 'builtin' as const },
+      ];
+      const mockAllModels = [
+        {
+          abilities: { reasoning: true },
+          enabled: true,
+          id: 'gpt-5-6-pro',
+          providerId: 'chatgptweb',
+          settings: { extendParams: ['gpt5_6ReasoningEffort'], searchImpl: 'params' },
+          source: 'custom' as const,
+          type: 'chat' as const,
+        },
+        {
+          abilities: { reasoning: true },
+          enabled: true,
+          id: 'gpt-5-6',
+          providerId: 'chatgptweb',
+          settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+          source: 'custom' as const,
+          type: 'chat' as const,
+        },
+      ];
+      vi.spyOn(repo, 'getAiProviderList').mockResolvedValue(mockProviders);
+      vi.spyOn(repo.aiModelModel, 'getAllModels').mockResolvedValue(mockAllModels as any);
+      vi.spyOn(repo as any, 'fetchBuiltinModels').mockResolvedValue([]);
+
+      const result = await repo.getEnabledModels();
+      const pro = result.find((model) => model.id === 'gpt-5-6-pro');
+      expect(pro?.settings).toEqual({
+        extendParams: ['gpt5_6ReasoningEffort'],
+        searchImpl: 'params',
+      });
+      expect(pro?.settings).not.toHaveProperty('legacyAlias');
+      expect(pro?.visible).toBeUndefined();
+      expect(result.find((model) => model.id === 'gpt-5-6')?.settings).toEqual({
+        extendParams: ['gpt5_6ReasoningEffort'],
+      });
+    });
+
     it('rewrites ChatGPT Web BYOK leftovers at read time', async () => {
       const mockProviders = [
         { enabled: true, id: 'chatgptweb', name: 'ChatGPT Web', source: 'builtin' as const },
