@@ -883,3 +883,70 @@ describe('platform.taskTemplates.list', () => {
     expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(0);
   });
 });
+
+const isServerDB = process.env.TEST_SERVER_DB === '1';
+
+describe.skipIf(!isServerDB)('admin.taskTemplates catalog lock races (TEST_SERVER_DB=1)', () => {
+  it('seed vs importRecommendations does not overwrite imported copy', async () => {
+    listDailyRecommendSpy.mockImplementation(
+      async (_keys: string[], options?: { locale?: string }) => [
+        marketTemplate({ title: options?.locale === 'zh-CN' ? '工程日报' : 'Market title' }),
+      ],
+    );
+    const caller = await adminCaller();
+
+    await Promise.all([
+      caller.importRecommendations({ locale: 'zh-CN' }),
+      caller.list({ limit: 20, locale: 'en-US', offset: 0 }),
+    ]);
+
+    const rows = await db.select().from(platformTaskTemplates);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.title).toBe('工程日报');
+  });
+
+  it('seed vs create keeps the created row', async () => {
+    const caller = await adminCaller();
+    await Promise.all([
+      caller.create(draft({ identifier: 'custom-row', title: 'Custom' })),
+      caller.list({ limit: 20, offset: 0 }),
+    ]);
+
+    const identifiers = (await db.select().from(platformTaskTemplates)).map(
+      (row) => row.identifier,
+    );
+    expect(identifiers.includes('custom-row')).toBe(true);
+  });
+
+  it('seed vs delete-all on an unmarked catalog does not recreate library rows', async () => {
+    const [row] = await db
+      .insert(platformTaskTemplates)
+      .values({
+        category: 'engineering',
+        connectors: [],
+        cronPattern: '0 9 * * *',
+        description: '',
+        enabled: true,
+        id: 'unmarked',
+        identifier: 'custom-row',
+        instruction: 'Keep me.',
+        interests: ['coding'],
+        revision: 1,
+        source: 'manual',
+        title: 'Custom',
+      })
+      .returning();
+    await db.delete(platformTemplateCatalogState);
+    const caller = await adminCaller();
+
+    await Promise.all([
+      caller.delete({ expectedRevision: row!.revision, id: row!.id }),
+      caller.list({ limit: 100, offset: 0 }),
+    ]);
+
+    expect(
+      (await db.select().from(platformTaskTemplates)).map((item) => item.identifier),
+    ).not.toContain('market-daily');
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
+  });
+});

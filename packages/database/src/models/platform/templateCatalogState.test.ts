@@ -1,15 +1,20 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { platformTemplateCatalogState } from '../../schemas/platform';
+import { platformAgentTemplates, platformTemplateCatalogState } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
-import { PlatformTemplateCatalogStateModel } from './templateCatalogState';
+import {
+  PLATFORM_TEMPLATE_CATALOG_LEGACY_LOCALE,
+  PlatformTemplateCatalogStateModel,
+} from './templateCatalogState';
 
 const db: LobeChatDatabase = await getTestDB();
 const model = new PlatformTemplateCatalogStateModel(db);
 
 const cleanup = async () => {
+  await db.delete(platformAgentTemplates);
   await db.delete(platformTemplateCatalogState);
 };
 
@@ -61,5 +66,45 @@ describe('PlatformTemplateCatalogStateModel', () => {
     expect(second.seededBy).toBe('admin-a');
     expect(second.seededAt.getTime()).toBe(first.seededAt.getTime());
     expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
+  });
+
+  it('acquires the catalog advisory lock inside a transaction', async () => {
+    await db.transaction(async (tx) => {
+      await new PlatformTemplateCatalogStateModel(tx).acquireLock('agent_templates');
+      await new PlatformTemplateCatalogStateModel(tx).acquireLock('agent_templates');
+    });
+  });
+
+  it('backfills a legacy marker for a nonempty catalog and not for an empty one', async () => {
+    await db.execute(sql`
+      INSERT INTO "platform_template_catalog_state" ("domain", "seeded_locale", "seeded_by")
+      SELECT 'agent_templates', 'legacy', NULL
+      WHERE EXISTS (SELECT 1 FROM "platform_agent_templates")
+      ON CONFLICT ("domain") DO NOTHING
+    `);
+    expect(await model.findSeeded('agent_templates')).toBeUndefined();
+
+    await db.insert(platformAgentTemplates).values({
+      description: '',
+      enabled: true,
+      id: 'upgrade-row',
+      identifier: 'custom-row',
+      revision: 1,
+      source: 'manual',
+      systemRole: 'Keep me.',
+      title: 'Custom',
+    });
+
+    await db.execute(sql`
+      INSERT INTO "platform_template_catalog_state" ("domain", "seeded_locale", "seeded_by")
+      SELECT 'agent_templates', 'legacy', NULL
+      WHERE EXISTS (SELECT 1 FROM "platform_agent_templates")
+      ON CONFLICT ("domain") DO NOTHING
+    `);
+
+    expect(await model.findSeeded('agent_templates')).toMatchObject({
+      seededBy: null,
+      seededLocale: PLATFORM_TEMPLATE_CATALOG_LEGACY_LOCALE,
+    });
   });
 });

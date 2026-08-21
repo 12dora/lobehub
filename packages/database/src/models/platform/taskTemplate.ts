@@ -16,6 +16,13 @@ import type { PlatformTaskTemplateConnector } from '../../schemas/platform';
 import { platformTaskTemplates } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { PlatformRevisionConflictError } from './errors';
+import {
+  PLATFORM_TEMPLATE_CATALOG_LEGACY_LOCALE,
+  PlatformTemplateCatalogStateModel,
+  withPlatformTemplateCatalogLock,
+} from './templateCatalogState';
+
+const TASK_TEMPLATE_CATALOG_DOMAIN = 'task_templates' as const;
 
 /** Namespace for per-identifier import locks (`hashtext` key of `${ns}:${identifier}`). */
 const TASK_TEMPLATE_IMPORT_LOCK_NAMESPACE = 'aihub:platform-task-templates-import:v1';
@@ -232,32 +239,35 @@ export class PlatformTaskTemplateModel {
     source: 'manual' | 'market';
     /** Defaults to the end of the list — new rows never jump the queue. */
     sortOrder?: number;
-  }): Promise<PlatformTaskTemplateRecord> => {
-    const sortOrder = params.sortOrder ?? (await this.nextSortOrder());
-    let row: typeof platformTaskTemplates.$inferSelect | undefined;
-    try {
-      [row] = await this.db
-        .insert(platformTaskTemplates)
-        .values({
-          ...params.document,
-          id: params.id,
-          identifier: params.identifier,
-          revision: 1,
-          sortOrder,
-          source: params.source,
-          updatedBy: params.actorUserId,
-        })
-        .returning();
-    } catch (error) {
-      // A taken identifier is an ordinary input conflict, not an internal failure.
-      if (isUniqueViolation(error)) {
-        throw new PlatformTaskTemplateIdentifierConflictError(params.identifier);
+  }): Promise<PlatformTaskTemplateRecord> =>
+    withPlatformTemplateCatalogLock(this.db, TASK_TEMPLATE_CATALOG_DOMAIN, async (tx) => {
+      const inner = new PlatformTaskTemplateModel(tx);
+      const sortOrder = params.sortOrder ?? (await inner.nextSortOrder());
+      let row: typeof platformTaskTemplates.$inferSelect | undefined;
+      try {
+        [row] = await tx
+          .insert(platformTaskTemplates)
+          .values({
+            ...params.document,
+            id: params.id,
+            identifier: params.identifier,
+            revision: 1,
+            sortOrder,
+            source: params.source,
+            updatedBy: params.actorUserId,
+          })
+          .returning();
+      } catch (error) {
+        // A taken identifier is an ordinary input conflict, not an internal failure.
+        if (isUniqueViolation(error)) {
+          throw new PlatformTaskTemplateIdentifierConflictError(params.identifier);
+        }
+        throw error;
       }
-      throw error;
-    }
-    if (!row) throw new Error('Failed to insert platform task template');
-    return toRecord(row);
-  };
+      if (!row) throw new Error('Failed to insert platform task template');
+      await inner.claimCatalog(params.actorUserId);
+      return toRecord(row);
+    });
 
   /**
    * Conditional content update.
@@ -268,37 +278,40 @@ export class PlatformTaskTemplateModel {
     document: PlatformTaskTemplateDocument;
     expectedRevision: number;
     id: string;
-  }): Promise<PlatformTaskTemplateRecord> => {
-    const [row] = await this.db
-      .update(platformTaskTemplates)
-      .set({
-        ...params.document,
-        revision: params.expectedRevision + 1,
-        updatedAt: new Date(),
-        updatedBy: params.actorUserId,
-      })
-      .where(
-        and(
-          eq(platformTaskTemplates.id, params.id),
-          eq(platformTaskTemplates.revision, params.expectedRevision),
-        ),
-      )
-      .returning();
+  }): Promise<PlatformTaskTemplateRecord> =>
+    withPlatformTemplateCatalogLock(this.db, TASK_TEMPLATE_CATALOG_DOMAIN, async (tx) => {
+      const inner = new PlatformTaskTemplateModel(tx);
+      const [row] = await tx
+        .update(platformTaskTemplates)
+        .set({
+          ...params.document,
+          revision: params.expectedRevision + 1,
+          updatedAt: new Date(),
+          updatedBy: params.actorUserId,
+        })
+        .where(
+          and(
+            eq(platformTaskTemplates.id, params.id),
+            eq(platformTaskTemplates.revision, params.expectedRevision),
+          ),
+        )
+        .returning();
 
-    if (!row) {
-      const current = await this.findById(params.id);
-      throw new PlatformRevisionConflictError(
-        'Task template revision conflict: expectedRevision does not match current revision',
-        {
-          currentRevision: current?.revision ?? -1,
-          expectedRevision: params.expectedRevision,
-          resourceId: params.id,
-          resourceType: 'task_template',
-        },
-      );
-    }
-    return toRecord(row);
-  };
+      if (!row) {
+        const current = await inner.findById(params.id);
+        throw new PlatformRevisionConflictError(
+          'Task template revision conflict: expectedRevision does not match current revision',
+          {
+            currentRevision: current?.revision ?? -1,
+            expectedRevision: params.expectedRevision,
+            resourceId: params.id,
+            resourceType: 'task_template',
+          },
+        );
+      }
+      await inner.claimCatalog(params.actorUserId);
+      return toRecord(row);
+    });
 
   /**
    * Enable / disable a single row under the same per-row CAS as a full edit: a table left open
@@ -311,26 +324,31 @@ export class PlatformTaskTemplateModel {
     enabled: boolean;
     expectedRevision: number;
     id: string;
-  }): Promise<PlatformTaskTemplateRecord | undefined> => {
-    const [row] = await this.db
-      .update(platformTaskTemplates)
-      .set({
-        enabled: params.enabled,
-        revision: params.expectedRevision + 1,
-        updatedAt: new Date(),
-        updatedBy: params.actorUserId,
-      })
-      .where(
-        and(
-          eq(platformTaskTemplates.id, params.id),
-          eq(platformTaskTemplates.revision, params.expectedRevision),
-        ),
-      )
-      .returning();
+  }): Promise<PlatformTaskTemplateRecord | undefined> =>
+    withPlatformTemplateCatalogLock(this.db, TASK_TEMPLATE_CATALOG_DOMAIN, async (tx) => {
+      const inner = new PlatformTaskTemplateModel(tx);
+      const [row] = await tx
+        .update(platformTaskTemplates)
+        .set({
+          enabled: params.enabled,
+          revision: params.expectedRevision + 1,
+          updatedAt: new Date(),
+          updatedBy: params.actorUserId,
+        })
+        .where(
+          and(
+            eq(platformTaskTemplates.id, params.id),
+            eq(platformTaskTemplates.revision, params.expectedRevision),
+          ),
+        )
+        .returning();
 
-    if (row) return toRecord(row);
-    return this.rejectStale(params.id, params.expectedRevision);
-  };
+      if (row) {
+        await inner.claimCatalog(params.actorUserId);
+        return toRecord(row);
+      }
+      return inner.rejectStale(params.id, params.expectedRevision);
+    });
 
   /**
    * Hard delete under the same per-row CAS.
@@ -340,20 +358,25 @@ export class PlatformTaskTemplateModel {
   delete = async (params: {
     expectedRevision: number;
     id: string;
-  }): Promise<PlatformTaskTemplateRecord | undefined> => {
-    const [row] = await this.db
-      .delete(platformTaskTemplates)
-      .where(
-        and(
-          eq(platformTaskTemplates.id, params.id),
-          eq(platformTaskTemplates.revision, params.expectedRevision),
-        ),
-      )
-      .returning();
+  }): Promise<PlatformTaskTemplateRecord | undefined> =>
+    withPlatformTemplateCatalogLock(this.db, TASK_TEMPLATE_CATALOG_DOMAIN, async (tx) => {
+      const inner = new PlatformTaskTemplateModel(tx);
+      const [row] = await tx
+        .delete(platformTaskTemplates)
+        .where(
+          and(
+            eq(platformTaskTemplates.id, params.id),
+            eq(platformTaskTemplates.revision, params.expectedRevision),
+          ),
+        )
+        .returning();
 
-    if (row) return toRecord(row);
-    return this.rejectStale(params.id, params.expectedRevision);
-  };
+      if (row) {
+        await inner.claimCatalog(null);
+        return toRecord(row);
+      }
+      return inner.rejectStale(params.id, params.expectedRevision);
+    });
 
   /**
    * Apply a new display order to a set of rows.
@@ -371,62 +394,65 @@ export class PlatformTaskTemplateModel {
   reorder = async (params: {
     actorUserId: string | null;
     items: { expectedRevision: number; id: string }[];
-  }): Promise<PlatformTaskTemplateRecord[] | undefined> => {
-    const ids = params.items.map((item) => item.id);
-    const locked = await this.db
-      .select()
-      .from(platformTaskTemplates)
-      .where(inArray(platformTaskTemplates.id, ids))
-      // Deterministic lock order (by id) so two concurrent reorders cannot deadlock.
-      .orderBy(asc(platformTaskTemplates.id))
-      .for('update');
+  }): Promise<PlatformTaskTemplateRecord[] | undefined> =>
+    withPlatformTemplateCatalogLock(this.db, TASK_TEMPLATE_CATALOG_DOMAIN, async (tx) => {
+      const inner = new PlatformTaskTemplateModel(tx);
+      const ids = params.items.map((item) => item.id);
+      const locked = await tx
+        .select()
+        .from(platformTaskTemplates)
+        .where(inArray(platformTaskTemplates.id, ids))
+        // Deterministic lock order (by id) so two concurrent reorders cannot deadlock.
+        .orderBy(asc(platformTaskTemplates.id))
+        .for('update');
 
-    if (locked.length !== ids.length) return undefined;
+      if (locked.length !== ids.length) return undefined;
 
-    const byId = new Map(locked.map((row) => [row.id, row]));
-    for (const item of params.items) {
-      const row = byId.get(item.id);
-      if (row && row.revision !== item.expectedRevision) {
-        throw new PlatformRevisionConflictError(
-          'Task template revision conflict: the list changed before this reorder was applied',
-          {
-            currentRevision: row.revision,
-            expectedRevision: item.expectedRevision,
-            resourceId: item.id,
-            resourceType: 'task_template',
-          },
-        );
+      const byId = new Map(locked.map((row) => [row.id, row]));
+      for (const item of params.items) {
+        const row = byId.get(item.id);
+        if (row && row.revision !== item.expectedRevision) {
+          throw new PlatformRevisionConflictError(
+            'Task template revision conflict: the list changed before this reorder was applied',
+            {
+              currentRevision: row.revision,
+              expectedRevision: item.expectedRevision,
+              resourceId: item.id,
+              resourceType: 'task_template',
+            },
+          );
+        }
       }
-    }
 
-    // Rows written before drag ordering existed can share slot 0, so force the reused slots to be
-    // strictly increasing — otherwise the "new" order would collapse back onto one value.
-    // Accumulates over the running previous slot, not the original array.
-    const slots: number[] = [];
-    for (const slot of locked.map((row) => row.sortOrder).sort((a, b) => a - b)) {
-      const previous = slots.at(-1);
-      slots.push(previous === undefined ? slot : Math.max(slot, previous + 1));
-    }
-    const updatedAt = new Date();
-    const results: PlatformTaskTemplateRecord[] = [];
+      // Rows written before drag ordering existed can share slot 0, so force the reused slots to be
+      // strictly increasing — otherwise the "new" order would collapse back onto one value.
+      // Accumulates over the running previous slot, not the original array.
+      const slots: number[] = [];
+      for (const slot of locked.map((row) => row.sortOrder).sort((a, b) => a - b)) {
+        const previous = slots.at(-1);
+        slots.push(previous === undefined ? slot : Math.max(slot, previous + 1));
+      }
+      const updatedAt = new Date();
+      const results: PlatformTaskTemplateRecord[] = [];
 
-    for (const [index, item] of params.items.entries()) {
-      const [row] = await this.db
-        .update(platformTaskTemplates)
-        .set({
-          revision: item.expectedRevision + 1,
-          sortOrder: slots[index]!,
-          updatedAt,
-          updatedBy: params.actorUserId,
-        })
-        .where(eq(platformTaskTemplates.id, item.id))
-        .returning();
-      if (!row) return undefined;
-      results.push(toRecord(row));
-    }
+      for (const [index, item] of params.items.entries()) {
+        const [row] = await tx
+          .update(platformTaskTemplates)
+          .set({
+            revision: item.expectedRevision + 1,
+            sortOrder: slots[index]!,
+            updatedAt,
+            updatedBy: params.actorUserId,
+          })
+          .where(eq(platformTaskTemplates.id, item.id))
+          .returning();
+        if (!row) return undefined;
+        results.push(toRecord(row));
+      }
 
-    return results;
-  };
+      await inner.claimCatalog(params.actorUserId);
+      return results;
+    });
 
   /** A conditional write that matched nothing is either a missing row or a stale revision. */
   private rejectStale = async (id: string, expectedRevision: number): Promise<undefined> => {
@@ -444,54 +470,47 @@ export class PlatformTaskTemplateModel {
   };
 
   /**
-   * Idempotent import by `identifier`: content columns are overwritten, while the operator's own
-   * `enabled` / `sortOrder` choices on an existing row are preserved (they are absent from the
-   * conflict `set`).
+   * Idempotent import by `identifier`.
    *
-   * One atomic `INSERT … ON CONFLICT (identifier) DO UPDATE` per row — never select-then-insert,
-   * so two concurrent imports serialize on the unique index instead of racing it and rolling a
-   * whole batch back. `xmax = 0` is true only for a freshly inserted tuple, which is how
-   * created/updated are told apart without a second read.
+   * Default `onConflict: 'update'` is the operator import: content columns are overwritten while
+   * `enabled` / `sortOrder` on an existing row are preserved. Auto-seed uses `'nothing'` so a
+   * concurrent create/import cannot have its localized content replaced.
    *
-   * `FOR UPDATE` cannot lock a row that does not exist yet, so two first-time importers of the
-   * same identifier would both observe `before === undefined` even though the loser's upsert
-   * reports `inserted: false`. A transaction-scoped advisory lock on the identifier serializes
-   * the read+upsert so the loser always sees the winner's committed row as `before`.
+   * Catalog lock is acquired first (via {@link withPlatformTemplateCatalogLock}); per-identifier
+   * advisory locks stay next so first-time importers still serialize the audit `before` read.
    */
   importByIdentifier = async (params: {
     actorUserId: string | null;
     nextId: () => string;
+    onConflict?: 'update' | 'nothing';
     rows: PlatformTaskTemplateImportRow[];
+    seededLocale?: string;
   }): Promise<{
     changes: PlatformTaskTemplateImportChange[];
     created: number;
     updated: number;
-  }> => {
-    const changes: PlatformTaskTemplateImportChange[] = [];
-    // Imported rows land at the end, each in its own slot — otherwise every import would share
-    // slot 0 and there would be nothing for a later drag to reorder.
-    let nextSlot = await this.nextSortOrder();
-    let created = 0;
-    let updated = 0;
+  }> =>
+    withPlatformTemplateCatalogLock(this.db, TASK_TEMPLATE_CATALOG_DOMAIN, async (tx) => {
+      const inner = new PlatformTaskTemplateModel(tx);
+      const changes: PlatformTaskTemplateImportChange[] = [];
+      let nextSlot = await inner.nextSortOrder();
+      let created = 0;
+      let updated = 0;
+      const onConflict = params.onConflict ?? 'update';
 
-    for (const row of params.rows) {
-      // FOR UPDATE is a no-op when the identifier has no row yet. Serialize first-time
-      // importers on a transaction-scoped advisory lock so the loser of the race reads the
-      // winner's committed row as `before` instead of reporting an unaudited overwrite.
-      await this.db.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtext(${`${TASK_TEMPLATE_IMPORT_LOCK_NAMESPACE}:${row.identifier}`})::bigint)`,
-      );
-      const [locked] = await this.db
-        .select()
-        .from(platformTaskTemplates)
-        .where(eq(platformTaskTemplates.identifier, row.identifier))
-        .limit(1)
-        .for('update');
-      const before = locked ? toRecord(locked) : undefined;
+      for (const row of params.rows) {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${`${TASK_TEMPLATE_IMPORT_LOCK_NAMESPACE}:${row.identifier}`})::bigint)`,
+        );
+        const [locked] = await tx
+          .select()
+          .from(platformTaskTemplates)
+          .where(eq(platformTaskTemplates.identifier, row.identifier))
+          .limit(1)
+          .for('update');
+        const before = locked ? toRecord(locked) : undefined;
 
-      const [result] = await this.db
-        .insert(platformTaskTemplates)
-        .values({
+        const values = {
           category: row.category,
           connectors: row.connectors,
           cronPattern: row.cronPattern,
@@ -503,51 +522,69 @@ export class PlatformTaskTemplateModel {
           instruction: row.instruction,
           interests: row.interests,
           revision: 1,
-          // Discarded when the row already exists (the conflict `set` omits sortOrder).
           sortOrder: nextSlot,
-          source: 'market',
+          source: 'market' as const,
           title: row.title,
           updatedBy: params.actorUserId,
-        })
-        .onConflictDoUpdate({
-          // `enabled` and `sortOrder` are intentionally omitted: they belong to the operator.
-          set: {
-            category: row.category,
-            connectors: row.connectors,
-            cronPattern: row.cronPattern,
-            description: row.description,
-            icon: row.icon,
-            instruction: row.instruction,
-            interests: row.interests,
-            revision: sql`${platformTaskTemplates.revision} + 1`,
-            source: 'market',
-            title: row.title,
-            updatedAt: new Date(),
-            updatedBy: params.actorUserId,
-          },
-          target: platformTaskTemplates.identifier,
-        })
-        // Whole row + the insert marker: `getTableColumns` is the supported way to widen a
-        // `returning()` selection with an extra expression.
-        .returning({
+        };
+        const returning = {
           ...getTableColumns(platformTaskTemplates),
           inserted: sql<boolean>`(xmax = 0)`,
+        };
+        const insert = tx.insert(platformTaskTemplates).values(values);
+        const [result] =
+          onConflict === 'nothing'
+            ? await insert
+                .onConflictDoNothing({ target: platformTaskTemplates.identifier })
+                .returning(returning)
+            : await insert
+                .onConflictDoUpdate({
+                  set: {
+                    category: row.category,
+                    connectors: row.connectors,
+                    cronPattern: row.cronPattern,
+                    description: row.description,
+                    icon: row.icon,
+                    instruction: row.instruction,
+                    interests: row.interests,
+                    revision: sql`${platformTaskTemplates.revision} + 1`,
+                    source: 'market',
+                    title: row.title,
+                    updatedAt: new Date(),
+                    updatedBy: params.actorUserId,
+                  },
+                  target: platformTaskTemplates.identifier,
+                })
+                .returning(returning);
+
+        if (!result) {
+          changes.push({ after: before, before, identifier: row.identifier, inserted: false });
+          continue;
+        }
+
+        const inserted = Boolean(result.inserted);
+        if (inserted) {
+          created += 1;
+          nextSlot += 1;
+        } else updated += 1;
+
+        changes.push({
+          after: toRecord(result),
+          before: inserted ? undefined : before,
+          identifier: row.identifier,
+          inserted,
         });
+      }
 
-      const inserted = Boolean(result?.inserted);
-      if (inserted) {
-        created += 1;
-        nextSlot += 1;
-      } else updated += 1;
+      await inner.claimCatalog(params.actorUserId, params.seededLocale);
+      return { changes, created, updated };
+    });
 
-      changes.push({
-        after: result ? toRecord(result) : undefined,
-        before: inserted ? undefined : before,
-        identifier: row.identifier,
-        inserted,
-      });
-    }
-
-    return { changes, created, updated };
+  private claimCatalog = async (actorUserId: string | null, seededLocale?: string) => {
+    await new PlatformTemplateCatalogStateModel(this.db).markSeeded({
+      domain: TASK_TEMPLATE_CATALOG_DOMAIN,
+      seededBy: actorUserId,
+      seededLocale: seededLocale ?? PLATFORM_TEMPLATE_CATALOG_LEGACY_LOCALE,
+    });
   };
 }

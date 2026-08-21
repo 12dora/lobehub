@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
 
-import { sql } from 'drizzle-orm';
-
 import { DEFAULT_LANG } from '@/const/locale';
 import type { PlatformTemplateCatalogDomain } from '@/database/models/platform';
 import {
@@ -21,7 +19,6 @@ import {
 } from '../routers/admin/taskTemplatesSupport';
 import { PlatformAuditService } from './platformAudit';
 
-const CATALOG_SEED_LOCK_NAMESPACE = 'aihub:platform-template-catalog-seed:v1';
 const BOOTSTRAP_ACTOR = 'platform-bootstrap';
 
 export interface EnsureTemplateCatalogSeededParams {
@@ -36,9 +33,6 @@ const resolveSeedLocale = (locale?: string): string => {
   if (fromEnv) return fromEnv;
   return DEFAULT_LANG;
 };
-
-const catalogLockKey = (domain: PlatformTemplateCatalogDomain) =>
-  `${CATALOG_SEED_LOCK_NAMESPACE}:${domain}`;
 
 const ensureCatalogSeeded = async (params: {
   db: LobeChatDatabase;
@@ -56,11 +50,9 @@ const ensureCatalogSeeded = async (params: {
   if (await state.findSeeded(params.domain)) return;
 
   await params.db.transaction(async (tx) => {
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext(${catalogLockKey(params.domain)})::bigint)`,
-    );
-
     const lockedState = new PlatformTemplateCatalogStateModel(tx);
+    await lockedState.acquireLock(params.domain);
+    // Re-check after the lock: a concurrent import/create/delete may have claimed the catalog.
     if (await lockedState.findSeeded(params.domain)) return;
 
     const countModel =
@@ -101,7 +93,9 @@ export const ensureAgentTemplateCatalogSeeded = async (
       const { changes, created, updated } = await model.importByIdentifier({
         actorUserId: seeded.actorUserId,
         nextId: () => randomUUID(),
+        onConflict: 'nothing',
         rows: fetched.rows,
+        seededLocale: seeded.locale,
       });
 
       await new PlatformAuditService(tx).append({
@@ -155,7 +149,9 @@ export const ensureTaskTemplateCatalogSeeded = async (
       const { changes, created, updated } = await model.importByIdentifier({
         actorUserId: seeded.actorUserId,
         nextId: () => randomUUID(),
+        onConflict: 'nothing',
         rows: fetched.rows,
+        seededLocale: seeded.locale,
       });
 
       await new PlatformAuditService(tx).append({

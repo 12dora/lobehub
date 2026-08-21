@@ -22942,7 +22942,7 @@
       "checkConstraints": {
         "platform_template_catalog_state_domain_check": {
           "name": "platform_template_catalog_state_domain_check",
-          "value": "\"platform_template_catalog_state\".\"domain\" IN (agent_templates, task_templates)"
+          "value": "\"platform_template_catalog_state\".\"domain\" IN ('agent_templates', 'task_templates')"
         }
       },
       "isRLSEnabled": false

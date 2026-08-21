@@ -1,5 +1,6 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
+import { inTransaction } from '../../repositories/platform/tx';
 import {
   type PlatformTemplateCatalogDomain,
   platformTemplateCatalogState,
@@ -8,6 +9,38 @@ import {
 import type { LobeChatDatabase, Transaction } from '../../type';
 
 export type { PlatformTemplateCatalogDomain, PlatformTemplateCatalogStateItem };
+
+/**
+ * Catalog-level advisory lock namespace. Every template catalog mutation and the
+ * auto-seed path acquire this **before** per-identifier import locks so lock order
+ * is always catalog → identifier (no deadlocks).
+ */
+export const PLATFORM_TEMPLATE_CATALOG_LOCK_NAMESPACE = 'aihub:platform-template-catalog-seed:v1';
+
+/**
+ * `seeded_locale` written when the catalog becomes managed without a locale-aware
+ * seed (operator create/delete/import, or a migration backfill of a nonempty table).
+ * Distinct from a real console locale so auditors can tell a claimed catalog from
+ * an auto-seed.
+ */
+export const PLATFORM_TEMPLATE_CATALOG_LEGACY_LOCALE = 'legacy';
+
+export const platformTemplateCatalogLockKey = (domain: PlatformTemplateCatalogDomain) =>
+  `${PLATFORM_TEMPLATE_CATALOG_LOCK_NAMESPACE}:${domain}`;
+
+/**
+ * Hold the catalog lock for `work`. Does **not** write the marker — callers claim
+ * only after a mutation actually lands (a 404 delete must not freeze an empty catalog).
+ */
+export const withPlatformTemplateCatalogLock = async <T>(
+  db: LobeChatDatabase | Transaction,
+  domain: PlatformTemplateCatalogDomain,
+  work: (tx: Transaction) => Promise<T>,
+): Promise<T> =>
+  inTransaction(db, async (tx) => {
+    await new PlatformTemplateCatalogStateModel(tx).acquireLock(domain);
+    return work(tx);
+  });
 
 /**
  * Reads and writes {@link platformTemplateCatalogState}.
@@ -21,6 +54,12 @@ export class PlatformTemplateCatalogStateModel {
   constructor(db: LobeChatDatabase | Transaction) {
     this.db = db;
   }
+
+  acquireLock = async (domain: PlatformTemplateCatalogDomain): Promise<void> => {
+    await this.db.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${platformTemplateCatalogLockKey(domain)})::bigint)`,
+    );
+  };
 
   findSeeded = async (
     domain: PlatformTemplateCatalogDomain,

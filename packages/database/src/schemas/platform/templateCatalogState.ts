@@ -9,10 +9,11 @@ export type PlatformTemplateCatalogDomain = (typeof PLATFORM_TEMPLATE_CATALOG_DO
 /**
  * One-row-per-domain marker that the platform template catalog has been taken over.
  *
- * Written the first time built-in examples are auto-seeded, or when an already-populated
- * catalog is observed (an upgraded tenant that imported/created rows before this table
- * existed). Presence of the marker — not row count — is what stops a later empty catalog
- * from being re-seeded: deleting every template must leave users with nothing.
+ * Written the first time built-in examples are auto-seeded, when an operator mutates the
+ * catalog, or by migration 0026 for an already-populated tenant. `seeded_locale = 'legacy'`
+ * is the sentinel for those last two cases (the original console locale is unknown).
+ * Presence of the marker — not row count — is what stops a later empty catalog from being
+ * re-seeded: deleting every template must leave users with nothing.
  */
 export const platformTemplateCatalogState = pgTable(
   'platform_template_catalog_state',

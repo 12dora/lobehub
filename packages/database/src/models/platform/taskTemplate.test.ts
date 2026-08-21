@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { platformTaskTemplates } from '../../schemas/platform';
+import { platformTaskTemplates, platformTemplateCatalogState } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
 import { PlatformTaskTemplateModel } from './taskTemplate';
 
@@ -23,6 +23,7 @@ const importRow = {
 
 const cleanup = async () => {
   await db.delete(platformTaskTemplates);
+  await db.delete(platformTemplateCatalogState);
 };
 
 beforeEach(cleanup);
@@ -54,5 +55,35 @@ describe('PlatformTaskTemplateModel.importByIdentifier', () => {
       identifier: 'market-daily',
       title: 'Market title',
     });
+  });
+
+  it('insert-only import leaves an existing row untouched', async () => {
+    await model.create({
+      actorUserId: 'admin-a',
+      document: {
+        category: 'engineering',
+        connectors: [],
+        cronPattern: '0 9 * * *',
+        description: '',
+        enabled: true,
+        icon: null,
+        instruction: 'Keep me.',
+        interests: ['coding'],
+        title: 'Custom zh-CN',
+      },
+      id: crypto.randomUUID(),
+      identifier: 'market-daily',
+      source: 'manual',
+    });
+
+    const result = await model.importByIdentifier({
+      actorUserId: 'admin-b',
+      nextId: () => crypto.randomUUID(),
+      onConflict: 'nothing',
+      rows: [{ ...importRow, title: 'Market title en-US' }],
+    });
+
+    expect(result).toMatchObject({ created: 0, updated: 0 });
+    expect((await model.list({ limit: 1, offset: 0 })).items[0]?.title).toBe('Custom zh-CN');
   });
 });

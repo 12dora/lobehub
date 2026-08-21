@@ -1,7 +1,9 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformAgentTemplateModel, PlatformTaskTemplateModel } from '@/database/models/platform';
 import {
   platformAgentTemplates,
   platformTaskTemplates,
@@ -200,6 +202,154 @@ describe('ensureAgentTemplateCatalogSeeded', () => {
       }),
     );
     expect((await db.select().from(platformTemplateCatalogState))[0]?.seededBy).toBeNull();
+  });
+
+  it('does not overwrite a same-identifier row (insert-only)', async () => {
+    await db.insert(platformAgentTemplates).values({
+      description: '',
+      enabled: true,
+      id: 'existing',
+      identifier: 'agent-01',
+      revision: 1,
+      source: 'manual',
+      systemRole: 'Keep me.',
+      title: 'Custom zh-CN',
+    });
+
+    await ensureAgentTemplateCatalogSeeded(db, { locale: 'en-US' });
+
+    const rows = await db.select().from(platformAgentTemplates);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.title).toBe('Custom zh-CN');
+    expect(mocks.fetchAgents).not.toHaveBeenCalled();
+  });
+
+  it('backfills a marker for a populated catalog so delete-all does not re-seed', async () => {
+    await db.insert(platformAgentTemplates).values({
+      description: '',
+      enabled: true,
+      id: 'upgrade-row',
+      identifier: 'custom-row',
+      revision: 1,
+      source: 'manual',
+      systemRole: 'Keep me.',
+      title: 'Custom',
+    });
+    await db.delete(platformTemplateCatalogState);
+
+    await db.execute(sql`
+      INSERT INTO "platform_template_catalog_state" ("domain", "seeded_locale", "seeded_by")
+      SELECT 'agent_templates', 'legacy', NULL
+      WHERE EXISTS (SELECT 1 FROM "platform_agent_templates")
+      ON CONFLICT ("domain") DO NOTHING
+    `);
+
+    await db.delete(platformAgentTemplates);
+    mocks.fetchAgents.mockClear();
+    await ensureAgentTemplateCatalogSeeded(db, { locale: 'en-US' });
+
+    expect(await db.select().from(platformAgentTemplates)).toHaveLength(0);
+    expect(mocks.fetchAgents).not.toHaveBeenCalled();
+  });
+});
+
+const isServerDB = process.env.TEST_SERVER_DB === '1';
+
+describe.skipIf(!isServerDB)('template catalog lock races (TEST_SERVER_DB=1)', () => {
+  it('seed vs import does not overwrite imported localized content', async () => {
+    await Promise.all([
+      ensureAgentTemplateCatalogSeeded(db, { locale: 'en-US' }),
+      db.transaction(async (tx) => {
+        await new PlatformAgentTemplateModel(tx).importByIdentifier({
+          actorUserId: 'admin-zh',
+          nextId: () => crypto.randomUUID(),
+          rows: [agentRow('zh-CN')],
+          seededLocale: 'zh-CN',
+        });
+      }),
+    ]);
+
+    const rows = await db.select().from(platformAgentTemplates);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.identifier).toBe('agent-01');
+    // Import upserts, so a completed import always wins the title. Seed is insert-only.
+    expect(rows[0]?.title).toBe('写作导师');
+  });
+
+  it('seed vs create never drops the created row or overwrites it', async () => {
+    await Promise.all([
+      ensureAgentTemplateCatalogSeeded(db, { locale: 'en-US' }),
+      db.transaction(async (tx) => {
+        await new PlatformAgentTemplateModel(tx).create({
+          actorUserId: 'admin-a',
+          document: {
+            avatar: null,
+            backgroundColor: null,
+            description: '',
+            enabled: true,
+            systemRole: 'Keep me.',
+            tags: [],
+            title: 'Custom',
+          },
+          id: crypto.randomUUID(),
+          identifier: 'custom-row',
+          source: 'manual',
+        });
+      }),
+    ]);
+
+    const identifiers = (await db.select().from(platformAgentTemplates))
+      .map((row) => row.identifier)
+      .toSorted();
+    expect(identifiers.includes('custom-row')).toBe(true);
+    expect(identifiers.every((id) => id === 'custom-row' || id === 'agent-01')).toBe(true);
+  });
+
+  it('seed vs delete-all on an unmarked catalog does not recreate deleted rows', async () => {
+    const [row] = await db
+      .insert(platformAgentTemplates)
+      .values({
+        description: '',
+        enabled: true,
+        id: 'unmarked',
+        identifier: 'custom-row',
+        revision: 1,
+        source: 'manual',
+        systemRole: 'Keep me.',
+        title: 'Custom',
+      })
+      .returning();
+    await db.delete(platformTemplateCatalogState);
+
+    await Promise.all([
+      ensureAgentTemplateCatalogSeeded(db, { locale: 'en-US' }),
+      new PlatformAgentTemplateModel(db).delete({
+        expectedRevision: row!.revision,
+        id: row!.id,
+      }),
+    ]);
+
+    const remaining = await db.select().from(platformAgentTemplates);
+    expect(remaining.map((item) => item.identifier)).not.toContain('agent-01');
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
+  });
+
+  it('seed vs task-template import does not overwrite imported content', async () => {
+    await Promise.all([
+      ensureTaskTemplateCatalogSeeded(db, { locale: 'en-US' }),
+      db.transaction(async (tx) => {
+        await new PlatformTaskTemplateModel(tx).importByIdentifier({
+          actorUserId: 'admin-zh',
+          nextId: () => crypto.randomUUID(),
+          rows: [taskRow('zh-CN')],
+          seededLocale: 'zh-CN',
+        });
+      }),
+    ]);
+
+    const rows = await db.select().from(platformTaskTemplates);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.title).toBe('工程日报');
   });
 });
 

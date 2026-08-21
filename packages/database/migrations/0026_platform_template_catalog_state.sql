@@ -5,8 +5,13 @@
 -- plus a marker means the operator deleted everything and users must see nothing — never
 -- re-seed. Do not insert template rows in this migration.
 --
--- Idempotent / convergent: CREATE TABLE IF NOT EXISTS only; safe to re-apply.
--- No CONCURRENTLY (the migrator runs inside one transaction).
+-- Upgrade: nonempty catalogs already exist as managed tenants. Backfill one marker per
+-- nonempty table so a rolling deploy cannot treat them as fresh and auto-seed (or race
+-- an older process's mutations). `seeded_locale = 'legacy'` is a sentinel — the original
+-- import locale is unknown — not a real console locale. `seeded_by` is null.
+--
+-- Idempotent / convergent: CREATE TABLE IF NOT EXISTS + INSERT … SELECT ON CONFLICT DO
+-- NOTHING; safe to re-apply. No CONCURRENTLY (the migrator runs inside one transaction).
 
 CREATE TABLE IF NOT EXISTS "platform_template_catalog_state" (
   "domain" text PRIMARY KEY NOT NULL,
@@ -15,3 +20,13 @@ CREATE TABLE IF NOT EXISTS "platform_template_catalog_state" (
   "seeded_by" text,
   CONSTRAINT "platform_template_catalog_state_domain_check" CHECK ("domain" IN ('agent_templates', 'task_templates'))
 );
+--> statement-breakpoint
+INSERT INTO "platform_template_catalog_state" ("domain", "seeded_locale", "seeded_by")
+SELECT 'agent_templates', 'legacy', NULL
+WHERE EXISTS (SELECT 1 FROM "platform_agent_templates")
+ON CONFLICT ("domain") DO NOTHING;
+--> statement-breakpoint
+INSERT INTO "platform_template_catalog_state" ("domain", "seeded_locale", "seeded_by")
+SELECT 'task_templates', 'legacy', NULL
+WHERE EXISTS (SELECT 1 FROM "platform_task_templates")
+ON CONFLICT ("domain") DO NOTHING;

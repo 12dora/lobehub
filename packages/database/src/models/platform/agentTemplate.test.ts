@@ -2,13 +2,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { platformAgentTemplates } from '../../schemas/platform';
+import { platformAgentTemplates, platformTemplateCatalogState } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
 import {
   PlatformAgentTemplateIdentifierConflictError,
   PlatformAgentTemplateModel,
 } from './agentTemplate';
 import { PlatformRevisionConflictError } from './errors';
+import { PLATFORM_TEMPLATE_CATALOG_LEGACY_LOCALE } from './templateCatalogState';
 
 const db: LobeChatDatabase = await getTestDB();
 const model = new PlatformAgentTemplateModel(db);
@@ -44,6 +45,7 @@ const create = (
 
 const cleanup = async () => {
   await db.delete(platformAgentTemplates);
+  await db.delete(platformTemplateCatalogState);
 };
 
 beforeEach(cleanup);
@@ -317,5 +319,45 @@ describe('PlatformAgentTemplateModel', () => {
     expect(winner.changes[0]?.before).toBeUndefined();
     expect(loser.changes[0]?.inserted).toBe(false);
     expect(loser.changes[0]?.before).toMatchObject({ identifier: 'agent-01', title: 'Writer' });
+  });
+
+  it('claims the catalog marker on create and never on a 404 delete', async () => {
+    const created = await create({ identifier: 'claimed' });
+    expect(await db.select().from(platformTemplateCatalogState)).toEqual([
+      expect.objectContaining({
+        domain: 'agent_templates',
+        seededLocale: PLATFORM_TEMPLATE_CATALOG_LEGACY_LOCALE,
+      }),
+    ]);
+
+    await db.delete(platformTemplateCatalogState);
+    expect(await model.delete({ expectedRevision: 1, id: 'does-not-exist' })).toBeUndefined();
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(0);
+
+    await model.delete({ expectedRevision: created.revision, id: created.id });
+    expect(await db.select().from(platformTemplateCatalogState)).toEqual([
+      expect.objectContaining({ domain: 'agent_templates' }),
+    ]);
+  });
+
+  it('insert-only import leaves an existing row untouched', async () => {
+    await create({ identifier: 'agent-01', document: { title: 'Custom zh-CN' } });
+
+    const result = await model.importByIdentifier({
+      actorUserId: 'admin-b',
+      nextId: () => crypto.randomUUID(),
+      onConflict: 'nothing',
+      rows: [
+        {
+          description: '',
+          identifier: 'agent-01',
+          systemRole: 'You are a writer.',
+          title: 'Writer en-US',
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({ created: 0, updated: 0 });
+    expect((await model.list({ limit: 1, offset: 0 })).items[0]?.title).toBe('Custom zh-CN');
   });
 });
