@@ -350,7 +350,6 @@ const LivePage = memo(() => {
 
   return (
     <AdminPageTemplate
-      description={t('audit.live.page.desc')}
       title={t('audit.live.page.title')}
       banner={
         showPolicyBanner && contentAccessMode === 'content_allowed' ? (
@@ -359,12 +358,13 @@ const LivePage = memo(() => {
           </div>
         ) : null
       }
-      notice={
-        showPolicyBanner && contentAccessMode === 'metadata_only' ? (
-          <Text role="status" type="warning">
-            {t('audit.live.banner.metadataOnly')}
-          </Text>
-        ) : null
+      description={
+        <span>
+          {t('audit.live.page.desc')}
+          {showPolicyBanner && contentAccessMode === 'metadata_only' ? (
+            <span role="status"> {t('audit.live.banner.metadataOnly')}</span>
+          ) : null}
+        </span>
       }
       toolbar={
         <div className={styles.toolbar}>
@@ -469,12 +469,12 @@ const LivePage = memo(() => {
             ) : null}
             <MessagePane
               bodyHidden={bodyHidden}
+              hasOlder={messagesCursorRenderable && Boolean(olderNextCursor) && canConversationRead}
               loading={messagesLive.isLoading && !messagesLive.data}
               loadingOlder={loadingOlder}
               messages={allMessages}
               topic={topicForPane}
               userId={userId}
-              hasOlder={messagesCursorRenderable && Boolean(olderNextCursor) && canConversationRead}
               onLoadOlder={() => {
                 if (!messagesCursorRenderable) return;
                 void loadOlderMessages();

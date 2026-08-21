@@ -108,18 +108,21 @@ vi.mock('../../primitives/AdminPageTemplate', () => ({
   default: ({
     banner,
     children,
+    description,
     notice,
     toolbar,
     title,
   }: {
     banner?: ReactNode;
     children?: ReactNode;
+    description?: ReactNode;
     notice?: ReactNode;
     title?: ReactNode;
     toolbar?: ReactNode;
   }) => (
     <div>
       <h1>{title}</h1>
+      <div data-testid="description">{description}</div>
       <div data-testid="notice">{notice}</div>
       <div data-testid="banner">{banner}</div>
       <div data-testid="toolbar">{toolbar}</div>
@@ -193,8 +196,11 @@ describe('LivePage URL synchronization', () => {
   it('renders the metadata-only policy notice next to the page description, not as a banner', () => {
     renderLive('/admin/audit/live');
 
-    // Policy is metadata_only → warning notice in the header, banner slot stays empty.
-    expect(screen.getByTestId('notice').textContent).toBe('audit.live.banner.metadataOnly');
+    // Policy is metadata_only → the sentence joins the description line; notice + banner slots stay empty.
+    expect(screen.getByTestId('description').textContent).toBe(
+      'audit.live.page.desc audit.live.banner.metadataOnly',
+    );
+    expect(screen.getByTestId('notice').textContent).toBe('');
     expect(screen.getByTestId('banner').textContent).toBe('');
   });
 

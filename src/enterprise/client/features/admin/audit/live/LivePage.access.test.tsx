@@ -197,18 +197,21 @@ vi.mock('../../primitives/AdminPageTemplate', () => ({
   default: ({
     banner,
     children,
+    description,
     notice,
     toolbar,
     title,
   }: {
     banner?: ReactNode;
     children?: ReactNode;
+    description?: ReactNode;
     notice?: ReactNode;
     title?: ReactNode;
     toolbar?: ReactNode;
   }) => (
     <div>
       <h1>{title}</h1>
+      <div data-testid="description">{description}</div>
       <div data-testid="notice">{notice}</div>
       <div data-testid="banner">{banner}</div>
       <div data-testid="toolbar">{toolbar}</div>
@@ -397,7 +400,10 @@ describe('LivePage access / feed characterization', () => {
 
     expect(evidence.policy?.contentAccessMode).toBe('content_allowed');
     expect(screen.getByTestId('message-pane').getAttribute('data-body-hidden')).toBe('1');
-    expect(screen.getByTestId('notice').textContent).toBe('audit.live.banner.metadataOnly');
+    expect(screen.getByTestId('description').textContent).toBe(
+      'audit.live.page.desc audit.live.banner.metadataOnly',
+    );
+    expect(screen.getByTestId('notice').textContent).toBe('');
     expect(screen.getByTestId('banner').textContent).toBe('');
   });
 
