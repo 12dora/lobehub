@@ -110,8 +110,18 @@ const assertCursorLocal = (url: URL): void => {
  * so it must be unique per config dir — which it is: every turn gets a fresh
  * `CURSOR_CONFIG_DIR`. It cannot be combined with `--resume` / `--continue`, and we
  * use neither: history is replayed through `--conversation-history-file`.
+ *
+ * `--allowed-tools` takes proto `ToolCall` oneof field names
+ * (`update_todos_tool_call`, `web_search_tool_call`, …), not the user-facing
+ * permission string `WebSearch`. Confirmed against cursor-agent 2026.08.11-e8db854.
  */
+export const CURSOR_WEB_SEARCH_TOOL = 'web_search_tool_call';
+const CURSOR_TODOS_TOOL = 'update_todos_tool_call';
+
 export const buildTurnArgv = (turn: TurnRequest, scratch: TurnScratch): string[] => {
+  const allowedTools = turn.enabledSearch
+    ? `${CURSOR_TODOS_TOOL},${CURSOR_WEB_SEARCH_TOOL}`
+    : CURSOR_TODOS_TOOL;
   const args = [
     '-p',
     '--output-format',
@@ -126,7 +136,7 @@ export const buildTurnArgv = (turn: TurnRequest, scratch: TurnScratch): string[]
     '--disable-auto-update',
     '--disable-project-configs',
     '--allowed-tools',
-    'update_todos_tool_call',
+    allowedTools,
     '--model',
     turn.model,
     '--conversation-history-file',

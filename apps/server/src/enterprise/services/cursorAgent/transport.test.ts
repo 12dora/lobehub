@@ -27,7 +27,12 @@ import { CURSOR_AGENT_INSTANCE_ID_ENV, CURSOR_AGENT_STATE_DIR_ENV } from './env'
 import { CursorAgentPolicyError } from './errors';
 import { resetCursorModelsCache } from './models';
 import { CURSOR_AGENT_HOME_ENV, resetCursorCliCache } from './resolveCli';
-import { createCursorAgentFetch, resetCursorAgentFetch } from './transport';
+import {
+  buildTurnArgv,
+  createCursorAgentFetch,
+  CURSOR_WEB_SEARCH_TOOL,
+  resetCursorAgentFetch,
+} from './transport';
 
 const { join } = nodePath;
 
@@ -435,6 +440,27 @@ describe('POST /v1/turn', () => {
     expect(spawnMock.mock.calls[0][2].cwd).toBe(join(historyPath, '..'));
 
     await vi.waitFor(() => expect(existsSync(historyPath)).toBe(false));
+  });
+
+  it('adds web_search_tool_call to --allowed-tools when enabledSearch is true', async () => {
+    let argv: string[] = [];
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      argv = args;
+      const child = makeFakeChild();
+      emitThenClose(child, PRINT_STREAM_JSONL);
+      return child;
+    });
+
+    const response = await cursorFetch('https://cursor.local/v1/turn', {
+      body: turnBody({ enabledSearch: true }),
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    await response.text();
+
+    const allowedIndex = argv.indexOf('--allowed-tools');
+    expect(argv[allowedIndex + 1]).toBe(`update_todos_tool_call,${CURSOR_WEB_SEARCH_TOOL}`);
+    expect(CURSOR_WEB_SEARCH_TOOL).toBe('web_search_tool_call');
   });
 
   it('injects a transport cli_exit event when the CLI exits non-zero before a result', async () => {
@@ -1727,5 +1753,33 @@ describe('per-connection config-seed isolation', () => {
     expect(JSON.parse(readFileSync(join(legacyRoot, 'cli-config.json'), 'utf8'))).toMatchObject({
       legacy: true,
     });
+  });
+});
+
+describe('buildTurnArgv', () => {
+  const scratch = {
+    configDir: '/tmp/config',
+    historyPath: '/tmp/history.json',
+    imagePaths: [] as string[],
+    root: '/tmp',
+  };
+  const turn = {
+    history: {},
+    images: [],
+    model: 'composer-2.5',
+    prompt: 'hello',
+  };
+
+  it('keeps the todos allowlist when search is off', () => {
+    expect(buildTurnArgv(turn, scratch)).toEqual(
+      expect.arrayContaining(['--allowed-tools', 'update_todos_tool_call']),
+    );
+    expect(buildTurnArgv(turn, scratch).join(' ')).not.toContain(CURSOR_WEB_SEARCH_TOOL);
+  });
+
+  it('appends the native web search tool when enabledSearch is true', () => {
+    const argv = buildTurnArgv({ ...turn, enabledSearch: true }, scratch);
+    const allowedIndex = argv.indexOf('--allowed-tools');
+    expect(argv[allowedIndex + 1]).toBe(`update_todos_tool_call,${CURSOR_WEB_SEARCH_TOOL}`);
   });
 });

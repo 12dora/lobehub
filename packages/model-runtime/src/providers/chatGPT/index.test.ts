@@ -465,6 +465,52 @@ describe('LobeChatGPTAI', () => {
     expect(request.tools).toContainEqual({ type: 'web_search' });
   });
 
+  it('moves web_search into additional_tools for Responses Lite models', async () => {
+    await instance.chat({
+      enabledSearch: true,
+      messages: [{ content: 'Search for this', role: 'user' }],
+      model: 'gpt-5.6-sol',
+      tools: [
+        {
+          function: {
+            description: 'Get the weather',
+            name: 'get_weather',
+            parameters: {
+              properties: { city: { type: 'string' } },
+              required: ['city'],
+              type: 'object',
+            },
+          },
+          type: 'function',
+        },
+      ],
+    });
+
+    const [request, requestOptions] = (instance['client'].responses.create as Mock).mock.calls[0];
+
+    expect(requestOptions.headers).toMatchObject({
+      'x-openai-internal-codex-responses-lite': 'true',
+    });
+    expect(request.input[0]).toEqual({
+      role: 'developer',
+      tools: [
+        {
+          description: 'Get the weather',
+          name: 'get_weather',
+          parameters: {
+            properties: { city: { type: 'string' } },
+            required: ['city'],
+            type: 'object',
+          },
+          type: 'function',
+        },
+        { type: 'web_search' },
+      ],
+      type: 'additional_tools',
+    });
+    expect(request.tools).toBeUndefined();
+  });
+
   describe('matchEffortControlForLevels', () => {
     it('returns the ChatGPT candidate whose levels equal the live set', () => {
       expect(matchEffortControlForLevels(['none', 'low', 'medium', 'high', 'xhigh', 'max'])).toBe(

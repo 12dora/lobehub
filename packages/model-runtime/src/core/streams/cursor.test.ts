@@ -592,3 +592,86 @@ describe('transformCursorEvents tool-call emulation', () => {
     expect(joinedText(chunks)).toBe(partial);
   });
 });
+
+describe('transformCursorEvents native web search', () => {
+  it('emits grounding for webSearchToolCall started and completed events', async () => {
+    const chunks = await collectChunks(
+      [
+        {
+          call_id: 'ws_1',
+          subtype: 'started',
+          tool_call: {
+            webSearchToolCall: { args: { searchTerm: 'latest tesla news' } },
+          },
+          type: 'tool_call',
+        },
+        {
+          call_id: 'ws_1',
+          subtype: 'completed',
+          tool_call: {
+            webSearchToolCall: {
+              args: { searchTerm: 'latest tesla news' },
+              result: {
+                success: {
+                  references: [{ title: 'Tesla', url: 'https://tesla.com' }],
+                },
+              },
+            },
+          },
+          type: 'tool_call',
+        },
+        successResult('here is what I found'),
+      ],
+      { parseToolCalls: false },
+    );
+
+    const grounding = chunks.filter((chunk) => chunk.type === 'grounding');
+    expect(grounding).toHaveLength(2);
+    expect(grounding[0]?.data).toEqual({ searchQueries: ['latest tesla news'] });
+    expect(grounding[1]?.data).toEqual({
+      citations: [{ title: 'Tesla', url: 'https://tesla.com' }],
+      searchQueries: ['latest tesla news'],
+    });
+  });
+
+  it('maps protobuf-es { tool: { case, value } } web search events', async () => {
+    const chunks = await collectChunks(
+      [
+        {
+          call_id: 'ws_proto',
+          subtype: 'started',
+          tool_call: {
+            tool: {
+              case: 'webSearchToolCall',
+              value: { args: { search_term: 'lobehub changelog' } },
+            },
+          },
+          type: 'tool_call',
+        },
+        successResult('ok'),
+      ],
+      { parseToolCalls: false },
+    );
+
+    expect(chunks.find((chunk) => chunk.type === 'grounding')?.data).toEqual({
+      searchQueries: ['lobehub changelog'],
+    });
+  });
+
+  it('ignores non-search tool_call events', async () => {
+    const chunks = await collectChunks(
+      [
+        {
+          call_id: 'todo_1',
+          subtype: 'started',
+          tool_call: { updateTodosToolCall: { args: {} } },
+          type: 'tool_call',
+        },
+        successResult('ok'),
+      ],
+      { parseToolCalls: false },
+    );
+
+    expect(chunks.filter((chunk) => chunk.type === 'grounding')).toEqual([]);
+  });
+});

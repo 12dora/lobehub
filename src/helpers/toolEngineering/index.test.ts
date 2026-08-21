@@ -316,18 +316,24 @@ describe('toolEngineering', () => {
   });
 
   describe('isExplicitActivation bypass', () => {
-    it('should not inject web browsing for grok when native search is the default', () => {
-      mockUseApplicationBuiltinSearchTool = false;
+    it.each([
+      ['grok-4.6', 'grok'],
+      ['gpt-4', 'openai'],
+    ])(
+      'should not inject web browsing for %s/%s when native search is the default',
+      (model, provider) => {
+        mockUseApplicationBuiltinSearchTool = false;
 
-      const toolsEngine = createAgentToolsEngine({ model: 'grok-4.6', provider: 'grok' });
-      const result = toolsEngine.generateToolsDetailed({
-        toolIds: [],
-        model: 'grok-4.6',
-        provider: 'grok',
-      });
+        const toolsEngine = createAgentToolsEngine({ model, provider });
+        const result = toolsEngine.generateToolsDetailed({
+          toolIds: [],
+          model,
+          provider,
+        });
 
-      expect(result.enabledToolIds).not.toContain('lobe-web-browsing');
-    });
+        expect(result.enabledToolIds).not.toContain('lobe-web-browsing');
+      },
+    );
 
     it('should disable web browsing when useApplicationBuiltinSearchTool is false', () => {
       mockUseApplicationBuiltinSearchTool = false;

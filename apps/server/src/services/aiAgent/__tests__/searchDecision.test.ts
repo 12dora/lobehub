@@ -171,6 +171,41 @@ describe('resolveServerSearchDecision', () => {
     expect(result.useApplicationBuiltinSearchTool).toBe(false);
   });
 
+  it('defaults an OpenAI params model onto native search when the builtin toggle is unset', () => {
+    const result = resolveServerSearchDecision({
+      builtinModels: [
+        {
+          abilities: { search: true },
+          id: 'gpt-4o',
+          providerId: 'openai',
+          settings: { searchImpl: 'params' },
+        },
+      ],
+      chatConfig: { searchMode: 'on' },
+      model: 'gpt-4o',
+      provider: 'openai',
+    });
+
+    expect(result.useModelSearch).toBe(true);
+    expect(result.useApplicationBuiltinSearchTool).toBe(false);
+  });
+
+  it.each(['chatgpt', 'chatgptweb', 'cursor'])(
+    'defaults %s onto native search from provider searchMode when the toggle is unset',
+    (provider) => {
+      const result = resolveServerSearchDecision({
+        builtinModels: [],
+        chatConfig: { searchMode: 'auto' },
+        model: 'remote-model',
+        provider,
+      });
+
+      expect(result.isProviderHasBuiltinSearch).toBe(true);
+      expect(result.useModelSearch).toBe(true);
+      expect(result.useApplicationBuiltinSearchTool).toBe(false);
+    },
+  );
+
   it.each(['grok', 'supergrok', 'xai'])(
     'defaults %s to native search when the builtin toggle is unset',
     (provider) => {

@@ -81,13 +81,41 @@ describe('resolveSearchDecision', () => {
       name: 'uses native search when Grok explicitly enables model builtin search',
     },
     {
-      expected: { application: true, model: false },
+      expected: { application: false, model: true },
       input: {
         modelSearchImpl: 'params' as const,
         provider: 'openai',
         searchMode: 'on' as const,
       },
-      name: 'does not default OpenAI onto native search when the toggle is unset',
+      name: 'defaults OpenAI onto native search when the toggle is unset',
+    },
+    {
+      expected: { application: false, model: true },
+      input: {
+        modelSearchImpl: 'params' as const,
+        provider: 'chatgpt',
+        searchMode: 'auto' as const,
+      },
+      name: 'defaults ChatGPT onto native search when the toggle is unset',
+    },
+    {
+      expected: { application: false, model: true },
+      input: {
+        provider: 'cursor',
+        providerSearchMode: 'params' as const,
+        searchMode: 'on' as const,
+      },
+      name: 'defaults Cursor onto native search from provider searchMode when the toggle is unset',
+    },
+    {
+      expected: { application: true, model: false },
+      input: {
+        modelSearchImpl: 'params' as const,
+        provider: 'openai',
+        searchMode: 'on' as const,
+        useModelBuiltinSearch: false,
+      },
+      name: 'keeps application search when OpenAI explicitly disables model builtin search',
     },
   ])('$name', ({ expected, input }) => {
     const result = resolveSearchDecision(input);
@@ -121,9 +149,12 @@ describe('resolveModelSearchDefaultSettings', () => {
     });
   });
 
-  it.each(['grok', 'supergrok', 'xai'])('uses params search for %s remote models', (provider) => {
-    expect(resolveModelSearchDefaultSettings(provider, 'remote-grok-model')).toEqual({
-      searchImpl: 'params',
-    });
-  });
+  it.each(['grok', 'supergrok', 'xai', 'chatgpt', 'cursor'])(
+    'uses params search for %s remote models',
+    (provider) => {
+      expect(resolveModelSearchDefaultSettings(provider, 'remote-model')).toEqual({
+        searchImpl: 'params',
+      });
+    },
+  );
 });

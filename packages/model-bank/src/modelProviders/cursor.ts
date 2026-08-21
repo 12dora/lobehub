@@ -41,6 +41,7 @@ const Cursor: ModelProviderCard = {
       tokenExchangeEndpoint: 'https://api2.cursor.sh/auth/exchange_user_api_key',
     },
     sdkType: 'openai',
+    searchMode: 'params',
     showApiKey: false,
     showChecker: true,
     showModelFetcher: true,

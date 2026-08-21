@@ -172,4 +172,10 @@ const cursorChatModels: AIChatModelCard[] = [
   },
 ];
 
-export default cursorChatModels;
+const withNativeSearch = (model: AIChatModelCard): AIChatModelCard => ({
+  ...model,
+  abilities: { ...model.abilities, search: true },
+  settings: { ...model.settings, searchImpl: 'params' },
+});
+
+export default cursorChatModels.map(withNativeSearch);

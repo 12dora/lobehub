@@ -34,6 +34,7 @@ export {
   CURSOR_AGENT_MAX_CONCURRENCY_ENV,
   CURSOR_AGENT_MAX_QUEUE_ENV,
   CURSOR_AGENT_TURN_TIMEOUT_MS_ENV,
+  CURSOR_WEB_SEARCH_TOOL,
   type CursorAgentFetchOptions,
   evictCursorAgentFetchExcept,
   getCursorAgentFetch,

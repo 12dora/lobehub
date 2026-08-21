@@ -2,7 +2,6 @@ import { Exa, Google } from '@lobehub/icons';
 import { Flexbox, Icon } from '@lobehub/ui';
 import { Switch } from 'antd';
 import { Search } from 'lucide-react';
-import { prefersNativeSearchByDefault } from 'model-bank';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -46,7 +45,9 @@ const ModelBuiltinSearch = memo<ModelBuiltinSearchProps>(({ disabled }) => {
     agentByIdSelectors.getAgentModelProviderById(agentId)(s),
     chatConfigByIdSelectors.getUseModelBuiltinSearchById(agentId)(s),
   ]);
-  const checked = storedChecked ?? prefersNativeSearchByDefault(provider);
+  // This toggle only renders when the model/provider has native search
+  // capability, so an unset preference defaults to Provider Search.
+  const checked = storedChecked ?? true;
 
   const [isLoading, setLoading] = useState(false);
   const modelCard = useAiInfraStore(aiModelSelectors.getEnabledModelById(model, provider));

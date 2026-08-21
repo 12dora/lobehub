@@ -151,6 +151,28 @@ describe('getSearchConfig', () => {
     });
   });
 
+  it('should default openai onto native search when the model has params search and the toggle is unset', () => {
+    vi.mocked(chatConfigByIdSelectors.getChatConfigById).mockReturnValue(
+      () =>
+        ({
+          searchMode: 'auto',
+        }) as any,
+    );
+    vi.mocked(aiInfraSelectors.aiModelSelectors.modelBuiltinSearchImpl).mockReturnValue(
+      () => 'params',
+    );
+
+    const result = getSearchConfig(model, provider);
+
+    expect(result).toEqual({
+      enabledSearch: true,
+      isProviderHasBuiltinSearch: false,
+      isModelHasBuiltinSearch: true,
+      useModelSearch: true,
+      useApplicationBuiltinSearchTool: false,
+    });
+  });
+
   it.each(['grok', 'supergrok', 'xai'])(
     'should default %s to native model search when the builtin toggle is unset',
     (nativeProvider) => {

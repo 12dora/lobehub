@@ -23,6 +23,8 @@ export interface TurnImage {
 }
 
 export interface TurnRequest {
+  /** Native Cursor WebSearch is allowed when the chat payload opted into search. */
+  enabledSearch?: boolean;
   history: unknown;
   images: TurnImage[];
   model: string;
@@ -142,6 +144,7 @@ export const parseTurnBody = async (request: Request): Promise<TurnRequest | Res
   const requestedSessionId = request.headers.get(CURSOR_CONVERSATION_HEADER)?.trim();
 
   return {
+    ...(body.enabledSearch === true ? { enabledSearch: true } : {}),
     history,
     images,
     model: body.model,

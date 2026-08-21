@@ -677,7 +677,8 @@ export default {
   'plus.search.appSearch': 'Smart Search',
   'plus.search.appSearchDesc': 'Optimized search service that delivers the best retrieval results.',
   'plus.search.modelSearch': 'Provider Search',
-  'plus.search.modelSearchDesc': "The model's own search. Grok searches X and the web natively.",
+  'plus.search.modelSearchDesc':
+    "The model's own search. Used by default when the provider supports it.",
   'plus.search.off': 'Off',
   'plus.search.offDesc': '',
   'plus.addAttachments': 'Attachments',
@@ -1189,6 +1190,7 @@ export default {
     'Your organization allows approved tools to run automatically and blocks tools that do not meet its safety rules.',
   'tool.intervention.mode.manual': 'Manual',
   'tool.intervention.mode.manualDesc': 'Manual approval required for each invocation',
+  'tool.intervention.mode.topicOnly': 'This conversation only',
   'tool.intervention.onboarding.agentIdentity.editHint':
     'You can edit the name or avatar directly below.',
   'tool.intervention.onboarding.agentIdentity.namePlaceholder': 'Agent name',

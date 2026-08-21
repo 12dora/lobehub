@@ -1,3 +1,4 @@
+import type { ChatCitationItem } from '@lobechat/types';
 import createDebug from 'debug';
 
 import {
@@ -44,12 +45,14 @@ interface CursorCliContentPart {
 }
 
 interface CursorCliEvent {
+  call_id?: string;
   code?: string;
   is_error?: boolean;
   message?: { content?: CursorCliContentPart[] | string; role?: string } | string;
   result?: string;
   subtype?: string;
   text?: string;
+  tool_call?: unknown;
   type?: string;
   usage?: CursorCliUsage;
 }
@@ -62,6 +65,71 @@ const AUTH_FAILURE_RE =
 
 const isRecord = (value: unknown): value is CursorCliEvent =>
   !!value && typeof value === 'object' && !Array.isArray(value);
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
+const pickString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value ? value : undefined;
+
+const extractCursorWebSearchPayload = (
+  event: CursorCliEvent,
+): Record<string, unknown> | undefined => {
+  if (event.type !== 'tool_call') return undefined;
+  const toolCall = event.tool_call;
+  if (!isPlainRecord(toolCall)) return undefined;
+
+  if (isPlainRecord(toolCall.webSearchToolCall)) return toolCall.webSearchToolCall;
+  if (isPlainRecord(toolCall.web_search_tool_call)) return toolCall.web_search_tool_call;
+
+  const tool = toolCall.tool;
+  if (
+    isPlainRecord(tool) &&
+    (tool.case === 'webSearchToolCall' || tool.case === 'web_search_tool_call') &&
+    isPlainRecord(tool.value)
+  ) {
+    return tool.value;
+  }
+
+  return undefined;
+};
+
+const extractCursorWebSearchQuery = (payload: Record<string, unknown>): string | undefined => {
+  const args = isPlainRecord(payload.args) ? payload.args : payload;
+  return pickString(args.searchTerm) ?? pickString(args.search_term);
+};
+
+const upsertNativeSearchQuery = (
+  streamContext: StreamContext,
+  callId: string | undefined,
+  query?: string,
+) => {
+  const key = callId || `web:${Object.keys(streamContext.nativeSearchQueries ?? {}).length}`;
+  streamContext.nativeSearchQueries ??= {};
+  const existing = streamContext.nativeSearchQueries[key];
+  streamContext.nativeSearchQueries[key] = query || existing || 'Web search';
+};
+
+const extractCursorWebSearchCitations = (payload: Record<string, unknown>): ChatCitationItem[] => {
+  const result = isPlainRecord(payload.result) ? payload.result : undefined;
+  if (!result) return [];
+
+  const nestedResult = isPlainRecord(result.result) ? result.result : undefined;
+  const success =
+    (isPlainRecord(result.success) ? result.success : undefined) ??
+    (nestedResult?.case === 'success' && isPlainRecord(nestedResult.value)
+      ? nestedResult.value
+      : undefined);
+  const references = success && Array.isArray(success.references) ? success.references : undefined;
+  if (!references) return [];
+
+  return references.flatMap((source) => {
+    if (!isPlainRecord(source)) return [];
+    const url = pickString(source.url);
+    if (!url) return [];
+    return [{ title: pickString(source.title) ?? url, url }];
+  });
+};
 
 const parseDataLine = (line: string): unknown | 'done' | undefined => {
   const trimmed = line.trim();
@@ -302,9 +370,28 @@ export async function* transformCursorEvents(
   const id = options.streamStack?.id || `chat_${nanoid()}`;
   const parseToolCalls = options.parseToolCalls === true;
   const scanner = createCursorToolCallScanner(id);
+  const streamContext = options.streamStack ?? { id };
   let assistantText = '';
   let emittedAssistant = false;
   let finished = false;
+  const citations: ChatCitationItem[] = [];
+
+  const emitWebSearchGrounding = (
+    callId: string | undefined,
+    query?: string,
+  ): StreamProtocolChunk => {
+    upsertNativeSearchQuery(streamContext, callId, query);
+    return {
+      data: {
+        ...(citations.length ? { citations: [...citations] } : {}),
+        ...(Object.keys(streamContext.nativeSearchQueries ?? {}).length
+          ? { searchQueries: Object.values(streamContext.nativeSearchQueries ?? {}) }
+          : {}),
+      },
+      id: callId ?? id,
+      type: 'grounding',
+    };
+  };
 
   const stopReason = (): string => (scanner.hasToolCalls() ? 'tool_calls' : 'stop');
 
@@ -357,6 +444,18 @@ export async function* transformCursorEvents(
           if (event.subtype === 'completed') break;
           const text = typeof event.text === 'string' ? event.text : '';
           if (text) yield { data: text, id, type: 'reasoning' };
+          break;
+        }
+
+        case 'tool_call': {
+          const payload = extractCursorWebSearchPayload(event);
+          if (!payload) break;
+          const callId = pickString(event.call_id);
+          const query = extractCursorWebSearchQuery(payload);
+          for (const citation of extractCursorWebSearchCitations(payload)) {
+            if (!citations.some((item) => item.url === citation.url)) citations.push(citation);
+          }
+          yield emitWebSearchGrounding(callId, query);
           break;
         }
 

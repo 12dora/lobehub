@@ -361,8 +361,9 @@ const PlusAction = memo(() => {
   const showProviderSearch =
     !isModelBuiltinSearchInternal && (isModelHasBuiltinSearch || isProviderHasBuiltinSearch);
 
-  // Derived active search option. Grok-family providers default to Provider Search
-  // when the user has not explicitly chosen App Search (`useModelBuiltinSearch` unset).
+  // Derived active search option. Native Provider Search is the default whenever
+  // the model/provider has search capability (or Grok-family with empty cards)
+  // and the user has not explicitly chosen App Search (`useModelBuiltinSearch` unset).
   const activeSearchOption: 'off' | 'app' | 'provider' =
     searchMode === 'off'
       ? 'off'
@@ -370,7 +371,7 @@ const PlusAction = memo(() => {
         ? 'provider'
         : useModelBuiltinSearch === false
           ? 'app'
-          : prefersNativeSearchByDefault(provider)
+          : showProviderSearch || prefersNativeSearchByDefault(provider)
             ? 'provider'
             : 'app';
 

@@ -130,6 +130,25 @@ describe('LobeCursorAI', () => {
       expect(sse).toContain('event: stop');
     });
 
+    it('threads enabledSearch onto the turn body', async () => {
+      const fetchImpl = vi.fn<
+        (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+      >(async () => successTurn());
+      const runtime = new LobeCursorAI({ apiKey: 'jwt-token', fetch: fetchImpl });
+
+      await runtime.chat({
+        enabledSearch: true,
+        messages: [{ content: 'search the web', role: 'user' }],
+        model: 'composer-2.5',
+      });
+
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({
+        enabledSearch: true,
+        model: 'composer-2.5',
+        prompt: 'search the web',
+      });
+    });
+
     it('forwards tools into the turn body as a system tool-protocol block', async () => {
       const fetchImpl = vi.fn<
         (input: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -440,7 +459,8 @@ describe('LobeCursorAI', () => {
           functionCall: true,
           id: 'auto',
           reasoning: false,
-          settings: undefined,
+          search: true,
+          settings: { searchImpl: 'params' },
           type: 'chat',
           vision: false,
         },
@@ -451,7 +471,8 @@ describe('LobeCursorAI', () => {
           functionCall: true,
           id: 'composer-2.5',
           reasoning: false,
-          settings: undefined,
+          search: true,
+          settings: { searchImpl: 'params' },
           type: 'chat',
           vision: true,
         },
@@ -462,7 +483,8 @@ describe('LobeCursorAI', () => {
           functionCall: true,
           id: 'claude-opus-5-thinking-high',
           reasoning: true,
-          settings: undefined,
+          search: true,
+          settings: { searchImpl: 'params' },
           type: 'chat',
           vision: true,
         },
@@ -473,7 +495,8 @@ describe('LobeCursorAI', () => {
           functionCall: true,
           id: 'gpt-5.6-sol-high',
           reasoning: true,
-          settings: undefined,
+          search: true,
+          settings: { searchImpl: 'params' },
           type: 'chat',
           vision: true,
         },

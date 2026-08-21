@@ -55,6 +55,7 @@ export const toCursorKnownModelCard = (
     functionCall: known.abilities?.functionCall,
     id,
     reasoning,
+    search: known.abilities?.search,
     settings: known.settings ? { ...known.settings } : undefined,
     type: 'chat',
     vision: known.abilities?.vision,
@@ -135,7 +136,10 @@ export class LobeCursorAI implements LobeRuntimeAI {
     });
 
     const response = await this.request(`${this.baseURL}/v1/turn`, {
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        ...body,
+        ...(payload.enabledSearch ? { enabledSearch: true } : {}),
+      }),
       headers: {
         'Accept': 'text/event-stream',
         'Content-Type': 'application/json',

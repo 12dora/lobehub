@@ -1490,6 +1490,32 @@ describe('ChatService', () => {
         );
       });
 
+      it('should enable built-in search for openai when the model has params search and useModelBuiltinSearch is unset', async () => {
+        const getChatCompletionSpy = vi.spyOn(chatService, 'getChatCompletion');
+
+        const messages = [{ content: 'Search for something', role: 'user' }] as UIChatMessage[];
+
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              searchMode: 'auto',
+            }) as any,
+        );
+        vi.spyOn(aiModelSelectors, 'modelBuiltinSearchImpl').mockReturnValue(() => 'params');
+
+        await chatService.createAssistantMessage({
+          messages,
+          resolvedAgentConfig: createMockResolvedConfig(),
+        });
+
+        expect(getChatCompletionSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            enabledSearch: true,
+          }),
+          expect.anything(),
+        );
+      });
+
       it('should enable built-in search for grok when useModelBuiltinSearch is unset', async () => {
         const getChatCompletionSpy = vi.spyOn(chatService, 'getChatCompletion');
 

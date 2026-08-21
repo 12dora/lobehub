@@ -30,6 +30,7 @@ const ChatGPT: ModelProviderCard = {
       tokenExchangeEndpoint: 'https://auth.openai.com/api/accounts/deviceauth/token',
     },
     sdkType: 'openai',
+    searchMode: 'params',
     showApiKey: false,
     showChecker: true,
     showModelFetcher: false,

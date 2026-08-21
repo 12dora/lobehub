@@ -26,13 +26,13 @@ export interface SearchDecision {
 }
 
 /**
- * Providers that default to native model search while search is on and
- * `useModelBuiltinSearch` is unset. An explicit `false` still selects the
- * application search tool. OpenAI / Anthropic / Google stay opt-in.
+ * Providers that prefer native search even when model/provider cards omit
+ * search metadata (Grok-family). An explicit `useModelBuiltinSearch === false`
+ * still selects the application search tool.
  *
- * Extension point: a follow-up can replace this allowlist with "any provider
- * that already has native search capability" without changing call sites —
- * they all go through `prefersNativeSearchByDefault`.
+ * Any provider whose model `searchImpl` or provider `searchMode` is
+ * `params` | `tool` | `internal` also defaults to native via
+ * `resolveSearchDecision` when the toggle is unset.
  */
 export const NATIVE_SEARCH_DEFAULT_PROVIDERS = ['grok', 'supergrok', 'xai'] as const;
 
@@ -58,8 +58,7 @@ export const resolveSearchDecision = ({
   const hasNativeSearchCapability =
     isModelHasBuiltinSearch || isProviderHasBuiltinSearch || preferNative;
   const nativeSearchSelected =
-    isBuiltinSearchInternal ||
-    (hasNativeSearchCapability && (useModelBuiltinSearch ?? preferNative));
+    isBuiltinSearchInternal || (hasNativeSearchCapability && (useModelBuiltinSearch ?? true));
   const useModelSearch = enabledSearch && nativeSearchSelected;
 
   return {
@@ -78,6 +77,8 @@ const PROVIDER_SEARCH_DEFAULTS: Record<string, ModelSearchSettings> = {
   aihubmix: { searchImpl: 'params' },
   anthropic: { searchImpl: 'params' },
   baichuan: { searchImpl: 'params' },
+  chatgpt: { searchImpl: 'params' },
+  cursor: { searchImpl: 'params' },
   default: { searchImpl: 'params' },
   google: { searchImpl: 'params', searchProvider: 'google' },
   grok: { searchImpl: 'params' },
