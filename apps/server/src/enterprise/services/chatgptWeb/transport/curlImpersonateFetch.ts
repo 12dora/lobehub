@@ -398,6 +398,15 @@ const readTransportPref = (env: NodeJS.ProcessEnv = process.env): ChatGPTWebTran
   return 'auto';
 };
 
+const describeRequestPath = (input: RequestInfo | URL): string => {
+  try {
+    const raw = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
+    return new URL(raw).pathname;
+  } catch {
+    return 'unknown';
+  }
+};
+
 const peekCookieJarKey = (input: RequestInfo | URL, init?: RequestInit): string | undefined => {
   const headers = new Headers();
   if (typeof Request !== 'undefined' && input instanceof Request) {
@@ -506,10 +515,14 @@ const getOrCreateCliFetch = (
     return existing.fetch;
   }
   evictOldest();
-  const impl = createCurlImpersonateFetch({
+  const inner = createCurlImpersonateFetch({
     impersonate,
     ...(resolvedProxyUrl ? { proxyUrl: resolvedProxyUrl } : {}),
   });
+  const impl: typeof fetch = (async (input, init) => {
+    transportLog('request transport=cli path=%s', describeRequestPath(input));
+    return inner(input, init);
+  }) as typeof fetch;
   keyed.set(key, { fetch: impl, lastUsed: Date.now(), proxyUrl: resolvedProxyUrl });
   return impl;
 };
@@ -549,8 +562,10 @@ const getOrCreateRoutedFetch = (
 
   const impl: typeof fetch = (async (input, init) => {
     if (persistent && shouldUsePersistent(input, init, persistentAvailable)) {
+      transportLog('request transport=persistent-ffi path=%s', describeRequestPath(input));
       return persistent(input, init);
     }
+    transportLog('request transport=cli path=%s', describeRequestPath(input));
     return cli(input, init);
   }) as typeof fetch;
 

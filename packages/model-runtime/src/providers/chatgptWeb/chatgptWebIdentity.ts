@@ -12,7 +12,15 @@ export {
   buildChatGptWebXhrHeaders,
   buildSessionHeaders,
 } from './headers';
-export { getSharedSentinelBundlePool } from './sentinelBundlePool';
+export { SENTINEL_BUNDLE_TTL_SEC } from './sentinel';
+export type { SentinelBundleBinding, SentinelBundleMintFn } from './sentinelBundlePool';
+export { getSharedSentinelBundlePool, resetSharedSentinelBundlePool } from './sentinelBundlePool';
+export {
+  resetChatGPTWebSentinelKeepWarmForTests,
+  SENTINEL_WARM_SKEW_MS,
+  startChatGPTWebSentinelKeepWarm,
+  stopChatGPTWebSentinelKeepWarm,
+} from './sentinelKeepWarm';
 export type { ChatGPTWebBootstrapState, ChatGPTWebSessionContext } from './sessionContext';
 export { createMemoryChatGPTWebSessionContext } from './sessionContext';
 export { COOKIE_JAR_HEADER, deriveSessionId } from './sessionId';

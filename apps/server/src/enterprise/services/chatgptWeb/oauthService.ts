@@ -9,6 +9,7 @@ import {
   userAgentHeaders,
 } from '@lobechat/model-runtime/browserProfile';
 import { isChatGPTWebSessionToken } from '@lobechat/utils/chatgptWebPaste';
+import debug from 'debug';
 
 import type {
   DeviceCodeResponse,
@@ -35,6 +36,8 @@ import {
   parsePasteEnvelope,
 } from './pasteEnvelope';
 import { deleteCookieJar, getChatGPTWebFetch } from './transport';
+
+const log = debug('lobe-server:chatgpt-web-oauth');
 
 export {
   buildChatGPTWebBrowserSessionAccountId,
@@ -173,7 +176,7 @@ export class ChatGPTWebOAuthService extends ChatGPTWebOAuthSessionOps {
   }
 
   /** A successful connect starts a new page session; refresh must not. */
-  private rotatePageSessionAfterConnect(deviceId: string): void {
+  private rotatePageSessionAfterConnect(deviceId: string, accessToken?: string): void {
     if (!this.browserSessionAccountId) return;
     const next = rotateChatGPTWebBrowserSession({
       accountId: this.browserSessionAccountId,
@@ -182,6 +185,39 @@ export class ChatGPTWebOAuthService extends ChatGPTWebOAuthSessionOps {
     });
     // Connect is not a chat turn; do not pin inFlight on the new generation.
     next?.release?.();
+    this.warmSentinelAfterRotate(next, deviceId, accessToken);
+  }
+
+  /**
+   * Fire-and-forget Sentinel keep-warm after rotate. Never throws into connect.
+   * Dynamic import keeps the OAuth path from loading the protocol client until
+   * a real connect succeeds.
+   */
+  private warmSentinelAfterRotate(
+    context: ReturnType<typeof rotateChatGPTWebBrowserSession>,
+    deviceId: string,
+    accessToken?: string,
+  ): void {
+    if (!context || !accessToken?.trim()) return;
+    const browserProfile = this.browserProfile;
+    const fetchImpl = this.transportFetch;
+    void import('@lobechat/model-runtime')
+      .then(({ ChatGPTWebClient }) => {
+        const client = new ChatGPTWebClient({
+          accessToken,
+          browserProfile,
+          deviceId,
+          fetch: fetchImpl,
+          sessionContext: context,
+        });
+        client.keepSentinelWarm(context.contextId);
+      })
+      .catch((error) => {
+        log(
+          'sentinel warm after rotate failed: %s',
+          error instanceof Error ? error.message : error,
+        );
+      });
   }
 
   /**
@@ -333,7 +369,7 @@ export class ChatGPTWebOAuthService extends ChatGPTWebOAuthSessionOps {
       idToken: tokens.id_token,
       refreshToken: tokens.refresh_token,
     });
-    this.rotatePageSessionAfterConnect(connection.deviceId);
+    this.rotatePageSessionAfterConnect(connection.deviceId, connection.accessToken);
     return connection;
   }
 

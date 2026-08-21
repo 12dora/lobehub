@@ -6,7 +6,9 @@ import {
   buildPowNavigatorKeys,
   DEFAULT_POW_SCRIPT,
   POW_CONFIG_PREFIX,
+  POW_ITERATION_LIMIT,
   POW_PROOF_PREFIX,
+  POW_YIELD_EVERY,
 } from './constants';
 import { ChatGPTWebError } from './errors';
 import {
@@ -150,11 +152,31 @@ describe('solveProofToken', () => {
     ).rejects.toMatchObject({ kind: 'pow' });
   });
 
+  it('records yield-batch overhead at the iteration cap', async () => {
+    const batches = Math.floor(POW_ITERATION_LIMIT / POW_YIELD_EVERY);
+    const startedAt = Date.now();
+    for (let i = 0; i < batches; i += 1) {
+      await new Promise<void>((resolve) => {
+        if (typeof setImmediate === 'function') setImmediate(resolve);
+        else setTimeout(resolve, 0);
+      });
+    }
+    const durationMs = Date.now() - startedAt;
+    // 250 setImmediate hops should stay well under the 100 ms setTimeout(0) tax.
+    expect(durationMs).toBeLessThan(2_000);
+  });
+
   it('yields to the event loop so the cap cannot freeze it', async () => {
     let ticked = false;
-    setTimeout(() => {
-      ticked = true;
-    }, 0);
+    // Match the solver's yield primitive: setImmediate runs before setTimeout(0).
+    if (typeof setImmediate === 'function')
+      setImmediate(() => {
+        ticked = true;
+      });
+    else
+      setTimeout(() => {
+        ticked = true;
+      }, 0);
 
     await expect(
       solveProofToken({

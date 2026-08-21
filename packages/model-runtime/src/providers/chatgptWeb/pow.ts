@@ -160,10 +160,21 @@ export const buildLegacyRequirementsToken = (options: BuildPowConfigOptions): st
     ),
   );
 
-const yieldToEventLoop = () =>
-  new Promise<void>((resolve) => {
-    setTimeout(resolve, 0);
-  });
+/**
+ * Yield without the `setTimeout(0)` 1ms-floor tax. At the 500k-iteration cap
+ * that is 250 yields; macrotask timers add hundreds of ms of idle time.
+ * `setImmediate` (Node) is a check-queue hop; browsers fall back to timeout.
+ */
+const scheduleYield: (resolve: () => void) => void =
+  typeof setImmediate === 'function'
+    ? (resolve) => {
+        setImmediate(resolve);
+      }
+    : (resolve) => {
+        setTimeout(resolve, 0);
+      };
+
+const yieldToEventLoop = () => new Promise<void>(scheduleYield);
 
 export interface SolveProofTokenOptions {
   config: PowConfig;

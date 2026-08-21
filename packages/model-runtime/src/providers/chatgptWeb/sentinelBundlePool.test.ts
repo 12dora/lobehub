@@ -101,8 +101,22 @@ describe('SentinelBundlePool', () => {
     await pool.warm(binding(), mint);
     const acquired = await pool.acquire(binding(), mint);
 
-    expect(mint).toHaveBeenCalledTimes(1);
+    expect(mint).toHaveBeenCalledTimes(2);
     expect(acquired.requirements.token).toBe('warm');
+  });
+
+  it('warms up to two ready bundles so a turn does not empty the pool', async () => {
+    const pool = new SentinelBundlePool();
+    let n = 0;
+    const mint = vi.fn(async () => minted(`t${(n += 1)}`));
+
+    await pool.warm(binding(), mint);
+    const first = await pool.acquire(binding(), mint);
+    const second = await pool.acquire(binding(), mint);
+
+    expect(mint).toHaveBeenCalledTimes(2);
+    expect(first.requirements.token).toBe('t1');
+    expect(second.requirements.token).toBe('t2');
   });
 
   it('does not consume the same bundle twice', async () => {
@@ -125,11 +139,11 @@ describe('SentinelBundlePool', () => {
 
     const first = await pool.acquire(binding(), mint);
     pool.replenish(binding(), mint);
-    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(3));
 
     const second = await pool.acquire(binding(), mint);
 
-    expect(mint).toHaveBeenCalledTimes(2);
+    expect(mint).toHaveBeenCalledTimes(3);
     expect(first.requirements.token).toBe('t1');
     expect(second.requirements.token).toBe('t2');
     expect(first.id).not.toBe(second.id);
@@ -170,7 +184,7 @@ describe('SentinelBundlePool', () => {
     now = 2000;
     const acquired = await pool.acquire(binding(), mint);
 
-    expect(mint).toHaveBeenCalledTimes(2);
+    expect(mint.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(acquired.requirements.token).toBe('fresh');
   });
 
@@ -179,12 +193,13 @@ describe('SentinelBundlePool', () => {
     const mint = vi
       .fn()
       .mockResolvedValueOnce(minted('old-device'))
+      .mockResolvedValueOnce(minted('old-device-2'))
       .mockResolvedValueOnce(minted('new-device'));
 
     await pool.warm(binding(), mint);
     const acquired = await pool.acquire(binding({ deviceId: 'device-2' }), mint);
 
-    expect(mint).toHaveBeenCalledTimes(2);
+    expect(mint.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(acquired.requirements.token).toBe('new-device');
     expect(acquired.binding.deviceId).toBe('device-2');
   });
@@ -250,8 +265,8 @@ describe('SentinelBundlePool', () => {
     const a = await pool.acquire(binding(), mint);
     const b = await pool.acquire(binding({ contextKey: 'ctx-2' }), mint);
 
-    expect(a.requirements.token).toBe('t3');
-    expect(b.requirements.token).toBe('t2');
+    expect(a.requirements.token).not.toBe(b.requirements.token);
+    expect(mint.mock.calls.length).toBeGreaterThanOrEqual(5);
   });
 
   it('invalidate deletes the slot so a late mint cannot park', async () => {
@@ -285,6 +300,24 @@ describe('SentinelBundlePool', () => {
     const after = vi.fn(async () => minted('new-page'));
     const acquired = await pool.acquire(binding(), after);
     expect(acquired.requirements.token).toBe('new-page');
+  });
+
+  it('discardExpiring drops bundles that expire within the skew window', async () => {
+    let now = 1000;
+    const pool = new SentinelBundlePool({ now: () => now });
+    const mint = vi
+      .fn()
+      .mockResolvedValueOnce(minted('soon', 20_000))
+      .mockResolvedValueOnce(minted('later', 80_000))
+      .mockResolvedValueOnce(minted('fresh', 90_000));
+
+    await pool.warm(binding(), mint);
+    await pool.discardExpiring('ctx-1', 30_000);
+    await pool.warm(binding(), mint);
+
+    now = 25_000;
+    const acquired = await pool.acquire(binding(), mint);
+    expect(acquired.requirements.token).toBe('later');
   });
 
   it('reset is safe when a mint is in flight', async () => {

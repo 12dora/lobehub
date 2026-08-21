@@ -98,6 +98,28 @@ export async function* replayIterator<T>(
   }
 }
 
+/**
+ * Same as {@link replayIterator}, but the first pull may still be in flight so
+ * the runtime can return a streaming Response as soon as HTTP headers succeed.
+ */
+export async function* replayPendingFirst<T>(
+  firstPromise: Promise<IteratorResult<T>>,
+  iterator: AsyncIterator<T>,
+): AsyncGenerator<T, void, undefined> {
+  try {
+    const first = await firstPromise;
+    if (first.done) return;
+    yield first.value;
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally {
+    await iterator.return?.(undefined);
+  }
+}
+
 export interface TurnState {
   conversationId?: string;
   /** the cleanup hook already fired — hiding twice is a wasted round trip */
@@ -141,6 +163,59 @@ const RECOVERABLE_PREPARE_KINDS = new Set(['network', 'not_found', 'timeout', 'u
 
 export const isRecoverablePrepareError = (error: unknown): boolean =>
   !isAbortError(error) && isChatGPTWebError(error) && RECOVERABLE_PREPARE_KINDS.has(error.kind);
+
+/**
+ * 4xx on `/f/conversation` that means the send raced ahead of prepare state
+ * (missing conduit token / client_prepare). Distinct from auth / Cloudflare /
+ * rate-limit, which must stay fatal.
+ */
+const MISSING_CONDUIT_STATUSES = new Set([400, 409, 422]);
+const MISSING_CONDUIT_MARKERS = [
+  'conduit',
+  'prepare_token',
+  'client_prepare',
+  'conversation_prepare',
+];
+const FATAL_CONDUIT_RETRY_KINDS = new Set([
+  'auth',
+  'cloudflare',
+  'permission',
+  'rate_limit',
+  'model_cap',
+  'transport_unavailable',
+]);
+
+export const isMissingConduitPrepareError = (error: unknown): boolean => {
+  if (isAbortError(error) || !isChatGPTWebError(error)) return false;
+  if (FATAL_CONDUIT_RETRY_KINDS.has(error.kind)) return false;
+  const haystack =
+    `${error.message} ${error.code ?? ''} ${typeof error.body === 'string' ? error.body : JSON.stringify(error.body ?? '')}`.toLowerCase();
+  if (MISSING_CONDUIT_MARKERS.some((marker) => haystack.includes(marker))) return true;
+  return (
+    error.kind === 'upstream' &&
+    typeof error.status === 'number' &&
+    MISSING_CONDUIT_STATUSES.has(error.status)
+  );
+};
+
+/**
+ * Wait until the first SSE leg has HTTP headers (or the iterator fails). Does
+ * not wait for the first ConversationEvent when `onHeaders` fires first.
+ */
+export const waitForStreamHeaders = async (
+  headersOpened: Promise<void>,
+  first: Promise<unknown>,
+): Promise<void> => {
+  await Promise.race([
+    headersOpened,
+    first.then(
+      () => undefined,
+      (error: unknown) => {
+        throw error;
+      },
+    ),
+  ]);
+};
 
 /** A one-shot event stream that only ever throws — used to replay a caller abort. */
 // eslint-disable-next-line require-yield -- intentionally yields nothing: it exists to throw

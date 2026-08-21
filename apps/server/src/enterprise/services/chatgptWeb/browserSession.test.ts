@@ -1,7 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 import { generateBrowserDeviceProfile } from '@lobechat/model-runtime/browserProfile';
-import { getSharedSentinelBundlePool } from '@lobechat/model-runtime/chatgptWebIdentity';
+import {
+  getSharedSentinelBundlePool,
+  resetChatGPTWebSentinelKeepWarmForTests,
+  resetSharedSentinelBundlePool,
+  SENTINEL_BUNDLE_TTL_SEC,
+  SENTINEL_WARM_SKEW_MS,
+} from '@lobechat/model-runtime/chatgptWebIdentity';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -36,10 +42,13 @@ const profile = generateBrowserDeviceProfile({ seed: 'chatgptweb-g3-g5-g7' });
 const SAME_DEVICE = 'oai-did-shared-physical-browser';
 
 afterEach(async () => {
+  resetChatGPTWebSentinelKeepWarmForTests();
+  resetSharedSentinelBundlePool();
   await Promise.resolve(resetCookieJars());
   await resetBrowserSessionRegistryForTests();
   resetBrowserCookieJars();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const bind = (
@@ -451,6 +460,70 @@ describe('stageChatGPTWebBrowserSession', () => {
         (cookie) => cookie.name === '_cfuvid' && cookie.value === 'cf-verified',
       ),
     ).toBe(true);
+  });
+});
+
+describe('warmChatGPTWebSentinelAfterBind', () => {
+  it('mints after bind when a sentinelMint is supplied and never throws', async () => {
+    const mint = vi.fn(async () => ({
+      expiresAtMs: Date.now() + 540_000,
+      requirements: { proofToken: 'p', soToken: 's', token: 't', turnstileToken: 'ts' },
+    }));
+
+    expect(() =>
+      bindChatGPTWebBrowserSession({
+        accountId: 'user:alice:_:chatgptweb',
+        browserProfile: profile,
+        deviceId: SAME_DEVICE,
+        sentinelMint: mint,
+      }),
+    ).not.toThrow();
+
+    await vi.waitFor(() => expect(mint.mock.calls.length).toBeGreaterThanOrEqual(1));
+  });
+
+  it('re-warms shortly before TTL with fake timers', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(1_000);
+    let n = 0;
+    const mint = vi.fn(async () => ({
+      expiresAtMs: Date.now() + 540_000,
+      requirements: {
+        proofToken: `p${(n += 1)}`,
+        soToken: 's',
+        token: `t${n}`,
+        turnstileToken: 'ts',
+      },
+    }));
+
+    bindChatGPTWebBrowserSession({
+      accountId: 'user:alice:_:chatgptweb',
+      browserProfile: profile,
+      deviceId: SAME_DEVICE,
+      sentinelMint: mint,
+    });
+
+    await vi.waitFor(() => expect(n).toBeGreaterThanOrEqual(1));
+    const firstWave = n;
+    await vi.advanceTimersByTimeAsync(SENTINEL_BUNDLE_TTL_SEC * 1000 - SENTINEL_WARM_SKEW_MS);
+    await vi.waitFor(() => expect(n).toBeGreaterThan(firstWave));
+  });
+
+  it('does not throw into bind when mint rejects', async () => {
+    const mint = vi.fn(async () => {
+      throw new Error('sentinel handshake failed');
+    });
+
+    expect(() =>
+      bindChatGPTWebBrowserSession({
+        accountId: 'user:alice:_:chatgptweb',
+        browserProfile: profile,
+        deviceId: SAME_DEVICE,
+        sentinelMint: mint,
+      }),
+    ).not.toThrow();
+
+    await vi.waitFor(() => expect(mint).toHaveBeenCalled());
   });
 });
 

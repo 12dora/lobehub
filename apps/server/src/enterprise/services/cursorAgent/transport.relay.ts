@@ -1,6 +1,10 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 
+import createDebug from 'debug';
+
 import { scrubJsonValue, scrubSecretString } from './scrub';
+
+const timing = createDebug('lobe-cursor:timing');
 
 const KILL_GRACE_MS = 3000;
 const MAX_DIAGNOSTIC_CHARS = 8192;
@@ -74,6 +78,7 @@ export const relayCliStream = (params: {
   child: ChildProcessWithoutNullStreams;
   onFinally: () => void;
   signal?: AbortSignal;
+  spawnedAt: number;
   timeoutMs: number;
   token: string;
 }): ReadableStream<Uint8Array> => {
@@ -173,6 +178,7 @@ export const relayCliStream = (params: {
         }
       };
 
+      let firstAssistantLogged = false;
       const handleLine = (line: string) => {
         if (!line || closed) return;
         try {
@@ -182,6 +188,10 @@ export const relayCliStream = (params: {
             return;
           }
           const record = parsed as Record<string, unknown>;
+          if (!firstAssistantLogged && record.type === 'assistant') {
+            firstAssistantLogged = true;
+            timing('spawn to first assistant delta durationMs=%d', Date.now() - params.spawnedAt);
+          }
           if (record.type === 'result') {
             sawResult = true;
             if (isErrorResult(record) && looksLikeAuthFailure(resultErrorText(record))) {
@@ -203,7 +213,12 @@ export const relayCliStream = (params: {
 
       params.child.stdout.setEncoding('utf8');
       params.child.stderr.setEncoding('utf8');
+      let firstStdoutLogged = false;
       params.child.stdout.on('data', (chunk: string) => {
+        if (!firstStdoutLogged) {
+          firstStdoutLogged = true;
+          timing('spawn to first-stdout-line durationMs=%d', Date.now() - params.spawnedAt);
+        }
         buffer += chunk;
         let newline = buffer.indexOf('\n');
         while (newline !== -1) {

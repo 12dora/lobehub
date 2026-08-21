@@ -14,6 +14,7 @@ import {
   ChatGPTWebError,
   classifyResponseError,
   describeResponseShape,
+  describeThrownValue,
   isChatGPTWebError,
 } from './errors';
 import {
@@ -48,8 +49,13 @@ import type {
   SentinelBundlePool,
 } from './sentinelBundlePool';
 import { deriveSentinelContextKey, getSharedSentinelBundlePool } from './sentinelBundlePool';
+import {
+  startChatGPTWebSentinelKeepWarm,
+  stopChatGPTWebSentinelKeepWarm,
+} from './sentinelKeepWarm';
 import { ConversationEventRouter } from './sse/events';
 import { iterSsePayloads } from './sse/reader';
+import { getDurationMs, timing } from './timing';
 import type {
   ChatRequirements,
   ConversationDocument,
@@ -87,6 +93,13 @@ export interface StreamConversationOptions {
   idleTimeoutMs?: number;
   /** Chained resume legs allowed for this turn. */
   maxResumes?: number;
+  /**
+   * Fired after the first SSE leg's HTTP headers succeed (status < 300) and
+   * before any ConversationEvent. Used so the runtime can return a streaming
+   * Response without waiting for `conversation.start`, while still classifying
+   * 401/403 at open.
+   */
+  onHeaders?: () => void;
   requirements: ChatRequirements;
   signal?: AbortSignal;
   /** Shared with the prepare request for this browser turn. */
@@ -325,11 +338,35 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     signal?: AbortSignal;
   } = {}): Promise<AcquiredSentinelBundle> {
     const binding = this.sentinelBinding(contextKey);
-    return this.sentinelPool.acquire(
+    const startedAt = Date.now();
+    let minted = false;
+    const acquired = await this.sentinelPool.acquire(
       binding,
-      (mintSignal) => this.mintChatRequirements({ onProgress, powLimit, signal: mintSignal }),
+      (mintSignal) => {
+        minted = true;
+        return this.mintChatRequirements({ onProgress, powLimit, signal: mintSignal });
+      },
       signal,
     );
+    timing(
+      'sentinel acquire source=%s durationMs=%d',
+      minted ? 'cold' : 'warm',
+      getDurationMs(startedAt),
+    );
+    return acquired;
+  }
+
+  /**
+   * Fire-and-forget keep-warm for this context. Never throws into bind / chat.
+   */
+  keepSentinelWarm(contextKey?: string): void {
+    try {
+      startChatGPTWebSentinelKeepWarm(this.sentinelBinding(contextKey), (mintSignal) =>
+        this.mintChatRequirements({ signal: mintSignal }),
+      );
+    } catch (error) {
+      log('keepSentinelWarm failed: %s', describeThrownValue(error));
+    }
   }
 
   /**
@@ -365,7 +402,9 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
 
   /** Drop parked bundles when the context reconnects or the device/profile changes. */
   invalidateSentinelBundles(contextKey?: string): void {
-    this.sentinelPool.invalidate(this.resolveContextKey(contextKey));
+    const key = this.resolveContextKey(contextKey);
+    this.sentinelPool.invalidate(key);
+    stopChatGPTWebSentinelKeepWarm(key);
   }
 
   private resolveContextKey(contextKey?: string): string {
@@ -399,46 +438,61 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     powLimit?: number;
     signal?: AbortSignal;
   } = {}): Promise<MintedSentinelBundle> {
-    onProgress?.('bootstrap');
-    const resources = await this.bootstrapPowResources(signal);
+    const mark = async <T>(
+      stage: 'bootstrap' | 'prepare' | 'solve' | 'finalize',
+      work: () => Promise<T>,
+    ): Promise<T> => {
+      onProgress?.(stage);
+      const startedAt = Date.now();
+      try {
+        return await work();
+      } finally {
+        timing('sentinel %s durationMs=%d', stage, getDurationMs(startedAt));
+      }
+    };
+
+    const resources = await mark('bootstrap', () => this.bootstrapPowResources(signal));
     const userAgent = this.userAgent;
     const requirementsToken = buildRequirementsToken(resources, userAgent, this.browserProfile);
 
-    onProgress?.('prepare');
-    const prepare = await this.retryOnCloudflare(
-      () =>
-        this.requestJson<SentinelPrepareResponse>({
-          ...this.jsonBody({ p: requirementsToken }),
-          context: 'sentinel_prepare',
-          path: `${PATHS.sentinelRequirements}/prepare`,
-          signal,
-          timeoutMs: TIMEOUTS.sentinel,
-        }),
-      signal,
+    const prepare = await mark('prepare', () =>
+      this.retryOnCloudflare(
+        () =>
+          this.requestJson<SentinelPrepareResponse>({
+            ...this.jsonBody({ p: requirementsToken }),
+            context: 'sentinel_prepare',
+            path: `${PATHS.sentinelRequirements}/prepare`,
+            signal,
+            timeoutMs: TIMEOUTS.sentinel,
+          }),
+        signal,
+      ),
     );
 
-    onProgress?.('solve');
-    const challenges = await solveSentinelChallenges({
-      powLimit,
-      prepare,
-      browserProfile: this.browserProfile,
-      requirementsToken,
-      resources,
-      signal,
-      userAgent,
-    });
+    const challenges = await mark('solve', () =>
+      solveSentinelChallenges({
+        powLimit,
+        prepare,
+        browserProfile: this.browserProfile,
+        requirementsToken,
+        resources,
+        signal,
+        userAgent,
+      }),
+    );
 
-    onProgress?.('finalize');
-    const finalize = await this.retryOnCloudflare(
-      () =>
-        this.requestJson<SentinelFinalizeResponse>({
-          ...this.jsonBody(buildSentinelFinalizeBody(prepare.prepare_token, challenges)),
-          context: 'sentinel_finalize',
-          path: `${PATHS.sentinelRequirements}/finalize`,
-          signal,
-          timeoutMs: TIMEOUTS.sentinel,
-        }),
-      signal,
+    const finalize = await mark('finalize', () =>
+      this.retryOnCloudflare(
+        () =>
+          this.requestJson<SentinelFinalizeResponse>({
+            ...this.jsonBody(buildSentinelFinalizeBody(prepare.prepare_token, challenges)),
+            context: 'sentinel_finalize',
+            path: `${PATHS.sentinelRequirements}/finalize`,
+            signal,
+            timeoutMs: TIMEOUTS.sentinel,
+          }),
+        signal,
+      ),
     );
 
     return {
@@ -481,6 +535,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       turnIdentity?: TurnRequestIdentity;
     } = {},
   ): Promise<{ conduitToken?: string }> {
+    const startedAt = Date.now();
     const raw = await this.requestJson<Record<string, any>>({
       body: JSON.stringify(body),
       context: 'conversation_prepare',
@@ -495,6 +550,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       path: PATHS.fConversationPrepare,
       signal,
     });
+    timing('prepare durationMs=%d', getDurationMs(startedAt));
 
     // `{status:"ok", conduit_token:null}` is a NORMAL prepare response, not a
     // failure — verified live 2026-08-19 against a captured real Chrome session:
@@ -542,6 +598,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       hardCapMs = TIMEOUTS.streamHardCap,
       idleTimeoutMs = TIMEOUTS.streamIdle,
       maxResumes = MAX_CHAINED_RESUMES,
+      onHeaders,
       requirements,
       signal,
       turnIdentity,
@@ -573,6 +630,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
 
     try {
       let conversationId: string | undefined;
+      let firstTextLogged = false;
 
       for (let resumes = 0; ; resumes += 1) {
         const state: LegState = { sawOutput: false };
@@ -580,13 +638,24 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
         let managed: ManagedResponse | undefined;
 
         try {
+          const openStartedAt = Date.now();
           managed = await this.openLeg(request, composed.signal);
-          for await (const event of this.readLeg(managed, router, legOptions, state)) {
+          if (resumes === 0) onHeaders?.();
+          for await (const event of this.readLeg(
+            managed,
+            router,
+            { ...legOptions, openStartedAt },
+            state,
+          )) {
             // both are turn bookkeeping, not output the consumer should see
             if (event.type === 'handoff') continue;
             if (event.type === 'done') {
               done = event;
               continue;
+            }
+            if (!firstTextLogged && event.type === 'text.delta') {
+              firstTextLogged = true;
+              timing('first text.delta durationMs=%d', getDurationMs(openStartedAt));
             }
             yield event;
           }
@@ -677,10 +746,11 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     signal: AbortSignal | undefined,
   ): Promise<ManagedResponse> {
     const retries = request.retries ?? 0;
+    const startedAt = Date.now();
 
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await this.request({
+        const managed = await this.request({
           accept: 'text/event-stream',
           body: request.body,
           context: request.context,
@@ -691,6 +761,8 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
           // the stream is bounded by hardCapMs / idleTimeoutMs instead
           timeoutMs: 0,
         });
+        timing('openLeg headers durationMs=%d path=%s', getDurationMs(startedAt), request.path);
+        return managed;
       } catch (error) {
         // covers the caller's stop AND our own hard cap (composed signal)
         const abortReason = callerAbortReason(signal);
@@ -712,8 +784,14 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     {
       deadlineSignal,
       idleTimeoutMs,
+      openStartedAt,
       signal,
-    }: { deadlineSignal?: AbortSignal; idleTimeoutMs?: number; signal?: AbortSignal },
+    }: {
+      deadlineSignal?: AbortSignal;
+      idleTimeoutMs?: number;
+      openStartedAt?: number;
+      signal?: AbortSignal;
+    },
     state: LegState,
   ): AsyncGenerator<ConversationEvent, void, undefined> {
     if (!managed.response.body)
@@ -722,11 +800,17 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     try {
       // `iterSsePayloads` THROWS on abort / hard cap / idle, so a truncated turn
       // can never surface as a `done` event here.
+      let firstByteLogged = false;
       for await (const payload of iterSsePayloads(managed.response.body, {
         deadlineSignal,
         idleTimeoutMs,
         signal,
       })) {
+        if (!firstByteLogged) {
+          firstByteLogged = true;
+          if (openStartedAt !== undefined)
+            timing('openLeg first-byte durationMs=%d', getDurationMs(openStartedAt));
+        }
         for (const event of router.feed(payload)) {
           if (event.type === 'handoff') state.handoff = event;
           if (event.type === 'conversation.start') state.conversationId = event.conversationId;

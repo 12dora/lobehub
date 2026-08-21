@@ -308,6 +308,7 @@ export const createCursorAgentFetch = (options: CursorAgentFetchOptions = {}): t
       });
 
       let child: ChildProcessWithoutNullStreams;
+      const spawnedAt = Date.now();
       try {
         child = spawnCursor(buildTurnArgv(parsed, scratch), { cwd: scratch.root, env });
       } catch (error) {
@@ -335,6 +336,7 @@ export const createCursorAgentFetch = (options: CursorAgentFetchOptions = {}): t
         child,
         onFinally,
         signal: request.signal,
+        spawnedAt,
         timeoutMs: turnTimeoutMs,
         token,
       });

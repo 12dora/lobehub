@@ -11,8 +11,15 @@ import { randomUUID } from 'node:crypto';
 
 import type { BrowserDeviceProfile } from '@lobechat/model-runtime/browserProfile';
 import { isFallbackBrowserProfile } from '@lobechat/model-runtime/browserProfile';
-import type { ChatGPTWebSessionContext } from '@lobechat/model-runtime/chatgptWebIdentity';
-import { getSharedSentinelBundlePool } from '@lobechat/model-runtime/chatgptWebIdentity';
+import type {
+  ChatGPTWebSessionContext,
+  SentinelBundleMintFn,
+} from '@lobechat/model-runtime/chatgptWebIdentity';
+import {
+  getSharedSentinelBundlePool,
+  startChatGPTWebSentinelKeepWarm,
+  stopChatGPTWebSentinelKeepWarm,
+} from '@lobechat/model-runtime/chatgptWebIdentity';
 import debug from 'debug';
 
 import {
@@ -70,6 +77,12 @@ export interface BindChatGPTWebBrowserSessionParams {
   browserProfileRevision?: number;
   deviceId?: string;
   ephemeral?: boolean;
+  /**
+   * Optional Sentinel mint used to keep-warm the pool after bind/rotate.
+   * The handshake lives on ChatGPTWebClient; this adapter never constructs one.
+   * Must never throw into the bind path.
+   */
+  sentinelMint?: SentinelBundleMintFn;
 }
 
 /**
@@ -111,6 +124,7 @@ onBrowserSessionBeforeDispose((context) => {
 onBrowserSessionInvalidate((context) => {
   if (context.provider !== CHATGPT_WEB_BROWSER_SESSION_PROVIDER) return;
   getSharedSentinelBundlePool().invalidate(context.contextId);
+  stopChatGPTWebSentinelKeepWarm(context.contextId);
 });
 
 const wrapHandle = (context: BrowserSessionContext): ChatGPTWebSessionContext => {
@@ -163,7 +177,32 @@ const toAcquireInput = (params: BindChatGPTWebBrowserSessionParams) => ({
 const dropChatGPTWebBrowserContext = (context: BrowserSessionContext): void => {
   unregisterContextCookieJar(cookieJarKeyFor(context));
   getSharedSentinelBundlePool().invalidate(context.contextId);
+  stopChatGPTWebSentinelKeepWarm(context.contextId);
   getBrowserSessionRegistry().invalidate(context.contextId);
+};
+
+/**
+ * Mint a Sentinel bundle for this context without blocking bind/rotate.
+ * Failures are logged; a missing mint is a no-op (the next chat still acquires).
+ */
+export const warmChatGPTWebSentinelAfterBind = (
+  context: ChatGPTWebSessionContext | undefined,
+  params: BindChatGPTWebBrowserSessionParams,
+): void => {
+  try {
+    if (!context || !params.sentinelMint) return;
+    startChatGPTWebSentinelKeepWarm(
+      {
+        contextKey: context.contextId,
+        deviceId: params.deviceId ?? context.logicalPageId,
+        profileId: params.browserProfile.id,
+        sessionId: context.logicalPageId,
+      },
+      params.sentinelMint,
+    );
+  } catch (error) {
+    log('sentinel warm after bind failed: %s', error instanceof Error ? error.message : error);
+  }
 };
 
 const liveBindingWouldChange = (
@@ -193,7 +232,9 @@ export const bindChatGPTWebBrowserSession = (
 
   const context = getBrowserSessionRegistry().acquire(toAcquireInput(params));
   bindJar(context, params.deviceId);
-  return wrapHandle(context);
+  const handle = wrapHandle(context);
+  warmChatGPTWebSentinelAfterBind(handle, params);
+  return handle;
 };
 
 /**
@@ -202,10 +243,8 @@ export const bindChatGPTWebBrowserSession = (
  * survives the rotation. Call after a successful connect/reconnect, never on
  * refresh.
  *
- * TODO(G4): `warmSentinelBundle` after rotate. The mint handshake lives on
- * ChatGPTWebClient (network prepare/finalize) and this adapter has no client,
- * so fire-and-forget warm is not cheap/safe here. The first post-reconnect
- * turn still blocks on a cold pool. See plan C4 implementation notes.
+ * After rotate, fire-and-forget Sentinel keep-warm when a mint is supplied
+ * (OAuth connect / tests). Never throws into the bind path.
  */
 export const rotateChatGPTWebBrowserSession = (
   params: BindChatGPTWebBrowserSessionParams,

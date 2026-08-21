@@ -6,8 +6,11 @@ import type { ChatRequirements } from './types';
 
 const log = createDebug('lobe-chatgptweb:sentinel-pool');
 
-/** One ready bundle is enough: the next handshake overlaps the current stream. */
-export const SENTINEL_READY_POOL_SIZE = 1;
+/**
+ * Two ready bundles so a turn that consumes one never finds the pool empty
+ * while the overlapping replenish is still in flight.
+ */
+export const SENTINEL_READY_POOL_SIZE = 2;
 
 /**
  * Opaque Browser Session Context key plus the ChatGPT identity the bundle was
@@ -226,8 +229,9 @@ export class SentinelBundlePool {
   }
 
   /**
-   * Park one ready bundle without consuming it. Call on context init/reconnect
-   * so the first turn is not stalled behind a background warm that never started.
+   * Park ready bundles up to {@link SENTINEL_READY_POOL_SIZE} without consuming
+   * them. Call on context init/reconnect so the first turn is not stalled
+   * behind a background warm that never started.
    */
   async warm(
     binding: SentinelBundleBinding,
@@ -235,16 +239,25 @@ export class SentinelBundlePool {
     signal?: AbortSignal,
   ): Promise<void> {
     const slot = this.slotFor(binding.contextKey);
-    // Wrap the mint promise so the mutex does not flatten/await it — minting
-    // must complete outside the lock (it re-enters the mutex to park the bundle).
-    const step = await slot.mutex.run(() => {
-      this.adoptBinding(slot, binding);
-      this.prune(slot);
-      if (this.hasReady(slot)) return { pending: undefined };
-      if (slot.minting) return { pending: slot.minting };
-      return { pending: this.startMint(slot, binding, mint, signal) };
-    });
-    if (step.pending) await step.pending;
+    for (let attempts = 0; attempts < this.maxReady * 4; attempts += 1) {
+      const abortReason = callerAbortReason(signal);
+      if (abortReason !== undefined) throw abortReason;
+
+      // Wrap the mint promise so the mutex does not flatten/await it — minting
+      // must complete outside the lock (it re-enters the mutex to park the bundle).
+      const step = await slot.mutex.run(() => {
+        this.adoptBinding(slot, binding);
+        this.prune(slot);
+        if (this.readyCount(slot) >= this.maxReady) return { done: true as const };
+        if (slot.minting) return { done: false as const, pending: slot.minting };
+        return { done: false as const, pending: this.startMint(slot, binding, mint, signal) };
+      });
+      if (step.done) return;
+      if (step.pending) {
+        const parked = await withAbort(step.pending, signal);
+        if (!parked) return;
+      }
+    }
   }
 
   /**
@@ -262,15 +275,46 @@ export class SentinelBundlePool {
       .run(() => {
         this.adoptBinding(slot, binding);
         this.prune(slot);
-        if (this.hasReady(slot) || slot.minting) return;
+        if (this.readyCount(slot) >= this.maxReady || slot.minting) return;
         const pending = this.startMint(slot, binding, mint, signal);
-        void pending.catch((error) => {
-          log('replenish failed: %s', describeThrownValue(error));
-        });
+        void pending
+          .then((bundle) => {
+            if (bundle) this.replenish(binding, mint, signal);
+          })
+          .catch((error) => {
+            log('replenish failed: %s', describeThrownValue(error));
+          });
       })
       .catch((error) => {
         log('replenish failed: %s', describeThrownValue(error));
       });
+  }
+
+  /**
+   * Drop parked bundles that expire within `withinMs` so a keep-warm mint can
+   * replace them before the pool goes empty. Failures are logged, never thrown.
+   */
+  async discardExpiring(contextKey: string, withinMs: number): Promise<void> {
+    const slot = this.slots.get(contextKey);
+    if (!slot) return;
+    const deadline = this.now() + Math.max(0, withinMs);
+    try {
+      await slot.mutex.run(() => {
+        this.prune(slot);
+        const kept: InternalBundle[] = [];
+        for (const bundle of slot.ready) {
+          if (bundle.state !== 'ready') continue;
+          if (bundle.expiresAtMs <= deadline) {
+            bundle.state = 'discarded';
+            continue;
+          }
+          kept.push(bundle);
+        }
+        slot.ready = kept;
+      });
+    } catch (error) {
+      log('discardExpiring failed: %s', describeThrownValue(error));
+    }
   }
 
   /** Drop every parked/in-flight bundle for a context (reconnect, device change). */
@@ -319,8 +363,12 @@ export class SentinelBundlePool {
   }
 
   private hasReady(slot: ContextSlot): boolean {
+    return this.readyCount(slot) > 0;
+  }
+
+  private readyCount(slot: ContextSlot): number {
     this.prune(slot);
-    return slot.ready.some((bundle) => bundle.state === 'ready');
+    return slot.ready.filter((bundle) => bundle.state === 'ready').length;
   }
 
   private takeReady(slot: ContextSlot): InternalBundle | undefined {
@@ -374,6 +422,7 @@ export class SentinelBundlePool {
     const promise: Promise<InternalBundle | undefined> = (async () => {
       try {
         const minted = await mint(signal);
+        if (!minted) return undefined;
         return await slot.mutex.run(() => {
           if (this.slots.get(contextKey) !== slot) return undefined;
           if (slot.generation !== generation) return undefined;

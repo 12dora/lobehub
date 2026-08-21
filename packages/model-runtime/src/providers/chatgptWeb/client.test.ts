@@ -303,13 +303,29 @@ describe('ChatGPTWebClient.acquireSentinelBundle', () => {
     const pool = new SentinelBundlePool();
     const client = createClient({ sentinelBundlePool: pool });
     const expireAt = mockSentinelHandshake('warm');
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prepare_token: 'prepare-warm-2',
+          proofofwork: { difficulty: 'ffff', required: true, seed: 'seed-warm-2' },
+          turnstile: { required: false },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          expire_after: 540,
+          expire_at: expireAt,
+          so_token: 'so-warm-2',
+          token: 'warm-2',
+        }),
+      );
 
     await client.warmSentinelBundle({ contextKey: 'ctx-1' });
     const acquired = await client.acquireSentinelBundle({ contextKey: 'ctx-1' });
 
     expect(acquired.requirements.token).toBe('warm');
     expect(acquired.expiresAtMs).toBe(expireAt * 1000);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it('replenishes a distinct bundle after acquire', async () => {
@@ -327,9 +343,19 @@ describe('ChatGPTWebClient.acquireSentinelBundle', () => {
       )
       .mockResolvedValueOnce(jsonResponse({ expire_after: 540, so_token: 'so-b', token: 'b' }));
 
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prepare_token: 'prepare-c',
+          proofofwork: { difficulty: 'ffff', required: true, seed: 'seed-c' },
+          turnstile: { required: false },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ expire_after: 540, so_token: 'so-c', token: 'c' }));
+
     const first = await client.acquireSentinelBundle({ contextKey: 'ctx-1' });
     client.replenishSentinelBundle({ contextKey: 'ctx-1' });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(7));
     const second = await client.acquireSentinelBundle({ contextKey: 'ctx-1' });
 
     expect(first.requirements.token).toBe('a');
