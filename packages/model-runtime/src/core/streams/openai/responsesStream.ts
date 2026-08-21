@@ -38,16 +38,26 @@ const isNativeSearchItemType = (type?: string): type is 'web_search_call' | 'x_s
 
 const nativeSearchLabel = (type: string) => (type.includes('x_search') ? 'X search' : 'Web search');
 
-const extractNativeSearchQuery = (item: unknown): string | undefined => {
-  if (!item || typeof item !== 'object') return undefined;
+const collectQueryStrings = (value: unknown): string[] => {
+  if (typeof value === 'string' && value) return [value];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+};
+
+const extractNativeSearchQueries = (item: unknown): string[] => {
+  if (!item || typeof item !== 'object') return [];
   const record = item as Record<string, unknown>;
-  if (typeof record.query === 'string' && record.query) return record.query;
-  const action = record.action;
-  if (action && typeof action === 'object') {
-    const query = (action as { query?: unknown }).query;
-    if (typeof query === 'string' && query) return query;
-  }
-  return undefined;
+  const action =
+    record.action && typeof record.action === 'object'
+      ? (record.action as Record<string, unknown>)
+      : undefined;
+  const queries = [
+    ...collectQueryStrings(record.query),
+    ...collectQueryStrings(record.queries),
+    ...(action ? collectQueryStrings(action.query) : []),
+    ...(action ? collectQueryStrings(action.queries) : []),
+  ];
+  return [...new Set(queries)];
 };
 
 const extractNativeSearchCitations = (item: unknown): ChatCitationItem[] => {
@@ -78,16 +88,30 @@ const extractNativeSearchCitations = (item: unknown): ChatCitationItem[] => {
   });
 };
 
-const upsertNativeSearchQuery = (
+const upsertNativeSearchQueries = (
   streamContext: StreamContext,
   itemType: string,
   id: string | undefined,
-  query?: string,
+  queries: string[],
 ) => {
   const key = id || `${itemType}:${Object.keys(streamContext.nativeSearchQueries ?? {}).length}`;
   streamContext.nativeSearchQueries ??= {};
-  const existing = streamContext.nativeSearchQueries[key];
-  streamContext.nativeSearchQueries[key] = query || existing || nativeSearchLabel(itemType);
+  const existing = streamContext.nativeSearchQueries[key] ?? [];
+  const incoming = queries.filter(Boolean);
+  const placeholder = nativeSearchLabel(itemType);
+  const existingIsPlaceholder = existing.length === 1 && existing[0] === placeholder;
+  let next: string[];
+  if (incoming.length === 0) {
+    next = existing.length > 0 ? existing : [placeholder];
+  } else if (existing.length === 0 || existingIsPlaceholder) {
+    next = incoming;
+  } else {
+    next = [...existing];
+    for (const query of incoming) {
+      if (!next.includes(query)) next.push(query);
+    }
+  }
+  streamContext.nativeSearchQueries[key] = next;
 };
 
 const rememberNativeSearchCitations = (streamContext: StreamContext, item: unknown) => {
@@ -104,7 +128,7 @@ const rememberNativeSearchCitations = (streamContext: StreamContext, item: unkno
 
 const buildNativeSearchGroundingData = (streamContext: StreamContext) => {
   const citations = streamContext.returnedCitationArray;
-  const searchQueries = Object.values(streamContext.nativeSearchQueries ?? {});
+  const searchQueries = Object.values(streamContext.nativeSearchQueries ?? {}).flat();
 
   return {
     ...(citations?.length ? { citations } : {}),
@@ -126,11 +150,11 @@ const handleNativeSearchItem = (
   item: { id?: string; type?: string } & Record<string, unknown>,
 ): StreamProtocolChunk => {
   const itemType = typeof item.type === 'string' ? item.type : 'web_search_call';
-  upsertNativeSearchQuery(
+  upsertNativeSearchQueries(
     streamContext,
     itemType,
     typeof item.id === 'string' ? item.id : undefined,
-    extractNativeSearchQuery(item),
+    extractNativeSearchQueries(item),
   );
   rememberNativeSearchCitations(streamContext, item);
   return emitNativeSearchGrounding(

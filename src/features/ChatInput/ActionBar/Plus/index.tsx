@@ -20,7 +20,7 @@ import {
   Settings2Icon,
   TypeIcon,
 } from 'lucide-react';
-import { prefersNativeSearchByDefault } from 'model-bank';
+import { shouldExposeProviderSearchChoice } from 'model-bank';
 import type { ReactNode } from 'react';
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -358,8 +358,12 @@ const PlusAction = memo(() => {
   const isProviderHasBuiltinSearch = useAiInfraStore(
     aiProviderSelectors.isProviderHasBuiltinSearchConfig(provider),
   );
-  const showProviderSearch =
-    !isModelBuiltinSearchInternal && (isModelHasBuiltinSearch || isProviderHasBuiltinSearch);
+  const showProviderSearch = shouldExposeProviderSearchChoice({
+    isModelBuiltinSearchInternal,
+    isModelHasBuiltinSearch,
+    isProviderHasBuiltinSearch,
+    provider,
+  });
 
   // Derived active search option. Native Provider Search is the default whenever
   // the model/provider has search capability (or Grok-family with empty cards)
@@ -371,7 +375,7 @@ const PlusAction = memo(() => {
         ? 'provider'
         : useModelBuiltinSearch === false
           ? 'app'
-          : showProviderSearch || prefersNativeSearchByDefault(provider)
+          : showProviderSearch
             ? 'provider'
             : 'app';
 

@@ -4,6 +4,7 @@ import {
   prefersNativeSearchByDefault,
   resolveModelSearchDefaultSettings,
   resolveSearchDecision,
+  shouldExposeProviderSearchChoice,
 } from './utils';
 
 describe('resolveSearchDecision', () => {
@@ -117,12 +118,77 @@ describe('resolveSearchDecision', () => {
       },
       name: 'keeps application search when OpenAI explicitly disables model builtin search',
     },
+    {
+      expected: { application: true, model: false },
+      input: {
+        modelSearchImpl: 'internal' as const,
+        provider: 'grok',
+        searchMode: 'on' as const,
+        useModelBuiltinSearch: false,
+      },
+      name: 'lets Grok App Search override internal model search metadata',
+    },
+    {
+      expected: { application: true, model: false },
+      input: {
+        provider: 'xai',
+        providerSearchMode: 'internal' as const,
+        searchMode: 'on' as const,
+        useModelBuiltinSearch: false,
+      },
+      name: 'lets xAI App Search override internal provider search metadata',
+    },
+    {
+      expected: { application: false, model: true },
+      input: {
+        modelSearchImpl: 'internal' as const,
+        provider: 'perplexity',
+        searchMode: 'on' as const,
+        useModelBuiltinSearch: false,
+      },
+      name: 'keeps Perplexity internal search even when App Search is requested',
+    },
   ])('$name', ({ expected, input }) => {
     const result = resolveSearchDecision(input);
 
     expect(result.useModelSearch).toBe(expected.model);
     expect(result.useApplicationBuiltinSearchTool).toBe(expected.application);
     expect(result.enabledSearch).toBe(input.searchMode !== 'off');
+  });
+});
+
+describe('shouldExposeProviderSearchChoice', () => {
+  it('exposes Provider Search for xai even without model/provider search metadata', () => {
+    expect(
+      shouldExposeProviderSearchChoice({
+        isModelBuiltinSearchInternal: false,
+        isModelHasBuiltinSearch: false,
+        isProviderHasBuiltinSearch: false,
+        provider: 'xai',
+      }),
+    ).toBe(true);
+  });
+
+  it('hides Provider Search for a custom provider with no search metadata', () => {
+    expect(
+      shouldExposeProviderSearchChoice({
+        isModelBuiltinSearchInternal: false,
+        isModelHasBuiltinSearch: false,
+        isProviderHasBuiltinSearch: false,
+        provider: 'openai',
+      }),
+    ).toBe(false);
+  });
+
+  it('hides Provider Search for true internal models that are not Grok-family', () => {
+    expect(
+      shouldExposeProviderSearchChoice({
+        isModelBuiltinSearchInternal: true,
+        isModelHasBuiltinSearch: true,
+        isProviderHasBuiltinSearch: false,
+        provider: 'perplexity',
+      }),
+    ).toBe(false);
   });
 });
 

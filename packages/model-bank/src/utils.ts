@@ -40,6 +40,25 @@ export const prefersNativeSearchByDefault = (provider?: string | null): boolean 
   !!provider && (NATIVE_SEARCH_DEFAULT_PROVIDERS as readonly string[]).includes(provider);
 
 /**
+ * Whether the Plus / Search controls should expose the App vs Provider Search
+ * choice. Grok-family providers always get the three-way menu even when cards
+ * omit search metadata, so the UI can restore Provider Search after a toggle.
+ */
+export const shouldExposeProviderSearchChoice = ({
+  isModelBuiltinSearchInternal,
+  isModelHasBuiltinSearch,
+  isProviderHasBuiltinSearch,
+  provider,
+}: {
+  isModelBuiltinSearchInternal?: boolean;
+  isModelHasBuiltinSearch?: boolean;
+  isProviderHasBuiltinSearch?: boolean;
+  provider?: string | null;
+}): boolean =>
+  prefersNativeSearchByDefault(provider) ||
+  (!isModelBuiltinSearchInternal && !!(isModelHasBuiltinSearch || isProviderHasBuiltinSearch));
+
+/**
  * Resolves the mutually exclusive search route shared by client and server runtimes.
  */
 export const resolveSearchDecision = ({
@@ -57,8 +76,13 @@ export const resolveSearchDecision = ({
   const preferNative = prefersNativeSearchByDefault(provider);
   const hasNativeSearchCapability =
     isModelHasBuiltinSearch || isProviderHasBuiltinSearch || preferNative;
+  // True `internal` models (Perplexity, search-preview, …) always use native
+  // search. Grok-family is the exception: an explicit App Search choice must
+  // win even if a managed card marked the impl `internal`.
+  const forceNativeInternal =
+    isBuiltinSearchInternal && !(preferNative && useModelBuiltinSearch === false);
   const nativeSearchSelected =
-    isBuiltinSearchInternal || (hasNativeSearchCapability && (useModelBuiltinSearch ?? true));
+    forceNativeInternal || (hasNativeSearchCapability && (useModelBuiltinSearch ?? true));
   const useModelSearch = enabledSearch && nativeSearchSelected;
 
   return {

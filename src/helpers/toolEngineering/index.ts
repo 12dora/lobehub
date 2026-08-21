@@ -225,6 +225,12 @@ export const createAgentToolsEngine = (
     agentChatConfigSelectors.currentChatConfig(agentState).memory?.enabled ??
     settingsSelectors.memoryEnabled(useUserStore.getState());
   const webBrowsingEnabled = searchConfig.useApplicationBuiltinSearchTool;
+  // Native search and the platform browsing tool must not stack. Drop the
+  // web-browsing manifest from the pool so `allowExplicitActivation` cannot
+  // re-enable it after lobe-activator.
+  const disabledIds = webBrowsingEnabled
+    ? disabledPluginIds
+    : [...disabledPluginIds, WebBrowsingManifest.identifier];
 
   const chatModeRules = {
     [KnowledgeBaseManifest.identifier]: kbEnabled,
@@ -250,7 +256,7 @@ export const createAgentToolsEngine = (
 
   return createToolsEngine({
     defaultToolIds: isChatMode ? chatModeAllowedToolIds : defaultToolIds,
-    disabledPluginIds,
+    disabledPluginIds: disabledIds,
     manifestContext,
     enableChecker: createEnableChecker({
       allowExplicitActivation: !isChatMode,

@@ -311,6 +311,29 @@ describe('createServerAgentToolsEngine', () => {
     expect(result.enabledToolIds).not.toContain(WebBrowsingManifest.identifier);
   });
 
+  it('does not let isExplicitActivation restore web browsing when native search is selected', () => {
+    const context = createMockContext();
+    const engine = createServerAgentToolsEngine(context, {
+      agentConfig: {
+        plugins: [WebBrowsingManifest.identifier],
+        chatConfig: { searchMode: 'on' },
+      },
+      model: 'grok-4.6',
+      provider: 'grok',
+      useApplicationBuiltinSearchTool: false,
+    });
+
+    const result = engine.generateToolsDetailed({
+      context: { isExplicitActivation: true },
+      model: 'grok-4.6',
+      provider: 'grok',
+      toolIds: [WebBrowsingManifest.identifier],
+    });
+
+    expect(result.enabledToolIds).not.toContain(WebBrowsingManifest.identifier);
+    expect(engine.getAvailablePlugins()).not.toContain(WebBrowsingManifest.identifier);
+  });
+
   it('should enable VisualUnderstanding when injected into runtime plugins', () => {
     const context = createMockContext();
     const engine = createServerAgentToolsEngine(context, {

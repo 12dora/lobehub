@@ -4,6 +4,7 @@ import { Divider } from 'antd';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
 import { type LucideIcon } from 'lucide-react';
 import { SparkleIcon } from 'lucide-react';
+import { resolveSearchDecision, shouldExposeProviderSearchChoice } from 'model-bank';
 import { memo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -158,12 +159,21 @@ const Controls = memo(() => {
 
   const showModelBuiltinSearch =
     searchMode !== 'off' &&
-    !isModelBuiltinSearchInternal &&
-    (isModelHasBuiltinSearchConfig || isProviderHasBuiltinSearchConfig);
+    shouldExposeProviderSearchChoice({
+      isModelBuiltinSearchInternal,
+      isModelHasBuiltinSearch: isModelHasBuiltinSearchConfig,
+      isProviderHasBuiltinSearch: isProviderHasBuiltinSearchConfig,
+      provider,
+    });
 
-  const showFCSearchModel =
-    !supportFC &&
-    (!modelBuiltinSearchImpl || (!isModelBuiltinSearchInternal && !useModelBuiltinSearch));
+  const { useApplicationBuiltinSearchTool } = resolveSearchDecision({
+    modelSearchImpl: modelBuiltinSearchImpl,
+    provider,
+    providerSearchMode: isProviderHasBuiltinSearchConfig ? 'params' : undefined,
+    searchMode,
+    useModelBuiltinSearch,
+  });
+  const showFCSearchModel = !supportFC && useApplicationBuiltinSearchTool;
 
   const showDivider = showModelBuiltinSearch || showFCSearchModel;
 

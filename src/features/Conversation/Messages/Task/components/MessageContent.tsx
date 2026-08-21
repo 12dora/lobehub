@@ -54,6 +54,7 @@ const MessageContent = memo<UIChatMessage>(
             imageResults={search.imageResults}
             imageSearchQueries={search.imageSearchQueries}
             searchQueries={search.searchQueries}
+            searching={generating}
           />
         )}
         {showFileChunks && <FileChunks data={chunksList} />}

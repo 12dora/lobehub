@@ -1984,5 +1984,34 @@ describe('OpenAIResponsesStream', () => {
       expect(last.searchQueries).toEqual(['from:elonmusk tesla', 'spacex launch']);
       expect(last.citations).toEqual([{ title: 'Post', url: 'https://x.com/elonmusk/status/1' }]);
     });
+
+    it('extracts and deduplicates action.queries on web_search_call', async () => {
+      const chunks = await readStreamChunk(
+        OpenAIResponsesStream(
+          createReadableStream([
+            {
+              response: { id: 'resp_queries', status: 'in_progress' },
+              type: 'response.created',
+            },
+            {
+              item: {
+                action: { queries: ['q1', 'q2', 'q1'], type: 'search' },
+                id: 'ws_queries',
+                status: 'in_progress',
+                type: 'web_search_call',
+              },
+              output_index: 0,
+              type: 'response.output_item.added',
+            },
+          ]),
+        ),
+      );
+
+      const grounding = parseSseEvents(chunks).find((event) => event.type === 'grounding');
+      expect(grounding).toBeDefined();
+      expect(JSON.parse(grounding!.data)).toEqual({
+        searchQueries: ['q1', 'q2'],
+      });
+    });
   });
 });

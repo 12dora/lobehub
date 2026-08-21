@@ -44,9 +44,11 @@ export interface StreamContext {
   id: string;
   /**
    * Native Responses search calls (`web_search_call` / `x_search_call`) keyed by
-   * item id. Lets in-progress events upgrade a placeholder label to the real query.
+   * item id. Each item retains one or more queries so `action.queries` is not
+   * collapsed. In-progress events can upgrade a placeholder label to the real
+   * keywords.
    */
-  nativeSearchQueries?: Record<string, string>;
+  nativeSearchQueries?: Record<string, string[]>;
   /**
    * Item ids that already emitted `response.output_text.delta`.
    * `response.output_text.done` only backfills text when the item is absent.

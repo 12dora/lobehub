@@ -349,25 +349,23 @@ describe('toolEngineering', () => {
       expect(result.enabledToolIds).not.toContain('lobe-web-browsing');
       expect(result.filteredTools).toContainEqual({
         id: 'lobe-web-browsing',
-        reason: 'disabled',
+        reason: 'not_found',
       });
     });
 
-    it('should enable web browsing with isExplicitActivation even when useApplicationBuiltinSearchTool is false', () => {
+    it('does not let isExplicitActivation restore web browsing when native search is selected', () => {
       mockUseApplicationBuiltinSearchTool = false;
 
-      const toolsEngine = createAgentToolsEngine({ model: 'gpt-4', provider: 'openai' });
+      const toolsEngine = createAgentToolsEngine({ model: 'grok-4.6', provider: 'grok' });
       const result = toolsEngine.generateToolsDetailed({
         context: { isExplicitActivation: true },
         toolIds: ['lobe-web-browsing'],
-        model: 'gpt-4',
-        provider: 'openai',
+        model: 'grok-4.6',
+        provider: 'grok',
         skipDefaultTools: true,
       });
 
-      expect(result.enabledToolIds).toContain('lobe-web-browsing');
-      expect(result.filteredTools).toEqual([]);
-      expect(result.tools).toHaveLength(1);
+      expect(result.enabledToolIds).not.toContain('lobe-web-browsing');
     });
 
     it('should bypass all enableChecker filters with isExplicitActivation', () => {
@@ -401,9 +399,10 @@ describe('toolEngineering', () => {
         skipDefaultTools: true,
       });
 
-      // Both should be enabled despite their normal filters
+      // Stdio MCP still bypasses platform filters; web browsing is physically
+      // dropped when native search is selected, so the activator cannot stack it.
       expect(result.enabledToolIds).toContain('stdio-mcp-plugin');
-      expect(result.enabledToolIds).toContain('lobe-web-browsing');
+      expect(result.enabledToolIds).not.toContain('lobe-web-browsing');
     });
 
     it('does NOT let isExplicitActivation enable a plugin the agent has disabled', () => {

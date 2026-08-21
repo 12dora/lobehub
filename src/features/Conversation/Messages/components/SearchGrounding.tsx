@@ -9,6 +9,26 @@ import { useIsDark } from '@/hooks/useIsDark';
 import Image from '@/libs/next/Image';
 import { type GroundingSearch } from '@/types/search';
 
+export type SearchGroundingHeadline = 'title' | 'imageTitle' | 'searching' | 'noResults';
+
+export const resolveSearchGroundingHeadline = ({
+  hasImageResults,
+  hasWebResults,
+  searching,
+}: {
+  hasImageResults: boolean;
+  hasWebResults: boolean;
+  searching?: boolean;
+}): SearchGroundingHeadline => {
+  if (hasWebResults) return 'title';
+  if (hasImageResults) return 'imageTitle';
+  return searching ? 'searching' : 'noResults';
+};
+
+interface SearchGroundingProps extends GroundingSearch {
+  searching?: boolean;
+}
+
 // Resolve the favicon host defensively: some providers (e.g. OpenRouter built-in
 // web search) may emit citations with an empty/invalid url, and `new URL(undefined)`
 // would throw and crash the whole message render.
@@ -121,8 +141,8 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   `,
 }));
 
-const SearchGrounding = memo<GroundingSearch>(
-  ({ searchQueries, citations, imageResults, imageSearchQueries }) => {
+const SearchGrounding = memo<SearchGroundingProps>(
+  ({ searchQueries, citations, imageResults, imageSearchQueries, searching }) => {
     const { t } = useTranslation('chat');
     const isDarkMode = useIsDark();
 
@@ -134,11 +154,17 @@ const SearchGrounding = memo<GroundingSearch>(
     const hasWebResults = !!validCitations?.length;
     const hasImageResults = !!imageResults?.length;
     const titleIcon = !hasWebResults && hasImageResults ? Images : Globe;
-    const titleText = hasWebResults
-      ? t('search.grounding.title', { count: validCitations?.length })
-      : hasImageResults
-        ? t('search.grounding.imageTitle', { count: imageResults?.length })
-        : t('search.grounding.searching');
+    const headline = resolveSearchGroundingHeadline({
+      hasImageResults,
+      hasWebResults,
+      searching,
+    });
+    const titleText =
+      headline === 'title'
+        ? t('search.grounding.title', { count: validCitations?.length })
+        : headline === 'imageTitle'
+          ? t('search.grounding.imageTitle', { count: imageResults?.length })
+          : t(`search.grounding.${headline}`);
 
     return (
       <Flexbox

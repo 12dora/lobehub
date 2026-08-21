@@ -317,6 +317,11 @@ export const createServerAgentToolsEngine = (
     [WebBrowsingManifest.identifier]: isSearchEnabled,
   };
 
+  const excludeIdentifiers = new Set<string>(
+    canUseDevice ? (deviceLocked ? REMOTE_DEVICE_TOOL_IDENTIFIERS : []) : DEVICE_TOOL_IDENTIFIERS,
+  );
+  if (!isSearchEnabled) excludeIdentifiers.add(WebBrowsingManifest.identifier);
+
   return createServerToolsEngine(context, {
     // Pass additional manifests (e.g., LobeHub Skills)
     additionalManifests,
@@ -343,12 +348,10 @@ export const createServerAgentToolsEngine = (
     // them from the combined `manifestSchemas` so the activator cannot
     // resolve them regardless of which manifest source declared them.
     // Locked turns exclude the remote-device picker only (local-system
-    // stays for the routed device).
-    excludeIdentifiers: canUseDevice
-      ? deviceLocked
-        ? REMOTE_DEVICE_TOOL_IDENTIFIERS
-        : undefined
-      : DEVICE_TOOL_IDENTIFIERS,
+    // stays for the routed device). Native search also physically drops
+    // `lobe-web-browsing` so explicit activation cannot stack it with
+    // the provider's own search tools.
+    excludeIdentifiers: excludeIdentifiers.size > 0 ? excludeIdentifiers : undefined,
     // Conversation context for context-aware builtin manifests (scope /
     // isSubAgent), e.g. hiding lobe-agent's callSubAgent in sub-agent / group runs.
     manifestContext,

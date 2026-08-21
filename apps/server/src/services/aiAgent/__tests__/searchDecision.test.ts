@@ -221,6 +221,25 @@ describe('resolveServerSearchDecision', () => {
     },
   );
 
+  it('lets Grok App Search override internal model search metadata', () => {
+    const result = resolveServerSearchDecision({
+      builtinModels: [
+        {
+          abilities: { search: true },
+          id: 'grok-4.6',
+          providerId: 'grok',
+          settings: { searchImpl: 'internal' },
+        },
+      ],
+      chatConfig: { searchMode: 'on', useModelBuiltinSearch: false },
+      model: 'grok-4.6',
+      provider: 'grok',
+    });
+
+    expect(result.useModelSearch).toBe(false);
+    expect(result.useApplicationBuiltinSearchTool).toBe(true);
+  });
+
   it('uses application search for grok when useModelBuiltinSearch is explicitly false', () => {
     const result = resolveServerSearchDecision({
       builtinModels: [],

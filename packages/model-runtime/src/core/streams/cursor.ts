@@ -106,8 +106,19 @@ const upsertNativeSearchQuery = (
 ) => {
   const key = callId || `web:${Object.keys(streamContext.nativeSearchQueries ?? {}).length}`;
   streamContext.nativeSearchQueries ??= {};
-  const existing = streamContext.nativeSearchQueries[key];
-  streamContext.nativeSearchQueries[key] = query || existing || 'Web search';
+  const existing = streamContext.nativeSearchQueries[key] ?? [];
+  const placeholder = 'Web search';
+  const existingIsPlaceholder = existing.length === 1 && existing[0] === placeholder;
+  if (query) {
+    streamContext.nativeSearchQueries[key] =
+      existing.length === 0 || existingIsPlaceholder
+        ? [query]
+        : existing.includes(query)
+          ? existing
+          : [...existing, query];
+    return;
+  }
+  streamContext.nativeSearchQueries[key] = existing.length > 0 ? existing : [placeholder];
 };
 
 const extractCursorWebSearchCitations = (payload: Record<string, unknown>): ChatCitationItem[] => {
@@ -385,7 +396,7 @@ export async function* transformCursorEvents(
       data: {
         ...(citations.length ? { citations: [...citations] } : {}),
         ...(Object.keys(streamContext.nativeSearchQueries ?? {}).length
-          ? { searchQueries: Object.values(streamContext.nativeSearchQueries ?? {}) }
+          ? { searchQueries: Object.values(streamContext.nativeSearchQueries ?? {}).flat() }
           : {}),
       },
       id: callId ?? id,
