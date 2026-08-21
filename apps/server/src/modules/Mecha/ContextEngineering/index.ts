@@ -1,6 +1,8 @@
+import { shouldOmitBuiltinInboxSystemRole } from '@lobechat/builtin-agents';
 import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
 import { MessagesEngine } from '@lobechat/context-engine';
 import { type OpenAIChatMessage } from '@lobechat/types';
+import { isWebAppProvider } from 'model-bank/modelProviders';
 
 import { type ServerMessagesEngineParams } from './types';
 
@@ -66,6 +68,8 @@ export const serverMessagesEngine = async ({
   inputTemplate,
   enableAgentMode,
   enableHistoryCount,
+  enableModelInfo,
+  enableSystemDate,
   forceFinish,
   historyCount,
   historySummary,
@@ -73,6 +77,7 @@ export const serverMessagesEngine = async ({
   initialContext,
   knowledge,
   agentDocuments,
+  agentSlug,
   skillsConfig,
   toolDiscoveryConfig,
   toolsConfig,
@@ -88,8 +93,19 @@ export const serverMessagesEngine = async ({
   pageContentContext,
   topicReferences,
   additionalVariables,
+  userLocale,
   userTimezone,
 }: ServerMessagesEngineParams): Promise<OpenAIChatMessage[]> => {
+  const isWebApp = isWebAppProvider(provider);
+  // Web-app providers skip generic date / model-info injections. An explicit
+  // caller `false` stays off for every provider (off stays off).
+  const resolvedEnableSystemDate = isWebApp ? false : enableSystemDate;
+  const resolvedEnableModelInfo = isWebApp ? false : enableModelInfo;
+  const resolvedSystemRole =
+    isWebApp && shouldOmitBuiltinInboxSystemRole({ agentSlug, systemRole, userLocale })
+      ? ''
+      : systemRole;
+
   const engine = new MessagesEngine({
     // Capability injection
     capabilities: {
@@ -103,6 +119,8 @@ export const serverMessagesEngine = async ({
     // Agent configuration
     enableAgentMode,
     enableHistoryCount,
+    enableModelInfo: resolvedEnableModelInfo,
+    enableSystemDate: resolvedEnableSystemDate,
 
     // Server-side file access URLs resolve to stable file-proxy URLs in production.
     fileContext: { enabled: true, includeFileUrl: true },
@@ -136,7 +154,7 @@ export const serverMessagesEngine = async ({
     modelKnowledgeCutoff,
 
     provider,
-    systemRole,
+    systemRole: resolvedSystemRole,
 
     // Timezone for system date provider
     timezone: userTimezone,

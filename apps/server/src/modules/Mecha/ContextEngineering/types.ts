@@ -78,6 +78,11 @@ export interface ServerMessagesEngineParams {
   additionalVariables?: Record<string, string>;
   /** Agent documents to inject into context based on load rules and positions */
   agentDocuments?: AgentContextDocument[];
+  /**
+   * Builtin-agent slug (e.g. `inbox`). Used with `systemRole` to drop the
+   * unmodified builtin inbox prompt on webApp providers.
+   */
+  agentSlug?: string;
   /** User's timezone for time-related variables (e.g. 'Asia/Shanghai') */
   userTimezone?: string;
   // ========== Extended contexts ==========
@@ -111,6 +116,18 @@ export interface ServerMessagesEngineParams {
 
   /** Whether to enable history message count limit */
   enableHistoryCount?: boolean;
+
+  /**
+   * Whether to inject runtime model metadata (default: true). Web-app
+   * providers force this off; an explicit `false` stays off.
+   */
+  enableModelInfo?: boolean;
+
+  /**
+   * Whether to inject the current date (default: true). Web-app providers
+   * force this off; an explicit `false` stays off.
+   */
+  enableSystemDate?: boolean;
 
   /** Force finish flag: when true, injects summary prompt for max-steps completion */
   forceFinish?: boolean;
@@ -147,6 +164,9 @@ export interface ServerMessagesEngineParams {
 
   /** System role */
   systemRole?: string;
+
+  /** User locale used to detect the unmodified builtin inbox role */
+  userLocale?: string;
 
   // ========== Skills ==========
   /** Skills configuration for <available_skills> injection */

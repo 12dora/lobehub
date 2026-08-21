@@ -20,6 +20,12 @@ export { AGENT_BUILDER } from './agents/agent-builder';
 export { GROUP_AGENT_BUILDER } from './agents/group-agent-builder';
 export { GROUP_SUPERVISOR } from './agents/group-supervisor';
 export { INBOX } from './agents/inbox';
+export {
+  createSystemRole as createInboxSystemRole,
+  isInboxAgentSlug,
+  isUnmodifiedInboxSystemRole,
+  shouldOmitBuiltinInboxSystemRole,
+} from './agents/inbox/systemRole';
 export { NIGHTLY_REVIEW } from './agents/nightly-review';
 export { PAGE_AGENT } from './agents/page-agent';
 export { SELF_FEEDBACK_INTENT } from './agents/self-feedback-intent';

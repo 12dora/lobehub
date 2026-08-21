@@ -318,6 +318,14 @@ export interface AiProviderSettings {
   showDeployName?: boolean;
   showModelFetcher?: boolean;
   supportResponsesApi?: boolean;
+  /**
+   * Web-app provider: proxies a consumer web app (ChatGPT / Cursor / Grok web). The app already manages date, model identity and its own system prompt, so LobeHub skips the generic date / model-info / default-assistant boilerplate injections.
+   *
+   * Only honoured on builtin provider cards (see `isWebAppProvider`).
+   *
+   * @default false
+   */
+  webApp?: boolean;
 }
 
 const ResponseAnimationType = z.enum(['smooth', 'fadeIn', 'none']);
@@ -417,6 +425,7 @@ const AiProviderSettingsSchema = z.object({
   showDeployName: z.boolean().optional(),
   showModelFetcher: z.boolean().optional(),
   supportResponsesApi: z.boolean().optional(),
+  webApp: z.boolean().optional(),
 });
 
 export interface AiProviderConfig {

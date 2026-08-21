@@ -162,6 +162,58 @@ describe('MessagesEngine', () => {
       expect(result.metadata.modelInfoInjected).toBe(true);
     });
 
+    it('should skip model info injection when enableModelInfo is false', async () => {
+      const params = createBasicParams({
+        enableModelInfo: false,
+        model: 'claude-fable-5',
+        modelDisplayName: 'Fable 5',
+        modelKnowledgeCutoff: '2026-01',
+        systemRole: 'You are a helpful assistant',
+      });
+      const engine = new MessagesEngine(params);
+
+      const result = await engine.process();
+
+      expect(result.messages[0]).toEqual({
+        content: 'You are a helpful assistant',
+        role: 'system',
+      });
+      expect(result.metadata.modelInfoInjected).toBeUndefined();
+    });
+
+    it('should inject the current date when enableSystemDate is true', async () => {
+      const params = createBasicParams({
+        enableSystemDate: true,
+        systemRole: 'You are a helpful assistant',
+      });
+      const engine = new MessagesEngine(params);
+
+      const result = await engine.process();
+      const system = result.messages[0];
+
+      expect(system.role).toBe('system');
+      expect(system.content).toMatch(
+        /^You are a helpful assistant\n\nCurrent date: \d{4}-\d{2}-\d{2} \(UTC\)$/,
+      );
+      expect(result.metadata.systemDateInjected).toBe(true);
+    });
+
+    it('should skip the current date when enableSystemDate is false', async () => {
+      const params = createBasicParams({
+        enableSystemDate: false,
+        systemRole: 'You are a helpful assistant',
+      });
+      const engine = new MessagesEngine(params);
+
+      const result = await engine.process();
+
+      expect(result.messages[0]).toEqual({
+        content: 'You are a helpful assistant',
+        role: 'system',
+      });
+      expect(result.metadata.systemDateInjected).toBeUndefined();
+    });
+
     it('should inject history summary when provided', async () => {
       const historySummary = 'We discussed AI and machine learning';
       const params = createBasicParams({ historySummary });

@@ -1,3 +1,4 @@
+import { createInboxSystemRole } from '@lobechat/builtin-agents';
 import { MessagesEngine } from '@lobechat/context-engine';
 import { type UIChatMessage } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
@@ -654,6 +655,108 @@ describe('serverMessagesEngine', () => {
 
       expect(result).toBeDefined();
       expect(Array.isArray(result)).toBe(true);
+    });
+  });
+
+  describe('webApp providers', () => {
+    const webAppProviders = ['chatgptweb', 'cursor', 'grok'] as const;
+
+    it.each(webAppProviders)('skips date and model-info lines for %s', async (provider) => {
+      const result = await serverMessagesEngine({
+        messages: createBasicMessages(),
+        model: 'auto',
+        modelDisplayName: 'Auto (ChatGPT Web)',
+        modelKnowledgeCutoff: '2024-06',
+        provider,
+        systemRole: 'You are a custom coding agent.',
+      });
+
+      expect(result[0]).toEqual({
+        content: 'You are a custom coding agent.',
+        role: 'system',
+      });
+      expect(result.some((message) => String(message.content).includes('Current date:'))).toBe(
+        false,
+      );
+      expect(result.some((message) => String(message.content).includes('Current model:'))).toBe(
+        false,
+      );
+    });
+
+    it('preserves a custom agent prompt on a webApp provider', async () => {
+      const custom = 'You are a code-review agent. Always cite files.';
+      const result = await serverMessagesEngine({
+        agentSlug: 'code-reviewer',
+        messages: createBasicMessages(),
+        model: 'auto',
+        modelDisplayName: 'Auto (ChatGPT Web)',
+        provider: 'chatgptweb',
+        systemRole: custom,
+      });
+
+      expect(result[0]).toEqual({ content: custom, role: 'system' });
+    });
+
+    it('drops the unmodified builtin inbox role on a webApp provider', async () => {
+      const result = await serverMessagesEngine({
+        agentSlug: 'inbox',
+        messages: createBasicMessages(),
+        model: 'auto',
+        provider: 'chatgptweb',
+        systemRole: createInboxSystemRole('en-US'),
+        userLocale: 'en-US',
+      });
+
+      expect(result.find((message) => message.role === 'system')).toBeUndefined();
+      expect(result.some((message) => String(message.content).includes('You are Lobe'))).toBe(
+        false,
+      );
+    });
+
+    it('preserves an edited inbox prompt on a webApp provider', async () => {
+      const edited = 'You are Lobe, but always reply in haiku.';
+      const result = await serverMessagesEngine({
+        agentSlug: 'inbox',
+        messages: createBasicMessages(),
+        model: 'auto',
+        provider: 'chatgptweb',
+        systemRole: edited,
+      });
+
+      expect(result[0]).toEqual({ content: edited, role: 'system' });
+    });
+
+    it('leaves date, model info and inbox role intact for other providers', async () => {
+      const inboxRole = createInboxSystemRole('en-US');
+      const result = await serverMessagesEngine({
+        agentSlug: 'inbox',
+        messages: createBasicMessages(),
+        model: 'gpt-4',
+        modelDisplayName: 'GPT-4',
+        modelKnowledgeCutoff: '2024-06',
+        provider: 'openai',
+        systemRole: inboxRole,
+        userLocale: 'en-US',
+      });
+
+      expect(result[0].role).toBe('system');
+      expect(result[0].content).toContain('You are Lobe');
+      expect(result[0].content).toContain(getCurrentDateContent());
+      expect(result[0].content).toContain('Current model: GPT-4 (gpt-4)');
+      expect(result[0].content).toContain('Model knowledge cutoff: 2024-06');
+    });
+
+    it('keeps enableSystemDate off even when the provider is not a webApp', async () => {
+      const result = await serverMessagesEngine({
+        enableSystemDate: false,
+        messages: createBasicMessages(),
+        model: 'gpt-4',
+        provider: 'openai',
+        systemRole: 'You are a helpful assistant',
+      });
+
+      expect(result[0].content).not.toContain('Current date:');
+      expect(result[0].content).toBe('You are a helpful assistant');
     });
   });
 });

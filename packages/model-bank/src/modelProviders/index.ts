@@ -261,6 +261,20 @@ export const isProviderNativeFileInput = (id?: string) =>
     (provider) => provider.id === id && provider.settings?.nativeFileInput === true,
   );
 
+/**
+ * Whether the provider is a web-app provider — it proxies a consumer web app
+ * (ChatGPT / Cursor / Grok web). The app already manages date, model identity
+ * and its own system prompt, so LobeHub skips the generic date / model-info /
+ * default-assistant boilerplate injections.
+ *
+ * Only builtin provider cards are consulted: a user-created provider cannot
+ * flip its own settings to opt out of injections its SDK still needs.
+ */
+export const isWebAppProvider = (id?: string) =>
+  DEFAULT_MODEL_PROVIDER_LIST.some(
+    (provider) => provider.id === id && provider.settings?.webApp === true,
+  );
+
 export const isProviderOAuthDeviceFlow = (id?: string) =>
   DEFAULT_MODEL_PROVIDER_LIST.some(
     (provider) => provider.id === id && provider.settings?.authType === 'oauthDeviceFlow',

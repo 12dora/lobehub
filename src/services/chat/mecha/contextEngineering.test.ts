@@ -1,3 +1,4 @@
+import { createInboxSystemRole } from '@lobechat/builtin-agents';
 import { type UIChatMessage } from '@lobechat/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -286,6 +287,104 @@ describe('contextEngineering', () => {
     expect(output[0]).toEqual({
       content: expect.stringContaining('Current model: Fable 5 (claude-fable-5)'),
       role: 'system',
+    });
+  });
+
+  describe('webApp providers', () => {
+    const userMessage = { content: 'Hello', role: 'user' } as UIChatMessage;
+    const webAppProviders = ['chatgptweb', 'cursor', 'grok'] as const;
+
+    beforeEach(() => {
+      vi.spyOn(helpers, 'getRuntimeModelDisplayName').mockReturnValue('Auto (ChatGPT Web)');
+      vi.spyOn(helpers, 'getRuntimeModelKnowledgeCutoff').mockReturnValue('2024-06');
+    });
+
+    it.each(webAppProviders)('skips date and model-info lines for %s', async (provider) => {
+      const output = await contextEngineering({
+        messages: [userMessage],
+        model: 'auto',
+        provider,
+        systemRole: 'You are a custom coding agent.',
+      });
+
+      const system = output.find((message) => message.role === 'system');
+      expect(system?.content).toBe('You are a custom coding agent.');
+      expect(system?.content).not.toContain('Current date:');
+      expect(system?.content).not.toContain('Current model:');
+      expect(system?.content).not.toContain('Model knowledge cutoff:');
+    });
+
+    it('preserves a custom agent prompt on a webApp provider', async () => {
+      const custom = 'You are a code-review agent. Always cite files.';
+      const output = await contextEngineering({
+        agentSlug: 'code-reviewer',
+        messages: [userMessage],
+        model: 'auto',
+        provider: 'chatgptweb',
+        systemRole: custom,
+      });
+
+      expect(output[0]).toEqual({ content: custom, role: 'system' });
+    });
+
+    it('drops the unmodified builtin inbox role on a webApp provider', async () => {
+      const output = await contextEngineering({
+        agentSlug: 'inbox',
+        messages: [userMessage],
+        model: 'auto',
+        provider: 'chatgptweb',
+        systemRole: createInboxSystemRole('en-US'),
+        userLocale: 'en-US',
+      });
+
+      expect(output.find((message) => message.role === 'system')).toBeUndefined();
+      expect(output.some((message) => String(message.content).includes('You are Lobe'))).toBe(
+        false,
+      );
+    });
+
+    it('preserves an edited inbox prompt on a webApp provider', async () => {
+      const edited = 'You are Lobe, but always reply in haiku.';
+      const output = await contextEngineering({
+        agentSlug: 'inbox',
+        messages: [userMessage],
+        model: 'auto',
+        provider: 'chatgptweb',
+        systemRole: edited,
+      });
+
+      expect(output[0]).toEqual({ content: edited, role: 'system' });
+    });
+
+    it('leaves date, model info and inbox role intact for other providers', async () => {
+      const inboxRole = createInboxSystemRole('en-US');
+      const output = await contextEngineering({
+        agentSlug: 'inbox',
+        messages: [userMessage],
+        model: 'gpt-4',
+        provider: 'openai',
+        systemRole: inboxRole,
+        userLocale: 'en-US',
+      });
+
+      const system = output[0];
+      expect(system.role).toBe('system');
+      expect(system.content).toContain('You are Lobe');
+      expect(system.content).toContain('Current date:');
+      expect(system.content).toContain('Current model: Auto (ChatGPT Web) (gpt-4)');
+      expect(system.content).toContain('Model knowledge cutoff: 2024-06');
+    });
+
+    it('keeps enableSystemDate off even when the provider is not a webApp', async () => {
+      const output = await contextEngineering({
+        enableSystemDate: false,
+        messages: [userMessage],
+        model: 'gpt-4',
+        provider: 'openai',
+        systemRole: 'You are a helpful assistant',
+      });
+
+      expect(output[0].content).not.toContain('Current date:');
     });
   });
 

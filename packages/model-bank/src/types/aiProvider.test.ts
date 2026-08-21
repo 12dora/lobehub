@@ -128,3 +128,16 @@ describe('OAuthDeviceFlowConfigSchema', () => {
     });
   });
 });
+
+describe('AiProviderSettingsSchema', () => {
+  it('keeps webApp through create parsing', () => {
+    const parsed = CreateAiProviderSchema.parse({
+      id: 'chatgptweb',
+      name: 'ChatGPT Web',
+      settings: { webApp: true },
+      source: 'custom' as const,
+    });
+
+    expect(parsed.settings?.webApp).toBe(true);
+  });
+});

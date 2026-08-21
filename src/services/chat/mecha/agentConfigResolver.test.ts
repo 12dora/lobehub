@@ -507,6 +507,42 @@ describe('resolveAgentConfig', () => {
         vi.spyOn(agentSelectors.agentSelectors, 'getAgentSlugById').mockReturnValue(() => 'inbox');
       });
 
+      it('should keep a user-authored inbox systemRole instead of the runtime default', () => {
+        vi.spyOn(agentSelectors.agentSelectors, 'getAgentConfigById').mockReturnValue(
+          () =>
+            ({
+              ...mockAgentConfig,
+              systemRole: 'Always answer in pirate speak.',
+            }) as any,
+        );
+        vi.spyOn(builtinAgents, 'getAgentRuntimeConfig').mockReturnValue({
+          plugins: [LobeAgentIdentifier],
+          systemRole: 'Inbox system role',
+        });
+
+        const result = resolveAgentConfig({ agentId: 'inbox-agent' });
+
+        expect(result.agentConfig.systemRole).toBe('Always answer in pirate speak.');
+      });
+
+      it('should use the runtime inbox role when the stored prompt is empty', () => {
+        vi.spyOn(agentSelectors.agentSelectors, 'getAgentConfigById').mockReturnValue(
+          () =>
+            ({
+              ...mockAgentConfig,
+              systemRole: '',
+            }) as any,
+        );
+        vi.spyOn(builtinAgents, 'getAgentRuntimeConfig').mockReturnValue({
+          plugins: [LobeAgentIdentifier],
+          systemRole: 'Inbox system role',
+        });
+
+        const result = resolveAgentConfig({ agentId: 'inbox-agent' });
+
+        expect(result.agentConfig.systemRole).toBe('Inbox system role');
+      });
+
       it('should include lobe-agent and Notebook tools in plugins', () => {
         vi.spyOn(builtinAgents, 'getAgentRuntimeConfig').mockReturnValue({
           plugins: [LobeAgentIdentifier, NotebookIdentifier],

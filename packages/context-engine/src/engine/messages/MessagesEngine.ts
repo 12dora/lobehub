@@ -175,6 +175,7 @@ export class MessagesEngine {
       stepContext,
       pageContentContext,
       topicReferences,
+      enableModelInfo,
       enableSystemDate,
       timezone,
     } = this.params;
@@ -210,6 +211,7 @@ export class MessagesEngine {
     const hasDateAwareTools =
       toolIds.includes('lobe-web-browsing') || toolIds.includes('lobe-user-memory');
     const isSystemDateEnabled = enableSystemDate !== false && !hasDateAwareTools;
+    const isModelInfoEnabled = enableModelInfo !== false;
     const currentUserMessage = [...messages]
       .reverse()
       .find((m) => m.role === 'user' && typeof m.content === 'string')?.content as
@@ -251,6 +253,7 @@ export class MessagesEngine {
       // Model info (name / id / knowledge cutoff)
       new ModelInfoProvider({
         displayName: modelDisplayName,
+        enabled: isModelInfoEnabled,
         knowledgeCutoff: modelKnowledgeCutoff,
         modelId: model,
       }),

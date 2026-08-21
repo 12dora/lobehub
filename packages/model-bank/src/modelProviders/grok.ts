@@ -25,6 +25,9 @@ const Grok: ModelProviderCard = {
     // OAuth tokens are refreshed and persisted server-side; browser requests
     // would bypass the refresh pipeline, so they are hard-disabled.
     disableBrowserRequest: true,
+    // Web-app provider: skip generic date / model-info / default-assistant
+    // boilerplate (see `isWebAppProvider`).
+    webApp: true,
     oauthDeviceFlow: {
       clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
       defaultPollingInterval: 5,

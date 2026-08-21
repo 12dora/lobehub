@@ -12,6 +12,7 @@ import {
   isProviderOAuthDeviceFlow,
   isProviderWebSessionOnly,
   isRotatingRefreshOAuthProvider,
+  isWebAppProvider,
 } from './index';
 
 describe('model provider predicates', () => {
@@ -160,6 +161,36 @@ describe('model provider predicates', () => {
     expect(isProviderNativeFileInput('opencodezen')).toBe(false);
     expect(isProviderNativeFileInput('openai')).toBe(false);
     expect(isProviderNativeFileInput('anthropic')).toBe(false);
+  });
+
+  it('detects webApp providers from the card settings', () => {
+    DEFAULT_MODEL_PROVIDER_LIST.push(
+      createProvider({ id: 'web-app', settings: { webApp: true } }),
+      createProvider({ id: 'explicitly-off', settings: { webApp: false } }),
+    );
+
+    expect(isWebAppProvider('web-app')).toBe(true);
+    expect(isWebAppProvider('explicitly-off')).toBe(false);
+    expect(isWebAppProvider('enabled-provider')).toBe(false);
+    expect(isWebAppProvider('not-exists')).toBe(false);
+    expect(isWebAppProvider()).toBe(false);
+  });
+
+  it('marks exactly chatgptweb, cursor and grok as webApp providers in the real catalog', () => {
+    DEFAULT_MODEL_PROVIDER_LIST.length = 0;
+    DEFAULT_MODEL_PROVIDER_LIST.push(...originalProviders);
+
+    const webAppProviders = DEFAULT_MODEL_PROVIDER_LIST.filter((provider) =>
+      isWebAppProvider(provider.id),
+    )
+      .map((provider) => provider.id)
+      .sort();
+
+    expect(webAppProviders).toEqual(['chatgptweb', 'cursor', 'grok']);
+    expect(isWebAppProvider('openai')).toBe(false);
+    expect(isWebAppProvider('anthropic')).toBe(false);
+    expect(isWebAppProvider('supergrok')).toBe(false);
+    expect(isWebAppProvider('chatgpt')).toBe(false);
   });
 
   it('marks exactly chatgpt, chatgptweb, cursor, grok and supergrok as rotating-refresh OAuth in the real catalog', () => {

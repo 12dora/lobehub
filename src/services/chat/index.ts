@@ -164,6 +164,7 @@ class ChatService {
       enabledManifests = [],
       enabledToolIds = [],
       plugins,
+      slug,
       tools,
     } = resolvedAgentConfig;
 
@@ -290,6 +291,7 @@ class ChatService {
       agentBuilderContext,
       agentDocuments,
       agentId: targetAgentId,
+      agentSlug: slug,
       // `agentConfig.plugins` is the raw (pre-filter) field — `plugins` below
       // is already pinned-only (resolved upstream in agentConfigResolver).
       disabledPluginIds: getDisabledPluginIds(agentConfig.plugins),

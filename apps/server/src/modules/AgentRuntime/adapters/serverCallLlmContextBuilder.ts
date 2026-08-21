@@ -504,7 +504,9 @@ export const buildServerCallLlmContext = async ({
     modelDisplayName,
     modelKnowledgeCutoff,
     provider,
+    agentSlug: typeof agentConfig.slug === 'string' ? agentConfig.slug : undefined,
     systemRole: agentConfig.systemRole ?? undefined,
+    userLocale: serverLanguage || undefined,
     toolDiscoveryConfig,
     toolsConfig: {
       manifests: Object.values(resolved.promptManifestMap),

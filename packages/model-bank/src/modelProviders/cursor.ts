@@ -25,6 +25,9 @@ const Cursor: ModelProviderCard = {
     // OAuth tokens are refreshed and persisted server-side; browser requests
     // would bypass the refresh pipeline, so they are hard-disabled.
     disableBrowserRequest: true,
+    // Web-app provider: skip generic date / model-info / default-assistant
+    // boilerplate (see `isWebAppProvider`).
+    webApp: true,
     oauthDeviceFlow: {
       allowAccessTokenPaste: true,
       clientId: 'cursor-cli',

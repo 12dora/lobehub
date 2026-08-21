@@ -224,7 +224,13 @@ export interface MessagesEngineParams {
   /** Provider ID */
   provider: string;
 
-  // ========== System date ==========
+  // ========== System date / model info ==========
+  /**
+   * Whether to inject runtime model metadata (name / id / knowledge cutoff)
+   * into the system message (default: true). Web-app providers (ChatGPT /
+   * Cursor / Grok web) turn this off — the app already knows its own identity.
+   */
+  enableModelInfo?: boolean;
   /** Whether to inject current date into system message (default: true) */
   enableSystemDate?: boolean;
   /** User timezone for system date formatting (e.g. 'Asia/Shanghai') */

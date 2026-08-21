@@ -398,8 +398,15 @@ export const resolveAgentConfig = (ctx: AgentConfigResolverContext): ResolvedAge
     userLocale: userGeneralSettingsSelectors.currentResponseLanguage(useUserStore.getState()),
   });
 
-  // Merge runtime systemRole into agent config
-  let resolvedSystemRole = runtimeConfig?.systemRole ?? agentConfig.systemRole;
+  // Merge runtime systemRole into agent config.
+  // Inbox is special: the runtime always emits the stock Lobe prompt, so a
+  // user-authored inbox systemRole stored on the agent must win. Other
+  // builtin agents still prefer the runtime role (their persist config does
+  // not carry a user-editable prompt).
+  let resolvedSystemRole =
+    slug === BUILTIN_AGENT_SLUGS.inbox && agentConfig.systemRole
+      ? agentConfig.systemRole
+      : (runtimeConfig?.systemRole ?? agentConfig.systemRole);
 
   // Merge plugins: runtime plugins take priority, fallback to base plugins
   let finalPlugins =

@@ -1,3 +1,4 @@
+import { shouldOmitBuiltinInboxSystemRole } from '@lobechat/builtin-agents';
 import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { AgentBuilderIdentifier } from '@lobechat/builtin-tool-agent-builder';
 import { AgentManagementIdentifier } from '@lobechat/builtin-tool-agent-management';
@@ -46,6 +47,7 @@ import {
   type UIChatMessage,
 } from '@lobechat/types';
 import debug from 'debug';
+import { isWebAppProvider } from 'model-bank/modelProviders';
 
 import { isCanUseFC } from '@/helpers/isCanUseFC';
 import { VARIABLE_GENERATORS } from '@/helpers/parserPlaceholder';
@@ -71,6 +73,8 @@ import {
   toolSelectors,
 } from '@/store/tool/selectors';
 import { ComposioServerStatus } from '@/store/tool/slices/composioStore';
+import { useUserStore } from '@/store/user';
+import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
 
 import {
@@ -93,6 +97,12 @@ interface ContextEngineeringContext {
   /** The agent ID that will respond (for group context injection) */
   agentId?: string;
   /**
+   * Builtin-agent slug when already resolved by the caller. Falls back to the
+   * agent store lookup via `agentId` so webApp inbox detection still works
+   * when the caller only has an id.
+   */
+  agentSlug?: string;
+  /**
    * Identifiers the agent has explicitly disabled (`agents.plugins` tri-state).
    * Excluded from the client skill candidate pool entirely — not just left
    * out of `plugins` (pinned) — so a disabled skill is neither listed in
@@ -105,6 +115,16 @@ interface ContextEngineeringContext {
    */
   enableAgentMode?: boolean;
   enableHistoryCount?: boolean;
+  /**
+   * Whether to inject runtime model metadata. Web-app providers force this
+   * off; an explicit `false` stays off for every provider.
+   */
+  enableModelInfo?: boolean;
+  /**
+   * Whether to inject the current date. Web-app providers force this off; an
+   * explicit `false` stays off for every provider.
+   */
+  enableSystemDate?: boolean;
   enableUserMemories?: boolean;
   /** Group ID for multi-agent scenarios */
   groupId?: string;
@@ -136,6 +156,8 @@ interface ContextEngineeringContext {
   tools?: string[];
   /** Topic ID for plan/todo context injection */
   topicId?: string;
+  /** User locale used to detect the unmodified builtin inbox role */
+  userLocale?: string;
 }
 
 // REVIEW: Maybe we can constrain identity, preference, exp to reorder or trim the context instead of passing everything in
@@ -154,8 +176,11 @@ export const contextEngineering = async ({
   agentBuilderContext,
   agentDocuments,
   agentId,
+  agentSlug,
   disabledPluginIds,
   enableAgentMode,
+  enableModelInfo,
+  enableSystemDate,
   groupId,
   initialContext,
   plugins,
@@ -163,6 +188,7 @@ export const contextEngineering = async ({
   stepContext,
   topicId,
   memoryContext,
+  userLocale,
 }: ContextEngineeringContext): Promise<OpenAIChatMessage[]> => {
   log('tools: %o', tools);
 
@@ -701,15 +727,37 @@ export const contextEngineering = async ({
     }
   }
 
+  const isWebApp = isWebAppProvider(provider);
+  const resolvedAgentSlug =
+    agentSlug ??
+    (agentId ? agentSelectors.getAgentSlugById(agentId)(getAgentStoreState()) : undefined);
+  const resolvedUserLocale =
+    userLocale ?? userGeneralSettingsSelectors.currentResponseLanguage(useUserStore.getState());
+  // Web-app providers skip generic date / model-info injections. An explicit
+  // caller `false` stays off for every provider (off stays off).
+  const resolvedEnableSystemDate = isWebApp ? false : enableSystemDate;
+  const resolvedEnableModelInfo = isWebApp ? false : enableModelInfo;
+  const resolvedSystemRole =
+    isWebApp &&
+    shouldOmitBuiltinInboxSystemRole({
+      agentSlug: resolvedAgentSlug,
+      systemRole,
+      userLocale: resolvedUserLocale,
+    })
+      ? ''
+      : systemRole;
+
   // Create MessagesEngine with injected dependencies
   const engine = new MessagesEngine({
     // Agent configuration
     enableHistoryCount,
+    enableModelInfo: resolvedEnableModelInfo,
+    enableSystemDate: resolvedEnableSystemDate,
     formatHistorySummary: historySummaryPrompt,
     historyCount,
     historySummary,
     inputTemplate,
-    systemRole,
+    systemRole: resolvedSystemRole,
 
     // Capability injection
     capabilities: {

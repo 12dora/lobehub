@@ -27,6 +27,9 @@ const ChatGPTWeb: ModelProviderCard = {
   settings: {
     authType: 'oauthDeviceFlow',
     disableBrowserRequest: true,
+    // Web-app provider: skip generic date / model-info / default-assistant
+    // boilerplate (see `isWebAppProvider`).
+    webApp: true,
     // The ChatGPT Web runtime uploads user documents to chatgpt.com and attaches
     // them to the conversation, so it is the only provider that understands the
     // native `file_url` content part (see `isProviderNativeFileInput`).
