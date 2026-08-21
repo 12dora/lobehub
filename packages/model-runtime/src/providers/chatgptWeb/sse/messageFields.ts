@@ -23,14 +23,20 @@ export const stripHistory = (text: string, historyText: string): string => {
   return out;
 };
 
-export const messageText = (message: Record<string, any>): string => {
+/** Joined string `parts` only — never `content.text` (that's the `code` payload). */
+export const messagePartsText = (message: Record<string, any>): string => {
   const content = asRecord(message.content);
   if (!content) return '';
   const parts = Array.isArray(content.parts) ? content.parts : [];
-  const joined = parts.filter((part: unknown) => typeof part === 'string').join('');
+  return parts.filter((part: unknown) => typeof part === 'string').join('');
+};
+
+export const messageText = (message: Record<string, any>): string => {
+  const joined = messagePartsText(message);
   if (joined) return joined;
   // content_type "code" keeps its payload in `text` rather than `parts`
-  return typeof content.text === 'string' ? content.text : '';
+  const content = asRecord(message.content);
+  return typeof content?.text === 'string' ? content.text : '';
 };
 
 export const reasoningText = (message: Record<string, any>): { summary?: string; text: string } => {

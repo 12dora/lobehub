@@ -5,9 +5,11 @@ import { ASSET_POINTER_PREFIXES } from '../constants';
 import { extractSandboxFiles } from '../interpreterFiles';
 import type { Citation, ConversationEvent } from '../types';
 import { sanitizeAnnotations } from './annotations';
+import { inspectBentoText } from './bento';
 import {
   asRecord,
   isImageToolMessage,
+  messagePartsText,
   messageText,
   pointerKind,
   reasoningText,
@@ -202,6 +204,24 @@ export class ConversationEventRouter {
     return state;
   }
 
+  /**
+   * Positive tool / hidden / non-answer signals. Thoughts, reasoning recaps and
+   * image-gen tool messages must keep flowing (later patches carry more deltas
+   * or asset pointers), so they are not latched.
+   */
+  private shouldLatchIgnored(message: Record<string, any>): boolean {
+    if (isImageToolMessage(message)) return false;
+    const contentType = String(asRecord(message.content)?.content_type ?? '');
+    if (contentType === 'thoughts' || contentType === 'reasoning_recap') return false;
+    // reasoning lives on channel `analysis`; latching would drop later thought deltas
+    const channel = String(message.channel ?? '')
+      .trim()
+      .toLowerCase();
+    if (channel === 'analysis') return false;
+    if (contentType === 'code') return true;
+    return !isVisibleAssistantMessage(message);
+  }
+
   private deriveMessageEvents(message: Record<string, any>, events: ConversationEvent[]) {
     const messageId = typeof message.id === 'string' ? message.id : '__current__';
     const state = this.stateFor(messageId);
@@ -224,8 +244,13 @@ export class ConversationEventRouter {
     this.emitReasoningDelta(message, messageId, state, events);
     this.emitReasoningDone(message, messageId, state, events);
 
-    if (isVisibleAssistantMessage(message)) {
-      if (isAnswerMessage(message)) state.isAnswer = true;
+    // Once a snapshot is *definitively* not user-facing, latch so later patches
+    // on this id cannot emit text. Missing recipient/channel is NOT a latch:
+    // live streams omit them on ordinary answers.
+    if (this.shouldLatchIgnored(message)) {
+      state.ignored = true;
+    } else if (isAnswerMessage(message)) {
+      state.isAnswer = true;
       this.emitText(message, messageId, state, events);
       this.emitCitations(message, state, events);
     }
@@ -358,7 +383,10 @@ export class ConversationEventRouter {
     const contentType = asRecord(message.content)?.content_type;
     if (contentType && !['text', 'multimodal_text'].includes(String(contentType))) return;
 
-    const raw = messageText(message);
+    // Answer text lives in string `parts`. `content.text` is the `code` payload
+    // and must never be treated as the user-facing answer (it can arrive before
+    // `content_type: "code"` is patched in).
+    const raw = messagePartsText(message);
     if (!raw) return;
 
     // `<replayed history><new text>` → `<new text>` (reference `strip_history`).
@@ -400,6 +428,17 @@ export class ConversationEventRouter {
     // deltas a consumer concatenates always equal `text`.
     const sanitized = sanitizeAnnotations(stripped, { streaming: !finished });
 
+    // Image-search / bento tool calls stream `{"layout":"bento",…}` *before*
+    // recipient/channel classify the message. Withhold while the candidate can
+    // still be that object; drop a complete object (and the following blank
+    // line) if prose follows in the same message.
+    const bento = inspectBentoText(sanitized);
+    if (bento.withhold) {
+      if (bento.ignored && finished) state.ignored = true;
+      return;
+    }
+    const candidate = bento.text;
+
     // HIGH-WATER contract. A resume leg replays the turn from offset 0, so the
     // very same message id arrives again from `H`, `He`, … Emitting those would
     // duplicate the answer downstream, because the event contract is ADDITIVE
@@ -410,18 +449,18 @@ export class ConversationEventRouter {
     // A snapshot that DIVERGES (upstream rewrote the answer) cannot be expressed
     // additively at all, so it is withheld too until it grows past the mark AND
     // extends it; the divergence is logged once.
-    if (sanitized.length <= state.text.length) {
-      if (!state.text.startsWith(sanitized)) this.logDivergence(state, messageId, 'text');
+    if (candidate.length <= state.text.length) {
+      if (!state.text.startsWith(candidate)) this.logDivergence(state, messageId, 'text');
       return;
     }
-    if (!sanitized.startsWith(state.text)) {
+    if (!candidate.startsWith(state.text)) {
       this.logDivergence(state, messageId, 'text');
       return;
     }
 
-    const delta = sanitized.slice(state.text.length);
-    state.text = sanitized;
-    if (delta) events.push({ delta, messageId, text: sanitized, type: 'text.delta' });
+    const delta = candidate.slice(state.text.length);
+    state.text = candidate;
+    if (delta) events.push({ delta, messageId, text: candidate, type: 'text.delta' });
   }
 
   /** One line per message, whatever how many divergent snapshots follow. */

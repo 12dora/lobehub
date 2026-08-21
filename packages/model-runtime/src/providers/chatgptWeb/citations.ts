@@ -20,13 +20,18 @@ export const isVisibleAssistantMessage = (message: Record<string, any>): boolean
   if (String(asRecord(message.author)?.role ?? '').toLowerCase() !== 'assistant') return false;
   if (asRecord(message.metadata)?.is_visually_hidden_from_conversation === true) return false;
 
-  // Tool calls are assistant messages addressed to a recipient such as "web".
+  // Tool calls are assistant messages addressed to a recipient other than "all":
+  // "web", "browser", "bento", opaque ids such as "t2uay3k.sj1i4kz", …
+  // Missing recipient is treated as visible — in-repo live streams omit it, so
+  // requiring `recipient === "all"` would drop ordinary answers.
   const recipient = String(message.recipient ?? '')
     .trim()
     .toLowerCase();
   if (recipient && recipient !== 'all') return false;
 
-  // Reasoning and other internal channels must not leak into the text output.
+  // Reasoning (`analysis`) and other internal channels (`commentary`) must not
+  // leak into the text output. Missing channel is treated as visible for the
+  // same reason as a missing recipient.
   const channel = String(message.channel ?? '')
     .trim()
     .toLowerCase();

@@ -1192,6 +1192,7 @@ export * from './requestBuilders';
 export * from './sentinel';
 export * from './sentinelBundlePool';
 export * from './sse/annotations';
+export * from './sse/bento';
 export * from './sse/events';
 export * from './sse/patch';
 export * from './sse/reader';

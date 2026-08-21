@@ -3,12 +3,59 @@ import { describe, expect, it } from 'vitest';
 import {
   citationsFromMessage,
   extractCitations,
+  isAnswerMessage,
+  isVisibleAssistantMessage,
   latestAssistantMessage,
   turnAnswerMessage,
 } from './citations';
 
 const doc = (messages: Record<string, any>[]) => ({
   mapping: Object.fromEntries(messages.map((message, index) => [`n${index}`, { message }])),
+});
+
+describe('isVisibleAssistantMessage', () => {
+  const assistant = (extra: Record<string, unknown> = {}) => ({
+    author: { role: 'assistant' },
+    ...extra,
+  });
+
+  it('treats a missing recipient and channel as visible', () => {
+    expect(isVisibleAssistantMessage(assistant())).toBe(true);
+  });
+
+  it.each([
+    ['channel commentary', { channel: 'commentary' }],
+    ['channel analysis', { channel: 'analysis' }],
+    ['recipient bento', { recipient: 'bento' }],
+    ['recipient browser', { recipient: 'browser' }],
+    ['recipient t2uay3k.sj1i4kz', { recipient: 't2uay3k.sj1i4kz' }],
+    ['recipient web', { recipient: 'web' }],
+    ['hidden', { metadata: { is_visually_hidden_from_conversation: true } }],
+    ['tool role', { author: { role: 'tool' } }],
+  ])('rejects %s', (_label, extra) => {
+    expect(isVisibleAssistantMessage(assistant(extra))).toBe(false);
+  });
+});
+
+describe('isAnswerMessage', () => {
+  it('accepts assistant text (and an absent content_type)', () => {
+    expect(isAnswerMessage({ author: { role: 'assistant' } })).toBe(true);
+    expect(
+      isAnswerMessage({
+        author: { role: 'assistant' },
+        content: { content_type: 'text', parts: ['hi'] },
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['content_type code', { content: { content_type: 'code', text: 'print(1)' } }],
+    ['content_type thoughts', { content: { content_type: 'thoughts' } }],
+    ['channel commentary', { channel: 'commentary' }],
+    ['recipient bento', { recipient: 'bento' }],
+  ])('rejects %s', (_label, extra) => {
+    expect(isAnswerMessage({ author: { role: 'assistant' }, ...extra })).toBe(false);
+  });
 });
 
 describe('citationsFromMessage', () => {

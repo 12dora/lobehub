@@ -50,6 +50,7 @@ import {
   MAX_DOWNLOAD_BYTES,
   RETRYABLE_POLL_STATUSES,
   sanitizeAnnotations,
+  stripBentoLayout,
   toAgentRuntimeErrorType,
   turnAnswerMessage,
 } from './client';
@@ -1156,7 +1157,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         const message = turnAnswerMessage(document, anchor);
         if (!message) continue;
 
-        const text = sanitizeAnnotations(messageParts(message));
+        const text = sanitizeAnnotations(stripBentoLayout(messageParts(message)));
         const finished =
           message.status === 'finished_successfully' ||
           message.status === 'finished_partial_completion' ||

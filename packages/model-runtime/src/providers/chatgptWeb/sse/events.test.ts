@@ -102,22 +102,59 @@ describe('ConversationEventRouter', () => {
     }
   });
 
-  it('never emits text for hidden, tool-addressed or non-final channels', () => {
-    const hidden = feedAll([
-      assistantAdd('m1', { metadata: { is_visually_hidden_from_conversation: true } }),
-      { o: 'append', p: '/message/content/parts/0', v: 'secret' },
-    ]);
-    const toolCall = feedAll([
-      assistantAdd('m2', { recipient: 'web' }),
-      { o: 'append', p: '/message/content/parts/0', v: 'search("x")' },
-    ]);
-    const analysis = feedAll([
-      assistantAdd('m3', { channel: 'analysis' }),
-      { o: 'append', p: '/message/content/parts/0', v: 'reasoning leak' },
-    ]);
+  it.each([
+    ['hidden', { metadata: { is_visually_hidden_from_conversation: true } }],
+    ['recipient web', { recipient: 'web' }],
+    ['recipient bento', { recipient: 'bento' }],
+    ['recipient browser', { recipient: 'browser' }],
+    ['recipient t2uay3k.sj1i4kz', { recipient: 't2uay3k.sj1i4kz' }],
+    ['channel analysis', { channel: 'analysis' }],
+    ['channel commentary', { channel: 'commentary' }],
+  ])('never emits text for %s', (_label, extra) => {
+    const { events } = feedAll([assistantAdd('m1', extra), append('secret')]);
+    expect(typesOf(events)).not.toContain('text.delta');
+  });
 
-    for (const result of [hidden, toolCall, analysis])
-      expect(typesOf(result.events)).not.toContain('text.delta');
+  it.each([
+    ['text', { content_type: 'text', parts: ['tool body'] }],
+    ['code', { content_type: 'code', text: 'print("hello")' }],
+  ])('never emits text for a tool-role %s message', (_label, content) => {
+    const { events } = feedAll([
+      {
+        o: 'add',
+        p: '',
+        v: {
+          conversation_id: 'conv-1',
+          message: { author: { role: 'tool' }, content, id: 't1' },
+        },
+      },
+    ]);
+    expect(typesOf(events)).not.toContain('text.delta');
+  });
+
+  it('never emits content.text of a content_type code message as the answer', () => {
+    const { events } = feedAll([
+      {
+        o: 'add',
+        p: '',
+        v: {
+          conversation_id: 'conv-1',
+          message: {
+            author: { role: 'assistant' },
+            content: { content_type: 'code', text: 'print("hello")' },
+            id: 'c1',
+          },
+        },
+      },
+    ]);
+    expect(typesOf(events)).not.toContain('text.delta');
+  });
+
+  it('still streams an answer that omits recipient and channel', () => {
+    const { events } = feedAll([assistantAdd('m1', { channel: undefined }), append('Hello')]);
+    expect(
+      (events.filter((event) => event.type === 'text.delta') as any[]).map((event) => event.delta),
+    ).toEqual(['Hello']);
   });
 
   it('maps thoughts to reasoning deltas and a recap to reasoning.done', () => {
@@ -766,5 +803,66 @@ describe('ConversationEventRouter', () => {
     ]);
 
     expect(events).toContainEqual({ code: 'rate_limit', message: 'slow down', type: 'error' });
+  });
+
+  describe('bento / image-search tool-call JSON', () => {
+    // Mirrors chatgpt.com image-search / bento tool calls: the skeleton `add`
+    // has no recipient/channel; the JSON body streams first; classification
+    // (recipient / channel) arrives on a later patch. `text.delta` is additive,
+    // so emitting the JSON would be unrecoverable.
+    const bentoJson = '{"layout":"bento","query":["XX","XX","XX"]}';
+    const textOf = (events: ConversationEvent[]) =>
+      (events.filter((event) => event.type === 'text.delta') as any[])
+        .map((event) => event.delta)
+        .join('');
+
+    it.each([
+      [
+        'recipient t2uay3k.sj1i4kz',
+        { o: 'replace', p: '/message/recipient', v: 't2uay3k.sj1i4kz' },
+      ],
+      ['channel commentary', { o: 'replace', p: '/message/channel', v: 'commentary' }],
+    ])(
+      'withholds a delayed %s bento tool call and only emits the next assistant message',
+      (_label, classify) => {
+        const { events } = feedAll([
+          assistantAdd('tool-1', { channel: undefined }),
+          append(bentoJson),
+          classify,
+          assistantAdd('answer', { channel: undefined }),
+          append('Here are some images.'),
+        ]);
+
+        expect(textOf(events)).toBe('Here are some images.');
+        expect(
+          (events.filter((event) => event.type === 'text.delta') as any[]).map(
+            (event) => event.delta,
+          ),
+        ).toEqual(['Here are some images.']);
+      },
+    );
+
+    it('drops a leading bento object from the same visible message', () => {
+      const { events } = feedAll([
+        assistantAdd('m1', {
+          content: {
+            content_type: 'text',
+            parts: ['{"layout":"bento","query":["a"]}', 'Visible answer'],
+          },
+        }),
+      ]);
+
+      expect(textOf(events)).toBe('Visible answer');
+    });
+
+    it('still streams a real JSON answer once it diverges from layout:bento', () => {
+      const { events } = feedAll([
+        assistantAdd('m1', { channel: undefined }),
+        append('{'),
+        append('"name":"ok"}'),
+      ]);
+
+      expect(textOf(events)).toBe('{"name":"ok"}');
+    });
   });
 });
