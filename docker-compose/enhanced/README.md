@@ -43,6 +43,26 @@ injects `LOBE_NODE_HEAP_MB=1536` (1024 on the minimal file) — a raw
 `docker run` without that variable does not cap the heap. See
 [docs/enterprise/modules.md](../../docs/enterprise/modules.md).
 
+### Local Docker sandbox (`SANDBOX_PROVIDER=local`)
+
+The app container talks to the host Docker daemon through `/var/run/docker.sock`.
+The process inside the image is uid 1001 (group `nodejs`), so it also needs the
+host Docker GID as a supplemental group:
+
+```bash
+# Linux
+export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+# macOS
+export DOCKER_GID="$(stat -f '%g' /var/run/docker.sock)"
+```
+
+Put `DOCKER_GID` in `.env` (compose defaults to `999`). If sandbox calls fail
+with `EACCES` / “Docker daemon is unreachable”, the GID is wrong — the socket
+is `root:docker` mode `0660` on a typical Linux host.
+
+Build the sandbox runtime image from the repo root (`bun run build:sandbox-image`,
+add `-- --smoke` to run `tsx` + `unzip` inside the image).
+
 Database migrations run automatically when the app container starts.
 
 **Every enhancement is on by default** — the admin console, managed AI / skills / connectors /
@@ -96,12 +116,13 @@ Notes worth reading before you go to production:
 
 Use the **published** package — do not fork `apps/cli`. Point it at this host:
 
+<!-- prettier-ignore -->
 ```bash
 # Device-code login (requires JWKS_KEY so OIDC is on)
-npx -y @lobehub/cli@latest login --server http:// < your-host > :3210
+npx -y @lobehub/cli@latest login --server http://<your-host>:3210
 
 # Or API key (Settings → API keys). Enough for tRPC reads (agent list, topic, file, user).
-export LOBEHUB_SERVER=http:// < your-host > :3210
+export LOBEHUB_SERVER=http://<your-host>:3210
 export LOBEHUB_CLI_API_KEY=sk-lh-...
 npx -y @lobehub/cli@latest agent list --json
 ```

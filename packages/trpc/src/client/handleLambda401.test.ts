@@ -4,6 +4,7 @@ import {
   handleNonAdminLambda401,
   probeBetterAuthSession,
   resetHandleLambda401State,
+  SESSION_PROBE_TIMEOUT_MS,
   shouldLogoutAfterSessionProbe,
 } from './handleLambda401';
 
@@ -14,6 +15,11 @@ const jsonResponse = (body: unknown, status = 200, contentType = 'application/js
   });
 
 describe('probeBetterAuthSession', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
   it('returns authenticated when get-session has a user', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ user: { id: 'user-1' } }));
 
@@ -24,6 +30,7 @@ describe('probeBetterAuthSession', () => {
         cache: 'no-store',
         credentials: 'include',
         method: 'GET',
+        signal: expect.any(AbortSignal),
       }),
     );
   });
@@ -57,6 +64,35 @@ describe('probeBetterAuthSession', () => {
       probeBetterAuthSession(vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))),
     ).resolves.toBe('unknown');
   });
+
+  it('classifies a never-resolving probe as unknown after the abort timeout', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), ms);
+      return controller.signal;
+    });
+
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return;
+        const onAbort = () => {
+          reject(new DOMException('The operation was aborted.', 'TimeoutError'));
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+    });
+
+    const result = probeBetterAuthSession(fetchImpl);
+    await vi.advanceTimersByTimeAsync(SESSION_PROBE_TIMEOUT_MS);
+    await expect(result).resolves.toBe('unknown');
+    vi.useRealTimers();
+  });
 });
 
 describe('shouldLogoutAfterSessionProbe', () => {
@@ -74,6 +110,8 @@ describe('handleNonAdminLambda401', () => {
 
   afterEach(() => {
     resetHandleLambda401State();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('does not logout when get-session still has a user', async () => {
@@ -143,5 +181,42 @@ describe('handleNonAdminLambda401', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(logout).toHaveBeenCalledOnce();
     expect(redirectToLogin).toHaveBeenCalledOnce();
+  });
+
+  it('does not logout when the probe never resolves and times out as unknown', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), ms);
+      return controller.signal;
+    });
+
+    const logout = vi.fn();
+    const redirectToLogin = vi.fn();
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return;
+        const onAbort = () => {
+          reject(new DOMException('The operation was aborted.', 'TimeoutError'));
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+    });
+
+    const pending = handleNonAdminLambda401(
+      { isSignedIn: true, logout, redirectToLogin },
+      fetchImpl,
+    );
+    await vi.advanceTimersByTimeAsync(SESSION_PROBE_TIMEOUT_MS);
+    await pending;
+
+    expect(logout).not.toHaveBeenCalled();
+    expect(redirectToLogin).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });

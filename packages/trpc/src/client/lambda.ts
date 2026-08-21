@@ -72,15 +72,19 @@ const errorHandlingLink: TRPCLink<LambdaRouter> = () => {
                 ) {
                   // A tRPC 401 is not proof the cookie is dead (Redis blip /
                   // getSession throw used to look like unauth). Probe get-session
-                  // first; only destroy the session if that is empty/401.
-                  const { getUserStoreState } = await import('@/store/user/store');
-                  const { isSignedIn, logout } = getUserStoreState();
-                  const { loginRequired } =
-                    await import('@/components/Error/loginRequiredNotification');
-                  await handleNonAdminLambda401({
-                    isSignedIn,
-                    logout,
-                    redirectToLogin: () => loginRequired.redirect(),
+                  // alongside the original error — do not block observer.error.
+                  void (async () => {
+                    const { getUserStoreState } = await import('@/store/user/store');
+                    const { isSignedIn, logout } = getUserStoreState();
+                    const { loginRequired } =
+                      await import('@/components/Error/loginRequiredNotification');
+                    await handleNonAdminLambda401({
+                      isSignedIn,
+                      logout,
+                      redirectToLogin: () => loginRequired.redirect(),
+                    });
+                  })().catch((error) => {
+                    console.error(error);
                   });
                 }
                 // Mark error as non-retryable to prevent SWR infinite retry loop

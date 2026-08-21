@@ -64,16 +64,22 @@ describe('isCredentialInvalidated', () => {
     expect(isCredentialInvalidated({ authInvalidatedAt: cutoff }, {})).toBe(true);
   });
 
-  it('does not fail-closed on a cookie-cache session missing createdAt but carrying a sessionId', () => {
+  it('fails closed on a missing timestamp even when a non-excluded sessionId is present', () => {
     expect(isCredentialInvalidated({ authInvalidatedAt: cutoff }, { sessionId: 'sess-live' })).toBe(
-      false,
+      true,
     );
     expect(
       isCredentialInvalidated(
         { authInvalidatedAt: cutoff },
         { credentialIssuedAt: null, sessionId: 'sess-live' },
       ),
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      isCredentialInvalidated(
+        { authInvalidatedAt: cutoff, authInvalidatedExcludedSessionId: 'keep-sess' },
+        { sessionId: 'other-sess' },
+      ),
+    ).toBe(true);
   });
 
   it('session exception bypasses cutoff only for exact session id match', () => {
@@ -81,13 +87,14 @@ describe('isCredentialInvalidated', () => {
       authInvalidatedAt: cutoff,
       authInvalidatedExcludedSessionId: 'keep-sess',
     };
-    // Matching session id: old issuance still allowed
+    // Matching session id: old issuance still allowed (including cookie-cache missing createdAt)
     expect(
       isCredentialInvalidated(user, {
         credentialIssuedAt: oldIssuance,
         sessionId: 'keep-sess',
       }),
     ).toBe(false);
+    expect(isCredentialInvalidated(user, { sessionId: 'keep-sess' })).toBe(false);
     // Different session id: fails
     expect(
       isCredentialInvalidated(user, {

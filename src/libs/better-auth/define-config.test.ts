@@ -355,10 +355,10 @@ describe('defineConfig', { timeout: 15_000 }, () => {
         strategy: SESSION_COOKIE_CACHE_STRATEGY,
       },
       expiresIn: 60 * 60 * 24 * 7,
-      preserveSessionInDatabase: true,
       storeSessionInDatabase: true,
       updateAge: 60 * 60 * 12,
     });
+    expect(options.session).not.toHaveProperty('preserveSessionInDatabase');
     expect(SESSION_COOKIE_CACHE_MAX_AGE_SECONDS).toBe(5 * 60);
     expect(SESSION_COOKIE_CACHE_STRATEGY).toBe('compact');
   });

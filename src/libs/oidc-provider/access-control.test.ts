@@ -143,7 +143,33 @@ describe('OIDC access control', () => {
       expect(isOIDCUserInactiveError(new Error(OIDC_USER_INACTIVE_ERROR_MESSAGE))).toBe(false);
     });
 
-    it('accepts a cookie-cache session missing createdAt when the session row is live', async () => {
+    it('accepts a cookie-cache session missing createdAt only for the live excluded session', async () => {
+      const cutoff = new Date('2024-06-01T12:00:00.000Z');
+      const { db } = createDb(
+        [
+          {
+            authInvalidatedAt: cutoff,
+            authInvalidatedExcludedSessionId: 'keep-sess',
+            banExpires: null,
+            banned: false,
+            id: 'user-1',
+          },
+        ],
+        [{ id: 'keep-sess' }],
+      );
+
+      await expect(
+        assertOIDCUserActive(
+          db as unknown as Parameters<typeof assertOIDCUserActive>[0],
+          'user-1',
+          {
+            sessionId: 'keep-sess',
+          },
+        ),
+      ).resolves.toBeUndefined();
+    });
+
+    it('rejects a missing createdAt when the exclusion is absent even if a session row exists', async () => {
       const cutoff = new Date('2024-06-01T12:00:00.000Z');
       const { db } = createDb(
         [
@@ -165,15 +191,42 @@ describe('OIDC access control', () => {
             sessionId: 'sess-live',
           },
         ),
-      ).resolves.toBeUndefined();
+      ).rejects.toBeInstanceOf(OIDCUserInactiveError);
     });
 
-    it('rejects a cookie-cache session missing createdAt when the session id is not live', async () => {
+    it('rejects a missing createdAt when the session id does not match the exclusion', async () => {
       const cutoff = new Date('2024-06-01T12:00:00.000Z');
       const { db } = createDb(
         [
           {
             authInvalidatedAt: cutoff,
+            authInvalidatedExcludedSessionId: 'keep-sess',
+            banExpires: null,
+            banned: false,
+            id: 'user-1',
+          },
+        ],
+        [{ id: 'other-sess' }],
+      );
+
+      await expect(
+        assertOIDCUserActive(
+          db as unknown as Parameters<typeof assertOIDCUserActive>[0],
+          'user-1',
+          {
+            sessionId: 'other-sess',
+          },
+        ),
+      ).rejects.toBeInstanceOf(OIDCUserInactiveError);
+    });
+
+    it('rejects a cookie-cache session missing createdAt when the excluded id is not live', async () => {
+      const cutoff = new Date('2024-06-01T12:00:00.000Z');
+      const { db } = createDb(
+        [
+          {
+            authInvalidatedAt: cutoff,
+            authInvalidatedExcludedSessionId: 'keep-sess',
             banExpires: null,
             banned: false,
             id: 'user-1',
@@ -187,7 +240,7 @@ describe('OIDC access control', () => {
           db as unknown as Parameters<typeof assertOIDCUserActive>[0],
           'user-1',
           {
-            sessionId: 'ghost-sess',
+            sessionId: 'keep-sess',
           },
         ),
       ).rejects.toBeInstanceOf(OIDCUserInactiveError);

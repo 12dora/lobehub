@@ -164,6 +164,41 @@ describe('UserUpdater', () => {
       vi.useRealTimers();
     });
 
+    it('confirms sign-out after refetch flips isPending false → true → false and does not retry again', async () => {
+      vi.useFakeTimers();
+      useUserStore.setState({ isSignedIn: true, user: { id: 'u1', email: 'a@b.com' } });
+
+      const refetch = vi.fn();
+      const emptySettled = { data: null, error: null, isPending: false, refetch };
+      useSessionMock.mockReturnValue(emptySettled);
+
+      const { rerender } = render(<UserUpdater />);
+      expect(useUserStore.getState().isSignedIn).toBe(true);
+
+      refetch.mockImplementation(async () => {
+        useSessionMock.mockReturnValue({ data: null, error: null, isPending: true, refetch });
+        rerender(<UserUpdater />);
+        expect(useUserStore.getState().isSignedIn).toBe(true);
+
+        useSessionMock.mockReturnValue(emptySettled);
+        rerender(<UserUpdater />);
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EMPTY_SESSION_RETRY_MS);
+      });
+
+      expect(refetch).toHaveBeenCalledOnce();
+      expect(useUserStore.getState().isSignedIn).toBe(false);
+      expect(useUserStore.getState().user).toBeUndefined();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EMPTY_SESSION_RETRY_MS * 3);
+      });
+      expect(refetch).toHaveBeenCalledOnce();
+      vi.useRealTimers();
+    });
+
     it('signs out immediately on an empty session when the user was already signed out', () => {
       useSessionMock.mockReturnValue({ data: null, error: null, isPending: false });
       render(<UserUpdater />);

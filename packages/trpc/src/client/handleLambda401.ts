@@ -9,6 +9,8 @@
 export type SessionProbeResult = 'authenticated' | 'unauthenticated' | 'unknown';
 
 const GET_SESSION_PATH = '/api/auth/get-session';
+/** Bound the probe so a hung get-session cannot stall later 401 handling. */
+export const SESSION_PROBE_TIMEOUT_MS = 5000;
 
 const hasSessionUser = (body: unknown): boolean => {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
@@ -26,6 +28,7 @@ export const probeBetterAuthSession = async (
       cache: 'no-store',
       credentials: 'include',
       method: 'GET',
+      signal: AbortSignal.timeout(SESSION_PROBE_TIMEOUT_MS),
     });
 
     if (response.status === 401) return 'unauthenticated';

@@ -146,21 +146,6 @@ export const assertUserActive = async (
     throw new OIDCUserInactiveError();
   }
 
-  const issuedAt = options.credentialIssuedAt;
-  const issuedAtMissing = !issuedAt || Number.isNaN(issuedAt.getTime());
-  const sessionId =
-    typeof options.sessionId === 'string' && options.sessionId.length > 0
-      ? options.sessionId
-      : null;
-
-  // Cookie-cache sessions may omit createdAt. A live auth_sessions row is
-  // enough to keep the user in; a ghost id still fails closed below.
-  if (user.authInvalidatedAt && issuedAtMissing && sessionId) {
-    const live = await isLiveBetterAuthSession(db, { sessionId, userId });
-    if (live) return;
-    throw new OIDCUserInactiveError();
-  }
-
   // Pure helper only identifies a candidate; live DB check is required before accept.
   const check: CredentialInvalidationCheck = {
     credentialIssuedAt: options.credentialIssuedAt,

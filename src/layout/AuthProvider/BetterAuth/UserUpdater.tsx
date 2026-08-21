@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { createStoreUpdater } from 'zustand-utils';
 
 import { useSession } from '@/libs/better-auth/auth-client';
@@ -58,34 +58,53 @@ const UserUpdater = memo(() => {
       : undefined;
 
   const [emptySessionConfirmed, setEmptySessionConfirmed] = useState(false);
+  // Ref is the source of truth so a refetch that flips isPending (and cancels
+  // this effect) cannot un-mark the attempt. State exists to re-render after.
+  const emptyRetryAttemptedRef = useRef(false);
+  const [emptyRetryAttempted, setEmptyRetryAttempted] = useState(false);
 
   const hasUser = !!session?.user;
   const prevIsSignedIn = !!useUserStore.getState().isSignedIn;
 
   useEffect(() => {
     if (hasUser) {
-      setEmptySessionConfirmed(false);
+      emptyRetryAttemptedRef.current = false;
+      if (emptyRetryAttempted) setEmptyRetryAttempted(false);
+      if (emptySessionConfirmed) setEmptySessionConfirmed(false);
       return;
     }
-    if (isPending || error) return;
-    if (!prevIsSignedIn || emptySessionConfirmed) return;
 
-    let cancelled = false;
+    if (error || !prevIsSignedIn) return;
+
+    if (emptyRetryAttemptedRef.current || emptyRetryAttempted) {
+      // Retry already fired. Once the snapshot is settled empty, confirm logout
+      // and never schedule another get-session.
+      if (!isPending && !emptySessionConfirmed) {
+        setEmptySessionConfirmed(true);
+      }
+      return;
+    }
+
+    if (isPending || emptySessionConfirmed) return;
+
     const timer = window.setTimeout(() => {
-      void (async () => {
-        try {
-          await refetch?.();
-        } finally {
-          if (!cancelled) setEmptySessionConfirmed(true);
-        }
-      })();
+      emptyRetryAttemptedRef.current = true;
+      setEmptyRetryAttempted(true);
+      void refetch?.();
     }, EMPTY_SESSION_RETRY_MS);
 
     return () => {
-      cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [emptySessionConfirmed, error, hasUser, isPending, prevIsSignedIn, refetch]);
+  }, [
+    emptyRetryAttempted,
+    emptySessionConfirmed,
+    error,
+    hasUser,
+    isPending,
+    prevIsSignedIn,
+    refetch,
+  ]);
 
   const isLoaded = !isPending;
   const isSignedIn = resolveIsSignedIn({

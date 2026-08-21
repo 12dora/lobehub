@@ -77,14 +77,10 @@ export const isCredentialInvalidated = (
 
   const credentialIssuedAt = opts.credentialIssuedAt;
   if (!credentialIssuedAt || Number.isNaN(credentialIssuedAt.getTime())) {
-    // Cookie-cache-shaped Better Auth sessions may omit createdAt while still
-    // carrying a live sessionId. That is not proof of validity here —
-    // assertUserActive live-validates the row — but do not fail closed solely
-    // because the timestamp is missing.
-    if (typeof opts.sessionId === 'string' && opts.sessionId.length > 0) {
-      return false;
-    }
     // Fail closed when we cannot prove the credential is post-cutoff.
+    // Cookie-cache sessions that omit createdAt are only accepted when
+    // sessionId matches authInvalidatedExcludedSessionId (handled above) and
+    // assertUserActive live-validates the row.
     return true;
   }
   return credentialIssuedAt.getTime() <= user.authInvalidatedAt.getTime();

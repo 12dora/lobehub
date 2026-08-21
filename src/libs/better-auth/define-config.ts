@@ -273,11 +273,12 @@ export function defineConfig(
         maxAge: SESSION_COOKIE_CACHE_MAX_AGE_SECONDS,
         strategy: SESSION_COOKIE_CACHE_STRATEGY,
       },
-      // Keep a DB-backed fallback when Redis secondary storage entries are unexpectedly missing.
+      // Redis is secondaryStorage. Also store the row in Postgres so a missing Redis
+      // key falls back to the DB (Better Auth 1.6 `findSession`: Redis miss returns
+      // null if `storeSessionInDatabase` is off OR `preserveSessionInDatabase` is on).
+      // Leave `preserveSessionInDatabase` unset (default false): revoke then deletes
+      // the DB row, so an unexpired row is proof the session is still live.
       storeSessionInDatabase: true,
-      // Do not drop the DB row when Redis TTL elapses — otherwise getSession misses
-      // after a flush / prefix change and the client treats it as a logout.
-      preserveSessionInDatabase: true,
     },
     database: drizzleAdapter(serverDB, {
       provider: 'pg',
