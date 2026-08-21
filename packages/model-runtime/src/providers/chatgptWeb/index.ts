@@ -15,6 +15,8 @@ import type {
   ChatMethodOptions,
   ChatStreamPayload,
   CreateImageMethodOptions,
+  GenerateObjectOptions,
+  GenerateObjectPayload,
   OpenAIChatMessage,
   StreamFileData,
   UserMessageContentPart,
@@ -54,6 +56,7 @@ import {
 import { createChatGPTWebImage } from './createImage';
 import { createDebugRedactor } from './debugRedactor';
 import { describeThrownValue } from './errors';
+import { runChatGPTWebGenerateObject } from './generateObject';
 import { readImageDimensions, readImageMimeType } from './imageDimensions';
 import { extractSandboxFiles, resolveFileMimeType, sandboxFileName } from './interpreterFiles';
 import {
@@ -504,6 +507,24 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     } finally {
       if (!streamConstructed) releaseLease();
     }
+  }
+
+  /**
+   * ChatGPT.com has no native JSON-schema / tool-calling generateObject path.
+   * Structured output is collected from a non-streaming `chat` turn with a
+   * JSON-only instruction; Instant/Pro still resolve through the family mapper.
+   * Caller-supplied `tools` are dropped — the web backend does not accept them.
+   */
+  async generateObject(
+    payload: GenerateObjectPayload,
+    options?: GenerateObjectOptions,
+  ): Promise<unknown> {
+    return runChatGPTWebGenerateObject({
+      chat: this.chat.bind(this),
+      options,
+      payload,
+      provider: this.provider,
+    });
   }
 
   async createImage(

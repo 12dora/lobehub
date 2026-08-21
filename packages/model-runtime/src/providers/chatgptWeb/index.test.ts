@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ModelRuntime } from '../../core/ModelRuntime';
 import { AgentRuntimeErrorType } from '../../types/error';
 import { debugStream } from '../../utils/debugStream';
 import {
@@ -541,6 +542,70 @@ describe('LobeChatGPTWebAI', () => {
       ]);
       expect(optionsOf(client).conduitToken).toBeUndefined();
       expect(optionsOf(client).useFPath).toBe(true);
+    });
+
+    const titleSchema = {
+      name: 'title',
+      schema: {
+        properties: { title: { type: 'string' } },
+        required: ['title'],
+        type: 'object' as const,
+      },
+    };
+
+    const fencedTitleEvents = (json = '{"title":"ok"}'): ConversationEvent[] => [
+      { conversationId: 'conv-1', type: 'conversation.start' },
+      { delta: `\`\`\`json\n${json}\n\`\`\``, text: json, type: 'text.delta' },
+      { conversationId: 'conv-1', endTurn: true, type: 'done' },
+    ];
+
+    it('family+pro generateObject resolves to gpt-5-6-pro + standard and parses fenced JSON', async () => {
+      const client = createFakeClient();
+      client.streamConversation = vi.fn(async function* () {
+        for (const event of fencedTitleEvents()) yield event;
+      });
+
+      const result = await createRuntime(client).generateObject({
+        chatgptWebReasoningEffort: 'pro',
+        messages: [{ content: 'name this', role: 'user' }],
+        model: 'gpt-5-6',
+        schema: titleSchema,
+      });
+
+      expect(result).toEqual({ title: 'ok' });
+      expect(bodyOf(client).model).toBe('gpt-5-6-pro');
+      expect(bodyOf(client).thinking_effort).toBe('standard');
+      expect(JSON.stringify(bodyOf(client))).not.toMatch(/"tools"/);
+    });
+
+    it('throws UpstreamMalformedResponse when generateObject output is not JSON', async () => {
+      await expect(
+        createRuntime(createFakeClient()).generateObject({
+          messages: [{ content: 'name this', role: 'user' }],
+          model: 'gpt-5-6',
+          schema: titleSchema,
+        }),
+      ).rejects.toMatchObject({
+        errorType: AgentRuntimeErrorType.UpstreamMalformedResponse,
+      });
+    });
+
+    it('ModelRuntime.generateObject reaches ChatGPT Web through the mocked transport', async () => {
+      const client = createFakeClient();
+      client.streamConversation = vi.fn(async function* () {
+        for (const event of fencedTitleEvents('{"title":"runtime"}')) yield event;
+      });
+
+      const result = await new ModelRuntime(createRuntime(client)).generateObject({
+        chatgptWebReasoningEffort: 'pro',
+        messages: [{ content: 'name this', role: 'user' }],
+        model: 'gpt-5-6',
+        schema: titleSchema,
+      });
+
+      expect(result).toEqual({ title: 'runtime' });
+      expect(bodyOf(client).model).toBe('gpt-5-6-pro');
+      expect(bodyOf(client).thinking_effort).toBe('standard');
     });
 
     it('omits thinking_effort for o3', async () => {

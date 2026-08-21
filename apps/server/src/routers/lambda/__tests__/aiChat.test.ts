@@ -1116,6 +1116,39 @@ describe('aiChatRouter', () => {
       );
     });
 
+    it('forwards chatgptWebReasoningEffort onto generateObject', async () => {
+      const { initModelRuntimeFromDB } = await import('@/server/modules/ModelRuntime');
+
+      const mockGenerateObject = vi.fn().mockResolvedValue({ ok: true });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValue({
+        generateObject: mockGenerateObject,
+      } as any);
+
+      const caller = aiChatRouter.createCaller({ ...mockCtx, serverDB: {} } as any);
+
+      await caller.outputJSON({
+        chatgptWebReasoningEffort: 'pro',
+        messages: [{ content: 'test', role: 'user' }],
+        model: 'gpt-5-6',
+        provider: 'chatgptweb',
+        schema: {
+          name: 'Person',
+          schema: {
+            properties: { name: { type: 'string' } },
+            type: 'object' as const,
+          },
+        },
+      });
+
+      expect(mockGenerateObject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatgptWebReasoningEffort: 'pro',
+          model: 'gpt-5-6',
+        }),
+        expect.any(Object),
+      );
+    });
+
     it('maps provider auth runtime errors to UNAUTHORIZED instead of leaking as internal errors', async () => {
       const { initModelRuntimeFromDB } = await import('@/server/modules/ModelRuntime');
       const runtimeError = {
