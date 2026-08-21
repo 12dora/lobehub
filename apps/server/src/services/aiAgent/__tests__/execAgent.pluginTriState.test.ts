@@ -1,5 +1,9 @@
+import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
+import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
 import type * as ModelBankModule from 'model-bank';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { buildToolDiscoveryConfig } from '@/server/modules/AgentRuntime/executorHelpers';
 
 import { AiAgentService } from '../index';
 
@@ -84,7 +88,10 @@ vi.mock('@/database/models/agent', () => ({
 }));
 
 vi.mock('@/server/services/agent', () => ({
-  AgentService: vi.fn().mockImplementation(() => ({ getAgentConfig: mockGetAgentConfig })),
+  AgentService: vi.fn().mockImplementation(() => ({
+    getAgentConfig: mockGetAgentConfig,
+    queryAvailableAgents: vi.fn().mockResolvedValue([]),
+  })),
 }));
 
 vi.mock('@/database/models/plugin', () => ({
@@ -316,5 +323,36 @@ describe('AiAgentService.execAgent - three-state plugin config (pinned/auto/disa
     expect(mockSkillFindAll).not.toHaveBeenCalled();
     expect(mockGetAgentSkills).not.toHaveBeenCalled();
     expect(mockGetManagedSkillRuntimeModeSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('omits lobe-web-browsing from operationToolSet.manifestMap and discovery during native search', async () => {
+    mockCreateServerAgentToolsEngine.mockReturnValue({
+      generateToolsDetailed: vi.fn().mockReturnValue({
+        enabledToolIds: [LobeActivatorIdentifier],
+        tools: [],
+      }),
+      getEnabledPluginManifests: vi.fn().mockReturnValue(new Map()),
+    });
+    mockGetAgentConfig.mockResolvedValue({
+      chatConfig: { searchMode: 'auto' },
+      id: 'agent-1',
+      model: 'grok-4.6',
+      plugins: [],
+      provider: 'grok',
+      systemRole: 'You are a helper',
+    });
+
+    await service.execAgent({ agentId: 'agent-1', prompt: 'Search X for news' } as any);
+
+    const toolSet = mockCreateOperation.mock.calls[0][0].toolSet as {
+      enabledToolIds: string[];
+      manifestMap: Record<string, unknown>;
+    };
+    expect(toolSet.manifestMap).not.toHaveProperty(WebBrowsingManifest.identifier);
+
+    const discovery = buildToolDiscoveryConfig(toolSet, toolSet.enabledToolIds);
+    expect(discovery?.availableTools.map((tool) => tool.identifier)).not.toContain(
+      WebBrowsingManifest.identifier,
+    );
   });
 });

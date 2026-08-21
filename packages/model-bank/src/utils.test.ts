@@ -119,24 +119,24 @@ describe('resolveSearchDecision', () => {
       name: 'keeps application search when OpenAI explicitly disables model builtin search',
     },
     {
-      expected: { application: true, model: false },
+      expected: { application: false, model: true },
       input: {
         modelSearchImpl: 'internal' as const,
         provider: 'grok',
         searchMode: 'on' as const,
         useModelBuiltinSearch: false,
       },
-      name: 'lets Grok App Search override internal model search metadata',
+      name: 'keeps Grok internal model search even when App Search is requested',
     },
     {
-      expected: { application: true, model: false },
+      expected: { application: false, model: true },
       input: {
         provider: 'xai',
         providerSearchMode: 'internal' as const,
         searchMode: 'on' as const,
         useModelBuiltinSearch: false,
       },
-      name: 'lets xAI App Search override internal provider search metadata',
+      name: 'keeps xAI internal provider search even when App Search is requested',
     },
     {
       expected: { application: false, model: true },
@@ -147,6 +147,26 @@ describe('resolveSearchDecision', () => {
         useModelBuiltinSearch: false,
       },
       name: 'keeps Perplexity internal search even when App Search is requested',
+    },
+    {
+      expected: { application: true, model: false },
+      input: {
+        modelSearchImpl: 'params' as const,
+        provider: 'grok',
+        searchMode: 'on' as const,
+        useModelBuiltinSearch: false,
+      },
+      name: 'lets explicit App Search override Grok params metadata',
+    },
+    {
+      expected: { application: true, model: false },
+      input: {
+        modelSearchImpl: 'tool' as const,
+        provider: 'grok',
+        searchMode: 'on' as const,
+        useModelBuiltinSearch: false,
+      },
+      name: 'lets explicit App Search override Grok tool metadata',
     },
   ])('$name', ({ expected, input }) => {
     const result = resolveSearchDecision(input);
@@ -187,6 +207,17 @@ describe('shouldExposeProviderSearchChoice', () => {
         isModelHasBuiltinSearch: true,
         isProviderHasBuiltinSearch: false,
         provider: 'perplexity',
+      }),
+    ).toBe(false);
+  });
+
+  it('hides App Search for internal Grok models even though the family defaults to native', () => {
+    expect(
+      shouldExposeProviderSearchChoice({
+        isModelBuiltinSearchInternal: true,
+        isModelHasBuiltinSearch: true,
+        isProviderHasBuiltinSearch: false,
+        provider: 'grok',
       }),
     ).toBe(false);
   });

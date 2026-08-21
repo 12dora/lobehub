@@ -61,6 +61,7 @@ vi.mock('@/server/services/agent', () => ({
       provider: 'openai',
       systemRole: 'You are a helpful assistant',
     }),
+    queryAvailableAgents: vi.fn().mockResolvedValue([]),
   })),
 }));
 
@@ -348,7 +349,7 @@ describe('AiAgentService.execAgent - file upload handling', () => {
           id: 'file-pdf',
           name: 'doc.pdf',
           size: 4096,
-          url: '',
+          url: 'files/test-user-id/xxx/doc.pdf',
         },
       ]);
     });
@@ -386,7 +387,7 @@ describe('AiAgentService.execAgent - file upload handling', () => {
           id: 'file-bin',
           name: 'blob.bin',
           size: 10,
-          url: '',
+          url: 'files/test-user-id/xxx/blob.bin',
         },
       ]);
     });

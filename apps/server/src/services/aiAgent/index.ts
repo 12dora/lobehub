@@ -19,6 +19,7 @@ import {
   shouldExposeSelfFeedbackIntentTool,
 } from '@lobechat/builtin-tool-self-iteration/inject';
 import { TaskIdentifier } from '@lobechat/builtin-tool-task/manifest';
+import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing/manifest';
 import { LOADING_FLAT } from '@lobechat/const';
 import type {
   AgentGroupConfig,
@@ -911,7 +912,10 @@ export class AiAgentService {
             id: result.fileId,
             name: file.name ?? 'file',
             size: file.size ?? 0,
-            url: result.resolvedUrl || '',
+            // Documents often have no public URL (ingest only resolves
+            // image/video/audio). The storage key is enough for
+            // `createCachedPreSignedUrlForPreview` during sandbox sync.
+            url: result.resolvedUrl || result.key || '',
           });
         } catch (error) {
           log('execAgent: failed to ingest file %s: %O', file.name || file.url, error);
@@ -3228,6 +3232,18 @@ export class AiAgentService {
       const isManifestIngestAllowed = (identifier: string): boolean => {
         if (!canUseDevice && isDeviceToolIdentifier(identifier)) return false;
         if (deviceLocked && REMOTE_DEVICE_TOOL_IDENTIFIERS.has(identifier)) return false;
+        // Native search must not stack with the platform browsing tool. The
+        // engine already drops the manifest from `manifestSchemas`, but this
+        // map is rebuilt for activator discovery from every discoverable
+        // builtin — without this guard `lobe-web-browsing` re-enters
+        // `<available_tools>` and ToolResolver can activate it on the next
+        // step.
+        if (
+          !searchDecision.useApplicationBuiltinSearchTool &&
+          identifier === WebBrowsingManifest.identifier
+        ) {
+          return false;
+        }
         return true;
       };
 
@@ -3274,7 +3290,11 @@ export class AiAgentService {
         delete toolManifestMap[RemoteDeviceManifest.identifier];
         delete toolManifestMap[LocalSystemManifest.identifier];
       }
+      if (!searchDecision.useApplicationBuiltinSearchTool) {
+        delete toolManifestMap[WebBrowsingManifest.identifier];
+      }
       for (const tool of allowedBuiltinTools) {
+        if (!isManifestIngestAllowed(tool.identifier)) continue;
         // lobe-cloud-sandbox is only activator-discoverable when runtimeMode resolves
         // to 'cloud' (i.e. executionTarget='sandbox').
         if (tool.identifier === CloudSandboxManifest.identifier && agentRuntimeMode !== 'cloud')

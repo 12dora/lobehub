@@ -221,7 +221,7 @@ describe('resolveServerSearchDecision', () => {
     },
   );
 
-  it('lets Grok App Search override internal model search metadata', () => {
+  it('keeps Grok internal model search even when App Search is requested', () => {
     const result = resolveServerSearchDecision({
       builtinModels: [
         {
@@ -236,8 +236,8 @@ describe('resolveServerSearchDecision', () => {
       provider: 'grok',
     });
 
-    expect(result.useModelSearch).toBe(false);
-    expect(result.useApplicationBuiltinSearchTool).toBe(true);
+    expect(result.useModelSearch).toBe(true);
+    expect(result.useApplicationBuiltinSearchTool).toBe(false);
   });
 
   it('uses application search for grok when useModelBuiltinSearch is explicitly false', () => {
