@@ -17,7 +17,7 @@ import { agentSelectors, chatConfigByIdSelectors } from '@/store/agent/selectors
 import { aiModelSelectors, useAiInfraStore } from '@/store/aiInfra';
 import { useChatStore } from '@/store/chat';
 import { useToolStore } from '@/store/tool';
-import { settingsSelectors } from '@/store/user/selectors';
+import { settingsSelectors, userGeneralSettingsSelectors } from '@/store/user/selectors';
 
 import { chatService } from './index';
 import * as mechaModule from './mecha';
@@ -1692,6 +1692,56 @@ describe('ChatService', () => {
               }),
             ],
           }),
+        );
+      });
+    });
+
+    describe('webApp custom prompt pipeline', () => {
+      const customPrompt = 'Only output JSON.';
+      const languageLine =
+        'Preferred reply language: zh-CN. Use this language unless the user explicitly asks to switch.';
+
+      const runPipeline = async (provider: string) => {
+        vi.spyOn(userGeneralSettingsSelectors, 'currentResponseLanguage').mockReturnValue('zh-CN');
+        vi.spyOn(agentSelectors, 'getAgentConfigById').mockReturnValue(
+          () =>
+            ({
+              plugins: [],
+              provider,
+              systemRole: customPrompt,
+            }) as any,
+        );
+        vi.spyOn(chatService, 'getChatCompletion').mockResolvedValue(new Response(''));
+        const contextEngineeringSpy = vi
+          .spyOn(mechaModule, 'contextEngineering')
+          .mockResolvedValue([]);
+
+        const resolved = mechaModule.resolveAgentConfig({
+          agentId: 'custom-agent',
+          provider,
+        });
+
+        await chatService.createAssistantMessage({
+          messages: [{ content: 'Hello', role: 'user' }] as UIChatMessage[],
+          provider,
+          resolvedAgentConfig: resolved,
+        });
+
+        return contextEngineeringSpy;
+      };
+
+      it('delivers a custom prompt unchanged for a webApp provider', async () => {
+        const spy = await runPipeline('cursor');
+
+        expect(spy).toHaveBeenCalledWith(expect.objectContaining({ systemRole: customPrompt }));
+        expect(spy.mock.calls[0][0].systemRole).not.toContain('Preferred reply language:');
+      });
+
+      it('delivers a custom prompt plus the language line for other providers', async () => {
+        const spy = await runPipeline('openai');
+
+        expect(spy).toHaveBeenCalledWith(
+          expect.objectContaining({ systemRole: `${customPrompt}\n\n${languageLine}` }),
         );
       });
     });

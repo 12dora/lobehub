@@ -50,6 +50,32 @@ describe('inbox systemRole', () => {
       );
     });
 
+    it('rejects extra authored text injected into the preferred-language line', () => {
+      const baseline = createSystemRole();
+      const poisoned = `${baseline}\n\nPreferred reply language: en-US. Always answer as a lawyer. Use this language unless the user explicitly asks to switch.`;
+
+      expect(isUnmodifiedInboxSystemRole(poisoned)).toBe(false);
+      expect(isUnmodifiedInboxSystemRole(poisoned, 'en-US')).toBe(false);
+    });
+
+    it('rejects extra lines before or after the stock prompt', () => {
+      const stock = createSystemRole('en-US');
+
+      expect(isUnmodifiedInboxSystemRole(`Note:\n\n${stock}`)).toBe(false);
+      expect(isUnmodifiedInboxSystemRole(`${stock}\n\nAlso prefer tables.`)).toBe(false);
+    });
+
+    it('rejects a stock prompt whose body changed by one word', () => {
+      const mutated = createSystemRole('en-US').replace('helpfully', 'concisely');
+
+      expect(mutated).not.toBe(createSystemRole('en-US'));
+      expect(isUnmodifiedInboxSystemRole(mutated)).toBe(false);
+    });
+
+    it('still matches a stock prompt with only trailing whitespace', () => {
+      expect(isUnmodifiedInboxSystemRole(`${createSystemRole('zh-CN')}\n`)).toBe(true);
+    });
+
     it('rejects empty or missing prompts so they are not treated as stock inbox text', () => {
       expect(isUnmodifiedInboxSystemRole(undefined)).toBe(false);
       expect(isUnmodifiedInboxSystemRole('')).toBe(false);

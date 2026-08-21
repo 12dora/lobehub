@@ -1,5 +1,9 @@
 import { type BuiltinAgentSlug } from '@lobechat/builtin-agents';
-import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
+import {
+  BUILTIN_AGENT_SLUGS,
+  getAgentRuntimeConfig,
+  isUnmodifiedInboxSystemRole,
+} from '@lobechat/builtin-agents';
 import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
 import { TaskIdentifier } from '@lobechat/builtin-tool-task';
 import { type LobeToolManifest } from '@lobechat/context-engine';
@@ -12,6 +16,7 @@ import {
 } from '@lobechat/types';
 import debug from 'debug';
 import { produce } from 'immer';
+import { isWebAppProvider } from 'model-bank/modelProviders';
 
 import { getAgentStoreState } from '@/store/agent';
 import { agentSelectors, chatConfigByIdSelectors } from '@/store/agent/selectors';
@@ -244,13 +249,17 @@ export const resolveAgentConfig = (ctx: AgentConfigResolverContext): ResolvedAge
     // Regular agent - use provided plugins if available, fallback to agent's plugins
     const finalPlugins = plugins && plugins.length > 0 ? plugins : basePlugins;
 
-    // Inject response language preference into system role for regular agents
+    // Inject response language preference into system role for regular agents.
+    // Web-app providers (ChatGPT / Cursor / Grok web) already manage language
+    // themselves — appending this line would leak into the user turn.
     const userLocale = userGeneralSettingsSelectors.currentResponseLanguage(
       useUserStore.getState(),
     );
-    const localeInstruction = userLocale
-      ? `Preferred reply language: ${userLocale}. Use this language unless the user explicitly asks to switch.`
-      : '';
+    const effectiveProvider = ctx.provider ?? agentConfig.provider;
+    const localeInstruction =
+      !isWebAppProvider(effectiveProvider) && userLocale
+        ? `Preferred reply language: ${userLocale}. Use this language unless the user explicitly asks to switch.`
+        : '';
     const systemRoleWithLocale = localeInstruction
       ? agentConfig.systemRole
         ? `${agentConfig.systemRole}\n\n${localeInstruction}`
@@ -399,14 +408,18 @@ export const resolveAgentConfig = (ctx: AgentConfigResolverContext): ResolvedAge
   });
 
   // Merge runtime systemRole into agent config.
-  // Inbox is special: the runtime always emits the stock Lobe prompt, so a
-  // user-authored inbox systemRole stored on the agent must win. Other
-  // builtin agents still prefer the runtime role (their persist config does
-  // not carry a user-editable prompt).
-  let resolvedSystemRole =
-    slug === BUILTIN_AGENT_SLUGS.inbox && agentConfig.systemRole
-      ? agentConfig.systemRole
-      : (runtimeConfig?.systemRole ?? agentConfig.systemRole);
+  // Inbox: a customised stored prompt wins. An unmodified stock prompt
+  // (including one generated under an older locale) is regenerated with the
+  // current locale via the runtime. Other builtin agents still prefer the
+  // runtime role (their persist config does not carry a user-editable prompt).
+  const storedInboxRole = agentConfig.systemRole;
+  const inboxHasCustomRole =
+    slug === BUILTIN_AGENT_SLUGS.inbox &&
+    !!storedInboxRole &&
+    !isUnmodifiedInboxSystemRole(storedInboxRole);
+  let resolvedSystemRole = inboxHasCustomRole
+    ? storedInboxRole
+    : (runtimeConfig?.systemRole ?? agentConfig.systemRole);
 
   // Merge plugins: runtime plugins take priority, fallback to base plugins
   let finalPlugins =

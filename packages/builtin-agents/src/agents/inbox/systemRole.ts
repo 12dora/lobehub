@@ -17,22 +17,23 @@ Your role is to:
 
 Respond in the same language the user is using.`;
 
-const PREFERRED_LANGUAGE_LINE =
-  'Preferred reply language: ${userLocale}. Use this language unless the user explicitly asks to switch.';
+const LANGUAGE_LINE_PREFIX = 'Preferred reply language: ';
+const LANGUAGE_LINE_SUFFIX = '. Use this language unless the user explicitly asks to switch.';
 
 /**
- * Trailing locale instruction appended by `createSystemRole` when a locale is
- * known. Matched independently of the actual locale so webApp callers can
- * detect the unmodified builtin role without threading userLocale through.
+ * BCP-47-ish locale tag as emitted by `createSystemRole` (`en-US`, `zh-CN`,
+ * `ar`). Rejects spaces, extra sentences, or any other authored text.
  */
-const INBOX_LOCALE_SUFFIX =
-  /\n\nPreferred reply language: .+\. Use this language unless the user explicitly asks to switch\.\s*$/;
+const LOCALE_TAG_RE = /^[A-Z]{2,3}(?:-[A-Z]{2,8})?$/i;
+
+const preferredLanguageLine = (userLocale: string) =>
+  `${LANGUAGE_LINE_PREFIX}${userLocale}${LANGUAGE_LINE_SUFFIX}`;
+
+/** Drop trailing whitespace / newlines only — leading or inner edits stay. */
+const normalizeTrailingWhitespace = (value: string) => value.replace(/\s+$/u, '');
 
 export const createSystemRole = (userLocale?: string) =>
-  [
-    systemRoleTemplate,
-    userLocale ? PREFERRED_LANGUAGE_LINE.replace('${userLocale}', userLocale) : '',
-  ]
+  [systemRoleTemplate, userLocale ? preferredLanguageLine(userLocale) : '']
     .filter(Boolean)
     .join('\n\n');
 
@@ -40,9 +41,11 @@ export const isInboxAgentSlug = (slug?: string | null): boolean =>
   slug === BUILTIN_AGENT_SLUGS.inbox;
 
 /**
- * True when `systemRole` is the stock inbox prompt (with or without the
- * preferred-language suffix). A user-edited inbox prompt — or any other
- * agent prompt — returns false so it is preserved verbatim.
+ * True when `systemRole` is exactly a stock inbox prompt (bare template, or
+ * template + a well-formed preferred-language line). Locale-agnostic: a stock
+ * role generated under `en-US` still matches after the user switches to
+ * `zh-CN`. Anything else — extra lines, a changed word, injected text in the
+ * language line — is customised.
  */
 export const isUnmodifiedInboxSystemRole = (
   systemRole?: string | null,
@@ -50,14 +53,23 @@ export const isUnmodifiedInboxSystemRole = (
 ): boolean => {
   if (!systemRole) return false;
 
-  const role = systemRole.trim();
+  const role = normalizeTrailingWhitespace(systemRole);
   if (!role) return false;
 
-  const baseline = createSystemRole().trim();
+  const baseline = createSystemRole();
   if (role === baseline) return true;
-  if (userLocale && role === createSystemRole(userLocale).trim()) return true;
+  if (userLocale && role === createSystemRole(userLocale)) return true;
 
-  return role.startsWith(baseline) && INBOX_LOCALE_SUFFIX.test(role.slice(baseline.length));
+  if (!role.startsWith(baseline)) return false;
+
+  const rest = role.slice(baseline.length);
+  const languagePrefix = `\n\n${LANGUAGE_LINE_PREFIX}`;
+  if (!rest.startsWith(languagePrefix) || !rest.endsWith(LANGUAGE_LINE_SUFFIX)) return false;
+
+  const tag = rest.slice(languagePrefix.length, rest.length - LANGUAGE_LINE_SUFFIX.length);
+  if (!LOCALE_TAG_RE.test(tag)) return false;
+
+  return role === createSystemRole(tag);
 };
 
 /**

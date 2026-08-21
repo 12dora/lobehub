@@ -543,6 +543,51 @@ describe('resolveAgentConfig', () => {
         expect(result.agentConfig.systemRole).toBe('Inbox system role');
       });
 
+      it('should regenerate a stock inbox role when the user locale changes', () => {
+        vi.spyOn(
+          userSelectors.userGeneralSettingsSelectors,
+          'currentResponseLanguage',
+        ).mockReturnValue('zh-CN');
+        vi.spyOn(agentSelectors.agentSelectors, 'getAgentConfigById').mockReturnValue(
+          () =>
+            ({
+              ...mockAgentConfig,
+              systemRole: builtinAgents.createInboxSystemRole('en-US'),
+            }) as any,
+        );
+        vi.spyOn(builtinAgents, 'getAgentRuntimeConfig').mockImplementation((_slug, ctx) => ({
+          plugins: [LobeAgentIdentifier],
+          systemRole: builtinAgents.createInboxSystemRole(ctx.userLocale),
+        }));
+
+        const result = resolveAgentConfig({ agentId: 'inbox-agent' });
+
+        expect(result.agentConfig.systemRole).toBe(builtinAgents.createInboxSystemRole('zh-CN'));
+        expect(result.agentConfig.systemRole).not.toContain('Preferred reply language: en-US');
+      });
+
+      it('should keep a customised inbox role after a locale switch', () => {
+        vi.spyOn(
+          userSelectors.userGeneralSettingsSelectors,
+          'currentResponseLanguage',
+        ).mockReturnValue('zh-CN');
+        vi.spyOn(agentSelectors.agentSelectors, 'getAgentConfigById').mockReturnValue(
+          () =>
+            ({
+              ...mockAgentConfig,
+              systemRole: 'Always answer in pirate speak.',
+            }) as any,
+        );
+        vi.spyOn(builtinAgents, 'getAgentRuntimeConfig').mockImplementation((_slug, ctx) => ({
+          plugins: [LobeAgentIdentifier],
+          systemRole: builtinAgents.createInboxSystemRole(ctx.userLocale),
+        }));
+
+        const result = resolveAgentConfig({ agentId: 'inbox-agent' });
+
+        expect(result.agentConfig.systemRole).toBe('Always answer in pirate speak.');
+      });
+
       it('should include lobe-agent and Notebook tools in plugins', () => {
         vi.spyOn(builtinAgents, 'getAgentRuntimeConfig').mockReturnValue({
           plugins: [LobeAgentIdentifier, NotebookIdentifier],
@@ -1393,6 +1438,46 @@ describe('resolveAgentConfig', () => {
       const result = resolveAgentConfig({ agentId: 'test-agent' });
 
       expect(result.agentConfig.systemRole).toBe('You are a helpful assistant');
+    });
+
+    it('should not append the language line for a webApp provider', () => {
+      vi.spyOn(
+        userSelectors.userGeneralSettingsSelectors,
+        'currentResponseLanguage',
+      ).mockReturnValue('zh-CN');
+      vi.spyOn(agentSelectors.agentSelectors, 'getAgentConfigById').mockReturnValue(
+        () =>
+          ({
+            ...mockAgentConfig,
+            provider: 'cursor',
+            systemRole: 'Only output JSON.',
+          }) as any,
+      );
+
+      const result = resolveAgentConfig({ agentId: 'test-agent', provider: 'cursor' });
+
+      expect(result.agentConfig.systemRole).toBe('Only output JSON.');
+    });
+
+    it('should still append the language line for a non-webApp provider', () => {
+      vi.spyOn(
+        userSelectors.userGeneralSettingsSelectors,
+        'currentResponseLanguage',
+      ).mockReturnValue('zh-CN');
+      vi.spyOn(agentSelectors.agentSelectors, 'getAgentConfigById').mockReturnValue(
+        () =>
+          ({
+            ...mockAgentConfig,
+            provider: 'openai',
+            systemRole: 'Only output JSON.',
+          }) as any,
+      );
+
+      const result = resolveAgentConfig({ agentId: 'test-agent', provider: 'openai' });
+
+      expect(result.agentConfig.systemRole).toBe(
+        'Only output JSON.\n\nPreferred reply language: zh-CN. Use this language unless the user explicitly asks to switch.',
+      );
     });
   });
 });
