@@ -41,22 +41,26 @@ export const prefersNativeSearchByDefault = (provider?: string | null): boolean 
 
 /**
  * Whether the Plus / Search controls should expose the App vs Provider Search
- * choice. `internal` models are always native while search is on, so they
- * never get the App Search option (including Grok-family). Grok-family still
- * gets the three-way menu when cards omit search metadata or use params/tool.
+ * choice. `internal` model or provider metadata is always native while search
+ * is on, so those never get the App Search option (including Grok-family).
+ * Grok-family still gets the three-way menu when cards omit search metadata
+ * or use params/tool.
  */
 export const shouldExposeProviderSearchChoice = ({
   isModelBuiltinSearchInternal,
   isModelHasBuiltinSearch,
+  isProviderBuiltinSearchInternal,
   isProviderHasBuiltinSearch,
   provider,
 }: {
   isModelBuiltinSearchInternal?: boolean;
   isModelHasBuiltinSearch?: boolean;
+  isProviderBuiltinSearchInternal?: boolean;
   isProviderHasBuiltinSearch?: boolean;
   provider?: string | null;
 }): boolean =>
   !isModelBuiltinSearchInternal &&
+  !isProviderBuiltinSearchInternal &&
   (prefersNativeSearchByDefault(provider) ||
     !!(isModelHasBuiltinSearch || isProviderHasBuiltinSearch));
 

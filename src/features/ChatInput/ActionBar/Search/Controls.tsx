@@ -116,6 +116,9 @@ const Controls = memo(() => {
   const isProviderHasBuiltinSearchConfig = useAiInfraStore(
     aiProviderSelectors.isProviderHasBuiltinSearchConfig(provider),
   );
+  const isProviderBuiltinSearchInternal = useAiInfraStore(
+    aiProviderSelectors.isProviderBuiltinSearchInternal(provider),
+  );
   const isModelHasBuiltinSearchConfig = useAiInfraStore(
     aiModelSelectors.isModelHasBuiltinSearchConfig(model, provider),
   );
@@ -124,6 +127,9 @@ const Controls = memo(() => {
   );
   const modelBuiltinSearchImpl = useAiInfraStore(
     aiModelSelectors.modelBuiltinSearchImpl(model, provider),
+  );
+  const providerSearchMode = useAiInfraStore(
+    (s) => aiProviderSelectors.providerConfigById(provider)(s)?.settings.searchMode,
   );
 
   useEffect(() => {
@@ -162,6 +168,7 @@ const Controls = memo(() => {
     shouldExposeProviderSearchChoice({
       isModelBuiltinSearchInternal,
       isModelHasBuiltinSearch: isModelHasBuiltinSearchConfig,
+      isProviderBuiltinSearchInternal,
       isProviderHasBuiltinSearch: isProviderHasBuiltinSearchConfig,
       provider,
     });
@@ -169,7 +176,7 @@ const Controls = memo(() => {
   const { useApplicationBuiltinSearchTool } = resolveSearchDecision({
     modelSearchImpl: modelBuiltinSearchImpl,
     provider,
-    providerSearchMode: isProviderHasBuiltinSearchConfig ? 'params' : undefined,
+    providerSearchMode,
     searchMode,
     useModelBuiltinSearch,
   });

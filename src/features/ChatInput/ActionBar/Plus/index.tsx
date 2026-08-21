@@ -358,9 +358,13 @@ const PlusAction = memo(() => {
   const isProviderHasBuiltinSearch = useAiInfraStore(
     aiProviderSelectors.isProviderHasBuiltinSearchConfig(provider),
   );
+  const isProviderBuiltinSearchInternal = useAiInfraStore(
+    aiProviderSelectors.isProviderBuiltinSearchInternal(provider),
+  );
   const showProviderSearch = shouldExposeProviderSearchChoice({
     isModelBuiltinSearchInternal,
     isModelHasBuiltinSearch,
+    isProviderBuiltinSearchInternal,
     isProviderHasBuiltinSearch,
     provider,
   });

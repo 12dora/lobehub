@@ -141,6 +141,17 @@ describe('resolveSearchDecision', () => {
     {
       expected: { application: false, model: true },
       input: {
+        modelSearchImpl: 'params' as const,
+        provider: 'xai',
+        providerSearchMode: 'internal' as const,
+        searchMode: 'on' as const,
+        useModelBuiltinSearch: false,
+      },
+      name: 'keeps xAI internal provider search even when the model has params metadata and App Search is requested',
+    },
+    {
+      expected: { application: false, model: true },
+      input: {
         modelSearchImpl: 'internal' as const,
         provider: 'perplexity',
         searchMode: 'on' as const,
@@ -220,6 +231,48 @@ describe('shouldExposeProviderSearchChoice', () => {
         provider: 'grok',
       }),
     ).toBe(false);
+  });
+
+  it.each(['grok', 'supergrok', 'xai'])(
+    'hides App Search for %s when provider search metadata is internal and the model has none',
+    (provider) => {
+      expect(
+        shouldExposeProviderSearchChoice({
+          isModelBuiltinSearchInternal: false,
+          isModelHasBuiltinSearch: false,
+          isProviderBuiltinSearchInternal: true,
+          isProviderHasBuiltinSearch: true,
+          provider,
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it.each(['grok', 'supergrok', 'xai'])(
+    'hides App Search for %s when provider search metadata is internal even if the model has params search',
+    (provider) => {
+      expect(
+        shouldExposeProviderSearchChoice({
+          isModelBuiltinSearchInternal: false,
+          isModelHasBuiltinSearch: true,
+          isProviderBuiltinSearchInternal: true,
+          isProviderHasBuiltinSearch: true,
+          provider,
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it('still exposes Provider Search for Grok-family when provider search is params', () => {
+    expect(
+      shouldExposeProviderSearchChoice({
+        isModelBuiltinSearchInternal: false,
+        isModelHasBuiltinSearch: false,
+        isProviderBuiltinSearchInternal: false,
+        isProviderHasBuiltinSearch: true,
+        provider: 'xai',
+      }),
+    ).toBe(true);
   });
 });
 
