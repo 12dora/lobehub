@@ -2470,4 +2470,238 @@ describe('topic action', () => {
       ]);
     });
   });
+
+  /**
+   * `#reconcileFetchedTopics` treats every retained `tmp_topic_*` row as absent
+   * from the server total. That holds right up until the server persists the
+   * topic: from then on a list response already counts it, while the client
+   * still shows the placeholder (it only learns the real id when the send
+   * response returns). The over-count is re-derived when the placeholder
+   * resolves — see `resolveNextTotal`.
+   */
+  describe('optimistic topic totals', () => {
+    const seedTopicBucket = (
+      agentId: string,
+      items: ChatTopic[],
+      { pageSize = 20, total = items.length }: { pageSize?: number; total?: number } = {},
+    ) => {
+      useChatStore.setState({
+        activeAgentId: agentId,
+        agentTopicsViewMap: {},
+        topicDataMap: {
+          [topicMapKey({ agentId })]: {
+            currentPage: 0,
+            hasMore: false,
+            isExpandingPageSize: false,
+            isLoadingMore: false,
+            items,
+            pageSize,
+            total,
+          },
+        },
+      });
+    };
+
+    it('drops the placeholder surplus when the fetched page already carries the persisted row', () => {
+      const agentId = 'agent-optimistic-a';
+      const key = topicMapKey({ agentId });
+      const { result } = renderHook(() => useChatStore());
+
+      act(() => {
+        seedTopicBucket(agentId, [{ id: 'tpc_old_a2', title: 'Older' } as ChatTopic]);
+      });
+
+      // First-message send inserts the client-only placeholder.
+      act(() => {
+        result.current.internal_dispatchTopic({
+          agentId,
+          type: 'addTopic',
+          value: { id: 'tmp_topic_a', sessionId: agentId, title: 'Sending…' },
+        });
+      });
+      expect(useChatStore.getState().topicDataMap[key].total).toBe(2);
+
+      // A list request lands after the server persisted the topic but before
+      // the send response comes back: its total already counts the real row.
+      act(() => {
+        result.current.internal_updateTopics(agentId, {
+          items: [
+            { id: 'tpc_real_a', title: 'Sending…' },
+            { id: 'tpc_old_a2', title: 'Older' },
+          ] as ChatTopic[],
+          pageSize: 20,
+          total: 2,
+        });
+      });
+
+      // The placeholder is still retained here — the client cannot yet tell it
+      // is the same topic as `tpc_real_a`.
+      expect(useChatStore.getState().topicDataMap[key].items.map((i) => i.id)).toEqual([
+        'tmp_topic_a',
+        'tpc_real_a',
+        'tpc_old_a2',
+      ]);
+
+      // Send response returns: the placeholder resolves and merges with the row
+      // the fetch already delivered.
+      act(() => {
+        result.current.internal_replaceTopicId({
+          agentId,
+          nextId: 'tpc_real_a',
+          previousId: 'tmp_topic_a',
+          value: { sessionId: agentId, title: 'Sending…' },
+        });
+      });
+
+      const data = useChatStore.getState().topicDataMap[key];
+      expect(data.items.map((i) => i.id)).toEqual(['tpc_real_a', 'tpc_old_a2']);
+      expect(data.total).toBe(2);
+      expect(data.hasMore).toBe(false);
+    });
+
+    it('drops the placeholder surplus when pagination omitted the persisted row', () => {
+      const agentId = 'agent-optimistic-b';
+      const key = topicMapKey({ agentId });
+      const { result } = renderHook(() => useChatStore());
+
+      act(() => {
+        seedTopicBucket(
+          agentId,
+          [
+            { id: 'topic-1', title: 'Topic 1' },
+            { id: 'topic-2', title: 'Topic 2' },
+          ] as ChatTopic[],
+          { pageSize: 2, total: 2 },
+        );
+      });
+
+      act(() => {
+        result.current.internal_dispatchTopic({
+          agentId,
+          type: 'addTopic',
+          value: { id: 'tmp_topic_b', sessionId: agentId, title: 'Sending…' },
+        });
+      });
+
+      // Server now holds 3 topics (the persisted one included in `total`), but
+      // page 1 does not carry it.
+      act(() => {
+        result.current.internal_updateTopics(agentId, {
+          items: [
+            { id: 'topic-1', title: 'Topic 1' },
+            { id: 'topic-2', title: 'Topic 2' },
+          ] as ChatTopic[],
+          pageSize: 2,
+          total: 3,
+        });
+      });
+
+      expect(useChatStore.getState().topicDataMap[key].items.map((i) => i.id)).toEqual([
+        'tmp_topic_b',
+        'topic-1',
+        'topic-2',
+      ]);
+
+      act(() => {
+        result.current.internal_replaceTopicId({
+          agentId,
+          nextId: 'tpc_real_b',
+          previousId: 'tmp_topic_b',
+          value: { sessionId: agentId, title: 'Sending…' },
+        });
+      });
+
+      const data = useChatStore.getState().topicDataMap[key];
+      expect(data.items.map((i) => i.id)).toEqual(['tpc_real_b', 'topic-1', 'topic-2']);
+      // 3 rows held, 3 on the server — no phantom fourth row to page in.
+      expect(data.total).toBe(3);
+      expect(data.hasMore).toBe(false);
+    });
+
+    it('keeps the total intact when no fetch raced the placeholder', () => {
+      const agentId = 'agent-optimistic-c';
+      const key = topicMapKey({ agentId });
+      const { result } = renderHook(() => useChatStore());
+
+      act(() => {
+        seedTopicBucket(agentId, [{ id: 'topic-1', title: 'Topic 1' }] as ChatTopic[]);
+      });
+
+      act(() => {
+        result.current.internal_dispatchTopic({
+          agentId,
+          type: 'addTopic',
+          value: { id: 'tmp_topic_c', sessionId: agentId, title: 'Sending…' },
+        });
+      });
+
+      act(() => {
+        result.current.internal_replaceTopicId({
+          agentId,
+          nextId: 'tpc_real_c',
+          previousId: 'tmp_topic_c',
+          value: { sessionId: agentId, title: 'Sending…' },
+        });
+      });
+
+      // The placeholder really was client-only here, so the row it became still
+      // has to be counted: the floor keeps the total at the number of rows held.
+      const data = useChatStore.getState().topicDataMap[key];
+      expect(data.items.map((i) => i.id)).toEqual(['tpc_real_c', 'topic-1']);
+      expect(data.total).toBe(2);
+      expect(data.hasMore).toBe(false);
+    });
+
+    it('re-derives the agent topics view total the same way', () => {
+      const agentId = 'agent-optimistic-view';
+      const key = topicMapKey({ agentId });
+      const { result } = renderHook(() => useChatStore());
+
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: agentId,
+          agentTopicsViewMap: {
+            [key]: {
+              currentPage: 0,
+              hasMore: false,
+              isExpandingPageSize: false,
+              isLoadingMore: false,
+              items: [
+                { id: 'tpc_real_view', title: 'Sending…' },
+                { id: 'tpc_old_view', title: 'Older' },
+              ] as ChatTopic[],
+              pageSize: 30,
+              total: 2,
+            },
+          },
+          topicDataMap: {},
+        });
+      });
+
+      // Placeholder mirrored into the view bucket, then resolved onto the row
+      // the view already carries.
+      act(() => {
+        result.current.internal_dispatchTopic({
+          agentId,
+          type: 'addTopic',
+          value: { id: 'tmp_topic_view', sessionId: agentId, title: 'Sending…' },
+        });
+      });
+      expect(useChatStore.getState().agentTopicsViewMap[key].total).toBe(3);
+
+      act(() => {
+        result.current.internal_replaceTopicId({
+          agentId,
+          nextId: 'tpc_real_view',
+          previousId: 'tmp_topic_view',
+          value: { sessionId: agentId, title: 'Sending…' },
+        });
+      });
+
+      const view = useChatStore.getState().agentTopicsViewMap[key];
+      expect(view.items.map((i) => i.id)).toEqual(['tpc_real_view', 'tpc_old_view']);
+      expect(view.total).toBe(2);
+      expect(view.hasMore).toBe(false);
+    });
+  });
 });

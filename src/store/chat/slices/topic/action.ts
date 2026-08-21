@@ -75,6 +75,70 @@ interface ReconciledTopics {
   retainedCount: number;
 }
 
+/**
+ * Prefix of the client-only placeholder row inserted for a first-message send
+ * before the server has returned the real topic id.
+ */
+const OPTIMISTIC_TOPIC_ID_PREFIX = 'tmp_topic_';
+
+const isClientOnlyTopicId = (id: string): boolean => id.startsWith(OPTIMISTIC_TOPIC_ID_PREFIX);
+
+/**
+ * Next `total` for a bucket after a local dispatch.
+ *
+ * The stored total is "server count + rows only this client knows about". Every
+ * branch here keeps that identity:
+ *
+ * - `addTopic` adds only the rows the reducer genuinely appended (it upserts by
+ *   id, so re-registering a row the bucket already holds must not bump it).
+ * - `deleteTopic` gives one back.
+ * - `replaceTopicId` resolves a `tmp_topic_*` placeholder to its persisted id,
+ *   which hands the row over to the server's own count — so the surplus that
+ *   `addTopic` added for it has to come back off. Without this the bucket keeps
+ *   claiming one row more than it holds and `hasMore` stays true forever:
+ *   `#reconcileFetchedTopics` treats every retained placeholder as absent from
+ *   the server total, but a list response that lands after the topic is
+ *   persisted (and before the send response replaces the id) already counts it.
+ *   That over-count cannot be detected at reconciliation time — the client does
+ *   not learn the real id until the send response returns, which is the same
+ *   tick as the replacement — so it is re-derived here instead.
+ *
+ * The `nextItemCount` floor keeps the total from ever claiming fewer rows than
+ * the bucket actually holds, which is what makes the same subtraction correct
+ * in the ordinary no-race case (the placeholder really was client-only there,
+ * so the floor keeps the total at the row count).
+ */
+const resolveNextTotal = (
+  payload: ChatTopicDispatch,
+  currentTotal: number,
+  nextItemCount: number,
+  addedRows: number,
+  currentItems?: ChatTopic[],
+): number => {
+  switch (payload.type) {
+    case 'addTopic': {
+      return currentTotal + addedRows;
+    }
+
+    case 'deleteTopic': {
+      return Math.max(nextItemCount, currentTotal - 1);
+    }
+
+    case 'replaceTopicId': {
+      const resolvedClientOnlyRow =
+        isClientOnlyTopicId(payload.id) && !!currentItems?.some((item) => item.id === payload.id);
+
+      return resolvedClientOnlyRow
+        ? Math.max(nextItemCount, currentTotal - 1)
+        : Math.max(nextItemCount, currentTotal);
+    }
+
+    default: {
+      return currentTotal;
+    }
+  }
+};
+
 type CronTopicsGroupWithJobInfo = {
   cronJob: unknown;
   cronJobId: string;
@@ -467,7 +531,7 @@ export class ChatTopicActionImpl {
     // still in the bucket — they only ever leave it via replaceTopicId (send
     // resolved) or deleteTopic (rollback), never via a fetch.
     if (currentItems && currentItems.length > 0) {
-      const optimisticRows = currentItems.filter((item) => item.id.startsWith('tmp_topic_'));
+      const optimisticRows = currentItems.filter((item) => isClientOnlyTopicId(item.id));
       if (optimisticRows.length > 0) {
         const fetchedIds = new Set(next.map((item) => item.id));
         const surviving = optimisticRows.filter((item) => !fetchedIds.has(item.id));
@@ -512,7 +576,7 @@ export class ChatTopicActionImpl {
    * are ignored here.
    */
   internal_pinRegisteredTopic = (topicId: string): void => {
-    if (!topicId || topicId.startsWith('tmp_topic_')) return;
+    if (!topicId || isClientOnlyTopicId(topicId)) return;
 
     this.#pinnedRegisteredTopicIds.set(topicId, Date.now() + PINNED_REGISTERED_TOPIC_TTL);
   };
@@ -1575,12 +1639,13 @@ export class ChatTopicActionImpl {
     // bucket already carries must not bump the total. Count the rows the
     // reducer actually appended instead of assuming one.
     const addedRows = Math.max(0, nextItems.length - (currentData?.items?.length ?? 0));
-    const total =
-      payload.type === 'addTopic'
-        ? currentTotal + addedRows
-        : payload.type === 'deleteTopic'
-          ? Math.max(nextItems.length, currentTotal - 1)
-          : currentTotal;
+    const total = resolveNextTotal(
+      payload,
+      currentTotal,
+      nextItems.length,
+      addedRows,
+      currentData?.items,
+    );
 
     const nextState: Record<string, unknown> = {};
 
@@ -1601,12 +1666,13 @@ export class ChatTopicActionImpl {
     if (viewChanged && viewData && nextViewItems) {
       const viewTotal = viewData.total ?? viewData.items?.length ?? 0;
       const viewAddedRows = Math.max(0, nextViewItems.length - (viewData.items?.length ?? 0));
-      const viewNextTotal =
-        payload.type === 'addTopic'
-          ? viewTotal + viewAddedRows
-          : payload.type === 'deleteTopic'
-            ? Math.max(nextViewItems.length, viewTotal - 1)
-            : viewTotal;
+      const viewNextTotal = resolveNextTotal(
+        payload,
+        viewTotal,
+        nextViewItems.length,
+        viewAddedRows,
+        viewData.items,
+      );
       nextState.agentTopicsViewMap = {
         ...viewMap,
         [key]: {
