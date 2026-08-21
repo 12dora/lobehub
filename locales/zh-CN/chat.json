@@ -643,6 +643,7 @@
   "runtimeEnv.title": "运行环境",
   "search.grounding.imageSearchQueries": "图片搜索关键词",
   "search.grounding.imageTitle": "找到 {{count}} 张图片",
+  "search.grounding.noResults": "未找到搜索结果",
   "search.grounding.searchQueries": "搜索关键词",
   "search.grounding.searching": "正在搜索...",
   "search.grounding.title": "找到 {{count}} 条结果",

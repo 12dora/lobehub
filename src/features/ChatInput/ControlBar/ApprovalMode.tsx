@@ -1,3 +1,4 @@
+import { resolveTopicApprovalMode } from '@lobechat/types';
 import { type MenuProps } from '@lobehub/ui';
 import { Button, Center, DropdownMenu, Flexbox, Icon, Tooltip } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
@@ -9,6 +10,9 @@ import { useTranslation } from 'react-i18next';
 import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
 import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { usePermission } from '@/hooks/usePermission';
+import { useChatStore } from '@/store/chat';
+import { topicSelectors } from '@/store/chat/selectors';
+import { isClientOnlyTopicId } from '@/store/chat/slices/topic/action';
 import { useUserStore } from '@/store/user';
 import { toolInterventionSelectors } from '@/store/user/selectors';
 import {
@@ -66,11 +70,29 @@ const ModeSelector = memo(() => {
   const { t } = useTranslation('chat');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const { allowed: canCreateContent, reason } = usePermission('create_content');
-  const approvalMode = useUserStore(toolInterventionSelectors.approvalMode);
   const rawApprovalMode = useUserStore(toolInterventionSelectors.rawApprovalMode);
+  const userApprovalMode = useUserStore(toolInterventionSelectors.approvalMode);
   const updateHumanIntervention = useUserStore((s) => s.updateHumanIntervention);
+  const activeTopicId = useChatStore((s) => s.activeTopicId);
+  const topicApprovalMode = useChatStore(topicSelectors.currentTopicApprovalMode);
+  const updateTopicApprovalMode = useChatStore((s) => s.updateTopicApprovalMode);
   const platformMeta = usePlatformSettingMeta('tool.humanIntervention.approvalMode');
   const platformLocked = platformMeta.locked;
+
+  // The user-store value is already the server-resolved effective setting, so it
+  // stands in for both the user preference and the locked / platform-default
+  // layer of the shared resolve chain.
+  const effectiveMode = resolveTopicApprovalMode({
+    lockedValue: rawApprovalMode,
+    platformLocked,
+    topicApprovalMode,
+    userApprovalMode: rawApprovalMode,
+  });
+  // `headless` has no menu entry — present it as auto-run, exactly as before.
+  const approvalMode: ApprovalMode = effectiveMode === 'headless' ? 'auto-run' : effectiveMode;
+  /** The selected mode belongs to this conversation and diverges from the user default. */
+  const isTopicOverride =
+    !platformLocked && !!topicApprovalMode && topicApprovalMode !== userApprovalMode;
 
   const modeLabels = useMemo(
     () => ({
@@ -82,15 +104,37 @@ const ModeSelector = memo(() => {
     [t],
   );
   const displayMode: RawApprovalMode =
-    platformMeta.enabled && rawApprovalMode === 'headless' ? 'headless' : approvalMode;
+    platformMeta.enabled && effectiveMode === 'headless' ? 'headless' : approvalMode;
 
   const handleModeChange = useCallback(
     async (mode: ApprovalMode) => {
       if (!canCreateContent || platformLocked) return;
 
-      await updateHumanIntervention({ approvalMode: mode });
+      // Inside a conversation the switch is scoped to that conversation only;
+      // from the empty / new-chat view there is no topic yet, so it updates the
+      // user default (which the next topic snapshots at creation).
+      // Menu clicks are fire-and-forget, so neither write may reject: the
+      // optimistic label already rolls back on failure, which is the feedback.
+      try {
+        // `tmp_topic_*` is a client-only placeholder for an in-flight first send:
+        // there is nothing to PATCH server-side yet, so fall back to the default.
+        if (activeTopicId && !isClientOnlyTopicId(activeTopicId)) {
+          await updateTopicApprovalMode(activeTopicId, mode);
+          return;
+        }
+
+        await updateHumanIntervention({ approvalMode: mode });
+      } catch (error) {
+        console.error('[ApprovalMode] failed to update approval mode:', error);
+      }
     },
-    [canCreateContent, platformLocked, updateHumanIntervention],
+    [
+      activeTopicId,
+      canCreateContent,
+      platformLocked,
+      updateHumanIntervention,
+      updateTopicApprovalMode,
+    ],
   );
 
   const handleOpenChange = useCallback(
@@ -155,7 +199,15 @@ const ModeSelector = memo(() => {
           {dropdownOpen ? (
             button
           ) : (
-            <Tooltip title={t('tool.intervention.approvalMode')}>{button}</Tooltip>
+            <Tooltip
+              title={
+                isTopicOverride
+                  ? t('tool.intervention.mode.topicOnly')
+                  : t('tool.intervention.approvalMode')
+              }
+            >
+              {button}
+            </Tooltip>
           )}
         </div>
       </DropdownMenu>

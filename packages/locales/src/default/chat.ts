@@ -703,6 +703,7 @@ export default {
   'runtimeEnv.mode.noneDesc': 'Disable runtime environment',
   'runtimeEnv.selectMode': 'Select Runtime Environment',
   'runtimeEnv.title': 'Runtime Environment',
+  'search.grounding.noResults': 'No search results',
   'search.grounding.searchQueries': 'Search Keywords',
   'search.grounding.searching': 'Searching...',
   'search.grounding.title': 'Found {{count}} results',

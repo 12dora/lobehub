@@ -13,6 +13,7 @@ import type {
 } from '@lobechat/types';
 
 import { isDesktop } from '@/const/version';
+import { getEffectiveApprovalMode, toSelectableApprovalMode } from '@/helpers/approvalMode';
 import {
   aiAgentService,
   type ResumeApprovalParam,
@@ -463,14 +464,26 @@ export class GatewayActionImpl {
     // it up. We clear only after the server confirms the topic was created.
     const pendingRepos =
       isCreateNewTopic && context.agentId ? getPendingTopicRepos(context.agentId) : [];
-    const initialTopicMetadata =
-      pendingRepos.length > 0
-        ? {
+    // Effective approval mode for this conversation: the topic snapshot wins over
+    // the user preference (unless the platform policy is locked). The server
+    // re-resolves the same chain, so this only has to match what the ControlBar
+    // showed the user.
+    const effectiveApprovalMode = toSelectableApprovalMode(
+      getEffectiveApprovalMode(topicSelectors.getTopicApprovalMode(context.topicId)(this.#get())),
+    );
+
+    const initialTopicMetadata = isCreateNewTopic
+      ? {
+          // Snapshot what the user saw onto the topic the server is about to
+          // create, so a later preference change can't retro-edit this run.
+          approvalMode: effectiveApprovalMode,
+          ...(pendingRepos.length > 0 && {
             repos: pendingRepos,
             workingDirectory: pendingRepos[0],
             workingDirectoryConfig: { path: pendingRepos[0], repoType: 'github' as const },
-          }
-        : undefined;
+          }),
+        }
+      : undefined;
 
     // Honour user-initiated cancel during phase-1 init: while we await the
     // execAgentTask round-trip the caller's loading state (e.g. `sendMessage`)
@@ -485,7 +498,7 @@ export class GatewayActionImpl {
 
     const localDeviceId = await resolveLocalDeviceId(context.agentId);
     const userInterventionConfig = {
-      approvalMode: toolInterventionSelectors.approvalMode(useUserStore.getState()),
+      approvalMode: effectiveApprovalMode,
       allowList: toolInterventionSelectors.allowList(useUserStore.getState()),
     };
 

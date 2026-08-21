@@ -1,7 +1,12 @@
 // Note: To make the code more logic and readable, we just disable the auto sort key eslint rule
 // DON'T REMOVE THE FIRST LINE
 import { chainSummaryTitle } from '@lobechat/prompts';
-import { type ChatTopicMetadata, type MessageMapScope, type UIChatMessage } from '@lobechat/types';
+import {
+  type ChatTopicMetadata,
+  type MessageMapScope,
+  type TopicApprovalMode,
+  type UIChatMessage,
+} from '@lobechat/types';
 import { TraceNameMap } from '@lobechat/types';
 import isEqual from 'fast-deep-equal';
 import { t } from 'i18next';
@@ -81,7 +86,12 @@ interface ReconciledTopics {
  */
 const OPTIMISTIC_TOPIC_ID_PREFIX = 'tmp_topic_';
 
-const isClientOnlyTopicId = (id: string): boolean => id.startsWith(OPTIMISTIC_TOPIC_ID_PREFIX);
+/**
+ * A `tmp_topic_*` placeholder exists only in this client until the send that
+ * created it resolves, so it can never be the target of a server mutation.
+ */
+export const isClientOnlyTopicId = (id: string): boolean =>
+  id.startsWith(OPTIMISTIC_TOPIC_ID_PREFIX);
 
 /**
  * Next `total` for a bucket after a local dispatch.
@@ -477,6 +487,37 @@ export class ChatTopicActionImpl {
     await topicService.updateTopicMetadata(id, metadata);
     await this.#get().refreshTopic();
     this.#get().internal_updateTopicLoading(id, false);
+  };
+
+  /**
+   * Per-conversation tool-approval mode. Writes only `topics.metadata.approvalMode`
+   * — the user preference (`tool.humanIntervention.approvalMode`) is left alone, so
+   * switching mode inside a conversation never leaks into other conversations.
+   *
+   * Optimistic so the ControlBar label flips immediately; reverted on failure
+   * because the selector has no other error surface.
+   */
+  updateTopicApprovalMode = async (id: string, approvalMode: TopicApprovalMode): Promise<void> => {
+    const previousMetadata = topicSelectors.getTopicById(id)(this.#get())?.metadata;
+
+    this.#get().internal_dispatchTopic({
+      type: 'updateTopic',
+      id,
+      value: { metadata: { ...previousMetadata, approvalMode } },
+    });
+
+    try {
+      await topicService.updateTopicMetadata(id, { approvalMode });
+    } catch (error) {
+      this.#get().internal_dispatchTopic({
+        type: 'updateTopic',
+        id,
+        value: { metadata: previousMetadata },
+      });
+      throw error;
+    }
+
+    await this.#get().refreshTopic();
   };
 
   updateTopicTitle = async (id: string, title: string): Promise<void> => {

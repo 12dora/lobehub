@@ -28,6 +28,7 @@ import {
 } from '@lobechat/types';
 import debug from 'debug';
 
+import { getEffectiveApprovalMode, toSelectableApprovalMode } from '@/helpers/approvalMode';
 import { createAgentToolsEngine } from '@/helpers/toolEngineering';
 import { aiAgentService } from '@/services/aiAgent';
 import { isCanUseVideo, isCanUseVision } from '@/services/chat/helper';
@@ -272,10 +273,14 @@ export class StreamingExecutorActionImpl {
       Object.keys(toolManifestMap).length,
     );
 
-    // Get user intervention config
+    // Get user intervention config. The per-conversation snapshot
+    // (`topics.metadata.approvalMode`) wins over the user preference so a
+    // client-executed run gates tools exactly like the server-executed one.
     const userStore = getUserStoreState();
     const userInterventionConfig = {
-      approvalMode: toolInterventionSelectors.approvalMode(userStore),
+      approvalMode: toSelectableApprovalMode(
+        getEffectiveApprovalMode(topicSelectors.getTopicApprovalMode(topicId)(this.#get())),
+      ),
       allowList: toolInterventionSelectors.allowList(userStore),
     };
 

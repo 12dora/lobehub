@@ -838,6 +838,88 @@ describe('topic action', () => {
       expect(refreshTopicSpy).toHaveBeenCalled();
     });
   });
+  describe('updateTopicApprovalMode', () => {
+    const seedTopic = (agentId: string, topic: Partial<ChatTopic> & { id: string }) => {
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: agentId,
+          topicDataMap: {
+            [topicMapKey({ agentId })]: {
+              currentPage: 0,
+              hasMore: false,
+              items: [topic as ChatTopic],
+              pageSize: 20,
+              total: 1,
+            },
+          },
+        });
+      });
+    };
+
+    it('optimistically merges the mode into the topic metadata and persists only that key', async () => {
+      const agentId = 'agent-1';
+      const key = topicMapKey({ agentId });
+      seedTopic(agentId, {
+        id: 'topic-1',
+        metadata: { workingDirectory: '/tmp/repo' },
+        title: 'T',
+      });
+
+      let resolveUpdate: (value: any) => void = () => {};
+      const updateSpy = vi
+        .spyOn(topicService, 'updateTopicMetadata')
+        .mockImplementation(() => new Promise((resolve) => (resolveUpdate = resolve)));
+
+      const { result } = renderHook(() => useChatStore());
+      const refreshTopicSpy = vi.spyOn(result.current, 'refreshTopic').mockResolvedValue(undefined);
+
+      let pending!: Promise<void>;
+      act(() => {
+        pending = result.current.updateTopicApprovalMode('topic-1', 'auto-run');
+      });
+
+      // Optimistic: visible before the mutation settles, siblings preserved.
+      expect(useChatStore.getState().topicDataMap[key].items[0].metadata).toMatchObject({
+        approvalMode: 'auto-run',
+        workingDirectory: '/tmp/repo',
+      });
+
+      await act(async () => {
+        resolveUpdate([]);
+        await pending;
+      });
+
+      expect(updateSpy).toHaveBeenCalledWith('topic-1', { approvalMode: 'auto-run' });
+      expect(refreshTopicSpy).toHaveBeenCalled();
+    });
+
+    it('reverts the optimistic metadata when the mutation fails', async () => {
+      const agentId = 'agent-1';
+      const key = topicMapKey({ agentId });
+      seedTopic(agentId, {
+        id: 'topic-1',
+        metadata: { approvalMode: 'manual' },
+        title: 'T',
+      });
+
+      vi.spyOn(topicService, 'updateTopicMetadata').mockRejectedValue(new Error('nope'));
+
+      const { result } = renderHook(() => useChatStore());
+      const refreshTopicSpy = vi.spyOn(result.current, 'refreshTopic').mockResolvedValue(undefined);
+
+      await act(async () => {
+        await expect(result.current.updateTopicApprovalMode('topic-1', 'auto-run')).rejects.toThrow(
+          'nope',
+        );
+      });
+
+      expect(useChatStore.getState().topicDataMap[key].items[0].metadata).toEqual({
+        approvalMode: 'manual',
+      });
+      expect(refreshTopicSpy).not.toHaveBeenCalled();
+    });
+  });
+
   describe('switchTopic', () => {
     it('should update activeTopicId and call refreshMessages', async () => {
       const topicId = 'topic-id';

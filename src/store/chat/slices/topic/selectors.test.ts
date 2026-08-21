@@ -173,6 +173,47 @@ describe('topicSelectors', () => {
     });
   });
 
+  describe('approval mode selectors', () => {
+    const topics = [
+      { id: 'topicA', metadata: { approvalMode: 'auto-run' }, name: 'A' },
+      { id: 'topicB', metadata: { approvalMode: 'headless' }, name: 'B' },
+      { id: 'topicC', name: 'C' },
+    ];
+    const buildState = (activeTopicId: string) =>
+      merge(initialStore, {
+        activeAgentId: 'test',
+        activeTopicId,
+        topicDataMap: {
+          [topicMapKey({ agentId: 'test' })]: {
+            currentPage: 0,
+            hasMore: false,
+            items: topics,
+            pageSize: 20,
+            total: topics.length,
+          },
+        },
+      }) as ChatStore;
+
+    it('reads the active topic snapshot', () => {
+      expect(topicSelectors.currentTopicApprovalMode(buildState('topicA'))).toBe('auto-run');
+    });
+
+    it('returns undefined for a topic without a snapshot', () => {
+      expect(topicSelectors.currentTopicApprovalMode(buildState('topicC'))).toBeUndefined();
+    });
+
+    it('rejects a stored value outside the user-selectable set', () => {
+      expect(topicSelectors.currentTopicApprovalMode(buildState('topicB'))).toBeUndefined();
+    });
+
+    it('binds lookup to the requested topic id', () => {
+      const state = buildState('topicC');
+      expect(topicSelectors.getTopicApprovalMode('topicA')(state)).toBe('auto-run');
+      expect(topicSelectors.getTopicApprovalMode(null)(state)).toBeUndefined();
+      expect(topicSelectors.getTopicApprovalMode(undefined)(state)).toBeUndefined();
+    });
+  });
+
   describe('getTopicWorkingDirectory', () => {
     const topics = [
       { id: 'topicA', metadata: { workingDirectory: '/project-a' }, name: 'A' },

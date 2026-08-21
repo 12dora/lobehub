@@ -1,5 +1,9 @@
 import { isDesktop } from '@lobechat/const';
-import { getWorkingDirEffectivePath } from '@lobechat/types';
+import {
+  getWorkingDirEffectivePath,
+  isTopicApprovalMode,
+  type TopicApprovalMode,
+} from '@lobechat/types';
 import { t } from 'i18next';
 
 import {
@@ -81,6 +85,25 @@ const currentActiveTopicSummary = (s: ChatStoreState): ChatTopicSummary | undefi
 };
 
 const currentTopicMetadata = (s: ChatStoreState) => currentActiveTopic(s)?.metadata;
+
+/**
+ * Per-conversation tool-approval snapshot of the active topic, when it has one.
+ * Legacy topics (and topics created before the feature landed) return
+ * `undefined` and fall through to the user preference.
+ */
+const currentTopicApprovalMode = (s: ChatStoreState): TopicApprovalMode | undefined => {
+  const mode = currentActiveTopic(s)?.metadata?.approvalMode;
+  return isTopicApprovalMode(mode) ? mode : undefined;
+};
+
+/** Same as `currentTopicApprovalMode`, for an explicit topic id. */
+const getTopicApprovalMode =
+  (id?: string | null) =>
+  (s: ChatStoreState): TopicApprovalMode | undefined => {
+    if (!id) return undefined;
+    const mode = getTopicById(id)(s)?.metadata?.approvalMode;
+    return isTopicApprovalMode(mode) ? mode : undefined;
+  };
 
 /**
  * Get current active topic's working directory.
@@ -272,6 +295,7 @@ export const topicSelectors = {
   agentTopicsViewTopics,
   currentActiveTopic,
   currentActiveTopicSummary,
+  currentTopicApprovalMode,
   currentTopicCount,
   currentTopicData,
   currentTopicLength,
@@ -282,6 +306,7 @@ export const topicSelectors = {
   currentUnFavTopics,
   displayTopics,
   displayTopicsForSidebar,
+  getTopicApprovalMode,
   getTopicById,
   getTopicWorkingDirectory,
   getTopicsByAgentId,

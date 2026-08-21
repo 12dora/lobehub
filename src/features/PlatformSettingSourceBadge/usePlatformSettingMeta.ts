@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { userSettingsService } from '@/enterprise/client/services/userSettings';
+import { publishPlatformSettingLocks } from '@/helpers/platformSettingLocks';
 import { useClientDataSWR } from '@/libs/swr';
 import type { UserSettingsGetEffectiveOutput } from '@/server/enterprise/contracts/userSettings';
 import { useUserStore } from '@/store/user';
@@ -51,7 +52,13 @@ export const usePlatformSettingMeta = (
     data,
     error,
     mutate: revalidate,
-  } = useClientDataSWR(enabled ? [EFFECTIVE_KEY] : null, () => userSettingsService.getEffective());
+  } = useClientDataSWR(enabled ? [EFFECTIVE_KEY] : null, async () => {
+    const effective = await userSettingsService.getEffective();
+    // Mirror the locked paths for non-React readers (store actions / agent-run
+    // transports) that must fail closed on a managed policy.
+    publishPlatformSettingLocks(effective.pathMeta);
+    return effective;
+  });
 
   const meta = data?.pathMeta[path];
 
