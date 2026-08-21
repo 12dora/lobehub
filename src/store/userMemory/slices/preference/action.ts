@@ -174,28 +174,41 @@ export class PreferenceActionImpl {
     // the counter stays monotonic either way.
     const nextEpoch = epoch ?? nextMemoryListEpoch();
 
+    // Keys from earlier mounts of this list can never be read again. Pruned
+    // before the early return below, or a list that is only ever revisited
+    // (never re-filtered) would never prune at all.
+    pruneMemoryListCache(userMemoryKeys.preferences.root);
+
     // Nothing to reset when the query already settled in the store. The pages
     // call this from a mount effect, so without this guard every visit wiped the
     // rows it had and replaced the list with a skeleton.
     if (nextQueryKey === state.preferencesQueryKey && state.preferencesSettled) {
-      // The rows stay, but this mount's epoch has to be adopted: it is already
-      // in the SWR key of the revalidation the remount just started, and a
-      // response the store won't recognise is a response it will drop.
-      if (nextEpoch !== state.preferencesEpoch) {
-        this.#set(
-          produce((draft) => {
-            draft.preferencesEpoch = nextEpoch;
-          }),
-          false,
-          n('adoptPreferencesEpoch'),
-        );
-      }
+      if (nextEpoch === state.preferencesEpoch) return;
+
+      this.#set(
+        produce((draft) => {
+          // The rows stay on screen, but this mount's epoch has to be adopted:
+          // it is already in the SWR key of the revalidation the remount just
+          // started, and a response the store won't recognise is one it drops.
+          draft.preferencesEpoch = nextEpoch;
+
+          // And that revalidation has to start from page 1. Leaving the page
+          // number where the last visit ended re-read *only* that page and
+          // appended it to pages the server has since changed: rows deleted in
+          // the meantime survived in the pages nothing re-read, and the list
+          // could end up longer than its own total. Page 1 replaces the
+          // accumulated rows wholesale (see `#applyPreferencesPage`) and recomputes
+          // `hasMore` from what actually came back.
+          draft.preferencesPage = 1;
+          draft.preferencesPageError = undefined;
+          draft.preferencesPendingPage = undefined;
+        }),
+        false,
+        n('adoptPreferencesEpoch'),
+      );
 
       return;
     }
-
-    // Entries keyed to an earlier epoch can never be read again.
-    pruneMemoryListCache(userMemoryKeys.preferences.root, nextEpoch);
 
     this.#set(
       produce((draft) => {
@@ -209,12 +222,16 @@ export class PreferenceActionImpl {
         // The epoch tells one *mount* of a query from another; the generation
         // tells one invalidation round from another *within* a mount, which is
         // the case the epoch cannot see because a post-write refresh leaves the
-        // key (and therefore the epoch) untouched. Both only ever go up. A
-        // same-key reset is the page's Retry, so step the counter past whatever
-        // the failed attempt left in flight; a new key gets a new epoch and
-        // needs nothing here.
+        // key (and therefore the epoch) untouched. Both only ever go up.
+        //
+        // Step it only for a retry — same query, same epoch — where nothing
+        // else separates the new attempt from the one that failed. A different
+        // epoch must NOT step it: SWR starts that mount's request from a layout
+        // effect, before this runs, so the request captured the generation as
+        // it is now and bumping here would reject the very response the remount
+        // is waiting for, leaving the list loading forever.
         draft.preferencesGeneration =
-          nextQueryKey === state.preferencesQueryKey
+          nextQueryKey === state.preferencesQueryKey && nextEpoch === state.preferencesEpoch
             ? state.preferencesGeneration + 1
             : state.preferencesGeneration;
         draft.preferencesHasMore = false;

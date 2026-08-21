@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { type Cache, SWRConfig, useSWRConfig } from 'swr';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setScopedMutate } from '@/libs/swr';
+import { setScopedCache, setScopedMutate } from '@/libs/swr';
 import { useUserMemoryStore } from '@/store/userMemory';
 import { initialState } from '@/store/userMemory/initialState';
 import { useMemoryListEpoch } from '@/store/userMemory/utils/useMemoryListEpoch';
@@ -60,10 +60,11 @@ const PAGE_SIZE = 2;
 let cache: Map<unknown, unknown>;
 let setQuery!: (q: string | undefined) => void;
 
-/** Mirrors `SWRMutateInitializer`: publishes the scoped mutate for use outside React. */
+/** Mirrors `SWRMutateInitializer`: publishes the scoped mutate and cache. */
 const MutateBridge = ({ children }: PropsWithChildren) => {
-  const { mutate } = useSWRConfig();
+  const { cache, mutate } = useSWRConfig();
   useEffect(() => setScopedMutate(mutate), [mutate]);
+  useEffect(() => setScopedCache(cache), [cache]);
   return <>{children}</>;
 };
 
@@ -125,10 +126,14 @@ const cachedRowIds = () =>
     (((entry as { data?: { items?: Row[] } })?.data?.items ?? []) as Row[]).map((item) => item.id),
   );
 
+/** Every cache entry belonging to the identity list. */
+const listCacheKeys = () =>
+  [...cache.keys()].filter((key) => String(key).includes('userMemory:identityList'));
+
 /** Load pages 1..n of the default query, two rows each. */
 const loadPages = async (...pages: string[][]) => {
   services.queryIdentities.mockResolvedValue({ items: rows(...pages[0]), total: 10 });
-  mountApp();
+  const app = mountApp();
   await waitFor(() => expect(ids()).toEqual(pages[0]));
 
   for (const page of pages.slice(1)) {
@@ -136,6 +141,8 @@ const loadPages = async (...pages: string[][]) => {
     act(() => state().loadMoreIdentities());
     await waitFor(() => expect(ids()).toContain(page[0]));
   }
+
+  return app;
 };
 
 beforeEach(() => {
@@ -547,5 +554,78 @@ describe('memory list requests that outlive their query', () => {
     // query is unchanged — but the store still has to adopt that epoch, or the
     // revalidation the remount just started is a response it will not recognise.
     await waitFor(() => expect(ids()).toEqual(['a1', 'a3']));
+  });
+});
+
+describe('memory list remounts', () => {
+  it('settles a query that was left mid-flight and returned to before it landed', async () => {
+    const pending: ReturnType<typeof deferred<{ items: Row[]; total: number }>>[] = [];
+    services.queryIdentities.mockImplementation(() => {
+      const next = deferred<{ items: Row[]; total: number }>();
+      pending.push(next);
+      return next.promise;
+    });
+
+    // Open a slow page and leave before it has anything to show.
+    const app = mountApp();
+    await waitFor(() => expect(pending).toHaveLength(1));
+    app.unmount();
+
+    // Come straight back. The remount's request is started from SWR's layout
+    // effect, before the reset effect runs — so anything the reset stamps onto
+    // the list afterwards has to still match what that request captured, or the
+    // page waits on a response the store will refuse forever.
+    mountApp();
+    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => {
+      pending[1].resolve({ items: rows('a1'), total: 1 });
+      await pending[1].promise;
+    });
+
+    await waitFor(() => expect(ids()).toEqual(['a1']));
+    expect(state().identitiesSettled).toBe(true);
+    expect(state().identitiesSearchLoading).toBe(false);
+  });
+
+  it('rereads page 1 when a list left on page 3 is revisited', async () => {
+    const app = await loadPages(['a1', 'a2'], ['a3', 'a4'], ['a5', 'a6']);
+    expect(state().identitiesPage).toBe(3);
+    expect(ids()).toHaveLength(6);
+
+    app.unmount();
+
+    // a1 was deleted elsewhere and the list is shorter now.
+    services.queryIdentities.mockClear();
+    services.queryIdentities.mockResolvedValue({ items: rows('a2', 'a3'), total: 5 });
+    mountApp();
+
+    await waitFor(() => expect(ids()).toEqual(['a2', 'a3']));
+
+    // Resuming on page 3 re-read only that page and appended it to pages 1–2 as
+    // the last visit left them: a1 would still be listed, and the list could end
+    // up longer than the total it reports.
+    expect(services.queryIdentities).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, pageSize: PAGE_SIZE }),
+    );
+    expect(ids()).not.toContain('a1');
+    expect(state().identitiesTotal).toBe(5);
+    expect(ids().length).toBeLessThanOrEqual(state().identitiesTotal);
+  });
+
+  it('does not accumulate cache entries as the list is refiltered', async () => {
+    services.queryIdentities.mockResolvedValue({ items: rows('a1'), total: 1 });
+    mountApp();
+    await waitFor(() => expect(ids()).toEqual(['a1']));
+
+    for (let index = 0; index < 6; index += 1) {
+      act(() => setQuery(`q${index}`));
+      await waitFor(() => expect(services.queryIdentities).toHaveBeenCalledTimes(index + 2));
+    }
+
+    // List keys carry a per-mount epoch, so every filter switch mints one that
+    // is never read again. `mutate(key, undefined)` only blanks an entry — the
+    // key itself has to be deleted from the provider or they pile up for the
+    // life of the session.
+    await waitFor(() => expect(listCacheKeys().length).toBeLessThanOrEqual(2));
   });
 });

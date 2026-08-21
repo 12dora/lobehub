@@ -3,18 +3,22 @@
 import { type PropsWithChildren, useEffect } from 'react';
 import { useSWRConfig } from 'swr';
 
-import { setScopedMutate } from '@/libs/swr';
+import { setScopedCache, setScopedMutate } from '@/libs/swr';
 
 /**
- * Initialize scoped mutate for use outside React components (e.g., Zustand stores)
- * This component must be rendered inside SWRConfig to access the scoped mutate
+ * Initialize the scoped mutate and cache for use outside React components (e.g.
+ * Zustand stores). This component must be rendered inside SWRConfig to reach either.
  */
 const SWRMutateInitializer = ({ children }: PropsWithChildren) => {
-  const { mutate } = useSWRConfig();
+  const { cache, mutate } = useSWRConfig();
 
   useEffect(() => {
     setScopedMutate(mutate);
   }, [mutate]);
+
+  useEffect(() => {
+    setScopedCache(cache);
+  }, [cache]);
 
   return <>{children}</>;
 };

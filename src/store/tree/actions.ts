@@ -76,9 +76,50 @@ export class TreeActionImpl {
     return revisions;
   };
 
-  /** Is this read still the newest one for its folder? */
-  #isLatestRevision = (folderId: string, revision: number, epoch: number): boolean =>
-    this.#get().epoch === epoch && (this.#get().revisions[folderId] ?? 0) === revision;
+  /** Reads currently outstanding per folder, so the last one out can tidy up. */
+  #inFlightReads = new Map<string, number>();
+
+  /** Bump the folder's revision, mark it busy, and take a ticket. */
+  #beginRead = (folderId: string, busy: 'loading' | 'revalidating'): number => {
+    this.#inFlightReads.set(folderId, (this.#inFlightReads.get(folderId) ?? 0) + 1);
+    const revision = this.#bumpRevisions(folderId)[folderId];
+    this.#set({ status: { ...this.#get().status, [folderId]: busy } }, false, `tree/${busy}/start`);
+
+    return revision;
+  };
+
+  /**
+   * Close out a read; `true` means it is still the newest and may write.
+   *
+   * A superseded read still owns the busy status it set. Leaving that behind
+   * wedged the folder for good: a mutation supersedes an in-flight
+   * `loadChildren`, the load returns and bails out silently, and the folder is
+   * left saying `loading` with nothing running — which is also why `revalidate`
+   * no longer refuses to start against a `loading` folder. Only the last read
+   * out releases the status, so a newer request's `loading` is never stolen.
+   */
+  #finishRead = (folderId: string, revision: number, epoch: number): boolean => {
+    const outstanding = (this.#inFlightReads.get(folderId) ?? 1) - 1;
+    if (outstanding > 0) this.#inFlightReads.set(folderId, outstanding);
+    else this.#inFlightReads.delete(folderId);
+
+    const isSameTree = this.#get().epoch === epoch;
+    const isLatest = isSameTree && (this.#get().revisions[folderId] ?? 0) === revision;
+    if (isLatest) return true;
+
+    if (isSameTree && outstanding <= 0) {
+      const busy = this.#get().status[folderId];
+      if (busy === 'loading' || busy === 'revalidating') {
+        this.#set(
+          { status: { ...this.#get().status, [folderId]: 'idle' } },
+          false,
+          'tree/read/release',
+        );
+      }
+    }
+
+    return false;
+  };
 
   #getEngine = () => {
     if (this.#engine) return this.#engine;
@@ -99,6 +140,7 @@ export class TreeActionImpl {
       return;
     }
 
+    this.#inFlightReads.clear();
     this.#set(
       {
         children: {},
@@ -116,6 +158,7 @@ export class TreeActionImpl {
   };
 
   reset = () => {
+    this.#inFlightReads.clear();
     this.#set(
       {
         children: {},
@@ -145,16 +188,12 @@ export class TreeActionImpl {
     const { epoch, knowledgeBaseId, status } = this.#get();
     if (status[folderId] === 'loading') return;
 
-    const revision = this.#bumpRevisions(folderId)[folderId];
-
     // Clear any prior error for this folder so a retry doesn't keep the failure marker.
     const nextErrors = { ...this.#get().errors };
     delete nextErrors[folderId];
-    this.#set(
-      { errors: nextErrors, status: { ...this.#get().status, [folderId]: 'loading' } },
-      false,
-      'tree/loadChildren/start',
-    );
+    this.#set({ errors: nextErrors }, false, 'tree/loadChildren/start');
+
+    const revision = this.#beginRead(folderId, 'loading');
 
     try {
       const response = await fileService.getKnowledgeItems({
@@ -163,7 +202,7 @@ export class TreeActionImpl {
         showFilesInKnowledgeBase: false,
       });
 
-      if (!this.#isLatestRevision(folderId, revision, epoch)) return;
+      if (!this.#finishRead(folderId, revision, epoch)) return;
 
       this.#set(
         {
@@ -177,7 +216,7 @@ export class TreeActionImpl {
         'tree/loadChildren/success',
       );
     } catch (error) {
-      if (!this.#isLatestRevision(folderId, revision, epoch)) return;
+      if (!this.#finishRead(folderId, revision, epoch)) return;
       console.error(`Failed to load children for ${folderId}:`, error);
       // Mark the folder as errored (was swallowed to 'idle', which read as a false
       // "empty folder" — Read §1.1 failure-as-empty). Keep the error so the view can
@@ -194,16 +233,13 @@ export class TreeActionImpl {
   };
 
   revalidate = async (folderId: string) => {
-    const { epoch, knowledgeBaseId, status } = this.#get();
-    if (status[folderId] === 'loading') return;
+    // Deliberately no "already loading, skip" guard. A revalidation fired after
+    // a mutation has to be able to supersede a read that started before it —
+    // refusing left the folder showing whatever that older read was fetching,
+    // or stuck busy when the older read bailed out.
+    const { epoch, knowledgeBaseId } = this.#get();
 
-    const revision = this.#bumpRevisions(folderId)[folderId];
-
-    this.#set(
-      { status: { ...this.#get().status, [folderId]: 'revalidating' } },
-      false,
-      'tree/revalidate/start',
-    );
+    const revision = this.#beginRead(folderId, 'revalidating');
 
     try {
       const response = await fileService.getKnowledgeItems({
@@ -212,7 +248,7 @@ export class TreeActionImpl {
         showFilesInKnowledgeBase: false,
       });
 
-      if (!this.#isLatestRevision(folderId, revision, epoch)) return;
+      if (!this.#finishRead(folderId, revision, epoch)) return;
 
       this.#set(
         {
@@ -226,7 +262,7 @@ export class TreeActionImpl {
         'tree/revalidate/success',
       );
     } catch {
-      if (!this.#isLatestRevision(folderId, revision, epoch)) return;
+      if (!this.#finishRead(folderId, revision, epoch)) return;
       this.#set(
         { status: { ...this.#get().status, [folderId]: 'idle' } },
         false,
@@ -273,14 +309,20 @@ export class TreeActionImpl {
       const { useFileStore } = await import('@/store/file');
       const { resourceMap } = useFileStore.getState();
 
-      if (resourceMap.has(itemId)) {
-        await useFileStore.getState().moveResource(itemId, toParent || null);
-      } else {
-        await resourceService.moveResource(itemId, toParent || null);
-        await useFileStore.getState().refreshFileList();
+      try {
+        if (resourceMap.has(itemId)) {
+          await useFileStore.getState().moveResource(itemId, toParent || null);
+        } else {
+          await resourceService.moveResource(itemId, toParent || null);
+          await useFileStore.getState().refreshFileList();
+        }
+      } finally {
+        // Either way the folders need re-reading: on success for the new
+        // arrangement, on failure because starting the move superseded whatever
+        // read was in flight and nothing else would ever replace it.
+        void Promise.all([this.revalidate(fromParent), this.revalidate(toParent)]);
       }
 
-      void Promise.all([this.revalidate(fromParent), this.revalidate(toParent)]);
       return;
     }
 
@@ -310,6 +352,13 @@ export class TreeActionImpl {
 
     tx.onSuccess = async () => {
       await engine.flush();
+      void Promise.all([this.revalidate(fromParent), this.revalidate(toParent)]);
+    };
+
+    // Starting the mutation superseded every read that was in flight for these
+    // folders, so a rollback alone would leave them showing the pre-move tree
+    // with nothing scheduled to correct it.
+    tx.onError = () => {
       void Promise.all([this.revalidate(fromParent), this.revalidate(toParent)]);
     };
 
@@ -365,6 +414,10 @@ export class TreeActionImpl {
       void Promise.all([this.revalidate(fromParent), this.revalidate(toParent)]);
     };
 
+    tx.onError = () => {
+      void Promise.all([this.revalidate(fromParent), this.revalidate(toParent)]);
+    };
+
     await tx.commit();
   };
 
@@ -388,6 +441,10 @@ export class TreeActionImpl {
 
     tx.onSuccess = async () => {
       await engine.flush();
+      void this.revalidate(parentId);
+    };
+
+    tx.onError = () => {
       void this.revalidate(parentId);
     };
 
@@ -419,6 +476,10 @@ export class TreeActionImpl {
         delete children[id];
       }
       this.#set({ children, expanded }, false, 'tree/removeItems/cleanup');
+      void this.revalidate(parentId);
+    };
+
+    tx.onError = () => {
       void this.revalidate(parentId);
     };
 

@@ -81,7 +81,20 @@ describe.each(lists)('$reset', ({ fields, key, loadMore, reset, retryPage }) => 
     );
   };
 
-  it('is a no-op when the query already settled in the store', () => {
+  it('leaves a settled query alone when the effect re-runs on the same mount', () => {
+    seedLoadedList(fields);
+    const epoch = state()[`${key}Epoch`];
+
+    call({ ...fields }, epoch);
+
+    // Same mount, same query: nothing to do at all.
+    expect(state()[key]).toHaveLength(1);
+    expect(state()[`${key}Page`]).toBe(2);
+    expect(state()[`${key}SearchLoading`]).toBe(false);
+    expect(state()[`${key}Settled`]).toBe(true);
+  });
+
+  it('keeps the rows but rewinds to page 1 when the query is revisited', () => {
     seedLoadedList(fields);
 
     call({ ...fields });
@@ -89,9 +102,14 @@ describe.each(lists)('$reset', ({ fields, key, loadMore, reset, retryPage }) => 
     // The pages call this from a mount effect: re-running it on a revisit must
     // not wipe rows or flip the list back into its loading state.
     expect(state()[key]).toHaveLength(1);
-    expect(state()[`${key}Page`]).toBe(2);
     expect(state()[`${key}SearchLoading`]).toBe(false);
     expect(state()[`${key}Settled`]).toBe(true);
+
+    // But the revalidation has to start from page 1. Re-reading only the page
+    // the last visit ended on appends it to pages nothing re-read, so rows
+    // deleted in the meantime survive and the list can outgrow its own total.
+    expect(state()[`${key}Page`]).toBe(1);
+    expect(state()[`${key}PendingPage`]).toBeUndefined();
   });
 
   it('keeps the loaded rows on screen while a changed query is in flight', () => {
@@ -196,17 +214,23 @@ describe.each(lists)('$reset', ({ fields, key, loadMore, reset, retryPage }) => 
     expect(third).toBeGreaterThan(second);
   });
 
-  it('only ever steps the generation forward', () => {
+  it('only ever steps the generation forward, and only for a same-epoch retry', () => {
     seedLoadedList(fields);
     useUserMemoryStore.setState({ [`${key}Generation`]: 4 } as never, false);
 
     // A different query gets a new epoch, which is discrimination enough.
-    call({ ...fields, q: 'research' });
+    call({ ...fields, q: 'research' }, 100);
     expect(state()[`${key}Generation`]).toBe(4);
 
-    // A retry keeps the key and the epoch, so only the counter can invalidate
+    // Neither does a remount of that query: SWR started its request from a
+    // layout effect before this ran, so it captured generation 4 — stepping
+    // here would reject the very response the remount is waiting for.
+    call({ ...fields, q: 'research' }, 101);
+    expect(state()[`${key}Generation`]).toBe(4);
+
+    // A retry keeps the key *and* the epoch, so only the counter can invalidate
     // whatever the failed attempt left in flight.
-    call({ ...fields, q: 'research' });
+    call({ ...fields, q: 'research' }, 101);
     expect(state()[`${key}Generation`]).toBe(5);
   });
 
@@ -221,6 +245,7 @@ describe.each(lists)('$reset', ({ fields, key, loadMore, reset, retryPage }) => 
     expect(state()[key]).toHaveLength(1);
     expect(state()[`${key}Settled`]).toBe(true);
     expect(state()[`${key}SearchLoading`]).toBe(false);
+    expect(state()[`${key}Page`]).toBe(1);
   });
 
   it('resets a cold list even when the query is the initial one', () => {

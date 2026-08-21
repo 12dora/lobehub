@@ -236,4 +236,56 @@ describe('TreeActionImpl folder read ordering', () => {
 
     expect(state.children['']?.map((item) => item.name)).not.toContain('Stale');
   });
+
+  it('never leaves a folder busy when a mutation supersedes its first load', async () => {
+    const state = createState();
+    const actions = new TreeActionImpl(
+      createSetter(() => state),
+      () => state,
+    );
+
+    const inFlight = deferred<{ items: unknown[] }>();
+    mockGetKnowledgeItems.mockReturnValueOnce(inFlight.promise);
+    const load = actions.loadChildren('folder-x');
+    expect(state.status['folder-x']).toBe('loading');
+
+    // A rename in that folder starts while the first load is still out.
+    mockGetKnowledgeItems.mockResolvedValue({ items: [treeRow('n1', 'After')] });
+    void actions.renameItem('n1', 'folder-x', 'After').catch(() => undefined);
+
+    inFlight.resolve({ items: [treeRow('n1', 'Stale')] });
+    await load;
+
+    // The superseded load owns the `loading` it set. Bailing out silently left
+    // it behind, and `revalidate` used to refuse to run against a folder that
+    // said `loading` — so the folder span stayed busy with nothing running.
+    expect(state.status['folder-x']).not.toBe('loading');
+
+    await actions.revalidate('folder-x');
+    expect(state.children['folder-x']?.map((item) => item.name)).toEqual(['After']);
+  });
+
+  it('lets a post-mutation revalidation supersede a load that is still running', async () => {
+    const state = createState();
+    const actions = new TreeActionImpl(
+      createSetter(() => state),
+      () => state,
+    );
+
+    const inFlight = deferred<{ items: unknown[] }>();
+    mockGetKnowledgeItems.mockReturnValueOnce(inFlight.promise);
+    const load = actions.loadChildren('folder-x');
+
+    // The rename's refresh arrives while that load is still out. Refusing to
+    // start against a `loading` folder dropped it entirely, and the folder was
+    // left with whatever the pre-mutation load happened to be fetching.
+    mockGetKnowledgeItems.mockResolvedValue({ items: [treeRow('n1', 'After')] });
+    const afterMutation = actions.revalidate('folder-x');
+
+    inFlight.resolve({ items: [treeRow('n1', 'Stale')] });
+    await Promise.all([load, afterMutation]);
+
+    expect(state.children['folder-x']?.map((item) => item.name)).toEqual(['After']);
+    expect(state.status['folder-x']).toBe('idle');
+  });
 });

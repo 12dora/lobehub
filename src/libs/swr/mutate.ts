@@ -18,6 +18,7 @@
  * import { mutate } from '@/libs/swr';
  * ```
  */
+import { type Cache } from 'swr';
 import { type ScopedMutator } from 'swr/_internal';
 
 import { getActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
@@ -27,6 +28,27 @@ import { augmentKey } from './augmentKey';
 // Mutable container to hold the scoped mutate reference
 // Using an object allows us to update the reference while keeping the same export
 const mutateRef: { current: ScopedMutator | null } = { current: null };
+
+// Same idea for the cache itself. `mutate(key, undefined)` blanks an entry's
+// data but leaves the entry in the provider's Map, so a caller that needs the
+// key *gone* — rather than emptied — has to reach the provider directly.
+const cacheRef: { current: Cache | null } = { current: null };
+
+/**
+ * Publish the scoped cache from SWRConfig.
+ * Called internally by SWRProvider on mount, alongside `setScopedMutate`.
+ */
+export const setScopedCache = (cache: Cache) => {
+  cacheRef.current = cache;
+};
+
+/**
+ * The scoped cache, or `null` before SWRConfig has mounted.
+ *
+ * Only reach for this to *evict* keys. Reading or writing entries behind SWR's
+ * back skips subscriber notification; use `mutate` for anything a hook renders.
+ */
+export const getScopedCache = (): Cache | null => cacheRef.current;
 
 /**
  * Set the scoped mutate function from SWRConfig
