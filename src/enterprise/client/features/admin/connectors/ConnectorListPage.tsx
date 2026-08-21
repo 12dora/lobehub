@@ -8,13 +8,14 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminConnectorsService } from '@/enterprise/client/services/adminConnectors';
 
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
 import ConnectorListView from './ConnectorListView';
 import { deriveAdminConnectorPermissions } from './controller';
 import { openCreateConnectorModal } from './openCreateConnectorModal';
 import type { AdminConnectorListInput } from './types';
 import { refreshAdminConnectorLists, useFetchAdminConnectors } from './useAdminConnectorCatalog';
 
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = DEFAULT_PAGE_SIZE;
 /** Match the admin skill catalog debounce so typing does not thrash URL/SWR. */
 export const CONNECTOR_SEARCH_DEBOUNCE_MS = 300;
 

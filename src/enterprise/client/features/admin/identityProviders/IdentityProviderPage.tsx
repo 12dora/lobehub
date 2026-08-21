@@ -30,7 +30,11 @@ import { identityProviderStyles as styles } from './styles';
 import { useIdentityProviderRestartAction } from './useIdentityProviderRestartAction';
 import { useIdentityProviderRestartLifecycle } from './useIdentityProviderRestartLifecycle';
 import { useIdentityProviderRowActions } from './useIdentityProviderRowActions';
-import { useAuthSnapshotStatus, useIdentityProviders } from './useIdentityProviders';
+import {
+  IDENTITY_PROVIDER_LIST_PAGE_SIZE,
+  useAuthSnapshotStatus,
+  useIdentityProviders,
+} from './useIdentityProviders';
 
 const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
@@ -44,8 +48,12 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const canDelete = permissions.includes(PLATFORM_PERMISSIONS.IDENTITY_DELETE);
   const canRestart = permissions.includes(PLATFORM_PERMISSIONS.OIDC_PUBLISH);
   const enabled = accessStatus === 'allowed' && canRead;
-  const { cursor, goNext, goPrevious, hasPrevious } = useCursorStack('identity-providers');
-  const providers = useIdentityProviders(enabled, cursor);
+  const [pageSize, setPageSize] = useState(IDENTITY_PROVIDER_LIST_PAGE_SIZE);
+  // Page size is part of the reset key so changing it returns to page 1.
+  const { cursor, goNext, goPrevious, hasPrevious } = useCursorStack(
+    `identity-providers:${pageSize}`,
+  );
+  const providers = useIdentityProviders(enabled, cursor, pageSize);
   const mutateProviders = providers.mutate;
   const runtimeEnabled = accessStatus === 'allowed' && canRestart;
   const [restartPolling, setRestartPolling] = useState(false);
@@ -231,6 +239,8 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                 if (providers.isLoading) return;
                 goPrevious();
               },
+              onPageSizeChange: setPageSize,
+              pageSize,
             }}
             onRetry={() => void providers.mutate()}
             onRowActivate={(item) => openWizard(item)}

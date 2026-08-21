@@ -7,6 +7,7 @@ import { useReducedMotion } from 'motion/react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
 import { useAdminConnectorAudit } from './useAdminConnectorAudit';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -43,7 +44,7 @@ const ConnectorAuditPanel = memo<ConnectorAuditPanelProps>(({ canReadAudit, conn
     connectorId,
     cursor,
     enabled: canReadAudit,
-    limit: 50,
+    limit: DEFAULT_PAGE_SIZE,
   });
 
   useEffect(() => setCursorStack([]), [connectorId]);

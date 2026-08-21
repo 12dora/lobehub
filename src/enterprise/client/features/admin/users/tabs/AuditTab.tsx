@@ -8,6 +8,7 @@ import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { formatAuditReason } from '../../audit/shared/auditReasonCodes';
+import { DEFAULT_PAGE_SIZE } from '../../primitives/dataTableChange';
 import { useFetchAdminUserAuditTrail } from '../hooks/useAdminUsers';
 import { formatAdminDateTime } from '../utils';
 import { detailStyles } from './detailStyles';
@@ -44,7 +45,7 @@ const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
 
   const shouldFetch = enabled && canReadAudit;
   const { data, error, isLoading, mutate } = useFetchAdminUserAuditTrail(
-    { cursor: currentCursor ?? undefined, limit: 50, userId },
+    { cursor: currentCursor ?? undefined, limit: DEFAULT_PAGE_SIZE, userId },
     shouldFetch,
   );
 

@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ADMIN_AUDIT_LIST_DEFAULT_LIMIT,
   ADMIN_AUDIT_LIST_MAX_LIMIT,
   adminAuditConversationsGetOutputSchema,
   adminAuditConversationsListInputSchema,
@@ -22,7 +23,8 @@ import {
 describe('adminAudit contracts', () => {
   it('clamps list limit to max 200 and defaults limit', () => {
     const parsed = adminAuditEventsListInputSchema.parse({});
-    expect(parsed.limit).toBe(50);
+    expect(parsed.limit).toBe(ADMIN_AUDIT_LIST_DEFAULT_LIMIT);
+    expect(parsed.limit).toBe(25);
     expect(() => adminAuditEventsListInputSchema.parse({ limit: 201 })).toThrow();
     expect(adminAuditEventsListInputSchema.parse({ limit: ADMIN_AUDIT_LIST_MAX_LIMIT }).limit).toBe(
       200,

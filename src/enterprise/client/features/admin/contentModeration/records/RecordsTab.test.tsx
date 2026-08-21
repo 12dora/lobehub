@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ContentModerationRecord } from '@/types/platform/contentModeration';
 
-import RecordsTab from './RecordsTab';
+import RecordsTab, { DEFAULT_RECORDS_PAGE_SIZE } from './RecordsTab';
 
 const record = (patch: Partial<ContentModerationRecord> = {}): ContentModerationRecord =>
   ({
@@ -216,7 +216,11 @@ describe('RecordsTab', () => {
 
   it('asks for hits only on the first page by default', () => {
     renderAt();
-    expect(mocks.lastInput).toMatchObject({ includeNonHits: undefined, limit: 20, offset: 0 });
+    expect(mocks.lastInput).toMatchObject({
+      includeNonHits: undefined,
+      limit: DEFAULT_RECORDS_PAGE_SIZE,
+      offset: 0,
+    });
   });
 
   it('maps column-header filters onto the list input', () => {
@@ -280,13 +284,13 @@ describe('RecordsTab', () => {
     expect((mocks.lastInput as { offset: number }).offset).toBe(0);
     // A second identical filter payload (what pagination emits) must not reset the page.
     act(() => {
-      mocks.paginationChange?.(2, 20);
+      mocks.paginationChange?.(2, DEFAULT_RECORDS_PAGE_SIZE);
     });
-    expect((mocks.lastInput as { offset: number }).offset).toBe(20);
+    expect((mocks.lastInput as { offset: number }).offset).toBe(DEFAULT_RECORDS_PAGE_SIZE);
     act(() => {
       mocks.onChange?.({ filters: { effectiveAction: ['block'] } });
     });
-    expect((mocks.lastInput as { offset: number }).offset).toBe(20);
+    expect((mocks.lastInput as { offset: number }).offset).toBe(DEFAULT_RECORDS_PAGE_SIZE);
   });
 
   it('disables bulk delete without the manage permission and explains why', () => {

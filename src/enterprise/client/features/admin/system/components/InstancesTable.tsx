@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import DataTable, {
   type AdminTableChangeMeta,
 } from '@/enterprise/client/features/admin/primitives/DataTable';
+import { DEFAULT_PAGE_SIZE } from '@/enterprise/client/features/admin/primitives/dataTableChange';
 import type { AdminSystemInstancesState } from '@/enterprise/client/features/admin/system/hooks/useAdminSystem';
 import type { AdminSystemInstanceRevisions } from '@/enterprise/client/services/adminSystem';
 
@@ -20,8 +21,6 @@ import {
 } from './instancesColumns';
 
 type Instance = AdminSystemInstanceRevisions['items'][number];
-
-const DEFAULT_PAGE_SIZE = 20;
 
 const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
   const raw = Array.isArray(value) ? value[0] : value;

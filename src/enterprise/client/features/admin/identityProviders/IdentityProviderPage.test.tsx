@@ -7,6 +7,7 @@ import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { AdminReauthCancelledError } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
 import type { IdentityProviderRestartPhase } from './controller';
 import IdentityProviderPage from './IdentityProviderPage';
 import { openIdentityProviderWizardModal } from './openIdentityProviderWizardModal';
@@ -110,10 +111,13 @@ vi.mock('../skills/useCursorPagedList', () => ({
 }));
 
 vi.mock('./useIdentityProviders', () => ({
+  IDENTITY_PROVIDER_LIST_PAGE_SIZE: 25,
   useAuthSnapshotStatus: () => mocks.runtime,
-  useIdentityProviders: (_enabled: boolean, cursor?: string) => {
-    // Expose the cursor the page passes so pagination can be asserted end-to-end.
-    (mocks.providers as { listCursor?: string | undefined }).listCursor = cursor;
+  useIdentityProviders: (_enabled: boolean, cursor?: string, limit?: number) => {
+    // Expose the cursor + page size the page passes so pagination can be asserted end-to-end.
+    const spy = mocks.providers as { listCursor?: string | undefined; listLimit?: number };
+    spy.listCursor = cursor;
+    spy.listLimit = limit;
     return mocks.providers;
   },
 }));
@@ -438,11 +442,11 @@ describe('IdentityProviderPage rendering rules', () => {
     expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
   });
 
-  it('passes the second page cursor so provider 101+ is administrable', async () => {
+  it('passes the second page cursor so providers beyond page 1 are administrable', async () => {
     const page2Provider = {
       ...sampleProvider,
-      displayName: 'Provider 101',
-      id: 'idp-101',
+      displayName: 'Provider page-2',
+      id: 'idp-page-2',
     };
     cursorStack.cursor = undefined;
     cursorStack.goNext.mockClear();
@@ -469,8 +473,10 @@ describe('IdentityProviderPage rendering rules', () => {
     };
     render(<IdentityProviderPage />);
 
-    expect(screen.getByText('Provider 101')).toBeTruthy();
+    expect(screen.getByText('Provider page-2')).toBeTruthy();
     expect((mocks.providers as { listCursor?: string }).listCursor).toBe('cursor-page-2');
+    // Page size comes from the shared admin default, not a per-page constant.
+    expect((mocks.providers as { listLimit?: number }).listLimit).toBe(DEFAULT_PAGE_SIZE);
     expect((screen.getByText('previous') as HTMLButtonElement).disabled).toBe(false);
     expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
   });

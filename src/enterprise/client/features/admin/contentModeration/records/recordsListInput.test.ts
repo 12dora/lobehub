@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildRecordsListInput,
+  DEFAULT_RECORDS_PAGE_SIZE,
   emptyRecordsFilters,
   toRangeEndExclusive,
   toRangeStart,
@@ -9,12 +10,12 @@ import {
 
 describe('buildRecordsListInput', () => {
   it('sends the first page with no filter keys at all by default', () => {
-    expect(buildRecordsListInput(emptyRecordsFilters(), 1, 20)).toEqual({
+    expect(buildRecordsListInput(emptyRecordsFilters(), 1, DEFAULT_RECORDS_PAGE_SIZE)).toEqual({
       actions: undefined,
       categories: undefined,
       from: undefined,
       includeNonHits: undefined,
-      limit: 20,
+      limit: DEFAULT_RECORDS_PAGE_SIZE,
       offset: 0,
       requestKinds: undefined,
       search: undefined,

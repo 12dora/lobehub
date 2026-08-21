@@ -5,6 +5,7 @@ import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
 import { useFetchAdminSkillDependents } from './hooks/useAdminSkills';
 import {
   CursorPagedListSurface,
@@ -12,7 +13,7 @@ import {
   useCursorStack,
 } from './useCursorPagedList';
 
-const PAGE_LIMIT = 20;
+const PAGE_LIMIT = DEFAULT_PAGE_SIZE;
 
 const styles = createStaticStyles(({ css }) => ({
   dependent: css`

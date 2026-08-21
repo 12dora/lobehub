@@ -123,15 +123,15 @@ describe('DataTable cursor pagination', () => {
           onNext: vi.fn(),
           onPageSizeChange: vi.fn(),
           onPrevious: vi.fn(),
-          pageSize: 20,
+          pageSize: 25,
         }}
       />,
     );
 
     const select = screen.getByLabelText('primitives.dataTable.pageSize') as HTMLSelectElement;
-    expect([...select.options].map((option) => option.value)).toEqual(['20', '50', '100']);
+    expect([...select.options].map((option) => option.value)).toEqual(['25', '50', '100']);
     expect([...select.options].map((option) => option.textContent)).toEqual([
-      '20 / page',
+      '25 / page',
       '50 / page',
       '100 / page',
     ]);

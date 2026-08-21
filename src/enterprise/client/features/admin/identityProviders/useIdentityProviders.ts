@@ -5,17 +5,24 @@ import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
 import { useVisiblePoll } from '@/enterprise/client/shared/useVisiblePoll';
 import { useClientDataSWR } from '@/libs/swr';
 
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
 import { isIdentityProviderTestTerminal } from './controller';
 
-export const IDENTITY_PROVIDER_LIST_PAGE_SIZE = 100;
+/** Shared admin default so the IdP list matches every other admin table. */
+export const IDENTITY_PROVIDER_LIST_PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
-export const useIdentityProviders = (enabled: boolean, cursor?: string) =>
+export const useIdentityProviders = (
+  enabled: boolean,
+  cursor?: string,
+  limit: number = IDENTITY_PROVIDER_LIST_PAGE_SIZE,
+) =>
   useClientDataSWR(
-    enabled ? (['admin.identityProviders.list', cursor ?? null] as const) : null,
+    // `limit` is part of the key: a page-size change must not reuse a differently sized page.
+    enabled ? (['admin.identityProviders.list', cursor ?? null, limit] as const) : null,
     () =>
       adminIdentityProvidersService.list({
         cursor,
-        limit: IDENTITY_PROVIDER_LIST_PAGE_SIZE,
+        limit,
       }),
     { revalidateOnFocus: false },
   );

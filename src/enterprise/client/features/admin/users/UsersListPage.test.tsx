@@ -6,6 +6,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, useLocation } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
 import UsersListPage from './UsersListPage';
 
 const sampleList = {
@@ -270,8 +271,8 @@ vi.mock('../primitives/DataTable', () => ({
             >
               next
             </button>
-            <button type="button" onClick={() => onPaginationChange?.(1, 20)}>
-              page-size-20
+            <button type="button" onClick={() => onPaginationChange?.(1, 50)}>
+              page-size-50
             </button>
           </div>
         ) : null}
@@ -397,12 +398,12 @@ describe('UsersListPage offset list + toolbar search', () => {
       </MemoryRouter>,
     );
 
-  it('requests offset pagination with default page size 20 and a total', async () => {
+  it('requests offset pagination with the shared default page size and a total', async () => {
     renderPage();
     await waitFor(() => expect(listCalls.length).toBeGreaterThan(0));
-    expect(listCalls[0]).toMatchObject({ limit: 20, offset: 0 });
+    expect(listCalls[0]).toMatchObject({ limit: DEFAULT_PAGE_SIZE, offset: 0 });
     expect((listCalls[0] as { cursor?: string }).cursor).toBeUndefined();
-    expect(screen.getByTestId('page-size').textContent).toBe('20');
+    expect(screen.getByTestId('page-size').textContent).toBe(String(DEFAULT_PAGE_SIZE));
     expect(screen.getByTestId('total').textContent).toBe('40');
   });
 
@@ -428,7 +429,9 @@ describe('UsersListPage offset list + toolbar search', () => {
     renderPage();
     fireEvent.click(screen.getByText('next'));
     await waitFor(() =>
-      expect(listCalls.some((c) => (c as { offset?: number }).offset === 20)).toBe(true),
+      expect(listCalls.some((c) => (c as { offset?: number }).offset === DEFAULT_PAGE_SIZE)).toBe(
+        true,
+      ),
     );
 
     listCalls.length = 0;
@@ -455,7 +458,9 @@ describe('UsersListPage offset list + toolbar search', () => {
   it('status / role / source / date / page-size each reset to offset 0', async () => {
     renderPage();
     fireEvent.click(screen.getByText('next'));
-    await waitFor(() => expect((listCalls.at(-1) as { offset?: number }).offset).toBe(20));
+    await waitFor(() =>
+      expect((listCalls.at(-1) as { offset?: number }).offset).toBe(DEFAULT_PAGE_SIZE),
+    );
 
     fireEvent.click(screen.getByLabelText('filter-status'));
     await waitFor(() => expect(listCalls.at(-1)).toMatchObject({ offset: 0, status: 'banned' }));

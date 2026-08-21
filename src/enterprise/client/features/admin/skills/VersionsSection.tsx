@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import AsyncBoundary from '@/components/AsyncBoundary';
 import { formatAdminDateTime } from '@/enterprise/client/features/admin/users/utils';
 
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
 import { useFetchAdminSkillVersions } from './hooks/useAdminSkills';
 import type { AdminSkillGetVersionOutput, AdminSkillVersionSummary } from './types';
 import {
@@ -18,7 +19,7 @@ import {
 } from './useCursorPagedList';
 import { isRollbackableSkillVersion } from './writeOperation';
 
-const PAGE_LIMIT = 20;
+const PAGE_LIMIT = DEFAULT_PAGE_SIZE;
 
 const styles = createStaticStyles(({ css }) => ({
   code: css`

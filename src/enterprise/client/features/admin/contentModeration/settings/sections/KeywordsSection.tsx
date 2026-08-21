@@ -14,6 +14,7 @@ import {
 } from '@/const/platform/contentModeration';
 import type { KeywordRule } from '@/types/platform/contentModeration';
 
+import { DEFAULT_PAGE_SIZE, DEFAULT_PAGE_SIZE_OPTIONS } from '../../../primitives/dataTableChange';
 import { categoryLabel, policyActionLabel } from '../../format';
 import { moderationStyles as styles } from '../../styles';
 import {
@@ -35,7 +36,8 @@ export interface KeywordsSectionProps {
   onPatch: (patch: Partial<ModerationConfigView>) => void;
 }
 
-const PAGE_SIZE_OPTIONS = [50, 100] as const;
+/** Shared admin page-size ladder, numeric for the local slice math. */
+const PAGE_SIZE_OPTIONS = DEFAULT_PAGE_SIZE_OPTIONS.map(Number);
 
 /** Row identity for the paged view — never the array index, which shifts under search. */
 interface KeywordRow {
@@ -173,7 +175,7 @@ const KeywordsSection = memo<KeywordsSectionProps>(
     const [importOpen, setImportOpen] = useState(false);
     const [search, setSearch] = useState('');
     const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_OPTIONS[0]);
+    const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
     // Typing in the filter must not block on re-filtering 10k rules.
     const deferredSearch = useDeferredValue(search);
 
@@ -384,7 +386,7 @@ const KeywordsSection = memo<KeywordsSectionProps>(
                   value: String(size),
                 }))}
                 onChange={(next) => {
-                  setPageSize(Number(next ?? PAGE_SIZE_OPTIONS[0]));
+                  setPageSize(Number(next ?? DEFAULT_PAGE_SIZE));
                   setPage(1);
                 }}
               />

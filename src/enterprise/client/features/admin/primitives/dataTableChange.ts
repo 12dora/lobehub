@@ -15,8 +15,9 @@ import type {
   AdminTableSortOrder,
 } from './DataTable';
 
-export const DEFAULT_PAGE_SIZE = 20;
-export const DEFAULT_PAGE_SIZE_OPTIONS = ['20', '50', '100'] as const;
+/** Single source of truth for admin list page size — every admin table/list defaults here. */
+export const DEFAULT_PAGE_SIZE = 25;
+export const DEFAULT_PAGE_SIZE_OPTIONS = ['25', '50', '100'] as const;
 
 export const toAdminPagination = (
   pagination: false | AdminTablePagination | undefined,

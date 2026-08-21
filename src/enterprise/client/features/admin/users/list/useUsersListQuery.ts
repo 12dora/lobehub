@@ -6,12 +6,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { firstColumnFilterValue } from '../../primitives/columnFilters';
 import type { AdminTableChangeMeta } from '../../primitives/DataTable';
+import { DEFAULT_PAGE_SIZE } from '../../primitives/dataTableChange';
 import { useFetchAdminUsersList } from '../hooks/useAdminUsers';
 
 type AdminUserSource = 'local' | 'sso';
 type AdminUserStatus = 'active' | 'banned';
 
-const DEFAULT_LIST_LIMIT = 20;
 const DEBOUNCE_MS = 300;
 
 export interface ListQueryState {
@@ -27,7 +27,7 @@ export interface ListQueryState {
 
 const emptyQuery = (): ListQueryState => ({
   page: 1,
-  pageSize: DEFAULT_LIST_LIMIT,
+  pageSize: DEFAULT_PAGE_SIZE,
   query: '',
 });
 

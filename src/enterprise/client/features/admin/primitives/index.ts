@@ -19,6 +19,12 @@ export {
   default as DataTable,
   type DataTableProps,
 } from './DataTable';
+export {
+  buildTablePagination,
+  createHandleTableChange,
+  DEFAULT_PAGE_SIZE,
+  DEFAULT_PAGE_SIZE_OPTIONS,
+} from './dataTableChange';
 export { default as FilterBar, type FilterBarProps } from './FilterBar';
 export {
   type AdminFilterValues,

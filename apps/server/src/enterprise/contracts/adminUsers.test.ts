@@ -54,12 +54,18 @@ describe('escapeLikePattern', () => {
 });
 
 describe('adminUsersListInputSchema', () => {
-  it('defaults limit to 20, offset to 0, and normalizes query', () => {
+  it('defaults limit to the shared admin page size, offset to 0, and normalizes query', () => {
     const parsed = adminUsersListInputSchema.parse({ query: '  Alice  ' });
     expect(parsed.limit).toBe(ADMIN_USERS_LIST_DEFAULT_LIMIT);
-    expect(parsed.limit).toBe(20);
+    expect(parsed.limit).toBe(25);
     expect(parsed.offset).toBe(0);
     expect(parsed.query).toBe('alice');
+  });
+
+  it('defaults an omitted input to the shared admin page size', () => {
+    const parsed = adminUsersListInputSchema.parse({});
+    expect(parsed.limit).toBe(25);
+    expect(parsed.offset).toBe(0);
   });
 
   it('rejects limit above max', () => {
@@ -530,6 +536,6 @@ describe('adminUsersGetAuditTrailInputSchema', () => {
   it('defaults limit and requires userId', () => {
     const parsed = adminUsersGetAuditTrailInputSchema.parse({ userId: 'u1' });
     expect(parsed.limit).toBe(ADMIN_USERS_AUDIT_DEFAULT_LIMIT);
-    expect(parsed.limit).toBe(50);
+    expect(parsed.limit).toBe(25);
   });
 });

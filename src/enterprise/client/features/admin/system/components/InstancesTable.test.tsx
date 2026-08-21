@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AdminSystemInstancesState } from '@/enterprise/client/features/admin/system/hooks/useAdminSystem';
 import type { AdminSystemInstanceRevisions } from '@/enterprise/client/services/adminSystem';
 
+import { DEFAULT_PAGE_SIZE } from '../../primitives/dataTableChange';
 import { InstancesTable } from './InstancesTable';
 
 vi.mock('antd-style', () => ({
@@ -153,15 +154,17 @@ describe('InstancesTable', () => {
   });
 
   it('paginates loaded rows and keeps short lists unpaginated', () => {
-    const many = Array.from({ length: 25 }, (_, index) =>
+    // One row past the shared default page size, so the first page is exactly full.
+    const total = DEFAULT_PAGE_SIZE + 1;
+    const many = Array.from({ length: total }, (_, index) =>
       instance({ instanceId: `pinst_${index.toString(16).padStart(48, '0')}` }),
     );
     const { rerender } = render(
       <InstancesTable showOffline state={buildState(many)} onShowOfflineChange={vi.fn()} />,
     );
 
-    expect(screen.getAllByTestId('row')).toHaveLength(20);
-    expect(screen.getByTestId('pagination')).toHaveTextContent('page 1 of 25');
+    expect(screen.getAllByTestId('row')).toHaveLength(DEFAULT_PAGE_SIZE);
+    expect(screen.getByTestId('pagination')).toHaveTextContent(`page 1 of ${total}`);
 
     rerender(
       <InstancesTable

@@ -203,7 +203,6 @@ const RecordsTab = memo<RecordsTabProps>(({ canBanUsers, canManage, enabled }) =
         pagination={{
           current: page,
           pageSize,
-          pageSizeOptions: ['20', '50', '100'],
           total,
         }}
         rowSelection={{

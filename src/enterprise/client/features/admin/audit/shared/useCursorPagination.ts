@@ -4,7 +4,10 @@ import { type Dispatch, type SetStateAction, useCallback, useMemo, useState } fr
 
 import { ADMIN_POLL_INTERVALS } from '@/enterprise/client/shared/pollIntervals';
 
-export const AUDIT_DEFAULT_LIST_LIMIT = 50;
+import { DEFAULT_PAGE_SIZE } from '../../primitives/dataTableChange';
+
+/** Audit lists share the admin-wide default page size. */
+export const AUDIT_DEFAULT_LIST_LIMIT = DEFAULT_PAGE_SIZE;
 export const AUDIT_LIST_POLL_MS = ADMIN_POLL_INTERVALS.auditList;
 
 export type AuditInFlightStatus = string | null | undefined;

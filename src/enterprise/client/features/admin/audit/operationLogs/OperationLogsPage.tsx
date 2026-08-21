@@ -377,7 +377,6 @@ const OperationLogsPage = memo(() => {
           onNext: () => onNext(nextCursor),
           onPrevious,
           pageSize: limit,
-          pageSizeOptions: ['20', '50', '100'],
           onPageSizeChange,
         }}
         toolbar={

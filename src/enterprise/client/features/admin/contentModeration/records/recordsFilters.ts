@@ -8,7 +8,9 @@ import type {
   ModerationRequestKind,
 } from '@/const/platform/contentModeration';
 
-export const DEFAULT_RECORDS_PAGE_SIZE = 20;
+import { DEFAULT_PAGE_SIZE } from '../../primitives/dataTableChange';
+
+export const DEFAULT_RECORDS_PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
 export interface RecordsFilters {
   actions: ModerationEffectiveAction[];

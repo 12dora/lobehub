@@ -67,7 +67,7 @@ export const IdentityProviderWizardModalContent = memo<ContentProps>(
     // revision back into the wizard when the row is on the current page.
     const providers = useIdentityProviders(isEdit);
     // Canonical row for revision CAS: prefer mutation response, then list hit, then prop.
-    // List is page-scoped (first 100) so providers outside page 1 rely on mutation retention.
+    // List is page-scoped (first page) so providers outside page 1 rely on mutation retention.
     const [canonicalProvider, setCanonicalProvider] = useState<
       PlatformIdentityProviderDraft | undefined
     >(provider);

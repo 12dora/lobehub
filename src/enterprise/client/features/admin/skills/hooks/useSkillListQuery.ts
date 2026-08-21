@@ -5,9 +5,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
 import type { AdminTableChangeMeta } from '../../primitives/DataTable';
+import { DEFAULT_PAGE_SIZE } from '../../primitives/dataTableChange';
 import type { AdminSkillListInput } from '../types';
 
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = DEFAULT_PAGE_SIZE;
 const SEARCH_DEBOUNCE_MS = 300;
 
 const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {

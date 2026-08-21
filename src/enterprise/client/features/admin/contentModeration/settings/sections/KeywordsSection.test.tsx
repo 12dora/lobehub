@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KeywordRule } from '@/types/platform/contentModeration';
 import { createDefaultContentModerationConfig } from '@/types/platform/contentModeration';
 
+import { DEFAULT_PAGE_SIZE } from '../../../primitives/dataTableChange';
 import type { ModerationConfigView } from '../draft';
 import KeywordsSection from './KeywordsSection';
 
@@ -120,8 +121,8 @@ describe('KeywordsSection at the 10,000-rule ceiling', () => {
     const elapsed = Date.now() - started;
 
     // Only one page of editors is mounted — never all 10k.
-    expect(screen.getAllByTestId(/^keyword-row-/)).toHaveLength(50);
-    expect(screen.queryByTestId('keyword-row-50')).toBeNull();
+    expect(screen.getAllByTestId(/^keyword-row-/)).toHaveLength(DEFAULT_PAGE_SIZE);
+    expect(screen.queryByTestId(`keyword-row-${DEFAULT_PAGE_SIZE}`)).toBeNull();
     expect(screen.getByTestId('keyword-page-info').textContent).toContain(
       'contentModeration.settings.keywords.pageInfo',
     );
@@ -131,9 +132,9 @@ describe('KeywordsSection at the 10,000-rule ceiling', () => {
   it('pages forward without remounting the whole list', () => {
     renderSection(configWith(10_000));
     fireEvent.click(screen.getByText('contentModeration.settings.keywords.nextPage'));
-    expect(screen.getByTestId('keyword-row-50')).toBeTruthy();
+    expect(screen.getByTestId(`keyword-row-${DEFAULT_PAGE_SIZE}`)).toBeTruthy();
     expect(screen.queryByTestId('keyword-row-0')).toBeNull();
-    expect(screen.getAllByTestId(/^keyword-row-/)).toHaveLength(50);
+    expect(screen.getAllByTestId(/^keyword-row-/)).toHaveLength(DEFAULT_PAGE_SIZE);
   });
 
   it('filters by pattern and by note, keeping the original row numbers', () => {
@@ -200,7 +201,7 @@ describe('KeywordsSection server rejections', () => {
     );
     // Only the page containing the offending rule is mounted.
     expect(screen.queryByTestId('keyword-row-0')).toBeNull();
-    expect(screen.getAllByTestId(/^keyword-row-/)).toHaveLength(50);
+    expect(screen.getAllByTestId(/^keyword-row-/)).toHaveLength(DEFAULT_PAGE_SIZE);
   });
 
   it('clears an active filter so the rejected rule is actually reachable', () => {
