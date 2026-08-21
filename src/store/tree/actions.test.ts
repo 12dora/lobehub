@@ -100,3 +100,44 @@ describe('TreeActionImpl.moveItem', () => {
     expect(mockRefreshFileList).not.toHaveBeenCalled();
   });
 });
+
+describe('TreeActionImpl.init', () => {
+  it('keeps the cached tree when re-initialising the library already in the store', () => {
+    const state = createState();
+    state.children = { '': [{ id: 'folder-a' } as never] };
+    state.expanded = { 'folder-a': true };
+    const actions = new TreeActionImpl(
+      createSetter(() => state),
+      () => state,
+    );
+    const loadChildrenSpy = vi.spyOn(actions, 'loadChildren').mockResolvedValue();
+    const revalidateSpy = vi.spyOn(actions, 'revalidate').mockResolvedValue();
+
+    actions.init('kb-1');
+
+    // A remount is not a reset: wiping here flashed the tree skeleton (and
+    // collapsed every open folder) on every visit to the same library.
+    expect(state.children['']).toHaveLength(1);
+    expect(state.expanded['folder-a']).toBe(true);
+    expect(state.epoch).toBe(0);
+    expect(loadChildrenSpy).not.toHaveBeenCalled();
+    expect(revalidateSpy).toHaveBeenCalledWith('');
+  });
+
+  it('resets and cold-loads when the library actually changes', () => {
+    const state = createState();
+    state.children = { '': [{ id: 'folder-a' } as never] };
+    const actions = new TreeActionImpl(
+      createSetter(() => state),
+      () => state,
+    );
+    const loadChildrenSpy = vi.spyOn(actions, 'loadChildren').mockResolvedValue();
+
+    actions.init('kb-2');
+
+    expect(state.children).toEqual({});
+    expect(state.knowledgeBaseId).toBe('kb-2');
+    expect(state.epoch).toBe(1);
+    expect(loadChildrenSpy).toHaveBeenCalledWith('');
+  });
+});

@@ -40,8 +40,8 @@ export const useExplorerListData = ({
     if (!currentQueryParams) return false;
 
     // `visibility` is part of navigation identity too: switching the Sidebar
-    // mode toggle is a "space switch" and needs the same skeleton treatment
-    // as changing folder / category / library so the list flip is legible.
+    // mode toggle is a "space switch" and belongs to the same family as
+    // changing folder / category / library.
     return (
       currentQueryParams.libraryId !== queryParams.libraryId ||
       currentQueryParams.parentId !== queryParams.parentId ||
@@ -70,13 +70,21 @@ export const useExplorerListData = ({
     [rawData, sorter, sortType],
   );
 
-  const showSkeleton = ((isLoading ?? false) && data.length === 0) || !!isNavigating;
+  // The skeleton is for an empty screen only. Navigating between categories /
+  // libraries used to force it even though the previous folder's rows were
+  // still in hand, so every switch blanked the list and re-laid it out. Keep
+  // those rows on screen and dim them while the new query resolves; a genuine
+  // space switch clears the store first (see `setListVisibility`), so it lands
+  // on `data.length === 0` and still gets the skeleton it needs.
+  const showSkeleton = ((isLoading ?? false) || isNavigating) && data.length === 0;
+  const isRefreshing = isNavigating && data.length > 0;
 
   return {
     columnWidths,
     currentFolderId,
     data,
     hasMore,
+    isRefreshing,
     showSkeleton,
   };
 };

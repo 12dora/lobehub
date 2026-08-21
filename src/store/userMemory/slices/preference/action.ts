@@ -11,6 +11,7 @@ import { LayersEnum } from '@/types/userMemory';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type UserMemoryStore } from '../../store';
+import { revalidateMemoryList } from '../../utils/listRevalidate';
 
 const n = setNamespace('userMemory/preference');
 
@@ -37,11 +38,7 @@ export class PreferenceActionImpl {
 
   deletePreference = async (id: string): Promise<void> => {
     await memoryCRUDService.deletePreference(id);
-    // Reset list to refresh
-    this.#get().resetPreferencesList({
-      q: this.#get().preferencesQuery,
-      sort: this.#get().preferencesSort,
-    });
+    await this.#refreshPreferencesList();
   };
 
   loadMorePreferences = (): void => {
@@ -57,10 +54,44 @@ export class PreferenceActionImpl {
     }
   };
 
-  resetPreferencesList = (params?: Omit<PreferenceQueryParams, 'page' | 'pageSize'>): void => {
+  /**
+   * Force a re-read of the list after a write.
+   *
+   * A mutation doesn't change the query, so it can't go through
+   * `resetPreferencesList` (which now no-ops on an unchanged query) and it can't
+   * rely on the SWR key changing either. Rewind to page 1 so the accumulated
+   * pages can't resurrect a row that was just removed, then revalidate.
+   */
+  #refreshPreferencesList = async (): Promise<void> => {
     this.#set(
       produce((draft) => {
-        draft.preferences = [];
+        draft.preferencesPage = 1;
+        draft.preferencesSearchLoading = true;
+      }),
+      false,
+      n('refreshPreferencesList'),
+    );
+
+    await revalidateMemoryList(userMemoryKeys.preferences.root);
+  };
+
+  resetPreferencesList = (params?: Omit<PreferenceQueryParams, 'page' | 'pageSize'>): void => {
+    const state = this.#get();
+
+    // Nothing to reset when the query is the one the store already fetched.
+    // The pages call this from a mount effect, so without this guard every
+    // visit wiped the rows it had and replaced the list with a skeleton.
+    const isSameQuery =
+      state.preferencesQuery === params?.q && state.preferencesSort === params?.sort;
+
+    if (isSameQuery && state.preferencesInit) return;
+
+    this.#set(
+      produce((draft) => {
+        // Deliberately keep `preferences`: the rows already on screen stay put
+        // while the new query is in flight (the page shows a subtle refreshing
+        // affordance instead of a skeleton), and the page-1 response below
+        // replaces them wholesale.
         draft.preferencesPage = 1;
         draft.preferencesQuery = params?.q;
         draft.preferencesSearchLoading = true;
@@ -88,6 +119,17 @@ export class PreferenceActionImpl {
         return result;
       },
       {
+        onError: () => {
+          // Otherwise the refreshing affordance would spin forever on a failed
+          // revalidation.
+          this.#set(
+            produce((draft) => {
+              draft.preferencesSearchLoading = false;
+            }),
+            false,
+            n('useFetchPreferences/onError'),
+          );
+        },
         onSuccess: (data: any) => {
           this.#set(
             produce((draft) => {

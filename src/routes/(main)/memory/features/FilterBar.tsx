@@ -1,5 +1,6 @@
 import { Flexbox, Icon, SearchBar, Select } from '@lobehub/ui';
-import { ArrowDownNarrowWide, Search } from 'lucide-react';
+import { cssVar } from 'antd-style';
+import { ArrowDownNarrowWide, Loader2Icon, Search } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -9,6 +10,12 @@ interface SortOption {
 }
 
 interface FilterBarProps {
+  /**
+   * A refetch for a changed filter is in flight while rows are still on
+   * screen. Renders a spinner next to the search box instead of collapsing the
+   * list into a skeleton — the results the user is looking at stay readable.
+   */
+  loading?: boolean;
   onSearch: (value: string) => void;
   onSortChange?: (sort: string) => void;
   searchValue: string;
@@ -17,7 +24,7 @@ interface FilterBarProps {
 }
 
 const FilterBar = memo<FilterBarProps>(
-  ({ searchValue, onSearch, sortValue, onSortChange, sortOptions }) => {
+  ({ searchValue, onSearch, sortValue, onSortChange, sortOptions, loading }) => {
     const { t } = useTranslation('memory');
 
     return (
@@ -35,6 +42,7 @@ const FilterBar = memo<FilterBarProps>(
             }
           }}
         />
+        {loading && <Icon spin color={cssVar.colorTextQuaternary} icon={Loader2Icon} size={16} />}
         {sortOptions && sortOptions.length > 0 && onSortChange && (
           <Select
             options={sortOptions}

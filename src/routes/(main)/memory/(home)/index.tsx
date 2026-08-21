@@ -3,11 +3,12 @@ import { Flexbox } from '@lobehub/ui';
 import { type FC } from 'react';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
-import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import NavHeader from '@/features/NavHeader';
 import WideScreenContainer from '@/features/WideScreenContainer';
 import WideScreenButton from '@/features/WideScreenContainer/WideScreenButton';
 import ActionBar from '@/routes/(main)/memory/features/ActionBar';
+import Loading from '@/routes/(main)/memory/features/Loading';
 import MemoryAnalysis from '@/routes/(main)/memory/features/MemoryAnalysis';
 import MemoryEmpty from '@/routes/(main)/memory/features/MemoryEmpty';
 import { SCROLL_PARENT_ID } from '@/routes/(main)/memory/features/TimeLineView/useScrollParent';
@@ -31,7 +32,13 @@ const Home: FC = () => {
   } = useFetchPersona();
   // const { EditorModalElement, openEditor } = usePersonaEditor();
 
-  if (isTagsLoading || isPersonaLoading) return <Loading debugId={'Home'} />;
+  // The first load used to early-return the FULLSCREEN brand loader inside the
+  // memory pane: the chrome vanished and a 100dvh splash took over the panel on
+  // every visit. Loading is now just one more state of the body below, folded
+  // into the AsyncBoundary that already arbitrates error / empty / data — and
+  // the store keeps persona + tags, so a revisit renders straight from them
+  // while SWR revalidates in the background.
+  const isColdLoading = isTagsLoading || isPersonaLoading;
 
   // Persona / tags feed the store, so a failed fetch left the render falling
   // through to the "analyze to get started" onboarding — telling the user they
@@ -64,10 +71,16 @@ const Home: FC = () => {
             error={error}
             errorVariant={'page'}
             isEmpty={!hasData}
+            isLoading={isColdLoading}
             empty={
               <MemoryEmpty>
                 <MemoryAnalysis />
               </MemoryEmpty>
+            }
+            loading={
+              <DelayedFallback>
+                <Loading />
+              </DelayedFallback>
             }
             onRetry={() => {
               mutateTags();

@@ -65,6 +65,18 @@ export class TreeActionImpl {
   };
 
   init = (knowledgeBaseId: string) => {
+    // Remounting the sidebar for the library that is already in the store is
+    // not a reset. Wiping here made `TreeSkeleton` flash on every visit to a
+    // library whose tree was already loaded (and collapsed every expanded
+    // folder with it). Refresh the root in place instead — `revalidate` marks
+    // the root `'revalidating'`, not `'loading'`, so the cold-load skeleton
+    // stays reserved for a genuinely cold tree.
+    const { children, knowledgeBaseId: currentKnowledgeBaseId } = this.#get();
+    if (currentKnowledgeBaseId === knowledgeBaseId && children['']) {
+      void this.revalidate('');
+      return;
+    }
+
     this.#set(
       {
         children: {},

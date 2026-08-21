@@ -10,6 +10,7 @@ import { type StoreSetter } from '@/store/types';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type UserMemoryStore } from '../../store';
+import { revalidateMemoryList } from '../../utils/listRevalidate';
 
 const n = setNamespace('userMemory/activity');
 
@@ -38,10 +39,7 @@ export class ActivityActionImpl {
 
   deleteActivity = async (id: string): Promise<void> => {
     await memoryCRUDService.deleteActivity(id);
-    this.#get().resetActivitiesList({
-      q: this.#get().activitiesQuery,
-      sort: this.#get().activitiesSort,
-    });
+    await this.#refreshActivitiesList();
   };
 
   loadMoreActivities = (): void => {
@@ -57,10 +55,44 @@ export class ActivityActionImpl {
     }
   };
 
-  resetActivitiesList = (params?: Omit<ActivityQueryParams, 'page' | 'pageSize'>): void => {
+  /**
+   * Force a re-read of the list after a write.
+   *
+   * A mutation doesn't change the query, so it can't go through
+   * `resetActivitiesList` (which now no-ops on an unchanged query) and it can't
+   * rely on the SWR key changing either. Rewind to page 1 so the accumulated
+   * pages can't resurrect a row that was just removed, then revalidate.
+   */
+  #refreshActivitiesList = async (): Promise<void> => {
     this.#set(
       produce((draft) => {
-        draft.activities = [];
+        draft.activitiesPage = 1;
+        draft.activitiesSearchLoading = true;
+      }),
+      false,
+      n('refreshActivitiesList'),
+    );
+
+    await revalidateMemoryList(userMemoryKeys.activities.root);
+  };
+
+  resetActivitiesList = (params?: Omit<ActivityQueryParams, 'page' | 'pageSize'>): void => {
+    const state = this.#get();
+
+    // Nothing to reset when the query is the one the store already fetched.
+    // The pages call this from a mount effect, so without this guard every
+    // visit wiped the rows it had and replaced the list with a skeleton.
+    const isSameQuery =
+      state.activitiesQuery === params?.q && state.activitiesSort === params?.sort;
+
+    if (isSameQuery && state.activitiesInit) return;
+
+    this.#set(
+      produce((draft) => {
+        // Deliberately keep `activities`: the rows already on screen stay put
+        // while the new query is in flight (the page shows a subtle refreshing
+        // affordance instead of a skeleton), and the page-1 response below
+        // replaces them wholesale.
         draft.activitiesPage = 1;
         draft.activitiesQuery = params?.q;
         draft.activitiesSearchLoading = true;
@@ -87,6 +119,17 @@ export class ActivityActionImpl {
         });
       },
       {
+        onError: () => {
+          // Otherwise the refreshing affordance would spin forever on a failed
+          // revalidation.
+          this.#set(
+            produce((draft) => {
+              draft.activitiesSearchLoading = false;
+            }),
+            false,
+            n('useFetchActivities/onError'),
+          );
+        },
         onSuccess: (data: ActivityListResult) => {
           this.#set(
             produce((draft) => {

@@ -21,11 +21,12 @@ interface ListViewProps {
 
 const ListView = ({ isLoading, isValidating, queryParams }: ListViewProps) => {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const { columnWidths, currentFolderId, data, hasMore, showSkeleton } = useExplorerListData({
-    isLoading,
-    isValidating,
-    queryParams,
-  });
+  const { columnWidths, currentFolderId, data, hasMore, isRefreshing, showSkeleton } =
+    useExplorerListData({
+      isLoading,
+      isValidating,
+      queryParams,
+    });
   const showUploader = queryParams.visibility !== 'private';
 
   if (showSkeleton)
@@ -33,7 +34,10 @@ const ListView = ({ isLoading, isValidating, queryParams }: ListViewProps) => {
 
   return (
     <Flexbox height={'100%'}>
-      <div className={styles.scrollContainer}>
+      <div
+        className={styles.scrollContainer}
+        style={{ opacity: isRefreshing ? 0.6 : 1, transition: 'opacity 0.2s ease-in-out' }}
+      >
         <ListViewHeader
           columnWidths={columnWidths}
           data={data}

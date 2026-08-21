@@ -3,6 +3,7 @@ import {
   type NewUserMemoryIdentity,
   type UpdateUserMemoryIdentity,
 } from '@lobechat/types';
+import { isEqual } from 'es-toolkit';
 import { uniqBy } from 'es-toolkit/compat';
 import { produce } from 'immer';
 import { type SWRResponse } from 'swr';
@@ -15,6 +16,7 @@ import { type StoreSetter } from '@/store/types';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type UserMemoryStore } from '../../store';
+import { revalidateMemoryList } from '../../utils/listRevalidate';
 
 const n = setNamespace('userMemory/identity');
 
@@ -43,25 +45,13 @@ export class IdentityActionImpl {
 
   createIdentity = async (data: NewUserMemoryIdentity): Promise<AddIdentityEntryResult> => {
     const result = await memoryCRUDService.createIdentity(data);
-    // Reset list to refresh
-    this.#get().resetIdentitiesList({
-      q: this.#get().identitiesQuery,
-      relationships: this.#get().identitiesRelationships,
-      sort: this.#get().identitiesSort,
-      types: this.#get().identitiesTypes,
-    });
+    await this.#refreshIdentitiesList();
     return result;
   };
 
   deleteIdentity = async (id: string): Promise<void> => {
     await memoryCRUDService.deleteIdentity(id);
-    // Reset list to refresh
-    this.#get().resetIdentitiesList({
-      q: this.#get().identitiesQuery,
-      relationships: this.#get().identitiesRelationships,
-      sort: this.#get().identitiesSort,
-      types: this.#get().identitiesTypes,
-    });
+    await this.#refreshIdentitiesList();
   };
 
   loadMoreIdentities = (): void => {
@@ -77,10 +67,47 @@ export class IdentityActionImpl {
     }
   };
 
-  resetIdentitiesList = (params?: Omit<IdentityQueryParams, 'page' | 'pageSize'>): void => {
+  /**
+   * Force a re-read of the list after a write.
+   *
+   * A mutation doesn't change the query, so it can't go through
+   * `resetIdentitiesList` (which now no-ops on an unchanged query) and it can't
+   * rely on the SWR key changing either. Rewind to page 1 so the accumulated
+   * pages can't resurrect a row that was just removed, then revalidate.
+   */
+  #refreshIdentitiesList = async (): Promise<void> => {
     this.#set(
       produce((draft) => {
-        draft.identities = [];
+        draft.identitiesPage = 1;
+        draft.identitiesSearchLoading = true;
+      }),
+      false,
+      n('refreshIdentitiesList'),
+    );
+
+    await revalidateMemoryList(userMemoryKeys.identityList.root);
+  };
+
+  resetIdentitiesList = (params?: Omit<IdentityQueryParams, 'page' | 'pageSize'>): void => {
+    const state = this.#get();
+
+    // Nothing to reset when the query is the one the store already fetched.
+    // The pages call this from a mount effect, so without this guard every
+    // visit wiped the rows it had and replaced the list with a skeleton.
+    const isSameQuery =
+      state.identitiesQuery === params?.q &&
+      state.identitiesSort === params?.sort &&
+      isEqual(state.identitiesRelationships, params?.relationships) &&
+      isEqual(state.identitiesTypes, params?.types);
+
+    if (isSameQuery && state.identitiesInit) return;
+
+    this.#set(
+      produce((draft) => {
+        // Deliberately keep `identities`: the rows already on screen stay put
+        // while the new query is in flight (the page shows a subtle refreshing
+        // affordance instead of a skeleton), and the page-1 response below
+        // replaces them wholesale.
         draft.identitiesPage = 1;
         draft.identitiesQuery = params?.q;
         draft.identitiesRelationships = params?.relationships;
@@ -95,13 +122,7 @@ export class IdentityActionImpl {
 
   updateIdentity = async (id: string, data: UpdateUserMemoryIdentity): Promise<boolean> => {
     const result = await memoryCRUDService.updateIdentity(id, data);
-    // Reset list to refresh
-    this.#get().resetIdentitiesList({
-      q: this.#get().identitiesQuery,
-      relationships: this.#get().identitiesRelationships,
-      sort: this.#get().identitiesSort,
-      types: this.#get().identitiesTypes,
-    });
+    await this.#refreshIdentitiesList();
     return result;
   };
 
@@ -122,6 +143,17 @@ export class IdentityActionImpl {
         });
       },
       {
+        onError: () => {
+          // Otherwise the refreshing affordance would spin forever on a failed
+          // revalidation.
+          this.#set(
+            produce((draft) => {
+              draft.identitiesSearchLoading = false;
+            }),
+            false,
+            n('useFetchIdentities/onError'),
+          );
+        },
         onSuccess: (data: IdentityListResult) => {
           this.#set(
             produce((draft) => {

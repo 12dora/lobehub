@@ -4,6 +4,7 @@ import { type FC } from 'react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import NavHeader from '@/features/NavHeader';
 import WideScreenContainer from '@/features/WideScreenContainer';
 import WideScreenButton from '@/features/WideScreenContainer/WideScreenButton';
@@ -30,6 +31,7 @@ const ContextsArea = memo(() => {
   const sortValue: 'capturedAt' | 'scoreImpact' | 'scoreUrgency' =
     sortValueRaw === 'scoreImpact' || sortValueRaw === 'scoreUrgency' ? sortValueRaw : 'capturedAt';
 
+  const contextsCount = useUserMemoryStore((s) => s.contexts.length);
   const contextsPage = useUserMemoryStore((s) => s.contextsPage);
   const contextsInit = useUserMemoryStore((s) => s.contextsInit);
   const contextsTotal = useUserMemoryStore((s) => s.contextsTotal);
@@ -77,7 +79,12 @@ const ContextsArea = memo(() => {
   );
 
   // Show loading: during search/reset or initial load
-  const showLoading = contextsSearchLoading || !contextsInit;
+  // The skeleton is for a genuinely cold list only. A revisit (or a filter
+  // refetch) keeps the rows that are already on screen and shows a spinner in
+  // the filter bar instead — replacing a populated list with a skeleton on
+  // every mount was the flash this page used to have.
+  const showLoading = !contextsInit && contextsCount === 0;
+  const isRefreshing = Boolean(contextsSearchLoading) && contextsCount > 0;
 
   return (
     <Flexbox flex={1} height={'100%'}>
@@ -102,6 +109,7 @@ const ContextsArea = memo(() => {
       >
         <WideScreenContainer gap={32} paddingBlock={48}>
           <FilterBar
+            loading={isRefreshing}
             searchValue={searchValue}
             sortOptions={viewMode === 'grid' ? sortOptions : undefined}
             sortValue={sortValue}
@@ -109,7 +117,9 @@ const ContextsArea = memo(() => {
             onSortChange={viewMode === 'grid' ? handleSortChange : undefined}
           />
           {showLoading ? (
-            <Loading viewMode={viewMode} />
+            <DelayedFallback>
+              <Loading viewMode={viewMode} />
+            </DelayedFallback>
           ) : (
             <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
           )}

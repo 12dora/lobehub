@@ -11,6 +11,7 @@ import { LayersEnum } from '@/types/userMemory';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type UserMemoryStore } from '../../store';
+import { revalidateMemoryList } from '../../utils/listRevalidate';
 
 const n = setNamespace('userMemory/context');
 
@@ -37,8 +38,7 @@ export class ContextActionImpl {
 
   deleteContext = async (id: string): Promise<void> => {
     await memoryCRUDService.deleteContext(id);
-    // Reset list to refresh
-    this.#get().resetContextsList({ q: this.#get().contextsQuery, sort: this.#get().contextsSort });
+    await this.#refreshContextsList();
   };
 
   loadMoreContexts = (): void => {
@@ -54,10 +54,43 @@ export class ContextActionImpl {
     }
   };
 
-  resetContextsList = (params?: Omit<ContextQueryParams, 'page' | 'pageSize'>): void => {
+  /**
+   * Force a re-read of the list after a write.
+   *
+   * A mutation doesn't change the query, so it can't go through
+   * `resetContextsList` (which now no-ops on an unchanged query) and it can't
+   * rely on the SWR key changing either. Rewind to page 1 so the accumulated
+   * pages can't resurrect a row that was just removed, then revalidate.
+   */
+  #refreshContextsList = async (): Promise<void> => {
     this.#set(
       produce((draft) => {
-        draft.contexts = [];
+        draft.contextsPage = 1;
+        draft.contextsSearchLoading = true;
+      }),
+      false,
+      n('refreshContextsList'),
+    );
+
+    await revalidateMemoryList(userMemoryKeys.contexts.root);
+  };
+
+  resetContextsList = (params?: Omit<ContextQueryParams, 'page' | 'pageSize'>): void => {
+    const state = this.#get();
+
+    // Nothing to reset when the query is the one the store already fetched.
+    // The pages call this from a mount effect, so without this guard every
+    // visit wiped the rows it had and replaced the list with a skeleton.
+    const isSameQuery = state.contextsQuery === params?.q && state.contextsSort === params?.sort;
+
+    if (isSameQuery && state.contextsInit) return;
+
+    this.#set(
+      produce((draft) => {
+        // Deliberately keep `contexts`: the rows already on screen stay put
+        // while the new query is in flight (the page shows a subtle refreshing
+        // affordance instead of a skeleton), and the page-1 response below
+        // replaces them wholesale.
         draft.contextsPage = 1;
         draft.contextsQuery = params?.q;
         draft.contextsSearchLoading = true;
@@ -85,6 +118,17 @@ export class ContextActionImpl {
         return result;
       },
       {
+        onError: () => {
+          // Otherwise the refreshing affordance would spin forever on a failed
+          // revalidation.
+          this.#set(
+            produce((draft) => {
+              draft.contextsSearchLoading = false;
+            }),
+            false,
+            n('useFetchContexts/onError'),
+          );
+        },
         onSuccess: (data: any) => {
           this.#set(
             produce((draft) => {

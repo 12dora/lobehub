@@ -5,7 +5,6 @@ import { useLocation, useParams } from 'react-router';
 
 import NotFound from '@/components/404';
 import AsyncError from '@/components/AsyncError';
-import NProgress from '@/components/NProgress';
 import ResourceManager from '@/features/ResourceManager';
 import Container from '@/routes/(main)/resource/library/features/Container';
 
@@ -48,13 +47,15 @@ const MainContent = memo(() => {
 MainContent.displayName = 'LibraryMainContent';
 
 const LibraryPage = memo(() => {
+  // No top progress bar here. `nextjs-toploader` listens to the Next.js router
+  // and to anchor clicks — neither of which describes navigation inside this
+  // react-router SPA — so all it did was flash a 2px line across the top on
+  // mount and on unrelated clicks. The surfaces below own their own feedback
+  // (tree skeleton, list skeleton, error + retry).
   return (
-    <>
-      <NProgress />
-      <Container>
-        <MainContent />
-      </Container>
-    </>
+    <Container>
+      <MainContent />
+    </Container>
   );
 });
 

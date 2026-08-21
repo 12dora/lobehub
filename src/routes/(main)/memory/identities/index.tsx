@@ -3,6 +3,7 @@ import { BrainCircuitIcon } from 'lucide-react';
 import { type FC } from 'react';
 import { memo, useCallback, useEffect, useState } from 'react';
 
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import NavHeader from '@/features/NavHeader';
 import WideScreenContainer from '@/features/WideScreenContainer';
 import WideScreenButton from '@/features/WideScreenContainer/WideScreenButton';
@@ -30,6 +31,7 @@ const IdentitiesArea = memo(() => {
   const searchValue = searchValueRaw || '';
   const typeFilter = (typeFilterRaw as IdentityType) || 'all';
 
+  const identitiesCount = useUserMemoryStore((s) => s.identities.length);
   const identitiesPage = useUserMemoryStore((s) => s.identitiesPage);
   const identitiesInit = useUserMemoryStore((s) => s.identitiesInit);
   const identitiesTotal = useUserMemoryStore((s) => s.identitiesTotal);
@@ -66,8 +68,12 @@ const IdentitiesArea = memo(() => {
     [setTypeFilterRaw],
   );
 
-  // Show loading: during search/reset or initial load
-  const showLoading = identitiesSearchLoading || !identitiesInit;
+  // The skeleton is for a genuinely cold list only. A revisit (or a filter
+  // refetch) keeps the rows that are already on screen and shows a spinner in
+  // the filter bar instead — replacing a populated list with a skeleton on
+  // every mount was the flash this page used to have.
+  const showLoading = !identitiesInit && identitiesCount === 0;
+  const isRefreshing = Boolean(identitiesSearchLoading) && identitiesCount > 0;
 
   return (
     <Flexbox flex={1} height={'100%'}>
@@ -93,10 +99,16 @@ const IdentitiesArea = memo(() => {
         <WideScreenContainer gap={32} paddingBlock={48}>
           <Flexbox horizontal align={'center'} gap={12} justify={'space-between'}>
             <SegmentedBar typeValue={typeFilter} onTypeChange={handleTypeChange} />
-            <CommonFilterBar searchValue={searchValue} onSearch={handleSearch} />
+            <CommonFilterBar
+              loading={isRefreshing}
+              searchValue={searchValue}
+              onSearch={handleSearch}
+            />
           </Flexbox>
           {showLoading ? (
-            <Loading viewMode={viewMode} />
+            <DelayedFallback>
+              <Loading viewMode={viewMode} />
+            </DelayedFallback>
           ) : (
             <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
           )}

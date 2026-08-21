@@ -1,6 +1,7 @@
 'use client';
 
-import { Button, Center, Checkbox, Flexbox } from '@lobehub/ui';
+import { Center, Flexbox } from '@lobehub/ui';
+import { Button, Checkbox } from '@lobehub/ui/base-ui';
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { type UIEvent } from 'react';
@@ -120,7 +121,7 @@ const MasonryView = memo(function MasonryView({
   const effectiveIsLoading = isLoading ?? false;
   const effectiveIsNavigating = isNavigating ?? false;
   const effectiveIsValidating = isValidating ?? false;
-  const { isMasonryReady, showSkeleton } = useMasonryViewState({
+  const { isMasonryReady, isRefreshing, showSkeleton } = useMasonryViewState({
     dataLength,
     isLoading: effectiveIsLoading,
     isNavigating: effectiveIsNavigating,
@@ -193,7 +194,7 @@ const MasonryView = memo(function MasonryView({
       style={{
         flex: 1,
         height: '100%',
-        opacity: isMasonryReady ? 1 : 0,
+        opacity: isMasonryReady ? (isRefreshing ? 0.6 : 1) : 0,
         overflowY: 'auto',
         transition: 'opacity 0.2s ease-in-out',
       }}

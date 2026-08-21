@@ -51,7 +51,23 @@ describe('useExplorerListData', () => {
     };
   });
 
-  it('shows skeleton while navigating even before SWR starts validating', () => {
+  it('keeps the previous rows while navigating instead of flashing a skeleton', () => {
+    const { result } = renderHook(() =>
+      useExplorerListData({
+        isLoading: false,
+        isValidating: false,
+        queryParams: { category: FilesTabs.Documents, parentId: null },
+      }),
+    );
+
+    expect(result.current.showSkeleton).toBe(false);
+    expect(result.current.isRefreshing).toBe(true);
+    expect(result.current.data).toHaveLength(1);
+  });
+
+  it('shows the skeleton while navigating with nothing left to render', () => {
+    mocks.fileState.resourceList = [];
+
     const { result } = renderHook(() =>
       useExplorerListData({
         isLoading: false,
@@ -61,5 +77,19 @@ describe('useExplorerListData', () => {
     );
 
     expect(result.current.showSkeleton).toBe(true);
+    expect(result.current.isRefreshing).toBe(false);
+  });
+
+  it('does not replace a populated list with a skeleton while revalidating', () => {
+    const { result } = renderHook(() =>
+      useExplorerListData({
+        isLoading: true,
+        isValidating: true,
+        queryParams: { category: FilesTabs.All, parentId: null },
+      }),
+    );
+
+    expect(result.current.showSkeleton).toBe(false);
+    expect(result.current.isRefreshing).toBe(false);
   });
 });

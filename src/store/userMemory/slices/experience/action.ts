@@ -10,6 +10,7 @@ import { type StoreSetter } from '@/store/types';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type UserMemoryStore } from '../../store';
+import { revalidateMemoryList } from '../../utils/listRevalidate';
 
 const n = setNamespace('userMemory/experience');
 
@@ -36,11 +37,7 @@ export class ExperienceActionImpl {
 
   deleteExperience = async (id: string): Promise<void> => {
     await memoryCRUDService.deleteExperience(id);
-    // Reset list to refresh
-    this.#get().resetExperiencesList({
-      q: this.#get().experiencesQuery,
-      sort: this.#get().experiencesSort,
-    });
+    await this.#refreshExperiencesList();
   };
 
   loadMoreExperiences = (): void => {
@@ -56,10 +53,44 @@ export class ExperienceActionImpl {
     }
   };
 
-  resetExperiencesList = (params?: Omit<ExperienceQueryParams, 'page' | 'pageSize'>): void => {
+  /**
+   * Force a re-read of the list after a write.
+   *
+   * A mutation doesn't change the query, so it can't go through
+   * `resetExperiencesList` (which now no-ops on an unchanged query) and it can't
+   * rely on the SWR key changing either. Rewind to page 1 so the accumulated
+   * pages can't resurrect a row that was just removed, then revalidate.
+   */
+  #refreshExperiencesList = async (): Promise<void> => {
     this.#set(
       produce((draft) => {
-        draft.experiences = [];
+        draft.experiencesPage = 1;
+        draft.experiencesSearchLoading = true;
+      }),
+      false,
+      n('refreshExperiencesList'),
+    );
+
+    await revalidateMemoryList(userMemoryKeys.experiences.root);
+  };
+
+  resetExperiencesList = (params?: Omit<ExperienceQueryParams, 'page' | 'pageSize'>): void => {
+    const state = this.#get();
+
+    // Nothing to reset when the query is the one the store already fetched.
+    // The pages call this from a mount effect, so without this guard every
+    // visit wiped the rows it had and replaced the list with a skeleton.
+    const isSameQuery =
+      state.experiencesQuery === params?.q && state.experiencesSort === params?.sort;
+
+    if (isSameQuery && state.experiencesInit) return;
+
+    this.#set(
+      produce((draft) => {
+        // Deliberately keep `experiences`: the rows already on screen stay put
+        // while the new query is in flight (the page shows a subtle refreshing
+        // affordance instead of a skeleton), and the page-1 response below
+        // replaces them wholesale.
         draft.experiencesPage = 1;
         draft.experiencesQuery = params?.q;
         draft.experiencesSearchLoading = true;
@@ -85,6 +116,17 @@ export class ExperienceActionImpl {
         });
       },
       {
+        onError: () => {
+          // Otherwise the refreshing affordance would spin forever on a failed
+          // revalidation.
+          this.#set(
+            produce((draft) => {
+              draft.experiencesSearchLoading = false;
+            }),
+            false,
+            n('useFetchExperiences/onError'),
+          );
+        },
         onSuccess: (data: ExperienceListResult) => {
           this.#set(
             produce((draft) => {

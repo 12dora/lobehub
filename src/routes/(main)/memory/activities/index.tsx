@@ -4,6 +4,7 @@ import { type FC } from 'react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import NavHeader from '@/features/NavHeader';
 import WideScreenContainer from '@/features/WideScreenContainer';
 import WideScreenButton from '@/features/WideScreenContainer/WideScreenButton';
@@ -30,6 +31,7 @@ const ActivitiesArea = memo(() => {
   const sortValue: 'capturedAt' | 'startsAt' =
     sortValueRaw === 'startsAt' ? 'startsAt' : 'capturedAt';
 
+  const activitiesCount = useUserMemoryStore((s) => s.activities.length);
   const activitiesPage = useUserMemoryStore((s) => s.activitiesPage);
   const activitiesInit = useUserMemoryStore((s) => s.activitiesInit);
   const activitiesTotal = useUserMemoryStore((s) => s.activitiesTotal);
@@ -45,7 +47,10 @@ const ActivitiesArea = memo(() => {
   const apiSort = sortValue === 'capturedAt' ? undefined : (sortValue as 'startsAt');
 
   useEffect(() => {
-    if (!apiSort) return;
+    // No `if (!apiSort) return` here: that guard existed to stop the mount-time
+    // reset from wiping the list, and it also swallowed the switch *back* to
+    // the default sort. The store now no-ops on an unchanged query, so the
+    // effect can run unconditionally and every sort change lands.
     const sort = viewMode === 'grid' ? apiSort : undefined;
     resetActivitiesList({ q: searchValue || undefined, sort });
   }, [searchValue, apiSort, viewMode]);
@@ -71,7 +76,12 @@ const ActivitiesArea = memo(() => {
     [setSortValueRaw],
   );
 
-  const showLoading = activitiesSearchLoading || !activitiesInit;
+  // The skeleton is for a genuinely cold list only. A revisit (or a filter
+  // refetch) keeps the rows that are already on screen and shows a spinner in
+  // the filter bar instead — replacing a populated list with a skeleton on
+  // every mount was the flash this page used to have.
+  const showLoading = !activitiesInit && activitiesCount === 0;
+  const isRefreshing = Boolean(activitiesSearchLoading) && activitiesCount > 0;
 
   return (
     <Flexbox flex={1} height={'100%'}>
@@ -96,6 +106,7 @@ const ActivitiesArea = memo(() => {
       >
         <WideScreenContainer gap={32} paddingBlock={48}>
           <FilterBar
+            loading={isRefreshing}
             searchValue={searchValue}
             sortOptions={viewMode === 'grid' ? sortOptions : undefined}
             sortValue={sortValue}
@@ -103,7 +114,9 @@ const ActivitiesArea = memo(() => {
             onSortChange={viewMode === 'grid' ? handleSortChange : undefined}
           />
           {showLoading ? (
-            <Loading viewMode={viewMode} />
+            <DelayedFallback>
+              <Loading viewMode={viewMode} />
+            </DelayedFallback>
           ) : (
             <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
           )}
