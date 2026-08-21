@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentRuntimeErrorType } from '../../types/error';
 import { debugStream } from '../../utils/debugStream';
+import {
+  pickGenerateObjectEffortParams,
+  projectServiceModelEffort,
+} from '../../utils/serviceModelEffort';
 import type { ConversationEvent } from './client';
 import { bytesToBase64, ChatGPTWebError } from './client';
 import { describeRequestBody, LobeChatGPTWebAI, undeliveredSuffix } from './index';
@@ -488,6 +492,31 @@ describe('LobeChatGPTWebAI', () => {
 
         expect(bodyOf(client).model).toBe(model);
         expect(bodyOf(client).thinking_effort).toBe(thinkingEffort);
+      },
+    );
+
+    it.each(['instant', 'pro'] as const)(
+      'system-agent projected %s reaches LobeChatGPTWebAI on a family id',
+      async (level) => {
+        const picked = pickGenerateObjectEffortParams(
+          projectServiceModelEffort({
+            extendParams: ['chatgptWebReasoningEffort'],
+            model: 'gpt-5-6',
+            reasoningEffort: level,
+          }),
+        );
+        expect(picked).toEqual({ chatgptWebReasoningEffort: level });
+
+        const client = createFakeClient();
+        await createRuntime(client).chat({
+          ...picked,
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'gpt-5-6',
+          temperature: 1,
+        });
+
+        expect(bodyOf(client).model).toBe(level === 'pro' ? 'gpt-5-6-pro' : 'gpt-5-6-instant');
+        expect(bodyOf(client).thinking_effort).toBe(level === 'pro' ? 'standard' : undefined);
       },
     );
 

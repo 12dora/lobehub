@@ -18,6 +18,13 @@ const GENERATE_OBJECT_REASONING_EFFORT_LEVELS = [
 ] as const;
 const GENERATE_OBJECT_THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'] as const;
 const GENERATE_OBJECT_THINKING_TYPES = ['enabled', 'disabled', 'adaptive'] as const;
+const GENERATE_OBJECT_CHATGPT_WEB_EFFORT_LEVELS = [
+  'instant',
+  'medium',
+  'high',
+  'xhigh',
+  'pro',
+] as const;
 
 const isOneOf = <T extends string>(value: string, allowed: readonly T[]): value is T =>
   (allowed as readonly string[]).includes(value);
@@ -119,9 +126,19 @@ export const projectServiceModelEffort = (
  * generateObject without leaking settings-only keys or unknown enum values.
  */
 export const pickGenerateObjectEffortParams = (
-  source: Pick<ModelExtendParams, 'effort' | 'reasoning_effort' | 'thinking' | 'thinkingLevel'>,
+  source: Pick<
+    ModelExtendParams,
+    'chatgptWebReasoningEffort' | 'effort' | 'reasoning_effort' | 'thinking' | 'thinkingLevel'
+  >,
 ): GenerateObjectEffortParams => {
   const params: GenerateObjectEffortParams = {};
+
+  if (
+    typeof source.chatgptWebReasoningEffort === 'string' &&
+    isOneOf(source.chatgptWebReasoningEffort, GENERATE_OBJECT_CHATGPT_WEB_EFFORT_LEVELS)
+  ) {
+    params.chatgptWebReasoningEffort = source.chatgptWebReasoningEffort;
+  }
 
   if (typeof source.effort === 'string' && isOneOf(source.effort, GENERATE_OBJECT_EFFORT_LEVELS)) {
     params.effort = source.effort;
@@ -163,7 +180,10 @@ export const pickGenerateObjectEffortParams = (
   // still coexists with `thinking: enabled` + `reasoning_effort`.
   if (
     params.thinking?.type === 'disabled' &&
-    (params.effort || params.reasoning_effort || params.thinkingLevel)
+    (params.chatgptWebReasoningEffort ||
+      params.effort ||
+      params.reasoning_effort ||
+      params.thinkingLevel)
   ) {
     delete params.thinking;
   }

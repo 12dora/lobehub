@@ -374,7 +374,7 @@ describe('AdminAiModelService CAS and apply contract', () => {
     expect(disabled.some((m) => m.id === 'on-model')).toBe(false);
   });
 
-  it('hides ChatGPT Web legacy-alias rows from the admin model list', async () => {
+  it('keeps ChatGPT Web legacy-alias rows on the admin model list for discovery', async () => {
     mocks.get.mockResolvedValue({
       ...detailFixture,
       draft: {
@@ -400,7 +400,10 @@ describe('AdminAiModelService CAS and apply contract', () => {
     });
 
     const list = await service.getAiProviderModelList('chatgptweb');
-    expect(list.some((model) => model.id === 'gpt-5-6-thinking')).toBe(false);
+    expect(list.some((model) => model.id === 'gpt-5-6-thinking')).toBe(true);
+    expect(list.find((model) => model.id === 'gpt-5-6-thinking')?.settings).toEqual({
+      legacyAlias: 'gpt-5-6',
+    });
     expect(list.some((model) => model.id === 'gpt-5-6')).toBe(true);
   });
 });

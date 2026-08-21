@@ -151,7 +151,7 @@ CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH=/usr/local/lib/libcurl-impersonate.so
 
 ### 4.3 首次连接与模型开启
 
-首次连接（`mode: 'create'`）会把服务商置为 `enabled: true`、写入 `checkModel: 'gpt-5-6'`，并**自动物化卡片里默认开启的内置模型**（`adminService.models.ts` 的 `materializeBuiltinDefaultModels`，取 `packages/model-bank/src/aiModels/chatgptWeb.ts` 中 `enabled: true` 的条目）：`gpt-5-6`、`gpt-5-5`、`o3`、`gpt-image-2`。落下来的是**已开启**的真实模型行（带卡片元数据，图像模型也在内），所以连上即可用，不需要再手动勾选。广告面与 chatgpt.com 一致：5.x 是**家族卡**（Instant / Medium / High / Extra high / Pro 一档滑杆），不是 Instant / Thinking / Pro 各一张。已有平台目录里的 `{base}-instant|-thinking|-pro` 和 `auto` 行在「同步上游模型」时**保持 enabled**（执行 allowlist 仍接纳，旧 agent 不会 `AiCatalogModelNotPublishedError`），但打上 `settings.legacyAlias` 让用户侧 picker 隐藏；同步还会把仍指向 `auto` / 旧 SKU 的 `checkModel` 迁到已开启的家族卡（默认 `gpt-5-6`）。
+首次连接（`mode: 'create'`）会把服务商置为 `enabled: true`、写入 `checkModel: 'gpt-5-6'`，并**自动物化卡片里默认开启的内置模型**（`adminService.models.ts` 的 `materializeBuiltinDefaultModels`，取 `packages/model-bank/src/aiModels/chatgptWeb.ts` 中 `enabled: true` 的条目）：`gpt-5-6`、`gpt-5-5`、`o3`、`gpt-image-2`。落下来的是**已开启**的真实模型行（带卡片元数据，图像模型也在内），所以连上即可用，不需要再手动勾选。广告面与 chatgpt.com 一致：5.x 是**家族卡**（Instant / Medium / High / Extra high / Pro 一档滑杆），不是 Instant / Thinking / Pro 各一张。已有平台目录里的 `{base}-instant|-thinking|-pro` 和 `auto` 行在「同步上游模型」时**保持 enabled**（执行 allowlist 仍接纳，旧 agent 不会 `AiCatalogModelNotPublishedError`），并打上 `settings.legacyAlias`。用户侧 picker、平台 agent / 内容审核依赖选择、Agent Builder **隐藏**这些行，只展示家族卡。管理端模型列表**仍显示**它们，标成只读「遗留别名 → \<family\>」：不能从列表开关或删除（同步也会把被关掉的别名重新打开，否则已保存 agent 会掉出 allowlist）。新工作请用家族卡。同步还会把仍指向 `auto` / 旧 SKU 的 `checkModel` 迁到已开启的家族卡（默认 `gpt-5-6`）。
 
 - 物化随服务商创建走同一次发布，不额外要求 `AI_MODEL_CREATE` 权限（这批行是内置卡片而非管理员自建模型）。
 - **重连不会重新物化**：已有的模型行原样保留，管理员之后的开关 / 删除不会被连接动作覆盖回去。

@@ -1,6 +1,7 @@
 import { ActionIcon, Center, Flexbox, Text, TooltipGroup } from '@lobehub/ui';
 import isEqual from 'fast-deep-equal';
 import { ArrowDownUpIcon, ToggleLeft } from 'lucide-react';
+import { isLegacyAliasModel } from 'model-bank';
 import { use, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -39,7 +40,10 @@ const EnabledModelList = ({ activeTab }: EnabledModelListProps) => {
   // Models that can be toggled (exclude embedding models when not editable)
   const togglableModels = useMemo(
     () =>
-      modelEditable ? filteredModels : filteredModels.filter((model) => model.type !== 'embedding'),
+      (modelEditable
+        ? filteredModels
+        : filteredModels.filter((model) => model.type !== 'embedding')
+      ).filter((model) => !isLegacyAliasModel(model.settings)),
     [filteredModels, modelEditable],
   );
 

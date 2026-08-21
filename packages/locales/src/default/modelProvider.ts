@@ -334,6 +334,7 @@ export default {
   'providerModels.item.delete.confirm': 'Are you sure you want to delete model {{displayName}}?',
   'providerModels.item.delete.success': 'Deletion successful',
   'providerModels.item.delete.title': 'Delete Model',
+  'providerModels.item.legacyAlias.tag': 'Legacy alias → {{family}}',
   'providerModels.item.modelConfig.azureDeployName.extra':
     'Field used for actual requests in Azure OpenAI',
   'providerModels.item.modelConfig.azureDeployName.placeholder':

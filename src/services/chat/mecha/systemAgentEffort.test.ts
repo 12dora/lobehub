@@ -164,6 +164,34 @@ describe('resolveSystemAgentEffortParams', () => {
     ).toEqual({ reasoning_effort: 'xhigh' });
   });
 
+  it.each(['instant', 'pro'] as const)(
+    'projects ChatGPT Web %s onto chatgptWebReasoningEffort',
+    (level) => {
+      mockEnabledAiModels([
+        {
+          id: 'gpt-5-6',
+          providerId: 'chatgptweb',
+          settings: { extendParams: ['chatgptWebReasoningEffort'] },
+        },
+      ]);
+
+      expect(
+        resolveSystemAgentEffortParams({
+          model: 'gpt-5-6',
+          provider: 'chatgptweb',
+          reasoningEffort: level,
+        }),
+      ).toEqual({ chatgptWebReasoningEffort: level });
+    },
+  );
+
+  it('does not emit chatgptWebReasoningEffort for a non-ChatGPT-Web model', () => {
+    expect(resolveSystemAgentEffortParams(item('pro'))).toEqual({ reasoning_effort: 'medium' });
+    expect(resolveSystemAgentEffortParams(item('pro'))).not.toHaveProperty(
+      'chatgptWebReasoningEffort',
+    );
+  });
+
   it("does not inherit another provider's controls for a non-aggregator empty card", () => {
     mockEnabledAiModels([
       openaiCard(['gpt5_6ReasoningEffort']),

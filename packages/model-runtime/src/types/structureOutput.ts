@@ -22,6 +22,7 @@ export interface GenerateObjectSchema {
 }
 
 export interface GenerateObjectPayload {
+  chatgptWebReasoningEffort?: ChatStreamPayload['chatgptWebReasoningEffort'];
   effort?: ChatStreamPayload['effort'];
   messages: GenerateObjectMessage[];
   model: string;
@@ -35,7 +36,7 @@ export interface GenerateObjectPayload {
 
 export type GenerateObjectEffortParams = Pick<
   GenerateObjectPayload,
-  'effort' | 'reasoning_effort' | 'thinking' | 'thinkingLevel'
+  'chatgptWebReasoningEffort' | 'effort' | 'reasoning_effort' | 'thinking' | 'thinkingLevel'
 >;
 
 export interface GenerateObjectOptions {

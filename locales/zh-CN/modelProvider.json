@@ -277,6 +277,7 @@
   "providerModels.item.delete.confirm": "确认删除模型 {{displayName}}？",
   "providerModels.item.delete.success": "删除成功",
   "providerModels.item.delete.title": "删除模型",
+  "providerModels.item.legacyAlias.tag": "遗留别名 → {{family}}",
   "providerModels.item.modelConfig.azureDeployName.extra": "在 Azure OpenAI 中实际请求的字段",
   "providerModels.item.modelConfig.azureDeployName.placeholder": "请输入 Azure 中的模型部署名称",
   "providerModels.item.modelConfig.azureDeployName.title": "模型部署名称",

@@ -4,8 +4,7 @@ import { confirmModal } from '@lobehub/ui/base-ui';
 import { App, Switch } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { LucidePencil, TrashIcon } from 'lucide-react';
-import { type AiProviderModelListItem } from 'model-bank';
-import { AiModelSourceEnum } from 'model-bank';
+import { AiModelSourceEnum, type AiProviderModelListItem, isLegacyAliasModel } from 'model-bank';
 import React, { memo, use, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -83,6 +82,7 @@ const ModelItem = memo<ModelItemProps>(
     source,
     contextWindowTokens,
     abilities,
+    settings,
     type,
   }) => {
     const { t } = useTranslation(['modelProvider', 'components', 'models', 'common']);
@@ -170,6 +170,10 @@ const ModelItem = memo<ModelItemProps>(
     };
 
     const isMobile = useIsMobile();
+    const isLegacyAlias = isLegacyAliasModel(settings);
+    const legacyFamily =
+      typeof settings?.legacyAlias === 'string' ? settings.legacyAlias : undefined;
+    const canToggle = !isLegacyAlias && !aiModelsManaged && (modelEditable || type !== 'embedding');
 
     const NewTag = <NewModelBadge releasedAt={releasedAt} />;
 
@@ -179,9 +183,14 @@ const ModelItem = memo<ModelItemProps>(
       </Tag>
     );
 
-    const canToggle = !aiModelsManaged && (modelEditable || type !== 'embedding');
+    const LegacyAliasTag =
+      isLegacyAlias && legacyFamily ? (
+        <Tag>{t('providerModels.item.legacyAlias.tag', { family: legacyFamily })}</Tag>
+      ) : null;
 
-    const EnableSwitch = canToggle ? (
+    const EnableSwitch = isLegacyAlias ? (
+      <Switch disabled checked={checked} size={'small'} />
+    ) : canToggle ? (
       <Switch
         checked={checked}
         disabled={!canManageProvider}
@@ -198,6 +207,7 @@ const ModelItem = memo<ModelItemProps>(
     const Actions =
       modelEditable &&
       !aiModelsManaged &&
+      !isLegacyAlias &&
       ((style?: React.CSSProperties) => (
         <Flexbox horizontal className={styles.config} style={style}>
           <ActionIcon
@@ -264,6 +274,7 @@ const ModelItem = memo<ModelItemProps>(
             </Flexbox>
             <div>
               {ModelIdTag}
+              {LegacyAliasTag}
               {NewTag}
             </div>
           </Flexbox>
@@ -289,6 +300,7 @@ const ModelItem = memo<ModelItemProps>(
             <Flexbox horizontal align={'center'} gap={8}>
               {displayName || id}
               {ModelIdTag}
+              {LegacyAliasTag}
               {NewTag}
               {Actions && Actions()}
             </Flexbox>

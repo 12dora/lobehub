@@ -87,12 +87,13 @@ describe('adminAiInfraAdapter mappers', () => {
       type: 'chat' as const,
     };
 
-    it('hides legacy-alias rows on the admin model list', () => {
+    it('keeps legacy-alias rows visible on the admin model list (read-only in ModelItem)', () => {
       expect(mapModelListItem(legacyRow)).toMatchObject({
         enabled: true,
         id: 'gpt-5-6-thinking',
-        visible: false,
+        settings: { legacyAlias: 'gpt-5-6' },
       });
+      expect(mapModelListItem(legacyRow).visible).not.toBe(false);
     });
 
     it('hides legacy-alias rows on the admin service-model selector', () => {

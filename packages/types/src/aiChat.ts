@@ -201,6 +201,7 @@ export const StructureSchema = z.object({
  * `reasoningEffort`. Never include the settings-only key `reasoningEffort`.
  */
 export const GenerateObjectEffortParamsSchema = z.object({
+  chatgptWebReasoningEffort: z.enum(['instant', 'medium', 'high', 'xhigh', 'pro']).optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   reasoning_effort: z
     .enum(['none', 'no_think', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
@@ -215,6 +216,7 @@ export const GenerateObjectEffortParamsSchema = z.object({
 });
 
 export interface GenerateObjectEffortParams {
+  chatgptWebReasoningEffort?: 'instant' | 'medium' | 'high' | 'xhigh' | 'pro';
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   reasoning_effort?: 'none' | 'no_think' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   thinking?: {

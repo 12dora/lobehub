@@ -99,4 +99,23 @@ describe('ModelItem managed aiModels', () => {
     expect(screen.queryByTitle('providerModels.item.config')).not.toBeInTheDocument();
     expect(screen.queryByTitle('providerModels.item.delete.title')).not.toBeInTheDocument();
   });
+
+  it('renders a ChatGPT Web legacy alias as read-only with a family tag', () => {
+    render(
+      <ModelItem
+        enabled
+        abilities={{}}
+        displayName="GPT-5.6 Thinking"
+        id="gpt-5-6-thinking"
+        settings={{ legacyAlias: 'gpt-5-6' }}
+        source={'custom' as never}
+        type="chat"
+      />,
+    );
+
+    expect(screen.getByText('providerModels.item.legacyAlias.tag')).toBeInTheDocument();
+    expect(screen.getByRole('switch')).toBeDisabled();
+    expect(screen.queryByTitle('providerModels.item.config')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('providerModels.item.delete.title')).not.toBeInTheDocument();
+  });
 });

@@ -125,7 +125,6 @@ export const mapModelListItem = (
   settings: (item.settings ?? undefined) as AiProviderModelListItem['settings'],
   source: 'custom',
   type: item.type,
-  ...projectPickerVisibility(item.settings),
 });
 
 export const mapEnabledModel = (

@@ -31,6 +31,12 @@ vi.mock('@/store/aiInfra', () => ({
       enabledModels: [
         { enabled: true, id: 'gpt-4o', type: 'chat' },
         { enabled: true, id: 'gpt-4.1', type: 'chat' },
+        {
+          enabled: true,
+          id: 'gpt-5-6-thinking',
+          settings: { legacyAlias: 'gpt-5-6' },
+          type: 'chat',
+        },
       ],
     }),
 }));
@@ -66,6 +72,7 @@ describe('EnabledModelList disable-all', () => {
     await waitFor(() =>
       expect(mocks.batchToggleAiModels).toHaveBeenCalledWith(['gpt-4o', 'gpt-4.1'], false),
     );
+    expect(mocks.batchToggleAiModels.mock.calls[0]?.[0]).not.toContain('gpt-5-6-thinking');
   });
 
   it('recovers from a rejected batch instead of spinning forever', async () => {
