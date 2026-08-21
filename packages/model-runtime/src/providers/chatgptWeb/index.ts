@@ -45,6 +45,7 @@ import {
   createTurnRequestIdentity,
   deriveSentinelContextKey,
   extractCitations,
+  isBentoOnlyText,
   isCallerAbort,
   isChatGPTWebError,
   MAX_DOWNLOAD_BYTES,
@@ -1157,7 +1158,13 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         const message = turnAnswerMessage(document, anchor);
         if (!message) continue;
 
-        const text = sanitizeAnnotations(stripBentoLayout(messageParts(message)));
+        const raw = messageParts(message);
+        // A finished unclassified bento tool-call strips to '' and would look
+        // like "the turn produced nothing". Keep polling until a real answer
+        // is written; a genuinely empty finished message still stops below.
+        if (isBentoOnlyText(raw)) continue;
+
+        const text = sanitizeAnnotations(stripBentoLayout(raw));
         const finished =
           message.status === 'finished_successfully' ||
           message.status === 'finished_partial_completion' ||

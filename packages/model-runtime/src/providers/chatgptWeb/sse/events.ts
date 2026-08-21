@@ -207,17 +207,13 @@ export class ConversationEventRouter {
   /**
    * Positive tool / hidden / non-answer signals. Thoughts, reasoning recaps and
    * image-gen tool messages must keep flowing (later patches carry more deltas
-   * or asset pointers), so they are not latched.
+   * or asset pointers), so they are not latched. Internal `analysis` *text* is
+   * latched: a later `channel=final` patch or same-id replay must not emit it.
    */
   private shouldLatchIgnored(message: Record<string, any>): boolean {
     if (isImageToolMessage(message)) return false;
     const contentType = String(asRecord(message.content)?.content_type ?? '');
     if (contentType === 'thoughts' || contentType === 'reasoning_recap') return false;
-    // reasoning lives on channel `analysis`; latching would drop later thought deltas
-    const channel = String(message.channel ?? '')
-      .trim()
-      .toLowerCase();
-    if (channel === 'analysis') return false;
     if (contentType === 'code') return true;
     return !isVisibleAssistantMessage(message);
   }
@@ -432,7 +428,7 @@ export class ConversationEventRouter {
     // recipient/channel classify the message. Withhold while the candidate can
     // still be that object; drop a complete object (and the following blank
     // line) if prose follows in the same message.
-    const bento = inspectBentoText(sanitized);
+    const bento = inspectBentoText(sanitized, { streaming: !finished });
     if (bento.withhold) {
       if (bento.ignored && finished) state.ignored = true;
       return;

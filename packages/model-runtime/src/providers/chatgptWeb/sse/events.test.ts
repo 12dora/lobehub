@@ -157,6 +157,27 @@ describe('ConversationEventRouter', () => {
     ).toEqual(['Hello']);
   });
 
+  it('latches analysis/text so a later channel=final patch cannot emit it', () => {
+    const { events } = feedAll([
+      assistantAdd('m1', { channel: 'analysis' }),
+      append('internal scratch'),
+      { o: 'replace', p: '/message/channel', v: 'final' },
+    ]);
+    expect(typesOf(events)).not.toContain('text.delta');
+  });
+
+  it('latches analysis/text so a same-id replay without channel cannot emit it', () => {
+    const { events } = feedAll([
+      assistantAdd('m1', { channel: 'analysis' }),
+      append('internal scratch'),
+      assistantAdd('m1', {
+        channel: undefined,
+        content: { content_type: 'text', parts: ['internal scratch'] },
+      }),
+    ]);
+    expect(typesOf(events)).not.toContain('text.delta');
+  });
+
   it('maps thoughts to reasoning deltas and a recap to reasoning.done', () => {
     const { events } = feedAll([
       {
@@ -863,6 +884,37 @@ describe('ConversationEventRouter', () => {
       ]);
 
       expect(textOf(events)).toBe('{"name":"ok"}');
+    });
+
+    it('emits an ambiguous JSON prefix once the message finishes', () => {
+      const { events } = feedAll([
+        assistantAdd('m1', { channel: undefined }),
+        append('{'),
+        {
+          o: 'patch',
+          p: '',
+          v: [
+            { o: 'replace', p: '/message/status', v: 'finished_successfully' },
+            { o: 'replace', p: '/message/end_turn', v: true },
+          ],
+        },
+      ]);
+
+      expect(textOf(events)).toBe('{');
+    });
+
+    it('still drops a confirmed bento prefix when the message finishes', () => {
+      const { events } = feedAll([
+        assistantAdd('m1', { channel: undefined }),
+        append('{"layout":"bento"'),
+        {
+          o: 'patch',
+          p: '',
+          v: [{ o: 'replace', p: '/message/status', v: 'finished_successfully' }],
+        },
+      ]);
+
+      expect(textOf(events)).toBe('');
     });
   });
 });

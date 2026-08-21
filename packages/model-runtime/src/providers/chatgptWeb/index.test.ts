@@ -1628,6 +1628,76 @@ describe('LobeChatGPTWebAI', () => {
       expect(sse).toContain('event: stop');
     }, 20_000);
 
+    it('keeps polling when the first document is only an unclassified bento node', async () => {
+      let polls = 0;
+      const client = createFakeClient({
+        getConversation: vi.fn(async () => {
+          polls += 1;
+          const body = bodyOf(client);
+          if (polls === 1) {
+            return documentFor(body, {
+              parts: ['{"layout":"bento","query":["XX","XX","XX"]}'],
+              status: 'finished_successfully',
+            });
+          }
+          return documentFor(body, {
+            parts: ['Here are some images.'],
+            status: 'finished_successfully',
+          });
+        }),
+        streamConversation: vi.fn(async function* () {
+          yield { conversationId: 'conv-async', type: 'conversation.start' } as ConversationEvent;
+          yield { conversationId: 'conv-async', endTurn: false, type: 'done' } as ConversationEvent;
+        }),
+      });
+
+      const runtime = createRuntime(client);
+      vi.useFakeTimers();
+      try {
+        const response = await runtime.chat({
+          chatgptWebThinkingEffort: 'extended',
+          messages: [{ content: 'show pictures of cats', role: 'user' }],
+          model: 'gpt-5-6-thinking',
+          temperature: 1,
+        });
+        const sse = readSSE(response);
+        await vi.advanceTimersByTimeAsync(10_000);
+        const raw = await sse;
+
+        expect(polls).toBeGreaterThanOrEqual(2);
+        expect(raw).toContain('event: text');
+        expect(raw).toContain('Here are some images.');
+        expect(raw).not.toContain('layout');
+      } finally {
+        vi.useRealTimers();
+      }
+    }, 20_000);
+
+    it('recovers an ambiguous JSON prefix as the finished answer', async () => {
+      const client = createFakeClient({
+        getConversation: vi.fn(async () =>
+          documentFor(bodyOf(client), { parts: ['{'], status: 'finished_successfully' }),
+        ),
+        streamConversation: vi.fn(async function* () {
+          yield { conversationId: 'conv-async', type: 'conversation.start' } as ConversationEvent;
+          yield { conversationId: 'conv-async', endTurn: false, type: 'done' } as ConversationEvent;
+        }),
+      });
+
+      const sse = await readSSE(
+        await createRuntime(client).chat({
+          chatgptWebThinkingEffort: 'extended',
+          messages: [{ content: 'reply with a single opening brace', role: 'user' }],
+          model: 'gpt-5-6-thinking',
+          temperature: 1,
+        }),
+      );
+
+      expect(sse).toContain('event: text');
+      expect(sse).toContain('"{"');
+      expect(sse).toContain('event: stop');
+    }, 20_000);
+
     it('never returns a replayed historical answer as this turn’s answer', async () => {
       // the document only holds a FINISHED assistant message from an earlier
       // turn (another branch, created before this request)
