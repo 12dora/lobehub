@@ -125,12 +125,15 @@ const resolveNextTotal = (
     }
 
     case 'replaceTopicId': {
-      const resolvedClientOnlyRow =
-        isClientOnlyTopicId(payload.id) && !!currentItems?.some((item) => item.id === payload.id);
-
-      return resolvedClientOnlyRow
-        ? Math.max(nextItemCount, currentTotal - 1)
-        : Math.max(nextItemCount, currentTotal);
+      // Promoting a tmp_topic_* placeholder to its real id never lowers the
+      // total: without an intervening fetch the server count already grew by
+      // one for the persisted topic, and decrementing here would end
+      // pagination early (hasMore=false with rows still on the server). The
+      // opposite race — a fetch that counted the persisted row while the
+      // placeholder was still retained — overcounts by one until the next
+      // authoritative fetch, which is the cheaper failure (one extra page
+      // request) and self-heals.
+      return Math.max(nextItemCount, currentTotal);
     }
 
     default: {
