@@ -69,9 +69,15 @@ vi.mock('@/enterprise/client/services/adminAgents', () => ({
     get: (...args: unknown[]) => mocks.get(...args),
   },
 }));
-vi.mock('@/components/Loading/BrandTextLoading', () => ({
-  default: () => <div role="status">loading</div>,
+// Only the brand mark is stubbed — it drags in the real Icon styles, which the
+// antd-style stub above cannot serve. The loader itself stays real.
+vi.mock('@lobehub/ui/brand', () => ({
+  BrandLoading: () => <span />,
+  LobeHubText: () => <span />,
 }));
+// BrandTextLoading is deliberately NOT mocked: the loading assertion below has to
+// see the real inline loader, so that losing its `role="status"` fails here
+// instead of being papered over by a role-injecting stub.
 vi.mock('@/components/NeuralNetworkLoading', () => ({
   default: () => <div role="status">loading</div>,
 }));
@@ -83,7 +89,11 @@ vi.mock('@/components/AsyncError', () => ({
   ),
 }));
 vi.mock('@lobehub/ui', () => ({
-  Center: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  // Spreads props like the real component: the inline loader's `role="status"`
+  // and its accessible label reach the DOM through here.
+  Center: ({ children, ...props }: { children?: ReactNode } & Record<string, unknown>) => (
+    <div {...props}>{children}</div>
+  ),
   Empty: ({ action, description }: { action?: ReactNode; description?: ReactNode }) => (
     <div>
       {description}
@@ -93,6 +103,7 @@ vi.mock('@lobehub/ui', () => ({
   Flexbox: ({ children, ...props }: { children?: ReactNode } & Record<string, unknown>) => (
     <div data-testid={props['data-testid'] as string | undefined}>{children}</div>
   ),
+  Icon: () => <span />,
   Input: (props: any) => <input {...props} />,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,

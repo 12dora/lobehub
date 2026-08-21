@@ -27,7 +27,9 @@ const ProfileArea = memo(() => {
   return (
     <Flexbox flex={1} height={'100%'} style={{ minWidth: 0, overflow: 'hidden' }}>
       {isGroupsLoading ? (
-        <Loading debugId="ProfileArea" />
+        <DelayedFallback>
+          <Loading debugId="ProfileArea" variant={'inline'} />
+        </DelayedFallback>
       ) : (
         <>
           <Header />

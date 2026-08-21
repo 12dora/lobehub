@@ -60,7 +60,11 @@ const ProfileArea = memo(() => {
           // gate on `!configError` so under loading→error precedence the loading
           // branch yields to the error state instead of spinning forever.
           isLoading={isAgentConfigLoading && !configError}
-          loading={<Loading debugId="ProfileArea" />}
+          loading={
+            <DelayedFallback>
+              <Loading debugId="ProfileArea" variant={'inline'} />
+            </DelayedFallback>
+          }
           onRetry={() => retryAgentConfigFetch()}
         >
           <Header />
