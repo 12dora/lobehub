@@ -813,6 +813,53 @@ describe('ChatGPTWebClient resume', () => {
     expect(events.at(-1)).toMatchObject({ recoveryRequired: true, type: 'done' });
   });
 
+  it('does not emit a handed-off `{` replayed empty on the resume leg', async () => {
+    const ambiguousAdd = JSON.stringify({
+      o: 'add',
+      p: '',
+      v: {
+        conversation_id: 'conv-h',
+        message: {
+          author: { role: 'assistant' },
+          content: { content_type: 'text', parts: [''] },
+          id: 'm1',
+          status: 'in_progress',
+        },
+      },
+    });
+    fetchMock
+      .mockResolvedValueOnce(
+        sseResponse([
+          '"v1"',
+          JSON.stringify({
+            conversation_id: 'conv-h',
+            kind: 'topic',
+            token: 'resume-jwt',
+            type: 'resume_conversation_token',
+          }),
+          ambiguousAdd,
+          JSON.stringify({ o: 'append', p: '/message/content/parts/0', v: '{' }),
+          JSON.stringify({ conversation_id: 'conv-h', type: 'stream_handoff' }),
+          '[DONE]',
+        ]),
+      )
+      .mockResolvedValueOnce(sseResponse([ambiguousAdd, '[DONE]']));
+
+    const events = [];
+    for await (const event of createClient().streamConversation(
+      {},
+      { maxResumes: 1, requirements, useFPath: true },
+    ))
+      events.push(event);
+
+    expect(events.filter((event) => event.type === 'text.delta')).toEqual([]);
+    expect(events.at(-1)).toMatchObject({
+      conversationId: 'conv-h',
+      recoveryRequired: true,
+      type: 'done',
+    });
+  });
+
   it('flags recovery when the resume budget runs out while still handed off', async () => {
     fetchMock.mockImplementation(async () => sseResponse(HANDOFF_PAYLOADS));
 

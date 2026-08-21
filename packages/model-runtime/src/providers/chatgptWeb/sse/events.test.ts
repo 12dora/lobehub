@@ -961,5 +961,93 @@ describe('ConversationEventRouter', () => {
       expect(events.some((event) => event.type === 'handoff')).toBe(true);
       expect(events.at(-1)).toMatchObject({ type: 'done' });
     });
+
+    it('does not release `{` on a status-only finish before stream_handoff', () => {
+      // Production shape: `{` lands, then `status: finished_successfully`
+      // without `end_turn`. Treating that as finished made inspectBentoText
+      // release the prefix *before* `stream_handoff`, so the [DONE] guard
+      // never saw it.
+      const { events } = feedAll([
+        assistantAdd('m1', { channel: undefined }),
+        append('{'),
+        {
+          o: 'patch',
+          p: '',
+          v: [{ o: 'replace', p: '/message/status', v: 'finished_successfully' }],
+        },
+        { conversation_id: 'conv-1', type: 'stream_handoff' },
+        '[DONE]',
+      ]);
+
+      expect(textOf(events)).toBe('');
+      expect(events.some((event) => event.type === 'handoff')).toBe(true);
+      expect(events.at(-1)).toMatchObject({ type: 'done' });
+    });
+
+    it('releases `{` at terminal [DONE] after a status-only finish with no handoff', () => {
+      const { events } = feedAll([
+        assistantAdd('m1', { channel: undefined }),
+        append('{'),
+        {
+          o: 'patch',
+          p: '',
+          v: [{ o: 'replace', p: '/message/status', v: 'finished_successfully' }],
+        },
+        '[DONE]',
+      ]);
+
+      expect(textOf(events)).toBe('{');
+      expect(events.at(-1)).toMatchObject({ type: 'done' });
+      expect(events.at(-1)).not.toMatchObject({ recoveryRequired: true });
+    });
+
+    it('does not flush a handed-off `{` from an empty resume replay', () => {
+      // Same ConversationEventRouter across legs, matching ChatGPTWebClient.
+      // Leg 1 withholds `{` and hands off; the resume re-adds m1 with empty
+      // text. The second [DONE] must not leak the previous leg's prefix, and
+      // must flag recovery instead of dressing `{` up as the answer.
+      const router = new ConversationEventRouter();
+      const first: ConversationEvent[] = [];
+      for (const payload of [
+        assistantAdd('m1', { channel: undefined }),
+        append('{'),
+        { conversation_id: 'conv-1', type: 'stream_handoff' },
+        '[DONE]',
+      ])
+        first.push(...router.feed(typeof payload === 'string' ? payload : JSON.stringify(payload)));
+
+      expect(textOf(first)).toBe('');
+      expect(first.some((event) => event.type === 'handoff')).toBe(true);
+
+      const resume: ConversationEvent[] = [];
+      for (const payload of [assistantAdd('m1', { channel: undefined }), '[DONE]'])
+        resume.push(
+          ...router.feed(typeof payload === 'string' ? payload : JSON.stringify(payload)),
+        );
+
+      expect(textOf(resume)).toBe('');
+      expect(resume.at(-1)).toMatchObject({ recoveryRequired: true, type: 'done' });
+    });
+
+    it('flushes `{` when the resume leg observes it again and ends without a handoff', () => {
+      const router = new ConversationEventRouter();
+      for (const payload of [
+        assistantAdd('m1', { channel: undefined }),
+        append('{'),
+        { conversation_id: 'conv-1', type: 'stream_handoff' },
+        '[DONE]',
+      ])
+        router.feed(typeof payload === 'string' ? payload : JSON.stringify(payload));
+
+      const resume: ConversationEvent[] = [];
+      for (const payload of [assistantAdd('m1', { channel: undefined }), append('{'), '[DONE]'])
+        resume.push(
+          ...router.feed(typeof payload === 'string' ? payload : JSON.stringify(payload)),
+        );
+
+      expect(textOf(resume)).toBe('{');
+      expect(resume.at(-1)).toMatchObject({ type: 'done' });
+      expect(resume.at(-1)).not.toMatchObject({ recoveryRequired: true });
+    });
   });
 });

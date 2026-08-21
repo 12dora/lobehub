@@ -37,9 +37,16 @@ interface MessageState {
   isAnswer: boolean;
   /**
    * Sanitized text withheld as an *ambiguous* bento prefix (`{`, `{"lay`, …).
-   * Released at a terminal `[DONE]` (no handoff); never on a handed-off leg.
+   * Scoped to the current SSE leg. Released on `end_turn: true`, or at a
+   * terminal `[DONE]` with no handoff — never on a status-only finish.
    */
   pendingAmbiguous?: string;
+  /**
+   * An ambiguous prefix was withheld on a previous handed-off SSE leg and has
+   * not been observed again. Never flushed as text; a terminal `[DONE]` that
+   * still has this set reports `recoveryRequired`.
+   */
+  quarantinedAmbiguous?: boolean;
   /** HIGH-WATER mark of the reasoning already surfaced — never shrinks */
   reasoning: string;
   reasoningDone: boolean;
@@ -97,17 +104,26 @@ export class ConversationEventRouter {
     if (!payload) return [];
     if (payload === '[DONE]') {
       const events: ConversationEvent[] = [];
+      const handedOff = this.sawHandoff;
       // A terminal leg (no handoff) never patches `status`/`end_turn` on some
-      // streams. Release any withheld `{` / `{"lay` so reasoning-then-`{` cannot
-      // vanish: reasoning already counts as output, so the client will not poll.
-      // A handed-off leg must NOT flush — the prefix may still become bento.
-      this.flushPendingAmbiguous(events);
+      // streams. Release any withheld `{` / `{"lay` observed on THIS leg so
+      // reasoning-then-`{` cannot vanish: reasoning already counts as output,
+      // so the client will not poll. A handed-off leg must NOT flush — the
+      // prefix may still become bento on resume — so quarantine it instead.
+      if (handedOff) this.quarantinePendingAmbiguous();
+      else this.flushPendingAmbiguous(events);
       this.sawHandoff = false;
       // Generated files must be reported BEFORE `done`: the consumer resolves
       // them inside the stream, while the conversation is still readable.
       for (const [messageId, state] of this.messages)
         this.emitSandboxFiles(messageId, state, events);
-      events.push({ conversationId: this.conversationId, endTurn: this.endTurn, type: 'done' });
+      const recoveryRequired = !handedOff && this.hasUnresolvedAmbiguous();
+      events.push({
+        conversationId: this.conversationId,
+        endTurn: this.endTurn,
+        type: 'done',
+        ...(recoveryRequired ? { recoveryRequired: true } : {}),
+      });
       return events;
     }
 
@@ -259,6 +275,8 @@ export class ConversationEventRouter {
     // live streams omit them on ordinary answers.
     if (this.shouldLatchIgnored(message)) {
       state.ignored = true;
+      state.pendingAmbiguous = undefined;
+      state.quarantinedAmbiguous = false;
     } else if (isAnswerMessage(message)) {
       state.isAnswer = true;
       this.emitText(message, messageId, state, events);
@@ -397,7 +415,13 @@ export class ConversationEventRouter {
     // and must never be treated as the user-facing answer (it can arrive before
     // `content_type: "code"` is patched in).
     const raw = messagePartsText(message);
-    if (!raw) return;
+    // An empty / reset snapshot (typical of a resume replay of the skeleton)
+    // is not a re-observation of the withheld prefix. Drop this leg's pending
+    // so a later terminal `[DONE]` cannot flush a previous leg's `{`.
+    if (!raw) {
+      state.pendingAmbiguous = undefined;
+      return;
+    }
 
     // `<replayed history><new text>` → `<new text>` (reference `strip_history`).
     const stripped = stripHistory(raw, this.historyText);
@@ -419,6 +443,11 @@ export class ConversationEventRouter {
     const finished =
       message.end_turn === true ||
       (typeof message.status === 'string' && message.status !== 'in_progress');
+    // Status-only completion is not enough to release `{` / `{"lay`: a
+    // `stream_handoff` can still follow, and the prefix may become bento on
+    // resume. Release on `end_turn: true` (the turn is done) or at a terminal
+    // `[DONE]` via {@link flushPendingAmbiguous}.
+    const endTurn = message.end_turn === true;
 
     // An echo that is still streaming in looks like a prefix of the history;
     // hold it back until it either completes (and strips to nothing) or
@@ -442,21 +471,25 @@ export class ConversationEventRouter {
     // recipient/channel classify the message. Withhold while the candidate can
     // still be that object; drop a complete object (and the following blank
     // line) if prose follows in the same message.
-    const bento = inspectBentoText(sanitized, { streaming: !finished });
+    const bento = inspectBentoText(sanitized, { streaming: !endTurn });
     if (bento.withhold) {
       if (bento.ignored && finished) state.ignored = true;
       // remember only *ambiguous* prefixes; a confirmed bento is dropped
       state.pendingAmbiguous = bento.confirmed ? undefined : sanitized;
+      // Re-observing this message on a later SSE leg resolves the quarantine:
+      // a confirmed bento is dropped; an ambiguous prefix may flush at [DONE].
+      state.quarantinedAmbiguous = false;
       return;
     }
     state.pendingAmbiguous = undefined;
+    state.quarantinedAmbiguous = false;
     this.advanceText(messageId, state, bento.text, events);
   }
 
   /**
    * `[DONE]` without a handoff is a supported terminal shape (no `status` patch).
-   * Treat any still-ambiguous prefix as finished text. Skip this after a
-   * `stream_handoff` so a resume can still grow `{` into bento JSON.
+   * Treat any still-ambiguous prefix *observed on this leg* as finished text.
+   * Skip this after a `stream_handoff` so a resume can still grow `{` into bento.
    */
   private flushPendingAmbiguous(events: ConversationEvent[]) {
     if (this.sawHandoff) return;
@@ -471,6 +504,25 @@ export class ConversationEventRouter {
       }
       this.advanceText(messageId, state, bento.text, events);
     }
+  }
+
+  /**
+   * A handed-off `[DONE]` must not flush `{`. Move it out of the per-leg pending
+   * slot so a later empty resume's terminal `[DONE]` cannot leak it as text.
+   */
+  private quarantinePendingAmbiguous() {
+    for (const state of this.messages.values()) {
+      if (!state.pendingAmbiguous) continue;
+      state.quarantinedAmbiguous = true;
+      state.pendingAmbiguous = undefined;
+    }
+  }
+
+  private hasUnresolvedAmbiguous(): boolean {
+    for (const state of this.messages.values()) {
+      if (state.quarantinedAmbiguous && !state.ignored && !state.historyOnly) return true;
+    }
+    return false;
   }
 
   /**
