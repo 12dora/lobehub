@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
+  buildOwnDeploymentOrigins,
   inferContentTypeFromImageUrl,
   inferFileExtensionFromImageUrl,
   isDesktopLocalStaticServerUrl,
@@ -547,80 +548,95 @@ describe('isLocalOrPrivateUrl', () => {
 });
 
 describe('isOwnDeploymentFileUrl', () => {
-  const originalEnv = {
-    APP_URL: process.env.APP_URL,
-    INTERNAL_APP_URL: process.env.INTERNAL_APP_URL,
-    S3_BUCKET: process.env.S3_BUCKET,
-    S3_ENABLE_PATH_STYLE: process.env.S3_ENABLE_PATH_STYLE,
-    S3_ENDPOINT: process.env.S3_ENDPOINT,
-    S3_PUBLIC_DOMAIN: process.env.S3_PUBLIC_DOMAIN,
-  };
-
-  afterEach(() => {
-    const restore = (key: keyof typeof originalEnv, value: string | undefined) => {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    };
-    restore('APP_URL', originalEnv.APP_URL);
-    restore('INTERNAL_APP_URL', originalEnv.INTERNAL_APP_URL);
-    restore('S3_BUCKET', originalEnv.S3_BUCKET);
-    restore('S3_ENABLE_PATH_STYLE', originalEnv.S3_ENABLE_PATH_STYLE);
-    restore('S3_ENDPOINT', originalEnv.S3_ENDPOINT);
-    restore('S3_PUBLIC_DOMAIN', originalEnv.S3_PUBLIC_DOMAIN);
-  });
-
-  beforeEach(() => {
-    delete process.env.APP_URL;
-    delete process.env.INTERNAL_APP_URL;
-    delete process.env.S3_BUCKET;
-    delete process.env.S3_ENABLE_PATH_STYLE;
-    delete process.env.S3_ENDPOINT;
-    delete process.env.S3_PUBLIC_DOMAIN;
+  const appOrigins = buildOwnDeploymentOrigins({
+    appUrl: 'https://app.example.com',
+    internalAppUrl: 'http://127.0.0.1:3010',
   });
 
   it('should allow exact app origins only on /f/{id}', () => {
-    process.env.APP_URL = 'https://app.example.com';
-    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
-
-    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc')).toBe(true);
-    expect(isOwnDeploymentFileUrl('http://127.0.0.1:3010/f/abc')).toBe(true);
-    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc?sig=secret')).toBe(true);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc', appOrigins)).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://127.0.0.1:3010/f/abc', appOrigins)).toBe(true);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc?sig=secret', appOrigins)).toBe(
+      true,
+    );
   });
 
   it('should reject generic loopback, other ports, and non-file app paths', () => {
-    process.env.APP_URL = 'https://app.example.com';
-    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
-
-    expect(isOwnDeploymentFileUrl('http://127.0.0.1:3000/internal')).toBe(false);
-    expect(isOwnDeploymentFileUrl('http://localhost:9000/bucket/a.png')).toBe(false);
-    expect(isOwnDeploymentFileUrl('https://app.example.com/admin')).toBe(false);
-    expect(isOwnDeploymentFileUrl('https://app.example.com:8443/f/abc')).toBe(false);
-    expect(isOwnDeploymentFileUrl('http://app.example.com/f/abc')).toBe(false);
-    expect(isOwnDeploymentFileUrl('https://app.example.com/f/')).toBe(false);
-    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc/extra')).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://127.0.0.1:3000/internal', appOrigins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://localhost:9000/bucket/a.png', appOrigins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/admin', appOrigins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://app.example.com:8443/f/abc', appOrigins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://app.example.com/f/abc', appOrigins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/', appOrigins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc/extra', appOrigins)).toBe(false);
   });
 
-  it('should allow S3 endpoint origins only on the bucket path', () => {
-    process.env.S3_ENDPOINT = 'http://minio:9000';
-    process.env.S3_BUCKET = 'lobe-files';
-    process.env.S3_ENABLE_PATH_STYLE = '1';
-    process.env.S3_PUBLIC_DOMAIN = 'https://files.example.com';
+  it('should allow path-style S3 origins only on the bucket path', () => {
+    const origins = buildOwnDeploymentOrigins({
+      bucket: 'lobe-files',
+      endpoint: 'http://minio:9000',
+      forcePathStyle: true,
+      publicDomain: 'https://files.example.com',
+    });
 
-    expect(isOwnDeploymentFileUrl('http://minio:9000/lobe-files/a.png')).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://minio:9000/lobe-files/a.png', origins)).toBe(true);
     expect(
-      isOwnDeploymentFileUrl('http://minio:9000/lobe-files/a.png?X-Amz-Signature=secret'),
+      isOwnDeploymentFileUrl('http://minio:9000/lobe-files/a.png?X-Amz-Signature=secret', origins),
     ).toBe(true);
-    expect(isOwnDeploymentFileUrl('http://minio:9000/other-bucket/a.png')).toBe(false);
-    expect(isOwnDeploymentFileUrl('http://minio:9000/lobe-files')).toBe(false);
-    expect(isOwnDeploymentFileUrl('https://files.example.com/a.png')).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://minio:9000/other-bucket/a.png', origins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://minio:9000/lobe-files', origins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://files.example.com/a.png', origins)).toBe(true);
+  });
+
+  it('should allow virtual-host S3 bucket origins with non-root object paths', () => {
+    const origins = buildOwnDeploymentOrigins({
+      bucket: 'mybucket',
+      endpoint: 'https://s3.example.net',
+      forcePathStyle: false,
+    });
+
+    expect(isOwnDeploymentFileUrl('https://mybucket.s3.example.net/file.png', origins)).toBe(true);
+    expect(
+      isOwnDeploymentFileUrl(
+        'https://mybucket.s3.example.net/file.png?X-Amz-Signature=secret',
+        origins,
+      ),
+    ).toBe(true);
+    expect(isOwnDeploymentFileUrl('https://s3.example.net/mybucket/file.png', origins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://mybucket.s3.example.net/', origins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://other.s3.example.net/file.png', origins)).toBe(false);
+  });
+
+  it('should use effective storage origins, not a stale environment origin', () => {
+    const envOrigins = buildOwnDeploymentOrigins({
+      bucket: 'old-bucket',
+      endpoint: 'http://localhost:9000',
+      forcePathStyle: true,
+    });
+    const effectiveOrigins = buildOwnDeploymentOrigins({
+      bucket: 'prod-files',
+      endpoint: 'https://s3.example.net',
+      forcePathStyle: false,
+    });
+
+    const envUrl = 'http://localhost:9000/old-bucket/a.png';
+    const effectiveUrl = 'https://prod-files.s3.example.net/a.png';
+
+    expect(isOwnDeploymentFileUrl(envUrl, envOrigins)).toBe(true);
+    expect(isOwnDeploymentFileUrl(effectiveUrl, envOrigins)).toBe(false);
+    expect(isOwnDeploymentFileUrl(effectiveUrl, effectiveOrigins)).toBe(true);
+    expect(isOwnDeploymentFileUrl(envUrl, effectiveOrigins)).toBe(false);
+  });
+
+  it('should fail closed when no origins are provided', () => {
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc')).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://localhost:9000/bucket/a.png', { rules: [] })).toBe(false);
   });
 
   it('should reject arbitrary public and private hosts', () => {
-    process.env.APP_URL = 'https://app.example.com';
-
-    expect(isOwnDeploymentFileUrl('https://evil.example.com/x.png')).toBe(false);
-    expect(isOwnDeploymentFileUrl('http://192.168.1.10/secret.png')).toBe(false);
-    expect(isOwnDeploymentFileUrl('not-a-url')).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://evil.example.com/x.png', appOrigins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://192.168.1.10/secret.png', appOrigins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('not-a-url', appOrigins)).toBe(false);
   });
 });
 
@@ -637,43 +653,25 @@ describe('sanitizedUrlHost', () => {
 });
 
 describe('resolveOwnDeploymentFetchUrl', () => {
-  const originalEnv = {
-    APP_URL: process.env.APP_URL,
-    INTERNAL_APP_URL: process.env.INTERNAL_APP_URL,
-  };
-
-  afterEach(() => {
-    const restore = (key: keyof typeof originalEnv, value: string | undefined) => {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    };
-    restore('APP_URL', originalEnv.APP_URL);
-    restore('INTERNAL_APP_URL', originalEnv.INTERNAL_APP_URL);
+  const origins = buildOwnDeploymentOrigins({
+    appUrl: 'https://app.example.com',
+    internalAppUrl: 'http://127.0.0.1:3010',
   });
 
   it('should rewrite APP_URL /f/ links onto INTERNAL_APP_URL', () => {
-    process.env.APP_URL = 'https://app.example.com';
-    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
-
-    expect(resolveOwnDeploymentFetchUrl('https://app.example.com/f/abc?sig=1')).toBe(
+    expect(resolveOwnDeploymentFetchUrl('https://app.example.com/f/abc?sig=1', origins)).toBe(
       'http://127.0.0.1:3010/f/abc?sig=1',
     );
   });
 
   it('should not rewrite non-file APP_URL paths', () => {
-    process.env.APP_URL = 'https://app.example.com';
-    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
-
-    expect(resolveOwnDeploymentFetchUrl('https://app.example.com/admin')).toBe(
+    expect(resolveOwnDeploymentFetchUrl('https://app.example.com/admin', origins)).toBe(
       'https://app.example.com/admin',
     );
   });
 
   it('should leave unrelated hosts unchanged', () => {
-    process.env.APP_URL = 'https://app.example.com';
-    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
-
-    expect(resolveOwnDeploymentFetchUrl('http://localhost:9000/bucket/a.png')).toBe(
+    expect(resolveOwnDeploymentFetchUrl('http://localhost:9000/bucket/a.png', origins)).toBe(
       'http://localhost:9000/bucket/a.png',
     );
   });

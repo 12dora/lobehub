@@ -131,6 +131,12 @@ export interface SSRFOptions {
   maxContentLength?: number;
   /** Max redirect hops on the proxied path (default 20, node-fetch's default). */
   maxRedirects?: number;
+  /**
+   * Do not console.error the underlying fetch error (node-fetch embeds the
+   * full request URL, including presigned query credentials). Thrown errors
+   * are host-only.
+   */
+  redactErrors?: boolean;
 }
 
 /**
@@ -290,6 +296,14 @@ export const ssrfSafeFetch = async (
     if (isProxyUnavailable(error)) throw error;
     const errorMessage = error instanceof Error ? error.message : String(error);
     const isSSRFBlock = errorMessage.includes('is not allowed');
+    const host = redactHost(url);
+
+    if (ssrfOptions?.redactErrors) {
+      if (isSSRFBlock) {
+        throw new Error(`SSRF blocked: host=${host}`, { cause: error });
+      }
+      throw new Error(`Fetch failed: host=${host}`, { cause: error });
+    }
 
     if (isSSRFBlock) {
       console.error('SSRF protection blocked request:', error);
@@ -302,5 +316,13 @@ export const ssrfSafeFetch = async (
 
     console.error('Fetch error:', error);
     throw new Error(`Fetch failed: ${errorMessage}`, { cause: error });
+  }
+};
+
+const redactHost = (value: string): string => {
+  try {
+    return new URL(value).host;
+  } catch {
+    return '<unparseable url>';
   }
 };

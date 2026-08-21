@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  assertDecodedBase64WithinLimit,
   AttachmentFetchError,
   AttachmentInlineLimitError,
   decodedBase64ByteLength,
@@ -190,14 +191,31 @@ describe('decodedBase64ByteLength', () => {
     expect(decodedBase64ByteLength('YWJj')).toBe(3);
   });
 
-  it('should treat a padded payload of exactly the 32MiB file limit as within limit', () => {
-    const maxBytes = DEFAULT_FILE_INLINE_MAX_BYTES;
-    const remainder = maxBytes % 3;
-    const padding = remainder === 0 ? 0 : 3 - remainder;
-    const encodedLength = 4 * Math.ceil(maxBytes / 3);
+  it('should floor unpadded payloads (YWI is 2 bytes, not 2.25)', () => {
+    expect(decodedBase64ByteLength('YWI')).toBe(2);
+    expect(decodedBase64ByteLength('YQ')).toBe(1);
+  });
 
-    // The naive `length/4 > limit/3` check rejects this size; padding-aware does not.
-    expect(encodedLength / 4 > maxBytes / 3).toBe(true);
-    expect((encodedLength * 3) / 4 - padding).toBe(maxBytes);
+  it('should reject invalid base64 syntax', () => {
+    expect(() => decodedBase64ByteLength('Y')).toThrow(TypeError);
+    expect(() => decodedBase64ByteLength('YWI===')).toThrow(TypeError);
+    expect(() => decodedBase64ByteLength('@@@')).toThrow(TypeError);
+  });
+
+  it.each([
+    { label: '5MiB', maxBytes: 5 * 1024 * 1024 },
+    { label: '20MiB', maxBytes: DEFAULT_IMAGE_INLINE_MAX_BYTES },
+    { label: '32MiB', maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES },
+  ])('should keep unpadded $label payloads at the floor, not 0.25 over', ({ maxBytes }) => {
+    expect(maxBytes % 3).toBe(2);
+    const unpaddedExact = Math.ceil(maxBytes / 3) * 4 - 1;
+    expect(Math.floor((unpaddedExact * 3) / 4)).toBe(maxBytes);
+    expect((unpaddedExact * 3) / 4).toBeGreaterThan(maxBytes);
+  });
+
+  it('should allow unpadded and padded payloads at the limit and reject one byte over', () => {
+    expect(() => assertDecodedBase64WithinLimit('YWI', 2)).not.toThrow();
+    expect(() => assertDecodedBase64WithinLimit('YWI=', 2)).not.toThrow();
+    expect(() => assertDecodedBase64WithinLimit('YWJj', 2)).toThrow(AttachmentInlineLimitError);
   });
 });

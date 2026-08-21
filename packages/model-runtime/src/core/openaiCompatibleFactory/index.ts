@@ -407,6 +407,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
       this.baseURL = baseURL || this.client.baseURL;
 
       this.id = options.id || provider;
+
       if (typeof inputOptions.chatgptAccountId === 'string') {
         this.subscriptionChannelId = createSignatureChannelId(
           'chatgpt-account',
@@ -414,6 +415,16 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         );
       }
       this.logPrefix = `lobe-model-runtime:${this.id}`;
+    }
+
+    private withOwnOrigins(
+      inline: ImageUrlToBase64Options | undefined,
+    ): ImageUrlToBase64Options | undefined {
+      if (!inline) return inline;
+      const ownOrigins = (this._options as { ownOrigins?: ImageUrlToBase64Options['ownOrigins'] })
+        .ownOrigins;
+      if (!ownOrigins) return inline;
+      return { ...inline, ownOrigins };
     }
 
     /**
@@ -740,8 +751,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           forceFileBase64: chatCompletion?.forceFileBase64,
           forceImageBase64: chatCompletion?.forceImageBase64,
           forceVideoBase64: chatCompletion?.forceVideoBase64,
-          inlineFile: chatCompletion?.inlineFile,
-          inlineImage: chatCompletion?.inlineImage,
+          inlineFile: this.withOwnOrigins(chatCompletion?.inlineFile),
+          inlineImage: this.withOwnOrigins(chatCompletion?.inlineImage),
           model: postPayload.model,
         });
         const includeUsageRequested = Boolean(postPayload.stream && !chatCompletion?.excludeUsage);
@@ -1572,8 +1583,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         forceFileBase64: chatCompletion?.forceFileBase64,
         forceImageBase64: chatCompletion?.forceImageBase64,
         forceVideoBase64: chatCompletion?.forceVideoBase64,
-        inlineFile: chatCompletion?.inlineFile,
-        inlineImage: chatCompletion?.inlineImage,
+        inlineFile: this.withOwnOrigins(chatCompletion?.inlineFile),
+        inlineImage: this.withOwnOrigins(chatCompletion?.inlineImage),
         reasoningSignatureScope,
         strictToolPairing: true,
       });
@@ -1737,8 +1748,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           forceFileBase64: chatCompletion?.forceFileBase64,
           forceImageBase64: chatCompletion?.forceImageBase64,
           forceVideoBase64: chatCompletion?.forceVideoBase64,
-          inlineFile: chatCompletion?.inlineFile,
-          inlineImage: chatCompletion?.inlineImage,
+          inlineFile: this.withOwnOrigins(chatCompletion?.inlineFile),
+          inlineImage: this.withOwnOrigins(chatCompletion?.inlineImage),
           reasoningSignatureScope,
           strictToolPairing: true,
         });

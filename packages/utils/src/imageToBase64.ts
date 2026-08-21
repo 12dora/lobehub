@@ -2,6 +2,7 @@ import { Buffer } from 'buffer.js';
 import debug from 'debug';
 
 import { resolveMimeTypeFromBytes } from './imageMimeType';
+import type { OwnDeploymentOrigins } from './url';
 import { isOwnDeploymentFileUrl, resolveOwnDeploymentFetchUrl, sanitizedUrlHost } from './url';
 
 const log = debug('lobe-utils:imageToBase64');
@@ -48,17 +49,36 @@ export interface ImageUrlToBase64Options {
    * deployment file origin + file route. ChatGPT/Codex must pass this.
    */
   ownOriginOnly?: boolean;
+  /**
+   * Immutable origin/path rules resolved server-side from the effective
+   * storage snapshot. Required when `ownOriginOnly` is set.
+   */
+  ownOrigins?: OwnDeploymentOrigins | Promise<OwnDeploymentOrigins>;
 }
 
+const BASE64_BODY = /^[A-Z0-9+/]*={0,2}$/i;
+
 /**
- * Padding-aware decoded byte length of a base64 payload. Does not allocate the
- * decoded buffer. `length/4 > limit/3` is wrong at limits not divisible by 3.
+ * Floor-aware decoded byte length of a base64 payload. Does not allocate the
+ * decoded buffer. Unpadded payloads (length % 4 !== 0) are valid; `YWI` is 2
+ * bytes, not 2.25.
  */
 export const decodedBase64ByteLength = (base64: string): number => {
   const compact = base64.replaceAll(/\s/g, '');
   if (!compact) return 0;
+  if (!BASE64_BODY.test(compact)) {
+    throw new TypeError('Invalid base64 payload');
+  }
+
   const padding = compact.endsWith('==') ? 2 : compact.endsWith('=') ? 1 : 0;
-  return (compact.length * 3) / 4 - padding;
+  if (padding > 0 && compact.length % 4 !== 0) {
+    throw new TypeError('Invalid base64 payload');
+  }
+  if (padding === 0 && compact.length % 4 === 1) {
+    throw new TypeError('Invalid base64 payload');
+  }
+
+  return Math.floor(((compact.length - padding) * 3) / 4);
 };
 
 export const assertDecodedBase64WithinLimit = (base64: string, maxBytes: number): void => {
@@ -116,7 +136,7 @@ const fetchAttachment = async (
   const ownOriginOnly = options?.ownOriginOnly === true;
   const maxBytes = options?.maxBytes;
   const ssrfOptions = {
-    ...(ownOriginOnly ? { allowPrivateIPAddress: true, maxRedirects: 0 } : {}),
+    ...(ownOriginOnly ? { allowPrivateIPAddress: true, maxRedirects: 0, redactErrors: true } : {}),
     ...(maxBytes !== undefined ? { maxContentLength: maxBytes + 1 } : {}),
   };
   const requestInit: RequestInit | undefined = ownOriginOnly ? { redirect: 'manual' } : undefined;
@@ -151,13 +171,14 @@ export const imageUrlToBase64 = async (
   const ownOriginOnly = options?.ownOriginOnly === true;
   const maxBytes = options?.maxBytes;
   const isServer = typeof window === 'undefined';
+  const origins = ownOriginOnly ? await Promise.resolve(options?.ownOrigins) : undefined;
 
   try {
-    let currentUrl = ownOriginOnly ? resolveOwnDeploymentFetchUrl(imageUrl) : imageUrl;
+    let currentUrl = ownOriginOnly ? resolveOwnDeploymentFetchUrl(imageUrl, origins) : imageUrl;
 
     let res: Response | undefined;
     for (let hop = 0; hop <= OWN_ORIGIN_MAX_REDIRECTS; hop += 1) {
-      if (ownOriginOnly && !isOwnDeploymentFileUrl(currentUrl)) {
+      if (ownOriginOnly && !isOwnDeploymentFileUrl(currentUrl, origins)) {
         throw new AttachmentFetchError(sanitizedUrlHost(currentUrl));
       }
 
@@ -193,10 +214,21 @@ export const imageUrlToBase64 = async (
 
     return { base64, mimeType };
   } catch (error) {
-    const host = sanitizedUrlHost(imageUrl);
-    const name = error instanceof Error ? error.name : 'Error';
-    const status = error instanceof AttachmentFetchError ? error.status : undefined;
-    log('inline failed: host=%s error=%s status=%s', host, name, status ?? '-');
+    if (error instanceof AttachmentInlineLimitError) throw error;
+    if (error instanceof AttachmentFetchError) {
+      log(
+        'inline failed: host=%s error=%s status=%s',
+        sanitizedUrlHost(imageUrl),
+        error.name,
+        error.status ?? '-',
+      );
+      throw error;
+    }
+    if (ownOriginOnly) {
+      const host = sanitizedUrlHost(imageUrl);
+      log('inline failed: host=%s error=%s status=-', host, 'AttachmentFetchError');
+      throw new AttachmentFetchError(host);
+    }
     throw error;
   }
 };

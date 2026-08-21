@@ -1,5 +1,6 @@
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { CURRENT_VERSION } from '@lobechat/const';
+import type { OwnDeploymentOrigins } from '@lobechat/utils';
 import { DEFAULT_FILE_INLINE_MAX_BYTES, DEFAULT_IMAGE_INLINE_MAX_BYTES } from '@lobechat/utils';
 import { isRecord } from '@lobechat/utils/object';
 import type { ChatModelCard } from 'model-bank';
@@ -21,6 +22,7 @@ const USER_AGENT = `${BRANDING_NAME}/${CURRENT_VERSION}`;
 
 interface ChatGPTClientOptions {
   chatgptAccountId?: string;
+  ownOrigins?: OwnDeploymentOrigins | Promise<OwnDeploymentOrigins>;
 }
 
 interface ChatGPTAdditionalToolsInput {
@@ -276,7 +278,7 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
   },
   createImage: createChatGPTImage,
   customClient: {
-    createClient: ({ chatgptAccountId, ...options }) =>
+    createClient: ({ chatgptAccountId, ownOrigins: _ownOrigins, ...options }) =>
       new OpenAI({
         ...options,
         defaultHeaders: {

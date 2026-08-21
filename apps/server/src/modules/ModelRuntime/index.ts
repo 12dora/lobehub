@@ -59,6 +59,7 @@ import {
   resolvePlatformAiExecutionConfigAtRevision,
   wrapPlatformModelRuntime,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
+import { resolveOwnDeploymentOrigins } from '@/server/services/file/ownDeploymentOrigins';
 import { createLLMGenerationTracingHook } from '@/server/services/llmGenerationTracing/hook';
 import { ensureFreshOAuthToken } from '@/server/services/oauthDeviceFlow/refresh';
 
@@ -955,6 +956,13 @@ export const initModelRuntimeWithUserPayload = (
               accountId: buildCursorRuntimeAccountId(provider, params),
               conversationKey,
               installationId,
+            }
+          : {}),
+        ...(runtimeProvider === ModelProvider.ChatGPT
+          ? {
+              ownOrigins:
+                (restParams as { ownOrigins?: unknown }).ownOrigins ??
+                resolveOwnDeploymentOrigins(),
             }
           : {}),
         ...(customFetch ? { fetch: customFetch } : {}),

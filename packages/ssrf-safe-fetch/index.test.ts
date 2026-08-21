@@ -200,6 +200,22 @@ describe('ssrfSafeFetch', () => {
       expect(console.error).toHaveBeenCalledWith('Fetch error:', originalError);
     });
 
+    it('should not log or throw a presigned URL when redactErrors is set', async () => {
+      const signed = 'https://files.example.com/a.png?X-Amz-Signature=super-secret-signature';
+      const originalError = new Error(`request to ${signed} failed, reason: connect ECONNREFUSED`);
+      mockFetch.mockRejectedValue(originalError);
+
+      const error = await ssrfSafeFetch(signed, {}, { redactErrors: true }).catch(
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('Fetch failed: host=files.example.com');
+      expect((error as Error).message).not.toContain('X-Amz-Signature');
+      expect((error as Error).message).not.toContain('super-secret-signature');
+      expect(console.error).not.toHaveBeenCalled();
+    });
+
     it('should throw SSRF blocked error when request-filtering-agent blocks', async () => {
       const ssrfError = new Error(
         'DNS lookup 10.0.0.1(family:4, host:10.0.0.1) is not allowed. Because, It is private IP address.',

@@ -248,22 +248,42 @@ const originOf = (value: string | undefined): string | undefined => {
 
 const APP_FILE_PATH = /^\/f\/[^/]+$/;
 
-const s3BucketPrefix = (): string | undefined => {
-  const bucket = process.env.S3_BUCKET?.trim();
-  if (!bucket) return undefined;
-  return `/${bucket.replaceAll(/^\/+|\/+$/g, '')}/`;
-};
+const normalizeBucket = (bucket: string): string => bucket.trim().replaceAll(/^\/+|\/+$/g, '');
 
 const pathnameIsAppFileRoute = (pathname: string): boolean => APP_FILE_PATH.test(pathname);
 
-const pathnameIsS3ObjectPath = (pathname: string, requireBucketPrefix: boolean): boolean => {
-  if (!pathname || pathname === '/') return false;
-  const prefix = s3BucketPrefix();
-  if (requireBucketPrefix && prefix) {
-    return pathname.startsWith(prefix) && pathname.length > prefix.length;
-  }
-  return true;
+const pathnameIsNonRootObject = (pathname: string): boolean =>
+  pathname.length > 1 && pathname !== '/';
+
+const pathnameIsPathStyleObject = (pathname: string, bucket: string): boolean => {
+  const prefix = `/${normalizeBucket(bucket)}/`;
+  return pathname.startsWith(prefix) && pathname.length > prefix.length;
 };
+
+export type OwnOriginPathPolicy =
+  | { bucket: string; type: 's3-path-style' }
+  | { type: 'app-file' }
+  | { type: 's3-public' }
+  | { type: 's3-virtual-host' };
+
+export interface OwnOriginRule {
+  origin: string;
+  path: OwnOriginPathPolicy;
+}
+
+export interface OwnDeploymentOrigins {
+  rewrite?: { fromOrigin: string; toOrigin: string };
+  rules: OwnOriginRule[];
+}
+
+export interface OwnDeploymentOriginInput {
+  appUrl?: string;
+  bucket?: string;
+  endpoint?: string;
+  forcePathStyle?: boolean;
+  internalAppUrl?: string;
+  publicDomain?: string;
+}
 
 /**
  * Hostname only — never the path or query (presigned S3 URLs put credentials
@@ -277,63 +297,111 @@ export const sanitizedUrlHost = (url: string): string => {
   }
 };
 
+const virtualHostOrigin = (endpoint: string, bucket: string): string | undefined => {
+  try {
+    const endpointUrl = new URL(withProtocol(endpoint));
+    const virtual = new URL(endpointUrl.href);
+    virtual.hostname = `${normalizeBucket(bucket)}.${endpointUrl.hostname}`;
+    return virtual.origin.toLowerCase();
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Pure allowlist builder. Callers pass the *effective* storage snapshot
+ * (getInfraSnapshot) plus app origins — never read process.env here.
+ */
+export const buildOwnDeploymentOrigins = (
+  input: OwnDeploymentOriginInput,
+): OwnDeploymentOrigins => {
+  const rules: OwnOriginRule[] = [];
+  const appOrigin = originOf(input.appUrl);
+  const internalOrigin = originOf(input.internalAppUrl);
+
+  if (appOrigin) rules.push({ origin: appOrigin, path: { type: 'app-file' } });
+  if (internalOrigin && internalOrigin !== appOrigin) {
+    rules.push({ origin: internalOrigin, path: { type: 'app-file' } });
+  }
+
+  const bucket = input.bucket ? normalizeBucket(input.bucket) : '';
+  const endpointOrigin = originOf(input.endpoint);
+  if (bucket && input.endpoint && endpointOrigin) {
+    if (input.forcePathStyle) {
+      rules.push({ origin: endpointOrigin, path: { bucket, type: 's3-path-style' } });
+    } else {
+      const virtualOrigin = virtualHostOrigin(input.endpoint, bucket);
+      if (virtualOrigin) {
+        rules.push({ origin: virtualOrigin, path: { type: 's3-virtual-host' } });
+      }
+    }
+  }
+
+  const publicOrigin = originOf(input.publicDomain);
+  if (publicOrigin) {
+    rules.push({ origin: publicOrigin, path: { type: 's3-public' } });
+  }
+
+  const rewrite =
+    appOrigin && internalOrigin && appOrigin !== internalOrigin
+      ? { fromOrigin: appOrigin, toOrigin: internalOrigin }
+      : undefined;
+
+  return { rewrite, rules };
+};
+
+const pathMatches = (pathname: string, policy: OwnOriginPathPolicy): boolean => {
+  switch (policy.type) {
+    case 'app-file': {
+      return pathnameIsAppFileRoute(pathname);
+    }
+    case 's3-path-style': {
+      return pathnameIsPathStyleObject(pathname, policy.bucket);
+    }
+    case 's3-public':
+    case 's3-virtual-host': {
+      return pathnameIsNonRootObject(pathname);
+    }
+    default: {
+      return false;
+    }
+  }
+};
+
 /**
  * URLs that belong to this deployment's file storage. Compared by exact origin
- * (scheme + host + port). Loopback is not trusted unless it is that origin.
- *
- * App origins (APP_URL / INTERNAL_APP_URL) may only serve `/f/{id}`.
- * S3_ENDPOINT / S3_PUBLIC_DOMAIN may only serve object paths (bucket prefix
- * when `S3_BUCKET` is set on a path-style endpoint).
+ * (scheme + host + port) against caller-supplied rules. Fail closed when no
+ * rules are provided — do not consult process.env.
  */
-export function isOwnDeploymentFileUrl(url: string): boolean {
+export function isOwnDeploymentFileUrl(url: string, origins?: OwnDeploymentOrigins): boolean {
+  if (!origins?.rules.length) return false;
+
   try {
     const parsed = new URL(url);
     const origin = parsed.origin.toLowerCase();
     const pathname = parsed.pathname;
 
-    const appOrigins = [
-      originOf(process.env.APP_URL),
-      originOf(process.env.INTERNAL_APP_URL),
-    ].filter((value): value is string => Boolean(value));
-    if (appOrigins.includes(origin)) {
-      return pathnameIsAppFileRoute(pathname);
-    }
-
-    const s3EndpointOrigin = originOf(process.env.S3_ENDPOINT);
-    if (s3EndpointOrigin && origin === s3EndpointOrigin) {
-      const pathStyle = process.env.S3_ENABLE_PATH_STYLE === '1' || Boolean(s3BucketPrefix());
-      return pathnameIsS3ObjectPath(pathname, pathStyle);
-    }
-
-    const publicOrigin = originOf(process.env.S3_PUBLIC_DOMAIN);
-    if (publicOrigin && origin === publicOrigin) {
-      return pathname.length > 1;
-    }
-
-    return false;
+    return origins.rules.some((rule) => rule.origin === origin && pathMatches(pathname, rule.path));
   } catch {
     return false;
   }
 }
 
 /**
- * Prefer INTERNAL_APP_URL when fetching a public APP_URL `/f/` link so inlining
- * can hit the local origin instead of a CDN / public hostname Codex cannot use.
+ * Prefer the internal app origin when fetching a public APP_URL `/f/` link.
  */
-export function resolveOwnDeploymentFetchUrl(url: string): string {
-  const appUrl = process.env.APP_URL;
-  const internal = process.env.INTERNAL_APP_URL;
-  if (!appUrl || !internal || appUrl === internal) return url;
+export function resolveOwnDeploymentFetchUrl(url: string, origins?: OwnDeploymentOrigins): string {
+  const rewrite = origins?.rewrite;
+  if (!rewrite) return url;
 
   try {
     const parsed = new URL(url);
-    const appOrigin = originOf(appUrl);
-    if (!appOrigin || parsed.origin.toLowerCase() !== appOrigin) return url;
+    if (parsed.origin.toLowerCase() !== rewrite.fromOrigin) return url;
     if (!pathnameIsAppFileRoute(parsed.pathname)) return url;
 
-    const internalUrl = new URL(withProtocol(internal));
-    parsed.protocol = internalUrl.protocol;
-    parsed.host = internalUrl.host;
+    const internal = new URL(rewrite.toOrigin);
+    parsed.protocol = internal.protocol;
+    parsed.host = internal.host;
     return parsed.toString();
   } catch {
     return url;

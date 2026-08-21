@@ -1,5 +1,6 @@
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { CURRENT_VERSION } from '@lobechat/const';
+import type { OwnDeploymentOrigins } from '@lobechat/utils';
 import {
   assertDecodedBase64WithinLimit,
   AttachmentInlineLimitError,
@@ -32,6 +33,7 @@ const BACKGROUND_VALUES = new Set(['transparent', 'opaque', 'auto']);
 
 type ChatGPTCreateImageOptions = CreateImageOptions & {
   chatgptAccountId?: string;
+  ownOrigins?: OwnDeploymentOrigins | Promise<OwnDeploymentOrigins>;
 };
 
 interface CodexImageData {
@@ -161,7 +163,10 @@ const collectReferenceUrls = (params: CreateImagePayload['params']): string[] =>
  * Convert a caller URL to a base64 data URL. Codex cannot fetch our file hosts,
  * so http(s) references are inlined server-side with a bounded SSRF-safe fetch.
  */
-const toBase64DataUrl = async (imageUrl: string): Promise<string> => {
+const toBase64DataUrl = async (
+  imageUrl: string,
+  ownOrigins?: OwnDeploymentOrigins | Promise<OwnDeploymentOrigins>,
+): Promise<string> => {
   const { type, base64, mimeType } = parseDataUri(imageUrl);
 
   if (type === 'base64') {
@@ -176,6 +181,7 @@ const toBase64DataUrl = async (imageUrl: string): Promise<string> => {
     const { base64: urlBase64, mimeType: urlMimeType } = await imageUrlToBase64(imageUrl, {
       maxBytes: MAX_REFERENCE_BYTES,
       ownOriginOnly: true,
+      ownOrigins,
     });
     return `data:${urlMimeType || 'image/png'};base64,${urlBase64}`;
   }
@@ -276,9 +282,9 @@ export async function createChatGPTImage(
     if (background) body.background = background;
 
     if (isEdit) {
-      body.images = (await Promise.all(referenceUrls.map((url) => toBase64DataUrl(url)))).map(
-        (imageUrl) => ({ image_url: imageUrl }),
-      );
+      body.images = (
+        await Promise.all(referenceUrls.map((url) => toBase64DataUrl(url, options.ownOrigins)))
+      ).map((imageUrl) => ({ image_url: imageUrl }));
     }
 
     const client = resolveClient(options);
