@@ -1490,6 +1490,35 @@ describe('ChatService', () => {
         );
       });
 
+      it('should enable built-in search for grok when useModelBuiltinSearch is unset', async () => {
+        const getChatCompletionSpy = vi.spyOn(chatService, 'getChatCompletion');
+
+        const messages = [{ content: 'Search X for news', role: 'user' }] as UIChatMessage[];
+
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              searchMode: 'auto',
+            }) as any,
+        );
+
+        await chatService.createAssistantMessage({
+          messages,
+          model: 'grok-4.6',
+          provider: 'grok',
+          resolvedAgentConfig: createMockResolvedConfig({
+            agentConfig: { model: 'grok-4.6', provider: 'grok' },
+          }),
+        });
+
+        expect(getChatCompletionSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            enabledSearch: true,
+          }),
+          expect.anything(),
+        );
+      });
+
       it('should not enable search when searchMode is off', async () => {
         const getChatCompletionSpy = vi.spyOn(chatService, 'getChatCompletion');
 

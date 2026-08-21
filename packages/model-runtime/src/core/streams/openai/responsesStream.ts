@@ -31,6 +31,122 @@ const mapResponsesIncompleteFinishReason = (reason?: string | null): string => {
   return reason || 'incomplete';
 };
 
+const NATIVE_SEARCH_ITEM_TYPES = new Set(['web_search_call', 'x_search_call']);
+
+const isNativeSearchItemType = (type?: string): type is 'web_search_call' | 'x_search_call' =>
+  !!type && NATIVE_SEARCH_ITEM_TYPES.has(type);
+
+const nativeSearchLabel = (type: string) => (type.includes('x_search') ? 'X search' : 'Web search');
+
+const extractNativeSearchQuery = (item: unknown): string | undefined => {
+  if (!item || typeof item !== 'object') return undefined;
+  const record = item as Record<string, unknown>;
+  if (typeof record.query === 'string' && record.query) return record.query;
+  const action = record.action;
+  if (action && typeof action === 'object') {
+    const query = (action as { query?: unknown }).query;
+    if (typeof query === 'string' && query) return query;
+  }
+  return undefined;
+};
+
+const extractNativeSearchCitations = (item: unknown): ChatCitationItem[] => {
+  if (!item || typeof item !== 'object') return [];
+  const record = item as Record<string, unknown>;
+  const action = record.action && typeof record.action === 'object' ? record.action : undefined;
+  const sources = [
+    record.results,
+    record.citations,
+    record.sources,
+    action && typeof action === 'object' ? (action as { sources?: unknown }).sources : undefined,
+    action && typeof action === 'object' ? (action as { results?: unknown }).results : undefined,
+  ].find((value) => Array.isArray(value));
+
+  if (!Array.isArray(sources)) return [];
+
+  return sources.flatMap((source) => {
+    if (typeof source === 'string' && source) return [{ title: source, url: source }];
+    if (!source || typeof source !== 'object') return [];
+    const entry = source as Record<string, unknown>;
+    const url =
+      (typeof entry.url === 'string' && entry.url) ||
+      (typeof entry.uri === 'string' && entry.uri) ||
+      undefined;
+    if (!url) return [];
+    const title = typeof entry.title === 'string' && entry.title ? entry.title : url;
+    return [{ title, url }];
+  });
+};
+
+const upsertNativeSearchQuery = (
+  streamContext: StreamContext,
+  itemType: string,
+  id: string | undefined,
+  query?: string,
+) => {
+  const key = id || `${itemType}:${Object.keys(streamContext.nativeSearchQueries ?? {}).length}`;
+  streamContext.nativeSearchQueries ??= {};
+  const existing = streamContext.nativeSearchQueries[key];
+  streamContext.nativeSearchQueries[key] = query || existing || nativeSearchLabel(itemType);
+};
+
+const rememberNativeSearchCitations = (streamContext: StreamContext, item: unknown) => {
+  const citations = extractNativeSearchCitations(item);
+  if (!citations.length) return;
+
+  streamContext.returnedCitationArray ??= [];
+  for (const citation of citations) {
+    if (!streamContext.returnedCitationArray.some((item) => item.url === citation.url)) {
+      streamContext.returnedCitationArray.push(citation);
+    }
+  }
+};
+
+const buildNativeSearchGroundingData = (streamContext: StreamContext) => {
+  const citations = streamContext.returnedCitationArray;
+  const searchQueries = Object.values(streamContext.nativeSearchQueries ?? {});
+
+  return {
+    ...(citations?.length ? { citations } : {}),
+    ...(searchQueries.length ? { searchQueries } : {}),
+  };
+};
+
+const emitNativeSearchGrounding = (
+  streamContext: StreamContext,
+  id?: string,
+): StreamProtocolChunk => ({
+  data: buildNativeSearchGroundingData(streamContext),
+  id: id ?? streamContext.id,
+  type: 'grounding',
+});
+
+const handleNativeSearchItem = (
+  streamContext: StreamContext,
+  item: { id?: string; type?: string } & Record<string, unknown>,
+): StreamProtocolChunk => {
+  const itemType = typeof item.type === 'string' ? item.type : 'web_search_call';
+  upsertNativeSearchQuery(
+    streamContext,
+    itemType,
+    typeof item.id === 'string' ? item.id : undefined,
+    extractNativeSearchQuery(item),
+  );
+  rememberNativeSearchCitations(streamContext, item);
+  return emitNativeSearchGrounding(
+    streamContext,
+    typeof item.id === 'string' ? item.id : undefined,
+  );
+};
+
+const nativeSearchEventType = (
+  eventType: string,
+): 'web_search_call' | 'x_search_call' | undefined => {
+  if (eventType.startsWith('response.x_search_call.')) return 'x_search_call';
+  if (eventType.startsWith('response.web_search_call.')) return 'web_search_call';
+  return undefined;
+};
+
 const emitResponsesTerminalChunks = (
   chunk: {
     response: {
@@ -150,6 +266,13 @@ const transformOpenAIStream = (
               type: 'tool_calls',
             } satisfies StreamProtocolToolCallChunk;
           }
+        }
+
+        if (isNativeSearchItemType(chunk.item.type)) {
+          return handleNativeSearchItem(
+            streamContext,
+            chunk.item as { id?: string; type?: string } & Record<string, unknown>,
+          );
         }
 
         return { data: chunk.item, id: streamContext.id, type: 'data' };
@@ -276,9 +399,17 @@ const transformOpenAIStream = (
           return chunks;
         }
 
-        if (streamContext.returnedCitationArray?.length) {
+        if (isNativeSearchItemType(chunk.item.type)) {
+          return handleNativeSearchItem(
+            streamContext,
+            chunk.item as { id?: string; type?: string } & Record<string, unknown>,
+          );
+        }
+
+        const grounding = buildNativeSearchGroundingData(streamContext);
+        if (grounding.citations?.length || grounding.searchQueries?.length) {
           return {
-            data: { citations: streamContext.returnedCitationArray },
+            data: grounding,
             id: chunk.item.id,
             type: 'grounding',
           };
@@ -316,6 +447,24 @@ const transformOpenAIStream = (
       }
 
       default: {
+        const searchEventType = nativeSearchEventType(chunk.type);
+        if (searchEventType) {
+          const event = chunk as {
+            item?: Record<string, unknown>;
+            item_id?: string;
+            type: string;
+          };
+          const item = {
+            ...event.item,
+            id:
+              (typeof event.item_id === 'string' && event.item_id) ||
+              (typeof event.item?.id === 'string' && event.item.id) ||
+              undefined,
+            type: searchEventType,
+          };
+          return handleNativeSearchItem(streamContext, item);
+        }
+
         return { data: chunk, id: streamContext.id, type: 'data' };
       }
     }

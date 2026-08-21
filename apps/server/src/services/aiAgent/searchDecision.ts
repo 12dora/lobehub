@@ -68,6 +68,7 @@ export const resolveServerSearchDecision = ({
 
   return resolveSearchDecision({
     modelSearchImpl: resolvedModelSearchImpl,
+    provider,
     providerSearchMode: providerSearchMode ?? builtinProviderSearchMode,
     searchMode: chatConfig?.searchMode,
     useModelBuiltinSearch: chatConfig?.useModelBuiltinSearch,

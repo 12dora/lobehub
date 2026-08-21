@@ -20,6 +20,7 @@ import {
   Settings2Icon,
   TypeIcon,
 } from 'lucide-react';
+import { prefersNativeSearchByDefault } from 'model-bank';
 import type { ReactNode } from 'react';
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -360,9 +361,18 @@ const PlusAction = memo(() => {
   const showProviderSearch =
     !isModelBuiltinSearchInternal && (isModelHasBuiltinSearch || isProviderHasBuiltinSearch);
 
-  // Derived active search option
+  // Derived active search option. Grok-family providers default to Provider Search
+  // when the user has not explicitly chosen App Search (`useModelBuiltinSearch` unset).
   const activeSearchOption: 'off' | 'app' | 'provider' =
-    searchMode === 'off' ? 'off' : useModelBuiltinSearch ? 'provider' : 'app';
+    searchMode === 'off'
+      ? 'off'
+      : useModelBuiltinSearch === true
+        ? 'provider'
+        : useModelBuiltinSearch === false
+          ? 'app'
+          : prefersNativeSearchByDefault(provider)
+            ? 'provider'
+            : 'app';
 
   const handleToggleMemory = useCallback(
     async (enabled: boolean) => {

@@ -1863,4 +1863,126 @@ describe('OpenAIResponsesStream', () => {
       );
     });
   });
+
+  describe('native xAI search calls', () => {
+    it('emits grounding with an X search query when x_search_call is added', async () => {
+      const chunks = await readStreamChunk(
+        OpenAIResponsesStream(
+          createReadableStream([
+            { response: { id: 'resp_x_search', status: 'in_progress' }, type: 'response.created' },
+            {
+              item: {
+                action: { query: 'latest tesla news', type: 'search' },
+                id: 'xs_1',
+                status: 'in_progress',
+                type: 'x_search_call',
+              },
+              output_index: 0,
+              type: 'response.output_item.added',
+            },
+          ]),
+        ),
+      );
+
+      const grounding = parseSseEvents(chunks).find((event) => event.type === 'grounding');
+      expect(grounding).toBeDefined();
+      expect(JSON.parse(grounding!.data)).toEqual({
+        searchQueries: ['latest tesla news'],
+      });
+    });
+
+    it('emits grounding for web_search_call and attaches url citations on done', async () => {
+      const chunks = await readStreamChunk(
+        OpenAIResponsesStream(
+          createReadableStream([
+            {
+              response: { id: 'resp_web_search', status: 'in_progress' },
+              type: 'response.created',
+            },
+            {
+              item: {
+                id: 'ws_1',
+                status: 'in_progress',
+                type: 'web_search_call',
+              },
+              output_index: 0,
+              type: 'response.output_item.added',
+            },
+            {
+              item: {
+                action: {
+                  query: 'lobehub changelog',
+                  sources: [{ title: 'LobeHub', url: 'https://lobehub.com' }],
+                  type: 'search',
+                },
+                id: 'ws_1',
+                status: 'completed',
+                type: 'web_search_call',
+              },
+              output_index: 0,
+              type: 'response.output_item.done',
+            },
+          ]),
+        ),
+      );
+
+      const groundingEvents = parseSseEvents(chunks).filter((event) => event.type === 'grounding');
+      expect(groundingEvents.length).toBeGreaterThanOrEqual(2);
+      expect(JSON.parse(groundingEvents[0]!.data)).toEqual({
+        searchQueries: ['Web search'],
+      });
+      expect(JSON.parse(groundingEvents.at(-1)!.data)).toEqual({
+        citations: [{ title: 'LobeHub', url: 'https://lobehub.com' }],
+        searchQueries: ['lobehub changelog'],
+      });
+    });
+
+    it('handles response.x_search_call and response.web_search_call progress events', async () => {
+      const chunks = await readStreamChunk(
+        OpenAIResponsesStream(
+          createReadableStream([
+            {
+              response: { id: 'resp_search_events', status: 'in_progress' },
+              type: 'response.created',
+            },
+            {
+              item_id: 'xs_progress',
+              type: 'response.x_search_call.in_progress',
+            },
+            {
+              item: { query: 'from:elonmusk tesla' },
+              item_id: 'xs_progress',
+              type: 'response.x_search_call.searching',
+            },
+            {
+              item: {
+                results: [{ title: 'Post', url: 'https://x.com/elonmusk/status/1' }],
+              },
+              item_id: 'xs_progress',
+              type: 'response.x_search_call.completed',
+            },
+            {
+              item_id: 'ws_progress',
+              type: 'response.web_search_call.in_progress',
+            },
+            {
+              item: { query: 'spacex launch' },
+              item_id: 'ws_progress',
+              type: 'response.web_search_call.searching',
+            },
+            {
+              type: 'response.web_search_call.completed',
+              item_id: 'ws_progress',
+            },
+          ]),
+        ),
+      );
+
+      const groundingEvents = parseSseEvents(chunks).filter((event) => event.type === 'grounding');
+      expect(groundingEvents.length).toBeGreaterThan(0);
+      const last = JSON.parse(groundingEvents.at(-1)!.data);
+      expect(last.searchQueries).toEqual(['from:elonmusk tesla', 'spacex launch']);
+      expect(last.citations).toEqual([{ title: 'Post', url: 'https://x.com/elonmusk/status/1' }]);
+    });
+  });
 });

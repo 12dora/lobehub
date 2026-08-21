@@ -151,6 +151,48 @@ describe('getSearchConfig', () => {
     });
   });
 
+  it.each(['grok', 'supergrok', 'xai'])(
+    'should default %s to native model search when the builtin toggle is unset',
+    (nativeProvider) => {
+      vi.mocked(chatConfigByIdSelectors.getChatConfigById).mockReturnValue(
+        () =>
+          ({
+            searchMode: 'auto',
+          }) as any,
+      );
+
+      const result = getSearchConfig('grok-4.6', nativeProvider);
+
+      expect(result).toEqual({
+        enabledSearch: true,
+        isProviderHasBuiltinSearch: false,
+        isModelHasBuiltinSearch: false,
+        useModelSearch: true,
+        useApplicationBuiltinSearchTool: false,
+      });
+    },
+  );
+
+  it('should use application search for grok when useModelBuiltinSearch is explicitly false', () => {
+    vi.mocked(chatConfigByIdSelectors.getChatConfigById).mockReturnValue(
+      () =>
+        ({
+          searchMode: 'auto',
+          useModelBuiltinSearch: false,
+        }) as any,
+    );
+
+    const result = getSearchConfig('grok-4.6', 'grok');
+
+    expect(result).toEqual({
+      enabledSearch: true,
+      isProviderHasBuiltinSearch: false,
+      isModelHasBuiltinSearch: false,
+      useModelSearch: false,
+      useApplicationBuiltinSearchTool: true,
+    });
+  });
+
   it('should force use model search when searchImpl is internal', () => {
     vi.mocked(chatConfigByIdSelectors.getChatConfigById).mockReturnValue(
       () =>

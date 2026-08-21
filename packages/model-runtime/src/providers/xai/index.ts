@@ -79,6 +79,40 @@ const sanitizeXAITools = (tools?: ChatCompletionTool[]) =>
     };
   });
 
+const XAI_NATIVE_SEARCH_TOOL_TYPES = new Set(['web_search', 'x_search']);
+
+const isXAIFunctionTool = (tool: unknown): tool is ChatCompletionTool =>
+  isRecord(tool) && tool.type === 'function' && isRecord(tool.function);
+
+const isXAINativeSearchTool = (tool: unknown): tool is { type: string } =>
+  isRecord(tool) && typeof tool.type === 'string' && XAI_NATIVE_SEARCH_TOOL_TYPES.has(tool.type);
+
+/**
+ * Sanitize function tools only. Native xAI server tools (`web_search` / `x_search`)
+ * have no `.function` schema and must not go through `sanitizeXAITools`.
+ */
+const withXAINativeSearchTools = (tools: unknown[] | undefined, enabledSearch?: boolean) => {
+  const incoming = tools ?? [];
+  const sanitizedFunctionTools = sanitizeXAITools(incoming.filter(isXAIFunctionTool)) ?? [];
+  const nativeTools = enabledSearch
+    ? [
+        ...incoming
+          .filter(isXAINativeSearchTool)
+          .filter(
+            (tool, index, list) => list.findIndex((item) => item.type === tool.type) === index,
+          ),
+        ...[{ type: 'web_search' }, { type: 'x_search' }].filter(
+          (tool) =>
+            !incoming.some((item) => isXAINativeSearchTool(item) && item.type === tool.type),
+        ),
+      ]
+    : [];
+
+  if (sanitizedFunctionTools.length === 0 && nativeTools.length === 0) return undefined;
+
+  return [...sanitizedFunctionTools, ...nativeTools];
+};
+
 /**
  * xAI Responses API accepts structured output constraints under `text.format`,
  * while callers still send OpenAI Chat Completions compatible `response_format`.
@@ -116,15 +150,10 @@ export const handleXAIChatCompletionPayload = (payload: ChatStreamPayload) =>
 export const handleXAIResponsesPayload = (payload: ChatStreamPayload) => {
   const { enabledSearch, response_format, text, tools, ...rest } =
     stripUnsupportedPenaltyParameters(payload);
-  const sanitizedTools = sanitizeXAITools(tools);
-
-  const xaiTools = enabledSearch
-    ? [...(sanitizedTools || []), { type: 'web_search' }, { type: 'x_search' }]
-    : sanitizedTools;
 
   return {
     ...rest,
-    tools: xaiTools,
+    tools: withXAINativeSearchTools(tools as unknown[] | undefined, enabledSearch),
     text: mapResponseFormatToResponsesText(response_format, text),
     include: ['reasoning.encrypted_content'],
   } as any;

@@ -171,6 +171,33 @@ describe('resolveServerSearchDecision', () => {
     expect(result.useApplicationBuiltinSearchTool).toBe(false);
   });
 
+  it.each(['grok', 'supergrok', 'xai'])(
+    'defaults %s to native search when the builtin toggle is unset',
+    (provider) => {
+      const result = resolveServerSearchDecision({
+        builtinModels: [],
+        chatConfig: { searchMode: 'auto' },
+        model: 'grok-4.6',
+        provider,
+      });
+
+      expect(result.useModelSearch).toBe(true);
+      expect(result.useApplicationBuiltinSearchTool).toBe(false);
+    },
+  );
+
+  it('uses application search for grok when useModelBuiltinSearch is explicitly false', () => {
+    const result = resolveServerSearchDecision({
+      builtinModels: [],
+      chatConfig: { searchMode: 'on', useModelBuiltinSearch: false },
+      model: 'grok-4.6',
+      provider: 'grok',
+    });
+
+    expect(result.useModelSearch).toBe(false);
+    expect(result.useApplicationBuiltinSearchTool).toBe(true);
+  });
+
   it('falls back to application search when selected native search is unsupported', () => {
     const result = resolveServerSearchDecision({
       builtinModels: [],

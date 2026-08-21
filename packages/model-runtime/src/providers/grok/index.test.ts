@@ -193,6 +193,39 @@ describe('LobeGrokAI', () => {
     expect(instance['client'].chat.completions.create).not.toHaveBeenCalled();
   });
 
+  it('adds web_search and x_search tools when enabledSearch is true', async () => {
+    await instance.chat({
+      enabledSearch: true,
+      messages: [{ content: 'Hello', role: 'user' }],
+      model: 'grok-4.6',
+      stream: true,
+      tools: [{ function: { description: 'test', name: 'test' }, type: 'function' as const }],
+    });
+
+    const [request] = (instance['client'].responses.create as Mock).mock.calls[0];
+    expect(request.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'function', name: 'test' }),
+        { type: 'web_search' },
+        { type: 'x_search' },
+      ]),
+    );
+  });
+
+  it('does not add native search tools when enabledSearch is false', async () => {
+    await instance.chat({
+      enabledSearch: false,
+      messages: [{ content: 'Hello', role: 'user' }],
+      model: 'grok-4.6',
+      stream: true,
+      tools: [{ function: { description: 'test', name: 'test' }, type: 'function' as const }],
+    });
+
+    const [request] = (instance['client'].responses.create as Mock).mock.calls[0];
+    expect(request.tools).not.toContainEqual({ type: 'web_search' });
+    expect(request.tools).not.toContainEqual({ type: 'x_search' });
+  });
+
   it('keeps max_output_tokens handling for Responses requests', async () => {
     await instance.chat({
       max_tokens: 4096,
@@ -855,6 +888,7 @@ describe('LobeGrokAI', () => {
         expect.objectContaining({
           id: 'grok-4.5',
           reasoning: true,
+          search: true,
           settings: expect.objectContaining({
             extendParams: ['grok4_5ReasoningEffort'],
           }),
@@ -901,7 +935,7 @@ describe('LobeGrokAI', () => {
           functionCall: true,
           id: 'grok-keyword-only-test-model',
           reasoning: false,
-          search: false,
+          search: true,
           vision: false,
         }),
       ]);
@@ -981,6 +1015,40 @@ describe('LobeGrokAI', () => {
       expect(body).not.toHaveProperty('safety_identifier');
       expect(body).not.toHaveProperty('user');
       expect(body).not.toHaveProperty('metadata');
+    });
+
+    it('preserves native search tools through prepareRequest', async () => {
+      const fetchImpl = vi.fn(
+        async (_input: RequestInfo | URL, _init?: RequestInit) =>
+          new Response(
+            JSON.stringify({ error: { message: 'stub', type: 'invalid_request_error' } }),
+            {
+              headers: { 'Content-Type': 'application/json' },
+              status: 400,
+            },
+          ),
+      );
+      const runtime = new LobeGrokAI({
+        apiKey: jwtAccessToken,
+        conversationKey: CONVERSATION_KEY,
+        fetch: fetchImpl,
+        firstSeenMs: FIRST_SEEN_MS,
+        installationId: INSTALLATION_ID,
+      });
+
+      await expect(
+        runtime.chat({
+          enabledSearch: true,
+          messages: [{ content: 'Hello', role: 'user' }],
+          model: 'grok-4.6',
+          stream: true,
+        } as never),
+      ).rejects.toBeDefined();
+
+      const body = requestBody(fetchImpl.mock.calls[0][1]);
+      expect(body.tools).toEqual(
+        expect.arrayContaining([{ type: 'web_search' }, { type: 'x_search' }]),
+      );
     });
 
     it('keeps session headers stable and request identifiers fresh across requests', async () => {

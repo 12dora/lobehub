@@ -178,6 +178,40 @@ describe('LobeXAI - custom features', () => {
       expect(createCall.tools).toEqual([{ type: 'web_search' }, { type: 'x_search' }]);
     });
 
+    it('should not add native search tools when enabledSearch is false', async () => {
+      await instance.chat({
+        enabledSearch: false,
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'grok-2',
+        tools: [{ function: { description: 'test', name: 'test' }, type: 'function' as const }],
+      });
+
+      const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+      expect(createCall.tools).toEqual([{ description: 'test', name: 'test', type: 'function' }]);
+      expect(createCall.tools).not.toContainEqual({ type: 'web_search' });
+      expect(createCall.tools).not.toContainEqual({ type: 'x_search' });
+    });
+
+    it('should dedupe native search tools already present in the payload', async () => {
+      await instance.chat({
+        enabledSearch: true,
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'grok-2',
+        tools: [
+          { function: { description: 'test', name: 'test' }, type: 'function' as const },
+          { type: 'web_search' } as never,
+          { type: 'x_search' } as never,
+        ],
+      });
+
+      const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+      expect(createCall.tools).toEqual([
+        { description: 'test', name: 'test', type: 'function' },
+        { type: 'web_search' },
+        { type: 'x_search' },
+      ]);
+    });
+
     it('should sanitize slash-delimited enum values from function tool schemas', async () => {
       await instance.chat({
         enabledSearch: true,

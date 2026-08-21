@@ -7,6 +7,11 @@ import type {
 
 export interface ResolveSearchDecisionInput {
   modelSearchImpl?: ModelSearchImplementType | null;
+  /**
+   * Provider id used to default Grok-family models onto native X/web search
+   * when the user has not explicitly chosen application search.
+   */
+  provider?: string | null;
   providerSearchMode?: ModelSearchImplementType | null;
   searchMode?: 'auto' | 'off' | 'on';
   useModelBuiltinSearch?: boolean;
@@ -21,10 +26,25 @@ export interface SearchDecision {
 }
 
 /**
+ * Providers that default to native model search while search is on and
+ * `useModelBuiltinSearch` is unset. An explicit `false` still selects the
+ * application search tool. OpenAI / Anthropic / Google stay opt-in.
+ *
+ * Extension point: a follow-up can replace this allowlist with "any provider
+ * that already has native search capability" without changing call sites —
+ * they all go through `prefersNativeSearchByDefault`.
+ */
+export const NATIVE_SEARCH_DEFAULT_PROVIDERS = ['grok', 'supergrok', 'xai'] as const;
+
+export const prefersNativeSearchByDefault = (provider?: string | null): boolean =>
+  !!provider && (NATIVE_SEARCH_DEFAULT_PROVIDERS as readonly string[]).includes(provider);
+
+/**
  * Resolves the mutually exclusive search route shared by client and server runtimes.
  */
 export const resolveSearchDecision = ({
   modelSearchImpl,
+  provider,
   providerSearchMode,
   searchMode,
   useModelBuiltinSearch,
@@ -34,10 +54,13 @@ export const resolveSearchDecision = ({
   const isProviderHasBuiltinSearch = !!providerSearchMode;
   const isBuiltinSearchInternal =
     modelSearchImpl === 'internal' || providerSearchMode === 'internal';
-  const useModelSearch =
-    enabledSearch &&
-    (isBuiltinSearchInternal ||
-      ((isModelHasBuiltinSearch || isProviderHasBuiltinSearch) && !!useModelBuiltinSearch));
+  const preferNative = prefersNativeSearchByDefault(provider);
+  const hasNativeSearchCapability =
+    isModelHasBuiltinSearch || isProviderHasBuiltinSearch || preferNative;
+  const nativeSearchSelected =
+    isBuiltinSearchInternal ||
+    (hasNativeSearchCapability && (useModelBuiltinSearch ?? preferNative));
+  const useModelSearch = enabledSearch && nativeSearchSelected;
 
   return {
     enabledSearch,
@@ -57,6 +80,7 @@ const PROVIDER_SEARCH_DEFAULTS: Record<string, ModelSearchSettings> = {
   baichuan: { searchImpl: 'params' },
   default: { searchImpl: 'params' },
   google: { searchImpl: 'params', searchProvider: 'google' },
+  grok: { searchImpl: 'params' },
   hunyuan: { searchImpl: 'params' },
   jina: { searchImpl: 'internal' },
   minimax: { searchImpl: 'params' },
@@ -65,6 +89,7 @@ const PROVIDER_SEARCH_DEFAULTS: Record<string, ModelSearchSettings> = {
   qwen: { searchImpl: 'params' },
   spark: { searchImpl: 'params' },
   stepfun: { searchImpl: 'params' },
+  supergrok: { searchImpl: 'params' },
   vertexai: { searchImpl: 'params', searchProvider: 'google' },
   wenxin: { searchImpl: 'params' },
   xai: { searchImpl: 'params' },

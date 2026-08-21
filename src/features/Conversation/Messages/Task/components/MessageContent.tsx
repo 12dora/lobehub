@@ -27,7 +27,11 @@ const MessageContent = memo<UIChatMessage>(
     // TODO: Need to implement isIntentUnderstanding selector in ConversationStore if needed
     const isIntentUnderstanding = false;
 
-    const showSearch = !!search && (!!search.citations?.length || !!search.imageResults?.length);
+    const showSearch =
+      !!search &&
+      (!!search.citations?.length ||
+        !!search.imageResults?.length ||
+        !!search.searchQueries?.length);
     const showImageItems = !!imageList && imageList.length > 0;
     const showFileItems = !!fileList && fileList.length > 0;
 

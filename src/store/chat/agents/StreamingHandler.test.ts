@@ -337,6 +337,20 @@ describe('StreamingHandler', () => {
       });
     });
 
+    it('should update grounding when only searchQueries are present', () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk({
+        type: 'grounding',
+        grounding: { searchQueries: ['X search'] },
+      });
+
+      expect(callbacks.onGroundingUpdate).toHaveBeenCalledWith({
+        searchQueries: ['X search'],
+      });
+    });
+
     it('should not update grounding when no citations', () => {
       const callbacks = createMockCallbacks();
       const handler = new StreamingHandler(mockContext, callbacks);

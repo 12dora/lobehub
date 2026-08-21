@@ -316,6 +316,19 @@ describe('toolEngineering', () => {
   });
 
   describe('isExplicitActivation bypass', () => {
+    it('should not inject web browsing for grok when native search is the default', () => {
+      mockUseApplicationBuiltinSearchTool = false;
+
+      const toolsEngine = createAgentToolsEngine({ model: 'grok-4.6', provider: 'grok' });
+      const result = toolsEngine.generateToolsDetailed({
+        toolIds: [],
+        model: 'grok-4.6',
+        provider: 'grok',
+      });
+
+      expect(result.enabledToolIds).not.toContain('lobe-web-browsing');
+    });
+
     it('should disable web browsing when useApplicationBuiltinSearchTool is false', () => {
       mockUseApplicationBuiltinSearchTool = false;
 

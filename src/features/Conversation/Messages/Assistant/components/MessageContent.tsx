@@ -32,7 +32,11 @@ const MessageContent = memo<UIChatMessage>(
     const isLoading = generating || isCreating;
     const isToolCallGenerating = isLoading && (content === LOADING_FLAT || !content) && !!tools;
 
-    const showSearch = !!search && (!!search.citations?.length || !!search.imageResults?.length);
+    const showSearch =
+      !!search &&
+      (!!search.citations?.length ||
+        !!search.imageResults?.length ||
+        !!search.searchQueries?.length);
     const showImageItems = !!imageList && imageList.length > 0;
     const showFileItems = !!fileList && fileList.length > 0;
 

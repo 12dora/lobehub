@@ -136,7 +136,9 @@ const SearchGrounding = memo<GroundingSearch>(
     const titleIcon = !hasWebResults && hasImageResults ? Images : Globe;
     const titleText = hasWebResults
       ? t('search.grounding.title', { count: validCitations?.length })
-      : t('search.grounding.imageTitle', { count: imageResults?.length });
+      : hasImageResults
+        ? t('search.grounding.imageTitle', { count: imageResults?.length })
+        : t('search.grounding.searching');
 
     return (
       <Flexbox

@@ -37,6 +37,7 @@ export const getSearchConfig = (
 
   return resolveSearchDecision({
     modelSearchImpl,
+    provider,
     providerSearchMode,
     searchMode: chatConfig.searchMode,
     useModelBuiltinSearch: chatConfig.useModelBuiltinSearch,

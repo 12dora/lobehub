@@ -346,7 +346,12 @@ export class StreamingHandler {
 
   private handleGroundingChunk(chunk: { grounding?: GroundingData; type: 'grounding' }): void {
     const { grounding } = chunk;
-    if (!grounding?.citations?.length && !grounding?.imageResults?.length) return;
+    if (
+      !grounding?.citations?.length &&
+      !grounding?.imageResults?.length &&
+      !grounding?.searchQueries?.length
+    )
+      return;
 
     this.callbacks.onGroundingUpdate(grounding);
   }
