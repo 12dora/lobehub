@@ -123,10 +123,31 @@ describe('ChatGPT subscription models', () => {
       (model) => model.providerId === ModelProvider.ChatGPT,
     );
 
-    expect(models).toHaveLength(4);
+    expect(models).toHaveLength(5);
+
+    const chatModels = models.filter((model) => model.type === 'chat');
+    expect(chatModels).toHaveLength(4);
     expect(
-      models.every((model) => model.settings?.extendParams?.includes('preserveThinking')),
+      chatModels.every((model) => model.settings?.extendParams?.includes('preserveThinking')),
     ).toBe(true);
+  });
+
+  it('advertises gpt-image-2 as an enabled image model', () => {
+    const image = LOBE_DEFAULT_MODEL_LIST.find(
+      (model) => model.providerId === ModelProvider.ChatGPT && model.id === 'gpt-image-2',
+    );
+
+    expect(image).toMatchObject({
+      enabled: true,
+      id: 'gpt-image-2',
+      type: 'image',
+    });
+    expect(image?.parameters).toMatchObject({
+      imageUrls: { maxCount: 5 },
+      prompt: { default: '' },
+      quality: { enum: ['low', 'medium', 'high', 'auto'] },
+      background: { enum: ['opaque', 'transparent', 'auto'] },
+    });
   });
 });
 

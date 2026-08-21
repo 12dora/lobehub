@@ -17,6 +17,9 @@ const ChatGPT: ModelProviderCard = {
   settings: {
     authType: 'oauthDeviceFlow',
     disableBrowserRequest: true,
+    // Codex Responses accepts document bytes as `input_file` + `file_data`
+    // (see convertOpenAIResponseInputs forceFileBase64).
+    nativeFileInput: true,
     oauthDeviceFlow: {
       clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
       defaultPollingInterval: 8,

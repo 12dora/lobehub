@@ -1,4 +1,9 @@
-import { imageUrlToBase64, videoUrlToBase64 } from '@lobechat/utils';
+import {
+  AttachmentInlineLimitError,
+  DEFAULT_FILE_INLINE_MAX_BYTES,
+  imageUrlToBase64,
+  videoUrlToBase64,
+} from '@lobechat/utils';
 import type OpenAI from 'openai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,10 +20,14 @@ import {
 } from './openai';
 
 // 模拟依赖
-vi.mock('@lobechat/utils', () => ({
-  imageUrlToBase64: vi.fn(),
-  videoUrlToBase64: vi.fn(),
-}));
+vi.mock('@lobechat/utils', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    imageUrlToBase64: vi.fn(),
+    videoUrlToBase64: vi.fn(),
+  };
+});
 vi.mock('../../utils/uriParser');
 
 describe('convertMessageContent', () => {
@@ -1235,6 +1244,204 @@ describe('convertOpenAIResponseInputs', () => {
     ]);
 
     expect(imageUrlToBase64).toHaveBeenCalledWith('https://example.com/image.jpg');
+  });
+
+  describe('native file_url (forceFileBase64)', () => {
+    beforeEach(() => {
+      vi.mocked(imageUrlToBase64).mockReset();
+    });
+
+    it('should drop file_url parts when forceFileBase64 is unset', async () => {
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarize' },
+            {
+              type: 'file_url',
+              file_url: {
+                content: 'EXTRACTED',
+                name: 'report.pdf',
+                url: 'http://localhost:9000/report.pdf',
+              },
+            } as any,
+          ],
+        },
+      ];
+
+      const result = await convertOpenAIResponseInputs(messages);
+
+      expect(result).toEqual([
+        {
+          role: 'user',
+          content: [{ type: 'input_text', text: 'summarize' }],
+        },
+      ]);
+      expect(imageUrlToBase64).not.toHaveBeenCalled();
+    });
+
+    it('should emit input_file with file_data when forceFileBase64 is true', async () => {
+      const fileUrl = 'http://localhost:9000/report.pdf';
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarize' },
+            {
+              file_url: {
+                content: 'EXTRACTED',
+                mimeType: 'application/pdf',
+                name: 'report.pdf',
+                url: fileUrl,
+              },
+              type: 'file_url',
+            } as any,
+          ],
+        },
+      ];
+
+      vi.mocked(parseDataUri).mockReturnValue({ type: 'url', base64: null, mimeType: null });
+      vi.mocked(imageUrlToBase64).mockResolvedValue({
+        base64: 'pdfbytes',
+        mimeType: 'application/pdf',
+      });
+
+      const result = await convertOpenAIResponseInputs(messages, { forceFileBase64: true });
+
+      expect(result).toEqual([
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'summarize' },
+            {
+              file_data: 'data:application/pdf;base64,pdfbytes',
+              filename: 'report.pdf',
+              type: 'input_file',
+            },
+          ],
+        },
+      ]);
+      expect(imageUrlToBase64).toHaveBeenCalledWith(fileUrl, {
+        maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES,
+      });
+    });
+
+    it('should fall back to files_info without url when the document is over the limit', async () => {
+      const onAttachmentOverLimit = vi.fn();
+      const fileUrl = 'http://localhost:9000/huge.pdf';
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            {
+              file_url: {
+                content: 'EXTRACTED TEXT',
+                fileId: 'file-1',
+                mimeType: 'application/pdf',
+                name: 'huge.pdf',
+                size: DEFAULT_FILE_INLINE_MAX_BYTES + 1,
+                url: fileUrl,
+              },
+              type: 'file_url',
+            } as any,
+            { type: 'text', text: 'summarize' },
+          ],
+        },
+      ];
+
+      const result = await convertOpenAIResponseInputs(messages, {
+        forceFileBase64: true,
+        onAttachmentOverLimit,
+      });
+
+      const content = (result[0] as { content: Array<{ text?: string; type: string }> }).content;
+      const fallback = content.find((part) => part.type === 'input_text');
+
+      expect(fallback?.text).toContain('<files_info>');
+      expect(fallback?.text).toContain('EXTRACTED TEXT');
+      expect(fallback?.text).toContain('name="huge.pdf"');
+      expect(fallback?.text).not.toContain('url=');
+      expect(fallback?.text).not.toContain(fileUrl);
+      expect(imageUrlToBase64).not.toHaveBeenCalled();
+      expect(onAttachmentOverLimit).toHaveBeenCalledWith([
+        expect.objectContaining({
+          filename: 'huge.pdf',
+          reason: 'over_limit',
+          url: fileUrl,
+        }),
+      ]);
+    });
+
+    it('should fall back to files_info without url for non-document types', async () => {
+      const onAttachmentOverLimit = vi.fn();
+      const fileUrl = 'http://localhost:9000/archive.zip';
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            {
+              file_url: {
+                content: 'cannot parse zip',
+                mimeType: 'application/zip',
+                name: 'archive.zip',
+                url: fileUrl,
+              },
+              type: 'file_url',
+            } as any,
+          ],
+        },
+      ];
+
+      const result = await convertOpenAIResponseInputs(messages, {
+        forceFileBase64: true,
+        onAttachmentOverLimit,
+      });
+
+      const content = (result[0] as { content: Array<{ text?: string; type: string }> }).content;
+      expect(content[0].type).toBe('input_text');
+      expect(content[0].text).toContain('<files_info>');
+      expect(content[0].text).not.toContain('url=');
+      expect(content[0].text).not.toContain(fileUrl);
+      expect(imageUrlToBase64).not.toHaveBeenCalled();
+      expect(onAttachmentOverLimit).toHaveBeenCalledWith([
+        expect.objectContaining({ filename: 'archive.zip', reason: 'unsupported_type' }),
+      ]);
+    });
+
+    it('should fall back when inlining throws AttachmentInlineLimitError', async () => {
+      const fileUrl = 'http://localhost:9000/report.pdf';
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            {
+              file_url: {
+                content: 'EXTRACTED',
+                mimeType: 'application/pdf',
+                name: 'report.pdf',
+                url: fileUrl,
+              },
+              type: 'file_url',
+            } as any,
+          ],
+        },
+      ];
+
+      vi.mocked(parseDataUri).mockReturnValue({ type: 'url', base64: null, mimeType: null });
+      vi.mocked(imageUrlToBase64).mockRejectedValue(
+        new AttachmentInlineLimitError(
+          DEFAULT_FILE_INLINE_MAX_BYTES,
+          DEFAULT_FILE_INLINE_MAX_BYTES + 8,
+        ),
+      );
+
+      const result = await convertOpenAIResponseInputs(messages, { forceFileBase64: true });
+      const content = (result[0] as { content: Array<{ text?: string; type: string }> }).content;
+
+      expect(content[0].type).toBe('input_text');
+      expect(content[0].text).toContain('EXTRACTED');
+      expect(content[0].text).not.toContain('url=');
+    });
   });
 });
 

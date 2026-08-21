@@ -1,11 +1,16 @@
-import { imageUrlToBase64, videoUrlToBase64 } from '@lobechat/utils';
+import {
+  AttachmentInlineLimitError,
+  DEFAULT_FILE_INLINE_MAX_BYTES,
+  imageUrlToBase64,
+  videoUrlToBase64,
+} from '@lobechat/utils';
 import { Buffer } from 'buffer.js';
 import type OpenAI from 'openai';
 import { toFile } from 'openai';
 
 import { disableStreamModels, systemToUserModels } from '../../providers/openai/openaiModelId';
 import type { ChatStreamPayload, OpenAIChatMessage, UserMessageContentPart } from '../../types';
-import { fileUrlPartPlaceholder, isFileUrlTypedPart } from '../../types/chat';
+import { fileUrlPartPlaceholder, isFileUrlPart, isFileUrlTypedPart } from '../../types/chat';
 import { isDeepSeekThinkingEligibleModel } from '../../utils/modelParse';
 import type { SignatureScope } from '../../utils/signatureScope';
 import { resolveScopedSignature } from '../../utils/signatureScope';
@@ -18,12 +23,157 @@ export type ExtendedChatCompletionContentPart = {
   };
 };
 
+/**
+ * A document that could not be inlined as Responses `input_file`.
+ * Follow-up work can sync these into a sandbox via `onAttachmentOverLimit`.
+ */
+export interface SkippedAttachment {
+  content?: string;
+  filename: string;
+  mimeType?: string;
+  reason: 'fetch_failed' | 'over_limit' | 'unsupported_type';
+  size?: number;
+  url: string;
+}
+
 type ConvertMessageContentOptions = {
+  forceFileBase64?: boolean;
   forceImageBase64?: boolean;
   forceVideoBase64?: boolean;
   model?: string;
+  /**
+   * Seam for over-limit / non-document files that fell back to extracted-text
+   * `<files_info>` (without a `url` attribute). Do not implement sandbox sync here.
+   */
+  onAttachmentOverLimit?: (skipped: SkippedAttachment[]) => void;
   reasoningSignatureScope?: SignatureScope;
   strictToolPairing?: boolean;
+};
+
+const DOCUMENT_MIME_TYPES = new Set([
+  'application/json',
+  'application/msword',
+  'application/pdf',
+  'application/rtf',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/xml',
+  'text/csv',
+  'text/html',
+  'text/markdown',
+  'text/plain',
+  'text/xml',
+]);
+
+const DOCUMENT_EXTENSIONS = new Set([
+  'csv',
+  'doc',
+  'docx',
+  'htm',
+  'html',
+  'json',
+  'md',
+  'pdf',
+  'ppt',
+  'pptx',
+  'rtf',
+  'txt',
+  'xls',
+  'xlsx',
+  'xml',
+]);
+
+const isDocumentFileInput = (mimeType?: string, filename?: string): boolean => {
+  if (mimeType) {
+    const mime = mimeType.split(';')[0]?.trim().toLowerCase();
+    if (mime && (DOCUMENT_MIME_TYPES.has(mime) || mime.startsWith('text/'))) return true;
+  }
+
+  const extension = filename?.split('.').pop()?.toLowerCase();
+  return !!extension && DOCUMENT_EXTENSIONS.has(extension);
+};
+
+const filesInfoWithoutUrl = (file: {
+  content?: string;
+  fileId?: string;
+  mimeType?: string;
+  name: string;
+  size?: number;
+}): string => {
+  const attrs = [
+    file.fileId ? `id="${file.fileId}"` : undefined,
+    `name="${file.name}"`,
+    file.mimeType ? `type="${file.mimeType}"` : undefined,
+    file.size === undefined ? undefined : `size="${file.size}"`,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return `<files_info>
+<files_docstring>here are user upload files you can refer to</files_docstring>
+<file ${attrs}>${file.content ?? ''}</file>
+</files_info>`;
+};
+
+type ResponseFilePart =
+  | { file_data: string; filename: string; type: 'input_file' }
+  | { text: string; type: 'input_text' };
+
+const toInputFilePart = (filename: string, mimeType: string, base64: string): ResponseFilePart => ({
+  file_data: `data:${mimeType};base64,${base64}`,
+  filename,
+  type: 'input_file',
+});
+
+const convertFileUrlPart = async (
+  part: UserMessageContentPart,
+  skipped: SkippedAttachment[],
+): Promise<ResponseFilePart | undefined> => {
+  if (!isFileUrlPart(part)) return undefined;
+
+  const { content, fileId, mimeType, name, size, url } = part.file_url;
+  const skip = (reason: SkippedAttachment['reason']): ResponseFilePart => {
+    skipped.push({ content, filename: name, mimeType, reason, size, url });
+    return {
+      text: filesInfoWithoutUrl({ content, fileId, mimeType, name, size }),
+      type: 'input_text',
+    };
+  };
+
+  if (!isDocumentFileInput(mimeType, name)) {
+    return skip('unsupported_type');
+  }
+
+  if (typeof size === 'number' && size > DEFAULT_FILE_INLINE_MAX_BYTES) {
+    return skip('over_limit');
+  }
+
+  const parsed = parseDataUri(url);
+  if (parsed.type === 'base64' && parsed.base64) {
+    if (parsed.base64.length / 4 > DEFAULT_FILE_INLINE_MAX_BYTES / 3) {
+      return skip('over_limit');
+    }
+    const resolvedMime = parsed.mimeType || mimeType || 'application/octet-stream';
+    return toInputFilePart(name, resolvedMime, parsed.base64);
+  }
+
+  try {
+    const inlined = await imageUrlToBase64(url, { maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES });
+    return toInputFilePart(
+      name,
+      inlined.mimeType || mimeType || 'application/octet-stream',
+      inlined.base64,
+    );
+  } catch (error) {
+    if (error instanceof AttachmentInlineLimitError) {
+      return skip('over_limit');
+    }
+    console.error('Failed to inline file attachment as input_file:', error);
+    return skip('fetch_failed');
+  }
 };
 
 const isDeepSeekModel = (model: string | undefined) =>
@@ -149,6 +299,7 @@ export const convertOpenAIResponseInputs = async (
   messages: OpenAIChatMessage[],
   options?: ConvertMessageContentOptions,
 ) => {
+  const skippedAttachments: SkippedAttachment[] = [];
   const strictToolPairing = options?.strictToolPairing === true;
   // OpenAI Responses API rejects inputs that keep a function_call without its matching
   // function_call_output. Example from production:
@@ -303,6 +454,12 @@ export const convertOpenAIResponseInputs = async (
                   return undefined;
                 }
 
+                if (isFileUrlTypedPart(c)) {
+                  // Opt-in only: other Responses providers keep today's drop.
+                  if (!options?.forceFileBase64) return undefined;
+                  return convertFileUrlPart(c, skippedAttachments);
+                }
+
                 if (c.type === 'video_url') {
                   const video = await convertMessageContent(c, options);
                   if (!('video_url' in video) || !video.video_url?.url) {
@@ -348,6 +505,10 @@ export const convertOpenAIResponseInputs = async (
       return items;
     }),
   );
+
+  if (skippedAttachments.length > 0) {
+    options?.onAttachmentOverLimit?.(skippedAttachments);
+  }
 
   return inputGroups.flat();
 };

@@ -233,3 +233,75 @@ export function isLocalOrPrivateUrl(url: string) {
     return false;
   }
 }
+
+const hostnameOf = (value: string | undefined): string | undefined => {
+  if (!value) return undefined;
+  try {
+    const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `http://${value}`;
+    return new URL(withProtocol).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Hosts that belong to this deployment's file storage, so fetching them is not
+ * an SSRF hop to an arbitrary private address. Used when a remote provider
+ * cannot reach our MinIO / `/f/` / APP_URL and we must inline bytes ourselves.
+ */
+export function isOwnDeploymentFileUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+
+    if (
+      hostname === 'localhost' ||
+      hostname.endsWith('.localhost') ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1' ||
+      hostname === '[::1]'
+    ) {
+      return true;
+    }
+
+    // 127.0.0.0/8 loopback besides 127.0.0.1 (desktop static file server)
+    const ipv4Match = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (ipv4Match) {
+      const a = Number(ipv4Match[1]);
+      if (a === 127) return true;
+    }
+
+    const ownHosts = [
+      hostnameOf(process.env.APP_URL),
+      hostnameOf(process.env.INTERNAL_APP_URL),
+      hostnameOf(process.env.S3_ENDPOINT),
+      hostnameOf(process.env.S3_PUBLIC_DOMAIN),
+    ].filter((host): host is string => Boolean(host));
+
+    return ownHosts.includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prefer INTERNAL_APP_URL when fetching a public APP_URL so inlining can hit
+ * the local origin instead of a CDN / public hostname Codex still cannot use.
+ */
+export function resolveOwnDeploymentFetchUrl(url: string): string {
+  const appUrl = process.env.APP_URL;
+  const internal = process.env.INTERNAL_APP_URL;
+  if (!appUrl || !internal || appUrl === internal) return url;
+
+  try {
+    const parsed = new URL(url);
+    const appHost = hostnameOf(appUrl);
+    if (!appHost || parsed.hostname.toLowerCase() !== appHost) return url;
+
+    const internalUrl = new URL(internal);
+    parsed.protocol = internalUrl.protocol;
+    parsed.host = internalUrl.host;
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}

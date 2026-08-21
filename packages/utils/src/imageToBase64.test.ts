@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { imageToBase64, imageUrlToBase64 } from './imageToBase64';
+import {
+  AttachmentInlineLimitError,
+  DEFAULT_IMAGE_INLINE_MAX_BYTES,
+  imageToBase64,
+  imageUrlToBase64,
+} from './imageToBase64';
 
 describe('imageToBase64', () => {
   let mockImage: HTMLImageElement;
@@ -115,5 +120,24 @@ describe('imageUrlToBase64', () => {
     mockFetch.mockRejectedValue(mockError);
 
     await expect(imageUrlToBase64('https://example.com/image.jpg')).rejects.toThrow('Fetch failed');
+  });
+
+  it('should throw AttachmentInlineLimitError when the body is over the cap', async () => {
+    const overLimit = new Uint8Array(8);
+
+    mockFetch.mockResolvedValue({
+      blob: () => Promise.resolve(new Blob([overLimit], { type: 'image/png' })),
+    });
+
+    await expect(
+      imageUrlToBase64('https://example.com/image.jpg', { maxBytes: 4 }),
+    ).rejects.toThrow(AttachmentInlineLimitError);
+    await expect(
+      imageUrlToBase64('https://example.com/image.jpg', { maxBytes: 4 }),
+    ).rejects.toThrow(`Attachment exceeds the 4 byte inlining limit`);
+  });
+
+  it('should default the image inlining cap to 20MB', () => {
+    expect(DEFAULT_IMAGE_INLINE_MAX_BYTES).toBe(20 * 1024 * 1024);
   });
 });

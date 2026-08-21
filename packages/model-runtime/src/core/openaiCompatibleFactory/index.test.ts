@@ -1549,6 +1549,7 @@ describe('LobeOpenAICompatibleFactory', () => {
         expect(convertSpy).toHaveBeenCalledWith(
           [{ content: 'hi', role: 'user' }],
           expect.objectContaining({
+            forceFileBase64: undefined,
             forceImageBase64: undefined,
             forceVideoBase64: undefined,
             strictToolPairing: true,

@@ -1,10 +1,12 @@
 // @vitest-environment node
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { CURRENT_VERSION } from '@lobechat/const';
+import { DEFAULT_FILE_INLINE_MAX_BYTES, imageUrlToBase64 } from '@lobechat/utils';
 import OpenAI from 'openai';
 import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as openaiHelpers from '../../core/contextBuilders/openai';
 import { applyModelExtendParams } from '../../utils/modelExtendParams';
 import {
   CODEX_CLIENT_VERSION,
@@ -17,10 +19,19 @@ vi.mock('@lobechat/business-model-bank/model-config', () => ({
   loadModels: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock('@lobechat/utils', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    imageUrlToBase64: vi.fn(),
+  };
+});
+
 describe('LobeChatGPTAI', () => {
   let instance: InstanceType<typeof LobeChatGPTAI>;
 
   beforeEach(() => {
+    vi.mocked(imageUrlToBase64).mockReset();
     instance = new LobeChatGPTAI({ apiKey: 'access-token', chatgptAccountId: 'account-id' });
     vi.spyOn(instance['client'].chat.completions, 'create').mockResolvedValue(
       new ReadableStream() as never,
@@ -44,6 +55,155 @@ describe('LobeChatGPTAI', () => {
         'version': CURRENT_VERSION,
       }),
     );
+  });
+
+  it('threads forceImageBase64 and forceFileBase64 into Responses conversion', async () => {
+    const convertSpy = vi
+      .spyOn(openaiHelpers, 'convertOpenAIResponseInputs')
+      .mockResolvedValue([{ content: 'mocked', role: 'user' }] as any);
+
+    await instance.chat(
+      {
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'gpt-5.5',
+        stream: true,
+      },
+      { user: 'user-id' },
+    );
+
+    expect(convertSpy).toHaveBeenCalledWith(
+      [{ content: 'Hello', role: 'user' }],
+      expect.objectContaining({
+        forceFileBase64: true,
+        forceImageBase64: true,
+        strictToolPairing: true,
+      }),
+    );
+    convertSpy.mockRestore();
+  });
+
+  it('inlines HTTP image URLs as data URLs so Codex does not fetch them', async () => {
+    vi.mocked(imageUrlToBase64).mockResolvedValue({
+      base64: 'imgbytes',
+      mimeType: 'image/png',
+    });
+
+    await instance.chat(
+      {
+        messages: [
+          {
+            content: [
+              { text: 'what is this', type: 'text' },
+              {
+                image_url: { url: 'http://localhost:9000/bucket/cat.png' },
+                type: 'image_url',
+              },
+            ],
+            role: 'user',
+          },
+        ],
+        model: 'gpt-5.5',
+        stream: true,
+      },
+      { user: 'user-id' },
+    );
+
+    const [request] = (instance['client'].responses.create as Mock).mock.calls[0];
+    const imagePart = request.input[0].content.find(
+      (part: { type?: string }) => part.type === 'input_image',
+    );
+
+    expect(imagePart.image_url).toBe('data:image/png;base64,imgbytes');
+    expect(imagePart.image_url.startsWith('data:image/')).toBe(true);
+    expect(imageUrlToBase64).toHaveBeenCalledWith('http://localhost:9000/bucket/cat.png');
+  });
+
+  it('emits input_file with file_data for document attachments', async () => {
+    vi.mocked(imageUrlToBase64).mockResolvedValue({
+      base64: 'pdfbytes',
+      mimeType: 'application/pdf',
+    });
+
+    await instance.chat(
+      {
+        messages: [
+          {
+            content: [
+              {
+                file_url: {
+                  content: 'EXTRACTED',
+                  mimeType: 'application/pdf',
+                  name: 'report.pdf',
+                  url: 'http://localhost:9000/report.pdf',
+                },
+                type: 'file_url',
+              },
+              { text: 'summarize', type: 'text' },
+            ],
+            role: 'user',
+          },
+        ],
+        model: 'gpt-5.5',
+        stream: true,
+      },
+      { user: 'user-id' },
+    );
+
+    const [request] = (instance['client'].responses.create as Mock).mock.calls[0];
+    const filePart = request.input[0].content.find(
+      (part: { type?: string }) => part.type === 'input_file',
+    );
+
+    expect(filePart).toEqual({
+      file_data: 'data:application/pdf;base64,pdfbytes',
+      filename: 'report.pdf',
+      type: 'input_file',
+    });
+    expect(imageUrlToBase64).toHaveBeenCalledWith('http://localhost:9000/report.pdf', {
+      maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES,
+    });
+  });
+
+  it('falls back to files_info text without url when a document is over the limit', async () => {
+    await instance.chat(
+      {
+        messages: [
+          {
+            content: [
+              {
+                file_url: {
+                  content: 'EXTRACTED TEXT',
+                  mimeType: 'application/pdf',
+                  name: 'huge.pdf',
+                  size: DEFAULT_FILE_INLINE_MAX_BYTES + 1,
+                  url: 'http://localhost:9000/huge.pdf',
+                },
+                type: 'file_url',
+              },
+              { text: 'summarize', type: 'text' },
+            ],
+            role: 'user',
+          },
+        ],
+        model: 'gpt-5.5',
+        stream: true,
+      },
+      { user: 'user-id' },
+    );
+
+    const [request] = (instance['client'].responses.create as Mock).mock.calls[0];
+    const textParts = request.input[0].content.filter(
+      (part: { type?: string }) => part.type === 'input_text',
+    );
+    const fallback = textParts.find((part: { text?: string }) =>
+      part.text?.includes('<files_info>'),
+    );
+
+    expect(fallback.text).toContain('EXTRACTED TEXT');
+    expect(fallback.text).toContain('name="huge.pdf"');
+    expect(fallback.text).not.toContain('url=');
+    expect(fallback.text).not.toContain('http://localhost:9000/huge.pdf');
+    expect(imageUrlToBase64).not.toHaveBeenCalled();
   });
 
   it('always uses Responses API and omits public API output limits', async () => {
@@ -346,7 +506,7 @@ describe('LobeChatGPTAI', () => {
   });
 
   describe('models', () => {
-    const catalogIds = ['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'];
+    const catalogIds = ['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-image-2'];
 
     const mockModelsGet = (payload: unknown) =>
       vi.spyOn(instance['client'], 'get').mockResolvedValue(payload as never);
@@ -379,7 +539,11 @@ describe('LobeChatGPTAI', () => {
       expect(instance['client'].get).toHaveBeenCalledWith('/models', {
         query: { client_version: CODEX_CLIENT_VERSION },
       });
-      expect(models.map((model) => model.id)).toEqual(['codex-only-model', 'gpt-5.5']);
+      expect(models.map((model) => model.id)).toEqual([
+        'codex-only-model',
+        'gpt-5.5',
+        'gpt-image-2',
+      ]);
       expect(models).toEqual([
         expect.objectContaining({
           displayName: 'Codex Only',
@@ -393,6 +557,10 @@ describe('LobeChatGPTAI', () => {
           id: 'gpt-5.5',
           reasoning: true,
           vision: true,
+        }),
+        expect.objectContaining({
+          id: 'gpt-image-2',
+          type: 'image',
         }),
       ]);
     });
@@ -449,9 +617,9 @@ describe('LobeChatGPTAI', () => {
         ],
       });
 
-      const [model] = await instance.models();
+      const model = (await instance.models()).find((item) => item.id === 'gpt-5.5');
 
-      expect(model.settings?.extendParams).toEqual([
+      expect(model?.settings?.extendParams).toEqual([
         'gpt5_2ReasoningEffort',
         'textVerbosity',
         'preserveThinking',
@@ -471,7 +639,7 @@ describe('LobeChatGPTAI', () => {
         ],
       });
 
-      const [model] = await instance.models();
+      const model = (await instance.models()).find((item) => item.id === 'codex-text-only');
 
       expect(model).toMatchObject({
         functionCall: true,
@@ -499,11 +667,13 @@ describe('LobeChatGPTAI', () => {
       });
 
       const listed = await instance.models();
-      expect(listed.map((model) => model.id)).toEqual(['gpt-5.5']);
+      expect(listed.map((model) => model.id)).toEqual(['gpt-5.5', 'gpt-image-2']);
       expect(listed.every((model) => model.id !== 'codex-auto-review')).toBe(true);
 
       mockModelsGet({ models: [] });
-      await expect(instance.models()).resolves.toEqual([]);
+      const gated = await instance.models();
+      expect(gated.map((model) => model.id)).toEqual(['gpt-image-2']);
+      expect(gated[0]).toMatchObject({ id: 'gpt-image-2', type: 'image' });
       expect(instance['client'].get).toHaveBeenLastCalledWith('/models', {
         query: { client_version: CODEX_CLIENT_VERSION },
       });
@@ -514,7 +684,11 @@ describe('LobeChatGPTAI', () => {
 
       const models = await instance.models();
 
-      expect(models.map((model) => model.id).sort()).toEqual(['codex-only-model', 'gpt-5.5']);
+      expect(models.map((model) => model.id).sort()).toEqual([
+        'codex-only-model',
+        'gpt-5.5',
+        'gpt-image-2',
+      ]);
       expect(models).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -591,6 +765,66 @@ describe('LobeChatGPTAI', () => {
       mockModelsGetReject(transport);
 
       await expect(instance.models()).rejects.toBe(transport);
+    });
+
+    it('keeps a live gpt-image-2 row that has no parameters of its own', async () => {
+      mockModelsGet({
+        models: [
+          { display_name: 'GPT-5.5', slug: 'gpt-5.5' },
+          { display_name: 'GPT Image 2 Live', slug: 'gpt-image-2' },
+        ],
+      });
+
+      const models = await instance.models();
+      const image = models.find((model) => model.id === 'gpt-image-2');
+
+      expect(image).toMatchObject({
+        displayName: 'GPT Image 2 Live',
+        id: 'gpt-image-2',
+        type: 'image',
+      });
+      expect(image?.parameters).toEqual(
+        expect.objectContaining({
+          imageUrls: expect.objectContaining({ maxCount: 5 }),
+          prompt: expect.objectContaining({ default: '' }),
+        }),
+      );
+    });
+  });
+
+  describe('createImage', () => {
+    it('posts JSON generations and never calls images.generate', async () => {
+      vi.spyOn(instance['client'], 'post').mockResolvedValue({
+        created: 1,
+        data: [{ b64_json: 'abc123' }],
+        size: '1024x1024',
+      } as never);
+      const generateSpy = vi.spyOn(instance['client'].images, 'generate');
+
+      const result = await instance.createImage({
+        model: 'gpt-image-2',
+        params: { prompt: 'a small red cube' },
+      });
+
+      expect(generateSpy).not.toHaveBeenCalled();
+      expect(instance['client'].post).toHaveBeenCalledWith(
+        '/images/generations',
+        expect.objectContaining({
+          body: expect.objectContaining({
+            model: 'gpt-image-2',
+            prompt: 'a small red cube',
+          }),
+          headers: expect.objectContaining({
+            'originator': 'lobehub',
+            'x-codex-image-turn-id': expect.any(String),
+          }),
+        }),
+      );
+      expect(result).toEqual({
+        height: 1024,
+        imageUrl: 'data:image/png;base64,abc123',
+        width: 1024,
+      });
     });
   });
 });

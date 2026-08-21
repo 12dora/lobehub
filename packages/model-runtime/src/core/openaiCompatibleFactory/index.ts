@@ -138,6 +138,12 @@ type ResponseCreateParamsWithPromptCacheKey = (
 export type CreateImageOptions = Omit<ClientOptions, 'apiKey' | 'provider'> &
   ModelIdMappingOptions & {
     apiKey: string;
+    /**
+     * The runtime's OpenAI-compatible client. Custom `createImage` handlers that
+     * need provider default headers (auth, originator, account id) should POST
+     * through this client instead of constructing a new one.
+     */
+    client?: OpenAI;
     provider: string;
   };
 
@@ -207,6 +213,7 @@ export interface OpenAICompatibleFactoryOptions<T extends Record<string, any> = 
       models: AiFullModelCard[];
     };
     excludeUsage?: boolean;
+    forceFileBase64?: boolean;
     forceImageBase64?: boolean;
     forceVideoBase64?: boolean;
     handleError?: (
@@ -725,6 +732,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         }
 
         const messages = await convertOpenAIMessages(postPayload.messages, {
+          forceFileBase64: chatCompletion?.forceFileBase64,
           forceImageBase64: chatCompletion?.forceImageBase64,
           forceVideoBase64: chatCompletion?.forceVideoBase64,
           model: postPayload.model,
@@ -879,6 +887,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         return customCreateImage(payload, {
           ...this._options,
           apiKey: this._options.apiKey!,
+          client: this.client,
           modelIdMapping: this.modelIdMappingOptions.modelIdMapping,
           provider,
         });
@@ -1553,6 +1562,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
       delete res.preserveThinking;
 
       const input = await convertOpenAIResponseInputs(messages as any, {
+        forceFileBase64: chatCompletion?.forceFileBase64,
         forceImageBase64: chatCompletion?.forceImageBase64,
         forceVideoBase64: chatCompletion?.forceVideoBase64,
         reasoningSignatureScope,
@@ -1715,6 +1725,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           'responses',
         );
         const input = await convertOpenAIResponseInputs(messages as any, {
+          forceFileBase64: chatCompletion?.forceFileBase64,
           forceImageBase64: chatCompletion?.forceImageBase64,
           forceVideoBase64: chatCompletion?.forceVideoBase64,
           reasoningSignatureScope,

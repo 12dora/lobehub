@@ -1,11 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   inferContentTypeFromImageUrl,
   inferFileExtensionFromImageUrl,
   isDesktopLocalStaticServerUrl,
   isLocalOrPrivateUrl,
+  isOwnDeploymentFileUrl,
   pathString,
+  resolveOwnDeploymentFetchUrl,
 } from './url';
 
 describe('pathString', () => {
@@ -540,5 +542,79 @@ describe('isLocalOrPrivateUrl', () => {
       expect(isLocalOrPrivateUrl('http://256.256.256.256')).toBe(false);
       expect(isLocalOrPrivateUrl('http://192.168.1.256')).toBe(false);
     });
+  });
+});
+
+describe('isOwnDeploymentFileUrl', () => {
+  const originalEnv = {
+    APP_URL: process.env.APP_URL,
+    INTERNAL_APP_URL: process.env.INTERNAL_APP_URL,
+    S3_ENDPOINT: process.env.S3_ENDPOINT,
+    S3_PUBLIC_DOMAIN: process.env.S3_PUBLIC_DOMAIN,
+  };
+
+  afterEach(() => {
+    const restore = (key: keyof typeof originalEnv, value: string | undefined) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    };
+    restore('APP_URL', originalEnv.APP_URL);
+    restore('INTERNAL_APP_URL', originalEnv.INTERNAL_APP_URL);
+    restore('S3_ENDPOINT', originalEnv.S3_ENDPOINT);
+    restore('S3_PUBLIC_DOMAIN', originalEnv.S3_PUBLIC_DOMAIN);
+  });
+
+  it("should allow localhost, loopback, and this deployment's file hosts", () => {
+    process.env.APP_URL = 'https://app.example.com';
+    process.env.S3_ENDPOINT = 'http://minio:9000';
+    process.env.S3_PUBLIC_DOMAIN = 'https://files.example.com';
+
+    expect(isOwnDeploymentFileUrl('http://localhost:9000/bucket/a.png')).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://127.0.0.1:3210/f/abc')).toBe(true);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc')).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://minio:9000/bucket/a.png')).toBe(true);
+    expect(isOwnDeploymentFileUrl('https://files.example.com/a.png')).toBe(true);
+  });
+
+  it('should reject arbitrary public and private hosts', () => {
+    process.env.APP_URL = 'https://app.example.com';
+
+    expect(isOwnDeploymentFileUrl('https://evil.example.com/x.png')).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://192.168.1.10/secret.png')).toBe(false);
+    expect(isOwnDeploymentFileUrl('not-a-url')).toBe(false);
+  });
+});
+
+describe('resolveOwnDeploymentFetchUrl', () => {
+  const originalEnv = {
+    APP_URL: process.env.APP_URL,
+    INTERNAL_APP_URL: process.env.INTERNAL_APP_URL,
+  };
+
+  afterEach(() => {
+    const restore = (key: keyof typeof originalEnv, value: string | undefined) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    };
+    restore('APP_URL', originalEnv.APP_URL);
+    restore('INTERNAL_APP_URL', originalEnv.INTERNAL_APP_URL);
+  });
+
+  it('should rewrite APP_URL file links onto INTERNAL_APP_URL', () => {
+    process.env.APP_URL = 'https://app.example.com';
+    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
+
+    expect(resolveOwnDeploymentFetchUrl('https://app.example.com/f/abc?sig=1')).toBe(
+      'http://127.0.0.1:3010/f/abc?sig=1',
+    );
+  });
+
+  it('should leave unrelated hosts unchanged', () => {
+    process.env.APP_URL = 'https://app.example.com';
+    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
+
+    expect(resolveOwnDeploymentFetchUrl('http://localhost:9000/bucket/a.png')).toBe(
+      'http://localhost:9000/bucket/a.png',
+    );
   });
 });

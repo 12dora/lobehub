@@ -11,6 +11,7 @@ import { EFFORT_CONTROL_REGISTRY, isEffortControlKey } from '../../utils/effortC
 import type { ProcessableModelCard } from '../../utils/modelParse';
 import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import { params as openAIParams } from '../openai';
+import { createChatGPTImage } from './createImage';
 
 const CHATGPT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 const CHATGPT_RESPONSES_LITE_HEADER = 'x-openai-internal-codex-responses-lite';
@@ -222,6 +223,26 @@ const mapCodexCatalog = (
   };
 };
 
+/**
+ * Codex `/models` is chat-oriented and may omit image slugs (or list them
+ * without `parameters`). Always union the static bank image cards by id so
+ * admin sync / empty gated lists / 404 fallback all keep `gpt-image-2`.
+ */
+const unionChatGPTBankImageModels = async (
+  processed: ChatModelCard[],
+): Promise<ChatModelCard[]> => {
+  const { chatgpt } = await import('model-bank');
+  const bankImages = chatgpt.filter((model) => model.type === 'image');
+  if (bankImages.length === 0) return processed;
+
+  const seen = new Set(processed.map((card) => card.id));
+  const missing = bankImages.filter((model) => !seen.has(model.id));
+  if (missing.length === 0) return processed;
+
+  const extra = await processModelList(missing, MODEL_LIST_CONFIGS.openai, 'chatgpt');
+  return [...processed, ...extra];
+};
+
 const attachUpstreamAbilityProvenance = (
   cards: ChatModelCard[],
   rawModels: unknown[],
@@ -246,8 +267,11 @@ const attachUpstreamAbilityProvenance = (
 export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>({
   baseURL: CHATGPT_CODEX_BASE_URL,
   chatCompletion: {
+    forceFileBase64: true,
+    forceImageBase64: true,
     useResponse: true,
   },
+  createImage: createChatGPTImage,
   customClient: {
     createClient: ({ chatgptAccountId, ...options }) =>
       new OpenAI({
@@ -283,9 +307,11 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
       if (Array.isArray(payload.models)) {
         const { cards: modelList, liveEffortById } = mapCodexCatalog(payload.models);
         const processed = await processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt');
-        return attachUpstreamAbilityProvenance(
-          processed.map((card) => applyLiveEffortExtendParam(card, liveEffortById.get(card.id))),
-          modelList,
+        return unionChatGPTBankImageModels(
+          attachUpstreamAbilityProvenance(
+            processed.map((card) => applyLiveEffortExtendParam(card, liveEffortById.get(card.id))),
+            modelList,
+          ),
         );
       }
 
@@ -294,9 +320,11 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
         const modelList = payload.data.filter(
           (item): item is ProcessableModelCard => isRecord(item) && typeof item.id === 'string',
         );
-        return attachUpstreamAbilityProvenance(
-          await processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt'),
-          modelList,
+        return unionChatGPTBankImageModels(
+          attachUpstreamAbilityProvenance(
+            await processModelList(modelList, MODEL_LIST_CONFIGS.openai, 'chatgpt'),
+            modelList,
+          ),
         );
       }
 
@@ -308,7 +336,9 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
 
       const { chatgpt } = await import('model-bank');
 
-      return processModelList(chatgpt, MODEL_LIST_CONFIGS.openai, 'chatgpt');
+      return unionChatGPTBankImageModels(
+        await processModelList(chatgpt, MODEL_LIST_CONFIGS.openai, 'chatgpt'),
+      );
     }
   },
   provider: ModelProvider.ChatGPT,

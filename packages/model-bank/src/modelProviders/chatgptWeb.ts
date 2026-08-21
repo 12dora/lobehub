@@ -31,8 +31,8 @@ const ChatGPTWeb: ModelProviderCard = {
     // boilerplate (see `isWebAppProvider`).
     webApp: true,
     // The ChatGPT Web runtime uploads user documents to chatgpt.com and attaches
-    // them to the conversation, so it is the only provider that understands the
-    // native `file_url` content part (see `isProviderNativeFileInput`).
+    // them to the conversation (`isProviderNativeFileInput`). The Codex
+    // `chatgpt` provider also opts in, emitting Responses `input_file` instead.
     nativeFileInput: true,
     oauthDeviceFlow: {
       allowAccessTokenPaste: true,
