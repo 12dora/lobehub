@@ -106,8 +106,8 @@ describe('DataTable server-driven list', () => {
         rowKey="id"
         pagination={{
           current: 3,
-          pageSize: 25,
-          pageSizeOptions: ['25', '50', '100'],
+          pageSize: 20,
+          pageSizeOptions: ['20', '50', '100'],
           showSizeChanger: true,
           total: 10_000,
         }}
@@ -243,7 +243,7 @@ describe('DataTable server-driven list', () => {
       <DataTable
         columns={columns}
         dataSource={rows}
-        pagination={{ current: 1, pageSize: 25, total: 10_000 }}
+        pagination={{ current: 1, pageSize: 20, total: 10_000 }}
         rowKey="id"
       />,
     );
@@ -258,10 +258,10 @@ describe('DataTable server-driven list', () => {
     expect(sizeChanger).toBeTruthy();
     fireEvent.mouseDown(sizeChanger!);
 
-    const option25 = [...document.querySelectorAll('.ant-select-item')].find((el) =>
-      el.textContent?.includes('25 / page'),
+    const option20 = [...document.querySelectorAll('.ant-select-item')].find((el) =>
+      el.textContent?.includes('20 / page'),
     );
-    expect(option25).toBeTruthy();
+    expect(option20).toBeTruthy();
   });
 
   it('does not show a total line when showTotal is opted out', () => {

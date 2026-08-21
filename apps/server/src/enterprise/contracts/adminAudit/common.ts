@@ -21,7 +21,7 @@ import { z } from 'zod';
 import { SECRET_SAFE_TEXT_MAX, secretSafeAuditReasonSchema, strictDateSchema } from '../shared';
 
 /** Mirrors the admin UI's shared DEFAULT_PAGE_SIZE so an omitted limit matches the table. */
-export const ADMIN_AUDIT_LIST_DEFAULT_LIMIT = 25;
+export const ADMIN_AUDIT_LIST_DEFAULT_LIMIT = 20;
 export const ADMIN_AUDIT_LIST_MAX_LIMIT = 200;
 export const ADMIN_AUDIT_FACET_DEFAULT_LIMIT = 20;
 export const ADMIN_AUDIT_FACET_MAX_LIMIT = 50;

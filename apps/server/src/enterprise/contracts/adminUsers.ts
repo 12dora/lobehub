@@ -21,7 +21,7 @@ import { secretSafeAuditReasonSchema, strictDateSchema } from './shared';
  * Default page size for the users list (offset pagination).
  * Mirrors the admin UI's shared DEFAULT_PAGE_SIZE so an omitted limit matches the table.
  */
-export const ADMIN_USERS_LIST_DEFAULT_LIMIT = 25;
+export const ADMIN_USERS_LIST_DEFAULT_LIMIT = 20;
 /** Hard cap for list / audit trail limit. */
 export const ADMIN_USERS_LIST_MAX_LIMIT = 100;
 /** Hard cap for list offset (jump-to-page). */
@@ -30,7 +30,7 @@ export const ADMIN_USERS_LIST_MAX_OFFSET = 100_000;
  * Default page size for the user-detail audit trail (still keyset).
  * Same shared default as the rest of the admin lists.
  */
-export const ADMIN_USERS_AUDIT_DEFAULT_LIMIT = 25;
+export const ADMIN_USERS_AUDIT_DEFAULT_LIMIT = 20;
 
 /**
  * Recent-reauth window for high-risk mutations (M04). Single server constant.

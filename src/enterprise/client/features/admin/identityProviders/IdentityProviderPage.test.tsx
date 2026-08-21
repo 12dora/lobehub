@@ -111,7 +111,7 @@ vi.mock('../skills/useCursorPagedList', () => ({
 }));
 
 vi.mock('./useIdentityProviders', () => ({
-  IDENTITY_PROVIDER_LIST_PAGE_SIZE: 25,
+  IDENTITY_PROVIDER_LIST_PAGE_SIZE: 20,
   useAuthSnapshotStatus: () => mocks.runtime,
   useIdentityProviders: (_enabled: boolean, cursor?: string, limit?: number) => {
     // Expose the cursor + page size the page passes so pagination can be asserted end-to-end.

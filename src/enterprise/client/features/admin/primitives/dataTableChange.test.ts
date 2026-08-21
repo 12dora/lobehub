@@ -12,8 +12,8 @@ const t = ((key: string, options?: Record<string, unknown>) =>
 
 describe('admin page size defaults', () => {
   it('is the single source of truth for every admin list', () => {
-    expect(DEFAULT_PAGE_SIZE).toBe(25);
-    expect([...DEFAULT_PAGE_SIZE_OPTIONS]).toEqual(['25', '50', '100']);
+    expect(DEFAULT_PAGE_SIZE).toBe(20);
+    expect([...DEFAULT_PAGE_SIZE_OPTIONS]).toEqual(['20', '50', '100']);
     // The default must be selectable in the size changer, otherwise the control shows
     // a value that is absent from its own option list.
     expect([...DEFAULT_PAGE_SIZE_OPTIONS]).toContain(String(DEFAULT_PAGE_SIZE));
@@ -31,7 +31,7 @@ describe('buildTablePagination', () => {
       align: 'end',
       current: 1,
       pageSize: DEFAULT_PAGE_SIZE,
-      pageSizeOptions: ['25', '50', '100'],
+      pageSizeOptions: ['20', '50', '100'],
       placement: ['bottomEnd'],
       showQuickJumper: true,
       showSizeChanger: true,
@@ -46,12 +46,12 @@ describe('buildTablePagination', () => {
     });
 
     if (config === false) throw new Error('expected a pagination config');
-    expect(config.showTotal?.(120, [1, 25])).toBe('primitives.dataTable.showTotal:120');
+    expect(config.showTotal?.(120, [1, 20])).toBe('primitives.dataTable.showTotal:120');
   });
 
   it('drops showTotal and the quick jumper when the total is unknown', () => {
     const config = buildTablePagination({
-      pagination: { current: 1, pageSize: 25, total: Number.POSITIVE_INFINITY },
+      pagination: { current: 1, pageSize: 20, total: Number.POSITIVE_INFINITY },
       t,
     });
 
@@ -59,7 +59,7 @@ describe('buildTablePagination', () => {
     expect(config.showTotal).toBeUndefined();
     expect(config.showQuickJumper).toBe(false);
     // Size changer still applies: cursor-free lists keep the shared ladder.
-    expect(config.pageSizeOptions).toEqual(['25', '50', '100']);
+    expect(config.pageSizeOptions).toEqual(['20', '50', '100']);
   });
 
   it('yields no antd pagination for cursor lists', () => {
@@ -71,7 +71,7 @@ describe('buildTablePagination', () => {
           onNext: () => {},
           onPrevious: () => {},
         },
-        pagination: { current: 1, pageSize: 25, total: 10 },
+        pagination: { current: 1, pageSize: 20, total: 10 },
         t,
       }),
     ).toBe(false);
