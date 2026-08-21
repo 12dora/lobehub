@@ -916,5 +916,50 @@ describe('ConversationEventRouter', () => {
 
       expect(textOf(events)).toBe('');
     });
+
+    it('releases `{` at terminal [DONE] after reasoning, with no status patch', () => {
+      // Production shape: thoughts (counts as output, so the client will not
+      // poll) then a one-character JSON answer, then `[DONE]` and no
+      // `status`/`end_turn`. The prefix must still become text.delta.
+      const { events } = feedAll([
+        {
+          o: 'add',
+          p: '',
+          v: {
+            conversation_id: 'conv-1',
+            message: {
+              author: { role: 'assistant' },
+              channel: 'analysis',
+              content: {
+                content_type: 'thoughts',
+                thoughts: [{ content: '', summary: 'Planning' }],
+              },
+              id: 'r1',
+            },
+          },
+        },
+        { o: 'append', p: '/message/content/thoughts/0/content', v: 'I will answer with a brace.' },
+        assistantAdd('answer', { channel: undefined }),
+        append('{'),
+        '[DONE]',
+      ]);
+
+      expect(events.some((event) => event.type === 'reasoning.delta')).toBe(true);
+      expect(textOf(events)).toBe('{');
+      expect(events.at(-1)).toMatchObject({ type: 'done' });
+    });
+
+    it('does not release an ambiguous prefix at [DONE] when the turn is handed off', () => {
+      const { events } = feedAll([
+        assistantAdd('m1', { channel: undefined }),
+        append('{'),
+        { conversation_id: 'conv-1', type: 'stream_handoff' },
+        '[DONE]',
+      ]);
+
+      expect(textOf(events)).toBe('');
+      expect(events.some((event) => event.type === 'handoff')).toBe(true);
+      expect(events.at(-1)).toMatchObject({ type: 'done' });
+    });
   });
 });

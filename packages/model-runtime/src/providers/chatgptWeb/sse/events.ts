@@ -35,6 +35,11 @@ interface MessageState {
   ignored: boolean;
   /** the message is (or was) the user-visible answer of the turn */
   isAnswer: boolean;
+  /**
+   * Sanitized text withheld as an *ambiguous* bento prefix (`{`, `{"lay`, …).
+   * Released at a terminal `[DONE]` (no handoff); never on a handed-off leg.
+   */
+  pendingAmbiguous?: string;
   /** HIGH-WATER mark of the reasoning already surfaced — never shrinks */
   reasoning: string;
   reasoningDone: boolean;
@@ -66,6 +71,8 @@ export class ConversationEventRouter {
   private endTurn = false;
   private historyIndex = 0;
   private resumeTokenValue?: string;
+  /** This SSE leg saw `stream_handoff` — `[DONE]` is not the end of the turn. */
+  private sawHandoff = false;
   private started = false;
 
   constructor({ echoHistory }: EventRouterOptions = {}) {
@@ -89,9 +96,15 @@ export class ConversationEventRouter {
   feed(payload: string): ConversationEvent[] {
     if (!payload) return [];
     if (payload === '[DONE]') {
+      const events: ConversationEvent[] = [];
+      // A terminal leg (no handoff) never patches `status`/`end_turn` on some
+      // streams. Release any withheld `{` / `{"lay` so reasoning-then-`{` cannot
+      // vanish: reasoning already counts as output, so the client will not poll.
+      // A handed-off leg must NOT flush — the prefix may still become bento.
+      this.flushPendingAmbiguous(events);
+      this.sawHandoff = false;
       // Generated files must be reported BEFORE `done`: the consumer resolves
       // them inside the stream, while the conversation is still readable.
-      const events: ConversationEvent[] = [];
       for (const [messageId, state] of this.messages)
         this.emitSandboxFiles(messageId, state, events);
       events.push({ conversationId: this.conversationId, endTurn: this.endTurn, type: 'done' });
@@ -137,6 +150,7 @@ export class ConversationEventRouter {
         return events;
       }
       case 'stream_handoff': {
+        this.sawHandoff = true;
         events.push({
           conversationId:
             typeof event.conversation_id === 'string' ? event.conversation_id : this.conversationId,
@@ -431,20 +445,52 @@ export class ConversationEventRouter {
     const bento = inspectBentoText(sanitized, { streaming: !finished });
     if (bento.withhold) {
       if (bento.ignored && finished) state.ignored = true;
+      // remember only *ambiguous* prefixes; a confirmed bento is dropped
+      state.pendingAmbiguous = bento.confirmed ? undefined : sanitized;
       return;
     }
-    const candidate = bento.text;
+    state.pendingAmbiguous = undefined;
+    this.advanceText(messageId, state, bento.text, events);
+  }
 
-    // HIGH-WATER contract. A resume leg replays the turn from offset 0, so the
-    // very same message id arrives again from `H`, `He`, … Emitting those would
-    // duplicate the answer downstream, because the event contract is ADDITIVE
-    // (the consumer concatenates every delta and can never take text back).
-    //
-    // So: withhold any snapshot that is a prefix of — or equal to — what we have
-    // already surfaced, and emit only the suffix once it grows past the mark.
-    // A snapshot that DIVERGES (upstream rewrote the answer) cannot be expressed
-    // additively at all, so it is withheld too until it grows past the mark AND
-    // extends it; the divergence is logged once.
+  /**
+   * `[DONE]` without a handoff is a supported terminal shape (no `status` patch).
+   * Treat any still-ambiguous prefix as finished text. Skip this after a
+   * `stream_handoff` so a resume can still grow `{` into bento JSON.
+   */
+  private flushPendingAmbiguous(events: ConversationEvent[]) {
+    if (this.sawHandoff) return;
+    for (const [messageId, state] of this.messages) {
+      if (state.ignored || state.historyOnly || !state.pendingAmbiguous) continue;
+      const pending = state.pendingAmbiguous;
+      state.pendingAmbiguous = undefined;
+      const bento = inspectBentoText(pending);
+      if (bento.withhold) {
+        if (bento.ignored) state.ignored = true;
+        continue;
+      }
+      this.advanceText(messageId, state, bento.text, events);
+    }
+  }
+
+  /**
+   * HIGH-WATER contract. A resume leg replays the turn from offset 0, so the
+   * very same message id arrives again from `H`, `He`, … Emitting those would
+   * duplicate the answer downstream, because the event contract is ADDITIVE
+   * (the consumer concatenates every delta and can never take text back).
+   *
+   * So: withhold any snapshot that is a prefix of — or equal to — what we have
+   * already surfaced, and emit only the suffix once it grows past the mark.
+   * A snapshot that DIVERGES (upstream rewrote the answer) cannot be expressed
+   * additively at all, so it is withheld too until it grows past the mark AND
+   * extends it; the divergence is logged once.
+   */
+  private advanceText(
+    messageId: string,
+    state: MessageState,
+    candidate: string,
+    events: ConversationEvent[],
+  ) {
     if (candidate.length <= state.text.length) {
       if (!state.text.startsWith(candidate)) this.logDivergence(state, messageId, 'text');
       return;
