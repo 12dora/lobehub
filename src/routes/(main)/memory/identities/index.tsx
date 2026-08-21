@@ -1,7 +1,7 @@
 import { Flexbox, Icon, Tag } from '@lobehub/ui';
 import { BrainCircuitIcon } from 'lucide-react';
 import { type FC } from 'react';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useState } from 'react';
 
 import AsyncError from '@/components/AsyncError';
 import DelayedFallback from '@/components/Loading/DelayedFallback';
@@ -63,7 +63,13 @@ const IdentitiesArea = memo(() => {
 
   // Reset list when search or type filter changes. A no-op in the store when
   // the query is the one already on screen (a revisit must not blank the list).
-  useEffect(() => {
+  // A layout effect, and declared above the `useFetchIdentities` call below, so it
+  // runs before the layout effect SWR uses to start its request. Left as a
+  // passive effect, a request that settled immediately — an offline reject, a
+  // synchronous mock — resolved against the epoch of the *previous* mount and
+  // was thrown away by the epoch guard, while the adoption that followed
+  // cleared the slate and changed no key, so nothing ever asked again.
+  useLayoutEffect(() => {
     resetIdentitiesList(listQuery, epoch);
   }, [epoch, listQuery, resetIdentitiesList]);
 

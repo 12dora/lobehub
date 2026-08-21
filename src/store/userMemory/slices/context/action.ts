@@ -314,6 +314,32 @@ export class ContextActionImpl {
   };
 
   /**
+   * Is this response for the query on screen, from a mount the store either
+   * knows about or is about to?
+   *
+   * A remount's response can beat the store's record of that mount: SWR starts
+   * the request from a layout effect, and a fast answer — an offline reject, a
+   * warm server — can settle before the effect that adopts the epoch has run.
+   * Dropping it stranded the list, because the adoption that followed changed
+   * no SWR key and so nothing ever asked again. A strictly newer epoch for the
+   * same query is that mount and no other, so take the response and adopt the
+   * epoch with it. Restricted to page 1: a later page is about to be rewound by
+   * the adoption anyway, and applying it first would append to rows the rewind
+   * is on its way to replace.
+   */
+  #adoptableContextsEpoch = (params: ContextQueryParams, page: number): number | undefined => {
+    const state = this.#get();
+    if (contextQueryKey(params) !== state.contextsQueryKey) return undefined;
+    if (params.epoch === state.contextsEpoch) return params.epoch;
+
+    const epoch = params.epoch;
+    const isUnadoptedRemount =
+      typeof epoch === 'number' && epoch > state.contextsEpoch && page === 1;
+
+    return isUnadoptedRemount ? epoch : undefined;
+  };
+
+  /**
    * Write one page into the list.
    *
    * Four things have to line up: the query identity, the epoch of the mount
@@ -328,8 +354,8 @@ export class ContextActionImpl {
     const state = this.#get();
     const page = params.page ?? 1;
 
-    if (contextQueryKey(params) !== state.contextsQueryKey) return;
-    if (params.epoch !== state.contextsEpoch) return;
+    const epoch = this.#adoptableContextsEpoch(params, page);
+    if (epoch === undefined) return;
     if (page !== state.contextsPage) return;
     if (generation !== state.contextsGeneration) return;
 
@@ -337,6 +363,7 @@ export class ContextActionImpl {
 
     this.#set(
       produce((draft) => {
+        draft.contextsEpoch = epoch;
         draft.contextsError = undefined;
         draft.contextsHasMore =
           data.items.length >= (params.pageSize || DEFAULT_MEMORY_LIST_PAGE_SIZE);
@@ -366,13 +393,17 @@ export class ContextActionImpl {
     const state = this.#get();
     const page = params.page ?? 1;
 
-    if (contextQueryKey(params) !== state.contextsQueryKey) return;
-    if (params.epoch !== state.contextsEpoch) return;
+    const epoch = this.#adoptableContextsEpoch(params, page);
+    if (epoch === undefined) return;
     if (page !== state.contextsPage) return;
     if (generation !== state.contextsGeneration) return;
 
     this.#set(
       produce((draft) => {
+        // Adopted here for the same reason a success adopts: the failure has to
+        // stick, or the adoption that follows clears it and leaves the list
+        // with no error, no retry, and nothing scheduled to ask again.
+        draft.contextsEpoch = epoch;
         draft.contextsPendingPage = undefined;
 
         // Rows on screen — a later page, or a revalidation of page 1 started by

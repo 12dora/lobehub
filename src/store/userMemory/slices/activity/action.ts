@@ -313,6 +313,32 @@ export class ActivityActionImpl {
   };
 
   /**
+   * Is this response for the query on screen, from a mount the store either
+   * knows about or is about to?
+   *
+   * A remount's response can beat the store's record of that mount: SWR starts
+   * the request from a layout effect, and a fast answer — an offline reject, a
+   * warm server — can settle before the effect that adopts the epoch has run.
+   * Dropping it stranded the list, because the adoption that followed changed
+   * no SWR key and so nothing ever asked again. A strictly newer epoch for the
+   * same query is that mount and no other, so take the response and adopt the
+   * epoch with it. Restricted to page 1: a later page is about to be rewound by
+   * the adoption anyway, and applying it first would append to rows the rewind
+   * is on its way to replace.
+   */
+  #adoptableActivitiesEpoch = (params: ActivityQueryParams, page: number): number | undefined => {
+    const state = this.#get();
+    if (activityQueryKey(params) !== state.activitiesQueryKey) return undefined;
+    if (params.epoch === state.activitiesEpoch) return params.epoch;
+
+    const epoch = params.epoch;
+    const isUnadoptedRemount =
+      typeof epoch === 'number' && epoch > state.activitiesEpoch && page === 1;
+
+    return isUnadoptedRemount ? epoch : undefined;
+  };
+
+  /**
    * Write one page into the list.
    *
    * Four things have to line up: the query identity, the epoch of the mount
@@ -327,8 +353,8 @@ export class ActivityActionImpl {
     const state = this.#get();
     const page = params.page ?? 1;
 
-    if (activityQueryKey(params) !== state.activitiesQueryKey) return;
-    if (params.epoch !== state.activitiesEpoch) return;
+    const epoch = this.#adoptableActivitiesEpoch(params, page);
+    if (epoch === undefined) return;
     if (page !== state.activitiesPage) return;
     if (generation !== state.activitiesGeneration) return;
 
@@ -336,6 +362,7 @@ export class ActivityActionImpl {
 
     this.#set(
       produce((draft) => {
+        draft.activitiesEpoch = epoch;
         draft.activitiesError = undefined;
         draft.activitiesHasMore =
           data.items.length >= (params.pageSize || DEFAULT_MEMORY_LIST_PAGE_SIZE);
@@ -365,13 +392,17 @@ export class ActivityActionImpl {
     const state = this.#get();
     const page = params.page ?? 1;
 
-    if (activityQueryKey(params) !== state.activitiesQueryKey) return;
-    if (params.epoch !== state.activitiesEpoch) return;
+    const epoch = this.#adoptableActivitiesEpoch(params, page);
+    if (epoch === undefined) return;
     if (page !== state.activitiesPage) return;
     if (generation !== state.activitiesGeneration) return;
 
     this.#set(
       produce((draft) => {
+        // Adopted here for the same reason a success adopts: the failure has to
+        // stick, or the adoption that follows clears it and leaves the list
+        // with no error, no retry, and nothing scheduled to ask again.
+        draft.activitiesEpoch = epoch;
         draft.activitiesPendingPage = undefined;
 
         // Rows on screen — a later page, or a revalidation of page 1 started by

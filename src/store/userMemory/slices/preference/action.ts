@@ -313,6 +313,35 @@ export class PreferenceActionImpl {
   };
 
   /**
+   * Is this response for the query on screen, from a mount the store either
+   * knows about or is about to?
+   *
+   * A remount's response can beat the store's record of that mount: SWR starts
+   * the request from a layout effect, and a fast answer — an offline reject, a
+   * warm server — can settle before the effect that adopts the epoch has run.
+   * Dropping it stranded the list, because the adoption that followed changed
+   * no SWR key and so nothing ever asked again. A strictly newer epoch for the
+   * same query is that mount and no other, so take the response and adopt the
+   * epoch with it. Restricted to page 1: a later page is about to be rewound by
+   * the adoption anyway, and applying it first would append to rows the rewind
+   * is on its way to replace.
+   */
+  #adoptablePreferencesEpoch = (
+    params: PreferenceQueryParams,
+    page: number,
+  ): number | undefined => {
+    const state = this.#get();
+    if (preferenceQueryKey(params) !== state.preferencesQueryKey) return undefined;
+    if (params.epoch === state.preferencesEpoch) return params.epoch;
+
+    const epoch = params.epoch;
+    const isUnadoptedRemount =
+      typeof epoch === 'number' && epoch > state.preferencesEpoch && page === 1;
+
+    return isUnadoptedRemount ? epoch : undefined;
+  };
+
+  /**
    * Write one page into the list.
    *
    * Four things have to line up: the query identity, the epoch of the mount
@@ -327,8 +356,8 @@ export class PreferenceActionImpl {
     const state = this.#get();
     const page = params.page ?? 1;
 
-    if (preferenceQueryKey(params) !== state.preferencesQueryKey) return;
-    if (params.epoch !== state.preferencesEpoch) return;
+    const epoch = this.#adoptablePreferencesEpoch(params, page);
+    if (epoch === undefined) return;
     if (page !== state.preferencesPage) return;
     if (generation !== state.preferencesGeneration) return;
 
@@ -336,6 +365,7 @@ export class PreferenceActionImpl {
 
     this.#set(
       produce((draft) => {
+        draft.preferencesEpoch = epoch;
         draft.preferencesError = undefined;
         draft.preferencesHasMore =
           data.items.length >= (params.pageSize || DEFAULT_MEMORY_LIST_PAGE_SIZE);
@@ -369,13 +399,17 @@ export class PreferenceActionImpl {
     const state = this.#get();
     const page = params.page ?? 1;
 
-    if (preferenceQueryKey(params) !== state.preferencesQueryKey) return;
-    if (params.epoch !== state.preferencesEpoch) return;
+    const epoch = this.#adoptablePreferencesEpoch(params, page);
+    if (epoch === undefined) return;
     if (page !== state.preferencesPage) return;
     if (generation !== state.preferencesGeneration) return;
 
     this.#set(
       produce((draft) => {
+        // Adopted here for the same reason a success adopts: the failure has to
+        // stick, or the adoption that follows clears it and leaves the list
+        // with no error, no retry, and nothing scheduled to ask again.
+        draft.preferencesEpoch = epoch;
         draft.preferencesPendingPage = undefined;
 
         // Rows on screen — a later page, or a revalidation of page 1 started by

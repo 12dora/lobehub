@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { type Cache, SWRConfig, useSWRConfig } from 'swr';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -80,7 +80,10 @@ const Reader = ({ q }: { q?: string }) => {
   const listQuery = useMemo(() => ({ q }), [q]);
   const epoch = useMemoryListEpoch(listQuery);
 
-  useEffect(() => {
+  // Mirrors the pages: a layout effect, declared above `useFetchIdentities`, so
+  // the store adopts this mount's epoch before SWR's own layout effect can
+  // start — and settle — a request stamped with it.
+  useLayoutEffect(() => {
     resetIdentitiesList(listQuery, epoch);
   }, [epoch, listQuery, resetIdentitiesList]);
 
@@ -101,6 +104,29 @@ const mountApp = () =>
     <SWRConfig value={{ provider: () => cache as unknown as Cache }}>
       <MutateBridge>
         <Host />
+      </MutateBridge>
+    </SWRConfig>,
+  );
+
+/**
+ * A list fetch at an epoch of the test's choosing, with no reset alongside it.
+ *
+ * This is how a remount's response looks when it beats the store's record of
+ * that mount — the state React's effect ordering decides in the real page, and
+ * which `act()`-wrapped rendering cannot reproduce because it flushes the
+ * passive effects before any promise settles.
+ */
+const FetchAt = ({ epoch, page }: { epoch: number; page: number }) => {
+  const useFetchIdentities = useUserMemoryStore((s) => s.useFetchIdentities);
+  useFetchIdentities({ epoch, page, pageSize: PAGE_SIZE, q: undefined });
+  return null;
+};
+
+const mountFetchAt = (epoch: number, page: number) =>
+  render(
+    <SWRConfig value={{ provider: () => cache as unknown as Cache }}>
+      <MutateBridge>
+        <FetchAt epoch={epoch} page={page} />
       </MutateBridge>
     </SWRConfig>,
   );
@@ -659,6 +685,40 @@ describe('memory list remounts', () => {
     expect(state().identitiesError).toBeUndefined();
   });
 
+  it('offers a retry when a remount of a page-1 list fails', async () => {
+    // A settled list sitting on page 1. The page number never moves, so the
+    // adoption changes no SWR key: whatever this remount's request produces is
+    // the only answer the list is going to get.
+    //
+    // Whether that answer can arrive *before* the store records the mount is
+    // decided by React effect ordering, which `act()`-wrapped rendering flushes
+    // away — see "responses that arrive before their mount is recorded" for the
+    // store-level cover of that race.
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'a2'), total: 2 });
+    const app = mountApp();
+    await waitFor(() => expect(ids()).toEqual(['a1', 'a2']));
+    expect(state().identitiesPage).toBe(1);
+
+    app.unmount();
+
+    services.queryIdentities.mockRejectedValue(new Error('offline'));
+    mountApp();
+
+    await waitFor(() => expect(state().identitiesPageError).toBeInstanceOf(Error));
+    expect(ids()).toEqual(['a1', 'a2']);
+    expect(state().identitiesSettled).toBe(true);
+
+    // And the footer's retry recovers the list.
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'a3'), total: 2 });
+    await act(async () => {
+      state().retryIdentitiesPage();
+      await revalidateCurrentPage();
+    });
+
+    await waitFor(() => expect(ids()).toEqual(['a1', 'a3']));
+    expect(state().identitiesPageError).toBeUndefined();
+  });
+
   it('does not accumulate cache entries as the list is refiltered', async () => {
     services.queryIdentities.mockResolvedValue({ items: rows('a1'), total: 1 });
     mountApp();
@@ -674,5 +734,87 @@ describe('memory list remounts', () => {
     // key itself has to be deleted from the provider or they pile up for the
     // life of the session.
     await waitFor(() => expect(listCacheKeys().length).toBeLessThanOrEqual(2));
+  });
+});
+
+describe('memory list responses that arrive before their mount is recorded', () => {
+  /** A settled list, with no reader left mounted to compete for the mock. */
+  const seedSettledList = async () => {
+    mountCacheOnly();
+    state().resetIdentitiesList({});
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'a2'), total: 2 });
+    await act(async () => {
+      await state().refreshIdentitiesList();
+    });
+    expect(ids()).toEqual(['a1', 'a2']);
+
+    return state().identitiesEpoch;
+  };
+
+  it('keeps a failure that lands before the store has adopted the remount epoch', async () => {
+    const adopted = await seedSettledList();
+
+    services.queryIdentities.mockRejectedValue(new Error('offline'));
+    mountFetchAt(adopted + 1, 1);
+
+    // Dropping this on the epoch guard left the page with rows, no error and no
+    // retry — and since the adoption that follows rewinds a page-1 list to
+    // page 1, no SWR key ever changed and nothing asked again.
+    await waitFor(() => expect(state().identitiesPageError).toBeInstanceOf(Error));
+    expect(state().identitiesEpoch).toBe(adopted + 1);
+    expect(ids()).toEqual(['a1', 'a2']);
+    expect(state().identitiesSettled).toBe(true);
+  });
+
+  it('keeps a success that lands before the store has adopted the remount epoch', async () => {
+    const adopted = await seedSettledList();
+
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'a3'), total: 2 });
+    mountFetchAt(adopted + 1, 1);
+
+    await waitFor(() => expect(ids()).toEqual(['a1', 'a3']));
+    expect(state().identitiesEpoch).toBe(adopted + 1);
+  });
+
+  it('refuses a later page from a mount the store has not recorded yet', async () => {
+    mountCacheOnly();
+    state().resetIdentitiesList({});
+    // The refresh rebuilds page 1 at the list's last known page size.
+    useUserMemoryStore.setState({ identitiesPageSize: PAGE_SIZE }, false);
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'a2'), total: 10 });
+    await act(async () => {
+      await state().refreshIdentitiesList();
+    });
+    const adopted = state().identitiesEpoch;
+
+    act(() => state().loadMoreIdentities());
+    expect(state().identitiesPage).toBe(2);
+
+    services.queryIdentities.mockResolvedValue({ items: rows('a3', 'a4'), total: 10 });
+    mountFetchAt(adopted + 1, 2);
+
+    // Only page 1 is adoptable. The adoption this response is racing rewinds
+    // the list to page 1, so appending page 2 first piles it onto rows the
+    // rewind is on its way to replace.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(ids()).toEqual(['a1', 'a2']);
+    expect(state().identitiesEpoch).toBe(adopted);
+  });
+
+  it('still refuses a response from a mount the store has already moved past', async () => {
+    const adopted = await seedSettledList();
+
+    services.queryIdentities.mockResolvedValue({ items: rows('gone'), total: 1 });
+    mountFetchAt(adopted - 1, 1);
+
+    // Only a *newer* epoch is adoptable. An older one is a request left over
+    // from a visit the user has already navigated away from.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(ids()).toEqual(['a1', 'a2']);
+    expect(state().identitiesEpoch).toBe(adopted);
   });
 });

@@ -1,7 +1,7 @@
 import { Flexbox, Icon, Tag } from '@lobehub/ui';
 import { BrainCircuitIcon } from 'lucide-react';
 import { type FC } from 'react';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncError from '@/components/AsyncError';
@@ -70,7 +70,13 @@ const PreferencesArea = memo(() => {
   // the one already on screen (a revisit must not blank the list), which is why
   // this can run unconditionally and still catch the switch back to the default
   // sort — the old `if (!apiSort) return` guard swallowed exactly that.
-  useEffect(() => {
+  // A layout effect, and declared above the `useFetchPreferences` call below, so it
+  // runs before the layout effect SWR uses to start its request. Left as a
+  // passive effect, a request that settled immediately — an offline reject, a
+  // synchronous mock — resolved against the epoch of the *previous* mount and
+  // was thrown away by the epoch guard, while the adoption that followed
+  // cleared the slate and changed no key, so nothing ever asked again.
+  useLayoutEffect(() => {
     resetPreferencesList(listQuery, epoch);
   }, [epoch, listQuery, resetPreferencesList]);
 
