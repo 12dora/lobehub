@@ -24,30 +24,35 @@ const lists = [
     key: 'activities',
     loadMore: 'loadMoreActivities',
     reset: 'resetActivitiesList',
+    retryPage: 'retryActivitiesPage',
   },
   {
     fields: { q: 'design', sort: 'scoreImpact' },
     key: 'contexts',
     loadMore: 'loadMoreContexts',
     reset: 'resetContextsList',
+    retryPage: 'retryContextsPage',
   },
   {
     fields: { q: 'design', sort: 'scoreConfidence' },
     key: 'experiences',
     loadMore: 'loadMoreExperiences',
     reset: 'resetExperiencesList',
+    retryPage: 'retryExperiencesPage',
   },
   {
     fields: { q: 'design', relationships: ['peer'], sort: 'type', types: ['personal'] },
     key: 'identities',
     loadMore: 'loadMoreIdentities',
     reset: 'resetIdentitiesList',
+    retryPage: 'retryIdentitiesPage',
   },
   {
     fields: { q: 'design', sort: 'scorePriority' },
     key: 'preferences',
     loadMore: 'loadMorePreferences',
     reset: 'resetPreferencesList',
+    retryPage: 'retryPreferencesPage',
   },
 ] as const;
 
@@ -57,7 +62,7 @@ beforeEach(() => {
   useUserMemoryStore.setState({ ...initialState }, false);
 });
 
-describe.each(lists)('$reset', ({ fields, key, loadMore, reset }) => {
+describe.each(lists)('$reset', ({ fields, key, loadMore, reset, retryPage }) => {
   const call = (params?: Record<string, unknown>) => state()[reset](params);
 
   /** Put the store where a settled visit leaves it: rows on screen, page 2. */
@@ -127,6 +132,65 @@ describe.each(lists)('$reset', ({ fields, key, loadMore, reset }) => {
     state()[loadMore]();
 
     expect(state()[`${key}Page`]).toBe(3);
+    expect(state()[`${key}PendingPage`]).toBe(3);
+  });
+
+  it('refuses a second page request while one is still outstanding', () => {
+    seedLoadedList(fields);
+
+    state()[loadMore]();
+    state()[loadMore]();
+
+    // Remounting the virtualizer fires `endReached` again at the bottom of the
+    // list. Skipping ahead loses the page that is still in flight: it is
+    // rejected by the page guard when it lands, and nothing ever asks again.
+    expect(state()[`${key}Page`]).toBe(3);
+    expect(state()[`${key}PendingPage`]).toBe(3);
+  });
+
+  it('will not skip past a page that failed', () => {
+    seedLoadedList(fields);
+    useUserMemoryStore.setState({ [`${key}PageError`]: new Error('boom') } as never, false);
+
+    state()[loadMore]();
+
+    expect(state()[`${key}Page`]).toBe(2);
+  });
+
+  it('retries the page that failed rather than the one after it', () => {
+    seedLoadedList(fields);
+    useUserMemoryStore.setState({ [`${key}PageError`]: new Error('boom') } as never, false);
+
+    state()[retryPage]();
+
+    expect(state()[`${key}PageError`]).toBeUndefined();
+    expect(state()[`${key}Page`]).toBe(2);
+    expect(state()[`${key}PendingPage`]).toBe(2);
+  });
+
+  it('clears the pagination latches when the query changes', () => {
+    seedLoadedList(fields);
+    state()[loadMore]();
+    useUserMemoryStore.setState({ [`${key}PageError`]: new Error('boom') } as never, false);
+
+    call({ ...fields, q: 'research' });
+
+    expect(state()[`${key}PendingPage`]).toBeUndefined();
+    expect(state()[`${key}PageError`]).toBeUndefined();
+  });
+
+  it('restarts the generation for a new query and steps it for a same-query retry', () => {
+    seedLoadedList(fields);
+    useUserMemoryStore.setState({ [`${key}Generation`]: 4 } as never, false);
+
+    call({ ...fields, q: 'research' });
+    // A different query is told apart by its key, so the counter starts over.
+    expect(state()[`${key}Generation`]).toBe(0);
+
+    // A retry keeps the key, so only the counter can invalidate whatever the
+    // failed attempt left in flight.
+    call({ ...fields, q: 'research' });
+    expect(state()[`${key}Generation`]).toBe(1);
   });
 
   it('resets a cold list even when the query is the initial one', () => {

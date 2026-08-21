@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, render, waitFor } from '@testing-library/react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { type Cache, SWRConfig, useSWRConfig } from 'swr';
@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setScopedMutate } from '@/libs/swr';
 import { useUserMemoryStore } from '@/store/userMemory';
 import { initialState } from '@/store/userMemory/initialState';
+import { LayersEnum } from '@/types/userMemory';
 
 /**
  * Runs against a REAL SWR cache — `@/libs/swr` is deliberately NOT mocked.
@@ -20,15 +21,18 @@ import { initialState } from '@/store/userMemory/initialState';
  * called with a predicate" passes in every one of those cases.
  */
 const services = vi.hoisted(() => ({
+  deleteAll: vi.fn(),
   deleteIdentity: vi.fn(),
   queryIdentities: vi.fn(),
+  updateIdentity: vi.fn(),
 }));
 
 vi.mock('@/services/userMemory', () => ({
   memoryCRUDService: {
     createIdentity: vi.fn(),
+    deleteAll: services.deleteAll,
     deleteIdentity: services.deleteIdentity,
-    updateIdentity: vi.fn(),
+    updateIdentity: services.updateIdentity,
   },
   userMemoryService: { queryIdentities: services.queryIdentities },
 }));
@@ -62,6 +66,9 @@ const MutateBridge = ({ children }: PropsWithChildren) => {
   return <>{children}</>;
 };
 
+/** SWR's `mutate` for the key the reader is currently on — the page's Retry. */
+let revalidateCurrentPage!: () => Promise<unknown>;
+
 /** The identities page's data wiring, with nothing but the data wiring in it. */
 const Reader = ({ q }: { q?: string }) => {
   const page = useUserMemoryStore((s) => s.identitiesPage);
@@ -74,7 +81,8 @@ const Reader = ({ q }: { q?: string }) => {
     resetIdentitiesList(listQuery);
   }, [listQuery, resetIdentitiesList]);
 
-  useFetchIdentities({ ...listQuery, page, pageSize: PAGE_SIZE });
+  const swr = useFetchIdentities({ ...listQuery, page, pageSize: PAGE_SIZE });
+  revalidateCurrentPage = swr.mutate;
 
   return null;
 };
@@ -94,6 +102,18 @@ const mountApp = () =>
     </SWRConfig>,
   );
 
+/**
+ * The provider without a reader, for the cases that are purely about the store:
+ * `dropMemoryListCache` still needs the scoped mutate, but a mounted list would
+ * fire fetches of its own and make request ordering ambiguous.
+ */
+const mountCacheOnly = () =>
+  render(
+    <SWRConfig value={{ provider: () => cache as unknown as Cache }}>
+      <MutateBridge />
+    </SWRConfig>,
+  );
+
 const state = () => useUserMemoryStore.getState();
 const ids = () => state().identities.map((item) => item.id);
 
@@ -103,8 +123,28 @@ const cachedRowIds = () =>
     (((entry as { data?: { items?: Row[] } })?.data?.items ?? []) as Row[]).map((item) => item.id),
   );
 
+/** Load pages 1..n of the default query, two rows each. */
+const loadPages = async (...pages: string[][]) => {
+  services.queryIdentities.mockResolvedValue({ items: rows(...pages[0]), total: 10 });
+  mountApp();
+  await waitFor(() => expect(ids()).toEqual(pages[0]));
+
+  for (const page of pages.slice(1)) {
+    services.queryIdentities.mockResolvedValue({ items: rows(...page), total: 10 });
+    act(() => state().loadMoreIdentities());
+    await waitFor(() => expect(ids()).toContain(page[0]));
+  }
+};
+
 beforeEach(() => {
+  // Each test mounts its own provider; a tree left over from the previous one
+  // would keep subscribing to the same store and answer its fetches.
+  cleanup();
   vi.clearAllMocks();
+  services.queryIdentities.mockReset();
+  services.deleteAll.mockResolvedValue(undefined);
+  services.deleteIdentity.mockResolvedValue(undefined);
+  services.updateIdentity.mockResolvedValue(true);
   cache = new Map();
   useUserMemoryStore.setState({ ...initialState }, false);
 });
@@ -247,5 +287,200 @@ describe('memory list failures', () => {
     await waitFor(() => expect(ids()).toEqual(['a1']));
     expect(state().identitiesError).toBeUndefined();
     expect(state().identitiesSettled).toBe(true);
+  });
+});
+
+describe('memory list writes from outside the list', () => {
+  it('re-reads page 1 when the editor edits a row out of the query, from page 3', async () => {
+    await loadPages(['a1', 'a2'], ['a3', 'a4'], ['a5', 'a6']);
+    expect(state().identitiesPage).toBe(3);
+
+    // a1 is edited so it no longer matches the query it was listed under.
+    services.queryIdentities.mockResolvedValue({ items: rows('a2', 'a3'), total: 9 });
+    services.queryIdentities.mockClear();
+
+    await act(async () => {
+      await state().updateMemory('a1', 'edited', LayersEnum.Identity);
+    });
+
+    // The editor lives in the base slice and used to invalidate with a bare
+    // matcher `mutate`: only page 3 revalidated, so the edited row stayed in
+    // the accumulated list and pages 1–2 stayed stale in the cache.
+    expect(services.updateIdentity).toHaveBeenCalledWith('a1', { description: 'edited' });
+    expect(services.queryIdentities).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, pageSize: PAGE_SIZE }),
+    );
+    expect(state().identitiesPage).toBe(1);
+    expect(ids()).toEqual(['a2', 'a3']);
+
+    const stillCached = cachedRowIds();
+    expect(stillCached).not.toContain('a4');
+    expect(stillCached).not.toContain('a6');
+  });
+
+  it('leaves a filtered list mounted on its own query after a purge', async () => {
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'a2'), total: 2 });
+    mountApp();
+    await waitFor(() => expect(ids()).toEqual(['a1', 'a2']));
+
+    act(() => setQuery('b'));
+    await waitFor(() => expect(state().identitiesSettled).toBe(true));
+    const filteredQueryKey = state().identitiesQueryKey;
+
+    services.queryIdentities.mockResolvedValue({ items: [], total: 0 });
+    await act(async () => {
+      await state().purgeAllMemories();
+    });
+
+    // The mounted page does not re-run its reset effect for a purge — its own
+    // filters didn't change — so blanking the store's query identity left the
+    // two disagreeing: the purge's revalidation came back as "page 1 of no
+    // query", was rejected, and the list sat on a skeleton it could not leave.
+    expect(state().identitiesQueryKey).toBe(filteredQueryKey);
+    expect(state().identities).toHaveLength(0);
+    expect(state().identitiesTotal).toBe(0);
+
+    // What the page reads: settled with no rows is the empty state, not a
+    // skeleton, and not an error.
+    expect(state().identitiesSettled).toBe(true);
+    expect(state().identitiesError).toBeUndefined();
+    expect(state().identitiesHasMore).toBe(false);
+
+    // And a later visit to the same filter still takes the unchanged-query
+    // no-op rather than blanking the list again.
+    act(() => state().resetIdentitiesList({ q: 'b' }));
+    expect(state().identitiesSettled).toBe(true);
+  });
+
+  it('drops the older of two overlapping refreshes, whichever lands last', async () => {
+    mountCacheOnly();
+
+    // A settled list of three rows, with no reader competing for the mock.
+    state().resetIdentitiesList({});
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'b1', 'c1'), total: 3 });
+    await act(async () => {
+      await state().refreshIdentitiesList();
+    });
+    expect(ids()).toEqual(['a1', 'b1', 'c1']);
+
+    // Hand every refetch its own hand-controlled promise, in call order.
+    const pending: ReturnType<typeof deferred<{ items: Row[]; total: number }>>[] = [];
+    services.queryIdentities.mockImplementation(() => {
+      const next = deferred<{ items: Row[]; total: number }>();
+      pending.push(next);
+      return next.promise;
+    });
+
+    // Delete a1; its refresh is in flight when b1 is deleted too.
+    const firstDelete = state().deleteIdentity('a1');
+    await waitFor(() => expect(pending).toHaveLength(1));
+    const secondDelete = state().deleteIdentity('b1');
+    await waitFor(() => expect(pending).toHaveLength(2));
+
+    // The newer refresh answers first, with both rows gone.
+    pending[1].resolve({ items: rows('c1'), total: 1 });
+    await waitFor(() => expect(ids()).toEqual(['c1']));
+
+    // The older one lands last, still carrying b1 — it was read before b1 was
+    // deleted. Both are "page 1 of this query", so key and page cannot tell
+    // them apart; only the generation can, and without it b1 comes back.
+    pending[0].resolve({ items: rows('b1', 'c1'), total: 2 });
+    await Promise.all([firstDelete, secondDelete]);
+
+    expect(ids()).toEqual(['c1']);
+    expect(state().identitiesTotal).toBe(1);
+  });
+
+  it('ignores a failure from a refresh that has already been superseded', async () => {
+    mountCacheOnly();
+
+    state().resetIdentitiesList({});
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'b1'), total: 2 });
+    await act(async () => {
+      await state().refreshIdentitiesList();
+    });
+
+    const pending: ReturnType<typeof deferred<{ items: Row[]; total: number }>>[] = [];
+    services.queryIdentities.mockImplementation(() => {
+      const next = deferred<{ items: Row[]; total: number }>();
+      pending.push(next);
+      return next.promise;
+    });
+
+    const firstDelete = state().deleteIdentity('a1');
+    await waitFor(() => expect(pending).toHaveLength(1));
+    const secondDelete = state().deleteIdentity('b1');
+    await waitFor(() => expect(pending).toHaveLength(2));
+
+    pending[1].resolve({ items: [], total: 0 });
+    await waitFor(() => expect(state().identitiesSettled).toBe(true));
+
+    // The superseded refresh fails on its way back. Its error describes a
+    // request nobody is waiting for any more, so surfacing it would replace a
+    // perfectly good empty list with a failure the user cannot act on.
+    pending[0].reject(new Error('too late'));
+    await Promise.all([firstDelete, secondDelete]);
+
+    expect(state().identitiesError).toBeUndefined();
+    expect(state().identitiesSettled).toBe(true);
+    expect(ids()).toEqual([]);
+  });
+});
+
+describe('memory list pagination failures', () => {
+  it('refuses a second load-more while a page request is still outstanding', async () => {
+    await loadPages(['a1', 'a2']);
+
+    const pending = deferred<{ items: Row[]; total: number }>();
+    services.queryIdentities.mockReturnValue(pending.promise);
+
+    act(() => state().loadMoreIdentities());
+    expect(state().identitiesPage).toBe(2);
+    expect(state().identitiesPendingPage).toBe(2);
+
+    // Remounting the virtualizer (grid <-> timeline) lands the viewport at the
+    // end again and fires `endReached` a second time. Skipping to page 3 here
+    // loses page 2 for good: it is rejected by the page guard when it lands.
+    act(() => state().loadMoreIdentities());
+    expect(state().identitiesPage).toBe(2);
+
+    await act(async () => {
+      pending.resolve({ items: rows('a3', 'a4'), total: 10 });
+      await pending.promise;
+    });
+
+    await waitFor(() => expect(ids()).toEqual(['a1', 'a2', 'a3', 'a4']));
+    expect(state().identitiesPendingPage).toBeUndefined();
+  });
+
+  it('surfaces a load-more failure as a retryable footer and retries the same page', async () => {
+    await loadPages(['a1', 'a2']);
+
+    services.queryIdentities.mockRejectedValue(new Error('page 2 died'));
+    act(() => state().loadMoreIdentities());
+
+    await waitFor(() => expect(state().identitiesPageError).toBeInstanceOf(Error));
+
+    // A pagination failure is not a whole-list failure: the rows stay, the list
+    // stays settled, and the page renders a retry footer instead of silently
+    // truncating the list at page 1.
+    expect(ids()).toEqual(['a1', 'a2']);
+    expect(state().identitiesSettled).toBe(true);
+    expect(state().identitiesError).toBeUndefined();
+
+    // Nothing may quietly ask for page 3 in the meantime.
+    act(() => state().loadMoreIdentities());
+    expect(state().identitiesPage).toBe(2);
+
+    services.queryIdentities.mockResolvedValue({ items: rows('a3', 'a4'), total: 10 });
+    await act(async () => {
+      state().retryIdentitiesPage();
+      await revalidateCurrentPage();
+    });
+
+    // The retry re-requested page 2 — the page that failed — not page 3.
+    expect(services.queryIdentities).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }));
+    await waitFor(() => expect(ids()).toEqual(['a1', 'a2', 'a3', 'a4']));
+    expect(state().identitiesPageError).toBeUndefined();
   });
 });

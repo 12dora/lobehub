@@ -4,10 +4,16 @@ export interface ContextSliceState {
   contexts: DisplayContextMemory[];
   /** Failure of the query currently on screen, if it never settled. */
   contextsError?: unknown;
+  /** Bumped whenever in-flight requests for this list become stale. */
+  contextsGeneration: number;
   contextsHasMore: boolean;
   contextsPage: number;
+  /** Failure of a load-more page; the rows already on screen stay. */
+  contextsPageError?: unknown;
   /** Page size of the last fetch, so a post-write refetch can rebuild page 1. */
   contextsPageSize?: number;
+  /** The page a request is currently outstanding for. */
+  contextsPendingPage?: number;
   contextsQuery?: string;
   /** Identity of the query the rows belong to — see `memoryListQueryKey`. */
   contextsQueryKey: string;
@@ -21,9 +27,12 @@ export interface ContextSliceState {
 export const contextInitialState: ContextSliceState = {
   contexts: [],
   contextsError: undefined,
+  contextsGeneration: 0,
   contextsHasMore: true,
   contextsPage: 1,
+  contextsPageError: undefined,
   contextsPageSize: undefined,
+  contextsPendingPage: undefined,
   contextsQuery: undefined,
   contextsQueryKey: '',
   contextsSettled: false,

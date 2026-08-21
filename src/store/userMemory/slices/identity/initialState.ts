@@ -12,10 +12,16 @@ export interface IdentitySliceState {
   identities: IdentityListItem[];
   /** Failure of the query currently on screen, if it never settled. */
   identitiesError?: unknown;
+  /** Bumped whenever in-flight requests for this list become stale. */
+  identitiesGeneration: number;
   identitiesHasMore: boolean;
   identitiesPage: number;
+  /** Failure of a load-more page; the rows already on screen stay. */
+  identitiesPageError?: unknown;
   /** Page size of the last fetch, so a post-write refetch can rebuild page 1. */
   identitiesPageSize?: number;
+  /** The page a request is currently outstanding for. */
+  identitiesPendingPage?: number;
   identitiesQuery?: string;
   /** Identity of the query the rows belong to — see `memoryListQueryKey`. */
   identitiesQueryKey: string;
@@ -34,9 +40,12 @@ export const identityInitialState: IdentitySliceState = {
   globalIdentitiesInit: false,
   identities: [],
   identitiesError: undefined,
+  identitiesGeneration: 0,
   identitiesHasMore: true,
   identitiesPage: 1,
+  identitiesPageError: undefined,
   identitiesPageSize: undefined,
+  identitiesPendingPage: undefined,
   identitiesQuery: undefined,
   identitiesQueryKey: '',
   identitiesRelationships: undefined,

@@ -25,7 +25,9 @@ export interface ExperienceQueryParams {
 
 type ExperienceFilter = Omit<ExperienceQueryParams, 'page' | 'pageSize'>;
 
-/** Every filter field of `ExperienceQueryParams` — pagination excluded. */
+/**
+ * Every filter field of `ExperienceQueryParams` — pagination excluded.
+ */
 const experienceQueryKey = (params?: ExperienceFilter): string =>
   memoryListQueryKey({ q: params?.q, sort: params?.sort });
 
@@ -45,7 +47,7 @@ export class ExperienceActionImpl {
 
   deleteExperience = async (id: string): Promise<void> => {
     await memoryCRUDService.deleteExperience(id);
-    await this.#refreshExperiencesList();
+    await this.refreshExperiencesList();
   };
 
   loadMoreExperiences = (): void => {
@@ -53,21 +55,34 @@ export class ExperienceActionImpl {
       experiences,
       experiencesHasMore,
       experiencesPage,
+      experiencesPageError,
+      experiencesPendingPage,
       experiencesSearchLoading,
       experiencesTotal,
     } = this.#get();
 
     // A reset / refresh is in flight, so the rows on screen still belong to the
-    // *previous* query. Bumping the page here would ask for page 2 of the new
-    // query and append it to those rows, leaving the list permanently mixed and
-    // page 1 of the new query missing. `hasMore` is also latched false across a
-    // reset, which stops the virtualized `endReached` from firing at all.
+    // *previous* query. Bumping the page here would ask for the next page of the
+    // new query and append it to those rows, leaving the list permanently mixed
+    // and the new query's page 1 missing.
     if (experiencesSearchLoading || !experiencesHasMore) return;
+
+    // One page request at a time. Remounting the virtualizer (a grid <-> timeline
+    // switch, say) lands the viewport at the end again and fires `endReached` a
+    // second time; without this latch that skipped straight to page 3, and page 2
+    // — rejected by the page guard when it finally landed — was lost for good.
+    if (experiencesPendingPage !== undefined) return;
+
+    // A failed page is retried explicitly (see `retryExperiencesPage`), never by
+    // silently asking for the page after it.
+    if (experiencesPageError) return;
+
     if (experiences.length >= (experiencesTotal || 0)) return;
 
     this.#set(
       produce((draft) => {
         draft.experiencesPage = experiencesPage + 1;
+        draft.experiencesPendingPage = experiencesPage + 1;
       }),
       false,
       n('loadMoreExperiences'),
@@ -77,15 +92,18 @@ export class ExperienceActionImpl {
   /**
    * Re-read the list after a write.
    *
-   * A mutation doesn't change the query, so neither `resetExperiencesList` (a
-   * no-op on an unchanged query) nor a key change can drive it. Rewind to page
-   * 1, drop every cached page of the list, then fetch page 1 here rather than
-   * hoping a subscriber revalidates — the store's page and React's subscription
-   * move at different times, so "revalidate whatever is subscribed" would have
-   * refreshed the page the user happened to be on, not the one the store is
-   * about to render.
+   * A mutation doesn't change the query, so neither `resetExperiencesList` (a no-op on
+   * an unchanged query) nor a key change can drive it. Rewind to page 1, drop
+   * every cached page of the list, then fetch page 1 here rather than hoping a
+   * subscriber revalidates — the store's page and React's subscription move at
+   * different times, so "revalidate whatever is subscribed" refreshes the page
+   * the user happens to be on, not the one the store is about to render.
+   *
+   * Public because every write path has to come through here: the memory editor
+   * lives in the base slice and used to invalidate with a bare matcher `mutate`,
+   * which left the edited row sitting in the accumulated pages.
    */
-  #refreshExperiencesList = async (): Promise<void> => {
+  refreshExperiencesList = async (): Promise<void> => {
     const state = this.#get();
     const params: ExperienceQueryParams = {
       page: 1,
@@ -94,11 +112,22 @@ export class ExperienceActionImpl {
       sort: state.experiencesSort,
     };
 
+    // Every in-flight request for this list is now stale, and they cannot be
+    // told apart by key and page alone — two overlapping refreshes of the same
+    // query both look like "page 1 of this query". The generation is what
+    // separates them, so the older one is dropped even if it lands last. The
+    // query identity does not change here, which is exactly why the counter
+    // has to move.
+    const generation = state.experiencesGeneration + 1;
+
     this.#set(
       produce((draft) => {
         draft.experiencesError = undefined;
+        draft.experiencesGeneration = generation;
         draft.experiencesHasMore = false;
         draft.experiencesPage = 1;
+        draft.experiencesPageError = undefined;
+        draft.experiencesPendingPage = undefined;
         draft.experiencesSearchLoading = true;
         draft.experiencesSettled = false;
       }),
@@ -110,9 +139,9 @@ export class ExperienceActionImpl {
 
     try {
       const data = await userMemoryService.queryExperiences(params);
-      this.#applyExperiencesPage(params, data);
+      this.#applyExperiencesPage(params, data, generation);
     } catch (error) {
-      this.#failExperiencesPage(params, error);
+      this.#failExperiencesPage(params, error, generation);
     }
   };
 
@@ -121,28 +150,58 @@ export class ExperienceActionImpl {
     const nextQueryKey = experienceQueryKey(params);
 
     // Nothing to reset when the query already settled in the store. The pages
-    // call this from a mount effect, so without this guard every visit wiped
-    // the rows it had and replaced the list with a skeleton.
+    // call this from a mount effect, so without this guard every visit wiped the
+    // rows it had and replaced the list with a skeleton.
     if (nextQueryKey === state.experiencesQueryKey && state.experiencesSettled) return;
 
     this.#set(
       produce((draft) => {
-        // Deliberately keep `experiences`: the rows already on screen stay put
-        // while the new query is in flight (the page shows a subtle refreshing
+        // Deliberately keep `experiences`: the rows already on screen stay put while
+        // the new query is in flight (the page shows a subtle refreshing
         // affordance instead of a skeleton). They are no longer "settled"
         // though, so nothing may accumulate on top of them until page 1 of the
         // new query lands.
         draft.experiencesError = undefined;
+        // The generation counts invalidations *within* one query identity, so
+        // it restarts when the identity itself changes. The pair (query key,
+        // generation) is what a response is matched against; a reset always
+        // moves it, either by changing the key or — on a same-key retry — by
+        // stepping the counter past whatever the failed attempt left in flight.
+        draft.experiencesGeneration =
+          nextQueryKey === state.experiencesQueryKey ? state.experiencesGeneration + 1 : 0;
         draft.experiencesHasMore = false;
         draft.experiencesPage = 1;
-        draft.experiencesQuery = params?.q;
+        draft.experiencesPageError = undefined;
+        draft.experiencesPendingPage = undefined;
         draft.experiencesQueryKey = nextQueryKey;
+        draft.experiencesQuery = params?.q;
+        draft.experiencesSort = params?.sort;
         draft.experiencesSearchLoading = true;
         draft.experiencesSettled = false;
-        draft.experiencesSort = params?.sort;
       }),
       false,
       n('resetExperiencesList'),
+    );
+  };
+
+  /**
+   * Retry the page that failed, not the one after it.
+   *
+   * The page renders a retryable footer for a pagination failure; the component
+   * revalidates the SWR key it is already on, which is exactly the failed page
+   * because `experiencesPage` was never advanced past it.
+   */
+  retryExperiencesPage = (): void => {
+    const { experiencesPage, experiencesPageError } = this.#get();
+    if (!experiencesPageError) return;
+
+    this.#set(
+      produce((draft) => {
+        draft.experiencesPageError = undefined;
+        draft.experiencesPendingPage = experiencesPage;
+      }),
+      false,
+      n('retryExperiencesPage'),
     );
   };
 
@@ -150,27 +209,37 @@ export class ExperienceActionImpl {
     const queryKey = experienceQueryKey(params);
     const page = params.page ?? 1;
 
-    const swr = useSWR(
+    const swr = useSWR<ExperienceListResult>(
       userMemoryKeys.experiences(params),
       async () => {
-        // Use the new dedicated queryExperiences API
-        return userMemoryService.queryExperiences({
-          page: params.page,
-          pageSize: params.pageSize,
-          q: params.q,
-          sort: params.sort,
-        });
+        // Captured before the request, never read back after it: that is what
+        // lets a response which was already in flight when a write evicted the
+        // list be told apart from a fresh one.
+        const generation = this.#get().experiencesGeneration;
+
+        try {
+          const data = await userMemoryService.queryExperiences({
+            page: params.page,
+            pageSize: params.pageSize,
+            q: params.q,
+            sort: params.sort,
+          });
+          this.#applyExperiencesPage(params, data, generation);
+          return data;
+        } catch (error) {
+          this.#failExperiencesPage(params, error, generation);
+          throw error;
+        }
       },
-      {
-        onError: (error) => this.#failExperiencesPage(params, error),
-        revalidateOnFocus: false,
-      },
+      { revalidateOnFocus: false },
     );
 
-    // Sync SWR → store from an effect rather than `onSuccess`: when the key
-    // changes to a page that is already cached, SWR hands the data back without
-    // ever running the fetcher, and an `onSuccess`-only store would keep
-    // showing the previous query's rows with a spinner that never stops.
+    // Bootstrap from the cache. When the key changes to a page SWR has already
+    // fetched it hands the data back without ever running the fetcher above, so
+    // applying only in the fetcher would leave the previous query's rows on
+    // screen under a spinner that never stops. This path is limited to a page
+    // the store is still waiting for (see `#applyExperiencesPage`), so it can never
+    // overwrite rows that have already settled.
     const data = swr.data;
     useEffect(() => {
       if (!data) return;
@@ -180,41 +249,82 @@ export class ExperienceActionImpl {
     return swr;
   };
 
-  /** Write one page into the list — only if it still belongs to what's on screen. */
-  #applyExperiencesPage = (params: ExperienceQueryParams, data: ExperienceListResult): void => {
+  /**
+   * Write one page into the list.
+   *
+   * Three things have to line up: the query identity, the page the store is
+   * waiting for, and — for a response produced by a request we started
+   * ourselves — the generation that request captured.
+   */
+  #applyExperiencesPage = (
+    params: ExperienceQueryParams,
+    data: ExperienceListResult,
+    generation?: number,
+  ): void => {
     const state = this.#get();
     const page = params.page ?? 1;
 
     if (experienceQueryKey(params) !== state.experiencesQueryKey) return;
     if (page !== state.experiencesPage) return;
 
+    if (generation === undefined) {
+      // Cache bootstrap: only a page the store has not resolved yet. Everything
+      // else is applied by the fetcher under its own generation, so a stale
+      // in-flight response cannot clobber the rows a write just produced.
+      if (state.experiencesSettled && state.experiencesPendingPage !== page) return;
+    } else if (generation !== state.experiencesGeneration) return;
+
+    // Backend returns a flat structure directly, no transformation needed.
+    const items = data.items;
+
     this.#set(
       produce((draft) => {
         draft.experiencesError = undefined;
         draft.experiencesHasMore =
           data.items.length >= (params.pageSize || DEFAULT_MEMORY_LIST_PAGE_SIZE);
+        draft.experiencesPageError = undefined;
         draft.experiencesPageSize = params.pageSize ?? draft.experiencesPageSize;
+        draft.experiencesPendingPage = undefined;
         draft.experiencesSearchLoading = false;
         draft.experiencesSettled = true;
         draft.experiencesTotal = data.total;
-
-        // Backend now returns flat structure directly, no transformation needed
         draft.experiences =
-          page === 1
-            ? uniqBy(data.items, 'id')
-            : uniqBy([...draft.experiences, ...data.items], 'id');
+          page === 1 ? uniqBy(items, 'id') : uniqBy([...draft.experiences, ...items], 'id');
       }),
       false,
       n('applyExperiencesPage'),
     );
   };
 
-  /** Record a failure for the query on screen so the page can offer a retry. */
-  #failExperiencesPage = (params: ExperienceQueryParams, error: unknown): void => {
-    if (experienceQueryKey(params) !== this.#get().experiencesQueryKey) return;
+  /**
+   * Record a failure.
+   *
+   * A first page that never landed is a whole-list failure, which the page
+   * renders instead of the list. A later page is a pagination failure, which
+   * keeps the rows on screen and offers a retryable footer — collapsing the two
+   * hid every load-more failure behind a footer that simply stopped.
+   */
+  #failExperiencesPage = (
+    params: ExperienceQueryParams,
+    error: unknown,
+    generation: number,
+  ): void => {
+    const state = this.#get();
+    const page = params.page ?? 1;
+
+    if (experienceQueryKey(params) !== state.experiencesQueryKey) return;
+    if (page !== state.experiencesPage) return;
+    if (generation !== state.experiencesGeneration) return;
 
     this.#set(
       produce((draft) => {
+        draft.experiencesPendingPage = undefined;
+
+        if (page > 1) {
+          draft.experiencesPageError = error;
+          return;
+        }
+
         draft.experiencesError = error;
         draft.experiencesSearchLoading = false;
       }),

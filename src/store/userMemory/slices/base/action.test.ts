@@ -5,7 +5,7 @@ import type { DisplayPreferenceMemory } from '@/database/repositories/userMemory
 import type * as SwrLib from '@/libs/swr';
 import { mutate } from '@/libs/swr';
 import { userMemoryKeys } from '@/libs/swr/keys';
-import { memoryCRUDService } from '@/services/userMemory';
+import { memoryCRUDService, userMemoryService } from '@/services/userMemory';
 import { useUserMemoryStore } from '@/store/userMemory';
 import { initialState } from '@/store/userMemory/initialState';
 import { LayersEnum } from '@/types/userMemory';
@@ -58,6 +58,23 @@ afterEach(() => {
 });
 
 describe('userMemory base actions', () => {
+  beforeEach(() => {
+    // The refresh pipeline re-reads page 1 of the list itself, and the server
+    // row — not the optimistic patch — is what ends up on screen.
+    vi.spyOn(userMemoryService, 'queryMemories').mockResolvedValue({
+      items: [
+        {
+          memory: {
+            ...preferenceMemory,
+            conclusionDirectives: 'Prefer concise answers with examples.',
+          },
+          preference: {},
+        },
+      ],
+      total: 1,
+    } as never);
+  });
+
   describe('updateMemory', () => {
     it('updates a preference memory in place and revalidates related caches', async () => {
       const updatePreferenceResult = {} as Awaited<
@@ -75,6 +92,13 @@ describe('userMemory base actions', () => {
         );
       });
 
+      // The edit lands on the row first, then the whole list is re-read: the
+      // editor used to invalidate with a bare matcher `mutate`, which only
+      // reached the subscribed page. Editing a row out of the active query left
+      // it in the accumulated pages, with the pages before it stale in cache.
+      expect(userMemoryService.queryMemories).toHaveBeenCalledWith(
+        expect.objectContaining({ layer: LayersEnum.Preference, page: 1 }),
+      );
       expect(result.current.preferences).toEqual([
         {
           ...preferenceMemory,
@@ -82,10 +106,10 @@ describe('userMemory base actions', () => {
         },
       ]);
       expect(result.current.preferencesSearchLoading).toBe(false);
+      expect(result.current.preferencesSettled).toBe(true);
       expect(memoryCRUDService.updatePreference).toHaveBeenCalledWith('preference-1', {
         conclusionDirectives: 'Prefer concise answers with examples.',
       });
-      expect(mutate).toHaveBeenCalledWith(expect.any(Function));
       expect(mutate).toHaveBeenCalledWith(
         userMemoryKeys.memoryDetail(LayersEnum.Preference, 'preference-1'),
       );

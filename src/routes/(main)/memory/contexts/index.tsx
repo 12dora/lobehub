@@ -35,11 +35,13 @@ const ContextsArea = memo(() => {
   const contextsCount = useUserMemoryStore((s) => s.contexts.length);
   const contextsError = useUserMemoryStore((s) => s.contextsError);
   const contextsPage = useUserMemoryStore((s) => s.contextsPage);
+  const contextsPageError = useUserMemoryStore((s) => s.contextsPageError);
   const contextsSearchLoading = useUserMemoryStore((s) => s.contextsSearchLoading);
   const contextsSettled = useUserMemoryStore((s) => s.contextsSettled);
   const contextsTotal = useUserMemoryStore((s) => s.contextsTotal);
   const useFetchContexts = useUserMemoryStore((s) => s.useFetchContexts);
   const resetContextsList = useUserMemoryStore((s) => s.resetContextsList);
+  const retryContextsPage = useUserMemoryStore((s) => s.retryContextsPage);
 
   const sortOptions = [
     { label: t('filter.sort.createdAt'), value: 'capturedAt' },
@@ -108,6 +110,14 @@ const ContextsArea = memo(() => {
     void revalidate();
   }, [listQuery, resetContextsList, revalidate]);
 
+  // A load-more failure keeps the rows that did load and offers a footer that
+  // retries the SAME page: `contextsPage` was never advanced past it, so the
+  // SWR key the component is on is exactly the request that failed.
+  const handleRetryPage = useCallback(() => {
+    retryContextsPage();
+    void revalidate();
+  }, [retryContextsPage, revalidate]);
+
   return (
     <Flexbox flex={1} height={'100%'}>
       <NavHeader
@@ -145,7 +155,16 @@ const ContextsArea = memo(() => {
           ) : showError ? (
             <AsyncError error={error} variant={'block'} onRetry={handleRetry} />
           ) : (
-            <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
+            <>
+              <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
+              {Boolean(contextsPageError) && (
+                <AsyncError
+                  error={contextsPageError}
+                  variant={'inline'}
+                  onRetry={handleRetryPage}
+                />
+              )}
+            </>
           )}
         </WideScreenContainer>
       </Flexbox>

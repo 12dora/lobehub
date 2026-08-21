@@ -31,7 +31,9 @@ interface ContextListResponse {
   total: number;
 }
 
-/** Every filter field of `ContextQueryParams` — pagination excluded. */
+/**
+ * Every filter field of `ContextQueryParams` — pagination excluded.
+ */
 const contextQueryKey = (params?: ContextFilter): string =>
   memoryListQueryKey({ q: params?.q, sort: params?.sort });
 
@@ -57,24 +59,42 @@ export class ContextActionImpl {
 
   deleteContext = async (id: string): Promise<void> => {
     await memoryCRUDService.deleteContext(id);
-    await this.#refreshContextsList();
+    await this.refreshContextsList();
   };
 
   loadMoreContexts = (): void => {
-    const { contexts, contextsHasMore, contextsPage, contextsSearchLoading, contextsTotal } =
-      this.#get();
+    const {
+      contexts,
+      contextsHasMore,
+      contextsPage,
+      contextsPageError,
+      contextsPendingPage,
+      contextsSearchLoading,
+      contextsTotal,
+    } = this.#get();
 
     // A reset / refresh is in flight, so the rows on screen still belong to the
-    // *previous* query. Bumping the page here would ask for page 2 of the new
-    // query and append it to those rows, leaving the list permanently mixed and
-    // page 1 of the new query missing. `hasMore` is also latched false across a
-    // reset, which stops the virtualized `endReached` from firing at all.
+    // *previous* query. Bumping the page here would ask for the next page of the
+    // new query and append it to those rows, leaving the list permanently mixed
+    // and the new query's page 1 missing.
     if (contextsSearchLoading || !contextsHasMore) return;
+
+    // One page request at a time. Remounting the virtualizer (a grid <-> timeline
+    // switch, say) lands the viewport at the end again and fires `endReached` a
+    // second time; without this latch that skipped straight to page 3, and page 2
+    // — rejected by the page guard when it finally landed — was lost for good.
+    if (contextsPendingPage !== undefined) return;
+
+    // A failed page is retried explicitly (see `retryContextsPage`), never by
+    // silently asking for the page after it.
+    if (contextsPageError) return;
+
     if (contexts.length >= (contextsTotal || 0)) return;
 
     this.#set(
       produce((draft) => {
         draft.contextsPage = contextsPage + 1;
+        draft.contextsPendingPage = contextsPage + 1;
       }),
       false,
       n('loadMoreContexts'),
@@ -84,15 +104,18 @@ export class ContextActionImpl {
   /**
    * Re-read the list after a write.
    *
-   * A mutation doesn't change the query, so neither `resetContextsList` (a
-   * no-op on an unchanged query) nor a key change can drive it. Rewind to page
-   * 1, drop every cached page of the list, then fetch page 1 here rather than
-   * hoping a subscriber revalidates — the store's page and React's subscription
-   * move at different times, so "revalidate whatever is subscribed" would have
-   * refreshed the page the user happened to be on, not the one the store is
-   * about to render.
+   * A mutation doesn't change the query, so neither `resetContextsList` (a no-op on
+   * an unchanged query) nor a key change can drive it. Rewind to page 1, drop
+   * every cached page of the list, then fetch page 1 here rather than hoping a
+   * subscriber revalidates — the store's page and React's subscription move at
+   * different times, so "revalidate whatever is subscribed" refreshes the page
+   * the user happens to be on, not the one the store is about to render.
+   *
+   * Public because every write path has to come through here: the memory editor
+   * lives in the base slice and used to invalidate with a bare matcher `mutate`,
+   * which left the edited row sitting in the accumulated pages.
    */
-  #refreshContextsList = async (): Promise<void> => {
+  refreshContextsList = async (): Promise<void> => {
     const state = this.#get();
     const params: ContextQueryParams = {
       page: 1,
@@ -101,11 +124,22 @@ export class ContextActionImpl {
       sort: state.contextsSort,
     };
 
+    // Every in-flight request for this list is now stale, and they cannot be
+    // told apart by key and page alone — two overlapping refreshes of the same
+    // query both look like "page 1 of this query". The generation is what
+    // separates them, so the older one is dropped even if it lands last. The
+    // query identity does not change here, which is exactly why the counter
+    // has to move.
+    const generation = state.contextsGeneration + 1;
+
     this.#set(
       produce((draft) => {
         draft.contextsError = undefined;
+        draft.contextsGeneration = generation;
         draft.contextsHasMore = false;
         draft.contextsPage = 1;
+        draft.contextsPageError = undefined;
+        draft.contextsPendingPage = undefined;
         draft.contextsSearchLoading = true;
         draft.contextsSettled = false;
       }),
@@ -120,9 +154,9 @@ export class ContextActionImpl {
         layer: LayersEnum.Context,
         ...params,
       })) as ContextListResponse;
-      this.#applyContextsPage(params, data);
+      this.#applyContextsPage(params, data, generation);
     } catch (error) {
-      this.#failContextsPage(params, error);
+      this.#failContextsPage(params, error, generation);
     }
   };
 
@@ -131,28 +165,58 @@ export class ContextActionImpl {
     const nextQueryKey = contextQueryKey(params);
 
     // Nothing to reset when the query already settled in the store. The pages
-    // call this from a mount effect, so without this guard every visit wiped
-    // the rows it had and replaced the list with a skeleton.
+    // call this from a mount effect, so without this guard every visit wiped the
+    // rows it had and replaced the list with a skeleton.
     if (nextQueryKey === state.contextsQueryKey && state.contextsSettled) return;
 
     this.#set(
       produce((draft) => {
-        // Deliberately keep `contexts`: the rows already on screen stay put
-        // while the new query is in flight (the page shows a subtle refreshing
+        // Deliberately keep `contexts`: the rows already on screen stay put while
+        // the new query is in flight (the page shows a subtle refreshing
         // affordance instead of a skeleton). They are no longer "settled"
         // though, so nothing may accumulate on top of them until page 1 of the
         // new query lands.
         draft.contextsError = undefined;
+        // The generation counts invalidations *within* one query identity, so
+        // it restarts when the identity itself changes. The pair (query key,
+        // generation) is what a response is matched against; a reset always
+        // moves it, either by changing the key or — on a same-key retry — by
+        // stepping the counter past whatever the failed attempt left in flight.
+        draft.contextsGeneration =
+          nextQueryKey === state.contextsQueryKey ? state.contextsGeneration + 1 : 0;
         draft.contextsHasMore = false;
         draft.contextsPage = 1;
-        draft.contextsQuery = params?.q;
+        draft.contextsPageError = undefined;
+        draft.contextsPendingPage = undefined;
         draft.contextsQueryKey = nextQueryKey;
+        draft.contextsQuery = params?.q;
+        draft.contextsSort = params?.sort;
         draft.contextsSearchLoading = true;
         draft.contextsSettled = false;
-        draft.contextsSort = params?.sort;
       }),
       false,
       n('resetContextsList'),
+    );
+  };
+
+  /**
+   * Retry the page that failed, not the one after it.
+   *
+   * The page renders a retryable footer for a pagination failure; the component
+   * revalidates the SWR key it is already on, which is exactly the failed page
+   * because `contextsPage` was never advanced past it.
+   */
+  retryContextsPage = (): void => {
+    const { contextsPage, contextsPageError } = this.#get();
+    if (!contextsPageError) return;
+
+    this.#set(
+      produce((draft) => {
+        draft.contextsPageError = undefined;
+        draft.contextsPendingPage = contextsPage;
+      }),
+      false,
+      n('retryContextsPage'),
     );
   };
 
@@ -163,26 +227,35 @@ export class ContextActionImpl {
     const swr = useSWR<ContextListResponse>(
       userMemoryKeys.contexts(params),
       async () => {
-        const result = await userMemoryService.queryMemories({
-          layer: LayersEnum.Context,
-          page: params.page,
-          pageSize: params.pageSize,
-          q: params.q,
-          sort: params.sort,
-        });
+        // Captured before the request, never read back after it: that is what
+        // lets a response which was already in flight when a write evicted the
+        // list be told apart from a fresh one.
+        const generation = this.#get().contextsGeneration;
 
-        return result as ContextListResponse;
+        try {
+          const data = (await userMemoryService.queryMemories({
+            layer: LayersEnum.Context,
+            page: params.page,
+            pageSize: params.pageSize,
+            q: params.q,
+            sort: params.sort,
+          })) as ContextListResponse;
+          this.#applyContextsPage(params, data, generation);
+          return data;
+        } catch (error) {
+          this.#failContextsPage(params, error, generation);
+          throw error;
+        }
       },
-      {
-        onError: (error) => this.#failContextsPage(params, error),
-        revalidateOnFocus: false,
-      },
+      { revalidateOnFocus: false },
     );
 
-    // Sync SWR → store from an effect rather than `onSuccess`: when the key
-    // changes to a page that is already cached, SWR hands the data back without
-    // ever running the fetcher, and an `onSuccess`-only store would keep
-    // showing the previous query's rows with a spinner that never stops.
+    // Bootstrap from the cache. When the key changes to a page SWR has already
+    // fetched it hands the data back without ever running the fetcher above, so
+    // applying only in the fetcher would leave the previous query's rows on
+    // screen under a spinner that never stops. This path is limited to a page
+    // the store is still waiting for (see `#applyContextsPage`), so it can never
+    // overwrite rows that have already settled.
     const data = swr.data;
     useEffect(() => {
       if (!data) return;
@@ -192,13 +265,30 @@ export class ContextActionImpl {
     return swr;
   };
 
-  /** Write one page into the list — only if it still belongs to what's on screen. */
-  #applyContextsPage = (params: ContextQueryParams, data: ContextListResponse): void => {
+  /**
+   * Write one page into the list.
+   *
+   * Three things have to line up: the query identity, the page the store is
+   * waiting for, and — for a response produced by a request we started
+   * ourselves — the generation that request captured.
+   */
+  #applyContextsPage = (
+    params: ContextQueryParams,
+    data: ContextListResponse,
+    generation?: number,
+  ): void => {
     const state = this.#get();
     const page = params.page ?? 1;
 
     if (contextQueryKey(params) !== state.contextsQueryKey) return;
     if (page !== state.contextsPage) return;
+
+    if (generation === undefined) {
+      // Cache bootstrap: only a page the store has not resolved yet. Everything
+      // else is applied by the fetcher under its own generation, so a stale
+      // in-flight response cannot clobber the rows a write just produced.
+      if (state.contextsSettled && state.contextsPendingPage !== page) return;
+    } else if (generation !== state.contextsGeneration) return;
 
     const items = toDisplayContexts(data);
 
@@ -207,7 +297,9 @@ export class ContextActionImpl {
         draft.contextsError = undefined;
         draft.contextsHasMore =
           data.items.length >= (params.pageSize || DEFAULT_MEMORY_LIST_PAGE_SIZE);
+        draft.contextsPageError = undefined;
         draft.contextsPageSize = params.pageSize ?? draft.contextsPageSize;
+        draft.contextsPendingPage = undefined;
         draft.contextsSearchLoading = false;
         draft.contextsSettled = true;
         draft.contextsTotal = data.total;
@@ -219,12 +311,31 @@ export class ContextActionImpl {
     );
   };
 
-  /** Record a failure for the query on screen so the page can offer a retry. */
-  #failContextsPage = (params: ContextQueryParams, error: unknown): void => {
-    if (contextQueryKey(params) !== this.#get().contextsQueryKey) return;
+  /**
+   * Record a failure.
+   *
+   * A first page that never landed is a whole-list failure, which the page
+   * renders instead of the list. A later page is a pagination failure, which
+   * keeps the rows on screen and offers a retryable footer — collapsing the two
+   * hid every load-more failure behind a footer that simply stopped.
+   */
+  #failContextsPage = (params: ContextQueryParams, error: unknown, generation: number): void => {
+    const state = this.#get();
+    const page = params.page ?? 1;
+
+    if (contextQueryKey(params) !== state.contextsQueryKey) return;
+    if (page !== state.contextsPage) return;
+    if (generation !== state.contextsGeneration) return;
 
     this.#set(
       produce((draft) => {
+        draft.contextsPendingPage = undefined;
+
+        if (page > 1) {
+          draft.contextsPageError = error;
+          return;
+        }
+
         draft.contextsError = error;
         draft.contextsSearchLoading = false;
       }),

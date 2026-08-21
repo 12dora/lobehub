@@ -35,11 +35,13 @@ const IdentitiesArea = memo(() => {
   const identitiesCount = useUserMemoryStore((s) => s.identities.length);
   const identitiesError = useUserMemoryStore((s) => s.identitiesError);
   const identitiesPage = useUserMemoryStore((s) => s.identitiesPage);
+  const identitiesPageError = useUserMemoryStore((s) => s.identitiesPageError);
   const identitiesSearchLoading = useUserMemoryStore((s) => s.identitiesSearchLoading);
   const identitiesSettled = useUserMemoryStore((s) => s.identitiesSettled);
   const identitiesTotal = useUserMemoryStore((s) => s.identitiesTotal);
   const useFetchIdentities = useUserMemoryStore((s) => s.useFetchIdentities);
   const resetIdentitiesList = useUserMemoryStore((s) => s.resetIdentitiesList);
+  const retryIdentitiesPage = useUserMemoryStore((s) => s.retryIdentitiesPage);
 
   // One source of truth for "which rows belong on screen". The store guards
   // every write with this same identity, so the reset effect and the fetch can
@@ -99,6 +101,14 @@ const IdentitiesArea = memo(() => {
     void revalidate();
   }, [listQuery, resetIdentitiesList, revalidate]);
 
+  // A load-more failure keeps the rows that did load and offers a footer that
+  // retries the SAME page: `identitiesPage` was never advanced past it, so the
+  // SWR key the component is on is exactly the request that failed.
+  const handleRetryPage = useCallback(() => {
+    retryIdentitiesPage();
+    void revalidate();
+  }, [retryIdentitiesPage, revalidate]);
+
   return (
     <Flexbox flex={1} height={'100%'}>
       <NavHeader
@@ -136,7 +146,16 @@ const IdentitiesArea = memo(() => {
           ) : showError ? (
             <AsyncError error={error} variant={'block'} onRetry={handleRetry} />
           ) : (
-            <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
+            <>
+              <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
+              {Boolean(identitiesPageError) && (
+                <AsyncError
+                  error={identitiesPageError}
+                  variant={'inline'}
+                  onRetry={handleRetryPage}
+                />
+              )}
+            </>
           )}
         </WideScreenContainer>
       </Flexbox>

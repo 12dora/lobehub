@@ -14,6 +14,7 @@ import { setNamespace } from '@/utils/storeDebug';
 import { type UserMemoryStore } from '../../store';
 import { type IdentityForInjection } from '../../types';
 import { userMemoryCacheKey } from '../../utils/cacheKey';
+import { captureMemoryListQueries, restoreMemoryListQueries } from '../../utils/purgeLists';
 import { createMemorySearchParams } from '../../utils/searchParams';
 import { activityInitialState } from '../activity/initialState';
 import { contextInitialState } from '../context/initialState';
@@ -58,11 +59,18 @@ export class BaseActionImpl {
 
     this.#set(
       produce((draft) => {
+        // Which query each mounted list page is showing survives the purge —
+        // see `restoreMemoryListQueries` for why blanking it stranded the page
+        // on a skeleton it could never leave.
+        const listQueries = captureMemoryListQueries(draft);
+
         Object.assign(draft, activityInitialState);
         Object.assign(draft, contextInitialState);
         Object.assign(draft, experienceInitialState);
         Object.assign(draft, identityInitialState);
         Object.assign(draft, preferenceInitialState);
+
+        restoreMemoryListQueries(draft, listQueries);
 
         draft.activeParams = undefined;
         draft.activeParamsKey = undefined;
@@ -155,7 +163,9 @@ export class BaseActionImpl {
   };
 
   updateMemory = async (id: string, content: string, layer: LayersEnum): Promise<void> => {
-    let listKeyRoot: string | undefined;
+    // The edit is applied to the row on screen first so the editor closes onto
+    // the new text, then the owning list is refreshed through its own pipeline.
+    let refreshList: (() => Promise<void>) | undefined;
 
     switch (layer) {
       case LayersEnum.Activity: {
@@ -168,7 +178,7 @@ export class BaseActionImpl {
           false,
           n('updateMemory/activity'),
         );
-        listKeyRoot = userMemoryKeys.activities.root;
+        refreshList = this.#get().refreshActivitiesList;
         break;
       }
       case LayersEnum.Context: {
@@ -181,7 +191,7 @@ export class BaseActionImpl {
           false,
           n('updateMemory/context'),
         );
-        listKeyRoot = userMemoryKeys.contexts.root;
+        refreshList = this.#get().refreshContextsList;
         break;
       }
       case LayersEnum.Experience: {
@@ -194,7 +204,7 @@ export class BaseActionImpl {
           false,
           n('updateMemory/experience'),
         );
-        listKeyRoot = userMemoryKeys.experiences.root;
+        refreshList = this.#get().refreshExperiencesList;
         break;
       }
       case LayersEnum.Identity: {
@@ -207,7 +217,7 @@ export class BaseActionImpl {
           false,
           n('updateMemory/identity'),
         );
-        listKeyRoot = userMemoryKeys.identityList.root;
+        refreshList = this.#get().refreshIdentitiesList;
         break;
       }
       case LayersEnum.Preference: {
@@ -220,19 +230,18 @@ export class BaseActionImpl {
           false,
           n('updateMemory/preference'),
         );
-        listKeyRoot = userMemoryKeys.preferences.root;
+        refreshList = this.#get().refreshPreferencesList;
         break;
       }
     }
 
     this.#get().clearEditingMemory();
 
-    if (listKeyRoot) {
-      await Promise.all([
-        mutate((key) => Array.isArray(key) && key[0] === listKeyRoot),
-        mutate(userMemoryKeys.memoryDetail(layer, id)),
-      ]);
-    }
+    // A matcher `mutate` here only reached the page that happened to be
+    // subscribed: editing a row so that it no longer matches the active search
+    // left it sitting in the accumulated pages, with pages 1..n-1 stale in the
+    // cache. The list's own refresh evicts every page and re-reads page 1.
+    await Promise.all([refreshList?.(), mutate(userMemoryKeys.memoryDetail(layer, id))]);
   };
 
   useFetchMemoryDetail = (id: string | null, layer: LayersEnum): SWRResponse<any> => {

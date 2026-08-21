@@ -4,10 +4,16 @@ export interface PreferenceSliceState {
   preferences: DisplayPreferenceMemory[];
   /** Failure of the query currently on screen, if it never settled. */
   preferencesError?: unknown;
+  /** Bumped whenever in-flight requests for this list become stale. */
+  preferencesGeneration: number;
   preferencesHasMore: boolean;
   preferencesPage: number;
+  /** Failure of a load-more page; the rows already on screen stay. */
+  preferencesPageError?: unknown;
   /** Page size of the last fetch, so a post-write refetch can rebuild page 1. */
   preferencesPageSize?: number;
+  /** The page a request is currently outstanding for. */
+  preferencesPendingPage?: number;
   preferencesQuery?: string;
   /** Identity of the query the rows belong to — see `memoryListQueryKey`. */
   preferencesQueryKey: string;
@@ -21,9 +27,12 @@ export interface PreferenceSliceState {
 export const preferenceInitialState: PreferenceSliceState = {
   preferences: [],
   preferencesError: undefined,
+  preferencesGeneration: 0,
   preferencesHasMore: true,
   preferencesPage: 1,
+  preferencesPageError: undefined,
   preferencesPageSize: undefined,
+  preferencesPendingPage: undefined,
   preferencesQuery: undefined,
   preferencesQueryKey: '',
   preferencesSettled: false,

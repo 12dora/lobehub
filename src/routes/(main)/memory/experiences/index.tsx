@@ -35,11 +35,13 @@ const ExperiencesArea = memo(() => {
   const experiencesCount = useUserMemoryStore((s) => s.experiences.length);
   const experiencesError = useUserMemoryStore((s) => s.experiencesError);
   const experiencesPage = useUserMemoryStore((s) => s.experiencesPage);
+  const experiencesPageError = useUserMemoryStore((s) => s.experiencesPageError);
   const experiencesSearchLoading = useUserMemoryStore((s) => s.experiencesSearchLoading);
   const experiencesSettled = useUserMemoryStore((s) => s.experiencesSettled);
   const experiencesTotal = useUserMemoryStore((s) => s.experiencesTotal);
   const useFetchExperiences = useUserMemoryStore((s) => s.useFetchExperiences);
   const resetExperiencesList = useUserMemoryStore((s) => s.resetExperiencesList);
+  const retryExperiencesPage = useUserMemoryStore((s) => s.retryExperiencesPage);
 
   const sortOptions = [
     { label: t('filter.sort.createdAt'), value: 'capturedAt' },
@@ -106,6 +108,14 @@ const ExperiencesArea = memo(() => {
     void revalidate();
   }, [listQuery, resetExperiencesList, revalidate]);
 
+  // A load-more failure keeps the rows that did load and offers a footer that
+  // retries the SAME page: `experiencesPage` was never advanced past it, so the
+  // SWR key the component is on is exactly the request that failed.
+  const handleRetryPage = useCallback(() => {
+    retryExperiencesPage();
+    void revalidate();
+  }, [retryExperiencesPage, revalidate]);
+
   return (
     <Flexbox flex={1} height={'100%'}>
       <NavHeader
@@ -143,7 +153,16 @@ const ExperiencesArea = memo(() => {
           ) : showError ? (
             <AsyncError error={error} variant={'block'} onRetry={handleRetry} />
           ) : (
-            <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
+            <>
+              <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
+              {Boolean(experiencesPageError) && (
+                <AsyncError
+                  error={experiencesPageError}
+                  variant={'inline'}
+                  onRetry={handleRetryPage}
+                />
+              )}
+            </>
           )}
         </WideScreenContainer>
       </Flexbox>
