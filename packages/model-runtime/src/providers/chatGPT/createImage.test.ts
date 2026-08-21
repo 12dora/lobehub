@@ -1,6 +1,6 @@
 // @vitest-environment node
 import * as imageToBase64Module from '@lobechat/utils';
-import { AttachmentInlineLimitError } from '@lobechat/utils';
+import { AttachmentFetchError, AttachmentInlineLimitError } from '@lobechat/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CreateImageOptions } from '../../core/openaiCompatibleFactory';
@@ -134,10 +134,10 @@ describe('createChatGPTImage', () => {
       expect(imageToBase64Module.imageUrlToBase64).toHaveBeenCalledTimes(1);
       expect(imageToBase64Module.imageUrlToBase64).toHaveBeenCalledWith(
         'https://files.example.test/ref.png?sig=secret',
-        {
+        expect.objectContaining({
           maxBytes: 5 * 1024 * 1024,
           ownOriginOnly: true,
-        },
+        }),
       );
       expect(mockPost).toHaveBeenCalledWith('/images/edits', {
         body: {
@@ -180,6 +180,33 @@ describe('createChatGPTImage', () => {
         }),
       );
       expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('maps host-only fetch failures without leaking the signed query', async () => {
+      vi.spyOn(imageToBase64Module, 'imageUrlToBase64').mockRejectedValueOnce(
+        new AttachmentFetchError('localhost:9000'),
+      );
+
+      const error = await createChatGPTImage(
+        generatePayload({
+          imageUrls: [
+            'http://localhost:9000/bucket/cat.png?X-Amz-Signature=super-secret-signature',
+          ],
+          prompt: 'edit',
+        }),
+        mockOptions,
+      ).catch((caught: unknown) => caught);
+
+      expect(error).toEqual(
+        expect.objectContaining({
+          error: expect.objectContaining({
+            message: 'failed to download attachment from localhost:9000',
+          }),
+          errorType: AgentRuntimeErrorType.ProviderBizError,
+        }),
+      );
+      expect(JSON.stringify(error)).not.toContain('X-Amz-Signature');
+      expect(JSON.stringify(error)).not.toContain('super-secret-signature');
     });
 
     it('maps AttachmentInlineLimitError from fetched references to InvalidRequestFormat', async () => {
