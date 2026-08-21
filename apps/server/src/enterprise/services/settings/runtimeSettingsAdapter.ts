@@ -285,14 +285,22 @@ const toolApprovalFromSettings = (settings: { tool?: unknown } | null | undefine
   return tool?.humanIntervention?.approvalMode;
 };
 
-const toPersistedTopicApprovalMode = (mode: unknown): TopicApprovalMode =>
-  isTopicApprovalMode(mode) ? mode : 'manual';
+/**
+ * Persistable snapshot, or `undefined` when the effective mode is `headless`
+ * (including a platform lock to headless). Callers must strip any incoming
+ * `approvalMode` in that case rather than coercing to `'manual'`.
+ */
+const toPersistedTopicApprovalMode = (mode: unknown): TopicApprovalMode | undefined => {
+  if (mode === 'headless') return undefined;
+  return isTopicApprovalMode(mode) ? mode : 'manual';
+};
 
 /**
  * Effective approval mode to snapshot onto a **new personal topic**.
  *
  * Chain: platform locked → client-supplied/topic layer → user preference →
- * platform default → `'manual'`. Never returns `'headless'`.
+ * platform default → `'manual'`. Returns `undefined` for an effective
+ * `'headless'` result (never persist headless as a topic snapshot).
  *
  * Workspace / import / background callers must skip this helper.
  */
@@ -300,7 +308,7 @@ export const resolvePersonalTopicApprovalSnapshot = async (params: {
   clientApprovalMode?: TopicApprovalMode | null;
   db: LobeChatDatabase;
   userId: string;
-}): Promise<TopicApprovalMode> => {
+}): Promise<TopicApprovalMode | undefined> => {
   const clientApprovalMode = isTopicApprovalMode(params.clientApprovalMode)
     ? params.clientApprovalMode
     : undefined;

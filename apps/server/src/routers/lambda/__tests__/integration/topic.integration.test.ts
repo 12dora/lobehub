@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { type LobeChatDatabase } from '@lobechat/database';
-import { sessions, topics, userSettings } from '@lobechat/database/schemas';
+import { sessions, topics, userSettings, workspaces } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -144,6 +144,30 @@ describe('Topic Router Integration Tests', () => {
       const [createdTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
 
       expect(createdTopic.metadata).toEqual({ approvalMode: 'manual' });
+    });
+
+    it('does not persist client approvalMode on a workspace topic', async () => {
+      const workspaceId = `ws-topic-${userId.slice(0, 8)}`;
+      await serverDB.insert(workspaces).values({
+        id: workspaceId,
+        name: 'Approval workspace',
+        primaryOwnerId: userId,
+        slug: workspaceId,
+      });
+
+      const caller = topicRouter.createCaller({
+        ...createTestContext(userId),
+        workspaceId,
+      });
+
+      const topicId = await caller.createTopic({
+        metadata: { approvalMode: 'auto-run' },
+        title: 'Workspace no snapshot',
+      });
+
+      const [createdTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
+      expect(createdTopic.metadata?.approvalMode).toBeUndefined();
+      expect(createdTopic.workspaceId).toBe(workspaceId);
     });
 
     it('should snapshot the user preference when the client omits approvalMode', async () => {

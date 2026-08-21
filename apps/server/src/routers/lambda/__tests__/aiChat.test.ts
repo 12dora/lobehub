@@ -14,10 +14,19 @@ import { aiChatRouter } from '../aiChat';
 
 const flushAsyncTasks = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-const mockResolvePersonalTopicApprovalSnapshot = vi.hoisted(() =>
+const mockApplyTopicApprovalSnapshot = vi.hoisted(() =>
   vi.fn(
-    async ({ clientApprovalMode }: { clientApprovalMode?: string }) =>
-      clientApprovalMode ?? 'manual',
+    async ({
+      metadata,
+      workspaceId,
+    }: {
+      metadata?: { approvalMode?: string };
+      workspaceId?: string | null;
+    }) => {
+      const { approvalMode, ...rest } = metadata ?? {};
+      if (workspaceId) return Object.keys(rest).length > 0 ? rest : undefined;
+      return { ...rest, approvalMode: approvalMode ?? 'manual' };
+    },
   ),
 );
 
@@ -26,8 +35,8 @@ vi.mock('@/database/models/message');
 vi.mock('@/database/models/thread');
 vi.mock('@/database/models/topic');
 vi.mock('@/server/services/aiChat');
-vi.mock('@/server/enterprise/services/settings/runtimeSettingsAdapter', () => ({
-  resolvePersonalTopicApprovalSnapshot: mockResolvePersonalTopicApprovalSnapshot,
+vi.mock('@/server/services/topicApproval', () => ({
+  applyTopicApprovalSnapshot: mockApplyTopicApprovalSnapshot,
 }));
 vi.mock('@/server/services/file', () => ({
   FileService: vi.fn(),
@@ -40,10 +49,19 @@ describe('aiChatRouter', () => {
   const mockCtx = { userId: 'u1' };
 
   beforeEach(() => {
-    mockResolvePersonalTopicApprovalSnapshot.mockClear();
-    mockResolvePersonalTopicApprovalSnapshot.mockImplementation(
-      async ({ clientApprovalMode }: { clientApprovalMode?: string }) =>
-        clientApprovalMode ?? 'manual',
+    mockApplyTopicApprovalSnapshot.mockClear();
+    mockApplyTopicApprovalSnapshot.mockImplementation(
+      async ({
+        metadata,
+        workspaceId,
+      }: {
+        metadata?: { approvalMode?: string };
+        workspaceId?: string | null;
+      }) => {
+        const { approvalMode, ...rest } = metadata ?? {};
+        if (workspaceId) return Object.keys(rest).length > 0 ? rest : undefined;
+        return { ...rest, approvalMode: approvalMode ?? 'manual' };
+      },
     );
     vi.mocked(TopicModel).mockImplementation(
       () =>
@@ -199,8 +217,11 @@ describe('aiChatRouter', () => {
       sessionId: 's1',
     } as any);
 
-    expect(mockResolvePersonalTopicApprovalSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ clientApprovalMode: 'auto-run', userId: 'u1' }),
+    expect(mockApplyTopicApprovalSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { approvalMode: 'auto-run', workingDirectory: '/tmp' },
+        userId: 'u1',
+      }),
     );
     expect(mockCreateTopic).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -208,6 +229,44 @@ describe('aiChatRouter', () => {
         title: 'T',
       }),
     );
+  });
+
+  it('strips client approvalMode on workspace sendMessageInServer topic creation', async () => {
+    const mockCreateTopic = vi.fn().mockResolvedValue({ id: 't1' });
+    const mockCreateMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ id: 'm-user' })
+      .mockResolvedValueOnce({ id: 'm-assistant' });
+    const mockGet = vi.fn().mockResolvedValue({
+      messages: [{ id: 'm-user' }, { id: 'm-assistant' }],
+      topics: { items: [{}], total: 1 },
+    });
+
+    vi.mocked(TopicModel).mockImplementation(() => ({ create: mockCreateTopic }) as any);
+    mockMessageModel(mockCreateMessage);
+    vi.mocked(AiChatService).mockImplementation(() => ({ getMessagesAndTopics: mockGet }) as any);
+
+    const caller = aiChatRouter.createCaller({ userId: 'u1', workspaceId: 'ws-1' } as any);
+
+    await caller.sendMessageInServer({
+      newAssistantMessage: { model: 'gpt-4o', provider: 'openai' },
+      newTopic: {
+        metadata: { approvalMode: 'auto-run', workingDirectory: '/tmp' },
+        title: 'T',
+      },
+      newUserMessage: { content: 'hi' },
+      sessionId: 's1',
+    } as any);
+
+    expect(mockApplyTopicApprovalSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-1' }),
+    );
+    expect(mockCreateTopic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { workingDirectory: '/tmp' },
+      }),
+    );
+    expect(mockCreateTopic.mock.calls[0][0].metadata).not.toHaveProperty('approvalMode');
   });
 
   it('should reuse existing topic when topicId provided', async () => {

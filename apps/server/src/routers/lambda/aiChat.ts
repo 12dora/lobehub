@@ -19,12 +19,12 @@ import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
-import { resolvePersonalTopicApprovalSnapshot } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { resolveContext } from '@/server/routers/lambda/_helpers/resolveContext';
 import { AiChatService } from '@/server/services/aiChat';
 import { AiGenerationService } from '@/server/services/aiGeneration';
 import { FileService } from '@/server/services/file';
 import { archiveToolResultIfNeeded } from '@/server/services/toolExecution/archiveToolResult';
+import { applyTopicApprovalSnapshot } from '@/server/services/topicApproval';
 
 const log = debug('lobe-lambda-router:ai-chat');
 const { createPrefixedTimingContext, logTiming, runTimedStage } = createTimingHelpers(
@@ -216,19 +216,16 @@ export const aiChatRouter = router({
           timingContext,
           'lambda.aiChat.topic.create',
           async () => {
-            const incomingMetadata = input.newTopic!.metadata;
-            const approvalMode = ctx.workspaceId
-              ? undefined
-              : await resolvePersonalTopicApprovalSnapshot({
-                  clientApprovalMode: incomingMetadata?.approvalMode,
-                  db: ctx.serverDB,
-                  userId: ctx.userId,
-                });
             const payload = {
               agentId: input.agentId,
               groupId: input.groupId,
               messages: input.newTopic!.topicMessageIds,
-              metadata: approvalMode ? { ...incomingMetadata, approvalMode } : incomingMetadata,
+              metadata: await applyTopicApprovalSnapshot({
+                db: ctx.serverDB,
+                metadata: input.newTopic!.metadata,
+                userId: ctx.userId,
+                workspaceId: ctx.workspaceId,
+              }),
               sessionId,
               title: input.newTopic!.title,
               trigger: input.newTopic!.trigger,

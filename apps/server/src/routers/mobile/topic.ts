@@ -6,7 +6,7 @@ import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceA
 import { TopicModel } from '@/database/models/topic';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
-import { resolvePersonalTopicApprovalSnapshot } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
+import { applyTopicApprovalSnapshot } from '@/server/services/topicApproval';
 import { type BatchTaskResult } from '@/types/service';
 
 const topicProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
@@ -97,16 +97,14 @@ export const topicRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { metadata, ...rest } = input;
-      const approvalMode = ctx.workspaceId
-        ? undefined
-        : await resolvePersonalTopicApprovalSnapshot({
-            clientApprovalMode: metadata?.approvalMode,
-            db: ctx.serverDB,
-            userId: ctx.userId,
-          });
       const data = await ctx.topicModel.create({
         ...rest,
-        metadata: approvalMode ? { ...metadata, approvalMode } : metadata,
+        metadata: await applyTopicApprovalSnapshot({
+          db: ctx.serverDB,
+          metadata,
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        }),
       });
 
       return data.id;

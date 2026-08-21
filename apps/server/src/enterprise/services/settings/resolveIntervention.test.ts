@@ -382,7 +382,7 @@ describe('resolvePersonalTopicApprovalSnapshot', () => {
     expect(snapshot).toBe('manual');
   });
 
-  it('never returns headless, even when user settings store it', async () => {
+  it('returns undefined when user settings store headless (never persist it)', async () => {
     policyState.enabled = false;
     await serverDB.insert(userSettings).values({
       id: 'u-personal',
@@ -393,7 +393,33 @@ describe('resolvePersonalTopicApprovalSnapshot', () => {
       db: serverDB,
       userId: 'u-personal',
     });
-    expect(snapshot).toBe('manual');
+    expect(snapshot).toBeUndefined();
+  });
+
+  it('returns undefined when a platform lock to headless would otherwise snapshot', async () => {
+    const admin = new AdminSettingsService(serverDB);
+    const base = await admin.getDraft();
+    await admin.save({
+      actorUserId: 'admin',
+      expectedDraftToken: base.draftToken,
+      expectedRevision: base.baseRevision,
+      policies: {
+        'tool.humanIntervention.approvalMode': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: 'headless',
+          visibility: 'hidden',
+        },
+      },
+      reason: 'p',
+    });
+
+    const snapshot = await resolvePersonalTopicApprovalSnapshot({
+      clientApprovalMode: 'auto-run',
+      db: serverDB,
+      userId: 'u-locked',
+    });
+    expect(snapshot).toBeUndefined();
   });
 
   it('flag OFF uses the user_settings preference when the client omits a mode', async () => {

@@ -304,6 +304,28 @@ describe('AiAgentService.execAgent - headless approval default', () => {
     );
   });
 
+  it('does not snapshot when a locked headless policy wins the first run', async () => {
+    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce(undefined);
+    mockResolveEffectiveUserInterventionConfig.mockResolvedValueOnce({ approvalMode: 'headless' });
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      appContext: { initialTopicMetadata: { approvalMode: 'auto-run' } },
+      prompt: 'Hello',
+      userInterventionConfig: { approvalMode: 'auto-run' },
+    });
+
+    expect(mockResolvePersonalTopicApprovalSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ clientApprovalMode: 'auto-run', userId }),
+    );
+    expect(mockCreateOperation.mock.calls[0][0].userInterventionConfig.approvalMode).toBe(
+      'headless',
+    );
+    expect(mockTopicCreate.mock.calls[0][0].metadata).toEqual(
+      expect.not.objectContaining({ approvalMode: expect.anything() }),
+    );
+  });
+
   it('lets a locked snapshot override client-supplied initial metadata on the first run', async () => {
     mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce('manual');
 
