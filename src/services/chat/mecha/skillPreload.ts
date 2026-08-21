@@ -22,6 +22,11 @@ interface PrepareSelectedSkillPreloadParams {
   platformSkillSnapshot?: PlatformSkillOperationSnapshot;
   selectedSkills?: RuntimeSelectedSkill[];
   /**
+   * Abort signal of the unit of work this preload belongs to, so a cancelled
+   * send tears the content requests down instead of leaving them in flight.
+   */
+  signal?: AbortSignal;
+  /**
    * User credentials for creds skill injection
    */
   userCreds?: UserCredSummary[];
@@ -97,6 +102,7 @@ const loadSkillContent = async (
   selectedSkill: RuntimeSelectedSkill,
   userCreds?: UserCredSummary[],
   platformSkillSnapshot?: PlatformSkillOperationSnapshot,
+  signal?: AbortSignal,
 ): Promise<PreloadedSkill | undefined> => {
   const toolState = getToolStoreState();
 
@@ -112,7 +118,9 @@ const loadSkillContent = async (
       (item) => item.skillKey === selectedSkill.identifier,
     );
 
-    const resolved = await agentSkillService.resolvePlatformPinned(ref, platformSkillSnapshot);
+    const resolved = await agentSkillService.resolvePlatformPinned(ref, platformSkillSnapshot, {
+      signal,
+    });
     if (
       resolved.identifier !== ref.skillKey ||
       resolved.version !== ref.version ||
@@ -162,8 +170,8 @@ const loadSkillContent = async (
 
   const detail =
     (listItem && toolState.agentSkillDetailMap?.[listItem.id]) ||
-    (listItem ? await agentSkillService.getById(listItem.id) : undefined) ||
-    (await agentSkillService.getByIdentifier(selectedSkill.identifier));
+    (listItem ? await agentSkillService.getById(listItem.id, { signal }) : undefined) ||
+    (await agentSkillService.getByIdentifier(selectedSkill.identifier, { signal }));
 
   if (!detail?.content) return undefined;
 
@@ -189,6 +197,7 @@ export const resolveSelectedSkillsWithContent = async ({
   message,
   platformSkillSnapshot,
   selectedSkills,
+  signal,
   userCreds,
 }: PrepareSelectedSkillPreloadParams): Promise<RuntimeSelectedSkill[]> => {
   const resolved = resolveSelectedSkills(message, selectedSkills);
@@ -199,7 +208,7 @@ export const resolveSelectedSkillsWithContent = async ({
 
   const enriched = await Promise.all(
     resolved.map(async (skill) => {
-      const loaded = await loadSkillContent(skill, userCreds, platformSkillSnapshot);
+      const loaded = await loadSkillContent(skill, userCreds, platformSkillSnapshot, signal);
       return loaded ? { ...skill, content: loaded.content } : managedRuntime ? undefined : skill;
     }),
   );

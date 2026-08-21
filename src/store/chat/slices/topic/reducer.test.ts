@@ -26,6 +26,46 @@ describe('topicReducer', () => {
 
       expect(newState[0].id).toBeDefined();
     });
+
+    it('upserts by id instead of adding a second row for a topic already in the list', () => {
+      // The home in-place send registers the topic it just created; the
+      // sidebar fetch may already have returned that same id.
+      state.push({
+        createdAt: 1,
+        id: 'tpc_1',
+        title: 'From the server',
+        updatedAt: 1,
+      } as ChatTopic);
+
+      const newState = topicReducer(state, {
+        type: 'addTopic',
+        value: { id: 'tpc_1', sessionId: 'agt_1', title: 'Locally registered' },
+      });
+
+      expect(newState).toHaveLength(1);
+      expect(newState[0].title).toBe('Locally registered');
+      // Fields the caller did not supply survive the merge.
+      expect(newState[0].createdAt).toBe(1);
+    });
+
+    it('keeps the existing row untouched when the upsert changes nothing', () => {
+      const topic = {
+        createdAt: 1,
+        favorite: false,
+        id: 'tpc_1',
+        sessionId: 'agt_1',
+        title: 'Same',
+        updatedAt: 1,
+      } as ChatTopic;
+      state.push(topic);
+
+      const newState = topicReducer(state, {
+        type: 'addTopic',
+        value: { id: 'tpc_1', sessionId: 'agt_1', title: 'Same' },
+      });
+
+      expect(newState[0]).toEqual(topic);
+    });
   });
 
   describe('updateTopic', () => {

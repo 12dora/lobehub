@@ -32,6 +32,12 @@ const freezePlatformSnapshot = (
 export const captureClientPlatformSkillSnapshot = async (
   pluginEntries?: AgentPluginEntry[],
   identity?: { agentId: string; operationId: string },
+  /**
+   * Abort signal of the unit of work this freeze belongs to. Passing it lets a
+   * cancelled send tear the authorization request down instead of leaving it
+   * (and the UI waiting on it) in flight.
+   */
+  options?: { signal?: AbortSignal },
 ): Promise<PlatformSkillOperationSnapshot | undefined> => {
   const state = getToolStoreState();
   if (state.platformSkillRuntimeStatus === 'unmanaged') return undefined;
@@ -51,11 +57,14 @@ export const captureClientPlatformSkillSnapshot = async (
     skillKey,
     version,
   }));
-  const authorization = await agentSkillService.beginPlatformSkillOperation({
-    ...identity,
-    refs,
-    revision: state.platformSkillCatalog.revision,
-  });
+  const authorization = await agentSkillService.beginPlatformSkillOperation(
+    {
+      ...identity,
+      refs,
+      revision: state.platformSkillCatalog.revision,
+    },
+    options,
+  );
   return freezePlatformSnapshot({
     ...authorization,
     mandatorySkillIds: skills.flatMap((skill) =>

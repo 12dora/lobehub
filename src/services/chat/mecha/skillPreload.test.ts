@@ -84,7 +84,25 @@ describe('managed platform Skill preload', () => {
         version: '1.0.0',
       },
       operationSnapshot,
+      // Preload requests carry the caller's abort signal so a cancelled send
+      // tears them down instead of leaving them in flight.
+      { signal: undefined },
     );
+  });
+
+  it('forwards the caller abort signal to the pinned-content request', async () => {
+    const controller = new AbortController();
+
+    await resolveSelectedSkillsWithContent({
+      message: '',
+      platformSkillSnapshot: operationSnapshot,
+      selectedSkills: [{ identifier: 'approved.skill', name: 'Approved Skill' }],
+      signal: controller.signal,
+    });
+
+    expect(mockedResolvePlatformPinned).toHaveBeenCalledWith(expect.anything(), operationSnapshot, {
+      signal: controller.signal,
+    });
   });
 
   it('does not fall back to a personal Skill outside the published catalog', async () => {
@@ -147,6 +165,7 @@ describe('managed platform Skill preload', () => {
     expect(mockedResolvePlatformPinned).toHaveBeenCalledWith(
       operationSnapshot.refs[0],
       operationSnapshot,
+      { signal: undefined },
     );
   });
 

@@ -18,6 +18,15 @@ import type {
 
 import { lambdaClient } from '@/libs/trpc/client';
 
+/**
+ * Per-request options forwarded to tRPC. `signal` lets a caller that owns an
+ * abortable unit of work (e.g. a chat operation being stopped mid-send) tear
+ * the request down instead of waiting for a response nobody will use.
+ */
+interface SkillRequestOptions {
+  signal?: AbortSignal;
+}
+
 class AgentSkillService {
   // ===== Create =====
 
@@ -45,16 +54,19 @@ class AgentSkillService {
 
   // ===== Query =====
 
-  async getById(id: string): Promise<SkillItem | undefined> {
-    return lambdaClient.agentSkills.getById.query({ id });
+  async getById(id: string, options?: SkillRequestOptions): Promise<SkillItem | undefined> {
+    return lambdaClient.agentSkills.getById.query({ id }, options);
   }
 
   async getZipUrl(id: string): Promise<{ name: string; url: string | null }> {
     return lambdaClient.agentSkills.getByIdWithZipUrl.query({ id });
   }
 
-  async getByIdentifier(identifier: string): Promise<SkillItem | undefined> {
-    return lambdaClient.agentSkills.getByIdentifier.query({ identifier });
+  async getByIdentifier(
+    identifier: string,
+    options?: SkillRequestOptions,
+  ): Promise<SkillItem | undefined> {
+    return lambdaClient.agentSkills.getByIdentifier.query({ identifier }, options);
   }
 
   async getByName(name: string): Promise<SkillItem | undefined> {
@@ -81,35 +93,43 @@ class AgentSkillService {
 
   async beginPlatformSkillOperation(
     snapshot: Pick<PlatformSkillOperationSnapshot, 'agentId' | 'operationId' | 'refs' | 'revision'>,
+    options?: SkillRequestOptions,
   ) {
     if (!snapshot.agentId || !snapshot.operationId) {
       throw new Error('Platform Skill operation identity is required');
     }
-    return lambdaClient.platform.skills.beginOperation.mutate({
-      agentId: snapshot.agentId,
-      operationId: snapshot.operationId,
-      refs: snapshot.refs,
-      revision: snapshot.revision,
-    });
+    return lambdaClient.platform.skills.beginOperation.mutate(
+      {
+        agentId: snapshot.agentId,
+        operationId: snapshot.operationId,
+        refs: snapshot.refs,
+        revision: snapshot.revision,
+      },
+      options,
+    );
   }
 
   async resolvePlatformPinned(
     ref: PlatformSkillPinnedRef,
     operation?: PlatformSkillOperationSnapshot,
+    options?: SkillRequestOptions,
   ) {
-    return lambdaClient.agentSkills.resolvePlatformPinned.query({
-      operation:
-        operation?.agentId && operation.operationId && operation.proof
-          ? {
-              agentId: operation.agentId,
-              operationId: operation.operationId,
-              proof: operation.proof,
-              refs: operation.refs,
-              revision: operation.revision,
-            }
-          : undefined,
-      ref,
-    });
+    return lambdaClient.agentSkills.resolvePlatformPinned.query(
+      {
+        operation:
+          operation?.agentId && operation.operationId && operation.proof
+            ? {
+                agentId: operation.agentId,
+                operationId: operation.operationId,
+                proof: operation.proof,
+                refs: operation.refs,
+                revision: operation.revision,
+              }
+            : undefined,
+        ref,
+      },
+      options,
+    );
   }
 
   // ===== Update =====

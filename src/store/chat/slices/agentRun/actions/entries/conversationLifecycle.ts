@@ -638,6 +638,16 @@ export class ConversationLifecycleActionImpl {
     this.#get().associateMessageWithOperation(tempId, operationId);
     this.#get().associateMessageWithOperation(tempAssistantId, operationId);
 
+    // Store editor state in operation metadata for cancel restoration. Declared
+    // BEFORE the first await below: Stop pressed during the skill-preparation
+    // window must be able to hand the user their draft back, exactly like Stop
+    // during persistence does.
+    const jsonState = inputEditorData ?? mainInputEditor?.getJSONState();
+    this.#get().updateOperationMetadata(operationId, {
+      inputEditorTempState: jsonState,
+      inputSendErrorMsg: undefined,
+    });
+
     // Everything the conversation surface needs to paint the send now exists.
     // Callers that navigate on this seam release here — before any round-trip.
     onOptimisticReady?.();
@@ -647,32 +657,89 @@ export class ConversationLifecycleActionImpl {
     // preload or executor can read exact content, and preload the content of
     // any @-mentioned skill. Both are network calls; they run here (not before
     // the optimistic messages) so the send is visible in the same frame.
-    let skillPreparation: {
-      enrichedSelectedSkills: Awaited<ReturnType<typeof resolveSelectedSkillsWithContent>>;
-      platformSkillSnapshot: Awaited<ReturnType<typeof captureClientPlatformSkillSnapshot>>;
-    };
-    try {
-      const platformSkillSnapshot = await captureClientPlatformSkillSnapshot(
-        agentSelectors.getAgentConfigById(agentId)(getAgentStoreState())
-          .plugins as unknown as AgentPluginEntry[],
-        { agentId, operationId },
-      );
-      skillPreparation = {
-        enrichedSelectedSkills: await resolveSelectedSkillsWithContent({
-          message,
-          platformSkillSnapshot,
-          selectedSkills,
-        }),
-        platformSkillSnapshot,
-      };
-    } catch (error) {
-      // The bubbles are already on screen — roll them back and fail the
-      // operation. Without this a catalog outage would leave an orphaned "…"
-      // assistant row and a send that never stops loading.
+    //
+    // Because the operation and both bubbles now exist *before* these awaits, a
+    // Stop landing in this window has to be honoured here — otherwise the "…"
+    // assistant row survives until the request settles (forever, if it hangs),
+    // and a late rejection would overwrite the `cancelled` status with `failed`.
+    // The requests take the operation's abort signal, and the whole preparation
+    // races that signal so even a request that never settles cannot strand the UI.
+    const rollbackOptimisticMessages = () => {
       this.#get().internal_dispatchMessage(
         { type: 'deleteMessages', ids: [tempId, tempAssistantId] },
         { operationId },
       );
+    };
+    const isSendCancelled = () =>
+      abortController.signal.aborted || this.#get().operations[operationId]?.status === 'cancelled';
+
+    type PreparedSkills = {
+      enrichedSelectedSkills: Awaited<ReturnType<typeof resolveSelectedSkillsWithContent>>;
+      platformSkillSnapshot: Awaited<ReturnType<typeof captureClientPlatformSkillSnapshot>>;
+    };
+    const CANCELLED = { cancelled: true } as const;
+
+    let skillPreparation: PreparedSkills;
+    try {
+      const preparing: Promise<PreparedSkills | typeof CANCELLED> = (async () => {
+        const platformSkillSnapshot = await captureClientPlatformSkillSnapshot(
+          agentSelectors.getAgentConfigById(agentId)(getAgentStoreState())
+            .plugins as unknown as AgentPluginEntry[],
+          { agentId, operationId },
+          { signal: abortController.signal },
+        );
+
+        // Cancelled while the catalog request was in flight: don't start the
+        // (also cancellable) preload for a send that is already dead.
+        if (isSendCancelled()) return CANCELLED;
+
+        return {
+          enrichedSelectedSkills: await resolveSelectedSkillsWithContent({
+            message,
+            platformSkillSnapshot,
+            selectedSkills,
+            signal: abortController.signal,
+          }),
+          platformSkillSnapshot,
+        };
+      })();
+
+      // When the cancellation wins the race below, this promise still settles
+      // later — keep its rejection observed so it never surfaces as an
+      // unhandled rejection.
+      preparing.catch(() => {});
+
+      const whenCancelled = new Promise<typeof CANCELLED>((resolve) => {
+        if (abortController.signal.aborted) {
+          resolve(CANCELLED);
+          return;
+        }
+        abortController.signal.addEventListener('abort', () => resolve(CANCELLED), { once: true });
+      });
+
+      const outcome = await Promise.race([preparing, whenCancelled]);
+
+      if ('cancelled' in outcome || isSendCancelled()) {
+        // `cancelOperation` already set the terminal status; only the bubbles
+        // are ours to clean up. Nothing else has been written yet — the topic
+        // placeholder is created further down.
+        rollbackOptimisticMessages();
+        return;
+      }
+
+      skillPreparation = outcome;
+    } catch (error) {
+      rollbackOptimisticMessages();
+
+      // A Stop that aborted the in-flight request surfaces here as an abort
+      // error. `failOperation` overwrites unconditionally (unlike
+      // `completeOperation`, it does not preserve `cancelled`), so bail before
+      // it and leave the user's own interruption as the recorded outcome.
+      if (isSendCancelled()) return;
+
+      // The bubbles are already on screen — fail the operation too. Without
+      // this a catalog outage would leave an orphaned "…" assistant row and a
+      // send that never stops loading.
       this.#get().failOperation(operationId, {
         message: error instanceof Error ? error.message : 'Unknown error',
         type: error instanceof Error ? error.name : 'unknown_error',
@@ -844,13 +911,6 @@ export class ConversationLifecycleActionImpl {
       this.#get().internal_updateTopicLoading(optimisticTopic.id, true);
       optimisticTopicActive = true;
     }
-
-    // Store editor state in operation metadata for cancel restoration
-    const jsonState = inputEditorData ?? mainInputEditor?.getJSONState();
-    this.#get().updateOperationMetadata(operationId, {
-      inputEditorTempState: jsonState,
-      inputSendErrorMsg: undefined,
-    });
 
     // ── External agent mode: delegate to heterogeneous agent CLI (desktop only) ──
     // Per-agent heterogeneousProvider config takes priority over the global gateway mode.
@@ -1384,12 +1444,18 @@ export class ConversationLifecycleActionImpl {
           // row here `topicSelectors.currentActiveTopic` stays empty after the
           // `?topic=` swap and the header sticks on "New topic" until the next
           // revalidation. Still no full list refetch.
-          if (registerCreatedTopic)
+          if (registerCreatedTopic) {
+            // Pin before the write: a topic-list request that was already in
+            // flight when the server created this topic cannot contain it, and
+            // landing that response would drop the row again (header back to
+            // "New topic"). The pin releases as soon as a fetch carries the id.
+            this.#get().internal_pinRegisteredTopic(data.topicId);
             addResolvedTopicPlaceholder(
               data.topicId,
               newTopicTitle,
               'sendMessage/registerIsolatedTopic',
             );
+          }
 
           // Notify the isolated caller immediately so its UI re-subscribes to
           // the new topic key and picks up the streaming AI response.

@@ -391,6 +391,117 @@ describe('ConversationLifecycle actions', () => {
         });
       });
 
+      it('honours a Stop landing while the managed-catalog request is still pending', async () => {
+        // The operation and both bubbles now exist BEFORE this window, so a
+        // cancel inside it has to clean up after itself — and must not depend
+        // on the request settling, because a hung catalog request never would.
+        const beginOperationSpy = vi
+          .spyOn(agentSkillService, 'beginPlatformSkillOperation')
+          .mockReturnValue(new Promise(() => {}) as any);
+
+        vi.spyOn(toolStoreModule, 'getToolStoreState').mockReturnValue({
+          agentSkillDetailMap: {},
+          agentSkills: [],
+          builtinSkills: [],
+          platformSkillCatalog: { revision: 3, skills: [] },
+          platformSkillRuntimeStatus: 'ready',
+        } as any);
+
+        const sendMessageInServerSpy = vi
+          .spyOn(aiChatService, 'sendMessageInServer')
+          .mockResolvedValue({} as any);
+
+        const { result } = renderHook(() => useChatStore());
+        const contextKey = messageMapKey({ agentId: TEST_IDS.SESSION_ID, topicId: null });
+
+        let sending: Promise<unknown> | undefined;
+        await act(async () => {
+          sending = result.current.sendMessage({
+            context: createTestContext(),
+            message: TEST_CONTENT.USER_MESSAGE,
+          });
+          await Promise.resolve();
+        });
+
+        const operation = Object.values(useChatStore.getState().operations).find(
+          (op) => op.type === 'sendMessage',
+        );
+        expect(operation).toBeDefined();
+        // The draft is registered before the window, so Stop can hand it back.
+        expect(operation!.metadata).toHaveProperty('inputEditorTempState');
+
+        const optimisticIds = (useChatStore.getState().dbMessagesMap[contextKey] ?? []).map(
+          (m) => m.id,
+        );
+        expect(optimisticIds).toHaveLength(2);
+
+        // The request itself takes the operation's abort signal, so cancelling
+        // tears it down instead of leaving it in flight.
+        expect(beginOperationSpy.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+
+        await act(async () => {
+          result.current.cancelOperation(operation!.id, 'User cancelled');
+          await sending;
+        });
+
+        const remaining = useChatStore.getState().dbMessagesMap[contextKey] ?? [];
+        expect(remaining.map((m) => m.id)).toEqual([]);
+        for (const id of optimisticIds) expect(remaining.some((m) => m.id === id)).toBe(false);
+
+        // The user's interruption is the recorded outcome — not `failed`.
+        expect(useChatStore.getState().operations[operation!.id].status).toBe('cancelled');
+        // ...and nothing downstream ran.
+        expect(sendMessageInServerSpy).not.toHaveBeenCalled();
+        expect(result.current.executeClientAgent).not.toHaveBeenCalled();
+      });
+
+      it('never overwrites an already-cancelled send with failed', async () => {
+        // `failOperation` overwrites unconditionally (unlike `completeOperation`
+        // it does not preserve `cancelled`), so a preparation rejection landing
+        // after the operation was cancelled must bail before it. Cancelled here
+        // without touching the abort controller so the rejection — not the
+        // abort race — is what reaches the catch.
+        let rejectCatalog: (error: unknown) => void = () => {};
+        const catalogAuthorization = new Promise((_resolve, reject) => {
+          rejectCatalog = reject;
+        });
+        vi.spyOn(agentSkillService, 'beginPlatformSkillOperation').mockReturnValue(
+          catalogAuthorization as any,
+        );
+        vi.spyOn(toolStoreModule, 'getToolStoreState').mockReturnValue({
+          agentSkillDetailMap: {},
+          agentSkills: [],
+          builtinSkills: [],
+          platformSkillCatalog: { revision: 3, skills: [] },
+          platformSkillRuntimeStatus: 'ready',
+        } as any);
+
+        const { result } = renderHook(() => useChatStore());
+        const contextKey = messageMapKey({ agentId: TEST_IDS.SESSION_ID, topicId: null });
+
+        let sending: Promise<unknown> | undefined;
+        await act(async () => {
+          sending = result.current.sendMessage({
+            context: createTestContext(),
+            message: TEST_CONTENT.USER_MESSAGE,
+          });
+          await Promise.resolve();
+        });
+
+        const operation = Object.values(useChatStore.getState().operations).find(
+          (op) => op.type === 'sendMessage',
+        );
+
+        await act(async () => {
+          result.current.updateOperationStatus(operation!.id, 'cancelled');
+          rejectCatalog(new Error('catalog offline'));
+          await expect(sending).resolves.toBeUndefined();
+        });
+
+        expect(useChatStore.getState().operations[operation!.id].status).toBe('cancelled');
+        expect(useChatStore.getState().dbMessagesMap[contextKey] ?? []).toEqual([]);
+      });
+
       it('rolls the optimistic messages back when the managed catalog is unavailable', async () => {
         vi.spyOn(agentSkillService, 'beginPlatformSkillOperation').mockRejectedValue(
           new Error('catalog offline'),

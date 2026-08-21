@@ -2187,4 +2187,126 @@ describe('topic action', () => {
       expect(next.items.map((i) => i.id)).toEqual(['topic-2']);
     });
   });
+
+  /**
+   * The home in-place send registers the topic the server just created without
+   * writing an authoritative list alongside it (it deliberately skips the full
+   * refetch). Both orderings against the sidebar's own fetch have to hold.
+   */
+  describe('registered topic rows', () => {
+    const seedBucket = (agentId: string, items: ChatTopic[], total = items.length) => {
+      useChatStore.setState({
+        activeAgentId: agentId,
+        topicDataMap: {
+          [topicMapKey({ agentId })]: {
+            currentPage: 0,
+            hasMore: false,
+            isExpandingPageSize: false,
+            isLoadingMore: false,
+            items,
+            pageSize: 20,
+            total,
+          },
+        },
+      });
+    };
+
+    it('does not duplicate or double-count a topic the list already carries', () => {
+      const agentId = 'agent-registered-a';
+      const key = topicMapKey({ agentId });
+      const { result } = renderHook(() => useChatStore());
+
+      // The fetch won the race and already returned the new topic.
+      act(() => {
+        seedBucket(agentId, [{ id: 'tpc_new_a', title: 'From the server' } as ChatTopic]);
+      });
+
+      act(() => {
+        result.current.internal_pinRegisteredTopic('tpc_new_a');
+        result.current.internal_dispatchTopic({
+          agentId,
+          type: 'addTopic',
+          value: { id: 'tpc_new_a', sessionId: agentId, title: 'Hello world' },
+        });
+      });
+
+      const next = useChatStore.getState().topicDataMap[key];
+      expect(next.items.map((i) => i.id)).toEqual(['tpc_new_a']);
+      expect(next.items[0].title).toBe('Hello world');
+      expect(next.total).toBe(1);
+    });
+
+    it('survives a list response that predates it, then yields to one that carries it', () => {
+      const agentId = 'agent-registered-b';
+      const key = topicMapKey({ agentId });
+      const { result } = renderHook(() => useChatStore());
+
+      act(() => {
+        seedBucket(agentId, [{ id: 'tpc_old_b', title: 'Older' } as ChatTopic]);
+      });
+
+      act(() => {
+        result.current.internal_pinRegisteredTopic('tpc_new_b');
+        result.current.internal_dispatchTopic({
+          agentId,
+          type: 'addTopic',
+          value: { id: 'tpc_new_b', sessionId: agentId, title: 'Hello world' },
+        });
+      });
+
+      expect(useChatStore.getState().topicDataMap[key].items.map((i) => i.id)).toEqual([
+        'tpc_new_b',
+        'tpc_old_b',
+      ]);
+      expect(useChatStore.getState().topicDataMap[key].total).toBe(2);
+
+      // A list request issued *before* the topic existed lands now. Without the
+      // pin it would drop the row and the header would revert to "New topic".
+      act(() => {
+        result.current.internal_updateTopics(agentId, {
+          items: [{ id: 'tpc_old_b', title: 'Older' } as ChatTopic],
+          pageSize: 20,
+          total: 1,
+        });
+      });
+
+      expect(useChatStore.getState().topicDataMap[key].items.map((i) => i.id)).toEqual([
+        'tpc_new_b',
+        'tpc_old_b',
+      ]);
+      expect(useChatStore.getState().topicDataMap[key].items[0].title).toBe('Hello world');
+
+      // A fetch that *does* carry the id is authoritative: its version wins and
+      // the pin is released.
+      act(() => {
+        result.current.internal_updateTopics(agentId, {
+          items: [
+            { id: 'tpc_new_b', title: 'Server title' } as ChatTopic,
+            { id: 'tpc_old_b', title: 'Older' } as ChatTopic,
+          ],
+          pageSize: 20,
+          total: 2,
+        });
+      });
+
+      expect(useChatStore.getState().topicDataMap[key].items.map((i) => i.id)).toEqual([
+        'tpc_new_b',
+        'tpc_old_b',
+      ]);
+      expect(useChatStore.getState().topicDataMap[key].items[0].title).toBe('Server title');
+
+      // Unpinned: a later server-side delete is no longer suppressed.
+      act(() => {
+        result.current.internal_updateTopics(agentId, {
+          items: [{ id: 'tpc_old_b', title: 'Older' } as ChatTopic],
+          pageSize: 20,
+          total: 1,
+        });
+      });
+
+      expect(useChatStore.getState().topicDataMap[key].items.map((i) => i.id)).toEqual([
+        'tpc_old_b',
+      ]);
+    });
+  });
 });

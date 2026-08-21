@@ -51,6 +51,12 @@ import { topicSelectors } from './selectors';
 const n = setNamespace('t');
 
 const STALE_RUNNING_TOPIC_TIMEOUT = 2 * 60 * 60 * 1000;
+/**
+ * How long a locally registered topic row outlives list responses that do not
+ * carry it. Long enough to cover an in-flight fetch plus a retry, short enough
+ * that a server-side delete is never suppressed for a user-visible duration.
+ */
+const PINNED_REGISTERED_TOPIC_TTL = 30_000;
 const STALE_RUNNING_TOPIC_QUERY_PAGE_SIZE = 500;
 
 type CronTopicsGroupWithJobInfo = {
@@ -407,6 +413,21 @@ export class ChatTopicActionImpl {
    */
   #pendingTopicStatusWrites = new Map<string, { expiresAt: number; status: ChatTopicStatus }>();
 
+  /**
+   * Server-resolved rows a caller registered locally *without* writing an
+   * authoritative list alongside them — today the home in-place send, which
+   * registers the topic it just created but deliberately skips the full topic
+   * refetch.
+   *
+   * Such a row is real (the server created it), yet a list request that was
+   * already in flight when it was created cannot contain it. Landing that
+   * response would drop the row again and the conversation header would revert
+   * to "New topic". Pin it until a fetch actually carries the id — that
+   * response is authoritative and replaces the placeholder — or until the TTL
+   * expires, so a genuine server-side delete can never be suppressed forever.
+   */
+  #pinnedRegisteredTopicIds = new Map<string, number>();
+
   #reconcileFetchedTopics = (items: ChatTopic[], currentItems?: ChatTopic[]): ChatTopic[] => {
     let next = items;
 
@@ -437,7 +458,40 @@ export class ChatTopicActionImpl {
       }
     }
 
+    // Pinned registered rows (see `#pinnedRegisteredTopicIds`). Unlike the
+    // `tmp_topic_*` rows above these carry real server ids, so a fetch that
+    // *does* contain one is authoritative: take its version and drop the pin.
+    if (this.#pinnedRegisteredTopicIds.size > 0) {
+      const fetchedIds = new Set(next.map((item) => item.id));
+      const now = Date.now();
+      const survivors: ChatTopic[] = [];
+
+      for (const [topicId, expiresAt] of this.#pinnedRegisteredTopicIds) {
+        if (fetchedIds.has(topicId) || expiresAt <= now) {
+          this.#pinnedRegisteredTopicIds.delete(topicId);
+          continue;
+        }
+
+        const pinned = currentItems?.find((item) => item.id === topicId);
+        if (pinned) survivors.push(pinned);
+      }
+
+      if (survivors.length > 0) next = [...survivors, ...next];
+    }
+
     return next;
+  };
+
+  /**
+   * Protect a locally registered, server-created topic row from list responses
+   * that predate it. See `#pinnedRegisteredTopicIds`. Client-only optimistic
+   * rows (`tmp_topic_*`) are already covered by the reconciliation above and
+   * are ignored here.
+   */
+  internal_pinRegisteredTopic = (topicId: string): void => {
+    if (!topicId || topicId.startsWith('tmp_topic_')) return;
+
+    this.#pinnedRegisteredTopicIds.set(topicId, Date.now() + PINNED_REGISTERED_TOPIC_TTL);
   };
 
   /**
@@ -1481,9 +1535,13 @@ export class ChatTopicActionImpl {
     if (!mainChanged && !viewChanged) return;
 
     const currentTotal = currentData?.total ?? currentData?.items?.length ?? 0;
+    // `addTopic` upserts by id (see reducer), so a registration for a row the
+    // bucket already carries must not bump the total. Count the rows the
+    // reducer actually appended instead of assuming one.
+    const addedRows = Math.max(0, nextItems.length - (currentData?.items?.length ?? 0));
     const total =
       payload.type === 'addTopic'
-        ? currentTotal + 1
+        ? currentTotal + addedRows
         : payload.type === 'deleteTopic'
           ? Math.max(nextItems.length, currentTotal - 1)
           : currentTotal;
@@ -1506,9 +1564,10 @@ export class ChatTopicActionImpl {
 
     if (viewChanged && viewData && nextViewItems) {
       const viewTotal = viewData.total ?? viewData.items?.length ?? 0;
+      const viewAddedRows = Math.max(0, nextViewItems.length - (viewData.items?.length ?? 0));
       const viewNextTotal =
         payload.type === 'addTopic'
-          ? viewTotal + 1
+          ? viewTotal + viewAddedRows
           : payload.type === 'deleteTopic'
             ? Math.max(nextViewItems.length, viewTotal - 1)
             : viewTotal;

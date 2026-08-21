@@ -47,11 +47,36 @@ export const topicReducer = (state: ChatTopic[] = [], payload: ChatTopicDispatch
   switch (payload.type) {
     case 'addTopic': {
       return produce(state, (draftState) => {
+        const id = payload.value.id ?? Date.now().toString();
+
+        // Upsert by id, never blind-prepend. A caller can register a row the
+        // list already carries — e.g. the home in-place send registers the
+        // topic it just created while the sidebar's own fetch has already
+        // returned it — and a second copy would duplicate the sidebar entry
+        // *and* double-count the bucket total. Merge into the existing row
+        // instead, keeping the fetched fields that the caller did not supply.
+        const existingIndex = draftState.findIndex((topic) => topic.id === id);
+        if (existingIndex !== -1) {
+          const existing = draftState[existingIndex];
+          const merged = {
+            ...existing,
+            ...payload.value,
+            id,
+            // `CreateTopicParams` allows a null sessionId; the stored row does
+            // not (same normalisation the insert path below applies).
+            sessionId: payload.value.sessionId ?? existing.sessionId ?? undefined,
+          };
+
+          if (!isEqual(current(existing), merged)) draftState[existingIndex] = merged;
+
+          return draftState.sort((a, b) => Number(b.favorite) - Number(a.favorite));
+        }
+
         draftState.unshift({
           ...payload.value,
           createdAt: Date.now(),
           favorite: false,
-          id: payload.value.id ?? Date.now().toString(),
+          id,
           sessionId: payload.value.sessionId || undefined,
           // A brand-new topic is fresh activity: seed the sidebar sort key so it
           // lands at the top immediately, matching the server's `topicActivityAt`
