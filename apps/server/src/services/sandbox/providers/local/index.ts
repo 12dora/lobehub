@@ -4,4 +4,5 @@ export { checkLocalSandboxHealth } from './health';
 export { LocalSandboxProvider } from './localSandboxProvider';
 export { resolveSandboxPath } from './paths';
 export { runWithLocalSandboxSession } from './sessionContext';
-export { resetLocalSandboxSupervisors } from './supervisor';
+export { getLocalSandboxSupervisor, resetLocalSandboxSupervisors, sessionKey } from './supervisor';
+export { wrapWithCoreutilsTimeout } from './timeoutWrap';

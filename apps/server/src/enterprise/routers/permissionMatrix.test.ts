@@ -53,16 +53,19 @@ const o04SystemProcedurePaths = [
   'admin.system.getInfraSettings',
   'admin.system.getInstanceRevisions',
   'admin.system.getJobs',
+  'admin.system.getSandboxSettings',
   'admin.system.getStatus',
   'admin.system.retryJob',
   'admin.system.testDependency',
   'admin.system.updateInfraSettings',
+  'admin.system.updateSandboxSettings',
 ] as const;
 const o04SystemProcedurePathSet = new Set<string>(o04SystemProcedurePaths);
 const o04SystemReadProcedurePaths = [
   'admin.system.getInfraSettings',
   'admin.system.getInstanceRevisions',
   'admin.system.getJobs',
+  'admin.system.getSandboxSettings',
   'admin.system.getStatus',
 ] as const;
 

@@ -295,8 +295,9 @@ export const buildServerCallLlmContext = async ({
 
   // Over-limit / non-native attachments: upload into /mnt/data/uploads before
   // the model call so sandbox tools can read them. Best-effort — a failure
-  // never breaks the turn (files_info falls back to extracted text).
+  // never breaks the turn (files_info falls back to extracted text, no URL).
   let sandboxPathByFileId: Record<string, string> | undefined;
+  let omitFileUrlFileIds: string[] | undefined;
   const sandboxTopicId = ctx.topicId || lobehubSkillTopicId;
   if (
     !isManagedPlatformOperation &&
@@ -310,6 +311,7 @@ export const buildServerCallLlmContext = async ({
         nativeFileInput: capabilities.isCanUseFiles(model, provider),
       });
       if (files.length > 0) {
+        omitFileUrlFileIds = files.map((file) => file.id);
         const fileService = new FileService(ctx.serverDB, ctx.userId, ctx.workspaceId);
         const sandboxService = createSandboxService({
           fileService,
@@ -320,13 +322,15 @@ export const buildServerCallLlmContext = async ({
         });
         const synced = await syncOverLimitAttachmentsIfSandboxEnabled({
           deps: {
-            callTool: (toolName, params) => sandboxService.callTool(toolName, params),
+            downloadFiles: (downloads) => sandboxService.syncOverLimitAttachments(downloads),
             resolveDownloadUrl: (url) => fileService.createCachedPreSignedUrlForPreview(url),
           },
           enabled: true,
           files,
         });
-        if (Object.keys(synced).length > 0) sandboxPathByFileId = synced;
+        if (Object.keys(synced.sandboxPathByFileId).length > 0) {
+          sandboxPathByFileId = synced.sandboxPathByFileId;
+        }
       }
     } catch (error) {
       log('Failed to sync over-limit attachments into the sandbox: %O', error);
@@ -580,8 +584,13 @@ export const buildServerCallLlmContext = async ({
     enableAgentMode: agentConfig.chatConfig?.enableAgentMode,
     ...(!isManagedPlatformOperation && topicReferences && { topicReferences }),
     ...(!isManagedPlatformOperation && onboardingContext && { onboardingContext }),
-    ...(sandboxPathByFileId && {
-      fileContext: { enabled: true, includeFileUrl: true, sandboxPathByFileId },
+    ...((sandboxPathByFileId || omitFileUrlFileIds) && {
+      fileContext: {
+        enabled: true,
+        includeFileUrl: true,
+        omitFileUrlFileIds,
+        sandboxPathByFileId,
+      },
     }),
   };
 

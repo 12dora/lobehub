@@ -2,7 +2,7 @@
 
 import { mutate } from '@/libs/swr';
 
-import { ADMIN_SYSTEM_INFRA_SETTINGS_KEY } from '../swrKeys';
+import { ADMIN_SYSTEM_INFRA_SETTINGS_KEY, ADMIN_SYSTEM_SANDBOX_SETTINGS_KEY } from '../swrKeys';
 
 /**
  * Refresh the 基础设施 snapshot after a write.
@@ -12,3 +12,6 @@ import { ADMIN_SYSTEM_INFRA_SETTINGS_KEY } from '../swrKeys';
  */
 export const invalidateAdminInfraSettings = (): Promise<unknown> =>
   mutate((key) => Array.isArray(key) && key[0] === ADMIN_SYSTEM_INFRA_SETTINGS_KEY);
+
+export const invalidateAdminSandboxSettings = (): Promise<unknown> =>
+  mutate((key) => Array.isArray(key) && key[0] === ADMIN_SYSTEM_SANDBOX_SETTINGS_KEY);

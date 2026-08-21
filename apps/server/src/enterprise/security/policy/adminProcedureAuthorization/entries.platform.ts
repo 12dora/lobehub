@@ -386,6 +386,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'query',
+    path: 'admin.system.getSandboxSettings',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'query',
     path: 'admin.system.getStatus',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
   },
@@ -412,6 +417,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   {
     kind: 'mutation',
     path: 'admin.system.updateInfraSettings',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.system.updateSandboxSettings',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
 ] as const satisfies readonly AdminProcedureAuthorization[];

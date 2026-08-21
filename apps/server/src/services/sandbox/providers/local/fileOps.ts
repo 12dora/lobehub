@@ -229,6 +229,13 @@ def main(encoded):
                     continue
             emit({'files': files, 'totalCount': len(files)})
             return
+        if op == 'stat':
+            path = jailed(args.get('path'), must_exist=True)
+            if os.path.isdir(path):
+                fail('not a file: ' + path)
+                return
+            emit({'path': path, 'size': os.stat(path).st_size})
+            return
         if op == 'delete':
             path = jailed(args.get('path'), must_exist=True)
             target = Path(path)

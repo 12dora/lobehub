@@ -2,7 +2,17 @@
 
 import { Alert, Block, Flexbox, Icon, Tag, Text } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { Box, Boxes, CircleAlert, KeyRound, Mail, Network, Server, Waypoints } from 'lucide-react';
+import {
+  Box,
+  Boxes,
+  CircleAlert,
+  Container,
+  KeyRound,
+  Mail,
+  Network,
+  Server,
+  Waypoints,
+} from 'lucide-react';
 import type { ReactNode } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -117,6 +127,52 @@ export const DependencyGrid = memo<{ status: AdminSystemStatus }>(({ status }) =
             </Block>
           );
         })}
+        {status.dependencies.sandbox ? (
+          <Block className={styles.dependency} key="sandbox" padding={12} variant="outlined">
+            <Flexbox gap={8}>
+              <Flexbox horizontal align="center" gap={8} justify="space-between">
+                <Flexbox horizontal align="center" gap={8}>
+                  <Icon icon={Container} size={16} />
+                  <Text strong>{t('system.dependencies.sandbox')}</Text>
+                </Flexbox>
+                <OperationalStatus status={status.dependencies.sandbox.status} />
+              </Flexbox>
+              <Text className={styles.code} type="secondary">
+                {t('system.sandbox.daemon', {
+                  value: t(
+                    status.dependencies.sandbox.daemonReachable
+                      ? 'systemGeneral.values.yes'
+                      : 'systemGeneral.values.no',
+                  ),
+                })}
+              </Text>
+              <Text className={styles.code} type="secondary">
+                {t('system.sandbox.image', {
+                  value: t(
+                    status.dependencies.sandbox.imagePresent
+                      ? 'systemGeneral.values.yes'
+                      : 'systemGeneral.values.no',
+                  ),
+                })}
+              </Text>
+              <Text className={styles.code} type="secondary">
+                {t('system.sandbox.containers', {
+                  active: status.dependencies.sandbox.activeContainers,
+                  max: status.dependencies.sandbox.maxContainers,
+                })}
+              </Text>
+              {status.dependencies.sandbox.lastError ? (
+                <Text type="secondary">{status.dependencies.sandbox.lastError}</Text>
+              ) : status.dependencies.sandbox.errorCategory ? (
+                <Text type="secondary">
+                  {t(
+                    `system.values.dependencyError.${status.dependencies.sandbox.errorCategory}` as never,
+                  )}
+                </Text>
+              ) : null}
+            </Flexbox>
+          </Block>
+        ) : null}
       </div>
       {status.instanceStatus.status === 'unavailable' ||
       status.instanceStatus.status === 'degraded' ? (

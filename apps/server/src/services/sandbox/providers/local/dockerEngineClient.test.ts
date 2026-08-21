@@ -74,21 +74,18 @@ describe('DockerEngineClient', () => {
     expect(fake.containerByNameOrId(created.Id)).toBeUndefined();
   });
 
-  it('times out a hanging exec and kills the exec process', async () => {
-    const { client } = await start();
+  it('times out a hanging exec stream without using ExecInspect.Pid', async () => {
+    const { client, fake } = await start();
     const created = await client.containerCreate('box-timeout', { Image: 'aihub-sandbox:latest' });
     await client.containerStart(created.Id);
 
     const exec = await client.execCreate(created.Id, { Cmd: ['sh', '-c', 'HANG'] });
     const started = await client.execStart(exec.Id, {
-      containerId: created.Id,
       timeoutMs: 150,
     });
 
     expect(started.timedOut).toBe(true);
-    const inspect = await client.execInspect(exec.Id);
-    expect(inspect.Running).toBe(false);
-    expect(inspect.ExitCode).toBe(137);
+    expect([...fake.execs.values()].some((item) => item.cmd[0] === 'kill')).toBe(false);
   });
 
   it('drains image pull progress and surfaces pull errors', async () => {

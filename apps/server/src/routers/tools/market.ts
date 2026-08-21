@@ -155,14 +155,15 @@ const metaSchema = z
   .optional();
 
 // Schema for sandbox tool execution request
-const execInSandboxSchema = z.object({
-  agentId: z.string().min(1).max(256).optional(),
-  operationId: z.string().min(1).max(256).optional(),
-  params: z.record(z.any()),
-  toolName: z.string(),
-  topicId: z.string(),
-  userId: z.string().optional(), // Optional: fallback to ctx.userId if not provided
-});
+const execInSandboxSchema = z
+  .object({
+    agentId: z.string().min(1).max(256).optional(),
+    operationId: z.string().min(1).max(256).optional(),
+    params: z.record(z.any()),
+    toolName: z.string(),
+    topicId: z.string(),
+  })
+  .strict();
 
 /**
  * Bound activated Skills before any catalog I/O (SR-002).
@@ -237,11 +238,13 @@ const platformSkillSnapshotSchema = z
   .strict();
 
 // Schema for export and upload file (combined operation)
-const exportAndUploadFileSchema = z.object({
-  filename: z.string(),
-  path: z.string(),
-  topicId: z.string(),
-});
+const exportAndUploadFileSchema = z
+  .object({
+    filename: z.string(),
+    path: z.string(),
+    topicId: z.string(),
+  })
+  .strict();
 
 // Schema for cloud MCP endpoint call
 const callCloudMcpEndpointSchema = z.object({
@@ -294,7 +297,7 @@ const execInSandboxHandler = async ({
   input: ExecInSandboxInput;
 }): Promise<CallToolResult> => {
   const { toolName, params, topicId } = input;
-  const userId = input?.userId || ctx.userId;
+  const userId = ctx.userId;
   let managedCorrelationId: string | undefined;
   let managedRequest = false;
   let sandboxKind: SandboxProviderKind | undefined;

@@ -51,6 +51,8 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'apps/server/src/services/memory/userMemory/persona/service.ts',
   'apps/server/src/services/memory/userMemory/extract.ts',
   'apps/server/src/services/aiAgent/index.ts',
+  // M05: topic/aiChat/message routers reach the approval snapshot via this adapter
+  'apps/server/src/services/topicApproval.ts',
   'apps/server/src/services/connector/sync.ts',
   'apps/server/src/services/toolExecution/index.ts',
   'apps/server/src/modules/AgentRuntime/buildHost.ts',
@@ -722,6 +724,20 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     reason: 'Boot-module gate for network-proxy egress binding at runtime construction',
   },
   {
+    file: 'apps/server/src/services/sandbox/factory.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'G2',
+    reason:
+      'Local Docker sandbox must not import the Docker client or probe health when the sandbox module is off',
+  },
+  {
+    file: 'apps/server/src/services/sandbox/factory.ts',
+    importSpecifier: '@/server/enterprise/services/sandboxSettings/effective',
+    owner: 'G2',
+    reason:
+      'Local sandbox factory reads DB ?? env settings so admin general-settings overrides take effect without a restart',
+  },
+  {
     file: 'apps/server/src/modules/ModelRuntime/index.ts',
     importSpecifier: '@/server/enterprise/services/networkProxy/engine/bindEgress',
     owner: 'G2',
@@ -999,6 +1015,24 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     importSpecifier: '@/server/enterprise/services/skillCatalog',
     owner: 'M08',
     reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/routers/tools/market.test.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'G2',
+    reason: 'Mocks the sandbox module gate on execInSandbox / exportAndUploadFile',
+  },
+  {
+    file: 'apps/server/src/services/sandbox/__tests__/factory.test.ts',
+    importSpecifier: '@/server/enterprise/services/moduleSettings',
+    owner: 'G2',
+    reason: 'Mocks the sandbox module gate so local Docker is not imported when disabled',
+  },
+  {
+    file: 'apps/server/src/services/sandbox/__tests__/factory.test.ts',
+    importSpecifier: '@/server/enterprise/services/sandboxSettings/effective',
+    owner: 'G2',
+    reason: 'Mocks effective sandbox settings (DB ?? env) at the factory seam',
   },
   {
     file: 'apps/server/src/services/agent/index.test.ts',

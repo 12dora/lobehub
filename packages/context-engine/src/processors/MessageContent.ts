@@ -52,15 +52,19 @@ const deserializeParts = (content: string): MessageContentPart[] | null => {
 const partitionFileList = (
   fileList: any[],
   canUseFiles: boolean,
-  sandboxPathByFileId?: Record<string, string>,
+  fileContext?: FileContextConfig,
 ): { nativeFileList: any[]; promptFileList: any[] } => {
   const nativeFileList: any[] = [];
   const promptFileList: any[] = [];
+  const sandboxPathByFileId = fileContext?.sandboxPathByFileId;
+  const omitFileUrl = new Set(fileContext?.omitFileUrlFileIds ?? []);
 
   for (const file of fileList) {
     const sandboxPath = file?.id ? sandboxPathByFileId?.[file.id] : undefined;
     if (sandboxPath) {
       promptFileList.push({ ...file, sandboxPath });
+    } else if (file?.id && omitFileUrl.has(file.id)) {
+      promptFileList.push({ ...file, omitUrl: true });
     } else if (canUseFiles) {
       nativeFileList.push(file);
     } else {
@@ -76,6 +80,11 @@ export interface FileContextConfig {
   enabled?: boolean;
   /** Whether to include file URLs in file context prompts */
   includeFileUrl?: boolean;
+  /**
+   * File ids selected for sandbox sync whose download failed. Rendered as
+   * extracted text without an internal http URL.
+   */
+  omitFileUrlFileIds?: string[];
   /**
    * Map of file id → sandbox path for attachments that were synced into the
    * session sandbox because they were not delivered natively. When set, those
@@ -221,7 +230,7 @@ export class MessageContentProcessor extends BaseProcessor {
     const { nativeFileList, promptFileList } = partitionFileList(
       hasFiles ? message.fileList : [],
       canUseFiles,
-      this.config.fileContext?.sandboxPathByFileId,
+      this.config.fileContext,
     );
     const hasPromptFiles = promptFileList.length > 0;
 

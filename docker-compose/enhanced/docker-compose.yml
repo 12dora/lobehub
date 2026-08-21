@@ -123,6 +123,13 @@ services:
       # Host Docker daemon for SANDBOX_PROVIDER=local. The container user must
       # be allowed to use this socket (often via the host `docker` group).
       - '/var/run/docker.sock:/var/run/docker.sock'
+    # The app image runs as uid 1001 (group nodejs). The host socket is typically
+    # root:docker mode 0660, so without this supplemental GID every sandbox call
+    # fails with EACCES. Derive from the host:
+    #   export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"   # Linux
+    #   export DOCKER_GID="$(stat -f '%g' /var/run/docker.sock)"   # macOS
+    group_add:
+      - '${DOCKER_GID:-999}'
     restart: always
     networks:
       - lobe-network

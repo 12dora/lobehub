@@ -10,6 +10,7 @@ import type {
   AdminBrowserProfileOptions,
   AdminBrowserProfileSummary,
   AdminSystemInfraSettings,
+  AdminSystemSandboxSettings,
   AdminSystemTestDependencyResult,
 } from '@/enterprise/client/services/adminSystem';
 import type { AdminSystemInfraDependency } from '@/server/enterprise/contracts/adminSystem';
@@ -18,6 +19,7 @@ import { BrowserProfileCard } from './infra/BrowserProfileCard';
 import type { BrowserProfileSaveInput } from './infra/browserProfileSelection';
 import { MailCard } from './infra/MailCard';
 import { ObjectStorageCard } from './infra/ObjectStorageCard';
+import { SandboxCard } from './infra/SandboxCard';
 import { infraSettingsStyles as styles } from './styles';
 
 export interface SystemGeneralPageViewProps {
@@ -36,6 +38,8 @@ export interface SystemGeneralPageViewProps {
   profileError?: unknown;
   profileIsLoading?: boolean;
   profileOptions?: AdminBrowserProfileOptions;
+  sandboxData?: AdminSystemSandboxSettings;
+  sandboxModuleEnabled?: boolean;
 }
 
 /**
@@ -66,6 +70,8 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
     profileError,
     profileIsLoading = false,
     profileOptions,
+    sandboxData,
+    sandboxModuleEnabled,
   }) => {
     const { t } = useTranslation('admin');
 
@@ -127,6 +133,13 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
                   view={data.mail}
                   onTest={() => onTest('mail')}
                 />
+                {sandboxModuleEnabled === undefined ? null : (
+                  <SandboxCard
+                    canOperate={canOperate}
+                    moduleEnabled={sandboxModuleEnabled}
+                    view={sandboxData}
+                  />
+                )}
               </>
             ) : null}
             {showProfileCard ? (

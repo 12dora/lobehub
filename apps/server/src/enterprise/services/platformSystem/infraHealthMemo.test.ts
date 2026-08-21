@@ -107,6 +107,40 @@ describe('infraHealthMemo', () => {
     expect(objectStorageProbe).toHaveBeenCalledOnce();
   });
 
+  it('coalesces the sandbox probe with the 30s single-flight memo', async () => {
+    const probeSandbox = vi.fn(async () => ({
+      activeContainers: 1,
+      daemonReachable: true,
+      errorCategory: null,
+      imagePresent: true,
+      lastCheckedAt: new Date(),
+      maxContainers: 8,
+      status: 'healthy' as const,
+    }));
+    const params = {
+      getScopeEpoch: async () => '1',
+      keyManagementEnv: completeKms,
+      objectStorageEnv: completeS3,
+      probeKeyManagement: async () => ({
+        errorCategory: null,
+        lastCheckedAt: new Date(),
+        status: 'healthy' as const,
+      }),
+      probeObjectStorageHealth: async () => ({
+        errorCategory: null,
+        lastCheckedAt: new Date(),
+        status: 'healthy' as const,
+      }),
+      probeSandbox,
+    };
+
+    const first = await getLiveInfraHealth(params);
+    const second = await getLiveInfraHealth(params);
+    expect(probeSandbox).toHaveBeenCalledOnce();
+    expect(first.sandbox).toMatchObject({ daemonReachable: true, imagePresent: true });
+    expect(second.sandbox).toBe(first.sandbox);
+  });
+
   it('reprobes after TTL expiry or an infra-settings epoch bump', async () => {
     const objectStorageProbe = vi.fn(async () => ({
       errorCategory: null,

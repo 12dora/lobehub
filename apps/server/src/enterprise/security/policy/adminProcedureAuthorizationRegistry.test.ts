@@ -98,14 +98,16 @@ describe('admin procedure authorization registry', () => {
     // +1 mutation since: admin.aiModels.syncUpstream (pull the catalog from the upstream account).
     // +1 query / +1 mutation since: admin.browserProfile.{options,update} (a chosen fingerprint).
     // +2 mutations since: admin.users.{setPassword,disableTwoFactor} (admin credential takeover).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(233);
+    // +1 query / +1 mutation since: admin.system.{getSandboxSettings,updateSandboxSettings}
+    // (local sandbox general-settings card).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(235);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(105);
+    ).toHaveLength(106);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(128);
-    expect(mutationPaths).toHaveLength(128);
+    ).toHaveLength(129);
+    expect(mutationPaths).toHaveLength(129);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -233,7 +235,7 @@ describe('admin procedure authorization registry', () => {
     const systemEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ path }) =>
       path.startsWith('admin.system.'),
     );
-    expect(systemEntries).toHaveLength(11);
+    expect(systemEntries).toHaveLength(13);
     expect(
       systemEntries.map((entry) =>
         'permission' in entry ? [entry.path, entry.permission.permissions[0]] : [entry.path, null],
@@ -244,12 +246,14 @@ describe('admin procedure authorization registry', () => {
       ['admin.system.getInfraSettings', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getInstanceRevisions', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getJobs', PLATFORM_PERMISSIONS.SYSTEM_READ],
+      ['admin.system.getSandboxSettings', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getStatus', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.prepareRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
       ['admin.system.requestRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
       ['admin.system.retryJob', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
       ['admin.system.testDependency', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
       ['admin.system.updateInfraSettings', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
+      ['admin.system.updateSandboxSettings', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
     ]);
     // A3: exactly five admin.audit.exports.* procedures, all gated by AUDIT_EXPORT.
     const auditExportEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(

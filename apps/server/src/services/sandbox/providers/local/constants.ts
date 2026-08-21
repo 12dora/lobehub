@@ -7,6 +7,9 @@ export const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576;
 export const DEFAULT_MEMORY_BYTES = 1024 * 1024 * 1024;
 export const DEFAULT_PIDS_LIMIT = 256;
 export const DEFAULT_NANO_CPUS = 1_000_000_000;
+/** tmpfs-backed workspace size. Counts toward host RAM, not disk. */
+export const DEFAULT_DISK_MB = 512;
+export const DEFAULT_MAX_EXPORT_BYTES = 100 * 1024 * 1024;
 export const SANDBOX_WORKSPACE = '/mnt/data';
 export const SANDBOX_TMP = '/tmp';
 export const SANDBOX_USER = '1000:1000';

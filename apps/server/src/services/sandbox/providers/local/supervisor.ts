@@ -4,6 +4,7 @@ import debug from 'debug';
 
 import {
   CONTAINER_NAME_PREFIX,
+  DEFAULT_DISK_MB,
   DEFAULT_IDLE_TTL_SEC,
   DEFAULT_MAX_CONTAINERS,
   DEFAULT_MEMORY_BYTES,
@@ -17,7 +18,7 @@ import {
   SANDBOX_WORKSPACE,
   VOLUME_NAME_PREFIX,
 } from './constants';
-import type { DockerEngineClient } from './dockerEngineClient';
+import type { DockerContainerSummary, DockerEngineClient } from './dockerEngineClient';
 import { DockerEngineError, isDockerNotFound } from './dockerEngineClient';
 import type { LocalSandboxSession } from './sessionContext';
 
@@ -42,7 +43,19 @@ export class LocalSandboxImageError extends Error {
   }
 }
 
+export class LocalSandboxDiskError extends Error {
+  constructor(message = 'Sandbox disk quota exceeded') {
+    super(message);
+    this.name = 'LocalSandboxDiskError';
+  }
+}
+
 export interface LocalSandboxSupervisorOptions {
+  /**
+   * Workspace tmpfs size in MiB. This is a hard quota (size=Nm) and counts
+   * toward host RAM, not disk; data lifetime equals the session.
+   */
+  diskMb: number;
   idleTtlSec: number;
   image: string;
   maxContainers: number;
@@ -60,9 +73,19 @@ export interface SandboxSessionRecord {
   containerName: string;
   inFlight: number;
   lastUsedAt: number;
+  provision?: Promise<void>;
   volumeName: string;
 }
 
+/**
+ * In-process supervisor for local Docker sandboxes.
+ *
+ * Single-replica assumption: TTL reaping and maxContainers are enforced for
+ * THIS process against daemon state it has adopted. Cross-replica leasing
+ * (two AIHub replicas sharing one Docker daemon) is out of scope — deploy a
+ * single replica against a given daemon, or accept that each replica will
+ * independently create/reap labeled containers.
+ */
 const supervisors = new Map<string, LocalSandboxSupervisor>();
 
 export const getLocalSandboxSupervisor = (
@@ -93,12 +116,15 @@ const dockerSafeName = (prefix: string, userId: string, topicId: string) => {
 
 export const sessionKey = (session: LocalSandboxSession) => `${session.userId}::${session.topicId}`;
 
+const LABEL_FILTER = { label: [`${SANDBOX_LABEL}=${SANDBOX_LABEL_VALUE}`] };
+
 export class LocalSandboxSupervisor {
   readonly sessions = new Map<string, SandboxSessionRecord>();
 
   private readonly client: DockerEngineClient;
   private readonly options: LocalSandboxSupervisorOptions;
   private readonly locks = new Map<string, Promise<void>>();
+  private readonly ready: Promise<void>;
   private reaper?: ReturnType<typeof setInterval>;
   private disposed = false;
 
@@ -106,6 +132,7 @@ export class LocalSandboxSupervisor {
     this.client = client;
     this.options = {
       ...options,
+      diskMb: options.diskMb || DEFAULT_DISK_MB,
       idleTtlSec: options.idleTtlSec || DEFAULT_IDLE_TTL_SEC,
       image: options.image || DEFAULT_SANDBOX_IMAGE,
       maxContainers: options.maxContainers || DEFAULT_MAX_CONTAINERS,
@@ -113,6 +140,10 @@ export class LocalSandboxSupervisor {
       nanoCpus: options.nanoCpus || DEFAULT_NANO_CPUS,
       pidsLimit: options.pidsLimit || DEFAULT_PIDS_LIMIT,
     };
+
+    this.ready = this.reconcile().catch((error) => {
+      log('reconcile failed: %O', error);
+    });
 
     const interval =
       options.reaperIntervalMs ??
@@ -133,126 +164,63 @@ export class LocalSandboxSupervisor {
     session: LocalSandboxSession,
     fn: (record: SandboxSessionRecord) => Promise<T>,
   ): Promise<T> {
-    const record = await this.ensureContainer(session);
-    record.inFlight += 1;
-    record.lastUsedAt = Date.now();
+    await this.ready;
+    const key = sessionKey(session);
+
+    if (!this.sessions.has(key) && this.sessions.size >= this.options.maxContainers) {
+      await this.reapIdle();
+    }
+
+    const record = await this.withLock(key, async () => this.leaseLocked(session));
+
     try {
+      if (!record.containerId) {
+        record.provision ??= this.provision(record, session);
+        await record.provision;
+      }
+      await this.ensureRunning(record);
       return await fn(record);
     } finally {
-      record.inFlight = Math.max(0, record.inFlight - 1);
-      record.lastUsedAt = Date.now();
+      await this.withLock(key, async () => {
+        const current = this.sessions.get(key);
+        if (current && current.containerName === record.containerName) {
+          current.inFlight = Math.max(0, current.inFlight - 1);
+          current.lastUsedAt = Date.now();
+        }
+      });
     }
   }
 
-  async ensureContainer(session: LocalSandboxSession): Promise<SandboxSessionRecord> {
+  /**
+   * Drop the session container/volume (e.g. after an HTTP watchdog timeout
+   * where in-container `timeout` failed to finish). Next withSession creates
+   * a fresh sandbox.
+   */
+  async invalidate(session: LocalSandboxSession): Promise<void> {
+    await this.ready;
     const key = sessionKey(session);
-    const existing = this.sessions.get(key);
-    if (existing) {
-      return this.withLock(key, async () => {
-        const current = this.sessions.get(key);
-        if (!current) return this.ensureContainer(session);
-        await this.ensureRunning(current);
-        current.lastUsedAt = Date.now();
-        return current;
-      });
-    }
-
-    return this.withLock('__create__', async () => {
-      const raced = this.sessions.get(key);
-      if (raced) {
-        await this.ensureRunning(raced);
-        raced.lastUsedAt = Date.now();
-        return raced;
-      }
-
-      if (this.sessions.size >= this.options.maxContainers) {
-        await this.reapIdle();
-      }
-      if (this.sessions.size >= this.options.maxContainers) {
-        throw new LocalSandboxCapacityError(this.options.maxContainers);
-      }
-
-      await this.ensureImage();
-
-      const containerName = dockerSafeName(CONTAINER_NAME_PREFIX, session.userId, session.topicId);
-      const volumeName = dockerSafeName(VOLUME_NAME_PREFIX, session.userId, session.topicId);
-      const labels = {
-        [SANDBOX_LABEL]: SANDBOX_LABEL_VALUE,
-        'aihub.sandbox.topicId': session.topicId,
-        'aihub.sandbox.userId': session.userId,
-        'aihub.sandbox.volume': volumeName,
-      };
-
-      try {
-        await this.client.volumeCreate(volumeName, labels);
-      } catch (error) {
-        if (!(error instanceof DockerEngineError) || error.status !== 409) {
-          throw error;
-        }
-      }
-
-      let containerId: string;
-      try {
-        const created = await this.client.containerCreate(containerName, {
-          Cmd: ['sh', '-c', 'exec sleep 2147483647'],
-          Env: ['HOME=/mnt/data', 'TMPDIR=/tmp'],
-          HostConfig: {
-            CapDrop: ['ALL'],
-            Memory: this.options.memoryBytes,
-            Mounts: [
-              {
-                Source: volumeName,
-                Target: SANDBOX_WORKSPACE,
-                Type: 'volume',
-              },
-            ],
-            NanoCpus: this.options.nanoCpus,
-            NetworkMode: this.options.network,
-            PidsLimit: this.options.pidsLimit,
-            Privileged: false,
-            ReadonlyRootfs: true,
-            SecurityOpt: ['no-new-privileges'],
-            Tmpfs: { [SANDBOX_TMP]: 'rw,noexec,nosuid,size=256m' },
-          },
-          Image: this.options.image,
-          Labels: labels,
-          User: SANDBOX_USER,
-          WorkingDir: SANDBOX_WORKSPACE,
-        });
-        containerId = created.Id;
-      } catch (error) {
-        if (error instanceof DockerEngineError && error.status === 409) {
-          const inspect = await this.client.containerInspect(containerName);
-          containerId = inspect.Id;
-        } else {
-          throw error;
-        }
-      }
-
-      const record: SandboxSessionRecord = {
-        containerId,
-        containerName,
-        inFlight: 0,
-        lastUsedAt: Date.now(),
-        volumeName,
-      };
-
-      await this.ensureRunning(record);
-      await this.chownWorkspace(record.containerId);
-      this.sessions.set(key, record);
-      return record;
+    await this.withLock(key, async () => {
+      const record = this.sessions.get(key);
+      if (!record) return;
+      await this.destroySession(key, record);
     });
   }
 
   async reapIdle(now = Date.now()): Promise<string[]> {
+    await this.ready;
     const ttlMs = this.options.idleTtlSec * 1000;
     const removed: string[] = [];
 
-    for (const [key, record] of this.sessions) {
-      if (record.inFlight > 0) continue;
-      if (now - record.lastUsedAt < ttlMs) continue;
-      await this.destroySession(key, record);
-      removed.push(key);
+    for (const key of this.sessions.keys()) {
+      const didRemove = await this.withLock(key, async () => {
+        const record = this.sessions.get(key);
+        if (!record) return false;
+        if (record.inFlight > 0) return false;
+        if (now - record.lastUsedAt < ttlMs) return false;
+        await this.destroySession(key, record);
+        return true;
+      });
+      if (didRemove) removed.push(key);
     }
 
     return removed;
@@ -265,16 +233,186 @@ export class LocalSandboxSupervisor {
       clearInterval(this.reaper);
       this.reaper = undefined;
     }
+    await this.ready.catch(() => undefined);
+  }
+
+  private async leaseLocked(session: LocalSandboxSession): Promise<SandboxSessionRecord> {
+    const key = sessionKey(session);
+    const existing = this.sessions.get(key);
+    if (existing) {
+      existing.inFlight += 1;
+      existing.lastUsedAt = Date.now();
+      return existing;
+    }
+
+    return this.withLock('__create__', async () => {
+      const raced = this.sessions.get(key);
+      if (raced) {
+        raced.inFlight += 1;
+        raced.lastUsedAt = Date.now();
+        return raced;
+      }
+
+      if (this.sessions.size >= this.options.maxContainers) {
+        throw new LocalSandboxCapacityError(this.options.maxContainers);
+      }
+
+      const containerName = dockerSafeName(CONTAINER_NAME_PREFIX, session.userId, session.topicId);
+      const volumeName = dockerSafeName(VOLUME_NAME_PREFIX, session.userId, session.topicId);
+      const record: SandboxSessionRecord = {
+        containerId: '',
+        containerName,
+        inFlight: 1,
+        lastUsedAt: Date.now(),
+        volumeName,
+      };
+      this.sessions.set(key, record);
+      return record;
+    });
+  }
+
+  private async provision(record: SandboxSessionRecord, session: LocalSandboxSession) {
+    await this.ensureImage();
+
+    const labels = {
+      [SANDBOX_LABEL]: SANDBOX_LABEL_VALUE,
+      'aihub.sandbox.topicId': session.topicId,
+      'aihub.sandbox.userId': session.userId,
+      'aihub.sandbox.volume': record.volumeName,
+    };
+
+    // Fail closed: no unbounded named volume fallback if tmpfs quota cannot be set.
+    try {
+      await this.client.volumeCreate(record.volumeName, {
+        driver: 'local',
+        driverOpts: {
+          device: 'tmpfs',
+          o: `size=${this.options.diskMb}m,uid=1000,gid=1000`,
+          type: 'tmpfs',
+        },
+        labels,
+      });
+    } catch (error) {
+      if (!(error instanceof DockerEngineError) || error.status !== 409) {
+        throw error;
+      }
+    }
+
+    try {
+      const created = await this.client.containerCreate(record.containerName, {
+        Cmd: ['sh', '-c', 'exec sleep 2147483647'],
+        Env: ['HOME=/mnt/data', 'TMPDIR=/tmp'],
+        HostConfig: {
+          CapDrop: ['ALL'],
+          Memory: this.options.memoryBytes,
+          Mounts: [
+            {
+              Source: record.volumeName,
+              Target: SANDBOX_WORKSPACE,
+              Type: 'volume',
+            },
+          ],
+          NanoCpus: this.options.nanoCpus,
+          NetworkMode: this.options.network,
+          PidsLimit: this.options.pidsLimit,
+          Privileged: false,
+          ReadonlyRootfs: true,
+          SecurityOpt: ['no-new-privileges'],
+          Tmpfs: { [SANDBOX_TMP]: 'rw,noexec,nosuid,size=256m' },
+        },
+        Image: this.options.image,
+        Labels: labels,
+        User: SANDBOX_USER,
+        WorkingDir: SANDBOX_WORKSPACE,
+      });
+      record.containerId = created.Id;
+    } catch (error) {
+      if (error instanceof DockerEngineError && error.status === 409) {
+        const inspect = await this.client.containerInspect(record.containerName);
+        record.containerId = inspect.Id;
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Adopt labeled containers/volumes already on the daemon so a process restart
+   * does not forget running sandboxes (they count toward maxContainers and TTL).
+   */
+  private async reconcile(): Promise<void> {
+    const containers = await this.client.containerList({ all: true, filters: LABEL_FILTER });
+    const seenVolumes = new Set<string>();
+
+    for (const container of containers) {
+      const adopted = this.adoptContainer(container);
+      if (adopted) seenVolumes.add(adopted.volumeName);
+    }
+
+    const volumes = await this.client.volumeList({ filters: LABEL_FILTER }).catch(() => []);
+    for (const volume of volumes) {
+      if (seenVolumes.has(volume.Name)) continue;
+      // Orphan volume (no matching container) — drop it.
+      try {
+        await this.client.volumeRemove(volume.Name, true);
+      } catch (error) {
+        if (!isDockerNotFound(error)) {
+          log('failed to remove orphan volume %s: %O', volume.Name, error);
+        }
+      }
+    }
+
+    await this.reapIdleUnlocked();
+  }
+
+  private adoptContainer(container: DockerContainerSummary): SandboxSessionRecord | undefined {
+    const labels = container.Labels ?? {};
+    const userId = labels['aihub.sandbox.userId'];
+    const topicId = labels['aihub.sandbox.topicId'];
+    if (!userId || !topicId) return undefined;
+
+    const key = sessionKey({ topicId, userId });
+    if (this.sessions.has(key)) return this.sessions.get(key);
+
+    const volumeName =
+      labels['aihub.sandbox.volume'] || dockerSafeName(VOLUME_NAME_PREFIX, userId, topicId);
+    const record: SandboxSessionRecord = {
+      containerId: container.Id,
+      containerName: (container.Names?.[0] ?? '').replace(/^\//, '') || container.Id,
+      inFlight: 0,
+      lastUsedAt: lastUsedFromSummary(container),
+      volumeName,
+    };
+    this.sessions.set(key, record);
+    return record;
+  }
+
+  /**
+   * Reap without awaiting `ready` (used at the end of reconcile itself).
+   */
+  private async reapIdleUnlocked(now = Date.now()): Promise<void> {
+    const ttlMs = this.options.idleTtlSec * 1000;
+    for (const key of this.sessions.keys()) {
+      await this.withLock(key, async () => {
+        const record = this.sessions.get(key);
+        if (!record) return;
+        if (record.inFlight > 0) return;
+        if (now - record.lastUsedAt < ttlMs) return;
+        await this.destroySession(key, record);
+      });
+    }
   }
 
   private async destroySession(key: string, record: SandboxSessionRecord) {
     log('reaping sandbox session %s container %s', key, record.containerId);
     this.sessions.delete(key);
-    try {
-      await this.client.containerRemove(record.containerId, { force: true });
-    } catch (error) {
-      if (!isDockerNotFound(error)) {
-        log('failed to remove container %s: %O', record.containerId, error);
+    if (record.containerId) {
+      try {
+        await this.client.containerRemove(record.containerId, { force: true });
+      } catch (error) {
+        if (!isDockerNotFound(error)) {
+          log('failed to remove container %s: %O', record.containerId, error);
+        }
       }
     }
     try {
@@ -287,35 +425,23 @@ export class LocalSandboxSupervisor {
   }
 
   private async ensureRunning(record: SandboxSessionRecord) {
+    if (!record.containerId) return;
     try {
       const inspect = await this.client.containerInspect(record.containerId);
       record.containerId = inspect.Id;
+      if (inspect.State?.StartedAt) {
+        const started = Date.parse(inspect.State.StartedAt);
+        if (Number.isFinite(started) && started > record.lastUsedAt && record.inFlight === 0) {
+          record.lastUsedAt = started;
+        }
+      }
       if (inspect.State?.Running) return;
     } catch (error) {
       if (!isDockerNotFound(error)) throw error;
-      for (const [key, value] of this.sessions) {
-        if (value.containerId === record.containerId) this.sessions.delete(key);
-      }
       throw error;
     }
 
     await this.client.containerStart(record.containerId);
-  }
-
-  private async chownWorkspace(containerId: string) {
-    try {
-      const exec = await this.client.execCreate(containerId, {
-        Cmd: ['chown', '1000:1000', SANDBOX_WORKSPACE],
-        User: '0:0',
-      });
-      await this.client.execStart(exec.Id, {
-        containerId,
-        maxOutputBytes: 1024,
-        timeoutMs: 10_000,
-      });
-    } catch (error) {
-      log('chown /mnt/data failed (continuing): %O', error);
-    }
   }
 
   private async ensureImage() {
@@ -369,3 +495,10 @@ export class LocalSandboxSupervisor {
     }
   }
 }
+
+const lastUsedFromSummary = (container: DockerContainerSummary) => {
+  if (typeof container.Created === 'number' && Number.isFinite(container.Created)) {
+    return container.Created < 1e12 ? container.Created * 1000 : container.Created;
+  }
+  return Date.now();
+};

@@ -5,6 +5,7 @@ import { useCallback, useRef, useState } from 'react';
 import type {
   AdminBrowserProfileService,
   AdminInfraSettingsService,
+  AdminSandboxSettingsService,
   AdminSystemInfraSettings,
   AdminSystemTestDependencyResult,
 } from '@/enterprise/client/services/adminSystem';
@@ -15,6 +16,7 @@ import {
   buildAdminBrowserProfileKey,
   buildAdminBrowserProfileOptionsKey,
   buildAdminInfraSettingsKey,
+  buildAdminSandboxSettingsKey,
 } from './swrKeys';
 
 export const useAdminBrowserProfile = (enabled: boolean, service: AdminBrowserProfileService) =>
@@ -39,6 +41,12 @@ export const useAdminBrowserProfileOptions = (
 
 export const useAdminInfraSettings = (enabled: boolean, service: AdminInfraSettingsService) =>
   useClientDataSWR(buildAdminInfraSettingsKey(enabled), () => service.getInfraSettings(), {
+    keepPreviousData: true,
+    revalidateOnFocus: false,
+  });
+
+export const useAdminSandboxSettings = (enabled: boolean, service: AdminSandboxSettingsService) =>
+  useClientDataSWR(buildAdminSandboxSettingsKey(enabled), () => service.getSandboxSettings(), {
     keepPreviousData: true,
     revalidateOnFocus: false,
   });

@@ -11,12 +11,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+ARG TSX_VERSION=4.22.4
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
     curl \
     git \
+    unzip \
     xz-utils \
   && arch="$(dpkg --print-architecture)" \
   && case "$arch" in \
@@ -26,6 +29,7 @@ RUN apt-get update \
     esac \
   && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
     | tar -xJ -C /usr/local --strip-components=1 \
+  && npm install -g "tsx@${TSX_VERSION}" \
   && apt-get purge -y xz-utils \
   && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*

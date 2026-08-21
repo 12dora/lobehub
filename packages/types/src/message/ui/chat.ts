@@ -40,6 +40,16 @@ export interface ChatFileItem {
   fileType: string;
   id: string;
   name: string;
+  /**
+   * When true, `<files_info>` must not include an http `url` (sandbox sync was
+   * attempted for this file but no sandboxPath is available).
+   */
+  omitUrl?: boolean;
+  /**
+   * Absolute sandbox path when this attachment was synced for tool access
+   * (e.g. `/mnt/data/uploads/report-file-1.pdf`). Never pair with an internal http URL.
+   */
+  sandboxPath?: string;
   size: number;
   url: string;
 }

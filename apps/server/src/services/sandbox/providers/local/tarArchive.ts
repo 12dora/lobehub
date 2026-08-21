@@ -1,3 +1,5 @@
+import { Readable, Transform } from 'node:stream';
+
 const BLOCK = 512;
 const USTAR_MAGIC = 'ustar';
 
@@ -156,6 +158,118 @@ export const extractTar = (archive: Buffer): TarEntry[] => {
 
   return entries;
 };
+
+/**
+ * Stream the first regular-file payload (optionally matching `basename`) out of
+ * a ustar archive without buffering the whole archive or file in memory.
+ */
+export const createTarFileExtractStream = (options: {
+  basename?: string;
+  expectedSize: number;
+}): Transform => {
+  const { basename, expectedSize } = options;
+  let leftover = Buffer.alloc(0);
+  let mode: 'header' | 'emit' | 'skip' | 'done' = 'header';
+  let remaining = 0;
+  let pad = 0;
+  let emitted = 0;
+
+  const matches = (name: string) => {
+    if (!basename) return true;
+    return name === basename || name.endsWith(`/${basename}`);
+  };
+
+  return new Transform({
+    flush(callback) {
+      if (mode === 'emit' && emitted < expectedSize) {
+        callback(new Error('truncated tar archive while extracting export'));
+        return;
+      }
+      callback();
+    },
+    transform(chunk: Buffer, _encoding, callback) {
+      leftover = Buffer.concat([leftover, chunk]);
+      try {
+        while (leftover.length > 0 && mode !== 'done') {
+          if (mode === 'header') {
+            if (leftover.length < BLOCK) break;
+            const header = leftover.subarray(0, BLOCK);
+            leftover = leftover.subarray(BLOCK);
+            if (header.every((byte) => byte === 0)) {
+              mode = 'done';
+              this.push(null);
+              break;
+            }
+            const name = readCString(header, 0, 100);
+            const prefix = readCString(header, 345, 155);
+            const fullName = prefix ? `${prefix}/${name}` : name;
+            const typeflag = String.fromCodePoint(header[156] ?? 48);
+            const size = readOctal(header, 124, 12);
+            const isFile = typeflag === '0' || typeflag === '\0' || typeflag === '7';
+            if (isFile && matches(fullName)) {
+              remaining = size;
+              pad = padToBlock(size);
+              mode = 'emit';
+            } else {
+              remaining = size;
+              pad = padToBlock(size);
+              mode = 'skip';
+            }
+            continue;
+          }
+
+          if (mode === 'emit') {
+            if (remaining > 0) {
+              const take = Math.min(remaining, leftover.length, expectedSize - emitted);
+              if (take > 0) {
+                this.push(leftover.subarray(0, take));
+                leftover = leftover.subarray(take);
+                remaining -= take;
+                emitted += take;
+              }
+              if (emitted >= expectedSize) {
+                this.push(null);
+                mode = 'done';
+                leftover = Buffer.alloc(0);
+                break;
+              }
+              if (remaining > 0) break;
+            }
+            if (pad > 0) {
+              const drop = Math.min(pad, leftover.length);
+              leftover = leftover.subarray(drop);
+              pad -= drop;
+              if (pad > 0) break;
+            }
+            mode = 'done';
+            this.push(null);
+            leftover = Buffer.alloc(0);
+            break;
+          }
+
+          if (mode === 'skip') {
+            const drop = Math.min(remaining + pad, leftover.length);
+            leftover = leftover.subarray(drop);
+            if (drop >= remaining) {
+              pad -= drop - remaining;
+              remaining = 0;
+              if (pad <= 0) mode = 'header';
+            } else {
+              remaining -= drop;
+              break;
+            }
+          }
+        }
+        callback();
+      } catch (error) {
+        callback(error as Error);
+      }
+    },
+  });
+};
+
+export const asWebReadable = (stream: Readable): ReadableStream<Uint8Array> =>
+  Readable.toWeb(stream) as ReadableStream<Uint8Array>;
 
 export const extractTarFile = (archive: Buffer, basename?: string): Buffer => {
   const files = extractTar(archive).filter((entry) => entry.type === 'file');

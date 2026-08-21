@@ -12,6 +12,7 @@ export * from './infraSettings';
 export * from './managedResources';
 export * from './networkProxy';
 export * from './publicSnapshot';
+export * from './sandboxSettings';
 export * from './settings';
 export * from './sidebarLayout';
 export * from './skills';

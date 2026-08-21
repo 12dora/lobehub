@@ -188,5 +188,19 @@ describe('MarketSandboxProvider', () => {
         zipUrl: '[redacted]',
       });
     });
+
+    it('does not retain a presigned curl URL or its signature', () => {
+      const signature = 'abcdef123456signature';
+      const command = `curl -fsSL 'https://bucket.s3.amazonaws.com/files/user/report.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20200101%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=${signature}' -o '/mnt/data/uploads/report-file-1.pdf'`;
+
+      const redacted = redactSandboxParams({ command, timeout: 30_000 });
+      const serialized = JSON.stringify(redacted);
+
+      expect(serialized).not.toContain('X-Amz-Signature');
+      expect(serialized).not.toContain(signature);
+      expect(serialized).not.toContain('https://bucket.s3.amazonaws.com');
+      expect(serialized).not.toContain('AKIAIOSFODNN7EXAMPLE');
+      expect(redacted.command).toBe('[redacted sandbox download command]');
+    });
   });
 });

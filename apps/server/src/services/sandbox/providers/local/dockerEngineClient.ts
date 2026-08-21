@@ -2,11 +2,7 @@ import type { IncomingHttpHeaders, IncomingMessage, RequestOptions } from 'node:
 import { request as httpRequest } from 'node:http';
 import { URL } from 'node:url';
 
-import debug from 'debug';
-
 import { DEFAULT_DOCKER_SOCKET, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT_MS } from './constants';
-
-const log = debug('lobe-server:sandbox:local:docker');
 
 const STREAM_STDOUT = 1;
 const STREAM_STDERR = 2;
@@ -101,17 +97,27 @@ export interface DockerExecInspect {
 }
 
 export interface DockerContainerInspect {
+  Created?: string;
   HostConfig?: { NetworkMode?: string };
   Id: string;
   Name?: string;
-  State: { Running?: boolean; Status?: string };
+  State: { Running?: boolean; StartedAt?: string; Status?: string };
 }
 
 export interface DockerContainerSummary {
+  Created?: number;
   Id: string;
   Labels?: Record<string, string>;
   Names?: string[];
   State?: string;
+}
+
+export interface DockerVolumeSummary {
+  CreatedAt?: string;
+  Driver?: string;
+  Labels?: Record<string, string>;
+  Name: string;
+  Options?: Record<string, string>;
 }
 
 export interface DockerImageInspect {
@@ -279,10 +285,34 @@ export class DockerEngineClient {
     );
   }
 
-  async volumeCreate(name: string, labels?: Record<string, string>): Promise<void> {
+  async volumeCreate(
+    name: string,
+    options: {
+      driver?: string;
+      driverOpts?: Record<string, string>;
+      labels?: Record<string, string>;
+    } = {},
+  ): Promise<void> {
     await this.requestJson('POST', '/volumes/create', {
-      json: { Labels: labels, Name: name },
+      json: {
+        Driver: options.driver,
+        DriverOpts: options.driverOpts,
+        Labels: options.labels,
+        Name: name,
+      },
     });
+  }
+
+  async volumeList(
+    options: { filters?: Record<string, string[]> } = {},
+  ): Promise<DockerVolumeSummary[]> {
+    const body = await this.requestJson<{ Volumes?: DockerVolumeSummary[] }>(
+      'GET',
+      `/volumes${jsonQuery({
+        filters: options.filters ? JSON.stringify(options.filters) : undefined,
+      })}`,
+    );
+    return body.Volumes ?? [];
   }
 
   async volumeRemove(name: string, force = true): Promise<void> {
@@ -305,23 +335,18 @@ export class DockerEngineClient {
   }
 
   /**
-   * Start an exec instance, demux Docker multiplexed stdout/stderr frames, and
-   * honour `timeoutMs` by destroying the stream then SIGKILL-ing the exec PID
-   * inside the container (when `containerId` is provided).
+   * Start an exec instance and demux Docker multiplexed stdout/stderr frames.
+   * `timeoutMs` is a HTTP watchdog only — in-container termination is done by
+   * GNU `timeout` (see wrapWithCoreutilsTimeout). Never uses ExecInspect.Pid
+   * (that value is the host PID, not the container PID namespace).
    */
   async execStart(
     id: string,
-    options: { containerId?: string; maxOutputBytes?: number; timeoutMs?: number } = {},
+    options: { maxOutputBytes?: number; timeoutMs?: number } = {},
   ): Promise<DockerExecStartResult> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-    const result = await this.execStartStream(id, { maxOutputBytes, timeoutMs });
-
-    if (result.timedOut && options.containerId) {
-      await this.killExecProcess(options.containerId, id);
-    }
-
-    return result;
+    return this.execStartStream(id, { maxOutputBytes, timeoutMs });
   }
 
   async putArchive(containerId: string, path: string, tar: Buffer): Promise<void> {
@@ -336,34 +361,27 @@ export class DockerEngineClient {
   }
 
   async getArchive(containerId: string, path: string): Promise<Buffer> {
-    const { status, body } = await this.request(
+    const stream = await this.getArchiveStream(containerId, path);
+    return readAll(stream);
+  }
+
+  async getArchiveStream(containerId: string, path: string): Promise<IncomingMessage> {
+    const { status, stream } = await this.request(
       'GET',
       `/containers/${encodeURIComponent(containerId)}/archive${jsonQuery({ path })}`,
+      { stream: true },
     );
 
+    if (!stream) {
+      throw new DockerEngineError(`Docker archive returned no stream (HTTP ${status})`, status);
+    }
+
     if (status !== 200) {
+      const body = await readAll(stream);
       throw new DockerEngineError(parseDockerError(body, status), status);
     }
 
-    return body;
-  }
-
-  private async killExecProcess(containerId: string, execId: string): Promise<void> {
-    try {
-      const inspect = await this.execInspect(execId);
-      const pid = inspect.Pid;
-      if (!pid || !inspect.Running) return;
-
-      const killer = await this.execCreate(containerId, {
-        AttachStderr: true,
-        AttachStdout: true,
-        Cmd: ['kill', '-9', String(pid)],
-        User: '0:0',
-      });
-      await this.execStartStream(killer.Id, { maxOutputBytes: 1024, timeoutMs: 5_000 });
-    } catch (error) {
-      log('failed to kill exec %s in container %s: %O', execId, containerId, error);
-    }
+    return stream;
   }
 
   private async execStartStream(

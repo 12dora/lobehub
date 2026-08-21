@@ -15,10 +15,14 @@ export type LocalSandboxNetwork = 'bridge' | 'none';
 
 /** Constructor options for `LocalSandboxProvider` (lazy-loaded from `./providers/local`). */
 export interface LocalSandboxProviderOptions {
+  /** Workspace tmpfs size in MiB (counts toward host RAM). Default 512. */
+  diskMb?: number;
   host?: string;
   idleTtlSec: number;
   image: string;
   maxContainers: number;
+  /** Hard cap on exportFile payload. Default 100 MiB. */
+  maxExportBytes?: number;
   maxOutputBytes: number;
   memoryBytes: number;
   nanoCpus: number;
@@ -62,9 +66,23 @@ export interface SandboxProvider extends Pick<ISandboxService, 'callTool'> {
   readonly kind: SandboxProviderKind;
 }
 
+export interface SandboxOverLimitAttachment {
+  id: string;
+  name: string;
+  /** Presigned (or otherwise fetchable) download URL. */
+  url: string;
+}
+
 export interface SandboxService extends ISandboxService {
   readonly capabilities: SandboxProviderCapabilities;
   readonly kind: SandboxProviderKind;
+  /**
+   * Internal: place over-limit / non-native attachments at collision-free
+   * `/mnt/data/uploads` paths. Must NOT run general topic-file initialization.
+   */
+  syncOverLimitAttachments: (
+    files: SandboxOverLimitAttachment[],
+  ) => Promise<Record<string, string>>;
 }
 
 export interface SandboxFileExporter {

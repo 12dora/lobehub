@@ -109,6 +109,12 @@ vi.mock('./hooks', () => ({
     isLoading: false,
     mutate: vi.fn(),
   }),
+  useAdminSandboxSettings: () => ({
+    data: undefined,
+    error: undefined,
+    isLoading: false,
+    mutate: vi.fn(),
+  }),
   useInfraDependencyProbe: () => ({ busy: {}, results: {}, run: vi.fn() }),
 }));
 

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { CloudSandboxIdentifier } from '@lobechat/builtin-tool-cloud-sandbox/manifest';
 import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -55,5 +56,10 @@ describe('assertToolModuleEnabled', () => {
   it('allows a mapped tool when the module is on', async () => {
     await expect(assertToolModuleEnabled(KnowledgeBaseIdentifier)).resolves.toBeUndefined();
     expect(assertModuleEnabled).toHaveBeenCalledWith('knowledgeBase');
+  });
+
+  it('maps the cloud sandbox tool to the sandbox module', async () => {
+    await expect(assertToolModuleEnabled(CloudSandboxIdentifier)).resolves.toBeUndefined();
+    expect(assertModuleEnabled).toHaveBeenCalledWith('sandbox');
   });
 });

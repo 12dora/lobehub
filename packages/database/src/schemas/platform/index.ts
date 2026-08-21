@@ -27,6 +27,7 @@ export * from './managedPolicy';
 export * from './moduleSettings';
 export * from './networkProxy';
 export * from './revisions';
+export * from './sandboxSettings';
 export * from './settings';
 export * from './sidebarLayout';
 export * from './skills';

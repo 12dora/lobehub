@@ -18,6 +18,7 @@ import {
   useAdminBrowserProfile,
   useAdminBrowserProfileOptions,
   useAdminInfraSettings,
+  useAdminSandboxSettings,
   useInfraDependencyProbe,
 } from './hooks';
 import type { BrowserProfileSaveInput } from './infra/browserProfileSelection';
@@ -46,6 +47,7 @@ const SystemGeneralPage = memo(() => {
   // 网络代理 is an optional module: when the deployment switched it off the tab must disappear
   // exactly like a missing permission does, rather than offer a page that answers FORBIDDEN.
   const networkProxyModule = useModuleEnabled('networkProxy');
+  const sandboxModule = useModuleEnabled('sandbox');
   const proxy = {
     ...rawProxy,
     canManage: rawProxy.canManage && networkProxyModule,
@@ -65,6 +67,7 @@ const SystemGeneralPage = memo(() => {
 
   const infraEnabled = allowed && canRead && tab === 'infrastructure';
   const settings = useAdminInfraSettings(infraEnabled, adminSystemService);
+  const sandboxSettings = useAdminSandboxSettings(infraEnabled, adminSystemService);
   const browserProfile = useAdminBrowserProfile(infraEnabled, adminSystemService);
   // Read permission, not operate: the pools also name the GPU the card reports read-only.
   const browserProfileOptions = useAdminBrowserProfileOptions(infraEnabled, adminSystemService);
@@ -140,6 +143,8 @@ const SystemGeneralPage = memo(() => {
           profileError={browserProfile.error}
           profileIsLoading={browserProfile.isLoading}
           profileOptions={browserProfileOptions.data}
+          sandboxData={sandboxSettings.data}
+          sandboxModuleEnabled={sandboxModule}
           onProfileRegenerate={regenerateBrowserProfile}
           onProfileRetry={() => void browserProfile.mutate()}
           onProfileSave={saveBrowserProfile}

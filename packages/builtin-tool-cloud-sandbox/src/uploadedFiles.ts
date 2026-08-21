@@ -69,10 +69,34 @@ export const sandboxUploadedFilePath = (name: string): string =>
   `${SANDBOX_UPLOADED_FILES_DIR}/${sanitizeSandboxFileName(name)}`;
 
 /**
- * Build the absolute sandbox path for an over-limit / non-native attachment.
+ * Flatten a file id so it can be interpolated into a sandbox basename without
+ * introducing path separators or control characters.
  */
-export const sandboxOverLimitUploadPath = (name: string): string =>
-  `${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/${sanitizeSandboxFileName(name)}`;
+export const sanitizeSandboxFileId = (fileId: string): string => {
+  const cleaned = sanitizeSandboxFileName(fileId).replaceAll(/[^\w.-]/g, '_');
+  return cleaned.length > 0 ? cleaned : 'file';
+};
+
+/**
+ * Collision-free basename for an over-limit attachment: sanitized original
+ * name with the file id inserted before the extension
+ * (`report.pdf` + `file-1` → `report-file-1.pdf`).
+ */
+export const sandboxOverLimitUploadFileName = (name: string, fileId: string): string => {
+  const safeName = sanitizeSandboxFileName(name);
+  const safeId = sanitizeSandboxFileId(fileId);
+  const lastDot = safeName.lastIndexOf('.');
+  if (lastDot <= 0) return `${safeName}-${safeId}`;
+  return `${safeName.slice(0, lastDot)}-${safeId}${safeName.slice(lastDot)}`;
+};
+
+/**
+ * Build the absolute sandbox path for an over-limit / non-native attachment.
+ * Destination is unique per file id so two attachments with the same original
+ * filename cannot overwrite each other.
+ */
+export const sandboxOverLimitUploadPath = (name: string, fileId: string): string =>
+  `${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/${sandboxOverLimitUploadFileName(name, fileId)}`;
 
 /**
  * Render the dynamic `{{sandbox_uploaded_files}}` section listing the files that

@@ -5,11 +5,13 @@ import { adminSystemService } from './adminSystem';
 const mocks = vi.hoisted(() => ({
   cancelJob: vi.fn(),
   getInfraSettings: vi.fn(),
+  getSandboxSettings: vi.fn(),
   getInstanceRevisions: vi.fn(),
   getJobs: vi.fn(),
   getStatus: vi.fn(),
   retryJob: vi.fn(),
   testDependency: vi.fn(),
+  updateSandboxSettings: vi.fn(),
 }));
 
 vi.mock('@/libs/trpc/client', () => ({
@@ -18,11 +20,13 @@ vi.mock('@/libs/trpc/client', () => ({
       system: {
         cancelJob: { mutate: mocks.cancelJob },
         getInfraSettings: { query: mocks.getInfraSettings },
+        getSandboxSettings: { query: mocks.getSandboxSettings },
         getInstanceRevisions: { query: mocks.getInstanceRevisions },
         getJobs: { query: mocks.getJobs },
         getStatus: { query: mocks.getStatus },
         retryJob: { mutate: mocks.retryJob },
         testDependency: { mutate: mocks.testDependency },
+        updateSandboxSettings: { mutate: mocks.updateSandboxSettings },
       },
     },
   },
@@ -81,5 +85,24 @@ describe('Admin System service adapter', () => {
     await expect(adminSystemService.testDependency({ dependency: 'mail' })).resolves.toBe(probe);
     expect(mocks.getInfraSettings).toHaveBeenCalledWith();
     expect(mocks.testDependency).toHaveBeenCalledWith({ dependency: 'mail' });
+  });
+
+  it('forwards sandbox settings get/update', async () => {
+    const settings = { provider: 'local', revision: 1, source: 'db' };
+    mocks.getSandboxSettings.mockResolvedValue(settings);
+    mocks.updateSandboxSettings.mockResolvedValue(settings);
+
+    await expect(adminSystemService.getSandboxSettings()).resolves.toBe(settings);
+    await expect(
+      adminSystemService.updateSandboxSettings({
+        config: { enabled: true, provider: 'local' },
+        expectedRevision: 0,
+      }),
+    ).resolves.toBe(settings);
+    expect(mocks.getSandboxSettings).toHaveBeenCalledWith();
+    expect(mocks.updateSandboxSettings).toHaveBeenCalledWith({
+      config: { enabled: true, provider: 'local' },
+      expectedRevision: 0,
+    });
   });
 });

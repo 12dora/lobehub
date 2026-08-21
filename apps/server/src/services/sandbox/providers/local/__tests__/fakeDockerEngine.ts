@@ -15,12 +15,22 @@ export interface FakeFsNode {
   target?: string;
 }
 
+export interface FakeVolume {
+  driver: string;
+  labels: Record<string, string>;
+  name: string;
+  options: Record<string, string>;
+  quotaBytes?: number;
+}
+
 export interface FakeContainer {
   config: Record<string, unknown>;
+  createdAt: number;
   fs: Map<string, FakeFsNode>;
   id: string;
   labels: Record<string, string>;
   name: string;
+  quotaBytes?: number;
   running: boolean;
 }
 
@@ -81,7 +91,10 @@ export class FakeDockerEngine {
   readonly execs = new Map<string, FakeExec>();
   readonly hangingResponses = new Map<string, ServerResponse>();
   readonly images = new Set<string>();
-  readonly volumes = new Set<string>();
+  readonly volumes = new Map<string, FakeVolume>();
+  inspectHold?: Promise<void>;
+  inspectStarted?: () => void;
+  lastVolumeCreate?: Record<string, unknown>;
   missingInterpreters = new Set<string>();
   pullShouldFail = false;
   socketPath: string;
@@ -201,6 +214,7 @@ export class FakeDockerEngine {
           }),
         )
         .map((container) => ({
+          Created: Math.floor(container.createdAt / 1000),
           Id: container.id,
           Labels: container.labels,
           Names: [`/${container.name}`],
@@ -220,12 +234,15 @@ export class FakeDockerEngine {
       const id = `ctr-${randomUUID().slice(0, 12)}`;
       const labels = (body.Labels as Record<string, string> | undefined) ?? {};
       const fs = new Map<string, FakeFsNode>([[SANDBOX_WORKSPACE, { kind: 'dir' }]]);
+      const quotaBytes = quotaFromVolume(this.volumes, labels['aihub.sandbox.volume']);
       this.containers.set(id, {
         config: body,
+        createdAt: Date.now(),
         fs,
         id,
         labels,
         name,
+        quotaBytes,
         running: false,
       });
       json(res, 201, { Id: id });
@@ -243,11 +260,18 @@ export class FakeDockerEngine {
       }
 
       if (method === 'GET' && rest === 'json') {
+        this.inspectStarted?.();
+        if (this.inspectHold) await this.inspectHold;
         json(res, 200, {
+          Created: new Date(container.createdAt).toISOString(),
           HostConfig: (container.config.HostConfig as Record<string, unknown>) ?? {},
           Id: container.id,
           Name: `/${container.name}`,
-          State: { Running: container.running, Status: container.running ? 'running' : 'created' },
+          State: {
+            Running: container.running,
+            StartedAt: new Date(container.createdAt).toISOString(),
+            Status: container.running ? 'running' : 'created',
+          },
         });
         return;
       }
@@ -283,7 +307,7 @@ export class FakeDockerEngine {
           WorkingDir?: string;
         };
         const execId = `exec-${randomUUID().slice(0, 12)}`;
-        const hanging = isHangCommand(body.Cmd);
+        const hanging = isHangCommand(body.Cmd) && body.Cmd[0] !== 'timeout';
         this.execs.set(execId, {
           cmd: body.Cmd,
           containerId: container.id,
@@ -322,9 +346,35 @@ export class FakeDockerEngine {
       }
     }
 
+    if (method === 'GET' && pathname === '/volumes') {
+      json(res, 200, {
+        Volumes: [...this.volumes.values()].map((volume) => ({
+          Driver: volume.driver,
+          Labels: volume.labels,
+          Name: volume.name,
+          Options: volume.options,
+        })),
+      });
+      return;
+    }
+
     if (method === 'POST' && pathname === '/volumes/create') {
-      const body = JSON.parse((await readBody(req)).toString('utf8')) as { Name?: string };
-      if (body.Name) this.volumes.add(body.Name);
+      const body = JSON.parse((await readBody(req)).toString('utf8')) as {
+        Driver?: string;
+        DriverOpts?: Record<string, string>;
+        Labels?: Record<string, string>;
+        Name?: string;
+      };
+      this.lastVolumeCreate = body;
+      if (body.Name) {
+        this.volumes.set(body.Name, {
+          driver: body.Driver || 'local',
+          labels: body.Labels ?? {},
+          name: body.Name,
+          options: body.DriverOpts ?? {},
+          quotaBytes: parseQuotaBytes(body.DriverOpts?.o),
+        });
+      }
       json(res, 201, { Name: body.Name });
       return;
     }
@@ -427,13 +477,32 @@ const tryKill = (
   return true;
 };
 
+const unwrapTimeout = (cmd: string[]): string[] => {
+  if (cmd[0] !== 'timeout') return cmd;
+  const execIdx = cmd.indexOf('exec "$0" "$@"');
+  if (execIdx !== -1) return cmd.slice(execIdx + 1);
+  const shIdx = cmd.indexOf('sh');
+  if (shIdx !== -1 && (cmd[shIdx + 1] === '-c' || cmd[shIdx + 1] === '-lc')) {
+    return cmd.slice(shIdx);
+  }
+  return cmd.slice(4);
+};
+
 const runExec = (
   exec: FakeExec,
   container: FakeContainer,
   missingInterpreters: Set<string>,
 ): { exitCode: number; stderr: string; stdout: string } => {
+  if (exec.cmd[0] === 'timeout') {
+    const inner = unwrapTimeout(exec.cmd);
+    if (isHangCommand(inner)) {
+      exec.exitCode = 124;
+      return { exitCode: 124, stderr: 'timeout: sending signal KILL\n', stdout: '' };
+    }
+    return runExec({ ...exec, cmd: inner }, container, missingInterpreters);
+  }
+
   const [bin, flag, ...rest] = exec.cmd;
-  const joined = exec.cmd.join(' ');
 
   if (bin === 'chown') return { exitCode: 0, stderr: '', stdout: '' };
 
@@ -639,8 +708,19 @@ const dispatchFileOp = (op: string, args: Record<string, unknown>, container: Fa
     const existing = fs.get(path);
     const prev =
       existing?.kind === 'file' ? (existing.content ?? Buffer.alloc(0)) : Buffer.alloc(0);
-    fs.set(path, { content: Buffer.concat([prev, chunk]), kind: 'file' });
+    const next = Buffer.concat([prev, chunk]);
+    if (container.quotaBytes && fsUsage(fs) - prev.length + next.length > container.quotaBytes) {
+      throw new Error('ENOSPC: No space left on device');
+    }
+    fs.set(path, { content: next, kind: 'file' });
     return { bytesWritten: chunk.length, success: true };
+  }
+
+  if (op === 'stat') {
+    const path = jailed(fs, String(args.path || ''));
+    const node = fs.get(path);
+    if (node?.kind !== 'file') throw new Error(`ENOENT: ${path}`);
+    return { path, size: node.content?.length ?? 0 };
   }
 
   if (op === 'edit') {
@@ -757,6 +837,26 @@ const dispatchFileOp = (op: string, args: Record<string, unknown>, container: Fa
   }
 
   throw new Error(`unknown file op: ${op}`);
+};
+
+const parseQuotaBytes = (opts?: string) => {
+  if (!opts) return undefined;
+  const match = opts.match(/size=(\d+)m/i);
+  if (!match) return undefined;
+  return Number(match[1]) * 1024 * 1024;
+};
+
+const quotaFromVolume = (volumes: Map<string, FakeVolume>, name?: string) => {
+  if (!name) return undefined;
+  return volumes.get(name)?.quotaBytes;
+};
+
+const fsUsage = (fs: Map<string, FakeFsNode>) => {
+  let total = 0;
+  for (const node of fs.values()) {
+    if (node.kind === 'file') total += node.content?.length ?? 0;
+  }
+  return total;
 };
 
 const applyTarToFs = (fs: Map<string, FakeFsNode>, dest: string, entries: TarEntry[]) => {

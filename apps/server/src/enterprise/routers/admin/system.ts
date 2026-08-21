@@ -6,6 +6,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PlatformRevisionConflictError } from '@/database/models/platform/errors';
 import { preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { rebuildSandboxProviderFromSettings } from '@/server/services/sandbox/factory';
 
 import {
   adminSystemAuthSnapshotStatusOutputSchema,
@@ -16,6 +17,7 @@ import {
   adminSystemGetInstanceRevisionsOutputSchema,
   adminSystemGetJobsInputSchema,
   adminSystemGetJobsOutputSchema,
+  adminSystemGetSandboxSettingsOutputSchema,
   adminSystemGetStatusOutputSchema,
   adminSystemPrepareRestartInputSchema,
   adminSystemPrepareRestartOutputSchema,
@@ -27,6 +29,8 @@ import {
   adminSystemTestDependencyOutputSchema,
   adminSystemUpdateInfraSettingsInputSchema,
   adminSystemUpdateInfraSettingsOutputSchema,
+  adminSystemUpdateSandboxSettingsInputSchema,
+  adminSystemUpdateSandboxSettingsOutputSchema,
 } from '../../contracts/adminSystem';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
@@ -60,7 +64,16 @@ import {
   PlatformSystemJobInvalidError,
   PlatformSystemJobNotFoundError,
 } from '../../services/platformSystem/errors';
+import { invalidateInfraHealthMemo } from '../../services/platformSystem/infraHealthMemo';
 import { InfraSettingsService } from '../../services/platformSystem/infraSettingsService';
+import {
+  getSandboxSettingsView,
+  SANDBOX_SETTINGS_AUDIT_ACTION,
+  SANDBOX_SETTINGS_AUDIT_TARGET_TYPE,
+  summarizeSandboxAfterDiff,
+  toSandboxSettingsOutput,
+  updateSandboxSettings,
+} from '../../services/sandboxSettings';
 import { isIdentityProviderFeatureEnabled } from './identityProvidersSupport';
 
 const createSystemService = (db: ConstructorParameters<typeof IdentityProviderSystemService>[0]) =>
@@ -284,6 +297,13 @@ export const adminSystemRouter = router({
       executePlatformSystem(() => new PlatformSystemAdminService(ctx.serverDB).getJobs(input)),
     ),
 
+  getSandboxSettings: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_READ))
+    .output(adminSystemGetSandboxSettingsOutputSchema)
+    .query(() =>
+      executePlatformSystem(async () => toSandboxSettingsOutput(await getSandboxSettingsView())),
+    ),
+
   getStatus: platformSystemBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_READ))
     .output(adminSystemGetStatusOutputSchema)
@@ -433,4 +453,34 @@ export const adminSystemRouter = router({
         return { appliedAt: new Date(), revision: applied.revision, source: applied.source };
       });
     }),
+
+  updateSandboxSettings: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
+    .input(adminSystemUpdateSandboxSettingsInputSchema)
+    .output(adminSystemUpdateSandboxSettingsOutputSchema)
+    .mutation(async ({ ctx, input }) =>
+      executePlatformSystem(async () => {
+        const view = await ctx.serverDB.transaction(async (tx) => {
+          const row = await updateSandboxSettings(tx, {
+            config: input.config,
+            expectedRevision: input.expectedRevision,
+            updatedBy: ctx.userId!,
+          });
+          await new PlatformAuditService(tx).append({
+            action: SANDBOX_SETTINGS_AUDIT_ACTION,
+            actorUserId: ctx.userId!,
+            afterDiff: summarizeSandboxAfterDiff(input.config),
+            configRevision: row.revision,
+            reason: input.reason,
+            result: 'success',
+            targetId: 'sandbox',
+            targetType: SANDBOX_SETTINGS_AUDIT_TARGET_TYPE,
+          });
+          return row;
+        });
+        invalidateInfraHealthMemo();
+        await rebuildSandboxProviderFromSettings();
+        return toSandboxSettingsOutput(view);
+      }),
+    ),
 });

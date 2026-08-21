@@ -16,6 +16,7 @@ import type {
   AdminSystemInstanceState,
   AdminSystemJob,
   AdminSystemRetryJobInput,
+  AdminSystemSandboxHealth,
 } from '@/server/enterprise/contracts/adminSystem';
 import type { PlatformConvergenceDomain } from '@/server/enterprise/contracts/platformInstanceStatus';
 
@@ -57,6 +58,7 @@ import type { InfraEnvBag } from './infraDependencyConfig';
 import type { LiveInfraHealth, LiveInfraHealthProbe } from './infraHealthMemo';
 import { getLiveInfraHealth } from './infraHealthMemo';
 import { fullJobProjection, projectJob } from './jobProjection';
+import { probeSandboxHealth } from './sandboxProbe';
 import {
   defaultRedisHealthDependencies,
   type DependencyHealth,
@@ -97,6 +99,7 @@ interface PlatformSystemAdminServiceOptions {
   }>;
   redisDependencies?: RedisHealthDependencies;
   redisProbe?: () => Promise<DependencyHealth>;
+  sandboxProbe?: () => Promise<AdminSystemSandboxHealth | null>;
 }
 
 export class PlatformSystemAdminService {
@@ -107,6 +110,7 @@ export class PlatformSystemAdminService {
   private readonly keyManagementProbe: LiveInfraHealthProbe | undefined;
   private readonly now: () => Date;
   private readonly objectStorageProbe: LiveInfraHealthProbe | undefined;
+  private readonly sandboxProbe: NonNullable<PlatformSystemAdminServiceOptions['sandboxProbe']>;
   private readonly publishFailureSummary: NonNullable<
     PlatformSystemAdminServiceOptions['publishFailureSummary']
   >;
@@ -123,6 +127,9 @@ export class PlatformSystemAdminService {
     this.keyManagementProbe = options.keyManagementProbe;
     this.now = options.now ?? (() => new Date());
     this.objectStorageProbe = options.objectStorageProbe;
+    this.sandboxProbe =
+      options.sandboxProbe ??
+      (this.envOverride ? async () => null : () => probeSandboxHealth(this.now));
     this.publishFailureSummary =
       options.publishFailureSummary ?? (() => this.getRecentPublishFailures());
     this.redisProbe =
@@ -146,6 +153,7 @@ export class PlatformSystemAdminService {
       objectStorageEnv,
       probeKeyManagement: this.keyManagementProbe,
       probeObjectStorageHealth: this.objectStorageProbe,
+      probeSandbox: this.sandboxProbe,
     });
   };
 
@@ -493,6 +501,7 @@ export class PlatformSystemAdminService {
         keyManagement: liveInfra.keyManagement,
         objectStorage: liveInfra.objectStorage,
         redisResult,
+        sandbox: liveInfra.sandbox ?? undefined,
       }),
       domains: instance?.domains ?? [],
       featureFlags: {

@@ -1,4 +1,4 @@
-import { SANDBOX_OVER_LIMIT_UPLOADS_DIR } from '@lobechat/builtin-tool-cloud-sandbox';
+import { sandboxOverLimitUploadPath } from '@lobechat/builtin-tool-cloud-sandbox';
 import type { ChatFileItem } from '@lobechat/types';
 import { DEFAULT_FILE_INLINE_MAX_BYTES } from '@lobechat/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,10 +10,7 @@ import {
   syncOverLimitAttachmentsIfSandboxEnabled,
   syncSandboxAttachments,
 } from '../attachmentSync';
-import {
-  SANDBOX_ATTACHMENT_SYNC_FAIL_PREFIX,
-  SANDBOX_ATTACHMENT_SYNC_OK_PREFIX,
-} from '../bootstrap';
+import { SANDBOX_ATTACHMENT_SYNC_CONCURRENCY } from '../bootstrap';
 
 const pdf = (overrides: Partial<ChatFileItem> = {}): ChatFileItem => ({
   fileType: 'application/pdf',
@@ -97,61 +94,68 @@ describe('selectAttachmentsForSandboxSync', () => {
     expect(files).toHaveLength(1);
     expect(files[0].name).toBe('report.pdf');
   });
+
+  it('keeps bot documents that only have a storage key as url', () => {
+    const files = selectAttachmentsForSandboxSync(
+      [{ fileList: [pdf({ url: 'files/test-user-id/xxx/doc.pdf' })] }],
+      { nativeFileInput: false },
+    );
+
+    expect(files).toEqual([
+      expect.objectContaining({ id: 'file-1', url: 'files/test-user-id/xxx/doc.pdf' }),
+    ]);
+  });
 });
 
 describe('syncSandboxAttachments', () => {
-  const callTool = vi.fn();
+  const downloadFiles = vi.fn();
   const resolveDownloadUrl = vi.fn(async (url: string) => `https://download.example.com/${url}`);
 
   beforeEach(() => {
-    callTool.mockReset();
+    downloadFiles.mockReset();
     resolveDownloadUrl.mockClear();
   });
 
-  it('uploads into /mnt/data/uploads and returns sandboxPath by file id', async () => {
-    callTool.mockResolvedValue({
-      result: { stdout: `${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}file-1\n` },
-      success: true,
-    });
-
-    const result = await syncSandboxAttachments([pdf()], { callTool, resolveDownloadUrl });
-
-    expect(result).toEqual({
-      'file-1': `${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/report.pdf`,
-    });
-    expect(callTool).toHaveBeenCalledTimes(1);
-    expect(callTool).toHaveBeenCalledWith(
-      'runCommand',
-      expect.objectContaining({
-        command: expect.stringContaining(`${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/report.pdf`),
-      }),
+  it('resolves storage keys and returns collision-free sandbox paths', async () => {
+    downloadFiles.mockImplementation(async (files: Array<{ id: string; name: string }>) =>
+      Object.fromEntries(
+        files.map((file) => [file.id, sandboxOverLimitUploadPath(file.name, file.id)]),
+      ),
     );
+
+    const result = await syncSandboxAttachments([pdf()], { downloadFiles, resolveDownloadUrl });
+
+    expect(result.attemptedFileIds).toEqual(['file-1']);
+    expect(result.sandboxPathByFileId).toEqual({
+      'file-1': sandboxOverLimitUploadPath('report.pdf', 'file-1'),
+    });
+    expect(downloadFiles).toHaveBeenCalledWith([
+      {
+        id: 'file-1',
+        name: 'report.pdf',
+        url: 'https://download.example.com/files/user/report.pdf',
+      },
+    ]);
     expect(resolveDownloadUrl).toHaveBeenCalledWith('files/user/report.pdf');
   });
 
   it('de-dupes by file id so the same file is only uploaded once', async () => {
-    callTool.mockResolvedValue({
-      result: { stdout: `${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}file-1\n` },
-      success: true,
+    downloadFiles.mockResolvedValue({
+      'file-1': sandboxOverLimitUploadPath('report.pdf', 'file-1'),
     });
 
     const result = await syncSandboxAttachments(
       [pdf(), pdf({ name: 'report-copy.pdf', url: 'files/user/copy.pdf' })],
-      { callTool, resolveDownloadUrl },
+      { downloadFiles, resolveDownloadUrl },
     );
 
-    expect(Object.keys(result)).toEqual(['file-1']);
-    const command = callTool.mock.calls[0][1].command as string;
-    const curlCount = command.split('curl ').length - 1;
-    expect(curlCount).toBe(1);
+    expect(result.attemptedFileIds).toEqual(['file-1']);
+    expect(downloadFiles.mock.calls[0][0]).toHaveLength(1);
   });
 
-  it('omits failed uploads and does not throw', async () => {
-    callTool.mockResolvedValue({
-      result: {
-        stdout: `${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}ok\n${SANDBOX_ATTACHMENT_SYNC_FAIL_PREFIX}bad\n`,
-      },
-      success: true,
+  it('keeps failed ids in attemptedFileIds without a sandbox path (partial failure)', async () => {
+    downloadFiles.mockResolvedValue({
+      ok: sandboxOverLimitUploadPath('ok.pdf', 'ok'),
     });
 
     const result = await syncSandboxAttachments(
@@ -159,64 +163,103 @@ describe('syncSandboxAttachments', () => {
         pdf({ id: 'ok', name: 'ok.pdf' }),
         pdf({ id: 'bad', name: 'bad.pdf', url: 'files/user/bad.pdf' }),
       ],
-      { callTool, resolveDownloadUrl },
+      { downloadFiles, resolveDownloadUrl },
     );
 
-    expect(result).toEqual({ ok: `${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/ok.pdf` });
-    expect(result).not.toHaveProperty('bad');
+    expect(result.attemptedFileIds).toEqual(['ok', 'bad']);
+    expect(result.sandboxPathByFileId).toEqual({
+      ok: sandboxOverLimitUploadPath('ok.pdf', 'ok'),
+    });
   });
 
-  it('falls back to text-only when the sandbox call throws', async () => {
-    callTool.mockRejectedValue(new Error('sandbox down'));
+  it('returns all attempted ids and no paths when every download fails', async () => {
+    downloadFiles.mockResolvedValue({});
+
+    const result = await syncSandboxAttachments(
+      [pdf(), pdf({ id: 'file-2', name: 'other.pdf', url: 'files/user/other.pdf' })],
+      { downloadFiles, resolveDownloadUrl },
+    );
+
+    expect(result.attemptedFileIds).toEqual(['file-1', 'file-2']);
+    expect(result.sandboxPathByFileId).toEqual({});
+  });
+
+  it('falls back to text-only when the sandbox download throws', async () => {
+    downloadFiles.mockRejectedValue(new Error('sandbox down'));
 
     await expect(
-      syncSandboxAttachments([pdf()], { callTool, resolveDownloadUrl }),
-    ).resolves.toEqual({});
+      syncSandboxAttachments([pdf()], { downloadFiles, resolveDownloadUrl }),
+    ).resolves.toEqual({
+      attemptedFileIds: ['file-1'],
+      sandboxPathByFileId: {},
+    });
   });
 
-  it('skips files whose download url cannot be resolved', async () => {
+  it('still records attempted ids when a storage key cannot be signed', async () => {
     resolveDownloadUrl.mockRejectedValueOnce(new Error('no such key'));
 
-    const result = await syncSandboxAttachments([pdf()], { callTool, resolveDownloadUrl });
+    const result = await syncSandboxAttachments([pdf()], { downloadFiles, resolveDownloadUrl });
 
-    expect(result).toEqual({});
-    expect(callTool).not.toHaveBeenCalled();
+    expect(result).toEqual({ attemptedFileIds: ['file-1'], sandboxPathByFileId: {} });
+    expect(downloadFiles).not.toHaveBeenCalled();
+  });
+
+  it('resolves download URLs with bounded concurrency', async () => {
+    let current = 0;
+    let max = 0;
+    resolveDownloadUrl.mockImplementation(async (url: string) => {
+      current += 1;
+      max = Math.max(max, current);
+      await new Promise((resolve) => {
+        setTimeout(resolve, 20);
+      });
+      current -= 1;
+      return `https://download.example.com/${url}`;
+    });
+    downloadFiles.mockResolvedValue({});
+
+    const files = Array.from({ length: 6 }, (_, index) =>
+      pdf({ id: `file-${index}`, url: `files/user/${index}.pdf` }),
+    );
+    await syncSandboxAttachments(files, { downloadFiles, resolveDownloadUrl });
+
+    expect(max).toBeLessThanOrEqual(SANDBOX_ATTACHMENT_SYNC_CONCURRENCY);
+    expect(max).toBeGreaterThan(1);
   });
 });
 
 describe('syncOverLimitAttachmentsIfSandboxEnabled', () => {
-  const callTool = vi.fn();
+  const downloadFiles = vi.fn();
 
   beforeEach(() => {
-    callTool.mockReset();
+    downloadFiles.mockReset();
   });
 
   it('skips the upload when sandbox is not enabled', async () => {
     const result = await syncOverLimitAttachmentsIfSandboxEnabled({
-      deps: { callTool },
+      deps: { downloadFiles },
       enabled: false,
       files: [pdf()],
     });
 
-    expect(result).toEqual({});
-    expect(callTool).not.toHaveBeenCalled();
+    expect(result).toEqual({ attemptedFileIds: [], sandboxPathByFileId: {} });
+    expect(downloadFiles).not.toHaveBeenCalled();
   });
 
   it('syncs when sandbox is enabled', async () => {
-    callTool.mockResolvedValue({
-      result: { stdout: `${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}file-1\n` },
-      success: true,
+    downloadFiles.mockResolvedValue({
+      'file-1': sandboxOverLimitUploadPath('report.pdf', 'file-1'),
     });
 
     const result = await syncOverLimitAttachmentsIfSandboxEnabled({
-      deps: { callTool },
+      deps: { downloadFiles },
       enabled: true,
       files: [pdf({ url: 'https://files.example.com/report.pdf' })],
     });
 
-    expect(result).toEqual({
-      'file-1': `${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/report.pdf`,
+    expect(result.sandboxPathByFileId).toEqual({
+      'file-1': sandboxOverLimitUploadPath('report.pdf', 'file-1'),
     });
-    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(downloadFiles).toHaveBeenCalledTimes(1);
   });
 });

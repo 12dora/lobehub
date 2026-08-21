@@ -15,6 +15,10 @@ import type {
 const log = debug('lobe-server:sandbox:market');
 const REDACTED_SANDBOX_PARAM = '[redacted]';
 const SANDBOX_AUTH_ENV_PATTERN = /\b(LOBEHUB_JWT|GITHUB_TOKEN)=("[^"]*"|'[^']*'|\S+)/g;
+/** Presigned / query-bearing URLs (S3 signatures live in the query string). */
+const SIGNED_URL_IN_COMMAND_PATTERN = /https?:\/\/[^\s'"]+\?[^\s'"]+/gi;
+const QUERY_CREDENTIAL_PATTERN =
+  /\b(X-Amz-(?:Algorithm|Credential|Date|Expires|SignedHeaders|Signature|Security-Token)|AWSAccessKeyId|Signature)=([^&\s'"]+)/gi;
 
 export class MarketSandboxProvider implements SandboxProvider {
   readonly capabilities = {
@@ -142,6 +146,20 @@ export class MarketSandboxProvider implements SandboxProvider {
   }
 }
 
+const redactCommandSecrets = (command: string): string => {
+  // Internal bootstrap / attachment-sync curls embed presigned URLs. Never log
+  // the full command — redacting in place is not enough if a future logger
+  // dumps the raw params before this helper runs.
+  if (/\bcurl\b/i.test(command) && command.includes('/mnt/data')) {
+    return '[redacted sandbox download command]';
+  }
+
+  return command
+    .replaceAll(SANDBOX_AUTH_ENV_PATTERN, (_, name: string) => `${name}=${REDACTED_SANDBOX_PARAM}`)
+    .replaceAll(SIGNED_URL_IN_COMMAND_PATTERN, REDACTED_SANDBOX_PARAM)
+    .replaceAll(QUERY_CREDENTIAL_PATTERN, (_, name: string) => `${name}=${REDACTED_SANDBOX_PARAM}`);
+};
+
 export const redactSandboxParams = (params: Record<string, unknown>) => {
   const hasCommand = typeof params.command === 'string';
   if (!params.skillZipUrls && !params.zipUrl && !hasCommand) return params;
@@ -153,10 +171,7 @@ export const redactSandboxParams = (params: Record<string, unknown>) => {
   if (params.zipUrl) redacted.zipUrl = REDACTED_SANDBOX_PARAM;
   if (params.skillZipUrls) redacted.skillZipUrls = REDACTED_SANDBOX_PARAM;
   if (typeof params.command === 'string') {
-    redacted.command = params.command.replaceAll(
-      SANDBOX_AUTH_ENV_PATTERN,
-      (_, name: string) => `${name}=${REDACTED_SANDBOX_PARAM}`,
-    );
+    redacted.command = redactCommandSecrets(params.command);
   }
 
   return redacted;

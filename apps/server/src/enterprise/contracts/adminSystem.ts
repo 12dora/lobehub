@@ -51,6 +51,16 @@ const adminSystemDependencyHealthSchema = z
   })
   .strict();
 
+export const adminSystemSandboxHealthSchema = adminSystemDependencyHealthSchema
+  .extend({
+    activeContainers: z.number().int().nonnegative(),
+    daemonReachable: z.boolean(),
+    imagePresent: z.boolean(),
+    lastError: z.string().trim().max(500).optional(),
+    maxContainers: z.number().int().positive(),
+  })
+  .strict();
+
 const validateAvailability = (
   value: { errorCategory: 'operation_unavailable' | null; status: 'healthy' | 'unavailable' },
   context: z.RefinementCtx,
@@ -145,6 +155,7 @@ export const adminSystemGetStatusOutputSchema = z
         mail: adminSystemDependencyHealthSchema,
         objectStorage: adminSystemDependencyHealthSchema,
         redis: adminSystemDependencyHealthSchema,
+        sandbox: adminSystemSandboxHealthSchema.optional(),
       })
       .strict(),
     domains: z.array(platformDomainConvergenceSchema).max(8),
@@ -716,4 +727,152 @@ export type AdminSystemUpdateInfraSettingsInput = z.input<
 >;
 export type AdminSystemUpdateInfraSettingsOutput = z.infer<
   typeof adminSystemUpdateInfraSettingsOutputSchema
+>;
+
+export const adminSystemSandboxProviderSchema = z.enum(['local', 'market', 'onlyboxes']);
+export const adminSystemSandboxPullPolicySchema = z.enum(['always', 'if-missing', 'never']);
+export const adminSystemSandboxNetworkSchema = z.enum(['bridge', 'none']);
+
+const requireSandboxLocalFields = (
+  value: {
+    enabled: boolean;
+    provider?: 'local' | 'market' | 'onlyboxes';
+  } & Record<string, unknown>,
+  ctx: z.RefinementCtx,
+): void => {
+  if (!value.enabled) return;
+  if (!value.provider) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'provider is required when enabled',
+      path: ['provider'],
+    });
+    return;
+  }
+  if (value.provider !== 'local') return;
+  requireWhenEnabled(true, ctx, [
+    {
+      message: 'dockerSocket is required when provider is local',
+      path: ['dockerSocket'],
+      present: Boolean(value.dockerSocket),
+    },
+    {
+      message: 'image is required when provider is local',
+      path: ['image'],
+      present: Boolean(value.image),
+    },
+    {
+      message: 'pullPolicy is required when provider is local',
+      path: ['pullPolicy'],
+      present: value.pullPolicy !== undefined,
+    },
+    {
+      message: 'network is required when provider is local',
+      path: ['network'],
+      present: value.network !== undefined,
+    },
+    {
+      message: 'memoryMb is required when provider is local',
+      path: ['memoryMb'],
+      present: value.memoryMb !== undefined,
+    },
+    {
+      message: 'pidsLimit is required when provider is local',
+      path: ['pidsLimit'],
+      present: value.pidsLimit !== undefined,
+    },
+    {
+      message: 'cpus is required when provider is local',
+      path: ['cpus'],
+      present: value.cpus !== undefined,
+    },
+    {
+      message: 'timeoutMs is required when provider is local',
+      path: ['timeoutMs'],
+      present: value.timeoutMs !== undefined,
+    },
+    {
+      message: 'maxOutputBytes is required when provider is local',
+      path: ['maxOutputBytes'],
+      present: value.maxOutputBytes !== undefined,
+    },
+    {
+      message: 'idleTtlSec is required when provider is local',
+      path: ['idleTtlSec'],
+      present: value.idleTtlSec !== undefined,
+    },
+    {
+      message: 'maxContainers is required when provider is local',
+      path: ['maxContainers'],
+      present: value.maxContainers !== undefined,
+    },
+  ]);
+};
+
+export const adminSystemSandboxSettingsConfigSchema = z
+  .object({
+    cpus: z.number().positive().optional(),
+    dockerHost: z.string().trim().max(512).optional(),
+    dockerSocket: z.string().trim().min(1).max(512).optional(),
+    enabled: z.boolean(),
+    idleTtlSec: z.number().int().positive().optional(),
+    image: z.string().trim().min(1).max(256).optional(),
+    maxContainers: z.number().int().positive().optional(),
+    maxOutputBytes: z.number().int().positive().optional(),
+    memoryMb: z.number().int().positive().optional(),
+    network: adminSystemSandboxNetworkSchema.optional(),
+    pidsLimit: z.number().int().positive().optional(),
+    provider: adminSystemSandboxProviderSchema.optional(),
+    pullPolicy: adminSystemSandboxPullPolicySchema.optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  })
+  .strict()
+  .superRefine(requireSandboxLocalFields);
+
+export const adminSystemGetSandboxSettingsOutputSchema = z
+  .object({
+    cpus: z.number().positive(),
+    dockerHost: z.string().trim().max(512).nullable(),
+    dockerSocket: z.string().trim().min(1).max(512),
+    enabled: z.boolean(),
+    idleTtlSec: z.number().int().positive(),
+    image: z.string().trim().min(1).max(256),
+    maxContainers: z.number().int().positive(),
+    maxOutputBytes: z.number().int().positive(),
+    memoryMb: z.number().int().positive(),
+    moduleEnabled: z.boolean(),
+    network: adminSystemSandboxNetworkSchema,
+    pidsLimit: z.number().int().positive(),
+    provider: adminSystemSandboxProviderSchema,
+    pullPolicy: adminSystemSandboxPullPolicySchema,
+    revision: z.number().int().nonnegative(),
+    source: z.enum(['db', 'env']),
+    timeoutMs: z.number().int().positive(),
+  })
+  .strict();
+
+export const adminSystemUpdateSandboxSettingsInputSchema = z
+  .object({
+    config: adminSystemSandboxSettingsConfigSchema,
+    expectedRevision: z.number().int().nonnegative(),
+    reason: reasonSchema.optional(),
+  })
+  .strict();
+
+export const adminSystemUpdateSandboxSettingsOutputSchema =
+  adminSystemGetSandboxSettingsOutputSchema;
+
+export type AdminSystemSandboxHealth = z.infer<typeof adminSystemSandboxHealthSchema>;
+export type AdminSystemGetSandboxSettings = z.infer<
+  typeof adminSystemGetSandboxSettingsOutputSchema
+>;
+export type AdminSystemGetSandboxSettingsOutput = AdminSystemGetSandboxSettings;
+export type AdminSystemSandboxSettingsConfig = z.infer<
+  typeof adminSystemSandboxSettingsConfigSchema
+>;
+export type AdminSystemUpdateSandboxSettingsInput = z.input<
+  typeof adminSystemUpdateSandboxSettingsInputSchema
+>;
+export type AdminSystemUpdateSandboxSettingsOutput = z.infer<
+  typeof adminSystemUpdateSandboxSettingsOutputSchema
 >;

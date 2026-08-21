@@ -12,7 +12,9 @@ const filePrompt = (item: ChatFileItem, addUrl: boolean) => {
   if (item.sandboxPath) {
     return `<file id="${item.id}" name="${item.name}" type="${item.fileType}" size="${item.size}" sandboxPath="${item.sandboxPath}">${content}</file>`;
   }
-  return addUrl
+  // Selected-but-failed sandbox syncs fall back to extracted text only.
+  const includeUrl = addUrl && !item.omitUrl;
+  return includeUrl
     ? `<file id="${item.id}" name="${item.name}" type="${item.fileType}" size="${item.size}" url="${item.url}">${content}</file>`
     : `<file id="${item.id}" name="${item.name}" type="${item.fileType}" size="${item.size}">${content}</file>`;
 };

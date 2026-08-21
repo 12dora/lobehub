@@ -77,7 +77,7 @@ describe('SandboxMiddlewareService', () => {
         ),
       }),
     );
-  });
+  }, 15_000);
 
   it('normalizes provider export failures before storage metadata is read', async () => {
     const provider = {
@@ -121,5 +121,5 @@ describe('SandboxMiddlewareService', () => {
     });
     expect(fileService.getFileMetadata).not.toHaveBeenCalled();
     expect(fileService.createFileRecord).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 });

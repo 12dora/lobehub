@@ -12,8 +12,10 @@ import type {
   SandboxSessionContext,
 } from '../../types';
 import {
+  DEFAULT_DISK_MB,
   DEFAULT_IDLE_TTL_SEC,
   DEFAULT_MAX_CONTAINERS,
+  DEFAULT_MAX_EXPORT_BYTES,
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_MEMORY_BYTES,
   DEFAULT_NANO_CPUS,
@@ -40,11 +42,13 @@ import { getLocalSandboxSession } from './sessionContext';
 import {
   getLocalSandboxSupervisor,
   LocalSandboxCapacityError,
+  LocalSandboxDiskError,
   LocalSandboxImageError,
   type LocalSandboxSupervisor,
   type SandboxSessionRecord,
 } from './supervisor';
-import { extractTarFile } from './tarArchive';
+import { asWebReadable, createTarFileExtractStream } from './tarArchive';
+import { httpWatchdogMs, wrapWithCoreutilsTimeout } from './timeoutWrap';
 
 const log = debug('lobe-server:sandbox:local');
 
@@ -80,29 +84,30 @@ export class LocalSandboxProvider implements SandboxProvider {
 
   private readonly boundSession?: LocalSandboxSession;
   private readonly client: DockerEngineClient;
-  private readonly engine: Required<
-    Pick<
-      LocalSandboxProviderOptions,
-      | 'idleTtlSec'
-      | 'image'
-      | 'maxContainers'
-      | 'maxOutputBytes'
-      | 'memoryBytes'
-      | 'nanoCpus'
-      | 'network'
-      | 'pidsLimit'
-      | 'pullOnDemand'
-      | 'pullPolicy'
-      | 'timeoutMs'
-    >
-  >;
+  private readonly engine: {
+    diskMb: number;
+    idleTtlSec: number;
+    image: string;
+    maxContainers: number;
+    maxExportBytes: number;
+    maxOutputBytes: number;
+    memoryBytes: number;
+    nanoCpus: number;
+    network: 'bridge' | 'none';
+    pidsLimit: number;
+    pullOnDemand: boolean;
+    pullPolicy: LocalSandboxProviderOptions['pullPolicy'];
+    timeoutMs: number;
+  };
   private readonly supervisor: LocalSandboxSupervisor;
 
   constructor(options: EngineOptions) {
     this.engine = {
+      diskMb: options.diskMb ?? DEFAULT_DISK_MB,
       idleTtlSec: options.idleTtlSec ?? DEFAULT_IDLE_TTL_SEC,
       image: options.image ?? DEFAULT_SANDBOX_IMAGE,
       maxContainers: options.maxContainers ?? DEFAULT_MAX_CONTAINERS,
+      maxExportBytes: options.maxExportBytes ?? DEFAULT_MAX_EXPORT_BYTES,
       maxOutputBytes: options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
       memoryBytes: options.memoryBytes ?? DEFAULT_MEMORY_BYTES,
       nanoCpus: options.nanoCpus ?? DEFAULT_NANO_CPUS,
@@ -114,7 +119,16 @@ export class LocalSandboxProvider implements SandboxProvider {
     };
     this.client = new DockerEngineClient({ host: options.host, socketPath: options.socketPath });
     this.supervisor = getLocalSandboxSupervisor(this.client, {
-      ...this.engine,
+      diskMb: this.engine.diskMb,
+      idleTtlSec: this.engine.idleTtlSec,
+      image: this.engine.image,
+      maxContainers: this.engine.maxContainers,
+      memoryBytes: this.engine.memoryBytes,
+      nanoCpus: this.engine.nanoCpus,
+      network: this.engine.network,
+      pidsLimit: this.engine.pidsLimit,
+      pullOnDemand: this.engine.pullOnDemand,
+      pullPolicy: this.engine.pullPolicy,
       reaperIntervalMs: options.reaperIntervalMs,
     });
     if (options.userId && options.topicId) {
@@ -218,14 +232,68 @@ export class LocalSandboxProvider implements SandboxProvider {
   }: SandboxProviderFileExportRequest): Promise<SandboxProviderFileExportResult> {
     try {
       const jailed = resolveSandboxPath(path);
-      return await this.supervisor.withSession(this.requireSession(), async (record) => {
-        const archive = await this.client.getArchive(record.containerId, jailed);
-        const content = extractTarFile(archive, jailed.split('/').pop());
+      const session = this.requireSession();
+      return await this.supervisor.withSession(session, async (record) => {
+        const stat = await this.execInContainer(
+          record,
+          session,
+          ['python3', '-c', buildFileOpCommand('stat', { path: jailed })],
+          this.engine.timeoutMs,
+        );
+        if (stat.exitCode !== 0) {
+          throw new Error(stat.stderr || stat.stdout || 'Failed to stat export file');
+        }
+        const parsed = JSON.parse(stat.stdout || '{}') as {
+          size?: number;
+          success?: boolean;
+          error?: string;
+        };
+        if (parsed.success === false) {
+          throw new Error(String(parsed.error || 'Failed to stat export file'));
+        }
+        const size = Number(parsed.size);
+        if (!Number.isFinite(size) || size < 0) {
+          throw new Error('Failed to stat export file');
+        }
+        if (size > this.engine.maxExportBytes) {
+          throw new LocalSandboxDiskError(
+            `Export exceeds SANDBOX_LOCAL_MAX_EXPORT_BYTES (${this.engine.maxExportBytes}): ${size} bytes`,
+          );
+        }
+
+        if (size === 0) {
+          const empty = await fetch(uploadUrl, {
+            body: Buffer.alloc(0),
+            headers: { ...uploadHeaders, 'Content-Length': '0' },
+            method: 'PUT',
+          });
+          if (!empty.ok) {
+            return {
+              error: { message: `Failed to upload exported file: HTTP ${empty.status}` },
+              success: false,
+            };
+          }
+          return {
+            mimeType: guessMimeType(jailed),
+            result: { mime_type: guessMimeType(jailed), size_bytes: 0 },
+            size: 0,
+            success: true,
+          };
+        }
+
+        const tarStream = await this.client.getArchiveStream(record.containerId, jailed);
+        const fileStream = tarStream.pipe(
+          createTarFileExtractStream({ basename: jailed.split('/').pop(), expectedSize: size }),
+        );
         const response = await fetch(uploadUrl, {
-          body: content,
-          headers: uploadHeaders,
+          body: asWebReadable(fileStream),
+          duplex: 'half',
+          headers: {
+            ...uploadHeaders,
+            'Content-Length': String(size),
+          },
           method: 'PUT',
-        });
+        } as RequestInit);
 
         if (!response.ok) {
           return {
@@ -236,8 +304,8 @@ export class LocalSandboxProvider implements SandboxProvider {
 
         return {
           mimeType: guessMimeType(jailed),
-          result: { mime_type: guessMimeType(jailed), size_bytes: content.length },
-          size: content.length,
+          result: { mime_type: guessMimeType(jailed), size_bytes: size },
+          size,
           success: true,
         };
       });
@@ -533,29 +601,31 @@ export class LocalSandboxProvider implements SandboxProvider {
   }
 
   private async execCapture(cmd: string[], timeoutMs: number, workingDir = SANDBOX_WORKSPACE) {
-    return this.supervisor.withSession(this.requireSession(), async (record) => {
-      return this.execInContainer(record, cmd, timeoutMs, workingDir);
+    const session = this.requireSession();
+    return this.supervisor.withSession(session, async (record) => {
+      return this.execInContainer(record, session, cmd, timeoutMs, workingDir);
     });
   }
 
   private async execInContainer(
     record: SandboxSessionRecord,
+    session: LocalSandboxSession,
     cmd: string[],
     timeoutMs: number,
-    workingDir: string,
+    workingDir = SANDBOX_WORKSPACE,
   ) {
+    const wrapped = wrapWithCoreutilsTimeout(cmd, timeoutMs);
     const created = await this.client.execCreate(record.containerId, {
       AttachStderr: true,
       AttachStdout: true,
-      Cmd: cmd,
+      Cmd: wrapped,
       Tty: false,
       User: SANDBOX_USER,
       WorkingDir: workingDir,
     });
     const started = await this.client.execStart(created.Id, {
-      containerId: record.containerId,
       maxOutputBytes: this.engine.maxOutputBytes,
-      timeoutMs,
+      timeoutMs: httpWatchdogMs(timeoutMs),
     });
     const inspect = await this.client.execInspect(created.Id).catch(() => ({
       ExitCode: started.timedOut ? EXEC_TIMEOUT_EXIT_CODE : 1,
@@ -573,6 +643,9 @@ export class LocalSandboxProvider implements SandboxProvider {
     if (started.timedOut) {
       exitCode = EXEC_TIMEOUT_EXIT_CODE;
       stderr = joinStderr(stderr, `command timed out after ${timeoutMs}ms`);
+      await this.supervisor.invalidate(session);
+    } else if (exitCode === EXEC_TIMEOUT_EXIT_CODE) {
+      stderr = joinStderr(stderr, `command timed out after ${timeoutMs}ms`);
     }
 
     return { execId: created.Id, exitCode, stderr, stdout };
@@ -586,15 +659,24 @@ export class LocalSandboxProvider implements SandboxProvider {
   }
 
   private timeout(params: Record<string, unknown>) {
+    const max = this.engine.timeoutMs;
     const value = params.timeout ?? params.timeout_ms;
-    return typeof value === 'number' && Number.isFinite(value) && value > 0
-      ? value
-      : this.engine.timeoutMs;
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.min(value, max);
+    }
+    return max;
   }
 
   private mapError(error: unknown): SandboxCallToolResult {
-    if (error instanceof LocalSandboxCapacityError || error instanceof LocalSandboxImageError) {
+    if (
+      error instanceof LocalSandboxCapacityError ||
+      error instanceof LocalSandboxImageError ||
+      error instanceof LocalSandboxDiskError
+    ) {
       return this.errorResult(error.message, error.name);
+    }
+    if (isDiskQuota(error)) {
+      return this.errorResult('Sandbox disk quota exceeded', 'LocalSandboxDiskError');
     }
     if (isPathEscape(error)) {
       return this.errorResult((error as Error).message);
@@ -704,6 +786,11 @@ const joinStderr = (stderr: string, extra: string) => (stderr ? `${stderr}\n${ex
 
 const isPathEscape = (error: unknown) =>
   error instanceof Error && error.message.includes('path escapes sandbox workspace');
+
+const isDiskQuota = (error: unknown) => {
+  if (!(error instanceof Error)) return false;
+  return /ENOSPC|no space left|disk quota/i.test(error.message);
+};
 
 const guessMimeType = (path: string) => {
   const ext = path.split('.').pop()?.toLowerCase();

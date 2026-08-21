@@ -1,6 +1,7 @@
 import {
   type SandboxCallToolResult,
   type SandboxExportFileResult,
+  sandboxOverLimitUploadPath,
   selectSandboxInitFiles,
 } from '@lobechat/builtin-tool-cloud-sandbox';
 import debug from 'debug';
@@ -9,12 +10,18 @@ import { sha256 } from 'js-sha256';
 import { FileModel } from '@/database/models/file';
 
 import {
+  buildSandboxAttachmentFileSyncCommand,
   buildSandboxFilesInitCommand,
+  SANDBOX_ATTACHMENT_SYNC_CONCURRENCY,
+  SANDBOX_ATTACHMENT_SYNC_FILE_TIMEOUT_MS,
+  SANDBOX_ATTACHMENT_SYNC_OK_PREFIX,
   SANDBOX_INIT_TIMEOUT_MS,
   type SandboxInitDownload,
 } from './bootstrap';
+import { mapWithConcurrency } from './pool';
 import type {
   SandboxCommandResult,
+  SandboxOverLimitAttachment,
   SandboxProvider,
   SandboxProviderCapabilities,
   SandboxProviderKind,
@@ -117,6 +124,54 @@ export class SandboxMiddlewareService implements SandboxService {
     } catch (error) {
       log('Sandbox file init failed for topic %s: %O', topicId, error);
     }
+  }
+
+  /**
+   * Place over-limit attachments at `/mnt/data/uploads` without running
+   * {@link ensureFilesInitialized}. Downloads are bounded (3) with a 30s
+   * per-file timeout. The download command is never logged (it embeds
+   * presigned URLs).
+   */
+  async syncOverLimitAttachments(
+    files: SandboxOverLimitAttachment[],
+  ): Promise<Record<string, string>> {
+    return this.withLocalSession(async () => {
+      const seen = new Set<string>();
+      const unique: SandboxOverLimitAttachment[] = [];
+      for (const file of files) {
+        if (!file.id || !file.url || seen.has(file.id)) continue;
+        seen.add(file.id);
+        unique.push(file);
+      }
+      if (unique.length === 0) return {};
+
+      const sandboxPathByFileId: Record<string, string> = {};
+
+      await mapWithConcurrency(unique, SANDBOX_ATTACHMENT_SYNC_CONCURRENCY, async (file) => {
+        const dest = sandboxOverLimitUploadPath(file.name, file.id);
+        try {
+          const raw = await this.provider.callTool('runCommand', {
+            command: buildSandboxAttachmentFileSyncCommand(file),
+            timeout: SANDBOX_ATTACHMENT_SYNC_FILE_TIMEOUT_MS,
+          });
+          const result = normalizeSandboxCommandResult(raw);
+          const output = [result.output, result.stderr].filter(Boolean).join('\n');
+          if (`\n${output}\n`.includes(`\n${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}${file.id}\n`)) {
+            sandboxPathByFileId[file.id] = dest;
+          }
+        } catch (error) {
+          log('Over-limit attachment %s sync failed: %O', file.id, error);
+        }
+      });
+
+      log(
+        'Over-limit attachment sync finished: %d/%d files',
+        Object.keys(sandboxPathByFileId).length,
+        unique.length,
+      );
+
+      return sandboxPathByFileId;
+    });
   }
 
   async exportAndUploadFile(path: string, filename: string): Promise<SandboxExportFileResult> {

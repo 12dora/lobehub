@@ -276,4 +276,10 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
       reauth: recentReauth,
     },
   ),
+  'admin.system.updateSandboxSettings': regularMutation(
+    'admin.system.updateSandboxSettings',
+    'medium',
+    'Replace platform sandbox provider and local Docker runtime limits. Takes effect immediately; leftover local containers are reaped.',
+    { reason: optionalReasonInput },
+  ),
 } as const satisfies Record<`admin.${string}`, AdminMutationDefinition>;

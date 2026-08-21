@@ -1,19 +1,11 @@
-import type { ISandboxService } from '@lobechat/builtin-tool-cloud-sandbox';
-import {
-  CloudSandboxIdentifier,
-  sandboxOverLimitUploadPath,
-} from '@lobechat/builtin-tool-cloud-sandbox';
+import { CloudSandboxIdentifier } from '@lobechat/builtin-tool-cloud-sandbox';
 import type { ChatFileItem } from '@lobechat/types';
 import { DEFAULT_FILE_INLINE_MAX_BYTES } from '@lobechat/utils';
 import debug from 'debug';
 
 import type { SandboxAttachmentUpload } from './bootstrap';
-import {
-  buildSandboxAttachmentUploadCommand,
-  SANDBOX_ATTACHMENT_SYNC_OK_PREFIX,
-  SANDBOX_INIT_TIMEOUT_MS,
-} from './bootstrap';
-import { normalizeSandboxCommandResult } from './service';
+import { SANDBOX_ATTACHMENT_SYNC_CONCURRENCY } from './bootstrap';
+import { mapWithConcurrency } from './pool';
 
 const log = debug('lobe-server:sandbox:attachmentSync');
 
@@ -66,8 +58,19 @@ export interface SandboxAttachmentToSync {
   url: string;
 }
 
+export interface SyncSandboxAttachmentsResult {
+  /** Every file selected for sandbox sync (success and failure). */
+  attemptedFileIds: string[];
+  /** file id → collision-free `/mnt/data/uploads/...` path for successful syncs. */
+  sandboxPathByFileId: Record<string, string>;
+}
+
 export interface SyncSandboxAttachmentsDeps {
-  callTool: ISandboxService['callTool'];
+  /**
+   * Dedicated sandbox download (must skip topic-file bootstrap). Receives
+   * already-presigned URLs.
+   */
+  downloadFiles: (files: SandboxAttachmentUpload[]) => Promise<Record<string, string>>;
   resolveDownloadUrl?: (storageUrl: string) => Promise<string>;
 }
 
@@ -138,77 +141,61 @@ export const selectAttachmentsForSandboxSync = (
   return dedupeByFileId(collected);
 };
 
-const parseSyncedFileIds = (output: string, fileIds: readonly string[]): Set<string> => {
-  const haystack = `\n${output}\n`;
-  const synced = new Set<string>();
-  for (const id of fileIds) {
-    if (haystack.includes(`\n${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}${id}\n`)) {
-      synced.add(id);
-    }
-  }
-  return synced;
-};
+const emptySyncResult = (attemptedFileIds: string[] = []): SyncSandboxAttachmentsResult => ({
+  attemptedFileIds,
+  sandboxPathByFileId: {},
+});
 
 /**
- * Upload non-native attachments into the session sandbox at
- * `/mnt/data/uploads/<filename>`. Idempotent per file id within a call
- * (and across the session via in-sandbox markers). Failures are logged and
- * omitted from the result so the turn can fall back to text-only files_info.
+ * Upload non-native attachments into the session sandbox at a collision-free
+ * `/mnt/data/uploads/<name>-<id>.<ext>` path. Failures are logged and omitted
+ * from `sandboxPathByFileId` so the turn can fall back to text-only files_info.
+ *
+ * URLs are resolved concurrently (bound 3). Downloads are delegated to
+ * {@link SyncSandboxAttachmentsDeps.downloadFiles}, which must skip general
+ * topic-file initialization.
  */
 export const syncSandboxAttachments = async (
   files: SandboxAttachmentToSync[],
   deps: SyncSandboxAttachmentsDeps,
-): Promise<Record<string, string>> => {
-  const unique = dedupeByFileId(files).filter((file) => file.url);
-  if (unique.length === 0) return {};
+): Promise<SyncSandboxAttachmentsResult> => {
+  const unique = dedupeByFileId(files);
+  const attemptedFileIds = unique.map((file) => file.id);
+  if (unique.length === 0) return emptySyncResult();
 
-  const downloads: SandboxAttachmentUpload[] = [];
-
-  for (const file of unique) {
-    try {
-      const url = deps.resolveDownloadUrl ? await deps.resolveDownloadUrl(file.url) : file.url;
-      if (!url) {
-        log('Skipping attachment %s: empty download url', file.id);
-        continue;
+  const withStorage = unique.filter((file) => file.url);
+  const resolved = await mapWithConcurrency(
+    withStorage,
+    SANDBOX_ATTACHMENT_SYNC_CONCURRENCY,
+    async (file): Promise<SandboxAttachmentUpload | null> => {
+      try {
+        const url = deps.resolveDownloadUrl ? await deps.resolveDownloadUrl(file.url) : file.url;
+        if (!url) {
+          log('Skipping attachment %s: empty download url', file.id);
+          return null;
+        }
+        return { id: file.id, name: file.name, url };
+      } catch (error) {
+        log('Failed to resolve download url for attachment %s: %O', file.id, error);
+        return null;
       }
-      downloads.push({ id: file.id, name: file.name, url });
-    } catch (error) {
-      log('Failed to resolve download url for attachment %s: %O', file.id, error);
-    }
-  }
+    },
+  );
 
-  if (downloads.length === 0) return {};
-
-  const command = buildSandboxAttachmentUploadCommand(downloads);
+  const downloads = resolved.filter((item): item is SandboxAttachmentUpload => item !== null);
+  if (downloads.length === 0) return emptySyncResult(attemptedFileIds);
 
   try {
-    const raw = await deps.callTool('runCommand', {
-      command,
-      timeout: SANDBOX_INIT_TIMEOUT_MS,
-    });
-    const result = normalizeSandboxCommandResult(raw);
-    const output = [result.output, result.stderr].filter(Boolean).join('\n');
-    const syncedIds = parseSyncedFileIds(
-      output,
-      downloads.map((file) => file.id),
-    );
-
-    const sandboxPathByFileId: Record<string, string> = {};
-    for (const file of unique) {
-      if (!syncedIds.has(file.id)) continue;
-      sandboxPathByFileId[file.id] = sandboxOverLimitUploadPath(file.name);
-    }
-
+    const sandboxPathByFileId = await deps.downloadFiles(downloads);
     log(
       'Synced %d/%d over-limit attachments into the sandbox',
       Object.keys(sandboxPathByFileId).length,
       unique.length,
     );
-
-    return sandboxPathByFileId;
+    return { attemptedFileIds, sandboxPathByFileId };
   } catch (error) {
     log('Sandbox attachment sync failed: %O', error);
-    return {};
+    return emptySyncResult(attemptedFileIds);
   }
 };
 
@@ -216,16 +203,16 @@ export const syncSandboxAttachments = async (
  * No-op when lobe-cloud-sandbox is not enabled for the run. Never throws.
  */
 export const syncOverLimitAttachmentsIfSandboxEnabled = async (params: {
+  deps: SyncSandboxAttachmentsDeps;
   enabled: boolean;
   files: SandboxAttachmentToSync[];
-  deps: SyncSandboxAttachmentsDeps;
-}): Promise<Record<string, string>> => {
-  if (!params.enabled) return {};
+}): Promise<SyncSandboxAttachmentsResult> => {
+  if (!params.enabled) return emptySyncResult();
 
   try {
     return await syncSandboxAttachments(params.files, params.deps);
   } catch (error) {
     log('Sandbox attachment sync failed: %O', error);
-    return {};
+    return emptySyncResult(params.files.map((file) => file.id));
   }
 };

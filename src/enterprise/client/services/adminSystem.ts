@@ -14,12 +14,15 @@ import type {
   adminSystemGetInstanceRevisionsOutputSchema,
   AdminSystemGetJobsInput,
   adminSystemGetJobsOutputSchema,
+  adminSystemGetSandboxSettingsOutputSchema,
   adminSystemGetStatusOutputSchema,
   AdminSystemRetryJobInput,
   AdminSystemTestDependencyInput,
   adminSystemTestDependencyOutputSchema,
   AdminSystemUpdateInfraSettingsInput,
   AdminSystemUpdateInfraSettingsOutput,
+  AdminSystemUpdateSandboxSettingsInput,
+  AdminSystemUpdateSandboxSettingsOutput,
 } from '@/server/enterprise/contracts/adminSystem';
 
 export type AdminSystemStatus = z.infer<typeof adminSystemGetStatusOutputSchema>;
@@ -29,6 +32,7 @@ export type AdminSystemInstanceRevisions = z.infer<
 export type AdminSystemJobs = z.infer<typeof adminSystemGetJobsOutputSchema>;
 export type AdminSystemJob = AdminSystemJobs['items'][number];
 export type AdminSystemInfraSettings = z.infer<typeof adminSystemGetInfraSettingsOutputSchema>;
+export type AdminSystemSandboxSettings = z.infer<typeof adminSystemGetSandboxSettingsOutputSchema>;
 export type AdminSystemTestDependencyResult = z.infer<typeof adminSystemTestDependencyOutputSchema>;
 
 /**
@@ -55,6 +59,13 @@ export interface AdminInfraSettingsService {
   ) => Promise<AdminSystemUpdateInfraSettingsOutput>;
 }
 
+export interface AdminSandboxSettingsService {
+  getSandboxSettings: () => Promise<AdminSystemSandboxSettings>;
+  updateSandboxSettings: (
+    input: AdminSystemUpdateSandboxSettingsInput,
+  ) => Promise<AdminSystemUpdateSandboxSettingsOutput>;
+}
+
 export interface AdminBrowserProfileService {
   getBrowserProfile: () => Promise<AdminBrowserProfileSummary>;
   /** The curated pools a fingerprint may be composed from — the card never posts raw values. */
@@ -68,7 +79,11 @@ export interface AdminBrowserProfileService {
 }
 
 class AdminSystemServiceImpl
-  implements AdminSystemService, AdminInfraSettingsService, AdminBrowserProfileService
+  implements
+    AdminSystemService,
+    AdminInfraSettingsService,
+    AdminBrowserProfileService,
+    AdminSandboxSettingsService
 {
   cancelJob = (input: AdminSystemCancelJobInput) =>
     lambdaClient.admin.system.cancelJob.mutate(input);
@@ -83,6 +98,8 @@ class AdminSystemServiceImpl
     lambdaClient.admin.system.getInstanceRevisions.query(input);
 
   getJobs = (input?: AdminSystemGetJobsInput) => lambdaClient.admin.system.getJobs.query(input);
+
+  getSandboxSettings = () => lambdaClient.admin.system.getSandboxSettings.query();
 
   getStatus = () => lambdaClient.admin.system.getStatus.query();
 
@@ -99,11 +116,15 @@ class AdminSystemServiceImpl
 
   updateInfraSettings = (input: AdminSystemUpdateInfraSettingsInput) =>
     lambdaClient.admin.system.updateInfraSettings.mutate(input);
+
+  updateSandboxSettings = (input: AdminSystemUpdateSandboxSettingsInput) =>
+    lambdaClient.admin.system.updateSandboxSettings.mutate(input);
 }
 
 export const adminSystemService: AdminSystemService &
   AdminInfraSettingsService &
-  AdminBrowserProfileService = new AdminSystemServiceImpl();
+  AdminBrowserProfileService &
+  AdminSandboxSettingsService = new AdminSystemServiceImpl();
 
 export type {
   AdminSystemCancelJobInput,
@@ -113,6 +134,8 @@ export type {
   AdminSystemTestDependencyInput,
   AdminSystemUpdateInfraSettingsInput,
   AdminSystemUpdateInfraSettingsOutput,
+  AdminSystemUpdateSandboxSettingsInput,
+  AdminSystemUpdateSandboxSettingsOutput,
 };
 export type {
   AdminBrowserProfileOptions,

@@ -2,6 +2,7 @@ import {
   INFRA_SETTINGS_INVALIDATION_SCOPE,
   INFRA_SETTINGS_LIMITS,
 } from '@/const/platform/infraSettings';
+import type { AdminSystemSandboxHealth } from '@/server/enterprise/contracts/adminSystem';
 
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
 import type { DependencyHealth, InfraEnvBag } from './infraDependencyConfig';
@@ -11,12 +12,14 @@ import {
   probeKeyManagement,
 } from './infraDependencyConfig';
 import { probeObjectStorageHealth } from './infraProbes';
+import type { SandboxHealthProbe } from './sandboxProbe';
 
 const LIVE_PROBE_TTL_MS = INFRA_SETTINGS_LIMITS.SNAPSHOT_TTL_MS;
 
 export interface LiveInfraHealth {
   keyManagement: DependencyHealth;
   objectStorage: DependencyHealth;
+  sandbox?: AdminSystemSandboxHealth | null;
 }
 
 export type LiveInfraHealthProbe = (env: InfraEnvBag) => Promise<DependencyHealth>;
@@ -80,21 +83,24 @@ const runLiveProbes = async (params: {
   objectStorageEnv: InfraEnvBag;
   probeKeyManagement: LiveInfraHealthProbe;
   probeObjectStorageHealth: LiveInfraHealthProbe;
+  probeSandbox?: SandboxHealthProbe;
 }): Promise<LiveInfraHealth> => {
   const objectStorageClassified = objectStorageHealth(params.objectStorageEnv);
   const keyManagementClassified = keyManagementHealth(params.keyManagementEnv);
-  const [objectStorageResult, keyManagementResult] = await Promise.allSettled([
+  const [objectStorageResult, keyManagementResult, sandboxResult] = await Promise.allSettled([
     shouldSkipLiveProbe(objectStorageClassified)
       ? Promise.resolve(objectStorageClassified)
       : params.probeObjectStorageHealth(params.objectStorageEnv),
     shouldSkipLiveProbe(keyManagementClassified)
       ? Promise.resolve(keyManagementClassified)
       : params.probeKeyManagement(params.keyManagementEnv),
+    params.probeSandbox ? params.probeSandbox() : Promise.resolve(null),
   ]);
   const checkedAt = params.now();
   return {
     keyManagement: settledOrUnavailable(keyManagementResult, checkedAt),
     objectStorage: settledOrUnavailable(objectStorageResult, checkedAt),
+    sandbox: sandboxResult.status === 'fulfilled' ? sandboxResult.value : null,
   };
 };
 
@@ -112,6 +118,7 @@ export const getLiveInfraHealth = async (params: {
   objectStorageEnv: InfraEnvBag;
   probeKeyManagement?: LiveInfraHealthProbe;
   probeObjectStorageHealth?: LiveInfraHealthProbe;
+  probeSandbox?: SandboxHealthProbe;
 }): Promise<LiveInfraHealth> => {
   const epoch = await readEpoch(params.getScopeEpoch);
   const nowMs = Date.now();
@@ -137,6 +144,7 @@ export const getLiveInfraHealth = async (params: {
       objectStorageEnv: params.objectStorageEnv,
       probeKeyManagement: params.probeKeyManagement ?? probeKeyManagement,
       probeObjectStorageHealth: params.probeObjectStorageHealth ?? probeObjectStorageHealth,
+      probeSandbox: params.probeSandbox,
     });
     // A later epoch or invalidate() must not let this result become the memo.
     if (inflight === flight && generation === startedGeneration) {

@@ -12,6 +12,7 @@ import {
   platformIdentityProviderRestartRequests,
   platformInfraSettings,
   platformJobs,
+  platformSandboxSettings,
   rolePermissions,
   roles,
   userRoles,
@@ -22,6 +23,7 @@ import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { resetEffectiveSandboxSettingsForTest } from '../../services/sandboxSettings';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 
@@ -32,6 +34,10 @@ const roleName = 'm11_oidc_restart_operator';
 const readerRoleName = 'm11_system_unrelated_reader';
 
 vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(async () => db) }));
+vi.mock('@/server/services/sandbox/factory', () => ({
+  rebuildSandboxProviderFromSettings: vi.fn(async () => undefined),
+}));
+
 vi.mock('../../services/infraSettings/destinationPolicy', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -47,6 +53,7 @@ const cleanup = async () => {
   await db.delete(platformIdentityProviderInstances);
   await db.delete(platformJobs);
   await db.delete(platformInfraSettings);
+  await db.delete(platformSandboxSettings);
   await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
   const ownedRoles = await db
     .select({ id: roles.id })
@@ -65,6 +72,7 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_DATABASE_OIDC', '1');
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+  resetEffectiveSandboxSettingsForTest();
   await cleanup();
   await db.insert(users).values(Object.values(ids).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -394,5 +402,75 @@ describe('admin.system operations gate', () => {
         expectedRevision: 0,
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED', message: 'ADMIN_REAUTH_REQUIRED' });
+  });
+
+  it('lets a system reader load sandbox settings and denies a write', async () => {
+    const operator = await callerFor(ids.operator);
+    await expect(operator.getSandboxSettings()).resolves.toMatchObject({
+      enabled: false,
+      provider: expect.any(String),
+      source: 'env',
+    });
+
+    const reader = await callerFor(ids.reader);
+    await expect(reader.getSandboxSettings()).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'PLATFORM_PERMISSION_DENIED',
+    });
+    await expect(
+      reader.updateSandboxSettings({
+        config: { enabled: true, provider: 'market' },
+        expectedRevision: 0,
+      }),
+    ).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'PLATFORM_PERMISSION_DENIED',
+    });
+  });
+
+  it('persists sandbox settings via CAS and rebuilds the provider', async () => {
+    const operator = await callerFor(ids.operator);
+    const result = await operator.updateSandboxSettings({
+      config: {
+        cpus: 2,
+        dockerSocket: '/var/run/docker.sock',
+        enabled: true,
+        idleTtlSec: 60,
+        image: 'aihub-sandbox:test',
+        maxContainers: 3,
+        maxOutputBytes: 4096,
+        memoryMb: 256,
+        network: 'none',
+        pidsLimit: 64,
+        provider: 'local',
+        pullPolicy: 'never',
+        timeoutMs: 5000,
+      },
+      expectedRevision: 0,
+    });
+    expect(result).toMatchObject({
+      enabled: true,
+      image: 'aihub-sandbox:test',
+      provider: 'local',
+      revision: 1,
+      source: 'db',
+    });
+
+    const logs = await db.select().from(platformAuditLogs);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        action: 'system.infra.sandbox.update',
+        result: 'success',
+        targetId: 'sandbox',
+        targetType: 'infra_settings',
+      }),
+    );
+
+    await expect(
+      operator.updateSandboxSettings({
+        config: { enabled: false },
+        expectedRevision: 0,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
   });
 });

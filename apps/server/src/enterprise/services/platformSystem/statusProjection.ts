@@ -1,6 +1,7 @@
 import { getRedisConfig } from '@/envs/redis';
 import { createRedisWithPrefix, isRedisEnabled } from '@/libs/redis/manager';
 import type { BaseRedisProvider, RedisConfig } from '@/libs/redis/types';
+import type { AdminSystemSandboxHealth } from '@/server/enterprise/contracts/adminSystem';
 
 import type { IdentityProviderStartupHealth } from '../identityProvider/startupArtifact';
 import {
@@ -176,8 +177,10 @@ export const projectDependencies = (params: {
   keyManagement: DependencyHealth;
   objectStorage: DependencyHealth;
   redisResult: PromiseSettledResult<DependencyHealth>;
+  sandbox?: AdminSystemSandboxHealth | null;
 }) => {
-  const { checkedAt, env, databaseResult, keyManagement, objectStorage, redisResult } = params;
+  const { checkedAt, env, databaseResult, keyManagement, objectStorage, redisResult, sandbox } =
+    params;
   return {
     database:
       databaseResult.status === 'fulfilled'
@@ -198,5 +201,6 @@ export const projectDependencies = (params: {
             lastCheckedAt: checkedAt,
             status: 'unavailable',
           } as const),
+    ...(sandbox ? { sandbox } : {}),
   };
 };

@@ -2,8 +2,6 @@ import type { BuiltinToolContext, BuiltinToolResult } from '@lobechat/types';
 import { BaseExecutor } from '@lobechat/types';
 
 import { cloudSandboxService } from '@/services/cloudSandbox';
-import { useUserStore } from '@/store/user';
-import { userProfileSelectors } from '@/store/user/slices/auth/selectors';
 
 import { CloudSandboxExecutionRuntime } from '../ExecutionRuntime';
 import { CloudSandboxIdentifier } from '../manifest';
@@ -29,26 +27,18 @@ import { CloudSandboxApiName } from '../types';
 
 /**
  * Client-side Sandbox Service
- * Wraps codeInterpreterService with bound context (topicId, userId)
+ * Wraps cloudSandboxService with bound topicId. Server identity is ctx.userId.
  */
 class ClientSandboxService implements ISandboxService {
   private topicId: string;
-  private userId: string;
 
   constructor(topicId: string) {
     this.topicId = topicId;
-    // Get userId from user store - client-side auth
-    const userId = userProfileSelectors.userId(useUserStore.getState());
-    if (!userId) {
-      throw new Error('userId must be provided');
-    }
-    this.userId = userId;
   }
 
   async callTool(toolName: string, params: Record<string, any>): Promise<SandboxCallToolResult> {
     return cloudSandboxService.callTool(toolName, params, {
       topicId: this.topicId,
-      userId: this.userId,
     });
   }
 

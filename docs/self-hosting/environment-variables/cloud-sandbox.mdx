@@ -93,6 +93,7 @@ Supported values:
 - The default network is `bridge`. Set `SANDBOX_LOCAL_NETWORK=none` if the sandbox should have no outbound network.
 - Memory, PID, CPU, idle TTL, output size, and concurrent container caps are enforced from env (see variables below).
 - The LobeHub process must be able to talk to the Docker API. Mount `/var/run/docker.sock` into the app container (see `docker-compose/enhanced/docker-compose.yml`). Anyone who can reach that socket can control the host Docker daemon — treat the mount as a privileged trust boundary.
+- The app image runs as uid `1001` (group `nodejs`). On a typical Linux host the socket is `root:docker` mode `0660`, so a mount alone is not enough: add the host Docker GID with `group_add` / `DOCKER_GID`. Derive it with `stat -c '%g' /var/run/docker.sock` (Linux) or `stat -f '%g' /var/run/docker.sock` (macOS). `EACCES` on the socket means the GID is wrong, not that Docker is down.
 - Turning off the platform `sandbox` module (admin console or `LOBE_MODULES_DISABLED=sandbox`) returns `PLATFORM_MODULE_DISABLED` and never opens a Docker client or health-probes the daemon.
 
 ### Image
@@ -102,9 +103,10 @@ Build and tag the sandbox image (not the main app image):
 ```bash
 bun run build:sandbox-image
 # tags aihub-sandbox:<package version> and aihub-sandbox:latest
+bun run build:sandbox-image -- --smoke   # also runs tsx hello + unzip -v in the image
 ```
 
-The image is `python:3.12-slim` plus Node 22, git, curl, a compiler toolchain, and common data/document Python libraries. Default working directory is `/mnt/data`.
+The image is `python:3.12-slim` plus Node 22, git, curl, unzip, a pinned global `tsx`, a compiler toolchain, and common data/document Python libraries. Default working directory is `/mnt/data`.
 
 ### Limits and Docker connection
 

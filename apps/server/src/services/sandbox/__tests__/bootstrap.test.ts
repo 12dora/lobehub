@@ -1,11 +1,12 @@
 import {
   SANDBOX_OVER_LIMIT_UPLOADS_DIR,
   SANDBOX_UPLOADED_FILES_DIR,
+  sandboxOverLimitUploadPath,
 } from '@lobechat/builtin-tool-cloud-sandbox';
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildSandboxAttachmentUploadCommand,
+  buildSandboxAttachmentFileSyncCommand,
   buildSandboxFilesInitCommand,
   SANDBOX_ATTACHMENT_SYNC_FAIL_PREFIX,
   SANDBOX_ATTACHMENT_SYNC_OK_PREFIX,
@@ -53,36 +54,65 @@ describe('buildSandboxFilesInitCommand', () => {
   });
 });
 
-describe('buildSandboxAttachmentUploadCommand', () => {
-  it('only ensures the uploads dir when there is nothing to download', () => {
-    expect(buildSandboxAttachmentUploadCommand([])).toBe(
-      `mkdir -p '${SANDBOX_OVER_LIMIT_UPLOADS_DIR}'`,
+describe('sandboxOverLimitUploadPath', () => {
+  it('allocates distinct destinations for the same filename with different ids', () => {
+    expect(sandboxOverLimitUploadPath('report.pdf', 'file-a')).toBe(
+      `${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/report-file-a.pdf`,
+    );
+    expect(sandboxOverLimitUploadPath('report.pdf', 'file-b')).toBe(
+      `${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/report-file-b.pdf`,
+    );
+    expect(sandboxOverLimitUploadPath('report.pdf', 'file-a')).not.toBe(
+      sandboxOverLimitUploadPath('report.pdf', 'file-b'),
     );
   });
+});
 
-  it('downloads into /mnt/data/uploads with a per-file-id marker', () => {
-    const command = buildSandboxAttachmentUploadCommand([
-      { id: 'file-1', name: 'report.pdf', url: 'https://files.example.com/a' },
-    ]);
+describe('buildSandboxAttachmentFileSyncCommand', () => {
+  it('writes a collision-free dest and requires the dest to exist for the marker', () => {
+    const command = buildSandboxAttachmentFileSyncCommand({
+      id: 'file-1',
+      name: 'report.pdf',
+      url: 'https://files.example.com/a',
+    });
+    const dest = sandboxOverLimitUploadPath('report.pdf', 'file-1');
 
     expect(command).toContain(`mkdir -p '${SANDBOX_OVER_LIMIT_UPLOADS_DIR}'`);
+    expect(command).toContain(`-o '${dest}'`);
     expect(command).toContain(
-      `curl -fsSL 'https://files.example.com/a' -o '${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/report.pdf'`,
+      `if [ -f '${sandboxAttachmentSyncMarker('file-1')}' ] && [ -f '${dest}' ]`,
     );
-    expect(command).toContain(`if [ -f '${sandboxAttachmentSyncMarker('file-1')}' ]`);
+    expect(command).toContain('--max-time 30');
     expect(command).toContain(`${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}file-1`);
     expect(command).toContain(`${SANDBOX_ATTACHMENT_SYNC_FAIL_PREFIX}file-1`);
   });
 
-  it('de-dupes downloads by file id', () => {
-    const command = buildSandboxAttachmentUploadCommand([
-      { id: 'file-1', name: 'a.pdf', url: 'https://files.example.com/a' },
-      { id: 'file-1', name: 'b.pdf', url: 'https://files.example.com/b' },
-    ]);
+  it('re-downloads when the file is renamed (old marker, new dest)', () => {
+    const renamed = buildSandboxAttachmentFileSyncCommand({
+      id: 'file-1',
+      name: 'renamed.pdf',
+      url: 'https://files.example.com/a',
+    });
+    const newDest = sandboxOverLimitUploadPath('renamed.pdf', 'file-1');
+    const oldDest = sandboxOverLimitUploadPath('report.pdf', 'file-1');
 
-    const curlCount = command.split('curl ').length - 1;
-    expect(curlCount).toBe(1);
-    expect(command).toContain('a.pdf');
-    expect(command).not.toContain('b.pdf');
+    expect(renamed).toContain(newDest);
+    expect(renamed).not.toContain(oldDest);
+    expect(renamed).toContain(
+      `if [ -f '${sandboxAttachmentSyncMarker('file-1')}' ] && [ -f '${newDest}' ]`,
+    );
+  });
+
+  it('reuses a topic-bootstrap copy at /mnt/data/<name> when present', () => {
+    const command = buildSandboxAttachmentFileSyncCommand({
+      id: 'file-1',
+      name: 'report.pdf',
+      url: 'https://files.example.com/a',
+    });
+
+    expect(command).toContain(`elif [ -f '${SANDBOX_UPLOADED_FILES_DIR}/report.pdf' ]`);
+    expect(command).toContain(
+      `cp '${SANDBOX_UPLOADED_FILES_DIR}/report.pdf' '${sandboxOverLimitUploadPath('report.pdf', 'file-1')}'`,
+    );
   });
 });

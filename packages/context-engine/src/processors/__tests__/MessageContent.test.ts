@@ -759,6 +759,86 @@ describe('MessageContentProcessor', () => {
       expect(content[1].text).not.toContain('http://internal.example.com');
     });
 
+    it('should omit the url for selected-but-failed sandbox files (all failed)', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        fileContext: {
+          enabled: true,
+          omitFileUrlFileIds: ['file1'],
+        },
+        isCanUseFiles: () => false,
+        isCanUseVision: mockIsCanUseVision,
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      const result = await processor.process(
+        createContext([
+          {
+            content: 'summarize it',
+            createdAt: Date.now(),
+            fileList: [docFile],
+            id: 'test',
+            role: 'user',
+            updatedAt: Date.now(),
+          } as UIChatMessage,
+        ]),
+      );
+
+      const text = (result.messages[0].content as any[])[0].text as string;
+      expect(text).toContain(
+        '<file id="file1" name="report.pdf" type="application/pdf" size="2048">',
+      );
+      expect(text).toContain('PARSED TEXT');
+      expect(text).not.toContain('http://internal.example.com/report.pdf');
+      expect(text).not.toContain('sandboxPath=');
+    });
+
+    it('should mix sandboxPath success with URL-free fallback on partial failure', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        fileContext: {
+          enabled: true,
+          omitFileUrlFileIds: ['file1', 'file2'],
+          sandboxPathByFileId: { file1: '/mnt/data/uploads/report-file1.pdf' },
+        },
+        isCanUseFiles: () => false,
+        isCanUseVision: mockIsCanUseVision,
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      const result = await processor.process(
+        createContext([
+          {
+            content: 'summarize them',
+            createdAt: Date.now(),
+            fileList: [
+              docFile,
+              {
+                content: 'OTHER TEXT',
+                fileType: 'application/pdf',
+                id: 'file2',
+                name: 'other.pdf',
+                size: 10,
+                url: 'http://internal.example.com/other.pdf',
+              },
+            ],
+            id: 'test',
+            role: 'user',
+            updatedAt: Date.now(),
+          } as UIChatMessage,
+        ]),
+      );
+
+      const text = (result.messages[0].content as any[])[0].text as string;
+      expect(text).toContain('sandboxPath="/mnt/data/uploads/report-file1.pdf"');
+      expect(text).toContain('<file id="file2" name="other.pdf" type="application/pdf" size="10">');
+      expect(text).not.toContain('http://internal.example.com');
+    });
+
     it('should leave native file_url delivery unchanged when sandbox is not enabled', async () => {
       mockIsCanUseVision.mockReturnValue(false);
 

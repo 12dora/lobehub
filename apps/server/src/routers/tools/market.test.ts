@@ -970,4 +970,82 @@ describe('tools marketRouter', () => {
       });
     });
   });
+
+  describe('sandbox identity is always ctx.userId', () => {
+    it("rejects a client-supplied foreign userId and never opens that user's sandbox", async () => {
+      mockPreprocessLhCommand.mockResolvedValue({
+        command: 'true',
+        isLhCommand: false,
+        skipSkillLookup: true,
+      });
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'attacker' } as any);
+
+      await expect(
+        caller.execInSandbox({
+          params: { command: 'true' },
+          toolName: 'runCommand',
+          topicId: 'victim-topic',
+          userId: 'victim-user',
+        } as any),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+      expect(mockCreateSandboxService).not.toHaveBeenCalled();
+      expect(mockSandboxCallTool).not.toHaveBeenCalled();
+      expect(managedSkillMocks.FileModel).not.toHaveBeenCalled();
+    });
+
+    it('keys the sandbox session and FileModel by ctx.userId, not a payload userId', async () => {
+      mockPreprocessLhCommand.mockResolvedValue({
+        command: 'true',
+        isLhCommand: false,
+        skipSkillLookup: false,
+      });
+      mockSandboxCallTool.mockResolvedValue({ result: { exitCode: 0 }, success: true });
+      const findByName = vi.fn().mockResolvedValue(null);
+      managedSkillMocks.AgentSkillModel.mockImplementation(() => ({ findByName }) as never);
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'session-user' } as any);
+
+      await caller.execInSandbox({
+        params: {
+          activatedSkills: [{ name: 'personal.skill' }],
+          command: 'true',
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      });
+
+      expect(mockCreateSandboxService).toHaveBeenCalledWith(
+        expect.objectContaining({
+          topicId: 'topic-1',
+          userId: 'session-user',
+        }),
+      );
+      expect(managedSkillMocks.AgentSkillModel).toHaveBeenCalledWith(
+        expect.anything(),
+        'session-user',
+        undefined,
+      );
+      expect(managedSkillMocks.FileModel).toHaveBeenCalledWith(
+        expect.anything(),
+        'session-user',
+        undefined,
+      );
+    });
+
+    it('rejects a client-supplied userId on exportAndUploadFile', async () => {
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'attacker' } as any);
+
+      await expect(
+        caller.exportAndUploadFile({
+          filename: 'out.txt',
+          path: '/mnt/data/out.txt',
+          topicId: 'victim-topic',
+          userId: 'victim-user',
+        } as any),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+      expect(mockCreateSandboxService).not.toHaveBeenCalled();
+      expect(mockExportAndUploadFile).not.toHaveBeenCalled();
+    });
+  });
 });

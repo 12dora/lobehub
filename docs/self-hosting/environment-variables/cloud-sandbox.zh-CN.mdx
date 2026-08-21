@@ -93,6 +93,7 @@ tags:
 - 默认网络是 `bridge`。若沙箱不应有出站网络，设置 `SANDBOX_LOCAL_NETWORK=none`。
 - 内存、PID、CPU、空闲 TTL、输出大小、并发容器数由环境变量限制（见下表）。
 - LobeHub 进程必须能访问 Docker API。把 `/var/run/docker.sock` 挂进应用容器（见 `docker-compose/enhanced/docker-compose.yml`）。能访问该套接字的人就能控制宿主机 Docker —— 把这次挂载当成特权信任边界。
+- 应用镜像以 uid `1001`（组 `nodejs`）运行。典型 Linux 宿主机上套接字是 `root:docker`、权限 `0660`，只挂载不够：还要用 `group_add` / `DOCKER_GID` 补上宿主机 Docker GID。用 `stat -c '%g' /var/run/docker.sock`（Linux）或 `stat -f '%g' /var/run/docker.sock`（macOS）读取。套接字返回 `EACCES` 表示 GID 不对，并不是 Docker 没起来。
 - 关闭平台 `sandbox` 模块（管理后台或 `LOBE_MODULES_DISABLED=sandbox`）会返回 `PLATFORM_MODULE_DISABLED`，不会导入 Docker 客户端，也不会对守护进程做健康探测。
 
 ### 镜像
@@ -102,9 +103,10 @@ tags:
 ```bash
 bun run build:sandbox-image
 # 打上 aihub-sandbox:<package version> 和 aihub-sandbox:latest
+bun run build:sandbox-image -- --smoke   # 再在镜像里跑 tsx hello 和 unzip -v
 ```
 
-镜像基于 `python:3.12-slim`，另外包含 Node 22、git、curl、编译工具链，以及常用的数据 / 文档 Python 库。默认工作目录是 `/mnt/data`。
+镜像基于 `python:3.12-slim`，另外包含 Node 22、git、curl、unzip、固定版本的全局 `tsx`、编译工具链，以及常用的数据 / 文档 Python 库。默认工作目录是 `/mnt/data`。
 
 ### 限额与 Docker 连接
 

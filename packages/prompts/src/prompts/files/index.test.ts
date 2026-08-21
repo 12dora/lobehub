@@ -175,6 +175,24 @@ describe('filesPrompts', () => {
     expect(result).not.toContain('Files with a sandboxPath attribute');
   });
 
+  it('should omit the url for selected-but-failed sandbox syncs (text-only fallback)', () => {
+    const result = filesPrompts({
+      fileList: [
+        {
+          ...mockFile,
+          content: 'extracted text',
+          omitUrl: true,
+        },
+      ],
+    });
+
+    expect(result).toContain(
+      '<file id="file-1" name="test.pdf" type="application/pdf" size="1024">extracted text</file>',
+    );
+    expect(result).not.toContain('url="https://example.com/test.pdf"');
+    expect(result).not.toContain('sandboxPath=');
+  });
+
   it('should handle without url', () => {
     const images: ChatImageItem[] = [
       mockImage,
