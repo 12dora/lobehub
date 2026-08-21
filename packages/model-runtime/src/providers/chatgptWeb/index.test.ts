@@ -575,7 +575,70 @@ describe('LobeChatGPTWebAI', () => {
       expect(result).toEqual({ title: 'ok' });
       expect(bodyOf(client).model).toBe('gpt-5-6-pro');
       expect(bodyOf(client).thinking_effort).toBe('standard');
-      expect(JSON.stringify(bodyOf(client))).not.toMatch(/"tools"/);
+    });
+
+    it('never forwards caller tools to the wire', async () => {
+      const client = createFakeClient();
+      client.streamConversation = vi.fn(async function* () {
+        for (const event of fencedTitleEvents()) yield event;
+      });
+
+      await createRuntime(client).generateObject({
+        messages: [{ content: 'name this', role: 'user' }],
+        model: 'gpt-5-6',
+        schema: titleSchema,
+        tools: [
+          {
+            function: { description: 'noop', name: 'noop', parameters: { type: 'object' } },
+            type: 'function',
+          },
+        ],
+      } as any);
+
+      const body = JSON.stringify(bodyOf(client));
+      expect(body).not.toMatch(/"tools"/);
+      expect(body).not.toContain('noop');
+    });
+
+    it('rejects when the stream fails after emitting valid-looking JSON', async () => {
+      const client = createFakeClient();
+      client.streamConversation = vi.fn(async function* () {
+        yield { conversationId: 'conv-1', type: 'conversation.start' } as ConversationEvent;
+        yield {
+          delta: '{"title":"ok"}',
+          text: '{"title":"ok"}',
+          type: 'text.delta',
+        } as ConversationEvent;
+        yield { message: 'rate limited', type: 'error' } as ConversationEvent;
+        yield { conversationId: 'conv-1', endTurn: false, type: 'done' } as ConversationEvent;
+      });
+
+      await expect(
+        createRuntime(client).generateObject({
+          messages: [{ content: 'name this', role: 'user' }],
+          model: 'gpt-5-6',
+          schema: titleSchema,
+        }),
+      ).rejects.toMatchObject({ provider: 'chatgptweb' });
+    });
+
+    it('forwards onUsage so ModelRuntime tracing sees the estimated usage', async () => {
+      const client = createFakeClient();
+      client.streamConversation = vi.fn(async function* () {
+        for (const event of fencedTitleEvents()) yield event;
+      });
+      const onUsage = vi.fn();
+
+      await new ModelRuntime(createRuntime(client)).generateObject(
+        {
+          messages: [{ content: 'name this', role: 'user' }],
+          model: 'gpt-5-6',
+          schema: titleSchema,
+        },
+        { onUsage },
+      );
+
+      expect(onUsage).toHaveBeenCalled();
     });
 
     it('throws UpstreamMalformedResponse when generateObject output is not JSON', async () => {

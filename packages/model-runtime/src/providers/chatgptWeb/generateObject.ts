@@ -82,6 +82,8 @@ export const runChatGPTWebGenerateObject = async (params: {
         onCompletion: (data) => {
           finish = data;
         },
+        // Usage drives completion tracing + `onGenerateObjectFinal` in ModelRuntime.
+        onUsage: options?.onUsage,
       },
       headers: options?.headers,
       signal: options?.signal,
@@ -94,6 +96,26 @@ export const runChatGPTWebGenerateObject = async (params: {
     const error = new Error('The operation was aborted');
     error.name = 'AbortError';
     throw error;
+  }
+
+  // A turn can stream valid-looking JSON and THEN fail (rate limit, upstream
+  // error event). The stream transformer records that separately from the text,
+  // so it must be checked before the text is trusted.
+  if (finish?.error) {
+    const streamError = finish.error as {
+      errorType?: string;
+      message?: string;
+      body?: { message?: string };
+      type?: string;
+    };
+    if (streamError.errorType) throw streamError;
+    const message = streamError.message ?? streamError.body?.message ?? 'ChatGPT Web turn failed';
+    throw AgentRuntimeError.chat({
+      error: { ...streamError, message },
+      errorType: AgentRuntimeErrorType.ProviderBizError,
+      message,
+      provider,
+    });
   }
 
   try {
