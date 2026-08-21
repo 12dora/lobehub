@@ -37,6 +37,10 @@ vi.mock('./serverCallLlmContextHints', () => ({
   })),
 }));
 
+const dummyServerDB = {
+  select: () => ({ from: () => ({ where: () => ({ limit: () => [] }) }) }),
+};
+
 describe('buildServerCallLlmContext — topic reference batch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -55,7 +59,7 @@ describe('buildServerCallLlmContext — topic reference batch', () => {
     await buildServerCallLlmContext({
       ctx: {
         agentConfig: { chatConfig: {}, files: [], knowledgeBases: [], systemRole: 's' },
-        serverDB: {},
+        serverDB: dummyServerDB,
         userId: 'u1',
         workspaceId: undefined,
       } as never,
@@ -91,7 +95,7 @@ describe('buildServerCallLlmContext — topic reference batch', () => {
     await buildServerCallLlmContext({
       ctx: {
         agentConfig: { chatConfig: {}, files: [], knowledgeBases: [], systemRole: 's' },
-        serverDB: {},
+        serverDB: dummyServerDB,
         userId: 'u1',
       } as never,
       llmPayload: {

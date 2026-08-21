@@ -1205,7 +1205,16 @@ export const initModelRuntimeFromDB = async (
   };
 
   if (options && 'executionConfig' in options) {
-    if (options.executionConfig) return initFromExecutionConfig(options.executionConfig);
+    if (options.executionConfig) {
+      // Defence in depth: a pre-resolved catalog config is only authorised while
+      // provider takeover is active. An admin who disabled 平台托管 while leaving
+      // the catalog published must not have ordinary BYOK calls run on the shared
+      // platform credential just because a caller already resolved it.
+      const takeoverFlags = isPlatformManagedAiEnabled()
+        ? await getPlatformAiTakeoverFlags(db)
+        : { models: false, providers: false };
+      if (takeoverFlags.providers) return initFromExecutionConfig(options.executionConfig);
+    }
   } else {
     // One snapshot for both catalog kinds. Sequential predicate calls each re-read the
     // policy table when models are unpublished (negative model-takeover is not cached).

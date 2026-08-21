@@ -1121,6 +1121,54 @@ describe('initModelRuntimeFromDB managed model guard', () => {
     }
   });
 
+  it('refuses a pre-resolved catalog executionConfig when provider takeover is off', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    enforcementMocks.takeover = false;
+    enforcementMocks.modelTakeover = false;
+
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'openai',
+      keyVaults: null,
+      settings: {},
+      source: 'builtin',
+    };
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [providerRow] }) }) }),
+    };
+    const resolveSpy = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+
+    try {
+      const runtime = await initModelRuntimeFromDB(db as never, 'user-1', 'openai', undefined, {
+        executionConfig: {
+          allowedModels: [{ modelKey: 'managed-chat', type: 'chat' }],
+          config: {},
+          keyVaults: {
+            apiKey: 'platform-secret-must-not-decrypt',
+            baseURL: 'https://platform.example/v1',
+          },
+          providerKey: 'openai',
+          revision: 2,
+          runtimeProvider: 'openai',
+        },
+      });
+
+      expect(runtime['_runtime']).toBeInstanceOf(LobeOpenAI);
+      expect(runtime['_runtime'].baseURL).not.toBe('https://platform.example/v1');
+      expect(resolveSpy).not.toHaveBeenCalled();
+    } finally {
+      enforcementMocks.takeover = true;
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
   it('does not read the policy table while the feature flag is off', async () => {
     const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
     process.env.ENABLE_PLATFORM_MANAGED_AI = '0';

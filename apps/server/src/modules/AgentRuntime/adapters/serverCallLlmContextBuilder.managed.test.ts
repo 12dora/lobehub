@@ -3,16 +3,21 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type * as AgentOperationModelModule from '@/database/models/agentOperation';
+import type * as PlatformAiRuntimeBridge from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
+
 import { buildServerCallLlmContext } from './serverCallLlmContextBuilder';
 
 const {
   findPlatformOperationRef,
+  getPlatformAiTakeoverFlags,
   isPlatformManagedAiEnabled,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfigAtRevision,
   serverMessagesEngine,
 } = vi.hoisted(() => ({
   findPlatformOperationRef: vi.fn(),
+  getPlatformAiTakeoverFlags: vi.fn(async () => ({ models: false, providers: true })),
   isPlatformManagedAiEnabled: vi.fn(() => true),
   resolvePlatformAiExecutionConfig: vi.fn(),
   resolvePlatformAiExecutionConfigAtRevision: vi.fn(),
@@ -21,25 +26,20 @@ const {
 
 vi.mock('@/server/modules/Mecha/ContextEngineering', () => ({ serverMessagesEngine }));
 
-vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    isPlatformManagedAiEnabled,
-    resolvePlatformAiExecutionConfig,
-    resolvePlatformAiExecutionConfigAtRevision,
-  };
-});
+vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof PlatformAiRuntimeBridge>()),
+  getPlatformAiTakeoverFlags,
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiExecutionConfig,
+  resolvePlatformAiExecutionConfigAtRevision,
+}));
 
-vi.mock('@/database/models/agentOperation', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    AgentOperationModel: class {
-      findPlatformOperationRef = findPlatformOperationRef;
-    },
-  };
-});
+vi.mock('@/database/models/agentOperation', async (importOriginal) => ({
+  ...(await importOriginal<typeof AgentOperationModelModule>()),
+  AgentOperationModel: class {
+    findPlatformOperationRef = findPlatformOperationRef;
+  },
+}));
 
 vi.mock('./serverCallLlmContextHints', () => ({
   resolveServerCallLlmContextHints: vi.fn(async ({ llmPayload }) => ({

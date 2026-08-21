@@ -3,13 +3,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type * as AgentOperationModelModule from '@/database/models/agentOperation';
 import * as ContextEngineering from '@/server/modules/Mecha/ContextEngineering';
+import type * as PlatformAiRuntimeBridge from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
 import type { RuntimeExecutorContext } from '../context';
 import { callLlm } from './serverCallLlmExecutor';
 
 const {
   findPlatformOperationRef,
+  getPlatformAiTakeoverFlags,
   initModelRuntimeFromDB,
   initPlatformExactModelRuntime,
   isPlatformManagedAiEnabled,
@@ -17,6 +20,7 @@ const {
   resolvePlatformAiExecutionConfigAtRevision,
 } = vi.hoisted(() => ({
   findPlatformOperationRef: vi.fn(),
+  getPlatformAiTakeoverFlags: vi.fn(async () => ({ models: false, providers: true })),
   initModelRuntimeFromDB: vi.fn(),
   initPlatformExactModelRuntime: vi.fn(),
   isPlatformManagedAiEnabled: vi.fn(() => true),
@@ -30,25 +34,20 @@ vi.mock('@/server/modules/ModelRuntime', () => ({
   rememberModelRuntimeConversationStartMs: vi.fn(() => 1_700_000_000_000),
 }));
 
-vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    isPlatformManagedAiEnabled,
-    resolvePlatformAiExecutionConfig,
-    resolvePlatformAiExecutionConfigAtRevision,
-  };
-});
+vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof PlatformAiRuntimeBridge>()),
+  getPlatformAiTakeoverFlags,
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiExecutionConfig,
+  resolvePlatformAiExecutionConfigAtRevision,
+}));
 
-vi.mock('@/database/models/agentOperation', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    AgentOperationModel: class {
-      findPlatformOperationRef = findPlatformOperationRef;
-    },
-  };
-});
+vi.mock('@/database/models/agentOperation', async (importOriginal) => ({
+  ...(await importOriginal<typeof AgentOperationModelModule>()),
+  AgentOperationModel: class {
+    findPlatformOperationRef = findPlatformOperationRef;
+  },
+}));
 
 vi.mock('./serverCallLlmContextHints', () => ({
   resolveServerCallLlmContextHints: vi.fn(async ({ llmPayload }) => ({
@@ -117,6 +116,7 @@ describe('callLlm — shared catalog resolution', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     isPlatformManagedAiEnabled.mockReturnValue(true);
+    getPlatformAiTakeoverFlags.mockResolvedValue({ models: false, providers: true });
     findPlatformOperationRef.mockResolvedValue({
       classification: 'ordinary',
       isPlatformOperation: false,
@@ -202,6 +202,43 @@ describe('callLlm — shared catalog resolution', () => {
     });
     expect(chatMessages.some((message) => message.content.includes('Current date:'))).toBe(false);
     expect(chatMessages.some((message) => message.content.includes('Current model:'))).toBe(false);
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('selects the user runtime when managed AI is on but provider takeover is off', async () => {
+    getPlatformAiTakeoverFlags.mockResolvedValue({ models: false, providers: false });
+    resolvePlatformAiExecutionConfig.mockResolvedValue(cursorExecution);
+
+    const engineSpy = vi.spyOn(ContextEngineering, 'serverMessagesEngine');
+
+    await callLlm(ctx)(
+      {
+        payload: {
+          messages: [{ content: 'hello', role: 'user' }],
+          model: 'gpt-4o',
+          provider: 'openai',
+        },
+        type: 'call_llm',
+      } as never,
+      createState(),
+    );
+
+    expect(resolvePlatformAiExecutionConfig).not.toHaveBeenCalled();
+    expect(resolvePlatformAiExecutionConfigAtRevision).not.toHaveBeenCalled();
+    expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
+    expect(initModelRuntimeFromDB).toHaveBeenCalledWith(
+      ctx.serverDB,
+      'user-a',
+      'openai',
+      undefined,
+      expect.objectContaining({ executionConfig: null }),
+    );
+    expect(engineSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'openai',
+        runtimeProvider: undefined,
+      }),
+    );
     expect(chat).toHaveBeenCalledTimes(1);
   });
 });

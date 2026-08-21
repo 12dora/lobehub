@@ -8,7 +8,7 @@ import {
   rememberModelRuntimeConversationStartMs,
 } from '@/server/modules/ModelRuntime';
 import {
-  isPlatformManagedAiEnabled,
+  getPlatformAiTakeoverFlags,
   type PlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfigAtRevision,
@@ -208,7 +208,11 @@ export const resolveOperationPlatformExecution = async (
     return { execution, pin, state: resolvedState };
   }
 
-  if (!isPlatformManagedAiEnabled()) return { execution: null, pin, state: resolvedState };
+  // Ordinary calls use the same gate `initModelRuntimeFromDB` used before the shared
+  // snapshot: feature flag off → inactive flags; providers takeover off → unmanaged
+  // BYOK even when the catalog still has an entry for this provider.
+  const takeoverFlags = await getPlatformAiTakeoverFlags(ctx.serverDB);
+  if (!takeoverFlags.providers) return { execution: null, pin, state: resolvedState };
 
   try {
     const execution = await withTransientCatalogRetry(() =>

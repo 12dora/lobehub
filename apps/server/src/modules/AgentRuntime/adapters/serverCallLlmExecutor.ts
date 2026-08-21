@@ -678,9 +678,9 @@ export const callLlm =
               await streamManager.publishStreamEvent(operationId, {
                 data: {
                   finalContent: streamSink.content,
-                  ...(currentStepFinishReason && { finishReason: currentStepFinishReason }),
+                  ...(currentStepFinishReason ? { finishReason: currentStepFinishReason } : {}),
                   grounding,
-                  ...(stepLabel && { stepLabel }),
+                  ...(stepLabel ? { stepLabel } : {}),
                   imageList: imageList.length > 0 ? imageList : undefined,
                   reasoning: streamSink.thinkingContent || undefined,
                   toolsCalling,

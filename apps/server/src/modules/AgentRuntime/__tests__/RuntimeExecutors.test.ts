@@ -76,7 +76,10 @@ vi.mock('@/server/services/message', () => ({
 }));
 
 // @lobechat/model-runtime resolves to @cloud/business-model-runtime which has
-// cloud-specific dependencies that are unavailable in the test environment
+// cloud-specific dependencies that are unavailable in the test environment.
+// Import the OSS helpers this suite actually needs from source (bypassing the
+// cloud package) rather than `importOriginal`, which would pull `model-bank`
+// through openai context builders and clash with this file's model-bank mock.
 vi.mock('@lobechat/model-runtime', async () => {
   // ModelEmptyError + isEmptyModelCompletion are pure (they only depend on
   // @lobechat/types), so import the real implementations directly from source —
@@ -112,6 +115,17 @@ vi.mock('@lobechat/model-runtime', async () => {
       /^kimi-k2\.(?:[7-9]|\d{2,})-code(?:$|-)/.test(model),
     ModelEmptyError,
     ModelRefusalError,
+    readExtendParamsFromModelCards: (
+      models:
+        | Array<{ id?: string; providerId?: string; settings?: { extendParams?: string[] } }>
+        | undefined,
+      model: string,
+      provider: string,
+    ) => {
+      const card = models?.find((item) => item.id === model && item.providerId === provider);
+      const params = card?.settings?.extendParams;
+      return Array.isArray(params) && params.length > 0 ? params : undefined;
+    },
     refineErrorCode: () => undefined,
   };
 });
