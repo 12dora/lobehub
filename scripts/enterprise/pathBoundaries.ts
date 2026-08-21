@@ -156,6 +156,13 @@ export interface EnterpriseImportAllowance {
 
 export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
   {
+    file: 'apps/server/src/services/file/ownDeploymentOrigins.ts',
+    importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
+    owner: 'G1',
+    reason:
+      'Attachment inlining allowlist must follow the admin-effective object-storage origins, not raw env',
+  },
+  {
     file: 'src/features/AdminToolScope/AdminBuiltinSkillDistribution.tsx',
     importSpecifier: '@/enterprise/client/services/adminAiInfraAdapter/errors',
     owner: 'M05',
@@ -847,6 +854,12 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
 export type EnterpriseTestImportAllowance = EnterpriseImportAllowance;
 
 export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
+  {
+    file: 'apps/server/src/services/file/ownDeploymentOrigins.test.ts',
+    importSpecifier: '@/server/enterprise/services/infraSettings/snapshot',
+    owner: 'G1',
+    reason: 'Mocks the effective storage snapshot for the allowlist tests',
+  },
   {
     file: 'src/routes/(main)/settings/profile/features/security/TwoFactor/TotpEnrollFlow.test.tsx',
     importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
