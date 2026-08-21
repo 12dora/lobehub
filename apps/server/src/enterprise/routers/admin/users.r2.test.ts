@@ -104,11 +104,30 @@ const ctx = async (
   },
 ) => {
   const now = new Date();
+  const authMethod = extras?.authMethod ?? 'better-auth';
+  const sessionId = extras && 'sessionId' in extras ? extras.sessionId : `actor-sess-${userId}`;
+  if (
+    authMethod === 'better-auth' &&
+    typeof sessionId === 'string' &&
+    !(extras && 'sessionId' in extras)
+  ) {
+    await db
+      .insert(session)
+      .values({
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + 3600_000),
+        id: sessionId,
+        token: `tok-${sessionId}`,
+        updatedAt: now,
+        userId,
+      })
+      .onConflictDoNothing();
+  }
   const base = await createContextInner({
     authenticatedAt: extras && 'authenticatedAt' in extras ? extras.authenticatedAt : now,
-    authMethod: extras?.authMethod ?? 'better-auth',
+    authMethod,
     credentialIssuedAt: extras && 'credentialIssuedAt' in extras ? extras.credentialIssuedAt : now,
-    sessionId: extras?.sessionId ?? 'actor-sess',
+    sessionId,
     userId,
   });
   return { ...base, serverDB: db } as never;
@@ -305,9 +324,9 @@ describe('session exception model (includeCurrent=false)', () => {
         userId: IDS.userAdmin,
       }),
     ).rejects.toMatchObject({
-      code: 'BAD_REQUEST',
+      code: 'UNAUTHORIZED',
       cause: {
-        data: { code: 'PLATFORM_INVALID_INPUT', details: { reason: 'retained_session_invalid' } },
+        data: { code: 'ADMIN_ACCESS_DENIED', details: { reason: 'user_inactive' } },
       },
     });
 
@@ -332,12 +351,8 @@ describe('session exception model (includeCurrent=false)', () => {
       where: eq(platformAuditLogs.action, 'admin.users.revokeSessions'),
     });
     const denied = audits.filter((a) => a.result === 'denied');
-    expect(denied).toHaveLength(beforeDenied + 1);
-    const latest = denied.at(-1)!;
-    expect(latest.afterDiff).toMatchObject({
-      error: 'retained_session_invalid',
-      retainedSessionAttempt: true,
-    });
+    // Active-user fail-closed rejects before the revoke handler, so no denied revoke audit.
+    expect(denied).toHaveLength(beforeDenied);
     // Never persist tokens / raw credentials
     expect(JSON.stringify(audits)).not.toMatch(/tf2|token/i);
   });
@@ -360,9 +375,9 @@ describe('session exception model (includeCurrent=false)', () => {
         userId: IDS.userAdmin,
       }),
     ).rejects.toMatchObject({
-      code: 'BAD_REQUEST',
+      code: 'UNAUTHORIZED',
       cause: {
-        data: { code: 'PLATFORM_INVALID_INPUT', details: { reason: 'retained_session_invalid' } },
+        data: { code: 'ADMIN_ACCESS_DENIED', details: { reason: 'user_inactive' } },
       },
     });
     const u = await db.query.users.findFirst({ where: eq(users.id, IDS.userAdmin) });
@@ -372,7 +387,7 @@ describe('session exception model (includeCurrent=false)', () => {
     expect(u?.authInvalidatedAt?.getTime() ?? null).toBe(
       beforeUser?.authInvalidatedAt?.getTime() ?? null,
     );
-    expect(await countDenied()).toBe(beforeMissing + 1);
+    expect(await countDenied()).toBe(beforeMissing);
 
     // Expired session (row exists but expiresAt <= now)
     await db.insert(session).values({
@@ -392,9 +407,9 @@ describe('session exception model (includeCurrent=false)', () => {
         userId: IDS.userAdmin,
       }),
     ).rejects.toMatchObject({
-      code: 'BAD_REQUEST',
+      code: 'UNAUTHORIZED',
       cause: {
-        data: { code: 'PLATFORM_INVALID_INPUT', details: { reason: 'retained_session_invalid' } },
+        data: { code: 'ADMIN_ACCESS_DENIED', details: { reason: 'user_inactive' } },
       },
     });
     const u2 = await db.query.users.findFirst({ where: eq(users.id, IDS.userAdmin) });
@@ -408,7 +423,7 @@ describe('session exception model (includeCurrent=false)', () => {
     expect(
       await db.query.session.findFirst({ where: eq(session.id, 'expired-sess') }),
     ).toBeTruthy();
-    expect(await countDenied()).toBe(beforeExpired + 1);
+    expect(await countDenied()).toBe(beforeExpired);
     const audits = await db.query.platformAuditLogs.findMany({
       where: eq(platformAuditLogs.action, 'admin.users.revokeSessions'),
     });

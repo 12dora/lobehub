@@ -378,6 +378,35 @@ describe('aiProviderSelectors', () => {
     });
   });
 
+  describe('isProviderBuiltinSearchInternal', () => {
+    it('should return true if search mode is internal', () => {
+      expect(aiProviderSelectors.isProviderBuiltinSearchInternal('provider1')(mockState)).toBe(
+        true,
+      );
+    });
+
+    it('should return false if no search mode exists', () => {
+      expect(aiProviderSelectors.isProviderBuiltinSearchInternal('provider2')(mockState)).toBe(
+        false,
+      );
+    });
+
+    it('should return false if search mode is params', () => {
+      const state = {
+        ...mockState,
+        aiProviderRuntimeConfig: {
+          ...mockState.aiProviderRuntimeConfig,
+          xai: {
+            keyVaults: {},
+            settings: { searchMode: 'params' },
+          },
+        },
+      };
+
+      expect(aiProviderSelectors.isProviderBuiltinSearchInternal('xai')(state)).toBe(false);
+    });
+  });
+
   describe('isProviderEnableResponseApi', () => {
     it('should return true when config explicitly sets enableResponseApi to true', () => {
       const state = {

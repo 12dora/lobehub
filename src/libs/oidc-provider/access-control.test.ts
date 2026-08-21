@@ -143,6 +143,33 @@ describe('OIDC access control', () => {
       expect(isOIDCUserInactiveError(new Error(OIDC_USER_INACTIVE_ERROR_MESSAGE))).toBe(false);
     });
 
+    it('rejects a Better Auth sessionId whose auth_sessions row is missing even without a cutoff', async () => {
+      const { db } = createDb([{ banExpires: null, banned: false, id: 'user-1' }], []);
+
+      await expect(
+        assertOIDCUserActive(
+          db as unknown as Parameters<typeof assertOIDCUserActive>[0],
+          'user-1',
+          { sessionId: 'revoked-sess' },
+        ),
+      ).rejects.toBeInstanceOf(OIDCUserInactiveError);
+    });
+
+    it('accepts an ordinary Better Auth session whose auth_sessions row is live', async () => {
+      const { db } = createDb(
+        [{ banExpires: null, banned: false, id: 'user-1' }],
+        [{ id: 'live-sess' }],
+      );
+
+      await expect(
+        assertOIDCUserActive(
+          db as unknown as Parameters<typeof assertOIDCUserActive>[0],
+          'user-1',
+          { sessionId: 'live-sess' },
+        ),
+      ).resolves.toBeUndefined();
+    });
+
     it('accepts a cookie-cache session missing createdAt only for the live excluded session', async () => {
       const cutoff = new Date('2024-06-01T12:00:00.000Z');
       const { db } = createDb(

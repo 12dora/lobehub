@@ -18,13 +18,17 @@ import {
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
+import { assertUserActive, OIDCUserInactiveError } from '@/libs/oidc-provider/access-control';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
+
+const deleteBetterAuthSecondaryStorageSessions = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
@@ -37,6 +41,10 @@ vi.mock('@/libs/oidc-provider/access-control', async (importOriginal) => {
     revokeOIDCArtifactsByUserId: vi.fn(async () => undefined),
   };
 });
+
+vi.mock('../../services/adminUser/betterAuthSecondaryStorage', () => ({
+  deleteBetterAuthSecondaryStorageSessions,
+}));
 
 const createAdminCaller = createCallerFactory(adminRouter);
 
@@ -72,6 +80,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+  deleteBetterAuthSecondaryStorageSessions.mockClear();
   await cleanup();
   await db.insert(users).values(Object.values(IDS).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -94,11 +103,26 @@ const ctx = async (
   },
 ) => {
   const now = new Date();
+  const authMethod = extras?.authMethod ?? 'better-auth';
+  const sessionId = extras && 'sessionId' in extras ? extras.sessionId : `actor-sess-${userId}`;
+  if (authMethod === 'better-auth' && typeof sessionId === 'string' && sessionId.length > 0) {
+    await db
+      .insert(session)
+      .values({
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + 3600_000),
+        id: sessionId,
+        token: `tok-${sessionId}`,
+        updatedAt: now,
+        userId,
+      })
+      .onConflictDoNothing();
+  }
   const base = await createContextInner({
     authenticatedAt: extras && 'authenticatedAt' in extras ? extras.authenticatedAt : now,
-    authMethod: extras?.authMethod ?? 'better-auth',
+    authMethod,
     credentialIssuedAt: now,
-    sessionId: extras?.sessionId ?? 'actor-sess',
+    sessionId,
     userId,
   });
   return { ...base, serverDB: db } as never;
@@ -190,7 +214,7 @@ describe('admin.users.delete (hard delete)', () => {
   });
 
   it('requires recent reauth and records a denied audit when stale', async () => {
-    const stale = new Date(Date.now() - 60 * 60 * 1000);
+    const stale = new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000);
     const caller = createAdminCaller(await ctx(IDS.super, { authenticatedAt: stale }));
     await expect(caller.users.delete({ reason: 'stale', userId: IDS.target })).rejects.toBeTruthy();
     // Target must survive the reauth failure.
@@ -260,6 +284,19 @@ describe('admin.users.revokeSessions (targeted)', () => {
       ),
     ).toBe(true);
     expect(JSON.stringify(audits)).not.toMatch(/tok-t-s|token/i);
+
+    expect(deleteBetterAuthSecondaryStorageSessions).toHaveBeenCalledWith(
+      expect.arrayContaining(['tok-t-s1', 'tok-t-s2']),
+    );
+    expect(deleteBetterAuthSecondaryStorageSessions.mock.calls[0]?.[0]).toHaveLength(2);
+
+    await expect(assertUserActive(db, IDS.target, { sessionId: 't-s1' })).rejects.toBeInstanceOf(
+      OIDCUserInactiveError,
+    );
+    await expect(assertUserActive(db, IDS.target, { sessionId: 't-s2' })).rejects.toBeInstanceOf(
+      OIDCUserInactiveError,
+    );
+    await expect(assertUserActive(db, IDS.target, { sessionId: 't-s3' })).resolves.toBeUndefined();
   });
 
   it('rejects targeted revoke referencing a foreign session id', async () => {

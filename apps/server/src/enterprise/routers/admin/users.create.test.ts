@@ -24,6 +24,7 @@ import { authEnv } from '@/envs/auth';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 
@@ -98,11 +99,30 @@ const ctx = async (
   },
 ) => {
   const now = new Date();
+  const authMethod = extras?.authMethod ?? 'better-auth';
+  const sessionId = extras && 'sessionId' in extras ? extras.sessionId : `actor-sess-${userId}`;
+  if (
+    authMethod === 'better-auth' &&
+    typeof sessionId === 'string' &&
+    !(extras && 'sessionId' in extras)
+  ) {
+    await db
+      .insert(session)
+      .values({
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + 3600_000),
+        id: sessionId,
+        token: `tok-${sessionId}`,
+        updatedAt: now,
+        userId,
+      })
+      .onConflictDoNothing();
+  }
   const base = await createContextInner({
     authenticatedAt: extras && 'authenticatedAt' in extras ? extras.authenticatedAt : now,
-    authMethod: extras?.authMethod ?? 'better-auth',
+    authMethod,
     credentialIssuedAt: now,
-    sessionId: extras?.sessionId ?? 'actor-sess',
+    sessionId,
     userId,
   });
   return { ...base, serverDB: db } as never;
@@ -252,7 +272,7 @@ describe('admin.users.create (credential user)', () => {
   });
 
   it('requires recent reauth and records a denied audit when stale', async () => {
-    const stale = new Date(Date.now() - 60 * 60 * 1000);
+    const stale = new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000);
     const caller = createAdminCaller(await ctx(IDS.super, { authenticatedAt: stale }));
     await expect(
       caller.users.create({

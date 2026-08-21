@@ -25,7 +25,7 @@ describe('probeBetterAuthSession', () => {
 
     await expect(probeBetterAuthSession(fetchImpl)).resolves.toBe('authenticated');
     expect(fetchImpl).toHaveBeenCalledWith(
-      '/api/auth/get-session',
+      '/api/auth/get-session?disableCookieCache=true',
       expect.objectContaining({
         cache: 'no-store',
         credentials: 'include',
@@ -63,6 +63,22 @@ describe('probeBetterAuthSession', () => {
     await expect(
       probeBetterAuthSession(vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))),
     ).resolves.toBe('unknown');
+  });
+
+  it('does not trust a cookie-cache session once the backing row is revoked', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('disableCookieCache=true')) {
+        return jsonResponse(null);
+      }
+      return jsonResponse({ user: { id: 'cached-user' } });
+    });
+
+    await expect(probeBetterAuthSession(fetchImpl)).resolves.toBe('unauthenticated');
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/auth/get-session?disableCookieCache=true',
+      expect.objectContaining({ cache: 'no-store', credentials: 'include', method: 'GET' }),
+    );
   });
 
   it('classifies a never-resolving probe as unknown after the abort timeout', async () => {

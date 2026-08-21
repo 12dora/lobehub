@@ -8,7 +8,7 @@
 
 export type SessionProbeResult = 'authenticated' | 'unauthenticated' | 'unknown';
 
-const GET_SESSION_PATH = '/api/auth/get-session';
+const GET_SESSION_PATH = '/api/auth/get-session?disableCookieCache=true';
 /** Bound the probe so a hung get-session cannot stall later 401 handling. */
 export const SESSION_PROBE_TIMEOUT_MS = 5000;
 

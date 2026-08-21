@@ -139,6 +139,12 @@ const isProviderHasBuiltinSearchConfig = (id: string) => (s: AIProviderStoreStat
   return !!providerCfg?.settings.searchMode && providerCfg?.settings.searchMode !== 'internal';
 };
 
+const isProviderBuiltinSearchInternal = (id: string) => (s: AIProviderStoreState) => {
+  const providerCfg = providerConfigById(id)(s);
+
+  return providerCfg?.settings.searchMode === 'internal';
+};
+
 const isProviderEnableResponseApi = (id: string) => (s: AIProviderStoreState) => {
   const providerCfg = providerConfigById(id)(s);
 
@@ -179,6 +185,7 @@ export const aiProviderSelectors = {
   isProviderEnableResponseApi,
   isProviderEnabled,
   isProviderFetchOnClient,
+  isProviderBuiltinSearchInternal,
   isProviderHasBuiltinSearch,
   isProviderHasBuiltinSearchConfig,
   isProviderLoading,

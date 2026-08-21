@@ -146,31 +146,33 @@ export const assertUserActive = async (
     throw new OIDCUserInactiveError();
   }
 
+  const sessionId =
+    typeof options.sessionId === 'string' && options.sessionId.length > 0
+      ? options.sessionId
+      : null;
+
+  // Every Better Auth sessionId must have a live auth_sessions row. Targeted
+  // revoke deletes the row without advancing authInvalidatedAt; Redis / cookie
+  // cache can still present the user. OIDC/API-key omit sessionId.
+  // Hot path is memoized by assertUserActiveCached (5s, keyed by sessionId,
+  // epoch-bumped on revoke) so this is not a DB hit per request.
+  if (sessionId) {
+    const live = await isLiveBetterAuthSession(db, { sessionId, userId });
+    if (!live) {
+      throw new OIDCUserInactiveError();
+    }
+    if (sessionId === user.authInvalidatedExcludedSessionId) {
+      // Live retained BA session: skip cutoff only (ban already checked above).
+      return;
+    }
+  }
+
   // Pure helper only identifies a candidate; live DB check is required before accept.
   const check: CredentialInvalidationCheck = {
     credentialIssuedAt: options.credentialIssuedAt,
     // Do not pass sessionId into pure helper as auto-bypass — we validate live first.
     sessionId: null,
   };
-
-  const candidateException =
-    Boolean(user.authInvalidatedExcludedSessionId) &&
-    typeof options.sessionId === 'string' &&
-    options.sessionId.length > 0 &&
-    options.sessionId === user.authInvalidatedExcludedSessionId;
-
-  if (candidateException) {
-    const live = await isLiveRetainedSessionException(db, {
-      excludedSessionId: user.authInvalidatedExcludedSessionId,
-      sessionId: options.sessionId,
-      userId,
-    });
-    if (live) {
-      // Live retained BA session: skip cutoff only (ban already checked above).
-      return;
-    }
-    // Stale cookie / deleted / expired / wrong-owner: fall through to cutoff rejection.
-  }
 
   if (isCredentialInvalidated(user, check)) {
     throw new OIDCUserInactiveError();

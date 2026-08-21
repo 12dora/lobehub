@@ -127,11 +127,30 @@ const ctx = async (
   },
 ) => {
   const now = new Date();
+  const authMethod = extras?.authMethod ?? 'better-auth';
+  const sessionId = extras && 'sessionId' in extras ? extras.sessionId : `actor-sess-${userId}`;
+  if (
+    authMethod === 'better-auth' &&
+    typeof sessionId === 'string' &&
+    !(extras && 'sessionId' in extras)
+  ) {
+    await db
+      .insert(session)
+      .values({
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + 3600_000),
+        id: sessionId,
+        token: `tok-${sessionId}`,
+        updatedAt: now,
+        userId,
+      })
+      .onConflictDoNothing();
+  }
   const base = await createContextInner({
     authenticatedAt: extras && 'authenticatedAt' in extras ? extras.authenticatedAt : now,
-    authMethod: extras?.authMethod ?? 'better-auth',
+    authMethod,
     credentialIssuedAt: now,
-    sessionId: extras?.sessionId ?? 'actor-sess',
+    sessionId,
     userId,
   });
   return { ...base, serverDB: db } as never;
