@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
 import {
   buildAdminConnectorAuditKey,
   buildAdminConnectorGetKey,
@@ -27,6 +28,26 @@ describe('admin Connector SWR keys', () => {
         true,
       ),
     ).toEqual(['adminConnector.list', 'calendar', 'per_user_oauth', true, 20, 'cal', 'published']);
+  });
+
+  // The audit request forwards an omitted `limit` as `undefined`, so the server's default
+  // decides the page — the key must normalize to that same effective size.
+  it('maps an omitted audit limit onto the shared default size', () => {
+    const omitted = buildAdminConnectorAuditKey({ connectorId: 'connector-1', enabled: true });
+    expect(omitted).toEqual(
+      buildAdminConnectorAuditKey({
+        connectorId: 'connector-1',
+        enabled: true,
+        limit: DEFAULT_PAGE_SIZE,
+      }),
+    );
+    expect(omitted).not.toEqual(
+      buildAdminConnectorAuditKey({
+        connectorId: 'connector-1',
+        enabled: true,
+        limit: DEFAULT_PAGE_SIZE + 30,
+      }),
+    );
   });
 
   it('scopes audit pagination to the Connector and cursor', () => {

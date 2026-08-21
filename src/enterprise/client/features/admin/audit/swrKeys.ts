@@ -1,5 +1,16 @@
 import type { AdminAuditEventsListInput } from '@/server/enterprise/contracts/adminAudit';
 
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
+
+/**
+ * Cache identity for the admin audit lists.
+ *
+ * An omitted `limit` travels to the server as `undefined` and the SERVER applies its own default
+ * (`ADMIN_AUDIT_LIST_DEFAULT_LIMIT`, kept equal to the shared UI `DEFAULT_PAGE_SIZE`). Every
+ * builder here normalizes to that same number, so an omitted-limit page can only share a cache
+ * entry with an explicit request of the identical effective size.
+ */
+
 export const ADMIN_AUDIT_EVENTS_LIST_KEY = 'admin.audit.events.list' as const;
 export const ADMIN_AUDIT_EVENTS_GET_KEY = 'admin.audit.events.get' as const;
 export const ADMIN_AUDIT_EVENTS_FACETS_KEY = 'admin.audit.events.facets' as const;
@@ -36,7 +47,7 @@ export const buildAdminAuditEventsListKey = (
     filters.targetId ?? '',
     filters.targetType ?? '',
     filters.cursor ?? '',
-    filters.limit ?? 50,
+    filters.limit ?? DEFAULT_PAGE_SIZE,
   ] as const;
 
 export const buildAdminAuditEventDetailKey = (id: string) =>
@@ -66,7 +77,7 @@ export const buildAdminAuditConversationsListKey = (params: {
     iso(params.from),
     iso(params.to),
     params.cursor ?? '',
-    params.limit ?? 50,
+    params.limit ?? DEFAULT_PAGE_SIZE,
   ] as const;
 
 export const buildAdminAuditConversationGetKey = (userId: string, topicId: string) =>
@@ -85,7 +96,7 @@ export const buildAdminAuditConversationMessagesKey = (params: {
     params.topicId,
     params.includeBody ? '1' : '0',
     params.cursor ?? '',
-    params.limit ?? 50,
+    params.limit ?? DEFAULT_PAGE_SIZE,
   ] as const;
 
 export const buildAdminAuditUserSummaryKey = (userId: string) =>
@@ -104,7 +115,7 @@ export const buildAdminAuditUserTimelineKey = (params: {
     iso(params.from),
     iso(params.to),
     params.cursor ?? '',
-    params.limit ?? 50,
+    params.limit ?? DEFAULT_PAGE_SIZE,
   ] as const;
 
 export const buildAdminAuditExportsListKey = (params: {
@@ -120,7 +131,7 @@ export const buildAdminAuditExportsListKey = (params: {
     params.status ?? '',
     params.mine ? '1' : '0',
     params.cursor ?? '',
-    params.limit ?? 50,
+    params.limit ?? DEFAULT_PAGE_SIZE,
   ] as const;
 
 export const buildAdminAuditHoldsListKey = (params: {
@@ -134,7 +145,7 @@ export const buildAdminAuditHoldsListKey = (params: {
     params.status ?? '',
     params.scopeType ?? '',
     params.cursor ?? '',
-    params.limit ?? 50,
+    params.limit ?? DEFAULT_PAGE_SIZE,
   ] as const;
 
 export const buildAdminAuditRetentionRunsKey = (params: {
@@ -152,5 +163,5 @@ export const buildAdminAuditRetentionRunsKey = (params: {
     params.status ?? '',
     params.mine ? '1' : '0',
     params.cursor ?? '',
-    params.limit ?? 50,
+    params.limit ?? DEFAULT_PAGE_SIZE,
   ] as const;
