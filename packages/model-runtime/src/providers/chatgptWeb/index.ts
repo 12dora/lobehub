@@ -59,6 +59,7 @@ import { extractSandboxFiles, resolveFileMimeType, sandboxFileName } from './int
 import {
   chatgptWebFamilyBase,
   deriveChatGPTWebFamilyDisplayName,
+  isChatGPTWebFamilyId,
   resolveChatGPTWebTurn,
 } from './resolveTurnModel';
 import type { ChatGPTWebSessionContext } from './sessionContext';
@@ -266,11 +267,19 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
 
       const search = payload.enabledSearch === true;
       const hasAttachments = mimeTypes.length > 0;
+      /**
+       * Bare family ids (`gpt-5-6`) read only the dedicated field so a leftover
+       * generic `reasoning_effort: 'high'` from a previous model cannot remap
+       * Medium (the picker default) onto `thinking_effort: extended`. Shared
+       * `reasoning_effort` / `reasoning.effort` fallback stays for hidden
+       * legacy SKU ids (`-instant` / `-thinking` / `-pro`).
+       */
       const resolved = resolveChatGPTWebTurn({
-        effort:
-          payload.chatgptWebReasoningEffort ??
-          payload.reasoning_effort ??
-          payload.reasoning?.effort,
+        effort: isChatGPTWebFamilyId(payload.model)
+          ? payload.chatgptWebReasoningEffort
+          : (payload.chatgptWebReasoningEffort ??
+            payload.reasoning_effort ??
+            payload.reasoning?.effort),
         model: payload.model,
       });
       const model = resolved.model;

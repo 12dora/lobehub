@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { isRecord } from '@lobechat/utils/object';
-import { AiModelTypeSchema } from 'model-bank';
+import { AiModelTypeSchema, isLegacyAliasModel } from 'model-bank';
 
 import type { LobeChatDatabase } from '@/database/type';
 
@@ -51,7 +51,7 @@ const toPublishedProvider = (
   const models = rawModels
     .filter(isRecord)
     .map((model) => model as RevisionModelPayload)
-    .filter((model) => model.enabled && model.modelKey)
+    .filter((model) => model.enabled && model.modelKey && !isLegacyAliasModel(model.settings))
     .flatMap((model) => {
       const type = AiModelTypeSchema.safeParse(model.type ?? 'chat');
       if (!type.success) return [];

@@ -108,4 +108,54 @@ describe('AiCatalogReadService', () => {
     expect(serialized).not.toContain('secretFingerprint');
     expect(serialized).not.toContain('disabled');
   });
+
+  it('omits ChatGPT Web legacy-alias rows from the published dependency picker', async () => {
+    const [provider] = await serverDB
+      .insert(platformAiProviders)
+      .values({
+        displayName: 'ChatGPT Web',
+        providerKey: 'chatgptweb',
+        revision: 1,
+        status: 'published',
+      })
+      .returning();
+    const payload = {
+      models: [
+        {
+          enabled: true,
+          modelKey: 'gpt-5-6',
+          settings: {},
+          sort: 0,
+          type: 'chat',
+        },
+        {
+          enabled: true,
+          modelKey: 'gpt-5-6-thinking',
+          settings: { legacyAlias: 'gpt-5-6' },
+          sort: 1,
+          type: 'chat',
+        },
+      ],
+      provider: {
+        displayName: 'ChatGPT Web',
+        enabled: true,
+        id: provider.id,
+        providerKey: 'chatgptweb',
+        sort: 0,
+        source: 'builtin',
+      },
+    };
+    await serverDB.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(payload),
+      payload,
+      resourceId: provider.id,
+      resourceType: 'provider',
+      revision: 1,
+      status: 'published',
+    });
+
+    const result = await service.getPublished();
+    const models = result.providers[0]?.models ?? [];
+    expect(models.map((model) => model.modelKey)).toEqual(['gpt-5-6']);
+  });
 });

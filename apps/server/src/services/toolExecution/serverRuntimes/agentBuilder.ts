@@ -12,6 +12,7 @@ import { builtinTools } from '@lobechat/builtin-tools';
 import { BRANDING_PROVIDER } from '@lobechat/business-const';
 import { modelsResultsPrompt } from '@lobechat/prompts';
 import { getPluginMode, upsertPluginMode } from '@lobechat/types';
+import { isAiModelVisible } from 'model-bank';
 
 import { AgentModel } from '@/database/models/agent';
 import { PluginModel } from '@/database/models/plugin';
@@ -87,7 +88,8 @@ export const agentBuilderRuntime: ServerRuntimeRegistration = {
                 (model) =>
                   model.enabled !== false &&
                   model.providerId === providerId &&
-                  model.type === 'chat',
+                  model.type === 'chat' &&
+                  isAiModelVisible(model),
               );
           } else {
             // Exact upstream path for instant rollback: preserve data source and ordering.

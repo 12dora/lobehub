@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LobeOpenAICompatibleRuntime } from '../../core/BaseAI';
 import { testProvider } from '../../providerTestUtils';
 import { LobeOpenRouterAI, params } from './index';
+import type { OpenRouterReasoning } from './type';
 
 const loadModelsMock = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 
@@ -168,9 +169,14 @@ describe('LobeOpenRouterAI - custom features', () => {
       const createCall = vi
         .mocked(instance['client'].chat.completions.create)
         .mock.calls.at(-1)?.[0];
-      expect(createCall).not.toHaveProperty('chatgptWebReasoningEffort');
-      expect(createCall.reasoning?.effort).toBe('high');
-      expect(JSON.stringify(createCall)).not.toMatch(/"effort"\s*:\s*"(instant|pro)"/);
+      expect(createCall).toBeDefined();
+      if (!createCall) throw new Error('expected OpenRouter chat.completions.create to be called');
+      const payload = createCall as typeof createCall & {
+        reasoning?: OpenRouterReasoning;
+      };
+      expect(payload).not.toHaveProperty('chatgptWebReasoningEffort');
+      expect(payload.reasoning?.effort).toBe('high');
+      expect(JSON.stringify(payload)).not.toMatch(/"effort"\s*:\s*"(instant|pro)"/);
     });
 
     it('should not modify model when enabledSearch is undefined', async () => {

@@ -6,7 +6,7 @@ import type {
 import { merge } from '@lobechat/utils';
 import { isRecord } from '@lobechat/utils/object';
 import type { EnabledAiModel } from 'model-bank';
-import { LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
+import { LOBE_DEFAULT_MODEL_LIST, projectPickerVisibility } from 'model-bank';
 
 import type {
   PlatformAiProviderConfig,
@@ -209,7 +209,9 @@ export const projectAiCatalogRuntimeState = (
           ? publishedConfig.deploymentName
           : undefined;
       const publishedSettings = isRecord(rawModel.settings) ? rawModel.settings : undefined;
-      const hiddenAsLegacyAlias = typeof publishedSettings?.legacyAlias === 'string';
+      const settings = hasPublishedMetadata(rawModel.settings)
+        ? merge(builtin?.settings || {}, rawModel.settings)
+        : builtin?.settings;
       models.push({
         ...builtin,
         abilities: hasPublishedMetadata(rawModel.abilities)
@@ -234,13 +236,11 @@ export const projectAiCatalogRuntimeState = (
           : builtin?.parameters,
         pricing: hasPublishedMetadata(rawModel.pricing) ? rawModel.pricing : builtin?.pricing,
         providerId: providerKey,
-        settings: hasPublishedMetadata(rawModel.settings)
-          ? merge(builtin?.settings || {}, rawModel.settings)
-          : builtin?.settings,
+        settings,
         sort: typeof rawModel.sort === 'number' ? rawModel.sort : undefined,
         source: builtin ? 'builtin' : 'custom',
         type: typeof rawModel.type === 'string' ? rawModel.type : 'chat',
-        ...(hiddenAsLegacyAlias ? { visible: false } : {}),
+        ...projectPickerVisibility(publishedSettings ?? settings),
       } as EnabledAiModel);
     }
   }

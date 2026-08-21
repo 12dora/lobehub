@@ -9,11 +9,13 @@ export type SystemAgentReasoningEffort =
   | 'none'
   | 'minimal'
   | 'auto'
+  | 'instant'
   | 'low'
   | 'medium'
   | 'high'
   | 'xhigh'
   | 'max'
+  | 'pro'
   | 'enabled';
 
 export interface SystemAgentItem {

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { mapProviderDetail, mapProviderListItem, splitFormKeyVaults } from './mappers';
+import {
+  mapEnabledModel,
+  mapModelListItem,
+  mapProviderDetail,
+  mapProviderListItem,
+  splitFormKeyVaults,
+} from './mappers';
 
 describe('adminAiInfraAdapter mappers', () => {
   it('maps list items with providerKey as id from draft enabled', () => {
@@ -59,6 +65,44 @@ describe('adminAiInfraAdapter mappers', () => {
     expect(detail.keyVaults).toEqual({ baseURL: 'https://api.example.test/v1' });
     expect(detail.secretConfigured).toBe(true);
     expect(JSON.stringify(detail)).not.toMatch(/sk-|api[_-]?key\s*[:=]/i);
+  });
+
+  describe('legacy-alias picker visibility', () => {
+    const legacyRow = {
+      abilities: {},
+      config: null,
+      contextWindowTokens: null,
+      description: null,
+      displayName: 'GPT-5.6 Thinking',
+      enabled: true,
+      id: 'thinking-uuid',
+      modelKey: 'gpt-5-6-thinking',
+      parameters: {},
+      pricing: null,
+      providerId: 'provider-uuid',
+      revision: 1,
+      settings: { legacyAlias: 'gpt-5-6' },
+      sort: 1,
+      status: 'published' as const,
+      type: 'chat' as const,
+    };
+
+    it('hides legacy-alias rows on the admin model list', () => {
+      expect(mapModelListItem(legacyRow)).toMatchObject({
+        enabled: true,
+        id: 'gpt-5-6-thinking',
+        visible: false,
+      });
+    });
+
+    it('hides legacy-alias rows on the admin service-model selector', () => {
+      expect(mapEnabledModel(legacyRow, 'chatgptweb')).toMatchObject({
+        enabled: true,
+        id: 'gpt-5-6-thinking',
+        providerId: 'chatgptweb',
+        visible: false,
+      });
+    });
   });
 
   describe('splitFormKeyVaults (B1)', () => {

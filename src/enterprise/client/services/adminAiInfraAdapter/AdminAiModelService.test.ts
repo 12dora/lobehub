@@ -373,4 +373,34 @@ describe('AdminAiModelService CAS and apply contract', () => {
     expect(disabled.some((m) => m.id === 'off-model')).toBe(true);
     expect(disabled.some((m) => m.id === 'on-model')).toBe(false);
   });
+
+  it('hides ChatGPT Web legacy-alias rows from the admin model list', async () => {
+    mocks.get.mockResolvedValue({
+      ...detailFixture,
+      draft: {
+        ...detailFixture.draft,
+        models: [
+          {
+            ...detailFixture.draft.models[0],
+            enabled: true,
+            id: 'family-uuid',
+            modelKey: 'gpt-5-6',
+            settings: {},
+          },
+          {
+            ...detailFixture.draft.models[1],
+            enabled: true,
+            id: 'thinking-uuid',
+            modelKey: 'gpt-5-6-thinking',
+            settings: { legacyAlias: 'gpt-5-6' },
+          },
+        ],
+        providerKey: 'chatgptweb',
+      },
+    });
+
+    const list = await service.getAiProviderModelList('chatgptweb');
+    expect(list.some((model) => model.id === 'gpt-5-6-thinking')).toBe(false);
+    expect(list.some((model) => model.id === 'gpt-5-6')).toBe(true);
+  });
 });

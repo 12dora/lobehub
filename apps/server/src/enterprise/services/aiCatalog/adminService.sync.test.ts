@@ -1,9 +1,11 @@
 // @vitest-environment node
 import { LobeChatGPTAI } from '@lobechat/model-runtime';
 import { eq, sql } from 'drizzle-orm';
+import type { ChatModelCard } from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformRevisionConflictError } from '@/database/models/platform';
 import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import {
   platformAgents,
@@ -28,6 +30,7 @@ import {
 } from './adminService';
 import {
   mapCardsToBatchUpdate,
+  projectCatalogAfterBatch,
   reconcileChatGPTWebLegacySkus,
   resolveChatGPTWebCheckModelUpgrade,
 } from './adminService.sync';
@@ -216,9 +219,9 @@ describe('reconcileChatGPTWebLegacySkus', () => {
     imageOutput: true,
     reasoning: true,
     search: true,
-    settings: { extendParams: ['chatgptWebReasoningEffort' as const], searchImpl: 'params' },
+    settings: { extendParams: ['chatgptWebReasoningEffort'] as const, searchImpl: 'params' },
     vision: true,
-  };
+  } satisfies ChatModelCard;
 
   it('hides Instant/Thinking/Pro and auto rows without disabling them', () => {
     const existing = [
@@ -360,9 +363,30 @@ describe('resolveChatGPTWebCheckModelUpgrade', () => {
       draftModel({ enabled: true, id: 'family-1', modelKey: 'gpt-5-6' }),
       draftModel({ enabled: true, id: 'auto-1', modelKey: 'auto' }),
     ];
-    expect(resolveChatGPTWebCheckModelUpgrade('auto', existing, [])).toBe('gpt-5-6');
-    expect(resolveChatGPTWebCheckModelUpgrade('gpt-5-6-thinking', existing, [])).toBe('gpt-5-6');
-    expect(resolveChatGPTWebCheckModelUpgrade('gpt-5-6', existing, [])).toBeUndefined();
+    expect(resolveChatGPTWebCheckModelUpgrade('auto', existing)).toBe('gpt-5-6');
+    expect(resolveChatGPTWebCheckModelUpgrade('gpt-5-6-thinking', existing)).toBe('gpt-5-6');
+    expect(resolveChatGPTWebCheckModelUpgrade('gpt-5-6', existing)).toBeUndefined();
+  });
+
+  it('leaves checkModel unchanged when the catalog is o3-only', () => {
+    const existing = [draftModel({ enabled: true, id: 'o3-1', modelKey: 'o3' })];
+    expect(resolveChatGPTWebCheckModelUpgrade('auto', existing)).toBeUndefined();
+  });
+
+  it('leaves checkModel unchanged when every family row is disabled', () => {
+    const existing = [
+      draftModel({ enabled: false, id: 'family-1', modelKey: 'gpt-5-6' }),
+      draftModel({ enabled: false, id: 'family-2', modelKey: 'gpt-5-5' }),
+    ];
+    expect(resolveChatGPTWebCheckModelUpgrade('auto', existing)).toBeUndefined();
+  });
+
+  it('does not pick a newly discovered family card created disabled', () => {
+    const existing = [draftModel({ enabled: true, id: 'o3-1', modelKey: 'o3' })];
+    const catalog = projectCatalogAfterBatch(existing, [
+      { enabled: false, id: 'gpt-5-6', type: 'chat' },
+    ]);
+    expect(resolveChatGPTWebCheckModelUpgrade('auto', catalog)).toBeUndefined();
   });
 });
 
@@ -684,5 +708,73 @@ describe('AiCatalogAdminService.syncUpstream', () => {
           (row.afterDiff as { checkModel?: string } | null)?.checkModel === 'gpt-5-6',
       ),
     ).toBe(true);
+  });
+
+  const disableFamilyRows = async (service: AiCatalogAdminService, providerId: string) => {
+    const detail = await service.getDetail(providerId);
+    for (const model of detail.draft.models) {
+      if (!/^gpt-5-\d+$/.test(model.modelKey) || !model.enabled) continue;
+      const latest = await service.getDetail(providerId);
+      const current = latest.draft.models.find((row) => row.id === model.id);
+      if (!current) continue;
+      await service.applyModelImmediate('admin', {
+        enabled: false,
+        expectedDraftToken: latest.draftToken,
+        expectedRevision: current.revision,
+        id: current.id,
+        operation: 'update',
+        providerId,
+        reason: 'disable family',
+      });
+    }
+  };
+
+  it('leaves checkModel unchanged when enumeration is o3-only and families are disabled', async () => {
+    const { providerId, service } = await seedChatgptWeb('auto');
+    await disableFamilyRows(service, providerId);
+    mockModels.mockResolvedValue([{ displayName: 'o3', id: 'o3', type: 'chat' }]);
+
+    await service.syncUpstream('admin', { providerId });
+
+    const [provider] = await db.select().from(platformAiProviders);
+    expect(provider.checkModel).toBe('auto');
+  });
+
+  it('does not migrate checkModel onto a newly created disabled family card', async () => {
+    const { providerId, service } = await seedChatgptWeb('auto');
+    await disableFamilyRows(service, providerId);
+    mockModels.mockResolvedValue([{ displayName: 'GPT-5.7', id: 'gpt-5-7', type: 'chat' }]);
+
+    await service.syncUpstream('admin', { providerId });
+
+    const [provider] = await db.select().from(platformAiProviders);
+    expect(provider.checkModel).toBe('auto');
+    const created = (await db.select().from(platformAiModels)).find(
+      (row) => row.modelKey === 'gpt-5-7',
+    );
+    expect(created?.enabled).toBe(false);
+  });
+
+  it('CAS-rejects a stale check-model-only sync after a concurrent checkModel write', async () => {
+    const { providerId, service } = await seedChatgptWeb('auto');
+    mockModels.mockImplementation(async () => {
+      const detail = await service.getDetail(providerId);
+      await service.applyProviderImmediate('admin', {
+        checkModel: 'o3',
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.draft.revision,
+        id: providerId,
+        mode: 'update',
+        reason: 'concurrent checkModel',
+      });
+      return [];
+    });
+
+    await expect(service.syncUpstream('admin', { providerId })).rejects.toBeInstanceOf(
+      PlatformRevisionConflictError,
+    );
+
+    const [provider] = await db.select().from(platformAiProviders);
+    expect(provider.checkModel).toBe('o3');
   });
 });

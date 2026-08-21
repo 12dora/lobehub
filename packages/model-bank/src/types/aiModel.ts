@@ -314,6 +314,22 @@ export interface AIBaseModelCard {
 
 export const isAiModelVisible = (model: { visible?: boolean }) => model.visible !== false;
 
+/**
+ * ChatGPT Web Instant / Thinking / Pro / `auto` rows collapsed into a family card.
+ * The stamp lives on `settings.legacyAlias`; every catalog projection must hide
+ * these from pickers while leaving `enabled` alone for the execution allowlist.
+ */
+export const isLegacyAliasModel = (settings: unknown): boolean => {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false;
+  return typeof (settings as { legacyAlias?: unknown }).legacyAlias === 'string';
+};
+
+/** Spread onto a catalog row so pickers honor {@link isAiModelVisible}. */
+export const projectPickerVisibility = (
+  settings: unknown,
+): { visible: false } | Record<never, never> =>
+  isLegacyAliasModel(settings) ? { visible: false } : {};
+
 export interface AiModelConfig {
   /**
    * used in azure and volcengine

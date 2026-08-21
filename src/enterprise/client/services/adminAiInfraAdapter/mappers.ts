@@ -1,4 +1,8 @@
-import type { AiProviderModelListItem, EnabledAiModel } from 'model-bank';
+import {
+  type AiProviderModelListItem,
+  type EnabledAiModel,
+  projectPickerVisibility,
+} from 'model-bank';
 
 import type {
   AdminAiModelListItem,
@@ -121,6 +125,7 @@ export const mapModelListItem = (
   settings: (item.settings ?? undefined) as AiProviderModelListItem['settings'],
   source: 'custom',
   type: item.type,
+  ...projectPickerVisibility(item.settings),
 });
 
 export const mapEnabledModel = (
@@ -139,6 +144,7 @@ export const mapEnabledModel = (
   settings: (item.settings ?? undefined) as EnabledAiModel['settings'],
   sort: item.sort ?? undefined,
   type: item.type as EnabledAiModel['type'],
+  ...projectPickerVisibility(item.settings),
 });
 
 /**

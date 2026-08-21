@@ -457,6 +457,19 @@ describe('LobeChatGPTWebAI', () => {
       expect(bodyOf(client).thinking_effort).toBe('standard');
     });
 
+    it('ignores leftover generic reasoning_effort on a bare family id', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6',
+        reasoning_effort: 'high' as any,
+        temperature: 1,
+      });
+
+      expect(bodyOf(client).model).toBe('gpt-5-6-thinking');
+      expect(bodyOf(client).thinking_effort).toBe('standard');
+    });
+
     it.each([
       ['instant', 'gpt-5-6-instant', undefined],
       ['medium', 'gpt-5-6-thinking', 'standard'],

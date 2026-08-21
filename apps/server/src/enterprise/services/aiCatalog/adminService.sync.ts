@@ -2,7 +2,7 @@ import type { ChatModelCard } from 'model-bank';
 import { isProviderOAuthDeviceFlow } from 'model-bank/modelProviders';
 
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 import {
   buildPayloadFromKeyVaults,
   initModelRuntimeWithUserPayload,
@@ -227,32 +227,71 @@ const readSettingsRecord = (value: unknown): Record<string, unknown> =>
     ? { ...(value as Record<string, unknown>) }
     : {};
 
+type CatalogRow = Pick<DraftModel, 'enabled' | 'id' | 'modelKey' | 'type'>;
+
+/**
+ * Overlay `batchUpdate` items onto the locked draft so check-model migration
+ * sees the catalog *after* reconciliation (new family cards are created
+ * disabled; existing enabled/disabled flags win unless the item says otherwise).
+ */
+export const projectCatalogAfterBatch = (
+  existing: readonly CatalogRow[],
+  items: readonly BatchUpdateItem[],
+): Array<Pick<DraftModel, 'enabled' | 'modelKey' | 'type'>> => {
+  const rows = new Map(
+    existing.map((model) => [
+      model.id,
+      { enabled: model.enabled, modelKey: model.modelKey, type: model.type },
+    ]),
+  );
+  const idByKey = new Map(existing.map((model) => [model.modelKey, model.id]));
+
+  for (const item of items) {
+    const id = rows.has(item.id) ? item.id : idByKey.get(item.id);
+    if (id && rows.has(id)) {
+      const current = rows.get(id)!;
+      rows.set(id, {
+        enabled: item.enabled ?? current.enabled,
+        modelKey: current.modelKey,
+        type: item.type ?? current.type,
+      });
+      continue;
+    }
+    rows.set(item.id, {
+      enabled: item.enabled ?? false,
+      modelKey: item.id,
+      type: item.type ?? 'chat',
+    });
+  }
+
+  return [...rows.values()];
+};
+
+const isEnabledChatFamilyRow = (model: Pick<DraftModel, 'enabled' | 'modelKey' | 'type'>) =>
+  model.enabled !== false &&
+  model.type === 'chat' &&
+  CHATGPT_WEB_FAMILY_BASE_RE.test(model.modelKey);
+
 /**
  * Existing providers keep a persisted `checkModel` from first connect. After the
- * family-card cutover that is often `auto` (or an Instant/Thinking/Pro SKU),
- * which then fails the connectivity probe with "Check model not enabled".
+ * family-card cutover that is often `auto` (or an Instant/Thinking/Pro SKU).
+ * Only rewrite it when a **post-reconciliation, enabled chat family** row
+ * exists; otherwise leave the stored value alone (o3-only catalogs, every
+ * family row disabled, newly discovered cards created disabled).
  */
 export const resolveChatGPTWebCheckModelUpgrade = (
   current: string | null | undefined,
-  existing: readonly DraftModel[],
-  cards: ChatModelCard[],
+  catalog: readonly Pick<DraftModel, 'enabled' | 'modelKey' | 'type'>[],
 ): string | undefined => {
   if (!current || !isChatGPTWebLegacyPickerId(current)) return undefined;
 
-  const enabledKeys = new Set(
-    existing.filter((model) => model.enabled).map((model) => model.modelKey),
-  );
-  if (enabledKeys.has(CHATGPT_WEB_DEFAULT_FAMILY)) return CHATGPT_WEB_DEFAULT_FAMILY;
+  const enabledFamilies = catalog.filter(isEnabledChatFamilyRow);
+  if (enabledFamilies.length === 0) return undefined;
 
-  const enabledFamily = existing.find(
-    (model) => model.enabled && CHATGPT_WEB_FAMILY_BASE_RE.test(model.modelKey),
+  return (
+    enabledFamilies.find((model) => model.modelKey === CHATGPT_WEB_DEFAULT_FAMILY)?.modelKey ??
+    enabledFamilies[0]?.modelKey
   );
-  if (enabledFamily) return enabledFamily.modelKey;
-
-  const familyCard =
-    cards.find((card) => card.id === CHATGPT_WEB_DEFAULT_FAMILY) ??
-    cards.find((card) => CHATGPT_WEB_FAMILY_BASE_RE.test(card.id));
-  return familyCard?.id ?? CHATGPT_WEB_DEFAULT_FAMILY;
 };
 
 const abilitiesFromCardFlags = (card: ChatModelCard): Record<string, boolean> | undefined => {
@@ -436,10 +475,9 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
         provider.providerKey === CHATGPTWEB_PROVIDER
           ? reconcileChatGPTWebLegacySkus(cards, detail.draft.models, mapped)
           : mapped;
-      const checkModelUpgrade =
-        provider.providerKey === CHATGPTWEB_PROVIDER
-          ? resolveChatGPTWebCheckModelUpgrade(provider.checkModel, detail.draft.models, cards)
-          : undefined;
+      const maybeLegacyCheckModel =
+        provider.providerKey === CHATGPTWEB_PROVIDER &&
+        isChatGPTWebLegacyPickerId(provider.checkModel ?? '');
 
       const appendSyncSuccessAudit = (db: typeof this.db, extra?: { checkModel?: string }) =>
         new PlatformAuditService(db).append({
@@ -452,7 +490,7 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
           targetType: 'provider',
         });
 
-      if (items.length > 0 || checkModelUpgrade) {
+      if (items.length > 0 || maybeLegacyCheckModel) {
         await this.runModelApplyTransaction(
           {
             action: 'admin.aiModels.applyImmediate',
@@ -462,6 +500,13 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
             secretTargetId: detail.draft.id,
           },
           async (scoped) => {
+            // Always CAS-lock the draft, including the check-model-only path
+            // where `items` is empty and `applyModelMutation` would be skipped.
+            const locked = await scoped.getLockedDraft(
+              scoped.db as Transaction,
+              detail.draft.id,
+              detail.draftToken,
+            );
             if (items.length > 0) {
               await scoped.applyModelMutation(
                 actorUserId,
@@ -475,6 +520,13 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
                 { allowModelCreate: true },
               );
             }
+            const checkModelUpgrade =
+              provider.providerKey === CHATGPTWEB_PROVIDER
+                ? resolveChatGPTWebCheckModelUpgrade(
+                    locked.checkModel,
+                    projectCatalogAfterBatch(locked.models, items),
+                  )
+                : undefined;
             if (checkModelUpgrade) {
               const repository = new PlatformAiCatalogRepository(scoped.db);
               await repository.updateProvider(detail.draft.id, {
@@ -483,7 +535,9 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
                 updatedBy: actorUserId,
               });
             }
-            await scoped.publishAfterMutation(actorUserId, detail.draft.id, reason);
+            if (items.length > 0 || checkModelUpgrade) {
+              await scoped.publishAfterMutation(actorUserId, detail.draft.id, reason);
+            }
             await appendSyncSuccessAudit(
               scoped.db,
               checkModelUpgrade ? { checkModel: checkModelUpgrade } : undefined,

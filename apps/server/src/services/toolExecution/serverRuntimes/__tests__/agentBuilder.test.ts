@@ -179,6 +179,33 @@ describe('agentBuilderRuntime', () => {
       expect(mockGetAiProviderList).not.toHaveBeenCalled();
     });
 
+    it('omits ChatGPT Web legacy-alias rows from Agent Builder pickers', async () => {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      mockIsPlatformAiTakeoverActive.mockResolvedValue(true);
+      mockGetAiProviderRuntimeState.mockResolvedValue(userOnlyUpstreamState);
+      mockResolveAiCatalogRuntimeState.mockResolvedValue({
+        enabledAiModels: [
+          { enabled: true, id: 'gpt-5-6', providerId: 'chatgptweb', type: 'chat' },
+          {
+            enabled: true,
+            id: 'gpt-5-6-thinking',
+            providerId: 'chatgptweb',
+            type: 'chat',
+            visible: false,
+          },
+        ],
+        enabledAiProviders: [{ id: 'chatgptweb', name: 'ChatGPT Web' }],
+      });
+
+      const result = await createRuntime().getAvailableModels({});
+
+      expect(result.success).toBe(true);
+      expect(result.state).toMatchObject({
+        providers: [{ id: 'chatgptweb', models: [{ id: 'gpt-5-6' }] }],
+      });
+      expect(JSON.stringify(result.state)).not.toContain('gpt-5-6-thinking');
+    });
+
     it('keeps a user-only provider alongside the platform catalog under takeover', async () => {
       process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
       mockIsPlatformAiTakeoverActive.mockResolvedValue(true);
