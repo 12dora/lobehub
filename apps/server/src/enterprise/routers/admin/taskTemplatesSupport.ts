@@ -5,12 +5,11 @@ import type {
   PlatformTaskTemplateImportRow,
   PlatformTaskTemplateRecord,
 } from '@/database/models/platform';
-import { listTaskTemplateLibrary, TaskTemplateService } from '@/server/services/taskTemplate';
+import { TaskTemplateService } from '@/server/services/taskTemplate';
 
 import type {
   AdminTaskTemplateConnector,
   AdminTaskTemplateItem,
-  AdminTaskTemplateListOutput,
   PlatformTaskTemplate,
 } from '../../contracts/adminTaskTemplates';
 import {
@@ -22,12 +21,6 @@ import {
 const CATEGORY_SET = new Set<string>(TASK_TEMPLATE_CATEGORIES);
 const ICON_SET = new Set<string>(TASK_TEMPLATE_ICONS);
 const INTEREST_SET = new Set<string>(INTEREST_AREA_KEYS);
-
-/** Prefix for read-only preview ids synthesized from the bundled library. */
-export const TASK_TEMPLATE_PREVIEW_ID_PREFIX = 'preview:';
-
-/** Fixed timestamp so preview rows stay type-valid without pretending they were written. */
-const PREVIEW_UPDATED_AT = new Date(0);
 
 const isConnector = (value: unknown): value is AdminTaskTemplateConnector => {
   if (typeof value !== 'object' || value === null) return false;
@@ -214,61 +207,4 @@ export const fetchLibraryTaskTemplatesForImport = async (params: {
   }
 
   return { rows, skipped };
-};
-
-const matchesPreviewQuery = (haystacks: string[], query?: string): boolean => {
-  const needle = query?.trim().toLowerCase();
-  if (!needle) return true;
-  return haystacks.some((value) => value.toLowerCase().includes(needle));
-};
-
-/**
- * Read-only admin preview of the bundled library users currently see.
- *
- * Does **not** import: an empty table stays unmanaged (`platform.taskTemplates.list` keeps
- * serving `listTaskTemplateLibrary`). Preview ids are `preview:<identifier>` so a mutation
- * against them misses the table and follows the existing NOT_FOUND path.
- */
-export const listUnmanagedTaskTemplatePreview = (params: {
-  enabled?: boolean;
-  limit: number;
-  locale?: string;
-  offset: number;
-  query?: string;
-}): AdminTaskTemplateListOutput => {
-  if (params.enabled === false) {
-    return { items: [], origin: 'unmanaged', totalAll: 0, totalFiltered: 0 };
-  }
-
-  const matched = listTaskTemplateLibrary(params.locale)
-    .map((row, sortOrder): AdminTaskTemplateItem => {
-      const icon = safeIcon(row.icon ?? null);
-      return {
-        category: safeCategory(row.category),
-        connectors: normalizeConnectors(row.connectors),
-        cronPattern: row.cronPattern,
-        description: row.description,
-        enabled: true,
-        icon,
-        id: `${TASK_TEMPLATE_PREVIEW_ID_PREFIX}${row.identifier}`,
-        identifier: row.identifier,
-        instruction: row.instruction,
-        interests: safeInterests(normalizeInterests(row.interests)),
-        revision: 0,
-        sortOrder,
-        source: 'market',
-        title: row.title,
-        updatedAt: PREVIEW_UPDATED_AT,
-      };
-    })
-    .filter((item) =>
-      matchesPreviewQuery([item.title, item.identifier, item.description], params.query),
-    );
-
-  return {
-    items: matched.slice(params.offset, params.offset + params.limit),
-    origin: 'unmanaged',
-    totalAll: 0,
-    totalFiltered: matched.length,
-  };
 };

@@ -17,11 +17,11 @@ import {
 
 import {
   AGENT_TEMPLATE_DISPLAY_MAX,
-  EMPTY_PLATFORM_AGENT_TEMPLATE_LIST,
+  DISABLED_PLATFORM_AGENT_TEMPLATE_LIST,
   platformAgentTemplateListOutputSchema,
 } from '../contracts/adminAgentTemplates';
 import {
-  EMPTY_PLATFORM_TASK_TEMPLATE_LIST,
+  DISABLED_PLATFORM_TASK_TEMPLATE_LIST,
   platformTaskTemplateListOutputSchema,
 } from '../contracts/adminTaskTemplates';
 import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
@@ -39,6 +39,10 @@ import {
 } from '../services/managedResourceCapabilities';
 import { getModuleSettingsSnapshot, isModuleEnabled } from '../services/moduleSettings';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
+import {
+  ensureAgentTemplateCatalogSeeded,
+  ensureTaskTemplateCatalogSeeded,
+} from '../services/templateCatalogBootstrap';
 import { isRenderableAgentTemplate, toPlatformAgentTemplate } from './admin/agentTemplatesSupport';
 import { isRenderableTaskTemplate, toPlatformTaskTemplate } from './admin/taskTemplatesSupport';
 import { withActiveUserWhenManaged } from './managedActiveUser';
@@ -74,9 +78,9 @@ export const platformRouter = router({
     /**
      * Platform-managed 助理模板 for the current user (create-agent modal examples).
      *
-     * Emptiness is meaningful: `managed: false` (flag off, or zero rows in the table) tells the
-     * client to keep using the locale-driven built-in examples. Once the table holds any row the
-     * platform list is authoritative and only enabled rows are returned.
+     * `managed: false` (flag/module off) tells the client to keep using the locale-driven built-in
+     * examples. When the module is on the catalog is always managed: builtins are auto-seeded on
+     * first use, and an empty list is a deliberate "no examples".
      */
     list: authedProcedure
       .use(serverDatabase)
@@ -84,12 +88,11 @@ export const platformRouter = router({
       .query(async ({ ctx }) => {
         const flags = parseEnterpriseFeatureFlags(process.env);
         if (!flags.ENABLE_PLATFORM_ADMIN || !(await isModuleEnabled('taskTemplates')))
-          return { ...EMPTY_PLATFORM_AGENT_TEMPLATE_LIST };
+          return { ...DISABLED_PLATFORM_AGENT_TEMPLATE_LIST };
+
+        await ensureAgentTemplateCatalogSeeded(ctx.serverDB);
 
         const model = new PlatformAgentTemplateModel(ctx.serverDB);
-        const total = await model.count();
-        if (total === 0) return { ...EMPTY_PLATFORM_AGENT_TEMPLATE_LIST };
-
         const rows = await model.listEnabled(AGENT_TEMPLATE_DISPLAY_MAX);
         return {
           managed: true,
@@ -104,9 +107,9 @@ export const platformRouter = router({
     /**
      * Platform-managed 任务模板 for the current user (home 为你推荐 + agent-task empty state).
      *
-     * Emptiness is meaningful: `managed: false` (flag off, or zero rows in the table) tells the
-     * client to keep using the remote market recommendations. Once the table holds any row the
-     * platform list is authoritative and only enabled rows are returned.
+     * `managed: false` (flag/module off) tells the client to keep using the bundled recommendations.
+     * When the module is on the catalog is always managed: builtins are auto-seeded on first use,
+     * and an empty list is a deliberate "no recommendations".
      */
     list: authedProcedure
       .use(serverDatabase)
@@ -114,12 +117,11 @@ export const platformRouter = router({
       .query(async ({ ctx }) => {
         const flags = parseEnterpriseFeatureFlags(process.env);
         if (!flags.ENABLE_PLATFORM_ADMIN || !(await isModuleEnabled('taskTemplates')))
-          return { ...EMPTY_PLATFORM_TASK_TEMPLATE_LIST };
+          return { ...DISABLED_PLATFORM_TASK_TEMPLATE_LIST };
+
+        await ensureTaskTemplateCatalogSeeded(ctx.serverDB);
 
         const model = new PlatformTaskTemplateModel(ctx.serverDB);
-        const total = await model.count();
-        if (total === 0) return { ...EMPTY_PLATFORM_TASK_TEMPLATE_LIST };
-
         // Both consumers render at most TASK_TEMPLATE_RECOMMEND_MAX_COUNT cards; cap server-side
         // so an unbounded catalog can never become an unbounded per-user response.
         const rows = await model.listEnabled(TASK_TEMPLATE_RECOMMEND_MAX_COUNT);

@@ -25,8 +25,9 @@ export const fetchPlatformSidebarLayoutPolicy = async (
 ): Promise<SidebarLayoutPolicy> => query();
 
 /**
- * Platform-managed agent templates. `managed: false` means the table is empty (or the flag is
- * off) and the caller should keep using the built-in locale examples.
+ * Platform-managed agent templates. `managed: false` means the flag/module is off (or the
+ * policy read failed) and the caller should keep using the built-in locale examples.
+ * `managed: true` with an empty list is a deliberate empty catalog.
  */
 export const fetchPlatformAgentTemplates = async (
   query: () => Promise<PlatformAgentTemplateListOutput> = () =>
@@ -34,8 +35,9 @@ export const fetchPlatformAgentTemplates = async (
 ): Promise<PlatformAgentTemplateListOutput> => query();
 
 /**
- * Platform-managed task templates. `managed: false` means the table is empty (or the flag is
- * off) and the caller should keep using the built-in market recommendations.
+ * Platform-managed task templates. `managed: false` means the flag/module is off (or the
+ * policy read failed) and the caller should keep using the bundled recommendations.
+ * `managed: true` with an empty list is a deliberate empty catalog.
  */
 export const fetchPlatformTaskTemplates = async (
   query: () => Promise<PlatformTaskTemplateListOutput> = () =>

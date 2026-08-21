@@ -5,12 +5,19 @@ import type { LobeChatDatabase } from '@/database/type';
 
 const mocks = vi.hoisted(() => ({
   bootstrapSuperAdmin: vi.fn(),
+  ensureAgentTemplateCatalogSeeded: vi.fn(),
   ensurePlatformRbacSeeded: vi.fn(),
+  ensureTaskTemplateCatalogSeeded: vi.fn(),
 }));
 
 vi.mock('./superAdmin', () => ({
   bootstrapSuperAdmin: mocks.bootstrapSuperAdmin,
   ensurePlatformRbacSeeded: mocks.ensurePlatformRbacSeeded,
+}));
+
+vi.mock('../services/templateCatalogBootstrap', () => ({
+  ensureAgentTemplateCatalogSeeded: mocks.ensureAgentTemplateCatalogSeeded,
+  ensureTaskTemplateCatalogSeeded: mocks.ensureTaskTemplateCatalogSeeded,
 }));
 
 const {
@@ -34,6 +41,8 @@ let errorSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   resetPlatformBootstrapForTest();
   mocks.ensurePlatformRbacSeeded.mockResolvedValue({ superAdminCount: 0 });
+  mocks.ensureAgentTemplateCatalogSeeded.mockResolvedValue(undefined);
+  mocks.ensureTaskTemplateCatalogSeeded.mockResolvedValue(undefined);
   mocks.bootstrapSuperAdmin.mockReset();
   infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -43,6 +52,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   mocks.ensurePlatformRbacSeeded.mockReset();
+  mocks.ensureAgentTemplateCatalogSeeded.mockReset();
+  mocks.ensureTaskTemplateCatalogSeeded.mockReset();
 });
 
 describe('runStartupPlatformBootstrap', () => {
@@ -53,6 +64,18 @@ describe('runStartupPlatformBootstrap', () => {
 
     expect(outcome).toEqual({ status: 'seeded', superAdminCount: 2 });
     expect(mocks.ensurePlatformRbacSeeded).toHaveBeenCalledWith(db);
+    expect(mocks.ensureAgentTemplateCatalogSeeded).toHaveBeenCalledWith(db);
+    expect(mocks.ensureTaskTemplateCatalogSeeded).toHaveBeenCalledWith(db);
+    expect(mocks.bootstrapSuperAdmin).not.toHaveBeenCalled();
+  });
+
+  it('does not fail boot when template catalog seed throws', async () => {
+    mocks.ensureAgentTemplateCatalogSeeded.mockRejectedValue(new Error('seed failed'));
+
+    const outcome = await runStartupPlatformBootstrap(db, baseEnv);
+
+    expect(outcome).toEqual({ status: 'seeded', superAdminCount: 0 });
+    expect(errorSpy).toHaveBeenCalled();
     expect(mocks.bootstrapSuperAdmin).not.toHaveBeenCalled();
   });
 
@@ -167,6 +190,7 @@ describe('bootstrapPlatformAdminRuntime', () => {
 
     expect(outcome).toEqual({ reason: 'platform-admin-disabled', status: 'skipped' });
     expect(mocks.ensurePlatformRbacSeeded).not.toHaveBeenCalled();
+    expect(mocks.ensureAgentTemplateCatalogSeeded).not.toHaveBeenCalled();
   });
 
   it('accepts the ENABLE_ENTERPRISE_ADMIN alias but still needs a database URL', async () => {

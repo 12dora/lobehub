@@ -34,11 +34,12 @@ import {
   withAllPlatformPermissions,
   withPlatformPermission,
 } from '../../guards/platformPermission';
+import { isModuleEnabled } from '../../services/moduleSettings';
 import { PlatformAuditService } from '../../services/platformAudit';
+import { ensureTaskTemplateCatalogSeeded } from '../../services/templateCatalogBootstrap';
 import {
   deriveTaskTemplateIdentifier,
   fetchLibraryTaskTemplatesForImport,
-  listUnmanagedTaskTemplatePreview,
   toAdminTaskTemplateItem,
   toTaskTemplateAuditDiff,
 } from './taskTemplatesSupport';
@@ -260,12 +261,15 @@ export const adminTaskTemplatesRouter = router({
     .input(adminTaskTemplateListInputSchema)
     .output(adminTaskTemplateListOutputSchema)
     .query(async ({ ctx, input }) => {
+      if (await isModuleEnabled('taskTemplates')) {
+        await ensureTaskTemplateCatalogSeeded(ctx.serverDB, {
+          actorUserId: ctx.userId,
+          locale: input.locale,
+        });
+      }
+
       const model = new PlatformTaskTemplateModel(ctx.serverDB);
       const totalAll = await model.count();
-      // Empty table: show the bundled library users currently see. Do not auto-import —
-      // that would flip `managed: true` and change the user-facing catalog.
-      if (totalAll === 0) return listUnmanagedTaskTemplatePreview(input);
-
       const page = await model.list({
         enabled: input.enabled,
         limit: input.limit,

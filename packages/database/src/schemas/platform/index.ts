@@ -31,3 +31,4 @@ export * from './settings';
 export * from './sidebarLayout';
 export * from './skills';
 export * from './taskTemplates';
+export * from './templateCatalogState';

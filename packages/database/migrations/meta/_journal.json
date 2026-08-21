@@ -127,6 +127,13 @@
       "when": 1788000000000,
       "tag": "0025_audit_redaction_profile_off",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788100000000,
+      "tag": "0026_platform_template_catalog_state",
+      "breakpoints": true
     }
   ]
 }

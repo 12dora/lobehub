@@ -1389,8 +1389,10 @@ export default {
   'settingsPolicy.options.systemAgent.reasoningEffort.low': 'Low',
   'settingsPolicy.options.systemAgent.reasoningEffort.medium': 'Medium',
   'settingsPolicy.options.systemAgent.reasoningEffort.high': 'High',
+  'settingsPolicy.options.systemAgent.reasoningEffort.instant': 'Instant',
   'settingsPolicy.options.systemAgent.reasoningEffort.xhigh': 'Extra high',
   'settingsPolicy.options.systemAgent.reasoningEffort.max': 'Max',
+  'settingsPolicy.options.systemAgent.reasoningEffort.pro': 'Pro',
   'settingsPolicy.options.systemAgent.reasoningEffort.enabled': 'Enabled',
   'settingsPolicy.options.animation.disabled': 'Disabled',
   'settingsPolicy.options.animation.agile': 'Agile',
@@ -2996,7 +2998,7 @@ export default {
   'audit.logs.targetType.task_template': 'Task template',
   'taskTemplateCatalog.title': 'Task templates',
   'taskTemplateCatalog.desc':
-    'Recommended scheduled tasks shown on the home screen and the task list. While this list is empty, users keep seeing the built-in recommendations.',
+    'Recommended scheduled tasks shown on the home screen and the task list. The catalog is always platform-managed: built-in examples are loaded automatically on first start. An empty list means users see no examples.',
   'taskTemplateCatalog.actions.create': 'New template',
   'taskTemplateCatalog.actions.import': 'Import recommendations',
   'taskTemplateCatalog.actions.edit': 'Edit',
@@ -3012,10 +3014,8 @@ export default {
   'taskTemplateCatalog.list.columns.actions': 'Actions',
   'taskTemplateCatalog.list.filters.query': 'Search title or identifier',
   'taskTemplateCatalog.list.empty.default':
-    'No task templates yet. Import the built-in recommendations or create your own.',
+    'No task templates. Users will not see recommended tasks until you import the built-in recommendations or create your own.',
   'taskTemplateCatalog.list.empty.filtered': 'No template matches these filters.',
-  'taskTemplateCatalog.list.unmanagedPreview':
-    'These are the built-in templates users currently see. Import them or create your own to start managing the catalog — once the catalog has any entry it replaces the built-in list for all users.',
   'taskTemplateCatalog.list.error.page': 'Could not load task templates.',
   'taskTemplateCatalog.list.connectors.none': 'None',
   'taskTemplateCatalog.boolean.true': 'Enabled',
@@ -3172,7 +3172,7 @@ export default {
     'Scheduled-task recommendations and the example cards users see when creating an assistant.',
   'agentTemplateCatalog.title': 'Agent templates',
   'agentTemplateCatalog.desc':
-    'Example cards shown when a user creates an assistant. While this list is empty, users keep seeing the built-in examples.',
+    'Example cards shown when a user creates an assistant. The catalog is always platform-managed: built-in examples are loaded automatically on first start. An empty list means users see no examples.',
   'agentTemplateCatalog.actions.create': 'New template',
   'agentTemplateCatalog.actions.import': 'Import recommendations',
   'agentTemplateCatalog.actions.edit': 'Edit',
@@ -3188,10 +3188,8 @@ export default {
   'agentTemplateCatalog.list.columns.actions': 'Actions',
   'agentTemplateCatalog.list.filters.query': 'Search title or identifier',
   'agentTemplateCatalog.list.empty.default':
-    'No agent templates yet. Import the built-in examples or create your own.',
+    'No agent templates. Users will not see example cards until you import the built-in examples or create your own.',
   'agentTemplateCatalog.list.empty.filtered': 'No template matches these filters.',
-  'agentTemplateCatalog.list.unmanagedPreview':
-    'These are the built-in templates users currently see. Import them or create your own to start managing the catalog — once the catalog has any entry it replaces the built-in list for all users.',
   'agentTemplateCatalog.list.error.page': 'Could not load agent templates.',
   'agentTemplateCatalog.list.tags.none': 'None',
   'agentTemplateCatalog.list.dragHandle': 'Drag to reorder {{title}}',

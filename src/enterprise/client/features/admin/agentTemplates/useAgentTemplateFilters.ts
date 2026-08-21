@@ -6,9 +6,9 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
 import type { AdminTableChangeMeta } from '../primitives/DataTable';
+import { DEFAULT_PAGE_SIZE } from '../primitives/dataTableChange';
 import type { AdminAgentTemplateListQuery } from './types';
 
-const DEFAULT_PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_MS = 300;
 
 const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
@@ -21,8 +21,7 @@ export const useAgentTemplateFilters = () => {
   const { i18n } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // The list resolves the bundled-library preview rows in the console language, the same way
-  // the import action does — so the operator previews exactly the copy an import would write.
+  // Console locale is forwarded so a first-run auto-seed writes the operator's language.
   const locale = i18n.resolvedLanguage || i18n.language;
 
   const query = searchParams.get('q') ?? '';

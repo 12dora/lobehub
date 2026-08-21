@@ -148,7 +148,7 @@ export class PlatformTaskTemplateModel {
     this.db = db;
   }
 
-  /** Total row count regardless of `enabled` — zero means "module never used". */
+  /** Total row count regardless of `enabled`. Zero is a valid empty catalog once seeded. */
   count = async (): Promise<number> => {
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })

@@ -119,7 +119,7 @@ export const adminTaskTemplateListInputSchema = z
   .object({
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).default(20),
-    /** Console locale; used only for the unmanaged library preview (falls back to en-US). */
+    /** Console locale; used for first-run auto-seed (falls back to DEFAULT_LANG / en-US). */
     locale: z.string().trim().min(2).max(32).optional(),
     offset: z.number().int().min(0).max(100_000).default(0),
     query: z.string().trim().max(200).optional(),
@@ -131,11 +131,11 @@ export const adminTaskTemplateListOutputSchema = z
   .object({
     items: z.array(adminTaskTemplateItemSchema),
     /**
-     * `managed` — DB rows (`totalAll > 0`). `unmanaged` — table empty; `items` are a read-only
-     * preview of the bundled library users currently see (`totalAll` is 0).
+     * Always `'managed'` when the module is on (kept as a union so older clients still parse).
+     * `'unmanaged'` is no longer produced.
      */
     origin: z.enum(['managed', 'unmanaged']),
-    /** Row count ignoring filters — zero means users still see the bundled library. */
+    /** Row count ignoring filters — zero means users see no recommended tasks. */
     totalAll: z.number().int().nonnegative(),
     totalFiltered: z.number().int().nonnegative(),
   })
@@ -266,7 +266,8 @@ export type AdminTaskTemplateImportOutput = z.infer<typeof adminTaskTemplateImpo
 
 /**
  * User-facing read (`platform.taskTemplates.list`).
- * `managed: false` means "keep using the market recommendations".
+ * `managed: false` means the flag/module is off — keep using the bundled recommendations.
+ * `managed: true` with an empty list is a deliberate empty catalog.
  */
 export const platformTaskTemplateSchema = z
   .object({
@@ -293,7 +294,8 @@ export const platformTaskTemplateListOutputSchema = z
   .strict();
 export type PlatformTaskTemplateListOutput = z.infer<typeof platformTaskTemplateListOutputSchema>;
 
-export const EMPTY_PLATFORM_TASK_TEMPLATE_LIST: PlatformTaskTemplateListOutput = {
+/** Returned when the platform-admin flag or the taskTemplates module is off. */
+export const DISABLED_PLATFORM_TASK_TEMPLATE_LIST: PlatformTaskTemplateListOutput = {
   managed: false,
   templates: [],
 };

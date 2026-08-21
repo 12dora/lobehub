@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * admin.taskTemplates — CRUD, enable/disable, CAS conflict mapping, import upsert,
- * and the user-facing platform read that decides market vs. platform authority.
+ * and the user-facing platform read that always reports a managed catalog when the module is on.
  */
 import { TASK_TEMPLATE_RECOMMEND_MAX_COUNT } from '@lobechat/const';
 import { inArray } from 'drizzle-orm';
@@ -14,6 +14,7 @@ import { getTestDB } from '@/database/core/getTestDB';
 import {
   permissions,
   platformTaskTemplates,
+  platformTemplateCatalogState,
   rolePermissions,
   roles,
   userRoles,
@@ -78,6 +79,7 @@ const marketTemplate = (overrides: Record<string, unknown> = {}) => ({
 const cleanup = async () => {
   await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
   await db.delete(platformTaskTemplates);
+  await db.delete(platformTemplateCatalogState);
   await db.delete(userRoles);
   await db.delete(rolePermissions);
   await db.delete(roles);
@@ -95,6 +97,7 @@ beforeEach(async () => {
     result: 'success',
   }));
   listDailyRecommendSpy.mockReset();
+  listDailyRecommendSpy.mockResolvedValue([marketTemplate()]);
   await cleanup();
   await db.insert(users).values([{ id: ids.admin }, { id: ids.viewer }]);
   await seedPlatformRoles(db);
@@ -677,127 +680,79 @@ describe('admin.taskTemplates.reorder', () => {
   });
 });
 
-describe('admin.taskTemplates list unmanaged preview', () => {
-  it('previews the bundled library without importing it', async () => {
-    const library = listTaskTemplateLibrary('en-US');
+describe('admin.taskTemplates list auto-seed', () => {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  it('seeds library rows on a fresh catalog with managed origin and UUID ids', async () => {
     const listed = await (await adminCaller()).list({ limit: 100, locale: 'en-US', offset: 0 });
 
-    expect(listed.origin).toBe('unmanaged');
-    expect(listed.totalAll).toBe(0);
-    expect(listed.totalFiltered).toBe(library.length);
-    expect(listed.items).toHaveLength(library.length);
+    expect(listed.origin).toBe('managed');
+    expect(listed.totalAll).toBe(1);
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]?.id).toMatch(UUID_RE);
     expect(listed.items[0]).toMatchObject({
       enabled: true,
-      id: `preview:${library[0]!.identifier}`,
-      identifier: library[0]!.identifier,
-      revision: 0,
-      sortOrder: 0,
+      identifier: 'market-daily',
       source: 'market',
-      title: library[0]!.title,
+      title: 'Market title',
     });
-    expect(listed.items.every((item) => item.id.startsWith('preview:'))).toBe(true);
-    expect(await db.select().from(platformTaskTemplates)).toHaveLength(0);
-    expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+    expect(listed.items[0]?.id.startsWith('preview:')).toBe(false);
+    expect(await db.select().from(platformTaskTemplates)).toHaveLength(1);
+    expect(await (await platformCaller()).list()).toMatchObject({
+      managed: true,
+      templates: [expect.objectContaining({ identifier: 'market-daily' })],
+    });
   });
 
-  it('resolves zh-CN titles independently of en-US', async () => {
+  it('does not duplicate rows when two lists race the first seed', async () => {
     const caller = await adminCaller();
-    const [zh, en] = await Promise.all([
-      caller.list({ limit: 1, locale: 'zh-CN', offset: 0 }),
-      caller.list({ limit: 1, locale: 'en-US', offset: 0 }),
+    const [a, b] = await Promise.all([
+      caller.list({ limit: 100, offset: 0 }),
+      caller.list({ limit: 100, offset: 0 }),
     ]);
 
-    expect(zh.origin).toBe('unmanaged');
-    expect(zh.items[0]?.identifier).toBe(en.items[0]?.identifier);
-    expect(zh.items[0]?.title).not.toBe(en.items[0]?.title);
-    expect(zh.items[0]?.title).toBe(listTaskTemplateLibrary('zh-CN')[0]!.title);
-    expect(en.items[0]?.title).toBe(listTaskTemplateLibrary('en-US')[0]!.title);
+    expect(a.origin).toBe('managed');
+    expect(b.origin).toBe('managed');
+    expect(await db.select().from(platformTaskTemplates)).toHaveLength(1);
+    expect(new Set([...a.items, ...b.items].map((item) => item.id)).size).toBe(1);
   });
 
-  it('filters preview rows by query in memory', async () => {
-    const listed = await (
-      await adminCaller()
-    ).list({
-      limit: 100,
-      locale: 'en-US',
-      offset: 0,
-      query: 'yield tracking',
+  it('stays managed and empty after every row is deleted and does not re-seed', async () => {
+    const caller = await adminCaller();
+    const seeded = await caller.list({ limit: 100, offset: 0 });
+    await caller.delete({
+      expectedRevision: seeded.items[0]!.revision,
+      id: seeded.items[0]!.id,
     });
 
-    expect(listed.origin).toBe('unmanaged');
-    expect(listed.totalAll).toBe(0);
-    expect(listed.totalFiltered).toBeGreaterThan(0);
-    expect(listed.totalFiltered).toBeLessThan(listTaskTemplateLibrary().length);
-    expect(
-      listed.items.every(
-        (item) =>
-          item.title.toLowerCase().includes('yield tracking') ||
-          item.identifier.toLowerCase().includes('yield tracking') ||
-          item.description.toLowerCase().includes('yield tracking'),
-      ),
-    ).toBe(true);
+    const listed = await caller.list({ limit: 100, offset: 0 });
+    expect(listed).toEqual({ items: [], origin: 'managed', totalAll: 0, totalFiltered: 0 });
+    expect(await db.select().from(platformTaskTemplates)).toHaveLength(0);
+    expect(await (await platformCaller()).list()).toEqual({ managed: true, templates: [] });
   });
 
-  it('returns an empty preview when enabled is false', async () => {
-    const listed = await (await adminCaller()).list({ enabled: false, limit: 20, offset: 0 });
-
-    expect(listed).toEqual({ items: [], origin: 'unmanaged', totalAll: 0, totalFiltered: 0 });
-  });
-
-  it('slices the preview by offset and limit', async () => {
-    const library = listTaskTemplateLibrary('en-US');
+  it('writes a marker only when rows already exist and never overwrites them', async () => {
     const caller = await adminCaller();
-    const page1 = await caller.list({ limit: 10, locale: 'en-US', offset: 0 });
-    const page2 = await caller.list({ limit: 10, locale: 'en-US', offset: 10 });
-
-    expect(page1.origin).toBe('unmanaged');
-    expect(page1.totalAll).toBe(0);
-    expect(page1.totalFiltered).toBe(library.length);
-    expect(page1.items).toHaveLength(10);
-    expect(page2.items).toHaveLength(10);
-    expect(page1.items[0]?.identifier).toBe(library[0]!.identifier);
-    expect(page2.items[0]?.identifier).toBe(library[10]!.identifier);
-    expect(page1.items.map((item) => item.id)).not.toEqual(page2.items.map((item) => item.id));
-  });
-
-  it('switches to managed after create and never returns preview ids', async () => {
-    const caller = await adminCaller();
-    await caller.create(draft());
+    await caller.create(draft({ title: 'Custom' }));
 
     const listed = await caller.list({ limit: 20, offset: 0 });
     expect(listed.origin).toBe('managed');
     expect(listed.totalAll).toBe(1);
-    expect(listed.items.every((item) => !item.id.startsWith('preview:'))).toBe(true);
+    expect(listed.items.map((item) => item.title)).toEqual(['Custom']);
+    expect(await db.select().from(platformTemplateCatalogState)).toEqual([
+      expect.objectContaining({ domain: 'task_templates' }),
+    ]);
   });
 
-  it('switches to managed after import and never returns preview ids', async () => {
-    listDailyRecommendSpy.mockResolvedValue([marketTemplate()]);
-    const caller = await adminCaller();
-    await caller.importRecommendations({});
+  it('seeds in the console locale passed by the list input', async () => {
+    listDailyRecommendSpy.mockImplementation(
+      async (_keys: string[], options?: { locale?: string }) =>
+        listTaskTemplateLibrary(options?.locale).slice(0, 1),
+    );
 
-    const listed = await caller.list({ limit: 20, offset: 0 });
+    const listed = await (await adminCaller()).list({ limit: 1, locale: 'zh-CN', offset: 0 });
     expect(listed.origin).toBe('managed');
-    expect(listed.totalAll).toBe(1);
-    expect(listed.items.every((item) => !item.id.startsWith('preview:'))).toBe(true);
-    expect(listed.items[0]?.source).toBe('market');
-  });
-
-  it('rejects mutations against a preview id as NOT_FOUND rather than 500', async () => {
-    const caller = await adminCaller();
-    const id = `preview:${listTaskTemplateLibrary()[0]!.identifier}`;
-
-    await expect(caller.delete({ expectedRevision: 0, id })).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-    });
-    await expect(
-      caller.setEnabled({ enabled: false, expectedRevision: 0, id }),
-    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    await expect(caller.reorder({ items: [{ expectedRevision: 0, id }] })).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-    });
-    await expect(caller.update({ ...draft(), expectedRevision: 0, id })).rejects.toMatchObject({
-      code: expect.stringMatching(/^(NOT_FOUND|CONFLICT)$/),
-    });
+    expect(listed.items[0]?.title).toBe(listTaskTemplateLibrary('zh-CN')[0]!.title);
   });
 });
 
@@ -883,8 +838,10 @@ describe('retired connectors (a provider removed from the catalogs after the row
 });
 
 describe('platform.taskTemplates.list', () => {
-  it('stays unmanaged while the table is empty so the market keeps serving users', async () => {
-    expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+  it('auto-seeds on first list and reports a managed catalog', async () => {
+    const result = await (await platformCaller()).list();
+    expect(result.managed).toBe(true);
+    expect(result.templates).toEqual([expect.objectContaining({ identifier: 'market-daily' })]);
   });
 
   it('becomes authoritative once a row exists and serves only enabled rows', async () => {
@@ -916,5 +873,13 @@ describe('platform.taskTemplates.list', () => {
     vi.stubEnv('ENABLE_PLATFORM_ADMIN', '');
 
     expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+  });
+
+  it('does not seed when the platform-admin flag is off', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '');
+
+    expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+    expect(await db.select().from(platformTaskTemplates)).toHaveLength(0);
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(0);
   });
 });

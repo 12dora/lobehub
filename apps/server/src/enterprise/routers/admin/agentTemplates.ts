@@ -34,11 +34,12 @@ import {
   withAllPlatformPermissions,
   withPlatformPermission,
 } from '../../guards/platformPermission';
+import { isModuleEnabled } from '../../services/moduleSettings';
 import { PlatformAuditService } from '../../services/platformAudit';
+import { ensureAgentTemplateCatalogSeeded } from '../../services/templateCatalogBootstrap';
 import {
   deriveAgentTemplateIdentifier,
   fetchBuiltInAgentTemplatesForImport,
-  listUnmanagedAgentTemplatePreview,
   toAdminAgentTemplateItem,
   toAgentTemplateAuditDiff,
 } from './agentTemplatesSupport';
@@ -246,12 +247,15 @@ export const adminAgentTemplatesRouter = router({
     .input(adminAgentTemplateListInputSchema)
     .output(adminAgentTemplateListOutputSchema)
     .query(async ({ ctx, input }) => {
+      if (await isModuleEnabled('taskTemplates')) {
+        await ensureAgentTemplateCatalogSeeded(ctx.serverDB, {
+          actorUserId: ctx.userId,
+          locale: input.locale,
+        });
+      }
+
       const model = new PlatformAgentTemplateModel(ctx.serverDB);
       const totalAll = await model.count();
-      // Empty table: show the locale examples users currently see. Do not auto-import —
-      // that would flip `managed: true` and change the user-facing catalog.
-      if (totalAll === 0) return listUnmanagedAgentTemplatePreview(input);
-
       const page = await model.list({
         enabled: input.enabled,
         limit: input.limit,

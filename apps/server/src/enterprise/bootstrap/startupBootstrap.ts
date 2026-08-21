@@ -8,7 +8,9 @@
  *  1. `ensurePlatformRbacSeeded` — upserts every `platform_*` permission code and
  *     re-syncs the system-role → permission mappings. This is what makes
  *     permissions added by a new release appear in an already-migrated database.
- *  2. Optional super-admin bootstrap, driven by the same `BOOTSTRAP_*` env vars
+ *  2. Auto-seed the platform template catalogs (agent + task) when they have never
+ *     been seeded. Failures are logged and never block boot.
+ *  3. Optional super-admin bootstrap, driven by the same `BOOTSTRAP_*` env vars
  *     the CLI script accepts. Promotes an existing user, or (with
  *     `BOOTSTRAP_ALLOW_CREATE=1`) creates a local break-glass account and prints
  *     the generated one-time password exactly once.
@@ -25,6 +27,10 @@ import { PHASE_PRODUCTION_BUILD } from 'next/constants';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
+import {
+  ensureAgentTemplateCatalogSeeded,
+  ensureTaskTemplateCatalogSeeded,
+} from '../services/templateCatalogBootstrap';
 import {
   bootstrapSuperAdmin,
   type BootstrapSuperAdminResult,
@@ -80,6 +86,16 @@ export const runStartupPlatformBootstrap = async (
 ): Promise<StartupBootstrapOutcome> => {
   try {
     const { superAdminCount } = await ensurePlatformRbacSeeded(db);
+
+    try {
+      await ensureAgentTemplateCatalogSeeded(db);
+      await ensureTaskTemplateCatalogSeeded(db);
+    } catch (error) {
+      console.error(`${LOG_PREFIX} template catalog seed failed (non-blocking)`, {
+        errorCategory: classifyError(error),
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const userId = env.BOOTSTRAP_SUPER_ADMIN_USER_ID?.trim() || null;
     const email = env.BOOTSTRAP_SUPER_ADMIN_EMAIL?.trim() || null;

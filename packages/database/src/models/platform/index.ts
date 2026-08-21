@@ -40,3 +40,4 @@ export * from './settings';
 export * from './sidebarLayout';
 export * from './skillCatalog';
 export * from './taskTemplate';
+export * from './templateCatalogState';

@@ -181,8 +181,8 @@ export function useDailyBriefRecommendationsUI(
 
   /**
    * When the platform admin manages a task-template catalog, that list is authoritative and the
-   * market is never consulted. An empty table (or a disabled/failed policy read) means
-   * `managed: false`, which keeps the original market recommendations exactly as they were.
+   * bundled library is never consulted. `managed: false` (flag/module off, or a failed policy
+   * read) keeps the original recommendations. `managed: true` with an empty list hides the cards.
    */
   const platform = usePlatformTaskTemplates();
   const [dismissedPlatformIds, setDismissedPlatformIds] = useState<string[]>([]);

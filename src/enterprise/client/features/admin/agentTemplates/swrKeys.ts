@@ -3,8 +3,8 @@ import type { AdminAgentTemplateListQuery } from './types';
 export const ADMIN_AGENT_TEMPLATE_LIST_KEY = 'admin.agentTemplates.list' as const;
 
 /**
- * `locale` is part of the key: while the catalog is unmanaged the list answers with preview rows
- * of the bundled library rendered in that language, so two locales are two different pages.
+ * `locale` is part of the key: first-run auto-seed writes the console language, so two locales
+ * are two different pages until the catalog is seeded.
  */
 export const buildAdminAgentTemplateListKey = (input: AdminAgentTemplateListQuery) =>
   [

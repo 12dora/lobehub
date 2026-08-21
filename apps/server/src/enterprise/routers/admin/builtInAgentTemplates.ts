@@ -26,8 +26,8 @@ import enUSSuggestQuestions from '../../../../../../packages/locales/src/default
  * module-scope fs read would also run when ENABLE_PLATFORM_ADMIN is off (this file is
  * pulled in by the admin/platform routers).
  *
- * After an operator import the stored copy is single-locale; until then both the admin
- * preview and `importBuiltins` must resolve the same catalog users see in i18next.
+ * After an operator import the stored copy is single-locale; first-run auto-seed and
+ * `importBuiltins` resolve the same catalog users would otherwise see in i18next.
  */
 const BUILTIN_COUNT = 40;
 const FALLBACK_LOCALE = 'en-US';

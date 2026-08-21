@@ -13,7 +13,7 @@ import { deriveTaskTemplatePermissions } from './controller';
 import { createSortableRow, SortableTable } from './SortableRow';
 import { buildTaskTemplateColumns } from './taskTemplateColumns';
 import TaskTemplateListToolbar from './TaskTemplateListToolbar';
-import type { AdminTaskTemplateItem, AdminTaskTemplateOrigin } from './types';
+import type { AdminTaskTemplateItem } from './types';
 import { useFetchAdminTaskTemplates } from './useAdminTaskTemplates';
 import { useTaskTemplateActions } from './useTaskTemplateActions';
 import { useTaskTemplateFilters } from './useTaskTemplateFilters';
@@ -62,17 +62,12 @@ const TaskTemplateListPage = memo<TaskTemplateListPageProps>(({ embedded }) => {
     pendingOrder,
   } = useTaskTemplateActions(data?.items);
   const { clearSelection, rowSelection, selectedRows } = useTaskTemplateSelection();
-  // While the catalog is empty the list previews the bundled library users are actually being
-  // served. Those rows are not catalog entries — there is nothing to toggle, edit, delete or
-  // reorder — so every write affordance is withdrawn until an import or a create takes it over.
-  const origin: AdminTaskTemplateOrigin = data?.origin ?? 'managed';
-  const unmanaged = origin === 'unmanaged';
   // Bulk delete is the only bulk action, so the checkbox column is dead weight without it.
-  const selectable = canDelete && !unmanaged;
+  const selectable = canDelete;
 
   // Dragging reassigns the sort slots of the rows on screen. Under a filter the visible rows are
   // not contiguous, so the result would be meaningless — reorder is offered on the plain list only.
-  const canReorder = canUpdate && !filtered && !unmanaged && (data?.items.length ?? 0) > 1;
+  const canReorder = canUpdate && !filtered && (data?.items.length ?? 0) > 1;
 
   const rows = useMemo(() => {
     const items = data?.items ?? [];
@@ -89,8 +84,8 @@ const TaskTemplateListPage = memo<TaskTemplateListPageProps>(({ embedded }) => {
   const columns = useMemo(
     () =>
       buildTaskTemplateColumns({
-        canDelete: canDelete && !unmanaged,
-        canUpdate: canUpdate && !unmanaged,
+        canDelete,
+        canUpdate,
         enabledParam,
         handleDelete,
         handleToggle,
@@ -105,7 +100,6 @@ const TaskTemplateListPage = memo<TaskTemplateListPageProps>(({ embedded }) => {
       canDelete,
       canUpdate,
       enabledParam,
-      unmanaged,
       handleDelete,
       handleToggle,
       i18n.language,
@@ -139,11 +133,8 @@ const TaskTemplateListPage = memo<TaskTemplateListPageProps>(({ embedded }) => {
       hideTitle={embedded}
       title={t('taskTemplateCatalog.title')}
     >
-      {canUpdate && filtered && !unmanaged && (data?.items.length ?? 0) > 1 ? (
+      {canUpdate && filtered && (data?.items.length ?? 0) > 1 ? (
         <Text type="secondary">{t('taskTemplateCatalog.list.reorderHint')}</Text>
-      ) : null}
-      {unmanaged ? (
-        <Alert showIcon message={t('taskTemplateCatalog.list.unmanagedPreview')} type="info" />
       ) : null}
       <SortableTable ids={rows.map((row) => row.id)} onReorder={(next) => void handleReorder(next)}>
         <DataTable<AdminTaskTemplateItem>
@@ -155,9 +146,7 @@ const TaskTemplateListPage = memo<TaskTemplateListPageProps>(({ embedded }) => {
           rowKey="id"
           rowSelection={selectable ? rowSelection : undefined}
           emptyDescription={
-            // "Import them or create your own" is the banner's job now: while the catalog is
-            // unmanaged there are always preview rows, so an empty table can only be a filter miss.
-            filtered || unmanaged
+            filtered
               ? t('taskTemplateCatalog.list.empty.filtered')
               : t('taskTemplateCatalog.list.empty.default')
           }

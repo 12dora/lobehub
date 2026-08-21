@@ -31,9 +31,9 @@ export interface PlatformTaskTemplateConnector {
  * `platform_resource_revisions` row. `revision` is a per-row CAS token that the
  * model advances on every successful conditional update.
  *
- * Emptiness is meaningful: while the table has zero rows the product keeps using the
- * remote market recommendations. As soon as one row exists the platform list is
- * authoritative and only `enabled` rows are served.
+ * The catalog is platform-managed in every state. Built-in examples are auto-seeded as
+ * real rows on first start (`platform_template_catalog_state`). An empty table after
+ * that is a deliberate empty catalog — only `enabled` rows are served.
  */
 export const platformTaskTemplates = pgTable(
   'platform_task_templates',

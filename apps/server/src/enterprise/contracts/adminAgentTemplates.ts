@@ -3,10 +3,9 @@ import { z } from 'zod';
 /**
  * Platform agent-template ("助理模板") admin contracts.
  *
- * Agent templates are the example cards shown under the user-side "create agent" modal. Until an
- * operator imports or creates one, users keep the locale-driven built-in examples
- * (`suggestQuestions:agent.NN.*`). Any row makes the platform list authoritative; only `enabled`
- * rows are served, in `sortOrder`.
+ * Agent templates are the example cards shown under the user-side "create agent" modal. The
+ * catalog is always platform-managed: built-in examples are auto-seeded as real rows on first
+ * start. An empty list means users see no examples. Only `enabled` rows are served, in `sortOrder`.
  *
  * Direct-save family (same as task templates): every write lands immediately, guarded by a per-row
  * `revision` CAS token — there is no draft/publish pair and no `platform_resource_revisions` history.
@@ -69,7 +68,7 @@ export const adminAgentTemplateListInputSchema = z
   .object({
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).default(20),
-    /** Console locale; used only for the unmanaged built-in preview (falls back to en-US). */
+    /** Console locale; used for first-run auto-seed (falls back to DEFAULT_LANG / en-US). */
     locale: z.string().trim().min(2).max(32).optional(),
     offset: z.number().int().min(0).max(100_000).default(0),
     query: z.string().trim().max(200).optional(),
@@ -81,11 +80,11 @@ export const adminAgentTemplateListOutputSchema = z
   .object({
     items: z.array(adminAgentTemplateItemSchema),
     /**
-     * `managed` — DB rows (`totalAll > 0`). `unmanaged` — table empty; `items` are a read-only
-     * preview of the locale examples users currently see (`totalAll` is 0).
+     * Always `'managed'` when the module is on (kept as a union so older clients still parse).
+     * `'unmanaged'` is no longer produced.
      */
     origin: z.enum(['managed', 'unmanaged']),
-    /** Row count ignoring filters — zero means users still see the built-in locale examples. */
+    /** Row count ignoring filters — zero means users see no example cards. */
     totalAll: z.number().int().nonnegative(),
     totalFiltered: z.number().int().nonnegative(),
   })
@@ -190,7 +189,8 @@ export type AdminAgentTemplateImportOutput = z.infer<typeof adminAgentTemplateIm
 
 /**
  * User-facing read (`platform.agentTemplates.list`).
- * `managed: false` means "keep using the built-in locale examples".
+ * `managed: false` means the flag/module is off — keep using the built-in locale examples.
+ * `managed: true` with an empty list is a deliberate empty catalog.
  */
 export const platformAgentTemplateSchema = z
   .object({
@@ -214,7 +214,8 @@ export const platformAgentTemplateListOutputSchema = z
   .strict();
 export type PlatformAgentTemplateListOutput = z.infer<typeof platformAgentTemplateListOutputSchema>;
 
-export const EMPTY_PLATFORM_AGENT_TEMPLATE_LIST: PlatformAgentTemplateListOutput = {
+/** Returned when the platform-admin flag or the taskTemplates module is off. */
+export const DISABLED_PLATFORM_AGENT_TEMPLATE_LIST: PlatformAgentTemplateListOutput = {
   managed: false,
   templates: [],
 };

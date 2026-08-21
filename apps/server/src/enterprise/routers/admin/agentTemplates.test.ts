@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * admin.agentTemplates — CRUD, enable/disable, CAS conflict mapping, import upsert,
- * and the user-facing platform read that decides locale examples vs. platform authority.
+ * and the user-facing platform read that always reports a managed catalog when the module is on.
  */
 import { inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import { getTestDB } from '@/database/core/getTestDB';
 import {
   permissions,
   platformAgentTemplates,
+  platformTemplateCatalogState,
   rolePermissions,
   roles,
   userRoles,
@@ -28,7 +29,6 @@ import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAudi
 import { adminRouter } from '../admin';
 import { platformRouter } from '../platform';
 import { deriveAgentTemplateIdentifier } from './agentTemplatesSupport';
-import type * as BuiltInAgentTemplatesModule from './builtInAgentTemplates';
 
 const db: LobeChatDatabase = await getTestDB();
 const createAdminCaller = createCallerFactory(adminRouter);
@@ -64,6 +64,7 @@ const builtinRow = (overrides: Record<string, unknown> = {}) => ({
 const cleanup = async () => {
   await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
   await db.delete(platformAgentTemplates);
+  await db.delete(platformTemplateCatalogState);
   await db.delete(userRoles);
   await db.delete(rolePermissions);
   await db.delete(roles);
@@ -590,138 +591,79 @@ describe('admin.agentTemplates.reorder', () => {
   });
 });
 
-describe('admin.agentTemplates list unmanaged preview', () => {
-  beforeEach(async () => {
-    const actual =
-      await vi.importActual<typeof BuiltInAgentTemplatesModule>('./builtInAgentTemplates');
-    builtInSpy.mockImplementation(actual.builtInAgentTemplatesForImport);
-  });
+describe('admin.agentTemplates list auto-seed', () => {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  it('previews the 40 built-in examples without importing them', async () => {
+  it('seeds built-in rows on a fresh catalog with managed origin and UUID ids', async () => {
     const listed = await (await adminCaller()).list({ limit: 100, offset: 0 });
 
-    expect(listed.origin).toBe('unmanaged');
-    expect(listed.totalAll).toBe(0);
-    expect(listed.totalFiltered).toBe(40);
-    expect(listed.items).toHaveLength(40);
+    expect(listed.origin).toBe('managed');
+    expect(listed.totalAll).toBe(1);
+    expect(listed.totalFiltered).toBe(1);
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]?.id).toMatch(UUID_RE);
     expect(listed.items[0]).toMatchObject({
       enabled: true,
-      id: 'preview:agent-01',
       identifier: 'agent-01',
-      revision: 0,
-      sortOrder: 0,
       source: 'builtin',
+      title: 'Writer',
     });
-    expect(listed.items.every((item) => item.id.startsWith('preview:'))).toBe(true);
-    expect(await db.select().from(platformAgentTemplates)).toHaveLength(0);
-    expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+    expect(listed.items[0]?.id.startsWith('preview:')).toBe(false);
+    expect(await db.select().from(platformAgentTemplates)).toHaveLength(1);
+    expect(await (await platformCaller()).list()).toMatchObject({
+      managed: true,
+      templates: [expect.objectContaining({ identifier: 'agent-01' })],
+    });
   });
 
-  it('resolves ja-JP, zh-TW, zh, and unknown locales onto the matching catalog', async () => {
+  it('does not duplicate rows when two lists race the first seed', async () => {
     const caller = await adminCaller();
-    const [ja, tw, zh, unknown, en, cn] = await Promise.all([
-      caller.list({ limit: 1, locale: 'ja-JP', offset: 0 }),
-      caller.list({ limit: 1, locale: 'zh-TW', offset: 0 }),
-      caller.list({ limit: 1, locale: 'zh', offset: 0 }),
-      caller.list({ limit: 1, locale: 'zz-ZZ', offset: 0 }),
-      caller.list({ limit: 1, locale: 'en-US', offset: 0 }),
-      caller.list({ limit: 1, locale: 'zh-CN', offset: 0 }),
+    const [a, b] = await Promise.all([
+      caller.list({ limit: 100, offset: 0 }),
+      caller.list({ limit: 100, offset: 0 }),
     ]);
 
-    expect(ja.origin).toBe('unmanaged');
-    expect(ja.items[0]?.title).toBe('もっと上手に書けるようになりたい');
-    expect(tw.items[0]?.title).toBe('幫助我成為更好的作家');
-    expect(zh.items[0]?.title).toBe('帮助我成为更好的写作者');
-    expect(cn.items[0]?.title).toBe(zh.items[0]?.title);
-    expect(unknown.items[0]?.title).toBe(en.items[0]?.title);
-    expect(unknown.items[0]?.title).toBe('Help me become a better writer');
-    expect(tw.items[0]?.title).not.toBe(cn.items[0]?.title);
-    expect(ja.items[0]?.identifier).toBe(en.items[0]?.identifier);
+    expect(a.origin).toBe('managed');
+    expect(b.origin).toBe('managed');
+    expect(await db.select().from(platformAgentTemplates)).toHaveLength(1);
+    expect(new Set([...a.items, ...b.items].map((item) => item.id)).size).toBe(1);
   });
 
-  it('filters preview rows by query in memory', async () => {
-    const listed = await (
-      await adminCaller()
-    ).list({
-      limit: 100,
-      locale: 'en-US',
-      offset: 0,
-      query: 'better writer',
+  it('stays managed and empty after every row is deleted and does not re-seed', async () => {
+    const caller = await adminCaller();
+    const seeded = await caller.list({ limit: 100, offset: 0 });
+    await caller.delete({
+      expectedRevision: seeded.items[0]!.revision,
+      id: seeded.items[0]!.id,
     });
 
-    expect(listed.origin).toBe('unmanaged');
-    expect(listed.totalAll).toBe(0);
-    expect(listed.totalFiltered).toBeGreaterThan(0);
-    expect(listed.totalFiltered).toBeLessThan(40);
-    expect(
-      listed.items.every(
-        (item) =>
-          item.title.toLowerCase().includes('better writer') ||
-          item.identifier.toLowerCase().includes('better writer') ||
-          item.description.toLowerCase().includes('better writer'),
-      ),
-    ).toBe(true);
+    const listed = await caller.list({ limit: 100, offset: 0 });
+    expect(listed).toEqual({ items: [], origin: 'managed', totalAll: 0, totalFiltered: 0 });
+    expect(await db.select().from(platformAgentTemplates)).toHaveLength(0);
+    expect(await (await platformCaller()).list()).toEqual({ managed: true, templates: [] });
   });
 
-  it('returns an empty preview when enabled is false', async () => {
-    const listed = await (await adminCaller()).list({ enabled: false, limit: 20, offset: 0 });
-
-    expect(listed).toEqual({ items: [], origin: 'unmanaged', totalAll: 0, totalFiltered: 0 });
-  });
-
-  it('slices the preview by offset and limit', async () => {
+  it('writes a marker only when rows already exist and never overwrites them', async () => {
     const caller = await adminCaller();
-    const page1 = await caller.list({ limit: 10, offset: 0 });
-    const page2 = await caller.list({ limit: 10, offset: 10 });
-
-    expect(page1.origin).toBe('unmanaged');
-    expect(page1.totalAll).toBe(0);
-    expect(page1.totalFiltered).toBe(40);
-    expect(page1.items).toHaveLength(10);
-    expect(page2.items).toHaveLength(10);
-    expect(page1.items[0]?.identifier).toBe('agent-01');
-    expect(page2.items[0]?.identifier).toBe('agent-11');
-    expect(page1.items.map((item) => item.id)).not.toEqual(page2.items.map((item) => item.id));
-  });
-
-  it('switches to managed after create and never returns preview ids', async () => {
-    const caller = await adminCaller();
-    await caller.create(draft());
+    await caller.create(draft({ title: 'Custom' }));
 
     const listed = await caller.list({ limit: 20, offset: 0 });
     expect(listed.origin).toBe('managed');
     expect(listed.totalAll).toBe(1);
-    expect(listed.items.every((item) => !item.id.startsWith('preview:'))).toBe(true);
+    expect(listed.items.map((item) => item.title)).toEqual(['Custom']);
+    expect(await db.select().from(platformTemplateCatalogState)).toEqual([
+      expect.objectContaining({ domain: 'agent_templates' }),
+    ]);
   });
 
-  it('switches to managed after import and never returns preview ids', async () => {
-    builtInSpy.mockImplementation(() => [builtinRow()]);
-    const caller = await adminCaller();
-    await caller.importBuiltins({});
+  it('seeds in the console locale passed by the list input', async () => {
+    builtInSpy.mockImplementation((locale?: string) => [
+      builtinRow({ title: locale === 'zh-CN' ? '写作导师' : 'Writer' }),
+    ]);
 
-    const listed = await caller.list({ limit: 20, offset: 0 });
+    const listed = await (await adminCaller()).list({ limit: 20, locale: 'zh-CN', offset: 0 });
     expect(listed.origin).toBe('managed');
-    expect(listed.totalAll).toBe(1);
-    expect(listed.items.every((item) => !item.id.startsWith('preview:'))).toBe(true);
-    expect(listed.items[0]?.id).not.toMatch(/^preview:/);
-  });
-
-  it('rejects mutations against a preview id as NOT_FOUND rather than 500', async () => {
-    const caller = await adminCaller();
-    const id = 'preview:agent-01';
-
-    await expect(caller.delete({ expectedRevision: 0, id })).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-    });
-    await expect(
-      caller.setEnabled({ enabled: false, expectedRevision: 0, id }),
-    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    await expect(caller.reorder({ items: [{ expectedRevision: 0, id }] })).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-    });
-    await expect(caller.update({ ...draft(), expectedRevision: 0, id })).rejects.toMatchObject({
-      code: expect.stringMatching(/^(NOT_FOUND|CONFLICT)$/),
-    });
+    expect(listed.items[0]?.title).toBe('写作导师');
   });
 });
 
@@ -763,8 +705,10 @@ describe('unrenderable rows (empty title / system role written before validation
 });
 
 describe('platform.agentTemplates.list', () => {
-  it('stays unmanaged while the table is empty so locale examples keep serving users', async () => {
-    expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+  it('auto-seeds on first list and reports a managed catalog', async () => {
+    const result = await (await platformCaller()).list();
+    expect(result.managed).toBe(true);
+    expect(result.templates).toEqual([expect.objectContaining({ identifier: 'agent-01' })]);
   });
 
   it('becomes authoritative once a row exists and serves only enabled rows', async () => {
@@ -804,5 +748,13 @@ describe('platform.agentTemplates.list', () => {
     vi.stubEnv('ENABLE_PLATFORM_ADMIN', '');
 
     expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+  });
+
+  it('does not seed when the platform-admin flag is off', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '');
+
+    expect(await (await platformCaller()).list()).toEqual({ managed: false, templates: [] });
+    expect(await db.select().from(platformAgentTemplates)).toHaveLength(0);
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(0);
   });
 });
