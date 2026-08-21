@@ -214,6 +214,13 @@ export class IdentityActionImpl {
           draft.identitiesPage = 1;
           draft.identitiesPageError = undefined;
           draft.identitiesPendingPage = undefined;
+
+          // Pagination has to be latched off for the same reason the reset path
+          // latches it: the rows are still on screen, so `endReached` can fire
+          // at the bottom of them while page 1 is in flight. That advanced to
+          // page 2, page 1 was then rejected by the page guard, and page 2 was
+          // appended to rows the server had already moved on from.
+          draft.identitiesHasMore = false;
         }),
         false,
         n('adoptIdentitiesEpoch'),
@@ -383,7 +390,12 @@ export class IdentityActionImpl {
       produce((draft) => {
         draft.identitiesPendingPage = undefined;
 
-        if (page > 1) {
+        // Rows on screen — a later page, or a revalidation of page 1 started by
+        // a remount — keep them and offer a retry. Only a query with nothing to
+        // show yet becomes a whole-list failure. Without the `settled` half of
+        // this, a failed remount revalidation left the list readable but frozen:
+        // no error, and `hasMore` latched off with nothing left to unlatch it.
+        if (page > 1 || state.identitiesSettled) {
           draft.identitiesPageError = error;
           return;
         }

@@ -76,12 +76,26 @@ export class TreeActionImpl {
     return revisions;
   };
 
-  /** Reads currently outstanding per folder, so the last one out can tidy up. */
+  /**
+   * Reads currently outstanding, per folder *and* per tree, so the last one out
+   * can tidy up.
+   *
+   * The epoch is part of the key because a read outlives the tree it was
+   * started for: `init` / `reset` swap the library out from under it, and a
+   * count kept per folder alone would let that stale read decrement the *new*
+   * tree's tally when it finally answered. With two reads running on the new
+   * tree that is enough to make the older of them believe it is the last one
+   * out and release the status while the newest is still fetching — the folder
+   * reads as resolved-and-empty, and expanding it starts the load over again.
+   */
   #inFlightReads = new Map<string, number>();
 
+  static #readSlot = (epoch: number, folderId: string) => `${epoch}:${folderId}`;
+
   /** Bump the folder's revision, mark it busy, and take a ticket. */
-  #beginRead = (folderId: string, busy: 'loading' | 'revalidating'): number => {
-    this.#inFlightReads.set(folderId, (this.#inFlightReads.get(folderId) ?? 0) + 1);
+  #beginRead = (epoch: number, folderId: string, busy: 'loading' | 'revalidating'): number => {
+    const slot = TreeActionImpl.#readSlot(epoch, folderId);
+    this.#inFlightReads.set(slot, (this.#inFlightReads.get(slot) ?? 0) + 1);
     const revision = this.#bumpRevisions(folderId)[folderId];
     this.#set({ status: { ...this.#get().status, [folderId]: busy } }, false, `tree/${busy}/start`);
 
@@ -99,15 +113,19 @@ export class TreeActionImpl {
    * out releases the status, so a newer request's `loading` is never stolen.
    */
   #finishRead = (folderId: string, revision: number, epoch: number): boolean => {
-    const outstanding = (this.#inFlightReads.get(folderId) ?? 1) - 1;
-    if (outstanding > 0) this.#inFlightReads.set(folderId, outstanding);
-    else this.#inFlightReads.delete(folderId);
+    const slot = TreeActionImpl.#readSlot(epoch, folderId);
+    const outstanding = (this.#inFlightReads.get(slot) ?? 1) - 1;
+    if (outstanding > 0) this.#inFlightReads.set(slot, outstanding);
+    else this.#inFlightReads.delete(slot);
 
-    const isSameTree = this.#get().epoch === epoch;
-    const isLatest = isSameTree && (this.#get().revisions[folderId] ?? 0) === revision;
+    // Belongs to a tree that has since been replaced: it writes nothing, and it
+    // owns no status in the tree that is on screen now.
+    if (this.#get().epoch !== epoch) return false;
+
+    const isLatest = (this.#get().revisions[folderId] ?? 0) === revision;
     if (isLatest) return true;
 
-    if (isSameTree && outstanding <= 0) {
+    if (outstanding <= 0) {
       const busy = this.#get().status[folderId];
       if (busy === 'loading' || busy === 'revalidating') {
         this.#set(
@@ -193,7 +211,7 @@ export class TreeActionImpl {
     delete nextErrors[folderId];
     this.#set({ errors: nextErrors }, false, 'tree/loadChildren/start');
 
-    const revision = this.#beginRead(folderId, 'loading');
+    const revision = this.#beginRead(epoch, folderId, 'loading');
 
     try {
       const response = await fileService.getKnowledgeItems({
@@ -239,7 +257,7 @@ export class TreeActionImpl {
     // or stuck busy when the older read bailed out.
     const { epoch, knowledgeBaseId } = this.#get();
 
-    const revision = this.#beginRead(folderId, 'revalidating');
+    const revision = this.#beginRead(epoch, folderId, 'revalidating');
 
     try {
       const response = await fileService.getKnowledgeItems({

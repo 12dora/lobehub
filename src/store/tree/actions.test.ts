@@ -288,4 +288,48 @@ describe('TreeActionImpl folder read ordering', () => {
     expect(state.children['folder-x']?.map((item) => item.name)).toEqual(['After']);
     expect(state.status['folder-x']).toBe('idle');
   });
+
+  it('does not let a read from a replaced tree release the new tree status', async () => {
+    const state = createState();
+    const actions = new TreeActionImpl(
+      createSetter(() => state),
+      () => state,
+    );
+
+    // A read on the library that is on screen now.
+    const fromOldTree = deferred<{ items: unknown[] }>();
+    mockGetKnowledgeItems.mockReturnValueOnce(fromOldTree.promise);
+    const staleRead = actions.loadChildren('folder-x');
+
+    // The user switches library: the tree is replaced under that read.
+    mockGetKnowledgeItems.mockReturnValue(new Promise(() => undefined));
+    actions.init('kb-2');
+
+    // Two reads on the new tree, both still fetching.
+    const firstNew = deferred<{ items: unknown[] }>();
+    const secondNew = deferred<{ items: unknown[] }>();
+    mockGetKnowledgeItems.mockReturnValueOnce(firstNew.promise);
+    mockGetKnowledgeItems.mockReturnValueOnce(secondNew.promise);
+    const supersededRead = actions.loadChildren('folder-x');
+    const latestRead = actions.revalidate('folder-x');
+    expect(state.status['folder-x']).toBe('revalidating');
+
+    // The read from the replaced tree finally answers. Counting tickets per
+    // folder alone let it decrement the *new* tree's tally.
+    fromOldTree.resolve({ items: [treeRow('n0', 'FromOldTree')] });
+    await staleRead;
+    expect(state.status['folder-x']).toBe('revalidating');
+
+    // Which then let the older of the two new reads believe it was the last one
+    // out and release the folder while the newest was still fetching — the
+    // folder reads as resolved-and-empty and gets loaded all over again.
+    firstNew.resolve({ items: [treeRow('n1', 'Superseded')] });
+    await supersededRead;
+    expect(state.status['folder-x']).toBe('revalidating');
+
+    secondNew.resolve({ items: [treeRow('n1', 'Latest')] });
+    await latestRead;
+    expect(state.status['folder-x']).toBe('idle');
+    expect(state.children['folder-x']?.map((item) => item.name)).toEqual(['Latest']);
+  });
 });

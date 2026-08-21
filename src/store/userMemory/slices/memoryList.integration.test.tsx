@@ -612,6 +612,53 @@ describe('memory list remounts', () => {
     expect(ids().length).toBeLessThanOrEqual(state().identitiesTotal);
   });
 
+  it('will not page while a remount is re-reading page 1', async () => {
+    const app = await loadPages(['a1', 'a2'], ['a3', 'a4']);
+    expect(state().identitiesPage).toBe(2);
+    expect(state().identitiesHasMore).toBe(true);
+
+    app.unmount();
+
+    const pending = deferred<{ items: Row[]; total: number }>();
+    services.queryIdentities.mockImplementation(() => pending.promise);
+    mountApp();
+    await waitFor(() => expect(state().identitiesPage).toBe(1));
+
+    // The four rows from the last visit are still on screen, so the virtualizer
+    // sits at the bottom of them and fires `endReached` while page 1 is out.
+    act(() => state().loadMoreIdentities());
+
+    // Advancing here asks for page 2 of a list that is being rebuilt: page 1
+    // then loses the page guard and page 2 is appended to rows the server has
+    // already moved past.
+    expect(state().identitiesPage).toBe(1);
+
+    await act(async () => {
+      pending.resolve({ items: rows('a9', 'a8'), total: 4 });
+      await pending.promise;
+    });
+
+    await waitFor(() => expect(ids()).toEqual(['a9', 'a8']));
+    expect(state().identitiesHasMore).toBe(true);
+  });
+
+  it('offers a retry when the remount revalidation fails, instead of freezing the list', async () => {
+    const app = await loadPages(['a1', 'a2'], ['a3', 'a4']);
+    app.unmount();
+
+    services.queryIdentities.mockRejectedValue(new Error('offline'));
+    mountApp();
+
+    await waitFor(() => expect(state().identitiesPageError).toBeInstanceOf(Error));
+
+    // The rows are still readable, so this is not a whole-list failure — but
+    // pagination is latched off by the rewind, and without a retry there would
+    // be nothing left to unlatch it.
+    expect(ids()).toHaveLength(4);
+    expect(state().identitiesSettled).toBe(true);
+    expect(state().identitiesError).toBeUndefined();
+  });
+
   it('does not accumulate cache entries as the list is refiltered', async () => {
     services.queryIdentities.mockResolvedValue({ items: rows('a1'), total: 1 });
     mountApp();
