@@ -44,11 +44,45 @@ const deserializeParts = (content: string): MessageContentPart[] | null => {
   return null;
 };
 
+/**
+ * Split attachments into native `file_url` parts vs `<files_info>` prompt
+ * entries. Sandbox-synced files always go to the prompt (with `sandboxPath`)
+ * even when the model would otherwise accept a native file part.
+ */
+const partitionFileList = (
+  fileList: any[],
+  canUseFiles: boolean,
+  sandboxPathByFileId?: Record<string, string>,
+): { nativeFileList: any[]; promptFileList: any[] } => {
+  const nativeFileList: any[] = [];
+  const promptFileList: any[] = [];
+
+  for (const file of fileList) {
+    const sandboxPath = file?.id ? sandboxPathByFileId?.[file.id] : undefined;
+    if (sandboxPath) {
+      promptFileList.push({ ...file, sandboxPath });
+    } else if (canUseFiles) {
+      nativeFileList.push(file);
+    } else {
+      promptFileList.push(file);
+    }
+  }
+
+  return { nativeFileList, promptFileList };
+};
+
 export interface FileContextConfig {
   /** Whether to enable file context injection */
   enabled?: boolean;
   /** Whether to include file URLs in file context prompts */
   includeFileUrl?: boolean;
+  /**
+   * Map of file id → sandbox path for attachments that were synced into the
+   * session sandbox because they were not delivered natively. When set, those
+   * files are described in `<files_info>` with `sandboxPath` (no http URL)
+   * instead of being emitted as native `file_url` parts.
+   */
+  sandboxPathByFileId?: Record<string, string>;
 }
 
 export interface MessageContentConfig {
@@ -181,8 +215,14 @@ export class MessageContentProcessor extends BaseProcessor {
     // `file_url` parts so the runtime can upload the real file upstream; those
     // documents are then excluded from the `<files_info>` text injection to
     // avoid sending the same payload twice. Images/videos/audios are unaffected.
-    const nativeFileList: any[] = canUseFiles && hasFiles ? message.fileList : [];
-    const promptFileList: any[] = canUseFiles ? [] : message.fileList || [];
+    // Attachments that were synced into the sandbox (over-limit / no native
+    // file input) stay on the `<files_info>` path with `sandboxPath` so the
+    // model can read them with sandbox tools.
+    const { nativeFileList, promptFileList } = partitionFileList(
+      hasFiles ? message.fileList : [],
+      canUseFiles,
+      this.config.fileContext?.sandboxPathByFileId,
+    );
     const hasPromptFiles = promptFileList.length > 0;
 
     // Historical messages may already be stored in multimodal parts form

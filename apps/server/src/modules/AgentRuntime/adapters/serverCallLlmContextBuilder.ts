@@ -36,8 +36,14 @@ import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
 import type { PlatformAiExecutionConfig } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
+import { FileService } from '@/server/services/file';
 import { MarketService } from '@/server/services/market';
 import { OnboardingService } from '@/server/services/onboarding';
+import {
+  createSandboxService,
+  selectAttachmentsForSandboxSync,
+  syncOverLimitAttachmentsIfSandboxEnabled,
+} from '@/server/services/sandbox';
 import { toAgentContextDocuments } from '@/utils/agentDocumentContextMapping';
 
 import type { RuntimeExecutorContext } from '../context';
@@ -284,6 +290,46 @@ export const buildServerCallLlmContext = async ({
       sandboxUploadedFiles = formatUploadedFilesPrompt(uploadedFiles);
     } catch (error) {
       log('Failed to resolve files for {{sandbox_uploaded_files}} substitution: %O', error);
+    }
+  }
+
+  // Over-limit / non-native attachments: upload into /mnt/data/uploads before
+  // the model call so sandbox tools can read them. Best-effort — a failure
+  // never breaks the turn (files_info falls back to extracted text).
+  let sandboxPathByFileId: Record<string, string> | undefined;
+  const sandboxTopicId = ctx.topicId || lobehubSkillTopicId;
+  if (
+    !isManagedPlatformOperation &&
+    sandboxEnabled === 'true' &&
+    ctx.serverDB &&
+    ctx.userId &&
+    sandboxTopicId
+  ) {
+    try {
+      const files = selectAttachmentsForSandboxSync(messagesForContext, {
+        nativeFileInput: capabilities.isCanUseFiles(model, provider),
+      });
+      if (files.length > 0) {
+        const fileService = new FileService(ctx.serverDB, ctx.userId, ctx.workspaceId);
+        const sandboxService = createSandboxService({
+          fileService,
+          marketService: new MarketService({ userInfo: { userId: ctx.userId } }),
+          serverDB: ctx.serverDB,
+          topicId: sandboxTopicId,
+          userId: ctx.userId,
+        });
+        const synced = await syncOverLimitAttachmentsIfSandboxEnabled({
+          deps: {
+            callTool: (toolName, params) => sandboxService.callTool(toolName, params),
+            resolveDownloadUrl: (url) => fileService.createCachedPreSignedUrlForPreview(url),
+          },
+          enabled: true,
+          files,
+        });
+        if (Object.keys(synced).length > 0) sandboxPathByFileId = synced;
+      }
+    } catch (error) {
+      log('Failed to sync over-limit attachments into the sandbox: %O', error);
     }
   }
 
@@ -534,6 +580,9 @@ export const buildServerCallLlmContext = async ({
     enableAgentMode: agentConfig.chatConfig?.enableAgentMode,
     ...(!isManagedPlatformOperation && topicReferences && { topicReferences }),
     ...(!isManagedPlatformOperation && onboardingContext && { onboardingContext }),
+    ...(sandboxPathByFileId && {
+      fileContext: { enabled: true, includeFileUrl: true, sandboxPathByFileId },
+    }),
   };
 
   const processedMessages = await agentRuntimeTracer.startActiveSpan(

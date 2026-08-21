@@ -8,6 +8,7 @@ import type {
   DiscordContext,
   EvalContext,
   FileContent,
+  FileContextConfig,
   KnowledgeBaseInfo,
   LobeToolManifest,
   OnboardingContext,
@@ -128,6 +129,9 @@ export interface ServerMessagesEngineParams {
    * force this off; an explicit `false` stays off.
    */
   enableSystemDate?: boolean;
+
+  /** File context configuration (native vs files_info, sandbox paths) */
+  fileContext?: FileContextConfig;
 
   /** Force finish flag: when true, injects summary prompt for max-steps completion */
   forceFinish?: boolean;

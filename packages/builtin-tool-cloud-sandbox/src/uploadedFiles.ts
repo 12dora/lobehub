@@ -4,6 +4,13 @@
  */
 export const SANDBOX_UPLOADED_FILES_DIR = '/mnt/data';
 
+/**
+ * Directory for attachments that were not delivered natively (over the provider
+ * inline limit, or the provider has no native file input). Synced before the
+ * model call so sandbox tools can read them.
+ */
+export const SANDBOX_OVER_LIMIT_UPLOADS_DIR = `${SANDBOX_UPLOADED_FILES_DIR}/uploads`;
+
 /** Skip individual files larger than this when syncing into the sandbox. */
 export const SANDBOX_INIT_MAX_FILE_SIZE = 100 * 1024 * 1024;
 
@@ -60,6 +67,12 @@ export const sanitizeSandboxFileName = (name: string): string => {
  */
 export const sandboxUploadedFilePath = (name: string): string =>
   `${SANDBOX_UPLOADED_FILES_DIR}/${sanitizeSandboxFileName(name)}`;
+
+/**
+ * Build the absolute sandbox path for an over-limit / non-native attachment.
+ */
+export const sandboxOverLimitUploadPath = (name: string): string =>
+  `${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/${sanitizeSandboxFileName(name)}`;
 
 /**
  * Render the dynamic `{{sandbox_uploaded_files}}` section listing the files that

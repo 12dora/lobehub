@@ -7,11 +7,11 @@ import type { ChatFileItem } from '@lobechat/types';
 import { DEFAULT_FILE_INLINE_MAX_BYTES } from '@lobechat/utils';
 import debug from 'debug';
 
+import type { SandboxAttachmentUpload } from './bootstrap';
 import {
   buildSandboxAttachmentUploadCommand,
   SANDBOX_ATTACHMENT_SYNC_OK_PREFIX,
   SANDBOX_INIT_TIMEOUT_MS,
-  type SandboxAttachmentUpload,
 } from './bootstrap';
 import { normalizeSandboxCommandResult } from './service';
 

@@ -1,7 +1,17 @@
-import { SANDBOX_UPLOADED_FILES_DIR } from '@lobechat/builtin-tool-cloud-sandbox';
+import {
+  SANDBOX_OVER_LIMIT_UPLOADS_DIR,
+  SANDBOX_UPLOADED_FILES_DIR,
+} from '@lobechat/builtin-tool-cloud-sandbox';
 import { describe, expect, it } from 'vitest';
 
-import { buildSandboxFilesInitCommand, SANDBOX_FILES_INIT_MARKER } from '../bootstrap';
+import {
+  buildSandboxAttachmentUploadCommand,
+  buildSandboxFilesInitCommand,
+  SANDBOX_ATTACHMENT_SYNC_FAIL_PREFIX,
+  SANDBOX_ATTACHMENT_SYNC_OK_PREFIX,
+  SANDBOX_FILES_INIT_MARKER,
+  sandboxAttachmentSyncMarker,
+} from '../bootstrap';
 
 describe('buildSandboxFilesInitCommand', () => {
   it('only ensures the dir when there is nothing to download', () => {

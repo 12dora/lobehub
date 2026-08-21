@@ -146,6 +146,35 @@ describe('filesPrompts', () => {
     expect(result.match(/<file\b/g)).toHaveLength(2);
   });
 
+  it('should render sandboxPath and omit the url for sandbox-synced files', () => {
+    const result = filesPrompts({
+      fileList: [
+        {
+          ...mockFile,
+          sandboxPath: '/mnt/data/uploads/test.pdf',
+        },
+      ],
+    });
+
+    expect(result).toContain(
+      '<file id="file-1" name="test.pdf" type="application/pdf" size="1024" sandboxPath="/mnt/data/uploads/test.pdf"></file>',
+    );
+    expect(result).not.toContain('url="https://example.com/test.pdf"');
+    expect(result).toContain(
+      'Files with a sandboxPath attribute are available in the sandbox and can be read with sandbox tools (e.g. readFile).',
+    );
+  });
+
+  it('should keep the url attribute when sandboxPath is not set', () => {
+    const result = filesPrompts({
+      fileList: [mockFile],
+    });
+
+    expect(result).toContain('url="https://example.com/test.pdf"');
+    expect(result).not.toContain('sandboxPath=');
+    expect(result).not.toContain('Files with a sandboxPath attribute');
+  });
+
   it('should handle without url', () => {
     const images: ChatImageItem[] = [
       mockImage,

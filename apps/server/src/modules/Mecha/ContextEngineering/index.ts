@@ -94,6 +94,7 @@ export const serverMessagesEngine = async ({
   pageContentContext,
   topicReferences,
   additionalVariables,
+  fileContext,
   userLocale,
   userTimezone,
 }: ServerMessagesEngineParams): Promise<OpenAIChatMessage[]> => {
@@ -124,7 +125,8 @@ export const serverMessagesEngine = async ({
     enableSystemDate: resolvedEnableSystemDate,
 
     // Server-side file access URLs resolve to stable file-proxy URLs in production.
-    fileContext: { enabled: true, includeFileUrl: true },
+    // Callers may overlay sandboxPathByFileId for over-limit attachments.
+    fileContext: { enabled: true, includeFileUrl: true, ...fileContext },
 
     // Force finish mode (inject summary prompt when maxSteps exceeded)
     forceFinish,

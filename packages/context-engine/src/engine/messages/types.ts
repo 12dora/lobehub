@@ -94,6 +94,12 @@ export interface FileContextConfig {
   enabled: boolean;
   /** Whether to include file URLs (desktop typically uses false) */
   includeFileUrl: boolean;
+  /**
+   * Map of file id → sandbox path for attachments synced into the session
+   * sandbox because they were not delivered natively. Those files are described
+   * in `<files_info>` with `sandboxPath` and without an internal http URL.
+   */
+  sandboxPathByFileId?: Record<string, string>;
 }
 
 /**

@@ -634,6 +634,162 @@ describe('MessageContentProcessor', () => {
     });
   });
 
+  describe('Sandbox path attachments', () => {
+    const docFile = {
+      content: 'PARSED TEXT',
+      fileType: 'application/pdf',
+      id: 'file1',
+      name: 'report.pdf',
+      size: 2048,
+      url: 'http://internal.example.com/report.pdf',
+    };
+
+    it('should inject sandboxPath into files_info and omit the internal url', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        fileContext: {
+          enabled: true,
+          sandboxPathByFileId: { file1: '/mnt/data/uploads/report.pdf' },
+        },
+        isCanUseFiles: () => false,
+        isCanUseVision: mockIsCanUseVision,
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      const result = await processor.process(
+        createContext([
+          {
+            content: 'summarize it',
+            createdAt: Date.now(),
+            fileList: [docFile],
+            id: 'test',
+            role: 'user',
+            updatedAt: Date.now(),
+          } as UIChatMessage,
+        ]),
+      );
+
+      const content = result.messages[0].content as any[];
+      expect(content).toHaveLength(1);
+      expect(content[0].type).toBe('text');
+      expect(content[0].text).toContain('sandboxPath="/mnt/data/uploads/report.pdf"');
+      expect(content[0].text).not.toContain('http://internal.example.com/report.pdf');
+      expect(content[0].text).toContain(
+        'Files with a sandboxPath attribute are available in the sandbox and can be read with sandbox tools (e.g. readFile).',
+      );
+    });
+
+    it('should keep sandbox-synced files on files_info even when native file input is available', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        fileContext: {
+          enabled: true,
+          sandboxPathByFileId: { file1: '/mnt/data/uploads/report.pdf' },
+        },
+        isCanUseFiles: () => true,
+        isCanUseVision: mockIsCanUseVision,
+        model: 'auto',
+        provider: 'chatgptweb',
+      });
+
+      const result = await processor.process(
+        createContext([
+          {
+            content: 'summarize it',
+            createdAt: Date.now(),
+            fileList: [docFile],
+            id: 'test',
+            role: 'user',
+            updatedAt: Date.now(),
+          } as UIChatMessage,
+        ]),
+      );
+
+      const content = result.messages[0].content as any[];
+      expect(content.map((part) => part.type)).toEqual(['text']);
+      expect(content[0].text).toContain('sandboxPath="/mnt/data/uploads/report.pdf"');
+      expect(content[0].text).not.toContain('<file_url');
+      expect(content[0].text).not.toContain('http://internal.example.com');
+    });
+
+    it('should keep under-limit native files as file_url while sandbox-synced files go to files_info', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        fileContext: {
+          enabled: true,
+          sandboxPathByFileId: { file1: '/mnt/data/uploads/report.pdf' },
+        },
+        isCanUseFiles: () => true,
+        isCanUseVision: mockIsCanUseVision,
+        model: 'auto',
+        provider: 'chatgptweb',
+      });
+
+      const result = await processor.process(
+        createContext([
+          {
+            content: 'summarize them',
+            createdAt: Date.now(),
+            fileList: [
+              docFile,
+              {
+                fileType: 'application/pdf',
+                id: 'small',
+                name: 'notes.pdf',
+                size: 512,
+                url: 'http://internal.example.com/notes.pdf',
+              },
+            ],
+            id: 'test',
+            role: 'user',
+            updatedAt: Date.now(),
+          } as UIChatMessage,
+        ]),
+      );
+
+      const content = result.messages[0].content as any[];
+      expect(content.map((part) => part.type)).toEqual(['file_url', 'text']);
+      expect(content[0].file_url).toMatchObject({ fileId: 'small', name: 'notes.pdf' });
+      expect(content[1].text).toContain('sandboxPath="/mnt/data/uploads/report.pdf"');
+      expect(content[1].text).not.toContain('notes.pdf');
+      expect(content[1].text).not.toContain('http://internal.example.com');
+    });
+
+    it('should leave native file_url delivery unchanged when sandbox is not enabled', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        fileContext: { enabled: true },
+        isCanUseFiles: () => true,
+        isCanUseVision: mockIsCanUseVision,
+        model: 'auto',
+        provider: 'chatgptweb',
+      });
+
+      const result = await processor.process(
+        createContext([
+          {
+            content: 'summarize it',
+            createdAt: Date.now(),
+            fileList: [docFile],
+            id: 'test',
+            role: 'user',
+            updatedAt: Date.now(),
+          } as UIChatMessage,
+        ]),
+      );
+
+      const content = result.messages[0].content as any[];
+      expect(content[0].type).toBe('file_url');
+      expect(content[1].text).toBe('summarize it');
+      expect(content[1].text).not.toContain('sandboxPath=');
+    });
+  });
+
   describe('Reasoning/thinking content', () => {
     it('should handle assistant messages with reasoning correctly', async () => {
       const processor = new MessageContentProcessor({
