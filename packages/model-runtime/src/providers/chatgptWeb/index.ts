@@ -393,33 +393,34 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
                 : 'f:plain'
           : 'conversation';
 
-      const buildBody = (fPath: boolean) =>
-        fPath
-          ? buildFConversationBody({
-              browserProfile: this.client.browserProfile,
-              messages,
-              model,
-              search,
-              thinkingEffort,
-            })
-          : buildConversationBody({
-              browserProfile: this.client.browserProfile,
-              messages,
-              model,
-              thinkingEffort,
-            });
+      // Built once: a conduit retry must POST the same message ids / create_time
+      // as the first send. Only the `X-Conduit-Token` header may change.
+      const fBody = buildFConversationBody({
+        browserProfile: this.client.browserProfile,
+        messages,
+        model,
+        search,
+        thinkingEffort,
+      });
 
-      const launchStream = (fPath: boolean, token: string | undefined) => {
-        const nextBody = buildBody(fPath);
-        if (process.env[DEBUG_FLAG] === '1')
-          log(
-            'request: %o',
-            describeRequestBody(nextBody, {
-              flow: describeFlow(fPath),
-              model,
-              thinkingEffort,
-            }),
-          );
+      const logRequest = (nextBody: Record<string, any>, fPath: boolean) => {
+        if (process.env[DEBUG_FLAG] !== '1') return;
+        log(
+          'request: %o',
+          describeRequestBody(nextBody, {
+            flow: describeFlow(fPath),
+            model,
+            thinkingEffort,
+          }),
+        );
+      };
+      logRequest(fBody, true);
+
+      const launchStream = (
+        nextBody: Record<string, any>,
+        fPath: boolean,
+        token: string | undefined,
+      ) => {
         let resolveHeaders = () => undefined;
         const headersPromise = new Promise<void>((resolve) => {
           resolveHeaders = resolve;
@@ -451,7 +452,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         }
       };
 
-      let launched = launchStream(useFPath, conduitToken);
+      let launched = launchStream(fBody, useFPath, conduitToken);
       this.client.replenishSentinelBundle({ contextKey });
 
       const openOrRetry = async () => {
@@ -478,7 +479,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
                 : 'conversation 4xx missing conduit; retrying once after prepare (no token)',
             );
             abandon(launched.iterator);
-            launched = launchStream(true, retryToken);
+            launched = launchStream(fBody, true, retryToken);
             await waitForStreamHeaders(launched.headersPromise, launched.firstPromise);
             return;
           }
@@ -498,7 +499,14 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
             abandon(launched.iterator);
             useFPath = false;
             conduitToken = undefined;
-            launched = launchStream(false, undefined);
+            const plainBody = buildConversationBody({
+              browserProfile: this.client.browserProfile,
+              messages,
+              model,
+              thinkingEffort,
+            });
+            logRequest(plainBody, false);
+            launched = launchStream(plainBody, false, undefined);
             await waitForStreamHeaders(launched.headersPromise, launched.firstPromise);
             return;
           }

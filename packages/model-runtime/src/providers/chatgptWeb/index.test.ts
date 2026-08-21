@@ -812,6 +812,9 @@ describe('LobeChatGPTWebAI', () => {
         conduitToken: 'conduit-retry',
         useFPath: true,
       });
+      // Conduit token is a header, not a body field — the retry must POST the
+      // exact same message ids / create_time as the first send.
+      expect(bodyOf(client, 1)).toBe(bodyOf(client, 0));
     });
 
     it('retries once without a token when prepare fulfilled with a null conduit token', async () => {
@@ -850,6 +853,7 @@ describe('LobeChatGPTWebAI', () => {
         conduitToken: undefined,
         useFPath: true,
       });
+      expect(bodyOf(client, 1)).toBe(bodyOf(client, 0));
     });
 
     it('falls back to the plain path once when a missing-conduit 4xx meets a failed prepare', async () => {
