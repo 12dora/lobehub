@@ -102,13 +102,17 @@ When('用户按 Enter 从 Home 默认输入发送', { timeout: 45_000 }, async f
 
   await this.page.waitForTimeout(200);
   this.testContext.delayColdAgentScripts = true;
+  // Pin the pathname the composer was opened on (`/` or `/:workspaceSlug`):
+  // sending must keep it byte-for-byte.
+  const homePathname = new URL(this.page.url()).pathname;
+  this.testContext.homePathname = homePathname;
 
   await this.page.keyboard.press('Enter');
 
   // The home composer never leaves the home pathname: the conversation is
   // addressed in place through `?agent=` (and later `?topic=`).
   await this.page.waitForURL(
-    (url) => url.searchParams.has('agent') && !AGENT_PATHNAME_REGEX.test(url.pathname),
+    (url) => url.searchParams.has('agent') && url.pathname === homePathname,
     { timeout: WAIT_TIMEOUT },
   );
 
@@ -121,17 +125,21 @@ Then(
   async function (this: CustomWorld) {
     console.log('   📍 Step: 验证 URL 原地打开新建 Topic...');
 
+    const homePathname = this.testContext.homePathname;
+    expect(homePathname).toBeTruthy();
+
     await this.page.waitForURL(
       (url) =>
         !!url.searchParams.get('agent') &&
         !!url.searchParams.get('topic') &&
-        !AGENT_PATHNAME_REGEX.test(url.pathname),
+        url.pathname === homePathname,
       { timeout: 30_000 },
     );
 
     const currentUrl = new URL(this.page.url());
     expect(currentUrl.searchParams.get('agent')).toBeTruthy();
     expect(currentUrl.searchParams.get('topic')).toBeTruthy();
+    expect(currentUrl.pathname).toBe(homePathname);
     // Never `/agent/...` — that pathname is what swaps the left nav away from home.
     expect(currentUrl.pathname).not.toMatch(AGENT_PATHNAME_REGEX);
 
