@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { SerializedAgentHook } from '../agentHook';
 import type { WorkingDirConfig } from '../device';
 import type { BaseDataModel } from '../meta';
+import type { TopicApprovalMode } from '../tool/intervention';
 
 // Type definitions
 export type ShareVisibility = 'private' | 'link';
@@ -105,6 +106,13 @@ export interface OnboardingSessionSnapshot {
 }
 
 export interface ChatTopicMetadata {
+  /**
+   * Per-conversation tool-approval mode. Snapshotted from the effective
+   * (user → platform default → `'manual'`) value when the topic is created.
+   * Subsequent selector changes write only this topic. Absent on legacy topics
+   * — those fall through the same resolve chain at runtime.
+   */
+  approvalMode?: TopicApprovalMode;
   bot?: ChatTopicBotContext;
   boundDeviceId?: string;
   cronJobId?: string;
@@ -313,6 +321,7 @@ export interface CreateTopicParams {
   favorite?: boolean;
   groupId?: string | null;
   messages?: string[];
+  metadata?: ChatTopicMetadata;
   sessionId?: string | null;
   title: string;
   trigger?: string;

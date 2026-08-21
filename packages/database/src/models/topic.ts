@@ -1009,6 +1009,20 @@ export class TopicModel {
   // **************** Update *************** //
 
   update = async (id: string, data: Partial<TopicItem>) => {
+    // `metadata` is a JSONB blob of independent keys (approvalMode,
+    // userMemoryExtractStatus, runningOperation, …). A SET of the column
+    // would clobber siblings, so peel it off and merge via updateMetadata.
+    if (data.metadata != null) {
+      const { metadata, ...rest } = data;
+      const result = await this.db
+        .update(topics)
+        .set({ ...rest, updatedAt: new Date() })
+        .where(and(eq(topics.id, id), this.ownership()))
+        .returning();
+      if (result.length === 0) return result;
+      return this.updateMetadata(id, metadata as TopicMetadataPatch);
+    }
+
     return this.db
       .update(topics)
       .set({ ...data, updatedAt: new Date() })

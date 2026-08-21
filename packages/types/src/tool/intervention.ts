@@ -118,6 +118,25 @@ export const HumanInterventionResponseSchema = z.object({
 });
 
 /**
+ * User-selectable tool approval modes. `headless` is internal (CLI / async / org)
+ * and is never stored on a topic.
+ */
+export const TOPIC_APPROVAL_MODES = ['auto-run', 'allow-list', 'manual'] as const;
+
+export type TopicApprovalMode = (typeof TOPIC_APPROVAL_MODES)[number];
+
+export const topicApprovalModeSchema = z.enum(TOPIC_APPROVAL_MODES);
+
+/** Runtime approval mode including the internal `headless` value. */
+export type RuntimeApprovalMode = TopicApprovalMode | 'headless';
+
+export const isTopicApprovalMode = (value: unknown): value is TopicApprovalMode =>
+  typeof value === 'string' && (TOPIC_APPROVAL_MODES as readonly string[]).includes(value);
+
+export const isRuntimeApprovalMode = (value: unknown): value is RuntimeApprovalMode =>
+  isTopicApprovalMode(value) || value === 'headless';
+
+/**
  * User's global intervention configuration
  * Applied across all tools in the session
  */
@@ -141,13 +160,42 @@ export interface UserInterventionConfig {
    * - headless: Fully automated mode for async tasks - all tools execute automatically,
    *             security blacklist tools are skipped (not blocked)
    */
-  approvalMode: 'auto-run' | 'allow-list' | 'manual' | 'headless';
+  approvalMode: RuntimeApprovalMode;
 }
 
 export const UserInterventionConfigSchema = z.object({
   allowList: z.array(z.string()).optional(),
   approvalMode: z.enum(['auto-run', 'allow-list', 'manual', 'headless']),
 });
+
+export interface ResolveTopicApprovalModeParams {
+  lockedValue?: RuntimeApprovalMode | null;
+  platformDefault?: RuntimeApprovalMode | null;
+  platformLocked?: boolean;
+  topicApprovalMode?: TopicApprovalMode | null;
+  userApprovalMode?: RuntimeApprovalMode | null;
+}
+
+/**
+ * Resolve the effective tool-approval mode for a conversation.
+ *
+ * Chain (first present wins): topic → user preference → platform default → `'manual'`.
+ * A platform-locked (managed) policy overrides every other layer.
+ */
+export const resolveTopicApprovalMode = (
+  params: ResolveTopicApprovalModeParams,
+): RuntimeApprovalMode => {
+  if (params.platformLocked) {
+    if (isRuntimeApprovalMode(params.lockedValue)) return params.lockedValue;
+    if (isRuntimeApprovalMode(params.platformDefault)) return params.platformDefault;
+    return 'manual';
+  }
+
+  if (isTopicApprovalMode(params.topicApprovalMode)) return params.topicApprovalMode;
+  if (isRuntimeApprovalMode(params.userApprovalMode)) return params.userApprovalMode;
+  if (isRuntimeApprovalMode(params.platformDefault)) return params.platformDefault;
+  return 'manual';
+};
 
 /**
  * Security Blacklist Rule

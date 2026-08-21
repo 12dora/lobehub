@@ -4,6 +4,7 @@ import {
   type RecentTopicGroup,
   type RecentTopicGroupMember,
   serializedAgentHookSchema,
+  topicApprovalModeSchema,
 } from '@lobechat/types';
 import { cleanObject } from '@lobechat/utils';
 import { inArray } from 'drizzle-orm';
@@ -238,6 +239,11 @@ export const topicRouter = router({
           favorite: z.boolean().optional(),
           groupId: z.string().nullish(),
           messages: z.array(z.string()).optional(),
+          metadata: z
+            .object({
+              approvalMode: topicApprovalModeSchema.optional(),
+            })
+            .optional(),
           title: z.string(),
           trigger: z.string().optional(),
         })
@@ -655,6 +661,7 @@ export const topicRouter = router({
           messages: z.array(z.string()).optional(),
           metadata: z
             .object({
+              approvalMode: topicApprovalModeSchema.optional(),
               model: z.string().optional(),
               provider: z.string().optional(),
             })
@@ -689,6 +696,7 @@ export const topicRouter = router({
       z.object({
         id: z.string(),
         metadata: z.object({
+          approvalMode: topicApprovalModeSchema.optional(),
           boundDeviceId: z.string().optional(),
           heteroSessionId: z.string().optional(),
           heteroSessionIdByWorkingDirectory: z.record(z.string()).optional(),

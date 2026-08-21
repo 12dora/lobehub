@@ -8,11 +8,15 @@ const {
   mockGetAgentConfig,
   mockMessageCreate,
   mockResolveEffectiveUserInterventionConfig,
+  mockTopicCreate,
+  mockTopicFindById,
 } = vi.hoisted(() => ({
   mockCreateOperation: vi.fn(),
   mockGetAgentConfig: vi.fn(),
   mockMessageCreate: vi.fn(),
   mockResolveEffectiveUserInterventionConfig: vi.fn(),
+  mockTopicCreate: vi.fn(),
+  mockTopicFindById: vi.fn(),
 }));
 
 vi.mock('@/server/enterprise/services/settings/runtimeSettingsAdapter', () => ({
@@ -46,6 +50,7 @@ vi.mock('@/database/models/agent', () => ({
 vi.mock('@/server/services/agent', () => ({
   AgentService: vi.fn().mockImplementation(() => ({
     getAgentConfig: mockGetAgentConfig,
+    queryAvailableAgents: vi.fn().mockResolvedValue([]),
   })),
 }));
 
@@ -57,7 +62,8 @@ vi.mock('@/database/models/plugin', () => ({
 
 vi.mock('@/database/models/topic', () => ({
   TopicModel: vi.fn().mockImplementation(() => ({
-    create: vi.fn().mockResolvedValue({ id: 'topic-1' }),
+    create: mockTopicCreate,
+    findById: mockTopicFindById,
   })),
 }));
 
@@ -133,6 +139,8 @@ describe('AiAgentService.execAgent - headless approval default', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockTopicCreate.mockResolvedValue({ id: 'topic-1' });
+    mockTopicFindById.mockResolvedValue(undefined);
     mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
     mockCreateOperation.mockResolvedValue({
       autoStarted: true,
@@ -222,5 +230,56 @@ describe('AiAgentService.execAgent - headless approval default', () => {
     expect(mockCreateOperation.mock.calls[0][0].userInterventionConfig).toEqual({
       approvalMode: 'manual',
     });
+  });
+
+  it('loads topic.metadata.approvalMode and forwards it to the resolver', async () => {
+    mockTopicFindById.mockResolvedValueOnce({
+      id: 'topic-existing',
+      metadata: { approvalMode: 'allow-list' },
+    });
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      appContext: { topicId: 'topic-existing' },
+      prompt: 'Hello',
+      userInterventionConfig: { approvalMode: 'manual' },
+    });
+
+    expect(mockTopicFindById).toHaveBeenCalledWith('topic-existing');
+    expect(mockResolveEffectiveUserInterventionConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topicApprovalMode: 'allow-list',
+        userId,
+      }),
+    );
+  });
+
+  it('snapshots the resolved approval mode onto a newly created topic', async () => {
+    mockResolveEffectiveUserInterventionConfig.mockResolvedValueOnce({ approvalMode: 'auto-run' });
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      prompt: 'Hello',
+      userInterventionConfig: { approvalMode: 'auto-run' },
+    });
+
+    expect(mockTopicCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ approvalMode: 'auto-run' }),
+      }),
+    );
+  });
+
+  it('does not snapshot headless onto a newly created topic', async () => {
+    await service.execAgent({
+      agentId: 'agent-1',
+      prompt: 'Hello',
+    });
+
+    expect(mockTopicCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: undefined,
+      }),
+    );
   });
 });

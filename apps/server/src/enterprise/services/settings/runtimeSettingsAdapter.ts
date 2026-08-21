@@ -10,7 +10,8 @@
  * keyVaults / market secrets stay on dedicated encrypted paths.
  */
 
-import type { UserInterventionConfig } from '@lobechat/types';
+import type { TopicApprovalMode, UserInterventionConfig } from '@lobechat/types';
+import { isTopicApprovalMode, resolveTopicApprovalMode } from '@lobechat/types';
 
 import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
@@ -273,38 +274,66 @@ export const getToolSlice = async (params: LoadEffectiveUserSettingsParams): Pro
 
 export type EffectiveUserInterventionConfig = UserInterventionConfig;
 
+const APPROVAL_MODE_PATH = 'tool.humanIntervention.approvalMode';
+
 /**
  * Resolve tool.humanIntervention for execAgent (R3-B1).
  *
- * Flag OFF: return caller config unchanged (legacy / headless default).
+ * Flag OFF: return caller config unchanged (legacy / headless default), unless
+ * a per-topic snapshot is supplied for an interactive (non-headless) personal
+ * run — then topic → caller → `'manual'`.
+ *
  * Flag ON: force approvalMode from effective settings so request body cannot
- * override locked/default/effective platform policy. allowList may still come
- * from the caller when mode is allow-list and not platform-locked-only.
+ * override locked/default/effective platform policy. A per-topic snapshot then
+ * wins unless the platform policy is locked. allowList may still come from the
+ * caller. Workspace / headless callers skip the topic overlay so those paths
+ * stay identical to pre-topic-mode behavior.
  */
 export const resolveEffectiveUserInterventionConfig = async (params: {
   callerConfig?: UserInterventionConfig | null;
   db: LobeChatDatabase;
   scope?: 'personal' | 'workspace';
+  /**
+   * Topic-level approval snapshot (`topics.metadata.approvalMode`). Loaded by
+   * the execAgent caller from the run's topic; the adapter stays free of
+   * TopicModel / workspace scoping.
+   */
+  topicApprovalMode?: TopicApprovalMode | null;
   userId: string;
 }): Promise<EffectiveUserInterventionConfig | undefined> => {
   const caller = params.callerConfig ?? undefined;
+  const applyTopic =
+    params.scope !== 'workspace' &&
+    caller?.approvalMode !== 'headless' &&
+    isTopicApprovalMode(params.topicApprovalMode);
 
   if (!isPolicyEnabled()) {
-    // Exact legacy: pass through (including undefined → caller default)
-    return caller;
+    if (!applyTopic) {
+      // Exact legacy: pass through (including undefined → caller default)
+      return caller;
+    }
+
+    return {
+      allowList: caller?.allowList,
+      approvalMode: resolveTopicApprovalMode({
+        topicApprovalMode: params.topicApprovalMode,
+        userApprovalMode: caller?.approvalMode,
+      }),
+    };
   }
 
   const service = new EffectiveSettingsService(params.db);
   let effectiveApproval: string | undefined;
+  let platformLocked: boolean;
 
   if (params.scope === 'workspace') {
     const platform = await service.getPlatformLayerEffectiveSettings();
-    effectiveApproval = platform.effectiveValues['tool.humanIntervention.approvalMode'] as
-      string | undefined;
+    effectiveApproval = platform.effectiveValues[APPROVAL_MODE_PATH] as string | undefined;
+    platformLocked = platform.pathMeta[APPROVAL_MODE_PATH]?.locked === true;
   } else {
     const userModel = new UserModel(params.db, params.userId);
     const row = await userModel.getUserSettings();
-    const { settings } = await loadEffectiveUserSettings({
+    const { effective, settings } = await loadEffectiveUserSettings({
       db: params.db,
       legacySettings: { tool: row?.tool } as Record<string, unknown>,
       userId: params.userId,
@@ -312,18 +341,26 @@ export const resolveEffectiveUserInterventionConfig = async (params: {
     const tool = settings.tool as
       { humanIntervention?: { allowList?: string[]; approvalMode?: string } } | undefined;
     effectiveApproval = tool?.humanIntervention?.approvalMode;
+    platformLocked = effective.pathMeta[APPROVAL_MODE_PATH]?.locked === true;
   }
 
   const approvalMode = settingsRegistry.validateValue(
-    'tool.humanIntervention.approvalMode',
+    APPROVAL_MODE_PATH,
     effectiveApproval ?? caller?.approvalMode ?? 'headless',
   );
   if (!approvalMode.ok) {
     throw new Error(`Invalid effective intervention policy: ${approvalMode.message}`);
   }
 
+  const effectiveMode = approvalMode.value as EffectiveUserInterventionConfig['approvalMode'];
+
   return {
     allowList: caller?.allowList,
-    approvalMode: approvalMode.value as EffectiveUserInterventionConfig['approvalMode'],
+    approvalMode: resolveTopicApprovalMode({
+      lockedValue: platformLocked ? effectiveMode : undefined,
+      platformLocked,
+      topicApprovalMode: applyTopic ? params.topicApprovalMode : undefined,
+      userApprovalMode: effectiveMode,
+    }),
   };
 };

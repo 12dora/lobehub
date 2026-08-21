@@ -1,5 +1,6 @@
 import type { WorkingDirConfig } from '../device';
 import type { TaskDetail, UIChatMessage } from '../message';
+import type { TopicApprovalMode } from '../tool/intervention';
 import type { ChatTopic } from '../topic';
 
 export type AgentSignalOperationKind =
@@ -86,6 +87,7 @@ export interface ExecAgentAppContext {
    * this execution. Ignored when a topicId is already provided (existing topic).
    */
   initialTopicMetadata?: {
+    approvalMode?: TopicApprovalMode;
     repos?: string[];
     workingDirectory?: string;
     workingDirectoryConfig?: WorkingDirConfig;

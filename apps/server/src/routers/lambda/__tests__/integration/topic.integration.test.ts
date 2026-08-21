@@ -119,6 +119,20 @@ describe('Topic Router Integration Tests', () => {
       expect(createdTopic.sessionId).toBe(testSessionId);
     });
 
+    it('should persist metadata.approvalMode on create', async () => {
+      const caller = topicRouter.createCaller(createTestContext(userId));
+
+      const topicId = await caller.createTopic({
+        metadata: { approvalMode: 'auto-run' },
+        sessionId: testSessionId,
+        title: 'Approval snapshot',
+      });
+
+      const [createdTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
+
+      expect(createdTopic.metadata).toEqual({ approvalMode: 'auto-run' });
+    });
+
     it('should fall back to sessionId when agentId not found', async () => {
       const caller = topicRouter.createCaller(createTestContext(userId));
 
@@ -454,6 +468,61 @@ describe('Topic Router Integration Tests', () => {
 
       expect(updatedTopic.title).toBe('Updated Title');
       expect(updatedTopic.sessionId).toBe(newSession.id);
+    });
+
+    it('should merge metadata.approvalMode without replacing sibling keys', async () => {
+      const caller = topicRouter.createCaller(createTestContext(userId));
+
+      const topicId = await caller.createTopic({
+        sessionId: testSessionId,
+        title: 'Merge metadata',
+      });
+
+      await serverDB
+        .update(topics)
+        .set({ metadata: { userMemoryExtractStatus: 'pending' } })
+        .where(eq(topics.id, topicId));
+
+      await caller.updateTopic({
+        id: topicId,
+        value: { metadata: { approvalMode: 'manual' } },
+      });
+
+      const [updatedTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
+      expect(updatedTopic.metadata).toEqual({
+        approvalMode: 'manual',
+        userMemoryExtractStatus: 'pending',
+      });
+    });
+  });
+
+  describe('updateTopicMetadata', () => {
+    it('should merge approvalMode onto existing metadata', async () => {
+      const caller = topicRouter.createCaller(createTestContext(userId));
+
+      const topicId = await caller.createTopic({
+        metadata: { approvalMode: 'manual' },
+        sessionId: testSessionId,
+        title: 'Metadata merge',
+      });
+
+      await serverDB
+        .update(topics)
+        .set({
+          metadata: { approvalMode: 'manual', userMemoryExtractStatus: 'pending' },
+        })
+        .where(eq(topics.id, topicId));
+
+      await caller.updateTopicMetadata({
+        id: topicId,
+        metadata: { approvalMode: 'auto-run' },
+      });
+
+      const [updatedTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
+      expect(updatedTopic.metadata).toEqual({
+        approvalMode: 'auto-run',
+        userMemoryExtractStatus: 'pending',
+      });
     });
   });
 

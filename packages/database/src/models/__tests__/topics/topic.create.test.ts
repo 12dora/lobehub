@@ -224,6 +224,24 @@ describe('TopicModel - Create', () => {
       expect(dbTopic[0].agentId).toBe('agent-for-topic');
     });
 
+    it('should persist metadata.approvalMode on create', async () => {
+      const createdTopic = await topicModel.create(
+        {
+          metadata: { approvalMode: 'auto-run' },
+          title: 'Approval snapshot',
+        },
+        'topic-approval-mode',
+      );
+
+      expect(createdTopic.metadata).toEqual({ approvalMode: 'auto-run' });
+
+      const [row] = await serverDB
+        .select()
+        .from(topics)
+        .where(eq(topics.id, 'topic-approval-mode'));
+      expect(row.metadata).toEqual({ approvalMode: 'auto-run' });
+    });
+
     it('should create a new topic with only agentId (no sessionId)', async () => {
       await serverDB.insert(agents).values({ id: 'agent-only', userId, title: 'Agent Only' });
 

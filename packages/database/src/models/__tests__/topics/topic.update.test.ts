@@ -39,6 +39,29 @@ describe('TopicModel - Update', () => {
       expect(item[0].favorite).toBeFalsy();
     });
 
+    it('should merge metadata.approvalMode without replacing sibling keys', async () => {
+      const topicId = 'metadata-merge-approval';
+      await serverDB.insert(topics).values({
+        id: topicId,
+        metadata: { userMemoryExtractStatus: 'pending', workingDirectory: '/old' },
+        title: 'Test',
+        userId,
+      });
+
+      const result = await topicModel.update(topicId, {
+        metadata: { approvalMode: 'auto-run' },
+        title: 'Renamed',
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].title).toBe('Renamed');
+      expect(result[0].metadata).toEqual({
+        approvalMode: 'auto-run',
+        userMemoryExtractStatus: 'pending',
+        workingDirectory: '/old',
+      });
+    });
+
     it('should not update a topic if user ID does not match', async () => {
       await serverDB.insert(users).values([{ id: '456' }]);
       const topicId = '123';
@@ -105,6 +128,25 @@ describe('TopicModel - Update', () => {
       expect(result[0].metadata).toEqual({
         model: 'gpt-4',
         workingDirectory: '/new/path',
+      });
+    });
+
+    it('should merge approvalMode without clobbering userMemoryExtractStatus', async () => {
+      const topicId = 'metadata-test-approval';
+      await serverDB.insert(topics).values({
+        id: topicId,
+        metadata: { model: 'gpt-4', userMemoryExtractStatus: 'pending' },
+        title: 'Test',
+        userId,
+      });
+
+      const result = await topicModel.updateMetadata(topicId, { approvalMode: 'allow-list' });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].metadata).toEqual({
+        approvalMode: 'allow-list',
+        model: 'gpt-4',
+        userMemoryExtractStatus: 'pending',
       });
     });
 

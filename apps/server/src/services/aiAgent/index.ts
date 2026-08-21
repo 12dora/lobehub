@@ -51,6 +51,7 @@ import type {
   PlatformOperationPin,
   ResumeInteractionKind,
   RuntimeMentionedAgent,
+  TopicApprovalMode,
   UserInterventionConfig,
   WorkspaceInitResult,
 } from '@lobechat/types';
@@ -59,6 +60,7 @@ import {
   getActivePluginIds,
   getDisabledPluginIds,
   getWorkingDirEffectivePath,
+  isTopicApprovalMode,
   ReasoningGraphSchema,
   RequestTrigger,
   ThreadStatus,
@@ -1125,10 +1127,22 @@ export class AiAgentService {
 
     // M05 R3-B1: platform-effective approvalMode wins over request body when policy ON.
     // Flag OFF: preserve legacy default headless when caller omits config.
+    // Per-topic snapshot (when present) then overlays unless the platform
+    // policy is locked. Workspace / async / headless skip the overlay.
+    let topicApprovalMode: TopicApprovalMode | undefined;
+    if (appContext?.topicId && !this.workspaceId) {
+      const existingTopic = await this.topicModel.findById(appContext.topicId);
+      const storedMode = existingTopic?.metadata?.approvalMode;
+      if (isTopicApprovalMode(storedMode)) {
+        topicApprovalMode = storedMode;
+      }
+    }
+
     const resolvedIntervention = await resolveEffectiveUserInterventionConfig({
       callerConfig: callerUserInterventionConfig ?? { approvalMode: 'headless' },
       db: this.db,
       scope: this.workspaceId ? 'workspace' : 'personal',
+      topicApprovalMode,
       userId: this.userId,
     });
     const userInterventionConfig = resolvedIntervention ?? { approvalMode: 'headless' as const };
@@ -1667,9 +1681,25 @@ export class AiAgentService {
       // Prepare metadata with cronJobId, taskId, botContext, bound device, and any
       // client-supplied initial metadata (e.g. repos selected before first message).
       const initialTopicMeta = appContext?.initialTopicMetadata;
+      // Snapshot the effective approval mode onto a brand-new topic so later
+      // selector / user-setting changes don't leak into this conversation.
+      // Workspace and headless (async) paths stay unsnapshotted.
+      const snapshotApprovalMode = this.workspaceId
+        ? undefined
+        : isTopicApprovalMode(initialTopicMeta?.approvalMode)
+          ? initialTopicMeta.approvalMode
+          : isTopicApprovalMode(userInterventionConfig.approvalMode)
+            ? userInterventionConfig.approvalMode
+            : undefined;
       const metadata =
-        cronJobId || operationTaskId || botContext || requestedDeviceId || initialTopicMeta
+        cronJobId ||
+        operationTaskId ||
+        botContext ||
+        requestedDeviceId ||
+        initialTopicMeta ||
+        snapshotApprovalMode
           ? {
+              ...(snapshotApprovalMode && { approvalMode: snapshotApprovalMode }),
               bot: botContext,
               boundDeviceId: requestedDeviceId,
               cronJobId: cronJobId || undefined,
