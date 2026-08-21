@@ -1,6 +1,11 @@
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { CURRENT_VERSION } from '@lobechat/const';
-import { imageUrlToBase64 } from '@lobechat/utils';
+import {
+  assertDecodedBase64WithinLimit,
+  AttachmentInlineLimitError,
+  imageUrlToBase64,
+  sanitizedUrlHost,
+} from '@lobechat/utils';
 import { isRecord } from '@lobechat/utils/object';
 import debug from 'debug';
 import OpenAI from 'openai';
@@ -9,6 +14,7 @@ import type { CreateImageOptions } from '../../core/openaiCompatibleFactory';
 import type { CreateImageErrorPayload, CreateImagePayload, CreateImageResponse } from '../../types';
 import { AgentRuntimeErrorType } from '../../types';
 import { AgentRuntimeError } from '../../utils/createError';
+import { isErrorCausedByContentFilter } from '../../utils/isErrorCausedByContentFilter';
 import { parseDataUri } from '../../utils/uriParser';
 
 const log = debug('lobe-image:chatgpt');
@@ -80,27 +86,62 @@ const fail = (
     provider,
   });
 
+const upstreamErrorCode = (error: unknown): string | undefined => {
+  if (!isRecord(error)) return undefined;
+  if (typeof error.code === 'string' && error.code.length > 0) return error.code;
+  if (
+    isRecord(error.error) &&
+    typeof error.error.code === 'string' &&
+    error.error.code.length > 0
+  ) {
+    return error.error.code;
+  }
+  return undefined;
+};
+
 const mapCreateImageError = (error: unknown, provider: string): CreateImageErrorPayload => {
   if (isCreateImageErrorPayload(error)) return error;
 
+  if (error instanceof AttachmentInlineLimitError) {
+    return fail(provider, AgentRuntimeErrorType.InvalidRequestFormat, error.message, {
+      byteLength: error.byteLength,
+      maxBytes: error.maxBytes,
+    });
+  }
+
   const status = getHttpStatus(error);
   const message = getUpstreamMessage(error) ?? 'ChatGPT image request failed';
+  const code = upstreamErrorCode(error);
+  const extra: Record<string, unknown> = {
+    ...(status !== undefined ? { status } : {}),
+    ...(code ? { code } : {}),
+  };
+
+  if (isErrorCausedByContentFilter(error)) {
+    return fail(provider, AgentRuntimeErrorType.ProviderContentPolicyViolation, message, extra);
+  }
 
   if (status === 401) {
-    return fail(provider, AgentRuntimeErrorType.InvalidProviderAPIKey, message, { status });
+    return fail(provider, AgentRuntimeErrorType.InvalidProviderAPIKey, message, extra);
   }
 
   if (status === 403) {
-    return fail(provider, AgentRuntimeErrorType.PermissionDenied, message, { status });
+    return fail(provider, AgentRuntimeErrorType.PermissionDenied, message, extra);
   }
 
   if (status === 400) {
-    return fail(provider, AgentRuntimeErrorType.InvalidRequestFormat, message, { status });
+    return fail(provider, AgentRuntimeErrorType.InvalidRequestFormat, message, extra);
   }
 
-  return fail(provider, AgentRuntimeErrorType.ProviderBizError, message, {
-    ...(status !== undefined ? { status } : {}),
-  });
+  if (status === 429) {
+    return fail(provider, AgentRuntimeErrorType.RateLimitExceeded, message, extra);
+  }
+
+  if (status !== undefined && status >= 500) {
+    return fail(provider, AgentRuntimeErrorType.ProviderServiceUnavailable, message, extra);
+  }
+
+  return fail(provider, AgentRuntimeErrorType.ProviderBizError, message, extra);
 };
 
 const collectReferenceUrls = (params: CreateImagePayload['params']): string[] => {
@@ -127,12 +168,14 @@ const toBase64DataUrl = async (imageUrl: string): Promise<string> => {
     if (!base64) {
       throw new TypeError('Reference image data URL is missing base64 data');
     }
+    assertDecodedBase64WithinLimit(base64, MAX_REFERENCE_BYTES);
     return `data:${mimeType || 'image/png'};base64,${base64}`;
   }
 
   if (type === 'url') {
     const { base64: urlBase64, mimeType: urlMimeType } = await imageUrlToBase64(imageUrl, {
       maxBytes: MAX_REFERENCE_BYTES,
+      ownOriginOnly: true,
     });
     return `data:${urlMimeType || 'image/png'};base64,${urlBase64}`;
   }
@@ -267,7 +310,17 @@ export async function createChatGPTImage(
       ...(pngSize.height ? { height: pngSize.height } : {}),
     };
   } catch (error) {
-    log('createImage failed: %O', error);
+    const status = getHttpStatus(error);
+    const host =
+      error instanceof Error && 'url' in error && typeof error.url === 'string'
+        ? sanitizedUrlHost(error.url)
+        : undefined;
+    log(
+      'createImage failed: error=%s status=%s host=%s',
+      error instanceof Error ? error.name : 'Error',
+      status ?? '-',
+      host ?? '-',
+    );
     throw mapCreateImageError(error, provider);
   }
 }

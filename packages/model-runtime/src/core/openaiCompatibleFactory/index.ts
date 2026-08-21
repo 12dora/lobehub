@@ -1,4 +1,5 @@
 import type { ChatModelCard } from '@lobechat/types';
+import type { ImageUrlToBase64Options } from '@lobechat/utils';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import debug from 'debug';
@@ -216,6 +217,10 @@ export interface OpenAICompatibleFactoryOptions<T extends Record<string, any> = 
     forceFileBase64?: boolean;
     forceImageBase64?: boolean;
     forceVideoBase64?: boolean;
+    /** Passed through to convertOpenAIResponseInputs for document inlining. */
+    inlineFile?: ImageUrlToBase64Options;
+    /** Passed through to convertOpenAI* for image inlining. */
+    inlineImage?: ImageUrlToBase64Options;
     handleError?: (
       error: any,
       options: ConstructorOptions<T>,
@@ -735,6 +740,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           forceFileBase64: chatCompletion?.forceFileBase64,
           forceImageBase64: chatCompletion?.forceImageBase64,
           forceVideoBase64: chatCompletion?.forceVideoBase64,
+          inlineFile: chatCompletion?.inlineFile,
+          inlineImage: chatCompletion?.inlineImage,
           model: postPayload.model,
         });
         const includeUsageRequested = Boolean(postPayload.stream && !chatCompletion?.excludeUsage);
@@ -1565,6 +1572,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         forceFileBase64: chatCompletion?.forceFileBase64,
         forceImageBase64: chatCompletion?.forceImageBase64,
         forceVideoBase64: chatCompletion?.forceVideoBase64,
+        inlineFile: chatCompletion?.inlineFile,
+        inlineImage: chatCompletion?.inlineImage,
         reasoningSignatureScope,
         strictToolPairing: true,
       });
@@ -1728,6 +1737,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           forceFileBase64: chatCompletion?.forceFileBase64,
           forceImageBase64: chatCompletion?.forceImageBase64,
           forceVideoBase64: chatCompletion?.forceVideoBase64,
+          inlineFile: chatCompletion?.inlineFile,
+          inlineImage: chatCompletion?.inlineImage,
           reasoningSignatureScope,
           strictToolPairing: true,
         });

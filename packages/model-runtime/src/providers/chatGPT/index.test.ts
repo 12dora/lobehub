@@ -1,7 +1,11 @@
 // @vitest-environment node
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { CURRENT_VERSION } from '@lobechat/const';
-import { DEFAULT_FILE_INLINE_MAX_BYTES, imageUrlToBase64 } from '@lobechat/utils';
+import {
+  DEFAULT_FILE_INLINE_MAX_BYTES,
+  DEFAULT_IMAGE_INLINE_MAX_BYTES,
+  imageUrlToBase64,
+} from '@lobechat/utils';
 import OpenAI from 'openai';
 import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -76,6 +80,8 @@ describe('LobeChatGPTAI', () => {
       expect.objectContaining({
         forceFileBase64: true,
         forceImageBase64: true,
+        inlineFile: { maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES, ownOriginOnly: true },
+        inlineImage: { maxBytes: DEFAULT_IMAGE_INLINE_MAX_BYTES, ownOriginOnly: true },
         strictToolPairing: true,
       }),
     );
@@ -115,7 +121,10 @@ describe('LobeChatGPTAI', () => {
 
     expect(imagePart.image_url).toBe('data:image/png;base64,imgbytes');
     expect(imagePart.image_url.startsWith('data:image/')).toBe(true);
-    expect(imageUrlToBase64).toHaveBeenCalledWith('http://localhost:9000/bucket/cat.png');
+    expect(imageUrlToBase64).toHaveBeenCalledWith('http://localhost:9000/bucket/cat.png', {
+      maxBytes: DEFAULT_IMAGE_INLINE_MAX_BYTES,
+      ownOriginOnly: true,
+    });
   });
 
   it('emits input_file with file_data for document attachments', async () => {
@@ -161,6 +170,7 @@ describe('LobeChatGPTAI', () => {
     });
     expect(imageUrlToBase64).toHaveBeenCalledWith('http://localhost:9000/report.pdf', {
       maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES,
+      ownOriginOnly: true,
     });
   });
 

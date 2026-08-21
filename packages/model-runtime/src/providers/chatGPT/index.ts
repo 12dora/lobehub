@@ -1,5 +1,6 @@
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { CURRENT_VERSION } from '@lobechat/const';
+import { DEFAULT_FILE_INLINE_MAX_BYTES, DEFAULT_IMAGE_INLINE_MAX_BYTES } from '@lobechat/utils';
 import { isRecord } from '@lobechat/utils/object';
 import type { ChatModelCard } from 'model-bank';
 import { ModelProvider } from 'model-bank';
@@ -269,6 +270,8 @@ export const LobeChatGPTAI = createOpenAICompatibleRuntime<ChatGPTClientOptions>
   chatCompletion: {
     forceFileBase64: true,
     forceImageBase64: true,
+    inlineFile: { maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES, ownOriginOnly: true },
+    inlineImage: { maxBytes: DEFAULT_IMAGE_INLINE_MAX_BYTES, ownOriginOnly: true },
     useResponse: true,
   },
   createImage: createChatGPTImage,

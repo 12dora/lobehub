@@ -66,6 +66,21 @@ describe('chat helper', () => {
       expect(isCanUseFiles('auto', 'chatgptweb')).toBe(true);
     });
 
+    it('should enable native file parts for the ChatGPT Codex provider', () => {
+      useAiInfraStore.setState({
+        enabledAiModels: [
+          {
+            abilities: { files: true, vision: true },
+            id: 'gpt-5.5',
+            providerId: 'chatgpt',
+            type: 'chat',
+          } as EnabledAiModel,
+        ],
+      });
+
+      expect(isCanUseFiles('gpt-5.5', 'chatgpt')).toBe(true);
+    });
+
     it('should keep OpenCode Zen models (abilities.files) on the legacy files_info injection', () => {
       // Regression: `abilities.files` alone must NOT switch on native `file_url`
       // parts — OpenCode Zen ships enabled models with `files: true` while its

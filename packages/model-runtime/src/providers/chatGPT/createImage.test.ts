@@ -1,5 +1,6 @@
 // @vitest-environment node
 import * as imageToBase64Module from '@lobechat/utils';
+import { AttachmentInlineLimitError } from '@lobechat/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CreateImageOptions } from '../../core/openaiCompatibleFactory';
@@ -135,6 +136,7 @@ describe('createChatGPTImage', () => {
         'https://files.example.test/ref.png?sig=secret',
         {
           maxBytes: 5 * 1024 * 1024,
+          ownOriginOnly: true,
         },
       );
       expect(mockPost).toHaveBeenCalledWith('/images/edits', {
@@ -153,6 +155,53 @@ describe('createChatGPTImage', () => {
       });
       expect(mockGenerate).not.toHaveBeenCalled();
       expect(result.imageUrl).toBe('data:image/png;base64,edited');
+    });
+
+    it('rejects an oversized data URL reference as InvalidRequestFormat', async () => {
+      vi.spyOn(imageToBase64Module, 'assertDecodedBase64WithinLimit').mockImplementationOnce(() => {
+        throw new AttachmentInlineLimitError(5 * 1024 * 1024, 5 * 1024 * 1024 + 1);
+      });
+
+      await expect(
+        createChatGPTImage(
+          generatePayload({
+            imageUrls: ['data:image/png;base64,aaa'],
+            prompt: 'make it blue',
+          }),
+          mockOptions,
+        ),
+      ).rejects.toEqual(
+        expect.objectContaining({
+          error: expect.objectContaining({
+            message: expect.stringContaining('inlining limit'),
+          }),
+          errorType: AgentRuntimeErrorType.InvalidRequestFormat,
+          provider: 'chatgpt',
+        }),
+      );
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('maps AttachmentInlineLimitError from fetched references to InvalidRequestFormat', async () => {
+      vi.spyOn(imageToBase64Module, 'imageUrlToBase64').mockRejectedValueOnce(
+        new AttachmentInlineLimitError(5 * 1024 * 1024, 5 * 1024 * 1024 + 1),
+      );
+
+      await expect(
+        createChatGPTImage(
+          generatePayload({
+            imageUrls: ['https://files.example.test/huge.png'],
+            prompt: 'edit',
+          }),
+          mockOptions,
+        ),
+      ).rejects.toEqual(
+        expect.objectContaining({
+          errorType: AgentRuntimeErrorType.InvalidRequestFormat,
+          provider: 'chatgpt',
+        }),
+      );
+      expect(mockPost).not.toHaveBeenCalled();
     });
 
     it('rejects more than five reference images without calling Codex', async () => {
@@ -211,6 +260,47 @@ describe('createChatGPTImage', () => {
         expect.objectContaining({
           error: expect.objectContaining({ message: 'unknown size' }),
           errorType: AgentRuntimeErrorType.InvalidRequestFormat,
+          provider: 'chatgpt',
+        }),
+      );
+    });
+
+    it('maps 429 to RateLimitExceeded', async () => {
+      mockPost.mockRejectedValueOnce(Object.assign(new Error('slow down'), { status: 429 }));
+
+      await expect(createChatGPTImage(generatePayload(), mockOptions)).rejects.toEqual(
+        expect.objectContaining({
+          error: expect.objectContaining({ message: 'slow down', status: 429 }),
+          errorType: AgentRuntimeErrorType.RateLimitExceeded,
+          provider: 'chatgpt',
+        }),
+      );
+    });
+
+    it('maps 503 to ProviderServiceUnavailable', async () => {
+      mockPost.mockRejectedValueOnce(Object.assign(new Error('overloaded'), { status: 503 }));
+
+      await expect(createChatGPTImage(generatePayload(), mockOptions)).rejects.toEqual(
+        expect.objectContaining({
+          error: expect.objectContaining({ message: 'overloaded', status: 503 }),
+          errorType: AgentRuntimeErrorType.ProviderServiceUnavailable,
+          provider: 'chatgpt',
+        }),
+      );
+    });
+
+    it('maps content-policy codes to ProviderContentPolicyViolation', async () => {
+      mockPost.mockRejectedValueOnce(
+        Object.assign(new Error('blocked'), {
+          error: { code: 'content_policy_violation', message: 'blocked' },
+          status: 400,
+        }),
+      );
+
+      await expect(createChatGPTImage(generatePayload(), mockOptions)).rejects.toEqual(
+        expect.objectContaining({
+          error: expect.objectContaining({ code: 'content_policy_violation' }),
+          errorType: AgentRuntimeErrorType.ProviderContentPolicyViolation,
           provider: 'chatgpt',
         }),
       );

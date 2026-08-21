@@ -124,6 +124,72 @@ describe('convertMessageContent', () => {
     expect(imageUrlToBase64).toHaveBeenCalledWith('https://example.com/image.jpg');
   });
 
+  it('should pass ChatGPT inlineImage options through to imageUrlToBase64', async () => {
+    process.env.LLM_VISION_IMAGE_USE_BASE64 = undefined;
+
+    const content = {
+      type: 'image_url',
+      image_url: { url: 'https://example.com/image.jpg' },
+    } as OpenAI.ChatCompletionContentPart;
+
+    vi.mocked(parseDataUri).mockReturnValue({ type: 'url', base64: null, mimeType: null });
+    vi.mocked(imageUrlToBase64).mockResolvedValue({
+      base64: 'forcedBase64',
+      mimeType: 'image/jpeg',
+    });
+
+    await convertMessageContent(content, {
+      forceImageBase64: true,
+      inlineImage: { maxBytes: 20 * 1024 * 1024, ownOriginOnly: true },
+    });
+
+    expect(imageUrlToBase64).toHaveBeenCalledWith('https://example.com/image.jpg', {
+      maxBytes: 20 * 1024 * 1024,
+      ownOriginOnly: true,
+    });
+  });
+
+  it('should reject an oversized data URL when inlineImage.maxBytes is set', async () => {
+    const content = {
+      type: 'image_url',
+      image_url: { url: 'data:image/png;base64,YWJj' },
+    } as OpenAI.ChatCompletionContentPart;
+
+    vi.mocked(parseDataUri).mockReturnValue({
+      type: 'base64',
+      base64: 'YWJj',
+      mimeType: 'image/png',
+    });
+
+    await expect(
+      convertMessageContent(content, {
+        forceImageBase64: true,
+        inlineImage: { maxBytes: 2, ownOriginOnly: true },
+      }),
+    ).rejects.toThrow(AttachmentInlineLimitError);
+    expect(imageUrlToBase64).not.toHaveBeenCalled();
+  });
+
+  it('should allow a data URL whose decoded size equals inlineImage.maxBytes', async () => {
+    const content = {
+      type: 'image_url',
+      image_url: { url: 'data:image/png;base64,YWI=' },
+    } as OpenAI.ChatCompletionContentPart;
+
+    vi.mocked(parseDataUri).mockReturnValue({
+      type: 'base64',
+      base64: 'YWI=',
+      mimeType: 'image/png',
+    });
+
+    await expect(
+      convertMessageContent(content, {
+        forceImageBase64: true,
+        inlineImage: { maxBytes: 2, ownOriginOnly: true },
+      }),
+    ).resolves.toEqual(content);
+  });
+
   it('should convert video URL to base64 when necessary', async () => {
     process.env.LLM_VISION_VIDEO_USE_BASE64 = '1';
 
@@ -1324,6 +1390,81 @@ describe('convertOpenAIResponseInputs', () => {
       expect(imageUrlToBase64).toHaveBeenCalledWith(fileUrl, {
         maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES,
       });
+    });
+
+    it('should emit input_file for a data URL whose decoded size equals the limit', async () => {
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            {
+              file_url: {
+                content: 'EXTRACTED',
+                mimeType: 'application/pdf',
+                name: 'tiny.pdf',
+                url: 'data:application/pdf;base64,YWI=',
+              },
+              type: 'file_url',
+            } as any,
+          ],
+        },
+      ];
+
+      vi.mocked(parseDataUri).mockReturnValue({
+        type: 'base64',
+        base64: 'YWI=',
+        mimeType: 'application/pdf',
+      });
+
+      const result = await convertOpenAIResponseInputs(messages, {
+        forceFileBase64: true,
+        inlineFile: { maxBytes: 2, ownOriginOnly: true },
+      });
+      const content = (result[0] as { content: Array<{ file_data?: string; type: string }> })
+        .content;
+
+      expect(content[0]).toEqual({
+        file_data: 'data:application/pdf;base64,YWI=',
+        filename: 'tiny.pdf',
+        type: 'input_file',
+      });
+      expect(imageUrlToBase64).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to files_info without url when a data URL is one byte over the limit', async () => {
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            {
+              file_url: {
+                content: 'EXTRACTED',
+                mimeType: 'application/pdf',
+                name: 'tiny.pdf',
+                url: 'data:application/pdf;base64,YWJj',
+              },
+              type: 'file_url',
+            } as any,
+          ],
+        },
+      ];
+
+      vi.mocked(parseDataUri).mockReturnValue({
+        type: 'base64',
+        base64: 'YWJj',
+        mimeType: 'application/pdf',
+      });
+
+      const result = await convertOpenAIResponseInputs(messages, {
+        forceFileBase64: true,
+        inlineFile: { maxBytes: 2, ownOriginOnly: true },
+      });
+      const content = (result[0] as { content: Array<{ text?: string; type: string }> }).content;
+
+      expect(content[0].type).toBe('input_text');
+      expect(content[0].text).toContain('EXTRACTED');
+      expect(content[0].text).not.toContain('url=');
+      expect(imageUrlToBase64).not.toHaveBeenCalled();
     });
 
     it('should fall back to files_info without url when the document is over the limit', async () => {

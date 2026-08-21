@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   inferContentTypeFromImageUrl,
@@ -8,6 +8,7 @@ import {
   isOwnDeploymentFileUrl,
   pathString,
   resolveOwnDeploymentFetchUrl,
+  sanitizedUrlHost,
 } from './url';
 
 describe('pathString', () => {
@@ -549,6 +550,8 @@ describe('isOwnDeploymentFileUrl', () => {
   const originalEnv = {
     APP_URL: process.env.APP_URL,
     INTERNAL_APP_URL: process.env.INTERNAL_APP_URL,
+    S3_BUCKET: process.env.S3_BUCKET,
+    S3_ENABLE_PATH_STYLE: process.env.S3_ENABLE_PATH_STYLE,
     S3_ENDPOINT: process.env.S3_ENDPOINT,
     S3_PUBLIC_DOMAIN: process.env.S3_PUBLIC_DOMAIN,
   };
@@ -560,19 +563,55 @@ describe('isOwnDeploymentFileUrl', () => {
     };
     restore('APP_URL', originalEnv.APP_URL);
     restore('INTERNAL_APP_URL', originalEnv.INTERNAL_APP_URL);
+    restore('S3_BUCKET', originalEnv.S3_BUCKET);
+    restore('S3_ENABLE_PATH_STYLE', originalEnv.S3_ENABLE_PATH_STYLE);
     restore('S3_ENDPOINT', originalEnv.S3_ENDPOINT);
     restore('S3_PUBLIC_DOMAIN', originalEnv.S3_PUBLIC_DOMAIN);
   });
 
-  it("should allow localhost, loopback, and this deployment's file hosts", () => {
+  beforeEach(() => {
+    delete process.env.APP_URL;
+    delete process.env.INTERNAL_APP_URL;
+    delete process.env.S3_BUCKET;
+    delete process.env.S3_ENABLE_PATH_STYLE;
+    delete process.env.S3_ENDPOINT;
+    delete process.env.S3_PUBLIC_DOMAIN;
+  });
+
+  it('should allow exact app origins only on /f/{id}', () => {
     process.env.APP_URL = 'https://app.example.com';
+    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
+
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc')).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://127.0.0.1:3010/f/abc')).toBe(true);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc?sig=secret')).toBe(true);
+  });
+
+  it('should reject generic loopback, other ports, and non-file app paths', () => {
+    process.env.APP_URL = 'https://app.example.com';
+    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
+
+    expect(isOwnDeploymentFileUrl('http://127.0.0.1:3000/internal')).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://localhost:9000/bucket/a.png')).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/admin')).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://app.example.com:8443/f/abc')).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://app.example.com/f/abc')).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/')).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc/extra')).toBe(false);
+  });
+
+  it('should allow S3 endpoint origins only on the bucket path', () => {
     process.env.S3_ENDPOINT = 'http://minio:9000';
+    process.env.S3_BUCKET = 'lobe-files';
+    process.env.S3_ENABLE_PATH_STYLE = '1';
     process.env.S3_PUBLIC_DOMAIN = 'https://files.example.com';
 
-    expect(isOwnDeploymentFileUrl('http://localhost:9000/bucket/a.png')).toBe(true);
-    expect(isOwnDeploymentFileUrl('http://127.0.0.1:3210/f/abc')).toBe(true);
-    expect(isOwnDeploymentFileUrl('https://app.example.com/f/abc')).toBe(true);
-    expect(isOwnDeploymentFileUrl('http://minio:9000/bucket/a.png')).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://minio:9000/lobe-files/a.png')).toBe(true);
+    expect(
+      isOwnDeploymentFileUrl('http://minio:9000/lobe-files/a.png?X-Amz-Signature=secret'),
+    ).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://minio:9000/other-bucket/a.png')).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://minio:9000/lobe-files')).toBe(false);
     expect(isOwnDeploymentFileUrl('https://files.example.com/a.png')).toBe(true);
   });
 
@@ -582,6 +621,18 @@ describe('isOwnDeploymentFileUrl', () => {
     expect(isOwnDeploymentFileUrl('https://evil.example.com/x.png')).toBe(false);
     expect(isOwnDeploymentFileUrl('http://192.168.1.10/secret.png')).toBe(false);
     expect(isOwnDeploymentFileUrl('not-a-url')).toBe(false);
+  });
+});
+
+describe('sanitizedUrlHost', () => {
+  it('should return host without the signed query string', () => {
+    expect(sanitizedUrlHost('http://minio:9000/bucket/a.png?X-Amz-Signature=secret')).toBe(
+      'minio:9000',
+    );
+  });
+
+  it('should not throw on unparseable URLs', () => {
+    expect(sanitizedUrlHost('not a url')).toBe('<unparseable url>');
   });
 });
 
@@ -600,12 +651,21 @@ describe('resolveOwnDeploymentFetchUrl', () => {
     restore('INTERNAL_APP_URL', originalEnv.INTERNAL_APP_URL);
   });
 
-  it('should rewrite APP_URL file links onto INTERNAL_APP_URL', () => {
+  it('should rewrite APP_URL /f/ links onto INTERNAL_APP_URL', () => {
     process.env.APP_URL = 'https://app.example.com';
     process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
 
     expect(resolveOwnDeploymentFetchUrl('https://app.example.com/f/abc?sig=1')).toBe(
       'http://127.0.0.1:3010/f/abc?sig=1',
+    );
+  });
+
+  it('should not rewrite non-file APP_URL paths', () => {
+    process.env.APP_URL = 'https://app.example.com';
+    process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3010';
+
+    expect(resolveOwnDeploymentFetchUrl('https://app.example.com/admin')).toBe(
+      'https://app.example.com/admin',
     );
   });
 

@@ -234,58 +234,91 @@ export function isLocalOrPrivateUrl(url: string) {
   }
 }
 
-const hostnameOf = (value: string | undefined): string | undefined => {
+const withProtocol = (value: string): string =>
+  /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `http://${value}`;
+
+const originOf = (value: string | undefined): string | undefined => {
   if (!value) return undefined;
   try {
-    const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `http://${value}`;
-    return new URL(withProtocol).hostname.toLowerCase();
+    return new URL(withProtocol(value)).origin.toLowerCase();
   } catch {
     return undefined;
   }
 };
 
+const APP_FILE_PATH = /^\/f\/[^/]+$/;
+
+const s3BucketPrefix = (): string | undefined => {
+  const bucket = process.env.S3_BUCKET?.trim();
+  if (!bucket) return undefined;
+  return `/${bucket.replaceAll(/^\/+|\/+$/g, '')}/`;
+};
+
+const pathnameIsAppFileRoute = (pathname: string): boolean => APP_FILE_PATH.test(pathname);
+
+const pathnameIsS3ObjectPath = (pathname: string, requireBucketPrefix: boolean): boolean => {
+  if (!pathname || pathname === '/') return false;
+  const prefix = s3BucketPrefix();
+  if (requireBucketPrefix && prefix) {
+    return pathname.startsWith(prefix) && pathname.length > prefix.length;
+  }
+  return true;
+};
+
 /**
- * Hosts that belong to this deployment's file storage, so fetching them is not
- * an SSRF hop to an arbitrary private address. Used when a remote provider
- * cannot reach our MinIO / `/f/` / APP_URL and we must inline bytes ourselves.
+ * Hostname only — never the path or query (presigned S3 URLs put credentials
+ * in the query string). Safe to interpolate into logs.
+ */
+export const sanitizedUrlHost = (url: string): string => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '<unparseable url>';
+  }
+};
+
+/**
+ * URLs that belong to this deployment's file storage. Compared by exact origin
+ * (scheme + host + port). Loopback is not trusted unless it is that origin.
+ *
+ * App origins (APP_URL / INTERNAL_APP_URL) may only serve `/f/{id}`.
+ * S3_ENDPOINT / S3_PUBLIC_DOMAIN may only serve object paths (bucket prefix
+ * when `S3_BUCKET` is set on a path-style endpoint).
  */
 export function isOwnDeploymentFileUrl(url: string): boolean {
   try {
-    const hostname = new URL(url).hostname.toLowerCase();
+    const parsed = new URL(url);
+    const origin = parsed.origin.toLowerCase();
+    const pathname = parsed.pathname;
 
-    if (
-      hostname === 'localhost' ||
-      hostname.endsWith('.localhost') ||
-      hostname === '127.0.0.1' ||
-      hostname === '::1' ||
-      hostname === '[::1]'
-    ) {
-      return true;
+    const appOrigins = [
+      originOf(process.env.APP_URL),
+      originOf(process.env.INTERNAL_APP_URL),
+    ].filter((value): value is string => Boolean(value));
+    if (appOrigins.includes(origin)) {
+      return pathnameIsAppFileRoute(pathname);
     }
 
-    // 127.0.0.0/8 loopback besides 127.0.0.1 (desktop static file server)
-    const ipv4Match = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-    if (ipv4Match) {
-      const a = Number(ipv4Match[1]);
-      if (a === 127) return true;
+    const s3EndpointOrigin = originOf(process.env.S3_ENDPOINT);
+    if (s3EndpointOrigin && origin === s3EndpointOrigin) {
+      const pathStyle = process.env.S3_ENABLE_PATH_STYLE === '1' || Boolean(s3BucketPrefix());
+      return pathnameIsS3ObjectPath(pathname, pathStyle);
     }
 
-    const ownHosts = [
-      hostnameOf(process.env.APP_URL),
-      hostnameOf(process.env.INTERNAL_APP_URL),
-      hostnameOf(process.env.S3_ENDPOINT),
-      hostnameOf(process.env.S3_PUBLIC_DOMAIN),
-    ].filter((host): host is string => Boolean(host));
+    const publicOrigin = originOf(process.env.S3_PUBLIC_DOMAIN);
+    if (publicOrigin && origin === publicOrigin) {
+      return pathname.length > 1;
+    }
 
-    return ownHosts.includes(hostname);
+    return false;
   } catch {
     return false;
   }
 }
 
 /**
- * Prefer INTERNAL_APP_URL when fetching a public APP_URL so inlining can hit
- * the local origin instead of a CDN / public hostname Codex still cannot use.
+ * Prefer INTERNAL_APP_URL when fetching a public APP_URL `/f/` link so inlining
+ * can hit the local origin instead of a CDN / public hostname Codex cannot use.
  */
 export function resolveOwnDeploymentFetchUrl(url: string): string {
   const appUrl = process.env.APP_URL;
@@ -294,10 +327,11 @@ export function resolveOwnDeploymentFetchUrl(url: string): string {
 
   try {
     const parsed = new URL(url);
-    const appHost = hostnameOf(appUrl);
-    if (!appHost || parsed.hostname.toLowerCase() !== appHost) return url;
+    const appOrigin = originOf(appUrl);
+    if (!appOrigin || parsed.origin.toLowerCase() !== appOrigin) return url;
+    if (!pathnameIsAppFileRoute(parsed.pathname)) return url;
 
-    const internalUrl = new URL(internal);
+    const internalUrl = new URL(withProtocol(internal));
     parsed.protocol = internalUrl.protocol;
     parsed.host = internalUrl.host;
     return parsed.toString();

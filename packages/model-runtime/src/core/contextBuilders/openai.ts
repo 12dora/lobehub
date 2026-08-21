@@ -1,10 +1,16 @@
+import type { ImageUrlToBase64Options } from '@lobechat/utils';
 import {
+  assertDecodedBase64WithinLimit,
+  AttachmentFetchError,
   AttachmentInlineLimitError,
+  decodedBase64ByteLength,
   DEFAULT_FILE_INLINE_MAX_BYTES,
   imageUrlToBase64,
+  sanitizedUrlHost,
   videoUrlToBase64,
 } from '@lobechat/utils';
 import { Buffer } from 'buffer.js';
+import debug from 'debug';
 import type OpenAI from 'openai';
 import { toFile } from 'openai';
 
@@ -36,10 +42,15 @@ export interface SkippedAttachment {
   url: string;
 }
 
+const log = debug('lobe-model-runtime:openai-inline');
+
 type ConvertMessageContentOptions = {
   forceFileBase64?: boolean;
   forceImageBase64?: boolean;
   forceVideoBase64?: boolean;
+  /** ChatGPT/Codex passes `{ maxBytes, ownOriginOnly: true }` explicitly. */
+  inlineFile?: ImageUrlToBase64Options;
+  inlineImage?: ImageUrlToBase64Options;
   model?: string;
   /**
    * Seam for over-limit / non-document files that fell back to extracted-text
@@ -131,10 +142,12 @@ const toInputFilePart = (filename: string, mimeType: string, base64: string): Re
 const convertFileUrlPart = async (
   part: UserMessageContentPart,
   skipped: SkippedAttachment[],
+  inlineFile?: ImageUrlToBase64Options,
 ): Promise<ResponseFilePart | undefined> => {
   if (!isFileUrlPart(part)) return undefined;
 
   const { content, fileId, mimeType, name, size, url } = part.file_url;
+  const maxBytes = inlineFile?.maxBytes ?? DEFAULT_FILE_INLINE_MAX_BYTES;
   const skip = (reason: SkippedAttachment['reason']): ResponseFilePart => {
     skipped.push({ content, filename: name, mimeType, reason, size, url });
     return {
@@ -147,13 +160,13 @@ const convertFileUrlPart = async (
     return skip('unsupported_type');
   }
 
-  if (typeof size === 'number' && size > DEFAULT_FILE_INLINE_MAX_BYTES) {
+  if (typeof size === 'number' && size > maxBytes) {
     return skip('over_limit');
   }
 
   const parsed = parseDataUri(url);
   if (parsed.type === 'base64' && parsed.base64) {
-    if (parsed.base64.length / 4 > DEFAULT_FILE_INLINE_MAX_BYTES / 3) {
+    if (decodedBase64ByteLength(parsed.base64) > maxBytes) {
       return skip('over_limit');
     }
     const resolvedMime = parsed.mimeType || mimeType || 'application/octet-stream';
@@ -161,7 +174,7 @@ const convertFileUrlPart = async (
   }
 
   try {
-    const inlined = await imageUrlToBase64(url, { maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES });
+    const inlined = await imageUrlToBase64(url, inlineFile ?? { maxBytes });
     return toInputFilePart(
       name,
       inlined.mimeType || mimeType || 'application/octet-stream',
@@ -171,7 +184,12 @@ const convertFileUrlPart = async (
     if (error instanceof AttachmentInlineLimitError) {
       return skip('over_limit');
     }
-    console.error('Failed to inline file attachment as input_file:', error);
+    log(
+      'input_file inline failed: host=%s error=%s status=%s',
+      sanitizedUrlHost(url),
+      error instanceof Error ? error.name : 'Error',
+      error instanceof AttachmentFetchError ? (error.status ?? '-') : '-',
+    );
     return skip('fetch_failed');
   }
 };
@@ -199,13 +217,20 @@ export const convertMessageContent = async (
   }
 
   if (content.type === 'image_url') {
-    const { type } = parseDataUri(content.image_url.url);
+    const parsed = parseDataUri(content.image_url.url);
+    const maxBytes = options?.inlineImage?.maxBytes;
+
+    if (parsed.type === 'base64' && parsed.base64 && maxBytes !== undefined) {
+      assertDecodedBase64WithinLimit(parsed.base64, maxBytes);
+    }
 
     const shouldUseBase64 =
       options?.forceImageBase64 || process.env.LLM_VISION_IMAGE_USE_BASE64 === '1';
 
-    if (type === 'url' && shouldUseBase64) {
-      const { base64, mimeType } = await imageUrlToBase64(content.image_url.url);
+    if (parsed.type === 'url' && shouldUseBase64) {
+      const { base64, mimeType } = options?.inlineImage
+        ? await imageUrlToBase64(content.image_url.url, options.inlineImage)
+        : await imageUrlToBase64(content.image_url.url);
 
       return {
         ...content,
@@ -457,7 +482,7 @@ export const convertOpenAIResponseInputs = async (
                 if (isFileUrlTypedPart(c)) {
                   // Opt-in only: other Responses providers keep today's drop.
                   if (!options?.forceFileBase64) return undefined;
-                  return convertFileUrlPart(c, skippedAttachments);
+                  return convertFileUrlPart(c, skippedAttachments, options.inlineFile);
                 }
 
                 if (c.type === 'video_url') {

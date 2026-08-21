@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  AttachmentFetchError,
   AttachmentInlineLimitError,
+  decodedBase64ByteLength,
+  DEFAULT_FILE_INLINE_MAX_BYTES,
   DEFAULT_IMAGE_INLINE_MAX_BYTES,
   imageToBase64,
   imageUrlToBase64,
@@ -78,6 +81,8 @@ describe('imageUrlToBase64', () => {
     mockFetch.mockResolvedValue({
       arrayBuffer: () => Promise.resolve(mockArrayBuffer),
       blob: () => Promise.resolve(new Blob([mockArrayBuffer], { type: 'image/jpg' })),
+      ok: true,
+      status: 200,
     });
 
     const result = await imageUrlToBase64('https://example.com/image.jpg');
@@ -96,6 +101,8 @@ describe('imageUrlToBase64', () => {
 
     mockFetch.mockResolvedValue({
       blob: () => Promise.resolve(new Blob([pngBytes], { type: 'image/jpeg' })),
+      ok: true,
+      status: 200,
     });
 
     const result = await imageUrlToBase64('https://example.com/image.jpg');
@@ -108,6 +115,8 @@ describe('imageUrlToBase64', () => {
 
     mockFetch.mockResolvedValue({
       blob: () => Promise.resolve(new Blob([pdfBytes], { type: '' })),
+      ok: true,
+      status: 200,
     });
 
     const result = await imageUrlToBase64('https://example.com/file');
@@ -127,6 +136,8 @@ describe('imageUrlToBase64', () => {
 
     mockFetch.mockResolvedValue({
       blob: () => Promise.resolve(new Blob([overLimit], { type: 'image/png' })),
+      ok: true,
+      status: 200,
     });
 
     await expect(
@@ -137,7 +148,56 @@ describe('imageUrlToBase64', () => {
     ).rejects.toThrow(`Attachment exceeds the 4 byte inlining limit`);
   });
 
-  it('should default the image inlining cap to 20MB', () => {
+  it('should not cap the body when maxBytes is omitted', async () => {
+    const body = new Uint8Array(8);
+    mockFetch.mockResolvedValue({
+      blob: () => Promise.resolve(new Blob([body], { type: 'image/png' })),
+      ok: true,
+      status: 200,
+    });
+
+    await expect(imageUrlToBase64('https://example.com/image.jpg')).resolves.toEqual({
+      base64: 'mockBase64String',
+      mimeType: 'image/png',
+    });
+  });
+
+  it('should throw AttachmentFetchError before reading a non-OK body', async () => {
+    mockFetch.mockResolvedValue({
+      blob: () => Promise.resolve(new Blob(['<html>denied</html>'], { type: 'text/html' })),
+      ok: false,
+      status: 403,
+    });
+
+    await expect(imageUrlToBase64('https://files.example.com/a.png?sig=secret')).rejects.toThrow(
+      AttachmentFetchError,
+    );
+    await expect(imageUrlToBase64('https://files.example.com/a.png?sig=secret')).rejects.toThrow(
+      'failed to download attachment from files.example.com: status=403',
+    );
+  });
+
+  it('should export ChatGPT inlining caps without applying them by default', () => {
     expect(DEFAULT_IMAGE_INLINE_MAX_BYTES).toBe(20 * 1024 * 1024);
+    expect(DEFAULT_FILE_INLINE_MAX_BYTES).toBe(32 * 1024 * 1024);
+  });
+});
+
+describe('decodedBase64ByteLength', () => {
+  it('should use padding-aware decoded size so exactly-at-limit is allowed', () => {
+    expect(decodedBase64ByteLength('YQ==')).toBe(1);
+    expect(decodedBase64ByteLength('YWI=')).toBe(2);
+    expect(decodedBase64ByteLength('YWJj')).toBe(3);
+  });
+
+  it('should treat a padded payload of exactly the 32MiB file limit as within limit', () => {
+    const maxBytes = DEFAULT_FILE_INLINE_MAX_BYTES;
+    const remainder = maxBytes % 3;
+    const padding = remainder === 0 ? 0 : 3 - remainder;
+    const encodedLength = 4 * Math.ceil(maxBytes / 3);
+
+    // The naive `length/4 > limit/3` check rejects this size; padding-aware does not.
+    expect(encodedLength / 4 > maxBytes / 3).toBe(true);
+    expect((encodedLength * 3) / 4 - padding).toBe(maxBytes);
   });
 });
