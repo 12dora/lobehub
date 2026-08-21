@@ -23,8 +23,10 @@ import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
 import { resetEffectiveSandboxSettingsForTest } from '../../services/sandboxSettings';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { seedLiveActorSession } from '../../testing/seedLiveActorSession';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -116,10 +118,11 @@ afterEach(async () => {
 });
 
 const callerFor = async (userId: string, authenticatedAt = new Date()) => {
+  const sessionId = await seedLiveActorSession(db, { sessionId: `session-${userId}`, userId });
   const context = await createContextInner({
     authenticatedAt,
     authMethod: 'better-auth',
-    sessionId: `session-${userId}`,
+    sessionId,
     userId,
   });
   return createCaller({ ...context, serverDB: db } as never).system;
@@ -146,7 +149,10 @@ describe('admin.system OIDC restart gate', () => {
   });
 
   it('audits stale reauthentication denial before preparing any restart intent', async () => {
-    const operator = await callerFor(ids.operator, new Date(Date.now() - 60 * 60 * 1000));
+    const operator = await callerFor(
+      ids.operator,
+      new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
+    );
     await expect(
       operator.prepareRestart({
         reason: 'Activate the tested provider',
@@ -194,7 +200,10 @@ describe('admin.system operations gate', () => {
   });
 
   it('runs a non-persisting probe without a reason or reauth session', async () => {
-    const operator = await callerFor(ids.operator, new Date(Date.now() - 60 * 60 * 1000));
+    const operator = await callerFor(
+      ids.operator,
+      new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
+    );
     const result = await operator.testDependency({ dependency: 'mail' });
     expect(result).toEqual(
       expect.objectContaining({
@@ -386,7 +395,10 @@ describe('admin.system operations gate', () => {
   });
 
   it('requires recent reauth for updateInfraSettings', async () => {
-    const operator = await callerFor(ids.operator, new Date(Date.now() - 60 * 60 * 1000));
+    const operator = await callerFor(
+      ids.operator,
+      new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
+    );
     await expect(
       operator.updateInfraSettings({
         config: {

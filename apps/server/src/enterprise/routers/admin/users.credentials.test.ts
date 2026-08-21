@@ -27,6 +27,7 @@ import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { liveActorSessionIdFor, seedLiveActorSession } from '../../testing/seedLiveActorSession';
 import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
@@ -128,23 +129,14 @@ const ctx = async (
 ) => {
   const now = new Date();
   const authMethod = extras?.authMethod ?? 'better-auth';
-  const sessionId = extras && 'sessionId' in extras ? extras.sessionId : `actor-sess-${userId}`;
+  const sessionId =
+    extras && 'sessionId' in extras ? extras.sessionId : liveActorSessionIdFor(userId);
   if (
     authMethod === 'better-auth' &&
     typeof sessionId === 'string' &&
     !(extras && 'sessionId' in extras)
   ) {
-    await db
-      .insert(session)
-      .values({
-        createdAt: now,
-        expiresAt: new Date(now.getTime() + 3600_000),
-        id: sessionId,
-        token: `tok-${sessionId}`,
-        updatedAt: now,
-        userId,
-      })
-      .onConflictDoNothing();
+    await seedLiveActorSession(db, { now, sessionId, userId });
   }
   const base = await createContextInner({
     authenticatedAt: extras && 'authenticatedAt' in extras ? extras.authenticatedAt : now,

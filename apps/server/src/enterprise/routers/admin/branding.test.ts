@@ -23,6 +23,7 @@ import {
 } from '../../services/branding/adminBrandingService';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
+import { seedLiveActorSession } from '../../testing/seedLiveActorSession';
 import { adminBrandingRouter } from './branding';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -70,16 +71,18 @@ const grant = async (userId: string, roleName: string, codes: string[]) => {
   await db.insert(userRoles).values({ roleId: role.id, userId, workspaceId: null });
 };
 
-const callerFor = async (userId: string, authenticatedAt = new Date()) =>
-  adminBrandingRouter.createCaller({
+const callerFor = async (userId: string, authenticatedAt = new Date()) => {
+  const sessionId = await seedLiveActorSession(db, { sessionId: `session-${userId}`, userId });
+  return adminBrandingRouter.createCaller({
     ...(await createContextInner({
       authenticatedAt,
       authMethod: 'better-auth',
-      sessionId: `session-${userId}`,
+      sessionId,
       userId,
     })),
     serverDB: db,
   } as never);
+};
 
 beforeEach(async () => {
   vi.unstubAllEnvs();

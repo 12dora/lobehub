@@ -20,6 +20,7 @@ import {
 } from '../../contracts/adminUsers';
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { liveActorSessionIdFor, seedLiveActorSession } from '../../testing/seedLiveActorSession';
 import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
@@ -89,19 +90,9 @@ const ctx = async (
   extras?: { authenticatedAt?: Date | null; authMethod?: any },
 ) => {
   const now = new Date();
-  const sessionId = `actor-sess-${userId}`;
+  const sessionId = liveActorSessionIdFor(userId);
   if ((extras?.authMethod ?? 'better-auth') === 'better-auth') {
-    await db
-      .insert(session)
-      .values({
-        createdAt: now,
-        expiresAt: new Date(now.getTime() + 3600_000),
-        id: sessionId,
-        token: `tok-${sessionId}`,
-        updatedAt: now,
-        userId,
-      })
-      .onConflictDoNothing();
+    await seedLiveActorSession(db, { now, sessionId, userId });
   }
   const base = await createContextInner({
     authenticatedAt: extras && 'authenticatedAt' in extras ? extras.authenticatedAt : now,

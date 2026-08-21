@@ -24,6 +24,8 @@ import { createContextInner } from '@/libs/trpc/lambda/context';
 import { getEnterpriseErrorBody } from '@/server/enterprise/guards/enterpriseErrors';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
+import { seedLiveActorSession } from '../../testing/seedLiveActorSession';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -107,10 +109,15 @@ const callerFor = async (
     authMethod?: 'api-key' | 'better-auth';
   } = { authenticatedAt: new Date(), authMethod: 'better-auth' },
 ) => {
+  const authMethod = auth.authMethod ?? 'better-auth';
+  const sessionId =
+    authMethod === 'better-auth'
+      ? await seedLiveActorSession(db, { sessionId: `session-${userId}`, userId })
+      : null;
   const context = await createContextInner({
     authenticatedAt: auth.authenticatedAt,
-    authMethod: auth.authMethod ?? 'better-auth',
-    sessionId: `session-${userId}`,
+    authMethod,
+    sessionId,
     userId,
   });
   return createCaller({ ...context, serverDB: db } as never).identityProviders;
@@ -150,7 +157,7 @@ describe('admin.identityProviders RBAC and feature gate', () => {
     const authStates = [
       { authenticatedAt: null, authMethod: 'better-auth' as const },
       {
-        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
         authMethod: 'better-auth' as const,
       },
       { authenticatedAt: new Date(), authMethod: 'api-key' as const },
@@ -205,7 +212,7 @@ describe('admin.identityProviders RBAC and feature gate', () => {
     const authStates = [
       { authenticatedAt: null, authMethod: 'better-auth' as const },
       {
-        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
         authMethod: 'better-auth' as const,
       },
       { authenticatedAt: new Date(), authMethod: 'api-key' as const },
@@ -268,7 +275,7 @@ describe('admin.identityProviders RBAC and feature gate', () => {
       await callerFor(ids.creator)
     ).create(identityInput('current-secret-guard', { operation: 'replace', value: currentSecret }));
     const stale = await callerFor(ids.updater, {
-      authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
       authMethod: 'better-auth',
     });
 
@@ -334,7 +341,7 @@ describe('admin.identityProviders RBAC and feature gate', () => {
       identityInput('all-existing-mutations', { operation: 'replace', value: currentSecret }),
     );
     const staleAuth = {
-      authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
       authMethod: 'better-auth' as const,
     };
     const publisher = await callerFor(ids.publisher, staleAuth);
@@ -501,11 +508,12 @@ describe('admin.identityProviders RBAC and feature gate', () => {
 
   it('still rejects create replacement when the denied audit sink fails', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const caller = await callerFor(ids.creator, { authenticatedAt: null });
     const insert = vi.spyOn(db, 'insert').mockImplementationOnce(() => {
       throw new Error('audit sink unavailable');
     });
     await expect(
-      (await callerFor(ids.creator, { authenticatedAt: null })).create(
+      caller.create(
         identityInput('audit-failure', {
           operation: 'replace',
           value: 'never-written-identity-secret',
@@ -614,7 +622,7 @@ describe('admin.identityProviders RBAC and feature gate', () => {
     for (const auth of [
       { authenticatedAt: null, authMethod: 'better-auth' as const },
       {
-        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
         authMethod: 'better-auth' as const,
       },
       { authenticatedAt: new Date(), authMethod: 'api-key' as const },
@@ -640,12 +648,11 @@ describe('admin.identityProviders RBAC and feature gate', () => {
     ]);
 
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const caller = await callerFor(ids.deleter, { authenticatedAt: null });
     const insert = vi.spyOn(db, 'insert').mockImplementationOnce(() => {
       throw new Error('audit sink unavailable');
     });
-    await expect(
-      (await callerFor(ids.deleter, { authenticatedAt: null })).delete(input),
-    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(caller.delete(input)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     await expect(
       db
         .select()

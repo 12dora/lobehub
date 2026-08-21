@@ -33,6 +33,7 @@ import {
   setPlatformConfigInvalidationPublisher,
 } from '../../services/platformConfigInvalidation';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { liveActorSessionIdFor, seedLiveActorSession } from '../../testing/seedLiveActorSession';
 import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
@@ -145,13 +146,28 @@ const withDbCtx = async (
     sessionId?: string | null;
   },
 ) => {
+  const now = new Date();
+  const authMethod = extras?.authMethod ?? 'better-auth';
+  const sessionId =
+    extras && 'sessionId' in extras
+      ? extras.sessionId
+      : userId
+        ? liveActorSessionIdFor(userId)
+        : null;
+  if (
+    userId &&
+    authMethod === 'better-auth' &&
+    typeof sessionId === 'string' &&
+    sessionId.length > 0
+  ) {
+    await seedLiveActorSession(db, { now, sessionId, userId });
+  }
   const base = await createContextInner(
     userId
       ? {
-          authenticatedAt:
-            extras && 'authenticatedAt' in extras ? extras.authenticatedAt : new Date(),
-          authMethod: extras?.authMethod ?? 'better-auth',
-          sessionId: extras?.sessionId ?? 'actor-session',
+          authenticatedAt: extras && 'authenticatedAt' in extras ? extras.authenticatedAt : now,
+          authMethod,
+          sessionId,
           userId,
         }
       : {},
