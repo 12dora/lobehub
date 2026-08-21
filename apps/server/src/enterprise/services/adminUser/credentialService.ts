@@ -66,7 +66,7 @@ export class AdminUserCredentialService extends AdminUserSupport {
     const passwordHash = await hashPassword(input.newPassword);
 
     try {
-      await this.db.transaction(async (tx) => {
+      const tokens = await this.db.transaction(async (tx) => {
         const model = new AdminUserModel(tx);
         const updated = await model.updateCredentialPassword({
           passwordHash,
@@ -74,8 +74,10 @@ export class AdminUserCredentialService extends AdminUserSupport {
         });
         if (!updated) throw new AdminUserNoCredentialAccountError();
 
+        let revokedTokens: string[] = [];
         if (revokeSessions) {
-          await model.revokeSessionsForUser({ userId: input.userId });
+          const revoked = await model.revokeAuthSessions({ userId: input.userId });
+          revokedTokens = revoked.tokens;
           await model.invalidateAuth({
             excludedSessionId: null,
             userId: input.userId,
@@ -91,7 +93,19 @@ export class AdminUserCredentialService extends AdminUserSupport {
           targetId: input.userId,
           targetType: 'user',
         });
+
+        return revokedTokens;
       });
+
+      if (revokeSessions) {
+        await this.evictBetterAuthSecondaryStorage(tokens);
+        try {
+          await revokeOIDCArtifactsByUserId(this.db, input.userId);
+        } catch {
+          // best-effort; authInvalidatedAt already advanced
+        }
+        await this.publishUserSecurityInvalidation(input.userId);
+      }
     } catch (error) {
       if (error instanceof AdminUserNoCredentialAccountError) {
         await this.auditUserFailure({
@@ -103,15 +117,6 @@ export class AdminUserCredentialService extends AdminUserSupport {
         });
       }
       throw error;
-    }
-
-    if (revokeSessions) {
-      try {
-        await revokeOIDCArtifactsByUserId(this.db, input.userId);
-      } catch {
-        // best-effort; authInvalidatedAt already advanced
-      }
-      await this.publishUserSecurityInvalidation(input.userId);
     }
 
     return { sessionsRevoked: revokeSessions, userId: input.userId };
@@ -136,13 +141,13 @@ export class AdminUserCredentialService extends AdminUserSupport {
       throw new AdminUserNotFoundError();
     }
 
-    await this.db.transaction(async (tx) => {
+    const { tokens } = await this.db.transaction(async (tx) => {
       const model = new AdminUserModel(tx);
       const twoFactorDeleted = await model.deleteTwoFactorForUser(input.userId);
       const passkeysDeleted = removePasskeys ? await model.deletePasskeysForUser(input.userId) : 0;
 
       await model.setTwoFactorEnabled({ enabled: false, userId: input.userId });
-      await model.revokeSessionsForUser({ userId: input.userId });
+      const { tokens } = await model.revokeAuthSessions({ userId: input.userId });
       await model.invalidateAuth({
         excludedSessionId: null,
         userId: input.userId,
@@ -161,7 +166,11 @@ export class AdminUserCredentialService extends AdminUserSupport {
         targetId: input.userId,
         targetType: 'user',
       });
+
+      return { tokens };
     });
+
+    await this.evictBetterAuthSecondaryStorage(tokens);
 
     try {
       await revokeOIDCArtifactsByUserId(this.db, input.userId);

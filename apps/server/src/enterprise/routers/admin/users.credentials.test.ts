@@ -32,8 +32,14 @@ import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
 
+const deleteBetterAuthSecondaryStorageSessions = vi.hoisted(() => vi.fn(async () => undefined));
+
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
+}));
+
+vi.mock('../../services/adminUser/betterAuthSecondaryStorage', () => ({
+  deleteBetterAuthSecondaryStorageSessions,
 }));
 
 // Mutable copy so tests can flip AUTH_DISABLE_EMAIL_PASSWORD (read at call time).
@@ -104,6 +110,7 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   (authEnv as { AUTH_DISABLE_EMAIL_PASSWORD: boolean }).AUTH_DISABLE_EMAIL_PASSWORD = false;
+  deleteBetterAuthSecondaryStorageSessions.mockClear();
   await cleanup();
   await db.insert(users).values(Object.values(IDS).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -179,6 +186,7 @@ describe('admin.users.setPassword', () => {
     expect(
       await db.query.session.findFirst({ where: eq(session.id, 'target-sess') }),
     ).toBeUndefined();
+    expect(deleteBetterAuthSecondaryStorageSessions).toHaveBeenCalledWith(['tok-target-setpw']);
     const after = await db.query.users.findFirst({ where: eq(users.id, IDS.target) });
     expect(after?.authInvalidatedAt).toBeInstanceOf(Date);
 
@@ -382,6 +390,7 @@ describe('admin.users.disableTwoFactor', () => {
     expect(after?.twoFactorEnabled).toBe(false);
     expect(after?.authInvalidatedAt).toBeInstanceOf(Date);
     expect(await db.query.session.findFirst({ where: eq(session.id, 'tf-sess') })).toBeUndefined();
+    expect(deleteBetterAuthSecondaryStorageSessions).toHaveBeenCalledWith(['tok-tf']);
 
     const second = await caller.users.disableTwoFactor({
       userId: IDS.target,

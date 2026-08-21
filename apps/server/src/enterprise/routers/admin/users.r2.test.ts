@@ -37,8 +37,14 @@ import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
 
+const deleteBetterAuthSecondaryStorageSessions = vi.hoisted(() => vi.fn(async () => undefined));
+
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
+}));
+
+vi.mock('../../services/adminUser/betterAuthSecondaryStorage', () => ({
+  deleteBetterAuthSecondaryStorageSessions,
 }));
 
 vi.mock('@/libs/oidc-provider/access-control', async (importOriginal) => {
@@ -82,6 +88,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+  deleteBetterAuthSecondaryStorageSessions.mockClear();
   await cleanup();
   await db.insert(users).values(Object.values(IDS).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -287,6 +294,7 @@ describe('session exception model (includeCurrent=false)', () => {
     const u = await db.query.users.findFirst({ where: eq(users.id, IDS.userAdmin) });
     expect(u?.authInvalidatedExcludedSessionId).toBeNull();
     expect(await db.query.session.findFirst({ where: eq(session.id, 's-full') })).toBeUndefined();
+    expect(deleteBetterAuthSecondaryStorageSessions).toHaveBeenCalledWith(['tf']);
   });
 
   it('rejects preserve when session does not belong to target + persists denied audit', async () => {

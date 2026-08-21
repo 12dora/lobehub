@@ -75,7 +75,7 @@ export class AdminUserLifecycleService extends AdminUserSupport {
         });
         if (!updated) throw new AdminUserNotFoundError();
 
-        await model.revokeSessionsForUser({ userId: input.userId });
+        const { tokens } = await model.revokeAuthSessions({ userId: input.userId });
 
         await this.appendAuditInDb(tx, {
           action: 'admin.users.ban',
@@ -90,8 +90,10 @@ export class AdminUserLifecycleService extends AdminUserSupport {
           targetType: 'user',
         });
 
-        return updated;
+        return { tokens, updated };
       });
+
+      await this.evictBetterAuthSecondaryStorage(result.tokens);
 
       try {
         await revokeOIDCArtifactsByUserId(this.db, input.userId);
@@ -102,7 +104,7 @@ export class AdminUserLifecycleService extends AdminUserSupport {
       await this.publishUserSecurityInvalidation(input.userId);
 
       return {
-        banExpires: result.banExpires ?? null,
+        banExpires: result.updated.banExpires ?? null,
         banned: true as const,
         userId: input.userId,
       };
@@ -152,7 +154,7 @@ export class AdminUserLifecycleService extends AdminUserSupport {
         });
         if (!updated) throw new AdminUserNotFoundError();
 
-        await model.revokeSessionsForUser({ userId: input.userId });
+        const { tokens } = await model.revokeAuthSessions({ userId: input.userId });
         await new PlatformContentModerationRecordModel(tx).markAutoBanned(recordId);
 
         await this.appendAuditInDb(tx, {
@@ -168,8 +170,10 @@ export class AdminUserLifecycleService extends AdminUserSupport {
           targetType: 'user',
         });
 
-        return updated;
+        return { tokens, updated };
       });
+
+      await this.evictBetterAuthSecondaryStorage(result.tokens);
 
       try {
         await revokeOIDCArtifactsByUserId(this.db, input.userId);
@@ -180,7 +184,7 @@ export class AdminUserLifecycleService extends AdminUserSupport {
       await this.publishUserSecurityInvalidation(input.userId);
 
       return {
-        banExpires: result.banExpires ?? null,
+        banExpires: result.updated.banExpires ?? null,
         banned: true as const,
         userId: input.userId,
       };
@@ -362,12 +366,15 @@ export class AdminUserLifecycleService extends AdminUserSupport {
     }
 
     try {
-      await this.db.transaction(async (tx) => {
+      const { tokens } = await this.db.transaction(async (tx) => {
         // Serialize with concurrent super-admin mutations (same lock as ban).
         await this.lockSuperAdminRoleRow(tx);
 
         const model = new AdminUserModel(tx);
         await this.assertNotLastSuperAdmin(tx, actorUserId, input.userId, { mode: 'last' });
+
+        // Capture session tokens before the user cascade so Redis can be evicted.
+        const { tokens } = await model.revokeAuthSessions({ userId: input.userId });
 
         // Audit before the cascade so intent is recorded even if delete throws.
         await this.appendAuditInDb(tx, {
@@ -382,7 +389,10 @@ export class AdminUserLifecycleService extends AdminUserSupport {
 
         const ok = await model.hardDeleteUser(input.userId);
         if (!ok) throw new AdminUserNotFoundError();
+        return { tokens };
       });
+
+      await this.evictBetterAuthSecondaryStorage(tokens);
 
       try {
         await revokeOIDCArtifactsByUserId(this.db, input.userId);

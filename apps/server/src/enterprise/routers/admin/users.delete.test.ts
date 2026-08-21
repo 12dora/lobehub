@@ -139,6 +139,7 @@ describe('admin.users.delete (hard delete)', () => {
     expect(await db.query.session.findMany({ where: eq(session.userId, IDS.target) })).toHaveLength(
       0,
     );
+    expect(deleteBetterAuthSecondaryStorageSessions).toHaveBeenCalledWith(['tok-target']);
     expect(
       await db.query.userRoles.findMany({ where: eq(userRoles.userId, IDS.target) }),
     ).toHaveLength(0);

@@ -103,6 +103,16 @@ export interface AdminUserSessionSummary {
   userAgent: string | null;
 }
 
+/**
+ * Result of deleting Better Auth `auth_sessions` rows.
+ * `tokens` are the exact tokens of the deleted rows (`DELETE ... RETURNING token`)
+ * so Redis secondary-storage eviction cannot race a concurrent login.
+ */
+export interface RevokedAuthSessions {
+  revokedCount: number;
+  tokens: string[];
+}
+
 export interface AdminUserDetail {
   avatar: string | null;
   banExpires: Date | null;
@@ -427,15 +437,26 @@ export class AdminUserModel {
   };
 
   /**
-   * Revoke Better Auth sessions for a target user (known auth_sessions model only).
-   * Optionally preserve a single session id (actor's current session).
-   * Returns number of deleted rows. Never touches accounts / credentials.
+   * Single Better Auth session-deletion path used by targeted revoke, full revoke,
+   * ban, system-ban, hard-delete, password replacement, and 2FA reset.
+   *
+   * `DELETE ... RETURNING token` so `revokedCount` and cleanup tokens come from
+   * exactly the rows removed — a login that commits between a prior SELECT and
+   * DELETE cannot leave a Redis entry whose DB row was deleted.
    */
-  revokeSessionsForUser = async (params: {
+  revokeAuthSessions = async (params: {
     excludeSessionId?: string | null;
+    sessionIds?: string[];
     userId: string;
-  }): Promise<number> => {
+  }): Promise<RevokedAuthSessions> => {
+    if (params.sessionIds && params.sessionIds.length === 0) {
+      return { revokedCount: 0, tokens: [] };
+    }
+
     const conditions = [eq(session.userId, params.userId)];
+    if (params.sessionIds && params.sessionIds.length > 0) {
+      conditions.push(inArray(session.id, params.sessionIds));
+    }
     if (params.excludeSessionId) {
       conditions.push(ne(session.id, params.excludeSessionId));
     }
@@ -443,10 +464,25 @@ export class AdminUserModel {
     const deleted = await this.db
       .delete(session)
       .where(and(...conditions))
-      .returning({ id: session.id });
+      .returning({ token: session.token });
 
-    return deleted.length;
+    return {
+      revokedCount: deleted.length,
+      tokens: deleted
+        .map((row) => row.token)
+        .filter((token): token is string => typeof token === 'string' && token.length > 0),
+    };
   };
+
+  /**
+   * Revoke Better Auth sessions for a target user (known auth_sessions model only).
+   * Optionally preserve a single session id (actor's current session).
+   * Never touches accounts / credentials.
+   */
+  revokeSessionsForUser = async (params: {
+    excludeSessionId?: string | null;
+    userId: string;
+  }): Promise<RevokedAuthSessions> => this.revokeAuthSessions(params);
 
   /**
    * Count how many of the given Better Auth session ids belong to the user.
@@ -466,20 +502,13 @@ export class AdminUserModel {
 
   /**
    * Delete a specific set of Better Auth sessions for a user (targeted revoke).
-   * Only rows owned by the user are deleted. Returns number of deleted rows.
+   * Only rows owned by the user are deleted.
    * Never advances the global auth epoch — callers keep the user's other sessions alive.
    */
   revokeSpecificSessions = async (params: {
     sessionIds: string[];
     userId: string;
-  }): Promise<number> => {
-    if (params.sessionIds.length === 0) return 0;
-    const deleted = await this.db
-      .delete(session)
-      .where(and(eq(session.userId, params.userId), inArray(session.id, params.sessionIds)))
-      .returning({ id: session.id });
-    return deleted.length;
-  };
+  }): Promise<RevokedAuthSessions> => this.revokeAuthSessions(params);
 
   /**
    * Case-insensitive duplicate check on email / normalizedEmail.

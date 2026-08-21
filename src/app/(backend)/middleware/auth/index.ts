@@ -11,6 +11,7 @@ import { LOBE_CHAT_OIDC_AUTH_HEADER } from '@/envs/auth';
 import { extractTraceContext, injectActiveTraceHeaders } from '@/libs/observability/traceparent';
 import { assertOIDCUserActive } from '@/libs/oidc-provider/access-control';
 import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
+import { assertUserActiveCached } from '@/libs/oidc-provider/userActiveCache';
 import { LOBE_CHAT_API_KEY_HEADER, validateApiKeyAuth } from '@/libs/trpc/lambda/context';
 import { createErrorResponse } from '@/utils/errorResponse';
 
@@ -103,7 +104,9 @@ export const checkAuth =
           userId = oidc.userId;
           await assertOIDCUserActive(serverDB, userId);
         } else {
-          // Better Auth session authentication (web)
+          // Better Auth session authentication (web). Cookie-cache can return a
+          // signed session after the auth_sessions row is gone — fail closed on
+          // a live DB row. Backend failures must stay 500, not 401.
           const session = await auth.api.getSession({
             headers: req.headers,
           });
@@ -113,6 +116,17 @@ export const checkAuth =
           }
 
           userId = session.user.id;
+          const rawCreatedAt = session.session?.createdAt;
+          const sessionCreatedAt =
+            rawCreatedAt instanceof Date
+              ? rawCreatedAt
+              : rawCreatedAt
+                ? new Date(rawCreatedAt)
+                : null;
+          const credentialIssuedAt =
+            sessionCreatedAt && !Number.isNaN(sessionCreatedAt.getTime()) ? sessionCreatedAt : null;
+          const sessionId = typeof session.session?.id === 'string' ? session.session.id : null;
+          await assertUserActiveCached(serverDB, userId, { credentialIssuedAt, sessionId });
         }
       }
     } catch (e) {

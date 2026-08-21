@@ -19,6 +19,7 @@ import {
   type PlatformConfigInvalidationPublisher,
 } from '../platformConfigInvalidation';
 import { LastSuperAdminError, PlatformRbacService } from '../platformRbac';
+import { deleteBetterAuthSecondaryStorageSessions } from './betterAuthSecondaryStorage';
 import { AdminUserPasswordAuthDisabledError } from './errors';
 
 export class AdminUserSupport {
@@ -129,6 +130,14 @@ export class AdminUserSupport {
     if (options.mode === 'any') throw new LastSuperAdminError();
     const count = await rbac.countActiveSuperAdmins();
     if (count <= 1) throw new LastSuperAdminError();
+  };
+
+  /**
+   * After a committed `DELETE ... RETURNING token`, drop Better Auth Redis entries.
+   * Best-effort: the DB row is the liveness source of truth.
+   */
+  protected evictBetterAuthSecondaryStorage = async (tokens: string[]) => {
+    await deleteBetterAuthSecondaryStorageSessions(tokens);
   };
 
   publishUserSecurityInvalidation = async (userId: string) => {

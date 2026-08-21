@@ -355,7 +355,8 @@ describe('AdminUserModel.revokeSessionsForUser', () => {
       excludeSessionId: 's-a1',
       userId: IDS.a,
     });
-    expect(revoked).toBe(1);
+    expect(revoked.revokedCount).toBe(1);
+    expect(revoked.tokens).toEqual(['tok-a2']);
 
     const aSessions = await serverDB.query.session.findMany({
       where: eq(session.userId, IDS.a),
@@ -369,6 +370,65 @@ describe('AdminUserModel.revokeSessionsForUser', () => {
 
     const acc = await serverDB.query.account.findFirst({ where: eq(account.id, 'acc-a') });
     expect(acc?.password).toBe('keep-me');
+  });
+
+  it('DELETE RETURNING includes a session inserted after a prior listing (concurrent login)', async () => {
+    await serverDB.insert(session).values({
+      expiresAt: new Date(Date.now() + 3600_000),
+      id: 's-listed',
+      token: 'tok-listed',
+      updatedAt: new Date(),
+      userId: IDS.a,
+    });
+
+    const listed = await serverDB
+      .select({ token: session.token })
+      .from(session)
+      .where(eq(session.userId, IDS.a));
+    expect(listed.map((row) => row.token)).toEqual(['tok-listed']);
+
+    await serverDB.insert(session).values({
+      expiresAt: new Date(Date.now() + 3600_000),
+      id: 's-concurrent',
+      token: 'tok-concurrent',
+      updatedAt: new Date(),
+      userId: IDS.a,
+    });
+
+    const revoked = await model.revokeAuthSessions({ userId: IDS.a });
+    expect(revoked.revokedCount).toBe(2);
+    expect(revoked.tokens.sort()).toEqual(['tok-concurrent', 'tok-listed']);
+    expect(
+      await serverDB.query.session.findMany({ where: eq(session.userId, IDS.a) }),
+    ).toHaveLength(0);
+  });
+
+  it('revokeSpecificSessions returns tokens of the deleted rows only', async () => {
+    await serverDB.insert(session).values([
+      {
+        expiresAt: new Date(Date.now() + 3600_000),
+        id: 'spec-1',
+        token: 'tok-spec-1',
+        updatedAt: new Date(),
+        userId: IDS.a,
+      },
+      {
+        expiresAt: new Date(Date.now() + 3600_000),
+        id: 'spec-keep',
+        token: 'tok-spec-keep',
+        updatedAt: new Date(),
+        userId: IDS.a,
+      },
+    ]);
+
+    const revoked = await model.revokeSpecificSessions({
+      sessionIds: ['spec-1'],
+      userId: IDS.a,
+    });
+    expect(revoked).toEqual({ revokedCount: 1, tokens: ['tok-spec-1'] });
+    expect(
+      await serverDB.query.session.findFirst({ where: eq(session.id, 'spec-keep') }),
+    ).toBeTruthy();
   });
 });
 

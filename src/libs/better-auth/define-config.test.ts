@@ -61,6 +61,10 @@ vi.mock('better-auth/minimal', () => ({
   betterAuth: mocks.betterAuth,
 }));
 
+vi.mock('@/libs/better-auth/session-db-liveness', () => ({
+  attachBetterAuthSessionLiveness: vi.fn(),
+}));
+
 vi.mock('better-auth/plugins', () => ({
   admin: vi.fn(() => ({ id: 'admin' })),
   emailOTP: vi.fn(() => ({ id: 'email-otp' })),

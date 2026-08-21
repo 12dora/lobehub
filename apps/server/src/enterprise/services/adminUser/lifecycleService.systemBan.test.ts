@@ -3,16 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LastSuperAdminError } from '../platformRbac';
 
 const setBanned = vi.fn(async () => ({ banExpires: null, banned: true, id: 'u1' }));
-const revokeSessionsForUser = vi.fn(async () => 1);
+const revokeAuthSessions = vi.fn(async () => ({ revokedCount: 1, tokens: ['tok-u1'] }));
 const findBanState = vi.fn(async () => ({ banned: false }));
 const isGlobalSuperAdmin = vi.fn(async () => false);
 const markAutoBanned = vi.fn(async () => undefined);
 const append = vi.fn(async () => ({ id: 'audit-1' }));
+const deleteBetterAuthSecondaryStorageSessions = vi.fn(async () => undefined);
 
 vi.mock('@/database/models/adminUser', () => ({
   AdminUserModel: class {
     findBanState = findBanState;
-    revokeSessionsForUser = revokeSessionsForUser;
+    revokeAuthSessions = revokeAuthSessions;
     setBanned = setBanned;
   },
 }));
@@ -36,6 +37,10 @@ vi.mock('@/database/models/platform/auditLog', () => ({
   PlatformAuditLogModel: class {
     append = append;
   },
+}));
+
+vi.mock('./betterAuthSecondaryStorage', () => ({
+  deleteBetterAuthSecondaryStorageSessions,
 }));
 
 vi.mock('@/libs/oidc-provider/access-control', () => ({
@@ -63,9 +68,10 @@ describe('AdminUserLifecycleService.systemBan', () => {
 
   beforeEach(() => {
     setBanned.mockClear();
-    revokeSessionsForUser.mockClear();
+    revokeAuthSessions.mockClear();
     markAutoBanned.mockClear();
     append.mockClear();
+    deleteBetterAuthSecondaryStorageSessions.mockClear();
     isGlobalSuperAdmin.mockReset();
     isGlobalSuperAdmin.mockResolvedValue(false);
     findBanState.mockResolvedValue({ banned: false });
@@ -115,5 +121,23 @@ describe('AdminUserLifecycleService.systemBan', () => {
     expect(rolledBack).toBe(true);
     expect(markAutoBanned).toHaveBeenCalled();
     expect(setBanned).toHaveBeenCalled();
+    expect(deleteBetterAuthSecondaryStorageSessions).not.toHaveBeenCalled();
+  });
+
+  it('evicts Better Auth secondary storage tokens returned by the session delete', async () => {
+    const db = {
+      transaction: async (fn: (tx: { execute: () => Promise<void> }) => Promise<unknown>) =>
+        fn({ execute: async () => undefined }),
+    };
+    const service = new AdminUserLifecycleService(db as never, {
+      invalidation: { publish: vi.fn() },
+    });
+
+    await expect(service.systemBan({ input, recordId: 'rec-1' })).resolves.toMatchObject({
+      banned: true,
+      userId: 'u1',
+    });
+    expect(revokeAuthSessions).toHaveBeenCalledWith({ userId: 'u1' });
+    expect(deleteBetterAuthSecondaryStorageSessions).toHaveBeenCalledWith(['tok-u1']);
   });
 });

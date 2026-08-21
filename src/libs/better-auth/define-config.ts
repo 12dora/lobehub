@@ -29,6 +29,7 @@ import {
   SESSION_COOKIE_CACHE_MAX_AGE_SECONDS,
   SESSION_COOKIE_CACHE_STRATEGY,
 } from '@/libs/better-auth/session-cookie-cache';
+import { attachBetterAuthSessionLiveness } from '@/libs/better-auth/session-db-liveness';
 import { initBetterAuthSSOProviders } from '@/libs/better-auth/sso';
 import {
   buildPlatformIdentityProvider,
@@ -553,5 +554,7 @@ export function defineConfig(
     ],
   } satisfies BetterAuthOptions;
 
-  return betterAuth(options);
+  const auth = betterAuth(options);
+  attachBetterAuthSessionLiveness(auth, serverDB);
+  return auth;
 }

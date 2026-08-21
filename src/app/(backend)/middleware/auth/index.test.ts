@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { auth } from '@/auth';
 import { assertOIDCUserActive } from '@/libs/oidc-provider/access-control';
 import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
+import { assertUserActiveCached } from '@/libs/oidc-provider/userActiveCache';
 import { validateApiKeyAuth } from '@/libs/trpc/lambda/context';
 import { createErrorResponse } from '@/utils/errorResponse';
 
@@ -60,6 +61,10 @@ vi.mock('@/libs/oidc-provider/jwt', () => ({
 
 vi.mock('@/libs/oidc-provider/access-control', () => ({
   assertOIDCUserActive: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('@/libs/oidc-provider/userActiveCache', () => ({
+  assertUserActiveCached: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@/envs/auth', () => ({
@@ -136,6 +141,50 @@ describe('checkAuth', () => {
     expect(AgentRuntimeError.createError).toHaveBeenCalledWith(ChatErrorType.Unauthorized);
     expect(createErrorResponse).toHaveBeenCalledWith(ChatErrorType.Unauthorized, {
       error: { errorType: ChatErrorType.Unauthorized },
+      provider: 'mock',
+    });
+    expect(mockHandler).not.toHaveBeenCalled();
+  });
+
+  it('rejects a cookie-cache Better Auth session whose database row is gone', async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      session: {
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        id: 'ghost-sess',
+      },
+      user: { id: 'revoked-user' },
+    } as Awaited<ReturnType<typeof auth.api.getSession>>);
+    const inactiveError = Object.assign(new Error('OIDC user is no longer active'), {
+      code: 'UNAUTHORIZED',
+    });
+    vi.mocked(assertUserActiveCached).mockRejectedValueOnce(inactiveError);
+    vi.mocked(mockHandler).mockResolvedValueOnce(new Response('ok'));
+
+    await checkAuth(mockHandler)(mockRequest, mockOptions);
+
+    expect(assertUserActiveCached).toHaveBeenCalledWith(expect.any(Object), 'revoked-user', {
+      credentialIssuedAt: new Date('2026-01-01T00:00:00.000Z'),
+      sessionId: 'ghost-sess',
+    });
+    expect(createErrorResponse).toHaveBeenCalledWith(ChatErrorType.Unauthorized, {
+      error: inactiveError,
+      provider: 'mock',
+    });
+    expect(mockHandler).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 when Better Auth session liveness check hits a backend failure', async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      session: { id: 'live-sess' },
+      user: { id: 'live-user' },
+    } as Awaited<ReturnType<typeof auth.api.getSession>>);
+    const backendError = new Error('database unavailable');
+    vi.mocked(assertUserActiveCached).mockRejectedValueOnce(backendError);
+
+    await checkAuth(mockHandler)(mockRequest, mockOptions);
+
+    expect(createErrorResponse).toHaveBeenCalledWith(ChatErrorType.InternalServerError, {
+      error: backendError,
       provider: 'mock',
     });
     expect(mockHandler).not.toHaveBeenCalled();

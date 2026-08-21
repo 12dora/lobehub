@@ -1,37 +1,12 @@
 /**
  * Admin user session retention and revocation.
  */
-import { and, eq, inArray, ne } from 'drizzle-orm';
-
 import { AdminUserModel } from '@/database/models/adminUser';
-import { session } from '@/database/schemas';
-import type { LobeChatDatabase } from '@/database/type';
 import { revokeOIDCArtifactsByUserId } from '@/libs/oidc-provider/access-control';
 
 import type { AdminUsersRevokeSessionsInput } from '../../contracts/adminUsers';
-import { deleteBetterAuthSecondaryStorageSessions } from './betterAuthSecondaryStorage';
 import { AdminUserNotFoundError, InvalidRetainedSessionError } from './errors';
 import { AdminUserSupport } from './support';
-
-const sessionTokensForUser = async (
-  db: LobeChatDatabase,
-  params: { excludeSessionId?: string; sessionIds?: string[]; userId: string },
-): Promise<string[]> => {
-  const conditions = [eq(session.userId, params.userId)];
-  if (params.sessionIds && params.sessionIds.length > 0) {
-    conditions.push(inArray(session.id, params.sessionIds));
-  }
-  if (params.excludeSessionId) {
-    conditions.push(ne(session.id, params.excludeSessionId));
-  }
-  const rows = await db
-    .select({ token: session.token })
-    .from(session)
-    .where(and(...conditions));
-  return rows
-    .map((row) => row.token)
-    .filter((token): token is string => typeof token === 'string' && token.length > 0);
-};
 
 export class AdminUserSessionService extends AdminUserSupport {
   revokeSessions = async (params: {
@@ -70,12 +45,7 @@ export class AdminUserSessionService extends AdminUserSupport {
             throw new InvalidRetainedSessionError('retained_session_invalid');
           }
 
-          const tokens = await sessionTokensForUser(tx as LobeChatDatabase, {
-            sessionIds: uniqueIds,
-            userId: input.userId,
-          });
-
-          const count = await model.revokeSpecificSessions({
+          const { revokedCount, tokens } = await model.revokeAuthSessions({
             sessionIds: uniqueIds,
             userId: input.userId,
           });
@@ -83,18 +53,18 @@ export class AdminUserSessionService extends AdminUserSupport {
           await this.appendAuditInDb(tx, {
             action: 'admin.users.revokeSessions',
             actorUserId,
-            afterDiff: { mode: 'targeted', requested: uniqueIds.length, revokedCount: count },
+            afterDiff: { mode: 'targeted', requested: uniqueIds.length, revokedCount },
             reason: input.reason,
             result: 'success',
             targetId: input.userId,
             targetType: 'user',
           });
 
-          return { revokedCount: count, tokens };
+          return { revokedCount, tokens };
         });
 
         // Drop Redis after the DB commit so get-session cannot keep serving the token.
-        await deleteBetterAuthSecondaryStorageSessions(tokens);
+        await this.evictBetterAuthSecondaryStorage(tokens);
 
         // Targeted revoke keeps the user's other sessions alive — do not touch OIDC epoch.
         await this.publishUserSecurityInvalidation(input.userId);
@@ -144,12 +114,7 @@ export class AdminUserSessionService extends AdminUserSupport {
           }
         }
 
-        const tokens = await sessionTokensForUser(tx as LobeChatDatabase, {
-          excludeSessionId,
-          userId: input.userId,
-        });
-
-        const count = await model.revokeSessionsForUser({
+        const { revokedCount, tokens } = await model.revokeAuthSessions({
           excludeSessionId,
           userId: input.userId,
         });
@@ -167,7 +132,7 @@ export class AdminUserSessionService extends AdminUserSupport {
           afterDiff: {
             includeCurrent: Boolean(input.includeCurrent),
             preservedSession: Boolean(excludeSessionId),
-            revokedCount: count,
+            revokedCount,
           },
           reason: input.reason,
           result: 'success',
@@ -175,10 +140,10 @@ export class AdminUserSessionService extends AdminUserSupport {
           targetType: 'user',
         });
 
-        return { revokedCount: count, tokens };
+        return { revokedCount, tokens };
       });
 
-      await deleteBetterAuthSecondaryStorageSessions(tokens);
+      await this.evictBetterAuthSecondaryStorage(tokens);
 
       try {
         await revokeOIDCArtifactsByUserId(this.db, input.userId);
