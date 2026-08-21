@@ -4,6 +4,7 @@ import { useMemo, useRef } from 'react';
 import { useUploadFiles } from '@/components/DragUploadZone';
 import { type ActionKeys } from '@/features/ChatInput';
 import { ChatInputProvider, DesktopChatInput } from '@/features/ChatInput';
+import { prefetchAgentSurface } from '@/features/HomeConversation';
 import { useHomeDailyBrief } from '@/hooks/useHomeDailyBrief';
 import { useInitAgentConfig } from '@/hooks/useInitAgentConfig';
 import { useAgentStore } from '@/store/agent';
@@ -64,7 +65,15 @@ const InputArea = () => {
 
   return (
     <Flexbox gap={16} style={{ marginBottom: 16 }}>
-      <Flexbox ref={chatInputRef} style={{ position: 'relative' }}>
+      {/* Focusing the composer is the earliest reliable signal that a send is
+          coming — warm the lazy conversation chunk now so pressing Enter swaps
+          the right column without a blank frame. Idempotent and capture-phase,
+          so it fires for the editor nested inside. */}
+      <Flexbox
+        ref={chatInputRef}
+        style={{ position: 'relative' }}
+        onFocusCapture={prefetchAgentSurface}
+      >
         <InputDragUpload
           radius={20}
           style={{ position: 'relative', zIndex: 1 }}

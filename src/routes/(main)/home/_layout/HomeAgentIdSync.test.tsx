@@ -166,6 +166,47 @@ describe('HomeAgentIdSync route + conversation gates', () => {
     expect(useAgentStore.getState().activeAgentId).toBeUndefined();
   });
 
+  it('never blinks activeAgentId through undefined when the landing opens its own conversation', () => {
+    // Sending to the inbox from the home composer keeps the pathname and only
+    // adds `?agent=<inbox>`. The conversation hydrator claims the same id in
+    // that commit, so this component must not release it on the way past —
+    // `undefined` for even one render keys the right column on
+    // `main_undefined_new` and drops `AgentInfo` to a skeleton.
+    const { rerender } = render(<ScopeHarness scope="user-a:workspace-a" />);
+    expect(useAgentStore.getState().activeAgentId).toBe('inbox-agent-a');
+
+    const seen: (string | undefined)[] = [];
+    const unsubscribe = useAgentStore.subscribe((state) => {
+      seen.push(state.activeAgentId);
+    });
+
+    route.search = 'agent=inbox-agent-a';
+    rerender(<ScopeHarness scope="user-a:workspace-a" />);
+    unsubscribe();
+
+    expect(seen).not.toContain(undefined);
+    expect(useAgentStore.getState().activeAgentId).toBe('inbox-agent-a');
+  });
+
+  it('still releases the inbox id when home stops being the route mid-conversation', () => {
+    const { rerender } = render(<ScopeHarness scope="user-a:workspace-a" />);
+    expect(useAgentStore.getState().activeAgentId).toBe('inbox-agent-a');
+
+    // Open the in-place conversation first, then leave home entirely. The
+    // conversation hydrator owns the release in that commit, so this component
+    // must not clear an id it no longer speaks for.
+    route.search = 'agent=inbox-agent-a';
+    rerender(<ScopeHarness scope="user-a:workspace-a" />);
+
+    route.pathname = '/agent/agt_routed';
+    act(() => {
+      useAgentStore.setState({ activeAgentId: 'agt_routed' });
+    });
+    rerender(<ScopeHarness scope="user-a:workspace-a" />);
+
+    expect(useAgentStore.getState().activeAgentId).toBe('agt_routed');
+  });
+
   it('never overwrites an agent the route already claimed', () => {
     const { rerender } = render(<ScopeHarness scope="user-a:workspace-a" />);
 

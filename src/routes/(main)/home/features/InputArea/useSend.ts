@@ -143,26 +143,66 @@ export const useSend = () => {
             // yet — block on the fetch so sendMessage finds a real config below.
             await ensureAgentConfigLoaded(activeAgentId);
 
-            sendMessage({
-              context: {
-                agentId: activeAgentId,
-                isolatedTopic: true,
-                ...(activeWorkspaceSlug ? { workspaceSlug: activeWorkspaceSlug } : {}),
-              },
-              contextSelections,
-              contexts: contextList,
-              editorData,
-              files: fileList,
-              message,
-              onTopicCreated: (topicId) => {
-                // Same in-place contract, now addressing the created topic. The
-                // pathname is still home, so this only swaps search params.
-                router.replace(homeConversationUrl({ agentId: activeAgentId, topicId }), {
-                  replace: true,
-                });
-              },
-              pageSelections,
+            // Claim the conversation identity BEFORE the surface can mount.
+            // `useAgentContext` reads `activeAgentId` from the **chat** store,
+            // while the landing's `HomeAgentIdSync` only owns the agent store —
+            // so on a warm chunk the right column's first render would build
+            // `main_undefined_new`, paint an avatar skeleton, and then remount
+            // the whole ConversationProvider once hydration's layout effect
+            // corrected the id. `activeTopicId` / `activeThreadId` are cleared
+            // for the same reason: a leftover id from the previously open
+            // conversation would key the first render onto the wrong bucket.
+            useChatStore.setState(
+              { activeAgentId, activeThreadId: undefined, activeTopicId: undefined },
+              false,
+              'HomeSend/seedConversation',
+            );
+            if (useAgentStore.getState().activeAgentId !== activeAgentId)
+              useAgentStore.setState({ activeAgentId }, false, 'HomeSend/seedConversation');
+
+            // Resolved by `onOptimisticReady`, i.e. once the optimistic user +
+            // assistant messages are in `dbMessagesMap['main_<id>_new']`.
+            let markOptimisticReady: () => void = () => {};
+            const optimisticReady = new Promise<void>((resolve) => {
+              markOptimisticReady = () => resolve();
             });
+
+            const sending = Promise.resolve(
+              sendMessage({
+                context: {
+                  agentId: activeAgentId,
+                  isolatedTopic: true,
+                  ...(activeWorkspaceSlug ? { workspaceSlug: activeWorkspaceSlug } : {}),
+                },
+                contextSelections,
+                contexts: contextList,
+                editorData,
+                files: fileList,
+                message,
+                onOptimisticReady: () => markOptimisticReady(),
+                onTopicCreated: (topicId) => {
+                  // Same in-place contract, now addressing the created topic. The
+                  // pathname is still home, so this only swaps search params.
+                  router.replace(homeConversationUrl({ agentId: activeAgentId, topicId }), {
+                    replace: true,
+                  });
+                },
+                pageSelections,
+                // The home conversation *is* this agent's main topic list, so the
+                // created topic has to land in `topicDataMap` — otherwise the
+                // header stays on "New topic" after the `?topic=` swap.
+                registerCreatedTopic: true,
+              }),
+            ).catch((error) => {
+              console.error('[HomeSend] sendMessage failed', error);
+            });
+
+            // Swap the column only once there is something to render. Racing the
+            // send promise keeps the early-return paths (queued send, empty
+            // message) from hanging the navigation, and never waits for the
+            // persist / topic creation — `onTopicCreated` still arrives later and
+            // only rewrites the search params.
+            await Promise.race([optimisticReady, sending]);
 
             // Stay on the home pathname and open the conversation in place
             // (`/?agent=<id>`, the same URL shape the Recents rows use). Pushing a

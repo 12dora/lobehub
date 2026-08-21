@@ -19,6 +19,10 @@ const clearChatUploadFileListMock = vi.hoisted(() => vi.fn());
 const clearChatContextSelectionsMock = vi.hoisted(() => vi.fn());
 
 const chatState = vi.hoisted(() => ({
+  activeAgentId: undefined as string | undefined,
+  activeThreadId: undefined as string | null | undefined,
+  activeTopicId: undefined as string | null | undefined,
+  dbMessagesMap: {} as Record<string, { id: string; role: string }[]>,
   inputMessage: 'hello',
   mainInputEditor: {
     clearContent: clearContentMock,
@@ -50,6 +54,7 @@ const homeState = vi.hoisted(() => ({
 }));
 
 const agentState = vi.hoisted(() => ({
+  activeAgentId: undefined as string | undefined,
   agentMap: {
     agt_inbox: {},
   },
@@ -92,6 +97,7 @@ vi.mock('@/store/agent', () => ({
     (selector: (state: typeof agentState) => unknown) => selector(agentState),
     {
       getState: () => agentState,
+      setState: (partial: Partial<typeof agentState>) => Object.assign(agentState, partial),
     },
   ),
 }));
@@ -113,8 +119,13 @@ vi.mock('@/store/global/selectors', () => ({
 }));
 
 vi.mock('@/store/chat', () => {
-  const useChatStore = (selector: (state: typeof chatState) => unknown) => selector(chatState);
-  useChatStore.getState = () => chatState;
+  const useChatStore = Object.assign(
+    (selector: (state: typeof chatState) => unknown) => selector(chatState),
+    {
+      getState: () => chatState,
+      setState: (partial: Partial<typeof chatState>) => Object.assign(chatState, partial),
+    },
+  );
 
   return { useChatStore };
 });
@@ -154,6 +165,11 @@ describe('Home InputArea useSend', () => {
     fileState.chatUploadFileList = [];
     homeState.inputActiveMode = null;
     activeWorkspaceSlugMock.value = null;
+    chatState.activeAgentId = undefined;
+    chatState.activeThreadId = 'thd_stale';
+    chatState.activeTopicId = 'tpc_stale';
+    chatState.dbMessagesMap = {};
+    agentState.activeAgentId = undefined;
   });
 
   const expectNoAgentPathname = () => {
@@ -196,6 +212,109 @@ describe('Home InputArea useSend', () => {
       replace: true,
     });
     expectNoAgentPathname();
+  });
+
+  it('seeds both stores and the optimistic messages before opening the column', async () => {
+    const order: string[] = [];
+    routerMock.push.mockImplementation(() => {
+      order.push('push');
+    });
+    sendMessageMock.mockImplementation(
+      async ({
+        context,
+        onOptimisticReady,
+      }: {
+        context: { agentId: string };
+        onOptimisticReady?: () => void;
+      }) => {
+        // A real `sendMessage` seeds synchronously, but the desktop branch can
+        // await before it — assert `useSend` waits for the signal, not for luck.
+        await Promise.resolve();
+
+        // Both stores must already carry the conversation identity by the time
+        // the send starts: `useAgentContext` reads the CHAT store, and the
+        // right column's very first render keys on it.
+        expect(chatState.activeAgentId).toBe('agt_inbox');
+        expect(chatState.activeTopicId).toBeUndefined();
+        expect(chatState.activeThreadId).toBeUndefined();
+        expect(agentState.activeAgentId).toBe('agt_inbox');
+
+        chatState.dbMessagesMap[`main_${context.agentId}_new`] = [
+          { id: 'tmp_user', role: 'user' },
+          { id: 'tmp_assistant', role: 'assistant' },
+        ];
+        order.push('optimistic');
+        onOptimisticReady?.();
+
+        // Persist + stream keep running long after the column has swapped.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        order.push('persisted');
+      },
+    );
+
+    const { result } = renderHook(() => useSend());
+    const params: Parameters<SendButtonHandler>[0] = {
+      clearContent: vi.fn(),
+      editor: {} as Parameters<SendButtonHandler>[0]['editor'],
+      getEditorData: () => undefined,
+      getMarkdownContent: () => 'hello',
+    };
+
+    await act(async () => {
+      await result.current.send(params);
+    });
+
+    // Never before the bubbles exist, never after the topic is persisted.
+    expect(order).toEqual(['optimistic', 'push']);
+    expect(chatState.dbMessagesMap['main_agt_inbox_new']).toHaveLength(2);
+    expect(routerMock.push).toHaveBeenCalledWith('/?agent=agt_inbox', { replace: true });
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onOptimisticReady: expect.any(Function),
+        registerCreatedTopic: true,
+      }),
+    );
+  });
+
+  it('still opens the column when the send bails out before seeding anything', async () => {
+    // e.g. the context is busy and the message is queued instead of sent —
+    // `onOptimisticReady` never fires, so the push must fall back to the
+    // settled send promise rather than hang the navigation.
+    sendMessageMock.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useSend());
+    const params: Parameters<SendButtonHandler>[0] = {
+      clearContent: vi.fn(),
+      editor: {} as Parameters<SendButtonHandler>[0]['editor'],
+      getEditorData: () => undefined,
+      getMarkdownContent: () => 'hello',
+    };
+
+    await act(async () => {
+      await result.current.send(params);
+    });
+
+    expect(routerMock.push).toHaveBeenCalledWith('/?agent=agt_inbox', { replace: true });
+  });
+
+  it('opens the column even when the send rejects', async () => {
+    sendMessageMock.mockRejectedValue(new Error('catalog unavailable'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { result } = renderHook(() => useSend());
+    const params: Parameters<SendButtonHandler>[0] = {
+      clearContent: vi.fn(),
+      editor: {} as Parameters<SendButtonHandler>[0]['editor'],
+      getEditorData: () => undefined,
+      getMarkdownContent: () => 'hello',
+    };
+
+    await act(async () => {
+      await result.current.send(params);
+    });
+
+    expect(routerMock.push).toHaveBeenCalledWith('/?agent=agt_inbox', { replace: true });
+    consoleSpy.mockRestore();
   });
 
   it('captures the active workspace slug in default homepage sends', async () => {

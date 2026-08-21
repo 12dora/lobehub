@@ -102,6 +102,21 @@ export interface SendMessageWithContextParams extends SendMessageParams {
    */
   context: ConversationContext;
   /**
+   * Fired the instant the optimistic user + assistant bubbles exist in
+   * `dbMessagesMap[messageMapKey(context)]` and the `sendMessage` operation is
+   * registered — i.e. before any persist / catalog round-trip.
+   *
+   * Callers that swap their UI on the send seam (the home composer opens
+   * `/?agent=<id>` in place) must await this before navigating: mounting the
+   * conversation surface on an empty bucket flashes the agent welcome for a
+   * frame before the user's own message lands.
+   *
+   * Not invoked on the early-return paths (queued send, empty message,
+   * `/compact`, `onlyAddUserMessage`) — race it against the `sendMessage`
+   * promise so a caller can never hang on it.
+   */
+  onOptimisticReady?: () => void;
+  /**
    * Called as soon as the backend reports a newly created topic id, so callers
    * with an isolated topic scope (e.g. Task Manager) can switch their UI to the
    * new topic while the AI response is still streaming.
@@ -110,6 +125,15 @@ export interface SendMessageWithContextParams extends SendMessageParams {
    * own `switchTopic` handles the transition on the global chat store.
    */
   onTopicCreated?: (topicId: string) => void | Promise<void>;
+  /**
+   * Isolated sends deliberately skip the topic-list write so a Task Manager
+   * trigger topic never flashes in the main sidebar. The home in-place
+   * conversation is the exception: it *is* the agent's main topic list, and
+   * without a row in `topicDataMap` its header stays on "New topic" until the
+   * next SWR revalidation. Opt in to a single placeholder row (still no full
+   * list refetch).
+   */
+  registerCreatedTopic?: boolean;
 }
 
 /**
@@ -271,7 +295,9 @@ export class ConversationLifecycleActionImpl {
     messages: inputMessages,
     parentId: inputParentId,
     pageSelections,
+    onOptimisticReady,
     onTopicCreated,
+    registerCreatedTopic,
   }: SendMessageWithContextParams): Promise<SendMessageResult | undefined> => {
     let editorData = inputEditorData;
     const { executeClientAgent, mainInputEditor } = this.#get();
@@ -489,21 +515,17 @@ export class ConversationLifecycleActionImpl {
       return;
     }
 
-    // Freeze the managed catalog through the authenticated server before any
-    // preload or executor can read exact content. The same operationId is then
-    // registered locally and is carried to cloud/device/desktop execution.
+    // Minted here because the optimistic messages, the operation and the
+    // managed-catalog authorization all have to share one id.
+    //
+    // The catalog freeze + skill preload that consume it are authenticated
+    // round-trips and deliberately run *after* the optimistic messages exist
+    // (see "Skill preparation" below). Any await placed between here and
+    // `optimisticCreateTmpMessage` re-opens the flicker this ordering fixes:
+    // callers that navigate on the send seam (the home composer opens
+    // `/?agent=…` in place) would mount the conversation surface on an empty
+    // message bucket and flash the agent welcome first.
     const operationId = `op_${nanoid()}`;
-    const operationPlatformSkillSnapshot = await captureClientPlatformSkillSnapshot(
-      agentSelectors.getAgentConfigById(agentId)(getAgentStoreState())
-        .plugins as unknown as AgentPluginEntry[],
-      { agentId, operationId },
-    );
-    const enrichedSelectedSkills = await resolveSelectedSkillsWithContent({
-      message,
-      platformSkillSnapshot: operationPlatformSkillSnapshot,
-      selectedSkills,
-    });
-    const enrichedSelectedTools = resolveSelectedToolsWithContent({ message, selectedTools });
 
     // Use provided messages or query from store
     // For /newTopic from existing topic, start with empty message list (fresh topic)
@@ -537,7 +559,9 @@ export class ConversationLifecycleActionImpl {
       metadata: {
         // Mark this as thread operation if threadId exists
         inThread: !!operationContext.threadId,
-        platformSkillSnapshot: operationPlatformSkillSnapshot,
+        // `platformSkillSnapshot` is backfilled via `updateOperationMetadata`
+        // right after the catalog freeze resolves — it cannot be awaited here
+        // without delaying the optimistic messages.
       },
     });
 
@@ -613,6 +637,61 @@ export class ConversationLifecycleActionImpl {
     // Associate temp messages with operation
     this.#get().associateMessageWithOperation(tempId, operationId);
     this.#get().associateMessageWithOperation(tempAssistantId, operationId);
+
+    // Everything the conversation surface needs to paint the send now exists.
+    // Callers that navigate on this seam release here — before any round-trip.
+    onOptimisticReady?.();
+
+    // ── Skill preparation ──
+    // Freeze the managed catalog through the authenticated server before any
+    // preload or executor can read exact content, and preload the content of
+    // any @-mentioned skill. Both are network calls; they run here (not before
+    // the optimistic messages) so the send is visible in the same frame.
+    let skillPreparation: {
+      enrichedSelectedSkills: Awaited<ReturnType<typeof resolveSelectedSkillsWithContent>>;
+      platformSkillSnapshot: Awaited<ReturnType<typeof captureClientPlatformSkillSnapshot>>;
+    };
+    try {
+      const platformSkillSnapshot = await captureClientPlatformSkillSnapshot(
+        agentSelectors.getAgentConfigById(agentId)(getAgentStoreState())
+          .plugins as unknown as AgentPluginEntry[],
+        { agentId, operationId },
+      );
+      skillPreparation = {
+        enrichedSelectedSkills: await resolveSelectedSkillsWithContent({
+          message,
+          platformSkillSnapshot,
+          selectedSkills,
+        }),
+        platformSkillSnapshot,
+      };
+    } catch (error) {
+      // The bubbles are already on screen — roll them back and fail the
+      // operation. Without this a catalog outage would leave an orphaned "…"
+      // assistant row and a send that never stops loading.
+      this.#get().internal_dispatchMessage(
+        { type: 'deleteMessages', ids: [tempId, tempAssistantId] },
+        { operationId },
+      );
+      this.#get().failOperation(operationId, {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        type: error instanceof Error ? error.name : 'unknown_error',
+      });
+      throw error;
+    }
+
+    const { enrichedSelectedSkills, platformSkillSnapshot: operationPlatformSkillSnapshot } =
+      skillPreparation;
+
+    // `startOperation` could not carry the snapshot (it did not exist yet).
+    // Backfill it so every executor that reads
+    // `operation.metadata.platformSkillSnapshot` still sees the frozen catalog.
+    if (operationPlatformSkillSnapshot)
+      this.#get().updateOperationMetadata(operationId, {
+        platformSkillSnapshot: operationPlatformSkillSnapshot,
+      });
+
+    const enrichedSelectedTools = resolveSelectedToolsWithContent({ message, selectedTools });
 
     const existingTopic = operationContext.topicId
       ? topicSelectors.getTopicById(operationContext.topicId)(this.#get())
@@ -1300,6 +1379,18 @@ export class ConversationLifecycleActionImpl {
 
       if (isCreateNewTopic && data.topicId) {
         if (context.isolatedTopic) {
+          // Opt-in single-row write for isolated callers whose surface *is* the
+          // agent's own topic list (the home in-place conversation). Without a
+          // row here `topicSelectors.currentActiveTopic` stays empty after the
+          // `?topic=` swap and the header sticks on "New topic" until the next
+          // revalidation. Still no full list refetch.
+          if (registerCreatedTopic)
+            addResolvedTopicPlaceholder(
+              data.topicId,
+              newTopicTitle,
+              'sendMessage/registerIsolatedTopic',
+            );
+
           // Notify the isolated caller immediately so its UI re-subscribes to
           // the new topic key and picks up the streaming AI response.
           await onTopicCreated?.(data.topicId);

@@ -8,6 +8,7 @@ import { agentService } from '@/services/agent';
 import { aiChatService } from '@/services/aiChat';
 import { chatService } from '@/services/chat';
 import { messageService } from '@/services/message';
+import { agentSkillService } from '@/services/skill';
 import * as agentGroupStore from '@/store/agentGroup';
 import { setPendingTopicRepos } from '@/store/chat/pendingTopicRepos';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
@@ -327,6 +328,97 @@ describe('ConversationLifecycle actions', () => {
         });
 
         expect(result.current.executeClientAgent).toHaveBeenCalled();
+      });
+
+      it('creates the optimistic messages before the managed-catalog round-trip', async () => {
+        // The home composer navigates on the `onOptimisticReady` seam. If the
+        // catalog freeze (an authenticated RPC) ran first, the conversation
+        // surface would mount on an empty bucket and flash the agent welcome.
+        let releaseCatalog: (value: any) => void = () => {};
+        const catalogAuthorization = new Promise((resolve) => {
+          releaseCatalog = resolve;
+        });
+        const beginOperationSpy = vi
+          .spyOn(agentSkillService, 'beginPlatformSkillOperation')
+          .mockReturnValue(catalogAuthorization as any);
+
+        vi.spyOn(toolStoreModule, 'getToolStoreState').mockReturnValue({
+          agentSkillDetailMap: {},
+          agentSkills: [],
+          builtinSkills: [],
+          platformSkillCatalog: { revision: 3, skills: [] },
+          platformSkillRuntimeStatus: 'ready',
+        } as any);
+
+        vi.spyOn(aiChatService, 'sendMessageInServer').mockResolvedValue({
+          assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+          messages: [],
+          topics: undefined,
+          userMessageId: TEST_IDS.USER_MESSAGE_ID,
+        } as any);
+
+        const { result } = renderHook(() => useChatStore());
+        const contextKey = messageMapKey({ agentId: TEST_IDS.SESSION_ID, topicId: null });
+
+        let sending: Promise<unknown> | undefined;
+        let optimisticReadyAt: number | undefined;
+        const readyOrder: string[] = [];
+
+        await act(async () => {
+          sending = result.current.sendMessage({
+            context: createTestContext(),
+            message: TEST_CONTENT.USER_MESSAGE,
+            onOptimisticReady: () => {
+              readyOrder.push('optimisticReady');
+              optimisticReadyAt = Date.now();
+            },
+          });
+          // Drain the synchronous prefix only — the catalog promise is still
+          // pending, so nothing past it can have run.
+          await Promise.resolve();
+        });
+
+        const optimistic = useChatStore.getState().dbMessagesMap[contextKey] ?? [];
+        expect(optimistic.map((m) => m.role)).toEqual(['user', 'assistant']);
+        expect(optimistic[0].content).toBe(TEST_CONTENT.USER_MESSAGE);
+        expect(readyOrder).toEqual(['optimisticReady']);
+        expect(optimisticReadyAt).toBeDefined();
+        expect(beginOperationSpy).toHaveBeenCalled();
+
+        await act(async () => {
+          releaseCatalog({ refs: [] });
+          await sending;
+        });
+      });
+
+      it('rolls the optimistic messages back when the managed catalog is unavailable', async () => {
+        vi.spyOn(agentSkillService, 'beginPlatformSkillOperation').mockRejectedValue(
+          new Error('catalog offline'),
+        );
+        vi.spyOn(toolStoreModule, 'getToolStoreState').mockReturnValue({
+          agentSkillDetailMap: {},
+          agentSkills: [],
+          builtinSkills: [],
+          platformSkillCatalog: { revision: 3, skills: [] },
+          platformSkillRuntimeStatus: 'ready',
+        } as any);
+
+        const { result } = renderHook(() => useChatStore());
+        const contextKey = messageMapKey({ agentId: TEST_IDS.SESSION_ID, topicId: null });
+
+        await act(async () => {
+          await expect(
+            result.current.sendMessage({
+              context: createTestContext(),
+              message: TEST_CONTENT.USER_MESSAGE,
+            }),
+          ).rejects.toThrow('catalog offline');
+        });
+
+        // No orphaned "…" assistant row, and no operation stuck on running.
+        expect(useChatStore.getState().dbMessagesMap[contextKey] ?? []).toEqual([]);
+        const operations = Object.values(useChatStore.getState().operations);
+        expect(operations.some((op) => op.status === 'running')).toBe(false);
       });
 
       it('should persist selected slash skills into user message content before sending', async () => {

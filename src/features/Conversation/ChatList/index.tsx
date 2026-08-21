@@ -93,6 +93,13 @@ const ChatList = memo<ChatListProps>(
     // mid-fan-out and clobber the in-memory streamed state with a stale
     // assistant placeholder.
     const isStreaming = useChatStore(operationSelectors.isAgentRuntimeRunningByContext(context));
+    // A send can be fired from *outside* this surface: the home composer starts
+    // `sendMessage` and then opens `/?agent=<id>` in place, so this list mounts
+    // while the send is still in flight. The welcome slot must never win that
+    // race — rendering `AgentHome` there flashes an empty agent card on top of
+    // the message the user just sent. Covers `sendMessage` itself, not just the
+    // AI runtime ops (see INPUT_LOADING_OPERATION_TYPES).
+    const hasInFlightSend = useChatStore(operationSelectors.isInputLoadingByContext(context));
     const { enableAgentSelfIteration } = useServerConfigStore(featureFlagsSelectors);
     const messagesSWR = useFetchMessages(context, { revalidateOnFocus: !isStreaming, skipFetch });
     const displayMessages = useConversationStore(dataSelectors.displayMessages);
@@ -188,6 +195,17 @@ const ChatList = memo<ChatListProps>(
     }
 
     if (!messagesInit && !isNewConversation) {
+      return <SkeletonList />;
+    }
+
+    // `showWelcome` is an explicit caller override (onboarding's greeting
+    // state) and always wins — it is never the accidental empty-state.
+    const forcedWelcome = !!showWelcome && !!welcome;
+
+    // Nothing to render yet while a send is in flight: show a neutral pending
+    // state instead of the welcome, which would read as "empty new chat" for
+    // the frame before the optimistic bubbles land.
+    if (!forcedWelcome && hasInFlightSend && displayMessageIds.length === 0) {
       return <SkeletonList />;
     }
 
