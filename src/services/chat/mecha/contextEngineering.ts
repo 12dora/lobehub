@@ -47,7 +47,6 @@ import {
   type UIChatMessage,
 } from '@lobechat/types';
 import debug from 'debug';
-import { isWebAppProvider } from 'model-bank/modelProviders';
 
 import { isCanUseFC } from '@/helpers/isCanUseFC';
 import { VARIABLE_GENERATORS } from '@/helpers/parserPlaceholder';
@@ -62,7 +61,7 @@ import { getAgentStoreState } from '@/store/agent';
 import { agentChatConfigSelectors, agentSelectors } from '@/store/agent/selectors';
 import { getChatGroupStoreState } from '@/store/agentGroup';
 import { agentGroupSelectors } from '@/store/agentGroup/selectors';
-import { getAiInfraStoreState } from '@/store/aiInfra';
+import { aiProviderSelectors, getAiInfraStoreState } from '@/store/aiInfra';
 import { getChatStoreState } from '@/store/chat';
 import { chatSelectors, topicSelectors } from '@/store/chat/selectors';
 import { getToolStoreState } from '@/store/tool';
@@ -727,7 +726,7 @@ export const contextEngineering = async ({
     }
   }
 
-  const isWebApp = isWebAppProvider(provider);
+  const isWebApp = aiProviderSelectors.isProviderWebApp(provider)(getAiInfraStoreState());
   const resolvedAgentSlug =
     agentSlug ??
     (agentId ? agentSelectors.getAgentSlugById(agentId)(getAgentStoreState()) : undefined);

@@ -64,6 +64,7 @@ export const serverMessagesEngine = async ({
   modelDisplayName,
   modelKnowledgeCutoff,
   provider,
+  runtimeProvider,
   systemRole,
   inputTemplate,
   enableAgentMode,
@@ -96,7 +97,7 @@ export const serverMessagesEngine = async ({
   userLocale,
   userTimezone,
 }: ServerMessagesEngineParams): Promise<OpenAIChatMessage[]> => {
-  const isWebApp = isWebAppProvider(provider);
+  const isWebApp = isWebAppProvider(provider) || isWebAppProvider(runtimeProvider);
   // Web-app providers skip generic date / model-info injections. An explicit
   // caller `false` stays off for every provider (off stays off).
   const resolvedEnableSystemDate = isWebApp ? false : enableSystemDate;

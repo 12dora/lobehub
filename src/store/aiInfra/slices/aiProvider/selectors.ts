@@ -1,4 +1,4 @@
-import { isProviderDisableBrowserRequest } from 'model-bank/modelProviders';
+import { isProviderDisableBrowserRequest, isWebAppProvider } from 'model-bank/modelProviders';
 
 import { type AIProviderStoreState } from '@/store/aiInfra/initialState';
 import { type AiProviderRuntimeConfig } from '@/types/aiProvider';
@@ -149,6 +149,18 @@ const isProviderEnableResponseApi = (id: string) => (s: AIProviderStoreState) =>
   return id === 'openai';
 };
 
+/**
+ * Whether this request provider is a web-app runtime (ChatGPT / Cursor / Grok
+ * web). Builtin catalog ids are recognised from the model-bank card; managed
+ * aliases (`corp-cursor`) use the trusted `settings.webApp` flag projected
+ * into runtime config.
+ */
+const isProviderWebApp = (id?: string) => (s: AIProviderStoreState) => {
+  if (!id) return false;
+  if (isWebAppProvider(id)) return true;
+  return providerConfigById(id)(s)?.settings?.webApp === true;
+};
+
 const isInitAiProviderRuntimeState = (s: AIProviderStoreState) => !!s.isInitAiProviderRuntimeState;
 
 export const aiProviderSelectors = {
@@ -170,6 +182,7 @@ export const aiProviderSelectors = {
   isProviderHasBuiltinSearch,
   isProviderHasBuiltinSearchConfig,
   isProviderLoading,
+  isProviderWebApp,
   providerConfigById,
   providerDescriptionById,
   providerDetailById,

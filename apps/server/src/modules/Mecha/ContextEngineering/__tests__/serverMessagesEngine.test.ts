@@ -758,5 +758,43 @@ describe('serverMessagesEngine', () => {
       expect(result[0].content).not.toContain('Current date:');
       expect(result[0].content).toBe('You are a helpful assistant');
     });
+
+    it('skips date and model-info when a managed alias resolves to a cursor runtime', async () => {
+      const custom = 'Only output JSON.';
+      const result = await serverMessagesEngine({
+        messages: createBasicMessages(),
+        model: 'auto',
+        modelDisplayName: 'Auto (Cursor)',
+        modelKnowledgeCutoff: '2024-06',
+        provider: 'corp-cursor',
+        runtimeProvider: 'cursor',
+        systemRole: custom,
+      });
+
+      expect(result[0]).toEqual({ content: custom, role: 'system' });
+      expect(result.some((message) => String(message.content).includes('Current date:'))).toBe(
+        false,
+      );
+      expect(result.some((message) => String(message.content).includes('Current model:'))).toBe(
+        false,
+      );
+    });
+
+    it('leaves injections intact for a managed alias whose runtime is not a webApp', async () => {
+      const custom = 'Only output JSON.';
+      const result = await serverMessagesEngine({
+        messages: createBasicMessages(),
+        model: 'gpt-4',
+        modelDisplayName: 'GPT-4',
+        modelKnowledgeCutoff: '2024-06',
+        provider: 'corp-openai',
+        runtimeProvider: 'openai',
+        systemRole: custom,
+      });
+
+      expect(result[0].content).toContain(custom);
+      expect(result[0].content).toContain(getCurrentDateContent());
+      expect(result[0].content).toContain('Current model: GPT-4 (gpt-4)');
+    });
   });
 });

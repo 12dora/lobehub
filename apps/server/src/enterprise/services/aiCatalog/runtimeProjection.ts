@@ -11,6 +11,7 @@ import {
   LOBE_DEFAULT_MODEL_LIST,
   projectPickerVisibility,
 } from 'model-bank';
+import { isWebAppProvider } from 'model-bank/modelProviders';
 
 import type {
   PlatformAiProviderConfig,
@@ -18,7 +19,10 @@ import type {
   PlatformResourceRevisionItem,
 } from '@/database/schemas/platform';
 
-import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
+import {
+  normalizeAiCatalogExecutionCredentials,
+  resolveAiCatalogRuntimeProvider,
+} from './credentialAdapter';
 import { AiCatalogValidationError } from './errors';
 
 /**
@@ -34,6 +38,26 @@ export const projectPublicAiProviderRuntimeConfig = (
     projected.enableResponseApi = config.enableResponseApi;
   }
   return projected;
+};
+
+/**
+ * Credential-free provider settings safe to expose in public runtime state.
+ * Only the trusted `webApp` capability is projected — derived from the actual
+ * runtime provider card (so a managed alias like `corp-cursor` still skips
+ * generic prompt injections). OAuth / proxy / sdkType stay server-only.
+ */
+export const projectPublicAiProviderRuntimeSettings = (
+  providerKey: string,
+  settings: unknown,
+  source: unknown,
+): AiProviderRuntimeConfig['settings'] => {
+  const platformSettings = isRecord(settings) ? (settings as PlatformAiProviderSettings) : {};
+  const runtimeProvider = resolveAiCatalogRuntimeProvider(
+    providerKey,
+    platformSettings,
+    typeof source === 'string' ? source : 'custom',
+  );
+  return isWebAppProvider(runtimeProvider) ? { webApp: true } : {};
 };
 
 const EMPTY_RUNTIME_STATE: AiProviderRuntimeState = {
@@ -195,7 +219,11 @@ export const projectAiCatalogRuntimeState = (
       config: projectPublicAiProviderRuntimeConfig(provider.config),
       fetchOnClient: false,
       keyVaults: {},
-      settings: {},
+      settings: projectPublicAiProviderRuntimeSettings(
+        providerKey,
+        provider.settings,
+        provider.source,
+      ),
     };
 
     for (const rawModel of revision.payload.models) {

@@ -10,6 +10,7 @@ import * as agentStore from '@/store/agent';
 import * as agentSelectors from '@/store/agent/selectors';
 import * as agentGroupStore from '@/store/agentGroup';
 import * as agentGroupSelectors from '@/store/agentGroup/selectors';
+import { useAiInfraStore } from '@/store/aiInfra';
 import * as userSelectors from '@/store/user/selectors';
 
 import { resolveAgentConfig } from './agentConfigResolver';
@@ -40,6 +41,7 @@ describe('resolveAgentConfig', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    useAiInfraStore.setState({ aiProviderRuntimeConfig: {} });
 
     vi.spyOn(agentStore, 'getAgentStoreState').mockReturnValue(mockAgentStoreState as any);
     vi.spyOn(agentSelectors.agentSelectors, 'getAgentConfigById').mockReturnValue(
@@ -1478,6 +1480,35 @@ describe('resolveAgentConfig', () => {
       expect(result.agentConfig.systemRole).toBe(
         'Only output JSON.\n\nPreferred reply language: zh-CN. Use this language unless the user explicitly asks to switch.',
       );
+    });
+
+    it('should not append the language line for a managed alias whose runtime is cursor', () => {
+      useAiInfraStore.setState({
+        aiProviderRuntimeConfig: {
+          'corp-cursor': {
+            config: {},
+            fetchOnClient: false,
+            keyVaults: {},
+            settings: { webApp: true },
+          },
+        },
+      } as any);
+      vi.spyOn(
+        userSelectors.userGeneralSettingsSelectors,
+        'currentResponseLanguage',
+      ).mockReturnValue('zh-CN');
+      vi.spyOn(agentSelectors.agentSelectors, 'getAgentConfigById').mockReturnValue(
+        () =>
+          ({
+            ...mockAgentConfig,
+            provider: 'corp-cursor',
+            systemRole: 'Only output JSON.',
+          }) as any,
+      );
+
+      const result = resolveAgentConfig({ agentId: 'test-agent', provider: 'corp-cursor' });
+
+      expect(result.agentConfig.systemRole).toBe('Only output JSON.');
     });
   });
 });

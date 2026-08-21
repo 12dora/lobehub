@@ -161,6 +161,11 @@ export interface ServerMessagesEngineParams {
 
   /** Provider ID */
   provider: string;
+  /**
+   * Actual runtime provider (e.g. `cursor`) when `provider` is a managed
+   * catalog alias (`corp-cursor`). Used to detect web-app runtimes.
+   */
+  runtimeProvider?: string;
 
   /** System role */
   systemRole?: string;

@@ -16,12 +16,12 @@ import {
 } from '@lobechat/types';
 import debug from 'debug';
 import { produce } from 'immer';
-import { isWebAppProvider } from 'model-bank/modelProviders';
 
 import { getAgentStoreState } from '@/store/agent';
 import { agentSelectors, chatConfigByIdSelectors } from '@/store/agent/selectors';
 import { getChatGroupStoreState } from '@/store/agentGroup';
 import { agentGroupByIdSelectors, agentGroupSelectors } from '@/store/agentGroup/selectors';
+import { aiProviderSelectors, getAiInfraStoreState } from '@/store/aiInfra';
 import { useUserStore } from '@/store/user';
 import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 import { isDev } from '@/utils/env';
@@ -257,7 +257,7 @@ export const resolveAgentConfig = (ctx: AgentConfigResolverContext): ResolvedAge
     );
     const effectiveProvider = ctx.provider ?? agentConfig.provider;
     const localeInstruction =
-      !isWebAppProvider(effectiveProvider) && userLocale
+      !aiProviderSelectors.isProviderWebApp(effectiveProvider)(getAiInfraStoreState()) && userLocale
         ? `Preferred reply language: ${userLocale}. Use this language unless the user explicitly asks to switch.`
         : '';
     const systemRoleWithLocale = localeInstruction

@@ -147,7 +147,7 @@ beforeEach(async () => {
     () => ({ searchMode: 'off' }) as any,
   );
   useAgentStore.setState({ activeAgentId: undefined, agentDocumentsMap: {} } as any);
-  useAiInfraStore.setState({ enabledAiModels: [] });
+  useAiInfraStore.setState({ aiProviderRuntimeConfig: {}, enabledAiModels: [] });
   useChatStore.setState({ activeAgentId: undefined } as any);
 });
 
@@ -1743,6 +1743,24 @@ describe('ChatService', () => {
         expect(spy).toHaveBeenCalledWith(
           expect.objectContaining({ systemRole: `${customPrompt}\n\n${languageLine}` }),
         );
+      });
+
+      it('delivers a custom prompt unchanged for a managed alias whose runtime is cursor', async () => {
+        useAiInfraStore.setState({
+          aiProviderRuntimeConfig: {
+            'corp-cursor': {
+              config: {},
+              fetchOnClient: false,
+              keyVaults: {},
+              settings: { webApp: true },
+            },
+          },
+        } as any);
+
+        const spy = await runPipeline('corp-cursor');
+
+        expect(spy).toHaveBeenCalledWith(expect.objectContaining({ systemRole: customPrompt }));
+        expect(spy.mock.calls[0][0].systemRole).not.toContain('Preferred reply language:');
       });
     });
   });

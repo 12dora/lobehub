@@ -34,6 +34,10 @@ import { PluginModel } from '@/database/models/plugin';
 import { TopicModel } from '@/database/models/topic';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
+import {
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiExecutionConfig,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { MarketService } from '@/server/services/market';
 import { OnboardingService } from '@/server/services/onboarding';
@@ -46,6 +50,20 @@ import {
   type ServerCallLlmContextHints,
 } from './serverCallLlmContextHints';
 import type { ServerCallLlmTooling } from './serverCallLlmTooling';
+
+const resolveActualRuntimeProvider = async (
+  ctx: RuntimeExecutorContext,
+  provider: string,
+): Promise<string | undefined> => {
+  if (!ctx.serverDB || !isPlatformManagedAiEnabled()) return undefined;
+  try {
+    const execution = await resolvePlatformAiExecutionConfig(ctx.serverDB, provider);
+    return execution.runtimeProvider;
+  } catch (error) {
+    log('Failed to resolve actual runtime provider for %s: %O', provider, error);
+    return undefined;
+  }
+};
 
 interface BuildServerCallLlmContextInput {
   ctx: RuntimeExecutorContext;
@@ -446,6 +464,8 @@ export const buildServerCallLlmContext = async ({
     }
   }
 
+  const runtimeProvider = await resolveActualRuntimeProvider(ctx, provider);
+
   const contextEngineInput = {
     agentDocuments,
     ...(!isManagedPlatformOperation && agentBuilderContext && { agentBuilderContext }),
@@ -504,6 +524,7 @@ export const buildServerCallLlmContext = async ({
     modelDisplayName,
     modelKnowledgeCutoff,
     provider,
+    runtimeProvider,
     agentSlug: typeof agentConfig.slug === 'string' ? agentConfig.slug : undefined,
     systemRole: agentConfig.systemRole ?? undefined,
     userLocale: serverLanguage || undefined,

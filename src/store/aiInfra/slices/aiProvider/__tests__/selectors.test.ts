@@ -209,6 +209,48 @@ describe('aiProviderSelectors', () => {
     });
   });
 
+  describe('isProviderWebApp', () => {
+    it('recognises builtin webApp catalog ids without runtime config', () => {
+      expect(aiProviderSelectors.isProviderWebApp('cursor')(mockState)).toBe(true);
+      expect(aiProviderSelectors.isProviderWebApp('chatgptweb')(mockState)).toBe(true);
+      expect(aiProviderSelectors.isProviderWebApp('grok')(mockState)).toBe(true);
+    });
+
+    it('recognises a managed alias from the projected settings.webApp flag', () => {
+      const state = {
+        ...mockState,
+        aiProviderRuntimeConfig: {
+          ...mockState.aiProviderRuntimeConfig,
+          'corp-cursor': {
+            config: {},
+            fetchOnClient: false,
+            keyVaults: {},
+            settings: { webApp: true },
+          },
+        },
+      };
+      expect(aiProviderSelectors.isProviderWebApp('corp-cursor')(state)).toBe(true);
+    });
+
+    it('returns false for a non-web-app alias and unknown ids', () => {
+      const state = {
+        ...mockState,
+        aiProviderRuntimeConfig: {
+          ...mockState.aiProviderRuntimeConfig,
+          'corp-openai': {
+            config: {},
+            fetchOnClient: false,
+            keyVaults: {},
+            settings: {},
+          },
+        },
+      };
+      expect(aiProviderSelectors.isProviderWebApp('corp-openai')(state)).toBe(false);
+      expect(aiProviderSelectors.isProviderWebApp('openai')(state)).toBe(false);
+      expect(aiProviderSelectors.isProviderWebApp(undefined)(state)).toBe(false);
+    });
+  });
+
   describe('providerConfigById', () => {
     it('should return config for existing provider', () => {
       expect(aiProviderSelectors.providerConfigById('provider1')(mockState)).toEqual(

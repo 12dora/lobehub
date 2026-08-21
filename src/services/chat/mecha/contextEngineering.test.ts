@@ -6,6 +6,7 @@ import * as isCanUseFCModule from '@/helpers/isCanUseFC';
 import { agentService } from '@/services/agent';
 import { agentDocumentService } from '@/services/agentDocument';
 import { useAgentStore } from '@/store/agent';
+import { useAiInfraStore } from '@/store/aiInfra';
 
 import * as helpers from '../helper';
 import { contextEngineering } from './contextEngineering';
@@ -85,6 +86,7 @@ beforeEach(() => {
 
 afterEach(() => {
   runtimeFlags.isServerMode = false;
+  useAiInfraStore.setState({ aiProviderRuntimeConfig: {} });
   vi.resetModules();
   vi.clearAllMocks();
 });
@@ -373,6 +375,56 @@ describe('contextEngineering', () => {
       expect(system.content).toContain('Current date:');
       expect(system.content).toContain('Current model: Auto (ChatGPT Web) (gpt-4)');
       expect(system.content).toContain('Model knowledge cutoff: 2024-06');
+    });
+
+    it('skips date and model-info for a managed alias whose runtime is cursor', async () => {
+      useAiInfraStore.setState({
+        aiProviderRuntimeConfig: {
+          'corp-cursor': {
+            config: {},
+            fetchOnClient: false,
+            keyVaults: {},
+            settings: { webApp: true },
+          },
+        },
+      } as any);
+
+      const custom = 'Only output JSON.';
+      const output = await contextEngineering({
+        messages: [userMessage],
+        model: 'auto',
+        provider: 'corp-cursor',
+        systemRole: custom,
+      });
+
+      expect(output[0]).toEqual({ content: custom, role: 'system' });
+      expect(output[0].content).not.toContain('Current date:');
+      expect(output[0].content).not.toContain('Current model:');
+    });
+
+    it('leaves date and model info intact for a managed alias that is not a webApp', async () => {
+      useAiInfraStore.setState({
+        aiProviderRuntimeConfig: {
+          'corp-openai': {
+            config: {},
+            fetchOnClient: false,
+            keyVaults: {},
+            settings: {},
+          },
+        },
+      } as any);
+
+      const custom = 'Only output JSON.';
+      const output = await contextEngineering({
+        messages: [userMessage],
+        model: 'gpt-4',
+        provider: 'corp-openai',
+        systemRole: custom,
+      });
+
+      expect(output[0].content).toContain(custom);
+      expect(output[0].content).toContain('Current date:');
+      expect(output[0].content).toContain('Current model: Auto (ChatGPT Web) (gpt-4)');
     });
 
     it('keeps enableSystemDate off even when the provider is not a webApp', async () => {

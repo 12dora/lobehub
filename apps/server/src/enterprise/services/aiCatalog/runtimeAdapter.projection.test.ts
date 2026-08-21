@@ -1333,3 +1333,66 @@ describe('projectAiCatalogRuntimeState settings merge', () => {
     });
   });
 });
+
+describe('projectAiCatalogRuntimeState webApp capability', () => {
+  it('projects settings.webApp for a managed alias whose runtime is cursor', () => {
+    const state = projectAiCatalogRuntimeState([
+      {
+        payload: {
+          models: [{ enabled: true, modelKey: 'composer-2.5', type: 'chat' }],
+          provider: {
+            displayName: 'Corp Cursor',
+            enabled: true,
+            providerKey: 'corp-cursor',
+            settings: { sdkType: 'cursor' },
+            source: 'custom',
+          },
+        },
+      } as never,
+    ]);
+
+    expect(state.runtimeConfig['corp-cursor']).toEqual({
+      config: {},
+      fetchOnClient: false,
+      keyVaults: {},
+      settings: { webApp: true },
+    });
+  });
+
+  it('projects settings.webApp for a builtin cursor provider key', () => {
+    const state = projectAiCatalogRuntimeState([
+      {
+        payload: {
+          models: [{ enabled: true, modelKey: 'composer-2.5', type: 'chat' }],
+          provider: {
+            displayName: 'Cursor',
+            enabled: true,
+            providerKey: 'cursor',
+            source: 'builtin',
+          },
+        },
+      } as never,
+    ]);
+
+    expect(state.runtimeConfig.cursor.settings).toEqual({ webApp: true });
+  });
+
+  it('does not project webApp for a non-web-app alias', () => {
+    const state = projectAiCatalogRuntimeState([
+      {
+        payload: {
+          models: [{ enabled: true, modelKey: 'gpt-4o', type: 'chat' }],
+          provider: {
+            displayName: 'Corp OpenAI',
+            enabled: true,
+            providerKey: 'corp-openai',
+            settings: { sdkType: 'openai' },
+            source: 'custom',
+          },
+        },
+      } as never,
+    ]);
+
+    expect(state.runtimeConfig['corp-openai'].settings).toEqual({});
+  });
+});
