@@ -218,6 +218,7 @@ const FULL_ACCESS = [
 
 const editor = () => screen.getByLabelText('editor-font.title:Setting 1');
 const saveButton = () => screen.getByRole('button', { name: 'settingsPolicy.save' });
+const modeSelect = () => screen.getByLabelText('settingsPolicy.uiMode.label');
 
 describe('SettingsPolicyPage', () => {
   beforeEach(() => {
@@ -294,11 +295,11 @@ describe('SettingsPolicyPage', () => {
 
     await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
     const payload = mocks.save.mock.calls[0]?.[0];
-    // Legacy `default` mode is normalized to the two-state platform form on write.
+    // A published platform default survives an unrelated edit — save must not lock it.
     expect(payload.policies['general.fontSize']).toMatchObject({
-      mode: 'locked',
+      mode: 'default',
       value: 'kept',
-      visibility: 'hidden',
+      visibility: 'visible',
     });
     expect(payload).toMatchObject({
       expectedDraftToken: draftToken,
@@ -311,6 +312,115 @@ describe('SettingsPolicyPage', () => {
     });
     await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
     expect(mocks.refreshAdminSettingsDraft).toHaveBeenCalled();
+  });
+
+  it('offers the three management tiers and reflects the stored one', async () => {
+    mocks.permissions = FULL_ACCESS;
+    render(<SettingsPolicyPage />);
+    await screen.findByLabelText('editor-font.title:Setting 1');
+
+    expect(
+      within(modeSelect())
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual([
+      'settingsPolicy.uiMode.user',
+      'settingsPolicy.uiMode.default',
+      'settingsPolicy.uiMode.platform',
+    ]);
+    // Stored `default` renders as its own tier — no longer collapsed into "platform managed".
+    expect(modeSelect()).toHaveValue('default');
+    expect(screen.getByText('settingsPolicy.uiMode.hint.default')).toBeInTheDocument();
+  });
+
+  it('publishes mode default + visible so users keep control of a pre-filled value', async () => {
+    mocks.permissions = FULL_ACCESS;
+    const userPolicy = {
+      mode: 'user' as const,
+      schemaVersion: 1,
+      value: 'old',
+      visibility: 'visible' as const,
+    };
+    mocks.data = {
+      ...makeData(1),
+      draft: { 'general.fontSize': userPolicy },
+      publishedPolicies: { 'general.fontSize': userPolicy },
+    };
+    render(<SettingsPolicyPage />);
+
+    // mode=user ignores the platform value, so no value editor is offered.
+    expect(await screen.findByLabelText('settingsPolicy.uiMode.label')).toHaveValue('user');
+    expect(screen.queryByLabelText('editor-font.title:Setting 1')).toBeNull();
+
+    fireEvent.change(modeSelect(), { target: { value: 'default' } });
+    await waitFor(() => expect(editor()).toHaveValue('old'));
+    fireEvent.change(editor(), { target: { value: 'auto-run' } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    expect(mocks.save.mock.calls[0]?.[0].policies['general.fontSize']).toMatchObject({
+      mode: 'default',
+      value: 'auto-run',
+      visibility: 'visible',
+    });
+  });
+
+  it('publishes locked + hidden for the platform-managed tier', async () => {
+    mocks.permissions = FULL_ACCESS;
+    render(<SettingsPolicyPage />);
+    await screen.findByLabelText('editor-font.title:Setting 1');
+
+    fireEvent.change(modeSelect(), { target: { value: 'locked' } });
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    expect(screen.getByText('settingsPolicy.uiMode.hint.platform')).toBeInTheDocument();
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    expect(mocks.save.mock.calls[0]?.[0].policies['general.fontSize']).toMatchObject({
+      mode: 'locked',
+      value: 'old',
+      visibility: 'hidden',
+    });
+  });
+
+  it('drops the value editor and publishes mode user for the user-customizable tier', async () => {
+    mocks.permissions = FULL_ACCESS;
+    render(<SettingsPolicyPage />);
+    await screen.findByLabelText('editor-font.title:Setting 1');
+
+    fireEvent.change(modeSelect(), { target: { value: 'user' } });
+    await waitFor(() => expect(screen.queryByLabelText('editor-font.title:Setting 1')).toBeNull());
+    expect(screen.getByText('settingsPolicy.uiMode.hint.user')).toBeInTheDocument();
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    expect(mocks.save.mock.calls[0]?.[0].policies['general.fontSize']).toMatchObject({
+      mode: 'user',
+      visibility: 'visible',
+    });
+  });
+
+  it('backfills the registry default when a valueless setting is promoted to a platform tier', async () => {
+    mocks.permissions = FULL_ACCESS;
+    const valueless = {
+      mode: 'user' as const,
+      schemaVersion: 1,
+      visibility: 'visible' as const,
+    };
+    const base = makeData(1);
+    mocks.data = {
+      ...base,
+      draft: { 'general.fontSize': valueless },
+      publishedPolicies: { 'general.fontSize': valueless },
+      registry: [{ ...base.registry[0]!, builtInDefault: 'manual' }],
+    };
+    render(<SettingsPolicyPage />);
+    await screen.findByLabelText('settingsPolicy.uiMode.label');
+
+    fireEvent.change(modeSelect(), { target: { value: 'default' } });
+
+    // A default/locked policy without a value is rejected server-side — never publish one.
+    await waitFor(() => expect(editor()).toHaveValue('manual'));
   });
 
   it('reloads the live policy and explains it when someone else saved first', async () => {

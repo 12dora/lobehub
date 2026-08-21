@@ -1220,13 +1220,20 @@ export default {
     'Saved, but the latest state could not be loaded. Refresh before making further changes.',
   'settingsPolicy.refresh.committedTitle': 'Saved, but the latest state could not be reloaded',
   'settingsPolicy.refresh.retry': 'Retry refresh',
-  // Legacy mode labels (preview / impact still may reference raw mode values).
-  'settingsPolicy.mode.user': 'User',
-  'settingsPolicy.mode.default': 'Default',
-  'settingsPolicy.mode.locked': 'Locked',
+  // Raw stored mode labels (change preview / impact). Kept in step with the tier names
+  // in `settingsPolicy.uiMode.*` so a diff row never contradicts the editor.
+  'settingsPolicy.mode.user': 'User customizable',
+  'settingsPolicy.mode.default': 'Platform default',
+  'settingsPolicy.mode.locked': 'Platform managed',
   'settingsPolicy.uiMode.label': 'Management mode',
+  'settingsPolicy.uiMode.default': 'Platform default',
   'settingsPolicy.uiMode.platform': 'Platform managed',
   'settingsPolicy.uiMode.user': 'User customizable',
+  'settingsPolicy.uiMode.hint.default':
+    'Everyone starts from the value below, and can still change it themselves.',
+  'settingsPolicy.uiMode.hint.platform':
+    'The value below is enforced for everyone and the control is hidden from users.',
+  'settingsPolicy.uiMode.hint.user': 'Users choose their own value; no platform value is applied.',
   'settingsPolicy.groups.general': 'General',
   'settingsPolicy.groups.memory': 'Memory',
   'settingsPolicy.groups.tool': 'Tools',
@@ -1258,9 +1265,9 @@ export default {
   'settingsPolicy.paths.memory.enabled.desc': 'Allow the assistant to use long-term memory.',
   'settingsPolicy.paths.memory.effort.title': 'Memory effort',
   'settingsPolicy.paths.memory.effort.desc': 'How aggressively memories are extracted and applied.',
-  'settingsPolicy.paths.tool.humanIntervention.approvalMode.title': 'Tool approval mode',
+  'settingsPolicy.paths.tool.humanIntervention.approvalMode.title': 'Approval policy',
   'settingsPolicy.paths.tool.humanIntervention.approvalMode.desc':
-    'When tool calls require user approval.',
+    'How agent tool calls are approved in chat — the default every new conversation starts from.',
   'settingsPolicy.paths.image.defaultImageNum.title': 'Default image count',
   'settingsPolicy.paths.image.defaultImageNum.desc': 'Default number of images per generation.',
   'settingsPolicy.paths.tts.sttAutoStop.title': 'STT auto-stop',
@@ -1403,10 +1410,11 @@ export default {
   'settingsPolicy.options.memory.effort.low': 'Low',
   'settingsPolicy.options.memory.effort.medium': 'Medium',
   'settingsPolicy.options.memory.effort.high': 'High',
-  'settingsPolicy.options.approval.autoRun': 'Auto-run',
-  'settingsPolicy.options.approval.allowList': 'Allow list',
+  // Keep these aligned with the chat control (`chat:tool.intervention.mode.*`).
+  'settingsPolicy.options.approval.autoRun': 'Auto Approve',
+  'settingsPolicy.options.approval.allowList': 'Allow List',
   'settingsPolicy.options.approval.manual': 'Manual',
-  'settingsPolicy.options.approval.headless': 'Headless',
+  'settingsPolicy.options.approval.headless': 'Headless (background tasks)',
   'settingsPolicy.options.tts.sttServer.openai': 'OpenAI',
   'settingsPolicy.options.tts.sttServer.browser': 'Browser',
   'settingsPolicy.options.tts.sttModel.whisper1': 'whisper-1',
@@ -4175,7 +4183,7 @@ export default {
   'modules.items.platformStats.desc': 'Deployment-wide usage statistics; the queries are heavy.',
   'modules.items.platformStats.title': 'Platform statistics',
   'modules.items.sandbox.desc':
-    'Python interpreter and cloud sandbox tools; needs an external sandbox service.',
+    'Python interpreter and code sandbox tools that run in isolated local Docker containers. Requires access to the Docker socket (docker.sock).',
   'modules.items.sandbox.title': 'Code sandbox',
   'modules.items.settingsPolicy.desc':
     'Administrator-managed defaults and locks for user settings.',

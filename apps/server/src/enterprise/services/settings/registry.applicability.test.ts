@@ -23,4 +23,27 @@ describe('settingsRegistry applicability (B6-R2)', () => {
       settingsRegistry.assertPathWritable({ client: 'server', path: 'memory.enabled' }),
     ).toBeNull();
   });
+
+  it('exposes the approval policy to the settings policy editor under the tool group', () => {
+    const path = 'tool.humanIntervention.approvalMode';
+    const entry = settingsRegistry.list().find((e) => e.path === path);
+
+    expect(entry).toBeDefined();
+    expect(entry).toMatchObject({
+      control: 'select',
+      group: 'tool',
+      platformPolicyEligible: true,
+      titleKey: 'settingsPolicy.paths.tool.humanIntervention.approvalMode.title',
+    });
+    // Every value the chat control can show must have an admin-side label.
+    expect(entry?.options?.map((option) => option.value)).toEqual([
+      'auto-run',
+      'allow-list',
+      'manual',
+      'headless',
+    ]);
+    expect(settingsRegistry.assertPathWritable({ path, requirePlatformEligible: true })).toBeNull();
+    // The tier the product asks for: platform default = auto approve.
+    expect(settingsRegistry.validateValue(path, 'auto-run')).toMatchObject({ ok: true });
+  });
 });

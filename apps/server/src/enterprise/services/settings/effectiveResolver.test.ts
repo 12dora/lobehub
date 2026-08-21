@@ -216,6 +216,72 @@ describe('resolveEffectiveSettings truth table', () => {
     expect(after.effectiveValues['memory.enabled']).toBe(false);
   });
 
+  it('flag ON: approvalMode published as mode=default pre-fills without taking control', () => {
+    const APPROVAL_PATH = 'tool.humanIntervention.approvalMode';
+    const policies = {
+      [APPROVAL_PATH]: {
+        mode: 'default' as const,
+        schemaVersion: 1,
+        value: 'auto-run',
+        visibility: 'visible' as const,
+      },
+    };
+
+    // Registry built-in is `manual`; the admin default must replace it for everyone…
+    expect(settingsRegistry.get(APPROVAL_PATH)?.builtInDefault).toBe('manual');
+    const withoutOverride = resolveEffectiveSettings({ platformPolicyEnabled: true, policies });
+    expect(withoutOverride.effectiveValues[APPROVAL_PATH]).toBe('auto-run');
+    expect(getByPath(withoutOverride.effectiveSettings, APPROVAL_PATH)).toBe('auto-run');
+    expect(withoutOverride.pathMeta[APPROVAL_PATH]).toMatchObject({
+      canOverride: true,
+      hidden: false,
+      locked: false,
+      mode: 'default',
+      source: 'platform',
+    });
+
+    // …while a user who picked their own mode keeps it, and can reset back to the default.
+    const withOverride = resolveEffectiveSettings({
+      overrides: { [APPROVAL_PATH]: { value: 'manual' } },
+      platformPolicyEnabled: true,
+      policies,
+    });
+    expect(withOverride.effectiveValues[APPROVAL_PATH]).toBe('manual');
+    expect(withOverride.pathMeta[APPROVAL_PATH]).toMatchObject({
+      canOverride: true,
+      locked: false,
+      mode: 'default',
+      source: 'user',
+    });
+  });
+
+  it('flag ON: approvalMode published as mode=locked ignores any user override', () => {
+    const APPROVAL_PATH = 'tool.humanIntervention.approvalMode';
+    const result = resolveEffectiveSettings({
+      // A stale override from before the lock must not leak back into chat.
+      overrides: { [APPROVAL_PATH]: { value: 'auto-run' } },
+      platformPolicyEnabled: true,
+      policies: {
+        [APPROVAL_PATH]: {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: 'manual',
+          visibility: 'hidden',
+        },
+      },
+    });
+
+    expect(result.effectiveValues[APPROVAL_PATH]).toBe('manual');
+    expect(getByPath(result.effectiveSettings, APPROVAL_PATH)).toBe('manual');
+    expect(result.pathMeta[APPROVAL_PATH]).toMatchObject({
+      canOverride: false,
+      hidden: true,
+      locked: true,
+      mode: 'locked',
+      source: 'platform',
+    });
+  });
+
   it('flag ON: explicit equal-to-default override is still user source', () => {
     const result = resolveEffectiveSettings({
       overrides: { 'general.fontSize': { value: 14 } },

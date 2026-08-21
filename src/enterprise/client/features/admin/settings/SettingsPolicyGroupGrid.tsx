@@ -15,6 +15,10 @@ import type { DraftPolicy, SettingsPolicyUiMode } from './settingsPolicyControll
 import {
   fromSettingsPolicyUiMode,
   SETTINGS_POLICY_GROUPS,
+  SETTINGS_POLICY_UI_MODE_HINT_KEYS,
+  SETTINGS_POLICY_UI_MODE_LABEL_KEYS,
+  SETTINGS_POLICY_UI_MODES,
+  settingsPolicyUiModeUsesValue,
   toSettingsPolicyUiMode,
 } from './settingsPolicyController';
 
@@ -63,6 +67,12 @@ const styles = createStaticStyles(({ css }) => ({
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 12px;
   `,
+  /** Tier semantics: which of the three states is active must never be a guess. */
+  hint: css`
+    font-size: 12px;
+    line-height: 1.5;
+    color: ${cssVar.colorTextTertiary};
+  `,
   row: css`
     display: flex;
     flex-shrink: 0;
@@ -72,7 +82,7 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const UI_MODE_VALUES = ['user', 'platform'] as const satisfies readonly SettingsPolicyUiMode[];
+const UI_MODE_VALUES: readonly SettingsPolicyUiMode[] = SETTINGS_POLICY_UI_MODES;
 
 export interface SettingsPolicyGroupGridProps {
   canUpdate: boolean;
@@ -97,6 +107,7 @@ const SettingsPolicyGroupGrid = memo<SettingsPolicyGroupGridProps>(
               <div className={styles.grid}>
                 {groupEntries.map((entry) => {
                   const policy = getPolicy(entry.path);
+                  const uiMode = toSettingsPolicyUiMode(policy);
                   const fallbackLabel = t('settingsPolicy.unknownSetting', {
                     index: entries.indexOf(entry) + 1,
                   });
@@ -116,33 +127,47 @@ const SettingsPolicyGroupGrid = memo<SettingsPolicyGroupGridProps>(
                             aria-label={t('settingsPolicy.uiMode.label')}
                             disabled={!canUpdate}
                             style={{ width: POLICY_MODE_SELECT_WIDTH }}
-                            value={toSettingsPolicyUiMode(policy)}
+                            value={uiMode}
                             options={UI_MODE_VALUES.map((value) => ({
-                              label: t(`settingsPolicy.uiMode.${value}` as never),
+                              label: t(SETTINGS_POLICY_UI_MODE_LABEL_KEYS[value] as never),
                               value,
                             }))}
-                            onChange={(v) =>
+                            onChange={(v) => {
+                              const next = v as SettingsPolicyUiMode;
+                              // default/locked publish a value; never leave the tier without
+                              // one (the server rejects a valueless default/locked policy).
+                              const needsValue =
+                                settingsPolicyUiModeUsesValue(next) &&
+                                (policy.value === undefined || policy.value === null);
                               updatePolicy(entry.path, {
-                                ...fromSettingsPolicyUiMode(v as SettingsPolicyUiMode),
-                              })
-                            }
+                                ...fromSettingsPolicyUiMode(next),
+                                ...(needsValue ? { value: entry.builtInDefault } : {}),
+                              });
+                            }}
                           />
                         </div>
                       </div>
                       <Text type="secondary">
                         {t(entry.descriptionKey as never, { defaultValue: '' })}
                       </Text>
-                      <PolicyValueEditor
-                        control={entry.control}
-                        disabled={!canUpdate}
-                        label={settingLabel}
-                        max={entry.max}
-                        min={entry.min}
-                        options={entry.options}
-                        step={entry.step}
-                        value={policy.value}
-                        onChange={(value) => updatePolicy(entry.path, { value })}
-                      />
+                      <div className={styles.hint}>
+                        {t(SETTINGS_POLICY_UI_MODE_HINT_KEYS[uiMode] as never)}
+                      </div>
+                      {/* mode=user ignores the platform value entirely — showing an editor
+                          for a value nothing reads would be a lie about what gets applied. */}
+                      {settingsPolicyUiModeUsesValue(uiMode) ? (
+                        <PolicyValueEditor
+                          control={entry.control}
+                          disabled={!canUpdate}
+                          label={settingLabel}
+                          max={entry.max}
+                          min={entry.min}
+                          options={entry.options}
+                          step={entry.step}
+                          value={policy.value}
+                          onChange={(value) => updatePolicy(entry.path, { value })}
+                        />
+                      ) : null}
                       {publishedPolicies[entry.path] ? (
                         <Text type="secondary">
                           {t('settingsPolicy.publishedValue')}:{' '}

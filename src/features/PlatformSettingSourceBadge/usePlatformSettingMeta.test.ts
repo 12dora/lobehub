@@ -130,6 +130,24 @@ describe('usePlatformSettingMeta', () => {
     expect(result.current).toMatchObject({ hidden: true, locked: true, status: 'ready' });
   });
 
+  it.each([
+    ['own override on a platform default', { mode: 'default', source: 'user' }, true, false],
+    ['platform default still in effect', { mode: 'default', source: 'platform' }, false, false],
+    ['locked policy', { mode: 'locked', locked: true, source: 'platform' }, false, true],
+    ['unmanaged path', { mode: 'user', source: 'user' }, false, false],
+  ] as const)('offers the reset affordance only for %s', (_case, overrides, canReset, locked) => {
+    useClientDataSWR.mockReturnValue({
+      data: effectiveData(overrides),
+      error: undefined,
+      isLoading: false,
+      mutate: revalidate,
+    } as never);
+
+    const { result } = renderHook(() => usePlatformSettingMeta(PATH));
+
+    expect(result.current).toMatchObject({ canReset, locked, status: 'ready' });
+  });
+
   it('single-flights reset and refreshes effective metadata plus the real user store', async () => {
     const pendingReset = deferred<{ deleted: boolean; path: string; revision: number }>();
     const resetOverride = vi

@@ -38,29 +38,61 @@ export const SETTINGS_POLICY_GROUPS = [
 ] as const;
 
 /**
- * Admin UI collapses mode+visibility into two states:
- * - user: mode user + visibility visible (users control the setting)
- * - platform: mode locked + visibility hidden (admin value forced; user control hidden)
- * Runtime may still honor historical `default` via applyImmediate — do not strip server support.
+ * Admin UI exposes the three runtime tiers 1:1 with the stored policy mode:
+ * - user:    mode user + visibility visible — users own the setting; the platform value is unused
+ * - default: mode default + visibility visible — platform value pre-fills, users may still change it
+ * - locked:  mode locked + visibility hidden — platform value is enforced and the control is hidden
+ *
+ * The UI mode intentionally mirrors `SettingPolicyMode` so nothing is lost on a
+ * load → edit → save round-trip (an admin-published `default` must survive `save`).
  */
-export type SettingsPolicyUiMode = 'platform' | 'user';
+export const SETTINGS_POLICY_UI_MODES = ['user', 'default', 'locked'] as const;
 
-/** Historical default/locked → platform; user → user. */
+export type SettingsPolicyUiMode = (typeof SETTINGS_POLICY_UI_MODES)[number];
+
+/**
+ * Label keys per tier. `locked` keeps the historical `uiMode.platform` key so the
+ * existing "Platform managed / 平台托管" translations stay in every locale.
+ */
+export const SETTINGS_POLICY_UI_MODE_LABEL_KEYS: Record<SettingsPolicyUiMode, string> = {
+  default: 'settingsPolicy.uiMode.default',
+  locked: 'settingsPolicy.uiMode.platform',
+  user: 'settingsPolicy.uiMode.user',
+};
+
+/** One-line semantics per tier, so the active tier is never ambiguous. */
+export const SETTINGS_POLICY_UI_MODE_HINT_KEYS: Record<SettingsPolicyUiMode, string> = {
+  default: 'settingsPolicy.uiMode.hint.default',
+  locked: 'settingsPolicy.uiMode.hint.platform',
+  user: 'settingsPolicy.uiMode.hint.user',
+};
+
+/** The platform value only matters for the two tiers that publish one. */
+export const settingsPolicyUiModeUsesValue = (mode: SettingsPolicyUiMode): boolean =>
+  mode !== 'user';
+
+/** Stored mode → UI tier. Unknown modes fail closed to the strictest tier. */
 export const toSettingsPolicyUiMode = (policy: {
   mode: string;
   visibility?: string;
-}): SettingsPolicyUiMode => (policy.mode === 'user' ? 'user' : 'platform');
+}): SettingsPolicyUiMode => {
+  if (policy.mode === 'user') return 'user';
+  if (policy.mode === 'default') return 'default';
+  return 'locked';
+};
 
-/** Canonical write form for the two-state UI. */
+/** Canonical write form for each tier. */
 export const fromSettingsPolicyUiMode = (
   mode: SettingsPolicyUiMode,
-): Pick<DraftPolicy, 'mode' | 'visibility'> =>
-  mode === 'platform'
-    ? { mode: 'locked', visibility: 'hidden' }
-    : { mode: 'user', visibility: 'visible' };
+): Pick<DraftPolicy, 'mode' | 'visibility'> => {
+  if (mode === 'locked') return { mode: 'locked', visibility: 'hidden' };
+  if (mode === 'default') return { mode: 'default', visibility: 'visible' };
+  return { mode: 'user', visibility: 'visible' };
+};
 
 /**
- * Normalize draft entries for the two-state policy UI (legacy default/locked → locked+hidden).
+ * Canonicalize draft entries to the tier form (mode → its paired visibility). `default`
+ * is preserved — rewriting it to locked would silently take a setting away from users.
  * Pass `preservePath` for foreign rows (service-model) so they stay byte-identical — the
  * policy editor must never rewrite hidden ownership belonging to another admin surface.
  */
