@@ -19,6 +19,7 @@ import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { resolvePersonalTopicApprovalSnapshot } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { resolveContext } from '@/server/routers/lambda/_helpers/resolveContext';
 import { AiChatService } from '@/server/services/aiChat';
 import { AiGenerationService } from '@/server/services/aiGeneration';
@@ -214,12 +215,20 @@ export const aiChatRouter = router({
         const topicItem = await runTimedStage(
           timingContext,
           'lambda.aiChat.topic.create',
-          () => {
+          async () => {
+            const incomingMetadata = input.newTopic!.metadata;
+            const approvalMode = ctx.workspaceId
+              ? undefined
+              : await resolvePersonalTopicApprovalSnapshot({
+                  clientApprovalMode: incomingMetadata?.approvalMode,
+                  db: ctx.serverDB,
+                  userId: ctx.userId,
+                });
             const payload = {
               agentId: input.agentId,
               groupId: input.groupId,
               messages: input.newTopic!.topicMessageIds,
-              metadata: input.newTopic!.metadata,
+              metadata: approvalMode ? { ...incomingMetadata, approvalMode } : incomingMetadata,
               sessionId,
               title: input.newTopic!.title,
               trigger: input.newTopic!.trigger,

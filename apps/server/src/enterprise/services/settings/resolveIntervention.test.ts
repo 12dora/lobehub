@@ -8,7 +8,7 @@ import {
   userSettingOverrideRevisions,
   userSettingOverrides,
 } from '@/database/schemas/platform';
-import { users } from '@/database/schemas/user';
+import { users, userSettings } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
 import {
   PLATFORM_SETTINGS_RESOURCE_ID,
@@ -22,7 +22,10 @@ import {
   EffectiveSettingsService,
   resetEffectiveSettingsCacheForTest,
 } from './effectiveSettingsService';
-import { resolveEffectiveUserInterventionConfig } from './runtimeSettingsAdapter';
+import {
+  resolveEffectiveUserInterventionConfig,
+  resolvePersonalTopicApprovalSnapshot,
+} from './runtimeSettingsAdapter';
 
 const { policyState } = vi.hoisted(() => ({ policyState: { enabled: true } }));
 
@@ -56,6 +59,7 @@ beforeEach(async () => {
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);
   await serverDB.delete(platformSettingsBundle);
+  await serverDB.delete(userSettings);
   await serverDB.delete(users);
   await serverDB
     .insert(users)
@@ -73,6 +77,7 @@ afterEach(async () => {
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);
   await serverDB.delete(platformSettingsBundle);
+  await serverDB.delete(userSettings);
   await serverDB.delete(users);
 });
 
@@ -299,5 +304,109 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
       userId: 'u-off',
     });
     expect(resolved).toBe(caller);
+  });
+});
+
+describe('resolvePersonalTopicApprovalSnapshot', () => {
+  it('falls back to built-in manual when the client omits a mode', async () => {
+    const snapshot = await resolvePersonalTopicApprovalSnapshot({
+      db: serverDB,
+      userId: 'u-personal',
+    });
+    expect(snapshot).toBe('manual');
+  });
+
+  it('uses the client-supplied topic layer when the platform is not locked', async () => {
+    const snapshot = await resolvePersonalTopicApprovalSnapshot({
+      clientApprovalMode: 'auto-run',
+      db: serverDB,
+      userId: 'u-personal',
+    });
+    expect(snapshot).toBe('auto-run');
+  });
+
+  it('uses a personal override when the client omits a mode', async () => {
+    const admin = new AdminSettingsService(serverDB);
+    const base = await admin.getDraft();
+    await admin.save({
+      actorUserId: 'admin',
+      expectedDraftToken: base.draftToken,
+      expectedRevision: base.baseRevision,
+      policies: {
+        'tool.humanIntervention.approvalMode': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 'manual',
+          visibility: 'visible',
+        },
+      },
+      reason: 'publish',
+    });
+    await new EffectiveSettingsService(serverDB).patchSettingOverride({
+      client: 'web',
+      path: 'tool.humanIntervention.approvalMode',
+      userId: 'u-personal',
+      value: 'auto-run',
+    });
+
+    const snapshot = await resolvePersonalTopicApprovalSnapshot({
+      db: serverDB,
+      userId: 'u-personal',
+    });
+    expect(snapshot).toBe('auto-run');
+  });
+
+  it('lets a platform-locked policy override client-supplied initial metadata', async () => {
+    const admin = new AdminSettingsService(serverDB);
+    const base = await admin.getDraft();
+    await admin.save({
+      actorUserId: 'admin',
+      expectedDraftToken: base.draftToken,
+      expectedRevision: base.baseRevision,
+      policies: {
+        'tool.humanIntervention.approvalMode': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: 'manual',
+          visibility: 'hidden',
+        },
+      },
+      reason: 'p',
+    });
+
+    const snapshot = await resolvePersonalTopicApprovalSnapshot({
+      clientApprovalMode: 'auto-run',
+      db: serverDB,
+      userId: 'u-locked',
+    });
+    expect(snapshot).toBe('manual');
+  });
+
+  it('never returns headless, even when user settings store it', async () => {
+    policyState.enabled = false;
+    await serverDB.insert(userSettings).values({
+      id: 'u-personal',
+      tool: { humanIntervention: { approvalMode: 'headless' } },
+    });
+
+    const snapshot = await resolvePersonalTopicApprovalSnapshot({
+      db: serverDB,
+      userId: 'u-personal',
+    });
+    expect(snapshot).toBe('manual');
+  });
+
+  it('flag OFF uses the user_settings preference when the client omits a mode', async () => {
+    policyState.enabled = false;
+    await serverDB.insert(userSettings).values({
+      id: 'u-personal',
+      tool: { humanIntervention: { approvalMode: 'allow-list' } },
+    });
+
+    const snapshot = await resolvePersonalTopicApprovalSnapshot({
+      db: serverDB,
+      userId: 'u-personal',
+    });
+    expect(snapshot).toBe('allow-list');
   });
 });

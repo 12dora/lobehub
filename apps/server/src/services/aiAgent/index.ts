@@ -123,6 +123,7 @@ import {
   getEffectiveMemorySettings,
   getRawUserSettings,
   resolveEffectiveUserInterventionConfig,
+  resolvePersonalTopicApprovalSnapshot,
 } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import {
   resolvePinnedPlatformSkillRuntimeSnapshot,
@@ -1127,21 +1128,36 @@ export class AiAgentService {
 
     // M05 R3-B1: platform-effective approvalMode wins over request body when policy ON.
     // Flag OFF: preserve legacy default headless when caller omits config.
-    // Per-topic snapshot (when present) then overlays unless the platform
-    // policy is locked. Workspace / async / headless skip the overlay.
+    // Headless is determined from the ORIGINAL caller config — a policy that
+    // later rewrites the run to an interactive mode must still skip snapshots.
+    // Workspace / async / headless skip the topic overlay entirely.
+    const isOriginalHeadless =
+      !callerUserInterventionConfig || callerUserInterventionConfig.approvalMode === 'headless';
+    const isWorkspaceRun = Boolean(this.workspaceId);
     let topicApprovalMode: TopicApprovalMode | undefined;
-    if (appContext?.topicId && !this.workspaceId) {
-      const existingTopic = await this.topicModel.findById(appContext.topicId);
-      const storedMode = existingTopic?.metadata?.approvalMode;
-      if (isTopicApprovalMode(storedMode)) {
-        topicApprovalMode = storedMode;
+    if (!isWorkspaceRun && !isOriginalHeadless) {
+      if (appContext?.topicId) {
+        const existingTopic = await this.topicModel.findById(appContext.topicId);
+        const storedMode = existingTopic?.metadata?.approvalMode;
+        if (isTopicApprovalMode(storedMode)) {
+          topicApprovalMode = storedMode;
+        }
+      } else {
+        // New personal topic: resolve the snapshot (locked → client → user →
+        // platform default → manual) and use it as the topic layer for THIS run
+        // so the first turn agrees with what we persist.
+        topicApprovalMode = await resolvePersonalTopicApprovalSnapshot({
+          clientApprovalMode: appContext?.initialTopicMetadata?.approvalMode,
+          db: this.db,
+          userId: this.userId,
+        });
       }
     }
 
     const resolvedIntervention = await resolveEffectiveUserInterventionConfig({
       callerConfig: callerUserInterventionConfig ?? { approvalMode: 'headless' },
       db: this.db,
-      scope: this.workspaceId ? 'workspace' : 'personal',
+      scope: isWorkspaceRun ? 'workspace' : 'personal',
       topicApprovalMode,
       userId: this.userId,
     });
@@ -1681,16 +1697,15 @@ export class AiAgentService {
       // Prepare metadata with cronJobId, taskId, botContext, bound device, and any
       // client-supplied initial metadata (e.g. repos selected before first message).
       const initialTopicMeta = appContext?.initialTopicMetadata;
-      // Snapshot the effective approval mode onto a brand-new topic so later
-      // selector / user-setting changes don't leak into this conversation.
-      // Workspace and headless (async) paths stay unsnapshotted.
-      const snapshotApprovalMode = this.workspaceId
-        ? undefined
-        : isTopicApprovalMode(initialTopicMeta?.approvalMode)
-          ? initialTopicMeta.approvalMode
-          : isTopicApprovalMode(userInterventionConfig.approvalMode)
-            ? userInterventionConfig.approvalMode
-            : undefined;
+      // Persist only the resolver's non-headless result. Original-headless and
+      // workspace executions never snapshot, even if the client sent an initial
+      // approvalMode or policy rewrote the run to an interactive mode.
+      const snapshotApprovalMode =
+        !isWorkspaceRun &&
+        !isOriginalHeadless &&
+        isTopicApprovalMode(userInterventionConfig.approvalMode)
+          ? userInterventionConfig.approvalMode
+          : undefined;
       const metadata =
         cronJobId ||
         operationTaskId ||

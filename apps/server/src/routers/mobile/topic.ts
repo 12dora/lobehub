@@ -1,3 +1,4 @@
+import { topicApprovalModeSchema } from '@lobechat/types';
 import { z } from 'zod';
 
 import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPermission';
@@ -5,6 +6,7 @@ import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceA
 import { TopicModel } from '@/database/models/topic';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { resolvePersonalTopicApprovalSnapshot } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { type BatchTaskResult } from '@/types/service';
 
 const topicProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
@@ -84,12 +86,28 @@ export const topicRouter = router({
         favorite: z.boolean().optional(),
         groupId: z.string().nullish(),
         messages: z.array(z.string()).optional(),
+        metadata: z
+          .object({
+            approvalMode: topicApprovalModeSchema.optional(),
+          })
+          .optional(),
         sessionId: z.string().nullish(),
         title: z.string(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const data = await ctx.topicModel.create(input);
+      const { metadata, ...rest } = input;
+      const approvalMode = ctx.workspaceId
+        ? undefined
+        : await resolvePersonalTopicApprovalSnapshot({
+            clientApprovalMode: metadata?.approvalMode,
+            db: ctx.serverDB,
+            userId: ctx.userId,
+          });
+      const data = await ctx.topicModel.create({
+        ...rest,
+        metadata: approvalMode ? { ...metadata, approvalMode } : metadata,
+      });
 
       return data.id;
     }),

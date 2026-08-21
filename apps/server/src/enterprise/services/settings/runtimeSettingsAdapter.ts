@@ -11,7 +11,11 @@
  */
 
 import type { TopicApprovalMode, UserInterventionConfig } from '@lobechat/types';
-import { isTopicApprovalMode, resolveTopicApprovalMode } from '@lobechat/types';
+import {
+  isRuntimeApprovalMode,
+  isTopicApprovalMode,
+  resolveTopicApprovalMode,
+} from '@lobechat/types';
 
 import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
@@ -275,6 +279,62 @@ export const getToolSlice = async (params: LoadEffectiveUserSettingsParams): Pro
 export type EffectiveUserInterventionConfig = UserInterventionConfig;
 
 const APPROVAL_MODE_PATH = 'tool.humanIntervention.approvalMode';
+
+const toolApprovalFromSettings = (settings: { tool?: unknown } | null | undefined) => {
+  const tool = settings?.tool as { humanIntervention?: { approvalMode?: unknown } } | undefined;
+  return tool?.humanIntervention?.approvalMode;
+};
+
+const toPersistedTopicApprovalMode = (mode: unknown): TopicApprovalMode =>
+  isTopicApprovalMode(mode) ? mode : 'manual';
+
+/**
+ * Effective approval mode to snapshot onto a **new personal topic**.
+ *
+ * Chain: platform locked → client-supplied/topic layer → user preference →
+ * platform default → `'manual'`. Never returns `'headless'`.
+ *
+ * Workspace / import / background callers must skip this helper.
+ */
+export const resolvePersonalTopicApprovalSnapshot = async (params: {
+  clientApprovalMode?: TopicApprovalMode | null;
+  db: LobeChatDatabase;
+  userId: string;
+}): Promise<TopicApprovalMode> => {
+  const clientApprovalMode = isTopicApprovalMode(params.clientApprovalMode)
+    ? params.clientApprovalMode
+    : undefined;
+
+  if (!isPolicyEnabled()) {
+    const row = await new UserModel(params.db, params.userId).getUserSettings();
+    const userMode = toolApprovalFromSettings(row);
+    return toPersistedTopicApprovalMode(
+      resolveTopicApprovalMode({
+        topicApprovalMode: clientApprovalMode,
+        userApprovalMode: isRuntimeApprovalMode(userMode) ? userMode : undefined,
+      }),
+    );
+  }
+
+  const row = await new UserModel(params.db, params.userId).getUserSettings();
+  const { effective, settings } = await loadEffectiveUserSettings({
+    db: params.db,
+    legacySettings: { tool: row?.tool } as Record<string, unknown>,
+    userId: params.userId,
+  });
+  const effectiveApproval = toolApprovalFromSettings(settings);
+  const platformLocked = effective.pathMeta[APPROVAL_MODE_PATH]?.locked === true;
+  const runtimeApproval = isRuntimeApprovalMode(effectiveApproval) ? effectiveApproval : undefined;
+
+  return toPersistedTopicApprovalMode(
+    resolveTopicApprovalMode({
+      lockedValue: platformLocked ? runtimeApproval : undefined,
+      platformLocked,
+      topicApprovalMode: clientApprovalMode,
+      userApprovalMode: runtimeApproval,
+    }),
+  );
+};
 
 /**
  * Resolve tool.humanIntervention for execAgent (R3-B1).

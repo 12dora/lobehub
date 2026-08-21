@@ -14,11 +14,21 @@ import { aiChatRouter } from '../aiChat';
 
 const flushAsyncTasks = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+const mockResolvePersonalTopicApprovalSnapshot = vi.hoisted(() =>
+  vi.fn(
+    async ({ clientApprovalMode }: { clientApprovalMode?: string }) =>
+      clientApprovalMode ?? 'manual',
+  ),
+);
+
 vi.mock('@/database/models/agent');
 vi.mock('@/database/models/message');
 vi.mock('@/database/models/thread');
 vi.mock('@/database/models/topic');
 vi.mock('@/server/services/aiChat');
+vi.mock('@/server/enterprise/services/settings/runtimeSettingsAdapter', () => ({
+  resolvePersonalTopicApprovalSnapshot: mockResolvePersonalTopicApprovalSnapshot,
+}));
 vi.mock('@/server/services/file', () => ({
   FileService: vi.fn(),
 }));
@@ -30,6 +40,11 @@ describe('aiChatRouter', () => {
   const mockCtx = { userId: 'u1' };
 
   beforeEach(() => {
+    mockResolvePersonalTopicApprovalSnapshot.mockClear();
+    mockResolvePersonalTopicApprovalSnapshot.mockImplementation(
+      async ({ clientApprovalMode }: { clientApprovalMode?: string }) =>
+        clientApprovalMode ?? 'manual',
+    );
     vi.mocked(TopicModel).mockImplementation(
       () =>
         ({
@@ -107,6 +122,7 @@ describe('aiChatRouter', () => {
 
     expect(mockCreateTopic).toHaveBeenCalledWith({
       messages: ['a', 'b'],
+      metadata: { approvalMode: 'manual' },
       sessionId: 's1',
       title: 'T',
     });
@@ -154,6 +170,44 @@ describe('aiChatRouter', () => {
     expect(res.messages?.length).toBe(2);
     expect(res.topics?.items.length).toBe(1);
     expect(res.topics?.total).toBe(1);
+  });
+
+  it('snapshots approvalMode onto sendMessageInServer topic creation', async () => {
+    const mockCreateTopic = vi.fn().mockResolvedValue({ id: 't1' });
+    const mockCreateMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ id: 'm-user' })
+      .mockResolvedValueOnce({ id: 'm-assistant' });
+    const mockGet = vi.fn().mockResolvedValue({
+      messages: [{ id: 'm-user' }, { id: 'm-assistant' }],
+      topics: { items: [{}], total: 1 },
+    });
+
+    vi.mocked(TopicModel).mockImplementation(() => ({ create: mockCreateTopic }) as any);
+    mockMessageModel(mockCreateMessage);
+    vi.mocked(AiChatService).mockImplementation(() => ({ getMessagesAndTopics: mockGet }) as any);
+
+    const caller = aiChatRouter.createCaller(mockCtx as any);
+
+    await caller.sendMessageInServer({
+      newAssistantMessage: { model: 'gpt-4o', provider: 'openai' },
+      newTopic: {
+        metadata: { approvalMode: 'auto-run', workingDirectory: '/tmp' },
+        title: 'T',
+      },
+      newUserMessage: { content: 'hi' },
+      sessionId: 's1',
+    } as any);
+
+    expect(mockResolvePersonalTopicApprovalSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ clientApprovalMode: 'auto-run', userId: 'u1' }),
+    );
+    expect(mockCreateTopic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { approvalMode: 'auto-run', workingDirectory: '/tmp' },
+        title: 'T',
+      }),
+    );
   });
 
   it('should reuse existing topic when topicId provided', async () => {
@@ -523,6 +577,7 @@ describe('aiChatRouter', () => {
     // Topic created first
     expect(mockCreateTopic).toHaveBeenCalledWith({
       messages: undefined,
+      metadata: { approvalMode: 'manual' },
       sessionId: 's1',
       title: 'New Topic',
     });

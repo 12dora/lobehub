@@ -35,5 +35,6 @@ export {
   getToolSlice,
   loadEffectiveUserSettings,
   resolveEffectiveUserInterventionConfig,
+  resolvePersonalTopicApprovalSnapshot,
   type UserSettingsReadMemo,
 } from './runtimeSettingsAdapter';

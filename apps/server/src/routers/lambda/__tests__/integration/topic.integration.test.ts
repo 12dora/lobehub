@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { type LobeChatDatabase } from '@lobechat/database';
-import { sessions, topics } from '@lobechat/database/schemas';
+import { sessions, topics, userSettings } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -130,6 +130,35 @@ describe('Topic Router Integration Tests', () => {
 
       const [createdTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
 
+      expect(createdTopic.metadata).toEqual({ approvalMode: 'auto-run' });
+    });
+
+    it('should snapshot built-in manual when the client omits approvalMode', async () => {
+      const caller = topicRouter.createCaller(createTestContext(userId));
+
+      const topicId = await caller.createTopic({
+        sessionId: testSessionId,
+        title: 'Legacy client',
+      });
+
+      const [createdTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
+
+      expect(createdTopic.metadata).toEqual({ approvalMode: 'manual' });
+    });
+
+    it('should snapshot the user preference when the client omits approvalMode', async () => {
+      await serverDB.insert(userSettings).values({
+        id: userId,
+        tool: { humanIntervention: { approvalMode: 'auto-run' } },
+      });
+
+      const caller = topicRouter.createCaller(createTestContext(userId));
+      const topicId = await caller.createTopic({
+        sessionId: testSessionId,
+        title: 'Pref snapshot',
+      });
+
+      const [createdTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
       expect(createdTopic.metadata).toEqual({ approvalMode: 'auto-run' });
     });
 

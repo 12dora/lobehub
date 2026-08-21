@@ -25,6 +25,7 @@ import { chatGroups } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { resolvePersonalTopicApprovalSnapshot } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { AgentService } from '@/server/services/agent';
 import { type BatchTaskResult } from '@/types/service';
 
@@ -250,7 +251,7 @@ export const topicRouter = router({
         .extend(basicContextSchema.shape),
     )
     .mutation(async ({ input, ctx }) => {
-      const { agentId, ...rest } = input;
+      const { agentId, metadata, ...rest } = input;
       const resolved = await resolveContext(
         { agentId, sessionId: rest.sessionId },
         ctx.serverDB,
@@ -258,7 +259,19 @@ export const topicRouter = router({
         ctx.workspaceId ?? undefined,
       );
 
-      const data = await ctx.topicModel.create({ ...rest, sessionId: resolved.sessionId });
+      const approvalMode = ctx.workspaceId
+        ? undefined
+        : await resolvePersonalTopicApprovalSnapshot({
+            clientApprovalMode: metadata?.approvalMode,
+            db: ctx.serverDB,
+            userId: ctx.userId,
+          });
+
+      const data = await ctx.topicModel.create({
+        ...rest,
+        metadata: approvalMode ? { ...metadata, approvalMode } : metadata,
+        sessionId: resolved.sessionId,
+      });
 
       return data.id;
     }),
