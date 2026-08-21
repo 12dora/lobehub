@@ -24,7 +24,7 @@ vi.mock('@lobechat/business-model-bank/model-config', () => ({
 }));
 
 vi.mock('@lobechat/utils', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = (await importOriginal()) as object;
   return {
     ...actual,
     imageUrlToBase64: vi.fn(),

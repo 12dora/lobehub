@@ -363,7 +363,7 @@ export const isOperationInterrupted = async (ctx: RuntimeExecutorContext) => {
 };
 
 export const buildToolDiscoveryConfig = (
-  operationToolSet: OperationToolSet,
+  operationToolSet: Pick<OperationToolSet, 'manifestMap'>,
   enabledToolIds: string[],
 ) => {
   const enabledToolSet = new Set(enabledToolIds);

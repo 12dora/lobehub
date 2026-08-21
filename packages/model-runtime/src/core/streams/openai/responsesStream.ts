@@ -147,7 +147,7 @@ const emitNativeSearchGrounding = (
 
 const handleNativeSearchItem = (
   streamContext: StreamContext,
-  item: { id?: string; type?: string } & Record<string, unknown>,
+  item: { id?: string; type?: string },
 ): StreamProtocolChunk => {
   const itemType = typeof item.type === 'string' ? item.type : 'web_search_call';
   upsertNativeSearchQueries(
@@ -293,10 +293,7 @@ const transformOpenAIStream = (
         }
 
         if (isNativeSearchItemType(chunk.item.type)) {
-          return handleNativeSearchItem(
-            streamContext,
-            chunk.item as { id?: string; type?: string } & Record<string, unknown>,
-          );
+          return handleNativeSearchItem(streamContext, chunk.item);
         }
 
         return { data: chunk.item, id: streamContext.id, type: 'data' };
@@ -424,10 +421,7 @@ const transformOpenAIStream = (
         }
 
         if (isNativeSearchItemType(chunk.item.type)) {
-          return handleNativeSearchItem(
-            streamContext,
-            chunk.item as { id?: string; type?: string } & Record<string, unknown>,
-          );
+          return handleNativeSearchItem(streamContext, chunk.item);
         }
 
         const grounding = buildNativeSearchGroundingData(streamContext);

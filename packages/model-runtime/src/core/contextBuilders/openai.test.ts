@@ -21,7 +21,7 @@ import {
 
 // 模拟依赖
 vi.mock('@lobechat/utils', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = (await importOriginal()) as object;
   return {
     ...actual,
     imageUrlToBase64: vi.fn(),

@@ -11,23 +11,26 @@ export { resolvePersonalTopicApprovalSnapshot } from '@/server/enterprise/servic
  * (never persist) and by personal create (always re-resolve, never trust the
  * client field as-is).
  */
-export const omitTopicApprovalMode = (
-  metadata?: ChatTopicMetadata,
-): ChatTopicMetadata | undefined => {
+export const omitTopicApprovalMode = <T extends { approvalMode?: unknown }>(
+  metadata?: T,
+): Omit<T, 'approvalMode'> | undefined => {
   if (!metadata) return undefined;
   const { approvalMode: _omitted, ...rest } = metadata;
-  return Object.keys(rest).length > 0 ? (rest as ChatTopicMetadata) : undefined;
+  return Object.keys(rest).length > 0 ? rest : undefined;
 };
 
 /**
  * Workspace topics never persist `approvalMode`. Strips it from an incoming
  * metadata patch when `workspaceId` is present; personal topics pass through
  * unchanged (including a client-supplied `approvalMode`).
+ *
+ * Accepts both stored `ChatTopicMetadata` and TRPC patch shapes (nested fields
+ * optional) because this helper only peels `approvalMode`.
  */
-export const sanitizeWorkspaceTopicMetadata = (
-  metadata: ChatTopicMetadata | undefined,
+export const sanitizeWorkspaceTopicMetadata = <T extends { approvalMode?: unknown }>(
+  metadata: T | undefined,
   workspaceId?: string | null,
-): ChatTopicMetadata | undefined => {
+): T | Omit<T, 'approvalMode'> | undefined => {
   if (!workspaceId) return metadata;
   return omitTopicApprovalMode(metadata);
 };

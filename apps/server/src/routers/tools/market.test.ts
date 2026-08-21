@@ -11,7 +11,7 @@ const mockCreateSandboxService = vi.hoisted(() =>
   vi.fn(() => ({
     callTool: mockSandboxCallTool,
     exportAndUploadFile: mockExportAndUploadFile,
-    kind: 'market' as const,
+    kind: 'market' as 'local' | 'market' | 'onlyboxes',
   })),
 );
 const mockMarketSDK = vi.hoisted(() => ({

@@ -503,6 +503,7 @@ const runExec = (
   }
 
   const [bin, flag, ...rest] = exec.cmd;
+  const joined = exec.cmd.join(' ');
 
   if (bin === 'chown') return { exitCode: 0, stderr: '', stdout: '' };
 

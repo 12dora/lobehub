@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import type { MarketService } from '@/server/services/market';
 
-const mockAssertModuleEnabled = vi.hoisted(() => vi.fn(async () => undefined));
+const mockAssertModuleEnabled = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
 const mockGetEffectiveSandboxSettings = vi.hoisted(() => vi.fn());
 const mockPeekProviderKind = vi.hoisted(() =>
   vi.fn(() => undefined as undefined | 'local' | 'market' | 'onlyboxes'),

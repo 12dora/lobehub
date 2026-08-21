@@ -21,7 +21,7 @@ describe('attachBetterAuthSessionLiveness', () => {
   });
 
   it('returns null when Redis still has a session whose database row is gone', async () => {
-    const findSession = vi.fn(async () => found);
+    const findSession = vi.fn(async (_token: string) => found);
     const auth = { $context: Promise.resolve({ internalAdapter: { findSession } }) };
 
     vi.mocked(assertUserActiveCached).mockRejectedValueOnce(new OIDCUserInactiveError());
@@ -36,7 +36,7 @@ describe('attachBetterAuthSessionLiveness', () => {
   });
 
   it('rethrows backend failures instead of treating them as unauthenticated', async () => {
-    const findSession = vi.fn(async () => found);
+    const findSession = vi.fn(async (_token: string) => found);
     const auth = { $context: Promise.resolve({ internalAdapter: { findSession } }) };
     const backendError = new Error('database unavailable');
     vi.mocked(assertUserActiveCached).mockRejectedValueOnce(backendError);
@@ -47,7 +47,7 @@ describe('attachBetterAuthSessionLiveness', () => {
   });
 
   it('passes through a live session', async () => {
-    const findSession = vi.fn(async () => found);
+    const findSession = vi.fn(async (_token: string) => found);
     const auth = { $context: Promise.resolve({ internalAdapter: { findSession } }) };
     attachBetterAuthSessionLiveness(auth, {} as never);
 

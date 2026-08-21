@@ -48,6 +48,7 @@ export const SandboxDisabledHint = memo(() => {
     <InfraSettingsCard
       canTest={false}
       icon={Container}
+      probing={false}
       title={t('systemGeneral.sandbox.title')}
       notice={
         <Text type="secondary">
@@ -122,6 +123,7 @@ const SandboxCardBody = memo<{
       envVars={editor.editing ? undefined : SANDBOX_ENV}
       headerExtra={<InfraSourceTag source={view.source} />}
       icon={Container}
+      probing={false}
       title={t('systemGeneral.sandbox.title')}
       editor={
         editor.editing ? (

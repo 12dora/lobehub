@@ -1800,7 +1800,9 @@ describe('Message Router Integration Tests', () => {
               type: 'createMessage',
             },
           ],
-        }),
+          // Batched creates forbid `newTopic` at the schema level (`z.undefined()`);
+          // the payload is intentionally invalid so Zod rejects it at runtime.
+        } as never),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
 
       const createdTopics = await serverDB

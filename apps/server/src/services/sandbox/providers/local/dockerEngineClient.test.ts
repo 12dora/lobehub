@@ -62,7 +62,7 @@ describe('DockerEngineClient', () => {
     expect(inspect.State.Running).toBe(true);
 
     const exec = await client.execCreate(created.Id, { Cmd: ['sh', '-c', '__demux__'] });
-    const started = await client.execStart(exec.Id, { containerId: created.Id, timeoutMs: 2000 });
+    const started = await client.execStart(exec.Id, { timeoutMs: 2000 });
     expect(started.stdout.toString('utf8')).toBe('out-data');
     expect(started.stderr.toString('utf8')).toBe('err-data');
     expect(started.timedOut).toBe(false);

@@ -29,7 +29,9 @@ import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
 
-const deleteBetterAuthSecondaryStorageSessions = vi.hoisted(() => vi.fn(async () => undefined));
+const deleteBetterAuthSecondaryStorageSessions = vi.hoisted(() =>
+  vi.fn(async (_tokens: string[]) => undefined),
+);
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),

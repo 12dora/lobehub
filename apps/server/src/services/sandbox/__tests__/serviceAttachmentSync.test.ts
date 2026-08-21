@@ -9,9 +9,9 @@ import {
   SANDBOX_ATTACHMENT_SYNC_OK_PREFIX,
 } from '../bootstrap';
 import { SandboxMiddlewareService } from '../service';
-import type { SandboxProvider } from '../types';
+import type { SandboxProvider, SandboxProviderCapabilities } from '../types';
 
-const capabilities = {
+const capabilities: SandboxProviderCapabilities = {
   backgroundCommands: true,
   exportFile: true,
   files: true,
@@ -19,7 +19,7 @@ const capabilities = {
   persistentSession: true,
   shell: true,
   skillScripts: true,
-} as const;
+};
 
 const createProvider = (callTool: SandboxProvider['callTool']): SandboxProvider =>
   ({
@@ -57,8 +57,9 @@ describe('SandboxMiddlewareService.syncOverLimitAttachments', () => {
   });
 
   it('writes distinct destinations for the same filename with different ids', async () => {
-    const callTool = vi.fn(async (_name: string, params: { command: string }) => {
-      const id = params.command.includes('file-a') ? 'file-a' : 'file-b';
+    const callTool: SandboxProvider['callTool'] = vi.fn(async (_name, params) => {
+      const command = typeof params.command === 'string' ? params.command : '';
+      const id = command.includes('file-a') ? 'file-a' : 'file-b';
       return { result: { stdout: `${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}${id}\n` }, success: true };
     });
     const service = new SandboxMiddlewareService(createProvider(callTool), {
@@ -80,14 +81,15 @@ describe('SandboxMiddlewareService.syncOverLimitAttachments', () => {
   it('caps in-flight downloads at 3', async () => {
     let current = 0;
     let max = 0;
-    const callTool = vi.fn(async (_name: string, params: { command: string }) => {
+    const callTool: SandboxProvider['callTool'] = vi.fn(async (_name, params) => {
       current += 1;
       max = Math.max(max, current);
       await new Promise((resolve) => {
         setTimeout(resolve, 25);
       });
       current -= 1;
-      const match = params.command.match(/LOBE_SYNC_OK:([^']+)/);
+      const command = typeof params.command === 'string' ? params.command : '';
+      const match = command.match(/LOBE_SYNC_OK:([^']+)/);
       const id = match?.[1] ?? 'file-0';
       return { result: { stdout: `${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}${id}\n` }, success: true };
     });

@@ -1,5 +1,6 @@
 import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
+import type { OperationToolSet } from '@lobechat/context-engine';
 import type * as ModelBankModule from 'model-bank';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -344,10 +345,10 @@ describe('AiAgentService.execAgent - three-state plugin config (pinned/auto/disa
 
     await service.execAgent({ agentId: 'agent-1', prompt: 'Search X for news' } as any);
 
-    const toolSet = mockCreateOperation.mock.calls[0][0].toolSet as {
-      enabledToolIds: string[];
-      manifestMap: Record<string, unknown>;
-    };
+    const toolSet = mockCreateOperation.mock.calls[0][0].toolSet as Pick<
+      OperationToolSet,
+      'enabledToolIds' | 'manifestMap'
+    >;
     expect(toolSet.manifestMap).not.toHaveProperty(WebBrowsingManifest.identifier);
 
     const discovery = buildToolDiscoveryConfig(toolSet, toolSet.enabledToolIds);

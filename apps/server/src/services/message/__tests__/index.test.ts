@@ -44,7 +44,7 @@ describe('MessageService', () => {
   beforeEach(() => {
     mockDB = {
       transaction: vi.fn(async (fn: (trx: unknown) => unknown) => fn({ id: 'trx' })),
-    } as LobeChatDatabase;
+    } as unknown as LobeChatDatabase;
     mockMessageModel = {
       create: vi.fn(),
       createWithTransaction: vi.fn(),
@@ -492,7 +492,7 @@ describe('MessageService', () => {
         undefined,
       );
       expect(mockMessageModel.create).not.toHaveBeenCalled();
-      expect(mockMessageModel.createWithTransaction.mock.calls[0][1]).not.toHaveProperty(
+      expect(vi.mocked(mockMessageModel.createWithTransaction).mock.calls[0][1]).not.toHaveProperty(
         'newTopic',
       );
       expect(mockMessageModel.query).toHaveBeenCalledWith(
