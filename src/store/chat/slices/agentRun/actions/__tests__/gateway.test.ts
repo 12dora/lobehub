@@ -6,6 +6,7 @@ import type * as ConstVersion from '@/const/version';
 import { aiAgentService } from '@/services/aiAgent';
 import { messageService } from '@/services/message';
 import { topicService } from '@/services/topic';
+import { setPendingTopicRepos } from '@/store/chat/pendingTopicRepos';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 import { topicMapKey } from '@/store/chat/utils/topicMapKey';
 
@@ -48,6 +49,7 @@ const mockToolInterventionConfig = vi.hoisted(() => ({
 }));
 const mockPlatformApprovalMeta = vi.hoisted(() => ({
   current: undefined as { locked: boolean } | undefined,
+  unknown: false,
 }));
 
 vi.mock('@/store/user/store', () => ({
@@ -56,6 +58,7 @@ vi.mock('@/store/user/store', () => ({
 
 vi.mock('@/helpers/platformSettingLocks', () => ({
   isPlatformSettingLocked: () => mockPlatformApprovalMeta.current?.locked === true,
+  isPlatformSettingLockUnknown: () => mockPlatformApprovalMeta.unknown,
 }));
 
 vi.mock('@/store/user', () => ({
@@ -175,6 +178,7 @@ describe('GatewayActionImpl', () => {
     mockToolInterventionConfig.approvalMode = 'manual';
     mockToolInterventionConfig.allowList = [];
     mockPlatformApprovalMeta.current = undefined;
+    mockPlatformApprovalMeta.unknown = false;
     vi.mocked(aiAgentService.getOperationStatus).mockResolvedValue(null);
   });
 
@@ -534,10 +538,15 @@ describe('GatewayActionImpl', () => {
     function createExecuteTestAction() {
       const mockClient = createMockClient();
       const moveQueuedMessages = vi.fn();
-      const state: Record<string, any> = { gatewayConnections: {}, topicDataMap: {} };
+      const state: Record<string, any> = {
+        gatewayConnections: {},
+        topicDataMap: {},
+        topicDetailMap: {},
+      };
       const associateMessageWithOperation = vi.fn();
       const connectToGateway = vi.fn();
       const internalDispatchTopic = vi.fn();
+      const internalEnsureTopicDetail = vi.fn().mockResolvedValue(undefined);
       const internalReplaceTopicId = vi.fn();
       const internalUpdateTopicLoading = vi.fn();
       const onOperationCancel = vi.fn();
@@ -559,6 +568,7 @@ describe('GatewayActionImpl', () => {
         associateMessageWithOperation,
         connectToGateway,
         internal_dispatchTopic: internalDispatchTopic,
+        internal_ensureTopicDetail: internalEnsureTopicDetail,
         internal_replaceTopicId: internalReplaceTopicId,
         internal_updateTopicLoading: internalUpdateTopicLoading,
         moveQueuedMessages,
@@ -588,6 +598,7 @@ describe('GatewayActionImpl', () => {
         connectToGateway,
         get,
         internalDispatchTopic,
+        internalEnsureTopicDetail,
         internalReplaceTopicId,
         internalUpdateTopicLoading,
         mockClient,
@@ -781,6 +792,9 @@ describe('GatewayActionImpl', () => {
         previousId: 'tmp-topic',
         value: {
           metadata: {
+            // Merged, not picked: the optimistic repo metadata AND the approval
+            // snapshot the server was asked to stamp both survive reconciliation.
+            approvalMode: 'manual',
             repos: [selectedRepo],
             workingDirectory: selectedRepo,
             workingDirectoryConfig: { path: selectedRepo, repoType: 'github' },
@@ -863,8 +877,10 @@ describe('GatewayActionImpl', () => {
 
     describe('per-conversation approval mode', () => {
       const seedTopic = (state: Record<string, any>, metadata?: Record<string, unknown>) => {
+        // Keyed by the run's OWN scope (`context.agentId`), not by whatever the
+        // store considers active — that is the point of the scoped resolution.
         state.topicDataMap = {
-          [topicMapKey({ agentId: undefined })]: {
+          [topicMapKey({ agentId: 'agent-1' })]: {
             items: [{ id: 'topic-1', metadata, title: 'T' }],
           },
         };
@@ -965,7 +981,7 @@ describe('GatewayActionImpl', () => {
         );
       });
 
-      it('never snapshots the internal headless mode onto a new topic', async () => {
+      it('sends headless verbatim and never snapshots it onto a new topic', async () => {
         const { action } = createExecuteTestAction();
         mockToolInterventionConfig.approvalMode = 'headless';
         mockCreated();
@@ -975,11 +991,73 @@ describe('GatewayActionImpl', () => {
           message: 'Hello',
         });
 
+        const [payload] = vi.mocked(aiAgentService.execAgentTask).mock.calls[0];
+        // headless !== auto-run: downgrading changes how globally blocked tools
+        // are handled, so the runtime payload must carry it verbatim…
+        expect((payload as any).userInterventionConfig.approvalMode).toBe('headless');
+        // …while the topic snapshot is omitted entirely (the server leaves
+        // headless runs unsnapshotted too).
+        expect((payload as any).appContext.initialTopicMetadata).toBeUndefined();
+      });
+
+      it('still snapshots repo metadata on a headless first send', async () => {
+        const { action } = createExecuteTestAction();
+        mockToolInterventionConfig.approvalMode = 'headless';
+        setPendingTopicRepos('agent-1', ['https://github.com/lobehub/lobehub']);
+        mockCreated();
+
+        await action.executeGatewayAgent({
+          context: { agentId: 'agent-1', topicId: null, threadId: null, scope: 'main' },
+          message: 'Hello',
+        });
+
+        const [payload] = vi.mocked(aiAgentService.execAgentTask).mock.calls[0];
+        const initialTopicMetadata = (payload as any).appContext.initialTopicMetadata;
+        expect(initialTopicMetadata.repos).toEqual(['https://github.com/lobehub/lobehub']);
+        expect(initialTopicMetadata.approvalMode).toBeUndefined();
+      });
+
+      it('resolves a topic that is only in the by-id detail cache (search / deep link)', async () => {
+        const { action, state } = createExecuteTestAction();
+        mockToolInterventionConfig.approvalMode = 'auto-run';
+        state.topicDataMap = {};
+        state.topicDetailMap = {
+          [`${topicMapKey({ agentId: 'agent-1' })}::topic-1`]: {
+            id: 'topic-1',
+            metadata: { approvalMode: 'manual' },
+            title: 'Old topic',
+          },
+        };
+        mockCreated();
+
+        await action.executeGatewayAgent({
+          context: { agentId: 'agent-1', topicId: 'topic-1', threadId: null, scope: 'main' },
+          message: 'Hello',
+        });
+
         expect(aiAgentService.execAgentTask).toHaveBeenCalledWith(
           expect.objectContaining({
-            appContext: expect.objectContaining({
-              initialTopicMetadata: expect.objectContaining({ approvalMode: 'auto-run' }),
-            }),
+            userInterventionConfig: { allowList: [], approvalMode: 'manual' },
+          }),
+          expect.anything(),
+        );
+      });
+
+      it('fails closed to manual while the platform lock state is unknown', async () => {
+        const { action, state } = createExecuteTestAction();
+        mockToolInterventionConfig.approvalMode = 'auto-run';
+        mockPlatformApprovalMeta.unknown = true;
+        seedTopic(state, { approvalMode: 'auto-run' });
+        mockCreated();
+
+        await action.executeGatewayAgent({
+          context: { agentId: 'agent-1', topicId: 'topic-1', threadId: null, scope: 'main' },
+          message: 'Hello',
+        });
+
+        expect(aiAgentService.execAgentTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userInterventionConfig: { allowList: [], approvalMode: 'manual' },
           }),
           expect.anything(),
         );
@@ -1089,7 +1167,11 @@ describe('GatewayActionImpl', () => {
       controller.abort('user cancelled');
 
       const mockClient = createMockClient();
-      const state: Record<string, any> = { gatewayConnections: {}, topicDataMap: {} };
+      const state: Record<string, any> = {
+        gatewayConnections: {},
+        topicDataMap: {},
+        topicDetailMap: {},
+      };
       const set = vi.fn((updater: any) => {
         if (typeof updater === 'function') Object.assign(state, updater(state));
         else Object.assign(state, updater);
@@ -1100,6 +1182,7 @@ describe('GatewayActionImpl', () => {
         completeOperation,
         connectToGateway,
         getOperationAbortSignal: vi.fn(() => controller.signal),
+        internal_ensureTopicDetail: vi.fn().mockResolvedValue(undefined),
         internal_updateTopicLoading: vi.fn(),
         onOperationCancel,
         replaceMessages: vi.fn(),
@@ -1166,7 +1249,11 @@ describe('GatewayActionImpl', () => {
       const startOperation = vi.fn(() => ({ operationId: 'gw-op-local' }));
 
       const mockClient = createMockClient();
-      const state: Record<string, any> = { gatewayConnections: {}, topicDataMap: {} };
+      const state: Record<string, any> = {
+        gatewayConnections: {},
+        topicDataMap: {},
+        topicDetailMap: {},
+      };
       const set = vi.fn((updater: any) => {
         if (typeof updater === 'function') Object.assign(state, updater(state));
         else Object.assign(state, updater);
@@ -1176,6 +1263,7 @@ describe('GatewayActionImpl', () => {
         associateMessageWithOperation: vi.fn(),
         connectToGateway: vi.fn(),
         internal_dispatchTopic: vi.fn(),
+        internal_ensureTopicDetail: vi.fn().mockResolvedValue(undefined),
         internal_updateTopicLoading: vi.fn(),
         moveQueuedMessages: vi.fn(),
         onOperationCancel,

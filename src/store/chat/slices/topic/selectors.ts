@@ -45,7 +45,10 @@ const currentTopicsWithoutCron = (s: ChatStoreState): ChatTopic[] | undefined =>
 };
 
 const currentActiveTopic = (s: ChatStoreState): ChatTopic | undefined => {
-  return currentTopics(s)?.find((topic) => topic.id === s.activeTopicId);
+  const fromList = currentTopics(s)?.find((topic) => topic.id === s.activeTopicId);
+  if (fromList || !s.activeTopicId) return fromList;
+  // Search / deep-link navigation leaves the row outside the paginated bucket.
+  return s.topicDetailMap?.[topicDetailKey(s.activeTopicId, activeTopicScope(s))];
 };
 const searchTopics = (s: ChatStoreState): ChatTopic[] => s.searchTopics;
 
@@ -58,10 +61,41 @@ const currentTopicLength = (s: ChatStoreState): number => currentTopicsWithoutCr
 
 const currentTopicCount = (s: ChatStoreState): number => currentTopicData(s)?.total || 0;
 
+/** Scope a topic lookup to an owning agent/group bucket. */
+export interface TopicScope {
+  agentId?: string;
+  groupId?: string;
+}
+
+const activeTopicScope = (s: ChatStoreState): TopicScope => ({
+  agentId: s.activeAgentId,
+  groupId: s.activeGroupId,
+});
+
+/** Cache key of a by-id topic row inside `topicDetailMap`. */
+export const topicDetailKey = (topicId: string, scope: TopicScope): string =>
+  `${topicMapKey(scope)}::${topicId}`;
+
+/**
+ * Resolve a topic in a specific bucket: the paginated list first, then the
+ * authoritative by-id cache. Search results and deep links routinely land on a
+ * topic outside the first page, where the list alone answers `undefined`.
+ */
+const getTopicByIdInScope =
+  (id: string | null | undefined, scope?: TopicScope) =>
+  (s: ChatStoreState): ChatTopic | undefined => {
+    if (!id) return undefined;
+    const container = scope ?? activeTopicScope(s);
+    const fromList = s.topicDataMap[topicMapKey(container)]?.items?.find(
+      (topic) => topic.id === id,
+    );
+    return fromList ?? s.topicDetailMap?.[topicDetailKey(id, container)];
+  };
+
 const getTopicById =
   (id: string) =>
   (s: ChatStoreState): ChatTopic | undefined =>
-    currentTopics(s)?.find((topic) => topic.id === id); // Don't filter here, need to access all topics by ID
+    getTopicByIdInScope(id)(s); // Don't filter here, need to access all topics by ID
 
 /**
  * Get topics by specific agentId (for AgentBuilder scenarios where agentId differs from activeAgentId)
@@ -91,17 +125,19 @@ const currentTopicMetadata = (s: ChatStoreState) => currentActiveTopic(s)?.metad
  * Legacy topics (and topics created before the feature landed) return
  * `undefined` and fall through to the user preference.
  */
-const currentTopicApprovalMode = (s: ChatStoreState): TopicApprovalMode | undefined => {
-  const mode = currentActiveTopic(s)?.metadata?.approvalMode;
-  return isTopicApprovalMode(mode) ? mode : undefined;
-};
+const currentTopicApprovalMode = (s: ChatStoreState): TopicApprovalMode | undefined =>
+  getTopicApprovalMode(s.activeTopicId)(s);
 
-/** Same as `currentTopicApprovalMode`, for an explicit topic id. */
+/**
+ * Same as `currentTopicApprovalMode`, for an explicit topic id (and optionally
+ * an explicit owning scope — an agent-run transport knows its own context and
+ * must not be resolved against whatever bucket is active by then).
+ */
 const getTopicApprovalMode =
-  (id?: string | null) =>
+  (id?: string | null, scope?: TopicScope) =>
   (s: ChatStoreState): TopicApprovalMode | undefined => {
     if (!id) return undefined;
-    const mode = getTopicById(id)(s)?.metadata?.approvalMode;
+    const mode = getTopicByIdInScope(id, scope)(s)?.metadata?.approvalMode;
     return isTopicApprovalMode(mode) ? mode : undefined;
   };
 
@@ -308,6 +344,7 @@ export const topicSelectors = {
   displayTopicsForSidebar,
   getTopicApprovalMode,
   getTopicById,
+  getTopicByIdInScope,
   getTopicWorkingDirectory,
   getTopicsByAgentId,
   groupedTopicsForSidebar,

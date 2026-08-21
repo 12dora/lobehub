@@ -29,6 +29,7 @@ import { t } from 'i18next';
 import { message as antdMessage } from '@/components/AntdStaticMethods';
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { resolveAgentWorkingDirectoryConfig } from '@/helpers/agentWorkingDirectory';
+import { getEffectiveApprovalMode, toTopicApprovalSnapshot } from '@/helpers/approvalMode';
 import { agentService } from '@/services/agent';
 import { aiChatService } from '@/services/aiChat';
 import { chatService } from '@/services/chat';
@@ -1275,6 +1276,27 @@ export class ConversationLifecycleActionImpl {
         (response.isCreateNewTopic || (!operationContext.topicId && !!response.topicId)),
       );
 
+    // Capture the approval mode ONCE, before the first asynchronous step. Two
+    // things depend on it and they must agree with each other and with what the
+    // ControlBar showed when Send was pressed:
+    //  - `newTopic.metadata.approvalMode`, the snapshot the server stamps on a
+    //    brand-new topic (client mode creates its topic here, not via execAgent),
+    //  - the runtime config of the local run started further below.
+    // Resolving it twice — or later — would let a preference change landing
+    // mid-persistence split the two.
+    const clientTopicScope = {
+      agentId: operationContext.agentId,
+      groupId: operationContext.groupId ?? undefined,
+    };
+    if (operationContext.topicId) {
+      await this.#get().internal_ensureTopicDetail(operationContext.topicId, clientTopicScope);
+    }
+    const capturedApprovalMode = getEffectiveApprovalMode(
+      topicSelectors.getTopicApprovalMode(operationContext.topicId, clientTopicScope)(this.#get()),
+    );
+    // `headless` is never stored on a topic — omit the key instead of downgrading.
+    const capturedApprovalSnapshot = toTopicApprovalSnapshot(capturedApprovalMode);
+
     try {
       const { model, provider } = agentSelectors.getAgentConfigById(agentId)(getAgentStoreState());
 
@@ -1334,6 +1356,9 @@ export class ConversationLifecycleActionImpl {
             : undefined,
           newTopic: !topicId
             ? {
+                ...(capturedApprovalSnapshot && {
+                  metadata: { approvalMode: capturedApprovalSnapshot },
+                }),
                 topicMessageIds: forceNewTopicFromExisting ? [] : messages.map((m) => m.id),
                 title: newTopicTitle,
               }
@@ -1643,6 +1668,7 @@ export class ConversationLifecycleActionImpl {
           );
 
           await executeClientAgent({
+            approvalMode: capturedApprovalMode,
             context: execContext,
             initialContext: mergedAgentRuntimeInitialContext,
             metadata: requestMetadata,

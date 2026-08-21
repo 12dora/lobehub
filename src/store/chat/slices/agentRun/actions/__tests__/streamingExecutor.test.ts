@@ -29,10 +29,12 @@ import { resetTestEnvironment, setupMockSelectors, spyOnMessageService } from '.
 const serverConfigMock = vi.hoisted(() => ({ enableVisualUnderstanding: false }));
 const platformApprovalMeta = vi.hoisted(() => ({
   current: undefined as { locked: boolean } | undefined,
+  unknown: false,
 }));
 
 vi.mock('@/helpers/platformSettingLocks', () => ({
   isPlatformSettingLocked: () => platformApprovalMeta.current?.locked === true,
+  isPlatformSettingLockUnknown: () => platformApprovalMeta.unknown,
   publishPlatformSettingLocks: vi.fn(),
 }));
 const agentSignalBridgeMock = vi.hoisted(() => ({
@@ -1729,8 +1731,9 @@ describe('StreamingExecutor actions', () => {
 
     afterEach(() => {
       platformApprovalMeta.current = undefined;
+      platformApprovalMeta.unknown = false;
       act(() => {
-        useChatStore.setState({ topicDataMap: {} } as any);
+        useChatStore.setState({ topicDataMap: {}, topicDetailMap: {} } as any);
         useUserStore.setState({ settings: {} } as any);
       });
     });
@@ -1778,7 +1781,9 @@ describe('StreamingExecutor actions', () => {
       expect(state.userInterventionConfig?.approvalMode).toBe('manual');
     });
 
-    it('keeps mapping the internal headless mode onto auto-run', () => {
+    it('runs headless verbatim — never downgraded to auto-run', () => {
+      // headless and auto-run differ in how globally blocked tools are handled,
+      // so the runtime must receive the exact mode.
       seed(undefined, 'headless');
       const { result } = renderHook(() => useChatStore());
 
@@ -1789,7 +1794,69 @@ describe('StreamingExecutor actions', () => {
         topicId: TEST_IDS.TOPIC_ID,
       });
 
-      expect(state.userInterventionConfig?.approvalMode).toBe('auto-run');
+      expect(state.userInterventionConfig?.approvalMode).toBe('headless');
+    });
+
+    it('fails closed to manual while the platform lock state is unknown', () => {
+      seed('auto-run', 'auto-run');
+      platformApprovalMeta.unknown = true;
+      const { result } = renderHook(() => useChatStore());
+
+      const { state } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      });
+
+      expect(state.userInterventionConfig?.approvalMode).toBe('manual');
+    });
+
+    it('resolves a topic that is only in the by-id detail cache (search / deep link)', () => {
+      act(() => {
+        useChatStore.setState({
+          executeClientAgent: realExecAgentRuntime,
+          topicDataMap: {},
+          topicDetailMap: {
+            [`${TOPIC_MAP_KEY}::${TEST_IDS.TOPIC_ID}`]: {
+              id: TEST_IDS.TOPIC_ID,
+              metadata: { approvalMode: 'manual' },
+              title: 'Old topic',
+            },
+          },
+        } as any);
+        useUserStore.setState({
+          settings: { tool: { humanIntervention: { approvalMode: 'auto-run' } } },
+        } as any);
+      });
+      const { result } = renderHook(() => useChatStore());
+
+      const { state } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      });
+
+      expect(state.userInterventionConfig?.approvalMode).toBe('manual');
+    });
+
+    it('a caller-captured mode wins over anything resolvable now', () => {
+      // The caller captured `allow-list` before its create round-trip; a
+      // preference change landing mid-flight must not split the run from the
+      // snapshot that was persisted with it.
+      seed('auto-run', 'auto-run');
+      const { result } = renderHook(() => useChatStore());
+
+      const { state } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        approvalMode: 'allow-list',
+        topicId: TEST_IDS.TOPIC_ID,
+      });
+
+      expect(state.userInterventionConfig?.approvalMode).toBe('allow-list');
     });
   });
 

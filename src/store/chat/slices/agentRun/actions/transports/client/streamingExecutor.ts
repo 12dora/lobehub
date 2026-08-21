@@ -23,12 +23,13 @@ import {
   type ConversationContext,
   type MessageMetadata,
   type RunSubAgentResult,
+  type RuntimeApprovalMode,
   type RuntimeInitialContext,
   type UIChatMessage,
 } from '@lobechat/types';
 import debug from 'debug';
 
-import { getEffectiveApprovalMode, toSelectableApprovalMode } from '@/helpers/approvalMode';
+import { getEffectiveApprovalMode } from '@/helpers/approvalMode';
 import { createAgentToolsEngine } from '@/helpers/toolEngineering';
 import { aiAgentService } from '@/services/aiAgent';
 import { isCanUseVideo, isCanUseVision } from '@/services/chat/helper';
@@ -113,6 +114,7 @@ export class StreamingExecutorActionImpl {
     messages,
     parentMessageId,
     agentId: paramAgentId,
+    approvalMode: capturedApprovalMode,
     disableTools,
     topicId: paramTopicId,
     threadId,
@@ -125,6 +127,14 @@ export class StreamingExecutorActionImpl {
     messages: UIChatMessage[];
     parentMessageId: string;
     agentId?: string;
+    /**
+     * Approval mode captured by the caller *before* its first asynchronous
+     * persistence step. Passing it keeps a run on the mode that was displayed
+     * when Send was pressed, even if the preference changes while the create
+     * round-trip is in flight (and covers first sends, where the topic does not
+     * exist yet so nothing local could be resolved).
+     */
+    approvalMode?: RuntimeApprovalMode;
     disableTools?: boolean;
     topicId?: string | null;
     threadId?: string;
@@ -276,11 +286,15 @@ export class StreamingExecutorActionImpl {
     // Get user intervention config. The per-conversation snapshot
     // (`topics.metadata.approvalMode`) wins over the user preference so a
     // client-executed run gates tools exactly like the server-executed one.
+    // The exact runtime mode is used: `headless` must NOT be downgraded to
+    // auto-run, they differ in how globally blocked tools are handled.
     const userStore = getUserStoreState();
     const userInterventionConfig = {
-      approvalMode: toSelectableApprovalMode(
-        getEffectiveApprovalMode(topicSelectors.getTopicApprovalMode(topicId)(this.#get())),
-      ),
+      approvalMode:
+        capturedApprovalMode ??
+        getEffectiveApprovalMode(
+          topicSelectors.getTopicApprovalMode(topicId, { agentId, groupId })(this.#get()),
+        ),
       allowList: toolInterventionSelectors.allowList(userStore),
     };
 
@@ -435,6 +449,11 @@ export class StreamingExecutorActionImpl {
   };
 
   executeClientAgent = async (params: {
+    /**
+     * Approval mode captured before the caller's first asynchronous step — see
+     * `internal_createAgentState`.
+     */
+    approvalMode?: RuntimeApprovalMode;
     context: ConversationContext;
     disableTools?: boolean;
     initialContext?: AgentRuntimeContext;
@@ -546,6 +565,7 @@ export class StreamingExecutorActionImpl {
       messages,
       parentMessageId: params.parentMessageId,
       agentId,
+      approvalMode: params.approvalMode,
       disableTools,
       topicId,
       threadId: threadId ?? undefined,

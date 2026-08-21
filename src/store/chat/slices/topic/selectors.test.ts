@@ -206,6 +206,41 @@ describe('topicSelectors', () => {
       expect(topicSelectors.currentTopicApprovalMode(buildState('topicB'))).toBeUndefined();
     });
 
+    it('falls back to the by-id detail cache for a topic outside the paginated page', () => {
+      const state = merge(buildState('topicOutside'), {
+        topicDetailMap: {
+          [`${topicMapKey({ agentId: 'test' })}::topicOutside`]: {
+            id: 'topicOutside',
+            metadata: { approvalMode: 'manual' },
+          },
+        },
+      }) as ChatStore;
+
+      expect(topicSelectors.currentTopicApprovalMode(state)).toBe('manual');
+      expect(topicSelectors.currentActiveTopic(state)?.id).toBe('topicOutside');
+    });
+
+    it('resolves an explicit scope rather than whatever bucket is active', () => {
+      const state = merge(initialStore, {
+        activeAgentId: 'other-agent',
+        topicDataMap: {
+          [topicMapKey({ agentId: 'test' })]: {
+            currentPage: 0,
+            hasMore: false,
+            items: topics,
+            pageSize: 20,
+            total: topics.length,
+          },
+        },
+      }) as ChatStore;
+
+      expect(topicSelectors.getTopicApprovalMode('topicA', { agentId: 'test' })(state)).toBe(
+        'auto-run',
+      );
+      // Same id, wrong bucket → unresolved rather than a cross-agent read.
+      expect(topicSelectors.getTopicApprovalMode('topicA')(state)).toBeUndefined();
+    });
+
     it('binds lookup to the requested topic id', () => {
       const state = buildState('topicC');
       expect(topicSelectors.getTopicApprovalMode('topicA')(state)).toBe('auto-run');

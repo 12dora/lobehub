@@ -4,7 +4,7 @@ import { Button, Center, DropdownMenu, Flexbox, Icon, Tooltip } from '@lobehub/u
 import { createStaticStyles } from 'antd-style';
 import { Check, ChevronDown, Hand, ListChecks, Zap } from 'lucide-react';
 import { type LucideIcon } from 'lucide-react';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
@@ -76,6 +76,14 @@ const ModeSelector = memo(() => {
   const activeTopicId = useChatStore((s) => s.activeTopicId);
   const topicApprovalMode = useChatStore(topicSelectors.currentTopicApprovalMode);
   const updateTopicApprovalMode = useChatStore((s) => s.updateTopicApprovalMode);
+  const ensureTopicDetail = useChatStore((s) => s.internal_ensureTopicDetail);
+
+  // A topic opened from search or a deep link is not in the paginated sidebar
+  // bucket, so its stored mode would read as "none" and this picker would show
+  // the account default instead of the conversation's real policy.
+  useEffect(() => {
+    void ensureTopicDetail(activeTopicId);
+  }, [activeTopicId, ensureTopicDetail]);
   const platformMeta = usePlatformSettingMeta('tool.humanIntervention.approvalMode');
   const platformLocked = platformMeta.locked;
 

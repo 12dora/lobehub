@@ -2,6 +2,7 @@
 
 import { type ReactNode, useEffect, useMemo } from 'react';
 
+import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import { useServerConfigStore } from '@/store/serverConfig';
 import { useToolStore } from '@/store/tool';
 import { useUserStore } from '@/store/user';
@@ -20,6 +21,7 @@ import {
 } from './enterprisePlatformContext';
 import { RuntimeBrandingProvider } from './RuntimeBrandingProvider';
 import { useEnterprisePlatformData } from './useEnterprisePlatformData';
+import { usePlatformSettingLockSync } from './usePlatformSettingLockSync';
 
 export interface EnterprisePlatformProviderProps {
   children: ReactNode;
@@ -54,15 +56,33 @@ export default function EnterprisePlatformProvider({
     (s) => s.serverConfig.enterprise?.enabled === true,
   );
   const isSignedIn = Boolean(useUserStore(authSelectors.isLogin));
+  // Inline rather than via `userProfileSelectors` so this stays independent of
+  // the user-selectors module surface.
+  const userId = useUserStore((s) => s.user?.id);
+  const workspaceId = useActiveWorkspaceId();
 
-  const { capabilities, error, loading, publicSnapshot, refresh } = useEnterprisePlatformData({
-    disableFetch,
+  const { capabilities, capabilitiesReady, error, loading, publicSnapshot, refresh } =
+    useEnterprisePlatformData({
+      disableFetch,
+      enterpriseEnabled,
+      fetchCapabilities,
+      fetchPublicSnapshot,
+      initialPublicSnapshot,
+      isSignedIn,
+      serverConfigInit,
+    });
+
+  // Publish the platform lock mirror from bootstrap, so non-React callers
+  // (store actions / agent-run transports) never have to guess while no managed
+  // field is mounted. Keyed on account + workspace + policy revision so a switch
+  // re-primes instead of leaving the previous answer readable.
+  usePlatformSettingLockSync({
+    capabilitiesReady,
     enterpriseEnabled,
-    fetchCapabilities,
-    fetchPublicSnapshot,
-    initialPublicSnapshot,
     isSignedIn,
+    policyIdentity: `${userId ?? ''}|${workspaceId ?? ''}|${capabilities.configRevision ?? ''}`,
     serverConfigInit,
+    userSettingsPolicyEnabled: capabilities.userSettingsPolicyEnabled === true,
   });
 
   usePublishedSkillCatalog(capabilities.managedResources.skills);

@@ -4,12 +4,15 @@ import { useCallback, useRef, useState } from 'react';
 
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { userSettingsService } from '@/enterprise/client/services/userSettings';
-import { publishPlatformSettingLocks } from '@/helpers/platformSettingLocks';
+import {
+  EFFECTIVE_SETTINGS_SWR_KEY,
+  publishPlatformSettingLocks,
+} from '@/helpers/platformSettingLocks';
 import { useClientDataSWR } from '@/libs/swr';
 import type { UserSettingsGetEffectiveOutput } from '@/server/enterprise/contracts/userSettings';
 import { useUserStore } from '@/store/user';
 
-const EFFECTIVE_KEY = 'user.settings.effective' as const;
+const EFFECTIVE_KEY = EFFECTIVE_SETTINGS_SWR_KEY;
 
 export type PlatformSettingMetaStatus = 'disabled' | 'loading' | 'error' | 'ready';
 

@@ -16,6 +16,7 @@ import { topicMapKey } from '@/store/chat/utils/topicMapKey';
 import { getSessionStoreState } from '@/store/session';
 import * as toolStoreModule from '@/store/tool';
 import { pageAgentRuntime } from '@/store/tool/slices/builtin/executors/lobe-page-agent';
+import { useUserStore } from '@/store/user';
 
 import { useChatStore } from '../../../../store';
 import { getGatewayStartErrorMessage } from '../entries/conversationLifecycle';
@@ -26,6 +27,13 @@ import { resetTestEnvironment, setupMockSelectors, spyOnMessageService } from '.
 vi.mock('zustand/traditional');
 
 const executeHeterogeneousAgentMock = vi.hoisted(() => vi.fn());
+const platformApprovalLocks = vi.hoisted(() => ({ locked: false, unknown: false }));
+
+vi.mock('@/helpers/platformSettingLocks', () => ({
+  isPlatformSettingLocked: () => platformApprovalLocks.locked,
+  isPlatformSettingLockUnknown: () => platformApprovalLocks.unknown,
+  publishPlatformSettingLocks: vi.fn(),
+}));
 const mockConstEnv = vi.hoisted(() => ({ isDesktop: false }));
 const mockLocalFileService = vi.hoisted(() => ({
   listLocalFiles: vi.fn(),
@@ -81,6 +89,8 @@ beforeEach(() => {
 
 afterEach(() => {
   executeHeterogeneousAgentMock.mockReset();
+  platformApprovalLocks.locked = false;
+  platformApprovalLocks.unknown = false;
   mockConstEnv.isDesktop = false;
   setPendingTopicRepos(TEST_IDS.SESSION_ID, []);
   vi.restoreAllMocks();
@@ -95,6 +105,144 @@ const createTestContext = (agentId: string = TEST_IDS.SESSION_ID) => ({
 
 describe('ConversationLifecycle actions', () => {
   describe('sendMessage', () => {
+    describe('per-conversation approval mode (client runtime)', () => {
+      const setUserApprovalMode = (approvalMode: string) => {
+        act(() => {
+          useUserStore.setState({
+            settings: { tool: { humanIntervention: { approvalMode } } },
+          } as any);
+        });
+      };
+
+      const mockServerSend = (value?: any) =>
+        vi.spyOn(aiChatService, 'sendMessageInServer').mockResolvedValue(
+          value ?? {
+            messages: [
+              createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
+              createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+            ],
+            topics: [],
+            topicId: TEST_IDS.NEW_TOPIC_ID,
+            isCreateNewTopic: true,
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            userMessageId: TEST_IDS.USER_MESSAGE_ID,
+          },
+        );
+
+      afterEach(() => {
+        act(() => {
+          useUserStore.setState({ settings: {} } as any);
+        });
+      });
+
+      it('snapshots the displayed mode onto the topic the first send creates', async () => {
+        const { result } = renderHook(() => useChatStore());
+        setUserApprovalMode('auto-run');
+        const sendSpy = mockServerSend();
+
+        await act(async () => {
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: createTestContext(),
+          });
+        });
+
+        expect(sendSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            newTopic: expect.objectContaining({ metadata: { approvalMode: 'auto-run' } }),
+          }),
+          expect.any(AbortController),
+        );
+        // …and the local run uses the very same captured value.
+        expect(result.current.executeClientAgent).toHaveBeenCalledWith(
+          expect.objectContaining({ approvalMode: 'auto-run' }),
+        );
+      });
+
+      it('never snapshots headless, but runs it verbatim', async () => {
+        const { result } = renderHook(() => useChatStore());
+        setUserApprovalMode('headless');
+        const sendSpy = mockServerSend();
+
+        await act(async () => {
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: createTestContext(),
+          });
+        });
+
+        const payload = sendSpy.mock.calls[0]?.[0] as any;
+        expect(payload.newTopic.metadata).toBeUndefined();
+        expect(result.current.executeClientAgent).toHaveBeenCalledWith(
+          expect.objectContaining({ approvalMode: 'headless' }),
+        );
+      });
+
+      it('keeps the mode captured at Send when the preference changes mid-persistence', async () => {
+        const { result } = renderHook(() => useChatStore());
+        setUserApprovalMode('auto-run');
+
+        let resolveSend!: (value: any) => void;
+        const sendSpy = vi
+          .spyOn(aiChatService, 'sendMessageInServer')
+          .mockReturnValue(new Promise((resolve) => (resolveSend = resolve)) as any);
+
+        let pending!: Promise<unknown>;
+        act(() => {
+          pending = result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: createTestContext(),
+          });
+        });
+
+        await waitFor(() => expect(sendSpy).toHaveBeenCalled());
+        // The user flips their global default while persistence is in flight.
+        setUserApprovalMode('manual');
+
+        await act(async () => {
+          resolveSend({
+            messages: [
+              createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
+              createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+            ],
+            topics: [],
+            topicId: TEST_IDS.NEW_TOPIC_ID,
+            isCreateNewTopic: true,
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            userMessageId: TEST_IDS.USER_MESSAGE_ID,
+          });
+          await pending;
+        });
+
+        const payload = sendSpy.mock.calls[0]?.[0] as any;
+        expect(payload.newTopic.metadata).toEqual({ approvalMode: 'auto-run' });
+        // The run must not diverge from what was persisted with it.
+        expect(result.current.executeClientAgent).toHaveBeenCalledWith(
+          expect.objectContaining({ approvalMode: 'auto-run' }),
+        );
+      });
+
+      it('fails closed to manual while the platform lock state is unknown', async () => {
+        const { result } = renderHook(() => useChatStore());
+        setUserApprovalMode('auto-run');
+        platformApprovalLocks.unknown = true;
+        const sendSpy = mockServerSend();
+
+        await act(async () => {
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: createTestContext(),
+          });
+        });
+
+        const payload = sendSpy.mock.calls[0]?.[0] as any;
+        expect(payload.newTopic.metadata).toEqual({ approvalMode: 'manual' });
+        expect(result.current.executeClientAgent).toHaveBeenCalledWith(
+          expect.objectContaining({ approvalMode: 'manual' }),
+        );
+      });
+    });
+
     describe('validation', () => {
       it('should not send when sessionId is empty', async () => {
         const { result } = renderHook(() => useChatStore());

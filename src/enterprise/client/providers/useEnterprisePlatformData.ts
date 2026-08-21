@@ -92,6 +92,13 @@ export interface UseEnterprisePlatformDataOptions {
 
 export interface EnterprisePlatformData {
   capabilities: PlatformCapabilities;
+  /**
+   * `platform.getCapabilities` has produced a real answer (or cannot produce
+   * one, e.g. fetching is disabled). While false, `capabilities` is still the
+   * DISABLED fallback and must NOT be read as "the policy is off" — see
+   * `usePlatformSettingLockSync`.
+   */
+  capabilitiesReady: boolean;
   error: Error | null;
   loading: boolean;
   publicSnapshot: PlatformPublicSnapshot;
@@ -200,6 +207,7 @@ export const useEnterprisePlatformData = ({
   if (!enabled) {
     return {
       capabilities: DISABLED_PLATFORM_CAPABILITIES,
+      capabilitiesReady: true,
       error: null,
       loading: false,
       publicSnapshot: safeInitialPublicSnapshot,
@@ -209,6 +217,10 @@ export const useEnterprisePlatformData = ({
 
   return {
     capabilities: capabilitiesSWR.data ?? DISABLED_PLATFORM_CAPABILITIES,
+    // `fallbackData` means `data` is never undefined, so readiness is "not
+    // loading" — an errored fetch counts as *not* ready so managed callers
+    // keep failing closed.
+    capabilitiesReady: capabilitiesEnabled && !capabilitiesSWR.isLoading && !capabilitiesSWR.error,
     error: toError(capabilitiesSWR.error ?? publicSnapshotSWR.error),
     loading: Boolean(capabilitiesSWR.isLoading || publicSnapshotSWR.isLoading),
     publicSnapshot: resolveSafePlatformPublicSnapshot(

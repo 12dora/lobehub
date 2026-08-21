@@ -98,6 +98,14 @@ export class TopicService {
     return lambdaClient.topic.updateTopic.mutate({ id, value: data });
   };
 
+  /**
+   * Authoritative single-topic read. The paginated list only carries the first
+   * page, so a topic reached by search / deep link is resolved through this.
+   */
+  getTopicDetail = (id: string): Promise<ChatTopic | null> => {
+    return lambdaClient.topic.getTopicDetail.query({ id }) as Promise<ChatTopic | null>;
+  };
+
   updateTopicMetadata = (id: string, metadata: UpdateTopicMetadataInput) => {
     return lambdaClient.topic.updateTopicMetadata.mutate({ id, metadata });
   };

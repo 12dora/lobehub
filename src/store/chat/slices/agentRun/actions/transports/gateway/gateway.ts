@@ -13,7 +13,7 @@ import type {
 } from '@lobechat/types';
 
 import { isDesktop } from '@/const/version';
-import { getEffectiveApprovalMode, toSelectableApprovalMode } from '@/helpers/approvalMode';
+import { getEffectiveApprovalMode, toTopicApprovalSnapshot } from '@/helpers/approvalMode';
 import {
   aiAgentService,
   type ResumeApprovalParam,
@@ -157,6 +157,10 @@ export interface ConnectGatewayParams {
 }
 
 // ─── Action Implementation ───
+
+/** `{}` carries no information — collapse it so the payload key is omitted. */
+const cleanEmptyTopicMetadata = <T extends Record<string, unknown>>(meta: T): T | undefined =>
+  Object.keys(meta).length > 0 ? meta : undefined;
 
 export class GatewayActionImpl {
   readonly #reconnectStatusFailureCounts = new Map<string, number>();
@@ -468,21 +472,33 @@ export class GatewayActionImpl {
     // the user preference (unless the platform policy is locked). The server
     // re-resolves the same chain, so this only has to match what the ControlBar
     // showed the user.
-    const effectiveApprovalMode = toSelectableApprovalMode(
-      getEffectiveApprovalMode(topicSelectors.getTopicApprovalMode(context.topicId)(this.#get())),
+    //
+    // Resolve the authoritative row first — a topic opened from search or a deep
+    // link is not in the paginated bucket, and silently falling back to the
+    // account default there would run it under the wrong policy.
+    const topicScope = { agentId: context.agentId, groupId: context.groupId ?? undefined };
+    if (context.topicId) {
+      await this.#get().internal_ensureTopicDetail(context.topicId, topicScope);
+    }
+
+    const effectiveApprovalMode = getEffectiveApprovalMode(
+      topicSelectors.getTopicApprovalMode(context.topicId, topicScope)(this.#get()),
     );
+    // `headless` is never persisted on a topic (the server leaves headless runs
+    // unsnapshotted too), so the key is omitted rather than downgraded.
+    const approvalSnapshot = toTopicApprovalSnapshot(effectiveApprovalMode);
 
     const initialTopicMetadata = isCreateNewTopic
-      ? {
+      ? cleanEmptyTopicMetadata({
           // Snapshot what the user saw onto the topic the server is about to
           // create, so a later preference change can't retro-edit this run.
-          approvalMode: effectiveApprovalMode,
+          ...(approvalSnapshot && { approvalMode: approvalSnapshot }),
           ...(pendingRepos.length > 0 && {
             repos: pendingRepos,
             workingDirectory: pendingRepos[0],
             workingDirectoryConfig: { path: pendingRepos[0], repoType: 'github' as const },
           }),
-        }
+        })
       : undefined;
 
     // Honour user-initiated cancel during phase-1 init: while we await the
@@ -556,7 +572,23 @@ export class GatewayActionImpl {
       // Topic created successfully — now safe to clear the pending repo selection.
       if (context.agentId) consumePendingTopicRepos(context.agentId);
       if (optimisticTopic) {
-        const topicMetadata = optimisticTopic.metadata ?? initialTopicMetadata;
+        // Merge, don't pick: the optimistic row carries repo / working-directory
+        // metadata chosen before the send, while `initialTopicMetadata` carries
+        // the approval snapshot the server was asked to stamp. Taking either one
+        // alone drops the other from the reconciled local row until a refetch —
+        // and a failed refetch would leave it wrong for the whole session.
+        const topicMetadata =
+          optimisticTopic.metadata || initialTopicMetadata
+            ? {
+                ...initialTopicMetadata,
+                ...optimisticTopic.metadata,
+                // The optimistic row predates the snapshot and never carries an
+                // approval mode, so the captured one always wins.
+                ...(initialTopicMetadata?.approvalMode && {
+                  approvalMode: initialTopicMetadata.approvalMode,
+                }),
+              }
+            : undefined;
         this.#get().internal_replaceTopicId({
           agentId: context.agentId,
           groupId: context.groupId,

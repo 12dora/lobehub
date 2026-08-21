@@ -58,6 +58,17 @@ export interface ChatTopicState {
    */
   topicDataMap: Record<string, TopicData>;
   /**
+   * Authoritative single-topic rows fetched by id, keyed
+   * `${topicMapKey(scope)}::${topicId}`.
+   *
+   * `topicDataMap` only holds the paginated sidebar page (20 rows by default),
+   * so a topic opened from search or a deep link is frequently absent from it.
+   * Anything that must be correct for the *active* conversation rather than for
+   * "whatever the sidebar happens to show" — the per-conversation approval mode
+   * above all — resolves through this cache as a fallback.
+   */
+  topicDetailMap: Record<string, ChatTopic>;
+  /**
    * Internal ref-count for topic loading owners. A topic can be loading because
    * the agent is running and because title-summary is streaming at the same time.
    */
@@ -75,6 +86,7 @@ export const initialTopicState: ChatTopicState = {
   isSearchingTopic: false,
   searchTopics: [],
   topicDataMap: {},
+  topicDetailMap: {},
   topicLoadingIdCounts: {},
   topicLoadingIds: [],
   topicSearchKeywords: '',

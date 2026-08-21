@@ -51,7 +51,7 @@ import { displayMessageSelectors } from '../message/selectors';
 import { type TopicData } from './initialState';
 import { type ChatTopicDispatch } from './reducer';
 import { topicReducer } from './reducer';
-import { topicSelectors } from './selectors';
+import { topicDetailKey, type TopicScope, topicSelectors } from './selectors';
 
 const n = setNamespace('t');
 
@@ -490,34 +490,213 @@ export class ChatTopicActionImpl {
   };
 
   /**
+   * Monotonic per-topic counter of approval-mode selections. The newest
+   * selection owns both persistence and the optimistic value; an older one may
+   * neither send its (superseded) request nor roll back on failure.
+   */
+  #approvalModeGenerations = new Map<string, number>();
+
+  /** One in-flight approval write per topic, so requests can never reorder. */
+  #approvalModeQueues = new Map<string, Promise<void>>();
+
+  /**
+   * Last *persisted* mode per topic while a write chain is open.
+   *
+   * A rollback must restore what the server actually holds, not the previous
+   * click's optimistic value: click auto-run then allow-list before the first
+   * request leaves, and auto-run is dropped unsent — so a failing allow-list has
+   * to fall back to the mode that was there before the burst started. Cleared
+   * with the queue entry, after which the next click re-reads persisted state.
+   */
+  #approvalModeBaselines = new Map<string, TopicApprovalMode | undefined>();
+
+  /**
+   * Write `approvalMode` into both the paginated bucket and the by-id cache of
+   * the *captured* scope, merged onto whatever metadata the row carries now.
+   * `mode: undefined` removes the key instead of storing an undefined value.
+   */
+  #applyTopicApprovalMode = (
+    id: string,
+    scope: TopicScope,
+    mode: TopicApprovalMode | undefined,
+  ): void => {
+    const current = topicSelectors.getTopicByIdInScope(id, scope)(this.#get())?.metadata;
+    const metadata: ChatTopicMetadata = { ...current };
+    if (mode) metadata.approvalMode = mode;
+    else delete metadata.approvalMode;
+
+    this.#get().internal_dispatchTopic({
+      ...scope,
+      type: 'updateTopic',
+      id,
+      value: { metadata },
+    });
+    this.#get().internal_updateTopicDetail(id, scope, { metadata });
+  };
+
+  /** `refreshTopic()` for an explicitly captured scope instead of the active one. */
+  #refreshTopicScope = async (scope: TopicScope): Promise<void> => {
+    const containerKey = topicMapKey(scope);
+    const agentViewKey = scope.agentId ? topicMapKey({ agentId: scope.agentId }) : null;
+    await mutate(
+      (key) =>
+        Array.isArray(key) &&
+        ((key[0] === topicKeys.list.root &&
+          typeof key[1] === 'string' &&
+          key[1] === containerKey) ||
+          (key[0] === topicKeys.agentView.root &&
+            agentViewKey !== null &&
+            key[1] === agentViewKey)),
+    );
+  };
+
+  /**
    * Per-conversation tool-approval mode. Writes only `topics.metadata.approvalMode`
    * — the user preference (`tool.humanIntervention.approvalMode`) is left alone, so
    * switching mode inside a conversation never leaks into other conversations.
    *
    * Optimistic so the ControlBar label flips immediately; reverted on failure
    * because the selector has no other error surface.
+   *
+   * Concurrency: a picker can be clicked faster than the round-trip. Writes are
+   * therefore serialized per topic and generation-fenced, so
+   * - persistence is last-selection-wins (a superseded request is dropped, not
+   *   raced — otherwise the DB can end on the *earlier* choice),
+   * - a late failure rolls back only `approvalMode`, only while its generation
+   *   still owns the optimistic value, merged onto current metadata (never
+   *   restoring a whole stale snapshot over newer sibling keys),
+   * - the optimistic write, the rollback and the revalidation all target the
+   *   scope captured at click time, so switching agent mid-flight cannot leave
+   *   an unpersisted value behind in the original bucket.
    */
   updateTopicApprovalMode = async (id: string, approvalMode: TopicApprovalMode): Promise<void> => {
-    const previousMetadata = topicSelectors.getTopicById(id)(this.#get())?.metadata;
+    const { activeAgentId, activeGroupId } = this.#get();
+    const scope: TopicScope = { agentId: activeAgentId, groupId: activeGroupId };
 
-    this.#get().internal_dispatchTopic({
-      type: 'updateTopic',
-      id,
-      value: { metadata: { ...previousMetadata, approvalMode } },
-    });
-
-    try {
-      await topicService.updateTopicMetadata(id, { approvalMode });
-    } catch (error) {
-      this.#get().internal_dispatchTopic({
-        type: 'updateTopic',
+    // Only the first click of a burst reads the row: later ones would read the
+    // earlier click's optimistic value, which may never have been persisted.
+    if (!this.#approvalModeQueues.has(id)) {
+      this.#approvalModeBaselines.set(
         id,
-        value: { metadata: previousMetadata },
-      });
-      throw error;
+        topicSelectors.getTopicApprovalMode(id, scope)(this.#get()),
+      );
     }
 
-    await this.#get().refreshTopic();
+    const generation = (this.#approvalModeGenerations.get(id) ?? 0) + 1;
+    this.#approvalModeGenerations.set(id, generation);
+
+    this.#applyTopicApprovalMode(id, scope, approvalMode);
+
+    const owns = () => this.#approvalModeGenerations.get(id) === generation;
+
+    const chain = (this.#approvalModeQueues.get(id) ?? Promise.resolve())
+      // A previous write's failure is already surfaced to its own caller; it
+      // must not break the queue for later selections.
+      .catch(() => {})
+      .then(async () => {
+        // Superseded while queued — the newer selection owns persistence.
+        if (!owns()) return;
+
+        try {
+          await topicService.updateTopicMetadata(id, { approvalMode });
+          // Now persisted: a later failure in this burst rolls back to here.
+          this.#approvalModeBaselines.set(id, approvalMode);
+        } catch (error) {
+          // Read lazily — an earlier write in this burst may have moved the
+          // baseline after this generation was queued.
+          if (owns()) {
+            this.#applyTopicApprovalMode(id, scope, this.#approvalModeBaselines.get(id));
+          }
+          throw error;
+        }
+
+        if (!owns()) return;
+        await this.#refreshTopicScope(scope);
+      })
+      .finally(() => {
+        if (!owns()) return;
+        this.#approvalModeQueues.delete(id);
+        this.#approvalModeBaselines.delete(id);
+      });
+
+    // The queued promise must never reject, or the next `.catch(() => {})`
+    // would be the only thing standing between a rejection and the console.
+    this.#approvalModeQueues.set(
+      id,
+      chain.catch(() => {}),
+    );
+
+    await chain;
+  };
+
+  /**
+   * In-flight `getTopicDetail` requests, keyed like `topicDetailMap`, so N
+   * concurrent resolvers of the same topic share one request.
+   */
+  #topicDetailFetches = new Map<string, Promise<ChatTopic | undefined>>();
+
+  /**
+   * Guarantee the authoritative row for `id` is resolvable in `scope`.
+   *
+   * `topicDataMap` only holds the paginated sidebar page, so a topic opened via
+   * search or a deep link is usually absent — and callers that read topic-level
+   * policy (the approval-mode selector, the agent-run transports) would silently
+   * fall back to the account default. Resolves from cache when possible; fetches
+   * once otherwise.
+   */
+  internal_ensureTopicDetail = async (
+    id?: string | null,
+    scope?: TopicScope,
+  ): Promise<ChatTopic | undefined> => {
+    // `tmp_topic_*` rows exist only in this client until the send resolves.
+    if (!id || isClientOnlyTopicId(id)) return undefined;
+
+    const { activeAgentId, activeGroupId } = this.#get();
+    const container: TopicScope = scope ?? { agentId: activeAgentId, groupId: activeGroupId };
+
+    const resolved = topicSelectors.getTopicByIdInScope(id, container)(this.#get());
+    if (resolved) return resolved;
+
+    const key = topicDetailKey(id, container);
+    const inFlight = this.#topicDetailFetches.get(key);
+    if (inFlight) return inFlight;
+
+    // Wrapped rather than `.catch()`-chained so a *synchronous* throw (e.g. a
+    // transport with no lambda client) is contained too: resolving a detail is
+    // an optimisation, never a reason to fail the send that asked for it.
+    const request = (async (): Promise<ChatTopic | undefined> => {
+      try {
+        const topic = await topicService.getTopicDetail(id);
+        if (!topic) return undefined;
+        this.#set(
+          { topicDetailMap: { ...this.#get().topicDetailMap, [key]: topic } },
+          false,
+          n('internal_ensureTopicDetail', { id }),
+        );
+        return topic;
+      } catch (error) {
+        console.error('[topic] failed to resolve topic detail:', error);
+        return undefined;
+      } finally {
+        this.#topicDetailFetches.delete(key);
+      }
+    })();
+
+    this.#topicDetailFetches.set(key, request);
+    return request;
+  };
+
+  /** Patch a row already held in the by-id cache. No-op when nothing is cached. */
+  internal_updateTopicDetail = (id: string, scope: TopicScope, patch: Partial<ChatTopic>): void => {
+    const key = topicDetailKey(id, scope);
+    const existing = this.#get().topicDetailMap[key];
+    if (!existing) return;
+
+    this.#set(
+      { topicDetailMap: { ...this.#get().topicDetailMap, [key]: { ...existing, ...patch } } },
+      false,
+      n('internal_updateTopicDetail', { id }),
+    );
   };
 
   updateTopicTitle = async (id: string, title: string): Promise<void> => {
@@ -1331,6 +1510,16 @@ export class ChatTopicActionImpl {
 
     if (activeAgentId) {
       this.#get().markTopicRead({ agentId: activeAgentId, topicId: id ?? null });
+    }
+
+    // Search results and deep links land on topics outside the paginated
+    // bucket. Resolve the authoritative row so topic-level policy (approval
+    // mode) is correct before the user can send anything.
+    if (id) {
+      void this.#get().internal_ensureTopicDetail(id, {
+        agentId: activeAgentId,
+        groupId: activeGroupId,
+      });
     }
 
     if (opts.skipRefreshMessage) return;

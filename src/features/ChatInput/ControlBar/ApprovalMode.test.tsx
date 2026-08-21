@@ -64,10 +64,13 @@ const initialChatStoreState = useChatStore.getState();
 const TOPIC_ID = 'topic-1';
 const AGENT_ID = 'agent-1';
 
+const ensureTopicDetail = vi.fn().mockResolvedValue(undefined);
+
 const setActiveTopic = (approvalMode?: string, topicId: string = TOPIC_ID) => {
   useChatStore.setState({
     activeAgentId: AGENT_ID,
     activeTopicId: topicId,
+    internal_ensureTopicDetail: ensureTopicDetail,
     topicDataMap: {
       [`agent_${AGENT_ID}`]: {
         items: [
@@ -79,10 +82,12 @@ const setActiveTopic = (approvalMode?: string, topicId: string = TOPIC_ID) => {
         ],
       },
     },
+    topicDetailMap: {},
   } as any);
 };
 
 afterEach(() => {
+  ensureTopicDetail.mockClear();
   useUserStore.setState(initialUserStoreState, true);
   useChatStore.setState(initialChatStoreState, true);
   platformMeta.current = { enabled: false, hidden: false, locked: false, status: 'disabled' };
@@ -232,5 +237,49 @@ describe('ApprovalMode write target', () => {
 
     expect(updateTopicApprovalMode).not.toHaveBeenCalled();
     expect(updateHumanIntervention).toHaveBeenCalledWith({ approvalMode: 'auto-run' });
+  });
+});
+
+describe('ApprovalMode topics outside the paginated page', () => {
+  it('displays the stored mode of a topic that is only in the by-id detail cache', () => {
+    useUserStore.setState({
+      settings: { tool: { humanIntervention: { approvalMode: 'auto-run' } } },
+      updateHumanIntervention: vi.fn(),
+    });
+    useChatStore.setState({
+      activeAgentId: AGENT_ID,
+      activeTopicId: 'topic-old',
+      internal_ensureTopicDetail: ensureTopicDetail,
+      topicDataMap: {},
+      topicDetailMap: {
+        [`agent_${AGENT_ID}::topic-old`]: {
+          id: 'topic-old',
+          metadata: { approvalMode: 'manual' },
+          title: 'Found via search',
+        },
+      },
+    } as any);
+
+    render(<ModeSelector />);
+
+    expect(screen.getByRole('button', { name: 'tool.intervention.mode.manual' })).toBeEnabled();
+  });
+
+  it('asks the store to resolve the authoritative row for the active topic', () => {
+    useUserStore.setState({
+      settings: { tool: { humanIntervention: { approvalMode: 'manual' } } },
+      updateHumanIntervention: vi.fn(),
+    });
+    useChatStore.setState({
+      activeAgentId: AGENT_ID,
+      activeTopicId: 'topic-old',
+      internal_ensureTopicDetail: ensureTopicDetail,
+      topicDataMap: {},
+      topicDetailMap: {},
+    } as any);
+
+    render(<ModeSelector />);
+
+    expect(ensureTopicDetail).toHaveBeenCalledWith('topic-old');
   });
 });

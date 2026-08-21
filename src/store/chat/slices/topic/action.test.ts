@@ -9,6 +9,7 @@ import { chatService } from '@/services/chat';
 import { messageService } from '@/services/message';
 import { topicService } from '@/services/topic';
 import { useAgentStore } from '@/store/agent';
+import { topicSelectors } from '@/store/chat/selectors';
 import { PortalViewType } from '@/store/chat/slices/portal/initialState';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 import { topicMapKey } from '@/store/chat/utils/topicMapKey';
@@ -36,6 +37,7 @@ vi.mock('@/services/topic', () => ({
     removeTopic: vi.fn(),
     cloneTopic: vi.fn(),
     createTopic: vi.fn(),
+    getTopicDetail: vi.fn(),
     updateTopicFavorite: vi.fn(),
     updateTopicMetadata: vi.fn(),
     updateTopicTitle: vi.fn(),
@@ -839,12 +841,18 @@ describe('topic action', () => {
     });
   });
   describe('updateTopicApprovalMode', () => {
-    const seedTopic = (agentId: string, topic: Partial<ChatTopic> & { id: string }) => {
+    const seedTopic = (
+      agentId: string,
+      topic: Partial<ChatTopic> & { id: string },
+      groupId?: string,
+    ) => {
       act(() => {
         useChatStore.setState({
           activeAgentId: agentId,
+          activeGroupId: groupId,
           topicDataMap: {
-            [topicMapKey({ agentId })]: {
+            ...useChatStore.getState().topicDataMap,
+            [topicMapKey({ agentId, groupId })]: {
               currentPage: 0,
               hasMore: false,
               items: [topic as ChatTopic],
@@ -856,22 +864,35 @@ describe('topic action', () => {
       });
     };
 
+    const deferred = () => {
+      let resolve!: (value: any) => void;
+      let reject!: (reason?: any) => void;
+      const promise = new Promise<any>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, reject, resolve };
+    };
+
+    const metadataOf = (agentId: string, id: string, groupId?: string) =>
+      useChatStore
+        .getState()
+        .topicDataMap[topicMapKey({ agentId, groupId })]?.items.find((t) => t.id === id)?.metadata;
+
     it('optimistically merges the mode into the topic metadata and persists only that key', async () => {
       const agentId = 'agent-1';
-      const key = topicMapKey({ agentId });
       seedTopic(agentId, {
         id: 'topic-1',
         metadata: { workingDirectory: '/tmp/repo' },
         title: 'T',
       });
 
-      let resolveUpdate: (value: any) => void = () => {};
+      const first = deferred();
       const updateSpy = vi
         .spyOn(topicService, 'updateTopicMetadata')
-        .mockImplementation(() => new Promise((resolve) => (resolveUpdate = resolve)));
+        .mockImplementation(() => first.promise);
 
       const { result } = renderHook(() => useChatStore());
-      const refreshTopicSpy = vi.spyOn(result.current, 'refreshTopic').mockResolvedValue(undefined);
 
       let pending!: Promise<void>;
       act(() => {
@@ -879,33 +900,58 @@ describe('topic action', () => {
       });
 
       // Optimistic: visible before the mutation settles, siblings preserved.
-      expect(useChatStore.getState().topicDataMap[key].items[0].metadata).toMatchObject({
+      expect(metadataOf(agentId, 'topic-1')).toEqual({
         approvalMode: 'auto-run',
         workingDirectory: '/tmp/repo',
       });
 
       await act(async () => {
-        resolveUpdate([]);
+        first.resolve([]);
         await pending;
       });
 
+      expect(updateSpy).toHaveBeenCalledTimes(1);
       expect(updateSpy).toHaveBeenCalledWith('topic-1', { approvalMode: 'auto-run' });
-      expect(refreshTopicSpy).toHaveBeenCalled();
+      // Revalidates the captured topic-list scope.
+      expect(mutate).toHaveBeenCalled();
     });
 
-    it('reverts the optimistic metadata when the mutation fails', async () => {
+    it('also writes the by-id detail cache so a search-opened topic stays consistent', async () => {
       const agentId = 'agent-1';
-      const key = topicMapKey({ agentId });
+      const detailKey = `${topicMapKey({ agentId })}::topic-9`;
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: agentId,
+          topicDataMap: {},
+          topicDetailMap: {
+            [detailKey]: { id: 'topic-9', metadata: { workingDirectory: '/x' }, title: 'T' } as any,
+          },
+        });
+      });
+      vi.spyOn(topicService, 'updateTopicMetadata').mockResolvedValue([] as any);
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        await result.current.updateTopicApprovalMode('topic-9', 'allow-list');
+      });
+
+      expect(useChatStore.getState().topicDetailMap[detailKey].metadata).toEqual({
+        approvalMode: 'allow-list',
+        workingDirectory: '/x',
+      });
+    });
+
+    it('rolls back only approvalMode, merged onto current metadata, when the write fails', async () => {
+      const agentId = 'agent-1';
       seedTopic(agentId, {
         id: 'topic-1',
-        metadata: { approvalMode: 'manual' },
+        metadata: { approvalMode: 'manual', workingDirectory: '/tmp/repo' },
         title: 'T',
       });
 
       vi.spyOn(topicService, 'updateTopicMetadata').mockRejectedValue(new Error('nope'));
 
       const { result } = renderHook(() => useChatStore());
-      const refreshTopicSpy = vi.spyOn(result.current, 'refreshTopic').mockResolvedValue(undefined);
 
       await act(async () => {
         await expect(result.current.updateTopicApprovalMode('topic-1', 'auto-run')).rejects.toThrow(
@@ -913,10 +959,313 @@ describe('topic action', () => {
         );
       });
 
-      expect(useChatStore.getState().topicDataMap[key].items[0].metadata).toEqual({
+      expect(metadataOf(agentId, 'topic-1')).toEqual({
         approvalMode: 'manual',
+        workingDirectory: '/tmp/repo',
       });
-      expect(refreshTopicSpy).not.toHaveBeenCalled();
+    });
+
+    it('removes the key entirely when rolling back a topic that had no stored mode', async () => {
+      const agentId = 'agent-1';
+      seedTopic(agentId, {
+        id: 'topic-1',
+        metadata: { workingDirectory: '/tmp/repo' },
+        title: 'T',
+      });
+
+      vi.spyOn(topicService, 'updateTopicMetadata').mockRejectedValue(new Error('nope'));
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        await expect(result.current.updateTopicApprovalMode('topic-1', 'auto-run')).rejects.toThrow(
+          'nope',
+        );
+      });
+
+      expect(metadataOf(agentId, 'topic-1')).toEqual({ workingDirectory: '/tmp/repo' });
+      expect('approvalMode' in (metadataOf(agentId, 'topic-1') as object)).toBe(false);
+    });
+
+    it('persists the LAST selection when two clicks race (reversed completion)', async () => {
+      const agentId = 'agent-1';
+      seedTopic(agentId, { id: 'topic-1', metadata: { approvalMode: 'manual' }, title: 'T' });
+
+      const first = deferred();
+      const calls: string[] = [];
+      vi.spyOn(topicService, 'updateTopicMetadata').mockImplementation((_id, metadata: any) => {
+        calls.push(metadata.approvalMode);
+        return calls.length === 1 ? first.promise : (Promise.resolve([]) as any);
+      });
+
+      const { result } = renderHook(() => useChatStore());
+
+      let firstWrite!: Promise<void>;
+      let secondWrite!: Promise<void>;
+      await act(async () => {
+        firstWrite = result.current.updateTopicApprovalMode('topic-1', 'auto-run');
+        // let the queued body actually reach the request
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        secondWrite = result.current.updateTopicApprovalMode('topic-1', 'allow-list');
+      });
+
+      await act(async () => {
+        first.resolve([]);
+        await firstWrite;
+        await secondWrite;
+      });
+
+      // Serialized, so the DB ends on the newest selection — never the older one.
+      expect(calls).toEqual(['auto-run', 'allow-list']);
+      expect(metadataOf(agentId, 'topic-1')).toEqual({ approvalMode: 'allow-list' });
+    });
+
+    it('drops a superseded write instead of sending it', async () => {
+      const agentId = 'agent-1';
+      seedTopic(agentId, { id: 'topic-1', metadata: { approvalMode: 'manual' }, title: 'T' });
+
+      const calls: string[] = [];
+      const updateSpy = vi
+        .spyOn(topicService, 'updateTopicMetadata')
+        .mockImplementation((_id, metadata: any) => {
+          calls.push(metadata.approvalMode);
+          return Promise.resolve([]) as any;
+        });
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        // Both clicks land before the first request can leave: only the newest
+        // one is worth sending.
+        const a = result.current.updateTopicApprovalMode('topic-1', 'auto-run');
+        const b = result.current.updateTopicApprovalMode('topic-1', 'allow-list');
+        await Promise.all([a, b]);
+      });
+
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(calls).toEqual(['allow-list']);
+      expect(metadataOf(agentId, 'topic-1')).toEqual({ approvalMode: 'allow-list' });
+    });
+
+    it('an older failing write never rolls back a newer successful one', async () => {
+      const agentId = 'agent-1';
+      seedTopic(agentId, { id: 'topic-1', metadata: { approvalMode: 'manual' }, title: 'T' });
+
+      const first = deferred();
+      let call = 0;
+      vi.spyOn(topicService, 'updateTopicMetadata').mockImplementation(() => {
+        call += 1;
+        return call === 1 ? first.promise : (Promise.resolve([]) as any);
+      });
+
+      const { result } = renderHook(() => useChatStore());
+
+      let firstWrite!: Promise<void>;
+      let secondWrite!: Promise<void>;
+      await act(async () => {
+        firstWrite = result.current.updateTopicApprovalMode('topic-1', 'auto-run');
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        secondWrite = result.current.updateTopicApprovalMode('topic-1', 'allow-list');
+      });
+
+      await act(async () => {
+        first.reject(new Error('older failed'));
+        await expect(firstWrite).rejects.toThrow('older failed');
+        await secondWrite;
+      });
+
+      // The stale generation may not restore `manual` over the newer choice.
+      expect(metadataOf(agentId, 'topic-1')).toEqual({ approvalMode: 'allow-list' });
+    });
+
+    it('rolls back a failed burst to the persisted value, not the previous optimistic one', async () => {
+      const agentId = 'agent-1';
+      seedTopic(agentId, { id: 'topic-1', metadata: { approvalMode: 'manual' }, title: 'T' });
+
+      // Both clicks land before the first request can leave, so `auto-run` is
+      // dropped unsent and `allow-list` is the only write — and it fails.
+      vi.spyOn(topicService, 'updateTopicMetadata').mockRejectedValue(new Error('nope'));
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        const a = result.current.updateTopicApprovalMode('topic-1', 'auto-run');
+        const b = result.current.updateTopicApprovalMode('topic-1', 'allow-list');
+        await Promise.allSettled([a, b]);
+      });
+
+      expect(metadataOf(agentId, 'topic-1')).toEqual({ approvalMode: 'manual' });
+    });
+
+    it('rolls back to the value an earlier write in the burst actually persisted', async () => {
+      const agentId = 'agent-1';
+      seedTopic(agentId, { id: 'topic-1', metadata: { approvalMode: 'manual' }, title: 'T' });
+
+      const first = deferred();
+      let call = 0;
+      vi.spyOn(topicService, 'updateTopicMetadata').mockImplementation(() => {
+        call += 1;
+        return call === 1 ? first.promise : (Promise.reject(new Error('second failed')) as any);
+      });
+
+      const { result } = renderHook(() => useChatStore());
+
+      let firstWrite!: Promise<void>;
+      let secondWrite!: Promise<void>;
+      await act(async () => {
+        firstWrite = result.current.updateTopicApprovalMode('topic-1', 'auto-run');
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        secondWrite = result.current.updateTopicApprovalMode('topic-1', 'allow-list');
+      });
+
+      await act(async () => {
+        first.resolve([]);
+        await firstWrite;
+        await expect(secondWrite).rejects.toThrow('second failed');
+      });
+
+      // `auto-run` really is in the DB — rolling back past it to `manual` would
+      // put the UI out of sync with the server.
+      expect(metadataOf(agentId, 'topic-1')).toEqual({ approvalMode: 'auto-run' });
+    });
+
+    it('rolls back into the bucket captured at click time, not the agent active on failure', async () => {
+      const agentId = 'agent-a';
+      seedTopic(agentId, { id: 'topic-1', metadata: { approvalMode: 'manual' }, title: 'T' });
+      seedTopic('agent-b', { id: 'topic-2', title: 'Other' });
+
+      const first = deferred();
+      vi.spyOn(topicService, 'updateTopicMetadata').mockImplementation(() => first.promise);
+
+      const { result } = renderHook(() => useChatStore());
+
+      let pending!: Promise<void>;
+      act(() => {
+        pending = result.current.updateTopicApprovalMode('topic-1', 'auto-run');
+      });
+
+      // User switches agent while the request is still in flight.
+      act(() => {
+        useChatStore.setState({ activeAgentId: 'agent-b' });
+      });
+
+      await act(async () => {
+        first.reject(new Error('rejected'));
+        await expect(pending).rejects.toThrow('rejected');
+      });
+
+      expect(metadataOf(agentId, 'topic-1')).toEqual({ approvalMode: 'manual' });
+    });
+
+    it('writes into the group bucket when the conversation is a group topic', async () => {
+      const agentId = 'agent-1';
+      const groupId = 'group-1';
+      seedTopic(agentId, { id: 'topic-1', metadata: {}, title: 'T' }, groupId);
+      vi.spyOn(topicService, 'updateTopicMetadata').mockResolvedValue([] as any);
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        await result.current.updateTopicApprovalMode('topic-1', 'auto-run');
+      });
+
+      expect(metadataOf(agentId, 'topic-1', groupId)).toEqual({ approvalMode: 'auto-run' });
+    });
+  });
+
+  describe('internal_ensureTopicDetail', () => {
+    it('resolves from the paginated bucket without a request', async () => {
+      const agentId = 'agent-1';
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: agentId,
+          topicDataMap: {
+            [topicMapKey({ agentId })]: {
+              currentPage: 0,
+              hasMore: false,
+              items: [{ id: 'topic-1', title: 'T' } as ChatTopic],
+              pageSize: 20,
+              total: 1,
+            },
+          },
+          topicDetailMap: {},
+        });
+      });
+      const spy = vi.spyOn(topicService, 'getTopicDetail');
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        await result.current.internal_ensureTopicDetail('topic-1');
+      });
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('fetches a topic that is outside the paginated page and caches it by scope', async () => {
+      const agentId = 'agent-1';
+      act(() => {
+        useChatStore.setState({ activeAgentId: agentId, topicDataMap: {}, topicDetailMap: {} });
+      });
+      const spy = vi
+        .spyOn(topicService, 'getTopicDetail')
+        .mockResolvedValue({ id: 'topic-9', metadata: { approvalMode: 'manual' } } as any);
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        await result.current.internal_ensureTopicDetail('topic-9');
+      });
+
+      expect(spy).toHaveBeenCalledWith('topic-9');
+      expect(
+        useChatStore.getState().topicDetailMap[`${topicMapKey({ agentId })}::topic-9`],
+      ).toMatchObject({ id: 'topic-9' });
+      expect(topicSelectors.getTopicApprovalMode('topic-9')(useChatStore.getState())).toBe(
+        'manual',
+      );
+    });
+
+    it('shares one request between concurrent resolvers', async () => {
+      act(() => {
+        useChatStore.setState({ activeAgentId: 'agent-1', topicDataMap: {}, topicDetailMap: {} });
+      });
+      const spy = vi
+        .spyOn(topicService, 'getTopicDetail')
+        .mockResolvedValue({ id: 'topic-9' } as any);
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        await Promise.all([
+          result.current.internal_ensureTopicDetail('topic-9'),
+          result.current.internal_ensureTopicDetail('topic-9'),
+        ]);
+      });
+
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('never asks the server about a client-only optimistic placeholder', async () => {
+      const spy = vi.spyOn(topicService, 'getTopicDetail');
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        await result.current.internal_ensureTopicDetail('tmp_topic_abc');
+      });
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('survives a failing request instead of rejecting the caller', async () => {
+      act(() => {
+        useChatStore.setState({ activeAgentId: 'agent-1', topicDataMap: {}, topicDetailMap: {} });
+      });
+      vi.spyOn(topicService, 'getTopicDetail').mockRejectedValue(new Error('offline'));
+
+      const { result } = renderHook(() => useChatStore());
+      await act(async () => {
+        await expect(result.current.internal_ensureTopicDetail('topic-9')).resolves.toBeUndefined();
+      });
     });
   });
 
