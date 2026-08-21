@@ -421,7 +421,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         fPath: boolean,
         token: string | undefined,
       ) => {
-        let resolveHeaders = () => undefined;
+        let resolveHeaders: () => void = () => {};
         const headersPromise = new Promise<void>((resolve) => {
           resolveHeaders = resolve;
         });

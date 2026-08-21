@@ -47,6 +47,7 @@ const toPublishedProvider = (
     ? (payload.provider as RevisionProviderPayload)
     : null;
   if (!provider?.enabled || !provider.providerKey || !provider.displayName) return null;
+  const providerKey = provider.providerKey;
   const rawModels = Array.isArray(payload.models) ? payload.models : [];
   const models = rawModels
     .filter(isRecord)
@@ -56,7 +57,7 @@ const toPublishedProvider = (
       const policy = applyChatGPTWebModelPolicy({
         abilities: model.abilities,
         modelId: model.modelKey,
-        providerId: provider.providerKey,
+        providerId: providerKey,
         settings: model.settings,
       });
       if (isLegacyAliasModel(policy.settings)) return [];
@@ -73,10 +74,10 @@ const toPublishedProvider = (
           contextWindowTokens: model.contextWindowTokens ?? null,
           description: model.description ?? null,
           displayName: model.displayName ?? null,
-          modelKey: model.modelKey,
+          modelKey: model.modelKey!,
           parameters: model.parameters ?? {},
           pricing: model.pricing ?? null,
-          settings: policy.settings ?? {},
+          settings: (policy.settings ?? {}) as Record<string, unknown>,
           sort: model.sort ?? 0,
           type: type.data,
         },

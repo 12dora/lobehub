@@ -785,8 +785,12 @@ describe('LobeChatGPTWebAI', () => {
           }),
       );
       let conversationCalls = 0;
+      // Serialise at call time: reference identity alone would not catch a
+      // mutation between the first send and the retry.
+      const serializedBodies: string[] = [];
       const streamConversation = vi.fn(async function* (_body: object, options: any = {}) {
         conversationCalls += 1;
+        serializedBodies.push(JSON.stringify(_body));
         if (conversationCalls === 1) {
           throw new ChatGPTWebError('upstream', 'conversation failed: missing conduit', {
             status: 400,
@@ -815,6 +819,8 @@ describe('LobeChatGPTWebAI', () => {
       // Conduit token is a header, not a body field — the retry must POST the
       // exact same message ids / create_time as the first send.
       expect(bodyOf(client, 1)).toBe(bodyOf(client, 0));
+      expect(serializedBodies).toHaveLength(2);
+      expect(serializedBodies[1]).toBe(serializedBodies[0]);
     });
 
     it('retries once without a token when prepare fulfilled with a null conduit token', async () => {
@@ -826,8 +832,12 @@ describe('LobeChatGPTWebAI', () => {
           }),
       );
       let conversationCalls = 0;
+      // Serialise at call time: reference identity alone would not catch a
+      // mutation between the first send and the retry.
+      const serializedBodies: string[] = [];
       const streamConversation = vi.fn(async function* (_body: object, options: any = {}) {
         conversationCalls += 1;
+        serializedBodies.push(JSON.stringify(_body));
         if (conversationCalls === 1) {
           throw new ChatGPTWebError('upstream', 'conversation failed: status=409', {
             status: 409,
@@ -854,6 +864,8 @@ describe('LobeChatGPTWebAI', () => {
         useFPath: true,
       });
       expect(bodyOf(client, 1)).toBe(bodyOf(client, 0));
+      expect(serializedBodies).toHaveLength(2);
+      expect(serializedBodies[1]).toBe(serializedBodies[0]);
     });
 
     it('falls back to the plain path once when a missing-conduit 4xx meets a failed prepare', async () => {
