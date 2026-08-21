@@ -21,6 +21,7 @@ import {
 } from '../Contexts/message-action-context';
 import InterruptedHint from './components/InterruptedHint';
 import MessageContent from './components/MessageContent';
+import TruncationNotice from './components/TruncationNotice';
 import { AssistantMessageExtra } from './Extra';
 import ModerationNotice from './Extra/ModerationNotice';
 
@@ -124,6 +125,7 @@ const AssistantMessage = memo<AssistantMessageProps>(
         messageExtra={
           <>
             {interrupted && <InterruptedHint />}
+            <TruncationNotice finishReason={metadata?.finishReason} />
             <AssistantMessageExtra
               content={content}
               extra={extra}

@@ -640,6 +640,34 @@ describe('fetchSSE', () => {
     });
   });
 
+  it('forwards a length stop reason as finishReason while leaving finishedType as done', async () => {
+    const mockOnFinish = vi.fn();
+    const mockOnMessageHandle = vi.fn();
+
+    (fetchEventSource as any).mockImplementationOnce(
+      (url: string, options: FetchEventSourceInit) => {
+        options.onopen!({ clone: () => ({ ok: true, headers: new Headers() }) } as any);
+        options.onmessage!({ event: 'text', data: JSON.stringify('Partial answer') } as any);
+        options.onmessage!({ event: 'stop', data: JSON.stringify('length') } as any);
+      },
+    );
+
+    await fetchSSE('/', {
+      onFinish: mockOnFinish,
+      onMessageHandle: mockOnMessageHandle,
+      responseAnimation: 'fadeIn',
+    });
+
+    expect(mockOnMessageHandle).toHaveBeenCalledWith({ reason: 'length', type: 'stop' });
+    expect(mockOnFinish).toHaveBeenCalledWith('Partial answer', {
+      finishReason: 'length',
+      observationId: null,
+      toolCalls: undefined,
+      traceId: null,
+      type: 'done',
+    });
+  });
+
   describe('onAbort', () => {
     it('should call onAbort when AbortError is thrown', async () => {
       const mockOnAbort = vi.fn();

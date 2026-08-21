@@ -385,6 +385,8 @@ export default {
   'messageAction.delAndRegenerate': 'Delete and Regenerate',
   'messageAction.interrupted': 'Interrupted',
   'messageAction.interruptedHint': 'What should I do instead?',
+  'messageAction.truncated': 'Truncated',
+  'messageAction.truncatedHint': 'This reply was cut off at the model’s length limit.',
   'messageAction.deleteDisabledByThreads': 'This message has a subtopic and can’t be deleted',
   'messageAction.expand': 'Expand Message',
   'messageAction.reaction': 'Add Reaction',

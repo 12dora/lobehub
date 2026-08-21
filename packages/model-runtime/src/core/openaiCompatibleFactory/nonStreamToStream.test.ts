@@ -788,5 +788,53 @@ describe('nonStreamToStream', () => {
         },
       ]);
     });
+
+    it('emits function_call output items as output_item.added before response.completed', async () => {
+      const functionCall = {
+        arguments: '{"city":"Tokyo"}',
+        call_id: 'call_ns_weather',
+        id: 'fc_ns_weather',
+        name: 'get_weather',
+        status: 'completed',
+        type: 'function_call',
+      };
+      const mockResponse = {
+        created_at: 1_755_000_000,
+        id: 'resp_ns_fn',
+        model: 'gpt-4o',
+        object: 'response',
+        output: [functionCall],
+        status: 'completed',
+        usage: {
+          input_tokens: 8,
+          output_tokens: 4,
+          total_tokens: 12,
+        },
+      } as unknown as OpenAI.Responses.Response;
+
+      const stream = transformResponseAPIToStream(mockResponse);
+      const events = [];
+      const reader = stream.getReader();
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        events.push(value);
+      }
+
+      expect(events).toEqual([
+        {
+          item: functionCall,
+          output_index: 0,
+          sequence_number: 0,
+          type: 'response.output_item.added',
+        },
+        {
+          response: mockResponse,
+          sequence_number: 999,
+          type: 'response.completed',
+        },
+      ]);
+    });
   });
 });

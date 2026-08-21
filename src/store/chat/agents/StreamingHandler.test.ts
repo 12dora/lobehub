@@ -688,6 +688,19 @@ describe('StreamingHandler', () => {
       expect(result.metadata.usage?.totalTokens).toBe(100);
     });
 
+    it('persists a length finishReason from onFinish onto message metadata', async () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk({ type: 'text', text: 'Partial answer' });
+      handler.handleChunk({ type: 'stop', reason: 'length' });
+
+      const result = await handler.handleFinish({ finishReason: 'length', type: 'done' });
+
+      expect(result.metadata.finishReason).toBe('length');
+      expect(result.metadata.finishType).toBe('done');
+    });
+
     it('should wait for image uploads', async () => {
       const callbacks = createMockCallbacks();
       callbacks.uploadBase64Image = vi.fn(

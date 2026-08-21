@@ -109,6 +109,7 @@ export class StreamingHandler {
 
   // ========== Other state ==========
   private msgTraceId?: string;
+  private finishReason?: string;
   private finishType?: string;
 
   // ========== Throttled updates ==========
@@ -169,7 +170,7 @@ export class StreamingHandler {
         break;
       }
       case 'stop': {
-        this.handleStopChunk();
+        this.handleStopChunk(chunk);
         break;
       }
       case 'usage': {
@@ -466,7 +467,10 @@ export class StreamingHandler {
     this.callbacks.onFilesUpdate?.(this.files);
   }
 
-  private handleStopChunk(): void {
+  private handleStopChunk(chunk: { reason?: string; type: 'stop' }): void {
+    if (typeof chunk.reason === 'string' && chunk.reason && !this.finishReason) {
+      this.finishReason = chunk.reason;
+    }
     this.endReasoningIfNeeded();
   }
 
@@ -737,11 +741,14 @@ export class StreamingHandler {
     }
 
     this.finishType = finishData.type;
+    const finishReason = finishData.finishReason || this.finishReason;
+    if (finishReason) this.finishReason = finishReason;
 
     log(
-      '[handleFinish] messageId=%s, finishType=%s, operationId=%s',
+      '[handleFinish] messageId=%s, finishType=%s, finishReason=%s, operationId=%s',
       this.context.messageId,
       finishData.type,
+      finishReason,
       this.context.operationId,
     );
 
@@ -751,6 +758,7 @@ export class StreamingHandler {
       isFunctionCall: this.isFunctionCall,
       metadata: {
         fileList: finalFiles.length > 0 ? finalFiles : undefined,
+        ...(finishReason && { finishReason }),
         finishType: finishData.type,
         imageList: finalImages.length > 0 ? finalImages : undefined,
         isMultimodal: hasContentImages || undefined,

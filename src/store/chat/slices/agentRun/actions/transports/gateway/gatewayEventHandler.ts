@@ -734,18 +734,26 @@ export const createGatewayEventHandler = (
         enqueue(() => {
           const data = toRecord(event.data);
           const finalContent = pickNonEmptyString(data?.finalContent);
-          if (finalContent !== undefined) {
+          const finishReason = pickNonEmptyString(data?.finishReason);
+          if (finalContent !== undefined || finishReason !== undefined) {
             // Example: reasoning-only answers stream as reasoning chunks, then
             // the server promotes that text into stream_end.finalContent. Apply
             // it before ending reasoning so visible_output_end cannot leave an
             // empty completed assistant bubble while waiting for terminal SoT.
-            accumulatedContent = finalContent;
-            hasStreamedContent = true;
+            // `finishReason` (e.g. `length`) is applied here so the truncation
+            // notice is visible before the terminal SoT snapshot lands.
+            if (finalContent !== undefined) {
+              accumulatedContent = finalContent;
+              hasStreamedContent = true;
+            }
             get().internal_dispatchMessage(
               {
                 id: currentAssistantMessageId,
                 type: 'updateMessage',
-                value: { content: accumulatedContent },
+                value: {
+                  ...(finalContent !== undefined && { content: accumulatedContent }),
+                  ...(finishReason !== undefined && { metadata: { finishReason } }),
+                },
               },
               dispatchContext,
             );

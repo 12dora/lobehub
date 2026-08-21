@@ -136,6 +136,19 @@ export const transformResponseAPIToStream = (data: OpenAI.Responses.Response) =>
               }
               break;
             }
+            case 'function_call': {
+              // Non-streaming Responses put the complete tool call on `output`.
+              // Emit the same item-added event the streaming path observes so
+              // `hasFunctionCall` is set and the call is dispatched before
+              // `response.completed` (which would otherwise finish as `stop`).
+              controller.enqueue({
+                item: output,
+                output_index: outputIndex,
+                sequence_number: outputIndex,
+                type: 'response.output_item.added',
+              } as OpenAI.Responses.ResponseOutputItemAddedEvent);
+              break;
+            }
           }
         });
       }

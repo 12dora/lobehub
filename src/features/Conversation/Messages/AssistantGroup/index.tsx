@@ -38,6 +38,7 @@ import {
   useConversationStore,
 } from '../../store';
 import InterruptedHint from '../Assistant/components/InterruptedHint';
+import TruncationNotice from '../Assistant/components/TruncationNotice';
 import ModerationNotice from '../Assistant/Extra/ModerationNotice';
 import Usage from '../components/Extras/Usage';
 import MessageBranch from '../components/MessageBranch';
@@ -120,6 +121,14 @@ const GroupMessage = memo<GroupMessageProps>(
       const finalBlock = children.at(-1) as AssistantContentBlock | undefined;
 
       return finalBlock?.metadata?.moderation as MessageModerationMetadata | undefined;
+    }, [children, metadata]);
+
+    const finishReason = useMemo(() => {
+      if (!children?.length) return metadata?.finishReason;
+
+      const finalBlock = children.at(-1) as AssistantContentBlock | undefined;
+
+      return finalBlock?.metadata?.finishReason ?? metadata?.finishReason;
     }, [children, metadata]);
 
     const isInbox = useAgentStore(builtinAgentSelectors.isInboxAgent);
@@ -279,6 +288,7 @@ const GroupMessage = memo<GroupMessageProps>(
           </div>
         )}
         {interrupted && <InterruptedHint />}
+        <TruncationNotice finishReason={finishReason} />
         {isDevMode && model && (
           <Usage model={model} performance={performance} provider={provider!} usage={usage} />
         )}

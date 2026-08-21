@@ -29,6 +29,12 @@ type SSEFinishType = 'done' | 'error' | 'abort' | string;
 export type OnFinishHandler = (
   text: string,
   context: {
+    /**
+     * Provider terminal finish reason from the `stop` SSE chunk
+     * (`stop` / `length` / `tool_calls` / `content_filter` / …). Distinct from
+     * `type`, which is the SSE transport outcome (`done` / `error` / `abort`).
+     */
+    finishReason?: string;
     grounding?: GroundingSearch;
     images?: ChatImageChunk[];
     /** 内容审计 downgrade notice, decoded from the `x-lobe-moderation-*` response headers. */
@@ -338,6 +344,7 @@ export const fetchSSE = async (url: string, options: RequestInit & FetchSSEOptio
   let triggerOnMessageHandler = false;
 
   let finishedType: SSEFinishType = 'done';
+  let finishReason: string | undefined;
   let response!: Response;
   const fetchStartTime = Date.now();
 
@@ -566,6 +573,9 @@ export const fetchSSE = async (url: string, options: RequestInit & FetchSSEOptio
         }
 
         case 'stop': {
+          if (typeof data === 'string' && data && !finishReason) {
+            finishReason = data;
+          }
           options.onMessageHandle?.({ reason: data, type: 'stop' });
           break;
         }
@@ -705,6 +715,7 @@ export const fetchSSE = async (url: string, options: RequestInit & FetchSSEOptio
         toolCalls,
         traceId,
         type: finishedType,
+        ...(finishReason && { finishReason }),
         usage,
       });
     }

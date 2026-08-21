@@ -137,6 +137,56 @@ describe('GatewayStreamNotifier', () => {
       expect(inner.calls.publishStreamChunk).toHaveLength(1);
       expect(inner.calls.publishStreamChunk[0]).toEqual(['op-1', 0, chunkData]);
     });
+
+    it('does not start a later Gateway HTTP push until the previous one for the same operation delivers', async () => {
+      const started: string[] = [];
+      const delivered: string[] = [];
+      let releaseFirst!: () => void;
+
+      mockFetch.mockReset();
+      mockFetch.mockImplementation((_url, init) => {
+        const body = JSON.parse((init as { body: string }).body);
+        const chunkType = body.event?.data?.chunkType as string;
+        started.push(chunkType);
+        if (chunkType === 'reasoning') {
+          return new Promise((resolve) => {
+            releaseFirst = () => {
+              delivered.push(chunkType);
+              resolve({ ok: true, text: () => Promise.resolve('') });
+            };
+          });
+        }
+        delivered.push(chunkType);
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('') });
+      });
+
+      try {
+        await notifier.publishStreamChunk('op-1', 0, {
+          chunkType: 'reasoning',
+          reasoning: 'think',
+        });
+        const second = notifier.publishStreamChunk('op-1', 0, {
+          chunkType: 'text',
+          content: 'answer',
+        });
+
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(started).toEqual(['reasoning']);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+
+        releaseFirst();
+        await second;
+        await new Promise((r) => setTimeout(r, 0));
+
+        expect(started).toEqual(['reasoning', 'text']);
+        expect(delivered).toEqual(['reasoning', 'text']);
+      } finally {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValue({ ok: true, text: () => Promise.resolve('') });
+      }
+    });
   });
 
   describe('publishAgentRuntimeInit', () => {

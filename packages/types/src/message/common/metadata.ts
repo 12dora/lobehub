@@ -203,6 +203,10 @@ export type MessageModerationMetadata = z.infer<typeof MessageModerationMetadata
 export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSchema).extend({
   collapsed: z.boolean().optional(),
   contextSelections: z.array(ContextSelectionSchema).optional(),
+  // Provider terminal finish reason (`stop` / `length` / `tool_calls` / …).
+  // Listed so zod does not strip it from writes going through UpdateMessageParamsSchema.
+  finishReason: z.string().optional(),
+  finishType: z.string().optional(),
   // Hetero-agent (Claude Code) per-message provenance. Listed here so zod does
   // NOT strip them from writes going through UpdateMessageParamsSchema /
   // CreateMessageParamsSchema (the renderer executor's `messageService` path).
@@ -295,6 +299,13 @@ export interface MessageMetadata {
   cost?: number;
   /** @deprecated use `metadata.performance` instead */
   duration?: number;
+  /**
+   * Provider terminal finish reason (`stop` / `length` / `tool_calls` /
+   * `content_filter` / …). Distinct from `finishType`, which is the SSE
+   * transport outcome (`done` / `error` / `abort`). `length` is surfaced as
+   * a truncation notice in the assistant extra.
+   */
+  finishReason?: string;
   finishType?: string;
   /**
    * The CC-native `message.id` of the hetero-agent (Claude Code) turn that

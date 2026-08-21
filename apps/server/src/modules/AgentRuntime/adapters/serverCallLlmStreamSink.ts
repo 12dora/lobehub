@@ -44,6 +44,11 @@ export class ServerCallLlmStreamSink {
   private readonly operationId: string;
   private readonly operationLogId: string;
   /**
+   * Once cancelAndDrain has run, leftover buffers must not start new publishes
+   * that could land after a retry/error/abort terminal event.
+   */
+  private cancelled = false;
+  /**
    * Serialises `publishStreamChunk` so a timer-triggered reasoning flush cannot
    * complete after (or during) a text publish.
    */
@@ -137,6 +142,21 @@ export class ServerCallLlmStreamSink {
     );
   }
 
+  /**
+   * Cancel outstanding timers, drop unflushed buffers, and await every publish
+   * already started or queued. Call this before publishing retry/error/abort so
+   * a late chunk cannot land after (or during) the next attempt.
+   */
+  async cancelAndDrain() {
+    this.cancelled = true;
+    this.reasoningPhaseEnded = true;
+    this.cancelBufferTimers();
+    this.textBuffer = '';
+    this.reasoningBuffer = '';
+
+    await Promise.allSettled(this.pendingPublishes());
+  }
+
   clearBuffers() {
     this.cancelBufferTimers();
     this.textBuffer = '';
@@ -150,14 +170,30 @@ export class ServerCallLlmStreamSink {
   /**
    * End-of-stream flush: leftover reasoning first, then leftover text.
    * Cancel outstanding timers and await any flush they already started so a
-   * 300 ms reasoning timer cannot publish after text.
+   * 300 ms reasoning timer cannot publish after text. Later queued publishes
+   * still drain if an earlier leftover flush rejects, then the first failure
+   * is rethrown.
    */
   async flushEndOfStream() {
     this.cancelBufferTimers();
-    if (this.reasoningTimerFlush) await this.reasoningTimerFlush;
-    if (this.textTimerFlush) await this.textTimerFlush;
-    await this.flushReasoningBuffer();
-    await this.flushTextBuffer();
+    await Promise.allSettled(this.pendingPublishes());
+
+    // Sequential leftover flush keeps reasoning-before-text. Catch so a failed
+    // reasoning publish cannot skip leftover text; rethrow the first failure
+    // after both have drained.
+    let firstError: unknown;
+    try {
+      await this.flushReasoningBuffer();
+    } catch (error) {
+      firstError = error;
+    }
+    try {
+      await this.flushTextBuffer();
+    } catch (error) {
+      firstError ??= error;
+    }
+    await Promise.allSettled([this.publishQueue]);
+    if (firstError) throw firstError;
   }
 
   async flushReasoningBuffer() {
@@ -255,8 +291,14 @@ export class ServerCallLlmStreamSink {
     return run;
   }
 
+  private pendingPublishes(): Promise<void>[] {
+    return [this.reasoningTimerFlush, this.textTimerFlush, this.publishQueue].filter(
+      (pending): pending is Promise<void> => pending != null,
+    );
+  }
+
   private queueReasoning(reasoning: string) {
-    if (this.reasoningPhaseEnded) return;
+    if (this.cancelled || this.reasoningPhaseEnded) return;
 
     this.reasoningBuffer += reasoning;
 
@@ -269,6 +311,8 @@ export class ServerCallLlmStreamSink {
   }
 
   private queueText(text: string) {
+    if (this.cancelled) return;
+
     this.textBuffer += text;
 
     if (!this.textBufferTimer) {

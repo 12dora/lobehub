@@ -541,6 +541,7 @@ export const createAgentExecutors = (context: {
             usage,
             speed,
             type,
+            finishReason,
           },
         ) => {
           void _content;
@@ -562,6 +563,7 @@ export const createAgentExecutors = (context: {
             usage,
             speed,
             type,
+            finishReason,
           });
 
           finalUsage = result.usage;
@@ -619,6 +621,7 @@ export const createAgentExecutors = (context: {
                 performance: result.metadata.performance,
                 usage: result.metadata.usage,
                 finishType: result.metadata.finishType,
+                ...(result.metadata.finishReason && { finishReason: result.metadata.finishReason }),
                 ...(result.metadata.isMultimodal && { isMultimodal: true }),
                 // 内容审计 downgrade: persist the notice with the message so it survives a reload.
                 ...(moderation && { moderation }),

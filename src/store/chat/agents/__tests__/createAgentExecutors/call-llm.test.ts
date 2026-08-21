@@ -70,11 +70,12 @@ vi.mock('@/store/agent/store', () => ({
  */
 const mockStreamResponse = (response: {
   content?: string;
+  finishReason?: string;
   finishType?: string;
   tool_calls?: MessageToolCall[];
   usage?: any;
 }) => {
-  const { content = '', finishType = 'stop', tool_calls, usage } = response;
+  const { content = '', finishReason, finishType = 'stop', tool_calls, usage } = response;
 
   vi.mocked(chatService.createAssistantMessageStream).mockImplementation(async (params: any) => {
     // Simulate text streaming
@@ -94,6 +95,7 @@ const mockStreamResponse = (response: {
     // Simulate finish
     if (params.onFinish) {
       await params.onFinish(content, {
+        ...(finishReason && { finishReason }),
         toolCalls: tool_calls,
         type: finishType,
         usage,
@@ -141,6 +143,37 @@ describe('call_llm executor', () => {
         expect.objectContaining({
           operationId: expect.any(String),
         }),
+      );
+    });
+
+    it('persists a length finishReason onto assistant message metadata', async () => {
+      const mockStore = createMockStore();
+      const context = createTestContext({ agentId: 'test-session', topicId: 'test-topic' });
+      const instruction = createCallLLMInstruction({
+        model: 'gpt-4',
+        provider: 'openai',
+        messages: [createUserMessage()],
+      });
+      const state = createInitialState({ operationId: 'test-session' });
+
+      mockStreamResponse({ content: 'Partial answer', finishReason: 'length', finishType: 'done' });
+      mockStore.dbMessagesMap[context.messageKey] = [];
+
+      await executeWithMockContext({
+        executor: 'call_llm',
+        instruction,
+        state,
+        mockStore,
+        context,
+      });
+
+      expect(mockStore.optimisticUpdateMessageContent).toHaveBeenCalledWith(
+        expect.any(String),
+        'Partial answer',
+        expect.objectContaining({
+          metadata: expect.objectContaining({ finishReason: 'length' }),
+        }),
+        expect.anything(),
       );
     });
 

@@ -22,4 +22,13 @@ describe('MessageMetadataSchema', () => {
 
     expect(parsed).toEqual({ heteroMessageId: 'cc-1', heteroSessionId: 'sess-A' });
   });
+
+  it('preserves provider finishReason so a length truncation notice survives writes', () => {
+    const parsed = MessageMetadataSchema.parse({
+      finishReason: 'length',
+      unknown: 'stripped',
+    });
+
+    expect(parsed).toEqual({ finishReason: 'length' });
+  });
 });

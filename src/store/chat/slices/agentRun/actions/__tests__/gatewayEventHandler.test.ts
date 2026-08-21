@@ -499,6 +499,24 @@ describe('createGatewayEventHandler', () => {
       expect(store.internal_updateTopicLoading).not.toHaveBeenCalledWith('topic-1', false);
     });
 
+    it('applies a length finishReason onto message metadata so the truncation notice can render', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'text', content: 'partial answer' }));
+      handler(makeEvent('stream_end', { finishReason: 'length' }));
+      await flush();
+
+      expect(store.internal_dispatchMessage).toHaveBeenCalledWith(
+        {
+          id: 'msg-initial',
+          type: 'updateMessage',
+          value: { metadata: { finishReason: 'length' } },
+        },
+        { operationId: 'op-1' },
+      );
+    });
+
     it('applies finalContent before ending a reasoning-only stream', async () => {
       const store = createMockStore();
       const handler = createHandler(store);

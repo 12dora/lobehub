@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AgentRuntimeErrorType } from '../../../types/error';
 import type { SignatureScope } from '../../../utils/signatureScope';
 import { serializeScopedSignature } from '../../../utils/signatureScope';
+import { transformResponseAPIToStream } from '../../openaiCompatibleFactory/nonStreamToStream';
 import { FIRST_CHUNK_ERROR_KEY } from '../protocol';
 import { createReadableStream, readStreamChunk } from '../utils';
 import { OpenAIResponsesStream } from './responsesStream';
@@ -1035,6 +1036,56 @@ describe('OpenAIResponsesStream', () => {
     expect(events.some((event) => event.type === 'tool_calls')).toBe(true);
     expect(events.find((event) => event.type === 'stop')?.data).toBe('"tool_calls"');
     expect(onFinal).toHaveBeenCalledWith(expect.objectContaining({ finishReason: 'tool_calls' }));
+  });
+
+  it('dispatches a non-streaming Responses function_call turn as tool_calls', async () => {
+    const onFinal = vi.fn();
+    const onToolsCalling = vi.fn();
+    const mockResponse = {
+      id: 'resp_ns_fn_protocol',
+      object: 'response',
+      output: [
+        {
+          arguments: '{"city":"Tokyo"}',
+          call_id: 'call_ns_weather',
+          id: 'fc_ns_weather',
+          name: 'get_weather',
+          status: 'completed',
+          type: 'function_call',
+        },
+      ],
+      status: 'completed',
+      usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
+    };
+
+    const protocolStream = OpenAIResponsesStream(
+      transformResponseAPIToStream(mockResponse as any),
+      {
+        callbacks: { onFinal, onToolsCalling },
+        enableStreaming: false,
+        payload: { model: 'gpt-4o', provider: 'openai' },
+      },
+    );
+    const chunks = await readStreamChunk(protocolStream);
+    const events = parseSseEvents(chunks);
+
+    expect(events.some((event) => event.type === 'tool_calls')).toBe(true);
+    expect(events.find((event) => event.type === 'stop')?.data).toBe('"tool_calls"');
+    expect(onToolsCalling).toHaveBeenCalled();
+    expect(onFinal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        finishReason: 'tool_calls',
+        toolsCalling: expect.arrayContaining([
+          expect.objectContaining({
+            function: expect.objectContaining({
+              arguments: '{"city":"Tokyo"}',
+              name: 'get_weather',
+            }),
+            id: 'call_ns_weather',
+          }),
+        ]),
+      }),
+    );
   });
 
   it('keeps finishReason stop for a plain completed turn so answer-in-thinking salvage still keys on stop', async () => {

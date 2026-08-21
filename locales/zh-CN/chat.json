@@ -462,6 +462,8 @@
   "messageAction.expand": "展开消息",
   "messageAction.interrupted": "已中断",
   "messageAction.interruptedHint": "接下来需要做什么？",
+  "messageAction.truncated": "已截断",
+  "messageAction.truncatedHint": "回复因达到模型长度上限被截断。",
   "messageAction.reaction": "添加表情",
   "messageAction.regenerate": "重新生成",
   "messageAction.select": "多选",

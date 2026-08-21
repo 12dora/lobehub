@@ -24,6 +24,13 @@ const MAX_INFLIGHT = 20; // bounded concurrency
  */
 export class GatewayStreamNotifier implements IStreamEventManager {
   private inflight = 0;
+  /**
+   * Per-operation Gateway HTTP push chain. Redis publication stays the hot
+   * path (`publishStreamChunk` still resolves after xadd); the HTTP push is
+   * enqueued so a slow reasoning POST cannot land after a later text POST
+   * on the same operation.
+   */
+  private opPushQueues = new Map<string, Promise<void>>();
 
   /**
    * `operationId → mirrorOperationId`. When an operation declares a
@@ -75,9 +82,11 @@ export class GatewayStreamNotifier implements IStreamEventManager {
       // `visible_output_end` may be published immediately after `stream_end`.
       // Await the Gateway push for this boundary so the client applies
       // stream_end.finalContent before closing visible loading/reasoning.
-      await this.pushEvent(operationId, gatewayEvent);
+      // Join the per-op chain so a still-in-flight reasoning/text push cannot
+      // overtake this terminal event on the WebSocket.
+      await this.enqueueOpPush(operationId, () => this.pushEvent(operationId, gatewayEvent));
     } else {
-      void this.pushEvent(operationId, gatewayEvent);
+      void this.enqueueOpPush(operationId, () => this.pushEvent(operationId, gatewayEvent));
     }
     return result;
   }
@@ -88,13 +97,15 @@ export class GatewayStreamNotifier implements IStreamEventManager {
     chunkData: StreamChunkData,
   ): Promise<string> {
     const result = await this.inner.publishStreamChunk(operationId, stepIndex, chunkData);
-    void this.pushEvent(operationId, {
-      data: chunkData,
-      operationId,
-      stepIndex,
-      timestamp: Date.now(),
-      type: 'stream_chunk',
-    });
+    void this.enqueueOpPush(operationId, () =>
+      this.pushEvent(operationId, {
+        data: chunkData,
+        operationId,
+        stepIndex,
+        timestamp: Date.now(),
+        type: 'stream_chunk',
+      }),
+    );
     return result;
   }
 
@@ -156,6 +167,7 @@ export class GatewayStreamNotifier implements IStreamEventManager {
     this.mirrorTargets.delete(operationId);
     this.mirrorResolved.delete(operationId);
     this.mirrorResolving.delete(operationId);
+    this.opPushQueues.delete(operationId);
 
     return result;
   }
@@ -207,6 +219,25 @@ export class GatewayStreamNotifier implements IStreamEventManager {
   }
 
   // ─── Gateway HTTP helpers ───
+
+  private enqueueOpPush(operationId: string, task: () => Promise<void>): Promise<void> {
+    const prev = this.opPushQueues.get(operationId);
+    // Empty queue: start immediately so the first push (and stream_end when
+    // nothing is in flight) does not pay an extra microtask. An in-flight
+    // previous push is chained so a slow reasoning POST cannot be overtaken.
+    const run = prev ? prev.then(task, task) : task();
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.opPushQueues.set(operationId, settled);
+    void settled.then(() => {
+      if (this.opPushQueues.get(operationId) === settled) {
+        this.opPushQueues.delete(operationId);
+      }
+    });
+    return run;
+  }
 
   private async pushEvent(operationId: string, event: Record<string, unknown>): Promise<void> {
     // Mirror the Redis publisher's chokepoint — strip

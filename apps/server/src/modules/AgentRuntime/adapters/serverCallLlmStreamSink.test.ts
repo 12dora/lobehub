@@ -121,4 +121,81 @@ describe('ServerCallLlmStreamSink flush ordering', () => {
       ),
     ).toEqual(['text']);
   });
+
+  it('cancelAndDrain waits for an in-flight deferred publish before resolving (error path)', async () => {
+    const events: AgentEvent[] = [];
+    let releaseText!: () => void;
+    const publishStreamChunk = vi.fn(async (_operationId, _stepIndex, payload) => {
+      if (payload.chunkType === 'text') {
+        await new Promise<void>((resolve) => {
+          releaseText = resolve;
+        });
+      }
+      return 'event-1';
+    });
+    const sink = createServerCallLlmStreamSink({
+      ctx: {
+        operationId: 'op-1',
+        stepIndex: 2,
+        streamManager: { publishStreamChunk },
+      } as unknown as RuntimeExecutorContext,
+      events,
+      operationLogId: 'op-1:2',
+    });
+
+    await sink.appendText('answer');
+    const flush = sink.flushTextBuffer();
+
+    let drainDone = false;
+    const drain = sink.cancelAndDrain().then(() => {
+      drainDone = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(drainDone).toBe(false);
+    expect(publishedTypes(publishStreamChunk)).toEqual(['text']);
+
+    releaseText();
+    await drain;
+    await flush;
+
+    expect(drainDone).toBe(true);
+  });
+
+  it('cancelAndDrain drops unflushed buffers so a later timer cannot publish after abort', async () => {
+    const { publishStreamChunk, sink } = createSink();
+
+    await sink.appendText('pending');
+    await sink.appendThinking('think');
+    await sink.cancelAndDrain();
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(publishStreamChunk).not.toHaveBeenCalled();
+  });
+
+  it('flushEndOfStream still publishes leftover text if leftover reasoning fails, then rethrows', async () => {
+    const events: AgentEvent[] = [];
+    const publishStreamChunk = vi.fn(async (_operationId, _stepIndex, payload) => {
+      if (payload.chunkType === 'reasoning') {
+        throw new Error('reasoning failed');
+      }
+      return 'event-1';
+    });
+    const sink = createServerCallLlmStreamSink({
+      ctx: {
+        operationId: 'op-1',
+        stepIndex: 2,
+        streamManager: { publishStreamChunk },
+      } as unknown as RuntimeExecutorContext,
+      events,
+      operationLogId: 'op-1:2',
+    });
+
+    await sink.appendThinking('think');
+    await sink.appendText('answer');
+
+    await expect(sink.flushEndOfStream()).rejects.toThrow('reasoning failed');
+    expect(publishedTypes(publishStreamChunk)).toEqual(['reasoning', 'text']);
+  });
 });

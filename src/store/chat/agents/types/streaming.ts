@@ -82,6 +82,7 @@ export interface StreamingCallbacks {
  * Finish callback data
  */
 export interface FinishData {
+  finishReason?: string;
   grounding?: GroundingData;
   observationId?: string | null;
   reasoning?: ModelReasoning;
@@ -101,6 +102,7 @@ export interface StreamingResult {
   isFunctionCall: boolean;
   metadata: {
     fileList?: ChatFileItem[];
+    finishReason?: string;
     finishType?: string;
     imageList?: ChatImageItem[];
     isMultimodal?: boolean;
@@ -145,5 +147,5 @@ export type StreamChunk =
       };
       type: 'file';
     }
-  | { type: 'stop' }
+  | { reason?: string; type: 'stop' }
   | { type: 'usage'; usage?: ModelUsage };
