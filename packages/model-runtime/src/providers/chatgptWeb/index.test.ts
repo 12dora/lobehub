@@ -814,6 +814,44 @@ describe('LobeChatGPTWebAI', () => {
       });
     });
 
+    it('retries once without a token when prepare fulfilled with a null conduit token', async () => {
+      let prepareResolve!: (value: { conduitToken?: string }) => void;
+      const prepareConversation = vi.fn(
+        () =>
+          new Promise<{ conduitToken?: string }>((resolve) => {
+            prepareResolve = resolve;
+          }),
+      );
+      let conversationCalls = 0;
+      const streamConversation = vi.fn(async function* (_body: object, options: any = {}) {
+        conversationCalls += 1;
+        if (conversationCalls === 1) {
+          throw new ChatGPTWebError('upstream', 'conversation failed: status=409', {
+            status: 409,
+          });
+        }
+        options?.onHeaders?.();
+        for (const event of defaultEvents) yield event;
+      });
+      const client = createFakeClient({ prepareConversation, streamConversation });
+
+      const chatPromise = createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      await vi.waitFor(() => expect(streamConversation).toHaveBeenCalledTimes(1));
+      prepareResolve({});
+      await chatPromise;
+
+      expect(streamConversation).toHaveBeenCalledTimes(2);
+      expect(optionsOf(client, 1)).toMatchObject({
+        conduitToken: undefined,
+        useFPath: true,
+      });
+    });
+
     it('falls back to the plain path once when a missing-conduit 4xx meets a failed prepare', async () => {
       const client = createFakeClient({
         prepareConversation: vi.fn(async () => {
@@ -872,6 +910,26 @@ describe('LobeChatGPTWebAI', () => {
       releaseFirst();
       const sse = await readSSE(response);
       expect(sse).toContain('event: text');
+    });
+
+    it('returns an error chunk when headers succeed then the stream throws before any event', async () => {
+      const streamConversation = vi.fn(async function* (_body: object, options: any = {}) {
+        options?.onHeaders?.();
+        throw new ChatGPTWebError('upstream', 'conversation body reset', { status: 500 });
+        yield undefined as never;
+      });
+      const client = createFakeClient({ streamConversation });
+
+      const response = await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(response).toBeInstanceOf(Response);
+      const sse = await readSSE(response);
+      expect(sse).toContain('event: error');
+      expect(sse).toContain('conversation body reset');
     });
 
     // A Pro prepare is not a gate: Chrome sends the conversation while both
@@ -998,6 +1056,7 @@ describe('LobeChatGPTWebAI', () => {
         temperature: 1,
       });
 
+      expect(client.keepSentinelWarm).not.toHaveBeenCalled();
       expect(client.acquireSentinelBundle).toHaveBeenCalledTimes(1);
       expect(client.acquireSentinelBundle.mock.calls[0][0]).toEqual(
         expect.objectContaining({ contextKey: 'chatgptweb:unscoped' }),
@@ -1020,11 +1079,30 @@ describe('LobeChatGPTWebAI', () => {
         temperature: 1,
       });
 
+      expect(client.keepSentinelWarm).toHaveBeenCalledWith('c1-context-id');
       expect(client.acquireSentinelBundle.mock.calls[0][0]).toEqual(
         expect.objectContaining({ contextKey: 'c1-context-id' }),
       );
       expect(client.replenishSentinelBundle.mock.calls[0][0]).toEqual(
         expect.objectContaining({ contextKey: 'c1-context-id' }),
+      );
+    });
+
+    it('does not keep-warm a fallback-profile slot that has no session lifecycle', async () => {
+      const client = createFakeClient();
+      await new LobeChatGPTWebAI({
+        apiKey: 'token',
+        browserSessionAccountId: 'platform:chatgptweb',
+        client: client as any,
+      }).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(client.keepSentinelWarm).not.toHaveBeenCalled();
+      expect(client.acquireSentinelBundle.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ contextKey: 'platform:chatgptweb:fallback-profile' }),
       );
     });
 

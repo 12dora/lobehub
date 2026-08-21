@@ -584,6 +584,32 @@ describe('ChatGPTWebClient.streamConversation', () => {
     ).rejects.toMatchObject({ kind: 'rate_limit', retryAfterMs: 3000 });
   });
 
+  it.each([
+    [401, 'auth'],
+    [403, 'permission'],
+  ] as const)(
+    'does not invoke onHeaders when the conversation POST is %d',
+    async (status, kind) => {
+      const onHeaders = vi.fn();
+      fetchMock.mockResolvedValue(
+        new Response('{"detail":"denied"}', {
+          headers: { 'content-type': 'application/json' },
+          status,
+        }),
+      );
+
+      await expect(
+        (async () => {
+          for await (const _event of createClient().streamConversation(
+            {},
+            { onHeaders, requirements },
+          ));
+        })(),
+      ).rejects.toMatchObject({ kind, status });
+      expect(onHeaders).not.toHaveBeenCalled();
+    },
+  );
+
   it('rejects on caller abort and never emits a done event', async () => {
     const controller = new AbortController();
     fetchMock.mockResolvedValue(

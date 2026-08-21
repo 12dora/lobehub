@@ -71,6 +71,23 @@ describe('startChatGPTWebSentinelKeepWarm', () => {
     await vi.waitFor(() => expect(n).toBeGreaterThan(firstWave));
   });
 
+  it('restarting the same slot midway through TTL does not postpone refresh', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(0);
+    const first = vi.fn(async () => minted(`a${first.mock.calls.length}`, Date.now() + 540_000));
+    startChatGPTWebSentinelKeepWarm(binding(), first);
+    await vi.waitFor(() => expect(first.mock.calls.length).toBeGreaterThanOrEqual(1));
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    const second = vi.fn(async () => minted(`b${second.mock.calls.length}`, Date.now() + 540_000));
+    startChatGPTWebSentinelKeepWarm(binding(), second);
+
+    // Original expiry is t=540s; refresh is scheduled at expiry − 30s = t=510s.
+    // A reset-on-restart timer would fire at t=810s instead.
+    await vi.advanceTimersByTimeAsync(210_000);
+    await vi.waitFor(() => expect(second.mock.calls.length).toBeGreaterThanOrEqual(1));
+  });
+
   it('caps overlapping keep-warms at two concurrent mints', async () => {
     const gates: Array<() => void> = [];
     const mint = vi.fn(

@@ -59,12 +59,15 @@ export const startChatGPTWebSentinelKeepWarm = (
     const key = binding.contextKey;
     const existing = slots.get(key);
     if (existing) {
-      existing.generation += 1;
-      if (existing.timer) clearTimeout(existing.timer);
+      // Idempotent: a reconstructed runtime must not push refresh past the
+      // parked bundles' real expiry. Swap the mint closure; keep the timer.
+      existing.mint = mint;
+      existing.binding = binding;
+      return;
     }
     const slot: WarmSlot = {
       binding,
-      generation: (existing?.generation ?? 0) + 1,
+      generation: 0,
       mint,
     };
     slots.set(key, slot);
@@ -106,9 +109,15 @@ const runWarm = async (slot: WarmSlot, { refreshExpiring }: { refreshExpiring: b
 
 const schedule = (slot: WarmSlot): void => {
   if (slot.timer) clearTimeout(slot.timer);
+  const earliest = getSharedSentinelBundlePool().earliestExpiryMs(slot.binding.contextKey);
+  const delay =
+    earliest === undefined
+      ? refreshDelayMs()
+      : Math.max(MIN_REFRESH_DELAY_MS, earliest - SENTINEL_WARM_SKEW_MS - Date.now());
   const timer = setTimeout(() => {
+    slot.timer = undefined;
     void runWarm(slot, { refreshExpiring: true });
-  }, refreshDelayMs());
+  }, delay);
   timer.unref?.();
   slot.timer = timer;
 };

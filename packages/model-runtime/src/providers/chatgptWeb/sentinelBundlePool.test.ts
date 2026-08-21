@@ -302,6 +302,21 @@ describe('SentinelBundlePool', () => {
     expect(acquired.requirements.token).toBe('new-page');
   });
 
+  it('earliestExpiryMs is the soonest ready bundle, ignoring expired ones', async () => {
+    let now = 1000;
+    const pool = new SentinelBundlePool({ now: () => now });
+    const mint = vi
+      .fn()
+      .mockResolvedValueOnce(minted('soon', 20_000))
+      .mockResolvedValueOnce(minted('later', 80_000));
+
+    await pool.warm(binding(), mint);
+    expect(pool.earliestExpiryMs('ctx-1')).toBe(20_000);
+
+    now = 25_000;
+    expect(pool.earliestExpiryMs('ctx-1')).toBe(80_000);
+  });
+
   it('discardExpiring drops bundles that expire within the skew window', async () => {
     let now = 1000;
     const pool = new SentinelBundlePool({ now: () => now });

@@ -291,6 +291,23 @@ export class SentinelBundlePool {
   }
 
   /**
+   * Soonest `expiresAtMs` among ready (non-expired) bundles for this context.
+   * Read-only: does not prune. Used to schedule keep-warm from real expiry
+   * rather than from the last constructor call.
+   */
+  earliestExpiryMs(contextKey: string): number | undefined {
+    const slot = this.slots.get(contextKey);
+    if (!slot) return undefined;
+    const now = this.now();
+    let earliest: number | undefined;
+    for (const bundle of slot.ready) {
+      if (bundle.state !== 'ready' || bundle.expiresAtMs <= now) continue;
+      if (earliest === undefined || bundle.expiresAtMs < earliest) earliest = bundle.expiresAtMs;
+    }
+    return earliest;
+  }
+
+  /**
    * Drop parked bundles that expire within `withinMs` so a keep-warm mint can
    * replace them before the pool goes empty. Failures are logged, never thrown.
    */

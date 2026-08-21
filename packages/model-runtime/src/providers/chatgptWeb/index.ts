@@ -234,7 +234,10 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
 
     this.uploadNamespace = uploadNamespace(chatgptAccountId ?? this.client.accountId, apiKey);
 
-    if (typeof this.client.keepSentinelWarm === 'function') {
+    // Managed Browser Session Context only. A fallback-profile key has no
+    // session lifecycle, so keep-warm would leak the mint closure (and the
+    // credential it closes over) until process exit.
+    if (this.browserSessionContextKey && typeof this.client.keepSentinelWarm === 'function') {
       this.client.keepSentinelWarm(this.browserSessionContextKey);
     }
   }
@@ -458,26 +461,39 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
           if (!isMissingConduitPrepareError(error) || isCallerAbort(signal)) throw error;
 
           const prepared = await Promise.allSettled(trackedPrepares);
-          const retryToken = prepared.findLast(
+          const fulfilled = prepared.filter(
             (result): result is PromiseFulfilledResult<{ conduitToken?: string }> =>
-              result.status === 'fulfilled' && !!result.value.conduitToken,
-          )?.value.conduitToken;
+              result.status === 'fulfilled',
+          );
 
-          if (retryToken) {
-            log('conversation 4xx missing conduit; retrying once with prepare token');
+          // `{status:"ok", conduit_token:null}` is a normal prepare response.
+          // Retry once whenever prepare itself succeeded, token or not — the
+          // server-side prepare state is what the 4xx was waiting on.
+          if (fulfilled.length > 0) {
+            const retryToken = fulfilled.findLast((result) => result.value.conduitToken)?.value
+              .conduitToken;
+            log(
+              retryToken
+                ? 'conversation 4xx missing conduit; retrying once with prepare token'
+                : 'conversation 4xx missing conduit; retrying once after prepare (no token)',
+            );
             abandon(launched.iterator);
             launched = launchStream(true, retryToken);
             await waitForStreamHeaders(launched.headersPromise, launched.firstPromise);
             return;
           }
 
-          const prepareFailure = prepared.find(
-            (result): result is PromiseRejectedResult => result.status === 'rejected',
-          );
-          if (mayFallBack && prepareFailure && isRecoverablePrepareError(prepareFailure.reason)) {
+          const allRecoverable =
+            prepared.length > 0 &&
+            prepared.every(
+              (result) => result.status === 'rejected' && isRecoverablePrepareError(result.reason),
+            );
+          if (mayFallBack && allRecoverable) {
             log(
               'conduit prepare failed (%s); falling back to the plain path',
-              String(prepareFailure.reason),
+              String(
+                (prepared[0] as PromiseRejectedResult | undefined)?.reason ?? 'prepare failed',
+              ),
             );
             abandon(launched.iterator);
             useFPath = false;
@@ -487,6 +503,9 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
             return;
           }
 
+          const prepareFailure = prepared.find(
+            (result): result is PromiseRejectedResult => result.status === 'rejected',
+          );
           if (prepareFailure) throw prepareFailure.reason;
           throw error;
         }
