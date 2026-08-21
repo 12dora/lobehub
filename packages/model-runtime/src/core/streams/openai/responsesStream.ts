@@ -65,7 +65,7 @@ const emitResponsesTerminalChunks = (
       responseId,
       source: 'openai_responses',
       terminalEventType: chunk.type,
-      terminalStatus: chunk.response.status,
+      terminalStatus: chunk.response.status ?? undefined,
     };
 
     chunks.push({ data: chunk, id: streamContext.id, type: 'data' });

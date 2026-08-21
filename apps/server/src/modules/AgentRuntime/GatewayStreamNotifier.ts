@@ -144,23 +144,32 @@ export class GatewayStreamNotifier implements IStreamEventManager {
     const effectiveReasonDetail = reasonDetail || getDefaultReasonDetail(finalState, reason);
     const errorType = finalState?.error?.type || finalState?.error?.errorType;
 
-    void this.pushEvent(operationId, {
-      // Forward `uiMessages` to the gateway push channel so terminal-state
-      // clients consuming /push-event get the canonical UIChatMessage[]
-      // snapshot — the final step has no later step_start to carry a fresh
-      // snapshot, so dropping it here would break the SoT contract.
-      data: {
-        errorType,
-        finalState,
-        reason,
-        reasonDetail: effectiveReasonDetail,
-        ...(uiMessages !== undefined && { uiMessages }),
-      },
-      operationId,
-      stepIndex,
-      timestamp: Date.now(),
-      type: 'agent_runtime_end',
-    });
+    // Join the per-op chain and wait for this terminal push. A queued
+    // `error` POST must land first — the client treats the first of
+    // `error` / `agent_runtime_end` as the terminal event and ignores
+    // the other. allSettled so a rejected earlier push cannot skip the
+    // end event or fail this method.
+    await Promise.allSettled([
+      this.enqueueOpPush(operationId, () =>
+        this.pushEvent(operationId, {
+          // Forward `uiMessages` to the gateway push channel so terminal-state
+          // clients consuming /push-event get the canonical UIChatMessage[]
+          // snapshot — the final step has no later step_start to carry a fresh
+          // snapshot, so dropping it here would break the SoT contract.
+          data: {
+            errorType,
+            finalState,
+            reason,
+            reasonDetail: effectiveReasonDetail,
+            ...(uiMessages !== undefined && { uiMessages }),
+          },
+          operationId,
+          stepIndex,
+          timestamp: Date.now(),
+          type: 'agent_runtime_end',
+        }),
+      ),
+    ]);
 
     // Terminal event has been forwarded (including any mirror); drop the mapping
     // so it can't leak across a reused operationId.
@@ -225,6 +234,8 @@ export class GatewayStreamNotifier implements IStreamEventManager {
     // Empty queue: start immediately so the first push (and stream_end when
     // nothing is in flight) does not pay an extra microtask. An in-flight
     // previous push is chained so a slow reasoning POST cannot be overtaken.
+    // `then(task, task)` + a swallowed settled tail is allSettled semantics:
+    // a rejected earlier push must not skip the next (e.g. agent_runtime_end).
     const run = prev ? prev.then(task, task) : task();
     const settled = run.then(
       () => undefined,

@@ -212,6 +212,109 @@ describe('GatewayStreamNotifier', () => {
   });
 
   describe('publishAgentRuntimeEnd', () => {
+    it('does not start agent_runtime_end until a delayed error Gateway push completes', async () => {
+      const started: string[] = [];
+      const delivered: string[] = [];
+      let releaseError!: () => void;
+
+      mockFetch.mockReset();
+      mockFetch.mockImplementation((_url, init) => {
+        const body = JSON.parse((init as { body: string }).body);
+        const type = body.event?.type as string;
+        started.push(type);
+        if (type === 'error') {
+          return new Promise((resolve) => {
+            releaseError = () => {
+              delivered.push(type);
+              resolve({ ok: true, text: () => Promise.resolve('') });
+            };
+          });
+        }
+        delivered.push(type);
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('') });
+      });
+
+      try {
+        void notifier.publishStreamEvent('op-1', {
+          data: { message: 'boom' },
+          stepIndex: 0,
+          type: 'error' as const,
+        });
+
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(started).toEqual(['error']);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+
+        const end = notifier.publishAgentRuntimeEnd({
+          finalState: {},
+          operationId: 'op-1',
+          reason: 'error',
+          stepIndex: 0,
+        });
+        let endResolved = false;
+        void end.then(() => {
+          endResolved = true;
+        });
+
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(started).toEqual(['error']);
+        expect(endResolved).toBe(false);
+
+        releaseError();
+        await end;
+
+        expect(started).toEqual(['error', 'agent_runtime_end']);
+        expect(delivered).toEqual(['error', 'agent_runtime_end']);
+        expect(
+          (notifier as { opPushQueues: Map<string, Promise<void>> }).opPushQueues.has('op-1'),
+        ).toBe(false);
+        expect((notifier as { mirrorTargets: Map<string, string> }).mirrorTargets.has('op-1')).toBe(
+          false,
+        );
+      } finally {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValue({ ok: true, text: () => Promise.resolve('') });
+      }
+    });
+
+    it('still delivers agent_runtime_end when an earlier Gateway push rejects', async () => {
+      mockFetch.mockReset();
+      mockFetch
+        .mockRejectedValueOnce(new Error('error push failed'))
+        .mockResolvedValue({ ok: true, text: () => Promise.resolve('') });
+
+      try {
+        void notifier.publishStreamEvent('op-1', {
+          data: { message: 'boom' },
+          stepIndex: 0,
+          type: 'error' as const,
+        });
+
+        await notifier.publishAgentRuntimeEnd({
+          finalState: {},
+          operationId: 'op-1',
+          reason: 'error',
+          stepIndex: 0,
+        });
+
+        const types = mockFetch.mock.calls.map(([, init]) => {
+          const body = JSON.parse((init as { body: string }).body);
+          return body.event?.type as string;
+        });
+        expect(types).toEqual(['error', 'agent_runtime_end']);
+        expect(
+          (notifier as { opPushQueues: Map<string, Promise<void>> }).opPushQueues.has('op-1'),
+        ).toBe(false);
+      } finally {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValue({ ok: true, text: () => Promise.resolve('') });
+      }
+    });
+
     it('delegates to inner and returns its result', async () => {
       const finalState = { status: 'done' };
 
