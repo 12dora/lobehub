@@ -11,6 +11,7 @@ import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformTaskTemplateModel } from '@/database/models/platform';
 import {
   permissions,
   platformTaskTemplates,
@@ -27,6 +28,8 @@ import { createContextInner } from '@/libs/trpc/lambda/context';
 import type * as TaskTemplateModuleTypes from '@/server/services/taskTemplate';
 import { listTaskTemplateLibrary } from '@/server/services/taskTemplate';
 
+import { ensureTaskTemplateCatalogSeeded } from '../../services/templateCatalogBootstrap';
+import { holdCatalogTxAndAssertBlocked } from '../../testing/catalogLockBarrier';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 import { platformRouter } from '../platform';
@@ -886,67 +889,127 @@ describe('platform.taskTemplates.list', () => {
 
 const isServerDB = process.env.TEST_SERVER_DB === '1';
 
-describe.skipIf(!isServerDB)('admin.taskTemplates catalog lock races (TEST_SERVER_DB=1)', () => {
-  it('seed vs importRecommendations does not overwrite imported copy', async () => {
-    listDailyRecommendSpy.mockImplementation(
-      async (_keys: string[], options?: { locale?: string }) => [
-        marketTemplate({ title: options?.locale === 'zh-CN' ? '工程日报' : 'Market title' }),
-      ],
-    );
-    const caller = await adminCaller();
+describe.skipIf(!isServerDB)(
+  'admin.taskTemplates catalog lock races (TEST_SERVER_DB=1)',
+  { timeout: 20_000 },
+  () => {
+    it('create holds the catalog lock: list/seed waits and inserts nothing', async () => {
+      const caller = await adminCaller();
+      await holdCatalogTxAndAssertBlocked({
+        domain: 'task_templates',
+        competing: () => caller.list({ limit: 20, locale: 'en-US', offset: 0 }),
+        work: async (tx) => {
+          await new PlatformTaskTemplateModel(tx).create({
+            actorUserId: ids.admin,
+            document: {
+              category: 'engineering',
+              connectors: [],
+              cronPattern: '0 9 * * *',
+              description: '',
+              enabled: true,
+              icon: null,
+              instruction: 'Keep me.',
+              interests: ['coding'],
+              title: 'Custom',
+            },
+            id: crypto.randomUUID(),
+            identifier: 'custom-row',
+            source: 'manual',
+          });
+        },
+      });
 
-    await Promise.all([
-      caller.importRecommendations({ locale: 'zh-CN' }),
-      caller.list({ limit: 20, locale: 'en-US', offset: 0 }),
-    ]);
+      expect((await db.select().from(platformTaskTemplates)).map((row) => row.identifier)).toEqual([
+        'custom-row',
+      ]);
+    });
 
-    const rows = await db.select().from(platformTaskTemplates);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.title).toBe('工程日报');
-  });
+    it('seed holds the catalog lock: create waits, then appends beside library rows', async () => {
+      listDailyRecommendSpy.mockResolvedValue([marketTemplate()]);
+      const caller = await adminCaller();
+      await holdCatalogTxAndAssertBlocked({
+        domain: 'task_templates',
+        competing: () => caller.create(draft({ identifier: 'custom-row', title: 'Custom' })),
+        work: async (tx) => {
+          await ensureTaskTemplateCatalogSeeded(tx as unknown as LobeChatDatabase, {
+            locale: 'en-US',
+          });
+        },
+      });
 
-  it('seed vs create keeps the created row', async () => {
-    const caller = await adminCaller();
-    await Promise.all([
-      caller.create(draft({ identifier: 'custom-row', title: 'Custom' })),
-      caller.list({ limit: 20, offset: 0 }),
-    ]);
+      expect(
+        (await db.select().from(platformTaskTemplates)).map((row) => row.identifier).sort(),
+      ).toEqual(['custom-row', 'market-daily']);
+    });
 
-    const identifiers = (await db.select().from(platformTaskTemplates)).map(
-      (row) => row.identifier,
-    );
-    expect(identifiers.includes('custom-row')).toBe(true);
-  });
+    it('import holds the catalog lock: list/seed waits and does not overwrite zh-CN', async () => {
+      const caller = await adminCaller();
+      await holdCatalogTxAndAssertBlocked({
+        domain: 'task_templates',
+        competing: () => caller.list({ limit: 20, locale: 'en-US', offset: 0 }),
+        work: async (tx) => {
+          await new PlatformTaskTemplateModel(tx).importByIdentifier({
+            actorUserId: ids.admin,
+            nextId: () => crypto.randomUUID(),
+            rows: [
+              {
+                category: 'engineering',
+                connectors: [],
+                cronPattern: '0 9 * * *',
+                description: 'Market description',
+                icon: null,
+                identifier: 'market-daily',
+                instruction: 'Market instruction',
+                interests: ['coding'],
+                title: '工程日报',
+              },
+            ],
+            seededLocale: 'zh-CN',
+          });
+        },
+      });
 
-  it('seed vs delete-all on an unmarked catalog does not recreate library rows', async () => {
-    const [row] = await db
-      .insert(platformTaskTemplates)
-      .values({
-        category: 'engineering',
-        connectors: [],
-        cronPattern: '0 9 * * *',
-        description: '',
-        enabled: true,
-        id: 'unmarked',
-        identifier: 'custom-row',
-        instruction: 'Keep me.',
-        interests: ['coding'],
-        revision: 1,
-        source: 'manual',
-        title: 'Custom',
-      })
-      .returning();
-    await db.delete(platformTemplateCatalogState);
-    const caller = await adminCaller();
+      const rows = await db.select().from(platformTaskTemplates);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.title).toBe('工程日报');
+    });
 
-    await Promise.all([
-      caller.delete({ expectedRevision: row!.revision, id: row!.id }),
-      caller.list({ limit: 100, offset: 0 }),
-    ]);
+    it('delete-all holds the catalog lock: list/seed waits and does not recreate library rows', async () => {
+      const [row] = await db
+        .insert(platformTaskTemplates)
+        .values({
+          category: 'engineering',
+          connectors: [],
+          cronPattern: '0 9 * * *',
+          description: '',
+          enabled: true,
+          id: 'unmarked',
+          identifier: 'custom-row',
+          instruction: 'Keep me.',
+          interests: ['coding'],
+          revision: 1,
+          source: 'manual',
+          title: 'Custom',
+        })
+        .returning();
+      await db.delete(platformTemplateCatalogState);
+      const caller = await adminCaller();
 
-    expect(
-      (await db.select().from(platformTaskTemplates)).map((item) => item.identifier),
-    ).not.toContain('market-daily');
-    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
-  });
-});
+      await holdCatalogTxAndAssertBlocked({
+        domain: 'task_templates',
+        competing: () => caller.list({ limit: 100, offset: 0 }),
+        work: async (tx) => {
+          await new PlatformTaskTemplateModel(tx).delete({
+            expectedRevision: row!.revision,
+            id: row!.id,
+          });
+        },
+      });
+
+      expect(
+        (await db.select().from(platformTaskTemplates)).map((item) => item.identifier),
+      ).not.toContain('market-daily');
+      expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
+    });
+  },
+);

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getTestDB } from '../../core/getTestDB';
 import { platformTaskTemplates, platformTemplateCatalogState } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
+import { PlatformRevisionConflictError } from './errors';
 import { PlatformTaskTemplateModel } from './taskTemplate';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -55,6 +56,130 @@ describe('PlatformTaskTemplateModel.importByIdentifier', () => {
       identifier: 'market-daily',
       title: 'Market title',
     });
+  });
+
+  it('claims the catalog marker on a successful delete, never on a 404', async () => {
+    const created = await model.create({
+      actorUserId: 'admin-a',
+      document: {
+        category: 'engineering',
+        connectors: [],
+        cronPattern: '0 9 * * *',
+        description: '',
+        enabled: true,
+        icon: null,
+        instruction: 'Keep me.',
+        interests: ['coding'],
+        title: 'Custom',
+      },
+      id: crypto.randomUUID(),
+      identifier: 'claimed',
+      source: 'manual',
+    });
+    await db.delete(platformTemplateCatalogState);
+
+    expect(await model.delete({ expectedRevision: 1, id: 'does-not-exist' })).toBeUndefined();
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(0);
+
+    await model.delete({ expectedRevision: created.revision, id: created.id });
+    expect(await db.select().from(platformTemplateCatalogState)).toEqual([
+      expect.objectContaining({ domain: 'task_templates' }),
+    ]);
+  });
+
+  it('claims the catalog marker on update / setEnabled / reorder success, not on failure', async () => {
+    const document = {
+      category: 'engineering' as const,
+      connectors: [] as { identifier: string; required: boolean; source: 'lobehub' }[],
+      cronPattern: '0 9 * * *',
+      description: '',
+      enabled: true,
+      icon: null,
+      instruction: 'Keep me.',
+      interests: ['coding'],
+      title: 'Raw',
+    };
+    const [raw] = await db
+      .insert(platformTaskTemplates)
+      .values({
+        ...document,
+        id: 'raw-1',
+        identifier: 'raw-1',
+        revision: 1,
+        source: 'manual',
+      })
+      .returning();
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(0);
+
+    await model.update({
+      actorUserId: 'admin-a',
+      document: { ...document, title: 'Edited' },
+      expectedRevision: raw!.revision,
+      id: raw!.id,
+    });
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
+
+    await db.delete(platformTemplateCatalogState);
+    await expect(
+      model.update({
+        actorUserId: 'admin-a',
+        document: { ...document, title: 'Stale' },
+        expectedRevision: 0,
+        id: raw!.id,
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(0);
+
+    const current = await model.findById(raw!.id);
+    await model.setEnabled({
+      actorUserId: 'admin-a',
+      enabled: false,
+      expectedRevision: current!.revision,
+      id: current!.id,
+    });
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
+
+    await db.delete(platformTemplateCatalogState);
+    expect(
+      await model.setEnabled({
+        actorUserId: 'admin-a',
+        enabled: true,
+        expectedRevision: 1,
+        id: 'does-not-exist',
+      }),
+    ).toBeUndefined();
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(0);
+
+    const [second] = await db
+      .insert(platformTaskTemplates)
+      .values({
+        ...document,
+        id: 'raw-2',
+        identifier: 'raw-2',
+        revision: 1,
+        sortOrder: 1,
+        source: 'manual',
+        title: 'Second',
+      })
+      .returning();
+    const first = await model.findById(raw!.id);
+    await model.reorder({
+      actorUserId: 'admin-a',
+      items: [
+        { expectedRevision: second!.revision, id: second!.id },
+        { expectedRevision: first!.revision, id: first!.id },
+      ],
+    });
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
+
+    await db.delete(platformTemplateCatalogState);
+    expect(
+      await model.reorder({
+        actorUserId: 'admin-a',
+        items: [{ expectedRevision: 1, id: 'does-not-exist' }],
+      }),
+    ).toBeUndefined();
+    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(0);
   });
 
   it('insert-only import leaves an existing row untouched', async () => {

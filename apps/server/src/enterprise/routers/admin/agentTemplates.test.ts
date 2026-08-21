@@ -10,6 +10,7 @@ import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformAgentTemplateModel } from '@/database/models/platform';
 import {
   permissions,
   platformAgentTemplates,
@@ -25,6 +26,8 @@ import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
 import { AGENT_TEMPLATE_DISPLAY_MAX } from '../../contracts/adminAgentTemplates';
+import { ensureAgentTemplateCatalogSeeded } from '../../services/templateCatalogBootstrap';
+import { holdCatalogTxAndAssertBlocked } from '../../testing/catalogLockBarrier';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 import { platformRouter } from '../platform';
@@ -761,61 +764,119 @@ describe('platform.agentTemplates.list', () => {
 
 const isServerDB = process.env.TEST_SERVER_DB === '1';
 
-describe.skipIf(!isServerDB)('admin.agentTemplates catalog lock races (TEST_SERVER_DB=1)', () => {
-  it('seed vs importBuiltins does not overwrite imported locale copy', async () => {
-    builtInSpy.mockImplementation((locale?: string) => [
-      builtinRow({ title: locale === 'zh-CN' ? '写作导师' : 'Writer' }),
-    ]);
-    const caller = await adminCaller();
+describe.skipIf(!isServerDB)(
+  'admin.agentTemplates catalog lock races (TEST_SERVER_DB=1)',
+  { timeout: 20_000 },
+  () => {
+    it('create holds the catalog lock: list/seed waits and inserts nothing', async () => {
+      const caller = await adminCaller();
+      await holdCatalogTxAndAssertBlocked({
+        domain: 'agent_templates',
+        competing: () => caller.list({ limit: 20, locale: 'en-US', offset: 0 }),
+        work: async (tx) => {
+          await new PlatformAgentTemplateModel(tx).create({
+            actorUserId: ids.admin,
+            document: {
+              avatar: null,
+              backgroundColor: null,
+              description: 'A short subtitle',
+              enabled: true,
+              systemRole: 'You are a helpful writing mentor.',
+              tags: ['writing'],
+              title: 'Custom',
+            },
+            id: crypto.randomUUID(),
+            identifier: 'custom-row',
+            source: 'manual',
+          });
+        },
+      });
 
-    await Promise.all([
-      caller.importBuiltins({ locale: 'zh-CN' }),
-      caller.list({ limit: 20, locale: 'en-US', offset: 0 }),
-    ]);
+      expect((await db.select().from(platformAgentTemplates)).map((row) => row.identifier)).toEqual(
+        ['custom-row'],
+      );
+    });
 
-    const rows = await db.select().from(platformAgentTemplates);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.title).toBe('写作导师');
-  });
+    it('seed holds the catalog lock: create waits, then appends beside builtins', async () => {
+      builtInSpy.mockImplementation(() => [builtinRow()]);
+      const caller = await adminCaller();
+      await holdCatalogTxAndAssertBlocked({
+        domain: 'agent_templates',
+        competing: () => caller.create(draft({ identifier: 'custom-row', title: 'Custom' })),
+        work: async (tx) => {
+          await ensureAgentTemplateCatalogSeeded(tx as unknown as LobeChatDatabase, {
+            locale: 'en-US',
+          });
+        },
+      });
 
-  it('seed vs create keeps the created row', async () => {
-    const caller = await adminCaller();
-    await Promise.all([
-      caller.create(draft({ identifier: 'custom-row', title: 'Custom' })),
-      caller.list({ limit: 20, offset: 0 }),
-    ]);
+      expect(
+        (await db.select().from(platformAgentTemplates)).map((row) => row.identifier).sort(),
+      ).toEqual(['agent-01', 'custom-row']);
+    });
 
-    const identifiers = (await db.select().from(platformAgentTemplates)).map(
-      (row) => row.identifier,
-    );
-    expect(identifiers.includes('custom-row')).toBe(true);
-  });
+    it('import holds the catalog lock: list/seed waits and does not overwrite zh-CN', async () => {
+      builtInSpy.mockImplementation((locale?: string) => [
+        builtinRow({ title: locale === 'zh-CN' ? '写作导师' : 'Writer' }),
+      ]);
+      const caller = await adminCaller();
+      await holdCatalogTxAndAssertBlocked({
+        domain: 'agent_templates',
+        competing: () => caller.list({ limit: 20, locale: 'en-US', offset: 0 }),
+        work: async (tx) => {
+          await new PlatformAgentTemplateModel(tx).importByIdentifier({
+            actorUserId: ids.admin,
+            nextId: () => crypto.randomUUID(),
+            rows: [
+              {
+                description: '',
+                identifier: 'agent-01',
+                systemRole: 'You are a writer.',
+                title: '写作导师',
+              },
+            ],
+            seededLocale: 'zh-CN',
+          });
+        },
+      });
 
-  it('seed vs delete-all on an unmarked catalog does not recreate builtins', async () => {
-    const [row] = await db
-      .insert(platformAgentTemplates)
-      .values({
-        description: '',
-        enabled: true,
-        id: 'unmarked',
-        identifier: 'custom-row',
-        revision: 1,
-        source: 'manual',
-        systemRole: 'Keep me.',
-        title: 'Custom',
-      })
-      .returning();
-    await db.delete(platformTemplateCatalogState);
-    const caller = await adminCaller();
+      const rows = await db.select().from(platformAgentTemplates);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.title).toBe('写作导师');
+    });
 
-    await Promise.all([
-      caller.delete({ expectedRevision: row!.revision, id: row!.id }),
-      caller.list({ limit: 100, offset: 0 }),
-    ]);
+    it('delete-all holds the catalog lock: list/seed waits and does not recreate builtins', async () => {
+      const [row] = await db
+        .insert(platformAgentTemplates)
+        .values({
+          description: '',
+          enabled: true,
+          id: 'unmarked',
+          identifier: 'custom-row',
+          revision: 1,
+          source: 'manual',
+          systemRole: 'Keep me.',
+          title: 'Custom',
+        })
+        .returning();
+      await db.delete(platformTemplateCatalogState);
+      const caller = await adminCaller();
 
-    expect(
-      (await db.select().from(platformAgentTemplates)).map((item) => item.identifier),
-    ).not.toContain('agent-01');
-    expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
-  });
-});
+      await holdCatalogTxAndAssertBlocked({
+        domain: 'agent_templates',
+        competing: () => caller.list({ limit: 100, offset: 0 }),
+        work: async (tx) => {
+          await new PlatformAgentTemplateModel(tx).delete({
+            expectedRevision: row!.revision,
+            id: row!.id,
+          });
+        },
+      });
+
+      expect(
+        (await db.select().from(platformAgentTemplates)).map((item) => item.identifier),
+      ).not.toContain('agent-01');
+      expect(await db.select().from(platformTemplateCatalogState)).toHaveLength(1);
+    });
+  },
+);
