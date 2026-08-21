@@ -7,6 +7,22 @@ import { FIRST_CHUNK_ERROR_KEY } from '../protocol';
 import { createReadableStream, readStreamChunk } from '../utils';
 import { OpenAIResponsesStream } from './responsesStream';
 
+const parseSseEvents = (chunks: string[]) => {
+  const events: { data: string; type: string }[] = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    const eventLine = chunks[i];
+    if (!eventLine.startsWith('event: ')) continue;
+
+    const type = eventLine.slice('event: '.length).trim();
+    const dataLine = chunks[i + 1];
+    const data = dataLine?.startsWith('data: ') ? dataLine.slice('data: '.length).trim() : '';
+    events.push({ data, type });
+  }
+
+  return events;
+};
+
 describe('OpenAIResponsesStream', () => {
   it('should emit complete reasoning items alongside the legacy signature event', async () => {
     const reasoningSignatureScope: SignatureScope = { fingerprint: 'b'.repeat(32) };
@@ -102,6 +118,7 @@ describe('OpenAIResponsesStream', () => {
 
     expect(chunks.some((chunk) => chunk.includes('event: reasoning_response_item'))).toBe(false);
     expect(chunks.some((chunk) => chunk.includes('unscoped-encrypted'))).toBe(false);
+    expect(chunks.some((chunk) => chunk.includes('event: text'))).toBe(false);
   });
 
   it('should not persist summary-only reasoning without a trustworthy channel scope', async () => {
@@ -629,7 +646,7 @@ describe('OpenAIResponsesStream', () => {
     const chunks = await readStreamChunk(protocolStream);
 
     expect(chunks).toMatchSnapshot();
-    expect(chunks.some((c) => c.includes('event: reasoning'))).toBe(true);
+    expect(chunks.some((c) => c.includes('event: reasoning'))).toBe(false);
   });
 
   it('should handle response.reasoning_summary_part.added for subsequent parts', async () => {
@@ -648,6 +665,11 @@ describe('OpenAIResponsesStream', () => {
         part: { type: 'summary_text', text: '' },
       },
       {
+        type: 'response.reasoning_summary_text.delta',
+        item_id: 'reasoning_1',
+        delta: 'first part',
+      },
+      {
         type: 'response.reasoning_summary_part.added',
         item_id: 'reasoning_2',
         summary_index: 1,
@@ -659,7 +681,10 @@ describe('OpenAIResponsesStream', () => {
     const chunks = await readStreamChunk(protocolStream);
 
     expect(chunks).toMatchSnapshot();
-    expect(chunks.filter((c) => c.includes('event: reasoning')).length).toBeGreaterThan(0);
+    expect(parseSseEvents(chunks).filter((event) => event.type === 'reasoning')).toEqual([
+      { data: '"first part"', type: 'reasoning' },
+      { data: '"\\n"', type: 'reasoning' },
+    ]);
   });
 
   it('should handle response.reasoning_summary_text.delta', async () => {
@@ -857,6 +882,13 @@ describe('OpenAIResponsesStream', () => {
 
     expect(chunks).toMatchSnapshot();
     expect(chunks.some((c) => c.includes('event: usage'))).toBe(true);
+    expect(chunks.some((c) => c.includes('event: stop'))).toBe(true);
+    const events = parseSseEvents(chunks);
+    const usageIndex = events.findIndex((event) => event.type === 'usage');
+    const stopIndex = events.findIndex((event) => event.type === 'stop');
+    expect(usageIndex).toBeGreaterThan(-1);
+    expect(stopIndex).toBeGreaterThan(usageIndex);
+    expect(events[stopIndex]?.data).toBe('"stop"');
   });
 
   it('should handle response.completed without usage', async () => {
@@ -885,6 +917,7 @@ describe('OpenAIResponsesStream', () => {
     const chunks = await readStreamChunk(protocolStream);
 
     expect(chunks).toMatchSnapshot();
+    expect(chunks.some((c) => c.includes('event: stop'))).toBe(true);
     expect(onFinal).toHaveBeenCalledWith(
       expect.objectContaining({
         usageMissingDiagnostics: {
@@ -1508,6 +1541,147 @@ describe('OpenAIResponsesStream', () => {
 
       expect(onStartMock).toHaveBeenCalledTimes(1);
       expect(onCompletionMock).toHaveBeenCalledTimes(1);
+
+      const events = parseSseEvents(chunks);
+      expect(events.some((event) => event.type === 'reasoning' && event.data === '""')).toBe(false);
+      expect(events.filter((event) => event.type === 'stop')).toHaveLength(1);
+
+      const lastReasoning = events.findLastIndex((event) => event.type === 'reasoning');
+      const firstText = events.findIndex((event) => event.type === 'text' && event.data !== 'null');
+      const usageIndex = events.findIndex((event) => event.type === 'usage');
+      const stopIndex = events.findIndex((event) => event.type === 'stop');
+      expect(lastReasoning).toBeGreaterThan(-1);
+      expect(firstText).toBeGreaterThan(lastReasoning);
+      expect(usageIndex).toBeGreaterThan(firstText);
+      expect(stopIndex).toBeGreaterThan(usageIndex);
+    });
+
+    it('emits reasoning, text, usage, then stop without trailing reasoning or text:null', async () => {
+      const chunks = await readStreamChunk(
+        OpenAIResponsesStream(
+          createReadableStream([
+            { response: { id: 'resp_b6', status: 'in_progress' }, type: 'response.created' },
+            {
+              item_id: 'rs_b6',
+              part: { text: '', type: 'summary_text' },
+              summary_index: 0,
+              type: 'response.reasoning_summary_part.added',
+            },
+            {
+              delta: 'The user asked for a single-word reply.',
+              item_id: 'rs_b6',
+              type: 'response.reasoning_summary_text.delta',
+            },
+            {
+              item: { id: 'rs_b6', summary: [], type: 'reasoning' },
+              output_index: 0,
+              type: 'response.output_item.done',
+            },
+            {
+              delta: 'pong',
+              item_id: 'msg_b6',
+              type: 'response.output_text.delta',
+            },
+            {
+              item_id: 'msg_b6',
+              text: 'pong',
+              type: 'response.output_text.done',
+            },
+            {
+              response: {
+                id: 'resp_b6',
+                status: 'completed',
+                usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 },
+              },
+              type: 'response.completed',
+            },
+          ]),
+        ),
+      );
+
+      const events = parseSseEvents(chunks);
+      const types = events.map((event) => event.type);
+
+      expect(events.some((event) => event.type === 'reasoning' && event.data === '""')).toBe(false);
+      expect(events.some((event) => event.type === 'text' && event.data === 'null')).toBe(false);
+      expect(
+        events.some((event) => event.data.includes('The user asked for a single-word reply.')),
+      ).toBe(true);
+      expect(events.some((event) => event.type === 'text' && event.data === '"pong"')).toBe(true);
+      expect(types.filter((type) => type === 'stop')).toEqual(['stop']);
+
+      const lastReasoning = types.lastIndexOf('reasoning');
+      const firstText = types.indexOf('text');
+      const usageIndex = types.indexOf('usage');
+      const stopIndex = types.indexOf('stop');
+      expect(lastReasoning).toBeGreaterThan(-1);
+      expect(firstText).toBeGreaterThan(lastReasoning);
+      expect(usageIndex).toBeGreaterThan(firstText);
+      expect(stopIndex).toBeGreaterThan(usageIndex);
+    });
+
+    it('emits stop after a summary-only stream completes', async () => {
+      const chunks = await readStreamChunk(
+        OpenAIResponsesStream(
+          createReadableStream([
+            {
+              response: { id: 'resp_summary_only', status: 'in_progress' },
+              type: 'response.created',
+            },
+            {
+              delta: 'still thinking',
+              item_id: 'rs_only',
+              type: 'response.reasoning_summary_text.delta',
+            },
+            {
+              response: { id: 'resp_summary_only', status: 'completed' },
+              type: 'response.completed',
+            },
+          ]),
+        ),
+      );
+
+      const events = parseSseEvents(chunks);
+      expect(events.some((event) => event.type === 'reasoning')).toBe(true);
+      expect(events.at(-1)).toEqual({ data: '"stop"', type: 'stop' });
+    });
+
+    it('maps response.reasoning_text.delta to reasoning', async () => {
+      const chunks = await readStreamChunk(
+        OpenAIResponsesStream(
+          createReadableStream([
+            { response: { id: 'resp_raw', status: 'in_progress' }, type: 'response.created' },
+            {
+              delta: 'raw chain of thought',
+              item_id: 'rs_raw',
+              type: 'response.reasoning_text.delta',
+            },
+          ]),
+        ),
+      );
+
+      expect(parseSseEvents(chunks)).toEqual(
+        expect.arrayContaining([{ data: '"raw chain of thought"', type: 'reasoning' }]),
+      );
+    });
+
+    it('emits output_text.done as text when no deltas were seen for that item', async () => {
+      const chunks = await readStreamChunk(
+        OpenAIResponsesStream(
+          createReadableStream([
+            { response: { id: 'resp_done_only', status: 'in_progress' }, type: 'response.created' },
+            {
+              item_id: 'msg_done_only',
+              text: 'hello from done',
+              type: 'response.output_text.done',
+            },
+          ]),
+        ),
+      );
+
+      expect(parseSseEvents(chunks)).toEqual(
+        expect.arrayContaining([{ data: '"hello from done"', type: 'text' }]),
+      );
     });
   });
 });

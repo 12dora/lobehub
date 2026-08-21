@@ -421,7 +421,8 @@ export const callLlm =
                     toolsCalling = payload;
                     tool_calls = raw;
 
-                    await streamSink.flushTextBuffer();
+                    await streamSink.flushEndOfStream();
+                    streamSink.endReasoningPhase();
 
                     await streamManager.publishStreamChunk(operationId, stepIndex, {
                       chunkType: 'tools_calling',
@@ -460,8 +461,11 @@ export const callLlm =
                 throw streamExecutionError;
               }
 
-              await streamSink.flushTextBuffer();
-              await streamSink.flushReasoningBuffer();
+              // Reasoning first so leftover thinking cannot land after the
+              // answer (which would restart the gateway Thinking indicator).
+              // If text already published, leftover reasoning is dropped.
+              await streamSink.flushEndOfStream();
+              streamSink.endReasoningPhase();
               streamSink.clearBuffers();
 
               // Wait for any model-generated image uploads to finish so the

@@ -145,4 +145,5 @@ export type StreamChunk =
       };
       type: 'file';
     }
-  | { type: 'stop' };
+  | { type: 'stop' }
+  | { type: 'usage'; usage?: ModelUsage };

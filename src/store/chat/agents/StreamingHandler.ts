@@ -85,6 +85,8 @@ export class StreamingHandler {
   private thinkingDuration?: number;
   private reasoningOperationId?: string;
   private reasoningParts: MessageContentPart[] = [];
+  /** Once text/stop/usage/finish closes thinking, trailing reasoning must not restart it. */
+  private reasoningClosed = false;
 
   // ========== Multimodal state ==========
   private contentParts: MessageContentPart[] = [];
@@ -170,6 +172,10 @@ export class StreamingHandler {
         this.handleStopChunk();
         break;
       }
+      case 'usage': {
+        this.endReasoningIfNeeded();
+        break;
+      }
     }
   }
 
@@ -177,6 +183,11 @@ export class StreamingHandler {
    * Handle streaming finish
    */
   async handleFinish(finishData: FinishData): Promise<StreamingResult> {
+    // Close thinking before waiting on uploads — otherwise a reasoning-only
+    // stream (or a provider that never emits `stop`) leaves "Thinking…" on
+    // for the duration of image/file uploads.
+    this.endReasoningIfNeeded();
+
     // Update traceId
     if (finishData.traceId) {
       this.msgTraceId = finishData.traceId;
@@ -462,6 +473,8 @@ export class StreamingHandler {
   // ==================== Helper methods ====================
 
   private startReasoningIfNeeded(): void {
+    if (this.reasoningClosed) return;
+
     if (!this.thinkingStartAt) {
       this.thinkingStartAt = Date.now();
       this.reasoningOperationId = this.callbacks.onReasoningStart();
@@ -469,6 +482,8 @@ export class StreamingHandler {
   }
 
   private endReasoningIfNeeded(): void {
+    this.reasoningClosed = true;
+
     if (this.thinkingStartAt && !this.thinkingDuration) {
       this.thinkingDuration = Date.now() - this.thinkingStartAt;
 

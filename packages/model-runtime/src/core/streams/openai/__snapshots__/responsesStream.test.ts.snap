@@ -23,11 +23,11 @@ exports[`OpenAIResponsesStream > Reasoning > summary 1`] = `
   "data: {"id":"rs_684313b9774481908ee856625f82fb8c0b502bf083132d0d","type":"reasoning","summary":[]}
 
 ",
-  "id: rs_684313b9774481908ee856625f82fb8c0b502bf083132d0d
+  "id: resp_684313b89200819087f27686e0c822260b502bf083132d0d
 ",
-  "event: reasoning
+  "event: data
 ",
-  "data: ""
+  "data: {"type":"response.reasoning_summary_part.added","item_id":"rs_684313b9774481908ee856625f82fb8c0b502bf083132d0d","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}
 
 ",
   "id: rs_684313b9774481908ee856625f82fb8c0b502bf083132d0d
@@ -88,9 +88,9 @@ exports[`OpenAIResponsesStream > Reasoning > summary 1`] = `
 ",
   "id: rs_684313b9774481908ee856625f82fb8c0b502bf083132d0d
 ",
-  "event: text
+  "event: data
 ",
-  "data: null
+  "data: {"id":"rs_684313b9774481908ee856625f82fb8c0b502bf083132d0d","type":"reasoning"}
 
 ",
   "id: resp_684313b89200819087f27686e0c822260b502bf083132d0d
@@ -140,6 +140,13 @@ exports[`OpenAIResponsesStream > Reasoning > summary 1`] = `
   "event: usage
 ",
   "data: {"inputCacheMissTokens":93,"inputCachedTokens":2298,"inputTextTokens":2391,"outputReasoningTokens":128,"outputTextTokens":16,"totalInputTokens":2391,"totalOutputTokens":144,"totalTokens":2535}
+
+",
+  "id: resp_684313b89200819087f27686e0c822260b502bf083132d0d
+",
+  "event: stop
+",
+  "data: "stop"
 
 ",
 ]
@@ -306,6 +313,13 @@ exports[`OpenAIResponsesStream > should handle response.completed with usage 1`]
   "data: {"inputCacheMissTokens":100,"inputTextTokens":100,"outputTextTokens":50,"totalInputTokens":100,"totalOutputTokens":50,"totalTokens":150}
 
 ",
+  "id: resp_completed_usage
+",
+  "event: stop
+",
+  "data: "stop"
+
+",
 ]
 `;
 
@@ -323,6 +337,13 @@ exports[`OpenAIResponsesStream > should handle response.completed without usage 
   "event: data
 ",
   "data: {"type":"response.completed","response":{"id":"resp_completed_no_usage","status":"completed"}}
+
+",
+  "id: resp_completed_no_usage
+",
+  "event: stop
+",
+  "data: "stop"
 
 ",
 ]
@@ -465,11 +486,11 @@ exports[`OpenAIResponsesStream > should handle response.reasoning_summary_part.a
   "data: "in_progress"
 
 ",
-  "id: reasoning_1
+  "id: resp_reasoning
 ",
-  "event: reasoning
+  "event: data
 ",
-  "data: ""
+  "data: {"type":"response.reasoning_summary_part.added","item_id":"reasoning_1","summary_index":0,"part":{"type":"summary_text","text":""}}
 
 ",
 ]
@@ -484,11 +505,18 @@ exports[`OpenAIResponsesStream > should handle response.reasoning_summary_part.a
   "data: "in_progress"
 
 ",
+  "id: resp_reasoning_multi
+",
+  "event: data
+",
+  "data: {"type":"response.reasoning_summary_part.added","item_id":"reasoning_1","summary_index":0,"part":{"type":"summary_text","text":""}}
+
+",
   "id: reasoning_1
 ",
   "event: reasoning
 ",
-  "data: ""
+  "data: "first part"
 
 ",
   "id: reasoning_2

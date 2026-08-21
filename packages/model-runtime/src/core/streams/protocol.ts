@@ -36,6 +36,17 @@ export interface StreamContext {
   chunkIndex?: number;
   id: string;
   /**
+   * Item ids that already emitted `response.output_text.delta`.
+   * `response.output_text.done` only backfills text when the item is absent.
+   */
+  outputTextDeltaItemIds?: Set<string>;
+  /**
+   * True after a reasoning/summary delta with actual content in the current
+   * summary part. The next `reasoning_summary_part.added` emits a `\n`
+   * separator only when this is set, then clears it.
+   */
+  reasoningHasContent?: boolean;
+  /**
    * As pplx citations is in every chunk, but we only need to return it once
    * this flag is used to check if the pplx citation is returned,and then not return it again.
    * Same as Hunyuan and Wenxin

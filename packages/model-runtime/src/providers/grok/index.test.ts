@@ -240,6 +240,122 @@ describe('LobeGrokAI', () => {
     expect(chunks.some((chunk) => chunk.includes('pong'))).toBe(true);
   });
 
+  it('closes the stream with usage then stop and never restarts reasoning after text', async () => {
+    const chunks = await readStreamChunk(
+      OpenAIResponsesStream(
+        createReadableStream([
+          {
+            response: { id: 'resp_grok', status: 'in_progress' },
+            type: 'response.created',
+          },
+          {
+            item_id: 'rs_grok',
+            part: { text: '', type: 'summary_text' },
+            summary_index: 0,
+            type: 'response.reasoning_summary_part.added',
+          },
+          {
+            delta: 'The user asked for a single-word reply.',
+            item_id: 'rs_grok',
+            type: 'response.reasoning_summary_text.delta',
+          },
+          {
+            item: { id: 'rs_grok', summary: [], type: 'reasoning' },
+            output_index: 0,
+            type: 'response.output_item.done',
+          },
+          {
+            delta: 'pong',
+            item_id: 'msg_grok',
+            type: 'response.output_text.delta',
+          },
+          {
+            item_id: 'msg_grok',
+            text: 'pong',
+            type: 'response.output_text.done',
+          },
+          {
+            response: {
+              id: 'resp_grok',
+              status: 'completed',
+              usage: { input_tokens: 12, output_tokens: 4, total_tokens: 16 },
+            },
+            type: 'response.completed',
+          },
+        ]),
+      ),
+    );
+
+    const types = chunks
+      .filter((chunk) => chunk.startsWith('event: '))
+      .map((chunk) => chunk.slice('event: '.length).trim());
+
+    expect(chunks.some((chunk) => chunk.includes('The user asked for a single-word reply.'))).toBe(
+      true,
+    );
+    expect(chunks.some((chunk) => chunk.includes('"pong"'))).toBe(true);
+    expect(chunks.some((chunk) => chunk.includes('data: null'))).toBe(false);
+
+    const lastReasoning = types.lastIndexOf('reasoning');
+    const firstText = types.indexOf('text');
+    const usageIndex = types.indexOf('usage');
+    const stopIndex = types.indexOf('stop');
+    expect(lastReasoning).toBeGreaterThan(-1);
+    expect(firstText).toBeGreaterThan(lastReasoning);
+    expect(usageIndex).toBeGreaterThan(firstText);
+    expect(stopIndex).toBeGreaterThan(usageIndex);
+  });
+
+  it('emits stop after a summary-only Grok completion', async () => {
+    const chunks = await readStreamChunk(
+      OpenAIResponsesStream(
+        createReadableStream([
+          {
+            response: { id: 'resp_grok_summary', status: 'in_progress' },
+            type: 'response.created',
+          },
+          {
+            delta: 'still thinking',
+            item_id: 'rs_grok',
+            type: 'response.reasoning_summary_text.delta',
+          },
+          {
+            response: { id: 'resp_grok_summary', status: 'completed' },
+            type: 'response.completed',
+          },
+        ]),
+      ),
+    );
+
+    expect(chunks.some((chunk) => chunk.includes('event: reasoning'))).toBe(true);
+    expect(chunks.some((chunk) => chunk.includes('event: stop'))).toBe(true);
+  });
+
+  it('maps reasoning_text.delta to reasoning and output_text.done without deltas to text', async () => {
+    const chunks = await readStreamChunk(
+      OpenAIResponsesStream(
+        createReadableStream([
+          { response: { id: 'resp_grok_done', status: 'in_progress' }, type: 'response.created' },
+          {
+            delta: 'raw thought',
+            item_id: 'rs_grok',
+            type: 'response.reasoning_text.delta',
+          },
+          {
+            item_id: 'msg_grok',
+            text: 'pong',
+            type: 'response.output_text.done',
+          },
+        ]),
+      ),
+    );
+
+    expect(chunks.some((chunk) => chunk.includes('event: reasoning'))).toBe(true);
+    expect(chunks.some((chunk) => chunk.includes('raw thought'))).toBe(true);
+    expect(chunks.some((chunk) => chunk.includes('event: text'))).toBe(true);
+    expect(chunks.some((chunk) => chunk.includes('pong'))).toBe(true);
+  });
+
   it('preserves summary-only reasoning for non-streaming Grok responses', async () => {
     const grokNonStreamResponse = {
       created_at: 1_755_000_000,

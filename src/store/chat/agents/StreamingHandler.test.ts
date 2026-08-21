@@ -115,6 +115,30 @@ describe('StreamingHandler', () => {
       expect(callbacks.onReasoningComplete).toHaveBeenCalledWith('reasoning-op-id');
       expect(handler.getThinkingDuration()).toBeGreaterThan(0);
     });
+
+    it('starts reasoning only once when reasoning resumes after text', async () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk({ type: 'reasoning', text: 'first pass' });
+      handler.handleChunk({ type: 'text', text: 'answer' });
+      handler.handleChunk({ type: 'reasoning', text: 'trailing thought' });
+
+      expect(callbacks.onReasoningStart).toHaveBeenCalledTimes(1);
+      expect(callbacks.onReasoningComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('should end reasoning on usage', async () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk({ type: 'reasoning', text: 'Thinking...' });
+      await new Promise((r) => setTimeout(r, 10));
+      handler.handleChunk({ type: 'usage', usage: { totalTokens: 10 } as never });
+
+      expect(callbacks.onReasoningComplete).toHaveBeenCalledWith('reasoning-op-id');
+      expect(handler.getThinkingDuration()).toBeGreaterThan(0);
+    });
   });
 
   describe('handleChunk - reasoning_part', () => {
@@ -696,6 +720,20 @@ describe('StreamingHandler', () => {
 
       expect(result.metadata.reasoning?.content).toBe('Thinking...');
       expect(result.metadata.reasoning?.duration).toBeGreaterThan(0);
+    });
+
+    it('ends reasoning on handleFinish when no text or stop arrived', async () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk({ type: 'reasoning', text: 'Thinking...' });
+      await new Promise((r) => setTimeout(r, 10));
+
+      const result = await handler.handleFinish({ type: 'stop' });
+
+      expect(callbacks.onReasoningComplete).toHaveBeenCalledWith('reasoning-op-id');
+      expect(result.metadata.reasoning?.duration).toBeGreaterThan(0);
+      expect(handler.getThinkingDuration()).toBeGreaterThan(0);
     });
 
     it('should include grounding from finish data', async () => {

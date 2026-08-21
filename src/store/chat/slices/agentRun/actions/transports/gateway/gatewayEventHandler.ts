@@ -463,9 +463,12 @@ export const createGatewayEventHandler = (
   // streaming. Without this, heterogeneous server-mode messages render the
   // collapsed "completed" state from the first chunk on.
   let reasoningOperationId: string | undefined;
+  // Once text/tools land in this stream, leftover reasoning must not restart
+  // the Thinking indicator. Reset on stream_start so the next step can think.
+  let reasoningPhaseEnded = false;
 
   const startReasoningIfNeeded = () => {
-    if (reasoningOperationId) return;
+    if (reasoningPhaseEnded || reasoningOperationId) return;
     const { operationId: reasoningOpId } = get().startOperation({
       context: { ...context, messageId: currentAssistantMessageId },
       parentOperationId: operationId,
@@ -561,8 +564,9 @@ export const createGatewayEventHandler = (
           // Close any reasoning op carried over from the previous step.
           // Safe to run after the assistant-id swap: the op was started with
           // its own messageId context, so completion doesn't depend on the
-          // current id.
+          // current id. A new step may think again, so reopen the phase.
           endReasoningIfNeeded();
+          reasoningPhaseEnded = false;
 
           // Reset accumulators for the new stream
           accumulatedContent = '';
@@ -629,6 +633,7 @@ export const createGatewayEventHandler = (
             // Text after reasoning marks the end of the thinking pass — see
             // `StreamingHandler.handleText` for the same transition.
             endReasoningIfNeeded();
+            reasoningPhaseEnded = true;
             accumulatedContent += data.content;
             hasStreamedContent = true;
             get().internal_dispatchMessage(
@@ -690,6 +695,7 @@ export const createGatewayEventHandler = (
 
           if (data.chunkType === 'tools_calling' && data.toolsCalling) {
             endReasoningIfNeeded();
+            reasoningPhaseEnded = true;
             hasStreamedContent = true;
             const toolsCalling = preserveToolResultMessageIds(
               data.toolsCalling as unknown[],

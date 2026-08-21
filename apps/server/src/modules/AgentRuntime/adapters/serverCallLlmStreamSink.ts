@@ -45,6 +45,11 @@ export class ServerCallLlmStreamSink {
   private readonly operationLogId: string;
   private reasoningBuffer = '';
   private reasoningBufferTimer: NodeJS.Timeout | null = null;
+  /**
+   * Once text (or tools) has been published in this stream, leftover reasoning
+   * must not be flushed — the gateway would restart the Thinking indicator.
+   */
+  private reasoningPhaseEnded = false;
   private readonly stepIndex: number;
   private textBuffer = '';
   private textBufferTimer: NodeJS.Timeout | null = null;
@@ -140,10 +145,26 @@ export class ServerCallLlmStreamSink {
     this.reasoningBuffer = '';
   }
 
+  endReasoningPhase() {
+    this.reasoningPhaseEnded = true;
+  }
+
+  /**
+   * End-of-stream flush: leftover reasoning first, then leftover text.
+   * If text has already been published, drop leftover reasoning so it cannot
+   * restart the Thinking indicator after the answer is visible.
+   */
+  async flushEndOfStream() {
+    await this.flushReasoningBuffer();
+    await this.flushTextBuffer();
+  }
+
   async flushReasoningBuffer() {
     const delta = this.reasoningBuffer;
 
     this.reasoningBuffer = '';
+
+    if (this.reasoningPhaseEnded) return;
 
     if (!!delta) {
       log(`[${this.operationLogId}] flushReasoningBuffer:`, delta);
@@ -186,6 +207,7 @@ export class ServerCallLlmStreamSink {
         chunkType: 'text',
         content: delta,
       });
+      this.reasoningPhaseEnded = true;
       timing(
         '[%s] flushTextBuffer published at %d, took %dms, length: %d',
         this.operationLogId,

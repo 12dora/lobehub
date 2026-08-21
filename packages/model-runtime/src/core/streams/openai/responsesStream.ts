@@ -116,19 +116,46 @@ const transformOpenAIStream = (
         } satisfies StreamProtocolToolCallChunk;
       }
       case 'response.output_text.delta': {
+        streamContext.outputTextDeltaItemIds ??= new Set();
+        streamContext.outputTextDeltaItemIds.add(chunk.item_id);
+
         return { data: chunk.delta, id: chunk.item_id, type: 'text' };
       }
 
+      case 'response.output_text.done': {
+        // Deltas already streamed the answer; repeating the full string here
+        // would duplicate content. Only backfill when the provider skipped deltas.
+        if (streamContext.outputTextDeltaItemIds?.has(chunk.item_id)) {
+          return { data: chunk, id: streamContext.id, type: 'data' };
+        }
+
+        const text = 'text' in chunk && typeof chunk.text === 'string' ? chunk.text : '';
+        if (!text) return { data: chunk, id: streamContext.id, type: 'data' };
+
+        return { data: text, id: chunk.item_id, type: 'text' };
+      }
+
+      case 'response.reasoning_text.delta': {
+        if (chunk.delta) streamContext.reasoningHasContent = true;
+
+        return { data: chunk.delta, id: chunk.item_id, type: 'reasoning' };
+      }
+
       case 'response.reasoning_summary_part.added': {
-        if (!streamContext.startReasoning) {
-          streamContext.startReasoning = true;
-          return { data: '', id: chunk.item_id, type: 'reasoning' };
-        } else {
+        // Do not emit an empty reasoning("") on the first part — that starts
+        // the Thinking indicator before any content exists. Keep `\n` only as
+        // a separator between parts that already streamed content.
+        if (streamContext.reasoningHasContent) {
+          streamContext.reasoningHasContent = false;
           return { data: '\n', id: chunk.item_id, type: 'reasoning' };
         }
+
+        return { data: chunk, id: streamContext.id, type: 'data' };
       }
 
       case 'response.reasoning_summary_text.delta': {
+        if (chunk.delta) streamContext.reasoningHasContent = true;
+
         return { data: chunk.delta, id: chunk.item_id, type: 'reasoning' };
       }
 
@@ -159,9 +186,15 @@ const transformOpenAIStream = (
 
           // Without a trustworthy channel scope, persistence and replay are both
           // disabled, including summary-only response items. Visible reasoning
-          // deltas still stream through their dedicated events.
+          // deltas still stream through their dedicated events. Do not emit
+          // `text: null` — fetchSSE drops it, and a text event would also
+          // incorrectly end (or start) the client thinking indicator.
           if (!payload?.reasoningSignatureScope || (!scopedEncryptedContent && !hasSummaryText))
-            return { data: null, id: chunk.item.id, type: 'text' };
+            return {
+              data: { id: chunk.item.id, type: chunk.item.type },
+              id: chunk.item.id,
+              type: 'data',
+            };
 
           const chunks: StreamProtocolChunk[] = [
             {
@@ -201,28 +234,43 @@ const transformOpenAIStream = (
       }
 
       case 'response.completed': {
+        const chunks: StreamProtocolChunk[] = [];
+        const responseId = chunk.response.id;
+
         if (chunk.response.usage) {
           delete streamContext.usageMissingDiagnostics;
-          return {
+          chunks.push({
             data: convertOpenAIResponseUsage(chunk.response.usage, payload),
-            id: chunk.response.id,
+            id: responseId,
             type: 'usage',
+          });
+        } else {
+          streamContext.usageMissingDiagnostics = {
+            apiMode: 'responses',
+            hasUsageMetadata: false,
+            includeUsageRequested: payload?.includeUsageRequested,
+            model: payload?.model,
+            provider: payload?.provider,
+            responseId,
+            source: 'openai_responses',
+            terminalEventType: chunk.type,
+            terminalStatus: chunk.response.status,
           };
+
+          chunks.push({ data: chunk, id: streamContext.id, type: 'data' });
         }
 
-        streamContext.usageMissingDiagnostics = {
-          apiMode: 'responses',
-          hasUsageMetadata: false,
-          includeUsageRequested: payload?.includeUsageRequested,
-          model: payload?.model,
-          provider: payload?.provider,
-          responseId: chunk.response.id,
-          source: 'openai_responses',
-          terminalEventType: chunk.type,
-          terminalStatus: chunk.response.status,
-        };
+        // Always close the protocol stream. Without `stop`, the client thinking
+        // indicator stays on when no later text/tool event arrives (Grok).
+        // Map Responses `completed` → protocol `stop` so the executor's
+        // answer-in-thinking salvage (`finishReason === 'stop'`) still fires.
+        chunks.push({
+          data: chunk.response.status === 'completed' ? 'stop' : (chunk.response.status ?? 'stop'),
+          id: responseId,
+          type: 'stop',
+        });
 
-        return { data: chunk, id: streamContext.id, type: 'data' };
+        return chunks;
       }
 
       default: {

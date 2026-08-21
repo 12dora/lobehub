@@ -371,7 +371,7 @@ describe('createGatewayEventHandler', () => {
       expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
     });
 
-    it('starts a new reasoning op when reasoning resumes after text in the same stream', async () => {
+    it('does not start a new reasoning op when reasoning arrives after text in the same stream', async () => {
       const store = createMockStore();
       const handler = createHandler(store);
 
@@ -380,7 +380,7 @@ describe('createGatewayEventHandler', () => {
       handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'second pass' }));
       await flush();
 
-      expect(store.startOperation).toHaveBeenCalledTimes(2);
+      expect(store.startOperation).toHaveBeenCalledTimes(1);
       expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
       expect(store.completeOperation).not.toHaveBeenCalledWith('op-reasoning-2');
     });
@@ -404,6 +404,20 @@ describe('createGatewayEventHandler', () => {
       handler(makeEvent('stream_start', { assistantMessage: { id: 'msg-step2' } }));
       await flush();
 
+      expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
+    });
+
+    it('can start a new reasoning op on the next stream after text', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'first' }));
+      handler(makeEvent('stream_chunk', { chunkType: 'text', content: 'answer' }));
+      handler(makeEvent('stream_start', { assistantMessage: { id: 'msg-step2' } }));
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'next step' }));
+      await flush();
+
+      expect(store.startOperation).toHaveBeenCalledTimes(2);
       expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
     });
 
