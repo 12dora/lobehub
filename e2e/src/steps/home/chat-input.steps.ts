@@ -7,6 +7,9 @@ import { WAIT_TIMEOUT } from '../../support/world';
 
 const COLD_ROUTE_SCRIPT_DELAY = 2500;
 
+/** Matches `/agent/...` and its workspace-prefixed mirror `/:slug/agent/...`. */
+const AGENT_PATHNAME_REGEX = /^\/(?:[^/]+\/)?agent\//;
+
 const delay = (ms: number) =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -102,21 +105,39 @@ When('用户按 Enter 从 Home 默认输入发送', { timeout: 45_000 }, async f
 
   await this.page.keyboard.press('Enter');
 
-  await this.page.waitForURL(/\/agent\/[^/?#]+/, { timeout: WAIT_TIMEOUT });
+  // The home composer never leaves the home pathname: the conversation is
+  // addressed in place through `?agent=` (and later `?topic=`).
+  await this.page.waitForURL(
+    (url) => url.searchParams.has('agent') && !AGENT_PATHNAME_REGEX.test(url.pathname),
+    { timeout: WAIT_TIMEOUT },
+  );
 
   console.log('   ✅ 已触发 Home 默认发送');
 });
 
-Then('页面应该跳转到新建 Topic 对话页面', { timeout: 45_000 }, async function (this: CustomWorld) {
-  console.log('   📍 Step: 验证 URL 进入新建 Topic...');
+Then(
+  '页面应该停留在首页并原地打开新建 Topic 对话',
+  { timeout: 45_000 },
+  async function (this: CustomWorld) {
+    console.log('   📍 Step: 验证 URL 原地打开新建 Topic...');
 
-  await this.page.waitForURL(/\/agent\/[^/?#]+\/[^/?#]+/, { timeout: 30_000 });
+    await this.page.waitForURL(
+      (url) =>
+        !!url.searchParams.get('agent') &&
+        !!url.searchParams.get('topic') &&
+        !AGENT_PATHNAME_REGEX.test(url.pathname),
+      { timeout: 30_000 },
+    );
 
-  const currentUrl = this.page.url();
-  expect(currentUrl).toMatch(/\/agent\/[^/?#]+\/[^/?#]+/);
+    const currentUrl = new URL(this.page.url());
+    expect(currentUrl.searchParams.get('agent')).toBeTruthy();
+    expect(currentUrl.searchParams.get('topic')).toBeTruthy();
+    // Never `/agent/...` — that pathname is what swaps the left nav away from home.
+    expect(currentUrl.pathname).not.toMatch(AGENT_PATHNAME_REGEX);
 
-  console.log(`   ✅ 已跳转到 Topic 页面: ${currentUrl}`);
-});
+    console.log(`   ✅ 已原地打开 Topic 对话: ${currentUrl.toString()}`);
+  },
+);
 
 Then(
   '用户消息 {string} 应该保留在对话中',

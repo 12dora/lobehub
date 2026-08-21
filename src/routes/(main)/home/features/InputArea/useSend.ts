@@ -1,9 +1,9 @@
-import { AGENT_CHAT_TOPIC_URL, AGENT_CHAT_URL } from '@lobechat/const';
 import { useCallback } from 'react';
 
 import { useActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
 import type { SendButtonHandler } from '@/features/ChatInput/store/initialState';
 import { buildMessageContextSelections } from '@/features/ChatInput/utils/contextSelections';
+import { homeConversationUrl } from '@/features/HomeConversation/homeConversationPath';
 import { useHomeDailyBrief } from '@/hooks/useHomeDailyBrief';
 import { useQueryRoute } from '@/hooks/useQueryRoute';
 import { agentService } from '@/services/agent';
@@ -155,12 +155,25 @@ export const useSend = () => {
               files: fileList,
               message,
               onTopicCreated: (topicId) => {
-                router.replace(AGENT_CHAT_TOPIC_URL(activeAgentId, topicId, false));
+                // Same in-place contract, now addressing the created topic. The
+                // pathname is still home, so this only swaps search params.
+                router.replace(homeConversationUrl({ agentId: activeAgentId, topicId }), {
+                  replace: true,
+                });
               },
               pageSelections,
             });
 
-            router.push(AGENT_CHAT_URL(activeAgentId, false));
+            // Stay on the home pathname and open the conversation in place
+            // (`/?agent=<id>`, the same URL shape the Recents rows use). Pushing a
+            // `/agent/...` path here would swap the left nav away from home.
+            //
+            // `replace: true` is a `useQueryRoute` option meaning "don't merge the
+            // current search params into the target" — without it a leftover
+            // `?agent=…&topic=…` from a previous conversation would win over the
+            // params we just built. History semantics stay `push` (Back returns to
+            // the bare home URL).
+            router.push(homeConversationUrl({ agentId: activeAgentId }), { replace: true });
           }
         }
       } finally {

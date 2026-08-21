@@ -156,7 +156,13 @@ describe('Home InputArea useSend', () => {
     activeWorkspaceSlugMock.value = null;
   });
 
-  it('routes cold homepage sends to the created topic instead of relying on ChatHydration timing', async () => {
+  const expectNoAgentPathname = () => {
+    for (const [url] of [...routerMock.push.mock.calls, ...routerMock.replace.mock.calls]) {
+      expect(url).not.toMatch(/^\/(?:[^/?#]+\/)?agent\//);
+    }
+  };
+
+  it('opens the cold homepage send in place instead of navigating to the agent route', async () => {
     const { result } = renderHook(() => useSend());
     const params: Parameters<SendButtonHandler>[0] = {
       clearContent: vi.fn(),
@@ -176,7 +182,9 @@ describe('Home InputArea useSend', () => {
         onTopicCreated: expect.any(Function),
       }),
     );
-    expect(routerMock.push).toHaveBeenCalledWith('/agent/agt_inbox');
+    // Navigate immediately — the conversation surface has to swap in while the
+    // optimistic messages stream, well before the topic exists.
+    expect(routerMock.push).toHaveBeenCalledWith('/?agent=agt_inbox', { replace: true });
 
     const sentPayload = sendMessageMock.mock.calls[0][0];
 
@@ -184,7 +192,10 @@ describe('Home InputArea useSend', () => {
       await sentPayload.onTopicCreated('tpc_created');
     });
 
-    expect(routerMock.replace).toHaveBeenCalledWith('/agent/agt_inbox/tpc_created');
+    expect(routerMock.replace).toHaveBeenCalledWith('/?agent=agt_inbox&topic=tpc_created', {
+      replace: true,
+    });
+    expectNoAgentPathname();
   });
 
   it('captures the active workspace slug in default homepage sends', async () => {
@@ -206,6 +217,20 @@ describe('Home InputArea useSend', () => {
         context: { agentId: 'agt_inbox', isolatedTopic: true, workspaceSlug: 'team' },
       }),
     );
+    // The URL handed to `useQueryRoute` stays root-relative — the workspace
+    // prefix (`/team/?agent=…`) is applied by `useWorkspaceAwareNavigate`.
+    expect(routerMock.push).toHaveBeenCalledWith('/?agent=agt_inbox', { replace: true });
+
+    const sentPayload = sendMessageMock.mock.calls[0][0];
+
+    await act(async () => {
+      await sentPayload.onTopicCreated('tpc_created');
+    });
+
+    expect(routerMock.replace).toHaveBeenCalledWith('/?agent=agt_inbox&topic=tpc_created', {
+      replace: true,
+    });
+    expectNoAgentPathname();
   });
 
   it('drops editorData when sending the placeholder hint so the user message renders the markdown content', async () => {
