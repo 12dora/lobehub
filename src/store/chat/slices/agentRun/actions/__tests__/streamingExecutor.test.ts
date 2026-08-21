@@ -12,6 +12,7 @@ import * as agentConfigResolver from '@/services/chat/mecha/agentConfigResolver'
 import { useAgentStore } from '@/store/agent';
 import { useAiInfraStore } from '@/store/aiInfra';
 import { pageAgentRuntime } from '@/store/tool/slices/builtin/executors/lobe-page-agent';
+import { useUserStore } from '@/store/user';
 
 import { useChatStore } from '../../../../store';
 import { messageMapKey } from '../../../../utils/messageMapKey';
@@ -26,6 +27,14 @@ import {
 import { resetTestEnvironment, setupMockSelectors, spyOnMessageService } from './helpers';
 
 const serverConfigMock = vi.hoisted(() => ({ enableVisualUnderstanding: false }));
+const platformApprovalMeta = vi.hoisted(() => ({
+  current: undefined as { locked: boolean } | undefined,
+}));
+
+vi.mock('@/helpers/platformSettingLocks', () => ({
+  isPlatformSettingLocked: () => platformApprovalMeta.current?.locked === true,
+  publishPlatformSettingLocks: vi.fn(),
+}));
 const agentSignalBridgeMock = vi.hoisted(() => ({
   emitClientAgentSignalSourceEvent: vi.fn().mockResolvedValue(undefined),
 }));
@@ -1680,6 +1689,107 @@ describe('StreamingExecutor actions', () => {
       // Note: The actual content depends on what plugins are resolved,
       // but the key point is they should not be empty (unless no plugins are configured)
       expect(stateWithoutDisable.toolManifestMap).toEqual(stateWithDisableFalse.toolManifestMap);
+    });
+  });
+
+  describe('internal_createAgentState approval mode', () => {
+    const TOPIC_MAP_KEY = `agent_${TEST_IDS.SESSION_ID}`;
+    const userMessage = {
+      id: TEST_IDS.USER_MESSAGE_ID,
+      role: 'user',
+      content: TEST_CONTENT.USER_MESSAGE,
+      sessionId: TEST_IDS.SESSION_ID,
+      topicId: TEST_IDS.TOPIC_ID,
+    } as UIChatMessage;
+
+    const seed = (
+      topicApprovalMode: string | undefined,
+      userApprovalMode: 'allow-list' | 'auto-run' | 'headless' | 'manual',
+    ) => {
+      act(() => {
+        useChatStore.setState({
+          executeClientAgent: realExecAgentRuntime,
+          topicDataMap: {
+            [TOPIC_MAP_KEY]: {
+              items: [
+                {
+                  id: TEST_IDS.TOPIC_ID,
+                  metadata: topicApprovalMode ? { approvalMode: topicApprovalMode } : undefined,
+                  title: 'T',
+                },
+              ],
+            },
+          },
+        } as any);
+        useUserStore.setState({
+          settings: { tool: { humanIntervention: { approvalMode: userApprovalMode } } },
+        } as any);
+      });
+    };
+
+    afterEach(() => {
+      platformApprovalMeta.current = undefined;
+      act(() => {
+        useChatStore.setState({ topicDataMap: {} } as any);
+        useUserStore.setState({ settings: {} } as any);
+      });
+    });
+
+    it("uses the topic's own approval mode over the user preference", () => {
+      seed('auto-run', 'manual');
+      const { result } = renderHook(() => useChatStore());
+
+      const { state } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      });
+
+      expect(state.userInterventionConfig?.approvalMode).toBe('auto-run');
+    });
+
+    it('falls back to the user preference when the topic has no snapshot', () => {
+      seed(undefined, 'allow-list');
+      const { result } = renderHook(() => useChatStore());
+
+      const { state } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      });
+
+      expect(state.userInterventionConfig?.approvalMode).toBe('allow-list');
+    });
+
+    it('lets a locked platform policy win over the topic snapshot', () => {
+      seed('auto-run', 'manual');
+      platformApprovalMeta.current = { locked: true };
+      const { result } = renderHook(() => useChatStore());
+
+      const { state } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      });
+
+      expect(state.userInterventionConfig?.approvalMode).toBe('manual');
+    });
+
+    it('keeps mapping the internal headless mode onto auto-run', () => {
+      seed(undefined, 'headless');
+      const { result } = renderHook(() => useChatStore());
+
+      const { state } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      });
+
+      expect(state.userInterventionConfig?.approvalMode).toBe('auto-run');
     });
   });
 

@@ -44,7 +44,18 @@ const mockUserDefaultConfig = vi.hoisted(() => ({
 }));
 const mockToolInterventionConfig = vi.hoisted(() => ({
   allowList: [] as string[],
-  approvalMode: 'manual' as 'allow-list' | 'auto-run' | 'manual',
+  approvalMode: 'manual' as 'allow-list' | 'auto-run' | 'headless' | 'manual',
+}));
+const mockPlatformApprovalMeta = vi.hoisted(() => ({
+  current: undefined as { locked: boolean } | undefined,
+}));
+
+vi.mock('@/store/user/store', () => ({
+  getUserStoreState: vi.fn(() => ({})),
+}));
+
+vi.mock('@/helpers/platformSettingLocks', () => ({
+  isPlatformSettingLocked: () => mockPlatformApprovalMeta.current?.locked === true,
 }));
 
 vi.mock('@/store/user', () => ({
@@ -62,6 +73,7 @@ vi.mock('@/store/user/selectors', () => ({
   toolInterventionSelectors: {
     allowList: () => mockToolInterventionConfig.allowList,
     approvalMode: () => mockToolInterventionConfig.approvalMode,
+    rawApprovalMode: () => mockToolInterventionConfig.approvalMode,
   },
 }));
 
@@ -162,6 +174,7 @@ describe('GatewayActionImpl', () => {
     mockUserDefaultConfig.disableGatewayMode = undefined;
     mockToolInterventionConfig.approvalMode = 'manual';
     mockToolInterventionConfig.allowList = [];
+    mockPlatformApprovalMeta.current = undefined;
     vi.mocked(aiAgentService.getOperationStatus).mockResolvedValue(null);
   });
 
@@ -719,6 +732,9 @@ describe('GatewayActionImpl', () => {
         nextId: 'topic-1',
         previousId: 'tmp-topic',
         value: {
+          // The placeholder had no metadata of its own, so the snapshot the
+          // server was asked to stamp on the new topic is carried over.
+          metadata: { approvalMode: 'manual' },
           sessionId: 'agent-1',
           title: '666',
         },
@@ -845,6 +861,145 @@ describe('GatewayActionImpl', () => {
       );
     });
 
+    describe('per-conversation approval mode', () => {
+      const seedTopic = (state: Record<string, any>, metadata?: Record<string, unknown>) => {
+        state.topicDataMap = {
+          [topicMapKey({ agentId: undefined })]: {
+            items: [{ id: 'topic-1', metadata, title: 'T' }],
+          },
+        };
+      };
+
+      const mockCreated = () =>
+        vi.mocked(aiAgentService.execAgentTask).mockResolvedValue({
+          agentId: 'agent-1',
+          assistantMessageId: 'ast-1',
+          autoStarted: true,
+          createdAt: new Date().toISOString(),
+          message: 'ok',
+          operationId: 'server-op-1',
+          status: 'created',
+          success: true,
+          timestamp: new Date().toISOString(),
+          token: 'test-token',
+          topicId: 'topic-1',
+          userMessageId: 'usr-1',
+        });
+
+      it("sends the topic's own approval mode instead of the user preference", async () => {
+        const { action, state } = createExecuteTestAction();
+        mockToolInterventionConfig.approvalMode = 'manual';
+        seedTopic(state, { approvalMode: 'auto-run' });
+        mockCreated();
+
+        await action.executeGatewayAgent({
+          context: { agentId: 'agent-1', topicId: 'topic-1', threadId: null, scope: 'main' },
+          message: 'Hello',
+        });
+
+        expect(aiAgentService.execAgentTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userInterventionConfig: { allowList: [], approvalMode: 'auto-run' },
+          }),
+          expect.anything(),
+        );
+      });
+
+      it('lets a locked platform policy win over the topic snapshot', async () => {
+        const { action, state } = createExecuteTestAction();
+        mockToolInterventionConfig.approvalMode = 'manual';
+        mockPlatformApprovalMeta.current = { locked: true };
+        seedTopic(state, { approvalMode: 'auto-run' });
+        mockCreated();
+
+        await action.executeGatewayAgent({
+          context: { agentId: 'agent-1', topicId: 'topic-1', threadId: null, scope: 'main' },
+          message: 'Hello',
+        });
+
+        expect(aiAgentService.execAgentTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userInterventionConfig: { allowList: [], approvalMode: 'manual' },
+          }),
+          expect.anything(),
+        );
+      });
+
+      it('falls back to the user preference for a topic without a snapshot', async () => {
+        const { action, state } = createExecuteTestAction();
+        mockToolInterventionConfig.approvalMode = 'allow-list';
+        seedTopic(state, undefined);
+        mockCreated();
+
+        await action.executeGatewayAgent({
+          context: { agentId: 'agent-1', topicId: 'topic-1', threadId: null, scope: 'main' },
+          message: 'Hello',
+        });
+
+        expect(aiAgentService.execAgentTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userInterventionConfig: { allowList: [], approvalMode: 'allow-list' },
+          }),
+          expect.anything(),
+        );
+      });
+
+      it('snapshots the displayed mode into initialTopicMetadata on the first send', async () => {
+        const { action } = createExecuteTestAction();
+        mockToolInterventionConfig.approvalMode = 'auto-run';
+        mockCreated();
+
+        await action.executeGatewayAgent({
+          context: { agentId: 'agent-1', topicId: null, threadId: null, scope: 'main' },
+          message: 'Hello',
+        });
+
+        expect(aiAgentService.execAgentTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            appContext: expect.objectContaining({
+              initialTopicMetadata: expect.objectContaining({ approvalMode: 'auto-run' }),
+            }),
+            userInterventionConfig: { allowList: [], approvalMode: 'auto-run' },
+          }),
+          expect.anything(),
+        );
+      });
+
+      it('never snapshots the internal headless mode onto a new topic', async () => {
+        const { action } = createExecuteTestAction();
+        mockToolInterventionConfig.approvalMode = 'headless';
+        mockCreated();
+
+        await action.executeGatewayAgent({
+          context: { agentId: 'agent-1', topicId: null, threadId: null, scope: 'main' },
+          message: 'Hello',
+        });
+
+        expect(aiAgentService.execAgentTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            appContext: expect.objectContaining({
+              initialTopicMetadata: expect.objectContaining({ approvalMode: 'auto-run' }),
+            }),
+          }),
+          expect.anything(),
+        );
+      });
+
+      it('sends no initialTopicMetadata for an existing topic', async () => {
+        const { action, state } = createExecuteTestAction();
+        seedTopic(state, { approvalMode: 'manual' });
+        mockCreated();
+
+        await action.executeGatewayAgent({
+          context: { agentId: 'agent-1', topicId: 'topic-1', threadId: null, scope: 'main' },
+          message: 'Hello',
+        });
+
+        const [payload] = vi.mocked(aiAgentService.execAgentTask).mock.calls[0];
+        expect((payload as any).appContext.initialTopicMetadata).toBeUndefined();
+      });
+    });
+
     it('should forward task manager default assignee and current task context', async () => {
       const { action } = createExecuteTestAction();
 
@@ -934,7 +1089,7 @@ describe('GatewayActionImpl', () => {
       controller.abort('user cancelled');
 
       const mockClient = createMockClient();
-      const state: Record<string, any> = { gatewayConnections: {} };
+      const state: Record<string, any> = { gatewayConnections: {}, topicDataMap: {} };
       const set = vi.fn((updater: any) => {
         if (typeof updater === 'function') Object.assign(state, updater(state));
         else Object.assign(state, updater);
