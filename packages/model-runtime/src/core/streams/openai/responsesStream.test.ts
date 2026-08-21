@@ -935,6 +935,134 @@ describe('OpenAIResponsesStream', () => {
     );
   });
 
+  it('treats response.incomplete with max_output_tokens as a terminal length stop', async () => {
+    const onFinal = vi.fn();
+    const mockOpenAIStream = createReadableStream([
+      {
+        type: 'response.created',
+        response: { id: 'resp_incomplete_max', status: 'in_progress' },
+      },
+      {
+        type: 'response.incomplete',
+        response: {
+          id: 'resp_incomplete_max',
+          incomplete_details: { reason: 'max_output_tokens' },
+          status: 'incomplete',
+          usage: { input_tokens: 12, output_tokens: 40, total_tokens: 52 },
+        },
+      },
+    ]);
+
+    const protocolStream = OpenAIResponsesStream(mockOpenAIStream, {
+      callbacks: { onFinal },
+      payload: { model: 'gpt-4', provider: 'openai' },
+    });
+    const chunks = await readStreamChunk(protocolStream);
+    const events = parseSseEvents(chunks);
+
+    expect(events.some((event) => event.type === 'usage')).toBe(true);
+    const stop = events.find((event) => event.type === 'stop');
+    expect(stop?.data).toBe('"length"');
+    expect(onFinal).toHaveBeenCalledWith(expect.objectContaining({ finishReason: 'length' }));
+  });
+
+  it('treats response.incomplete with content_filter as a terminal content_filter stop', async () => {
+    const onFinal = vi.fn();
+    const mockOpenAIStream = createReadableStream([
+      {
+        type: 'response.created',
+        response: { id: 'resp_incomplete_filter', status: 'in_progress' },
+      },
+      {
+        type: 'response.incomplete',
+        response: {
+          id: 'resp_incomplete_filter',
+          incomplete_details: { reason: 'content_filter' },
+          status: 'incomplete',
+          usage: { input_tokens: 8, output_tokens: 3, total_tokens: 11 },
+        },
+      },
+    ]);
+
+    const protocolStream = OpenAIResponsesStream(mockOpenAIStream, {
+      callbacks: { onFinal },
+      payload: { model: 'gpt-4', provider: 'openai' },
+    });
+    const chunks = await readStreamChunk(protocolStream);
+    const events = parseSseEvents(chunks);
+
+    expect(events.some((event) => event.type === 'usage')).toBe(true);
+    expect(events.find((event) => event.type === 'stop')?.data).toBe('"content_filter"');
+    expect(onFinal).toHaveBeenCalledWith(
+      expect.objectContaining({ finishReason: 'content_filter' }),
+    );
+  });
+
+  it('uses tool_calls as the terminal finishReason for a completed function-call turn', async () => {
+    const onFinal = vi.fn();
+    const mockOpenAIStream = createReadableStream([
+      {
+        type: 'response.created',
+        response: { id: 'resp_fn_completed', status: 'in_progress' },
+      },
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: {
+          arguments: '{"q":"hi"}',
+          call_id: 'call_fn',
+          name: 'search',
+          type: 'function_call',
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_fn_completed',
+          status: 'completed',
+          usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+        },
+      },
+    ]);
+
+    const protocolStream = OpenAIResponsesStream(mockOpenAIStream, {
+      callbacks: { onFinal },
+      payload: { model: 'gpt-4', provider: 'openai' },
+    });
+    const chunks = await readStreamChunk(protocolStream);
+    const events = parseSseEvents(chunks);
+
+    expect(events.some((event) => event.type === 'tool_calls')).toBe(true);
+    expect(events.find((event) => event.type === 'stop')?.data).toBe('"tool_calls"');
+    expect(onFinal).toHaveBeenCalledWith(expect.objectContaining({ finishReason: 'tool_calls' }));
+  });
+
+  it('keeps finishReason stop for a plain completed turn so answer-in-thinking salvage still keys on stop', async () => {
+    const onFinal = vi.fn();
+    const mockOpenAIStream = createReadableStream([
+      {
+        type: 'response.created',
+        response: { id: 'resp_plain_completed', status: 'in_progress' },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_plain_completed',
+          status: 'completed',
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      },
+    ]);
+
+    const protocolStream = OpenAIResponsesStream(mockOpenAIStream, {
+      callbacks: { onFinal },
+      payload: { model: 'gpt-4', provider: 'openai' },
+    });
+    await readStreamChunk(protocolStream);
+
+    expect(onFinal).toHaveBeenCalledWith(expect.objectContaining({ finishReason: 'stop' }));
+  });
+
   it('should handle unknown chunk type as data', async () => {
     const mockOpenAIStream = createReadableStream([
       {

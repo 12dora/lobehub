@@ -43,6 +43,11 @@ export class ServerCallLlmStreamSink {
   private readonly imageUploadService?: FileService;
   private readonly operationId: string;
   private readonly operationLogId: string;
+  /**
+   * Serialises `publishStreamChunk` so a timer-triggered reasoning flush cannot
+   * complete after (or during) a text publish.
+   */
+  private publishQueue: Promise<void> = Promise.resolve();
   private reasoningBuffer = '';
   private reasoningBufferTimer: NodeJS.Timeout | null = null;
   /**
@@ -50,9 +55,11 @@ export class ServerCallLlmStreamSink {
    * must not be flushed — the gateway would restart the Thinking indicator.
    */
   private reasoningPhaseEnded = false;
+  private reasoningTimerFlush: Promise<void> | null = null;
   private readonly stepIndex: number;
   private textBuffer = '';
   private textBufferTimer: NodeJS.Timeout | null = null;
+  private textTimerFlush: Promise<void> | null = null;
 
   constructor({ ctx, events, operationLogId }: CreateServerCallLlmStreamSinkInput) {
     this.events = events;
@@ -131,16 +138,7 @@ export class ServerCallLlmStreamSink {
   }
 
   clearBuffers() {
-    if (this.textBufferTimer) {
-      clearTimeout(this.textBufferTimer);
-      this.textBufferTimer = null;
-    }
-
-    if (this.reasoningBufferTimer) {
-      clearTimeout(this.reasoningBufferTimer);
-      this.reasoningBufferTimer = null;
-    }
-
+    this.cancelBufferTimers();
     this.textBuffer = '';
     this.reasoningBuffer = '';
   }
@@ -151,23 +149,27 @@ export class ServerCallLlmStreamSink {
 
   /**
    * End-of-stream flush: leftover reasoning first, then leftover text.
-   * If text has already been published, drop leftover reasoning so it cannot
-   * restart the Thinking indicator after the answer is visible.
+   * Cancel outstanding timers and await any flush they already started so a
+   * 300 ms reasoning timer cannot publish after text.
    */
   async flushEndOfStream() {
+    this.cancelBufferTimers();
+    if (this.reasoningTimerFlush) await this.reasoningTimerFlush;
+    if (this.textTimerFlush) await this.textTimerFlush;
     await this.flushReasoningBuffer();
     await this.flushTextBuffer();
   }
 
   async flushReasoningBuffer() {
     const delta = this.reasoningBuffer;
-
     this.reasoningBuffer = '';
 
-    if (this.reasoningPhaseEnded) return;
+    if (this.reasoningPhaseEnded || !delta) return;
 
-    if (!!delta) {
-      log(`[${this.operationLogId}] flushReasoningBuffer:`, delta);
+    log(`[${this.operationLogId}] flushReasoningBuffer:`, delta);
+
+    await this.enqueuePublish(async () => {
+      if (this.reasoningPhaseEnded) return;
 
       this.events.push({
         chunk: { text: delta, type: 'reasoning' },
@@ -186,17 +188,26 @@ export class ServerCallLlmStreamSink {
         Date.now() - publishStart,
         delta.length,
       );
-    }
+    });
   }
 
   async flushTextBuffer() {
     const delta = this.textBuffer;
     this.textBuffer = '';
 
-    if (!!delta) {
-      log(`[${this.operationLogId}] flushTextBuffer:`, delta);
+    if (!delta) return;
 
-      // Build standard Agent Runtime event
+    log(`[${this.operationLogId}] flushTextBuffer:`, delta);
+
+    // Mark the reasoning phase ended BEFORE text publication so a concurrent
+    // timer flush cannot emit thinking after (or during) the answer.
+    this.reasoningPhaseEnded = true;
+    if (this.reasoningBufferTimer) {
+      clearTimeout(this.reasoningBufferTimer);
+      this.reasoningBufferTimer = null;
+    }
+
+    await this.enqueuePublish(async () => {
       this.events.push({
         chunk: { text: delta, type: 'text' },
         type: 'llm_stream',
@@ -207,7 +218,6 @@ export class ServerCallLlmStreamSink {
         chunkType: 'text',
         content: delta,
       });
-      this.reasoningPhaseEnded = true;
       timing(
         '[%s] flushTextBuffer published at %d, took %dms, length: %d',
         this.operationLogId,
@@ -215,7 +225,7 @@ export class ServerCallLlmStreamSink {
         Date.now() - publishStart,
         delta.length,
       );
-    }
+    });
   }
 
   async waitForImageUploads() {
@@ -224,13 +234,36 @@ export class ServerCallLlmStreamSink {
     }
   }
 
+  private cancelBufferTimers() {
+    if (this.textBufferTimer) {
+      clearTimeout(this.textBufferTimer);
+      this.textBufferTimer = null;
+    }
+
+    if (this.reasoningBufferTimer) {
+      clearTimeout(this.reasoningBufferTimer);
+      this.reasoningBufferTimer = null;
+    }
+  }
+
+  private enqueuePublish(task: () => Promise<void>): Promise<void> {
+    const run = this.publishQueue.then(task);
+    this.publishQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   private queueReasoning(reasoning: string) {
+    if (this.reasoningPhaseEnded) return;
+
     this.reasoningBuffer += reasoning;
 
     if (!this.reasoningBufferTimer) {
-      this.reasoningBufferTimer = setTimeout(async () => {
-        await this.flushReasoningBuffer();
+      this.reasoningBufferTimer = setTimeout(() => {
         this.reasoningBufferTimer = null;
+        this.reasoningTimerFlush = this.flushReasoningBuffer();
       }, BUFFER_INTERVAL);
     }
   }
@@ -239,9 +272,9 @@ export class ServerCallLlmStreamSink {
     this.textBuffer += text;
 
     if (!this.textBufferTimer) {
-      this.textBufferTimer = setTimeout(async () => {
-        await this.flushTextBuffer();
+      this.textBufferTimer = setTimeout(() => {
         this.textBufferTimer = null;
+        this.textTimerFlush = this.flushTextBuffer();
       }, BUFFER_INTERVAL);
     }
   }

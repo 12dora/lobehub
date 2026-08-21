@@ -64,6 +64,14 @@ const SERVER_LLM_RETRY_POLICY = {
   noRetryProviders: [BRANDING_PROVIDER],
 };
 
+/**
+ * Answer-in-thinking salvage only applies to a natural, non-tool completion.
+ * `tool_calls` / `length` / `content_filter` must not promote reasoning into
+ * the visible answer.
+ */
+export const isAnswerInThinkingSalvageFinishReason = (finishReason?: string) =>
+  finishReason === 'end_turn' || finishReason === 'stop';
+
 export const callLlm =
   (ctx: RuntimeExecutorContext, prepared?: PreparedCallLLMContext): InstructionExecutor =>
   async (instruction, state) => {
@@ -597,10 +605,10 @@ export const callLlm =
               // the answer. This is a backstop; the primary fix is replaying the
               // real assistant reasoning in history (see modelForcesPreserveThinking
               // above) which sharply reduces how often the model does this.
-              const isTerminalNaturalStop =
-                currentStepFinishReason === 'end_turn' || currentStepFinishReason === 'stop';
+              // Only plain completions (`stop` / `end_turn`) salvage — never
+              // `tool_calls`, `length`, or `content_filter`.
               if (
-                isTerminalNaturalStop &&
+                isAnswerInThinkingSalvageFinishReason(currentStepFinishReason) &&
                 toolsCalling.length === 0 &&
                 tool_calls.length === 0 &&
                 streamSink.content.trim().length === 0 &&

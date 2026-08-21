@@ -84,4 +84,41 @@ describe('ServerCallLlmStreamSink flush ordering', () => {
 
     expect(publishedTypes(publishStreamChunk)).toEqual(['reasoning', 'text']);
   });
+
+  it('does not let a timer-triggered reasoning publish complete after text', async () => {
+    const events: AgentEvent[] = [];
+    let releaseText!: () => void;
+    const publishStreamChunk = vi.fn(async (_operationId, _stepIndex, payload) => {
+      if (payload.chunkType === 'text') {
+        await new Promise<void>((resolve) => {
+          releaseText = resolve;
+        });
+      }
+      return 'event-1';
+    });
+    const sink = createServerCallLlmStreamSink({
+      ctx: {
+        operationId: 'op-1',
+        stepIndex: 2,
+        streamManager: { publishStreamChunk },
+      } as unknown as RuntimeExecutorContext,
+      events,
+      operationLogId: 'op-1:2',
+    });
+
+    await sink.appendThinking('think');
+    await sink.appendText('answer');
+
+    const textFlush = sink.flushTextBuffer();
+    await vi.advanceTimersByTimeAsync(400);
+    releaseText();
+    await textFlush;
+
+    expect(publishedTypes(publishStreamChunk)).toEqual(['text']);
+    expect(
+      events.map((event) =>
+        event.type === 'llm_stream' ? (event.chunk as { type: string }).type : event.type,
+      ),
+    ).toEqual(['text']);
+  });
 });

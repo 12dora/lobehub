@@ -22,6 +22,59 @@ import {
 } from '../protocol';
 import type { OpenAIStreamOptions } from './openai';
 
+/**
+ * Map Responses `incomplete_details.reason` onto the chat-completions finish
+ * vocabulary (`length` for max tokens; other reasons pass through).
+ */
+const mapResponsesIncompleteFinishReason = (reason?: string | null): string => {
+  if (reason === 'max_output_tokens') return 'length';
+  return reason || 'incomplete';
+};
+
+const emitResponsesTerminalChunks = (
+  chunk: {
+    response: {
+      id: string;
+      incomplete_details?: { reason?: string } | null;
+      status?: string | null;
+      usage?: OpenAI.Responses.ResponseUsage | null;
+    };
+    type: string;
+  },
+  streamContext: StreamContext,
+  payload: ChatPayloadForTransformStream | undefined,
+  finishReason: string,
+): StreamProtocolChunk[] => {
+  const chunks: StreamProtocolChunk[] = [];
+  const responseId = chunk.response.id;
+
+  if (chunk.response.usage) {
+    delete streamContext.usageMissingDiagnostics;
+    chunks.push({
+      data: convertOpenAIResponseUsage(chunk.response.usage, payload),
+      id: responseId,
+      type: 'usage',
+    });
+  } else {
+    streamContext.usageMissingDiagnostics = {
+      apiMode: 'responses',
+      hasUsageMetadata: false,
+      includeUsageRequested: payload?.includeUsageRequested,
+      model: payload?.model,
+      provider: payload?.provider,
+      responseId,
+      source: 'openai_responses',
+      terminalEventType: chunk.type,
+      terminalStatus: chunk.response.status,
+    };
+
+    chunks.push({ data: chunk, id: streamContext.id, type: 'data' });
+  }
+
+  chunks.push({ data: finishReason, id: responseId, type: 'stop' });
+  return chunks;
+};
+
 const transformOpenAIStream = (
   chunk:
     | OpenAI.Responses.ResponseStreamEvent
@@ -75,6 +128,7 @@ const transformOpenAIStream = (
       case 'response.output_item.added': {
         switch (chunk.item.type) {
           case 'function_call': {
+            streamContext.hasFunctionCall = true;
             streamContext.toolIndex =
               typeof streamContext.toolIndex === 'undefined' ? 0 : streamContext.toolIndex + 1;
             streamContext.tool = {
@@ -233,44 +287,32 @@ const transformOpenAIStream = (
         return { data: null, id: chunk.item.id, type: 'text' };
       }
 
+      case 'response.incomplete': {
+        // Terminal: OpenAI/Azure hit a limit (max_output_tokens, content_filter)
+        // and emit this instead of `response.completed`. Without `stop`, the
+        // partial answer is treated as a successful stream with no usage and
+        // no finish reason.
+        return emitResponsesTerminalChunks(
+          chunk,
+          streamContext,
+          payload,
+          mapResponsesIncompleteFinishReason(chunk.response.incomplete_details?.reason),
+        );
+      }
+
       case 'response.completed': {
-        const chunks: StreamProtocolChunk[] = [];
-        const responseId = chunk.response.id;
-
-        if (chunk.response.usage) {
-          delete streamContext.usageMissingDiagnostics;
-          chunks.push({
-            data: convertOpenAIResponseUsage(chunk.response.usage, payload),
-            id: responseId,
-            type: 'usage',
-          });
-        } else {
-          streamContext.usageMissingDiagnostics = {
-            apiMode: 'responses',
-            hasUsageMetadata: false,
-            includeUsageRequested: payload?.includeUsageRequested,
-            model: payload?.model,
-            provider: payload?.provider,
-            responseId,
-            source: 'openai_responses',
-            terminalEventType: chunk.type,
-            terminalStatus: chunk.response.status,
-          };
-
-          chunks.push({ data: chunk, id: streamContext.id, type: 'data' });
-        }
-
         // Always close the protocol stream. Without `stop`, the client thinking
         // indicator stays on when no later text/tool event arrives (Grok).
-        // Map Responses `completed` → protocol `stop` so the executor's
-        // answer-in-thinking salvage (`finishReason === 'stop'`) still fires.
-        chunks.push({
-          data: chunk.response.status === 'completed' ? 'stop' : (chunk.response.status ?? 'stop'),
-          id: responseId,
-          type: 'stop',
-        });
+        // Plain completions map to `stop` so the executor's answer-in-thinking
+        // salvage (`finishReason === 'stop'`) still fires. Function-call turns
+        // use `tool_calls` so salvage does not promote thinking into the answer.
+        const finishReason = streamContext.hasFunctionCall
+          ? 'tool_calls'
+          : chunk.response.status === 'completed'
+            ? 'stop'
+            : (chunk.response.status ?? 'stop');
 
-        return chunks;
+        return emitResponsesTerminalChunks(chunk, streamContext, payload, finishReason);
       }
 
       default: {

@@ -34,6 +34,13 @@ export type ChatPayloadForTransformStream = {
  */
 export interface StreamContext {
   chunkIndex?: number;
+  /**
+   * True once this Responses stream has emitted a function-call item. The
+   * terminal `stop` payload uses `tool_calls` instead of `stop` so the
+   * executor's answer-in-thinking salvage (which keys on `stop` / `end_turn`
+   * only) does not fire on tool turns.
+   */
+  hasFunctionCall?: boolean;
   id: string;
   /**
    * Item ids that already emitted `response.output_text.delta`.
