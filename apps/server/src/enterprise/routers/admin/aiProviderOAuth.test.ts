@@ -40,6 +40,7 @@ import { AiCatalogAdminService } from '../../services/aiCatalog/adminService';
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
 import { resetSharedAccountIdentityBackfillForTests } from '../../services/aiCatalog/sharedOAuthIdentity';
 import { markSharedOAuthGrantInvalidForProvider } from '../../services/aiCatalog/sharedOAuthReauthMarker';
+import { clearBrowserCookieJarTombstone } from '../../services/browserSession/cookieJar';
 import { ChatGPTWebOAuthService } from '../../services/chatgptWeb/oauthService';
 import { getCookieJarPath, seedSessionJar } from '../../services/chatgptWeb/transport';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
@@ -1883,20 +1884,18 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
 
     const rows = await db.select().from(platformAiModels);
     expect(rows.map((row) => row.modelKey).sort()).toEqual([
-      'auto',
+      'gpt-5-5',
       'gpt-5-6',
-      'gpt-5-6-instant',
-      'gpt-5-6-pro',
-      'gpt-5-6-thinking',
       'gpt-image-2',
+      'o3',
     ]);
     expect(rows.every((row) => row.enabled)).toBe(true);
     // Both model types the card enables, not just the chat ones.
     expect(rows.find((row) => row.modelKey === 'gpt-image-2')?.type).toBe('image');
     // Card metadata, so the row is not an empty stub the list then contradicts.
-    expect(rows.find((row) => row.modelKey === 'auto')).toMatchObject({
+    expect(rows.find((row) => row.modelKey === 'gpt-5-6')).toMatchObject({
       contextWindowTokens: 128_000,
-      displayName: 'Auto (ChatGPT Web)',
+      displayName: 'GPT-5.6 Sol (ChatGPT Web)',
     });
     // Live, not a saved-but-unpublished draft.
     expect((await db.select().from(platformAiProviders))[0]).toMatchObject({
@@ -1930,7 +1929,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     expect(
       await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test'),
     ).toMatchObject({ status: 'success', stored: true });
-    expect(await db.select().from(platformAiModels)).toHaveLength(6);
+    expect(await db.select().from(platformAiModels)).toHaveLength(4);
   });
 
   it('wipes the ChatGPT Web cookie jar on disconnect', async () => {
@@ -2082,10 +2081,14 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
       }),
     ).rejects.toBeTruthy();
 
-    // First request wiped; a leftover jar after that outage must still be
-    // recoverable on retry rather than short-circuited into a no-op.
+    // First request wiped and tombstoned the path so a late curl cannot
+    // resurrect it. A leftover after that outage is a jar that appeared once
+    // the fence was lifted (reconnect / new context); lift then re-seed so
+    // the retry can still prove it wipes rather than short-circuiting.
+    const leftoverJar = getCookieJarPath(envelope.deviceId);
+    clearBrowserCookieJarTombstone(leftoverJar);
     seedSessionJar(envelope.deviceId);
-    expect(existsSync(getCookieJarPath(envelope.deviceId))).toBe(true);
+    expect(existsSync(leftoverJar)).toBe(true);
 
     serviceSeam.failPostCommitDetail = false;
     serviceSeam.failVerificationRead = false;

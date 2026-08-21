@@ -239,6 +239,13 @@ export const applyModelExtendParams = (ctx: ApplyModelExtendParamsContext): Mode
     extendParams.reasoning_effort = chatConfig.gpt5_6ReasoningEffort;
   }
 
+  if (
+    modelExtendParams.includes('chatgptWebReasoningEffort') &&
+    chatConfig.chatgptWebReasoningEffort
+  ) {
+    extendParams.reasoning_effort = chatConfig.chatgptWebReasoningEffort;
+  }
+
   if (modelExtendParams.includes('reasoningMode') && chatConfig.reasoningMode === 'pro') {
     extendParams.reasoning = { ...extendParams.reasoning, mode: 'pro' };
   }

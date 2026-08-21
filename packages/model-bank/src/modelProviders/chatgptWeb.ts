@@ -17,7 +17,7 @@ import type { ModelProviderCard } from '../types';
  */
 const ChatGPTWeb: ModelProviderCard = {
   chatModels: [],
-  checkModel: 'auto',
+  checkModel: 'gpt-5-6',
   description:
     'Use your ChatGPT subscription through the chatgpt.com web backend, with web search, image generation and file upload — no OpenAI Platform API key needed.',
   disableBrowserRequest: true,

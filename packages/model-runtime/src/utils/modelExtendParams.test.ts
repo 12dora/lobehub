@@ -131,6 +131,19 @@ describe('applyModelExtendParams', () => {
     expect(result.reasoning_effort).toBe('max');
   });
 
+  it('resolves ChatGPT Web family reasoning effort independently from gpt5_6ReasoningEffort', () => {
+    const result = applyModelExtendParams({
+      chatConfig: chatConfig({
+        chatgptWebReasoningEffort: 'pro',
+        gpt5_6ReasoningEffort: 'max',
+      }),
+      extendParams: ['chatgptWebReasoningEffort'],
+      model: 'gpt-5-6',
+    });
+
+    expect(result.reasoning_effort).toBe('pro');
+  });
+
   it('resolves Kimi K3 reasoning effort', () => {
     const result = applyModelExtendParams({
       chatConfig: chatConfig({ kimiK3ReasoningEffort: 'high' }),

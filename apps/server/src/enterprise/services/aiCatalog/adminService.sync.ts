@@ -208,6 +208,80 @@ export const mapCardsToBatchUpdate = (
   return { created, items, total, updated };
 };
 
+const CHATGPTWEB_PROVIDER = 'chatgptweb';
+const CHATGPT_WEB_FAMILY_BASE_RE = /^gpt-5-\d+$/;
+
+const abilitiesFromCardFlags = (card: ChatModelCard): Record<string, boolean> | undefined => {
+  const abilities: Record<string, boolean> = {};
+  let reported = false;
+  for (const key of ABILITY_KEYS) {
+    const value = card[key];
+    if (typeof value !== 'boolean') continue;
+    reported = true;
+    if (value) abilities[key] = true;
+  }
+  return reported ? abilities : undefined;
+};
+
+type MappedCards = ReturnType<typeof mapCardsToBatchUpdate>;
+
+/**
+ * When chatgptweb `models()` collapses Instant / Thinking / Pro SKUs into one
+ * family card, existing catalog rows for those SKUs (and `auto`) must be
+ * disabled — never deleted — so a later sync does not re-create them as live
+ * options. The family row picks up the new settings/abilities from the card.
+ * Idempotent: already-disabled rows and already-matching family metadata are
+ * left alone.
+ */
+export const reconcileChatGPTWebLegacySkus = (
+  cards: ChatModelCard[],
+  existing: readonly DraftModel[],
+  mapped: MappedCards,
+): MappedCards => {
+  const familyCards = cards.filter((card) => CHATGPT_WEB_FAMILY_BASE_RE.test(card.id));
+  if (familyCards.length === 0) return mapped;
+
+  const itemsById = new Map(mapped.items.map((item) => [item.id, { ...item }]));
+  let { updated } = mapped;
+  const existingByKey = new Map(existing.map((model) => [model.modelKey, model]));
+
+  for (const card of familyCards) {
+    const row = existingByKey.get(card.id);
+    if (!row) continue;
+
+    const abilities = abilitiesFromCardFlags(card);
+    const current = itemsById.get(row.id);
+    const candidate: BatchUpdateItem = {
+      ...(current ?? { id: row.id }),
+      ...(abilities ? { abilities } : {}),
+      id: row.id,
+    };
+    if (!metadataChanged(row, candidate)) continue;
+    if (!current) updated += 1;
+    itemsById.set(row.id, candidate);
+  }
+
+  const disableKeys = new Set<string>(['auto']);
+  for (const card of familyCards) {
+    disableKeys.add(`${card.id}-instant`);
+    disableKeys.add(`${card.id}-thinking`);
+    disableKeys.add(`${card.id}-pro`);
+  }
+
+  for (const row of existing) {
+    if (!disableKeys.has(row.modelKey) || row.enabled === false) continue;
+    const current = itemsById.get(row.id);
+    if (current) {
+      current.enabled = false;
+      continue;
+    }
+    itemsById.set(row.id, { enabled: false, id: row.id });
+    updated += 1;
+  }
+
+  return { created: mapped.created, items: [...itemsById.values()], total: mapped.total, updated };
+};
+
 /**
  * Decrypt the draft platform vault, refresh a rotating grant if needed, and list
  * models through the same runtime chat uses. Does not go through
@@ -311,7 +385,11 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
         runtimeProvider: normalized.runtimeProvider,
       });
 
-      const { created, items, total, updated } = mapCardsToBatchUpdate(cards, detail.draft.models);
+      const mapped = mapCardsToBatchUpdate(cards, detail.draft.models);
+      const { created, items, total, updated } =
+        provider.providerKey === CHATGPTWEB_PROVIDER
+          ? reconcileChatGPTWebLegacySkus(cards, detail.draft.models, mapped)
+          : mapped;
 
       const appendSyncSuccessAudit = (db: typeof this.db) =>
         new PlatformAuditService(db).append({

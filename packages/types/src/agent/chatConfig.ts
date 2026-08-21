@@ -27,23 +27,28 @@ export interface AgentSelfIterationChatConfig {
 }
 
 export interface LobeAgentChatConfig extends AgentMemoryChatConfig, AgentSelfIterationChatConfig {
+  /**
+   * ChatGPT.com web UI thinking-effort picker (Instant / Medium / High / Extra high / Pro).
+   * Distinct from `gpt5_6ReasoningEffort`, which is shared with OpenAI Platform gpt-5.6-sol.
+   */
+  chatgptWebReasoningEffort?: 'instant' | 'medium' | 'high' | 'xhigh' | 'pro';
   codexMaxReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
   /**
    * Model ID to use for generating compression summaries
    */
   compressionModelId?: string;
-  deepseekV4ReasoningEffort?: 'none' | 'high' | 'max';
 
+  deepseekV4ReasoningEffort?: 'none' | 'high' | 'max';
   /**
    * Disable context caching
    */
   disableContextCaching?: boolean;
+
   /**
    * Disable Gateway mode for this agent. Undefined means Gateway mode follows
    * the app-level default and stays enabled when the server supports it.
    */
   disableGatewayMode?: boolean;
-
   effort?: 'low' | 'medium' | 'high' | 'max';
   /**
    * Whether to enable adaptive thinking (Claude Opus 4.6)
@@ -236,6 +241,7 @@ export const SelfIterationChatConfigSchema = z.object({
 
 export const AgentChatConfigSchema = z
   .object({
+    chatgptWebReasoningEffort: z.enum(['instant', 'medium', 'high', 'xhigh', 'pro']).optional(),
     codexMaxReasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
     deepseekV4ReasoningEffort: z.enum(['none', 'high', 'max']).optional(),
     compressionModelId: z.string().optional(),

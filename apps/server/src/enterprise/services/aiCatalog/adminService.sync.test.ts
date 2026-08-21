@@ -23,7 +23,7 @@ import {
   AiCatalogUpstreamSyncError,
   AiCatalogValidationError,
 } from './adminService';
-import { mapCardsToBatchUpdate } from './adminService.sync';
+import { mapCardsToBatchUpdate, reconcileChatGPTWebLegacySkus } from './adminService.sync';
 import type * as SharedOAuthRefreshModule from './sharedOAuthRefresh';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -192,6 +192,92 @@ describe('mapCardsToBatchUpdate', () => {
         settings: { extendParams: ['gpt5_6ReasoningEffort'] },
       }),
     ]);
+  });
+});
+
+describe('reconcileChatGPTWebLegacySkus', () => {
+  const familyCard = {
+    description: 'Family',
+    displayName: 'GPT-5.6 Sol (ChatGPT Web)',
+    enabled: true,
+    files: true,
+    functionCall: false,
+    id: 'gpt-5-6',
+    imageOutput: true,
+    reasoning: true,
+    search: true,
+    settings: { extendParams: ['chatgptWebReasoningEffort' as const], searchImpl: 'params' },
+    vision: true,
+  };
+
+  it('disables Instant/Thinking/Pro and auto rows without deleting them', () => {
+    const existing = [
+      draftModel({
+        abilities: { files: true, vision: true },
+        displayName: 'GPT-5.6 (ChatGPT Web)',
+        id: 'family-1',
+        modelKey: 'gpt-5-6',
+      }),
+      draftModel({ enabled: true, id: 'instant-1', modelKey: 'gpt-5-6-instant' }),
+      draftModel({ enabled: true, id: 'thinking-1', modelKey: 'gpt-5-6-thinking' }),
+      draftModel({ enabled: true, id: 'pro-1', modelKey: 'gpt-5-6-pro' }),
+      draftModel({ enabled: true, id: 'auto-1', modelKey: 'auto' }),
+      draftModel({ enabled: true, id: 'mini-1', modelKey: 'gpt-5-6-mini' }),
+    ];
+
+    const mapped = mapCardsToBatchUpdate([familyCard], existing);
+    const result = reconcileChatGPTWebLegacySkus([familyCard], existing, mapped);
+
+    const byId = Object.fromEntries(result.items.map((item) => [item.id, item]));
+    expect(byId['instant-1']).toEqual({ enabled: false, id: 'instant-1' });
+    expect(byId['thinking-1']).toEqual({ enabled: false, id: 'thinking-1' });
+    expect(byId['pro-1']).toEqual({ enabled: false, id: 'pro-1' });
+    expect(byId['auto-1']).toEqual({ enabled: false, id: 'auto-1' });
+    expect(byId['mini-1']).toBeUndefined();
+    expect(byId['family-1']).toEqual(
+      expect.objectContaining({
+        abilities: {
+          files: true,
+          imageOutput: true,
+          reasoning: true,
+          search: true,
+          vision: true,
+        },
+        displayName: 'GPT-5.6 Sol (ChatGPT Web)',
+        id: 'family-1',
+        settings: { extendParams: ['chatgptWebReasoningEffort'], searchImpl: 'params' },
+      }),
+    );
+    expect(result.items.some((item) => item.id === 'instant-1' && !('modelKey' in item))).toBe(
+      true,
+    );
+  });
+
+  it('is idempotent when legacy SKUs are already disabled and the family row matches', () => {
+    const existing = [
+      draftModel({
+        abilities: {
+          files: true,
+          imageOutput: true,
+          reasoning: true,
+          search: true,
+          vision: true,
+        },
+        description: 'Family',
+        displayName: 'GPT-5.6 Sol (ChatGPT Web)',
+        id: 'family-1',
+        modelKey: 'gpt-5-6',
+        settings: { extendParams: ['chatgptWebReasoningEffort'], searchImpl: 'params' },
+      }),
+      draftModel({ enabled: false, id: 'instant-1', modelKey: 'gpt-5-6-instant' }),
+      draftModel({ enabled: false, id: 'auto-1', modelKey: 'auto' }),
+    ];
+
+    const mapped = mapCardsToBatchUpdate([familyCard], existing);
+    const result = reconcileChatGPTWebLegacySkus([familyCard], existing, mapped);
+
+    expect(result.items).toEqual(mapped.items);
+    expect(result.items.some((item) => item.enabled === false)).toBe(false);
   });
 });
 

@@ -445,7 +445,7 @@ describe('LobeChatGPTWebAI', () => {
       expect(bodyOf(client).thinking_effort).toBe('standard');
     });
 
-    it('does not default thinking_effort for a plain (non -pro, non -thinking) model', async () => {
+    it('defaults a family id without effort to Medium (thinking slug + standard)', async () => {
       const client = createFakeClient();
       await createRuntime(client).chat({
         messages: [{ content: 'hi', role: 'user' }],
@@ -453,6 +453,64 @@ describe('LobeChatGPTWebAI', () => {
         temperature: 1,
       });
 
+      expect(bodyOf(client).model).toBe('gpt-5-6-thinking');
+      expect(bodyOf(client).thinking_effort).toBe('standard');
+    });
+
+    it.each([
+      ['instant', 'gpt-5-6-instant', undefined],
+      ['medium', 'gpt-5-6-thinking', 'standard'],
+      ['high', 'gpt-5-6-thinking', 'extended'],
+      ['xhigh', 'gpt-5-6-thinking', 'max'],
+    ] as const)(
+      'family gpt-5-6 + %s → model %s / thinking_effort %s',
+      async (effort, model, thinkingEffort) => {
+        const client = createFakeClient();
+        await createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'gpt-5-6',
+          reasoning_effort: effort,
+          temperature: 1,
+        });
+
+        expect(bodyOf(client).model).toBe(model);
+        expect(bodyOf(client).thinking_effort).toBe(thinkingEffort);
+      },
+    );
+
+    it('family + pro takes the existing Pro path (dual prepare, standard effort)', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6',
+        reasoning_effort: 'pro',
+        temperature: 1,
+      });
+
+      expect(bodyOf(client).model).toBe('gpt-5-6-pro');
+      expect(bodyOf(client).thinking_effort).toBe('standard');
+      expect(client.prepareConversation).toHaveBeenCalledTimes(2);
+      expect(
+        client.prepareConversation.mock.calls.map(([body]: any[]) => body.client_prepare_state),
+      ).toEqual(['success', 'sent']);
+      expect(client.prepareConversation.mock.calls.map(([body]: any[]) => body.model)).toEqual([
+        'gpt-5-6-pro',
+        'gpt-5-6-pro',
+      ]);
+      expect(optionsOf(client).conduitToken).toBeUndefined();
+      expect(optionsOf(client).useFPath).toBe(true);
+    });
+
+    it('omits thinking_effort for o3', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'o3',
+        reasoning_effort: 'high' as any,
+        temperature: 1,
+      });
+
+      expect(bodyOf(client).model).toBe('o3');
       expect(bodyOf(client).thinking_effort).toBeUndefined();
     });
 
@@ -460,7 +518,7 @@ describe('LobeChatGPTWebAI', () => {
       const client = createFakeClient();
       await createRuntime(client).chat({
         messages: [{ content: 'Reply with exactly: pong', role: 'user' }],
-        model: 'gpt-5-6',
+        model: 'auto',
         temperature: 1,
       });
 
@@ -1676,7 +1734,7 @@ describe('LobeChatGPTWebAI', () => {
   });
 
   describe('models', () => {
-    it('exposes chat slugs, drops internal ones and always offers auto', async () => {
+    it('collapses Instant/Thinking/Pro SKUs into one family card and hides internals', async () => {
       const client = createFakeClient({
         listModels: vi.fn(async () => [
           { maxTokens: 128_000, raw: {}, slug: 'gpt-5-6', title: 'GPT-5.6' },
@@ -1688,12 +1746,19 @@ describe('LobeChatGPTWebAI', () => {
 
       const models = await createRuntime(client).models();
 
-      expect(models.map((model) => model.id)).toEqual(['auto', 'gpt-5-6', 'gpt-5-6-thinking']);
-      expect(models[0]).toMatchObject({ enabled: true, id: 'auto' });
-      expect(models[1]).toMatchObject({ contextWindowTokens: 128_000, functionCall: false });
+      expect(models.map((model) => model.id)).toEqual(['gpt-5-6']);
+      expect(models[0]).toMatchObject({
+        contextWindowTokens: 128_000,
+        displayName: 'GPT-5.6 Sol (ChatGPT Web)',
+        enabled: true,
+        functionCall: false,
+        id: 'gpt-5-6',
+        reasoning: true,
+        settings: expect.objectContaining({ extendParams: ['chatgptWebReasoningEffort'] }),
+      });
     });
 
-    it('enables the GPT-5.6 line, including Pro, out of the box', async () => {
+    it('enables the advertised family set, not Instant/Thinking/Pro SKUs', async () => {
       const client = createFakeClient({
         listModels: vi.fn(async () => [
           { raw: {}, slug: 'gpt-5-6' },
@@ -1701,23 +1766,30 @@ describe('LobeChatGPTWebAI', () => {
           { raw: {}, slug: 'gpt-5-6-pro' },
           { raw: {}, slug: 'gpt-5-6-instant' },
           { raw: {}, slug: 'gpt-5-5' },
+          { raw: {}, slug: 'o3' },
+          { raw: {}, slug: 'gpt-5-6-mini' },
         ]),
       });
 
       const models = await createRuntime(client).models();
       const enabled = models.filter((model) => model.enabled).map((model) => model.id);
 
-      expect(enabled).toEqual([
-        'auto',
-        'gpt-5-6',
-        'gpt-5-6-thinking',
-        'gpt-5-6-pro',
-        'gpt-5-6-instant',
-      ]);
-      expect(models.find((model) => model.id === 'gpt-5-6-pro')).toMatchObject({ reasoning: true });
+      expect(enabled).toEqual(['gpt-5-6', 'gpt-5-5', 'o3']);
+      expect(models.map((model) => model.id)).toEqual(['gpt-5-6', 'gpt-5-5', 'o3', 'gpt-5-6-mini']);
+      expect(models.find((model) => model.id === 'gpt-5-6')).toMatchObject({ reasoning: true });
+      expect(models.find((model) => model.id === 'o3')).toMatchObject({
+        reasoning: true,
+        settings: expect.not.objectContaining({
+          extendParams: expect.arrayContaining(['chatgptWebReasoningEffort']),
+        }),
+      });
+      expect(models.find((model) => model.id === 'gpt-5-6-mini')).toMatchObject({
+        enabled: false,
+        id: 'gpt-5-6-mini',
+      });
     });
 
-    it('gives a live-only slug sane defaults', async () => {
+    it('collapses a live-only family and derives the display name from SKU titles', async () => {
       const client = createFakeClient({
         listModels: vi.fn(async () => [
           { raw: {}, slug: 'gpt-5-7-thinking', title: 'GPT-5.7 Thinking' },
@@ -1727,42 +1799,21 @@ describe('LobeChatGPTWebAI', () => {
 
       const models = await createRuntime(client).models();
 
-      expect(models.find((model) => model.id === 'gpt-5-7-thinking')).toMatchObject({
+      expect(models.map((model) => model.id)).toEqual(['gpt-5-7']);
+      expect(models[0]).toMatchObject({
         contextWindowTokens: 128_000,
-        displayName: 'GPT-5.7 Thinking',
+        displayName: 'GPT-5.7',
         enabled: false,
         files: true,
         functionCall: false,
         reasoning: true,
         search: true,
+        settings: {
+          extendParams: ['chatgptWebReasoningEffort'],
+          searchImpl: 'params',
+          searchProvider: 'chatgptweb',
+        },
         vision: true,
-      });
-      // no `-thinking` / `-pro` / `o3` in the name ⇒ not a reasoning model
-      expect(models.find((model) => model.id === 'gpt-5-7-instant')).toMatchObject({
-        reasoning: false,
-      });
-    });
-
-    it('gives a live-only slug the shared settings, not an empty one', async () => {
-      const client = createFakeClient({
-        listModels: vi.fn(async () => [
-          { raw: {}, slug: 'gpt-5-7-thinking' },
-          { raw: {}, slug: 'gpt-5-7-instant' },
-        ]),
-      });
-
-      const models = await createRuntime(client).models();
-
-      // a search toggle needs an implementation behind it…
-      expect(models.find((model) => model.id === 'gpt-5-7-instant')?.settings).toEqual({
-        searchImpl: 'params',
-        searchProvider: 'chatgptweb',
-      });
-      // …and an advertised reasoning ability needs the effort selector
-      expect(models.find((model) => model.id === 'gpt-5-7-thinking')?.settings).toEqual({
-        extendParams: ['gpt5_6ReasoningEffort'],
-        searchImpl: 'params',
-        searchProvider: 'chatgptweb',
       });
     });
   });

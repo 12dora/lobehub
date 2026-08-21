@@ -151,7 +151,7 @@ CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH=/usr/local/lib/libcurl-impersonate.so
 
 ### 4.3 首次连接与模型开启
 
-首次连接（`mode: 'create'`）会把服务商置为 `enabled: true`、写入 `checkModel: 'auto'`，并**自动物化卡片里默认开启的内置模型**（`adminService.models.ts` 的 `materializeBuiltinDefaultModels`，取 `packages/model-bank/src/aiModels/chatgptWeb.ts` 中 `enabled: true` 的条目）：`auto`、`gpt-5-6`、`gpt-5-6-thinking`、`gpt-5-6-instant`、`gpt-5-6-pro`、`gpt-image-2`。落下来的是**已开启**的真实模型行（带卡片元数据，图像模型也在内），所以连上即可用，不需要再手动勾选。
+首次连接（`mode: 'create'`）会把服务商置为 `enabled: true`、写入 `checkModel: 'gpt-5-6'`，并**自动物化卡片里默认开启的内置模型**（`adminService.models.ts` 的 `materializeBuiltinDefaultModels`，取 `packages/model-bank/src/aiModels/chatgptWeb.ts` 中 `enabled: true` 的条目）：`gpt-5-6`、`gpt-5-5`、`o3`、`gpt-image-2`。落下来的是**已开启**的真实模型行（带卡片元数据，图像模型也在内），所以连上即可用，不需要再手动勾选。广告面与 chatgpt.com 一致：5.x 是**家族卡**（Instant / Medium / High / Extra high / Pro 一档滑杆），不是 Instant / Thinking / Pro 各一张。已有平台目录里的 `{base}-instant|-thinking|-pro` 和 `auto` 行在「同步上游模型」时会被**关掉、不删除**。
 
 - 物化随服务商创建走同一次发布，不额外要求 `AI_MODEL_CREATE` 权限（这批行是内置卡片而非管理员自建模型）。
 - **重连不会重新物化**：已有的模型行原样保留，管理员之后的开关 / 删除不会被连接动作覆盖回去。
@@ -221,7 +221,17 @@ CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH=/usr/local/lib/libcurl-impersonate.so
 - **上游可能按 IP / 用量静默降级模型**：SSE 的 `server_ste_metadata` 里带回真实 `model_slug`。现在它会被记录下来 —— 与请求的模型不一致时，`DEBUG=lobe-chatgptweb:stream` 打印一行 `upstream served <slug> for a turn that requested <model>`，同一个值也随 `servedModel` 进入流的 `onDone` 上下文。**界面仍然不会提示**（协议层没有「实际模型 ≠ 请求模型」的通用槽位，加一个要动 `StreamProtocolChunk` + `fetchSSE` + 消息元数据三层），所以怀疑被降级时先看这行日志。目录里两张 mini 卡的说明已写明「用量达限时使用的更快更轻的 GPT-5.x 变体」，但默认关闭。
   - 注意 **`auto` 本来就会被上游路由**：选 `auto` 时服务到 `gpt-5-6-mini` 是上游分流器的正常行为，不是故障。拿浏览器里手选 GPT-5.6 去对比平台上的 `auto`，两边不可比。
 - **请求体里不会出现 `author.role: "system"`**：网页版自己从不发系统角色回合（自定义指令走另一套带标记的元数据），所以带自由文本的 system 回合是只有自动化客户端才会产出的形状。上下文引擎每一轮都会在 `messages[0]` 塞一条 system（人设、日期、模型信息、工具提示词），运行时会把它**并入紧随其后的那条用户消息**（`buildMessages`）；若下一条是助手回合（或已到末尾），则**就地**单独发成一条用户消息 —— 指令绝不允许跨过助手回合往后挪，否则会打乱对话顺序（`AgentDocumentMessageInjector` 会在首条用户消息之后插 system，这条路径真实可达）。`ChatGPTWebMessage['role']` 已收窄到 `'user' | 'assistant'` 钉住这条不变量。
-- **思考档位只有三档**：上游只接受 `standard` / `extended` / `max`（`low`/`medium`/`high` 会被 422 拒绝）。界面 6 档滑杆的映射是 `low|medium|standard → standard`、`high|xhigh|extended → extended`、`max → max`、`none|minimal|auto` → 不发该字段。
+- **思考档位（家族卡）**：chatgpt.com 给 GPT-5.6 Sol / GPT-5.5 一个五档选择器，挑一档会同时改 **wire slug** 和 `thinking_effort`。控制键是独立的 `chatgptWebReasoningEffort`（不要复用 OpenAI Platform 的 `gpt5_6ReasoningEffort`）。`o3` 没有档位，wire `model: o3`，不发 `thinking_effort`。
+
+  | 档位 | wire model | thinking_effort |
+  | --- | --- | --- |
+  | Instant（极速） | `{family}-instant` | 省略 |
+  | Medium（中） | `{family}-thinking` | `standard` |
+  | High（高） | `{family}-thinking` | `extended` |
+  | Extra high（极高） | `{family}-thinking` | `max` |
+  | Pro | `{family}-pro` | `standard`（走既有 Pro 双 prepare） |
+
+  上游仍然**只接受** `standard` / `extended` / `max`（`low`/`medium`/`high`/`instant`/`pro` 都不得出现在 wire 上，后两者 422 或语义错误）。旧 SKU id（`-instant`/`-thinking`/`-pro`/`-mini`、`auto`）运行时仍按原样透传；`thinking_effort` 的旧别名是 `low|medium|standard → standard`、`high|xhigh|extended → extended`、`max → max`、`none|minimal|auto|instant|pro` → 不发该字段。
 - **带显式思考档位的回合几乎必然走 handoff/resume**：上游先回一个空流 + `stream_handoff`，答案在 `/f/conversation/resume` 上重放（最多链 3 次）。预算耗尽时回合标 `recoveryRequired`，运行时改为轮询会话文档最多 240 s 补齐后缀。表现为「首字慢」，不是故障。
 - **限流来自共享账号本身**：所有成员共用一个 ChatGPT 账号的配额，429 是终态错误（不重试、不回落）。图片生成配额虽然协议里能读（`limits_progress`），当前**没有做任何预检**。
 - **`model_cap_exceeded`** 映射为 `ModelNotFound`，是为了让界面建议切到 `auto`；它不属于可回落错误。

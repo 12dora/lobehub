@@ -16,6 +16,7 @@ import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors, chatConfigByIdSelectors } from '@/store/agent/selectors';
 import { aiModelSelectors, useAiInfraStore } from '@/store/aiInfra';
 
+import { ChatGPTWebReasoningEffortSlider } from './ChatGPTWebReasoningEffortSlider';
 import CodexMaxReasoningEffortSlider from './CodexMaxReasoningEffortSlider';
 import ContextCachingSwitch from './ContextCachingSwitch';
 import DeepSeekReasoningEffortSlider from './DeepSeekReasoningEffortSlider';
@@ -327,6 +328,17 @@ const ControlsForm = memo<ControlsFormProps>(
         layout: 'vertical',
         minWidth: undefined,
         name: 'gpt5_6ReasoningEffort',
+        style: {
+          paddingBottom: 0,
+        },
+      },
+      {
+        children: <ChatGPTWebReasoningEffortSlider />,
+        desc: 'reasoning_effort',
+        label: t('extendParams.reasoningEffort.title'),
+        layout: 'vertical',
+        minWidth: undefined,
+        name: 'chatgptWebReasoningEffort',
         style: {
           paddingBottom: 0,
         },

@@ -47,6 +47,10 @@ const inferFlow = (options: { search?: boolean; systemHints?: string[] }): Condu
  * rejected with `422 {"detail":"Invalid conversation body"}` on both
  * `/backend-api/conversation` and `/backend-api/f/conversation/prepare` — only
  * `standard`, `extended`, `max` (or omitting the field) are accepted.
+ *
+ * `instant` and `pro` are ChatGPT Web family-picker levels, never wire values:
+ * Instant omits the field (and switches the slug); Pro is a slug (`*-pro`)
+ * with `thinking_effort: standard` applied by `resolveChatGPTWebTurn`.
  */
 const THINKING_EFFORT_ALIASES: Record<string, ThinkingEffort> = {
   extended: 'extended',
@@ -59,8 +63,8 @@ const THINKING_EFFORT_ALIASES: Record<string, ThinkingEffort> = {
 };
 
 /**
- * `auto` / `none` / `minimal` / unknown ⇒ omit the field entirely (that is what
- * the web client does).
+ * `auto` / `none` / `minimal` / `instant` / `pro` / unknown ⇒ omit the field
+ * entirely (that is what the web client does).
  */
 export const normalizeThinkingEffort = (
   value: string | undefined | null,

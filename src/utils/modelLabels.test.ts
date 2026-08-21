@@ -20,7 +20,7 @@ describe('getProviderLabel', () => {
 
 describe('getModelDisplayName re-export', () => {
   it('is the shared model-bank lookup', () => {
-    expect(getModelDisplayName('auto', 'chatgptweb')).toBe('Auto (ChatGPT Web)');
+    expect(getModelDisplayName('gpt-5-6', 'chatgptweb')).toBe('GPT-5.6 Sol (ChatGPT Web)');
     expect(getModelDisplayName('gpt')).toBe('gpt');
   });
 });

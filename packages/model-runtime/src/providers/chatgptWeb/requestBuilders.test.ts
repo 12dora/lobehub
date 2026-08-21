@@ -43,6 +43,8 @@ describe('normalizeThinkingEffort', () => {
     ['auto', undefined],
     ['none', undefined],
     ['minimal', undefined],
+    ['instant', undefined],
+    ['pro', undefined],
     ['nonsense', undefined],
     ['low', 'standard'],
     ['MEDIUM', 'standard'],
@@ -102,6 +104,22 @@ describe('buildConversationBody', () => {
         messages: [{ content: 'hi', role: 'user' }],
         model: 'auto',
         thinkingEffort: 'auto',
+      }),
+    ).not.toHaveProperty('thinking_effort');
+
+    expect(
+      buildConversationBody({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6-instant',
+        thinkingEffort: 'instant',
+      }),
+    ).not.toHaveProperty('thinking_effort');
+
+    expect(
+      buildConversationBody({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6-pro',
+        thinkingEffort: 'pro',
       }),
     ).not.toHaveProperty('thinking_effort');
   });

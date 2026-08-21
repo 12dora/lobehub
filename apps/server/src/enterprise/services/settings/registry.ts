@@ -27,7 +27,7 @@ import type {
 } from '@/types/platform/settings';
 
 /** Bump when registered paths / schemas change in a breaking way for cache keys. */
-export const SETTINGS_REGISTRY_VERSION = 5;
+export const SETTINGS_REGISTRY_VERSION = 6;
 
 /** Appearance / preference leaves used only in user UI clients (B6-R2). */
 const UI_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile'];

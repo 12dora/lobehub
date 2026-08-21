@@ -8,8 +8,9 @@ import {
 
 describe('getModelDisplayName', () => {
   it('resolves the card of the exact provider/model pair', () => {
-    expect(getModelDisplayName('auto', 'chatgptweb')).toBe('Auto (ChatGPT Web)');
-    expect(getModelDisplayName('gpt-5-6', 'chatgptweb')).toBe('GPT-5.6 (ChatGPT Web)');
+    expect(getModelDisplayName('gpt-5-6', 'chatgptweb')).toBe('GPT-5.6 Sol (ChatGPT Web)');
+    expect(getModelDisplayName('gpt-5-5', 'chatgptweb')).toBe('GPT-5.5 (ChatGPT Web)');
+    expect(getModelDisplayName('o3', 'chatgptweb')).toBe('o3 (ChatGPT Web)');
   });
 
   it('falls back to the first card carrying the id when the provider has no such card', () => {

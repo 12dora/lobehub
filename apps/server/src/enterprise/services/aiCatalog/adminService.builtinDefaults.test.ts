@@ -66,7 +66,7 @@ const createService = (connectionProbe: AiConnectionProbe = async () => {}) =>
  */
 const connectChatgptWeb = (service: AiCatalogAdminService) =>
   service.applyProviderImmediate('admin', {
-    checkModel: 'auto',
+    checkModel: 'gpt-5-6',
     displayName: 'ChatGPT Web',
     enabled: true,
     mode: 'create',
@@ -90,33 +90,27 @@ describe('AiCatalogAdminService builtin default-model materialization', () => {
     );
     // ...and the named keys pin today's contract, including the IMAGE model: an image card
     // the catalog enables is exactly as visibly "enabled" in the admin list as a chat one.
-    expect(keys).toEqual(
-      expect.arrayContaining([
-        'auto',
-        'gpt-5-6',
-        'gpt-5-6-instant',
-        'gpt-5-6-pro',
-        'gpt-5-6-thinking',
-        'gpt-image-2',
-      ]),
-    );
+    expect(keys).toEqual(['gpt-5-5', 'gpt-5-6', 'gpt-image-2', 'o3']);
     expect(result.draft.models.every((model) => model.enabled)).toBe(true);
     expect(result.draft.models.find((model) => model.modelKey === 'gpt-image-2')?.type).toBe(
       'image',
     );
 
     // Card metadata, not an empty stub — the whole point of reusing the model-bank payload.
-    const auto = result.draft.models.find((model) => model.modelKey === 'auto')!;
-    expect(auto).toMatchObject({
+    const family = result.draft.models.find((model) => model.modelKey === 'gpt-5-6')!;
+    expect(family).toMatchObject({
       contextWindowTokens: 128_000,
-      displayName: 'Auto (ChatGPT Web)',
+      displayName: 'GPT-5.6 Sol (ChatGPT Web)',
       type: 'chat',
     });
-    expect(auto.abilities).toMatchObject({ reasoning: true, vision: true });
-    expect(auto.settings).toMatchObject({ searchProvider: 'chatgptweb' });
+    expect(family.abilities).toMatchObject({ reasoning: true, vision: true });
+    expect(family.settings).toMatchObject({
+      extendParams: ['chatgptWebReasoningEffort'],
+      searchProvider: 'chatgptweb',
+    });
 
     // Card order survives, so the list reads the way the catalog presents it.
-    expect(result.draft.models[0]!.modelKey).toBe('auto');
+    expect(result.draft.models[0]!.modelKey).toBe('gpt-5-6');
   });
 
   it('audits every seeded row as a create tagged with its builtin origin', async () => {
@@ -208,6 +202,6 @@ describe('AiCatalogAdminService builtin default-model materialization', () => {
       reason: 'verify the shared account',
     });
     expect(result.status).toBe('success');
-    expect(probedModel).toBe('auto');
+    expect(probedModel).toBe('gpt-5-6');
   });
 });

@@ -5,6 +5,7 @@ import { type ExtendParamsType } from 'model-bank';
 import { memo, type ReactNode, type SyntheticEvent, useMemo } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
+import { ChatGPTWebReasoningEffortSlider } from '@/features/ModelSwitchPanel/components/ControlsForm/ChatGPTWebReasoningEffortSlider';
 import CodexMaxReasoningEffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/CodexMaxReasoningEffortSlider';
 import DeepSeekReasoningEffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/DeepSeekReasoningEffortSlider';
 import EffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/EffortSlider';
@@ -110,6 +111,10 @@ const EXTEND_PARAMS_OPTIONS: ExtendParamsOption[] = [
     key: 'gpt5_6ReasoningEffort',
   },
   {
+    hintKey: 'providerModels.item.modelConfig.extendParams.options.chatgptWebReasoningEffort.hint',
+    key: 'chatgptWebReasoningEffort',
+  },
+  {
     hintKey: 'providerModels.item.modelConfig.extendParams.options.gpt5_2ProReasoningEffort.hint',
     key: 'gpt5_2ProReasoningEffort',
   },
@@ -209,6 +214,7 @@ const TITLE_KEY_ALIASES: Partial<Record<ExtendParamsType, ExtendParamsType>> = {
   gpt5_2ProReasoningEffort: 'reasoningEffort',
   gpt5_2ReasoningEffort: 'reasoningEffort',
   gpt5_6ReasoningEffort: 'reasoningEffort',
+  chatgptWebReasoningEffort: 'reasoningEffort',
   glm5_2ReasoningEffort: 'reasoningEffort',
   grok4_20ReasoningEffort: 'reasoningEffort',
   grok4_3ReasoningEffort: 'reasoningEffort',
@@ -262,6 +268,11 @@ const PREVIEW_META: Partial<Record<ExtendParamsType, PreviewMeta>> = {
   },
   gpt5_2ReasoningEffort: { labelSuffix: ' (GPT-5.2)', previewWidth: 300, tag: 'reasoning_effort' },
   gpt5_6ReasoningEffort: { labelSuffix: ' (GPT-5.6)', previewWidth: 340, tag: 'reasoning_effort' },
+  chatgptWebReasoningEffort: {
+    labelSuffix: ' (ChatGPT Web)',
+    previewWidth: 340,
+    tag: 'reasoning_effort',
+  },
   glm5_2ReasoningEffort: { labelSuffix: ' (GLM-5.2)', previewWidth: 240, tag: 'reasoning_effort' },
   grok4_20ReasoningEffort: {
     labelSuffix: ' (Grok 4.20)',
@@ -452,6 +463,7 @@ const ExtendParamsSelect = memo<ExtendParamsSelectProps>(({ value, onChange }) =
       gpt5_2ProReasoningEffort: <GPT52ProReasoningEffortSlider value="medium" />,
       gpt5_2ReasoningEffort: <GPT52ReasoningEffortSlider value="none" />,
       gpt5_6ReasoningEffort: <GPT56ReasoningEffortSlider value="medium" />,
+      chatgptWebReasoningEffort: <ChatGPTWebReasoningEffortSlider value="medium" />,
       glm5_2ReasoningEffort: <GLM52ReasoningEffortSlider value="max" />,
       grok4_20ReasoningEffort: <Grok420ReasoningEffortSlider value="medium" />,
       grok4_3ReasoningEffort: <Grok43ReasoningEffortSlider value="low" />,
