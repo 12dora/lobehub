@@ -15,6 +15,10 @@ const MEMORY_LISTS = [
  * empties the list; it does not move the page to a different query.
  */
 const QUERY_IDENTITY_FIELDS = [
+  // The epoch belongs to the mount, not to the data: a purge empties the list
+  // under the page that is already watching it, and that page's requests still
+  // carry the epoch it was mounted with.
+  'Epoch',
   'PageSize',
   'Query',
   'QueryKey',

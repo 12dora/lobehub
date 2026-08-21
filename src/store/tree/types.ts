@@ -38,5 +38,7 @@ export interface TreeState extends TreeDataState {
   renameItem: (itemId: string, parentId: string, newName: string) => Promise<void>;
   reset: () => void;
   revalidate: (folderId: string) => Promise<void>;
+  /** Per-folder read counter; only the newest read for a folder may write. */
+  revisions: Record<string, number>;
   toggle: (folderId: string) => void;
 }

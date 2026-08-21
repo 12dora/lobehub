@@ -32,3 +32,21 @@ export const memoryListQueryKey = (params?: Record<string, unknown>): string => 
 
   return JSON.stringify(entries);
 };
+
+/**
+ * Monotonic counter behind `useMemoryListEpoch`.
+ *
+ * It never restarts — not per list, not per query. A per-query counter would
+ * hand the same `(query, page, counter)` tuple back to a request that was
+ * started for an earlier visit to that same query: leave A with a request in
+ * flight, go to B, come back to A, and the original response would match the
+ * tuple the returned-to list is waiting for and settle it with rows read before
+ * B was ever opened.
+ */
+let listEpochCounter = 0;
+
+/** The next request epoch. Only `useMemoryListEpoch` should need this. */
+export const nextMemoryListEpoch = (): number => {
+  listEpochCounter += 1;
+  return listEpochCounter;
+};

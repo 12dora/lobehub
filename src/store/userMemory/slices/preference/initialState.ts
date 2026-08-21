@@ -2,6 +2,8 @@ import { type DisplayPreferenceMemory } from '@/database/repositories/userMemory
 
 export interface PreferenceSliceState {
   preferences: DisplayPreferenceMemory[];
+  /** Request epoch of the mount whose responses this list accepts. */
+  preferencesEpoch: number;
   /** Failure of the query currently on screen, if it never settled. */
   preferencesError?: unknown;
   /** Bumped whenever in-flight requests for this list become stale. */
@@ -26,6 +28,7 @@ export interface PreferenceSliceState {
 
 export const preferenceInitialState: PreferenceSliceState = {
   preferences: [],
+  preferencesEpoch: 0,
   preferencesError: undefined,
   preferencesGeneration: 0,
   preferencesHasMore: true,

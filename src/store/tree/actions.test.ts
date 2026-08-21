@@ -3,10 +3,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TreeActionImpl } from './actions';
 import type { TreeState } from './types';
 
-const { mockRefreshFileList, mockResourceMove, mockStoreMove } = vi.hoisted(() => ({
+const {
+  mockGetKnowledgeItems,
+  mockRefreshFileList,
+  mockResourceMove,
+  mockStoreMove,
+  mockUpdateResource,
+} = vi.hoisted(() => ({
+  mockGetKnowledgeItems: vi.fn(),
   mockRefreshFileList: vi.fn(),
   mockResourceMove: vi.fn(),
   mockStoreMove: vi.fn(),
+  mockUpdateResource: vi.fn(),
+}));
+
+vi.mock('@/services/file', () => ({
+  fileService: { getKnowledgeItems: mockGetKnowledgeItems },
 }));
 
 const fileStoreState = {
@@ -18,6 +30,7 @@ const fileStoreState = {
 vi.mock('@/services/resource', () => ({
   resourceService: {
     moveResource: mockResourceMove,
+    updateResource: mockUpdateResource,
   },
 }));
 
@@ -30,6 +43,7 @@ vi.mock('@/store/file', () => ({
 const createState = (): TreeState => ({
   children: {},
   epoch: 0,
+  revisions: {},
   errors: {},
   expanded: {},
   init: vi.fn(),
@@ -139,5 +153,87 @@ describe('TreeActionImpl.init', () => {
     expect(state.knowledgeBaseId).toBe('kb-2');
     expect(state.epoch).toBe(1);
     expect(loadChildrenSpy).toHaveBeenCalledWith('');
+  });
+});
+
+/** A promise the test resolves by hand, so "in flight" is an observable state. */
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+};
+
+const treeRow = (id: string, name: string) => ({
+  fileType: 'text/directory',
+  id,
+  metadata: null,
+  name,
+  slug: id,
+  url: '',
+});
+
+describe('TreeActionImpl folder read ordering', () => {
+  beforeEach(() => {
+    mockGetKnowledgeItems.mockReset();
+    mockRefreshFileList.mockReset().mockResolvedValue(undefined);
+    mockUpdateResource.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('lets the newest read for a folder win, whichever one answers last', async () => {
+    const state = createState();
+    state.children = { '': [treeRow('folder-a', 'Before') as never] };
+    const actions = new TreeActionImpl(
+      createSetter(() => state),
+      () => state,
+    );
+
+    const remount = deferred<{ items: unknown[] }>();
+    const afterRename = deferred<{ items: unknown[] }>();
+    mockGetKnowledgeItems.mockReturnValueOnce(remount.promise);
+    mockGetKnowledgeItems.mockReturnValueOnce(afterRename.promise);
+
+    // The sidebar remounts and refreshes the root; the rename that follows
+    // refreshes it again before the first read has answered.
+    const remountRead = actions.revalidate('');
+    const postMutationRead = actions.revalidate('');
+
+    afterRename.resolve({ items: [treeRow('folder-a', 'After')] });
+    await postMutationRead;
+
+    // The library-wide epoch is the same for both reads, so it cannot separate
+    // them: without a per-folder revision the stale one restores the old name.
+    remount.resolve({ items: [treeRow('folder-a', 'Before')] });
+    await remountRead;
+
+    expect(state.children['']?.map((item) => item.name)).toEqual(['After']);
+  });
+
+  it('supersedes a read that was already running when a mutation starts', async () => {
+    const state = createState();
+    state.children = { '': [treeRow('folder-a', 'Current') as never] };
+    const actions = new TreeActionImpl(
+      createSetter(() => state),
+      () => state,
+    );
+
+    const inFlight = deferred<{ items: unknown[] }>();
+    mockGetKnowledgeItems.mockReturnValueOnce(inFlight.promise);
+    const remountRead = actions.revalidate('');
+    const revisionWhenReadStarted = state.revisions[''];
+
+    // The rename starts while that read is still out. Its optimistic write is
+    // the truth from this moment on, so the read has to be superseded right
+    // away — waiting for the rename's own refresh to start is too late.
+    mockGetKnowledgeItems.mockResolvedValue({ items: [treeRow('folder-a', 'Renamed')] });
+    void actions.renameItem('folder-a', '', 'Renamed').catch(() => undefined);
+
+    expect(state.revisions['']).toBeGreaterThan(revisionWhenReadStarted);
+
+    inFlight.resolve({ items: [treeRow('folder-a', 'Stale')] });
+    await remountRead;
+
+    expect(state.children['']?.map((item) => item.name)).not.toContain('Stale');
   });
 });

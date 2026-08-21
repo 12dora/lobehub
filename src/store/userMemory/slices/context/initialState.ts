@@ -2,6 +2,8 @@ import { type DisplayContextMemory } from '@/database/repositories/userMemory';
 
 export interface ContextSliceState {
   contexts: DisplayContextMemory[];
+  /** Request epoch of the mount whose responses this list accepts. */
+  contextsEpoch: number;
   /** Failure of the query currently on screen, if it never settled. */
   contextsError?: unknown;
   /** Bumped whenever in-flight requests for this list become stale. */
@@ -26,6 +28,7 @@ export interface ContextSliceState {
 
 export const contextInitialState: ContextSliceState = {
   contexts: [],
+  contextsEpoch: 0,
   contextsError: undefined,
   contextsGeneration: 0,
   contextsHasMore: true,

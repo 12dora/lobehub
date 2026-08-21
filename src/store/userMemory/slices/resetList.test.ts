@@ -63,7 +63,7 @@ beforeEach(() => {
 });
 
 describe.each(lists)('$reset', ({ fields, key, loadMore, reset, retryPage }) => {
-  const call = (params?: Record<string, unknown>) => state()[reset](params);
+  const call = (params?: Record<string, unknown>, epoch?: number) => state()[reset](params, epoch);
 
   /** Put the store where a settled visit leaves it: rows on screen, page 2. */
   const seedLoadedList = (params: Record<string, unknown>) => {
@@ -179,18 +179,48 @@ describe.each(lists)('$reset', ({ fields, key, loadMore, reset, retryPage }) => 
     expect(state()[`${key}PageError`]).toBeUndefined();
   });
 
-  it('restarts the generation for a new query and steps it for a same-query retry', () => {
+  it('never hands the same epoch back to a query that is returned to', () => {
+    seedLoadedList(fields);
+    const first = state()[`${key}Epoch`];
+
+    call({ ...fields, q: 'research' });
+    const second = state()[`${key}Epoch`];
+
+    call({ ...fields });
+    const third = state()[`${key}Epoch`];
+
+    // Leave a query with a request in flight, go elsewhere, come back: a
+    // counter that restarted per query would recreate the exact tuple that
+    // request is stamped with, and its stale rows would settle the list.
+    expect(second).toBeGreaterThan(first);
+    expect(third).toBeGreaterThan(second);
+  });
+
+  it('only ever steps the generation forward', () => {
     seedLoadedList(fields);
     useUserMemoryStore.setState({ [`${key}Generation`]: 4 } as never, false);
 
+    // A different query gets a new epoch, which is discrimination enough.
     call({ ...fields, q: 'research' });
-    // A different query is told apart by its key, so the counter starts over.
-    expect(state()[`${key}Generation`]).toBe(0);
+    expect(state()[`${key}Generation`]).toBe(4);
 
-    // A retry keeps the key, so only the counter can invalidate whatever the
-    // failed attempt left in flight.
+    // A retry keeps the key and the epoch, so only the counter can invalidate
+    // whatever the failed attempt left in flight.
     call({ ...fields, q: 'research' });
-    expect(state()[`${key}Generation`]).toBe(1);
+    expect(state()[`${key}Generation`]).toBe(5);
+  });
+
+  it('adopts a remount epoch without disturbing the rows it finds', () => {
+    seedLoadedList(fields);
+
+    // A remount of the same query: the reset is a no-op for the data, but the
+    // revalidation it is about to run already carries the new epoch.
+    call({ ...fields }, 9999);
+
+    expect(state()[`${key}Epoch`]).toBe(9999);
+    expect(state()[key]).toHaveLength(1);
+    expect(state()[`${key}Settled`]).toBe(true);
+    expect(state()[`${key}SearchLoading`]).toBe(false);
   });
 
   it('resets a cold list even when the query is the initial one', () => {

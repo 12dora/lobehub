@@ -58,6 +58,28 @@ export class TreeActionImpl {
     };
   }
 
+  /**
+   * Supersede every read in flight for these folders.
+   *
+   * The library-wide `epoch` only separates one tree from another, so two reads
+   * of the *same* folder were indistinguishable: a sidebar remount's
+   * `revalidate('')` that captured the pre-rename root would pass the epoch
+   * check and put the old name back over a rename that had already landed.
+   * Bumping here — at the start of every read and of every mutation — makes
+   * "latest wins" explicit, per folder.
+   */
+  #bumpRevisions = (...folderIds: string[]): Record<string, number> => {
+    const revisions = { ...this.#get().revisions };
+    for (const folderId of folderIds) revisions[folderId] = (revisions[folderId] ?? 0) + 1;
+    this.#set({ revisions }, false, 'tree/bumpRevisions');
+
+    return revisions;
+  };
+
+  /** Is this read still the newest one for its folder? */
+  #isLatestRevision = (folderId: string, revision: number, epoch: number): boolean =>
+    this.#get().epoch === epoch && (this.#get().revisions[folderId] ?? 0) === revision;
+
   #getEngine = () => {
     if (this.#engine) return this.#engine;
     this.#engine = new OptimisticEngine(this.#storeHandle, { maxRetries: 1 });
@@ -84,6 +106,7 @@ export class TreeActionImpl {
         errors: {},
         expanded: {},
         knowledgeBaseId,
+        revisions: {},
         status: {},
       },
       false,
@@ -100,6 +123,7 @@ export class TreeActionImpl {
         errors: {},
         expanded: {},
         knowledgeBaseId: null,
+        revisions: {},
         status: {},
       },
       false,
@@ -121,6 +145,8 @@ export class TreeActionImpl {
     const { epoch, knowledgeBaseId, status } = this.#get();
     if (status[folderId] === 'loading') return;
 
+    const revision = this.#bumpRevisions(folderId)[folderId];
+
     // Clear any prior error for this folder so a retry doesn't keep the failure marker.
     const nextErrors = { ...this.#get().errors };
     delete nextErrors[folderId];
@@ -137,7 +163,7 @@ export class TreeActionImpl {
         showFilesInKnowledgeBase: false,
       });
 
-      if (this.#get().epoch !== epoch) return;
+      if (!this.#isLatestRevision(folderId, revision, epoch)) return;
 
       this.#set(
         {
@@ -151,7 +177,7 @@ export class TreeActionImpl {
         'tree/loadChildren/success',
       );
     } catch (error) {
-      if (this.#get().epoch !== epoch) return;
+      if (!this.#isLatestRevision(folderId, revision, epoch)) return;
       console.error(`Failed to load children for ${folderId}:`, error);
       // Mark the folder as errored (was swallowed to 'idle', which read as a false
       // "empty folder" — Read §1.1 failure-as-empty). Keep the error so the view can
@@ -171,6 +197,8 @@ export class TreeActionImpl {
     const { epoch, knowledgeBaseId, status } = this.#get();
     if (status[folderId] === 'loading') return;
 
+    const revision = this.#bumpRevisions(folderId)[folderId];
+
     this.#set(
       { status: { ...this.#get().status, [folderId]: 'revalidating' } },
       false,
@@ -184,7 +212,7 @@ export class TreeActionImpl {
         showFilesInKnowledgeBase: false,
       });
 
-      if (this.#get().epoch !== epoch) return;
+      if (!this.#isLatestRevision(folderId, revision, epoch)) return;
 
       this.#set(
         {
@@ -198,7 +226,7 @@ export class TreeActionImpl {
         'tree/revalidate/success',
       );
     } catch {
-      if (this.#get().epoch !== epoch) return;
+      if (!this.#isLatestRevision(folderId, revision, epoch)) return;
       this.#set(
         { status: { ...this.#get().status, [folderId]: 'idle' } },
         false,
@@ -208,6 +236,7 @@ export class TreeActionImpl {
   };
 
   reconcile = (folderId: string, items: TreeItem[]) => {
+    this.#bumpRevisions(folderId);
     this.#set(
       {
         children: { ...this.#get().children, [folderId]: sortTreeItems(items) },
@@ -234,6 +263,9 @@ export class TreeActionImpl {
   };
 
   moveItem = async (itemId: string, fromParent: string, toParent: string): Promise<void> => {
+    // Any read already running for these folders describes the tree before this
+    // move; the optimistic write below must not be undone when one lands late.
+    this.#bumpRevisions(fromParent, toParent);
     const { children } = this.#get();
     const item = children[fromParent]?.find((i) => i.id === itemId);
 
@@ -285,6 +317,7 @@ export class TreeActionImpl {
   };
 
   moveItems = async (itemIds: string[], fromParent: string, toParent: string): Promise<void> => {
+    this.#bumpRevisions(fromParent, toParent);
     const { children } = this.#get();
     const idsSet = new Set(itemIds);
     const items = (children[fromParent] ?? []).filter((i) => idsSet.has(i.id));
@@ -336,6 +369,7 @@ export class TreeActionImpl {
   };
 
   renameItem = async (itemId: string, parentId: string, newName: string): Promise<void> => {
+    this.#bumpRevisions(parentId);
     const engine = this.#getEngine();
     const tx = engine.createTransaction(`renameItem(${itemId})`);
 
@@ -361,6 +395,7 @@ export class TreeActionImpl {
   };
 
   removeItems = async (itemIds: string[], parentId: string): Promise<void> => {
+    this.#bumpRevisions(parentId);
     const idsSet = new Set(itemIds);
     const engine = this.#getEngine();
     const tx = engine.createTransaction(`removeItems(${itemIds.join(',')})`);

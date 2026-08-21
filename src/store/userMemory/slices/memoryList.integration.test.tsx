@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setScopedMutate } from '@/libs/swr';
 import { useUserMemoryStore } from '@/store/userMemory';
 import { initialState } from '@/store/userMemory/initialState';
+import { useMemoryListEpoch } from '@/store/userMemory/utils/useMemoryListEpoch';
 import { LayersEnum } from '@/types/userMemory';
 
 /**
@@ -76,12 +77,13 @@ const Reader = ({ q }: { q?: string }) => {
   const resetIdentitiesList = useUserMemoryStore((s) => s.resetIdentitiesList);
 
   const listQuery = useMemo(() => ({ q }), [q]);
+  const epoch = useMemoryListEpoch(listQuery);
 
   useEffect(() => {
-    resetIdentitiesList(listQuery);
-  }, [listQuery, resetIdentitiesList]);
+    resetIdentitiesList(listQuery, epoch);
+  }, [epoch, listQuery, resetIdentitiesList]);
 
-  const swr = useFetchIdentities({ ...listQuery, page, pageSize: PAGE_SIZE });
+  const swr = useFetchIdentities({ ...listQuery, epoch, page, pageSize: PAGE_SIZE });
   revalidateCurrentPage = swr.mutate;
 
   return null;
@@ -482,5 +484,68 @@ describe('memory list pagination failures', () => {
     expect(services.queryIdentities).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }));
     await waitFor(() => expect(ids()).toEqual(['a1', 'a2', 'a3', 'a4']));
     expect(state().identitiesPageError).toBeUndefined();
+  });
+});
+
+describe('memory list requests that outlive their query', () => {
+  it('ignores the first visit to a query when the user has been away and come back', async () => {
+    // Every fetch gets a promise the test resolves by hand, in call order.
+    const pending: ReturnType<typeof deferred<{ items: Row[]; total: number }>>[] = [];
+    services.queryIdentities.mockImplementation(() => {
+      const next = deferred<{ items: Row[]; total: number }>();
+      pending.push(next);
+      return next.promise;
+    });
+
+    // Visit A. Its request stalls — the snapshot it is holding is about to go
+    // out of date.
+    mountApp();
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    // Away to B, where memories change.
+    act(() => setQuery('b'));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => {
+      pending[1].resolve({ items: rows('b1'), total: 1 });
+      await pending[1].promise;
+    });
+    await waitFor(() => expect(ids()).toEqual(['b1']));
+
+    // Back to A. This has to be a *new* request: the key carries the epoch, so
+    // SWR can neither serve the first visit's cache nor dedupe onto its
+    // still-running fetch.
+    act(() => setQuery(undefined));
+    await waitFor(() => expect(pending).toHaveLength(3));
+    await act(async () => {
+      pending[2].resolve({ items: rows('a9'), total: 1 });
+      await pending[2].promise;
+    });
+    await waitFor(() => expect(ids()).toEqual(['a9']));
+
+    // Only now does the first visit's request answer, with rows read before B
+    // was ever opened. A counter that restarted per query would have handed the
+    // returned-to list the very tuple this response is stamped with.
+    await act(async () => {
+      pending[0].resolve({ items: rows('a1', 'a2'), total: 2 });
+      await pending[0].promise;
+    });
+
+    expect(ids()).toEqual(['a9']);
+    expect(state().identitiesTotal).toBe(1);
+  });
+
+  it('accepts the revalidation a remount of the same query starts', async () => {
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'a2'), total: 2 });
+    const app = mountApp();
+    await waitFor(() => expect(ids()).toEqual(['a1', 'a2']));
+
+    app.unmount();
+    services.queryIdentities.mockResolvedValue({ items: rows('a1', 'a3'), total: 2 });
+    mountApp();
+
+    // The remount mints a fresh epoch. Its reset is a no-op for the rows — the
+    // query is unchanged — but the store still has to adopt that epoch, or the
+    // revalidation the remount just started is a response it will not recognise.
+    await waitFor(() => expect(ids()).toEqual(['a1', 'a3']));
   });
 });

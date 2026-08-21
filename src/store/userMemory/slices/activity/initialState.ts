@@ -2,6 +2,8 @@ import { type ActivityListItem } from '@lobechat/types';
 
 export interface ActivitySliceState {
   activities: ActivityListItem[];
+  /** Request epoch of the mount whose responses this list accepts. */
+  activitiesEpoch: number;
   /** Failure of the query currently on screen, if it never settled. */
   activitiesError?: unknown;
   /** Bumped whenever in-flight requests for this list become stale. */
@@ -28,6 +30,7 @@ export interface ActivitySliceState {
 
 export const activityInitialState: ActivitySliceState = {
   activities: [],
+  activitiesEpoch: 0,
   activitiesError: undefined,
   activitiesGeneration: 0,
   activitiesHasMore: true,

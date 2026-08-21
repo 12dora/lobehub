@@ -1,7 +1,6 @@
 import { type ExperienceListResult } from '@lobechat/types';
 import { uniqBy } from 'es-toolkit/compat';
 import { produce } from 'immer';
-import { useEffect } from 'react';
 import { type SWRResponse } from 'swr';
 import useSWR from 'swr';
 
@@ -11,12 +10,18 @@ import { type StoreSetter } from '@/store/types';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type UserMemoryStore } from '../../store';
-import { DEFAULT_MEMORY_LIST_PAGE_SIZE, memoryListQueryKey } from '../../utils/listQuery';
-import { dropMemoryListCache } from '../../utils/listRevalidate';
+import {
+  DEFAULT_MEMORY_LIST_PAGE_SIZE,
+  memoryListQueryKey,
+  nextMemoryListEpoch,
+} from '../../utils/listQuery';
+import { dropMemoryListCache, pruneMemoryListCache } from '../../utils/listRevalidate';
 
 const n = setNamespace('userMemory/experience');
 
 export interface ExperienceQueryParams {
+  /** Request epoch — part of the SWR key, never sent to the service. */
+  epoch?: number;
   page?: number;
   pageSize?: number;
   q?: string;
@@ -105,12 +110,15 @@ export class ExperienceActionImpl {
    */
   refreshExperiencesList = async (): Promise<void> => {
     const state = this.#get();
-    const params: ExperienceQueryParams = {
+    const request = {
       page: 1,
       pageSize: state.experiencesPageSize ?? DEFAULT_MEMORY_LIST_PAGE_SIZE,
       q: state.experiencesQuery,
       sort: state.experiencesSort,
     };
+    // `epoch` never reaches the service — it exists so the guards can tell this
+    // response apart from one belonging to a different mount of the query.
+    const params: ExperienceQueryParams = { ...request, epoch: state.experiencesEpoch };
 
     // Every in-flight request for this list is now stale, and they cannot be
     // told apart by key and page alone — two overlapping refreshes of the same
@@ -138,21 +146,42 @@ export class ExperienceActionImpl {
     await dropMemoryListCache(userMemoryKeys.experiences.root);
 
     try {
-      const data = await userMemoryService.queryExperiences(params);
+      const data = await userMemoryService.queryExperiences(request);
       this.#applyExperiencesPage(params, data, generation);
     } catch (error) {
       this.#failExperiencesPage(params, error, generation);
     }
   };
 
-  resetExperiencesList = (params?: ExperienceFilter): void => {
+  resetExperiencesList = (params?: ExperienceFilter, epoch?: number): void => {
     const state = this.#get();
     const nextQueryKey = experienceQueryKey(params);
+    // Callers outside the page (tests, tooling) don't own an epoch; mint one so
+    // the counter stays monotonic either way.
+    const nextEpoch = epoch ?? nextMemoryListEpoch();
 
     // Nothing to reset when the query already settled in the store. The pages
     // call this from a mount effect, so without this guard every visit wiped the
     // rows it had and replaced the list with a skeleton.
-    if (nextQueryKey === state.experiencesQueryKey && state.experiencesSettled) return;
+    if (nextQueryKey === state.experiencesQueryKey && state.experiencesSettled) {
+      // The rows stay, but this mount's epoch has to be adopted: it is already
+      // in the SWR key of the revalidation the remount just started, and a
+      // response the store won't recognise is a response it will drop.
+      if (nextEpoch !== state.experiencesEpoch) {
+        this.#set(
+          produce((draft) => {
+            draft.experiencesEpoch = nextEpoch;
+          }),
+          false,
+          n('adoptExperiencesEpoch'),
+        );
+      }
+
+      return;
+    }
+
+    // Entries keyed to an earlier epoch can never be read again.
+    pruneMemoryListCache(userMemoryKeys.experiences.root, nextEpoch);
 
     this.#set(
       produce((draft) => {
@@ -161,14 +190,19 @@ export class ExperienceActionImpl {
         // affordance instead of a skeleton). They are no longer "settled"
         // though, so nothing may accumulate on top of them until page 1 of the
         // new query lands.
+        draft.experiencesEpoch = nextEpoch;
         draft.experiencesError = undefined;
-        // The generation counts invalidations *within* one query identity, so
-        // it restarts when the identity itself changes. The pair (query key,
-        // generation) is what a response is matched against; a reset always
-        // moves it, either by changing the key or — on a same-key retry — by
-        // stepping the counter past whatever the failed attempt left in flight.
+        // The epoch tells one *mount* of a query from another; the generation
+        // tells one invalidation round from another *within* a mount, which is
+        // the case the epoch cannot see because a post-write refresh leaves the
+        // key (and therefore the epoch) untouched. Both only ever go up. A
+        // same-key reset is the page's Retry, so step the counter past whatever
+        // the failed attempt left in flight; a new key gets a new epoch and
+        // needs nothing here.
         draft.experiencesGeneration =
-          nextQueryKey === state.experiencesQueryKey ? state.experiencesGeneration + 1 : 0;
+          nextQueryKey === state.experiencesQueryKey
+            ? state.experiencesGeneration + 1
+            : state.experiencesGeneration;
         draft.experiencesHasMore = false;
         draft.experiencesPage = 1;
         draft.experiencesPageError = undefined;
@@ -206,9 +240,6 @@ export class ExperienceActionImpl {
   };
 
   useFetchExperiences = (params: ExperienceQueryParams): SWRResponse<ExperienceListResult> => {
-    const queryKey = experienceQueryKey(params);
-    const page = params.page ?? 1;
-
     const swr = useSWR<ExperienceListResult>(
       userMemoryKeys.experiences(params),
       async () => {
@@ -234,45 +265,33 @@ export class ExperienceActionImpl {
       { revalidateOnFocus: false },
     );
 
-    // Bootstrap from the cache. When the key changes to a page SWR has already
-    // fetched it hands the data back without ever running the fetcher above, so
-    // applying only in the fetcher would leave the previous query's rows on
-    // screen under a spinner that never stops. This path is limited to a page
-    // the store is still waiting for (see `#applyExperiencesPage`), so it can never
-    // overwrite rows that have already settled.
-    const data = swr.data;
-    useEffect(() => {
-      if (!data) return;
-      this.#applyExperiencesPage(params, data);
-    }, [data, queryKey, page]);
-
+    // No cache-bootstrap path: the key carries `params.epoch`, which changes
+    // with every mount of a query, so there is never a cached entry to fall
+    // back on and the fetcher always runs. That is deliberate — the bootstrap
+    // it replaces had no way to know which request produced the cached rows,
+    // and would happily settle a returned-to list with an earlier visit's data.
     return swr;
   };
 
   /**
    * Write one page into the list.
    *
-   * Three things have to line up: the query identity, the page the store is
-   * waiting for, and — for a response produced by a request we started
-   * ourselves — the generation that request captured.
+   * Four things have to line up: the query identity, the epoch of the mount
+   * that asked, the page the store is waiting for, and the generation the
+   * request captured when it started.
    */
   #applyExperiencesPage = (
     params: ExperienceQueryParams,
     data: ExperienceListResult,
-    generation?: number,
+    generation: number,
   ): void => {
     const state = this.#get();
     const page = params.page ?? 1;
 
     if (experienceQueryKey(params) !== state.experiencesQueryKey) return;
+    if (params.epoch !== state.experiencesEpoch) return;
     if (page !== state.experiencesPage) return;
-
-    if (generation === undefined) {
-      // Cache bootstrap: only a page the store has not resolved yet. Everything
-      // else is applied by the fetcher under its own generation, so a stale
-      // in-flight response cannot clobber the rows a write just produced.
-      if (state.experiencesSettled && state.experiencesPendingPage !== page) return;
-    } else if (generation !== state.experiencesGeneration) return;
+    if (generation !== state.experiencesGeneration) return;
 
     // Backend returns a flat structure directly, no transformation needed.
     const items = data.items;
@@ -313,6 +332,7 @@ export class ExperienceActionImpl {
     const page = params.page ?? 1;
 
     if (experienceQueryKey(params) !== state.experiencesQueryKey) return;
+    if (params.epoch !== state.experiencesEpoch) return;
     if (page !== state.experiencesPage) return;
     if (generation !== state.experiencesGeneration) return;
 

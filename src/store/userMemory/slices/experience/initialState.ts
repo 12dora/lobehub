@@ -2,6 +2,8 @@ import { type ExperienceListItem } from '@lobechat/types';
 
 export interface ExperienceSliceState {
   experiences: ExperienceListItem[];
+  /** Request epoch of the mount whose responses this list accepts. */
+  experiencesEpoch: number;
   /** Failure of the query currently on screen, if it never settled. */
   experiencesError?: unknown;
   /** Bumped whenever in-flight requests for this list become stale. */
@@ -26,6 +28,7 @@ export interface ExperienceSliceState {
 
 export const experienceInitialState: ExperienceSliceState = {
   experiences: [],
+  experiencesEpoch: 0,
   experiencesError: undefined,
   experiencesGeneration: 0,
   experiencesHasMore: true,

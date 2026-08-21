@@ -13,6 +13,7 @@ import { useQueryState } from '@/hooks/useQueryParam';
 import ActionBar from '@/routes/(main)/memory/features/ActionBar';
 import { SCROLL_PARENT_ID } from '@/routes/(main)/memory/features/TimeLineView/useScrollParent';
 import { useUserMemoryStore } from '@/store/userMemory';
+import { useMemoryListEpoch } from '@/store/userMemory/utils/useMemoryListEpoch';
 
 import EditableModal from '../features/EditableModal';
 import FilterBar from '../features/FilterBar';
@@ -61,20 +62,26 @@ const ContextsArea = memo(() => {
     [searchValue, apiSort, viewMode],
   );
 
+  // Derived during render, next to the SWR key it travels in: SWR starts its
+  // fetch from a layout effect, before the reset effect below runs, so an epoch
+  // minted by the reset would always be one step behind the request it is meant
+  // to stamp.
+  const epoch = useMemoryListEpoch(listQuery);
+
   // Reset list when the query changes. A no-op in the store when the query is
   // the one already on screen (a revisit must not blank the list), which is why
   // this can run unconditionally and still catch the switch back to the default
   // sort — the old `if (!apiSort) return` guard swallowed exactly that.
   useEffect(() => {
-    resetContextsList(listQuery);
-  }, [listQuery, resetContextsList]);
+    resetContextsList(listQuery, epoch);
+  }, [epoch, listQuery, resetContextsList]);
 
   // Call SWR hook to fetch data
   const {
     error: fetchError,
     isLoading,
     mutate: revalidate,
-  } = useFetchContexts({ ...listQuery, page: contextsPage, pageSize: 12 });
+  } = useFetchContexts({ ...listQuery, epoch, page: contextsPage, pageSize: 12 });
 
   // Handle search and sort changes
   const handleSearch = useCallback(
@@ -106,9 +113,9 @@ const ContextsArea = memo(() => {
 
   const handleRetry = useCallback(() => {
     // Re-arm the loading state (clears the stored error) before revalidating.
-    resetContextsList(listQuery);
+    resetContextsList(listQuery, epoch);
     void revalidate();
-  }, [listQuery, resetContextsList, revalidate]);
+  }, [epoch, listQuery, resetContextsList, revalidate]);
 
   // A load-more failure keeps the rows that did load and offers a footer that
   // retries the SAME page: `contextsPage` was never advanced past it, so the

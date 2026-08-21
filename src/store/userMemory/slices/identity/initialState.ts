@@ -10,6 +10,8 @@ export interface IdentitySliceState {
   /** Whether global identities have been initialized */
   globalIdentitiesInit: boolean;
   identities: IdentityListItem[];
+  /** Request epoch of the mount whose responses this list accepts. */
+  identitiesEpoch: number;
   /** Failure of the query currently on screen, if it never settled. */
   identitiesError?: unknown;
   /** Bumped whenever in-flight requests for this list become stale. */
@@ -39,6 +41,7 @@ export const identityInitialState: IdentitySliceState = {
   globalIdentitiesFetchedAt: undefined,
   globalIdentitiesInit: false,
   identities: [],
+  identitiesEpoch: 0,
   identitiesError: undefined,
   identitiesGeneration: 0,
   identitiesHasMore: true,

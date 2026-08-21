@@ -1,6 +1,5 @@
 import { uniqBy } from 'es-toolkit/compat';
 import { produce } from 'immer';
-import { useEffect } from 'react';
 import { type SWRResponse } from 'swr';
 import useSWR from 'swr';
 
@@ -12,12 +11,18 @@ import { LayersEnum } from '@/types/userMemory';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type UserMemoryStore } from '../../store';
-import { DEFAULT_MEMORY_LIST_PAGE_SIZE, memoryListQueryKey } from '../../utils/listQuery';
-import { dropMemoryListCache } from '../../utils/listRevalidate';
+import {
+  DEFAULT_MEMORY_LIST_PAGE_SIZE,
+  memoryListQueryKey,
+  nextMemoryListEpoch,
+} from '../../utils/listQuery';
+import { dropMemoryListCache, pruneMemoryListCache } from '../../utils/listRevalidate';
 
 const n = setNamespace('userMemory/preference');
 
 export interface PreferenceQueryParams {
+  /** Request epoch — part of the SWR key, never sent to the service. */
+  epoch?: number;
   page?: number;
   pageSize?: number;
   q?: string;
@@ -116,12 +121,15 @@ export class PreferenceActionImpl {
    */
   refreshPreferencesList = async (): Promise<void> => {
     const state = this.#get();
-    const params: PreferenceQueryParams = {
+    const request = {
       page: 1,
       pageSize: state.preferencesPageSize ?? DEFAULT_MEMORY_LIST_PAGE_SIZE,
       q: state.preferencesQuery,
       sort: state.preferencesSort,
     };
+    // `epoch` never reaches the service — it exists so the guards can tell this
+    // response apart from one belonging to a different mount of the query.
+    const params: PreferenceQueryParams = { ...request, epoch: state.preferencesEpoch };
 
     // Every in-flight request for this list is now stale, and they cannot be
     // told apart by key and page alone — two overlapping refreshes of the same
@@ -151,7 +159,7 @@ export class PreferenceActionImpl {
     try {
       const data = (await userMemoryService.queryMemories({
         layer: LayersEnum.Preference,
-        ...params,
+        ...request,
       })) as PreferenceListResponse;
       this.#applyPreferencesPage(params, data, generation);
     } catch (error) {
@@ -159,14 +167,35 @@ export class PreferenceActionImpl {
     }
   };
 
-  resetPreferencesList = (params?: PreferenceFilter): void => {
+  resetPreferencesList = (params?: PreferenceFilter, epoch?: number): void => {
     const state = this.#get();
     const nextQueryKey = preferenceQueryKey(params);
+    // Callers outside the page (tests, tooling) don't own an epoch; mint one so
+    // the counter stays monotonic either way.
+    const nextEpoch = epoch ?? nextMemoryListEpoch();
 
     // Nothing to reset when the query already settled in the store. The pages
     // call this from a mount effect, so without this guard every visit wiped the
     // rows it had and replaced the list with a skeleton.
-    if (nextQueryKey === state.preferencesQueryKey && state.preferencesSettled) return;
+    if (nextQueryKey === state.preferencesQueryKey && state.preferencesSettled) {
+      // The rows stay, but this mount's epoch has to be adopted: it is already
+      // in the SWR key of the revalidation the remount just started, and a
+      // response the store won't recognise is a response it will drop.
+      if (nextEpoch !== state.preferencesEpoch) {
+        this.#set(
+          produce((draft) => {
+            draft.preferencesEpoch = nextEpoch;
+          }),
+          false,
+          n('adoptPreferencesEpoch'),
+        );
+      }
+
+      return;
+    }
+
+    // Entries keyed to an earlier epoch can never be read again.
+    pruneMemoryListCache(userMemoryKeys.preferences.root, nextEpoch);
 
     this.#set(
       produce((draft) => {
@@ -175,14 +204,19 @@ export class PreferenceActionImpl {
         // affordance instead of a skeleton). They are no longer "settled"
         // though, so nothing may accumulate on top of them until page 1 of the
         // new query lands.
+        draft.preferencesEpoch = nextEpoch;
         draft.preferencesError = undefined;
-        // The generation counts invalidations *within* one query identity, so
-        // it restarts when the identity itself changes. The pair (query key,
-        // generation) is what a response is matched against; a reset always
-        // moves it, either by changing the key or — on a same-key retry — by
-        // stepping the counter past whatever the failed attempt left in flight.
+        // The epoch tells one *mount* of a query from another; the generation
+        // tells one invalidation round from another *within* a mount, which is
+        // the case the epoch cannot see because a post-write refresh leaves the
+        // key (and therefore the epoch) untouched. Both only ever go up. A
+        // same-key reset is the page's Retry, so step the counter past whatever
+        // the failed attempt left in flight; a new key gets a new epoch and
+        // needs nothing here.
         draft.preferencesGeneration =
-          nextQueryKey === state.preferencesQueryKey ? state.preferencesGeneration + 1 : 0;
+          nextQueryKey === state.preferencesQueryKey
+            ? state.preferencesGeneration + 1
+            : state.preferencesGeneration;
         draft.preferencesHasMore = false;
         draft.preferencesPage = 1;
         draft.preferencesPageError = undefined;
@@ -220,9 +254,6 @@ export class PreferenceActionImpl {
   };
 
   useFetchPreferences = (params: PreferenceQueryParams): SWRResponse<PreferenceListResponse> => {
-    const queryKey = preferenceQueryKey(params);
-    const page = params.page ?? 1;
-
     const swr = useSWR<PreferenceListResponse>(
       userMemoryKeys.preferences(params),
       async () => {
@@ -249,45 +280,33 @@ export class PreferenceActionImpl {
       { revalidateOnFocus: false },
     );
 
-    // Bootstrap from the cache. When the key changes to a page SWR has already
-    // fetched it hands the data back without ever running the fetcher above, so
-    // applying only in the fetcher would leave the previous query's rows on
-    // screen under a spinner that never stops. This path is limited to a page
-    // the store is still waiting for (see `#applyPreferencesPage`), so it can never
-    // overwrite rows that have already settled.
-    const data = swr.data;
-    useEffect(() => {
-      if (!data) return;
-      this.#applyPreferencesPage(params, data);
-    }, [data, queryKey, page]);
-
+    // No cache-bootstrap path: the key carries `params.epoch`, which changes
+    // with every mount of a query, so there is never a cached entry to fall
+    // back on and the fetcher always runs. That is deliberate — the bootstrap
+    // it replaces had no way to know which request produced the cached rows,
+    // and would happily settle a returned-to list with an earlier visit's data.
     return swr;
   };
 
   /**
    * Write one page into the list.
    *
-   * Three things have to line up: the query identity, the page the store is
-   * waiting for, and — for a response produced by a request we started
-   * ourselves — the generation that request captured.
+   * Four things have to line up: the query identity, the epoch of the mount
+   * that asked, the page the store is waiting for, and the generation the
+   * request captured when it started.
    */
   #applyPreferencesPage = (
     params: PreferenceQueryParams,
     data: PreferenceListResponse,
-    generation?: number,
+    generation: number,
   ): void => {
     const state = this.#get();
     const page = params.page ?? 1;
 
     if (preferenceQueryKey(params) !== state.preferencesQueryKey) return;
+    if (params.epoch !== state.preferencesEpoch) return;
     if (page !== state.preferencesPage) return;
-
-    if (generation === undefined) {
-      // Cache bootstrap: only a page the store has not resolved yet. Everything
-      // else is applied by the fetcher under its own generation, so a stale
-      // in-flight response cannot clobber the rows a write just produced.
-      if (state.preferencesSettled && state.preferencesPendingPage !== page) return;
-    } else if (generation !== state.preferencesGeneration) return;
+    if (generation !== state.preferencesGeneration) return;
 
     const items = toDisplayPreferences(data);
 
@@ -327,6 +346,7 @@ export class PreferenceActionImpl {
     const page = params.page ?? 1;
 
     if (preferenceQueryKey(params) !== state.preferencesQueryKey) return;
+    if (params.epoch !== state.preferencesEpoch) return;
     if (page !== state.preferencesPage) return;
     if (generation !== state.preferencesGeneration) return;
 
