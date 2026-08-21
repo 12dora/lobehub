@@ -1,9 +1,10 @@
 import { Flexbox, Icon, Tag } from '@lobehub/ui';
 import { BrainCircuitIcon } from 'lucide-react';
 import { type FC } from 'react';
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import AsyncError from '@/components/AsyncError';
 import DelayedFallback from '@/components/Loading/DelayedFallback';
 import NavHeader from '@/features/NavHeader';
 import WideScreenContainer from '@/features/WideScreenContainer';
@@ -32,10 +33,11 @@ const ContextsArea = memo(() => {
     sortValueRaw === 'scoreImpact' || sortValueRaw === 'scoreUrgency' ? sortValueRaw : 'capturedAt';
 
   const contextsCount = useUserMemoryStore((s) => s.contexts.length);
+  const contextsError = useUserMemoryStore((s) => s.contextsError);
   const contextsPage = useUserMemoryStore((s) => s.contextsPage);
-  const contextsInit = useUserMemoryStore((s) => s.contextsInit);
-  const contextsTotal = useUserMemoryStore((s) => s.contextsTotal);
   const contextsSearchLoading = useUserMemoryStore((s) => s.contextsSearchLoading);
+  const contextsSettled = useUserMemoryStore((s) => s.contextsSettled);
+  const contextsTotal = useUserMemoryStore((s) => s.contextsTotal);
   const useFetchContexts = useUserMemoryStore((s) => s.useFetchContexts);
   const resetContextsList = useUserMemoryStore((s) => s.resetContextsList);
 
@@ -49,19 +51,28 @@ const ContextsArea = memo(() => {
   const apiSort =
     sortValue === 'capturedAt' ? undefined : (sortValue as 'scoreImpact' | 'scoreUrgency');
 
-  // Reset list when search or sort changes
+  // One source of truth for "which rows belong on screen". The store guards
+  // every write with this same identity, so the reset effect and the fetch can
+  // never disagree about which query the list is showing.
+  const listQuery = useMemo(
+    () => ({ q: searchValue || undefined, sort: viewMode === 'grid' ? apiSort : undefined }),
+    [searchValue, apiSort, viewMode],
+  );
+
+  // Reset list when the query changes. A no-op in the store when the query is
+  // the one already on screen (a revisit must not blank the list), which is why
+  // this can run unconditionally and still catch the switch back to the default
+  // sort — the old `if (!apiSort) return` guard swallowed exactly that.
   useEffect(() => {
-    const sort = viewMode === 'grid' ? apiSort : undefined;
-    resetContextsList({ q: searchValue || undefined, sort });
-  }, [searchValue, apiSort, viewMode]);
+    resetContextsList(listQuery);
+  }, [listQuery, resetContextsList]);
 
   // Call SWR hook to fetch data
-  const { isLoading } = useFetchContexts({
-    page: contextsPage,
-    pageSize: 12,
-    q: searchValue || undefined,
-    sort: viewMode === 'grid' ? apiSort : undefined,
-  });
+  const {
+    error: fetchError,
+    isLoading,
+    mutate: revalidate,
+  } = useFetchContexts({ ...listQuery, page: contextsPage, pageSize: 12 });
 
   // Handle search and sort changes
   const handleSearch = useCallback(
@@ -78,13 +89,24 @@ const ContextsArea = memo(() => {
     [setSortValueRaw],
   );
 
-  // Show loading: during search/reset or initial load
-  // The skeleton is for a genuinely cold list only. A revisit (or a filter
-  // refetch) keeps the rows that are already on screen and shows a spinner in
-  // the filter bar instead — replacing a populated list with a skeleton on
-  // every mount was the flash this page used to have.
-  const showLoading = !contextsInit && contextsCount === 0;
+  const error = contextsError ?? fetchError;
+
+  // Three states, in precedence order:
+  // - cold: nothing to show and the first page is still in flight → skeleton.
+  // - failed: the query on screen never settled → reason + Retry. Without this
+  //   a cold failure sat on the skeleton forever, and a failed filter change
+  //   silently presented the *previous* query's rows as the new results.
+  // - otherwise the list, which may still be the previous query's rows while a
+  //   filter change resolves — the filter bar spinner says so.
+  const showError = Boolean(error) && !contextsSettled;
+  const showLoading = !contextsSettled && contextsCount === 0 && !error;
   const isRefreshing = Boolean(contextsSearchLoading) && contextsCount > 0;
+
+  const handleRetry = useCallback(() => {
+    // Re-arm the loading state (clears the stored error) before revalidating.
+    resetContextsList(listQuery);
+    void revalidate();
+  }, [listQuery, resetContextsList, revalidate]);
 
   return (
     <Flexbox flex={1} height={'100%'}>
@@ -120,6 +142,8 @@ const ContextsArea = memo(() => {
             <DelayedFallback>
               <Loading viewMode={viewMode} />
             </DelayedFallback>
+          ) : showError ? (
+            <AsyncError error={error} variant={'block'} onRetry={handleRetry} />
           ) : (
             <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
           )}

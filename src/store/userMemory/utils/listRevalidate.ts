@@ -1,15 +1,16 @@
 import { mutate } from '@/libs/swr';
 
 /**
- * Revalidate every cached page of a paginated memory list.
+ * Drop every cached page of a paginated memory list.
  *
- * The list SWR keys are `[root, params]`, and `params` carries the page — so a
- * write (create / update / delete) cannot be flushed by touching a single key,
- * and it cannot rely on the reset action either: `reset*List` deliberately
- * no-ops when the query is unchanged (that no-op is what stops a remount from
- * wiping already-loaded rows). Matching on the key root revalidates whatever
- * pages the cache is holding for this list, whichever filter they belong to.
+ * A write (create / update / delete) invalidates *all* of the list's pages, not
+ * just the one on screen. Matcher-based `mutate` with `revalidate: true` would
+ * only re-request the keys that currently have a subscriber and hand every
+ * other entry straight back from cache, so the pages the user scrolled past
+ * would resurrect the row that was just deleted the next time the view mounted.
+ * Clearing the entries instead makes the next read a real fetch, and the caller
+ * is expected to fetch page 1 itself rather than hoping a subscriber does it.
  */
-export const revalidateMemoryList = async (root: string): Promise<void> => {
-  await mutate((key) => Array.isArray(key) && key[0] === root);
+export const dropMemoryListCache = async (root: string): Promise<void> => {
+  await mutate((key) => Array.isArray(key) && key[0] === root, undefined, { revalidate: false });
 };

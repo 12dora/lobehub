@@ -43,7 +43,8 @@ beforeEach(() => {
     {
       ...initialState,
       preferences: [preferenceMemory],
-      preferencesInit: true,
+      preferencesQueryKey: '[]',
+      preferencesSettled: true,
       preferencesPage: 1,
       preferencesSearchLoading: false,
       preferencesTotal: 1,

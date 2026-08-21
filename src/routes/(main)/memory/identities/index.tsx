@@ -1,8 +1,9 @@
 import { Flexbox, Icon, Tag } from '@lobehub/ui';
 import { BrainCircuitIcon } from 'lucide-react';
 import { type FC } from 'react';
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 
+import AsyncError from '@/components/AsyncError';
 import DelayedFallback from '@/components/Loading/DelayedFallback';
 import NavHeader from '@/features/NavHeader';
 import WideScreenContainer from '@/features/WideScreenContainer';
@@ -32,26 +33,37 @@ const IdentitiesArea = memo(() => {
   const typeFilter = (typeFilterRaw as IdentityType) || 'all';
 
   const identitiesCount = useUserMemoryStore((s) => s.identities.length);
+  const identitiesError = useUserMemoryStore((s) => s.identitiesError);
   const identitiesPage = useUserMemoryStore((s) => s.identitiesPage);
-  const identitiesInit = useUserMemoryStore((s) => s.identitiesInit);
-  const identitiesTotal = useUserMemoryStore((s) => s.identitiesTotal);
   const identitiesSearchLoading = useUserMemoryStore((s) => s.identitiesSearchLoading);
+  const identitiesSettled = useUserMemoryStore((s) => s.identitiesSettled);
+  const identitiesTotal = useUserMemoryStore((s) => s.identitiesTotal);
   const useFetchIdentities = useUserMemoryStore((s) => s.useFetchIdentities);
   const resetIdentitiesList = useUserMemoryStore((s) => s.resetIdentitiesList);
 
-  // Reset list when search or type filter changes
+  // One source of truth for "which rows belong on screen". The store guards
+  // every write with this same identity, so the reset effect and the fetch can
+  // never disagree about which query the list is showing.
+  const listQuery = useMemo(
+    () => ({
+      q: searchValue || undefined,
+      types: typeFilter === 'all' ? undefined : [typeFilter as TypesEnum],
+    }),
+    [searchValue, typeFilter],
+  );
+
+  // Reset list when search or type filter changes. A no-op in the store when
+  // the query is the one already on screen (a revisit must not blank the list).
   useEffect(() => {
-    const types = typeFilter === 'all' ? undefined : [typeFilter as TypesEnum];
-    resetIdentitiesList({ q: searchValue || undefined, types });
-  }, [searchValue, typeFilter]);
+    resetIdentitiesList(listQuery);
+  }, [listQuery, resetIdentitiesList]);
 
   // Call SWR hook to fetch data
-  const { isLoading } = useFetchIdentities({
-    page: identitiesPage,
-    pageSize: 12,
-    q: searchValue || undefined,
-    types: typeFilter === 'all' ? undefined : [typeFilter as TypesEnum],
-  });
+  const {
+    error: fetchError,
+    isLoading,
+    mutate: revalidate,
+  } = useFetchIdentities({ ...listQuery, page: identitiesPage, pageSize: 12 });
 
   // Handle search and type changes
   const handleSearch = useCallback(
@@ -68,12 +80,24 @@ const IdentitiesArea = memo(() => {
     [setTypeFilterRaw],
   );
 
-  // The skeleton is for a genuinely cold list only. A revisit (or a filter
-  // refetch) keeps the rows that are already on screen and shows a spinner in
-  // the filter bar instead — replacing a populated list with a skeleton on
-  // every mount was the flash this page used to have.
-  const showLoading = !identitiesInit && identitiesCount === 0;
+  const error = identitiesError ?? fetchError;
+
+  // Three states, in precedence order:
+  // - cold: nothing to show and the first page is still in flight → skeleton.
+  // - failed: the query on screen never settled → reason + Retry. Without this
+  //   a cold failure sat on the skeleton forever, and a failed filter change
+  //   silently presented the *previous* query's rows as the new results.
+  // - otherwise the list, which may still be the previous query's rows while a
+  //   filter change resolves — the filter bar spinner says so.
+  const showError = Boolean(error) && !identitiesSettled;
+  const showLoading = !identitiesSettled && identitiesCount === 0 && !error;
   const isRefreshing = Boolean(identitiesSearchLoading) && identitiesCount > 0;
+
+  const handleRetry = useCallback(() => {
+    // Re-arm the loading state (clears the stored error) before revalidating.
+    resetIdentitiesList(listQuery);
+    void revalidate();
+  }, [listQuery, resetIdentitiesList, revalidate]);
 
   return (
     <Flexbox flex={1} height={'100%'}>
@@ -109,6 +133,8 @@ const IdentitiesArea = memo(() => {
             <DelayedFallback>
               <Loading viewMode={viewMode} />
             </DelayedFallback>
+          ) : showError ? (
+            <AsyncError error={error} variant={'block'} onRetry={handleRetry} />
           ) : (
             <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
           )}

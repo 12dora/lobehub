@@ -1,9 +1,10 @@
 import { Flexbox, Icon, Tag } from '@lobehub/ui';
 import { CalendarClockIcon } from 'lucide-react';
 import { type FC } from 'react';
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import AsyncError from '@/components/AsyncError';
 import DelayedFallback from '@/components/Loading/DelayedFallback';
 import NavHeader from '@/features/NavHeader';
 import WideScreenContainer from '@/features/WideScreenContainer';
@@ -32,10 +33,11 @@ const ActivitiesArea = memo(() => {
     sortValueRaw === 'startsAt' ? 'startsAt' : 'capturedAt';
 
   const activitiesCount = useUserMemoryStore((s) => s.activities.length);
+  const activitiesError = useUserMemoryStore((s) => s.activitiesError);
   const activitiesPage = useUserMemoryStore((s) => s.activitiesPage);
-  const activitiesInit = useUserMemoryStore((s) => s.activitiesInit);
-  const activitiesTotal = useUserMemoryStore((s) => s.activitiesTotal);
   const activitiesSearchLoading = useUserMemoryStore((s) => s.activitiesSearchLoading);
+  const activitiesSettled = useUserMemoryStore((s) => s.activitiesSettled);
+  const activitiesTotal = useUserMemoryStore((s) => s.activitiesTotal);
   const useFetchActivities = useUserMemoryStore((s) => s.useFetchActivities);
   const resetActivitiesList = useUserMemoryStore((s) => s.resetActivitiesList);
 
@@ -44,24 +46,33 @@ const ActivitiesArea = memo(() => {
     { label: t('filter.sort.startsAt'), value: 'startsAt' },
   ];
 
+  // Convert sort: capturedAt becomes undefined (backend default)
   const apiSort = sortValue === 'capturedAt' ? undefined : (sortValue as 'startsAt');
 
+  // One source of truth for "which rows belong on screen". The store guards
+  // every write with this same identity, so the reset effect and the fetch can
+  // never disagree about which query the list is showing.
+  const listQuery = useMemo(
+    () => ({ q: searchValue || undefined, sort: viewMode === 'grid' ? apiSort : undefined }),
+    [searchValue, apiSort, viewMode],
+  );
+
+  // Reset list when the query changes. A no-op in the store when the query is
+  // the one already on screen (a revisit must not blank the list), which is why
+  // this can run unconditionally and still catch the switch back to the default
+  // sort — the old `if (!apiSort) return` guard swallowed exactly that.
   useEffect(() => {
-    // No `if (!apiSort) return` here: that guard existed to stop the mount-time
-    // reset from wiping the list, and it also swallowed the switch *back* to
-    // the default sort. The store now no-ops on an unchanged query, so the
-    // effect can run unconditionally and every sort change lands.
-    const sort = viewMode === 'grid' ? apiSort : undefined;
-    resetActivitiesList({ q: searchValue || undefined, sort });
-  }, [searchValue, apiSort, viewMode]);
+    resetActivitiesList(listQuery);
+  }, [listQuery, resetActivitiesList]);
 
-  const { isLoading } = useFetchActivities({
-    page: activitiesPage,
-    pageSize: 12,
-    q: searchValue || undefined,
-    sort: viewMode === 'grid' ? apiSort : undefined,
-  });
+  // Call SWR hook to fetch data
+  const {
+    error: fetchError,
+    isLoading,
+    mutate: revalidate,
+  } = useFetchActivities({ ...listQuery, page: activitiesPage, pageSize: 12 });
 
+  // Handle search and sort changes
   const handleSearch = useCallback(
     (value: string) => {
       setSearchValueRaw(value || null);
@@ -76,12 +87,24 @@ const ActivitiesArea = memo(() => {
     [setSortValueRaw],
   );
 
-  // The skeleton is for a genuinely cold list only. A revisit (or a filter
-  // refetch) keeps the rows that are already on screen and shows a spinner in
-  // the filter bar instead — replacing a populated list with a skeleton on
-  // every mount was the flash this page used to have.
-  const showLoading = !activitiesInit && activitiesCount === 0;
+  const error = activitiesError ?? fetchError;
+
+  // Three states, in precedence order:
+  // - cold: nothing to show and the first page is still in flight → skeleton.
+  // - failed: the query on screen never settled → reason + Retry. Without this
+  //   a cold failure sat on the skeleton forever, and a failed filter change
+  //   silently presented the *previous* query's rows as the new results.
+  // - otherwise the list, which may still be the previous query's rows while a
+  //   filter change resolves — the filter bar spinner says so.
+  const showError = Boolean(error) && !activitiesSettled;
+  const showLoading = !activitiesSettled && activitiesCount === 0 && !error;
   const isRefreshing = Boolean(activitiesSearchLoading) && activitiesCount > 0;
+
+  const handleRetry = useCallback(() => {
+    // Re-arm the loading state (clears the stored error) before revalidating.
+    resetActivitiesList(listQuery);
+    void revalidate();
+  }, [listQuery, resetActivitiesList, revalidate]);
 
   return (
     <Flexbox flex={1} height={'100%'}>
@@ -117,6 +140,8 @@ const ActivitiesArea = memo(() => {
             <DelayedFallback>
               <Loading viewMode={viewMode} />
             </DelayedFallback>
+          ) : showError ? (
+            <AsyncError error={error} variant={'block'} onRetry={handleRetry} />
           ) : (
             <List isLoading={isLoading} searchValue={searchValue} viewMode={viewMode} />
           )}

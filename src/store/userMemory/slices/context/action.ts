@@ -1,5 +1,6 @@
 import { uniqBy } from 'es-toolkit/compat';
 import { produce } from 'immer';
+import { useEffect } from 'react';
 import { type SWRResponse } from 'swr';
 import useSWR from 'swr';
 
@@ -11,7 +12,8 @@ import { LayersEnum } from '@/types/userMemory';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type UserMemoryStore } from '../../store';
-import { revalidateMemoryList } from '../../utils/listRevalidate';
+import { DEFAULT_MEMORY_LIST_PAGE_SIZE, memoryListQueryKey } from '../../utils/listQuery';
+import { dropMemoryListCache } from '../../utils/listRevalidate';
 
 const n = setNamespace('userMemory/context');
 
@@ -21,6 +23,23 @@ export interface ContextQueryParams {
   q?: string;
   sort?: 'capturedAt' | 'scoreImpact' | 'scoreUrgency';
 }
+
+type ContextFilter = Omit<ContextQueryParams, 'page' | 'pageSize'>;
+
+interface ContextListResponse {
+  items: { context?: Record<string, unknown>; memory?: Record<string, unknown> }[];
+  total: number;
+}
+
+/** Every filter field of `ContextQueryParams` — pagination excluded. */
+const contextQueryKey = (params?: ContextFilter): string =>
+  memoryListQueryKey({ q: params?.q, sort: params?.sort });
+
+const toDisplayContexts = (response: ContextListResponse): DisplayContextMemory[] =>
+  response.items.map(
+    (item) =>
+      ({ ...item.memory, ...item.context, source: null }) as unknown as DisplayContextMemory,
+  );
 
 type Setter = StoreSetter<UserMemoryStore>;
 export const createContextSlice = (set: Setter, get: () => UserMemoryStore, _api?: unknown) =>
@@ -42,58 +61,94 @@ export class ContextActionImpl {
   };
 
   loadMoreContexts = (): void => {
-    const { contextsPage, contextsTotal, contexts } = this.#get();
-    if (contexts.length < (contextsTotal || 0)) {
-      this.#set(
-        produce((draft) => {
-          draft.contextsPage = contextsPage + 1;
-        }),
-        false,
-        n('loadMoreContexts'),
-      );
-    }
+    const { contexts, contextsHasMore, contextsPage, contextsSearchLoading, contextsTotal } =
+      this.#get();
+
+    // A reset / refresh is in flight, so the rows on screen still belong to the
+    // *previous* query. Bumping the page here would ask for page 2 of the new
+    // query and append it to those rows, leaving the list permanently mixed and
+    // page 1 of the new query missing. `hasMore` is also latched false across a
+    // reset, which stops the virtualized `endReached` from firing at all.
+    if (contextsSearchLoading || !contextsHasMore) return;
+    if (contexts.length >= (contextsTotal || 0)) return;
+
+    this.#set(
+      produce((draft) => {
+        draft.contextsPage = contextsPage + 1;
+      }),
+      false,
+      n('loadMoreContexts'),
+    );
   };
 
   /**
-   * Force a re-read of the list after a write.
+   * Re-read the list after a write.
    *
-   * A mutation doesn't change the query, so it can't go through
-   * `resetContextsList` (which now no-ops on an unchanged query) and it can't
-   * rely on the SWR key changing either. Rewind to page 1 so the accumulated
-   * pages can't resurrect a row that was just removed, then revalidate.
+   * A mutation doesn't change the query, so neither `resetContextsList` (a
+   * no-op on an unchanged query) nor a key change can drive it. Rewind to page
+   * 1, drop every cached page of the list, then fetch page 1 here rather than
+   * hoping a subscriber revalidates — the store's page and React's subscription
+   * move at different times, so "revalidate whatever is subscribed" would have
+   * refreshed the page the user happened to be on, not the one the store is
+   * about to render.
    */
   #refreshContextsList = async (): Promise<void> => {
+    const state = this.#get();
+    const params: ContextQueryParams = {
+      page: 1,
+      pageSize: state.contextsPageSize ?? DEFAULT_MEMORY_LIST_PAGE_SIZE,
+      q: state.contextsQuery,
+      sort: state.contextsSort,
+    };
+
     this.#set(
       produce((draft) => {
+        draft.contextsError = undefined;
+        draft.contextsHasMore = false;
         draft.contextsPage = 1;
         draft.contextsSearchLoading = true;
+        draft.contextsSettled = false;
       }),
       false,
       n('refreshContextsList'),
     );
 
-    await revalidateMemoryList(userMemoryKeys.contexts.root);
+    await dropMemoryListCache(userMemoryKeys.contexts.root);
+
+    try {
+      const data = (await userMemoryService.queryMemories({
+        layer: LayersEnum.Context,
+        ...params,
+      })) as ContextListResponse;
+      this.#applyContextsPage(params, data);
+    } catch (error) {
+      this.#failContextsPage(params, error);
+    }
   };
 
-  resetContextsList = (params?: Omit<ContextQueryParams, 'page' | 'pageSize'>): void => {
+  resetContextsList = (params?: ContextFilter): void => {
     const state = this.#get();
+    const nextQueryKey = contextQueryKey(params);
 
-    // Nothing to reset when the query is the one the store already fetched.
-    // The pages call this from a mount effect, so without this guard every
-    // visit wiped the rows it had and replaced the list with a skeleton.
-    const isSameQuery = state.contextsQuery === params?.q && state.contextsSort === params?.sort;
-
-    if (isSameQuery && state.contextsInit) return;
+    // Nothing to reset when the query already settled in the store. The pages
+    // call this from a mount effect, so without this guard every visit wiped
+    // the rows it had and replaced the list with a skeleton.
+    if (nextQueryKey === state.contextsQueryKey && state.contextsSettled) return;
 
     this.#set(
       produce((draft) => {
         // Deliberately keep `contexts`: the rows already on screen stay put
         // while the new query is in flight (the page shows a subtle refreshing
-        // affordance instead of a skeleton), and the page-1 response below
-        // replaces them wholesale.
+        // affordance instead of a skeleton). They are no longer "settled"
+        // though, so nothing may accumulate on top of them until page 1 of the
+        // new query lands.
+        draft.contextsError = undefined;
+        draft.contextsHasMore = false;
         draft.contextsPage = 1;
         draft.contextsQuery = params?.q;
+        draft.contextsQueryKey = nextQueryKey;
         draft.contextsSearchLoading = true;
+        draft.contextsSettled = false;
         draft.contextsSort = params?.sort;
       }),
       false,
@@ -101,10 +156,11 @@ export class ContextActionImpl {
     );
   };
 
-  useFetchContexts = (params: ContextQueryParams): SWRResponse<any> => {
+  useFetchContexts = (params: ContextQueryParams): SWRResponse<ContextListResponse> => {
+    const queryKey = contextQueryKey(params);
     const page = params.page ?? 1;
 
-    return useSWR(
+    const swr = useSWR<ContextListResponse>(
       userMemoryKeys.contexts(params),
       async () => {
         const result = await userMemoryService.queryMemories({
@@ -115,52 +171,65 @@ export class ContextActionImpl {
           sort: params.sort,
         });
 
-        return result;
+        return result as ContextListResponse;
       },
       {
-        onError: () => {
-          // Otherwise the refreshing affordance would spin forever on a failed
-          // revalidation.
-          this.#set(
-            produce((draft) => {
-              draft.contextsSearchLoading = false;
-            }),
-            false,
-            n('useFetchContexts/onError'),
-          );
-        },
-        onSuccess: (data: any) => {
-          this.#set(
-            produce((draft) => {
-              draft.contextsSearchLoading = false;
-              draft.contextsInit = true;
-              draft.contextsTotal = data.total;
-
-              // Transform data structure
-              const transformedItems: DisplayContextMemory[] = data.items.map((item: any) => ({
-                ...item.memory,
-                ...item.context,
-                source: null,
-              }));
-
-              // Accumulate data logic
-              if (page === 1) {
-                // First page, set directly
-                draft.contexts = uniqBy(transformedItems, 'id');
-              } else {
-                // Subsequent pages, accumulate data
-                draft.contexts = uniqBy([...draft.contexts, ...transformedItems], 'id');
-              }
-
-              // Update hasMore
-              draft.contextsHasMore = data.items.length >= (params.pageSize || 20);
-            }),
-            false,
-            n('useFetchContexts/onSuccess'),
-          );
-        },
+        onError: (error) => this.#failContextsPage(params, error),
         revalidateOnFocus: false,
       },
+    );
+
+    // Sync SWR → store from an effect rather than `onSuccess`: when the key
+    // changes to a page that is already cached, SWR hands the data back without
+    // ever running the fetcher, and an `onSuccess`-only store would keep
+    // showing the previous query's rows with a spinner that never stops.
+    const data = swr.data;
+    useEffect(() => {
+      if (!data) return;
+      this.#applyContextsPage(params, data);
+    }, [data, queryKey, page]);
+
+    return swr;
+  };
+
+  /** Write one page into the list — only if it still belongs to what's on screen. */
+  #applyContextsPage = (params: ContextQueryParams, data: ContextListResponse): void => {
+    const state = this.#get();
+    const page = params.page ?? 1;
+
+    if (contextQueryKey(params) !== state.contextsQueryKey) return;
+    if (page !== state.contextsPage) return;
+
+    const items = toDisplayContexts(data);
+
+    this.#set(
+      produce((draft) => {
+        draft.contextsError = undefined;
+        draft.contextsHasMore =
+          data.items.length >= (params.pageSize || DEFAULT_MEMORY_LIST_PAGE_SIZE);
+        draft.contextsPageSize = params.pageSize ?? draft.contextsPageSize;
+        draft.contextsSearchLoading = false;
+        draft.contextsSettled = true;
+        draft.contextsTotal = data.total;
+        draft.contexts =
+          page === 1 ? uniqBy(items, 'id') : uniqBy([...draft.contexts, ...items], 'id');
+      }),
+      false,
+      n('applyContextsPage'),
+    );
+  };
+
+  /** Record a failure for the query on screen so the page can offer a retry. */
+  #failContextsPage = (params: ContextQueryParams, error: unknown): void => {
+    if (contextQueryKey(params) !== this.#get().contextsQueryKey) return;
+
+    this.#set(
+      produce((draft) => {
+        draft.contextsError = error;
+        draft.contextsSearchLoading = false;
+      }),
+      false,
+      n('failContextsPage'),
     );
   };
 }
