@@ -9,7 +9,7 @@ import type {
 } from '@lobechat/types';
 import { isEmpty } from 'es-toolkit/compat';
 import type { AIChatModelCard, AiProviderModelListItem, EnabledAiModel } from 'model-bank';
-import { AiModelSourceEnum, normalizeAiModelType } from 'model-bank';
+import { AiModelSourceEnum, applyChatGPTWebModelPolicy, normalizeAiModelType } from 'model-bank';
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 import pMap from 'p-map';
 
@@ -23,6 +23,20 @@ import type { LobeChatDatabase } from '../../type';
 type DecryptUserKeyVaults = (encryptKeyVaultsStr: string | null) => Promise<any>;
 
 const normalizeProvider = (provider: string) => provider.toLowerCase();
+
+const applyChatGPTWebReadPolicy = (item: EnabledAiModel): EnabledAiModel => {
+  const policy = applyChatGPTWebModelPolicy({
+    abilities: item.abilities,
+    modelId: item.id,
+    providerId: item.providerId,
+    settings: item.settings,
+  });
+  return {
+    ...item,
+    settings: policy.settings,
+    ...(policy.visible === false ? { visible: false } : {}),
+  };
+};
 
 export class AiInfraRepos {
   private userId: string;
@@ -158,9 +172,11 @@ export class AiInfraRepos {
         injectSearchSettings(item.providerId, { ...item, type: normalizeAiModelType(item.type) }),
       );
 
-    return [...builtinModels, ...appendedUserModels].sort(
-      (a, b) => (a?.sort ?? Infinity) - (b?.sort ?? Infinity),
-    ) as EnabledAiModel[];
+    // ChatGPT Web leftovers (stale gpt5_6ReasoningEffort, un-aliased auto/pro)
+    // are rewritten at read time so BYOK rows match chatgpt.com without a re-sync.
+    return ([...builtinModels, ...appendedUserModels] as EnabledAiModel[])
+      .map(applyChatGPTWebReadPolicy)
+      .sort((a, b) => (a?.sort ?? Infinity) - (b?.sort ?? Infinity));
   };
 
   getAiProviderRuntimeState = async (
@@ -169,6 +185,8 @@ export class AiInfraRepos {
     const [result, enabledAiProviders, allModels] = await Promise.all([
       this.aiProviderModel.getAiProviderRuntimeConfig(decryptor),
       this.getUserEnabledProviderList(),
+      // Policy is applied inside getEnabledModels so BYOK leftovers are
+      // stripped/hidden here too.
       this.getEnabledModels(false),
     ]);
 

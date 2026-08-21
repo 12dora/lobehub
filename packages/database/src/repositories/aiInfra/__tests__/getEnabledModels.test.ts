@@ -1088,5 +1088,57 @@ describe('AiInfraRepos', () => {
         units: [{ name: 'textInput', rate: 0.15, strategy: 'fixed', unit: 'millionTokens' }],
       });
     });
+
+    it('rewrites ChatGPT Web BYOK leftovers at read time', async () => {
+      const mockProviders = [
+        { enabled: true, id: 'chatgptweb', name: 'ChatGPT Web', source: 'builtin' as const },
+      ];
+      const mockAllModels = [
+        {
+          abilities: { reasoning: true },
+          enabled: true,
+          id: 'gpt-5-6',
+          providerId: 'chatgptweb',
+          settings: { extendParams: ['gpt5_6ReasoningEffort'], searchImpl: 'params' },
+          type: 'chat' as const,
+        },
+        {
+          abilities: { reasoning: true },
+          enabled: true,
+          id: 'auto',
+          providerId: 'chatgptweb',
+          settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+          type: 'chat' as const,
+        },
+        {
+          abilities: { reasoning: true },
+          enabled: true,
+          id: 'gpt-5-6-pro',
+          providerId: 'chatgptweb',
+          settings: { extendParams: ['chatgptWebReasoningEffort'] },
+          type: 'chat' as const,
+        },
+      ] as EnabledAiModel[];
+
+      vi.spyOn(repo, 'getAiProviderList').mockResolvedValue(mockProviders);
+      vi.spyOn(repo.aiModelModel, 'getAllModels').mockResolvedValue(mockAllModels);
+      vi.spyOn(repo as any, 'fetchBuiltinModels').mockResolvedValue([]);
+
+      const result = await repo.getEnabledModels();
+      expect(result.find((model) => model.id === 'gpt-5-6')?.settings).toEqual({
+        extendParams: ['chatgptWebReasoningEffort'],
+        searchImpl: 'params',
+      });
+      expect(result.find((model) => model.id === 'auto')).toMatchObject({
+        enabled: true,
+        settings: { legacyAlias: 'gpt-5-6' },
+        visible: false,
+      });
+      expect(result.find((model) => model.id === 'gpt-5-6-pro')).toMatchObject({
+        enabled: true,
+        settings: { legacyAlias: 'gpt-5-6' },
+        visible: false,
+      });
+    });
   });
 });

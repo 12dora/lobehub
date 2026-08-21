@@ -30,17 +30,17 @@ export const chatgptWebFamilyBase = (slug: string): string | undefined => {
 const FAMILY_LEVELS = new Set<string>(['instant', 'medium', 'high', 'xhigh', 'pro']);
 
 /**
- * Map a stored / payload effort onto the five web-UI levels. Missing values
- * default to Medium (the chatgpt.com default). Unknown tokens fall through to
- * Medium rather than leaking onto the wire.
+ * Map a stored / payload effort onto the five web-UI levels. Only those five
+ * tokens remap a family id; missing or unknown values leave the bare family
+ * slug alone (a stale agent without `chatgptWebReasoningEffort` must not
+ * default to Medium).
  */
-const resolveFamilyLevel = (effort: string | undefined | null): ChatGPTWebFamilyLevel => {
+const parseFamilyLevel = (effort: string | undefined | null): ChatGPTWebFamilyLevel | undefined => {
   const normalized = String(effort ?? '')
     .trim()
     .toLowerCase();
-  if (!normalized) return 'medium';
   if (FAMILY_LEVELS.has(normalized)) return normalized as ChatGPTWebFamilyLevel;
-  return 'medium';
+  return undefined;
 };
 
 const FAMILY_TURN: Record<ChatGPTWebFamilyLevel, (family: string) => ChatGPTWebTurn> = {
@@ -61,9 +61,13 @@ const FAMILY_TURN: Record<ChatGPTWebFamilyLevel, (family: string) => ChatGPTWebT
  * turns — effort is never expressed via hints.
  *
  * Family ids (`gpt-5-6`, `gpt-5-5`, …) follow the web UI picker: a level
- * changes BOTH the slug and the effort field. `o3` has no effort control.
- * Legacy SKU ids (`-instant` / `-thinking` / `-pro` / `-mini`, `auto`) pass
- * through; `thinking_effort` is still aliased by {@link normalizeThinkingEffort}.
+ * changes BOTH the slug and the effort field — but only when the value is one
+ * of the five family levels. A family id with no (or unknown) field is sent
+ * as the bare slug with no `thinking_effort`.
+ *
+ * `o3`, `auto`, `*-instant`, and `*-mini` never send `thinking_effort`.
+ * `*-pro` always sends `standard` (leftover values are ignored).
+ * Legacy `*-thinking` still aliases a leftover via {@link normalizeThinkingEffort}.
  */
 export const resolveChatGPTWebTurn = ({
   model,
@@ -75,11 +79,25 @@ export const resolveChatGPTWebTurn = ({
   if (model === 'o3') return { model: 'o3' };
 
   if (isChatGPTWebFamilyId(model)) {
-    return FAMILY_TURN[resolveFamilyLevel(effort)](model);
+    const level = parseFamilyLevel(effort);
+    if (!level) return { model };
+    return FAMILY_TURN[level](model);
   }
 
-  const thinkingEffort = normalizeThinkingEffort(effort);
-  return thinkingEffort ? { model, thinkingEffort } : { model };
+  if (model.endsWith('-pro')) {
+    return { model, thinkingEffort: 'standard' };
+  }
+
+  if (model === 'auto' || model.endsWith('-instant') || model.endsWith('-mini')) {
+    return { model };
+  }
+
+  if (model.endsWith('-thinking')) {
+    const thinkingEffort = normalizeThinkingEffort(effort);
+    return thinkingEffort ? { model, thinkingEffort } : { model };
+  }
+
+  return { model };
 };
 
 const FAMILY_TITLE_SUFFIXES = [' Instant', ' Thinking', ' Pro'] as const;

@@ -1283,4 +1283,53 @@ describe('projectAiCatalogRuntimeState settings merge', () => {
     });
     expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6')?.visible).not.toBe(false);
   });
+
+  it('rewrites published gpt5_6ReasoningEffort on gpt-5-6 and hides stale auto/pro without a re-sync', () => {
+    const state = projectAiCatalogRuntimeState([
+      {
+        payload: {
+          models: [
+            {
+              enabled: true,
+              modelKey: 'gpt-5-6',
+              settings: { extendParams: ['gpt5_6ReasoningEffort'], searchImpl: 'params' },
+              type: 'chat',
+            },
+            {
+              enabled: true,
+              modelKey: 'auto',
+              settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+              type: 'chat',
+            },
+            {
+              enabled: true,
+              modelKey: 'gpt-5-6-pro',
+              settings: { extendParams: ['chatgptWebReasoningEffort'] },
+              type: 'chat',
+            },
+          ],
+          provider: {
+            displayName: 'ChatGPT Web',
+            enabled: true,
+            providerKey: 'chatgptweb',
+            source: 'builtin',
+          },
+        },
+      } as never,
+    ]);
+
+    expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6')?.settings).toEqual(
+      expect.objectContaining({ extendParams: ['chatgptWebReasoningEffort'] }),
+    );
+    expect(state.enabledAiModels.find((model) => model.id === 'auto')).toMatchObject({
+      enabled: true,
+      settings: { legacyAlias: 'gpt-5-6' },
+      visible: false,
+    });
+    expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6-pro')).toMatchObject({
+      enabled: true,
+      settings: { legacyAlias: 'gpt-5-6' },
+      visible: false,
+    });
+  });
 });

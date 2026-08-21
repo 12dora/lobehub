@@ -319,6 +319,63 @@ describe('reconcileChatGPTWebLegacySkus', () => {
     );
   });
 
+  it('rewrites stale gpt5_6ReasoningEffort on family and legacy rows', () => {
+    const existing = [
+      draftModel({
+        id: 'family-1',
+        modelKey: 'gpt-5-6',
+        settings: { extendParams: ['gpt5_6ReasoningEffort'], searchImpl: 'params' },
+      }),
+      draftModel({
+        enabled: true,
+        id: 'auto-1',
+        modelKey: 'auto',
+        settings: { extendParams: ['gpt5_6ReasoningEffort'], legacyAlias: 'gpt-5-6' },
+      }),
+      draftModel({
+        enabled: true,
+        id: 'pro-1',
+        modelKey: 'gpt-5-6-pro',
+        settings: { extendParams: ['chatgptWebReasoningEffort'] },
+      }),
+    ];
+
+    const mapped = mapCardsToBatchUpdate([familyCard], existing);
+    const result = reconcileChatGPTWebLegacySkus([familyCard], existing, mapped);
+    const byId = Object.fromEntries(result.items.map((item) => [item.id, item]));
+
+    expect(byId['family-1']?.settings).toEqual({
+      extendParams: ['chatgptWebReasoningEffort'],
+      searchImpl: 'params',
+    });
+    expect(byId['auto-1']?.settings).toEqual({ legacyAlias: 'gpt-5-6' });
+    expect(byId['pro-1']?.settings).toEqual({ legacyAlias: 'gpt-5-6' });
+    expect(result.updated).toBeGreaterThan(0);
+  });
+
+  it('emits an update when a stamped legacy row still has stale extendParams', () => {
+    const existing = [
+      draftModel({
+        enabled: true,
+        id: 'instant-1',
+        modelKey: 'gpt-5-6-instant',
+        settings: { extendParams: ['gpt5_6ReasoningEffort'], legacyAlias: 'gpt-5-6' },
+      }),
+    ];
+    const mapped = mapCardsToBatchUpdate([familyCard], existing);
+    const result = reconcileChatGPTWebLegacySkus([familyCard], existing, mapped);
+
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'instant-1',
+          settings: { legacyAlias: 'gpt-5-6' },
+        }),
+      ]),
+    );
+    expect(result.updated).toBeGreaterThan(mapped.updated);
+  });
+
   it('is idempotent when legacy SKUs already carry legacyAlias and stay enabled', () => {
     const existing = [
       draftModel({

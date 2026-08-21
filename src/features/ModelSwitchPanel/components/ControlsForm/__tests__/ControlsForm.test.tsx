@@ -11,6 +11,7 @@ interface TestAgentState {
 }
 
 interface TestAiState {
+  abilities?: { reasoning?: boolean };
   extendParams: string[];
 }
 
@@ -21,14 +22,19 @@ const testState = vi.hoisted(() => ({
     provider: 'openai',
   } as TestAgentState,
   aiState: {
+    abilities: undefined as { reasoning?: boolean } | undefined,
     extendParams: ['enableReasoning'],
   } as TestAiState,
+  formItems: [] as Array<{ name?: string }>,
   setFieldsValue: vi.fn(),
   updateAgentChatConfig: vi.fn(),
 }));
 
 vi.mock('@lobehub/ui', () => {
-  const MockForm = () => <div data-testid="controls-form" />;
+  const MockForm = ({ items }: { items?: Array<{ name?: string }> }) => {
+    testState.formItems = items ?? [];
+    return <div data-testid="controls-form" />;
+  };
   MockForm.useForm = () => [{ setFieldsValue: testState.setFieldsValue }];
 
   return { Form: MockForm };
@@ -87,8 +93,10 @@ describe('ControlsForm', () => {
       provider: 'openai',
     };
     testState.aiState = {
+      abilities: undefined,
       extendParams: ['enableReasoning'],
     };
+    testState.formItems = [];
   });
 
   it('should sync legacy thinking values into mounted form without persisting them', () => {
@@ -145,5 +153,26 @@ describe('ControlsForm', () => {
         enableAdaptiveThinking: false,
       }),
     );
+  });
+
+  it('does not show an effort slider from empty extendParams even when abilities.reasoning is true', () => {
+    testState.agentState = { config: {}, model: 'o3', provider: 'chatgptweb' };
+    testState.aiState = { abilities: { reasoning: true }, extendParams: [] };
+
+    render(<ControlsForm model="o3" provider="chatgptweb" />);
+
+    expect(testState.formItems.map((item) => item.name)).toEqual([]);
+  });
+
+  it('shows only the ChatGPT Web family slider for chatgptWebReasoningEffort', () => {
+    testState.agentState = { config: {}, model: 'gpt-5-6', provider: 'chatgptweb' };
+    testState.aiState = {
+      abilities: { reasoning: true },
+      extendParams: ['chatgptWebReasoningEffort'],
+    };
+
+    render(<ControlsForm model="gpt-5-6" provider="chatgptweb" />);
+
+    expect(testState.formItems.map((item) => item.name)).toEqual(['chatgptWebReasoningEffort']);
   });
 });

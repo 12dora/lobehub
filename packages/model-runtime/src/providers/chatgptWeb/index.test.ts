@@ -44,7 +44,8 @@ const defaultEvents: ConversationEvent[] = [
 ];
 
 const createFakeClient = (overrides: Record<string, any> = {}) => {
-  const streamConversation = vi.fn(async function* (_body: object, _options: object) {
+  const streamConversation = vi.fn(async function* (_body: object, options: any = {}) {
+    options?.onHeaders?.();
     for (const event of defaultEvents) yield event;
   });
 
@@ -72,6 +73,7 @@ const createFakeClient = (overrides: Record<string, any> = {}) => {
     getConversation: vi.fn(async () => ({})),
     getFileDownloadUrl: vi.fn(async () => 'https://blob/file'),
     hideConversation: vi.fn(async () => {}),
+    keepSentinelWarm: vi.fn(),
     listModels: vi.fn(async () => []),
     prepareConversation: vi.fn(async () => ({ conduitToken: 'conduit' })),
     replenishSentinelBundle: vi.fn(),
@@ -190,8 +192,9 @@ describe('LobeChatGPTWebAI', () => {
         'user',
       ]);
       expect(body.messages[0].content.parts).toEqual(['be terse\n\nhi']);
-      // every turn goes through the conduit path — see the `/f/` default below
-      expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
+      // every turn goes through the conduit path — see the `/f/` default below.
+      // Prepare is non-blocking, so a token that arrives on a microtask is omitted.
+      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
       // the assistant turn is registered so the upstream echo can be dropped
       expect(optionsOf(client).echoHistory).toEqual(['hello']);
 
@@ -438,19 +441,19 @@ describe('LobeChatGPTWebAI', () => {
       await Promise.resolve();
     });
 
-    it('does not override an explicit lower effort on a -pro model', async () => {
+    it('always sends standard on a -pro model, ignoring leftover reasoning_effort', async () => {
       const client = createFakeClient();
       await createRuntime(client).chat({
         messages: [{ content: 'hi', role: 'user' }],
         model: 'gpt-5-6-pro',
-        reasoning_effort: 'low' as any,
+        reasoning_effort: 'high' as any,
         temperature: 1,
       });
 
       expect(bodyOf(client).thinking_effort).toBe('standard');
     });
 
-    it('defaults a family id without effort to Medium (thinking slug + standard)', async () => {
+    it('passes a family id without chatgptWebReasoningEffort through as the bare slug', async () => {
       const client = createFakeClient();
       await createRuntime(client).chat({
         messages: [{ content: 'hi', role: 'user' }],
@@ -458,8 +461,8 @@ describe('LobeChatGPTWebAI', () => {
         temperature: 1,
       });
 
-      expect(bodyOf(client).model).toBe('gpt-5-6-thinking');
-      expect(bodyOf(client).thinking_effort).toBe('standard');
+      expect(bodyOf(client).model).toBe('gpt-5-6');
+      expect(bodyOf(client).thinking_effort).toBeUndefined();
     });
 
     it('ignores leftover generic reasoning_effort on a bare family id', async () => {
@@ -471,8 +474,22 @@ describe('LobeChatGPTWebAI', () => {
         temperature: 1,
       });
 
-      expect(bodyOf(client).model).toBe('gpt-5-6-thinking');
-      expect(bodyOf(client).thinking_effort).toBe('standard');
+      expect(bodyOf(client).model).toBe('gpt-5-6');
+      expect(bodyOf(client).thinking_effort).toBeUndefined();
+    });
+
+    it('does not send thinking_effort for leftover reasoning_effort on auto / instant / mini', async () => {
+      for (const model of ['auto', 'gpt-5-6-instant', 'gpt-5-6-mini'] as const) {
+        const client = createFakeClient();
+        await createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model,
+          reasoning_effort: 'high' as any,
+          temperature: 1,
+        });
+        expect(bodyOf(client).model).toBe(model);
+        expect(bodyOf(client).thinking_effort).toBeUndefined();
+      }
     });
 
     it.each([
@@ -724,13 +741,93 @@ describe('LobeChatGPTWebAI', () => {
       // the plain body's opt-out is NOT sent: it makes the conversation
       // unreadable afterwards (no files, no citations, no recovery)
       expect(body.history_and_training_disabled).toBeUndefined();
-      expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
+      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
     });
 
-    it('falls back to the plain path once when the conduit prepare fails', async () => {
+    it('starts a plain Instant conversation before prepare settles', async () => {
+      const settlePrepares: Array<(value: { conduitToken?: string }) => void> = [];
+      let settled = 0;
+      const prepareConversation = vi.fn(
+        () =>
+          new Promise<{ conduitToken?: string }>((resolve) => {
+            settlePrepares.push((value) => {
+              settled += 1;
+              resolve(value);
+            });
+          }),
+      );
+      const client = createFakeClient({ prepareConversation });
+
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(prepareConversation).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(0);
+      expect(client.streamConversation).toHaveBeenCalledTimes(1);
+      expect(prepareConversation.mock.invocationCallOrder[0]!).toBeLessThan(
+        client.streamConversation.mock.invocationCallOrder[0]!,
+      );
+      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+
+      for (const settle of settlePrepares) settle({ conduitToken: 'too-late' });
+      await Promise.resolve();
+    });
+
+    it('retries once with the conduit token when the first send is a missing-prepare 4xx', async () => {
+      let prepareResolve!: (value: { conduitToken?: string }) => void;
+      const prepareConversation = vi.fn(
+        () =>
+          new Promise<{ conduitToken?: string }>((resolve) => {
+            prepareResolve = resolve;
+          }),
+      );
+      let conversationCalls = 0;
+      const streamConversation = vi.fn(async function* (_body: object, options: any = {}) {
+        conversationCalls += 1;
+        if (conversationCalls === 1) {
+          throw new ChatGPTWebError('upstream', 'conversation failed: missing conduit', {
+            status: 400,
+          });
+        }
+        options?.onHeaders?.();
+        for (const event of defaultEvents) yield event;
+      });
+      const client = createFakeClient({ prepareConversation, streamConversation });
+
+      const chatPromise = createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      await vi.waitFor(() => expect(streamConversation).toHaveBeenCalledTimes(1));
+      prepareResolve({ conduitToken: 'conduit-retry' });
+      await chatPromise;
+
+      expect(streamConversation).toHaveBeenCalledTimes(2);
+      expect(optionsOf(client, 1)).toMatchObject({
+        conduitToken: 'conduit-retry',
+        useFPath: true,
+      });
+    });
+
+    it('falls back to the plain path once when a missing-conduit 4xx meets a failed prepare', async () => {
       const client = createFakeClient({
         prepareConversation: vi.fn(async () => {
           throw new ChatGPTWebError('upstream', 'prepare exploded', { status: 500 });
+        }),
+        streamConversation: vi.fn(async function* (_body: object, options: any = {}) {
+          if (!options.useFPath) {
+            options?.onHeaders?.();
+            for (const event of defaultEvents) yield event;
+            return;
+          }
+          throw new ChatGPTWebError('upstream', 'conversation failed: missing conduit', {
+            status: 400,
+          });
         }),
       });
 
@@ -743,9 +840,37 @@ describe('LobeChatGPTWebAI', () => {
       );
 
       expect(client.prepareConversation).toHaveBeenCalledTimes(1);
-      expect(optionsOf(client).useFPath).toBeFalsy();
-      expect(optionsOf(client).conduitToken).toBeUndefined();
-      expect(bodyOf(client).history_and_training_disabled).toBe(true);
+      expect(client.streamConversation).toHaveBeenCalledTimes(2);
+      expect(optionsOf(client, 1).useFPath).toBeFalsy();
+      expect(optionsOf(client, 1).conduitToken).toBeUndefined();
+      expect(bodyOf(client, 1).history_and_training_disabled).toBe(true);
+      expect(sse).toContain('event: text');
+    });
+
+    it('returns StreamingResponse after headers without waiting for the first event', async () => {
+      let releaseFirst!: () => void;
+      const firstEvent = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let headersOpened = false;
+      const streamConversation = vi.fn(async function* (_body: object, options: any = {}) {
+        headersOpened = true;
+        options?.onHeaders?.();
+        await firstEvent;
+        for (const event of defaultEvents) yield event;
+      });
+      const client = createFakeClient({ streamConversation });
+
+      const response = await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(headersOpened).toBe(true);
+      expect(response).toBeInstanceOf(Response);
+      releaseFirst();
+      const sse = await readSSE(response);
       expect(sse).toContain('event: text');
     });
 
@@ -795,7 +920,14 @@ describe('LobeChatGPTWebAI', () => {
       ['a network hiccup', new ChatGPTWebError('network', 'econnreset')],
       ['a timeout', new ChatGPTWebError('timeout', 'prepare aborted')],
       ['a missing endpoint', new ChatGPTWebError('not_found', 'no such path', { status: 404 })],
-    ])('falls back to the plain path on %s', async (_label, raised) => {
+      ['an auth failure', new ChatGPTWebError('auth', 'token expired', { status: 401 })],
+      ['a rate limit', new ChatGPTWebError('rate_limit', 'slow down', { status: 429 })],
+      ['a Cloudflare challenge', new ChatGPTWebError('cloudflare', 'blocked', { status: 403 })],
+      ['a model cap', new ChatGPTWebError('model_cap', 'cap reached', { status: 403 })],
+      ['a permission failure', new ChatGPTWebError('permission', 'forbidden', { status: 403 })],
+      ['a missing transport', new ChatGPTWebError('transport_unavailable', 'no curl binary')],
+      ['an unclassified error', new TypeError('cannot read properties of undefined')],
+    ])('does not wait for prepare to fail before sending on %s', async (_label, raised) => {
       const client = createFakeClient({
         prepareConversation: vi.fn(async () => {
           throw raised;
@@ -808,41 +940,21 @@ describe('LobeChatGPTWebAI', () => {
         temperature: 1,
       });
 
-      expect(optionsOf(client).useFPath).toBeFalsy();
-    });
-
-    it.each([
-      ['an auth failure', new ChatGPTWebError('auth', 'token expired', { status: 401 })],
-      ['a rate limit', new ChatGPTWebError('rate_limit', 'slow down', { status: 429 })],
-      // the plain path is challenged by the very same bot protection
-      ['a Cloudflare challenge', new ChatGPTWebError('cloudflare', 'blocked', { status: 403 })],
-      // the plain path refuses the model for this account too
-      ['a model cap', new ChatGPTWebError('model_cap', 'cap reached', { status: 403 })],
-      ['a permission failure', new ChatGPTWebError('permission', 'forbidden', { status: 403 })],
-      ['a missing transport', new ChatGPTWebError('transport_unavailable', 'no curl binary')],
-      // an untyped failure is a bug of ours, not something the plain path fixes
-      ['an unclassified error', new TypeError('cannot read properties of undefined')],
-    ])('does not fall back on %s', async (_label, raised) => {
-      const client = createFakeClient({
-        prepareConversation: vi.fn(async () => {
-          throw raised;
-        }),
-      });
-
-      await expect(
-        createRuntime(client).chat({
-          messages: [{ content: 'hi', role: 'user' }],
-          model: 'auto',
-          temperature: 1,
-        }),
-      ).rejects.toBeDefined();
-      expect(client.streamConversation).not.toHaveBeenCalled();
+      expect(client.streamConversation).toHaveBeenCalledTimes(1);
+      expect(optionsOf(client).useFPath).toBe(true);
     });
 
     it('never falls back for a turn the plain body cannot express', async () => {
       const client = createFakeClient({
         prepareConversation: vi.fn(async () => {
           throw new ChatGPTWebError('upstream', 'prepare exploded', { status: 500 });
+        }),
+        streamConversation: vi.fn(async function* (_body: object, options: any = {}) {
+          if (!options.useFPath) throw new Error('must not fall back');
+          throw new ChatGPTWebError('upstream', 'conversation failed: missing conduit', {
+            status: 400,
+          });
+          yield;
         }),
       });
 
@@ -854,7 +966,8 @@ describe('LobeChatGPTWebAI', () => {
           temperature: 1,
         }),
       ).rejects.toBeDefined();
-      expect(client.streamConversation).not.toHaveBeenCalled();
+      expect(client.streamConversation).toHaveBeenCalledTimes(1);
+      expect(optionsOf(client).useFPath).toBe(true);
     });
 
     it('uses the /f/ conduit path with search switches when search is on', async () => {
@@ -874,7 +987,7 @@ describe('LobeChatGPTWebAI', () => {
       const body = bodyOf(client);
       expect(body.force_use_search).toBe(true);
       expect(body.messages.at(-1).metadata.system_hints).toEqual(['search']);
-      expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
+      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
     });
 
     it('acquires a sentinel bundle by context key and replenishes after send starts', async () => {
@@ -1964,6 +2077,38 @@ describe('LobeChatGPTWebAI', () => {
       expect(models.find((model) => model.id === 'gpt-5-6-mini')).toMatchObject({
         enabled: false,
         id: 'gpt-5-6-mini',
+      });
+    });
+
+    it('does not advertise leftover auto as enabled and keeps o3 without an effort control', async () => {
+      const client = createFakeClient({
+        listModels: vi.fn(async () => [
+          { raw: {}, slug: 'auto', title: 'Auto' },
+          { raw: {}, slug: 'o3', title: 'o3' },
+        ]),
+      });
+
+      const models = await createRuntime(client).models();
+      expect(models.find((model) => model.id === 'auto')).toMatchObject({
+        enabled: false,
+        id: 'auto',
+      });
+      expect(models.find((model) => model.id === 'auto')?.settings).not.toEqual(
+        expect.objectContaining({
+          extendParams: expect.arrayContaining([
+            'chatgptWebReasoningEffort',
+            'gpt5_6ReasoningEffort',
+          ]),
+        }),
+      );
+      expect(models.find((model) => model.id === 'o3')).toMatchObject({
+        reasoning: true,
+        settings: expect.not.objectContaining({
+          extendParams: expect.arrayContaining([
+            'chatgptWebReasoningEffort',
+            'gpt5_6ReasoningEffort',
+          ]),
+        }),
       });
     });
 

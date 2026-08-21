@@ -6,7 +6,11 @@ import type {
 import { merge } from '@lobechat/utils';
 import { isRecord } from '@lobechat/utils/object';
 import type { EnabledAiModel } from 'model-bank';
-import { LOBE_DEFAULT_MODEL_LIST, projectPickerVisibility } from 'model-bank';
+import {
+  applyChatGPTWebModelPolicy,
+  LOBE_DEFAULT_MODEL_LIST,
+  projectPickerVisibility,
+} from 'model-bank';
 
 import type {
   PlatformAiProviderConfig,
@@ -208,15 +212,21 @@ export const projectAiCatalogRuntimeState = (
         typeof publishedConfig.deploymentName === 'string'
           ? publishedConfig.deploymentName
           : undefined;
-      const publishedSettings = isRecord(rawModel.settings) ? rawModel.settings : undefined;
-      const settings = hasPublishedMetadata(rawModel.settings)
+      const abilities = hasPublishedMetadata(rawModel.abilities)
+        ? rawModel.abilities
+        : (builtin?.abilities ?? {});
+      const mergedSettings = hasPublishedMetadata(rawModel.settings)
         ? merge(builtin?.settings || {}, rawModel.settings)
         : builtin?.settings;
+      const policy = applyChatGPTWebModelPolicy({
+        abilities,
+        modelId: rawModel.modelKey,
+        providerId: providerKey,
+        settings: mergedSettings,
+      });
       models.push({
         ...builtin,
-        abilities: hasPublishedMetadata(rawModel.abilities)
-          ? rawModel.abilities
-          : (builtin?.abilities ?? {}),
+        abilities,
         config: {
           ...builtin?.config,
           ...(deploymentName ? { deploymentName } : {}),
@@ -236,11 +246,11 @@ export const projectAiCatalogRuntimeState = (
           : builtin?.parameters,
         pricing: hasPublishedMetadata(rawModel.pricing) ? rawModel.pricing : builtin?.pricing,
         providerId: providerKey,
-        settings,
+        settings: policy.settings,
         sort: typeof rawModel.sort === 'number' ? rawModel.sort : undefined,
         source: builtin ? 'builtin' : 'custom',
         type: typeof rawModel.type === 'string' ? rawModel.type : 'chat',
-        ...projectPickerVisibility(publishedSettings ?? settings),
+        ...projectPickerVisibility(policy.settings),
       } as EnabledAiModel);
     }
   }

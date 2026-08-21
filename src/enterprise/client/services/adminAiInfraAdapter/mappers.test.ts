@@ -104,6 +104,50 @@ describe('adminAiInfraAdapter mappers', () => {
         visible: false,
       });
     });
+
+    it('rewrites published gpt5_6ReasoningEffort and hides stale auto/pro leftovers', () => {
+      const family = mapEnabledModel(
+        {
+          ...legacyRow,
+          modelKey: 'gpt-5-6',
+          settings: { extendParams: ['gpt5_6ReasoningEffort'], searchImpl: 'params' },
+        },
+        'chatgptweb',
+      );
+      expect(family.settings).toEqual({
+        extendParams: ['chatgptWebReasoningEffort'],
+        searchImpl: 'params',
+      });
+      expect(family.visible).not.toBe(false);
+
+      const auto = mapEnabledModel(
+        {
+          ...legacyRow,
+          modelKey: 'auto',
+          settings: { extendParams: ['gpt5_6ReasoningEffort'] },
+        },
+        'chatgptweb',
+      );
+      expect(auto).toMatchObject({
+        enabled: true,
+        settings: { legacyAlias: 'gpt-5-6' },
+        visible: false,
+      });
+
+      const pro = mapEnabledModel(
+        {
+          ...legacyRow,
+          modelKey: 'gpt-5-6-pro',
+          settings: { extendParams: ['chatgptWebReasoningEffort'] },
+        },
+        'chatgptweb',
+      );
+      expect(pro).toMatchObject({
+        enabled: true,
+        settings: { legacyAlias: 'gpt-5-6' },
+        visible: false,
+      });
+    });
   });
 
   describe('splitFormKeyVaults (B1)', () => {

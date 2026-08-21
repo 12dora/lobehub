@@ -1,8 +1,5 @@
-import {
-  type AiProviderModelListItem,
-  type EnabledAiModel,
-  projectPickerVisibility,
-} from 'model-bank';
+import type { AiProviderModelListItem, EnabledAiModel } from 'model-bank';
+import { applyChatGPTWebModelPolicy, projectPickerVisibility } from 'model-bank';
 
 import type {
   AdminAiModelListItem,
@@ -130,21 +127,29 @@ export const mapModelListItem = (
 export const mapEnabledModel = (
   item: AdminAiProviderDraft['models'][number],
   providerKey: string,
-): EnabledAiModel => ({
-  abilities: (item.abilities ?? {}) as EnabledAiModel['abilities'],
-  config: (item.config ?? undefined) as EnabledAiModel['config'],
-  contextWindowTokens: item.contextWindowTokens ?? undefined,
-  displayName: item.displayName ?? undefined,
-  enabled: item.enabled,
-  id: item.modelKey,
-  parameters: (item.parameters ?? undefined) as EnabledAiModel['parameters'],
-  pricing: (item.pricing ?? undefined) as EnabledAiModel['pricing'],
-  providerId: providerKey,
-  settings: (item.settings ?? undefined) as EnabledAiModel['settings'],
-  sort: item.sort ?? undefined,
-  type: item.type as EnabledAiModel['type'],
-  ...projectPickerVisibility(item.settings),
-});
+): EnabledAiModel => {
+  const policy = applyChatGPTWebModelPolicy({
+    abilities: item.abilities,
+    modelId: item.modelKey,
+    providerId: providerKey,
+    settings: item.settings,
+  });
+  return {
+    abilities: (item.abilities ?? {}) as EnabledAiModel['abilities'],
+    config: (item.config ?? undefined) as EnabledAiModel['config'],
+    contextWindowTokens: item.contextWindowTokens ?? undefined,
+    displayName: item.displayName ?? undefined,
+    enabled: item.enabled,
+    id: item.modelKey,
+    parameters: (item.parameters ?? undefined) as EnabledAiModel['parameters'],
+    pricing: (item.pricing ?? undefined) as EnabledAiModel['pricing'],
+    providerId: providerKey,
+    settings: policy.settings,
+    sort: item.sort ?? undefined,
+    type: item.type as EnabledAiModel['type'],
+    ...projectPickerVisibility(policy.settings),
+  };
+};
 
 /**
  * Build runtime state for ModelList / EnableSwitch from admin list + draft models.

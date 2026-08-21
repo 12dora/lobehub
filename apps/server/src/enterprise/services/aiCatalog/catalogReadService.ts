@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { isRecord } from '@lobechat/utils/object';
-import { AiModelTypeSchema, isLegacyAliasModel } from 'model-bank';
+import { AiModelTypeSchema, applyChatGPTWebModelPolicy, isLegacyAliasModel } from 'model-bank';
 
 import type { LobeChatDatabase } from '@/database/type';
 
@@ -51,8 +51,15 @@ const toPublishedProvider = (
   const models = rawModels
     .filter(isRecord)
     .map((model) => model as RevisionModelPayload)
-    .filter((model) => model.enabled && model.modelKey && !isLegacyAliasModel(model.settings))
     .flatMap((model) => {
+      if (!model.enabled || !model.modelKey) return [];
+      const policy = applyChatGPTWebModelPolicy({
+        abilities: model.abilities,
+        modelId: model.modelKey,
+        providerId: provider.providerKey,
+        settings: model.settings,
+      });
+      if (isLegacyAliasModel(policy.settings)) return [];
       const type = AiModelTypeSchema.safeParse(model.type ?? 'chat');
       if (!type.success) return [];
       return [
@@ -66,10 +73,10 @@ const toPublishedProvider = (
           contextWindowTokens: model.contextWindowTokens ?? null,
           description: model.description ?? null,
           displayName: model.displayName ?? null,
-          modelKey: model.modelKey!,
+          modelKey: model.modelKey,
           parameters: model.parameters ?? {},
           pricing: model.pricing ?? null,
-          settings: model.settings ?? {},
+          settings: policy.settings ?? {},
           sort: model.sort ?? 0,
           type: type.data,
         },

@@ -1,4 +1,5 @@
 import type { ChatModelCard } from 'model-bank';
+import { applyChatGPTWebModelPolicy } from 'model-bank';
 import { isProviderOAuthDeviceFlow } from 'model-bank/modelProviders';
 
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
@@ -210,17 +211,11 @@ export const mapCardsToBatchUpdate = (
 
 const CHATGPTWEB_PROVIDER = 'chatgptweb';
 const CHATGPT_WEB_FAMILY_BASE_RE = /^gpt-5-\d+$/;
-const CHATGPT_WEB_LEGACY_SKU_RE = /^(gpt-5-\d+)-(instant|thinking|pro)$/;
+const CHATGPT_WEB_LEGACY_SKU_RE = /^gpt-5-\d+-(?:instant|thinking|pro)$/;
 const CHATGPT_WEB_DEFAULT_FAMILY = 'gpt-5-6';
-const CHATGPT_WEB_LEGACY_ALIAS_KEY = 'legacyAlias';
 
 export const isChatGPTWebLegacyPickerId = (modelKey: string): boolean =>
   modelKey === 'auto' || CHATGPT_WEB_LEGACY_SKU_RE.test(modelKey);
-
-const familyAliasForLegacyKey = (modelKey: string): string => {
-  const match = modelKey.match(CHATGPT_WEB_LEGACY_SKU_RE);
-  return match?.[1] ?? CHATGPT_WEB_DEFAULT_FAMILY;
-};
 
 const readSettingsRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -315,7 +310,10 @@ type MappedCards = ReturnType<typeof mapCardsToBatchUpdate>;
  * `settings.legacyAlias` so user-facing pickers hide them. Matching is against
  * existing rows (`/^gpt-5-\d+-(instant|thinking|pro)$/` plus `auto`), not the
  * live family-card set — a gpt-5-5 SKU or a lone `auto` still reconciles when
- * the current enumeration has no matching family.
+ * the current enumeration has no matching family. `extendParams` is rewritten
+ * through `applyChatGPTWebModelPolicy` (family rows forced to
+ * `chatgptWebReasoningEffort`; leftovers stripped). The idempotent skip treats
+ * stale extendParams as dirty.
  *
  * Do **not** set `enabled: false`: that both drops the row from the allowlist
  * (`AiCatalogModelNotPublishedError` on the next turn) and trips the published
@@ -337,10 +335,17 @@ export const reconcileChatGPTWebLegacySkus = (
 
     const abilities = abilitiesFromCardFlags(card);
     const current = itemsById.get(row.id);
+    const policy = applyChatGPTWebModelPolicy({
+      abilities: abilities ?? row.abilities,
+      modelId: card.id,
+      providerId: CHATGPTWEB_PROVIDER,
+      settings: current?.settings ?? row.settings,
+    });
     const candidate: BatchUpdateItem = {
       ...(current ?? { id: row.id }),
       ...(abilities ? { abilities } : {}),
       id: row.id,
+      settings: (policy.settings ?? {}) as Record<string, unknown>,
     };
     if (!metadataChanged(row, candidate)) continue;
     if (!current) updated += 1;
@@ -349,15 +354,23 @@ export const reconcileChatGPTWebLegacySkus = (
 
   for (const row of existing) {
     if (!isChatGPTWebLegacyPickerId(row.modelKey)) continue;
-    const alias = familyAliasForLegacyKey(row.modelKey);
     const current = itemsById.get(row.id);
     const baseSettings = readSettingsRecord(current?.settings ?? row.settings);
-    if (baseSettings[CHATGPT_WEB_LEGACY_ALIAS_KEY] === alias && row.enabled !== false) continue;
+    const policy = applyChatGPTWebModelPolicy({
+      abilities: row.abilities,
+      modelId: row.modelKey,
+      providerId: CHATGPTWEB_PROVIDER,
+      settings: baseSettings,
+    });
+    const nextSettings = (policy.settings ?? {}) as Record<string, unknown>;
+    // Stale extendParams (gpt5_6ReasoningEffort leftovers) are dirty even when
+    // legacyAlias is already stamped — skip only when settings already match.
+    if (stableJson(baseSettings) === stableJson(nextSettings) && row.enabled !== false) continue;
 
     const candidate: BatchUpdateItem = {
       ...(current ?? { id: row.id }),
       id: row.id,
-      settings: { ...baseSettings, [CHATGPT_WEB_LEGACY_ALIAS_KEY]: alias },
+      settings: nextSettings,
       ...(row.enabled === false ? { enabled: true } : {}),
     };
     if (!current) updated += 1;

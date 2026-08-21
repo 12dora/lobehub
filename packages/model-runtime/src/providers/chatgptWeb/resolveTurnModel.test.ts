@@ -52,11 +52,15 @@ describe('resolveChatGPTWebTurn', () => {
       ['high', `${family}-thinking`, 'extended'],
       ['xhigh', `${family}-thinking`, 'max'],
       ['pro', `${family}-pro`, 'standard'],
-      [undefined, `${family}-thinking`, 'standard'],
     ] as const)('maps %s → model %s / thinking_effort %s', (effort, model, thinkingEffort) => {
       expect(resolveChatGPTWebTurn({ effort, model: family })).toEqual(
         thinkingEffort ? { model, thinkingEffort } : { model },
       );
+    });
+
+    it('passes a family id without a family-level effort through as the bare slug', () => {
+      expect(resolveChatGPTWebTurn({ model: family })).toEqual({ model: family });
+      expect(resolveChatGPTWebTurn({ effort: 'low', model: family })).toEqual({ model: family });
     });
   });
 
@@ -66,18 +70,33 @@ describe('resolveChatGPTWebTurn', () => {
   });
 
   describe('legacy SKU pass-through', () => {
-    it('leaves auto / instant / thinking / pro / mini ids unchanged', () => {
+    it('leaves auto / instant / mini ids unchanged and never sends thinking_effort', () => {
       expect(resolveChatGPTWebTurn({ model: 'auto' })).toEqual({ model: 'auto' });
+      expect(resolveChatGPTWebTurn({ effort: 'high', model: 'auto' })).toEqual({ model: 'auto' });
       expect(resolveChatGPTWebTurn({ effort: 'high', model: 'gpt-5-6-instant' })).toEqual({
         model: 'gpt-5-6-instant',
-        thinkingEffort: 'extended',
       });
+      expect(resolveChatGPTWebTurn({ effort: 'high', model: 'gpt-5-6-mini' })).toEqual({
+        model: 'gpt-5-6-mini',
+      });
+    });
+
+    it('always sends standard on a -pro SKU, ignoring leftovers', () => {
+      expect(resolveChatGPTWebTurn({ model: 'gpt-5-6-pro' })).toEqual({
+        model: 'gpt-5-6-pro',
+        thinkingEffort: 'standard',
+      });
+      expect(resolveChatGPTWebTurn({ effort: 'high', model: 'gpt-5-6-pro' })).toEqual({
+        model: 'gpt-5-6-pro',
+        thinkingEffort: 'standard',
+      });
+    });
+
+    it('aliases leftover effort on a thinking SKU', () => {
       expect(resolveChatGPTWebTurn({ effort: 'xhigh', model: 'gpt-5-6-thinking' })).toEqual({
         model: 'gpt-5-6-thinking',
         thinkingEffort: 'extended',
       });
-      expect(resolveChatGPTWebTurn({ model: 'gpt-5-6-pro' })).toEqual({ model: 'gpt-5-6-pro' });
-      expect(resolveChatGPTWebTurn({ model: 'gpt-5-6-mini' })).toEqual({ model: 'gpt-5-6-mini' });
     });
 
     it('still aliases old gpt5_6ReasoningEffort values on a thinking SKU', () => {

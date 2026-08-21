@@ -66,22 +66,26 @@ import {
   resolveChatGPTWebTurn,
 } from './resolveTurnModel';
 import type { ChatGPTWebSessionContext } from './sessionContext';
+import { getDurationMs, timing } from './timing';
 import type { TurnState } from './turnHelpers';
 import {
   describeRequestBody,
   isAbortError,
+  isMissingConduitPrepareError,
   isRecoverablePrepareError,
   lastUserMessageId,
   lastUserText,
   messageParts,
-  replayIterator,
+  replayPendingFirst,
   throwingEvents,
   toAttachmentRef,
   toGroundingCitation,
   undeliveredSuffix,
+  waitForStreamHeaders,
 } from './turnHelpers';
 import { getCachedUpload, setCachedUpload, uploadCacheKey, uploadNamespace } from './uploadCache';
 
+export { ChatGPTWebClient } from './client';
 export { describeRequestBody, undeliveredSuffix };
 
 const log = createDebug('lobe-chatgptweb:runtime');
@@ -229,6 +233,10 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       });
 
     this.uploadNamespace = uploadNamespace(chatgptAccountId ?? this.client.accountId, apiKey);
+
+    if (typeof this.client.keepSentinelWarm === 'function') {
+      this.client.keepSentinelWarm(this.browserSessionContextKey);
+    }
   }
 
   /**
@@ -271,18 +279,22 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       const search = payload.enabledSearch === true;
       const hasAttachments = mimeTypes.length > 0;
       /**
-       * Bare family ids (`gpt-5-6`) read only the dedicated field so a leftover
-       * generic `reasoning_effort: 'high'` from a previous model cannot remap
-       * Medium (the picker default) onto `thinking_effort: extended`. Shared
-       * `reasoning_effort` / `reasoning.effort` fallback stays for hidden
-       * legacy SKU ids (`-instant` / `-thinking` / `-pro`).
+       * Family ids read only `chatgptWebReasoningEffort` — a leftover generic
+       * `reasoning_effort` must not remap the slug. Non-family ids never read
+       * that generic field except hidden `*-thinking` SKUs, which still alias
+       * a leftover via `normalizeThinkingEffort`. `auto` / `*-instant` /
+       * `*-mini` / `o3` / `*-pro` ignore leftovers entirely.
        */
+      const leftoverThinkingEffort =
+        payload.chatgptWebReasoningEffort ?? payload.reasoning_effort ?? payload.reasoning?.effort;
+      let effort: string | undefined;
+      if (isChatGPTWebFamilyId(payload.model)) {
+        effort = payload.chatgptWebReasoningEffort;
+      } else if (payload.model.endsWith('-thinking')) {
+        effort = leftoverThinkingEffort;
+      }
       const resolved = resolveChatGPTWebTurn({
-        effort: isChatGPTWebFamilyId(payload.model)
-          ? payload.chatgptWebReasoningEffort
-          : (payload.chatgptWebReasoningEffort ??
-            payload.reasoning_effort ??
-            payload.reasoning?.effort),
+        effort,
         model: payload.model,
       });
       const model = resolved.model;
@@ -309,101 +321,180 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       const mayFallBack = !search && !hasAttachments && !thinkingEffort;
 
       const contextKey = this.resolveSentinelContextKey();
-      const acquired = await this.client.acquireSentinelBundle({ contextKey, signal });
+      timing('runtime init durationMs=%d', getDurationMs(inputStartAt));
+      let lastSentinelStage = Date.now();
+      const acquired = await this.client.acquireSentinelBundle({
+        contextKey,
+        onProgress: (stage) => {
+          timing('sentinel %s (onProgress) durationMs=%d', stage, getDurationMs(lastSentinelStage));
+          lastSentinelStage = Date.now();
+        },
+        signal,
+      });
       const requirements = acquired.requirements;
       const turnIdentity = createTurnRequestIdentity();
 
-      let useFPath = true;
-      let conduitToken: string | undefined;
-      try {
-        const prepare = (clientPrepareState: 'sent' | 'success') =>
-          buildPrepareBody({
-            attachmentMimeTypes: hasAttachments ? mimeTypes : undefined,
-            browserProfile: this.client.browserProfile,
-            clientPrepareState,
-            model,
-            prompt: lastUserText(messages),
-            systemHints: search ? ['search'] : [],
-            thinkingEffort,
-          });
-        const prepareStates: Array<'sent' | 'success'> = isProTierModel(model)
-          ? ['success', 'sent']
-          : ['success'];
-        const pendingPrepares = prepareStates.map((clientPrepareState) =>
-          this.client.prepareConversation(prepare(clientPrepareState), {
-            requirements,
-            signal,
-            turnIdentity,
-          }),
-        );
-
-        if (isProTierModel(model)) {
-          /**
-           * Pro prepare calls are browser lifecycle observations, not a gate. In the real
-           * Chrome HAR both calls started at +0/+11 ms, `/f/conversation` started at +98 ms,
-           * and the prepare responses did not arrive until +1471/+1505 ms. Waiting for them
-           * changes the protocol ordering — and a null conduit token cannot possibly be an
-           * input to a send that was already in flight. Observe failures so no rejection is
-           * lost, but launch the actual turn immediately just like the browser.
-           */
-          void Promise.allSettled(pendingPrepares).then((results) => {
-            for (const result of results) {
-              if (result.status === 'rejected')
-                log(
-                  'non-blocking Pro prepare failed after send: %s',
-                  describeThrownValue(result.reason),
-                );
-              else if (result.value.conduitToken)
-                log('non-blocking Pro prepare returned a late conduit token; ignoring it');
-            }
-          });
-        } else {
-          const prepared = await Promise.all(pendingPrepares);
-          conduitToken = prepared.findLast((result) => result.conduitToken)?.conduitToken;
+      const prepare = (clientPrepareState: 'sent' | 'success') =>
+        buildPrepareBody({
+          attachmentMimeTypes: hasAttachments ? mimeTypes : undefined,
+          browserProfile: this.client.browserProfile,
+          clientPrepareState,
+          model,
+          prompt: lastUserText(messages),
+          systemHints: search ? ['search'] : [],
+          thinkingEffort,
+        });
+      const prepareStates: Array<'sent' | 'success'> = isProTierModel(model)
+        ? ['success', 'sent']
+        : ['success'];
+      /**
+       * Chrome does not wait for `/f/conversation/prepare` on any tier (HAR:
+       * conversation POST at +98 ms, prepare responses at +1.4 s). Attach a
+       * conduit token only if one has already arrived; otherwise send without
+       * it. A missing-conduit 4xx retries once after awaiting prepare.
+       */
+      const pendingPrepares = prepareStates.map((clientPrepareState) =>
+        this.client.prepareConversation(prepare(clientPrepareState), {
+          requirements,
+          signal,
+          turnIdentity,
+        }),
+      );
+      let latestConduitToken: string | undefined;
+      const trackedPrepares = pendingPrepares.map((pending) =>
+        pending.then((result) => {
+          if (result.conduitToken) latestConduitToken = result.conduitToken;
+          return result;
+        }),
+      );
+      void Promise.allSettled(trackedPrepares).then((results) => {
+        for (const result of results) {
+          if (result.status === 'rejected')
+            log('non-blocking prepare failed after send: %s', describeThrownValue(result.reason));
+          else if (result.value.conduitToken)
+            log('non-blocking prepare returned a late conduit token; ignoring it');
         }
-      } catch (error) {
-        // Only a failure the plain path can actually correct falls back: a
-        // credential / cap / bot-protection failure is about the account, and
-        // retrying it on the legacy endpoint only hides it behind a degraded
-        // turn (see {@link isRecoverablePrepareError}).
-        if (!mayFallBack || isCallerAbort(signal) || !isRecoverablePrepareError(error)) throw error;
-        log('conduit prepare failed (%s); falling back to the plain path', String(error));
-        useFPath = false;
-        conduitToken = undefined;
-      }
+      });
 
-      const body = useFPath
-        ? buildFConversationBody({
-            browserProfile: this.client.browserProfile,
-            messages,
-            model,
-            search,
-            thinkingEffort,
-          })
-        : buildConversationBody({
-            browserProfile: this.client.browserProfile,
-            messages,
-            model,
-            thinkingEffort,
-          });
+      let useFPath = true;
+      let conduitToken = latestConduitToken;
 
-      if (process.env[DEBUG_FLAG] === '1')
-        log(
-          'request: %o',
-          describeRequestBody(body, {
-            flow: useFPath
-              ? search
-                ? 'f:search'
-                : hasAttachments
-                  ? 'f:attachments'
-                  : thinkingEffort
-                    ? 'f:effort'
-                    : 'f:plain'
-              : 'conversation',
-            model,
-            thinkingEffort,
-          }),
-        );
+      const describeFlow = (fPath: boolean) =>
+        fPath
+          ? search
+            ? 'f:search'
+            : hasAttachments
+              ? 'f:attachments'
+              : thinkingEffort
+                ? 'f:effort'
+                : 'f:plain'
+          : 'conversation';
+
+      const buildBody = (fPath: boolean) =>
+        fPath
+          ? buildFConversationBody({
+              browserProfile: this.client.browserProfile,
+              messages,
+              model,
+              search,
+              thinkingEffort,
+            })
+          : buildConversationBody({
+              browserProfile: this.client.browserProfile,
+              messages,
+              model,
+              thinkingEffort,
+            });
+
+      const launchStream = (fPath: boolean, token: string | undefined) => {
+        const nextBody = buildBody(fPath);
+        if (process.env[DEBUG_FLAG] === '1')
+          log(
+            'request: %o',
+            describeRequestBody(nextBody, {
+              flow: describeFlow(fPath),
+              model,
+              thinkingEffort,
+            }),
+          );
+        let resolveHeaders = () => undefined;
+        const headersPromise = new Promise<void>((resolve) => {
+          resolveHeaders = resolve;
+        });
+        const conversation = this.client.streamConversation(nextBody, {
+          conduitToken: token,
+          echoHistory,
+          hardCapMs: STREAM_HARD_CAP_MS,
+          idleTimeoutMs: STREAM_IDLE_MS,
+          onHeaders: resolveHeaders,
+          requirements,
+          signal,
+          turnIdentity,
+          useFPath: fPath,
+        });
+        const nextIterator = conversation[Symbol.asyncIterator]();
+        return {
+          body: nextBody,
+          firstPromise: nextIterator.next(),
+          headersPromise,
+          iterator: nextIterator,
+        };
+      };
+
+      const abandon = (iterator: AsyncIterator<ConversationEvent>) => {
+        const closing = iterator.return?.();
+        if (closing && typeof (closing as Promise<unknown>).then === 'function') {
+          void (closing as Promise<unknown>).catch(() => undefined);
+        }
+      };
+
+      let launched = launchStream(useFPath, conduitToken);
+      this.client.replenishSentinelBundle({ contextKey });
+
+      const openOrRetry = async () => {
+        try {
+          await waitForStreamHeaders(launched.headersPromise, launched.firstPromise);
+        } catch (error) {
+          if (!isMissingConduitPrepareError(error) || isCallerAbort(signal)) throw error;
+
+          const prepared = await Promise.allSettled(trackedPrepares);
+          const retryToken = prepared.findLast(
+            (result): result is PromiseFulfilledResult<{ conduitToken?: string }> =>
+              result.status === 'fulfilled' && !!result.value.conduitToken,
+          )?.value.conduitToken;
+
+          if (retryToken) {
+            log('conversation 4xx missing conduit; retrying once with prepare token');
+            abandon(launched.iterator);
+            launched = launchStream(true, retryToken);
+            await waitForStreamHeaders(launched.headersPromise, launched.firstPromise);
+            return;
+          }
+
+          const prepareFailure = prepared.find(
+            (result): result is PromiseRejectedResult => result.status === 'rejected',
+          );
+          if (mayFallBack && prepareFailure && isRecoverablePrepareError(prepareFailure.reason)) {
+            log(
+              'conduit prepare failed (%s); falling back to the plain path',
+              String(prepareFailure.reason),
+            );
+            abandon(launched.iterator);
+            useFPath = false;
+            conduitToken = undefined;
+            launched = launchStream(false, undefined);
+            await waitForStreamHeaders(launched.headersPromise, launched.firstPromise);
+            return;
+          }
+
+          if (prepareFailure) throw prepareFailure.reason;
+          throw error;
+        }
+      };
+
+      await openOrRetry();
+
+      const { body, firstPromise, iterator } = launched;
 
       // Correlation anchors for the document fallback: everything we might read
       // back must descend from THIS user message (or post-date this request).
@@ -412,27 +503,10 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         userMessageId: lastUserMessageId(body),
       };
 
-      const conversation = this.client.streamConversation(body, {
-        conduitToken,
-        echoHistory,
-        hardCapMs: STREAM_HARD_CAP_MS,
-        idleTimeoutMs: STREAM_IDLE_MS,
-        requirements,
-        signal,
-        turnIdentity,
-        useFPath,
-      });
-      const iterator = conversation[Symbol.asyncIterator]();
-
-      // Pull the first event here so an upstream 401/403/429 becomes a proper
-      // error Response instead of a mid-stream error chunk. Kick the next
-      // Sentinel handshake as soon as that request is in flight so it overlaps
-      // the current stream; a replenish failure never rejects this turn.
-      const firstPromise = iterator.next();
-      this.client.replenishSentinelBundle({ contextKey });
-      const first = await firstPromise;
-
-      const events = this.trackConversation(replayIterator(first, iterator), turn);
+      // HTTP-status errors already threw at openLeg (401/403 stay pre-stream
+      // for re-auth). Skip waiting for the first ConversationEvent so the
+      // client can paint a generating state as soon as headers are OK.
+      const events = this.trackConversation(replayPendingFirst(firstPromise, iterator), turn);
 
       const stream = ChatGPTWebStream(events, {
         callbacks: options?.callback,
@@ -543,7 +617,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
   }
 
   async models(options?: { signal?: AbortSignal }): Promise<ChatModelCard[]> {
-    const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
+    const { applyChatGPTWebModelPolicy, LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
 
     let models: Awaited<ReturnType<ChatGPTWebClient['listModels']>>;
     try {
@@ -570,12 +644,20 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     ): ChatModelCard => {
       const card = known(slug);
       const reasoning = slug.startsWith('o3');
+      const settings = applyChatGPTWebModelPolicy({
+        abilities: card?.abilities,
+        modelId: slug,
+        providerId: this.provider,
+        settings: card?.settings ?? { ...LIVE_MODEL_SETTINGS },
+      }).settings;
       return {
         contextWindowTokens:
           card?.contextWindowTokens ?? live?.maxTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
         description: card?.description ?? live?.description,
         displayName: card?.displayName ?? live?.title ?? slug,
-        enabled: card?.enabled ?? false,
+        // leftover `auto` is never advertised as enabled, even if a stale
+        // catalogue row still has the flag.
+        enabled: slug === 'auto' ? false : (card?.enabled ?? false),
         // the web backend runs its own built-in tools for every model
         files: card?.abilities?.files ?? true,
         functionCall: false,
@@ -586,7 +668,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         // An unknown slug still needs the settings every ChatGPT Web model
         // shares. Family cards carry the web picker; leftover slugs (minis, o3)
         // do not get the Platform gpt-5.6 effort control.
-        settings: card?.settings ?? { ...LIVE_MODEL_SETTINGS },
+        settings: settings ?? { ...LIVE_MODEL_SETTINGS },
         type: 'chat' as const,
         vision: card?.abilities?.vision ?? true,
       };
@@ -600,6 +682,15 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       }, undefined);
       const liveDescription = members.find((member) => member.description)?.description;
 
+      const settings = applyChatGPTWebModelPolicy({
+        abilities: card?.abilities,
+        modelId: base,
+        providerId: this.provider,
+        settings: card?.settings ?? {
+          ...LIVE_MODEL_SETTINGS,
+          extendParams: [...FAMILY_EXTEND_PARAMS],
+        },
+      }).settings;
       return {
         contextWindowTokens:
           card?.contextWindowTokens ?? maxTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -612,7 +703,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         imageOutput: card?.abilities?.imageOutput ?? true,
         reasoning: true,
         search: card?.abilities?.search ?? true,
-        settings: card?.settings ?? {
+        settings: settings ?? {
           ...LIVE_MODEL_SETTINGS,
           extendParams: [...FAMILY_EXTEND_PARAMS],
         },
