@@ -46,6 +46,7 @@
     "build:next": "cross-env NODE_OPTIONS=--max-old-space-size=7168 bun run build:next:raw",
     "build:next:raw": "next build",
     "build:raw": "bun run build:spa:raw && bun run build:spa:auth && bun run build:spa:copy && bun run build:next:raw",
+    "build:sandbox-image": "docker build -f Dockerfile.sandbox -t aihub-sandbox:latest -t aihub-sandbox:$(node -p \"require('./package.json').version\") .",
     "build:spa": "cross-env NODE_OPTIONS=--max-old-space-size=8192 pnpm run build:spa:raw",
     "build:spa:auth": "rm -rf public/_spa public/_spa-auth && cross-env NODE_OPTIONS=--max-old-space-size=8192 AUTH=true vite build",
     "build:spa:copy": "tsx scripts/copySpaBuild.mts && tsx scripts/generateSpaTemplates.mts",

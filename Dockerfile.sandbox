@@ -1,0 +1,52 @@
+# Isolated Cloud Sandbox image for SANDBOX_PROVIDER=local.
+# Not bundled into the main app Dockerfile. Build with:
+#   bun run build:sandbox-image
+FROM python:3.12-slim
+
+ARG NODE_VERSION=22.16.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    xz-utils \
+  && arch="$(dpkg --print-architecture)" \
+  && case "$arch" in \
+      amd64) node_arch=x64 ;; \
+      arm64) node_arch=arm64 ;; \
+      *) echo "unsupported architecture: ${arch}" && exit 1 ;; \
+    esac \
+  && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+    | tar -xJ -C /usr/local --strip-components=1 \
+  && apt-get purge -y xz-utils \
+  && apt-get autoremove -y \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --upgrade pip \
+  && pip install --no-cache-dir \
+    beautifulsoup4 \
+    matplotlib \
+    numpy \
+    openpyxl \
+    pandas \
+    pypdf \
+    python-docx \
+    python-pptx \
+    requests
+
+RUN useradd --uid 1000 --create-home --shell /bin/bash sandbox \
+  && mkdir -p /mnt/data \
+  && chown sandbox:sandbox /mnt/data
+
+USER sandbox
+WORKDIR /mnt/data
+
+CMD ["sleep", "infinity"]

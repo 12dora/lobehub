@@ -27,6 +27,7 @@ import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withActiveUserWhenManaged } from '@/server/enterprise/routers/managedActiveUser';
 import { redactForLog } from '@/server/enterprise/security/redaction';
 import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
+import { assertModuleEnabled } from '@/server/enterprise/services/moduleSettings';
 import { runWithEgressScope } from '@/server/enterprise/services/networkProxy';
 import {
   cleanupSandboxSkillWorkspace,
@@ -43,6 +44,7 @@ import {
   contentBlocksToString,
   processContentBlocks,
 } from '@/server/services/mcp/contentProcessor';
+import type { SandboxProviderKind } from '@/server/services/sandbox';
 import { createSandboxService } from '@/server/services/sandbox';
 import { preprocessLhCommand } from '@/server/services/toolExecution/preprocessLhCommand';
 
@@ -295,10 +297,13 @@ const execInSandboxHandler = async ({
   const userId = input?.userId || ctx.userId;
   let managedCorrelationId: string | undefined;
   let managedRequest = false;
+  let sandboxKind: SandboxProviderKind | undefined;
 
   log('execInSandbox: tool=%s, topicId=%s', toolName, topicId);
 
   try {
+    await assertModuleEnabled('sandbox');
+
     let enhancedParams = params;
     let managedInlineSkills:
       | Array<{
@@ -489,6 +494,7 @@ const execInSandboxHandler = async ({
       topicId,
       userId,
     });
+    sandboxKind = sandboxService.kind;
 
     let response: CallToolResult;
     if (managedInlineSkills) {
@@ -542,7 +548,7 @@ const execInSandboxHandler = async ({
       managedCorrelationId ?? 'none',
     );
 
-    if (!response.success && isSandboxAuthError(response.error)) {
+    if (!response.success && sandboxKind === 'market' && isSandboxAuthError(response.error)) {
       throwSandboxAuthError();
     }
 
@@ -582,16 +588,15 @@ const execInSandboxHandler = async ({
       ? 'This Skill couldn’t run. Start a new run and try again. If the problem continues, contact your administrator.'
       : String(redactForLog(rawErrorMessage)).slice(0, 1000);
 
-    // Check for authentication errors thrown as exceptions
+    // Check for authentication errors thrown as exceptions — Market only.
+    // Local Docker / Onlyboxes failures must surface as readable tool errors.
     if (
-      rawErrorMessage.toLowerCase().includes('invalid_token') ||
-      rawErrorMessage.toLowerCase().includes('token expired') ||
-      rawErrorMessage.toLowerCase().includes('unauthorized')
+      sandboxKind === 'market' &&
+      (rawErrorMessage.toLowerCase().includes('invalid_token') ||
+        rawErrorMessage.toLowerCase().includes('token expired') ||
+        rawErrorMessage.toLowerCase().includes('unauthorized'))
     ) {
-      throw new TRPCError({
-        code: 'UNAUTHORIZED',
-        message: MARKET_AUTH_REQUIRED_MESSAGE,
-      });
+      throwSandboxAuthError();
     }
 
     return {
@@ -986,16 +991,20 @@ export const marketRouter = router({
 
       log('Exporting and uploading file: %s from path: %s in topic: %s', filename, path, topicId);
 
+      let sandboxKind: SandboxProviderKind | undefined;
+
       try {
+        await assertModuleEnabled('sandbox');
         const sandboxService = createSandboxService({
           fileService: ctx.fileService,
           marketService: ctx.marketService,
           topicId,
           userId: ctx.userId,
         });
+        sandboxKind = sandboxService.kind;
         const result = await sandboxService.exportAndUploadFile(path, filename);
 
-        if (!result.success && isSandboxAuthError(result.error)) {
+        if (!result.success && sandboxKind === 'market' && isSandboxAuthError(result.error)) {
           throwSandboxAuthError();
         }
 
@@ -1010,11 +1019,12 @@ export const marketRouter = router({
 
         const errorMessage = (error as Error).message;
 
-        // Check for authentication errors
+        // Check for authentication errors — Market only
         if (
-          errorMessage.toLowerCase().includes('invalid_token') ||
-          errorMessage.toLowerCase().includes('token expired') ||
-          errorMessage.toLowerCase().includes('unauthorized')
+          sandboxKind === 'market' &&
+          (errorMessage.toLowerCase().includes('invalid_token') ||
+            errorMessage.toLowerCase().includes('token expired') ||
+            errorMessage.toLowerCase().includes('unauthorized'))
         ) {
           throwSandboxAuthError();
         }

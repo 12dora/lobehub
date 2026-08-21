@@ -29,6 +29,7 @@ jobs:
       floating: ${{ steps.tag.outputs.floating }}
       image: ${{ steps.tag.outputs.image }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
+      sandbox_image: ${{ steps.tag.outputs.sandbox_image }}
       tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.tag.outputs.version }}
     steps:
@@ -71,16 +72,19 @@ jobs:
 
           # GHCR only accepts lowercase repository names.
           image="ghcr.io/$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          sandbox_image="$(echo "$image" | sed 's#/[^/]*$##')/aihub-sandbox"
 
           {
             echo "tag=${tag}"
             echo "version=${tag#v}"
             echo "image=${image}"
+            echo "sandbox_image=${sandbox_image}"
             echo "prerelease=${prerelease}"
             echo "floating=${floating}"
           } >> "$GITHUB_OUTPUT"
 
           echo "Releasing ${image}:${tag#v} (prerelease=${prerelease}, floating tags=${floating})"
+          echo "Sandbox image ${sandbox_image}:${tag#v}"
 
   build:
     name: Build ${{ matrix.platform }}
@@ -214,9 +218,142 @@ jobs:
       - name: Inspect image
         run: docker buildx imagetools inspect "${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}"
 
+  build-sandbox:
+    name: Build sandbox ${{ matrix.platform }}
+    needs: resolve
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            os: ubuntu-latest
+          - platform: linux/arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout ${{ needs.resolve.outputs.tag }}
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
+
+      - name: Prepare
+        id: prep
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          {
+            echo "platform_pair=${PLATFORM//\//-}"
+            echo "revision=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.resolve.outputs.sandbox_image }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.resolve.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.resolve.outputs.tag }},enable=${{ needs.resolve.outputs.floating == 'true' }}
+            type=raw,value=latest,enable=${{ needs.resolve.outputs.floating == 'true' && needs.resolve.outputs.prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.prep.outputs.revision }}
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.title=aihub-sandbox
+
+      - name: Build and push sandbox by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.sandbox
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          cache-from: type=gha,scope=sandbox-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=sandbox-${{ matrix.platform }}
+          outputs: type=image,name=${{ needs.resolve.outputs.sandbox_image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/digests
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v6
+        with:
+          name: sandbox-digest-${{ steps.prep.outputs.platform_pair }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-sandbox:
+    name: Merge sandbox multi-arch manifest
+    needs: [resolve, build-sandbox]
+    permissions:
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v7
+        with:
+          path: /tmp/digests
+          pattern: sandbox-digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.resolve.outputs.sandbox_image }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.resolve.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.resolve.outputs.tag }},enable=${{ needs.resolve.outputs.floating == 'true' }}
+            type=raw,value=latest,enable=${{ needs.resolve.outputs.floating == 'true' && needs.resolve.outputs.prerelease == 'false' }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ needs.resolve.outputs.sandbox_image }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      - name: Inspect sandbox image
+        run: docker buildx imagetools inspect "${{ needs.resolve.outputs.sandbox_image }}:${{ needs.resolve.outputs.version }}"
+
   release:
     name: Publish GitHub Release
-    needs: [resolve, merge]
+    needs: [resolve, merge, merge-sandbox]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -227,6 +364,7 @@ jobs:
           FLOATING: ${{ needs.resolve.outputs.floating }}
           IMAGE: ${{ needs.resolve.outputs.image }}
           PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+          SANDBOX_IMAGE: ${{ needs.resolve.outputs.sandbox_image }}
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
@@ -236,10 +374,14 @@ jobs:
             echo
             echo '```bash'
             echo "docker pull ${IMAGE}:${VERSION}"
+            echo "docker pull ${SANDBOX_IMAGE}:${VERSION}"
             if [[ "$FLOATING" == 'true' && "$PRERELEASE" == 'false' ]]; then
               echo "docker pull ${IMAGE}:latest"
+              echo "docker pull ${SANDBOX_IMAGE}:latest"
             fi
             echo '```'
+            echo
+            echo "\`${SANDBOX_IMAGE}\` is the local Cloud Sandbox runtime (\`SANDBOX_PROVIDER=local\`). Tag it locally as \`aihub-sandbox:${VERSION}\` if you follow the compose default."
             echo
             echo 'Platforms: `linux/amd64`, `linux/arm64` (Apple Silicon Macs use `linux/arm64` via Docker Desktop)'
             echo 'RELEASE_BODY_EOF'

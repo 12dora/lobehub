@@ -14,11 +14,14 @@ import { contextSelectors, useConversationStore } from '@/features/Conversation/
 import { useMarketAuth } from '@/layout/AuthProvider/MarketAuth';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
+import { serverConfigSelectors, useServerConfigStore } from '@/store/serverConfig';
 import { useToolStore } from '@/store/tool';
 import { type ComposioServer } from '@/store/tool/slices/composioStore';
 import { ComposioServerStatus, composioStoreSelectors } from '@/store/tool/slices/composioStore';
 import { useUserStore } from '@/store/user';
 import { userProfileSelectors } from '@/store/user/selectors';
+
+import { getMarketAuthTools } from './marketAuthTools';
 
 const useStyles = createStyles(({ css }) => ({
   // Reveal the remove icon only when the row is hovered.
@@ -32,15 +35,6 @@ const useStyles = createStyles(({ css }) => ({
     transition: opacity 0.2s ease;
   `,
 }));
-
-// Tools that require Market authentication
-const MARKET_AUTH_TOOLS = [
-  {
-    avatar: '💻',
-    identifier: 'lobe-cloud-sandbox',
-    label: 'Cloud Sandbox',
-  },
-];
 
 const POLL_INTERVAL_MS = 1000;
 const POLL_TIMEOUT_MS = 15_000;
@@ -348,6 +342,8 @@ const ToolAuthAlert = memo(() => {
   // false unauthorized state on refresh before the real status loads.
   const isComposioServersInit = useToolStore((s) => s.isComposioServersInit);
   const { isAuthenticated: isMarketAuthenticated } = useMarketAuth();
+  const sandboxProvider = useServerConfigStore(serverConfigSelectors.sandboxProvider);
+  const marketAuthTools = useMemo(() => getMarketAuthTools(sandboxProvider), [sandboxProvider]);
 
   // Filter out tools that need authorization
   const pendingAuthTools = useMemo<PendingAuthTool[]>(() => {
@@ -374,14 +370,14 @@ const ToolAuthAlert = memo(() => {
       }
 
       // Check if this is a Market auth tool
-      const marketTool = MARKET_AUTH_TOOLS.find((t) => t.identifier === pluginId);
+      const marketTool = marketAuthTools.find((t) => t.identifier === pluginId);
       if (marketTool && !isMarketAuthenticated) {
         result.push({ ...marketTool, authType: 'market' });
       }
     }
 
     return result;
-  }, [plugins, composioServers, isComposioServersInit, isMarketAuthenticated]);
+  }, [plugins, composioServers, isComposioServersInit, isMarketAuthenticated, marketAuthTools]);
 
   // Don't render if no pending auth tools
   if (pendingAuthTools.length === 0) {

@@ -5,9 +5,13 @@ import { marketRouter } from './market';
 
 const mockPreprocessLhCommand = vi.hoisted(() => vi.fn());
 const mockSandboxCallTool = vi.hoisted(() => vi.fn());
+const mockExportAndUploadFile = vi.hoisted(() => vi.fn());
+const mockAssertModuleEnabled = vi.hoisted(() => vi.fn(async () => undefined));
 const mockCreateSandboxService = vi.hoisted(() =>
   vi.fn(() => ({
     callTool: mockSandboxCallTool,
+    exportAndUploadFile: mockExportAndUploadFile,
+    kind: 'market' as const,
   })),
 );
 const mockMarketSDK = vi.hoisted(() => ({
@@ -82,6 +86,10 @@ vi.mock('@/server/enterprise/services/managedResourceCapabilities', () => ({
   getManagedSkillRuntimeModeSnapshot: managedSkillMocks.getRuntimeModeSnapshot,
 }));
 
+vi.mock('@/server/enterprise/services/moduleSettings', () => ({
+  assertModuleEnabled: mockAssertModuleEnabled,
+}));
+
 vi.mock('@/libs/trpc/lambda/middleware', () => ({
   marketUserInfo: vi.fn((opts: any) => opts.next({ ctx: opts.ctx })),
   serverDatabase: vi.fn((opts: any) => opts.next({ ctx: opts.ctx })),
@@ -120,6 +128,12 @@ describe('tools marketRouter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    mockAssertModuleEnabled.mockResolvedValue(undefined);
+    mockCreateSandboxService.mockImplementation(() => ({
+      callTool: mockSandboxCallTool,
+      exportAndUploadFile: mockExportAndUploadFile,
+      kind: 'market' as const,
+    }));
     managedSkillMocks.assertUserActive.mockResolvedValue(undefined);
     managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
       ENABLE_PLATFORM_MANAGED_SKILLS: false,
@@ -852,6 +866,108 @@ describe('tools marketRouter', () => {
       args: { query: 'select * from events' },
       tool: 'query',
       topicId: undefined,
+    });
+  });
+
+  describe('sandbox provider auth mapping', () => {
+    const runCommandInput = {
+      params: { command: 'true' },
+      toolName: 'runCommand' as const,
+      topicId: 'topic-1',
+    };
+
+    it('throws MARKET_AUTH_REQUIRED for market unauthorized tool errors', async () => {
+      mockSandboxCallTool.mockResolvedValue({
+        error: { message: 'unauthorized', name: 'unauthorized' },
+        result: null,
+        success: false,
+      });
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+      await expect(caller.execInSandbox(runCommandInput)).rejects.toMatchObject({
+        code: 'UNAUTHORIZED',
+        message: 'MARKET_AUTH_REQUIRED',
+      });
+    });
+
+    it.each(['onlyboxes', 'local'] as const)(
+      'passes %s unauthorized-looking errors through as tool errors',
+      async (kind) => {
+        mockCreateSandboxService.mockImplementation(() => ({
+          callTool: mockSandboxCallTool,
+          exportAndUploadFile: mockExportAndUploadFile,
+          kind,
+        }));
+        mockSandboxCallTool.mockResolvedValue({
+          error: { message: 'unauthorized', name: 'unauthorized' },
+          result: null,
+          success: false,
+        });
+        const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+        await expect(caller.execInSandbox(runCommandInput)).resolves.toMatchObject({
+          error: { message: 'unauthorized', name: 'unauthorized' },
+          success: false,
+        });
+      },
+    );
+
+    it('does not remap thrown unauthorized errors from local to MARKET_AUTH_REQUIRED', async () => {
+      mockCreateSandboxService.mockImplementation(() => ({
+        callTool: mockSandboxCallTool,
+        exportAndUploadFile: mockExportAndUploadFile,
+        kind: 'local' as const,
+      }));
+      mockSandboxCallTool.mockRejectedValue(new Error('unauthorized docker socket'));
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+      await expect(caller.execInSandbox(runCommandInput)).resolves.toMatchObject({
+        error: { message: expect.stringContaining('unauthorized') },
+        success: false,
+      });
+    });
+
+    it('rejects execInSandbox with MODULE_DISABLED before creating a sandbox client', async () => {
+      const { TRPCError } = await import('@trpc/server');
+      mockAssertModuleEnabled.mockRejectedValue(
+        new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'PLATFORM_MODULE_DISABLED',
+        }),
+      );
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+      await expect(caller.execInSandbox(runCommandInput)).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        message: 'PLATFORM_MODULE_DISABLED',
+      });
+      expect(mockCreateSandboxService).not.toHaveBeenCalled();
+      expect(mockSandboxCallTool).not.toHaveBeenCalled();
+    });
+
+    it('does not remap onlyboxes export auth errors to MARKET_AUTH_REQUIRED', async () => {
+      mockCreateSandboxService.mockImplementation(() => ({
+        callTool: mockSandboxCallTool,
+        exportAndUploadFile: mockExportAndUploadFile,
+        kind: 'onlyboxes' as const,
+      }));
+      mockExportAndUploadFile.mockResolvedValue({
+        error: { message: 'unauthorized', name: 'unauthorized' },
+        filename: 'out.txt',
+        success: false,
+      });
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+      await expect(
+        caller.exportAndUploadFile({
+          filename: 'out.txt',
+          path: '/mnt/data/out.txt',
+          topicId: 'topic-1',
+        }),
+      ).resolves.toMatchObject({
+        error: { message: 'unauthorized' },
+        success: false,
+      });
     });
   });
 });

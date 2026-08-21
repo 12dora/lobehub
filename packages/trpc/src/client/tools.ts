@@ -8,6 +8,27 @@ import { type ToolsRouter } from '@/server/routers/tools';
 let lastMarket401Time = 0;
 const MIN_401_INTERVAL = 5000; // 5 seconds
 
+const SANDBOX_MARKET_AUTH_PATH_MARKERS = [
+  'execInSandbox',
+  'exportAndUploadFile',
+  'callCodeInterpreterTool',
+] as const;
+
+/**
+ * Market OIDC (community sandbox) is only required when the server actually
+ * routes Cloud Sandbox through LobeHub Market. Local Docker / Onlyboxes 401s
+ * must not open that modal.
+ */
+export const shouldEmitMarketUnauthorized = (
+  path: string,
+  sandboxProvider: 'local' | 'market' | 'onlyboxes' | undefined,
+): boolean => {
+  if (!path.startsWith('market.')) return false;
+  const isSandboxPath = SANDBOX_MARKET_AUTH_PATH_MARKERS.some((marker) => path.includes(marker));
+  if (isSandboxPath && sandboxProvider !== 'market') return false;
+  return true;
+};
+
 // Error handling link for tools client
 const errorHandlingLink: TRPCLink<ToolsRouter> = () => {
   return ({ op, next }) =>
@@ -29,6 +50,13 @@ const errorHandlingLink: TRPCLink<ToolsRouter> = () => {
           // UNAUTHORIZED tRPC code maps to HTTP 401
           const is401 = status === 401 || code === 'UNAUTHORIZED';
           if (is401 && op.path.startsWith('market.')) {
+            const { getServerConfigStoreState } = await import('@/store/serverConfig');
+            const sandboxProvider = getServerConfigStoreState()?.serverConfig.sandboxProvider;
+            if (!shouldEmitMarketUnauthorized(op.path, sandboxProvider)) {
+              observer.error(err);
+              return;
+            }
+
             const { getUserStoreState } = await import('@/store/user/store');
             // Without a LobeChat session a market.* 401 is not a Market auth
             // issue — let it bubble instead of triggering the auth modal

@@ -42,8 +42,25 @@ export class SandboxMiddlewareService implements SandboxService {
     toolName: string,
     params: Record<string, unknown>,
   ): Promise<SandboxCallToolResult> {
-    await this.ensureFilesInitialized();
-    return this.provider.callTool(toolName, params);
+    return this.withLocalSession(async () => {
+      await this.ensureFilesInitialized();
+      return this.provider.callTool(toolName, params);
+    });
+  }
+
+  /**
+   * The local Docker provider is constructed as a process-wide singleton (no
+   * userId/topicId on the constructor). Bind the current request session for
+   * the duration of the provider call so containers stay keyed per topic.
+   */
+  private async withLocalSession<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.kind !== 'local') return fn();
+
+    const { runWithLocalSandboxSession } = await import('./providers/local/sessionContext');
+    return runWithLocalSandboxSession(
+      { topicId: this.options.topicId, userId: this.options.userId },
+      fn,
+    );
   }
 
   /**
@@ -121,12 +138,14 @@ export class SandboxMiddlewareService implements SandboxService {
       const key = `code-interpreter-exports/${today}/${topicId}/${filename}`;
       const upload = await fileService.createPreSignedUpload(key);
 
-      const exported = await this.provider.exportFileToUploadUrl({
-        filename,
-        path,
-        uploadHeaders: upload.headers,
-        uploadUrl: upload.url,
-      });
+      const exported = await this.withLocalSession(() =>
+        this.provider.exportFileToUploadUrl({
+          filename,
+          path,
+          uploadHeaders: upload.headers,
+          uploadUrl: upload.url,
+        }),
+      );
 
       if (!exported.success) {
         return {

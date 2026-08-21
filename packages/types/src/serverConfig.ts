@@ -116,6 +116,11 @@ export interface GlobalServerConfig {
     providerKey: string;
   }>;
   oAuthSSOProviders?: string[];
+  /**
+   * Server-side Cloud Sandbox backend. Clients use this to skip Market OIDC
+   * prompts when execution is local Docker or Onlyboxes rather than LobeHub Market.
+   */
+  sandboxProvider?: 'local' | 'market' | 'onlyboxes';
   systemAgent?: PartialDeep<UserServiceModelConfig>;
   telemetry: {
     langfuse?: boolean;

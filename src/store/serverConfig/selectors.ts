@@ -21,5 +21,6 @@ export const serverConfigSelectors = {
   isMobile: (s: ServerConfigStore) => s.isMobile || false,
   oAuthSSOProviders: (s: ServerConfigStore) => s.serverConfig.oAuthSSOProviders,
   oAuthSSOProviderMetadata: (s: ServerConfigStore) => s.serverConfig.oAuthSSOProviderMetadata,
+  sandboxProvider: (s: ServerConfigStore) => s.serverConfig.sandboxProvider,
   visualUnderstanding: (s: ServerConfigStore) => s.serverConfig.visualUnderstanding,
 };

@@ -83,4 +83,18 @@ describe('serverConfigSelectors', () => {
       expect(result).toBe(false);
     });
   });
+
+  describe('sandboxProvider', () => {
+    it('returns the configured sandbox provider', () => {
+      const store = initServerConfigStore({
+        serverConfig: {
+          aiProvider: {},
+          sandboxProvider: 'local',
+          telemetry: {},
+        },
+      });
+
+      expect(serverConfigSelectors.sandboxProvider(store.getState())).toBe('local');
+    });
+  });
 });

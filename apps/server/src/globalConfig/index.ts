@@ -18,6 +18,7 @@ import {
 import { ensurePlatformAiRuntimeRegistered } from '@/server/enterprise/services/aiCatalog/runtimeBridge';
 import { getInfraSnapshot } from '@/server/enterprise/services/infraSettings/snapshot';
 import { parseSystemAgent } from '@/server/globalConfig/parseSystemAgent';
+import { getSandboxProviderKind } from '@/server/services/sandbox';
 import { type GlobalServerConfig } from '@/types/serverConfig';
 import { cleanObject } from '@/utils/object';
 
@@ -165,6 +166,7 @@ export const getServerGlobalConfig = async () => {
       userMemory: cleanObject(getPublicMemoryExtractionConfig()),
     },
     oAuthSSOProviders: getBetterAuthSSOProviders(),
+    sandboxProvider: getSandboxProviderKind(),
     systemAgent: parseSystemAgent(appEnv.SYSTEM_AGENT),
     telemetry: {
       langfuse: langfuseEnv.ENABLE_LANGFUSE,

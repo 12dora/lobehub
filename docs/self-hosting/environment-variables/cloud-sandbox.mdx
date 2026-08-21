@@ -1,15 +1,16 @@
 ---
 title: Configuring Cloud Sandbox
-description: Configure the built-in Cloud Sandbox provider, including Market and self-hosted Onlyboxes.
+description: Configure the built-in Cloud Sandbox provider, including local Docker, Market, and self-hosted Onlyboxes.
 tags:
   - Cloud Sandbox
+  - Local Docker
   - Onlyboxes
   - Self-hosting
 ---
 
 # Configuring Cloud Sandbox
 
-Cloud Sandbox powers the built-in code execution, shell command, file operation, and file export tools. By default, LobeHub uses the Market sandbox. Self-hosted deployments can switch the same tool surface to an Onlyboxes-compatible sandbox provider.
+Cloud Sandbox powers the built-in code execution, shell command, file operation, and file export tools. Self-hosted deployments default to a local Docker sandbox so they do not depend on LobeHub Market. You can still switch the same tool surface to Market or an Onlyboxes-compatible sandbox provider.
 
 ## Core Environment Variables
 
@@ -17,12 +18,13 @@ Cloud Sandbox powers the built-in code execution, shell command, file operation,
 
 - Type: Optional
 - Description: Selects the server-side sandbox provider.
-- Default: `market`
+- Default: `local`
 - Example: `onlyboxes`
 
 Supported values:
 
-- `market`: Use the existing Market sandbox.
+- `local`: Run isolated sandbox containers on the host Docker daemon. Requires a Docker socket (or TCP host) and the `aihub-sandbox` image.
+- `market`: Use the existing Market sandbox (requires a community / Market profile).
 - `onlyboxes`: Use an Onlyboxes-compatible self-hosted sandbox console.
 
 ### `MARKET_BASE_URL`
@@ -81,15 +83,60 @@ Supported values:
 - Default: `900`
 - Example: `3600`
 
-## Market Configuration
+## Local Docker sandbox
 
-By default, LobeHub uses the official Market sandbox and does not require extra sandbox configuration:
+`SANDBOX_PROVIDER=local` (the default) starts per-session containers from `SANDBOX_LOCAL_IMAGE` using the host Docker engine. Agent file, shell, and code tools keep the same `lobe-cloud-sandbox` surface; only the backend changes.
+
+### Security model
+
+- Workloads run as uid `1000` (`sandbox`) inside a dedicated container, not as the LobeHub Node process.
+- The default network is `bridge`. Set `SANDBOX_LOCAL_NETWORK=none` if the sandbox should have no outbound network.
+- Memory, PID, CPU, idle TTL, output size, and concurrent container caps are enforced from env (see variables below).
+- The LobeHub process must be able to talk to the Docker API. Mount `/var/run/docker.sock` into the app container (see `docker-compose/enhanced/docker-compose.yml`). Anyone who can reach that socket can control the host Docker daemon — treat the mount as a privileged trust boundary.
+- Turning off the platform `sandbox` module (admin console or `LOBE_MODULES_DISABLED=sandbox`) returns `PLATFORM_MODULE_DISABLED` and never opens a Docker client or health-probes the daemon.
+
+### Image
+
+Build and tag the sandbox image (not the main app image):
 
 ```bash
-# SANDBOX_PROVIDER=market
+bun run build:sandbox-image
+# tags aihub-sandbox:<package version> and aihub-sandbox:latest
 ```
 
-To explicitly use Market, or to connect to a self-hosted or dedicated Market service, configure:
+The image is `python:3.12-slim` plus Node 22, git, curl, a compiler toolchain, and common data/document Python libraries. Default working directory is `/mnt/data`.
+
+### Limits and Docker connection
+
+| Variable                         | Default                | Description                                        |
+| -------------------------------- | ---------------------- | -------------------------------------------------- |
+| `SANDBOX_DOCKER_SOCKET`          | `/var/run/docker.sock` | Unix socket of the Docker daemon.                  |
+| `SANDBOX_DOCKER_HOST`            | unset                  | Optional Docker TCP host (`tcp://127.0.0.1:2375`). |
+| `SANDBOX_LOCAL_IMAGE`            | `aihub-sandbox:latest` | Image used for sandbox containers.                 |
+| `SANDBOX_LOCAL_PULL_POLICY`      | `if-missing`           | `if-missing`, `always`, or `never`.                |
+| `SANDBOX_LOCAL_NETWORK`          | `bridge`               | `bridge` or `none`.                                |
+| `SANDBOX_LOCAL_MEMORY_MB`        | `1024`                 | Memory cap per sandbox container.                  |
+| `SANDBOX_LOCAL_PIDS_LIMIT`       | `256`                  | PID cap per sandbox container.                     |
+| `SANDBOX_LOCAL_CPUS`             | `1`                    | CPU quota per sandbox container.                   |
+| `SANDBOX_LOCAL_TIMEOUT_MS`       | `120000`               | Tool execution timeout.                            |
+| `SANDBOX_LOCAL_MAX_OUTPUT_BYTES` | `1048576`              | Captured stdout/stderr cap.                        |
+| `SANDBOX_LOCAL_IDLE_TTL_SEC`     | `1800`                 | Idle container reclaim TTL.                        |
+| `SANDBOX_LOCAL_MAX_CONTAINERS`   | `8`                    | Max concurrent sandbox containers.                 |
+
+Minimum configuration:
+
+```bash
+SANDBOX_PROVIDER=local
+SANDBOX_LOCAL_IMAGE=aihub-sandbox:latest
+```
+
+### Module switch
+
+The enterprise platform module `sandbox` gates this capability. When it is off, `execInSandbox` / `createSandboxService` fail with `PLATFORM_MODULE_DISABLED` and the Docker client is not imported.
+
+## Market Configuration
+
+To use Market instead of local Docker, set `SANDBOX_PROVIDER=market`. To connect to a self-hosted or dedicated Market service, also set `MARKET_BASE_URL`:
 
 ```bash
 SANDBOX_PROVIDER=market

@@ -113,6 +113,10 @@ const mockGlobalConfigDependencies = (
     toolsEnv: {},
   }));
 
+  vi.doMock('@/server/services/sandbox', () => ({
+    getSandboxProviderKind: () => process.env.SANDBOX_PROVIDER || 'local',
+  }));
+
   vi.doMock('@/libs/better-auth/utils/server', () => ({
     parseSSOProviders: vi.fn(() => []),
   }));
@@ -231,6 +235,27 @@ describe('getServerGlobalConfig', () => {
     await expect(loadServerConfig(false, { enableAgentGateway: true })).resolves.toMatchObject({
       enableGatewayMode: false,
     });
+  });
+
+  it('exposes sandboxProvider from SANDBOX_PROVIDER (default local)', async () => {
+    const previous = process.env.SANDBOX_PROVIDER;
+    delete process.env.SANDBOX_PROVIDER;
+    try {
+      await expect(loadServerConfig(false)).resolves.toMatchObject({
+        sandboxProvider: 'local',
+      });
+
+      process.env.SANDBOX_PROVIDER = 'market';
+      await expect(loadServerConfig(false)).resolves.toMatchObject({
+        sandboxProvider: 'market',
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.SANDBOX_PROVIDER;
+      } else {
+        process.env.SANDBOX_PROVIDER = previous;
+      }
+    }
   });
 
   it('exposes enterprise.modules from LOBE_MODULES_DISABLED', async () => {

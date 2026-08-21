@@ -42,3 +42,37 @@ describe('buildSandboxFilesInitCommand', () => {
     expect(command).toContain(String.raw`'https://x/a'\''b'`);
   });
 });
+
+describe('buildSandboxAttachmentUploadCommand', () => {
+  it('only ensures the uploads dir when there is nothing to download', () => {
+    expect(buildSandboxAttachmentUploadCommand([])).toBe(
+      `mkdir -p '${SANDBOX_OVER_LIMIT_UPLOADS_DIR}'`,
+    );
+  });
+
+  it('downloads into /mnt/data/uploads with a per-file-id marker', () => {
+    const command = buildSandboxAttachmentUploadCommand([
+      { id: 'file-1', name: 'report.pdf', url: 'https://files.example.com/a' },
+    ]);
+
+    expect(command).toContain(`mkdir -p '${SANDBOX_OVER_LIMIT_UPLOADS_DIR}'`);
+    expect(command).toContain(
+      `curl -fsSL 'https://files.example.com/a' -o '${SANDBOX_OVER_LIMIT_UPLOADS_DIR}/report.pdf'`,
+    );
+    expect(command).toContain(`if [ -f '${sandboxAttachmentSyncMarker('file-1')}' ]`);
+    expect(command).toContain(`${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}file-1`);
+    expect(command).toContain(`${SANDBOX_ATTACHMENT_SYNC_FAIL_PREFIX}file-1`);
+  });
+
+  it('de-dupes downloads by file id', () => {
+    const command = buildSandboxAttachmentUploadCommand([
+      { id: 'file-1', name: 'a.pdf', url: 'https://files.example.com/a' },
+      { id: 'file-1', name: 'b.pdf', url: 'https://files.example.com/b' },
+    ]);
+
+    const curlCount = command.split('curl ').length - 1;
+    expect(curlCount).toBe(1);
+    expect(command).toContain('a.pdf');
+    expect(command).not.toContain('b.pdf');
+  });
+});

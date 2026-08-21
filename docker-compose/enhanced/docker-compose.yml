@@ -105,6 +105,14 @@ services:
 
       # --- built-in search (empty = searxng off; other providers still work) ---
       - 'SEARXNG_URL=${SEARXNG_URL:-}'
+
+      # --- local Docker sandbox (default Cloud Sandbox provider) ---
+      # Isolated code/shell/file tools run in sibling containers via the host
+      # Docker daemon. Build the image first: `bun run build:sandbox-image`.
+      # Disable the `sandbox` platform module (admin or LOBE_MODULES_DISABLED)
+      # to detach this path without talking to Docker.
+      - 'SANDBOX_PROVIDER=${SANDBOX_PROVIDER:-local}'
+      - 'SANDBOX_LOCAL_IMAGE=${SANDBOX_LOCAL_IMAGE:-aihub-sandbox:latest}'
     env_file:
       # Anything extra you put in .env (proxies, CHATGPT_WEB_*, …) reaches the container.
       - path: .env
@@ -112,6 +120,9 @@ services:
     volumes:
       # Persists the last-known-good OIDC snapshot across restarts.
       - 'platform-oidc-lkg:/app/.lobe'
+      # Host Docker daemon for SANDBOX_PROVIDER=local. The container user must
+      # be allowed to use this socket (often via the host `docker` group).
+      - '/var/run/docker.sock:/var/run/docker.sock'
     restart: always
     networks:
       - lobe-network

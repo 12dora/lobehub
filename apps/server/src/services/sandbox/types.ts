@@ -7,7 +7,28 @@ import type { LobeChatDatabase } from '@lobechat/database';
 import type { FileService } from '@/server/services/file';
 import type { MarketService } from '@/server/services/market';
 
-export type SandboxProviderKind = 'market' | 'onlyboxes';
+export type SandboxProviderKind = 'local' | 'market' | 'onlyboxes';
+
+export type LocalSandboxPullPolicy = 'always' | 'if-missing' | 'never';
+
+export type LocalSandboxNetwork = 'bridge' | 'none';
+
+/** Constructor options for `LocalSandboxProvider` (lazy-loaded from `./providers/local`). */
+export interface LocalSandboxProviderOptions {
+  host?: string;
+  idleTtlSec: number;
+  image: string;
+  maxContainers: number;
+  maxOutputBytes: number;
+  memoryBytes: number;
+  nanoCpus: number;
+  network: LocalSandboxNetwork;
+  pidsLimit: number;
+  pullOnDemand: boolean;
+  pullPolicy: LocalSandboxPullPolicy;
+  socketPath?: string;
+  timeoutMs: number;
+}
 
 export interface SandboxSessionContext {
   topicId: string;
