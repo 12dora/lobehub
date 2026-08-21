@@ -1,4 +1,7 @@
+import { PERMISSION_ACTIONS } from '@lobechat/const/rbac';
+import type { LobeChatDatabase } from '@lobechat/database';
 import {
+  CreateBatchMessageParamsSchema,
   CreateNewMessageParamsSchema,
   UpdateMessageParamsSchema,
   UpdateMessagePluginSchema,
@@ -14,6 +17,7 @@ import {
   wsCompatProcedure,
 } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { MessageModel } from '@/database/models/message';
+import { RbacModel } from '@/database/models/rbac';
 import { TopicShareModel } from '@/database/models/topicShare';
 import { CompressionRepository } from '@/database/repositories/compression';
 import { publicProcedure, router } from '@/libs/trpc/lambda';
@@ -54,9 +58,42 @@ const messageAnalyticsSchema = z.object({
   topicId: z.string().optional(),
 });
 
+const TOPIC_CREATE_PERMISSIONS = [
+  `${PERMISSION_ACTIONS.TOPIC_CREATE}:all`,
+  `${PERMISSION_ACTIONS.TOPIC_CREATE}:owner`,
+] as const;
+
+const hasActionableNewTopic = (input: { newTopic?: unknown; topicId?: string | null }) =>
+  Boolean(input.newTopic) && !input.topicId;
+
+/**
+ * `message.createMessage` is gated on `message:create`. When the client also
+ * asks the server to create a topic (`newTopic` without an existing `topicId`),
+ * require the same `topic:create` grant every dedicated topic-create route uses.
+ * Personal (no workspace) requests skip the extra check — OSS workspace RBAC
+ * is a no-op there, matching `withScopedPermission`.
+ */
+const assertTopicCreateIfNeeded = async (
+  ctx: { serverDB: LobeChatDatabase; userId: string; workspaceId?: string | null },
+  input: { newTopic?: unknown; topicId?: string | null },
+) => {
+  if (!hasActionableNewTopic(input) || !ctx.workspaceId) return;
+
+  const allowed = await new RbacModel(ctx.serverDB, ctx.userId).hasAnyPermission(
+    [...TOPIC_CREATE_PERMISSIONS],
+    { workspaceId: ctx.workspaceId },
+  );
+  if (!allowed) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Missing permission: topic:create',
+    });
+  }
+};
+
 const messageBatchOperationSchema = z.discriminatedUnion('type', [
   z.object({
-    message: CreateNewMessageParamsSchema,
+    message: CreateBatchMessageParamsSchema,
     type: z.literal('createMessage'),
   }),
   z.object({
@@ -235,6 +272,8 @@ export const messageRouter = router({
     .use(withScopedPermission('message:create'))
     .input(CreateNewMessageParamsSchema)
     .mutation(async ({ input, ctx }) => {
+      await assertTopicCreateIfNeeded(ctx, input);
+
       // If there's no agentId but has sessionId, resolve agentId from sessionId
       let agentId = input.agentId;
       if (!agentId && input.sessionId) {

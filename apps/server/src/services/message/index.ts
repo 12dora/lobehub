@@ -203,6 +203,9 @@ export class MessageService {
     for (const [index, operation] of operations.entries()) {
       try {
         if (operation.type === 'createMessage') {
+          if (operation.message.newTopic) {
+            throw new Error('newTopic is not supported in batchMutate; use createMessage');
+          }
           // RR5-1: strip the server-owned intervention kind from client-batched creates too.
           const message = operation.message.pluginIntervention
             ? {
@@ -257,28 +260,40 @@ export class MessageService {
       : rest;
 
     let topicId = sanitized.topicId;
-    if (!topicId && newTopic) {
-      const topic = await this.topicModel.create({
-        agentId: sanitized.agentId,
-        groupId: sanitized.groupId,
-        messages: newTopic.topicMessageIds,
-        metadata: await applyTopicApprovalSnapshot({
-          db: this.db,
-          metadata: newTopic.metadata,
-          userId: this.userId,
-          workspaceId: this.workspaceId,
-        }),
-        sessionId: sanitized.sessionId,
-        title: newTopic.title,
-      });
-      topicId = topic.id;
-    }
+    let item;
 
-    // 1. Create the message (using agentId). Honor a caller-pre-allocated id
-    //    when present (passing `undefined` falls back to the model's genId
-    //    default), so flows that chain parentId across not-yet-created messages
-    //    (e.g. the subagent run coordinator) can assign ids up front.
-    const item = await this.messageModel.create({ ...sanitized, topicId }, sanitized.id);
+    if (!topicId && newTopic) {
+      const metadata = await applyTopicApprovalSnapshot({
+        db: this.db,
+        metadata: newTopic.metadata,
+        userId: this.userId,
+        workspaceId: this.workspaceId,
+      });
+
+      item = await this.db.transaction(async (trx) => {
+        const topic = await this.topicModel.createWithTransaction(trx, {
+          agentId: sanitized.agentId,
+          groupId: sanitized.groupId,
+          messages: newTopic.topicMessageIds,
+          metadata,
+          sessionId: sanitized.sessionId,
+          title: newTopic.title,
+        });
+        topicId = topic.id;
+
+        return this.messageModel.createWithTransaction(
+          trx,
+          { ...sanitized, topicId },
+          sanitized.id,
+        );
+      });
+    } else {
+      // 1. Create the message (using agentId). Honor a caller-pre-allocated id
+      //    when present (passing `undefined` falls back to the model's genId
+      //    default), so flows that chain parentId across not-yet-created messages
+      //    (e.g. the subagent run coordinator) can assign ids up front.
+      item = await this.messageModel.create({ ...sanitized, topicId }, sanitized.id);
+    }
 
     // 2. Query all messages for this agent/topic
     // Use agentId field for query

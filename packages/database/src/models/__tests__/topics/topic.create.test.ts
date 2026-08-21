@@ -103,6 +103,22 @@ describe('TopicModel - Create', () => {
       expect(unassociatedMessage[0].topicId).toBeNull();
     });
 
+    it('createWithTransaction rolls back with the caller transaction', async () => {
+      await expect(
+        serverDB.transaction(async (trx) => {
+          await topicModel.createWithTransaction(
+            trx,
+            { sessionId, title: 'Will rollback' },
+            'topic-trx-rollback',
+          );
+          throw new Error('force rollback');
+        }),
+      ).rejects.toThrow('force rollback');
+
+      const rows = await serverDB.select().from(topics).where(eq(topics.id, 'topic-trx-rollback'));
+      expect(rows).toHaveLength(0);
+    });
+
     it('should associate workspace messages created by another member', async () => {
       const workspaceId = 'topic-create-workspace';
       const workspaceSessionId = 'topic-create-workspace-session';

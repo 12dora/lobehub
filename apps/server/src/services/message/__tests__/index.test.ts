@@ -34,14 +34,20 @@ describe('MessageService', () => {
   let messageService: MessageService;
   let mockDB: LobeChatDatabase;
   let mockMessageModel: MessageModel;
-  let mockTopicModel: { create: ReturnType<typeof vi.fn> };
+  let mockTopicModel: {
+    create: ReturnType<typeof vi.fn>;
+    createWithTransaction: ReturnType<typeof vi.fn>;
+  };
   let mockFileService: FileService;
   const userId = 'test-user-id';
 
   beforeEach(() => {
-    mockDB = {} as LobeChatDatabase;
+    mockDB = {
+      transaction: vi.fn(async (fn: (trx: unknown) => unknown) => fn({ id: 'trx' })),
+    } as LobeChatDatabase;
     mockMessageModel = {
       create: vi.fn(),
+      createWithTransaction: vi.fn(),
       deleteMessage: vi.fn(),
       deleteMessages: vi.fn(),
       query: vi.fn(),
@@ -54,6 +60,7 @@ describe('MessageService', () => {
     } as any;
     mockTopicModel = {
       create: vi.fn().mockResolvedValue({ id: 'topic-new' }),
+      createWithTransaction: vi.fn().mockResolvedValue({ id: 'topic-new' }),
     };
 
     mockFileService = {
@@ -333,6 +340,28 @@ describe('MessageService', () => {
         success: false,
       });
     });
+
+    it('rejects createMessage operations that include newTopic instead of silently dropping it', async () => {
+      const result = await messageService.batchMutate([
+        {
+          message: {
+            content: 'First send',
+            id: 'msg-batch',
+            newTopic: { metadata: { approvalMode: 'manual' }, title: 'Ignored topic' },
+            role: 'user',
+          } as any,
+          type: 'createMessage',
+        },
+      ]);
+
+      expect(mockMessageModel.create).not.toHaveBeenCalled();
+      expect(mockTopicModel.create).not.toHaveBeenCalled();
+      expect(mockTopicModel.createWithTransaction).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        results: [{ id: 'msg-batch', index: 0, success: false, type: 'createMessage' }],
+        success: false,
+      });
+    });
   });
 
   describe('updateMetadata', () => {
@@ -424,7 +453,7 @@ describe('MessageService', () => {
 
     it('creates a topic with client-supplied approvalMode and attaches the message', async () => {
       const createdMessage = { id: 'msg-1', content: 'Hello', topicId: 'topic-new' };
-      vi.mocked(mockMessageModel.create).mockResolvedValue(createdMessage as any);
+      vi.mocked(mockMessageModel.createWithTransaction).mockResolvedValue(createdMessage as any);
       vi.mocked(mockMessageModel.query).mockResolvedValue([createdMessage] as any);
 
       const result = await messageService.createMessage({
@@ -444,19 +473,28 @@ describe('MessageService', () => {
           userId,
         }),
       );
-      expect(mockTopicModel.create).toHaveBeenCalledWith({
-        agentId: 'agent-1',
-        groupId: undefined,
-        messages: ['old-1'],
-        metadata: { approvalMode: 'auto-run' },
-        sessionId: undefined,
-        title: 'First send',
-      });
-      expect(mockMessageModel.create).toHaveBeenCalledWith(
+      expect(mockDB.transaction).toHaveBeenCalledTimes(1);
+      expect(mockTopicModel.createWithTransaction).toHaveBeenCalledWith(
+        { id: 'trx' },
+        {
+          agentId: 'agent-1',
+          groupId: undefined,
+          messages: ['old-1'],
+          metadata: { approvalMode: 'auto-run' },
+          sessionId: undefined,
+          title: 'First send',
+        },
+      );
+      expect(mockTopicModel.create).not.toHaveBeenCalled();
+      expect(mockMessageModel.createWithTransaction).toHaveBeenCalledWith(
+        { id: 'trx' },
         expect.objectContaining({ topicId: 'topic-new' }),
         undefined,
       );
-      expect(mockMessageModel.create.mock.calls[0][0]).not.toHaveProperty('newTopic');
+      expect(mockMessageModel.create).not.toHaveBeenCalled();
+      expect(mockMessageModel.createWithTransaction.mock.calls[0][1]).not.toHaveProperty(
+        'newTopic',
+      );
       expect(mockMessageModel.query).toHaveBeenCalledWith(
         expect.objectContaining({ topicId: 'topic-new' }),
         expect.anything(),
@@ -466,7 +504,7 @@ describe('MessageService', () => {
 
     it('snapshots built-in manual when newTopic omits approvalMode', async () => {
       const createdMessage = { id: 'msg-1', content: 'Hello', topicId: 'topic-new' };
-      vi.mocked(mockMessageModel.create).mockResolvedValue(createdMessage as any);
+      vi.mocked(mockMessageModel.createWithTransaction).mockResolvedValue(createdMessage as any);
       vi.mocked(mockMessageModel.query).mockResolvedValue([createdMessage] as any);
 
       await messageService.createMessage({
@@ -479,7 +517,8 @@ describe('MessageService', () => {
       expect(mockApplyTopicApprovalSnapshot).toHaveBeenCalledWith(
         expect.objectContaining({ metadata: undefined, userId }),
       );
-      expect(mockTopicModel.create).toHaveBeenCalledWith(
+      expect(mockTopicModel.createWithTransaction).toHaveBeenCalledWith(
+        { id: 'trx' },
         expect.objectContaining({
           metadata: { approvalMode: 'manual' },
           title: 'First send',
@@ -501,13 +540,14 @@ describe('MessageService', () => {
       } as any);
 
       expect(mockTopicModel.create).not.toHaveBeenCalled();
+      expect(mockTopicModel.createWithTransaction).not.toHaveBeenCalled();
       expect(mockApplyTopicApprovalSnapshot).not.toHaveBeenCalled();
     });
 
     it('strips client approvalMode when creating a workspace topic', async () => {
       messageService = new MessageService(mockDB, userId, 'ws-1');
       const createdMessage = { id: 'msg-1', content: 'Hello', topicId: 'topic-new' };
-      vi.mocked(mockMessageModel.create).mockResolvedValue(createdMessage as any);
+      vi.mocked(mockMessageModel.createWithTransaction).mockResolvedValue(createdMessage as any);
       vi.mocked(mockMessageModel.query).mockResolvedValue([createdMessage] as any);
 
       await messageService.createMessage({
@@ -523,12 +563,15 @@ describe('MessageService', () => {
       expect(mockApplyTopicApprovalSnapshot).toHaveBeenCalledWith(
         expect.objectContaining({ workspaceId: 'ws-1' }),
       );
-      expect(mockTopicModel.create).toHaveBeenCalledWith(
+      expect(mockTopicModel.createWithTransaction).toHaveBeenCalledWith(
+        { id: 'trx' },
         expect.objectContaining({
           metadata: { workingDirectory: '/tmp' },
         }),
       );
-      expect(mockTopicModel.create.mock.calls[0][0].metadata).not.toHaveProperty('approvalMode');
+      expect(mockTopicModel.createWithTransaction.mock.calls[0][1].metadata).not.toHaveProperty(
+        'approvalMode',
+      );
     });
 
     it('should create message with topicId and groupId', async () => {

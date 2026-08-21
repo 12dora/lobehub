@@ -97,6 +97,59 @@ describe('MessageService Integration Tests', () => {
       expect(result.id).toBeDefined();
       expect(result.messages[0].topicId).toBe('topic-1');
     });
+
+    it('rolls back topic create and message reassignment when message create fails', async () => {
+      const messageService = new MessageService(serverDB, userId);
+
+      await serverDB.insert(agents).values({ id: 'agent-rollback', userId });
+      await serverDB.insert(sessions).values({ id: 'session-rollback', userId });
+      await serverDB.insert(agentsToSessions).values({
+        agentId: 'agent-rollback',
+        sessionId: 'session-rollback',
+        userId,
+      });
+      await serverDB.insert(messages).values([
+        {
+          agentId: 'agent-rollback',
+          content: 'already exists',
+          id: 'msg-dup-id',
+          role: 'user',
+          userId,
+        },
+        {
+          agentId: 'agent-rollback',
+          content: 'should stay unassigned',
+          id: 'msg-to-reassign',
+          role: 'user',
+          userId,
+        },
+      ]);
+
+      await expect(
+        messageService.createMessage({
+          agentId: 'agent-rollback',
+          content: 'new first send',
+          id: 'msg-dup-id',
+          newTopic: {
+            title: 'Orphan topic should not persist',
+            topicMessageIds: ['msg-to-reassign'],
+          },
+          role: 'user',
+        }),
+      ).rejects.toThrow();
+
+      const orphanTopics = await serverDB
+        .select()
+        .from(topics)
+        .where(eq(topics.title, 'Orphan topic should not persist'));
+      expect(orphanTopics).toHaveLength(0);
+
+      const [reassigned] = await serverDB
+        .select()
+        .from(messages)
+        .where(eq(messages.id, 'msg-to-reassign'));
+      expect(reassigned.topicId).toBeNull();
+    });
   });
 
   describe('queryWithSuccess with agentId', () => {

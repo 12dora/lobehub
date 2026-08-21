@@ -1,6 +1,19 @@
 // @vitest-environment node
-import { type LobeChatDatabase } from '@lobechat/database';
-import { messages, sessions, topics, userSettings } from '@lobechat/database/schemas';
+import { PERMISSION_ACTIONS, WORKSPACE_SYSTEM_ROLES } from '@lobechat/const/rbac';
+import type { LobeChatDatabase } from '@lobechat/database';
+import { assignWorkspaceRoleToUser, seedWorkspaceRoles } from '@lobechat/database';
+import {
+  agents,
+  messages,
+  permissions,
+  rolePermissions,
+  roles,
+  sessions,
+  topics,
+  userRoles,
+  userSettings,
+  workspaces,
+} from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -187,6 +200,124 @@ describe('Message Router Integration Tests', () => {
         .from(topics)
         .where(eq(topics.id, createdMessage.topicId!));
       expect(createdTopic.metadata).toEqual({ approvalMode: 'allow-list' });
+    });
+
+    it('denies newTopic for a workspace role with message:create but not topic:create', async () => {
+      const workspaceId = `ws-msg-rbac-${userId.slice(0, 8)}`;
+      await serverDB.insert(workspaces).values({
+        id: workspaceId,
+        name: 'Message-only RBAC workspace',
+        primaryOwnerId: userId,
+        slug: workspaceId,
+      });
+      await seedWorkspaceRoles(serverDB, workspaceId);
+
+      const [messageCreatePerm] = await serverDB
+        .select()
+        .from(permissions)
+        .where(eq(permissions.code, `${PERMISSION_ACTIONS.MESSAGE_CREATE}:owner`));
+      expect(messageCreatePerm).toBeDefined();
+
+      const [role] = await serverDB
+        .insert(roles)
+        .values({
+          displayName: 'Message only',
+          isSystem: false,
+          name: `message-only-${workspaceId}`,
+          workspaceId,
+        })
+        .returning();
+      await serverDB.insert(rolePermissions).values({
+        permissionId: messageCreatePerm.id,
+        roleId: role.id,
+      });
+      await serverDB.insert(userRoles).values({
+        roleId: role.id,
+        userId,
+        workspaceId,
+      });
+
+      const [agent] = await serverDB
+        .insert(agents)
+        .values({ slug: `agt-${workspaceId}`, title: 'WS agent', userId, workspaceId })
+        .returning();
+
+      const caller = messageRouter.createCaller({
+        ...createTestContext(userId),
+        workspaceId,
+      });
+
+      await expect(
+        caller.createMessage({
+          agentId: agent.id,
+          content: 'Should not create a topic',
+          newTopic: { title: 'RBAC blocked topic' },
+          role: 'user',
+        }),
+      ).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        message: 'Missing permission: topic:create',
+      });
+
+      const blockedTopics = await serverDB
+        .select()
+        .from(topics)
+        .where(eq(topics.title, 'RBAC blocked topic'));
+      expect(blockedTopics).toHaveLength(0);
+
+      const allowed = await caller.createMessage({
+        agentId: agent.id,
+        content: 'Plain message still allowed',
+        role: 'user',
+      });
+      expect(allowed.id).toBeTruthy();
+      const [created] = await serverDB.select().from(messages).where(eq(messages.id, allowed.id));
+      expect(created.topicId).toBeNull();
+      expect(created.content).toBe('Plain message still allowed');
+    });
+
+    it('allows newTopic for a workspace member who has topic:create', async () => {
+      const workspaceId = `ws-msg-member-${userId.slice(0, 8)}`;
+      await serverDB.insert(workspaces).values({
+        id: workspaceId,
+        name: 'Member RBAC workspace',
+        primaryOwnerId: userId,
+        slug: workspaceId,
+      });
+      await seedWorkspaceRoles(serverDB, workspaceId);
+      await assignWorkspaceRoleToUser(serverDB, {
+        roleName: WORKSPACE_SYSTEM_ROLES.MEMBER,
+        userId,
+        workspaceId,
+      });
+
+      const [agent] = await serverDB
+        .insert(agents)
+        .values({ slug: `agt-${workspaceId}`, title: 'Member agent', userId, workspaceId })
+        .returning();
+
+      const caller = messageRouter.createCaller({
+        ...createTestContext(userId),
+        workspaceId,
+      });
+
+      const result = await caller.createMessage({
+        agentId: agent.id,
+        content: 'Member first send',
+        newTopic: { title: 'Member topic' },
+        role: 'user',
+      });
+
+      const [createdMessage] = await serverDB
+        .select()
+        .from(messages)
+        .where(eq(messages.id, result.id));
+      const [createdTopic] = await serverDB
+        .select()
+        .from(topics)
+        .where(eq(topics.id, createdMessage.topicId!));
+      expect(createdTopic.title).toBe('Member topic');
+      expect(createdTopic.workspaceId).toBe(workspaceId);
     });
 
     it('should create message with threadId', async () => {
@@ -1646,6 +1777,37 @@ describe('Message Router Integration Tests', () => {
       } as never);
       expect((await readMeta(created.id))?.operationId).toBeUndefined();
       expect((await readMeta(created.id))?.batched).toBe(true);
+    });
+  });
+
+  describe('batchMutate newTopic contract', () => {
+    it('rejects batched createMessage payloads that include newTopic', async () => {
+      const caller = messageRouter.createCaller(createTestContext(userId));
+
+      await expect(
+        caller.batchMutate({
+          operations: [
+            {
+              message: {
+                content: 'Batched first send',
+                newTopic: {
+                  metadata: { approvalMode: 'manual' },
+                  title: 'Batched topic must not be created',
+                },
+                role: 'user',
+                sessionId: testSessionId,
+              },
+              type: 'createMessage',
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+      const createdTopics = await serverDB
+        .select()
+        .from(topics)
+        .where(eq(topics.title, 'Batched topic must not be created'));
+      expect(createdTopics).toHaveLength(0);
     });
   });
 });

@@ -31,7 +31,7 @@ import {
 
 import type { TopicItem } from '../schemas';
 import { agents, messagePlugins, messages, threads, topicDocuments, topics } from '../schemas';
-import type { LobeChatDatabase } from '../type';
+import type { LobeChatDatabase, Transaction } from '../type';
 import { sanitizeBm25Query } from '../utils/bm25';
 import { genEndDateWhere, genRangeWhere, genStartDateWhere, genWhere } from '../utils/genWhere';
 import { idGenerator } from '../utils/idGenerator';
@@ -747,7 +747,12 @@ export class TopicModel {
 
   // **************** Create *************** //
 
-  create = async (
+  /**
+   * Same as {@link create} but uses a caller-owned transaction so topic insert,
+   * old-message reassignment, and a follow-on message create can roll back together.
+   */
+  createWithTransaction = async (
+    trx: LobeChatDatabase | Transaction,
     { messages: messageIds, ...params }: CreateTopicParams,
     id: string = this.genId(),
     timing?: ModelTimingContext,
@@ -768,49 +773,49 @@ export class TopicModel {
       hasSessionId: !!params.sessionId,
     };
 
-    if (!messageIds || messageIds.length === 0) {
-      const [topic] = await runTimedStage(
-        timing,
-        'db.topic.create.topics.insert',
-        () => this.db.insert(topics).values(insertData).returning(),
-        insertMeta,
-      );
+    const [topic] = await runTimedStage(
+      timing,
+      'db.topic.create.topics.insert',
+      () => trx.insert(topics).values(insertData).returning(),
+      insertMeta,
+    );
 
-      return topic;
+    if (messageIds && messageIds.length > 0) {
+      await runTimedStage(
+        timing,
+        'db.topic.create.messages.updateTopic',
+        () =>
+          trx
+            .update(messages)
+            .set({ topicId: topic.id })
+            .where(and(this.messageOwnership(), inArray(messages.id, messageIds))),
+        { messageCount: messageIds.length },
+      );
+    }
+
+    return topic;
+  };
+
+  create = async (
+    params: CreateTopicParams,
+    id: string = this.genId(),
+    timing?: ModelTimingContext,
+  ): Promise<TopicItem> => {
+    const messageIds = params.messages;
+
+    if (!messageIds || messageIds.length === 0) {
+      return this.createWithTransaction(this.db, params, id, timing);
     }
 
     return runTimedStage(
       timing,
       'db.topic.create.transaction',
-      () =>
-        this.db.transaction(async (tx) => {
-          // Insert new topic
-          const [topic] = await runTimedStage(
-            timing,
-            'db.topic.create.topics.insert',
-            () => tx.insert(topics).values(insertData).returning(),
-            insertMeta,
-          );
-
-          // Update associated messages' topicId
-          await runTimedStage(
-            timing,
-            'db.topic.create.messages.updateTopic',
-            () =>
-              tx
-                .update(messages)
-                .set({ topicId: topic.id })
-                .where(and(this.messageOwnership(), inArray(messages.id, messageIds))),
-            { messageCount: messageIds.length },
-          );
-
-          return topic;
-        }),
+      () => this.db.transaction(async (tx) => this.createWithTransaction(tx, params, id, timing)),
       {
         hasAgentId: !!params.agentId,
         hasGroupId: !!params.groupId,
         hasSessionId: !!params.sessionId,
-        messageCount: messageIds?.length ?? 0,
+        messageCount: messageIds.length,
       },
     );
   };

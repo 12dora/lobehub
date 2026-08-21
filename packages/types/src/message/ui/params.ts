@@ -217,6 +217,16 @@ const ChatPluginPayloadSchema = z.object({
   type: z.string(),
 });
 
+const CreateMessageNewTopicSchema = z.object({
+  metadata: z
+    .object({
+      approvalMode: topicApprovalModeSchema.optional(),
+    })
+    .optional(),
+  title: z.string().optional(),
+  topicMessageIds: z.array(z.string()).optional(),
+});
+
 export const CreateNewMessageParamsSchema = z
   .object({
     // Required fields
@@ -242,17 +252,7 @@ export const CreateNewMessageParamsSchema = z
     topicId: z.string().nullish(),
     threadId: z.string().nullish(),
     targetId: z.string().nullish(),
-    newTopic: z
-      .object({
-        metadata: z
-          .object({
-            approvalMode: topicApprovalModeSchema.optional(),
-          })
-          .optional(),
-        title: z.string().optional(),
-        topicMessageIds: z.array(z.string()).optional(),
-      })
-      .optional(),
+    newTopic: CreateMessageNewTopicSchema.optional(),
     // Model info
     model: z.string().nullish(),
     provider: z.string().nullish(),
@@ -265,6 +265,19 @@ export const CreateNewMessageParamsSchema = z
     fileChunks: z.array(SemanticSearchChunkSchema).optional(),
   })
   .passthrough();
+
+/**
+ * Batched creates share the create-message fields but must not accept `newTopic`.
+ * Kept as a ZodObject (not `.superRefine`) so it can sit in a discriminated union.
+ * A present `newTopic` fails validation instead of being stripped/ignored.
+ */
+export const CreateBatchMessageParamsSchema = CreateNewMessageParamsSchema.extend({
+  newTopic: z
+    .undefined({
+      invalid_type_error: 'newTopic is not supported in batchMutate; use createMessage',
+    })
+    .optional(),
+});
 
 export const UpdateMessagePluginSchema = z.object({
   id: z.string().optional(),
