@@ -172,13 +172,75 @@ describe('edge-safe proxy auth', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('fails closed on redirects, unsigned evidence, or unavailable auth', async () => {
+  it('treats redirects as an indeterminate session, not logged-out', async () => {
     const proxyAuth = await loadProxyAuth({ appUrl: 'https://app.example.test' });
     getCookieCache.mockResolvedValue(null);
     vi.mocked(fetch).mockResolvedValue(
       new Response(null, { headers: { location: 'https://evil.test' }, status: 302 }),
     );
 
+    await expect(proxyAuth.api.getSession({ headers })).resolves.toEqual({ status: 'unknown' });
+  });
+
+  it('accepts a cookie cache younger than 5 minutes without fetching', async () => {
+    const proxyAuth = await loadProxyAuth({ appUrl: 'https://app.example.test' });
+    getCookieCache.mockResolvedValue({
+      ...cachedSession(),
+      updatedAt: Date.now() - 4 * 60_000,
+    });
+
+    await expect(proxyAuth.api.getSession({ headers })).resolves.toMatchObject({
+      user: { id: 'user-1' },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('treats 200 + empty JSON as unauthenticated', async () => {
+    const proxyAuth = await loadProxyAuth({ appUrl: 'https://app.example.test' });
+    getCookieCache.mockResolvedValue(null);
+    vi.mocked(fetch).mockResolvedValue(
+      new Response('null', { headers: { 'content-type': 'application/json' }, status: 200 }),
+    );
+
     await expect(proxyAuth.api.getSession({ headers })).resolves.toBeNull();
+  });
+
+  it('treats 401 as unauthenticated', async () => {
+    const proxyAuth = await loadProxyAuth({ appUrl: 'https://app.example.test' });
+    getCookieCache.mockResolvedValue(null);
+    vi.mocked(fetch).mockResolvedValue(new Response('', { status: 401 }));
+
+    await expect(proxyAuth.api.getSession({ headers })).resolves.toBeNull();
+  });
+
+  it.each([
+    ['500', new Response('nope', { status: 500 })],
+    ['429', new Response('slow down', { status: 429 })],
+    [
+      'non-JSON 200',
+      new Response('<html>signin</html>', {
+        headers: { 'content-type': 'text/html' },
+        status: 200,
+      }),
+    ],
+  ])('treats %s as an indeterminate session, not logged-out', async (_label, response) => {
+    const proxyAuth = await loadProxyAuth({ appUrl: 'https://app.example.test' });
+    getCookieCache.mockResolvedValue(null);
+    vi.mocked(fetch).mockResolvedValue(response);
+
+    await expect(proxyAuth.api.getSession({ headers })).resolves.toEqual({ status: 'unknown' });
+  });
+
+  it('treats get-session timeout / network failure as indeterminate', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const proxyAuth = await loadProxyAuth({ appUrl: 'https://app.example.test' });
+    getCookieCache.mockResolvedValue(null);
+    vi.mocked(fetch).mockRejectedValue(
+      new DOMException('The operation was aborted.', 'TimeoutError'),
+    );
+
+    await expect(proxyAuth.api.getSession({ headers })).resolves.toEqual({ status: 'unknown' });
+    expect(timeoutSpy).toHaveBeenCalledWith(8000);
+    timeoutSpy.mockRestore();
   });
 });

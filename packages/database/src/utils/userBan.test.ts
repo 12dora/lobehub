@@ -64,6 +64,18 @@ describe('isCredentialInvalidated', () => {
     expect(isCredentialInvalidated({ authInvalidatedAt: cutoff }, {})).toBe(true);
   });
 
+  it('does not fail-closed on a cookie-cache session missing createdAt but carrying a sessionId', () => {
+    expect(isCredentialInvalidated({ authInvalidatedAt: cutoff }, { sessionId: 'sess-live' })).toBe(
+      false,
+    );
+    expect(
+      isCredentialInvalidated(
+        { authInvalidatedAt: cutoff },
+        { credentialIssuedAt: null, sessionId: 'sess-live' },
+      ),
+    ).toBe(false);
+  });
+
   it('session exception bypasses cutoff only for exact session id match', () => {
     const user = {
       authInvalidatedAt: cutoff,

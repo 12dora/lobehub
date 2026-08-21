@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useEffect } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { createStoreUpdater } from 'zustand-utils';
 
 import { useSession } from '@/libs/better-auth/auth-client';
@@ -11,13 +11,17 @@ interface SessionErrorLike {
   status?: number;
 }
 
+/** Pause before treating a signed-in → empty get-session as logout. */
+export const EMPTY_SESSION_RETRY_MS = 300;
+
 /**
  * Decide the next signed-in state from the latest `useSession` snapshot.
  *
  * - A successful response containing a user is authoritative: signed in.
  *   (Better-auth also preserves the previous session data on non-401 errors,
  *   which lands here and correctly keeps the user signed in.)
- * - A successful empty response (no user, no error) is authoritative: signed out.
+ * - A successful empty response (no user, no error) is authoritative: signed out,
+ *   except we retry once if the user was already signed in (transient empty body).
  * - A definitive 401 means the session is gone: signed out.
  * - Any other error (network failure while the server restarts, 5xx, …) is
  *   transient: keep the last known state instead of flipping a signed-in user
@@ -25,14 +29,18 @@ interface SessionErrorLike {
  *   refresh manager) and will deliver an authoritative answer later.
  */
 export const resolveIsSignedIn = (options: {
+  emptySessionConfirmed?: boolean;
   error: SessionErrorLike | null | undefined;
   hasUser: boolean;
   prevIsSignedIn: boolean;
 }): boolean => {
-  const { error, hasUser, prevIsSignedIn } = options;
+  const { emptySessionConfirmed = false, error, hasUser, prevIsSignedIn } = options;
 
   if (hasUser) return true;
-  if (!error) return false;
+  if (!error) {
+    if (prevIsSignedIn && !emptySessionConfirmed) return true;
+    return false;
+  }
   if (error.status === 401) return false;
 
   return prevIsSignedIn;
@@ -42,13 +50,49 @@ export const resolveIsSignedIn = (options: {
  * Sync Better-Auth session state to Zustand store
  */
 const UserUpdater = memo(() => {
-  const { data: session, isPending, error } = useSession();
+  const sessionSnapshot = useSession();
+  const { data: session, error, isPending } = sessionSnapshot;
+  const refetch =
+    'refetch' in sessionSnapshot && typeof sessionSnapshot.refetch === 'function'
+      ? sessionSnapshot.refetch
+      : undefined;
+
+  const [emptySessionConfirmed, setEmptySessionConfirmed] = useState(false);
+
+  const hasUser = !!session?.user;
+  const prevIsSignedIn = !!useUserStore.getState().isSignedIn;
+
+  useEffect(() => {
+    if (hasUser) {
+      setEmptySessionConfirmed(false);
+      return;
+    }
+    if (isPending || error) return;
+    if (!prevIsSignedIn || emptySessionConfirmed) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await refetch?.();
+        } finally {
+          if (!cancelled) setEmptySessionConfirmed(true);
+        }
+      })();
+    }, EMPTY_SESSION_RETRY_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [emptySessionConfirmed, error, hasUser, isPending, prevIsSignedIn, refetch]);
 
   const isLoaded = !isPending;
   const isSignedIn = resolveIsSignedIn({
+    emptySessionConfirmed,
     error,
-    hasUser: !!session?.user,
-    prevIsSignedIn: !!useUserStore.getState().isSignedIn,
+    hasUser,
+    prevIsSignedIn,
   });
 
   const betterAuthUser = session?.user;

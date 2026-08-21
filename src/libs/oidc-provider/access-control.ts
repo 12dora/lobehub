@@ -77,6 +77,26 @@ export interface AssertUserActiveOptions {
   sessionId?: string | null;
 }
 
+const isLiveBetterAuthSession = async (
+  db: LobeChatDatabase,
+  params: { sessionId: string; userId: string },
+): Promise<boolean> => {
+  const now = new Date();
+  const [row] = await db
+    .select({ id: session.id })
+    .from(session)
+    .where(
+      and(
+        eq(session.id, params.sessionId),
+        eq(session.userId, params.userId),
+        gt(session.expiresAt, now),
+      ),
+    )
+    .limit(1);
+
+  return Boolean(row);
+};
+
 /**
  * Live-validate a retained-session exception against Better Auth session table.
  * Requires: same id + userId + expiresAt > now. Does not select tokens.
@@ -97,20 +117,7 @@ export const isLiveRetainedSessionException = async (
     return false;
   }
 
-  const now = new Date();
-  const [row] = await db
-    .select({ id: session.id })
-    .from(session)
-    .where(
-      and(
-        eq(session.id, params.sessionId),
-        eq(session.userId, params.userId),
-        gt(session.expiresAt, now),
-      ),
-    )
-    .limit(1);
-
-  return Boolean(row);
+  return isLiveBetterAuthSession(db, { sessionId: params.sessionId, userId: params.userId });
 };
 
 /**
@@ -136,6 +143,21 @@ export const assertUserActive = async (
     .limit(1);
 
   if (!user || isEffectivelyBanned(user)) {
+    throw new OIDCUserInactiveError();
+  }
+
+  const issuedAt = options.credentialIssuedAt;
+  const issuedAtMissing = !issuedAt || Number.isNaN(issuedAt.getTime());
+  const sessionId =
+    typeof options.sessionId === 'string' && options.sessionId.length > 0
+      ? options.sessionId
+      : null;
+
+  // Cookie-cache sessions may omit createdAt. A live auth_sessions row is
+  // enough to keep the user in; a ghost id still fails closed below.
+  if (user.authInvalidatedAt && issuedAtMissing && sessionId) {
+    const live = await isLiveBetterAuthSession(db, { sessionId, userId });
+    if (live) return;
     throw new OIDCUserInactiveError();
   }
 

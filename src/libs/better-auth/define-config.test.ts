@@ -340,6 +340,29 @@ describe('defineConfig', { timeout: 15_000 }, () => {
     expect(options.advanced.cookiePrefix).toBe('aihub-3011');
   });
 
+  it('configures a 7-day sliding session with compact cookie cache and DB persistence', async () => {
+    const { defineConfig } = await import('./define-config');
+    const { SESSION_COOKIE_CACHE_MAX_AGE_SECONDS, SESSION_COOKIE_CACHE_STRATEGY } =
+      await import('./session-cookie-cache');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
+    expect(options.session).toEqual({
+      cookieCache: {
+        enabled: true,
+        maxAge: SESSION_COOKIE_CACHE_MAX_AGE_SECONDS,
+        strategy: SESSION_COOKIE_CACHE_STRATEGY,
+      },
+      expiresIn: 60 * 60 * 24 * 7,
+      preserveSessionInDatabase: true,
+      storeSessionInDatabase: true,
+      updateAge: 60 * 60 * 12,
+    });
+    expect(SESSION_COOKIE_CACHE_MAX_AGE_SECONDS).toBe(5 * 60);
+    expect(SESSION_COOKIE_CACHE_STRATEGY).toBe('compact');
+  });
+
   it('should respect NO_PROXY when configuring the development proxy dispatcher', async () => {
     process.env = {
       ...process.env,

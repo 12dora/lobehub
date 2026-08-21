@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 import { UAParser } from 'ua-parser-js';
 import urlJoin from 'url-join';
 
-import { proxyAuth as auth } from '@/auth.proxy';
+import { isUnknownProxySession, proxyAuth as auth } from '@/auth.proxy';
 import { LOBE_LOCALE_COOKIE } from '@/const/locale';
 import { appEnv } from '@/envs/app';
 import { authEnv } from '@/envs/auth';
@@ -266,6 +266,13 @@ export function defineConfig() {
       headers: req.headers,
       requestUrl: req.url,
     });
+
+    // Timeout / 5xx / 429 / network blip: do not bounce a still-valid session
+    // to /signin. Let the SPA load; tRPC + useSession decide.
+    if (isUnknownProxySession(session)) {
+      logBetterAuth('BetterAuth session lookup indeterminate; allowing request through');
+      return response;
+    }
 
     const isLoggedIn = !!session?.user;
 

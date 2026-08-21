@@ -2,8 +2,8 @@ import { TRPCError } from '@trpc/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCallerFactory } from '@/libs/trpc/lambda';
-import { type AuthContext } from '@/libs/trpc/lambda/context';
-import { createContextInner } from '@/libs/trpc/lambda/context';
+import type { AuthContext } from '@/libs/trpc/lambda/context';
+import { AUTH_BACKEND_UNAVAILABLE, createContextInner } from '@/libs/trpc/lambda/context';
 
 import { trpc } from '../lambda/init';
 import { userAuth } from './userAuth';
@@ -32,6 +32,18 @@ describe('userAuth middleware', () => {
     } catch (e) {
       expect(e).toEqual(new TRPCError({ code: 'UNAUTHORIZED' }));
     }
+  });
+
+  it('throws AUTH_BACKEND_UNAVAILABLE instead of UNAUTHORIZED when the auth backend failed', async () => {
+    ctx = await createContextInner({ authBackendUnavailable: true, userId: null });
+    router = createCaller(ctx);
+
+    await expect(router.protectedQuery()).rejects.toEqual(
+      new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: AUTH_BACKEND_UNAVAILABLE,
+      }),
+    );
   });
 
   it('should call next with userId in context if userId is present', async () => {

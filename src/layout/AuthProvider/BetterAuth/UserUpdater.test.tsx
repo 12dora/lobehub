@@ -1,9 +1,9 @@
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useUserStore } from '@/store/user';
 
-import UserUpdater from './UserUpdater';
+import UserUpdater, { EMPTY_SESSION_RETRY_MS, resolveIsSignedIn } from './UserUpdater';
 
 const useSessionMock = vi.hoisted(() => vi.fn());
 
@@ -25,6 +25,27 @@ const sampleSession = (overrides?: Record<string, unknown>) => ({
   error: null,
 });
 
+describe('resolveIsSignedIn', () => {
+  it('holds signed-in on an empty body until the retry is confirmed', () => {
+    expect(
+      resolveIsSignedIn({
+        emptySessionConfirmed: false,
+        error: null,
+        hasUser: false,
+        prevIsSignedIn: true,
+      }),
+    ).toBe(true);
+    expect(
+      resolveIsSignedIn({
+        emptySessionConfirmed: true,
+        error: null,
+        hasUser: false,
+        prevIsSignedIn: true,
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('UserUpdater', () => {
   beforeEach(() => {
     useSessionMock.mockReset();
@@ -32,6 +53,7 @@ describe('UserUpdater', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     useUserStore.setState({ user: undefined, isSignedIn: false, isLoaded: false });
   });
 
@@ -121,14 +143,32 @@ describe('UserUpdater', () => {
       expect(useUserStore.getState().isLoaded).toBe(true);
     });
 
-    it('signs out on an authoritative empty session (no user, no error)', () => {
+    it('holds signed-in on an empty session until one retry confirms it', async () => {
+      vi.useFakeTimers();
+      const refetch = vi.fn().mockResolvedValue(undefined);
       useUserStore.setState({ isSignedIn: true, user: { id: 'u1', email: 'a@b.com' } });
 
-      useSessionMock.mockReturnValue({ data: null, isPending: false, error: null });
+      useSessionMock.mockReturnValue({ data: null, error: null, isPending: false, refetch });
+      render(<UserUpdater />);
+
+      expect(useUserStore.getState().isSignedIn).toBe(true);
+      expect(useUserStore.getState().user?.id).toBe('u1');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EMPTY_SESSION_RETRY_MS);
+      });
+
+      expect(refetch).toHaveBeenCalledOnce();
+      expect(useUserStore.getState().isSignedIn).toBe(false);
+      expect(useUserStore.getState().user).toBeUndefined();
+      vi.useRealTimers();
+    });
+
+    it('signs out immediately on an empty session when the user was already signed out', () => {
+      useSessionMock.mockReturnValue({ data: null, error: null, isPending: false });
       render(<UserUpdater />);
 
       expect(useUserStore.getState().isSignedIn).toBe(false);
-      expect(useUserStore.getState().user).toBeUndefined();
     });
 
     it('signs out on a definitive 401 response', () => {

@@ -132,7 +132,15 @@ export interface OIDCAuth {
   sub: string;
 }
 
+/** Surfaced by userAuth as INTERNAL_SERVER_ERROR instead of a fake UNAUTHORIZED. */
+export const AUTH_BACKEND_UNAVAILABLE = 'AUTH_BACKEND_UNAVAILABLE';
+
 export interface AuthContext {
+  /**
+   * Better Auth / Redis / secondary storage failed while resolving the session.
+   * Must not be treated as anonymous — userAuth maps this to AUTH_BACKEND_UNAVAILABLE.
+   */
+  authBackendUnavailable?: boolean;
   /**
    * Trusted interactive auth timestamp (reauth gates only):
    * - Better Auth: original session.createdAt (login time; never rewritten by revoke)
@@ -169,6 +177,7 @@ export interface AuthContext {
  */
 export const createContextInner = async (params?: {
   authenticatedAt?: Date | null;
+  authBackendUnavailable?: boolean;
   authMethod?: AuthMethod | null;
   clientIp?: string | null;
   credentialIssuedAt?: Date | null;
@@ -185,6 +194,7 @@ export const createContextInner = async (params?: {
 
   return {
     authenticatedAt: params?.authenticatedAt ?? null,
+    authBackendUnavailable: params?.authBackendUnavailable ?? false,
     authMethod: params?.authMethod ?? null,
     clientIp: params?.clientIp,
     credentialIssuedAt: params?.credentialIssuedAt ?? null,
@@ -395,11 +405,13 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
   } catch (e) {
     log('Better Auth authentication error: %O', e);
     console.error('better auth err', e);
+    // Do not emit an anonymous context: userAuth would turn this into 401 and
+    // the client used to call signOut, destroying a still-valid DB session.
+    return createContextInner({
+      ...commonContext,
+      authBackendUnavailable: true,
+      traceContext,
+      userId: null,
+    });
   }
-
-  log(
-    'All authentication methods attempted, returning final context, userId: %s',
-    userId || 'not authenticated',
-  );
-  return createContextInner({ ...commonContext, traceContext, userId });
 };

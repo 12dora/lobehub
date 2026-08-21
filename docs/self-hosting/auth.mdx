@@ -37,6 +37,19 @@ To enable Better Auth in LobeHub, set the following environment variables:
 | `NEXT_PUBLIC_AUTH_URL` | Deprecated | Removed NextAuth/browser auth URL. Setting this variable will cause the deployment to fail — use `APP_URL` instead.                                                                                                                                                                                       |
 | `AUTH_SSO_PROVIDERS`   | Optional   | Comma-separated list of enabled SSO providers, e.g., `google,github,microsoft`                                                                                                                                                                                                                            |
 
+## Keep sessions stable (self-hosting)
+
+Users get bounced to `/signin` while they are still using the app if these values drift between restarts or do not match the browser origin. Pin them and do not rotate them casually:
+
+| Variable             | Requirement                                                                                                                                                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `APP_URL`            | Exact browser origin only: `https://host` (or `http://localhost` / `http://127.0.0.1` for local). No path, no credentials. Must match the URL users type. `https` in production so `__Secure-` cookies are sent.                                 |
+| `INTERNAL_APP_URL`   | Server-to-server origin inside the container, typically `http://127.0.0.1:3210` (or the container listen port). Used by middleware to call `/api/auth/get-session`. If it is wrong or unreachable, a cookie-cache miss used to look like logout. |
+| `AUTH_SECRET`        | Stable across restarts. Rotating it invalidates the signed cookie cache **and** session tokens — everyone has to sign in again.                                                                                                                  |
+| `AUTH_COOKIE_PREFIX` | Stable per instance. Compose defaults this to `lobehub-enhanced`. Changing it (or leaving it unset after running with the default) makes the browser keep the old cookie name while the server looks for a new one.                              |
+
+Extra hostnames need `AUTH_TRUSTED_ORIGINS`. Terminate TLS at the proxy and forward `X-Forwarded-Proto`. Do not change `REDIS_PREFIX` on a live deployment: Better Auth stores sessions in Redis when `REDIS_URL` is set.
+
 ## Supported SSO Providers
 
 | Provider              | Value                   | Environment Variables                                                                                              |

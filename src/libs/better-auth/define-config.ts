@@ -25,6 +25,10 @@ import {
 } from '@/libs/better-auth/email-templates';
 import { emailWhitelist } from '@/libs/better-auth/plugins/email-whitelist';
 import { registrationGuard } from '@/libs/better-auth/plugins/registration-guard';
+import {
+  SESSION_COOKIE_CACHE_MAX_AGE_SECONDS,
+  SESSION_COOKIE_CACHE_STRATEGY,
+} from '@/libs/better-auth/session-cookie-cache';
 import { initBetterAuthSSOProviders } from '@/libs/better-auth/sso';
 import {
   buildPlatformIdentityProvider,
@@ -261,12 +265,19 @@ export function defineConfig(
       errorURL: '/auth-error',
     },
     session: {
+      // Absolute lifetime. Sliding refresh (`updateAge`) runs on cookie-cache miss.
+      expiresIn: 60 * 60 * 24 * 7, // 7 days
+      updateAge: 60 * 60 * 12, // refresh after 12h of activity
       cookieCache: {
         enabled: true,
-        maxAge: 2 * 60, // Cache duration in seconds
+        maxAge: SESSION_COOKIE_CACHE_MAX_AGE_SECONDS,
+        strategy: SESSION_COOKIE_CACHE_STRATEGY,
       },
       // Keep a DB-backed fallback when Redis secondary storage entries are unexpectedly missing.
       storeSessionInDatabase: true,
+      // Do not drop the DB row when Redis TTL elapses — otherwise getSession misses
+      // after a flush / prefix change and the client treats it as a logout.
+      preserveSessionInDatabase: true,
     },
     database: drizzleAdapter(serverDB, {
       provider: 'pg',

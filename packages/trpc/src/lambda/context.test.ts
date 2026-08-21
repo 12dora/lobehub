@@ -345,6 +345,40 @@ describe('createLambdaContext', () => {
     );
   });
 
+  it('accepts a cookie-cache-shaped Better Auth session missing createdAt when sessionId is present', async () => {
+    mockGetSession.mockResolvedValueOnce({
+      session: { id: 'sess-cache-1' },
+      user: { id: 'session-user' },
+    });
+
+    const request = new NextRequest('https://example.com/trpc/lambda');
+    const context = await createLambdaContext(request);
+
+    expect(context.userId).toBe('session-user');
+    expect(context.sessionId).toBe('sess-cache-1');
+    expect(context.credentialIssuedAt).toBeNull();
+    expect(context.authenticatedAt).toBeNull();
+    expect(mockAssertOIDCUserActive).toHaveBeenCalledWith(
+      expect.any(Object),
+      'session-user',
+      expect.objectContaining({
+        credentialIssuedAt: null,
+        sessionId: 'sess-cache-1',
+      }),
+    );
+  });
+
+  it('does not emit an anonymous context when Better Auth getSession throws', async () => {
+    mockGetSession.mockRejectedValueOnce(new Error('Redis connection refused'));
+
+    const request = new NextRequest('https://example.com/trpc/lambda');
+    const context = await createLambdaContext(request);
+
+    expect(context.userId).toBeNull();
+    expect(context.authBackendUnavailable).toBe(true);
+    expect(context.authMethod).toBeNull();
+  });
+
   it('should reject banned Better Auth session without falling back', async () => {
     const inactiveError = new Error('OIDC user is no longer active');
     mockAssertOIDCUserActive.mockRejectedValueOnce(inactiveError);

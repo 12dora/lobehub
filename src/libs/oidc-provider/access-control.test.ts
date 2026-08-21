@@ -5,6 +5,7 @@ import {
   oidcGrants,
   oidcRefreshTokens,
   oidcSessions,
+  session,
 } from '@lobechat/database/schemas';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -55,19 +56,26 @@ describe('OIDC access control', () => {
 
   describe('assertOIDCUserActive', () => {
     const createDb = (
-      rows: Array<{ banExpires: Date | null; banned: boolean | null; id: string }>,
+      rows: Array<{
+        authInvalidatedAt?: Date | null;
+        authInvalidatedExcludedSessionId?: string | null;
+        banExpires: Date | null;
+        banned: boolean | null;
+        id: string;
+      }>,
+      sessionRows: Array<{ id: string }> = [],
     ) => {
-      const limit = vi.fn().mockResolvedValue(rows);
-      const where = vi.fn(() => ({ limit }));
-      const from = vi.fn(() => ({ where }));
+      const from = vi.fn((table: unknown) => {
+        const limit = vi.fn().mockResolvedValue(table === session ? sessionRows : rows);
+        const where = vi.fn(() => ({ limit }));
+        return { where };
+      });
 
       return {
         db: {
           select: vi.fn(() => ({ from })),
         },
         from,
-        limit,
-        where,
       };
     };
 
@@ -133,6 +141,56 @@ describe('OIDC access control', () => {
     it('identifies the domain inactive-user error', () => {
       expect(isOIDCUserInactiveError(new OIDCUserInactiveError())).toBe(true);
       expect(isOIDCUserInactiveError(new Error(OIDC_USER_INACTIVE_ERROR_MESSAGE))).toBe(false);
+    });
+
+    it('accepts a cookie-cache session missing createdAt when the session row is live', async () => {
+      const cutoff = new Date('2024-06-01T12:00:00.000Z');
+      const { db } = createDb(
+        [
+          {
+            authInvalidatedAt: cutoff,
+            banExpires: null,
+            banned: false,
+            id: 'user-1',
+          },
+        ],
+        [{ id: 'sess-live' }],
+      );
+
+      await expect(
+        assertOIDCUserActive(
+          db as unknown as Parameters<typeof assertOIDCUserActive>[0],
+          'user-1',
+          {
+            sessionId: 'sess-live',
+          },
+        ),
+      ).resolves.toBeUndefined();
+    });
+
+    it('rejects a cookie-cache session missing createdAt when the session id is not live', async () => {
+      const cutoff = new Date('2024-06-01T12:00:00.000Z');
+      const { db } = createDb(
+        [
+          {
+            authInvalidatedAt: cutoff,
+            banExpires: null,
+            banned: false,
+            id: 'user-1',
+          },
+        ],
+        [],
+      );
+
+      await expect(
+        assertOIDCUserActive(
+          db as unknown as Parameters<typeof assertOIDCUserActive>[0],
+          'user-1',
+          {
+            sessionId: 'ghost-sess',
+          },
+        ),
+      ).rejects.toBeInstanceOf(OIDCUserInactiveError);
     });
   });
 });

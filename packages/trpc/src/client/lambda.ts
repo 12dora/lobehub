@@ -10,11 +10,11 @@ import { isDesktop } from '@/const/version';
 import { type LambdaRouter } from '@/server/routers/lambda';
 
 import { shouldLogoutOnLambda401 } from '../utils/isAdminReauthRequiredError';
+import { handleNonAdminLambda401 } from './handleLambda401';
 
 const log = debug('lobe-image:lambda-client');
 
 // 401 error debouncing: prevent showing multiple login notifications in short time
-let last401Time = 0;
 let lastMarket401Time = 0;
 const MIN_401_INTERVAL = 5000; // 5 seconds
 
@@ -64,28 +64,24 @@ const errorHandlingLink: TRPCLink<LambdaRouter> = () => {
                     });
                   }
                 } else if (
-                  shouldLogoutOnLambda401({ error: err, isMarketApi: false, status: 401 })
-                ) {
+                  shouldLogoutOnLambda401({ error: err, isMarketApi: false, status: 401 }) &&
                   // Genuine session expiry only — admin ADMIN_REAUTH_REQUIRED is a
                   // step-up challenge handled by withAdminReauthRetry (must not logout).
-                  const now = Date.now();
-                  if (now - last401Time > MIN_401_INTERVAL) {
-                    last401Time = now;
-                    // Desktop app doesn't have the web auth routes like `/signin`,
-                    // so skip the login redirect/notification there.
-                    if (!isDesktop) {
-                      const { getUserStoreState } = await import('@/store/user/store');
-                      const { isSignedIn, logout } = getUserStoreState();
-                      // If user is still marked as signed in but got 401,
-                      // session is invalid - clear client state first
-                      if (isSignedIn) {
-                        await logout();
-                      }
-                      const { loginRequired } =
-                        await import('@/components/Error/loginRequiredNotification');
-                      loginRequired.redirect();
-                    }
-                  }
+                  // Desktop app doesn't have the web auth routes like `/signin`.
+                  !isDesktop
+                ) {
+                  // A tRPC 401 is not proof the cookie is dead (Redis blip /
+                  // getSession throw used to look like unauth). Probe get-session
+                  // first; only destroy the session if that is empty/401.
+                  const { getUserStoreState } = await import('@/store/user/store');
+                  const { isSignedIn, logout } = getUserStoreState();
+                  const { loginRequired } =
+                    await import('@/components/Error/loginRequiredNotification');
+                  await handleNonAdminLambda401({
+                    isSignedIn,
+                    logout,
+                    redirectToLogin: () => loginRequired.redirect(),
+                  });
                 }
                 // Mark error as non-retryable to prevent SWR infinite retry loop
                 err.meta = { ...err.meta, shouldRetry: false };

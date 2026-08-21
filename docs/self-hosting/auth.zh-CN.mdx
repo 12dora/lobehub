@@ -35,6 +35,19 @@ LobeHub 支持使用 Better Auth 配置外部身份验证服务，供企业 / �
 | `NEXT_PUBLIC_AUTH_URL` | 已废弃 | 已移除的 NextAuth / 浏览器认证 URL。设置该变量会导致部署失败，请改用 `APP_URL`。                                                                                                                             |
 | `AUTH_SSO_PROVIDERS`   | 可选  | 启用的 SSO 提供商列表，以逗号分隔，例如 `google,github,microsoft`                                                                                                                                  |
 
+## 保持会话稳定（自托管）
+
+如果下面这些值在重启之间发生变化，或与浏览器访问源不一致，用户会在仍在使用应用时被踢回 `/signin`。请固定它们，不要随意轮换：
+
+| 变量                   | 要求                                                                                                                                                    |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_URL`            | 必须是浏览器访问的 origin：`https://host`（本地可用 `http://localhost` / `http://127.0.0.1`）。不要带 path 或账号密码。必须与用户实际打开的地址一致。生产环境用 `https`，否则 `__Secure-` Cookie 发不出去。 |
+| `INTERNAL_APP_URL`   | 容器内部的服务间地址，通常是 `http://127.0.0.1:3210`（或容器监听端口）。中间件用它请求 `/api/auth/get-session`。配错或不可达时，Cookie 缓存失效会被误判为未登录。                                          |
+| `AUTH_SECRET`        | 重启后保持不变。轮换会同时让签名 Cookie 缓存和会话令牌失效，所有人需要重新登录。                                                                                                          |
+| `AUTH_COOKIE_PREFIX` | 每个实例保持稳定。Compose 默认是 `lobehub-enhanced`。改掉它（或先有默认值后又留空）会导致浏览器仍发送旧 Cookie 名，服务端却在读新名字。                                                                 |
+
+额外域名请设置 `AUTH_TRUSTED_ORIGINS`。在代理上终止 TLS 并转发 `X-Forwarded-Proto`。不要在运行中的部署上改 `REDIS_PREFIX`：设置了 `REDIS_URL` 时 Better Auth 会把会话放在 Redis 里。
+
 ## 支持的 SSO 提供商
 
 | 提供商                   | 值                       | 环境变量                                                                                                               |

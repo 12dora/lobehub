@@ -9,6 +9,8 @@ import { defineConfig } from './define-config';
 const getSessionMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/auth.proxy', () => ({
+  isUnknownProxySession: (session: { status?: string } | null | undefined) =>
+    session?.status === 'unknown',
   proxyAuth: { api: { getSession: getSessionMock } },
 }));
 
@@ -55,6 +57,25 @@ describe('defineConfig SPA rewrites', () => {
       expect(new URL(rewrite!).pathname).toMatch(new RegExp(`^/spa/[^/]+${path}$`));
     },
   );
+});
+
+describe('defineConfig session gating', () => {
+  it('does not redirect to sign-in when session lookup is unknown', async () => {
+    getSessionMock.mockResolvedValue({ status: 'unknown' });
+
+    const response = await middleware(new NextRequest('http://localhost:3010/chat'));
+
+    expect(response?.headers.get('location')).toBeNull();
+    expect(response?.headers.get('x-middleware-rewrite')).toBeTruthy();
+  });
+
+  it('redirects to sign-in only when the session is definitively empty', async () => {
+    getSessionMock.mockResolvedValue(null);
+
+    const response = await middleware(new NextRequest('http://localhost:3010/chat'));
+
+    expect(response?.headers.get('location')).toContain('/signin');
+  });
 });
 
 describe('defineConfig public routes', () => {
