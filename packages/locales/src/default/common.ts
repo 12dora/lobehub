@@ -568,6 +568,7 @@ export default {
   'tab.files': 'Files',
   'tab.generation': 'Generation',
   'tab.home': 'Home',
+  'tab.newChat': 'New chat',
   'tab.knowledgeBase': 'Library',
   'tab.marketplace': 'Marketplace',
   'tab.me': 'Me',

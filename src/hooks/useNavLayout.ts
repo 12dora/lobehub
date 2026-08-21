@@ -1,4 +1,4 @@
-import { HomeIcon, SearchIcon } from 'lucide-react';
+import { MessageSquarePlusIcon, SearchIcon } from 'lucide-react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -49,9 +49,9 @@ export const useNavLayout = (): NavLayout => {
           title: t('tab.search'),
         },
         {
-          icon: HomeIcon,
+          icon: MessageSquarePlusIcon,
           key: SidebarTabKey.Home,
-          title: t('tab.home'),
+          title: t('tab.newChat'),
           url: '/',
         },
         {
