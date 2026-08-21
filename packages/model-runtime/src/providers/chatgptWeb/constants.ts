@@ -10,6 +10,18 @@ import type { RuntimeBrowserDeviceProfile } from '../../browserProfile';
 
 export const CHATGPT_BASE_URL = 'https://chatgpt.com';
 
+/**
+ * Carried on every `/backend-api/f/conversation` body the web client sends
+ * (HAR 2026-08-21). Prepare bodies do NOT include it.
+ */
+export const MODEL_RESPONSE_CONTRACTS = [
+  {
+    id: 'photo_upload_action.v1',
+    protocol_version: 1,
+    presets: ['cap:image', 'cap:file', 'placement:end'],
+  },
+] as const;
+
 export const PATHS = {
   accountsCheck: '/backend-api/accounts/check/v4-2023-04-27',
   conversation: '/backend-api/conversation',

@@ -267,7 +267,10 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       const search = payload.enabledSearch === true;
       const hasAttachments = mimeTypes.length > 0;
       const resolved = resolveChatGPTWebTurn({
-        effort: payload.reasoning_effort ?? payload.reasoning?.effort,
+        effort:
+          payload.chatgptWebReasoningEffort ??
+          payload.reasoning_effort ??
+          payload.reasoning?.effort,
         model: payload.model,
       });
       const model = resolved.model;

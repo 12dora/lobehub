@@ -753,6 +753,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           // Strip LobeHub-internal fields that should never reach downstream APIs.
           const {
             apiMode: _apiMode,
+            chatgptWebReasoningEffort: _chatgptWebReasoningEffort,
             preserveThinking: _preserveThinking,
             ...cleanProcessedPayload
           } = processedPayload as any;
@@ -773,7 +774,12 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           // Remove LobeHub-internal fields before sending to downstream API.
           // `preserveThinking` is only consumed by Qwen/Zhipu handlePayload (which runs above)
           // and must not leak to other providers' APIs as an unknown parameter.
-          const { apiMode: _, preserveThinking: _pt, ...cleanedPayload } = postPayload as any;
+          const {
+            apiMode: _,
+            chatgptWebReasoningEffort: _cw,
+            preserveThinking: _pt,
+            ...cleanedPayload
+          } = postPayload as any;
           const finalPayload = {
             ...cleanedPayload,
             messages,
@@ -1538,6 +1544,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
 
       // remove penalty params and chat completion specific params
       delete res.apiMode;
+      delete res.chatgptWebReasoningEffort;
       delete res.frequency_penalty;
       delete res.presence_penalty;
       delete res.preserveThinking;

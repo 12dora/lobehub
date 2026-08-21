@@ -16,6 +16,7 @@ export const params = {
   chatCompletion: {
     handlePayload: (payload) => {
       const {
+        chatgptWebReasoningEffort: _chatgptWebReasoningEffort,
         reasoning_effort,
         thinking,
         reasoning: _reasoning,

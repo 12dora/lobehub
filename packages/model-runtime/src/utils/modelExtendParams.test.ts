@@ -141,7 +141,8 @@ describe('applyModelExtendParams', () => {
       model: 'gpt-5-6',
     });
 
-    expect(result.reasoning_effort).toBe('pro');
+    expect(result.chatgptWebReasoningEffort).toBe('pro');
+    expect(result.reasoning_effort).toBeUndefined();
   });
 
   it('resolves Kimi K3 reasoning effort', () => {

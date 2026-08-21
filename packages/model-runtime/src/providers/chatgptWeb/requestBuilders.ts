@@ -7,6 +7,7 @@ import {
   buildFlowClientContextualInfo,
   CLIENT_CREATED_ROOT,
   FLOW_CLIENT_PREPARE_STATE,
+  MODEL_RESPONSE_CONTRACTS,
   SEARCH_SOURCE,
 } from './constants';
 import type { AttachmentRef, ChatGPTWebMessage, ThinkingEffort } from './types';
@@ -339,6 +340,7 @@ export const buildFConversationBody = ({
     enable_message_followups: true,
     force_parallel_switch: 'auto',
     local_function_names: ['local.continue_in_work'],
+    model_response_contracts: [...MODEL_RESPONSE_CONTRACTS],
     messages: toConversationMessages(messages, {
       lastMessageSystemHints: messageHints,
       withRichMetadata: true,

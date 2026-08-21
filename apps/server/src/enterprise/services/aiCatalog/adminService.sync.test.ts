@@ -4,7 +4,10 @@ import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import {
+  platformAgents,
+  platformAgentVersions,
   platformAiModels,
   platformAiProviders,
   platformAiProviderSecrets,
@@ -23,7 +26,12 @@ import {
   AiCatalogUpstreamSyncError,
   AiCatalogValidationError,
 } from './adminService';
-import { mapCardsToBatchUpdate, reconcileChatGPTWebLegacySkus } from './adminService.sync';
+import {
+  mapCardsToBatchUpdate,
+  reconcileChatGPTWebLegacySkus,
+  resolveChatGPTWebCheckModelUpgrade,
+} from './adminService.sync';
+import { AiCatalogExecutionResolver } from './runtimeAdapter';
 import type * as SharedOAuthRefreshModule from './sharedOAuthRefresh';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -59,6 +67,8 @@ const cleanup = async () => {
     TRUNCATE TABLE
       ${platformAuditLogs},
       ${platformResourceRevisions},
+      ${platformAgentVersions},
+      ${platformAgents},
       ${platformAiModels},
       ${platformAiProviderSecrets},
       ${platformAiProviders},
@@ -210,7 +220,7 @@ describe('reconcileChatGPTWebLegacySkus', () => {
     vision: true,
   };
 
-  it('disables Instant/Thinking/Pro and auto rows without deleting them', () => {
+  it('hides Instant/Thinking/Pro and auto rows without disabling them', () => {
     const existing = [
       draftModel({
         abilities: { files: true, vision: true },
@@ -229,11 +239,24 @@ describe('reconcileChatGPTWebLegacySkus', () => {
     const result = reconcileChatGPTWebLegacySkus([familyCard], existing, mapped);
 
     const byId = Object.fromEntries(result.items.map((item) => [item.id, item]));
-    expect(byId['instant-1']).toEqual({ enabled: false, id: 'instant-1' });
-    expect(byId['thinking-1']).toEqual({ enabled: false, id: 'thinking-1' });
-    expect(byId['pro-1']).toEqual({ enabled: false, id: 'pro-1' });
-    expect(byId['auto-1']).toEqual({ enabled: false, id: 'auto-1' });
+    expect(byId['instant-1']).toEqual({
+      id: 'instant-1',
+      settings: { legacyAlias: 'gpt-5-6' },
+    });
+    expect(byId['thinking-1']).toEqual({
+      id: 'thinking-1',
+      settings: { legacyAlias: 'gpt-5-6' },
+    });
+    expect(byId['pro-1']).toEqual({
+      id: 'pro-1',
+      settings: { legacyAlias: 'gpt-5-6' },
+    });
+    expect(byId['auto-1']).toEqual({
+      id: 'auto-1',
+      settings: { legacyAlias: 'gpt-5-6' },
+    });
     expect(byId['mini-1']).toBeUndefined();
+    expect(result.items.every((item) => item.enabled !== false)).toBe(true);
     expect(byId['family-1']).toEqual(
       expect.objectContaining({
         abilities: {
@@ -248,12 +271,52 @@ describe('reconcileChatGPTWebLegacySkus', () => {
         settings: { extendParams: ['chatgptWebReasoningEffort'], searchImpl: 'params' },
       }),
     );
-    expect(result.items.some((item) => item.id === 'instant-1' && !('modelKey' in item))).toBe(
-      true,
+  });
+
+  it('re-enables a previously disabled SKU and stamps legacyAlias', () => {
+    const existing = [
+      draftModel({ enabled: false, id: 'thinking-1', modelKey: 'gpt-5-6-thinking' }),
+    ];
+    const mapped = mapCardsToBatchUpdate([familyCard], existing);
+    const result = reconcileChatGPTWebLegacySkus([familyCard], existing, mapped);
+
+    expect(result.items.find((item) => item.id === 'thinking-1')).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        id: 'thinking-1',
+        settings: { legacyAlias: 'gpt-5-6' },
+      }),
     );
   });
 
-  it('is idempotent when legacy SKUs are already disabled and the family row matches', () => {
+  it('stamps gpt-5-5 SKUs even when that family is absent from the live cards', () => {
+    const existing = [
+      draftModel({ enabled: true, id: 'thinking-55', modelKey: 'gpt-5-5-thinking' }),
+      draftModel({ enabled: true, id: 'pro-55', modelKey: 'gpt-5-5-pro' }),
+    ];
+    const mapped = mapCardsToBatchUpdate([familyCard], existing);
+    const result = reconcileChatGPTWebLegacySkus([familyCard], existing, mapped);
+    const byId = Object.fromEntries(result.items.map((item) => [item.id, item]));
+
+    expect(byId['thinking-55']?.settings).toEqual({ legacyAlias: 'gpt-5-5' });
+    expect(byId['pro-55']?.settings).toEqual({ legacyAlias: 'gpt-5-5' });
+    expect(byId['thinking-55']?.enabled).toBeUndefined();
+  });
+
+  it('stamps auto when the live enumeration has no family cards', () => {
+    const existing = [draftModel({ enabled: true, id: 'auto-1', modelKey: 'auto' })];
+    const o3Card = { displayName: 'o3', id: 'o3', reasoning: true };
+    const mapped = mapCardsToBatchUpdate([o3Card], existing);
+    const result = reconcileChatGPTWebLegacySkus([o3Card], existing, mapped);
+
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'auto-1', settings: { legacyAlias: 'gpt-5-6' } }),
+      ]),
+    );
+  });
+
+  it('is idempotent when legacy SKUs already carry legacyAlias and stay enabled', () => {
     const existing = [
       draftModel({
         abilities: {
@@ -269,8 +332,18 @@ describe('reconcileChatGPTWebLegacySkus', () => {
         modelKey: 'gpt-5-6',
         settings: { extendParams: ['chatgptWebReasoningEffort'], searchImpl: 'params' },
       }),
-      draftModel({ enabled: false, id: 'instant-1', modelKey: 'gpt-5-6-instant' }),
-      draftModel({ enabled: false, id: 'auto-1', modelKey: 'auto' }),
+      draftModel({
+        enabled: true,
+        id: 'instant-1',
+        modelKey: 'gpt-5-6-instant',
+        settings: { legacyAlias: 'gpt-5-6' },
+      }),
+      draftModel({
+        enabled: true,
+        id: 'auto-1',
+        modelKey: 'auto',
+        settings: { legacyAlias: 'gpt-5-6' },
+      }),
     ];
 
     const mapped = mapCardsToBatchUpdate([familyCard], existing);
@@ -278,6 +351,18 @@ describe('reconcileChatGPTWebLegacySkus', () => {
 
     expect(result.items).toEqual(mapped.items);
     expect(result.items.some((item) => item.enabled === false)).toBe(false);
+  });
+});
+
+describe('resolveChatGPTWebCheckModelUpgrade', () => {
+  it('upgrades auto and Instant/Thinking/Pro to an enabled family row', () => {
+    const existing = [
+      draftModel({ enabled: true, id: 'family-1', modelKey: 'gpt-5-6' }),
+      draftModel({ enabled: true, id: 'auto-1', modelKey: 'auto' }),
+    ];
+    expect(resolveChatGPTWebCheckModelUpgrade('auto', existing, [])).toBe('gpt-5-6');
+    expect(resolveChatGPTWebCheckModelUpgrade('gpt-5-6-thinking', existing, [])).toBe('gpt-5-6');
+    expect(resolveChatGPTWebCheckModelUpgrade('gpt-5-6', existing, [])).toBeUndefined();
   });
 });
 
@@ -455,5 +540,149 @@ describe('AiCatalogAdminService.syncUpstream', () => {
       abilities: {},
       enabled: true,
     });
+  });
+
+  const seedChatgptWeb = async (checkModel = 'auto') => {
+    const service = createService();
+    const created = await service.applyProviderImmediate('admin', {
+      checkModel,
+      displayName: 'ChatGPT Web',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'chatgptweb',
+      reason: 'seed chatgptweb',
+      secret: { operation: 'replace', value: { oauthAccessToken: 'shared-access-token' } },
+      source: 'builtin',
+    });
+    return { providerId: created.draft.id, service };
+  };
+
+  const addLegacySku = async (
+    service: AiCatalogAdminService,
+    providerId: string,
+    modelKey: string,
+  ) => {
+    const detail = await service.getDetail(providerId);
+    await service.applyModelImmediate('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey,
+      operation: 'create',
+      providerId,
+      reason: 'seed legacy sku',
+      type: 'chat',
+    });
+  };
+
+  const familyLiveCards = [
+    {
+      displayName: 'GPT-5.6 Sol (ChatGPT Web)',
+      id: 'gpt-5-6',
+      reasoning: true,
+      settings: { extendParams: ['chatgptWebReasoningEffort' as const] },
+      type: 'chat' as const,
+    },
+  ];
+
+  it('keeps a legacy SKU on the execution allowlist after sync and hides it from the picker', async () => {
+    const { providerId, service } = await seedChatgptWeb();
+    await addLegacySku(service, providerId, 'gpt-5-6-thinking');
+    mockModels.mockResolvedValue(familyLiveCards);
+
+    await expect(service.syncUpstream('admin', { providerId })).resolves.toMatchObject({
+      created: 0,
+    });
+
+    const thinking = (await db.select().from(platformAiModels)).find(
+      (row) => row.modelKey === 'gpt-5-6-thinking',
+    );
+    expect(thinking).toMatchObject({
+      enabled: true,
+      settings: expect.objectContaining({ legacyAlias: 'gpt-5-6' }),
+    });
+
+    const execution = new AiCatalogExecutionResolver(
+      db,
+      new PlatformSecretService({ keyProvider }),
+    );
+    const config = await execution.resolveProviderExecutionConfig('chatgptweb');
+    expect(config.allowedModels.map((model) => model.modelKey)).toContain('gpt-5-6-thinking');
+  });
+
+  it('does not abort sync when a published platform agent depends on a legacy SKU', async () => {
+    const { providerId, service } = await seedChatgptWeb();
+    await addLegacySku(service, providerId, 'gpt-5-6-thinking');
+
+    const repository = new PlatformAgentCatalogRepository(db);
+    const agent = await repository.createIdentity({
+      agentKey: 'legacy-thinking-agent',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version = await repository.appendVersionCas({
+      agentId: agent.id,
+      config: {
+        avatar: null,
+        backgroundColor: null,
+        description: 'Depends on thinking SKU',
+        displayName: 'Thinking dependent',
+        modelParameters: {},
+        openingMessage: null,
+        openingQuestions: [],
+        systemRole: 'Use the exact model dependency.',
+        tags: [],
+      },
+      dependencySnapshot: {
+        connectors: [],
+        model: {
+          modelKey: 'gpt-5-6-thinking',
+          providerChecksum: 'b'.repeat(64),
+          providerKey: 'chatgptweb',
+          providerRevision: 1,
+        },
+        skills: [],
+      },
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+    await repository.pointToVersionCas({
+      agentId: agent.id,
+      expectedDraftSequence: 1,
+      expectedRevision: 0,
+      publishedAt: new Date(),
+      versionId: version!.id,
+    });
+
+    mockModels.mockResolvedValue(familyLiveCards);
+
+    await expect(service.syncUpstream('admin', { providerId })).resolves.toMatchObject({
+      created: 0,
+    });
+
+    const thinking = (await db.select().from(platformAiModels)).find(
+      (row) => row.modelKey === 'gpt-5-6-thinking',
+    );
+    expect(thinking?.enabled).toBe(true);
+  });
+
+  it('migrates a persisted checkModel of auto to gpt-5-6 during sync', async () => {
+    const { providerId, service } = await seedChatgptWeb('auto');
+    mockModels.mockResolvedValue(familyLiveCards);
+
+    await service.syncUpstream('admin', { providerId });
+
+    const [provider] = await db.select().from(platformAiProviders);
+    expect(provider.checkModel).toBe('gpt-5-6');
+
+    const audits = await db.select().from(platformAuditLogs);
+    expect(
+      audits.some(
+        (row) =>
+          row.action === 'admin.aiModels.syncUpstream' &&
+          row.result === 'success' &&
+          (row.afterDiff as { checkModel?: string } | null)?.checkModel === 'gpt-5-6',
+      ),
+    ).toBe(true);
   });
 });

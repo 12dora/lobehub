@@ -380,6 +380,13 @@ export interface AiModelSettings {
   disabledParams?: DisabledParamType[];
   extendParams?: ExtendParamsType[];
   /**
+   * ChatGPT Web Instant/Thinking/Pro/`auto` rows collapsed into a family card.
+   * The value is the family id the picker should show instead (`gpt-5-6`, …).
+   * User-facing lists hide these rows (`visible: false`); the execution
+   * allowlist still admits the id so saved agents keep working.
+   */
+  legacyAlias?: string;
+  /**
    * How the model layer implements search
    */
   searchImpl?: ModelSearchImplementType;

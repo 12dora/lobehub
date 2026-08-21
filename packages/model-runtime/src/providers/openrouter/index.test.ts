@@ -157,6 +157,22 @@ describe('LobeOpenRouterAI - custom features', () => {
       );
     });
 
+    it('never forwards ChatGPT Web instant/pro as reasoning.effort', async () => {
+      await instance.chat({
+        chatgptWebReasoningEffort: 'pro',
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'openai/gpt-4',
+        reasoning_effort: 'high' as const,
+      });
+
+      const createCall = vi
+        .mocked(instance['client'].chat.completions.create)
+        .mock.calls.at(-1)?.[0];
+      expect(createCall).not.toHaveProperty('chatgptWebReasoningEffort');
+      expect(createCall.reasoning?.effort).toBe('high');
+      expect(JSON.stringify(createCall)).not.toMatch(/"effort"\s*:\s*"(instant|pro)"/);
+    });
+
     it('should not modify model when enabledSearch is undefined', async () => {
       await instance.chat({
         messages: [{ content: 'Hello', role: 'user' }],

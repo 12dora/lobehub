@@ -1253,4 +1253,34 @@ describe('projectAiCatalogRuntimeState settings merge', () => {
     expect(projectSettings({ modelKey: 'gpt-5.5', settings: {} })).toEqual(builtin);
     expect(projectSettings({ modelKey: 'gpt-5.5' })).toEqual(builtin);
   });
+
+  it('hides ChatGPT Web legacy-alias rows from pickers while keeping them enabled', () => {
+    const state = projectAiCatalogRuntimeState([
+      {
+        payload: {
+          models: [
+            { enabled: true, modelKey: 'gpt-5-6', type: 'chat' },
+            {
+              enabled: true,
+              modelKey: 'gpt-5-6-thinking',
+              settings: { legacyAlias: 'gpt-5-6' },
+              type: 'chat',
+            },
+          ],
+          provider: {
+            displayName: 'ChatGPT Web',
+            enabled: true,
+            providerKey: 'chatgptweb',
+            source: 'builtin',
+          },
+        },
+      } as never,
+    ]);
+
+    expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6-thinking')).toMatchObject({
+      enabled: true,
+      visible: false,
+    });
+    expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6')?.visible).not.toBe(false);
+  });
 });

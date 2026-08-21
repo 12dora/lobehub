@@ -210,6 +210,50 @@ export const mapCardsToBatchUpdate = (
 
 const CHATGPTWEB_PROVIDER = 'chatgptweb';
 const CHATGPT_WEB_FAMILY_BASE_RE = /^gpt-5-\d+$/;
+const CHATGPT_WEB_LEGACY_SKU_RE = /^(gpt-5-\d+)-(instant|thinking|pro)$/;
+const CHATGPT_WEB_DEFAULT_FAMILY = 'gpt-5-6';
+const CHATGPT_WEB_LEGACY_ALIAS_KEY = 'legacyAlias';
+
+export const isChatGPTWebLegacyPickerId = (modelKey: string): boolean =>
+  modelKey === 'auto' || CHATGPT_WEB_LEGACY_SKU_RE.test(modelKey);
+
+const familyAliasForLegacyKey = (modelKey: string): string => {
+  const match = modelKey.match(CHATGPT_WEB_LEGACY_SKU_RE);
+  return match?.[1] ?? CHATGPT_WEB_DEFAULT_FAMILY;
+};
+
+const readSettingsRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+
+/**
+ * Existing providers keep a persisted `checkModel` from first connect. After the
+ * family-card cutover that is often `auto` (or an Instant/Thinking/Pro SKU),
+ * which then fails the connectivity probe with "Check model not enabled".
+ */
+export const resolveChatGPTWebCheckModelUpgrade = (
+  current: string | null | undefined,
+  existing: readonly DraftModel[],
+  cards: ChatModelCard[],
+): string | undefined => {
+  if (!current || !isChatGPTWebLegacyPickerId(current)) return undefined;
+
+  const enabledKeys = new Set(
+    existing.filter((model) => model.enabled).map((model) => model.modelKey),
+  );
+  if (enabledKeys.has(CHATGPT_WEB_DEFAULT_FAMILY)) return CHATGPT_WEB_DEFAULT_FAMILY;
+
+  const enabledFamily = existing.find(
+    (model) => model.enabled && CHATGPT_WEB_FAMILY_BASE_RE.test(model.modelKey),
+  );
+  if (enabledFamily) return enabledFamily.modelKey;
+
+  const familyCard =
+    cards.find((card) => card.id === CHATGPT_WEB_DEFAULT_FAMILY) ??
+    cards.find((card) => CHATGPT_WEB_FAMILY_BASE_RE.test(card.id));
+  return familyCard?.id ?? CHATGPT_WEB_DEFAULT_FAMILY;
+};
 
 const abilitiesFromCardFlags = (card: ChatModelCard): Record<string, boolean> | undefined => {
   const abilities: Record<string, boolean> = {};
@@ -227,11 +271,16 @@ type MappedCards = ReturnType<typeof mapCardsToBatchUpdate>;
 
 /**
  * When chatgptweb `models()` collapses Instant / Thinking / Pro SKUs into one
- * family card, existing catalog rows for those SKUs (and `auto`) must be
- * disabled — never deleted — so a later sync does not re-create them as live
- * options. The family row picks up the new settings/abilities from the card.
- * Idempotent: already-disabled rows and already-matching family metadata are
- * left alone.
+ * family card, existing catalog rows for those SKUs (and `auto`) stay **enabled**
+ * so the execution allowlist still admits saved agents, but they are marked
+ * `settings.legacyAlias` so user-facing pickers hide them. Matching is against
+ * existing rows (`/^gpt-5-\d+-(instant|thinking|pro)$/` plus `auto`), not the
+ * live family-card set — a gpt-5-5 SKU or a lone `auto` still reconciles when
+ * the current enumeration has no matching family.
+ *
+ * Do **not** set `enabled: false`: that both drops the row from the allowlist
+ * (`AiCatalogModelNotPublishedError` on the next turn) and trips the published
+ * agent/setting dependency check (`AiCatalogResourceInUseError`), aborting sync.
  */
 export const reconcileChatGPTWebLegacySkus = (
   cards: ChatModelCard[],
@@ -239,8 +288,6 @@ export const reconcileChatGPTWebLegacySkus = (
   mapped: MappedCards,
 ): MappedCards => {
   const familyCards = cards.filter((card) => CHATGPT_WEB_FAMILY_BASE_RE.test(card.id));
-  if (familyCards.length === 0) return mapped;
-
   const itemsById = new Map(mapped.items.map((item) => [item.id, { ...item }]));
   let { updated } = mapped;
   const existingByKey = new Map(existing.map((model) => [model.modelKey, model]));
@@ -261,22 +308,21 @@ export const reconcileChatGPTWebLegacySkus = (
     itemsById.set(row.id, candidate);
   }
 
-  const disableKeys = new Set<string>(['auto']);
-  for (const card of familyCards) {
-    disableKeys.add(`${card.id}-instant`);
-    disableKeys.add(`${card.id}-thinking`);
-    disableKeys.add(`${card.id}-pro`);
-  }
-
   for (const row of existing) {
-    if (!disableKeys.has(row.modelKey) || row.enabled === false) continue;
+    if (!isChatGPTWebLegacyPickerId(row.modelKey)) continue;
+    const alias = familyAliasForLegacyKey(row.modelKey);
     const current = itemsById.get(row.id);
-    if (current) {
-      current.enabled = false;
-      continue;
-    }
-    itemsById.set(row.id, { enabled: false, id: row.id });
-    updated += 1;
+    const baseSettings = readSettingsRecord(current?.settings ?? row.settings);
+    if (baseSettings[CHATGPT_WEB_LEGACY_ALIAS_KEY] === alias && row.enabled !== false) continue;
+
+    const candidate: BatchUpdateItem = {
+      ...(current ?? { id: row.id }),
+      id: row.id,
+      settings: { ...baseSettings, [CHATGPT_WEB_LEGACY_ALIAS_KEY]: alias },
+      ...(row.enabled === false ? { enabled: true } : {}),
+    };
+    if (!current) updated += 1;
+    itemsById.set(row.id, candidate);
   }
 
   return { created: mapped.created, items: [...itemsById.values()], total: mapped.total, updated };
@@ -390,19 +436,23 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
         provider.providerKey === CHATGPTWEB_PROVIDER
           ? reconcileChatGPTWebLegacySkus(cards, detail.draft.models, mapped)
           : mapped;
+      const checkModelUpgrade =
+        provider.providerKey === CHATGPTWEB_PROVIDER
+          ? resolveChatGPTWebCheckModelUpgrade(provider.checkModel, detail.draft.models, cards)
+          : undefined;
 
-      const appendSyncSuccessAudit = (db: typeof this.db) =>
+      const appendSyncSuccessAudit = (db: typeof this.db, extra?: { checkModel?: string }) =>
         new PlatformAuditService(db).append({
           action: 'admin.aiModels.syncUpstream',
           actorUserId,
-          afterDiff: { created, total, updated },
+          afterDiff: { created, total, updated, ...extra },
           reason,
           result: 'success',
           targetId: detail.draft.id,
           targetType: 'provider',
         });
 
-      if (items.length > 0) {
+      if (items.length > 0 || checkModelUpgrade) {
         await this.runModelApplyTransaction(
           {
             action: 'admin.aiModels.applyImmediate',
@@ -412,19 +462,32 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
             secretTargetId: detail.draft.id,
           },
           async (scoped) => {
-            await scoped.applyModelMutation(
-              actorUserId,
-              {
-                expectedDraftToken: detail.draftToken,
-                models: items,
-                operation: 'batchUpdate',
-                providerId: detail.draft.id,
-                reason,
-              },
-              { allowModelCreate: true },
-            );
+            if (items.length > 0) {
+              await scoped.applyModelMutation(
+                actorUserId,
+                {
+                  expectedDraftToken: detail.draftToken,
+                  models: items,
+                  operation: 'batchUpdate',
+                  providerId: detail.draft.id,
+                  reason,
+                },
+                { allowModelCreate: true },
+              );
+            }
+            if (checkModelUpgrade) {
+              const repository = new PlatformAiCatalogRepository(scoped.db);
+              await repository.updateProvider(detail.draft.id, {
+                checkModel: checkModelUpgrade,
+                status: 'draft',
+                updatedBy: actorUserId,
+              });
+            }
             await scoped.publishAfterMutation(actorUserId, detail.draft.id, reason);
-            await appendSyncSuccessAudit(scoped.db);
+            await appendSyncSuccessAudit(
+              scoped.db,
+              checkModelUpgrade ? { checkModel: checkModelUpgrade } : undefined,
+            );
           },
         );
       } else {

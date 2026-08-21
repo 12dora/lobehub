@@ -157,6 +157,12 @@ export interface OpenAIChatMessage {
 export interface ChatStreamPayload {
   apiMode?: 'chatCompletion' | 'responses';
   /**
+   * ChatGPT Web family picker (Instant / Medium / High / Extra high / Pro).
+   * Translated to a wire slug + `thinking_effort` only inside `LobeChatGPTWebAI`.
+   * Must not ride `reasoning_effort` — OpenAI / OpenRouter forward that field.
+   */
+  chatgptWebReasoningEffort?: 'instant' | 'medium' | 'high' | 'xhigh' | 'pro';
+  /**
    * @title Provider deployment name
    */
   deploymentName?: string;
@@ -225,17 +231,7 @@ export interface ChatStreamPayload {
     mode?: 'standard' | 'pro';
     summary?: string;
   };
-  reasoning_effort?:
-    | 'none'
-    | 'no_think'
-    | 'minimal'
-    | 'instant'
-    | 'low'
-    | 'medium'
-    | 'high'
-    | 'xhigh'
-    | 'max'
-    | 'pro';
+  reasoning_effort?: 'none' | 'no_think' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   response_format?: ChatResponseFormat;
   responseMode?: 'stream' | 'json';
   /**

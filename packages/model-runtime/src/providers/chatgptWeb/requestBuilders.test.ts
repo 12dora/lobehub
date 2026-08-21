@@ -233,6 +233,7 @@ describe('buildPrepareBody', () => {
     expect(body.client_prepare_source).toBe('context_change');
     expect(body.local_function_names).toEqual(['local.continue_in_work']);
     expect(body).not.toHaveProperty('fork_from_shared_post');
+    expect(body).not.toHaveProperty('model_response_contracts');
   });
 
   it('supports the sent phase of the browser prepare lifecycle', () => {
@@ -319,6 +320,13 @@ describe('buildFConversationBody', () => {
     expect(body.paragen_cot_summary_display_override).toBe('allow');
     expect(body.conversation_mode).toEqual({ kind: 'primary_assistant' });
     expect(body.parent_message_id).toBe('client-created-root');
+    expect(body.model_response_contracts).toEqual([
+      {
+        id: 'photo_upload_action.v1',
+        protocol_version: 1,
+        presets: ['cap:image', 'cap:file', 'placement:end'],
+      },
+    ]);
   });
 
   it('sends the exact search contextual-info block from E6 §1.3', () => {
@@ -422,6 +430,14 @@ describe('buildImageConversationBodies', () => {
     // both bodies thread their own fresh uuid, never `client-created-root`
     expect(conversation.parent_message_id).toMatch(UUID_RE);
     expect(conversation.parent_message_id).not.toBe(prepare.parent_message_id);
+    expect(conversation.model_response_contracts).toEqual([
+      {
+        id: 'photo_upload_action.v1',
+        protocol_version: 1,
+        presets: ['cap:image', 'cap:file', 'placement:end'],
+      },
+    ]);
+    expect(prepare).not.toHaveProperty('model_response_contracts');
   });
 
   it('uses a plain text content for text-to-image', () => {

@@ -54,6 +54,12 @@ const FAMILY_TURN: Record<ChatGPTWebFamilyLevel, (family: string) => ChatGPTWebT
 /**
  * Resolve the chatgpt.com wire model + `thinking_effort` for one turn.
  *
+ * Verified against real Chrome captures 2026-08-21: Medium / High / Extra-high
+ * = `{family}-thinking` + `standard` / `extended` / `max`; Pro = `{family}-pro`
+ * + `standard` (2026-08-19 capture); Instant = `{family}-instant` inferred from
+ * the `/models` slug list (no capture). `system_hints` is `[]` on all thinking
+ * turns — effort is never expressed via hints.
+ *
  * Family ids (`gpt-5-6`, `gpt-5-5`, …) follow the web UI picker: a level
  * changes BOTH the slug and the effort field. `o3` has no effort control.
  * Legacy SKU ids (`-instant` / `-thinking` / `-pro` / `-mini`, `auto`) pass

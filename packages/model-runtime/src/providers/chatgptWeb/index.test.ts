@@ -467,9 +467,9 @@ describe('LobeChatGPTWebAI', () => {
       async (effort, model, thinkingEffort) => {
         const client = createFakeClient();
         await createRuntime(client).chat({
+          chatgptWebReasoningEffort: effort,
           messages: [{ content: 'hi', role: 'user' }],
           model: 'gpt-5-6',
-          reasoning_effort: effort,
           temperature: 1,
         });
 
@@ -481,9 +481,9 @@ describe('LobeChatGPTWebAI', () => {
     it('family + pro takes the existing Pro path (dual prepare, standard effort)', async () => {
       const client = createFakeClient();
       await createRuntime(client).chat({
+        chatgptWebReasoningEffort: 'pro',
         messages: [{ content: 'hi', role: 'user' }],
         model: 'gpt-5-6',
-        reasoning_effort: 'pro',
         temperature: 1,
       });
 
@@ -527,6 +527,7 @@ describe('LobeChatGPTWebAI', () => {
       expect(prepareBody.system_hints).toEqual([]);
       expect(prepareBody.attachment_mime_types).toBeUndefined();
       expect(prepareBody.thinking_effort).toBeUndefined();
+      expect(prepareBody).not.toHaveProperty('model_response_contracts');
 
       // the live-verified plain `/f/conversation` body (scratchpad file-probe)
       const body = bodyOf(client);
@@ -535,6 +536,13 @@ describe('LobeChatGPTWebAI', () => {
         client_prepare_state: 'sent',
         enable_message_followups: true,
         force_parallel_switch: 'auto',
+        model_response_contracts: [
+          {
+            id: 'photo_upload_action.v1',
+            protocol_version: 1,
+            presets: ['cap:image', 'cap:file', 'placement:end'],
+          },
+        ],
         paragen_cot_summary_display_override: 'allow',
         parent_message_id: 'client-created-root',
         supported_encodings: ['v1'],

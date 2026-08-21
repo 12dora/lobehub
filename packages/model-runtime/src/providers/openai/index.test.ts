@@ -347,6 +347,22 @@ describe('LobeOpenAI', () => {
       expect(createCall.presence_penalty).toBe(0.3);
       expect(createCall.stream).toBe(true);
     });
+
+    it('never forwards ChatGPT Web instant/pro on chat completions', async () => {
+      await instance.chat({
+        chatgptWebReasoningEffort: 'instant',
+        messages: [{ content: 'Hello', role: 'user' as const }],
+        model: 'gpt-4o',
+        temperature: 0.7,
+      });
+
+      const createCall = (instance['client'].chat.completions.create as Mock).mock.calls.at(
+        -1,
+      )?.[0];
+      expect(createCall).not.toHaveProperty('chatgptWebReasoningEffort');
+      expect(createCall).not.toHaveProperty('reasoning_effort');
+      expect(JSON.stringify(createCall)).not.toMatch(/"(instant|pro)"/);
+    });
   });
 
   describe('responses.handlePayload', () => {
@@ -379,6 +395,20 @@ describe('LobeOpenAI', () => {
       expect(createCall.presence_penalty).toBeUndefined();
       expect(createCall.temperature).toBeUndefined();
       expect(createCall.top_p).toBeUndefined();
+    });
+
+    it('never forwards ChatGPT Web instant/pro as reasoning effort', async () => {
+      await instance.chat({
+        chatgptWebReasoningEffort: 'pro',
+        messages: [{ content: 'Hello', role: 'user' as const }],
+        model: 'gpt-5.6-sol',
+        reasoning_effort: 'high' as const,
+      });
+
+      const createCall = (instance['client'].responses.create as Mock).mock.calls.at(-1)?.[0];
+      expect(createCall).not.toHaveProperty('chatgptWebReasoningEffort');
+      expect(createCall.reasoning?.effort).toBe('high');
+      expect(JSON.stringify(createCall)).not.toMatch(/"effort"\s*:\s*"(instant|pro)"/);
     });
 
     it('should add search_context_size to web_search tool when OPENAI_SEARCH_CONTEXT_SIZE is set', async () => {

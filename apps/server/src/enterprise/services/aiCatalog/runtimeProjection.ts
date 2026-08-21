@@ -208,6 +208,8 @@ export const projectAiCatalogRuntimeState = (
         typeof publishedConfig.deploymentName === 'string'
           ? publishedConfig.deploymentName
           : undefined;
+      const publishedSettings = isRecord(rawModel.settings) ? rawModel.settings : undefined;
+      const hiddenAsLegacyAlias = typeof publishedSettings?.legacyAlias === 'string';
       models.push({
         ...builtin,
         abilities: hasPublishedMetadata(rawModel.abilities)
@@ -238,6 +240,7 @@ export const projectAiCatalogRuntimeState = (
         sort: typeof rawModel.sort === 'number' ? rawModel.sort : undefined,
         source: builtin ? 'builtin' : 'custom',
         type: typeof rawModel.type === 'string' ? rawModel.type : 'chat',
+        ...(hiddenAsLegacyAlias ? { visible: false } : {}),
       } as EnabledAiModel);
     }
   }
