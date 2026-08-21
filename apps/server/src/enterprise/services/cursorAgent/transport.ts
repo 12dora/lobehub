@@ -114,6 +114,15 @@ const assertCursorLocal = (url: URL): void => {
  * `--allowed-tools` takes proto `ToolCall` oneof field names
  * (`update_todos_tool_call`, `web_search_tool_call`, …), not the user-facing
  * permission string `WebSearch`. Confirmed against cursor-agent 2026.08.11-e8db854.
+ *
+ * Print mode (`-p`) has no TTY approval prompt. The allowlist alone still
+ * REJECTS WebSearch with "User Rejected" (live, 2026.08.11); `-f` / `--force`
+ * ("allow unless explicitly denied") is required to auto-accept it. `-f` does
+ * not expand the tool set: `--mode ask` is always on (CLI maps it to internal
+ * metadata mode `search` — Q&A, read-only, no edits or command execution;
+ * sandbox policy becomes `workspace_readonly`), and `--allowed-tools` still
+ * lists only todos plus, when search is on, `web_search_tool_call`. Shell /
+ * edit / delete oneofs are never on that list.
  */
 export const CURSOR_WEB_SEARCH_TOOL = 'web_search_tool_call';
 const CURSOR_TODOS_TOOL = 'update_todos_tool_call';
@@ -131,6 +140,7 @@ export const buildTurnArgv = (turn: TurnRequest, scratch: TurnScratch): string[]
     'ask',
     '--single-turn',
     '--trust',
+    ...(turn.enabledSearch ? ['-f'] : []),
     '--disable-indexing',
     '--disable-codebase-ref',
     '--disable-auto-update',

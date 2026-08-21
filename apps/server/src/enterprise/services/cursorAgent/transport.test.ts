@@ -460,6 +460,7 @@ describe('POST /v1/turn', () => {
 
     const allowedIndex = argv.indexOf('--allowed-tools');
     expect(argv[allowedIndex + 1]).toBe(`update_todos_tool_call,${CURSOR_WEB_SEARCH_TOOL}`);
+    expect(argv).toContain('-f');
     expect(CURSOR_WEB_SEARCH_TOOL).toBe('web_search_tool_call');
   });
 
@@ -1771,15 +1772,18 @@ describe('buildTurnArgv', () => {
   };
 
   it('keeps the todos allowlist when search is off', () => {
-    expect(buildTurnArgv(turn, scratch)).toEqual(
-      expect.arrayContaining(['--allowed-tools', 'update_todos_tool_call']),
-    );
-    expect(buildTurnArgv(turn, scratch).join(' ')).not.toContain(CURSOR_WEB_SEARCH_TOOL);
+    const argv = buildTurnArgv(turn, scratch);
+    expect(argv).toEqual(expect.arrayContaining(['--allowed-tools', 'update_todos_tool_call']));
+    expect(argv.join(' ')).not.toContain(CURSOR_WEB_SEARCH_TOOL);
+    expect(argv).not.toContain('-f');
+    expect(argv).toEqual(expect.arrayContaining(['--mode', 'ask']));
   });
 
-  it('appends the native web search tool when enabledSearch is true', () => {
+  it('appends the native web search tool and -f when enabledSearch is true', () => {
     const argv = buildTurnArgv({ ...turn, enabledSearch: true }, scratch);
     const allowedIndex = argv.indexOf('--allowed-tools');
     expect(argv[allowedIndex + 1]).toBe(`update_todos_tool_call,${CURSOR_WEB_SEARCH_TOOL}`);
+    expect(argv).toContain('-f');
+    expect(argv).toEqual(expect.arrayContaining(['--mode', 'ask']));
   });
 });
