@@ -42,22 +42,50 @@ export const projectPublicAiProviderRuntimeConfig = (
 
 /**
  * Credential-free provider settings safe to expose in public runtime state.
- * Only the trusted `webApp` capability is projected — derived from the actual
- * runtime provider card (so a managed alias like `corp-cursor` still skips
- * generic prompt injections). OAuth / proxy / sdkType stay server-only.
+ * OAuth / proxy / sdkType stay server-only. The webApp capability is a
+ * server-owned field on `capabilities` — never copied from stored settings.
  */
-export const projectPublicAiProviderRuntimeSettings = (
+export const projectPublicAiProviderRuntimeSettings =
+  (): AiProviderRuntimeConfig['settings'] => ({});
+
+/**
+ * Server-owned webApp flag, derived from the actual runtime provider card so a
+ * managed alias like `corp-cursor` still skips generic prompt injections.
+ * User provider schemas cannot populate `capabilities`.
+ */
+export const projectPublicAiProviderRuntimeCapabilities = (
   providerKey: string,
   settings: unknown,
   source: unknown,
-): AiProviderRuntimeConfig['settings'] => {
+): AiProviderRuntimeConfig['capabilities'] | undefined => {
   const platformSettings = isRecord(settings) ? (settings as PlatformAiProviderSettings) : {};
   const runtimeProvider = resolveAiCatalogRuntimeProvider(
     providerKey,
     platformSettings,
     typeof source === 'string' ? source : 'custom',
   );
-  return isWebAppProvider(runtimeProvider) ? { webApp: true } : {};
+  return isWebAppProvider(runtimeProvider) ? { webApp: true } : undefined;
+};
+
+/**
+ * Drop spoofable webApp markers from a user-owned (BYOK / upstream) runtime
+ * config before it is returned as runtime state. `capabilities` is server-owned
+ * and is never copied from upstream; `settings.webApp` is stripped even if a
+ * user stored it before the schema rejected the field.
+ */
+const omitSettingsWebApp = (
+  settings: AiProviderRuntimeConfig['settings'] | undefined,
+): AiProviderRuntimeConfig['settings'] => {
+  if (!settings || !('webApp' in settings)) return settings ?? {};
+  const { webApp: _webApp, ...rest } = settings;
+  return rest;
+};
+
+export const stripUserSpoofableRuntimeConfig = (
+  config: AiProviderRuntimeConfig,
+): AiProviderRuntimeConfig => {
+  const { capabilities: _capabilities, settings, ...rest } = config;
+  return { ...rest, settings: omitSettingsWebApp(settings) };
 };
 
 const EMPTY_RUNTIME_STATE: AiProviderRuntimeState = {
@@ -215,15 +243,17 @@ export const projectAiCatalogRuntimeState = (
       },
       sort: typeof provider.sort === 'number' ? provider.sort : Number.MAX_SAFE_INTEGER,
     });
+    const capabilities = projectPublicAiProviderRuntimeCapabilities(
+      providerKey,
+      provider.settings,
+      provider.source,
+    );
     runtimeConfig[providerKey] = {
+      ...(capabilities ? { capabilities } : {}),
       config: projectPublicAiProviderRuntimeConfig(provider.config),
       fetchOnClient: false,
       keyVaults: {},
-      settings: projectPublicAiProviderRuntimeSettings(
-        providerKey,
-        provider.settings,
-        provider.source,
-      ),
+      settings: projectPublicAiProviderRuntimeSettings(),
     };
 
     for (const rawModel of revision.payload.models) {

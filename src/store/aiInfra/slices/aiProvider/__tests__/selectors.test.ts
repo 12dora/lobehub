@@ -216,20 +216,37 @@ describe('aiProviderSelectors', () => {
       expect(aiProviderSelectors.isProviderWebApp('grok')(mockState)).toBe(true);
     });
 
-    it('recognises a managed alias from the projected settings.webApp flag', () => {
+    it('recognises a managed alias from the projected capabilities.webApp flag', () => {
       const state = {
         ...mockState,
         aiProviderRuntimeConfig: {
           ...mockState.aiProviderRuntimeConfig,
           'corp-cursor': {
+            capabilities: { webApp: true },
             config: {},
             fetchOnClient: false,
             keyVaults: {},
-            settings: { webApp: true },
+            settings: {},
           },
         },
       };
       expect(aiProviderSelectors.isProviderWebApp('corp-cursor')(state)).toBe(true);
+    });
+
+    it('does not trust settings.webApp on a custom BYOK provider', () => {
+      const state = {
+        ...mockState,
+        aiProviderRuntimeConfig: {
+          ...mockState.aiProviderRuntimeConfig,
+          'user-openai': {
+            config: {},
+            fetchOnClient: false,
+            keyVaults: { apiKey: 'sk-user' },
+            settings: { sdkType: 'openai', webApp: true },
+          },
+        },
+      };
+      expect(aiProviderSelectors.isProviderWebApp('user-openai')(state)).toBe(false);
     });
 
     it('returns false for a non-web-app alias and unknown ids', () => {

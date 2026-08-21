@@ -329,11 +329,14 @@ export class AiProviderModel {
         }
       }
 
+      const mergedSettings = !!builtin ? merge(builtin.settings, userSettings) : userSettings;
+      const { webApp: _webApp, ...settings } = mergedSettings ?? {};
+
       runtimeConfig[item.id] = {
         config: item.config || {},
         fetchOnClient: typeof item.fetchOnClient === 'boolean' ? item.fetchOnClient : undefined,
         keyVaults,
-        settings: !!builtin ? merge(builtin.settings, userSettings) : userSettings,
+        settings,
       };
     }
 

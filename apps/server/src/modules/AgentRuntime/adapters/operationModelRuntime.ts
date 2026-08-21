@@ -71,14 +71,22 @@ const conversationOptions = (ctx: RuntimeExecutorContext, state?: AgentState | n
   };
 };
 
-export const initOperationModelRuntime = async (
+/**
+ * Verify the operation's server-authored classification against the persisted row and, for a
+ * complete platform start, return the exact model pin both runtime init and context engineering
+ * must resolve. A mismatch fails closed — never the current/latest pointer.
+ *
+ * Pass `state` when the caller already loaded it (runtime init) so the row is not read twice.
+ */
+export const resolveVerifiedPlatformModelPin = async (
   ctx: RuntimeExecutorContext,
   provider: string,
   model: string,
-): Promise<ModelRuntime> => {
-  const state = await ctx.loadAgentState?.(ctx.operationId);
-  const trustedClassification = state?.metadata?.platformStartClassification;
-  const trustedBinding = state?.metadata?.platformStartBinding;
+  state?: AgentState | null,
+) => {
+  const resolvedState = state === undefined ? await ctx.loadAgentState?.(ctx.operationId) : state;
+  const trustedClassification = resolvedState?.metadata?.platformStartClassification;
+  const trustedBinding = resolvedState?.metadata?.platformStartBinding;
   const ref = ctx.userId
     ? await new AgentOperationModel(
         ctx.serverDB,
@@ -118,6 +126,20 @@ export const initOperationModelRuntime = async (
     if (!pin || pin.providerKey !== provider || pin.modelKey !== model) {
       throw new PlatformExactModelUnavailableError();
     }
+    return pin;
+  }
+
+  return null;
+};
+
+export const initOperationModelRuntime = async (
+  ctx: RuntimeExecutorContext,
+  provider: string,
+  model: string,
+): Promise<ModelRuntime> => {
+  const state = await ctx.loadAgentState?.(ctx.operationId);
+  const pin = await resolveVerifiedPlatformModelPin(ctx, provider, model, state);
+  if (pin) {
     return initPlatformExactModelRuntime(
       ctx.serverDB,
       ctx.userId!,

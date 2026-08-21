@@ -74,9 +74,9 @@ export const isUnmodifiedInboxSystemRole = (
 
 /**
  * Web-app providers skip the unmodified builtin inbox role so it is not
- * folded into the user turn. Callers must still gate on `settings.webApp`;
- * this helper only answers "is this the stock inbox prompt on the inbox
- * agent".
+ * folded into the user turn. Callers must still gate on the server-projected
+ * webApp capability; this helper only answers "is this the stock inbox prompt
+ * on the inbox agent".
  */
 export const shouldOmitBuiltinInboxSystemRole = ({
   agentSlug,

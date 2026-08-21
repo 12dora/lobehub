@@ -152,13 +152,13 @@ const isProviderEnableResponseApi = (id: string) => (s: AIProviderStoreState) =>
 /**
  * Whether this request provider is a web-app runtime (ChatGPT / Cursor / Grok
  * web). Builtin catalog ids are recognised from the model-bank card; managed
- * aliases (`corp-cursor`) use the trusted `settings.webApp` flag projected
- * into runtime config.
+ * aliases (`corp-cursor`) use the server-projected `capabilities.webApp` flag.
+ * User `settings.webApp` is never trusted.
  */
 const isProviderWebApp = (id?: string) => (s: AIProviderStoreState) => {
   if (!id) return false;
   if (isWebAppProvider(id)) return true;
-  return providerConfigById(id)(s)?.settings?.webApp === true;
+  return providerConfigById(id)(s)?.capabilities?.webApp === true;
 };
 
 const isInitAiProviderRuntimeState = (s: AIProviderStoreState) => !!s.isInitAiProviderRuntimeState;

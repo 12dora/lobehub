@@ -130,14 +130,15 @@ describe('OAuthDeviceFlowConfigSchema', () => {
 });
 
 describe('AiProviderSettingsSchema', () => {
-  it('keeps webApp through create parsing', () => {
+  it('does not accept webApp through user provider create parsing', () => {
     const parsed = CreateAiProviderSchema.parse({
-      id: 'chatgptweb',
-      name: 'ChatGPT Web',
-      settings: { webApp: true },
+      id: 'user-openai',
+      name: 'My OpenAI',
+      settings: { sdkType: 'openai', webApp: true },
       source: 'custom' as const,
     });
 
-    expect(parsed.settings?.webApp).toBe(true);
+    expect(parsed.settings).not.toHaveProperty('webApp');
+    expect(parsed).not.toHaveProperty('capabilities');
   });
 });

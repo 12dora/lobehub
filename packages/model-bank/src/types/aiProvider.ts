@@ -321,7 +321,8 @@ export interface AiProviderSettings {
   /**
    * Web-app provider: proxies a consumer web app (ChatGPT / Cursor / Grok web). The app already manages date, model identity and its own system prompt, so LobeHub skips the generic date / model-info / default-assistant boilerplate injections.
    *
-   * Only honoured on builtin provider cards (see `isWebAppProvider`).
+   * Only honoured on builtin provider cards (see `isWebAppProvider`). Never accepted from
+   * user provider create/update, and stripped from BYOK / upstream runtime settings.
    *
    * @default false
    */
@@ -425,7 +426,6 @@ const AiProviderSettingsSchema = z.object({
   showDeployName: z.boolean().optional(),
   showModelFetcher: z.boolean().optional(),
   supportResponsesApi: z.boolean().optional(),
-  webApp: z.boolean().optional(),
 });
 
 export interface AiProviderConfig {
@@ -571,7 +571,23 @@ export interface EnabledProviderWithModels {
   source: AiProviderSourceType;
 }
 
+/**
+ * Server-projected runtime capabilities. User provider create/update schemas cannot
+ * populate this object; catalog projection is the only writer of `webApp`.
+ */
+export interface AiProviderRuntimeCapabilities {
+  /**
+   * The resolved runtime is a web-app provider (ChatGPT / Cursor / Grok web).
+   * Derived from the actual runtime provider, not from stored user settings.
+   */
+  webApp?: boolean;
+}
+
 export interface AiProviderRuntimeConfig {
+  /**
+   * Server-owned capability projection. Absent on BYOK / upstream configs.
+   */
+  capabilities?: AiProviderRuntimeCapabilities;
   config: AiProviderConfig;
   fetchOnClient?: boolean;
   keyVaults: Record<string, string>;

@@ -5,11 +5,41 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildServerCallLlmContext } from './serverCallLlmContextBuilder';
 
-const { serverMessagesEngine } = vi.hoisted(() => ({
+const {
+  findPlatformOperationRef,
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiExecutionConfig,
+  resolvePlatformAiExecutionConfigAtRevision,
+  serverMessagesEngine,
+} = vi.hoisted(() => ({
+  findPlatformOperationRef: vi.fn(),
+  isPlatformManagedAiEnabled: vi.fn(() => true),
+  resolvePlatformAiExecutionConfig: vi.fn(),
+  resolvePlatformAiExecutionConfigAtRevision: vi.fn(),
   serverMessagesEngine: vi.fn(async (input: { messages: unknown[] }) => input.messages),
 }));
 
 vi.mock('@/server/modules/Mecha/ContextEngineering', () => ({ serverMessagesEngine }));
+
+vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    isPlatformManagedAiEnabled,
+    resolvePlatformAiExecutionConfig,
+    resolvePlatformAiExecutionConfigAtRevision,
+  };
+});
+
+vi.mock('@/database/models/agentOperation', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    AgentOperationModel: class {
+      findPlatformOperationRef = findPlatformOperationRef;
+    },
+  };
+});
 
 vi.mock('./serverCallLlmContextHints', () => ({
   resolveServerCallLlmContextHints: vi.fn(async ({ llmPayload }) => ({
@@ -122,5 +152,115 @@ describe('buildServerCallLlmContext — managed exact prompt boundary', () => {
     expect(input.initialContext).toEqual(initialContext.initialContext);
     expect(input.userMemory).toEqual(dynamicMetadata.userMemory);
     expect(input.userTimezone).toBe('Asia/Singapore');
+  });
+});
+
+const cursorPin = {
+  modelKey: 'composer-2.5',
+  providerChecksum: 'a'.repeat(64),
+  providerKey: 'corp-cursor',
+  providerRevision: 1,
+};
+const cursorPlatformStart = {
+  assistantMessageId: 'asst-1',
+  platformConnectors: [],
+  platformModel: cursorPin,
+  platformOperation: {
+    checksum: 'b'.repeat(64),
+    platformAgentId: 'pagt-1',
+    versionId: 'pav-1',
+  },
+  platformSkills: [],
+};
+
+describe('buildServerCallLlmContext — runtime provider classification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isPlatformManagedAiEnabled.mockReturnValue(true);
+  });
+
+  it('resolves a complete platform op from its pinned Cursor revision after the current runtime or feature flag changes', async () => {
+    isPlatformManagedAiEnabled.mockReturnValue(false);
+    resolvePlatformAiExecutionConfig.mockResolvedValue({ runtimeProvider: 'openai' });
+    resolvePlatformAiExecutionConfigAtRevision.mockResolvedValue({ runtimeProvider: 'cursor' });
+    findPlatformOperationRef.mockResolvedValue({
+      classification: 'complete',
+      isPlatformOperation: true,
+      modelPin: cursorPin,
+      platformStart: cursorPlatformStart,
+    });
+
+    await buildServerCallLlmContext({
+      ctx: {
+        ...dynamicCtx,
+        serverDB: {},
+        userId: 'user-a',
+      } as never,
+      llmPayload: { messages } as never,
+      model: 'composer-2.5',
+      provider: 'corp-cursor',
+      state: {
+        metadata: {
+          ...dynamicMetadata,
+          platformStartBinding: cursorPlatformStart,
+          platformStartClassification: 'complete',
+        },
+      } as never,
+      tooling: tooling as never,
+    });
+
+    expect(resolvePlatformAiExecutionConfig).not.toHaveBeenCalled();
+    expect(resolvePlatformAiExecutionConfigAtRevision).toHaveBeenCalledWith({}, cursorPin);
+    expect(serverMessagesEngine.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ runtimeProvider: 'cursor' }),
+    );
+  });
+
+  it('propagates catalog resolution errors other than PLATFORM_NOT_FOUND', async () => {
+    resolvePlatformAiExecutionConfig.mockRejectedValue(new Error('db down'));
+
+    await expect(
+      buildServerCallLlmContext({
+        ctx: {
+          ...dynamicCtx,
+          serverDB: {},
+          userId: 'user-a',
+        } as never,
+        llmPayload: { messages } as never,
+        model: 'gpt-4o',
+        provider: 'corp-cursor',
+        state: {
+          metadata: { ...dynamicMetadata, platformStartClassification: 'ordinary' },
+        } as never,
+        tooling: tooling as never,
+      }),
+    ).rejects.toThrow('db down');
+
+    expect(serverMessagesEngine).not.toHaveBeenCalled();
+  });
+
+  it('treats PLATFORM_NOT_FOUND as unmanaged BYOK fallback', async () => {
+    resolvePlatformAiExecutionConfig.mockRejectedValue(
+      Object.assign(new Error('PLATFORM_NOT_FOUND'), { code: 'PLATFORM_NOT_FOUND' }),
+    );
+
+    await buildServerCallLlmContext({
+      ctx: {
+        ...dynamicCtx,
+        serverDB: {},
+        userId: 'user-a',
+      } as never,
+      llmPayload: { messages } as never,
+      model: 'gpt-4o',
+      provider: 'openai',
+      state: {
+        metadata: { ...dynamicMetadata, platformStartClassification: 'ordinary' },
+      } as never,
+      tooling: tooling as never,
+    });
+
+    expect(serverMessagesEngine.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ runtimeProvider: undefined }),
+    );
   });
 });

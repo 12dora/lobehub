@@ -32,6 +32,7 @@ import {
 import {
   canExecuteAiCatalogProviderWithoutStoredSecret,
   projectAiCatalogRuntimeState,
+  stripUserSpoofableRuntimeConfig,
 } from './runtimeProjection';
 import type { PlatformProviderKeyVaults } from './secretManager';
 import { AiCatalogSecretManager } from './secretManager';
@@ -473,7 +474,7 @@ export const mergeUnmanagedUpstreamProviders = (
   const runtimeConfig = { ...managed.runtimeConfig };
   for (const key of unmanagedConfigKeys) {
     const config = upstream.runtimeConfig?.[key];
-    if (config) runtimeConfig[key] = config;
+    if (config) runtimeConfig[key] = stripUserSpoofableRuntimeConfig(config);
   }
 
   return {
@@ -512,13 +513,17 @@ export const projectModelTakeoverRuntimeState = (
   providersHosted: boolean,
 ): AiProviderRuntimeState => {
   if (providersHosted) return catalog;
+  const runtimeConfig: AiProviderRuntimeState['runtimeConfig'] = {};
+  for (const [key, config] of Object.entries(upstream.runtimeConfig ?? {})) {
+    runtimeConfig[key] = stripUserSpoofableRuntimeConfig(config);
+  }
   return {
     enabledAiModels: catalog.enabledAiModels,
     enabledAiProviders: upstream.enabledAiProviders,
     enabledChatAiProviders: catalog.enabledChatAiProviders,
     enabledImageAiProviders: catalog.enabledImageAiProviders,
     enabledVideoAiProviders: catalog.enabledVideoAiProviders,
-    runtimeConfig: upstream.runtimeConfig,
+    runtimeConfig,
   };
 };
 

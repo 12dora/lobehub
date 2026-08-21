@@ -1335,7 +1335,7 @@ describe('projectAiCatalogRuntimeState settings merge', () => {
 });
 
 describe('projectAiCatalogRuntimeState webApp capability', () => {
-  it('projects settings.webApp for a managed alias whose runtime is cursor', () => {
+  it('projects capabilities.webApp for a managed alias whose runtime is cursor', () => {
     const state = projectAiCatalogRuntimeState([
       {
         payload: {
@@ -1352,14 +1352,15 @@ describe('projectAiCatalogRuntimeState webApp capability', () => {
     ]);
 
     expect(state.runtimeConfig['corp-cursor']).toEqual({
+      capabilities: { webApp: true },
       config: {},
       fetchOnClient: false,
       keyVaults: {},
-      settings: { webApp: true },
+      settings: {},
     });
   });
 
-  it('projects settings.webApp for a builtin cursor provider key', () => {
+  it('projects capabilities.webApp for a builtin cursor provider key', () => {
     const state = projectAiCatalogRuntimeState([
       {
         payload: {
@@ -1374,11 +1375,34 @@ describe('projectAiCatalogRuntimeState webApp capability', () => {
       } as never,
     ]);
 
-    expect(state.runtimeConfig.cursor.settings).toEqual({ webApp: true });
+    expect(state.runtimeConfig.cursor.capabilities).toEqual({ webApp: true });
+    expect(state.runtimeConfig.cursor.settings).toEqual({});
   });
 
-  it('does not project webApp for a non-web-app alias', () => {
+  it('does not project webApp for a non-web-app alias, even if settings.webApp is stored', () => {
     const state = projectAiCatalogRuntimeState([
+      {
+        payload: {
+          models: [{ enabled: true, modelKey: 'gpt-4o', type: 'chat' }],
+          provider: {
+            displayName: 'Corp OpenAI',
+            enabled: true,
+            providerKey: 'corp-openai',
+            settings: { sdkType: 'openai', webApp: true },
+            source: 'custom',
+          },
+        },
+      } as never,
+    ]);
+
+    expect(state.runtimeConfig['corp-openai'].settings).toEqual({});
+    expect(state.runtimeConfig['corp-openai'].capabilities?.webApp).not.toBe(true);
+  });
+});
+
+describe('BYOK runtime-state projection must not spoof webApp', () => {
+  it('strips settings.webApp and capabilities from a real BYOK extra before returning runtime state', () => {
+    const managed = projectAiCatalogRuntimeState([
       {
         payload: {
           models: [{ enabled: true, modelKey: 'gpt-4o', type: 'chat' }],
@@ -1393,6 +1417,32 @@ describe('projectAiCatalogRuntimeState webApp capability', () => {
       } as never,
     ]);
 
-    expect(state.runtimeConfig['corp-openai'].settings).toEqual({});
+    const merged = mergeUnmanagedUpstreamProviders(managed, {
+      enabledAiModels: [
+        { abilities: {}, enabled: true, id: 'gpt-4o', providerId: 'user-openai', type: 'chat' },
+      ],
+      enabledAiProviders: [{ id: 'user-openai', name: 'My OpenAI', source: 'custom' }],
+      enabledChatAiProviders: [{ id: 'user-openai', name: 'My OpenAI', source: 'custom' }],
+      enabledImageAiProviders: [],
+      enabledVideoAiProviders: [],
+      runtimeConfig: {
+        'user-openai': {
+          capabilities: { webApp: true },
+          config: {},
+          fetchOnClient: false,
+          keyVaults: { apiKey: 'sk-user' },
+          settings: { sdkType: 'openai', webApp: true },
+        },
+      },
+    });
+
+    expect(merged.runtimeConfig['user-openai']).toEqual({
+      config: {},
+      fetchOnClient: false,
+      keyVaults: { apiKey: 'sk-user' },
+      settings: { sdkType: 'openai' },
+    });
+    expect(merged.runtimeConfig['user-openai']).not.toHaveProperty('capabilities');
+    expect(merged.runtimeConfig['user-openai'].settings).not.toHaveProperty('webApp');
   });
 });

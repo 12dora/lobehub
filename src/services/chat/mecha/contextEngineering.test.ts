@@ -381,10 +381,11 @@ describe('contextEngineering', () => {
       useAiInfraStore.setState({
         aiProviderRuntimeConfig: {
           'corp-cursor': {
+            capabilities: { webApp: true },
             config: {},
             fetchOnClient: false,
             keyVaults: {},
-            settings: { webApp: true },
+            settings: {},
           },
         },
       } as any);

@@ -773,6 +773,22 @@ describe('AiProviderModel', () => {
       expect(config['no-settings-provider'].settings).toEqual({});
     });
 
+    it('strips settings.webApp from BYOK runtime config so it cannot spoof the webApp capability', async () => {
+      await serverDB.insert(aiProviders).values({
+        id: 'user-openai',
+        name: 'My OpenAI',
+        settings: { sdkType: 'openai', webApp: true } as any,
+        source: 'custom',
+        userId,
+      });
+
+      const config = await aiProviderModel.getAiProviderRuntimeConfig();
+
+      expect(config['user-openai'].settings).toEqual({ sdkType: 'openai' });
+      expect(config['user-openai'].settings).not.toHaveProperty('webApp');
+      expect(config['user-openai']).not.toHaveProperty('capabilities');
+    });
+
     it('should only include providers for the current user', async () => {
       await serverDB.insert(aiProviders).values([
         {
