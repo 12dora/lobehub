@@ -14,6 +14,30 @@ const mockFetch = fetch as any;
 // Mock console.error to avoid noise in test output
 vi.spyOn(console, 'error').mockImplementation(() => {});
 
+/** Walk the error/cause tree, including non-enumerable fields like message/stack. */
+const serializeErrorCauseTree = (value: unknown, seen = new Set<unknown>()): string => {
+  if (value == null) return '';
+  if (typeof value !== 'object') return String(value);
+  if (seen.has(value)) return '';
+  seen.add(value);
+
+  const chunks: string[] = [];
+  for (const key of Object.getOwnPropertyNames(value)) {
+    let prop: unknown;
+    try {
+      prop = (value as Record<string, unknown>)[key];
+    } catch {
+      continue;
+    }
+    if (typeof prop === 'string' || typeof prop === 'number' || typeof prop === 'boolean') {
+      chunks.push(String(prop));
+      continue;
+    }
+    chunks.push(serializeErrorCauseTree(prop, seen));
+  }
+  return chunks.join('\n');
+};
+
 const EGRESS_BINDING = Symbol.for('aihub.networkProxy.egressBinding');
 
 describe('ssrfSafeFetch', () => {
@@ -202,7 +226,11 @@ describe('ssrfSafeFetch', () => {
 
     it('should not log or throw a presigned URL when redactErrors is set', async () => {
       const signed = 'https://files.example.com/a.png?X-Amz-Signature=super-secret-signature';
-      const originalError = new Error(`request to ${signed} failed, reason: connect ECONNREFUSED`);
+      const inner = new Error(`nested request to ${signed} failed`);
+      const originalError = Object.assign(
+        new Error(`request to ${signed} failed, reason: connect ECONNREFUSED`, { cause: inner }),
+        { code: 'ECONNREFUSED', name: 'FetchError' },
+      );
       mockFetch.mockRejectedValue(originalError);
 
       const error = await ssrfSafeFetch(signed, {}, { redactErrors: true }).catch(
@@ -214,6 +242,19 @@ describe('ssrfSafeFetch', () => {
       expect((error as Error).message).not.toContain('X-Amz-Signature');
       expect((error as Error).message).not.toContain('super-secret-signature');
       expect(console.error).not.toHaveBeenCalled();
+
+      const cause = (error as Error).cause as Error & { code?: string };
+      expect(cause).toBeInstanceOf(Error);
+      expect(cause).not.toBe(originalError);
+      expect(cause.name).toBe('FetchError');
+      expect(cause.code).toBe('ECONNREFUSED');
+      expect(cause.message).toBe('redacted');
+      expect(cause.cause).toBeUndefined();
+
+      const treeText = serializeErrorCauseTree(error);
+      expect(treeText).not.toContain('X-Amz-Signature');
+      expect(treeText).not.toContain('super-secret-signature');
+      expect(treeText).not.toContain(signed);
     });
 
     it('should throw SSRF blocked error when request-filtering-agent blocks', async () => {

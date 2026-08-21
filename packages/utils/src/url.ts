@@ -297,11 +297,21 @@ export const sanitizedUrlHost = (url: string): string => {
   }
 };
 
+/**
+ * Virtual-hosted origin only when the synthetic `{bucket}.{endpoint-host}`
+ * hostname actually stuck. `URL.hostname` assignment is a silent no-op for
+ * IP-literal endpoints (`127.0.0.1`, `[::1]`), which would otherwise yield
+ * the original origin and an overly broad `s3-virtual-host` rule.
+ */
 const virtualHostOrigin = (endpoint: string, bucket: string): string | undefined => {
   try {
     const endpointUrl = new URL(withProtocol(endpoint));
+    const expectedHostname = `${normalizeBucket(bucket)}.${endpointUrl.hostname}`;
     const virtual = new URL(endpointUrl.href);
-    virtual.hostname = `${normalizeBucket(bucket)}.${endpointUrl.hostname}`;
+    virtual.hostname = expectedHostname;
+    if (virtual.hostname.toLowerCase() !== expectedHostname.toLowerCase()) {
+      return undefined;
+    }
     return virtual.origin.toLowerCase();
   } catch {
     return undefined;
@@ -327,14 +337,18 @@ export const buildOwnDeploymentOrigins = (
   const bucket = input.bucket ? normalizeBucket(input.bucket) : '';
   const endpointOrigin = originOf(input.endpoint);
   if (bucket && input.endpoint && endpointOrigin) {
-    if (input.forcePathStyle) {
-      rules.push({ origin: endpointOrigin, path: { bucket, type: 's3-path-style' } });
-    } else {
+    if (!input.forcePathStyle) {
       const virtualOrigin = virtualHostOrigin(input.endpoint, bucket);
       if (virtualOrigin) {
         rules.push({ origin: virtualOrigin, path: { type: 's3-virtual-host' } });
       }
     }
+    // Path-style on the configured endpoint, always under /{bucket}/:
+    // - forcePathStyle=true (MinIO, etc.)
+    // - IP-literal / non-virtual-host-capable endpoints (assignment no-op)
+    // - AWS SDK fallback when forcePathStyle=false but the bucket is dotted
+    //   (HTTPS wildcard certs cannot cover `my.bucket.s3.example.net`)
+    rules.push({ origin: endpointOrigin, path: { bucket, type: 's3-path-style' } });
   }
 
   const publicOrigin = originOf(input.publicDomain);

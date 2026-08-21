@@ -299,10 +299,13 @@ export const ssrfSafeFetch = async (
     const host = redactHost(url);
 
     if (ssrfOptions?.redactErrors) {
+      const cause = toSanitizedCause(error);
       if (isSSRFBlock) {
-        throw new Error(`SSRF blocked: host=${host}`, { cause: error });
+        // eslint-disable-next-line preserve-caught-error -- redacted cause is name/code only
+        throw new Error(`SSRF blocked: host=${host}`, { cause });
       }
-      throw new Error(`Fetch failed: host=${host}`, { cause: error });
+      // eslint-disable-next-line preserve-caught-error -- redacted cause is name/code only
+      throw new Error(`Fetch failed: host=${host}`, { cause });
     }
 
     if (isSSRFBlock) {
@@ -325,4 +328,19 @@ const redactHost = (value: string): string => {
   } catch {
     return '<unparseable url>';
   }
+};
+
+/**
+ * Redacted-mode cause: name/code only. The original Error.message (and any
+ * nested cause) from node-fetch embeds the full request URL, including
+ * presigned query credentials.
+ */
+const toSanitizedCause = (error: unknown): Error => {
+  const sanitized = new Error('redacted') as Error & { code?: string };
+  if (!error || typeof error !== 'object') return sanitized;
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  if (typeof name === 'string' && name) sanitized.name = name;
+  if (typeof code === 'string' && code) sanitized.code = code;
+  return sanitized;
 };

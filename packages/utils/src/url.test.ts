@@ -602,9 +602,59 @@ describe('isOwnDeploymentFileUrl', () => {
         origins,
       ),
     ).toBe(true);
-    expect(isOwnDeploymentFileUrl('https://s3.example.net/mybucket/file.png', origins)).toBe(false);
+    expect(isOwnDeploymentFileUrl('https://s3.example.net/mybucket/file.png', origins)).toBe(true);
+    expect(isOwnDeploymentFileUrl('https://s3.example.net/other-bucket/file.png', origins)).toBe(
+      false,
+    );
     expect(isOwnDeploymentFileUrl('https://mybucket.s3.example.net/', origins)).toBe(false);
     expect(isOwnDeploymentFileUrl('https://other.s3.example.net/file.png', origins)).toBe(false);
+  });
+
+  it('should restrict IP-literal endpoints to the configured bucket path', () => {
+    const ipv4 = buildOwnDeploymentOrigins({
+      bucket: 'files',
+      endpoint: 'http://127.0.0.1:9000',
+      forcePathStyle: false,
+    });
+    const ipv6 = buildOwnDeploymentOrigins({
+      bucket: 'files',
+      endpoint: 'http://[::1]:9000',
+      forcePathStyle: false,
+    });
+
+    expect(ipv4.rules).toEqual([
+      { origin: 'http://127.0.0.1:9000', path: { bucket: 'files', type: 's3-path-style' } },
+    ]);
+    expect(ipv6.rules).toEqual([
+      { origin: 'http://[::1]:9000', path: { bucket: 'files', type: 's3-path-style' } },
+    ]);
+
+    expect(isOwnDeploymentFileUrl('http://127.0.0.1:9000/files/a.png', ipv4)).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://127.0.0.1:9000/other-bucket/private', ipv4)).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://127.0.0.1:9000/minio/admin/x', ipv4)).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://[::1]:9000/files/a.png', ipv6)).toBe(true);
+    expect(isOwnDeploymentFileUrl('http://[::1]:9000/other-bucket/private', ipv6)).toBe(false);
+    expect(isOwnDeploymentFileUrl('http://[::1]:9000/minio/admin/x', ipv6)).toBe(false);
+  });
+
+  it('should allow path-style dotted-bucket URLs when forcePathStyle is false', () => {
+    const origins = buildOwnDeploymentOrigins({
+      bucket: 'my.bucket',
+      endpoint: 'https://s3.example.net',
+      forcePathStyle: false,
+    });
+
+    expect(
+      isOwnDeploymentFileUrl(
+        'https://s3.example.net/my.bucket/a.png?X-Amz-Signature=secret',
+        origins,
+      ),
+    ).toBe(true);
+    expect(isOwnDeploymentFileUrl('https://my.bucket.s3.example.net/a.png', origins)).toBe(true);
+    expect(isOwnDeploymentFileUrl('https://s3.example.net/other.bucket/a.png', origins)).toBe(
+      false,
+    );
+    expect(isOwnDeploymentFileUrl('https://s3.example.net/admin', origins)).toBe(false);
   });
 
   it('should use effective storage origins, not a stale environment origin', () => {
