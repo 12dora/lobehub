@@ -7,7 +7,8 @@ import { parseClaudeModelId } from '../providers/anthropic/claudeModelId';
  * Extended parameters for model runtime
  */
 export interface ModelExtendParams {
-  chatgptWebReasoningEffort?: string;
+  chatgptWebProThinkingEffort?: string;
+  chatgptWebThinkingEffort?: string;
   deepseekV4ReasoningEffort?: string;
   effort?: string;
   enabledContextCaching?: boolean;
@@ -241,10 +242,17 @@ export const applyModelExtendParams = (ctx: ApplyModelExtendParamsContext): Mode
   }
 
   if (
-    modelExtendParams.includes('chatgptWebReasoningEffort') &&
-    chatConfig.chatgptWebReasoningEffort
+    modelExtendParams.includes('chatgptWebThinkingEffort') &&
+    chatConfig.chatgptWebThinkingEffort
   ) {
-    extendParams.chatgptWebReasoningEffort = chatConfig.chatgptWebReasoningEffort;
+    extendParams.chatgptWebThinkingEffort = chatConfig.chatgptWebThinkingEffort;
+  }
+
+  if (
+    modelExtendParams.includes('chatgptWebProThinkingEffort') &&
+    chatConfig.chatgptWebProThinkingEffort
+  ) {
+    extendParams.chatgptWebProThinkingEffort = chatConfig.chatgptWebProThinkingEffort;
   }
 
   if (modelExtendParams.includes('reasoningMode') && chatConfig.reasoningMode === 'pro') {

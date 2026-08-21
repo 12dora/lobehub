@@ -67,8 +67,8 @@ describe('adminAiInfraAdapter mappers', () => {
     expect(JSON.stringify(detail)).not.toMatch(/sk-|api[_-]?key\s*[:=]/i);
   });
 
-  describe('legacy-alias picker visibility', () => {
-    const legacyRow = {
+  describe('ChatGPT Web picker policy', () => {
+    const thinkingRow = {
       abilities: {},
       config: null,
       contextWindowTokens: null,
@@ -81,48 +81,46 @@ describe('adminAiInfraAdapter mappers', () => {
       pricing: null,
       providerId: 'provider-uuid',
       revision: 1,
-      settings: { legacyAlias: 'gpt-5-6' },
+      settings: { extendParams: ['chatgptWebReasoningEffort'] },
       sort: 1,
       status: 'published' as const,
       type: 'chat' as const,
     };
 
-    it('keeps legacy-alias rows visible on the admin model list (read-only in ModelItem)', () => {
-      expect(mapModelListItem(legacyRow)).toMatchObject({
+    it('keeps thinking SKUs visible on the admin model list', () => {
+      expect(mapModelListItem(thinkingRow)).toMatchObject({
         enabled: true,
         id: 'gpt-5-6-thinking',
-        settings: { legacyAlias: 'gpt-5-6' },
+        settings: { extendParams: ['chatgptWebReasoningEffort'] },
       });
-      expect(mapModelListItem(legacyRow).visible).not.toBe(false);
+      expect(mapModelListItem(thinkingRow).visible).not.toBe(false);
     });
 
-    it('hides legacy-alias rows on the admin service-model selector', () => {
-      expect(mapEnabledModel(legacyRow, 'chatgptweb')).toMatchObject({
+    it('normalises thinking/pro/none on the admin service-model selector', () => {
+      expect(mapEnabledModel(thinkingRow, 'chatgptweb')).toMatchObject({
         enabled: true,
         id: 'gpt-5-6-thinking',
         providerId: 'chatgptweb',
-        visible: false,
+        settings: { extendParams: ['chatgptWebThinkingEffort'] },
       });
+      expect(mapEnabledModel(thinkingRow, 'chatgptweb').visible).not.toBe(false);
     });
 
-    it('rewrites published gpt5_6ReasoningEffort and hides stale auto/pro leftovers', () => {
+    it('rewrites published gpt5_6ReasoningEffort and keeps auto/pro visible', () => {
       const family = mapEnabledModel(
         {
-          ...legacyRow,
+          ...thinkingRow,
           modelKey: 'gpt-5-6',
           settings: { extendParams: ['gpt5_6ReasoningEffort'], searchImpl: 'params' },
         },
         'chatgptweb',
       );
-      expect(family.settings).toEqual({
-        extendParams: ['chatgptWebReasoningEffort'],
-        searchImpl: 'params',
-      });
+      expect(family.settings).toEqual({ searchImpl: 'params' });
       expect(family.visible).not.toBe(false);
 
       const auto = mapEnabledModel(
         {
-          ...legacyRow,
+          ...thinkingRow,
           modelKey: 'auto',
           settings: { extendParams: ['gpt5_6ReasoningEffort'] },
         },
@@ -130,13 +128,14 @@ describe('adminAiInfraAdapter mappers', () => {
       );
       expect(auto).toMatchObject({
         enabled: true,
-        settings: { legacyAlias: 'gpt-5-6' },
-        visible: false,
+        id: 'auto',
       });
+      expect(auto.settings).toBeUndefined();
+      expect(auto.visible).not.toBe(false);
 
       const pro = mapEnabledModel(
         {
-          ...legacyRow,
+          ...thinkingRow,
           modelKey: 'gpt-5-6-pro',
           settings: { extendParams: ['chatgptWebReasoningEffort'] },
         },
@@ -144,8 +143,7 @@ describe('adminAiInfraAdapter mappers', () => {
       );
       expect(pro).toMatchObject({
         enabled: true,
-        settings: { legacyAlias: 'gpt-5-6' },
-        visible: false,
+        settings: { extendParams: ['chatgptWebProThinkingEffort'] },
       });
     });
   });

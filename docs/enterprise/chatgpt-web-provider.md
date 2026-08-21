@@ -155,7 +155,7 @@ CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH=/usr/local/lib/libcurl-impersonate.so
 
 ### 4.3 首次连接与模型开启
 
-首次连接（`mode: 'create'`）会把服务商置为 `enabled: true`、写入 `checkModel: 'gpt-5-6'`，并**自动物化卡片里默认开启的内置模型**（`adminService.models.ts` 的 `materializeBuiltinDefaultModels`，取 `packages/model-bank/src/aiModels/chatgptWeb.ts` 中 `enabled: true` 的条目）：`gpt-5-6`、`gpt-5-5`、`o3`、`gpt-image-2`。落下来的是**已开启**的真实模型行（带卡片元数据，图像模型也在内），所以连上即可用，不需要再手动勾选。广告面与 chatgpt.com 一致：5.x 是**家族卡**（Instant / Medium / High / Extra high / Pro 一档滑杆），不是 Instant / Thinking / Pro 各一张。已有平台目录里的 `{base}-instant|-thinking|-pro` 和 `auto` 行在「同步上游模型」时**保持 enabled**（执行 allowlist 仍接纳，旧 agent 不会 `AiCatalogModelNotPublishedError`），并打上 `settings.legacyAlias`。用户侧 picker、平台 agent / 内容审核依赖选择、Agent Builder **隐藏**这些行，只展示家族卡。管理端模型列表**仍显示**它们，标成只读「遗留别名 → \<family>」：不能从列表开关或删除（同步也会把被关掉的别名重新打开，否则已保存 agent 会掉出 allowlist）。新工作请用家族卡。同步还会把仍指向 `auto` / 旧 SKU 的 `checkModel` 迁到已开启的家族卡（默认 `gpt-5-6`）。
+首次连接（`mode: 'create'`）会把服务商置为 `enabled: true`、写入 `checkModel: 'auto'`，并**自动物化卡片里默认开启的内置模型**（`adminService.models.ts` 的 `materializeBuiltinDefaultModels`，取 `packages/model-bank/src/aiModels/chatgptWeb.ts` 中 `enabled: true` 的条目）：`auto`、`gpt-5-6`、`gpt-5-6-instant`、`gpt-5-6-thinking`、`gpt-5-6-pro`、`gpt-image-2`。落下来的是**已开启**的真实模型行（带卡片元数据，图像模型也在内），所以连上即可用，不需要再手动勾选。目录按上游 slug **1:1** 展示（管理员配置什么，用户就看到什么；发送时不改写 slug）。`gpt-5-5-*`、minis、`o3` 默认关闭。同步上游模型会把各 SKU 的 `extendParams` 正规化为 thinking / pro / 无，并清掉旧的 family-card `legacyAlias` 戳记。
 
 - 物化随服务商创建走同一次发布，不额外要求 `AI_MODEL_CREATE` 权限（这批行是内置卡片而非管理员自建模型）。
 - **重连不会重新物化**：已有的模型行原样保留，管理员之后的开关 / 删除不会被连接动作覆盖回去。
@@ -198,7 +198,7 @@ CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH=/usr/local/lib/libcurl-impersonate.so
 - **对话流式输出**：所有对话都走 `/backend-api/f/conversation`（conduit）通道；仅在无搜索、无附件、无思考档位且属于可恢复的 prepare 失败时，才回落一次旧的 `/backend-api/conversation`。每次创建的会话在结束后会被软隐藏。
 - **联网搜索**：聊天框原有的搜索开关。`searchImpl: 'params'`（不是 `'internal'`），因此用户可以**关掉**它。引用以原生 citation 形式回传为 grounding。
 - **附件（原生文档上传）**：聊天框原有的附件按钮。`nativeFileInput: true` 的服务商 + 模型 `abilities.files` 才生效；文档以 `file_url` 部件直传上游并等待索引就绪，上传失败时降级为把正文塞进提示词。
-- **推理过程**：模型切换面板的推理档位滑杆。家族卡（`gpt-5-6` / `gpt-5-5`）用独立的 `chatgptWebReasoningEffort`；不得复用 OpenAI Platform 的 `gpt5_6ReasoningEffort`。
+- **推理过程**：模型切换面板的思考档位滑杆。只挂在 `*-thinking`（`chatgptWebThinkingEffort`：standard / extended / max）和 `*-pro`（`chatgptWebProThinkingEffort`：仅 standard）上；不得复用 OpenAI Platform 的 `gpt5_6ReasoningEffort`，也不得骑共享的 `reasoning_effort`。
 - **回答内嵌图片**：上游返回的图片指针会被下载并以 data URI 内联。
 - **代码解释器生成的文件（pdf /docx/ …）**：回答里的 `sandbox:/mnt/data/xxx` 链接会被解析、下载（单文件上限 32 MiB），上传到本平台文件库并**挂到该条消息**上；Markdown 里的 `sandbox:` 链接由 `SandboxFileLink` 插件渲染成可点开的附件，匹配不到附件时退化为纯文本，不会留死链。
 - **图像生成 / 编辑**：图像生成页，模型 id **`gpt-image-2`**（对上游实际以 `picture_v2` 流程跑），仅暴露 `prompt` 与最多 4 张、单张 ≤10 MiB 的参考图（有参考图即为「编辑」）；一次调用产出一张图，整体预算 200 s。
@@ -227,17 +227,13 @@ CHATGPT_WEB_LIBCURL_IMPERSONATE_PATH=/usr/local/lib/libcurl-impersonate.so
 
 - **请求体里不会出现 `author.role: "system"`**：网页版自己从不发系统角色回合（自定义指令走另一套带标记的元数据），所以带自由文本的 system 回合是只有自动化客户端才会产出的形状。上下文引擎每一轮都会在 `messages[0]` 塞一条 system（人设、日期、模型信息、工具提示词），运行时会把它**并入紧随其后的那条用户消息**（`buildMessages`）；若下一条是助手回合（或已到末尾），则**就地**单独发成一条用户消息 —— 指令绝不允许跨过助手回合往后挪，否则会打乱对话顺序（`AgentDocumentMessageInjector` 会在首条用户消息之后插 system，这条路径真实可达）。`ChatGPTWebMessage['role']` 已收窄到 `'user' | 'assistant'` 钉住这条不变量。
 
-- **思考档位（家族卡）**：chatgpt.com 给 GPT-5.6 Sol / GPT-5.5 一个五档选择器，挑一档会同时改 **wire slug** 和 `thinking_effort`。控制键是独立的 `chatgptWebReasoningEffort`（不要复用 OpenAI Platform 的 `gpt5_6ReasoningEffort`，也不得骑共享的 `reasoning_effort` 字段）。家族映射**只在**档位是下面五个 UI 值之一时发生；没有该字段的陈旧 agent / 行按裸 `gpt-5-6` 透传，**不**默认 Medium。
+- **思考档位（1:1 SKU）**：发送时 **slug = 所选模型**，不按档位改写。chatgpt.com 只接受 `thinking_effort` ∈ `standard` | `extended` | `max`（HAR 2026-08-21）。控制键是独立的 `chatgptWebThinkingEffort` / `chatgptWebProThinkingEffort`（不要复用 OpenAI Platform 的 `gpt5_6ReasoningEffort`，也不得骑共享的 `reasoning_effort`）。
 
-  Verified against real Chrome captures 2026-08-21: Medium/High/Extra-high = `gpt-5-6-thinking` + `standard`/`extended`/`max`; Pro = `gpt-5-6-pro` + `standard` (2026-08-19 capture); Instant = `gpt-5-6-instant` inferred from the `/models` slug list (no capture). `system_hints` is `[]` on all thinking turns (effort is never expressed via hints).
-
-  | id                                                          | UI 档位                               | wire                                                                                                                                                 |
-  | ----------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | 家族 `gpt-5-6` / `gpt-5-5` 且带 `chatgptWebReasoningEffort` | instant / medium / high / xhigh / pro | instant → `{family}-instant` 不发字段；medium /high/xhigh → `{family}-thinking` + `standard` / `extended` / `max`；pro → `{family}-pro` + `standard` |
-  | 家族 id **没有**该字段（陈旧行 /agent）                     | 无                                    | 透传裸 `gpt-5-6`，**不**发 `thinking_effort`，不默认 Medium                                                                                          |
-  | `auto`、`*-instant`、`*-mini`、`o3`                         | 无                                    | **不**发 `thinking_effort`，即使有残留的 `reasoning_effort`                                                                                          |
-  | `*-pro`                                                     | 无                                    | **始终** `thinking_effort: standard`（忽略残留值；不得让更低档位覆盖 HAR）                                                                           |
-  | `*-thinking`（legacy，靠 `legacyAlias` 隐藏）               | UI 无                                 | 残留值走 `normalizeThinkingEffort` 别名；未设置则省略                                                                                                |
+  | id | UI | wire |
+  | --- | --- | --- |
+  | `*-thinking` | standard / extended / max（`chatgptWebThinkingEffort`） | 发送所选值；未设置则省略。旧 agent 的 low/medium/high/xhigh 仍走 `normalizeThinkingEffort` 别名 |
+  | `*-pro` | 仅 Standard（`chatgptWebProThinkingEffort`） | **始终** `thinking_effort: standard`（忽略残留值；走既有 dual-prepare Pro 路径） |
+  | `auto`、裸 `gpt-5-6` / `gpt-5-5`、`*-instant`、minis、`o3` | 无选择器 | **不**发 `thinking_effort`，即使 payload 里残留 `reasoning_effort` |
 
   上游仍然**只接受** `standard` / `extended` / `max`（`low`/`medium`/`high`/`instant`/`pro` 都不得出现在 wire 上）。`*-thinking` 的旧别名是 `low|medium|standard → standard`、`high|xhigh|extended → extended`、`max → max`、`none|minimal|auto|instant|pro` → 不发该字段。`/backend-api/f/conversation` 还带固定的 `model_response_contracts`（`photo_upload_action.v1`）；prepare 体不带。
 

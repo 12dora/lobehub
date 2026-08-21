@@ -1884,10 +1884,12 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
 
     const rows = await db.select().from(platformAiModels);
     expect(rows.map((row) => row.modelKey).sort()).toEqual([
-      'gpt-5-5',
+      'auto',
       'gpt-5-6',
+      'gpt-5-6-instant',
+      'gpt-5-6-pro',
+      'gpt-5-6-thinking',
       'gpt-image-2',
-      'o3',
     ]);
     expect(rows.every((row) => row.enabled)).toBe(true);
     // Both model types the card enables, not just the chat ones.
@@ -1895,7 +1897,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     // Card metadata, so the row is not an empty stub the list then contradicts.
     expect(rows.find((row) => row.modelKey === 'gpt-5-6')).toMatchObject({
       contextWindowTokens: 128_000,
-      displayName: 'GPT-5.6 Sol (ChatGPT Web)',
+      displayName: 'GPT-5.6 (ChatGPT Web)',
     });
     // Live, not a saved-but-unpublished draft.
     expect((await db.select().from(platformAiProviders))[0]).toMatchObject({
@@ -1929,7 +1931,7 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     expect(
       await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test'),
     ).toMatchObject({ status: 'success', stored: true });
-    expect(await db.select().from(platformAiModels)).toHaveLength(4);
+    expect(await db.select().from(platformAiModels)).toHaveLength(6);
   });
 
   it('wipes the ChatGPT Web cookie jar on disconnect', async () => {

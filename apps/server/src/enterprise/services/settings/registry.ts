@@ -27,7 +27,7 @@ import type {
 } from '@/types/platform/settings';
 
 /** Bump when registered paths / schemas change in a breaking way for cache keys. */
-export const SETTINGS_REGISTRY_VERSION = 6;
+export const SETTINGS_REGISTRY_VERSION = 7;
 
 /** Appearance / preference leaves used only in user UI clients (B6-R2). */
 const UI_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile'];
@@ -51,13 +51,13 @@ export const SYSTEM_AGENT_REASONING_EFFORT_LEVELS = [
   'none',
   'minimal',
   'auto',
-  'instant',
   'low',
+  'standard',
   'medium',
+  'extended',
   'high',
   'xhigh',
   'max',
-  'pro',
   'enabled',
 ] as const satisfies readonly SystemAgentReasoningEffort[];
 

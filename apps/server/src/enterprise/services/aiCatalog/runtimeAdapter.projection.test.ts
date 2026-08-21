@@ -1254,7 +1254,7 @@ describe('projectAiCatalogRuntimeState settings merge', () => {
     expect(projectSettings({ modelKey: 'gpt-5.5' })).toEqual(builtin);
   });
 
-  it('hides ChatGPT Web legacy-alias rows from pickers while keeping them enabled', () => {
+  it('unstamps leftover family-card rows so thinking SKUs stay visible', () => {
     const state = projectAiCatalogRuntimeState([
       {
         payload: {
@@ -1263,7 +1263,7 @@ describe('projectAiCatalogRuntimeState settings merge', () => {
             {
               enabled: true,
               modelKey: 'gpt-5-6-thinking',
-              settings: { legacyAlias: 'gpt-5-6' },
+              settings: { extendParams: ['chatgptWebReasoningEffort'] },
               type: 'chat',
             },
           ],
@@ -1279,12 +1279,14 @@ describe('projectAiCatalogRuntimeState settings merge', () => {
 
     expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6-thinking')).toMatchObject({
       enabled: true,
-      visible: false,
+      settings: { extendParams: ['chatgptWebThinkingEffort'] },
     });
-    expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6')?.visible).not.toBe(false);
+    expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6-thinking')?.visible).not.toBe(
+      false,
+    );
   });
 
-  it('rewrites published gpt5_6ReasoningEffort on gpt-5-6 and hides stale auto/pro without a re-sync', () => {
+  it('rewrites published gpt5_6ReasoningEffort and keeps auto/pro visible', () => {
     const state = projectAiCatalogRuntimeState([
       {
         payload: {
@@ -1319,17 +1321,15 @@ describe('projectAiCatalogRuntimeState settings merge', () => {
     ]);
 
     expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6')?.settings).toEqual(
-      expect.objectContaining({ extendParams: ['chatgptWebReasoningEffort'] }),
+      expect.objectContaining({ searchImpl: 'params' }),
     );
-    expect(state.enabledAiModels.find((model) => model.id === 'auto')).toMatchObject({
-      enabled: true,
-      settings: { legacyAlias: 'gpt-5-6' },
-      visible: false,
-    });
+    expect(
+      state.enabledAiModels.find((model) => model.id === 'gpt-5-6')?.settings,
+    ).not.toHaveProperty('extendParams');
+    expect(state.enabledAiModels.find((model) => model.id === 'auto')?.visible).not.toBe(false);
     expect(state.enabledAiModels.find((model) => model.id === 'gpt-5-6-pro')).toMatchObject({
       enabled: true,
-      settings: { legacyAlias: 'gpt-5-6' },
-      visible: false,
+      settings: { extendParams: ['chatgptWebProThinkingEffort'] },
     });
   });
 });

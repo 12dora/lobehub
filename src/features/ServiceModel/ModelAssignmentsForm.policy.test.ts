@@ -90,8 +90,8 @@ describe('Service Model managed policy coverage', () => {
   });
 
   it('covers every EffortControlKey as a default-assistant chatConfig path literal', () => {
-    expect(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).toHaveLength(24);
-    expect(new Set(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).size).toBe(24);
+    expect(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).toHaveLength(25);
+    expect(new Set(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).size).toBe(25);
     expect([...DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS]).toEqual(
       EFFORT_CONTROL_KEYS.map((key) => `defaultAgent.config.chatConfig.${key}`),
     );

@@ -49,9 +49,9 @@ const inferFlow = (options: { search?: boolean; systemHints?: string[] }): Condu
  * `/backend-api/conversation` and `/backend-api/f/conversation/prepare` — only
  * `standard`, `extended`, `max` (or omitting the field) are accepted.
  *
- * `instant` and `pro` are ChatGPT Web family-picker levels, never wire values:
- * Instant omits the field (and switches the slug); Pro is a slug (`*-pro`)
- * with `thinking_effort: standard` applied by `resolveChatGPTWebTurn`.
+ * `instant` / `pro` / `none` / `minimal` / `auto` / unknown are not wire
+ * values — they omit the field. Pro's `standard` is applied by
+ * `resolveChatGPTWebTurn`, not by this alias table.
  */
 const THINKING_EFFORT_ALIASES: Record<string, ThinkingEffort> = {
   extended: 'extended',

@@ -1116,7 +1116,7 @@ describe('aiChatRouter', () => {
       );
     });
 
-    it('forwards chatgptWebReasoningEffort onto generateObject', async () => {
+    it('forwards chatgptWebThinkingEffort onto generateObject', async () => {
       const { initModelRuntimeFromDB } = await import('@/server/modules/ModelRuntime');
 
       const mockGenerateObject = vi.fn().mockResolvedValue({ ok: true });
@@ -1127,9 +1127,9 @@ describe('aiChatRouter', () => {
       const caller = aiChatRouter.createCaller({ ...mockCtx, serverDB: {} } as any);
 
       await caller.outputJSON({
-        chatgptWebReasoningEffort: 'pro',
+        chatgptWebThinkingEffort: 'extended',
         messages: [{ content: 'test', role: 'user' }],
-        model: 'gpt-5-6',
+        model: 'gpt-5-6-thinking',
         provider: 'chatgptweb',
         schema: {
           name: 'Person',
@@ -1142,8 +1142,8 @@ describe('aiChatRouter', () => {
 
       expect(mockGenerateObject).toHaveBeenCalledWith(
         expect.objectContaining({
-          chatgptWebReasoningEffort: 'pro',
-          model: 'gpt-5-6',
+          chatgptWebThinkingEffort: 'extended',
+          model: 'gpt-5-6-thinking',
         }),
         expect.any(Object),
       );

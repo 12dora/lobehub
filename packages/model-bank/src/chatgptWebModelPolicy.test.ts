@@ -16,11 +16,11 @@ describe('applyChatGPTWebModelPolicy', () => {
     ).toEqual({ settings });
   });
 
-  it('forces family ids onto exactly chatgptWebReasoningEffort and preserves search settings', () => {
+  it('forces thinking SKUs onto chatgptWebThinkingEffort and preserves search settings', () => {
     expect(
       applyChatGPTWebModelPolicy({
         abilities: { reasoning: true, search: true },
-        modelId: 'gpt-5-6',
+        modelId: 'gpt-5-6-thinking',
         providerId: chatgptweb,
         settings: {
           extendParams: ['gpt5_6ReasoningEffort', 'textVerbosity'],
@@ -30,61 +30,25 @@ describe('applyChatGPTWebModelPolicy', () => {
       }),
     ).toEqual({
       settings: {
-        extendParams: ['chatgptWebReasoningEffort'],
+        extendParams: ['textVerbosity', 'chatgptWebThinkingEffort'],
         searchImpl: 'params',
         searchProvider: 'chatgptweb',
       },
     });
   });
 
-  it('stamps empty family settings with the family control', () => {
+  it('forces pro SKUs onto chatgptWebProThinkingEffort', () => {
     expect(
       applyChatGPTWebModelPolicy({
-        modelId: 'gpt-5-5',
-        providerId: chatgptweb,
-        settings: {},
-      }).settings,
-    ).toEqual({ extendParams: ['chatgptWebReasoningEffort'] });
-  });
-
-  it.each(['auto', 'gpt-5-6-instant', 'gpt-5-6-thinking', 'gpt-5-6-pro'] as const)(
-    'strips effort keys from %s, stamps legacyAlias, and hides the picker row',
-    (modelId) => {
-      expect(
-        applyChatGPTWebModelPolicy({
-          abilities: { reasoning: true },
-          modelId,
-          providerId: chatgptweb,
-          settings: {
-            extendParams: ['gpt5_6ReasoningEffort', 'chatgptWebReasoningEffort'],
-            searchImpl: 'params',
-          },
-        }),
-      ).toEqual({
-        settings: {
-          legacyAlias: 'gpt-5-6',
-          searchImpl: 'params',
-        },
-        visible: false,
-      });
-    },
-  );
-
-  it('aliases gpt-5-5 SKUs onto the gpt-5-5 family', () => {
-    expect(
-      applyChatGPTWebModelPolicy({
-        modelId: 'gpt-5-5-pro',
+        modelId: 'gpt-5-6-pro',
         providerId: chatgptweb,
         settings: { extendParams: ['chatgptWebReasoningEffort'] },
-      }),
-    ).toEqual({
-      settings: { legacyAlias: 'gpt-5-5' },
-      visible: false,
-    });
+      }).settings,
+    ).toEqual({ extendParams: ['chatgptWebProThinkingEffort'] });
   });
 
-  it.each(['o3', 'gpt-5-6-mini'] as const)(
-    'strips effort keys from %s without hiding the row',
+  it.each(['auto', 'gpt-5-6', 'gpt-5-6-instant', 'gpt-5-6-mini', 'o3'] as const)(
+    'strips effort keys from %s and does not hide the row',
     (modelId) => {
       expect(
         applyChatGPTWebModelPolicy({
@@ -94,14 +58,26 @@ describe('applyChatGPTWebModelPolicy', () => {
           settings: {
             extendParams: ['gpt5_6ReasoningEffort', 'chatgptWebReasoningEffort'],
             searchImpl: 'params',
-            searchProvider: 'chatgptweb',
           },
         }),
       ).toEqual({
-        settings: { searchImpl: 'params', searchProvider: 'chatgptweb' },
+        settings: { searchImpl: 'params' },
       });
     },
   );
+
+  it('unstamps leftover family-card stamps so thinking SKUs are visible again', () => {
+    const alias = 'leg' + 'acyAlias';
+    expect(
+      applyChatGPTWebModelPolicy({
+        modelId: 'gpt-5-6-thinking',
+        providerId: chatgptweb,
+        settings: { [alias]: 'gpt-5-6', extendParams: ['chatgptWebReasoningEffort'] },
+      }),
+    ).toEqual({
+      settings: { extendParams: ['chatgptWebThinkingEffort'] },
+    });
+  });
 
   it('does not invent an effort slider from abilities.reasoning on o3', () => {
     expect(

@@ -271,7 +271,7 @@ describe('AdminSettingsService.applyImmediate', () => {
       ).toBeNull();
     }
 
-    expect(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).toHaveLength(24);
+    expect(DEFAULT_AGENT_CHAT_CONFIG_EFFORT_PATHS).toHaveLength(25);
     expect(settingsRegistry.has('defaultAgent.config.chatConfig.thinking')).toBe(true);
     expect(settingsRegistry.has('defaultAgent.config.chatConfig.enableStreaming')).toBe(true);
     expect(settingsRegistry.has('systemAgent.userMemoryEmbedding.reasoningEffort')).toBe(false);
@@ -310,18 +310,34 @@ describe('AdminSettingsService.applyImmediate', () => {
     ).toBeUndefined();
     expect(
       settingsRegistry.validateValue(
-        'defaultAgent.config.chatConfig.chatgptWebReasoningEffort',
-        'pro',
+        'defaultAgent.config.chatConfig.chatgptWebThinkingEffort',
+        'extended',
       ).ok,
     ).toBe(true);
     expect(
       settingsRegistry.validateValue(
-        'defaultAgent.config.chatConfig.chatgptWebReasoningEffort',
+        'defaultAgent.config.chatConfig.chatgptWebThinkingEffort',
         'low',
       ).ok,
     ).toBe(false);
     expect(
-      settingsRegistry.get('defaultAgent.config.chatConfig.chatgptWebReasoningEffort')
+      settingsRegistry.get('defaultAgent.config.chatConfig.chatgptWebThinkingEffort')
+        ?.builtInDefault,
+    ).toBeUndefined();
+    expect(
+      settingsRegistry.validateValue(
+        'defaultAgent.config.chatConfig.chatgptWebProThinkingEffort',
+        'standard',
+      ).ok,
+    ).toBe(true);
+    expect(
+      settingsRegistry.validateValue(
+        'defaultAgent.config.chatConfig.chatgptWebProThinkingEffort',
+        'max',
+      ).ok,
+    ).toBe(false);
+    expect(
+      settingsRegistry.get('defaultAgent.config.chatConfig.chatgptWebProThinkingEffort')
         ?.builtInDefault,
     ).toBeUndefined();
   });

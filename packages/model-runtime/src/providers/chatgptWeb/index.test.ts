@@ -354,12 +354,12 @@ describe('LobeChatGPTWebAI', () => {
       ['max', 'max'],
       ['none', undefined],
       ['minimal', undefined],
-    ])('maps reasoning_effort %s → thinking_effort %s', async (effort, expected) => {
+    ])('maps chatgptWebThinkingEffort %s → thinking_effort %s', async (effort, expected) => {
       const client = createFakeClient();
       await createRuntime(client).chat({
+        chatgptWebThinkingEffort: effort as any,
         messages: [{ content: 'hi', role: 'user' }],
         model: 'gpt-5-6-thinking',
-        reasoning_effort: effort as any,
         temperature: 1,
       });
 
@@ -453,7 +453,7 @@ describe('LobeChatGPTWebAI', () => {
       expect(bodyOf(client).thinking_effort).toBe('standard');
     });
 
-    it('passes a family id without chatgptWebReasoningEffort through as the bare slug', async () => {
+    it('passes a bare gpt-5-6 slug through without thinking_effort', async () => {
       const client = createFakeClient();
       await createRuntime(client).chat({
         messages: [{ content: 'hi', role: 'user' }],
@@ -465,21 +465,8 @@ describe('LobeChatGPTWebAI', () => {
       expect(bodyOf(client).thinking_effort).toBeUndefined();
     });
 
-    it('ignores leftover generic reasoning_effort on a bare family id', async () => {
-      const client = createFakeClient();
-      await createRuntime(client).chat({
-        messages: [{ content: 'hi', role: 'user' }],
-        model: 'gpt-5-6',
-        reasoning_effort: 'high' as any,
-        temperature: 1,
-      });
-
-      expect(bodyOf(client).model).toBe('gpt-5-6');
-      expect(bodyOf(client).thinking_effort).toBeUndefined();
-    });
-
-    it('does not send thinking_effort for leftover reasoning_effort on auto / instant / mini', async () => {
-      for (const model of ['auto', 'gpt-5-6-instant', 'gpt-5-6-mini'] as const) {
+    it('ignores leftover generic reasoning_effort on every non-thinking slug', async () => {
+      for (const model of ['auto', 'gpt-5-6', 'gpt-5-6-instant', 'gpt-5-6-mini', 'o3'] as const) {
         const client = createFakeClient();
         await createRuntime(client).chat({
           messages: [{ content: 'hi', role: 'user' }],
@@ -493,57 +480,70 @@ describe('LobeChatGPTWebAI', () => {
     });
 
     it.each([
-      ['instant', 'gpt-5-6-instant', undefined],
-      ['medium', 'gpt-5-6-thinking', 'standard'],
-      ['high', 'gpt-5-6-thinking', 'extended'],
-      ['xhigh', 'gpt-5-6-thinking', 'max'],
+      ['standard', 'standard'],
+      ['extended', 'extended'],
+      ['max', 'max'],
+      ['xhigh', 'extended'],
     ] as const)(
-      'family gpt-5-6 + %s → model %s / thinking_effort %s',
-      async (effort, model, thinkingEffort) => {
+      'thinking SKU + %s → thinking_effort %s (slug unchanged)',
+      async (effort, thinkingEffort) => {
         const client = createFakeClient();
         await createRuntime(client).chat({
-          chatgptWebReasoningEffort: effort,
+          chatgptWebThinkingEffort: effort as any,
           messages: [{ content: 'hi', role: 'user' }],
-          model: 'gpt-5-6',
+          model: 'gpt-5-6-thinking',
           temperature: 1,
         });
 
-        expect(bodyOf(client).model).toBe(model);
+        expect(bodyOf(client).model).toBe('gpt-5-6-thinking');
         expect(bodyOf(client).thinking_effort).toBe(thinkingEffort);
       },
     );
 
-    it.each(['instant', 'pro'] as const)(
-      'system-agent projected %s reaches LobeChatGPTWebAI on a family id',
+    it('thinking SKU ignores leftover generic reasoning_effort', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'gpt-5-6-thinking',
+        reasoning_effort: 'high' as any,
+        temperature: 1,
+      });
+
+      expect(bodyOf(client).model).toBe('gpt-5-6-thinking');
+      expect(bodyOf(client).thinking_effort).toBeUndefined();
+    });
+
+    it.each(['standard', 'extended', 'max'] as const)(
+      'system-agent projected %s reaches LobeChatGPTWebAI on a thinking SKU',
       async (level) => {
         const picked = pickGenerateObjectEffortParams(
           projectServiceModelEffort({
-            extendParams: ['chatgptWebReasoningEffort'],
-            model: 'gpt-5-6',
+            extendParams: ['chatgptWebThinkingEffort'],
+            model: 'gpt-5-6-thinking',
             reasoningEffort: level,
           }),
         );
-        expect(picked).toEqual({ chatgptWebReasoningEffort: level });
+        expect(picked).toEqual({ chatgptWebThinkingEffort: level });
 
         const client = createFakeClient();
         await createRuntime(client).chat({
           ...picked,
           messages: [{ content: 'hi', role: 'user' }],
-          model: 'gpt-5-6',
+          model: 'gpt-5-6-thinking',
           temperature: 1,
         });
 
-        expect(bodyOf(client).model).toBe(level === 'pro' ? 'gpt-5-6-pro' : 'gpt-5-6-instant');
-        expect(bodyOf(client).thinking_effort).toBe(level === 'pro' ? 'standard' : undefined);
+        expect(bodyOf(client).model).toBe('gpt-5-6-thinking');
+        expect(bodyOf(client).thinking_effort).toBe(level);
       },
     );
 
-    it('family + pro takes the existing Pro path (dual prepare, standard effort)', async () => {
+    it('pro SKU takes the existing Pro path (dual prepare, standard effort)', async () => {
       const client = createFakeClient();
       await createRuntime(client).chat({
-        chatgptWebReasoningEffort: 'pro',
+        chatgptWebProThinkingEffort: 'standard',
         messages: [{ content: 'hi', role: 'user' }],
-        model: 'gpt-5-6',
+        model: 'gpt-5-6-pro',
         temperature: 1,
       });
 
@@ -576,16 +576,16 @@ describe('LobeChatGPTWebAI', () => {
       { conversationId: 'conv-1', endTurn: true, type: 'done' },
     ];
 
-    it('family+pro generateObject resolves to gpt-5-6-pro + standard and parses fenced JSON', async () => {
+    it('pro generateObject sends gpt-5-6-pro + standard and parses fenced JSON', async () => {
       const client = createFakeClient();
       client.streamConversation = vi.fn(async function* () {
         for (const event of fencedTitleEvents()) yield event;
       });
 
       const result = await createRuntime(client).generateObject({
-        chatgptWebReasoningEffort: 'pro',
+        chatgptWebProThinkingEffort: 'standard',
         messages: [{ content: 'name this', role: 'user' }],
-        model: 'gpt-5-6',
+        model: 'gpt-5-6-pro',
         schema: titleSchema,
       });
 
@@ -677,15 +677,15 @@ describe('LobeChatGPTWebAI', () => {
       });
 
       const result = await new ModelRuntime(createRuntime(client)).generateObject({
-        chatgptWebReasoningEffort: 'pro',
+        chatgptWebThinkingEffort: 'extended',
         messages: [{ content: 'name this', role: 'user' }],
-        model: 'gpt-5-6',
+        model: 'gpt-5-6-thinking',
         schema: titleSchema,
       });
 
       expect(result).toEqual({ title: 'runtime' });
-      expect(bodyOf(client).model).toBe('gpt-5-6-pro');
-      expect(bodyOf(client).thinking_effort).toBe('standard');
+      expect(bodyOf(client).model).toBe('gpt-5-6-thinking');
+      expect(bodyOf(client).thinking_effort).toBe('extended');
     });
 
     it('omits thinking_effort for o3', async () => {
@@ -1034,9 +1034,9 @@ describe('LobeChatGPTWebAI', () => {
 
       await expect(
         createRuntime(client).chat({
+          chatgptWebThinkingEffort: 'extended',
           messages: [{ content: 'hi', role: 'user' }],
           model: 'gpt-5-6-thinking',
-          reasoning_effort: 'high' as any,
           temperature: 1,
         }),
       ).rejects.toBeDefined();
@@ -1614,9 +1614,9 @@ describe('LobeChatGPTWebAI', () => {
 
       const sse = await readSSE(
         await createRuntime(client).chat({
+          chatgptWebThinkingEffort: 'extended',
           messages: [{ content: '2+2? one word', role: 'user' }],
           model: 'gpt-5-6-thinking',
-          reasoning_effort: 'high',
           temperature: 1,
         }),
       );
@@ -1658,9 +1658,9 @@ describe('LobeChatGPTWebAI', () => {
       vi.useFakeTimers();
       try {
         const response = await runtime.chat({
+          chatgptWebThinkingEffort: 'extended',
           messages: [{ content: '2+2? one word', role: 'user' }],
           model: 'gpt-5-6-thinking',
-          reasoning_effort: 'high',
           temperature: 1,
         });
         const sse = readSSE(response);
@@ -1706,9 +1706,9 @@ describe('LobeChatGPTWebAI', () => {
 
       const sse = await readSSE(
         await createRuntime(client).chat({
+          chatgptWebThinkingEffort: 'extended',
           messages: [{ content: 'tell me a long thing', role: 'user' }],
           model: 'gpt-5-6-thinking',
-          reasoning_effort: 'high',
           temperature: 1,
         }),
       );
@@ -2119,7 +2119,7 @@ describe('LobeChatGPTWebAI', () => {
   });
 
   describe('models', () => {
-    it('collapses Instant/Thinking/Pro SKUs into one family card and hides internals', async () => {
+    it('lists one card per live slug and hides internals', async () => {
       const client = createFakeClient({
         listModels: vi.fn(async () => [
           { maxTokens: 128_000, raw: {}, slug: 'gpt-5-6', title: 'GPT-5.6' },
@@ -2131,19 +2131,23 @@ describe('LobeChatGPTWebAI', () => {
 
       const models = await createRuntime(client).models();
 
-      expect(models.map((model) => model.id)).toEqual(['gpt-5-6']);
-      expect(models[0]).toMatchObject({
+      expect(models.map((model) => model.id)).toEqual(['auto', 'gpt-5-6', 'gpt-5-6-thinking']);
+      expect(models.find((model) => model.id === 'gpt-5-6-thinking')).toMatchObject({
         contextWindowTokens: 128_000,
-        displayName: 'GPT-5.6 Sol (ChatGPT Web)',
+        displayName: 'GPT-5.6 Thinking (ChatGPT Web)',
         enabled: true,
         functionCall: false,
-        id: 'gpt-5-6',
         reasoning: true,
-        settings: expect.objectContaining({ extendParams: ['chatgptWebReasoningEffort'] }),
+        settings: expect.objectContaining({ extendParams: ['chatgptWebThinkingEffort'] }),
       });
+      expect(models.find((model) => model.id === 'gpt-5-6')?.settings).not.toEqual(
+        expect.objectContaining({
+          extendParams: expect.arrayContaining(['chatgptWebThinkingEffort']),
+        }),
+      );
     });
 
-    it('enables the advertised family set, not Instant/Thinking/Pro SKUs', async () => {
+    it('enables the advertised 1:1 set including Instant/Thinking/Pro', async () => {
       const client = createFakeClient({
         listModels: vi.fn(async () => [
           { raw: {}, slug: 'gpt-5-6' },
@@ -2159,13 +2163,29 @@ describe('LobeChatGPTWebAI', () => {
       const models = await createRuntime(client).models();
       const enabled = models.filter((model) => model.enabled).map((model) => model.id);
 
-      expect(enabled).toEqual(['gpt-5-6', 'gpt-5-5', 'o3']);
-      expect(models.map((model) => model.id)).toEqual(['gpt-5-6', 'gpt-5-5', 'o3', 'gpt-5-6-mini']);
-      expect(models.find((model) => model.id === 'gpt-5-6')).toMatchObject({ reasoning: true });
+      expect(enabled).toEqual([
+        'auto',
+        'gpt-5-6',
+        'gpt-5-6-thinking',
+        'gpt-5-6-pro',
+        'gpt-5-6-instant',
+      ]);
+      expect(models.find((model) => model.id === 'gpt-5-6-thinking')).toMatchObject({
+        reasoning: true,
+        settings: expect.objectContaining({ extendParams: ['chatgptWebThinkingEffort'] }),
+      });
+      expect(models.find((model) => model.id === 'gpt-5-6-pro')).toMatchObject({
+        reasoning: true,
+        settings: expect.objectContaining({ extendParams: ['chatgptWebProThinkingEffort'] }),
+      });
       expect(models.find((model) => model.id === 'o3')).toMatchObject({
+        enabled: false,
         reasoning: true,
         settings: expect.not.objectContaining({
-          extendParams: expect.arrayContaining(['chatgptWebReasoningEffort']),
+          extendParams: expect.arrayContaining([
+            'chatgptWebThinkingEffort',
+            'chatgptWebProThinkingEffort',
+          ]),
         }),
       });
       expect(models.find((model) => model.id === 'gpt-5-6-mini')).toMatchObject({
@@ -2174,23 +2194,21 @@ describe('LobeChatGPTWebAI', () => {
       });
     });
 
-    it('does not advertise leftover auto as enabled and keeps o3 without an effort control', async () => {
+    it('injects auto when missing and keeps o3 without an effort control', async () => {
       const client = createFakeClient({
-        listModels: vi.fn(async () => [
-          { raw: {}, slug: 'auto', title: 'Auto' },
-          { raw: {}, slug: 'o3', title: 'o3' },
-        ]),
+        listModels: vi.fn(async () => [{ raw: {}, slug: 'o3', title: 'o3' }]),
       });
 
       const models = await createRuntime(client).models();
       expect(models.find((model) => model.id === 'auto')).toMatchObject({
-        enabled: false,
+        enabled: true,
         id: 'auto',
       });
       expect(models.find((model) => model.id === 'auto')?.settings).not.toEqual(
         expect.objectContaining({
           extendParams: expect.arrayContaining([
-            'chatgptWebReasoningEffort',
+            'chatgptWebThinkingEffort',
+            'chatgptWebProThinkingEffort',
             'gpt5_6ReasoningEffort',
           ]),
         }),
@@ -2199,38 +2217,44 @@ describe('LobeChatGPTWebAI', () => {
         reasoning: true,
         settings: expect.not.objectContaining({
           extendParams: expect.arrayContaining([
-            'chatgptWebReasoningEffort',
+            'chatgptWebThinkingEffort',
+            'chatgptWebProThinkingEffort',
             'gpt5_6ReasoningEffort',
           ]),
         }),
       });
     });
 
-    it('collapses a live-only family and derives the display name from SKU titles', async () => {
+    it('gives an unknown thinking slug the thinking control', async () => {
       const client = createFakeClient({
         listModels: vi.fn(async () => [
           { raw: {}, slug: 'gpt-5-7-thinking', title: 'GPT-5.7 Thinking' },
-          { raw: {}, slug: 'gpt-5-7-instant', title: 'GPT-5.7 Instant' },
         ]),
       });
 
       const models = await createRuntime(client).models();
-
-      expect(models.map((model) => model.id)).toEqual(['gpt-5-7']);
-      expect(models[0]).toMatchObject({
-        contextWindowTokens: 128_000,
-        displayName: 'GPT-5.7',
+      const thinking = models.find((model) => model.id === 'gpt-5-7-thinking');
+      expect(thinking).toMatchObject({
+        displayName: 'GPT-5.7 Thinking',
         enabled: false,
-        files: true,
-        functionCall: false,
         reasoning: true,
-        search: true,
-        settings: {
-          extendParams: ['chatgptWebReasoningEffort'],
+        settings: expect.objectContaining({
+          extendParams: ['chatgptWebThinkingEffort'],
           searchImpl: 'params',
           searchProvider: 'chatgptweb',
-        },
-        vision: true,
+        }),
+      });
+    });
+
+    it('gives an unknown pro slug the pro control', async () => {
+      const client = createFakeClient({
+        listModels: vi.fn(async () => [{ raw: {}, slug: 'gpt-5-7-pro', title: 'GPT-5.7 Pro' }]),
+      });
+
+      const models = await createRuntime(client).models();
+      expect(models.find((model) => model.id === 'gpt-5-7-pro')).toMatchObject({
+        reasoning: true,
+        settings: expect.objectContaining({ extendParams: ['chatgptWebProThinkingEffort'] }),
       });
     });
   });

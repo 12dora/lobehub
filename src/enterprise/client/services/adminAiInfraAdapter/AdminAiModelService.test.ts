@@ -401,9 +401,9 @@ describe('AdminAiModelService CAS and apply contract', () => {
 
     const list = await service.getAiProviderModelList('chatgptweb');
     expect(list.some((model) => model.id === 'gpt-5-6-thinking')).toBe(true);
-    expect(list.find((model) => model.id === 'gpt-5-6-thinking')?.settings).toEqual({
-      legacyAlias: 'gpt-5-6',
-    });
+    expect(list.find((model) => model.id === 'gpt-5-6-thinking')?.settings).toEqual(
+      expect.objectContaining({ extendParams: ['chatgptWebThinkingEffort'] }),
+    );
     expect(list.some((model) => model.id === 'gpt-5-6')).toBe(true);
   });
 });

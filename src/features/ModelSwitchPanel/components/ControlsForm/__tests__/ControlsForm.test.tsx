@@ -164,15 +164,27 @@ describe('ControlsForm', () => {
     expect(testState.formItems.map((item) => item.name)).toEqual([]);
   });
 
-  it('shows only the ChatGPT Web family slider for chatgptWebReasoningEffort', () => {
-    testState.agentState = { config: {}, model: 'gpt-5-6', provider: 'chatgptweb' };
+  it('shows the thinking slider for chatgptWebThinkingEffort', () => {
+    testState.agentState = { config: {}, model: 'gpt-5-6-thinking', provider: 'chatgptweb' };
     testState.aiState = {
       abilities: { reasoning: true },
-      extendParams: ['chatgptWebReasoningEffort'],
+      extendParams: ['chatgptWebThinkingEffort'],
     };
 
-    render(<ControlsForm model="gpt-5-6" provider="chatgptweb" />);
+    render(<ControlsForm model="gpt-5-6-thinking" provider="chatgptweb" />);
 
-    expect(testState.formItems.map((item) => item.name)).toEqual(['chatgptWebReasoningEffort']);
+    expect(testState.formItems.map((item) => item.name)).toEqual(['chatgptWebThinkingEffort']);
+  });
+
+  it('shows the Pro control for chatgptWebProThinkingEffort', () => {
+    testState.agentState = { config: {}, model: 'gpt-5-6-pro', provider: 'chatgptweb' };
+    testState.aiState = {
+      abilities: { reasoning: true },
+      extendParams: ['chatgptWebProThinkingEffort'],
+    };
+
+    render(<ControlsForm model="gpt-5-6-pro" provider="chatgptweb" />);
+
+    expect(testState.formItems.map((item) => item.name)).toEqual(['chatgptWebProThinkingEffort']);
   });
 });

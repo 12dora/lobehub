@@ -57,7 +57,8 @@ export class FollowUpActionService {
 
     const { system, user } = buildSuggestionPrompt({ assistantText: text, hint });
     const {
-      chatgptWebReasoningEffort,
+      chatgptWebProThinkingEffort,
+      chatgptWebThinkingEffort,
       effort,
       model,
       provider,
@@ -71,7 +72,8 @@ export class FollowUpActionService {
     try {
       raw = await ai.generateObject(
         {
-          chatgptWebReasoningEffort,
+          chatgptWebProThinkingEffort,
+          chatgptWebThinkingEffort,
           effort,
           messages: [
             { content: system, role: 'system' as const },

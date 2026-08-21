@@ -157,11 +157,15 @@ export interface OpenAIChatMessage {
 export interface ChatStreamPayload {
   apiMode?: 'chatCompletion' | 'responses';
   /**
-   * ChatGPT Web family picker (Instant / Medium / High / Extra high / Pro).
-   * Translated to a wire slug + `thinking_effort` only inside `LobeChatGPTWebAI`.
-   * Must not ride `reasoning_effort` — OpenAI / OpenRouter forward that field.
+   * ChatGPT Web `*-thinking` SKUs: `thinking_effort` ∈ standard | extended | max.
+   * Dedicated field so OpenAI / OpenRouter never forward it as `reasoning_effort`.
    */
-  chatgptWebReasoningEffort?: 'instant' | 'medium' | 'high' | 'xhigh' | 'pro';
+  chatgptWebThinkingEffort?: 'standard' | 'extended' | 'max';
+  /**
+   * ChatGPT Web `*-pro` SKUs. The runtime always sends `thinking_effort: standard`
+   * regardless of this value; the field exists so the 1-level control can persist.
+   */
+  chatgptWebProThinkingEffort?: 'standard';
   /**
    * @title Provider deployment name
    */

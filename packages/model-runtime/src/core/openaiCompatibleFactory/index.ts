@@ -753,7 +753,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           // Strip LobeHub-internal fields that should never reach downstream APIs.
           const {
             apiMode: _apiMode,
-            chatgptWebReasoningEffort: _chatgptWebReasoningEffort,
+            chatgptWebProThinkingEffort: _chatgptWebProThinkingEffort,
+            chatgptWebThinkingEffort: _chatgptWebThinkingEffort,
             preserveThinking: _preserveThinking,
             ...cleanProcessedPayload
           } = processedPayload as any;
@@ -776,7 +777,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           // and must not leak to other providers' APIs as an unknown parameter.
           const {
             apiMode: _,
-            chatgptWebReasoningEffort: _cw,
+            chatgptWebProThinkingEffort: _cwPro,
+            chatgptWebThinkingEffort: _cw,
             preserveThinking: _pt,
             ...cleanedPayload
           } = postPayload as any;
@@ -1544,7 +1546,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
 
       // remove penalty params and chat completion specific params
       delete res.apiMode;
-      delete res.chatgptWebReasoningEffort;
+      delete res.chatgptWebProThinkingEffort;
+      delete res.chatgptWebThinkingEffort;
       delete res.frequency_penalty;
       delete res.presence_penalty;
       delete res.preserveThinking;

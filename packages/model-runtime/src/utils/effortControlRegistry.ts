@@ -11,13 +11,13 @@ export type EffortLevel =
   | 'none'
   | 'minimal'
   | 'auto'
-  | 'instant'
   | 'low'
+  | 'standard'
   | 'medium'
+  | 'extended'
   | 'high'
   | 'xhigh'
   | 'max'
-  | 'pro'
   | 'enabled';
 
 export interface EffortControlDefinition {
@@ -91,10 +91,15 @@ export const EFFORT_CONTROL_REGISTRY = {
     defaultLevel: 'medium',
     levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
   },
-  chatgptWebReasoningEffort: {
-    configKey: 'chatgptWebReasoningEffort',
-    defaultLevel: 'medium',
-    levels: ['instant', 'medium', 'high', 'xhigh', 'pro'],
+  chatgptWebThinkingEffort: {
+    configKey: 'chatgptWebThinkingEffort',
+    defaultLevel: 'standard',
+    levels: ['standard', 'extended', 'max'],
+  },
+  chatgptWebProThinkingEffort: {
+    configKey: 'chatgptWebProThinkingEffort',
+    defaultLevel: 'standard',
+    levels: ['standard'],
   },
   grok4_20ReasoningEffort: {
     configKey: 'grok4_20ReasoningEffort',

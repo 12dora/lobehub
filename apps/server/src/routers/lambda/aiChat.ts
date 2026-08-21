@@ -139,7 +139,8 @@ export const aiChatRouter = router({
     try {
       data = await ctx.aiGenerationService.generateObject(
         {
-          chatgptWebReasoningEffort: input.chatgptWebReasoningEffort,
+          chatgptWebProThinkingEffort: input.chatgptWebProThinkingEffort,
+          chatgptWebThinkingEffort: input.chatgptWebThinkingEffort,
           effort: input.effort,
           messages: input.messages,
           model: input.model,

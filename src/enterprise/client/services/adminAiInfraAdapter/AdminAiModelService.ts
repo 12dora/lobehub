@@ -8,7 +8,7 @@ import type {
   ToggleAiModelEnableParams,
   UpdateAiModelParams,
 } from 'model-bank';
-import { AiModelSourceEnum, LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
+import { AiModelSourceEnum, applyChatGPTWebModelPolicy, LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
 
 import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { lambdaClient } from '@/libs/trpc/client';
@@ -120,7 +120,16 @@ export class AdminAiModelService {
     let dbModels: AiProviderModelListItem[] = [];
     try {
       const detail = await getDetail(id);
-      dbModels = detail.draft.models.map(mapModelListItem);
+      dbModels = detail.draft.models.map((item) => {
+        const mapped = mapModelListItem(item);
+        const policy = applyChatGPTWebModelPolicy({
+          abilities: mapped.abilities,
+          modelId: mapped.id,
+          providerId: id,
+          settings: mapped.settings,
+        });
+        return { ...mapped, settings: policy.settings };
+      });
     } catch (cause) {
       // No platform row yet → built-ins only. Rethrow permission/network/server failures.
       if (!isPlatformNotFoundError(cause)) throw cause;

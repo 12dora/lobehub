@@ -16,7 +16,8 @@ import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors, chatConfigByIdSelectors } from '@/store/agent/selectors';
 import { aiModelSelectors, useAiInfraStore } from '@/store/aiInfra';
 
-import { ChatGPTWebReasoningEffortSlider } from './ChatGPTWebReasoningEffortSlider';
+import { ChatGPTWebProThinkingEffortSlider } from './ChatGPTWebProThinkingEffortSlider';
+import { ChatGPTWebThinkingEffortSlider } from './ChatGPTWebThinkingEffortSlider';
 import CodexMaxReasoningEffortSlider from './CodexMaxReasoningEffortSlider';
 import ContextCachingSwitch from './ContextCachingSwitch';
 import DeepSeekReasoningEffortSlider from './DeepSeekReasoningEffortSlider';
@@ -333,12 +334,23 @@ const ControlsForm = memo<ControlsFormProps>(
         },
       },
       {
-        children: <ChatGPTWebReasoningEffortSlider />,
-        desc: 'reasoning_effort',
+        children: <ChatGPTWebThinkingEffortSlider />,
+        desc: 'thinking_effort',
         label: t('extendParams.reasoningEffort.title'),
         layout: 'vertical',
         minWidth: undefined,
-        name: 'chatgptWebReasoningEffort',
+        name: 'chatgptWebThinkingEffort',
+        style: {
+          paddingBottom: 0,
+        },
+      },
+      {
+        children: <ChatGPTWebProThinkingEffortSlider />,
+        desc: 'thinking_effort',
+        label: t('extendParams.reasoningEffort.title'),
+        layout: 'vertical',
+        minWidth: undefined,
+        name: 'chatgptWebProThinkingEffort',
         style: {
           paddingBottom: 0,
         },

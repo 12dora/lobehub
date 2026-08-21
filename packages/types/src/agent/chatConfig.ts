@@ -28,10 +28,16 @@ export interface AgentSelfIterationChatConfig {
 
 export interface LobeAgentChatConfig extends AgentMemoryChatConfig, AgentSelfIterationChatConfig {
   /**
-   * ChatGPT.com web UI thinking-effort picker (Instant / Medium / High / Extra high / Pro).
-   * Distinct from `gpt5_6ReasoningEffort`, which is shared with OpenAI Platform gpt-5.6-sol.
+   * ChatGPT Web `*-pro` SKUs. The only accepted wire value is `standard`; the
+   * selector exists so the control is visible, but it offers that one level.
    */
-  chatgptWebReasoningEffort?: 'instant' | 'medium' | 'high' | 'xhigh' | 'pro';
+  chatgptWebProThinkingEffort?: 'standard';
+  /**
+   * ChatGPT Web `*-thinking` SKUs: `thinking_effort` ∈ standard | extended | max.
+   * Distinct from OpenAI Platform `gpt5_6ReasoningEffort` and from the generic
+   * `reasoning_effort` field (which ChatGPT Web never consults).
+   */
+  chatgptWebThinkingEffort?: 'standard' | 'extended' | 'max';
   codexMaxReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
   /**
    * Model ID to use for generating compression summaries
@@ -241,7 +247,8 @@ export const SelfIterationChatConfigSchema = z.object({
 
 export const AgentChatConfigSchema = z
   .object({
-    chatgptWebReasoningEffort: z.enum(['instant', 'medium', 'high', 'xhigh', 'pro']).optional(),
+    chatgptWebProThinkingEffort: z.enum(['standard']).optional(),
+    chatgptWebThinkingEffort: z.enum(['standard', 'extended', 'max']).optional(),
     codexMaxReasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
     deepseekV4ReasoningEffort: z.enum(['none', 'high', 'max']).optional(),
     compressionModelId: z.string().optional(),

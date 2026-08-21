@@ -59,12 +59,7 @@ import { describeThrownValue } from './errors';
 import { runChatGPTWebGenerateObject } from './generateObject';
 import { readImageDimensions, readImageMimeType } from './imageDimensions';
 import { extractSandboxFiles, resolveFileMimeType, sandboxFileName } from './interpreterFiles';
-import {
-  chatgptWebFamilyBase,
-  deriveChatGPTWebFamilyDisplayName,
-  isChatGPTWebFamilyId,
-  resolveChatGPTWebTurn,
-} from './resolveTurnModel';
+import { resolveChatGPTWebTurn } from './resolveTurnModel';
 import type { ChatGPTWebSessionContext } from './sessionContext';
 import { getDurationMs, timing } from './timing';
 import type { TurnState } from './turnHelpers';
@@ -139,12 +134,10 @@ const timeoutSignalHandle = (ms: number): { cleanup: () => void; signal: AbortSi
  * value sent — see the fix in `client.ts#prepareConversation` — so this default
  * is about matching the real request shape, not about unblocking the token.)
  *
- * Family cards (`gpt-5-6`, `gpt-5-5`) resolve Pro via {@link resolveChatGPTWebTurn}
- * *before* this check, so a family+pro turn takes the same dual-prepare path.
+ * `resolveChatGPTWebTurn` always attaches `thinking_effort: standard` for these
+ * slugs, so a Pro turn takes the same dual-prepare path as the live web client.
  */
 const isProTierModel = (model: string): boolean => model.endsWith('-pro');
-
-const FAMILY_EXTEND_PARAMS = ['chatgptWebReasoningEffort'] as const;
 
 /** Shared settings for a live slug the catalogue does not carry yet. */
 const LIVE_MODEL_SETTINGS: NonNullable<ChatModelCard['settings']> = {
@@ -282,32 +275,19 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       const search = payload.enabledSearch === true;
       const hasAttachments = mimeTypes.length > 0;
       /**
-       * Family ids read only `chatgptWebReasoningEffort` — a leftover generic
-       * `reasoning_effort` must not remap the slug. Non-family ids never read
-       * that generic field except hidden `*-thinking` SKUs, which still alias
-       * a leftover via `normalizeThinkingEffort`. `auto` / `*-instant` /
-       * `*-mini` / `o3` / `*-pro` ignore leftovers entirely.
+       * Dedicated ChatGPT Web fields only. Generic `reasoning_effort` is never
+       * consulted — leftover values on auto / instant / minis / o3 must not
+       * leak onto the wire. Pro ignores the persisted value anyway
+       * (`resolveChatGPTWebTurn` always sends `standard`).
        */
-      const leftoverThinkingEffort =
-        payload.chatgptWebReasoningEffort ?? payload.reasoning_effort ?? payload.reasoning?.effort;
-      let effort: string | undefined;
-      if (isChatGPTWebFamilyId(payload.model)) {
-        effort = payload.chatgptWebReasoningEffort;
-      } else if (payload.model.endsWith('-thinking')) {
-        effort = leftoverThinkingEffort;
-      }
       const resolved = resolveChatGPTWebTurn({
-        effort,
         model: payload.model,
+        thinkingEffort: payload.model.endsWith('-pro')
+          ? payload.chatgptWebProThinkingEffort
+          : payload.chatgptWebThinkingEffort,
       });
       const model = resolved.model;
-      /**
-       * Family+pro already carries `standard` from the helper. Legacy `*-pro`
-       * SKUs with no effort still default to `standard` so the turn matches the
-       * real Chrome request shape (and never falls back to the plain endpoint).
-       */
-      const thinkingEffort =
-        resolved.thinkingEffort ?? (isProTierModel(model) ? 'standard' : undefined);
+      const thinkingEffort = resolved.thinkingEffort;
       /**
        * The `/f/` conduit path is what the web client uses for EVERY turn, and
        * it is the only one whose conversation the upstream keeps: the plain
@@ -658,8 +638,6 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     const known = (slug: string) =>
       LOBE_DEFAULT_MODEL_LIST.find((item) => item.id === slug && item.providerId === this.provider);
 
-    type LiveSlug = (typeof models)[number];
-
     /**
      * A slug the catalogue does not know yet (chatgpt.com ships new checkpoints
      * well before we do) still has to be usable, so give it the defaults every
@@ -670,7 +648,8 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       live?: { description?: string; maxTokens?: number; title?: string },
     ): ChatModelCard => {
       const card = known(slug);
-      const reasoning = slug.startsWith('o3');
+      const reasoning =
+        slug.endsWith('-thinking') || slug.endsWith('-pro') || slug.startsWith('o3');
       const settings = applyChatGPTWebModelPolicy({
         abilities: card?.abilities,
         modelId: slug,
@@ -682,9 +661,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
           card?.contextWindowTokens ?? live?.maxTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
         description: card?.description ?? live?.description,
         displayName: card?.displayName ?? live?.title ?? slug,
-        // leftover `auto` is never advertised as enabled, even if a stale
-        // catalogue row still has the flag.
-        enabled: slug === 'auto' ? false : (card?.enabled ?? false),
+        enabled: card?.enabled ?? false,
         // the web backend runs its own built-in tools for every model
         files: card?.abilities?.files ?? true,
         functionCall: false,
@@ -692,75 +669,27 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         imageOutput: card?.abilities?.imageOutput ?? true,
         reasoning: card?.abilities?.reasoning ?? reasoning,
         search: card?.abilities?.search ?? true,
-        // An unknown slug still needs the settings every ChatGPT Web model
-        // shares. Family cards carry the web picker; leftover slugs (minis, o3)
-        // do not get the Platform gpt-5.6 effort control.
+        // Unknown slugs get thinking / pro controls from the policy helper
+        // (`*-thinking` / `*-pro`); everything else has no effort picker.
         settings: settings ?? { ...LIVE_MODEL_SETTINGS },
         type: 'chat' as const,
         vision: card?.abilities?.vision ?? true,
       };
     };
 
-    const toFamilyCard = (base: string, members: LiveSlug[]): ChatModelCard => {
-      const card = known(base);
-      const maxTokens = members.reduce<number | undefined>((current, member) => {
-        if (typeof member.maxTokens !== 'number') return current;
-        return current === undefined ? member.maxTokens : Math.max(current, member.maxTokens);
-      }, undefined);
-      const liveDescription = members.find((member) => member.description)?.description;
+    const cards: ChatModelCard[] = models
+      .filter((model) => !isHiddenModelSlug(model.slug))
+      .map((model) => toCard(model.slug, model));
 
-      const settings = applyChatGPTWebModelPolicy({
-        abilities: card?.abilities,
-        modelId: base,
-        providerId: this.provider,
-        settings: card?.settings ?? {
-          ...LIVE_MODEL_SETTINGS,
-          extendParams: [...FAMILY_EXTEND_PARAMS],
-        },
-      }).settings;
-      return {
-        contextWindowTokens:
-          card?.contextWindowTokens ?? maxTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
-        description: card?.description ?? liveDescription,
-        displayName: card?.displayName ?? deriveChatGPTWebFamilyDisplayName(base, members),
-        enabled: card?.enabled ?? false,
-        files: card?.abilities?.files ?? true,
-        functionCall: false,
-        id: base,
-        imageOutput: card?.abilities?.imageOutput ?? true,
-        reasoning: true,
-        search: card?.abilities?.search ?? true,
-        settings: settings ?? {
-          ...LIVE_MODEL_SETTINGS,
-          extendParams: [...FAMILY_EXTEND_PARAMS],
-        },
-        type: 'chat' as const,
-        vision: card?.abilities?.vision ?? true,
-      };
-    };
-
-    const visible = models.filter((model) => !isHiddenModelSlug(model.slug));
-    const familyMembers = new Map<string, LiveSlug[]>();
-    for (const live of visible) {
-      const base = chatgptWebFamilyBase(live.slug);
-      if (!base) continue;
-      const group = familyMembers.get(base);
-      if (group) group.push(live);
-      else familyMembers.set(base, [live]);
-    }
-
-    const seenFamilies = new Set<string>();
-    const cards: ChatModelCard[] = [];
-    for (const live of visible) {
-      const base = chatgptWebFamilyBase(live.slug);
-      if (base) {
-        if (seenFamilies.has(base)) continue;
-        seenFamilies.add(base);
-        cards.push(toFamilyCard(base, familyMembers.get(base) ?? [live]));
-        continue;
-      }
-      cards.push(toCard(live.slug, live));
-    }
+    // `auto` is accepted as a model but is not advertised by /backend-api/models.
+    if (!cards.some((card) => card.id === 'auto'))
+      cards.unshift({
+        ...toCard('auto'),
+        displayName: known('auto')?.displayName ?? 'Auto',
+        // `auto` is what the web app itself defaults to — always offer it
+        enabled: known('auto')?.enabled ?? true,
+        reasoning: known('auto')?.abilities?.reasoning ?? true,
+      });
 
     return cards;
   }

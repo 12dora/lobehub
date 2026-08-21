@@ -109,7 +109,7 @@ describe('AiCatalogReadService', () => {
     expect(serialized).not.toContain('disabled');
   });
 
-  it('omits ChatGPT Web legacy-alias rows from the published dependency picker', async () => {
+  it('unstamps leftover family-card rows so thinking SKUs appear in the published picker', async () => {
     const [provider] = await serverDB
       .insert(platformAiProviders)
       .values({
@@ -131,7 +131,7 @@ describe('AiCatalogReadService', () => {
         {
           enabled: true,
           modelKey: 'gpt-5-6-thinking',
-          settings: { legacyAlias: 'gpt-5-6' },
+          settings: { extendParams: ['chatgptWebReasoningEffort'] },
           sort: 1,
           type: 'chat',
         },
@@ -156,10 +156,13 @@ describe('AiCatalogReadService', () => {
 
     const result = await service.getPublished();
     const models = result.providers[0]?.models ?? [];
-    expect(models.map((model) => model.modelKey)).toEqual(['gpt-5-6']);
+    expect(models.map((model) => model.modelKey)).toEqual(['gpt-5-6', 'gpt-5-6-thinking']);
+    expect(models.find((model) => model.modelKey === 'gpt-5-6-thinking')?.settings).toEqual({
+      extendParams: ['chatgptWebThinkingEffort'],
+    });
   });
 
-  it('rewrites published gpt5_6ReasoningEffort and omits un-aliased auto/pro leftovers', async () => {
+  it('rewrites published gpt5_6ReasoningEffort and keeps auto/pro visible', async () => {
     const [provider] = await serverDB
       .insert(platformAiProviders)
       .values({
@@ -213,10 +216,12 @@ describe('AiCatalogReadService', () => {
 
     const result = await service.getPublished();
     const models = result.providers[0]?.models ?? [];
-    expect(models.map((model) => model.modelKey)).toEqual(['gpt-5-6']);
-    expect(models[0]?.settings).toEqual({
-      extendParams: ['chatgptWebReasoningEffort'],
+    expect(models.map((model) => model.modelKey)).toEqual(['gpt-5-6', 'auto', 'gpt-5-6-pro']);
+    expect(models.find((model) => model.modelKey === 'gpt-5-6')?.settings).toEqual({
       searchImpl: 'params',
+    });
+    expect(models.find((model) => model.modelKey === 'gpt-5-6-pro')?.settings).toEqual({
+      extendParams: ['chatgptWebProThinkingEffort'],
     });
   });
 });

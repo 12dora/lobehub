@@ -72,10 +72,10 @@ export const runChatGPTWebGenerateObject = async (params: {
   let finish: OnFinishData | undefined;
   const response = await chat(
     {
-      chatgptWebReasoningEffort: payload.chatgptWebReasoningEffort,
+      chatgptWebProThinkingEffort: payload.chatgptWebProThinkingEffort,
+      chatgptWebThinkingEffort: payload.chatgptWebThinkingEffort,
       messages: buildChatGPTWebGenerateObjectMessages(payload),
       model: payload.model,
-      reasoning_effort: payload.reasoning_effort,
     },
     {
       callback: {

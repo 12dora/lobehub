@@ -38,7 +38,6 @@ const applyChatGPTWebReadPolicy = (item: EnabledAiModel): EnabledAiModel => {
   return {
     ...item,
     settings: policy.settings,
-    ...(policy.visible === false ? { visible: false } : {}),
   };
 };
 

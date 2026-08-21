@@ -9,7 +9,8 @@ import { render, screen } from '@testing-library/react';
 import type { ComponentType } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ChatGPTWebReasoningEffortSlider } from '../ChatGPTWebReasoningEffortSlider';
+import { ChatGPTWebProThinkingEffortSlider } from '../ChatGPTWebProThinkingEffortSlider';
+import { ChatGPTWebThinkingEffortSlider } from '../ChatGPTWebThinkingEffortSlider';
 import CodexMaxReasoningEffortSlider from '../CodexMaxReasoningEffortSlider';
 import DeepSeekReasoningEffortSlider from '../DeepSeekReasoningEffortSlider';
 import EffortSlider from '../EffortSlider';
@@ -44,7 +45,8 @@ const cases: [EffortControlKey, ComponentType<any>][] = [
   ['gpt5_2ProReasoningEffort', GPT52ProReasoningEffortSlider],
   ['gpt5_2ReasoningEffort', GPT52ReasoningEffortSlider],
   ['gpt5_6ReasoningEffort', GPT56ReasoningEffortSlider],
-  ['chatgptWebReasoningEffort', ChatGPTWebReasoningEffortSlider],
+  ['chatgptWebThinkingEffort', ChatGPTWebThinkingEffortSlider],
+  ['chatgptWebProThinkingEffort', ChatGPTWebProThinkingEffortSlider],
   ['grok4_20ReasoningEffort', Grok420ReasoningEffortSlider],
   ['grok4_3ReasoningEffort', Grok43ReasoningEffortSlider],
   ['grok4_5ReasoningEffort', Grok45ReasoningEffortSlider],

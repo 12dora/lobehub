@@ -164,31 +164,33 @@ describe('resolveSystemAgentEffortParams', () => {
     ).toEqual({ reasoning_effort: 'xhigh' });
   });
 
-  it.each(['instant', 'pro'] as const)(
-    'projects ChatGPT Web %s onto chatgptWebReasoningEffort',
+  it.each(['standard', 'extended', 'max'] as const)(
+    'projects ChatGPT Web %s onto chatgptWebThinkingEffort',
     (level) => {
       mockEnabledAiModels([
         {
-          id: 'gpt-5-6',
+          id: 'gpt-5-6-thinking',
           providerId: 'chatgptweb',
-          settings: { extendParams: ['chatgptWebReasoningEffort'] },
+          settings: { extendParams: ['chatgptWebThinkingEffort'] },
         },
       ]);
 
       expect(
         resolveSystemAgentEffortParams({
-          model: 'gpt-5-6',
+          model: 'gpt-5-6-thinking',
           provider: 'chatgptweb',
           reasoningEffort: level,
         }),
-      ).toEqual({ chatgptWebReasoningEffort: level });
+      ).toEqual({ chatgptWebThinkingEffort: level });
     },
   );
 
-  it('does not emit chatgptWebReasoningEffort for a non-ChatGPT-Web model', () => {
-    expect(resolveSystemAgentEffortParams(item('pro'))).toEqual({ reasoning_effort: 'medium' });
-    expect(resolveSystemAgentEffortParams(item('pro'))).not.toHaveProperty(
-      'chatgptWebReasoningEffort',
+  it('does not emit chatgptWebThinkingEffort for a non-ChatGPT-Web model', () => {
+    expect(resolveSystemAgentEffortParams(item('extended'))).toEqual({
+      reasoning_effort: 'medium',
+    });
+    expect(resolveSystemAgentEffortParams(item('extended'))).not.toHaveProperty(
+      'chatgptWebThinkingEffort',
     );
   });
 

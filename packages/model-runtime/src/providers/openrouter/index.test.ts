@@ -158,9 +158,9 @@ describe('LobeOpenRouterAI - custom features', () => {
       );
     });
 
-    it('never forwards ChatGPT Web instant/pro as reasoning.effort', async () => {
+    it('never forwards ChatGPT Web thinking effort as reasoning.effort', async () => {
       await instance.chat({
-        chatgptWebReasoningEffort: 'pro',
+        chatgptWebThinkingEffort: 'max',
         messages: [{ content: 'Hello', role: 'user' }],
         model: 'openai/gpt-4',
         reasoning_effort: 'high' as const,
@@ -174,9 +174,9 @@ describe('LobeOpenRouterAI - custom features', () => {
       const payload = createCall as typeof createCall & {
         reasoning?: OpenRouterReasoning;
       };
-      expect(payload).not.toHaveProperty('chatgptWebReasoningEffort');
+      expect(payload).not.toHaveProperty('chatgptWebThinkingEffort');
+      expect(payload).not.toHaveProperty('chatgptWebProThinkingEffort');
       expect(payload.reasoning?.effort).toBe('high');
-      expect(JSON.stringify(payload)).not.toMatch(/"effort"\s*:\s*"(instant|pro)"/);
     });
 
     it('should not modify model when enabledSearch is undefined', async () => {

@@ -131,17 +131,28 @@ describe('applyModelExtendParams', () => {
     expect(result.reasoning_effort).toBe('max');
   });
 
-  it('resolves ChatGPT Web family reasoning effort independently from gpt5_6ReasoningEffort', () => {
+  it('resolves ChatGPT Web thinking effort independently from gpt5_6ReasoningEffort', () => {
     const result = applyModelExtendParams({
       chatConfig: chatConfig({
-        chatgptWebReasoningEffort: 'pro',
+        chatgptWebThinkingEffort: 'extended',
         gpt5_6ReasoningEffort: 'max',
       }),
-      extendParams: ['chatgptWebReasoningEffort'],
-      model: 'gpt-5-6',
+      extendParams: ['chatgptWebThinkingEffort'],
+      model: 'gpt-5-6-thinking',
     });
 
-    expect(result.chatgptWebReasoningEffort).toBe('pro');
+    expect(result.chatgptWebThinkingEffort).toBe('extended');
+    expect(result.reasoning_effort).toBeUndefined();
+  });
+
+  it('resolves ChatGPT Web Pro thinking effort onto the dedicated field', () => {
+    const result = applyModelExtendParams({
+      chatConfig: chatConfig({ chatgptWebProThinkingEffort: 'standard' }),
+      extendParams: ['chatgptWebProThinkingEffort'],
+      model: 'gpt-5-6-pro',
+    });
+
+    expect(result.chatgptWebProThinkingEffort).toBe('standard');
     expect(result.reasoning_effort).toBeUndefined();
   });
 

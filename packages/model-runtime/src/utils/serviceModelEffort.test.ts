@@ -102,32 +102,46 @@ describe('projectServiceModelEffort', () => {
     expect(GenerateObjectEffortParamsSchema.parse(projected)).toEqual(projected);
   });
 
-  it.each(['instant', 'pro'] as const)(
-    'projects ChatGPT Web %s onto chatgptWebReasoningEffort and passes the wire schema',
+  it.each(['standard', 'extended', 'max'] as const)(
+    'projects ChatGPT Web %s onto chatgptWebThinkingEffort and passes the wire schema',
     (level) => {
       const projected = pickGenerateObjectEffortParams(
         projectServiceModelEffort({
-          extendParams: ['chatgptWebReasoningEffort'],
-          model: 'gpt-5-6',
+          extendParams: ['chatgptWebThinkingEffort'],
+          model: 'gpt-5-6-thinking',
           reasoningEffort: level,
         }),
       );
 
-      expect(projected).toEqual({ chatgptWebReasoningEffort: level });
+      expect(projected).toEqual({ chatgptWebThinkingEffort: level });
       expect(GenerateObjectEffortParamsSchema.parse(projected)).toEqual(projected);
     },
   );
 
-  it('drops chatgptWebReasoningEffort when the current model is not a ChatGPT Web family card', () => {
+  it('projects ChatGPT Web Pro onto chatgptWebProThinkingEffort', () => {
+    const projected = pickGenerateObjectEffortParams(
+      projectServiceModelEffort({
+        extendParams: ['chatgptWebProThinkingEffort'],
+        model: 'gpt-5-6-pro',
+        reasoningEffort: 'standard',
+      }),
+    );
+
+    expect(projected).toEqual({ chatgptWebProThinkingEffort: 'standard' });
+    expect(GenerateObjectEffortParamsSchema.parse(projected)).toEqual(projected);
+  });
+
+  it('drops ChatGPT Web thinking effort when the current model is not a thinking SKU', () => {
     const projected = pickGenerateObjectEffortParams(
       projectServiceModelEffort({
         extendParams: ['gpt5_6ReasoningEffort'],
         model: 'gpt-5.6',
-        reasoningEffort: 'pro',
+        reasoningEffort: 'extended',
       }),
     );
 
-    expect(projected).not.toHaveProperty('chatgptWebReasoningEffort');
+    expect(projected).not.toHaveProperty('chatgptWebThinkingEffort');
+    expect(projected).not.toHaveProperty('chatgptWebProThinkingEffort');
     expect(projected).toEqual({ reasoning_effort: 'medium' });
   });
 });
@@ -174,11 +188,15 @@ describe('pickGenerateObjectEffortParams', () => {
     ).toEqual({ effort: 'high' });
   });
 
-  it('copies a valid chatgptWebReasoningEffort and drops an unknown one', () => {
-    expect(pickGenerateObjectEffortParams({ chatgptWebReasoningEffort: 'instant' })).toEqual({
-      chatgptWebReasoningEffort: 'instant',
+  it('copies a valid chatgptWebThinkingEffort and drops an unknown one', () => {
+    expect(pickGenerateObjectEffortParams({ chatgptWebThinkingEffort: 'extended' })).toEqual({
+      chatgptWebThinkingEffort: 'extended',
     });
-    expect(pickGenerateObjectEffortParams({ chatgptWebReasoningEffort: 'turbo' })).toEqual({});
+    expect(pickGenerateObjectEffortParams({ chatgptWebThinkingEffort: 'turbo' })).toEqual({});
+    expect(pickGenerateObjectEffortParams({ chatgptWebProThinkingEffort: 'standard' })).toEqual({
+      chatgptWebProThinkingEffort: 'standard',
+    });
+    expect(pickGenerateObjectEffortParams({ chatgptWebProThinkingEffort: 'max' })).toEqual({});
   });
 
   it('keeps thinking: enabled alongside reasoning_effort (DeepSeek coexistence)', () => {

@@ -1159,6 +1159,14 @@ describe('AiInfraRepos', () => {
           settings: { extendParams: ['chatgptWebReasoningEffort'] },
           type: 'chat' as const,
         },
+        {
+          abilities: { reasoning: true },
+          enabled: true,
+          id: 'gpt-5-6-thinking',
+          providerId: 'chatgptweb',
+          settings: { extendParams: ['chatgptWebReasoningEffort'] },
+          type: 'chat' as const,
+        },
       ] as EnabledAiModel[];
 
       vi.spyOn(repo, 'getAiProviderList').mockResolvedValue(mockProviders);
@@ -1167,18 +1175,20 @@ describe('AiInfraRepos', () => {
 
       const result = await repo.getEnabledModels();
       expect(result.find((model) => model.id === 'gpt-5-6')?.settings).toEqual({
-        extendParams: ['chatgptWebReasoningEffort'],
         searchImpl: 'params',
       });
       expect(result.find((model) => model.id === 'auto')).toMatchObject({
         enabled: true,
-        settings: { legacyAlias: 'gpt-5-6' },
-        visible: false,
       });
+      expect(result.find((model) => model.id === 'auto')?.settings).toBeUndefined();
+      expect(result.find((model) => model.id === 'auto')?.visible).not.toBe(false);
       expect(result.find((model) => model.id === 'gpt-5-6-pro')).toMatchObject({
         enabled: true,
-        settings: { legacyAlias: 'gpt-5-6' },
-        visible: false,
+        settings: { extendParams: ['chatgptWebProThinkingEffort'] },
+      });
+      expect(result.find((model) => model.id === 'gpt-5-6-thinking')).toMatchObject({
+        enabled: true,
+        settings: { extendParams: ['chatgptWebThinkingEffort'] },
       });
     });
   });

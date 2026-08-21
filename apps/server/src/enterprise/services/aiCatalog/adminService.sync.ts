@@ -3,7 +3,7 @@ import { applyChatGPTWebModelPolicy } from 'model-bank';
 import { isProviderOAuthDeviceFlow } from 'model-bank/modelProviders';
 
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
-import type { LobeChatDatabase, Transaction } from '@/database/type';
+import type { LobeChatDatabase } from '@/database/type';
 import {
   buildPayloadFromKeyVaults,
   initModelRuntimeWithUserPayload,
@@ -210,150 +210,31 @@ export const mapCardsToBatchUpdate = (
 };
 
 const CHATGPTWEB_PROVIDER = 'chatgptweb';
-const CHATGPT_WEB_FAMILY_BASE_RE = /^gpt-5-\d+$/;
-const CHATGPT_WEB_LEGACY_SKU_RE = /^gpt-5-\d+-(?:instant|thinking|pro)$/;
-const CHATGPT_WEB_DEFAULT_FAMILY = 'gpt-5-6';
-
-export const isChatGPTWebLegacyPickerId = (modelKey: string): boolean =>
-  modelKey === 'auto' || CHATGPT_WEB_LEGACY_SKU_RE.test(modelKey);
 
 const readSettingsRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? { ...(value as Record<string, unknown>) }
     : {};
 
-type CatalogRow = Pick<DraftModel, 'enabled' | 'id' | 'modelKey' | 'type'>;
-
-/**
- * Overlay `batchUpdate` items onto the locked draft so check-model migration
- * sees the catalog *after* reconciliation (new family cards are created
- * disabled; existing enabled/disabled flags win unless the item says otherwise).
- */
-export const projectCatalogAfterBatch = (
-  existing: readonly CatalogRow[],
-  items: readonly BatchUpdateItem[],
-): Array<Pick<DraftModel, 'enabled' | 'modelKey' | 'type'>> => {
-  const rows = new Map(
-    existing.map((model) => [
-      model.id,
-      { enabled: model.enabled, modelKey: model.modelKey, type: model.type },
-    ]),
-  );
-  const idByKey = new Map(existing.map((model) => [model.modelKey, model.id]));
-
-  for (const item of items) {
-    const id = rows.has(item.id) ? item.id : idByKey.get(item.id);
-    if (id && rows.has(id)) {
-      const current = rows.get(id)!;
-      rows.set(id, {
-        enabled: item.enabled ?? current.enabled,
-        modelKey: current.modelKey,
-        type: item.type ?? current.type,
-      });
-      continue;
-    }
-    rows.set(item.id, {
-      enabled: item.enabled ?? false,
-      modelKey: item.id,
-      type: item.type ?? 'chat',
-    });
-  }
-
-  return [...rows.values()];
-};
-
-const isEnabledChatFamilyRow = (model: Pick<DraftModel, 'enabled' | 'modelKey' | 'type'>) =>
-  model.enabled !== false &&
-  model.type === 'chat' &&
-  CHATGPT_WEB_FAMILY_BASE_RE.test(model.modelKey);
-
-/**
- * Existing providers keep a persisted `checkModel` from first connect. After the
- * family-card cutover that is often `auto` (or an Instant/Thinking/Pro SKU).
- * Only rewrite it when a **post-reconciliation, enabled chat family** row
- * exists; otherwise leave the stored value alone (o3-only catalogs, every
- * family row disabled, newly discovered cards created disabled).
- */
-export const resolveChatGPTWebCheckModelUpgrade = (
-  current: string | null | undefined,
-  catalog: readonly Pick<DraftModel, 'enabled' | 'modelKey' | 'type'>[],
-): string | undefined => {
-  if (!current || !isChatGPTWebLegacyPickerId(current)) return undefined;
-
-  const enabledFamilies = catalog.filter(isEnabledChatFamilyRow);
-  if (enabledFamilies.length === 0) return undefined;
-
-  return (
-    enabledFamilies.find((model) => model.modelKey === CHATGPT_WEB_DEFAULT_FAMILY)?.modelKey ??
-    enabledFamilies[0]?.modelKey
-  );
-};
-
-const abilitiesFromCardFlags = (card: ChatModelCard): Record<string, boolean> | undefined => {
-  const abilities: Record<string, boolean> = {};
-  let reported = false;
-  for (const key of ABILITY_KEYS) {
-    const value = card[key];
-    if (typeof value !== 'boolean') continue;
-    reported = true;
-    if (value) abilities[key] = true;
-  }
-  return reported ? abilities : undefined;
-};
-
 type MappedCards = ReturnType<typeof mapCardsToBatchUpdate>;
 
 /**
- * When chatgptweb `models()` collapses Instant / Thinking / Pro SKUs into one
- * family card, existing catalog rows for those SKUs (and `auto`) stay **enabled**
- * so the execution allowlist still admits saved agents, but they are marked
- * `settings.legacyAlias` so user-facing pickers hide them. Matching is against
- * existing rows (`/^gpt-5-\d+-(instant|thinking|pro)$/` plus `auto`), not the
- * live family-card set — a gpt-5-5 SKU or a lone `auto` still reconciles when
- * the current enumeration has no matching family. `extendParams` is rewritten
- * through `applyChatGPTWebModelPolicy` (family rows forced to
- * `chatgptWebReasoningEffort`; leftovers stripped). The idempotent skip treats
- * stale extendParams as dirty.
+ * One-shot chatgptweb catalog cleanup after the family-card revert.
  *
- * Do **not** set `enabled: false`: that both drops the row from the allowlist
- * (`AiCatalogModelNotPublishedError` on the next turn) and trips the published
- * agent/setting dependency check (`AiCatalogResourceInUseError`), aborting sync.
+ * Live cards already carry the right `extendParams` from `models()`. This pass
+ * walks every existing chatgptweb row (including SKUs the live list omitted)
+ * and rewrites settings through `applyChatGPTWebModelPolicy`, which deletes
+ * leftover `legacyAlias` stamps and normalises thinking / pro / none. Idempotent:
+ * rows whose settings already match are skipped.
  */
-export const reconcileChatGPTWebLegacySkus = (
-  cards: ChatModelCard[],
+export const applyChatGPTWebCatalogSyncPolicy = (
   existing: readonly DraftModel[],
   mapped: MappedCards,
 ): MappedCards => {
-  const familyCards = cards.filter((card) => CHATGPT_WEB_FAMILY_BASE_RE.test(card.id));
   const itemsById = new Map(mapped.items.map((item) => [item.id, { ...item }]));
   let { updated } = mapped;
-  const existingByKey = new Map(existing.map((model) => [model.modelKey, model]));
-
-  for (const card of familyCards) {
-    const row = existingByKey.get(card.id);
-    if (!row) continue;
-
-    const abilities = abilitiesFromCardFlags(card);
-    const current = itemsById.get(row.id);
-    const policy = applyChatGPTWebModelPolicy({
-      abilities: abilities ?? row.abilities,
-      modelId: card.id,
-      providerId: CHATGPTWEB_PROVIDER,
-      settings: current?.settings ?? row.settings,
-    });
-    const candidate: BatchUpdateItem = {
-      ...(current ?? { id: row.id }),
-      ...(abilities ? { abilities } : {}),
-      id: row.id,
-      settings: (policy.settings ?? {}) as Record<string, unknown>,
-    };
-    if (!metadataChanged(row, candidate)) continue;
-    if (!current) updated += 1;
-    itemsById.set(row.id, candidate);
-  }
 
   for (const row of existing) {
-    if (!isChatGPTWebLegacyPickerId(row.modelKey)) continue;
     const current = itemsById.get(row.id);
     const baseSettings = readSettingsRecord(current?.settings ?? row.settings);
     const policy = applyChatGPTWebModelPolicy({
@@ -363,15 +244,12 @@ export const reconcileChatGPTWebLegacySkus = (
       settings: baseSettings,
     });
     const nextSettings = (policy.settings ?? {}) as Record<string, unknown>;
-    // Stale extendParams (gpt5_6ReasoningEffort leftovers) are dirty even when
-    // legacyAlias is already stamped — skip only when settings already match.
-    if (stableJson(baseSettings) === stableJson(nextSettings) && row.enabled !== false) continue;
+    if (stableJson(baseSettings) === stableJson(nextSettings)) continue;
 
     const candidate: BatchUpdateItem = {
       ...(current ?? { id: row.id }),
       id: row.id,
       settings: nextSettings,
-      ...(row.enabled === false ? { enabled: true } : {}),
     };
     if (!current) updated += 1;
     itemsById.set(row.id, candidate);
@@ -486,24 +364,21 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
       const mapped = mapCardsToBatchUpdate(cards, detail.draft.models);
       const { created, items, total, updated } =
         provider.providerKey === CHATGPTWEB_PROVIDER
-          ? reconcileChatGPTWebLegacySkus(cards, detail.draft.models, mapped)
+          ? applyChatGPTWebCatalogSyncPolicy(detail.draft.models, mapped)
           : mapped;
-      const maybeLegacyCheckModel =
-        provider.providerKey === CHATGPTWEB_PROVIDER &&
-        isChatGPTWebLegacyPickerId(provider.checkModel ?? '');
 
-      const appendSyncSuccessAudit = (db: typeof this.db, extra?: { checkModel?: string }) =>
+      const appendSyncSuccessAudit = (db: typeof this.db) =>
         new PlatformAuditService(db).append({
           action: 'admin.aiModels.syncUpstream',
           actorUserId,
-          afterDiff: { created, total, updated, ...extra },
+          afterDiff: { created, total, updated },
           reason,
           result: 'success',
           targetId: detail.draft.id,
           targetType: 'provider',
         });
 
-      if (items.length > 0 || maybeLegacyCheckModel) {
+      if (items.length > 0) {
         await this.runModelApplyTransaction(
           {
             action: 'admin.aiModels.applyImmediate',
@@ -513,48 +388,19 @@ export abstract class AiCatalogAdminServiceSyncOps extends AiCatalogAdminService
             secretTargetId: detail.draft.id,
           },
           async (scoped) => {
-            // Always CAS-lock the draft, including the check-model-only path
-            // where `items` is empty and `applyModelMutation` would be skipped.
-            const locked = await scoped.getLockedDraft(
-              scoped.db as Transaction,
-              detail.draft.id,
-              detail.draftToken,
+            await scoped.applyModelMutation(
+              actorUserId,
+              {
+                expectedDraftToken: detail.draftToken,
+                models: items,
+                operation: 'batchUpdate',
+                providerId: detail.draft.id,
+                reason,
+              },
+              { allowModelCreate: true },
             );
-            if (items.length > 0) {
-              await scoped.applyModelMutation(
-                actorUserId,
-                {
-                  expectedDraftToken: detail.draftToken,
-                  models: items,
-                  operation: 'batchUpdate',
-                  providerId: detail.draft.id,
-                  reason,
-                },
-                { allowModelCreate: true },
-              );
-            }
-            const checkModelUpgrade =
-              provider.providerKey === CHATGPTWEB_PROVIDER
-                ? resolveChatGPTWebCheckModelUpgrade(
-                    locked.checkModel,
-                    projectCatalogAfterBatch(locked.models, items),
-                  )
-                : undefined;
-            if (checkModelUpgrade) {
-              const repository = new PlatformAiCatalogRepository(scoped.db);
-              await repository.updateProvider(detail.draft.id, {
-                checkModel: checkModelUpgrade,
-                status: 'draft',
-                updatedBy: actorUserId,
-              });
-            }
-            if (items.length > 0 || checkModelUpgrade) {
-              await scoped.publishAfterMutation(actorUserId, detail.draft.id, reason);
-            }
-            await appendSyncSuccessAudit(
-              scoped.db,
-              checkModelUpgrade ? { checkModel: checkModelUpgrade } : undefined,
-            );
+            await scoped.publishAfterMutation(actorUserId, detail.draft.id, reason);
+            await appendSyncSuccessAudit(scoped.db);
           },
         );
       } else {

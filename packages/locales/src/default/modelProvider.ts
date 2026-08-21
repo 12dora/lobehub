@@ -350,8 +350,10 @@ export default {
   'providerModels.item.modelConfig.displayName.title': 'Model Display Name',
   'providerModels.item.modelConfig.extendParams.extra':
     'Choose extended parameters supported by the model. Hover an option to preview controls. Incorrect configs may cause request failures.',
-  'providerModels.item.modelConfig.extendParams.options.chatgptWebReasoningEffort.hint':
-    'For ChatGPT Web GPT-5.x families; Instant / Medium / High / Extra high / Pro, matching chatgpt.com.',
+  'providerModels.item.modelConfig.extendParams.options.chatgptWebThinkingEffort.hint':
+    'For ChatGPT Web thinking SKUs; Standard / Extended / Max, matching chatgpt.com thinking_effort.',
+  'providerModels.item.modelConfig.extendParams.options.chatgptWebProThinkingEffort.hint':
+    'For ChatGPT Web Pro SKUs. The only accepted value is Standard.',
   'providerModels.item.modelConfig.extendParams.options.codexMaxReasoningEffort.hint':
     'For Codex models; controls reasoning intensity.',
   'providerModels.item.modelConfig.extendParams.options.disableContextCaching.hint':

@@ -348,9 +348,9 @@ describe('LobeOpenAI', () => {
       expect(createCall.stream).toBe(true);
     });
 
-    it('never forwards ChatGPT Web instant/pro on chat completions', async () => {
+    it('never forwards ChatGPT Web thinking effort on chat completions', async () => {
       await instance.chat({
-        chatgptWebReasoningEffort: 'instant',
+        chatgptWebThinkingEffort: 'extended',
         messages: [{ content: 'Hello', role: 'user' as const }],
         model: 'gpt-4o',
         temperature: 0.7,
@@ -359,9 +359,9 @@ describe('LobeOpenAI', () => {
       const createCall = (instance['client'].chat.completions.create as Mock).mock.calls.at(
         -1,
       )?.[0];
-      expect(createCall).not.toHaveProperty('chatgptWebReasoningEffort');
+      expect(createCall).not.toHaveProperty('chatgptWebThinkingEffort');
+      expect(createCall).not.toHaveProperty('chatgptWebProThinkingEffort');
       expect(createCall).not.toHaveProperty('reasoning_effort');
-      expect(JSON.stringify(createCall)).not.toMatch(/"(instant|pro)"/);
     });
   });
 
@@ -397,18 +397,18 @@ describe('LobeOpenAI', () => {
       expect(createCall.top_p).toBeUndefined();
     });
 
-    it('never forwards ChatGPT Web instant/pro as reasoning effort', async () => {
+    it('never forwards ChatGPT Web thinking effort as reasoning effort', async () => {
       await instance.chat({
-        chatgptWebReasoningEffort: 'pro',
+        chatgptWebThinkingEffort: 'max',
         messages: [{ content: 'Hello', role: 'user' as const }],
         model: 'gpt-5.6-sol',
         reasoning_effort: 'high' as const,
       });
 
       const createCall = (instance['client'].responses.create as Mock).mock.calls.at(-1)?.[0];
-      expect(createCall).not.toHaveProperty('chatgptWebReasoningEffort');
+      expect(createCall).not.toHaveProperty('chatgptWebThinkingEffort');
+      expect(createCall).not.toHaveProperty('chatgptWebProThinkingEffort');
       expect(createCall.reasoning?.effort).toBe('high');
-      expect(JSON.stringify(createCall)).not.toMatch(/"effort"\s*:\s*"(instant|pro)"/);
     });
 
     it('should add search_context_size to web_search tool when OPENAI_SEARCH_CONTEXT_SIZE is set', async () => {
