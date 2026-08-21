@@ -6,6 +6,7 @@ import { useParams } from 'react-router';
 import { createStoreUpdater } from 'zustand-utils';
 
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import PageExplorer from '@/features/PageExplorer';
 import { usePageStore } from '@/store/page';
 import { getIdFromIdentifier } from '@/utils/identifier';
@@ -23,7 +24,13 @@ const PagesPage = memo(() => {
   storeUpdater('selectedPageId', pageId);
 
   return (
-    <Suspense fallback={<Loading debugId="PagesPage" />}>
+    <Suspense
+      fallback={
+        <DelayedFallback>
+          <Loading debugId="PagesPage" variant={'inline'} />
+        </DelayedFallback>
+      }
+    >
       <PageExplorer pageId={pageId} />
     </Suspense>
   );

@@ -1,10 +1,17 @@
 import { createElement } from 'react';
 
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import dynamic from '@/libs/next/dynamic';
 import { SettingsTabs } from '@/store/global/initialState';
 
-const loading = (debugId: string) => () => createElement(Loading, { debugId });
+/**
+ * Tab chunks land in a few dozen ms, so the loader is delayed: switching tabs
+ * reads as instant instead of flashing a spinner. Inline, never fullscreen —
+ * this renders boxed inside the already-painted settings shell.
+ */
+const loading = (debugId: string) => () =>
+  createElement(DelayedFallback, null, createElement(Loading, { debugId, variant: 'inline' }));
 
 export const componentMap = {
   [SettingsTabs.Advanced]: dynamic(() => import('../advanced'), {

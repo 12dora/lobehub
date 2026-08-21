@@ -313,10 +313,11 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     mocks.updateItem.mockReset().mockResolvedValue(undefined);
   });
 
-  it('shows the real loading state before the first page settles (data undefined)', () => {
+  it('shows the real loading state before the first page settles (data undefined)', async () => {
     mocks.list = pagination({ boundaryData: undefined, isLoadingInitial: true });
     renderPage();
-    expect(screen.getByRole('status')).toBeTruthy();
+    // The loader is delayed (DelayedFallback) so a fast fetch never flashes it.
+    expect(await screen.findByRole('status')).toBeTruthy();
     expect(screen.queryByText('agentCatalog.list.empty.default')).toBeNull();
   });
 

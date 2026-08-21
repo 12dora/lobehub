@@ -7,6 +7,7 @@ import {
   type BootFrameScheduler,
   BootPhaseOutletMarker,
   createRouterBootPhase,
+  ROUTE_FALLBACK_DELAY_MS,
   RouteFallback,
   RouterBootPhaseContext,
   RouterBootRoot,
@@ -131,7 +132,9 @@ describe('boot splash topology', () => {
     layout.resolve();
     await screen.findByTestId('layout');
 
-    expect(screen.getByTestId('route-fallback').dataset.variant).toBe('inline');
+    // The leaf fallback is delayed, so nothing paints for the grace period; when
+    // it finally does it is the inline loader, never a second splash.
+    expect((await screen.findByTestId('route-fallback')).dataset.variant).toBe('inline');
     expect(splash()).toBeInTheDocument();
     expect(bootPhase.isBooting()).toBe(true);
 
@@ -242,12 +245,12 @@ describe('boot splash topology', () => {
 
     // Any route fallback rendered under this (settled) phase is the inline
     // loader, never the boot splash.
-    const { getByTestId, unmount } = render(
+    const { findByTestId, unmount } = render(
       <RouterBootPhaseContext value={bootPhase}>
         <RouteFallback debugId="post-boot" />
       </RouterBootPhaseContext>,
     );
-    expect(getByTestId('route-fallback').dataset.variant).toBe('inline');
+    expect((await findByTestId('route-fallback')).dataset.variant).toBe('inline');
     unmount();
 
     later.resolve();
@@ -424,9 +427,24 @@ describe('createRouterBootPhase', () => {
 });
 
 describe('RouteFallback', () => {
-  it('always renders the inline loader', () => {
-    render(<RouteFallback debugId="detached" />);
+  it('paints nothing during the grace period, then the inline loader', async () => {
+    vi.useFakeTimers();
+    try {
+      render(<RouteFallback debugId="detached" />);
 
-    expect(screen.getByTestId('route-fallback').dataset.variant).toBe('inline');
+      expect(screen.queryByTestId('route-fallback')).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ROUTE_FALLBACK_DELAY_MS - 1);
+      });
+      expect(screen.queryByTestId('route-fallback')).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(screen.getByTestId('route-fallback').dataset.variant).toBe('inline');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

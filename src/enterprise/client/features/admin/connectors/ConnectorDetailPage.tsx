@@ -5,6 +5,7 @@ import { useParams } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import type { AdminAccessContextValue } from '@/enterprise/client/providers/AdminAccessProvider';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
@@ -82,7 +83,11 @@ const ConnectorDetailPage = memo(() => {
       error={error}
       errorVariant={'page'}
       isLoading={isLoading}
-      loading={<Loading debugId={'AdminConnectorDetail'} />}
+      loading={
+        <DelayedFallback>
+          <Loading debugId={'AdminConnectorDetail'} variant={'inline'} />
+        </DelayedFallback>
+      }
       onRetry={() => void mutate()}
     >
       {data ? (

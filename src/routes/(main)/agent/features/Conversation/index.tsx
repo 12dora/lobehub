@@ -4,6 +4,7 @@ import React, { memo, Suspense, useCallback } from 'react';
 
 import DragUploadZone, { type DroppedLocalPath, useUploadFiles } from '@/components/DragUploadZone';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import { insertLocalPathTags } from '@/features/ChatInput/InputEditor/insertLocalFileTags';
 import { useEffectiveWorkingDirectory } from '@/hooks/useEffectiveWorkingDirectory';
 import { useAgentStore } from '@/store/agent';
@@ -39,7 +40,13 @@ const ChatConversation = memo(() => {
   }, []);
 
   return (
-    <Suspense fallback={<Loading debugId="Agent > ChatConversation" />}>
+    <Suspense
+      fallback={
+        <DelayedFallback>
+          <Loading debugId="Agent > ChatConversation" variant={'inline'} />
+        </DelayedFallback>
+      }
+    >
       <DragUploadZone
         enableLocalPathReference={enableLocalPathReference}
         style={wrapperStyle}

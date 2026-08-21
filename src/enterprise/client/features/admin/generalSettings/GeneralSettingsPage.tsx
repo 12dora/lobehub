@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import { MAX_WIDTH } from '@/const/layoutTokens';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
@@ -46,7 +47,12 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   } = useGeneralSettingsEditor({ embedded });
 
   const renderLoaded = () => {
-    if (!draft) return <Loading debugId="AdminGeneralSettings > Hydrate" />;
+    if (!draft)
+      return (
+        <DelayedFallback>
+          <Loading debugId="AdminGeneralSettings > Hydrate" variant={'inline'} />
+        </DelayedFallback>
+      );
     const disabled = !canUpdate || serverStale || revisionConflict;
 
     return (
@@ -119,7 +125,11 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       error={error}
       errorVariant="page"
       isLoading={isLoading}
-      loading={<Loading debugId="AdminGeneralSettings" />}
+      loading={
+        <DelayedFallback>
+          <Loading debugId="AdminGeneralSettings" variant={'inline'} />
+        </DelayedFallback>
+      }
       onRetry={() => void mutate()}
     >
       {data ? renderLoaded() : null}

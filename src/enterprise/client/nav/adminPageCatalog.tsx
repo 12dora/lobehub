@@ -2,6 +2,7 @@ import { Text } from '@lobehub/ui';
 import { lazy, type ReactNode, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import NotFoundPage from '@/enterprise/client/features/admin/pages/NotFoundPage';
 
 /**
@@ -105,7 +106,21 @@ const AdminLazyFallback = () => {
   );
 };
 
-const withLazy = (node: ReactNode) => <Suspense fallback={<AdminLazyFallback />}>{node}</Suspense>;
+/**
+ * Admin page chunks normally land in a few dozen ms, so the fallback is delayed:
+ * a first click reads as instant instead of flashing "loading…".
+ */
+const withLazy = (node: ReactNode) => (
+  <Suspense
+    fallback={
+      <DelayedFallback>
+        <AdminLazyFallback />
+      </DelayedFallback>
+    }
+  >
+    {node}
+  </Suspense>
+);
 
 /**
  * Implemented page registry: id → stable component identity token + element factory.

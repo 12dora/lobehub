@@ -5,6 +5,7 @@ import { useLocation, useNavigation } from 'react-router';
 
 import BootSplashOverlay from '@/components/Loading/BootSplashOverlay';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 
 /**
  * Boot phase for one router instance.
@@ -206,13 +207,29 @@ export const useRouterBootPhase = () => use(RouterBootPhaseContext);
 const useIsBooting = (bootPhase: RouterBootPhase) =>
   useSyncExternalStore(bootPhase.subscribe, bootPhase.isBooting, bootPhase.isBooting);
 
-/** Suspense fallback for lazily-loaded route elements — always inline. */
+/** Grace period before a route fallback is allowed to paint a loader. */
+export const ROUTE_FALLBACK_DELAY_MS = 200;
+
+/**
+ * Suspense fallback for lazily-loaded route elements — always inline, and never
+ * visible for the first {@link ROUTE_FALLBACK_DELAY_MS}.
+ *
+ * Route chunks normally land in a few dozen ms, so painting a spinner on mount
+ * turned every first click into a flash. The boot retain below is deliberately
+ * *not* delayed: boot settlement must still wait on a cold deep link even while
+ * this boundary is rendering nothing, and the root `BootSplashOverlay` is what
+ * covers the screen in that window.
+ */
 export const RouteFallback = ({ debugId }: { debugId: string }) => {
   const bootPhase = useRouterBootPhase();
 
   useEffect(() => bootPhase.retainFallback(), [bootPhase]);
 
-  return <Loading debugId={debugId} variant={'inline'} />;
+  return (
+    <DelayedFallback delayMs={ROUTE_FALLBACK_DELAY_MS}>
+      <Loading debugId={debugId} variant={'inline'} />
+    </DelayedFallback>
+  );
 };
 
 /** The root-level splash, shown for as long as the phase is booting. */

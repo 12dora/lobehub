@@ -38,10 +38,13 @@ export enum GroupKey {
 const ACCORDION_KEYS = new Set<string>([GroupKey.Recents, GroupKey.Agent, GroupKey.Private]);
 
 /**
- * Hover prefetch for the two heaviest sidebar destinations. Their route chunks
- * are lazy (`dynamicElement` / `dynamicLayout`), so a cold first click suspends
- * and shows the outlet fallback. Warming the exact same module ids the router
- * imports means the click usually resolves from cache instead.
+ * Hover prefetch for the heaviest sidebar destinations. Their route chunks are
+ * lazy (`dynamicElement` / `dynamicLayout`), so a cold first click suspends and
+ * shows the outlet fallback. Warming the exact same module ids the router
+ * imports means the click usually resolves from cache instead — the specifiers
+ * must stay character-identical so Vite treats them as the same chunk.
+ *
+ * Each entry lists the layout(s) plus the index leaf the URL actually lands on.
  *
  * Keep in sync with `src/spa/router/desktopRouter.config*.tsx`; a stale entry
  * only wastes a prefetch, it can never break navigation.
@@ -55,6 +58,15 @@ const ROUTE_CHUNK_PREFETCHERS: Record<string, () => Promise<unknown>[]> = {
   '/image': () => [
     import('@/routes/(main)/(create)/image/_layout'),
     import('@/routes/(main)/(create)/image'),
+  ],
+  '/memory': () => [
+    import('@/routes/(main)/memory/_layout'),
+    import('@/routes/(main)/memory/(home)'),
+  ],
+  '/resource': () => [
+    import('@/routes/(main)/resource/_layout'),
+    import('@/routes/(main)/resource/(home)/_layout'),
+    import('@/routes/(main)/resource/(home)'),
   ],
 };
 

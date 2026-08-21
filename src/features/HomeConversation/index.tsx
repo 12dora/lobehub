@@ -3,6 +3,7 @@
 import { memo } from 'react';
 
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import dynamic from '@/libs/next/dynamic';
 
 import HomeConversationHydration from './HomeConversationHydration';
@@ -12,10 +13,18 @@ import { type HomeConversationParams } from './useHomeConversation';
 // them lazy so opening the app on `/` does not pull the whole conversation
 // tree.
 const AgentSurface = dynamic(() => import('./AgentSurface'), {
-  loading: () => <Loading debugId="HomeConversation > Agent" variant={'inline'} />,
+  loading: () => (
+    <DelayedFallback>
+      <Loading debugId="HomeConversation > Agent" variant={'inline'} />
+    </DelayedFallback>
+  ),
 });
 const GroupSurface = dynamic(() => import('./GroupSurface'), {
-  loading: () => <Loading debugId="HomeConversation > Group" variant={'inline'} />,
+  loading: () => (
+    <DelayedFallback>
+      <Loading debugId="HomeConversation > Group" variant={'inline'} />
+    </DelayedFallback>
+  ),
 });
 
 /**

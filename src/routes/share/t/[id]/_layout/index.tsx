@@ -9,6 +9,7 @@ import { Link, Outlet } from 'react-router';
 
 import { ProductLogo } from '@/components/Branding';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import { RouteMetaBridge } from '@/features/RouteMeta';
 import { trackLoginOrSignupClicked } from '@/features/User/UserLoginOrSignup/trackLoginOrSignupClicked';
 import { useIsDark } from '@/hooks/useIsDark';
@@ -73,7 +74,13 @@ const ShareTopicLayout = memo<PropsWithChildren>(({ children }) => {
         </Flexbox>
         <Flexbox horizontal className={styles.content} style={{ overflow: 'hidden' }}>
           <Flexbox flex={1} style={{ overflow: 'hidden' }}>
-            <Suspense fallback={<Loading debugId="share layout" />}>
+            <Suspense
+              fallback={
+                <DelayedFallback>
+                  <Loading debugId="share layout" variant={'inline'} />
+                </DelayedFallback>
+              }
+            >
               {children ?? <Outlet />}
             </Suspense>
           </Flexbox>

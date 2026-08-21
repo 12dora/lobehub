@@ -5,6 +5,7 @@ import { type FC } from 'react';
 import { memo, Suspense } from 'react';
 
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import WideScreenContainer from '@/features/WideScreenContainer';
 import { useAgentGroupStore } from '@/store/agentGroup';
 import { agentGroupSelectors } from '@/store/agentGroup/selectors';
@@ -51,7 +52,13 @@ const ProfileArea = memo(() => {
 
 const GroupProfile: FC = () => {
   return (
-    <Suspense fallback={<Loading debugId="GroupProfile" />}>
+    <Suspense
+      fallback={
+        <DelayedFallback>
+          <Loading debugId="GroupProfile" variant={'inline'} />
+        </DelayedFallback>
+      }
+    >
       <StoreSync />
       <Flexbox horizontal height={'100%'} width={'100%'}>
         <ProfileArea />

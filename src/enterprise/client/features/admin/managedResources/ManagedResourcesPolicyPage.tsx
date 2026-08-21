@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { MANAGED_RESOURCE_NAV_LABEL_KEY } from './controller';
@@ -46,7 +47,12 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
 
   const renderPolicySection = () => {
     if (!canView) return null;
-    if (!draft) return <Loading debugId="AdminManagedResources > Hydrate" />;
+    if (!draft)
+      return (
+        <DelayedFallback>
+          <Loading debugId="AdminManagedResources > Hydrate" variant={'inline'} />
+        </DelayedFallback>
+      );
 
     return (
       <>
@@ -171,7 +177,11 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       error={error}
       errorVariant="page"
       isLoading={isLoading}
-      loading={<Loading debugId="AdminManagedResources" />}
+      loading={
+        <DelayedFallback>
+          <Loading debugId="AdminManagedResources" variant={'inline'} />
+        </DelayedFallback>
+      }
       onRetry={() => void mutate()}
     >
       {data ? body : null}

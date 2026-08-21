@@ -4,6 +4,7 @@ import { cssVar } from 'antd-style';
 import { memo, Suspense, useState } from 'react';
 
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 
@@ -77,7 +78,15 @@ const RightPanel = memo<RightPanelProps>(
         }}
         {...rest}
       >
-        <Suspense fallback={<Loading debugId={'RightPanel'} />}>{children}</Suspense>
+        <Suspense
+          fallback={
+            <DelayedFallback>
+              <Loading debugId={'RightPanel'} variant={'inline'} />
+            </DelayedFallback>
+          }
+        >
+          {children}
+        </Suspense>
       </DraggablePanel>
     );
   },

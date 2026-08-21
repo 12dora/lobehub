@@ -111,7 +111,8 @@ describe('AgentListPage end-to-end through real SWR + AsyncBoundary', () => {
     mocks.list.mockReturnValueOnce(first.promise);
     renderPage();
 
-    expect(screen.getByRole('status')).toBeTruthy();
+    // The loader is delayed (DelayedFallback) so a fast fetch never flashes it.
+    expect(await screen.findByRole('status')).toBeTruthy();
 
     await act(async () => {
       first.resolve({ items: [item('a')], nextCursor: null });

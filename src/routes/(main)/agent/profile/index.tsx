@@ -6,6 +6,7 @@ import { memo, Suspense } from 'react';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import AgentBuilder from '@/features/AgentBuilder';
 import { ManagedAgentConfigurationBoundary } from '@/features/ManagedResources';
 import WideScreenContainer from '@/features/WideScreenContainer';
@@ -106,7 +107,13 @@ const AgentBuilderSlot = memo(() => {
 const AgentProfile: FC = () => {
   return (
     <ManagedAgentConfigurationBoundary>
-      <Suspense fallback={<Loading debugId="AgentProfile" />}>
+      <Suspense
+        fallback={
+          <DelayedFallback>
+            <Loading debugId="AgentProfile" variant={'inline'} />
+          </DelayedFallback>
+        }
+      >
         <ProfileProvider>
           <Flexbox horizontal height={'100%'} width={'100%'}>
             <ProfileArea />

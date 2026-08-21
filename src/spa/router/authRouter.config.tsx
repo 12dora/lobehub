@@ -5,6 +5,7 @@ import type { RouteObject } from 'react-router';
 import { Outlet, useRouteError } from 'react-router';
 
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import AuthShell from '@/features/AuthShell';
 import { isChunkLoadError, notifyChunkError } from '@/utils/chunkError';
 
@@ -129,7 +130,15 @@ export const authRoutes: RouteObject[] = [
     ],
     element: (
       <AuthShell>
-        <Suspense fallback={<Loading debugId="AuthRoutes" />}>
+        {/* Delayed + inline: the auth shell is already painted around this, and
+            the route chunk normally lands before the loader would appear. */}
+        <Suspense
+          fallback={
+            <DelayedFallback>
+              <Loading debugId="AuthRoutes" variant={'inline'} />
+            </DelayedFallback>
+          }
+        >
           <Outlet />
         </Suspense>
       </AuthShell>

@@ -10,6 +10,7 @@ import { useSearchParams } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
@@ -242,7 +243,11 @@ const AgentListPage = memo(() => {
         error={list.error}
         isEmpty={false}
         isLoading={list.isLoadingInitial}
-        loading={<Loading debugId="AdminAgentList" />}
+        loading={
+          <DelayedFallback>
+            <Loading debugId="AdminAgentList" variant={'inline'} />
+          </DelayedFallback>
+        }
         onRetry={list.retry}
       >
         <Flexbox gap={12}>

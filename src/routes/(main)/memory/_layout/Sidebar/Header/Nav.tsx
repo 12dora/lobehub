@@ -29,6 +29,33 @@ interface Item {
   url?: string;
 }
 
+/**
+ * Hover prefetch for the memory leaves. Each specifier must stay
+ * character-identical to the one in `src/spa/router/desktopRouter.config*.tsx`
+ * so Vite resolves them to the same chunk; a stale entry only wastes a
+ * prefetch, it can never break navigation.
+ */
+const MEMORY_CHUNK_PREFETCHERS: Record<string, () => Promise<unknown>> = {
+  '/memory': () => import('@/routes/(main)/memory/(home)'),
+  '/memory/activities': () => import('@/routes/(main)/memory/activities'),
+  '/memory/contexts': () => import('@/routes/(main)/memory/contexts'),
+  '/memory/experiences': () => import('@/routes/(main)/memory/experiences'),
+  '/memory/identities': () => import('@/routes/(main)/memory/identities'),
+  '/memory/preferences': () => import('@/routes/(main)/memory/preferences'),
+};
+
+const prefetchedRoutes = new Set<string>();
+
+const prefetchRouteChunk = (url: string) => {
+  const load = MEMORY_CHUNK_PREFETCHERS[url];
+  if (!load || prefetchedRoutes.has(url)) return;
+
+  prefetchedRoutes.add(url);
+  // A failed prefetch must stay silent (offline, deploy skew): let the real
+  // navigation surface the error, and allow a later hover to retry.
+  void load().catch(() => prefetchedRoutes.delete(url));
+};
+
 enum MemoryTabKey {
   Activities = 'activities',
   Contexts = 'contexts',
@@ -125,6 +152,9 @@ const Nav = memo(() => {
               if (item.url) {
                 navigate(item.url);
               }
+            }}
+            onMouseEnter={() => {
+              if (item.url) prefetchRouteChunk(item.url);
             }}
           >
             <NavItem active={tab === item.key} icon={item.icon} title={item.title} />

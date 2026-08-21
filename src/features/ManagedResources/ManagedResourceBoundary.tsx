@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 
 import AsyncError from '@/components/AsyncError';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DelayedFallback from '@/components/Loading/DelayedFallback';
 import type { ManagedResourceKind } from '@/const/platform/managedResources';
 
 import { ManagedResourceNotice } from './ManagedResourceNotice';
@@ -22,7 +23,9 @@ export const ManagedResourceBoundary = ({ children, resource }: ManagedResourceB
   const content = error ? (
     <AsyncError error={error} variant="page" onRetry={() => void refresh()} />
   ) : loading ? (
-    <Loading debugId={`ManagedResourceBoundary > ${resource}`} />
+    <DelayedFallback>
+      <Loading debugId={`ManagedResourceBoundary > ${resource}`} variant={'inline'} />
+    </DelayedFallback>
   ) : managed ? (
     <ManagedResourceNotice resource={resource} />
   ) : (

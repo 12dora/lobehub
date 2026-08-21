@@ -91,6 +91,14 @@ vi.mock('@/store/global', () => ({
   useGlobalStore: (selector: (state: MockGlobalState) => unknown) => selector(mocks.globalState),
 }));
 
+// The sidebar layout policy hook reads this context-backed store, which has no
+// provider here. Reporting "not hydrated" keeps the policy at its user-controlled
+// default and issues no platform RPC — this suite is about sidebar ordering.
+vi.mock('@/store/serverConfig', () => ({
+  useServerConfigStore: (selector: (state: unknown) => unknown) =>
+    selector({ serverConfig: {}, serverConfigInit: false }),
+}));
+
 beforeEach(() => {
   mocks.updateSystemStatus.mockReset();
   mocks.navLayout = {
