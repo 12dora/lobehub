@@ -3,6 +3,8 @@ import { z } from 'zod';
 import type { ConversationContext } from '../../conversation';
 import type { UploadFileItem } from '../../files';
 import type { MessageSemanticSearchChunk } from '../../rag';
+import type { TopicApprovalMode } from '../../tool/intervention';
+import { topicApprovalModeSchema } from '../../tool/intervention';
 import type { ChatMessageError } from '../common/base';
 import { ChatMessageErrorSchema } from '../common/base';
 import type {
@@ -18,13 +20,19 @@ import type { UIChatMessage } from './chat';
 import { SemanticSearchChunkSchema } from './rag';
 
 export type CreateMessageRoleType =
-  | 'user'
-  | 'assistant'
-  | 'tool'
-  | 'task'
-  | 'supervisor'
-  | 'verify'
-  | 'taskCallback';
+  'user' | 'assistant' | 'tool' | 'task' | 'supervisor' | 'verify' | 'taskCallback';
+
+/**
+ * Optional topic to create atomically with a message (client-runtime first send).
+ * `metadata.approvalMode` is snapshotted server-side when omitted.
+ */
+export interface CreateMessageNewTopicParams {
+  metadata?: {
+    approvalMode?: TopicApprovalMode;
+  };
+  title?: string;
+  topicMessageIds?: string[];
+}
 
 export interface CreateMessageParams extends Partial<
   Omit<UIChatMessage, 'content' | 'role' | 'topicId' | 'chunksList'>
@@ -36,6 +44,11 @@ export interface CreateMessageParams extends Partial<
   files?: string[];
   groupId?: string;
   model?: string;
+  /**
+   * When set and `topicId` is absent, the server creates a personal topic
+   * (with an approval-mode snapshot) and attaches this message to it.
+   */
+  newTopic?: CreateMessageNewTopicParams;
   provider?: string;
   role: CreateMessageRoleType;
   /**
@@ -68,20 +81,25 @@ export interface CreateNewMessageParams {
   // ========== Model info ==========
   model?: string;
 
+  /**
+   * Create a topic with this message (client-runtime first send).
+   * Server snapshots `metadata.approvalMode` when the client omits it.
+   */
+  newTopic?: CreateMessageNewTopicParams;
   // ========== Grouping ==========
   parentId?: string;
   plugin?: ChatPluginPayload;
-  provider?: string;
 
+  provider?: string;
   // ========== Required fields ==========
   role: CreateMessageRoleType;
+
   targetId?: string | null;
 
   threadId?: string;
 
   // ========== Tool related ==========
   tool_call_id?: string;
-
   // ========== Context ==========
   topicId?: string;
   // ========== Metadata ==========
@@ -224,6 +242,17 @@ export const CreateNewMessageParamsSchema = z
     topicId: z.string().nullish(),
     threadId: z.string().nullish(),
     targetId: z.string().nullish(),
+    newTopic: z
+      .object({
+        metadata: z
+          .object({
+            approvalMode: topicApprovalModeSchema.optional(),
+          })
+          .optional(),
+        title: z.string().optional(),
+        topicMessageIds: z.array(z.string()).optional(),
+      })
+      .optional(),
     // Model info
     model: z.string().nullish(),
     provider: z.string().nullish(),

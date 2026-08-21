@@ -2000,6 +2000,8 @@ export class MessageModel {
     ragQueryId,
     updatedAt,
     createdAt,
+    // Topic-create payload is handled by MessageService; never persist it as a column.
+    newTopic: _newTopic,
     ...message
   }: CreateMessageParams): SplitCreateMessageParams => ({
     insert: {

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { type LobeChatDatabase } from '@lobechat/database';
-import { messages, sessions, topics } from '@lobechat/database/schemas';
+import { messages, sessions, topics, userSettings } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -114,6 +114,79 @@ describe('Message Router Integration Tests', () => {
         content: 'Test message',
         role: 'user',
       });
+    });
+
+    it('creates a topic with client-supplied newTopic.metadata.approvalMode', async () => {
+      const caller = messageRouter.createCaller(createTestContext(userId));
+
+      const result = await caller.createMessage({
+        content: 'First send',
+        newTopic: {
+          metadata: { approvalMode: 'auto-run' },
+          title: 'Client topic',
+        },
+        role: 'user',
+        sessionId: testSessionId,
+      });
+
+      const [createdMessage] = await serverDB
+        .select()
+        .from(messages)
+        .where(eq(messages.id, result.id));
+      expect(createdMessage.topicId).toBeTruthy();
+
+      const [createdTopic] = await serverDB
+        .select()
+        .from(topics)
+        .where(eq(topics.id, createdMessage.topicId!));
+      expect(createdTopic.title).toBe('Client topic');
+      expect(createdTopic.metadata).toEqual({ approvalMode: 'auto-run' });
+    });
+
+    it('snapshots built-in manual when newTopic omits approvalMode', async () => {
+      const caller = messageRouter.createCaller(createTestContext(userId));
+
+      const result = await caller.createMessage({
+        content: 'Legacy first send',
+        newTopic: { title: 'Legacy client topic' },
+        role: 'user',
+        sessionId: testSessionId,
+      });
+
+      const [createdMessage] = await serverDB
+        .select()
+        .from(messages)
+        .where(eq(messages.id, result.id));
+      const [createdTopic] = await serverDB
+        .select()
+        .from(topics)
+        .where(eq(topics.id, createdMessage.topicId!));
+      expect(createdTopic.metadata).toEqual({ approvalMode: 'manual' });
+    });
+
+    it('snapshots the user preference when newTopic omits approvalMode', async () => {
+      await serverDB.insert(userSettings).values({
+        id: userId,
+        tool: { humanIntervention: { approvalMode: 'allow-list' } },
+      });
+
+      const caller = messageRouter.createCaller(createTestContext(userId));
+      const result = await caller.createMessage({
+        content: 'Pref first send',
+        newTopic: { title: 'Pref topic' },
+        role: 'user',
+        sessionId: testSessionId,
+      });
+
+      const [createdMessage] = await serverDB
+        .select()
+        .from(messages)
+        .where(eq(messages.id, result.id));
+      const [createdTopic] = await serverDB
+        .select()
+        .from(topics)
+        .where(eq(topics.id, createdMessage.topicId!));
+      expect(createdTopic.metadata).toEqual({ approvalMode: 'allow-list' });
     });
 
     it('should create message with threadId', async () => {

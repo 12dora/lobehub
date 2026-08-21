@@ -9,6 +9,8 @@ import {
 import { createTimingHelpers, getDurationMs } from '@lobechat/utils';
 
 import { MessageModel } from '@/database/models/message';
+import { TopicModel } from '@/database/models/topic';
+import { applyTopicApprovalSnapshot } from '@/server/services/topicApproval';
 
 import { FileService } from '../file';
 
@@ -93,12 +95,20 @@ export type MessageBatchOperation =
  * After performing update/delete operations, conditionally returns message list based on sessionId/topicId.
  */
 export class MessageService {
+  private readonly db: LobeChatDatabase;
+  private readonly userId: string;
+  private readonly workspaceId?: string;
   private messageModel: MessageModel;
+  private topicModel: TopicModel;
   private fileService: FileService;
   private compressionRepository: CompressionRepository;
 
   constructor(db: LobeChatDatabase, userId: string, workspaceId?: string) {
+    this.db = db;
+    this.userId = userId;
+    this.workspaceId = workspaceId;
     this.messageModel = new MessageModel(db, userId, workspaceId);
+    this.topicModel = new TopicModel(db, userId, workspaceId);
     this.fileService = new FileService(db, userId, workspaceId);
     this.compressionRepository = new CompressionRepository(db, userId, workspaceId);
   }
@@ -237,18 +247,38 @@ export class MessageService {
    * reducing the need for separate refresh calls and improving performance.
    */
   async createMessage(params: CreateMessageParams): Promise<CreateMessageResult> {
+    const { newTopic, ...rest } = params;
     // RR5-1: never let a client stamp the server-owned intervention kind on a created tool message.
-    const sanitized: CreateMessageParams = params.pluginIntervention
+    const sanitized: CreateMessageParams = rest.pluginIntervention
       ? {
-          ...params,
-          pluginIntervention: stripReservedInterventionFields(params.pluginIntervention),
+          ...rest,
+          pluginIntervention: stripReservedInterventionFields(rest.pluginIntervention),
         }
-      : params;
+      : rest;
+
+    let topicId = sanitized.topicId;
+    if (!topicId && newTopic) {
+      const topic = await this.topicModel.create({
+        agentId: sanitized.agentId,
+        groupId: sanitized.groupId,
+        messages: newTopic.topicMessageIds,
+        metadata: await applyTopicApprovalSnapshot({
+          db: this.db,
+          metadata: newTopic.metadata,
+          userId: this.userId,
+          workspaceId: this.workspaceId,
+        }),
+        sessionId: sanitized.sessionId,
+        title: newTopic.title,
+      });
+      topicId = topic.id;
+    }
+
     // 1. Create the message (using agentId). Honor a caller-pre-allocated id
     //    when present (passing `undefined` falls back to the model's genId
     //    default), so flows that chain parentId across not-yet-created messages
     //    (e.g. the subagent run coordinator) can assign ids up front.
-    const item = await this.messageModel.create(sanitized, sanitized.id);
+    const item = await this.messageModel.create({ ...sanitized, topicId }, sanitized.id);
 
     // 2. Query all messages for this agent/topic
     // Use agentId field for query
@@ -259,7 +289,7 @@ export class MessageService {
         groupId: params.groupId,
         pageSize: 9999,
         threadId: params.threadId,
-        topicId: params.topicId,
+        topicId,
       },
       {
         postProcessUrl: this.postProcessUrl,

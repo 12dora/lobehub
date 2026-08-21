@@ -2,17 +2,39 @@ import { type LobeChatDatabase } from '@lobechat/database';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MessageModel } from '@/database/models/message';
+import { TopicModel } from '@/database/models/topic';
 import { FileService } from '@/server/services/file';
 
 import { MessageService } from '../index';
 
+const mockApplyTopicApprovalSnapshot = vi.hoisted(() =>
+  vi.fn(
+    async ({
+      metadata,
+      workspaceId,
+    }: {
+      metadata?: { approvalMode?: string };
+      workspaceId?: string | null;
+    }) => {
+      const { approvalMode, ...rest } = metadata ?? {};
+      if (workspaceId) return Object.keys(rest).length > 0 ? rest : undefined;
+      return { ...rest, approvalMode: approvalMode ?? 'manual' };
+    },
+  ),
+);
+
 vi.mock('@/database/models/message');
+vi.mock('@/database/models/topic');
 vi.mock('@/server/services/file');
+vi.mock('@/server/services/topicApproval', () => ({
+  applyTopicApprovalSnapshot: mockApplyTopicApprovalSnapshot,
+}));
 
 describe('MessageService', () => {
   let messageService: MessageService;
   let mockDB: LobeChatDatabase;
   let mockMessageModel: MessageModel;
+  let mockTopicModel: { create: ReturnType<typeof vi.fn> };
   let mockFileService: FileService;
   const userId = 'test-user-id';
 
@@ -30,6 +52,9 @@ describe('MessageService', () => {
       updatePluginState: vi.fn(),
       updateToolMessage: vi.fn(),
     } as any;
+    mockTopicModel = {
+      create: vi.fn().mockResolvedValue({ id: 'topic-new' }),
+    };
 
     mockFileService = {
       getFullFileUrl: vi.fn().mockImplementation((path) => Promise.resolve(`/files${path}`)),
@@ -37,7 +62,22 @@ describe('MessageService', () => {
 
     // Mock constructors
     vi.mocked(MessageModel).mockImplementation(() => mockMessageModel);
+    vi.mocked(TopicModel).mockImplementation(() => mockTopicModel as any);
     vi.mocked(FileService).mockImplementation(() => mockFileService);
+    mockApplyTopicApprovalSnapshot.mockClear();
+    mockApplyTopicApprovalSnapshot.mockImplementation(
+      async ({
+        metadata,
+        workspaceId,
+      }: {
+        metadata?: { approvalMode?: string };
+        workspaceId?: string | null;
+      }) => {
+        const { approvalMode, ...rest } = metadata ?? {};
+        if (workspaceId) return Object.keys(rest).length > 0 ? rest : undefined;
+        return { ...rest, approvalMode: approvalMode ?? 'manual' };
+      },
+    );
 
     messageService = new MessageService(mockDB, userId);
   });
@@ -358,7 +398,11 @@ describe('MessageService', () => {
 
       const result = await messageService.createMessage(params as any);
 
-      expect(mockMessageModel.create).toHaveBeenCalledWith(params, undefined);
+      expect(mockMessageModel.create).toHaveBeenCalledWith(
+        expect.objectContaining(params),
+        undefined,
+      );
+      expect(mockTopicModel.create).not.toHaveBeenCalled();
       expect(mockMessageModel.query).toHaveBeenCalledWith(
         {
           agentId: 'agent-1',
@@ -376,6 +420,115 @@ describe('MessageService', () => {
         id: 'msg-1',
         messages: mockMessages,
       });
+    });
+
+    it('creates a topic with client-supplied approvalMode and attaches the message', async () => {
+      const createdMessage = { id: 'msg-1', content: 'Hello', topicId: 'topic-new' };
+      vi.mocked(mockMessageModel.create).mockResolvedValue(createdMessage as any);
+      vi.mocked(mockMessageModel.query).mockResolvedValue([createdMessage] as any);
+
+      const result = await messageService.createMessage({
+        agentId: 'agent-1',
+        content: 'Hello',
+        newTopic: {
+          metadata: { approvalMode: 'auto-run' },
+          title: 'First send',
+          topicMessageIds: ['old-1'],
+        },
+        role: 'user',
+      } as any);
+
+      expect(mockApplyTopicApprovalSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: { approvalMode: 'auto-run' },
+          userId,
+        }),
+      );
+      expect(mockTopicModel.create).toHaveBeenCalledWith({
+        agentId: 'agent-1',
+        groupId: undefined,
+        messages: ['old-1'],
+        metadata: { approvalMode: 'auto-run' },
+        sessionId: undefined,
+        title: 'First send',
+      });
+      expect(mockMessageModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ topicId: 'topic-new' }),
+        undefined,
+      );
+      expect(mockMessageModel.create.mock.calls[0][0]).not.toHaveProperty('newTopic');
+      expect(mockMessageModel.query).toHaveBeenCalledWith(
+        expect.objectContaining({ topicId: 'topic-new' }),
+        expect.anything(),
+      );
+      expect(result.id).toBe('msg-1');
+    });
+
+    it('snapshots built-in manual when newTopic omits approvalMode', async () => {
+      const createdMessage = { id: 'msg-1', content: 'Hello', topicId: 'topic-new' };
+      vi.mocked(mockMessageModel.create).mockResolvedValue(createdMessage as any);
+      vi.mocked(mockMessageModel.query).mockResolvedValue([createdMessage] as any);
+
+      await messageService.createMessage({
+        agentId: 'agent-1',
+        content: 'Hello',
+        newTopic: { title: 'First send', topicMessageIds: [] },
+        role: 'user',
+      } as any);
+
+      expect(mockApplyTopicApprovalSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: undefined, userId }),
+      );
+      expect(mockTopicModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: { approvalMode: 'manual' },
+          title: 'First send',
+        }),
+      );
+    });
+
+    it('does not create a topic when topicId is already provided', async () => {
+      const createdMessage = { id: 'msg-1', content: 'Hello', topicId: 'topic-1' };
+      vi.mocked(mockMessageModel.create).mockResolvedValue(createdMessage as any);
+      vi.mocked(mockMessageModel.query).mockResolvedValue([createdMessage] as any);
+
+      await messageService.createMessage({
+        agentId: 'agent-1',
+        content: 'Hello',
+        newTopic: { title: 'Ignored' },
+        role: 'user',
+        topicId: 'topic-1',
+      } as any);
+
+      expect(mockTopicModel.create).not.toHaveBeenCalled();
+      expect(mockApplyTopicApprovalSnapshot).not.toHaveBeenCalled();
+    });
+
+    it('strips client approvalMode when creating a workspace topic', async () => {
+      messageService = new MessageService(mockDB, userId, 'ws-1');
+      const createdMessage = { id: 'msg-1', content: 'Hello', topicId: 'topic-new' };
+      vi.mocked(mockMessageModel.create).mockResolvedValue(createdMessage as any);
+      vi.mocked(mockMessageModel.query).mockResolvedValue([createdMessage] as any);
+
+      await messageService.createMessage({
+        agentId: 'agent-1',
+        content: 'Hello',
+        newTopic: {
+          metadata: { approvalMode: 'auto-run', workingDirectory: '/tmp' },
+          title: 'Workspace first send',
+        },
+        role: 'user',
+      } as any);
+
+      expect(mockApplyTopicApprovalSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: 'ws-1' }),
+      );
+      expect(mockTopicModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: { workingDirectory: '/tmp' },
+        }),
+      );
+      expect(mockTopicModel.create.mock.calls[0][0].metadata).not.toHaveProperty('approvalMode');
     });
 
     it('should create message with topicId and groupId', async () => {
