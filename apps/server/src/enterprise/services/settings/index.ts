@@ -34,6 +34,7 @@ export {
   getSystemAgentSlice,
   getToolSlice,
   loadEffectiveUserSettings,
+  type PersonalTopicApprovalResolution,
   resolveEffectiveUserInterventionConfig,
   resolvePersonalTopicApprovalSnapshot,
   type UserSettingsReadMemo,

@@ -547,6 +547,35 @@ describe('Topic Router Integration Tests', () => {
         userMemoryExtractStatus: 'pending',
       });
     });
+
+    it('does not persist client approvalMode on a workspace topic update', async () => {
+      const workspaceId = `ws-topic-upd-${userId.slice(0, 8)}`;
+      await serverDB.insert(workspaces).values({
+        id: workspaceId,
+        name: 'Approval workspace update',
+        primaryOwnerId: userId,
+        slug: workspaceId,
+      });
+
+      const caller = topicRouter.createCaller({
+        ...createTestContext(userId),
+        workspaceId,
+      });
+
+      const topicId = await caller.createTopic({
+        title: 'Workspace no snapshot on update',
+      });
+
+      await caller.updateTopic({
+        id: topicId,
+        value: { metadata: { approvalMode: 'auto-run', model: 'gpt-4' } },
+      });
+
+      const [updatedTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
+      expect(updatedTopic.metadata?.approvalMode).toBeUndefined();
+      expect(updatedTopic.metadata?.model).toBe('gpt-4');
+      expect(updatedTopic.workspaceId).toBe(workspaceId);
+    });
   });
 
   describe('updateTopicMetadata', () => {
@@ -576,6 +605,35 @@ describe('Topic Router Integration Tests', () => {
         approvalMode: 'auto-run',
         userMemoryExtractStatus: 'pending',
       });
+    });
+
+    it('does not persist client approvalMode on a workspace topic metadata update', async () => {
+      const workspaceId = `ws-topic-meta-${userId.slice(0, 8)}`;
+      await serverDB.insert(workspaces).values({
+        id: workspaceId,
+        name: 'Approval workspace metadata',
+        primaryOwnerId: userId,
+        slug: workspaceId,
+      });
+
+      const caller = topicRouter.createCaller({
+        ...createTestContext(userId),
+        workspaceId,
+      });
+
+      const topicId = await caller.createTopic({
+        title: 'Workspace no snapshot on metadata update',
+      });
+
+      await caller.updateTopicMetadata({
+        id: topicId,
+        metadata: { approvalMode: 'auto-run', workingDirectory: '/ws' },
+      });
+
+      const [updatedTopic] = await serverDB.select().from(topics).where(eq(topics.id, topicId));
+      expect(updatedTopic.metadata?.approvalMode).toBeUndefined();
+      expect(updatedTopic.metadata?.workingDirectory).toBe('/ws');
+      expect(updatedTopic.workspaceId).toBe(workspaceId);
     });
   });
 

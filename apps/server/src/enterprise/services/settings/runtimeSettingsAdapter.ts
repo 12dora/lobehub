@@ -10,7 +10,11 @@
  * keyVaults / market secrets stay on dedicated encrypted paths.
  */
 
-import type { TopicApprovalMode, UserInterventionConfig } from '@lobechat/types';
+import type {
+  RuntimeApprovalMode,
+  TopicApprovalMode,
+  UserInterventionConfig,
+} from '@lobechat/types';
 import {
   isRuntimeApprovalMode,
   isTopicApprovalMode,
@@ -296,19 +300,35 @@ const toPersistedTopicApprovalMode = (mode: unknown): TopicApprovalMode | undefi
 };
 
 /**
- * Effective approval mode to snapshot onto a **new personal topic**.
+ * Effective runtime mode plus the persistable snapshot for a **new personal topic**.
+ *
+ * `runtimeMode` is the resolved chain result (including `'headless'`).
+ * `snapshotMode` is that result only when it is persistable — `undefined` for
+ * an effective `'headless'` result (never persist headless as a topic snapshot).
+ * Topic metadata must be built from `snapshotMode` only.
  *
  * Chain: platform locked → client-supplied/topic layer → user preference →
- * platform default → `'manual'`. Returns `undefined` for an effective
- * `'headless'` result (never persist headless as a topic snapshot).
+ * platform default → `'manual'`.
  *
  * Workspace / import / background callers must skip this helper.
  */
+export interface PersonalTopicApprovalResolution {
+  runtimeMode: RuntimeApprovalMode;
+  snapshotMode: TopicApprovalMode | undefined;
+}
+
+const toPersonalTopicApprovalResolution = (
+  runtimeMode: RuntimeApprovalMode,
+): PersonalTopicApprovalResolution => ({
+  runtimeMode,
+  snapshotMode: toPersistedTopicApprovalMode(runtimeMode),
+});
+
 export const resolvePersonalTopicApprovalSnapshot = async (params: {
   clientApprovalMode?: TopicApprovalMode | null;
   db: LobeChatDatabase;
   userId: string;
-}): Promise<TopicApprovalMode | undefined> => {
+}): Promise<PersonalTopicApprovalResolution> => {
   const clientApprovalMode = isTopicApprovalMode(params.clientApprovalMode)
     ? params.clientApprovalMode
     : undefined;
@@ -316,7 +336,7 @@ export const resolvePersonalTopicApprovalSnapshot = async (params: {
   if (!isPolicyEnabled()) {
     const row = await new UserModel(params.db, params.userId).getUserSettings();
     const userMode = toolApprovalFromSettings(row);
-    return toPersistedTopicApprovalMode(
+    return toPersonalTopicApprovalResolution(
       resolveTopicApprovalMode({
         topicApprovalMode: clientApprovalMode,
         userApprovalMode: isRuntimeApprovalMode(userMode) ? userMode : undefined,
@@ -334,7 +354,7 @@ export const resolvePersonalTopicApprovalSnapshot = async (params: {
   const platformLocked = effective.pathMeta[APPROVAL_MODE_PATH]?.locked === true;
   const runtimeApproval = isRuntimeApprovalMode(effectiveApproval) ? effectiveApproval : undefined;
 
-  return toPersistedTopicApprovalMode(
+  return toPersonalTopicApprovalResolution(
     resolveTopicApprovalMode({
       lockedValue: platformLocked ? runtimeApproval : undefined,
       platformLocked,

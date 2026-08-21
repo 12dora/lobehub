@@ -165,9 +165,13 @@ describe('AiAgentService.execAgent - headless approval default', () => {
         return { ...callerConfig, approvalMode: topicApprovalMode };
       },
     );
-    mockResolvePersonalTopicApprovalSnapshot.mockImplementation(
-      async ({ clientApprovalMode }) => clientApprovalMode ?? 'manual',
-    );
+    mockResolvePersonalTopicApprovalSnapshot.mockImplementation(async ({ clientApprovalMode }) => {
+      const runtimeMode = clientApprovalMode ?? 'manual';
+      return {
+        runtimeMode,
+        snapshotMode: runtimeMode === 'headless' ? undefined : runtimeMode,
+      };
+    });
     service = new AiAgentService(mockDb, userId);
   });
 
@@ -196,7 +200,10 @@ describe('AiAgentService.execAgent - headless approval default', () => {
 
   it('should respect explicit allow-list approval mode with allowList', async () => {
     const config = { allowList: ['tool-a', 'tool-b'], approvalMode: 'allow-list' as const };
-    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce('allow-list');
+    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce({
+      runtimeMode: 'allow-list',
+      snapshotMode: 'allow-list',
+    });
 
     await service.execAgent({
       agentId: 'agent-1',
@@ -265,7 +272,10 @@ describe('AiAgentService.execAgent - headless approval default', () => {
   });
 
   it('snapshots the resolved approval mode onto a newly created topic', async () => {
-    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce('auto-run');
+    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce({
+      runtimeMode: 'auto-run',
+      snapshotMode: 'auto-run',
+    });
 
     await service.execAgent({
       agentId: 'agent-1',
@@ -281,7 +291,10 @@ describe('AiAgentService.execAgent - headless approval default', () => {
   });
 
   it('uses initialTopicMetadata.approvalMode as the topic layer so the first run matches the snapshot', async () => {
-    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce('manual');
+    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce({
+      runtimeMode: 'manual',
+      snapshotMode: 'manual',
+    });
 
     await service.execAgent({
       agentId: 'agent-1',
@@ -305,7 +318,10 @@ describe('AiAgentService.execAgent - headless approval default', () => {
   });
 
   it('does not snapshot when a locked headless policy wins the first run', async () => {
-    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce(undefined);
+    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce({
+      runtimeMode: 'headless',
+      snapshotMode: undefined,
+    });
     mockResolveEffectiveUserInterventionConfig.mockResolvedValueOnce({ approvalMode: 'headless' });
 
     await service.execAgent({
@@ -327,7 +343,10 @@ describe('AiAgentService.execAgent - headless approval default', () => {
   });
 
   it('lets a locked snapshot override client-supplied initial metadata on the first run', async () => {
-    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce('manual');
+    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce({
+      runtimeMode: 'manual',
+      snapshotMode: 'manual',
+    });
 
     await service.execAgent({
       agentId: 'agent-1',
@@ -399,6 +418,35 @@ describe('AiAgentService.execAgent - headless approval default', () => {
     expect(mockCreateOperation.mock.calls[0][0].userInterventionConfig).toEqual({
       approvalMode: 'manual',
     });
+    expect(mockTopicCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: undefined,
+      }),
+    );
+  });
+
+  it('does not snapshot a resolver-produced undefined even when the caller is interactive', async () => {
+    mockResolvePersonalTopicApprovalSnapshot.mockResolvedValueOnce({
+      runtimeMode: 'headless',
+      snapshotMode: undefined,
+    });
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      prompt: 'Hello',
+      userInterventionConfig: { approvalMode: 'manual' },
+    });
+
+    expect(mockResolvePersonalTopicApprovalSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ clientApprovalMode: undefined, userId }),
+    );
+    expect(mockResolveEffectiveUserInterventionConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callerConfig: { approvalMode: 'manual' },
+        topicApprovalMode: undefined,
+      }),
+    );
+    expect(mockCreateOperation.mock.calls[0][0].userInterventionConfig.approvalMode).toBe('manual');
     expect(mockTopicCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         metadata: undefined,

@@ -313,7 +313,7 @@ describe('resolvePersonalTopicApprovalSnapshot', () => {
       db: serverDB,
       userId: 'u-personal',
     });
-    expect(snapshot).toBe('manual');
+    expect(snapshot).toEqual({ runtimeMode: 'manual', snapshotMode: 'manual' });
   });
 
   it('uses the client-supplied topic layer when the platform is not locked', async () => {
@@ -322,7 +322,7 @@ describe('resolvePersonalTopicApprovalSnapshot', () => {
       db: serverDB,
       userId: 'u-personal',
     });
-    expect(snapshot).toBe('auto-run');
+    expect(snapshot).toEqual({ runtimeMode: 'auto-run', snapshotMode: 'auto-run' });
   });
 
   it('uses a personal override when the client omits a mode', async () => {
@@ -353,7 +353,7 @@ describe('resolvePersonalTopicApprovalSnapshot', () => {
       db: serverDB,
       userId: 'u-personal',
     });
-    expect(snapshot).toBe('auto-run');
+    expect(snapshot).toEqual({ runtimeMode: 'auto-run', snapshotMode: 'auto-run' });
   });
 
   it('lets a platform-locked policy override client-supplied initial metadata', async () => {
@@ -379,10 +379,10 @@ describe('resolvePersonalTopicApprovalSnapshot', () => {
       db: serverDB,
       userId: 'u-locked',
     });
-    expect(snapshot).toBe('manual');
+    expect(snapshot).toEqual({ runtimeMode: 'manual', snapshotMode: 'manual' });
   });
 
-  it('returns undefined when user settings store headless (never persist it)', async () => {
+  it('returns no snapshotMode when user settings store headless (never persist it)', async () => {
     policyState.enabled = false;
     await serverDB.insert(userSettings).values({
       id: 'u-personal',
@@ -393,10 +393,10 @@ describe('resolvePersonalTopicApprovalSnapshot', () => {
       db: serverDB,
       userId: 'u-personal',
     });
-    expect(snapshot).toBeUndefined();
+    expect(snapshot).toEqual({ runtimeMode: 'headless', snapshotMode: undefined });
   });
 
-  it('returns undefined when a platform lock to headless would otherwise snapshot', async () => {
+  it('returns no snapshotMode when a platform lock to headless would otherwise snapshot', async () => {
     const admin = new AdminSettingsService(serverDB);
     const base = await admin.getDraft();
     await admin.save({
@@ -419,7 +419,7 @@ describe('resolvePersonalTopicApprovalSnapshot', () => {
       db: serverDB,
       userId: 'u-locked',
     });
-    expect(snapshot).toBeUndefined();
+    expect(snapshot).toEqual({ runtimeMode: 'headless', snapshotMode: undefined });
   });
 
   it('flag OFF uses the user_settings preference when the client omits a mode', async () => {
@@ -433,6 +433,6 @@ describe('resolvePersonalTopicApprovalSnapshot', () => {
       db: serverDB,
       userId: 'u-personal',
     });
-    expect(snapshot).toBe('allow-list');
+    expect(snapshot).toEqual({ runtimeMode: 'allow-list', snapshotMode: 'allow-list' });
   });
 });

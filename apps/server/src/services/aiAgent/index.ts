@@ -1147,14 +1147,15 @@ export class AiAgentService {
           topicApprovalMode = storedMode;
         }
       } else {
-        // New personal topic: resolve the snapshot (locked → client → user →
-        // platform default → manual) and use it as the topic layer for THIS run
-        // so the first turn agrees with what we persist.
-        topicApprovalMode = await resolvePersonalTopicApprovalSnapshot({
+        // New personal topic: resolve runtime vs persistable snapshot (locked →
+        // client → user → platform default → manual). Overlay and persist only
+        // `snapshotMode` so an effective `headless` result never stamps a topic.
+        const { snapshotMode } = await resolvePersonalTopicApprovalSnapshot({
           clientApprovalMode: appContext?.initialTopicMetadata?.approvalMode,
           db: this.db,
           userId: this.userId,
         });
+        topicApprovalMode = snapshotMode;
       }
     }
 
@@ -1701,15 +1702,12 @@ export class AiAgentService {
       // Prepare metadata with cronJobId, taskId, botContext, bound device, and any
       // client-supplied initial metadata (e.g. repos selected before first message).
       const initialTopicMeta = appContext?.initialTopicMetadata;
-      // Persist only the resolver's non-headless result. Original-headless and
-      // workspace executions never snapshot, even if the client sent an initial
-      // approvalMode or policy rewrote the run to an interactive mode.
-      const snapshotApprovalMode =
-        !isWorkspaceRun &&
-        !isOriginalHeadless &&
-        isTopicApprovalMode(userInterventionConfig.approvalMode)
-          ? userInterventionConfig.approvalMode
-          : undefined;
+      // Persist only the snapshot resolver's persistable result (`snapshotMode`).
+      // Do not re-derive from the execution config — an interactive caller plus
+      // an effective `headless` result must still leave no snapshot. Original-
+      // headless and workspace executions never resolve a snapshot, so
+      // `topicApprovalMode` stays undefined even if policy rewrites the run.
+      const snapshotApprovalMode = topicApprovalMode;
       const metadata =
         cronJobId ||
         operationTaskId ||

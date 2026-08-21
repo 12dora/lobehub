@@ -26,7 +26,10 @@ import type { LobeChatDatabase } from '@/database/type';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { AgentService } from '@/server/services/agent';
-import { applyTopicApprovalSnapshot } from '@/server/services/topicApproval';
+import {
+  applyTopicApprovalSnapshot,
+  sanitizeWorkspaceTopicMetadata,
+} from '@/server/services/topicApproval';
 import { type BatchTaskResult } from '@/types/service';
 
 import {
@@ -697,7 +700,11 @@ export const topicRouter = router({
         resolvedSessionId = resolved.sessionId ?? undefined;
       }
 
-      return ctx.topicModel.update(input.id, { ...restValue, sessionId: resolvedSessionId });
+      return ctx.topicModel.update(input.id, {
+        ...restValue,
+        metadata: sanitizeWorkspaceTopicMetadata(restValue.metadata, ctx.workspaceId),
+        sessionId: resolvedSessionId,
+      });
     }),
 
   updateTopicMetadata: topicProcedure
@@ -761,7 +768,10 @@ export const topicRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      return ctx.topicModel.updateMetadata(input.id, input.metadata);
+      return ctx.topicModel.updateMetadata(
+        input.id,
+        sanitizeWorkspaceTopicMetadata(input.metadata, ctx.workspaceId) ?? {},
+      );
     }),
 });
 
