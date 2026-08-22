@@ -82,31 +82,32 @@ operator may leave out of a deployment to save memory, CPU, or sidecars.
 
 <!-- BEGIN MODULE TABLE -->
 
-| id                  | origin   | tier     | kind    | minimal | standard | full | cost                                               |
-| ------------------- | -------- | -------- | ------- | ------- | -------- | ---- | -------------------------------------------------- |
-| `knowledgeBase`     | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, s3                         |
-| `imageGen`          | upstream | standard | hot     | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, onUse, s3                         |
-| `speech`            | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse                             |
-| `webSearch`         | upstream | standard | hot     | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, onUse, searxng                    |
-| `market`            | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse                             |
-| `memory`            | upstream | standard | hot     | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, perMessage                        |
-| `bots`              | upstream | full     | restart | ✗       | ✗        | ✓    | rss 22MB, 1 jobs, onUse                            |
-| `agentSignal`       | upstream | full     | restart | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, redis                      |
-| `workflows`         | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, externalService            |
-| `sandbox`           | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, externalService            |
-| `deviceGateway`     | upstream | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, onUse, externalService            |
-| `managedAi`         | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 6MB, 0 jobs, perMessage                        |
-| `managedSkills`     | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 0MB, 0 jobs, none                              |
-| `managedConnectors` | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 3 jobs, none                              |
-| `managedAgents`     | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 1 jobs, none                              |
-| `settingsPolicy`    | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 0MB, 0 jobs, perRequest                        |
-| `branding`          | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 6MB, 1 jobs, none, s3                          |
-| `databaseIdp`       | fork     | minimal  | restart | ✓       | ✓        | ✓    | rss 0MB, 2 jobs, none                              |
-| `audit`             | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 2 jobs, perRequest, s3                    |
-| `moderation`        | fork     | standard | restart | ✗       | ✓        | ✓    | rss 0MB, 0 jobs, perMessage, load-sensitive, redis |
-| `networkProxy`      | fork     | standard | restart | ✗       | ✓        | ✓    | rss 8MB, 3 jobs, perFetch, subprocess              |
-| `platformStats`     | fork     | minimal  | hot     | ✓       | ✓        | ✓    | rss 0MB, 0 jobs, onUse                             |
-| `taskTemplates`     | fork     | full     | hot     | ✗       | ✗        | ✓    | rss 0MB, 0 jobs, none                              |
+| id | origin | tier | kind | minimal | standard | full | cost |
+|---|---|---|---|---|---|---|---|
+| `knowledgeBase` | upstream | full | hot | ✗ | ✗ | ✓ | rss 0MB, 0 jobs, onUse, s3 |
+| `imageGen` | upstream | standard | hot | ✗ | ✓ | ✓ | rss 0MB, 0 jobs, onUse, s3 |
+| `speech` | upstream | full | hot | ✗ | ✗ | ✓ | rss 0MB, 0 jobs, onUse |
+| `webSearch` | upstream | standard | hot | ✗ | ✓ | ✓ | rss 0MB, 0 jobs, onUse, searxng |
+| `market` | upstream | full | hot | ✗ | ✗ | ✓ | rss 0MB, 0 jobs, onUse |
+| `memory` | upstream | standard | hot | ✗ | ✓ | ✓ | rss 0MB, 0 jobs, perMessage |
+| `bots` | upstream | full | restart | ✗ | ✗ | ✓ | rss 22MB, 1 jobs, onUse |
+| `agentSignal` | upstream | full | restart | ✗ | ✗ | ✓ | rss 0MB, 0 jobs, onUse, redis |
+| `workflows` | upstream | full | hot | ✗ | ✗ | ✓ | rss 0MB, 0 jobs, onUse, externalService |
+| `sandbox` | upstream | full | hot | ✗ | ✗ | ✓ | rss 0MB, 0 jobs, onUse, externalService |
+| `documentRender` | fork | full | hot | ✗ | ✗ | ✓ | rss 0MB, 1 jobs, onUse, externalService |
+| `deviceGateway` | upstream | full | hot | ✗ | ✗ | ✓ | rss 0MB, 0 jobs, onUse, externalService |
+| `managedAi` | fork | minimal | hot | ✓ | ✓ | ✓ | rss 6MB, 0 jobs, perMessage |
+| `managedSkills` | fork | minimal | hot | ✓ | ✓ | ✓ | rss 0MB, 0 jobs, none |
+| `managedConnectors` | fork | standard | restart | ✗ | ✓ | ✓ | rss 0MB, 3 jobs, none |
+| `managedAgents` | fork | standard | restart | ✗ | ✓ | ✓ | rss 0MB, 1 jobs, none |
+| `settingsPolicy` | fork | minimal | hot | ✓ | ✓ | ✓ | rss 0MB, 0 jobs, perRequest |
+| `branding` | fork | minimal | hot | ✓ | ✓ | ✓ | rss 6MB, 1 jobs, none, s3 |
+| `databaseIdp` | fork | minimal | restart | ✓ | ✓ | ✓ | rss 0MB, 2 jobs, none |
+| `audit` | fork | standard | restart | ✗ | ✓ | ✓ | rss 0MB, 2 jobs, perRequest, s3 |
+| `moderation` | fork | standard | restart | ✗ | ✓ | ✓ | rss 0MB, 0 jobs, perMessage, load-sensitive, redis |
+| `networkProxy` | fork | standard | restart | ✗ | ✓ | ✓ | rss 8MB, 3 jobs, perFetch, subprocess |
+| `platformStats` | fork | minimal | hot | ✓ | ✓ | ✓ | rss 0MB, 0 jobs, onUse |
+| `taskTemplates` | fork | full | hot | ✗ | ✗ | ✓ | rss 0MB, 0 jobs, none |
 
 <!-- END MODULE TABLE -->
 

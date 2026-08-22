@@ -11,7 +11,30 @@ services:
     ports:
       - '${LOBE_PORT:-3210}:3210'
     depends_on:
-      platform-oidc-lkg-init:
+      document-render:
+    # Gotenberg (LibreOffice + Chromium) converts docx/pptx/xlsx to PDF for page images.
+    # Only reachable on the internal network; /tmp is a size-capped tmpfs so a bad file
+    # cannot fill the host. Chromium routes are disabled (unused).
+    profiles: [document-render]
+    image: gotenberg/gotenberg:8
+    container_name: lobehub-enhanced-document-render
+    command:
+      - gotenberg
+      - --api-timeout=120s
+      - --chromium-disable-routes=true
+      - --libreoffice-auto-start=true
+    tmpfs:
+      - /tmp:size=512m
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    restart: always
+    networks:
+      - lobe-network
+
+  platform-oidc-lkg-init:
         condition: service_completed_successfully
       postgresql:
         condition: service_healthy
@@ -113,6 +136,11 @@ services:
       # to detach this path without talking to Docker.
       - 'SANDBOX_PROVIDER=${SANDBOX_PROVIDER:-local}'
       - 'SANDBOX_LOCAL_IMAGE=${SANDBOX_LOCAL_IMAGE:-aihub-sandbox:latest}'
+
+      # --- document rendering sidecar (empty = off; Office files are fed as text only) ---
+      # Start with `docker compose --profile document-render up -d` and set
+      # DOCUMENT_RENDER_URL=http://document-render:3000 (or configure it in the admin panel).
+      - 'DOCUMENT_RENDER_URL=${DOCUMENT_RENDER_URL:-}'
     env_file:
       # Anything extra you put in .env (proxies, CHATGPT_WEB_*, …) reaches the container.
       - path: .env

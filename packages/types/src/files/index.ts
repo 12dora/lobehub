@@ -30,3 +30,4 @@ export interface FileItem {
 
 export * from './list';
 export * from './upload';
+export * from './render';

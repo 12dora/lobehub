@@ -141,6 +141,13 @@
       "when": 1788200000000,
       "tag": "0027_platform_sandbox_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1788300000000,
+      "tag": "0028_platform_document_render_settings",
+      "breakpoints": true
     }
   ]
 }

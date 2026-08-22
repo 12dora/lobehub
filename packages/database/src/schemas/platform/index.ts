@@ -19,6 +19,7 @@ export * from './connectorGovernance';
 export * from './connectors';
 export * from './contentModeration';
 export * from './credentials';
+export * from './documentRenderSettings';
 export * from './identity';
 export * from './infraSettings';
 export * from './instances';
