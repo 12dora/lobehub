@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { ModelProvider } from 'model-bank';
 import type { Mock } from 'vitest';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { testProvider } from '../../providerTestUtils';
 import { LobeSuperGrokAI } from './index';
@@ -80,7 +80,12 @@ describe('LobeSuperGrokAI - models', () => {
     const models = await instance.models();
 
     expect(instance['client'].models.list).toHaveBeenCalled();
-    expect(models.map((model) => model.id).sort()).toEqual(['grok-4.5', 'grok-4.6']);
+    expect(
+      models
+        .filter((model) => model.type === 'chat')
+        .map((model) => model.id)
+        .sort(),
+    ).toEqual(['grok-4.5', 'grok-4.6']);
     expect(models).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -99,6 +104,9 @@ describe('LobeSuperGrokAI - models', () => {
           reasoning: true,
           vision: true,
         }),
+        expect.objectContaining({ id: 'grok-imagine-image', type: 'image' }),
+        expect.objectContaining({ id: 'grok-imagine-image-quality', type: 'image' }),
+        expect.objectContaining({ id: 'grok-imagine-video', type: 'video' }),
       ]),
     );
   });
@@ -125,8 +133,9 @@ describe('LobeSuperGrokAI - models', () => {
     } as never);
 
     const models = await instance.models();
+    const live = models.find((model) => model.id === 'grok-420-reasoning');
 
-    expect(models).toEqual([
+    expect(live).toEqual(
       expect.objectContaining({
         contextWindowTokens: 256_000,
         functionCall: true,
@@ -167,9 +176,15 @@ describe('LobeSuperGrokAI - models', () => {
         search: true,
         vision: true,
       }),
-    ]);
-    expect(models[0]).not.toHaveProperty('aliases');
-    expect(models[0]).not.toHaveProperty('owned_by');
+    );
+    expect(live).not.toHaveProperty('aliases');
+    expect(live).not.toHaveProperty('owned_by');
+    expect(models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'grok-imagine-image', type: 'image' }),
+        expect.objectContaining({ id: 'grok-imagine-video', type: 'video' }),
+      ]),
+    );
   });
 
   it('leaves abilities to keyword fallback when the list card has only an id', async () => {
@@ -179,7 +194,7 @@ describe('LobeSuperGrokAI - models', () => {
 
     const models = await instance.models();
 
-    expect(models).toEqual([
+    expect(models.find((model) => model.id === 'grok-keyword-only-test-model')).toEqual(
       expect.objectContaining({
         functionCall: true,
         id: 'grok-keyword-only-test-model',
@@ -187,13 +202,39 @@ describe('LobeSuperGrokAI - models', () => {
         search: true,
         vision: false,
       }),
+    );
+  });
+
+  it('still unions static image and video cards when the live list is empty', async () => {
+    vi.spyOn(instance['client'].models, 'list').mockResolvedValue({ data: [] } as never);
+
+    const models = await instance.models();
+
+    expect(models.map((model) => model.id).sort()).toEqual([
+      'grok-imagine-image',
+      'grok-imagine-image-quality',
+      'grok-imagine-video',
     ]);
   });
 
-  it('treats an explicit empty list as zero models', async () => {
-    vi.spyOn(instance['client'].models, 'list').mockResolvedValue({ data: [] } as never);
+  it('does not duplicate generation cards already present in the live list', async () => {
+    vi.spyOn(instance['client'].models, 'list').mockResolvedValue({
+      data: [{ id: 'grok-4.6' }, { id: 'grok-imagine-image' }],
+    } as never);
 
-    await expect(instance.models()).resolves.toEqual([]);
+    const models = await instance.models();
+
+    expect(models.filter((model) => model.id === 'grok-imagine-image')).toHaveLength(1);
+    expect(models.find((model) => model.id === 'grok-imagine-image')).toEqual(
+      expect.objectContaining({
+        id: 'grok-imagine-image',
+        parameters: expect.objectContaining({
+          imageUrls: { default: [] },
+          prompt: { default: '' },
+        }),
+        type: 'image',
+      }),
+    );
   });
 
   it.each([
@@ -203,5 +244,112 @@ describe('LobeSuperGrokAI - models', () => {
     vi.spyOn(instance['client'].models, 'list').mockResolvedValue({ data } as never);
 
     await expect(instance.models()).rejects.toThrow('SuperGrok models payload was not a list');
+  });
+});
+
+describe('LobeSuperGrokAI - image and video', () => {
+  let instance: InstanceType<typeof LobeSuperGrokAI>;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    instance = new LobeSuperGrokAI({ apiKey: 'test_api_key' });
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('posts image generations to api.x.ai with the injected bearer token', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      json: async () => ({
+        data: [{ revised_prompt: 'a cat', url: 'https://cdn.example/out.png' }],
+      }),
+      ok: true,
+    });
+
+    const result = await instance.createImage({
+      model: 'grok-imagine-image',
+      params: { prompt: 'a cat' },
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.x.ai/v1/images/generations',
+      expect.objectContaining({
+        headers: {
+          'Authorization': 'Bearer test_api_key',
+          'Content-Type': 'application/json',
+        },
+        method: 'POST',
+      }),
+    );
+    expect(result).toEqual({ imageUrl: 'https://cdn.example/out.png' });
+  });
+
+  it('passes a data URI through to image_url on edits', async () => {
+    const dataUri = 'data:image/png;base64,aaaa';
+    global.fetch = vi.fn().mockResolvedValue({
+      json: async () => ({
+        data: [{ revised_prompt: 'edit', url: 'https://cdn.example/edited.png' }],
+      }),
+      ok: true,
+    });
+
+    await instance.createImage({
+      model: 'grok-imagine-image',
+      params: { imageUrls: [dataUri], prompt: 'make it night' },
+    });
+
+    const body = JSON.parse((global.fetch as Mock).mock.calls[0][1].body);
+    expect(body).toEqual({
+      images: [{ type: 'image_url', url: dataUri }],
+      model: 'grok-imagine-image',
+      prompt: 'make it night',
+    });
+  });
+
+  it('posts video generations to api.x.ai with the injected bearer token', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      json: async () => ({ request_id: 'xai-request-123' }),
+      ok: true,
+    });
+
+    const result = await instance.createVideo({
+      model: 'grok-imagine-video',
+      params: { prompt: 'a cyberpunk city' },
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.x.ai/v1/videos/generations',
+      expect.objectContaining({
+        headers: {
+          'Authorization': 'Bearer test_api_key',
+          'Content-Type': 'application/json',
+        },
+        method: 'POST',
+      }),
+    );
+    expect(result).toEqual({ inferenceId: 'xai-request-123' });
+  });
+
+  it('polls video status on the xAI videos API', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      json: async () => ({ status: 'done', video: { url: 'https://cdn.example/v.mp4' } }),
+      ok: true,
+    });
+
+    const result = await instance.handlePollVideoStatus('req-1');
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.x.ai/v1/videos/req-1',
+      expect.objectContaining({
+        headers: {
+          'Authorization': 'Bearer test_api_key',
+          'Content-Type': 'application/json',
+        },
+        method: 'GET',
+      }),
+    );
+    expect(result).toEqual({ status: 'success', videoUrl: 'https://cdn.example/v.mp4' });
   });
 });

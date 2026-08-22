@@ -243,7 +243,7 @@ const xaiChatModels: AIChatModelCard[] = [
   },
 ];
 
-const xaiImageModels: AIImageModelCard[] = [
+export const xaiImageModels: AIImageModelCard[] = [
   {
     description:
       'Generate images from text prompts, edit existing images with natural language, or iteratively refine images through multi-turn conversations.',
@@ -328,7 +328,7 @@ const xaiImageModels: AIImageModelCard[] = [
   },
 ];
 
-const xaiVideoModels: AIVideoModelCard[] = [
+export const xaiVideoModels: AIVideoModelCard[] = [
   {
     description: 'State-of-the-art video generation across quality, cost, and latency.',
     displayName: 'Grok Imagine Video',

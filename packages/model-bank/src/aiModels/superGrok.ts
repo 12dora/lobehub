@@ -1,8 +1,10 @@
-import type { AIChatModelCard } from '../types/aiModel';
+import type { AIChatModelCard, AIImageModelCard, AIVideoModelCard } from '../types/aiModel';
+import { xaiImageModels, xaiVideoModels } from './xai';
 
 // Grok models available through the SuperGrok / X Premium subscription.
 // Same model ids as the `xai` provider, but without pricing: usage is
-// covered by the flat-rate subscription, so per-token cost would mislead.
+// covered by the flat-rate subscription, so per-token / per-image / per-second
+// cost would mislead.
 // Only the latest generation is listed by default — older models can still
 // be pulled in via the remote model list.
 // ref: https://docs.x.ai/docs/models
@@ -55,4 +57,14 @@ const superGrokChatModels: AIChatModelCard[] = [
   },
 ];
 
-export default superGrokChatModels;
+const superGrokImageModels: AIImageModelCard[] = xaiImageModels.map(
+  ({ pricing: _pricing, ...model }) => model,
+);
+
+const superGrokVideoModels: AIVideoModelCard[] = xaiVideoModels.map(
+  ({ pricing: _pricing, ...model }) => model,
+);
+
+export const allModels = [...superGrokChatModels, ...superGrokImageModels, ...superGrokVideoModels];
+
+export default allModels;

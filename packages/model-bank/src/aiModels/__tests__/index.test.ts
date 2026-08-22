@@ -151,6 +151,52 @@ describe('ChatGPT subscription models', () => {
   });
 });
 
+describe('SuperGrok subscription models', () => {
+  it('advertises imagine image and video cards without usage pricing', () => {
+    const models = LOBE_DEFAULT_MODEL_LIST.filter(
+      (model) => model.providerId === ModelProvider.SuperGrok,
+    );
+
+    expect(models).toHaveLength(5);
+    expect(models.filter((model) => model.type === 'chat')).toHaveLength(2);
+
+    const image = models.find((model) => model.id === 'grok-imagine-image');
+    const imageQuality = models.find((model) => model.id === 'grok-imagine-image-quality');
+    const video = models.find((model) => model.id === 'grok-imagine-video');
+
+    expect(image).toMatchObject({
+      enabled: true,
+      id: 'grok-imagine-image',
+      type: 'image',
+    });
+    expect(image).not.toHaveProperty('pricing');
+    expect(image?.parameters).toEqual(
+      LOBE_DEFAULT_MODEL_LIST.find(
+        (model) => model.providerId === ModelProvider.XAI && model.id === 'grok-imagine-image',
+      )?.parameters,
+    );
+
+    expect(imageQuality).toMatchObject({
+      enabled: true,
+      id: 'grok-imagine-image-quality',
+      type: 'image',
+    });
+    expect(imageQuality).not.toHaveProperty('pricing');
+
+    expect(video).toMatchObject({
+      enabled: true,
+      id: 'grok-imagine-video',
+      type: 'video',
+    });
+    expect(video).not.toHaveProperty('pricing');
+    expect(video?.parameters).toEqual(
+      LOBE_DEFAULT_MODEL_LIST.find(
+        (model) => model.providerId === ModelProvider.XAI && model.id === 'grok-imagine-video',
+      )?.parameters,
+    );
+  });
+});
+
 describe('Moonshot models', () => {
   it('advertises Kimi K3 reasoning effort controls', () => {
     const kimiK3 = LOBE_DEFAULT_MODEL_LIST.find(

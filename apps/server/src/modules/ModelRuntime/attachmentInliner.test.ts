@@ -4,7 +4,7 @@ import { buildOwnDeploymentOrigins } from '@lobechat/utils';
 import { DEFAULT_IMAGE_INLINE_MAX_BYTES } from '@lobechat/utils/imageToBase64';
 import { describe, expect, it, vi } from 'vitest';
 
-import { inlineOwnOriginAttachments } from './attachmentInliner';
+import { inlineOwnOriginAttachments, inlineOwnOriginImageUrls } from './attachmentInliner';
 
 const ownOrigins = buildOwnDeploymentOrigins({
   appUrl: 'http://localhost:3010',
@@ -144,5 +144,51 @@ describe('inlineOwnOriginAttachments', () => {
     expect(resolver).toHaveBeenCalledTimes(1);
     expect(messages[0].content).toEqual([{ image_url: { url: PNG_DATA_URI }, type: 'image_url' }]);
     expect(messages[1].content).toEqual([{ image_url: { url: PNG_DATA_URI }, type: 'image_url' }]);
+  });
+});
+
+describe('inlineOwnOriginImageUrls', () => {
+  it('replaces own-origin URLs with data URIs and leaves the rest untouched', async () => {
+    const resolver = vi.fn(async () => ({ bytes: PNG_BYTES, mimeType: 'image/png' }));
+
+    await expect(
+      inlineOwnOriginImageUrls(
+        [OWN_FILE_URL, FOREIGN_URL, DATA_URI, OWN_FILE_URL],
+        resolver,
+        ownOrigins,
+      ),
+    ).resolves.toEqual([PNG_DATA_URI, FOREIGN_URL, DATA_URI, PNG_DATA_URI]);
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL);
+  });
+
+  it('leaves an over-cap own-origin URL in place', async () => {
+    const resolver = vi.fn(async () => ({
+      bytes: { byteLength: DEFAULT_IMAGE_INLINE_MAX_BYTES + 1 } as Uint8Array,
+      mimeType: 'image/png',
+    }));
+
+    await expect(inlineOwnOriginImageUrls([OWN_FILE_URL], resolver, ownOrigins)).resolves.toEqual([
+      OWN_FILE_URL,
+    ]);
+  });
+
+  it('leaves the URL in place when the resolver fails', async () => {
+    const resolver = vi.fn(async () => {
+      throw new Error('s3 unavailable');
+    });
+
+    await expect(inlineOwnOriginImageUrls([OWN_FILE_URL], resolver, ownOrigins)).resolves.toEqual([
+      OWN_FILE_URL,
+    ]);
+  });
+
+  it('does not call the resolver when every URL is foreign or already a data URI', async () => {
+    const resolver = vi.fn();
+
+    await expect(
+      inlineOwnOriginImageUrls([FOREIGN_URL, DATA_URI], resolver, ownOrigins),
+    ).resolves.toEqual([FOREIGN_URL, DATA_URI]);
+    expect(resolver).not.toHaveBeenCalled();
   });
 });

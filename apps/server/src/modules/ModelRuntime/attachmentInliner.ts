@@ -171,6 +171,32 @@ const applyInlinedUrl = (
 };
 
 /**
+ * Rewrite own-deployment file URLs in an image-edit `imageUrls` list to data
+ * URIs. Foreign URLs, data URIs, over-cap files, and resolver failures are
+ * left unchanged. Does not mutate `urls`.
+ */
+export const inlineOwnOriginImageUrls = async (
+  urls: readonly string[],
+  resolver: OwnOriginAttachmentResolver,
+  origins: OwnDeploymentOrigins,
+): Promise<string[]> => {
+  const uniqueOwnOriginUrls = [
+    ...new Set(urls.filter((url) => !isDataUri(url) && isOwnDeploymentFileUrl(url, origins))),
+  ];
+  if (uniqueOwnOriginUrls.length === 0) return [...urls];
+
+  const resolvedByUrl = new Map<string, OwnOriginAttachmentBytes | null>();
+  await mapWithConcurrency(uniqueOwnOriginUrls, INLINE_RESOLVE_CONCURRENCY, async (url) => {
+    resolvedByUrl.set(url, await safeResolve(url, resolver));
+  });
+
+  return urls.map((url) => {
+    if (!resolvedByUrl.has(url)) return url;
+    return applyInlinedUrl(url, resolvedByUrl.get(url) ?? null, DEFAULT_IMAGE_INLINE_MAX_BYTES);
+  });
+};
+
+/**
  * Replace own-deployment file URLs in user messages with data URIs, and strip
  * own-origin `url="…"` attributes from files-prompt text. Mutates `messages`.
  */
@@ -286,6 +312,21 @@ export const createOwnOriginAttachmentInlineHooks = (
         'own-origin attachment inline failed: %s',
         error instanceof Error ? error.message : error,
       );
+    }
+  },
+  beforeCreateImage: async (payload) => {
+    try {
+      const urls = payload.params.imageUrls;
+      if (!urls?.some((url) => typeof url === 'string' && !isDataUri(url))) return;
+
+      const origins = await resolveMaybeLazy(input.ownOrigins);
+      payload.params.imageUrls = await inlineOwnOriginImageUrls(
+        urls,
+        createFileServiceResolver(input),
+        origins,
+      );
+    } catch (error) {
+      log('own-origin imageUrls inline failed: %s', error instanceof Error ? error.message : error);
     }
   },
 });

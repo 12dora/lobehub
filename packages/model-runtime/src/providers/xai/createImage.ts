@@ -85,6 +85,9 @@ export async function createXAIImage(
     }
 
     if (isImageEdit) {
+      // xAI accepts a base64 data URL in `image_url` (docs.x.ai images API).
+      // Pass data URIs through as-is rather than requiring http(s) — own-origin
+      // `/f/<id>` URLs are inlined to data URIs server-side before this runs.
       if (hasImageUrl && params.imageUrl) {
         requestBody.image = {
           type: 'image_url',
