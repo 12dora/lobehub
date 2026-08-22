@@ -2080,6 +2080,29 @@ describe('Cursor installation identity injection', () => {
   });
 });
 
+describe('own-origin attachment inline hook wiring', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('merges the inline hook for grok and not for openai', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    initModelRuntimeWithUserPayload(
+      ModelProvider.Grok,
+      { apiKey: 'oauth-token-value', runtimeProvider: ModelProvider.Grok },
+      { browserProfile: DEFAULT_BROWSER_DEVICE_PROFILE },
+    );
+    expect(spy.mock.calls[0]?.[2]?.beforeChat).toEqual(expect.any(Function));
+
+    spy.mockClear();
+    initModelRuntimeWithUserPayload(ModelProvider.OpenAI, { apiKey: 'user-openai-key' });
+    expect(spy.mock.calls[0]?.[2]?.beforeChat).toBeUndefined();
+  });
+});
+
 describe('buildPayloadFromKeyVaults Cursor contract', () => {
   it('only accepts oauthAccessToken — plain apiKey does not become a usable bearer', () => {
     expect(buildPayloadFromKeyVaults({ apiKey: 'sk-ignored' }, ModelProvider.Cursor)).toEqual({

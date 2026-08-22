@@ -65,6 +65,7 @@ import { ensureFreshOAuthToken } from '@/server/services/oauthDeviceFlow/refresh
 
 import { KeyVaultsGateKeeper } from '../KeyVaultsEncrypt';
 import apiKeyManager from './apiKeyManager';
+import { createOwnOriginAttachmentInlineHooks } from './attachmentInliner';
 import type { ModelRuntimeConversation } from './conversationIdentity';
 
 export * from './conversationIdentity';
@@ -136,6 +137,18 @@ export const runtimePresentsInstallationIdentity = (runtimeProvider: string): bo
  * Cursor degrades instead: without an installation id the CLI mints its own chat id.
  */
 const PROFILE_REQUIRED_RUNTIMES = new Set<string>([ModelProvider.ChatGPTWeb, ModelProvider.Grok]);
+
+/**
+ * Providers that cannot fetch Docker-mapped APP_URL / localhost file URLs from
+ * inside the container (or skip HTTP image URLs entirely). Inlined via S3.
+ */
+const OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES = new Set<string>([
+  ModelProvider.ChatGPT,
+  ModelProvider.ChatGPTWeb,
+  ModelProvider.Cursor,
+  ModelProvider.Grok,
+  ModelProvider.SuperGrok,
+]);
 
 /**
  * Runtimes that actually CONSUME the conversation identity (upstream session id +
@@ -909,6 +922,14 @@ export const initModelRuntimeWithUserPayload = (
     return wrap(new ModelRuntime(runtime, hooks));
   }
 
+  const attachmentInlineHooks = OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES.has(runtimeProvider)
+    ? createOwnOriginAttachmentInlineHooks({
+        ownOrigins: resolveOwnDeploymentOrigins,
+        userId: typeof restParams.userId === 'string' ? restParams.userId : undefined,
+      })
+    : undefined;
+  const composedHooks = mergeModelRuntimeHooks(attachmentInlineHooks, hooks);
+
   return wrap(
     ModelRuntime.initializeWithProvider(
       runtimeProvider,
@@ -968,7 +989,7 @@ export const initModelRuntimeWithUserPayload = (
         ...(customFetch ? { fetch: customFetch } : {}),
         ...(requestHandler ? { requestHandler: requestHandler as never } : {}),
       } as never,
-      hooks,
+      composedHooks,
     ),
   );
 };
