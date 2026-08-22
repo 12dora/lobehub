@@ -417,7 +417,10 @@ export const adminSystemRouter = router({
     .mutation(({ input }) =>
       executePlatformSystem(async () => {
         if (input.dependency === 'documentRender') return testDocumentRenderDependency();
-        return new InfraSettingsService().testDependency(input);
+        return new InfraSettingsService().testDependency({
+          ...input,
+          dependency: input.dependency,
+        });
       }),
     ),
 

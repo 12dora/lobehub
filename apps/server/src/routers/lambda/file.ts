@@ -509,6 +509,9 @@ export const fileRouter = router({
       }
 
       if (fileIds.length > 0) {
+        // Render artifacts are purged only for rows this user owns; `deleteMany` is
+        // ownership-scoped, so foreign ids in the query result never reach cleanup.
+        const ownedFileIds = (await ctx.fileModel.findByIds(fileIds)).map((file) => file.id);
         const needToRemoveFileList = await ctx.fileModel.deleteMany(
           fileIds,
           serverDBEnv.REMOVE_GLOBAL_FILE,
@@ -516,8 +519,9 @@ export const fileRouter = router({
 
         void import('@/server/enterprise/services/documentRender')
           .then(async ({ cancelPendingDocumentRenderJobs, deleteDocumentRenderArtifacts }) => {
-            await cancelPendingDocumentRenderJobs(ctx.serverDB, fileIds);
-            await deleteDocumentRenderArtifacts(fileIds);
+            if (ownedFileIds.length === 0) return;
+            await cancelPendingDocumentRenderJobs(ctx.serverDB, ownedFileIds);
+            await deleteDocumentRenderArtifacts(ownedFileIds);
           })
           .catch((error) => {
             console.error('Failed to cleanup document render artifacts', error);
@@ -610,10 +614,14 @@ export const fileRouter = router({
     .use(withScopedPermission('file:delete'))
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input, ctx }) => {
+      // Ownership check before the delete: `delete` only returns a row when the
+      // global blob is unreferenced, so it cannot tell us whether `input.id` was ours.
+      const owned = await ctx.fileModel.findById(input.id);
       const file = await ctx.fileModel.delete(input.id, serverDBEnv.REMOVE_GLOBAL_FILE);
 
       void import('@/server/enterprise/services/documentRender')
         .then(async ({ cancelPendingDocumentRenderJobs, deleteDocumentRenderArtifacts }) => {
+          if (!owned) return;
           await cancelPendingDocumentRenderJobs(ctx.serverDB, [input.id]);
           await deleteDocumentRenderArtifacts([input.id]);
         })
@@ -651,6 +659,7 @@ export const fileRouter = router({
     .use(withScopedPermission('file:delete'))
     .input(z.object({ ids: z.array(z.string()) }))
     .mutation(async ({ input, ctx }) => {
+      const ownedFileIds = (await ctx.fileModel.findByIds(input.ids)).map((file) => file.id);
       const needToRemoveFileList = await ctx.fileModel.deleteMany(
         input.ids,
         serverDBEnv.REMOVE_GLOBAL_FILE,
@@ -658,8 +667,9 @@ export const fileRouter = router({
 
       void import('@/server/enterprise/services/documentRender')
         .then(async ({ cancelPendingDocumentRenderJobs, deleteDocumentRenderArtifacts }) => {
-          await cancelPendingDocumentRenderJobs(ctx.serverDB, input.ids);
-          await deleteDocumentRenderArtifacts(input.ids);
+          if (ownedFileIds.length === 0) return;
+          await cancelPendingDocumentRenderJobs(ctx.serverDB, ownedFileIds);
+          await deleteDocumentRenderArtifacts(ownedFileIds);
         })
         .catch((error) => {
           console.error('Failed to cleanup document render artifacts', error);

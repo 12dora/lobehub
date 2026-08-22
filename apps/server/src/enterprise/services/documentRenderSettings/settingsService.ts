@@ -9,7 +9,8 @@ import { normalizeDocumentRenderSettings } from '@/types/platform/documentRender
 import type { DocumentRenderEnvBag, EffectiveDocumentRenderSettings } from './effective';
 import {
   getEffectiveDocumentRenderSettings,
-  invalidateEffectiveDocumentRenderSettings,
+  mergeDocumentRenderSettings,
+  readDocumentRenderEnvBag,
 } from './effective';
 
 export const DOCUMENT_RENDER_SETTINGS_AUDIT_ACTION = 'system.infra.document_render.update';
@@ -77,11 +78,11 @@ export const updateDocumentRenderSettings = async (
     ...normalizeDocumentRenderSettings(input.config),
     expectedRevision: input.expectedRevision,
   });
-  invalidateEffectiveDocumentRenderSettings();
-  const [effective, moduleEnabled] = await Promise.all([
-    getEffectiveDocumentRenderSettings({ db }),
-    isModuleEnabled('documentRender'),
-  ]);
+  // The caller usually runs this inside a transaction that may still roll back
+  // (audit insert). Build the response from the written row only; the cache is
+  // invalidated by the router after commit.
+  const effective = mergeDocumentRenderSettings(readDocumentRenderEnvBag(), row);
+  const moduleEnabled = await isModuleEnabled('documentRender');
   return toDocumentRenderSettingsOutput(effective, row, moduleEnabled);
 };
 

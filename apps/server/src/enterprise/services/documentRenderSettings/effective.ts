@@ -52,7 +52,7 @@ interface CacheSlot {
 
 let cache: CacheSlot | null = null;
 
-const readEnvBag = (override?: DocumentRenderEnvBag): DocumentRenderEnvBag => {
+export const readDocumentRenderEnvBag = (override?: DocumentRenderEnvBag): DocumentRenderEnvBag => {
   if (override) return override;
   return {
     DOCUMENT_RENDER_CONCURRENCY: documentRenderEnv.DOCUMENT_RENDER_CONCURRENCY,
@@ -170,7 +170,7 @@ export const mergeDocumentRenderSettings = (
 };
 
 export const settingsFromEnv = (override?: DocumentRenderEnvBag): EffectiveDocumentRenderSettings =>
-  mergeDocumentRenderSettings(readEnvBag(override), {
+  mergeDocumentRenderSettings(readDocumentRenderEnvBag(override), {
     ...normalizeDocumentRenderSettings({}),
     revision: 0,
   });
@@ -204,7 +204,7 @@ export const getEffectiveDocumentRenderSettings = async (
     return cache.value;
   }
 
-  const env = readEnvBag(options.env);
+  const env = readDocumentRenderEnvBag(options.env);
   let stored: PlatformDocumentRenderSettings & { revision: number } = {
     ...normalizeDocumentRenderSettings({}),
     revision: 0,

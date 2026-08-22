@@ -71,6 +71,15 @@ export const DOCUMENT_RENDER_DEFAULTS = {
   trigger: 'onUpload' as DocumentRenderTrigger,
 } as const;
 
+export const isHttpUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
 const optionalPositiveInt = z.number().int().positive().optional();
 const optionalNonNegativeInt = z.number().int().nonnegative().optional();
 
@@ -79,7 +88,12 @@ export const platformDocumentRenderSettingsFields = {
   contactSheetCols: z.number().int().min(1).max(6).optional(),
   contactSheetRows: z.number().int().min(1).max(8).optional(),
   enabled: z.boolean(),
-  endpoint: z.string().trim().max(512).optional(),
+  endpoint: z
+    .string()
+    .trim()
+    .max(512)
+    .refine(isHttpUrl, { message: 'endpoint must be an http(s) URL' })
+    .optional(),
   longEdgePx: z.number().int().min(256).max(4096).optional(),
   maxDocsPerRequest: optionalPositiveInt,
   maxFileBytes: optionalPositiveInt,
@@ -121,7 +135,7 @@ export const normalizeDocumentRenderSettings = (
   const next: PlatformDocumentRenderSettings = { enabled: raw.enabled === true };
 
   const endpoint = asOptionalString(raw.endpoint);
-  if (endpoint) next.endpoint = endpoint;
+  if (endpoint && isHttpUrl(endpoint)) next.endpoint = endpoint;
   if (raw.trigger === 'onUpload' || raw.trigger === 'onDemand') next.trigger = raw.trigger;
 
   const ints: Array<[keyof PlatformDocumentRenderSettings, number, number?]> = [

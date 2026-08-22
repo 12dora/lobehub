@@ -11,30 +11,7 @@ services:
     ports:
       - '${LOBE_PORT:-3210}:3210'
     depends_on:
-      document-render:
-    # Gotenberg (LibreOffice + Chromium) converts docx/pptx/xlsx to PDF for page images.
-    # Only reachable on the internal network; /tmp is a size-capped tmpfs so a bad file
-    # cannot fill the host. Chromium routes are disabled (unused).
-    profiles: [document-render]
-    image: gotenberg/gotenberg:8
-    container_name: lobehub-enhanced-document-render
-    command:
-      - gotenberg
-      - --api-timeout=120s
-      - --chromium-disable-routes=true
-      - --libreoffice-auto-start=true
-    tmpfs:
-      - /tmp:size=512m
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-    restart: always
-    networks:
-      - lobe-network
-
-  platform-oidc-lkg-init:
+      platform-oidc-lkg-init:
         condition: service_completed_successfully
       postgresql:
         condition: service_healthy
@@ -253,6 +230,29 @@ services:
       - './searxng-settings.yml:/etc/searxng/settings.yml'
     environment:
       - 'SEARXNG_SETTINGS_FILE=/etc/searxng/settings.yml'
+    restart: always
+    networks:
+      - lobe-network
+
+  document-render:
+    # Gotenberg (LibreOffice + Chromium) converts docx/pptx/xlsx to PDF for page images.
+    # Only reachable on the internal network; /tmp is a size-capped tmpfs so a bad file
+    # cannot fill the host. Chromium routes are disabled (unused).
+    profiles: [document-render]
+    image: gotenberg/gotenberg:8
+    container_name: lobehub-enhanced-document-render
+    command:
+      - gotenberg
+      - --api-timeout=120s
+      - --chromium-disable-routes=true
+      - --libreoffice-auto-start=true
+    tmpfs:
+      - /tmp:size=512m
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
     restart: always
     networks:
       - lobe-network
