@@ -55,9 +55,9 @@ import {
   toAgentRuntimeErrorType,
   turnAnswerMessage,
 } from './client';
+import { CONDUIT_PREPARE_WAIT_MS } from './constants';
 import { createChatGPTWebImage } from './createImage';
 import { createDebugRedactor } from './debugRedactor';
-import { describeThrownValue } from './errors';
 import { runChatGPTWebGenerateObject } from './generateObject';
 import { readImageDimensions, readImageMimeType } from './imageDimensions';
 import { extractSandboxFiles, resolveFileMimeType, sandboxFileName } from './interpreterFiles';
@@ -122,6 +122,47 @@ const timeoutSignalHandle = (ms: number): { cleanup: () => void; signal: AbortSi
     ms,
   );
   return { cleanup: () => clearTimeout(timer), signal: controller.signal };
+};
+
+/**
+ * Wait for every `/f/conversation/prepare` to settle, or for
+ * {@link CONDUIT_PREPARE_WAIT_MS} to elapse — whichever comes first.
+ * Honours `signal` the same way other awaits in `chat` do (already-aborted
+ * throws immediately; abort while waiting rejects). The timer is always
+ * cleared so a resolved race cannot leave a dangling handle.
+ */
+const waitForConduitPrepare = async (
+  trackedPrepares: Array<Promise<{ conduitToken?: string }>>,
+  signal?: AbortSignal,
+): Promise<'settled' | 'timeout'> => {
+  const abortReason = callerAbortReason(signal);
+  if (abortReason !== undefined) throw abortReason;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), CONDUIT_PREPARE_WAIT_MS);
+  });
+
+  let onAbort: (() => void) | undefined;
+  const aborted = signal
+    ? new Promise<never>((_, reject) => {
+        onAbort = () => {
+          reject(callerAbortReason(signal));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      })
+    : undefined;
+
+  try {
+    return await Promise.race([
+      Promise.allSettled(trackedPrepares).then(() => 'settled' as const),
+      timeout,
+      ...(aborted ? [aborted] : []),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+  }
 };
 
 /**
@@ -333,10 +374,19 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         ? ['success', 'sent']
         : ['success'];
       /**
-       * Chrome does not wait for `/f/conversation/prepare` on any tier (HAR:
-       * conversation POST at +98 ms, prepare responses at +1.4 s). Attach a
-       * conduit token only if one has already arrived; otherwise send without
-       * it. A missing-conduit 4xx retries once after awaiting prepare.
+       * Wait briefly for `/f/conversation/prepare` before the conversation POST.
+       * The real web client issues prepare while the user types, so the token is
+       * already present by send time; the HAR "+98 ms" note was measured against
+       * a prepare that had already been issued. Firing both in the same
+       * millisecond produces a conduit-less turn that chatgpt.com answers 200
+       * for but silently routes to `gpt-5-5-mini` — for every model, including
+       * `auto` and `*-instant`.
+       *
+       * If prepare fails, times out, or returns `conduit_token: null`, send
+       * without a token; a missing-conduit 4xx still retries once after awaiting
+       * prepare. Pro fires two prepares (`success`, `sent`): wait for both to
+       * settle, but if any token has arrived and the rest are still pending
+       * when the bound elapses, proceed with the token we have.
        */
       const pendingPrepares = prepareStates.map((clientPrepareState) =>
         this.client.prepareConversation(prepare(clientPrepareState), {
@@ -352,17 +402,30 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
           return result;
         }),
       );
-      void Promise.allSettled(trackedPrepares).then((results) => {
-        for (const result of results) {
-          if (result.status === 'rejected')
-            log('non-blocking prepare failed after send: %s', describeThrownValue(result.reason));
-          else if (result.value.conduitToken)
-            log('non-blocking prepare returned a late conduit token; ignoring it');
-        }
-      });
+      const prepareWaitStartedAt = Date.now();
+      const prepareWaitOutcome = await waitForConduitPrepare(trackedPrepares, signal);
+      timing('prepare wait durationMs=%d', getDurationMs(prepareWaitStartedAt));
 
       let useFPath = true;
       let conduitToken = latestConduitToken;
+      log(
+        conduitToken
+          ? 'sending conversation with a conduit token'
+          : 'sending conversation without a conduit token',
+      );
+      // A token that arrives after the bound is too late for this POST; the
+      // missing-conduit 4xx retry still awaits the same prepares.
+      if (prepareWaitOutcome === 'timeout' && !conduitToken) {
+        void Promise.allSettled(trackedPrepares).then((results) => {
+          for (const result of results) {
+            if (result.status === 'fulfilled' && result.value.conduitToken) {
+              log(
+                'prepare returned a conduit token after the wait timed out; conversation already sent without it',
+              );
+            }
+          }
+        });
+      }
 
       const describeFlow = (fPath: boolean) =>
         fPath

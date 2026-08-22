@@ -9,6 +9,7 @@ import {
 } from '../../utils/serviceModelEffort';
 import type { ConversationEvent } from './client';
 import { bytesToBase64, ChatGPTWebError } from './client';
+import { CONDUIT_PREPARE_WAIT_MS } from './constants';
 import { describeRequestBody, LobeChatGPTWebAI, undeliveredSuffix } from './index';
 import { clearUploadCache } from './uploadCache';
 
@@ -193,8 +194,8 @@ describe('LobeChatGPTWebAI', () => {
       ]);
       expect(body.messages[0].content.parts).toEqual(['be terse\n\nhi']);
       // every turn goes through the conduit path — see the `/f/` default below.
-      // Prepare is non-blocking, so a token that arrives on a microtask is omitted.
-      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+      // Prepare is awaited (bounded), so a resolved token is on the first POST.
+      expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
       // the assistant turn is registered so the upstream echo can be dropped
       expect(optionsOf(client).echoHistory).toEqual(['hello']);
 
@@ -401,44 +402,82 @@ describe('LobeChatGPTWebAI', () => {
       const [, secondOptions] = client.prepareConversation.mock.calls[1] as any[];
       expect(secondOptions.turnIdentity).toBe(firstOptions.turnIdentity);
       expect(optionsOf(client).turnIdentity).toBe(firstOptions.turnIdentity);
-      // Chrome starts the Pro send while both prepares are still pending, so a
-      // late conduit token is never an input to this request.
-      expect(optionsOf(client).conduitToken).toBeUndefined();
+      // Both prepares resolve on a microtask within the bound, so the first
+      // conversation POST carries the token.
+      expect(optionsOf(client).conduitToken).toBe('conduit');
       // an effort makes the turn mandatory-conduit — a -pro turn must never be
       // allowed to fall back to the endpoint that cannot serve it.
       expect(optionsOf(client).useFPath).toBe(true);
     });
 
-    it('starts a -pro conversation before either prepare response settles', async () => {
+    it('sends a -pro conversation without a token when both prepares exceed the wait', async () => {
       const settlePrepares: Array<(value: { conduitToken?: string }) => void> = [];
-      let settled = 0;
       const prepareConversation = vi.fn(
         () =>
           new Promise<{ conduitToken?: string }>((resolve) => {
-            settlePrepares.push((value) => {
-              settled += 1;
-              resolve(value);
-            });
+            settlePrepares.push(resolve);
           }),
       );
       const client = createFakeClient({ prepareConversation });
 
-      await createRuntime(client).chat({
-        messages: [{ content: 'hi', role: 'user' }],
-        model: 'gpt-5-6-pro',
-        temperature: 1,
+      vi.useFakeTimers();
+      try {
+        const chatPromise = createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'gpt-5-6-pro',
+          temperature: 1,
+        });
+
+        await vi.advanceTimersByTimeAsync(CONDUIT_PREPARE_WAIT_MS - 1);
+        expect(client.streamConversation).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        await chatPromise;
+
+        expect(prepareConversation).toHaveBeenCalledTimes(2);
+        expect(client.streamConversation).toHaveBeenCalledTimes(1);
+        expect(Math.max(...prepareConversation.mock.invocationCallOrder)).toBeLessThan(
+          client.streamConversation.mock.invocationCallOrder[0]!,
+        );
+        expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+      } finally {
+        for (const settle of settlePrepares) settle({ conduitToken: 'too-late' });
+        vi.useRealTimers();
+      }
+    });
+
+    it('sends a -pro conversation with a token if any prepare resolved before the wait elapsed', async () => {
+      const settleSlow: Array<(value: { conduitToken?: string }) => void> = [];
+      let prepareCalls = 0;
+      const prepareConversation = vi.fn(() => {
+        prepareCalls += 1;
+        if (prepareCalls === 1) return Promise.resolve({ conduitToken: 'pro-token' });
+        return new Promise<{ conduitToken?: string }>((resolve) => {
+          settleSlow.push(resolve);
+        });
       });
+      const client = createFakeClient({ prepareConversation });
 
-      expect(prepareConversation).toHaveBeenCalledTimes(2);
-      expect(settled).toBe(0);
-      expect(client.streamConversation).toHaveBeenCalledTimes(1);
-      expect(Math.max(...prepareConversation.mock.invocationCallOrder)).toBeLessThan(
-        client.streamConversation.mock.invocationCallOrder[0]!,
-      );
-      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+      vi.useFakeTimers();
+      try {
+        const chatPromise = createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'gpt-5-6-pro',
+          temperature: 1,
+        });
 
-      for (const settle of settlePrepares) settle({ conduitToken: 'too-late' });
-      await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(CONDUIT_PREPARE_WAIT_MS);
+        await chatPromise;
+
+        expect(prepareConversation).toHaveBeenCalledTimes(2);
+        expect(client.streamConversation).toHaveBeenCalledTimes(1);
+        expect(optionsOf(client)).toMatchObject({
+          conduitToken: 'pro-token',
+          useFPath: true,
+        });
+      } finally {
+        for (const settle of settleSlow) settle({});
+        vi.useRealTimers();
+      }
     });
 
     it('always sends standard on a -pro model, ignoring leftover reasoning_effort', async () => {
@@ -557,7 +596,7 @@ describe('LobeChatGPTWebAI', () => {
         'gpt-5-6-pro',
         'gpt-5-6-pro',
       ]);
-      expect(optionsOf(client).conduitToken).toBeUndefined();
+      expect(optionsOf(client).conduitToken).toBe('conduit');
       expect(optionsOf(client).useFPath).toBe(true);
     });
 
@@ -741,22 +780,13 @@ describe('LobeChatGPTWebAI', () => {
       // the plain body's opt-out is NOT sent: it makes the conversation
       // unreadable afterwards (no files, no citations, no recovery)
       expect(body.history_and_training_disabled).toBeUndefined();
-      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+      expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
     });
 
-    it('starts a plain Instant conversation before prepare settles', async () => {
-      const settlePrepares: Array<(value: { conduitToken?: string }) => void> = [];
-      let settled = 0;
-      const prepareConversation = vi.fn(
-        () =>
-          new Promise<{ conduitToken?: string }>((resolve) => {
-            settlePrepares.push((value) => {
-              settled += 1;
-              resolve(value);
-            });
-          }),
-      );
-      const client = createFakeClient({ prepareConversation });
+    it('attaches a resolved prepare token to the first conversation POST', async () => {
+      const client = createFakeClient({
+        prepareConversation: vi.fn(async () => ({ conduitToken: 'conduit-ready' })),
+      });
 
       await createRuntime(client).chat({
         messages: [{ content: 'hi', role: 'user' }],
@@ -764,16 +794,46 @@ describe('LobeChatGPTWebAI', () => {
         temperature: 1,
       });
 
-      expect(prepareConversation).toHaveBeenCalledTimes(1);
-      expect(settled).toBe(0);
       expect(client.streamConversation).toHaveBeenCalledTimes(1);
-      expect(prepareConversation.mock.invocationCallOrder[0]!).toBeLessThan(
-        client.streamConversation.mock.invocationCallOrder[0]!,
-      );
-      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+      expect(optionsOf(client)).toMatchObject({
+        conduitToken: 'conduit-ready',
+        useFPath: true,
+      });
+    });
 
-      for (const settle of settlePrepares) settle({ conduitToken: 'too-late' });
-      await Promise.resolve();
+    it('sends the conversation without a token when prepare exceeds the wait', async () => {
+      const settlePrepares: Array<(value: { conduitToken?: string }) => void> = [];
+      const prepareConversation = vi.fn(
+        () =>
+          new Promise<{ conduitToken?: string }>((resolve) => {
+            settlePrepares.push(resolve);
+          }),
+      );
+      const client = createFakeClient({ prepareConversation });
+
+      vi.useFakeTimers();
+      try {
+        const chatPromise = createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'auto',
+          temperature: 1,
+        });
+
+        await vi.advanceTimersByTimeAsync(CONDUIT_PREPARE_WAIT_MS - 1);
+        expect(client.streamConversation).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        await chatPromise;
+
+        expect(prepareConversation).toHaveBeenCalledTimes(1);
+        expect(client.streamConversation).toHaveBeenCalledTimes(1);
+        expect(prepareConversation.mock.invocationCallOrder[0]!).toBeLessThan(
+          client.streamConversation.mock.invocationCallOrder[0]!,
+        );
+        expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+      } finally {
+        for (const settle of settlePrepares) settle({ conduitToken: 'too-late' });
+        vi.useRealTimers();
+      }
     });
 
     it('retries once with the conduit token when the first send is a missing-prepare 4xx', async () => {
@@ -801,36 +861,40 @@ describe('LobeChatGPTWebAI', () => {
       });
       const client = createFakeClient({ prepareConversation, streamConversation });
 
-      const chatPromise = createRuntime(client).chat({
-        messages: [{ content: 'hi', role: 'user' }],
-        model: 'auto',
-        temperature: 1,
-      });
+      vi.useFakeTimers();
+      try {
+        const chatPromise = createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'auto',
+          temperature: 1,
+        });
 
-      await vi.waitFor(() => expect(streamConversation).toHaveBeenCalledTimes(1));
-      prepareResolve({ conduitToken: 'conduit-retry' });
-      await chatPromise;
+        await vi.advanceTimersByTimeAsync(CONDUIT_PREPARE_WAIT_MS);
+        expect(streamConversation).toHaveBeenCalledTimes(1);
+        expect(optionsOf(client, 0)).toMatchObject({
+          conduitToken: undefined,
+          useFPath: true,
+        });
+        prepareResolve({ conduitToken: 'conduit-retry' });
+        await chatPromise;
 
-      expect(streamConversation).toHaveBeenCalledTimes(2);
-      expect(optionsOf(client, 1)).toMatchObject({
-        conduitToken: 'conduit-retry',
-        useFPath: true,
-      });
-      // Conduit token is a header, not a body field — the retry must POST the
-      // exact same message ids / create_time as the first send.
-      expect(bodyOf(client, 1)).toBe(bodyOf(client, 0));
-      expect(serializedBodies).toHaveLength(2);
-      expect(serializedBodies[1]).toBe(serializedBodies[0]);
+        expect(streamConversation).toHaveBeenCalledTimes(2);
+        expect(optionsOf(client, 1)).toMatchObject({
+          conduitToken: 'conduit-retry',
+          useFPath: true,
+        });
+        // Conduit token is a header, not a body field — the retry must POST the
+        // exact same message ids / create_time as the first send.
+        expect(bodyOf(client, 1)).toBe(bodyOf(client, 0));
+        expect(serializedBodies).toHaveLength(2);
+        expect(serializedBodies[1]).toBe(serializedBodies[0]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('retries once without a token when prepare fulfilled with a null conduit token', async () => {
-      let prepareResolve!: (value: { conduitToken?: string }) => void;
-      const prepareConversation = vi.fn(
-        () =>
-          new Promise<{ conduitToken?: string }>((resolve) => {
-            prepareResolve = resolve;
-          }),
-      );
+      const prepareConversation = vi.fn(async () => ({}));
       let conversationCalls = 0;
       // Serialise at call time: reference identity alone would not catch a
       // mutation between the first send and the retry.
@@ -848,17 +912,17 @@ describe('LobeChatGPTWebAI', () => {
       });
       const client = createFakeClient({ prepareConversation, streamConversation });
 
-      const chatPromise = createRuntime(client).chat({
+      await createRuntime(client).chat({
         messages: [{ content: 'hi', role: 'user' }],
         model: 'auto',
         temperature: 1,
       });
 
-      await vi.waitFor(() => expect(streamConversation).toHaveBeenCalledTimes(1));
-      prepareResolve({});
-      await chatPromise;
-
       expect(streamConversation).toHaveBeenCalledTimes(2);
+      expect(optionsOf(client, 0)).toMatchObject({
+        conduitToken: undefined,
+        useFPath: true,
+      });
       expect(optionsOf(client, 1)).toMatchObject({
         conduitToken: undefined,
         useFPath: true,
@@ -948,9 +1012,9 @@ describe('LobeChatGPTWebAI', () => {
       expect(sse).toContain('conversation body reset');
     });
 
-    // A Pro prepare is not a gate: Chrome sends the conversation while both
-    // prepare requests are still pending. A late prepare failure is observed,
-    // while the actual conversation request remains the source of truth.
+    // A failed Pro prepare is not a gate: wait for both to settle (or the
+    // bound to elapse), then send without a token. The conversation request
+    // remains the source of truth.
     it('does not block a -pro send when a non-gating prepare later fails', async () => {
       const client = createFakeClient({
         prepareConversation: vi.fn(async () => {
@@ -1001,7 +1065,7 @@ describe('LobeChatGPTWebAI', () => {
       ['a permission failure', new ChatGPTWebError('permission', 'forbidden', { status: 403 })],
       ['a missing transport', new ChatGPTWebError('transport_unavailable', 'no curl binary')],
       ['an unclassified error', new TypeError('cannot read properties of undefined')],
-    ])('does not wait for prepare to fail before sending on %s', async (_label, raised) => {
+    ])('sends without a conduit token when prepare fails with %s', async (_label, raised) => {
       const client = createFakeClient({
         prepareConversation: vi.fn(async () => {
           throw raised;
@@ -1061,7 +1125,7 @@ describe('LobeChatGPTWebAI', () => {
       const body = bodyOf(client);
       expect(body.force_use_search).toBe(true);
       expect(body.messages.at(-1).metadata.system_hints).toEqual(['search']);
-      expect(optionsOf(client)).toMatchObject({ conduitToken: undefined, useFPath: true });
+      expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
     });
 
     it('acquires a sentinel bundle by context key and replenishes after send starts', async () => {

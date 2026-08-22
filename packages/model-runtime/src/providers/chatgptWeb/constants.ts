@@ -211,6 +211,19 @@ export const TIMEOUTS = {
   streamIdle: 60_000,
 } as const;
 
+/**
+ * Bound on waiting for `/f/conversation/prepare` before the conversation POST.
+ *
+ * The real chatgpt.com client issues prepare while the user types, so the
+ * conduit token is already in hand by send time. The HAR "+98 ms" gap was
+ * measured against a prepare that had already been issued. Posting conversation
+ * in the same millisecond as prepare (no wait) yields a 200 whose turn is
+ * silently routed to `gpt-5-5-mini` for every model, including `auto` and
+ * `*-instant`. If prepare has not produced a token within this window, send
+ * without one and rely on the missing-conduit 4xx retry.
+ */
+export const CONDUIT_PREPARE_WAIT_MS = 4000;
+
 export const buildClientContextualInfo = (profile: RuntimeBrowserDeviceProfile) => ({
   is_dark_mode: profile.prefersColorScheme === 'dark',
   page_height: Math.min(900, profile.screen.availHeight),
