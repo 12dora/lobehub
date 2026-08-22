@@ -3,14 +3,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { adminSystemService } from './adminSystem';
 
 const mocks = vi.hoisted(() => ({
+  cancelDocumentRenderJob: vi.fn(),
   cancelJob: vi.fn(),
+  getDocumentRenderSettings: vi.fn(),
+  getDocumentRenderStatus: vi.fn(),
   getInfraSettings: vi.fn(),
   getSandboxSettings: vi.fn(),
   getInstanceRevisions: vi.fn(),
   getJobs: vi.fn(),
   getStatus: vi.fn(),
+  retryDocumentRenderJob: vi.fn(),
   retryJob: vi.fn(),
   testDependency: vi.fn(),
+  updateDocumentRenderSettings: vi.fn(),
   updateSandboxSettings: vi.fn(),
 }));
 
@@ -18,14 +23,19 @@ vi.mock('@/libs/trpc/client', () => ({
   lambdaClient: {
     admin: {
       system: {
+        cancelDocumentRenderJob: { mutate: mocks.cancelDocumentRenderJob },
         cancelJob: { mutate: mocks.cancelJob },
+        getDocumentRenderSettings: { query: mocks.getDocumentRenderSettings },
+        getDocumentRenderStatus: { query: mocks.getDocumentRenderStatus },
         getInfraSettings: { query: mocks.getInfraSettings },
         getSandboxSettings: { query: mocks.getSandboxSettings },
         getInstanceRevisions: { query: mocks.getInstanceRevisions },
         getJobs: { query: mocks.getJobs },
         getStatus: { query: mocks.getStatus },
+        retryDocumentRenderJob: { mutate: mocks.retryDocumentRenderJob },
         retryJob: { mutate: mocks.retryJob },
         testDependency: { mutate: mocks.testDependency },
+        updateDocumentRenderSettings: { mutate: mocks.updateDocumentRenderSettings },
         updateSandboxSettings: { mutate: mocks.updateSandboxSettings },
       },
     },
@@ -104,5 +114,46 @@ describe('Admin System service adapter', () => {
       config: { enabled: true, provider: 'local' },
       expectedRevision: 0,
     });
+  });
+
+  it('forwards document-render settings, status and queue actions', async () => {
+    const settings = { config: { trigger: 'onUpload' }, revision: 2, source: 'db' };
+    const status = { configured: true, moduleEnabled: true };
+    mocks.getDocumentRenderSettings.mockResolvedValue(settings);
+    mocks.updateDocumentRenderSettings.mockResolvedValue(settings);
+    mocks.getDocumentRenderStatus.mockResolvedValue(status);
+    mocks.retryDocumentRenderJob.mockResolvedValue({ ok: true });
+    mocks.cancelDocumentRenderJob.mockResolvedValue({ ok: true });
+
+    await expect(adminSystemService.getDocumentRenderSettings()).resolves.toBe(settings);
+    await expect(adminSystemService.getDocumentRenderStatus()).resolves.toBe(status);
+    await expect(
+      adminSystemService.updateDocumentRenderSettings({
+        config: { enabled: true, endpoint: 'http://document-render:3000' },
+        expectedRevision: 1,
+      }),
+    ).resolves.toBe(settings);
+    await expect(adminSystemService.retryDocumentRenderJob({ jobId: 'job-1' })).resolves.toEqual({
+      ok: true,
+    });
+    await expect(adminSystemService.cancelDocumentRenderJob({ jobId: 'job-1' })).resolves.toEqual({
+      ok: true,
+    });
+
+    expect(mocks.updateDocumentRenderSettings).toHaveBeenCalledWith({
+      config: { enabled: true, endpoint: 'http://document-render:3000' },
+      expectedRevision: 1,
+    });
+    expect(mocks.retryDocumentRenderJob).toHaveBeenCalledWith({ jobId: 'job-1' });
+    expect(mocks.cancelDocumentRenderJob).toHaveBeenCalledWith({ jobId: 'job-1' });
+  });
+
+  /** The probe rides the shared dependency mutation — a separate procedure would need its own registry entry. */
+  it('probes the render sidecar through testDependency', async () => {
+    const probe = { checkedAt: new Date('2026-08-22T00:00:00.000Z'), latencyMs: 4, ok: true };
+    mocks.testDependency.mockResolvedValue(probe);
+
+    await expect(adminSystemService.testDocumentRender()).resolves.toBe(probe);
+    expect(mocks.testDependency).toHaveBeenCalledWith({ dependency: 'documentRender' });
   });
 });

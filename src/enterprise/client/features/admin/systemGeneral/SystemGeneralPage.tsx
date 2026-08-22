@@ -17,11 +17,13 @@ import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import {
   useAdminBrowserProfile,
   useAdminBrowserProfileOptions,
+  useAdminDocumentRenderSettings,
   useAdminInfraSettings,
   useAdminSandboxSettings,
   useInfraDependencyProbe,
 } from './hooks';
 import type { BrowserProfileSaveInput } from './infra/browserProfileSelection';
+import { DOCUMENT_RENDER_MODULE_ID } from './infra/documentRenderDraft';
 import { SystemGeneralPageView } from './SystemGeneralPageView';
 
 export const SYSTEM_GENERAL_TABS = ['infrastructure', 'network-proxy'] as const;
@@ -48,6 +50,7 @@ const SystemGeneralPage = memo(() => {
   // exactly like a missing permission does, rather than offer a page that answers FORBIDDEN.
   const networkProxyModule = useModuleEnabled('networkProxy');
   const sandboxModule = useModuleEnabled('sandbox');
+  const documentRenderModule = useModuleEnabled(DOCUMENT_RENDER_MODULE_ID);
   const proxy = {
     ...rawProxy,
     canManage: rawProxy.canManage && networkProxyModule,
@@ -68,6 +71,11 @@ const SystemGeneralPage = memo(() => {
   const infraEnabled = allowed && canRead && tab === 'infrastructure';
   const settings = useAdminInfraSettings(infraEnabled, adminSystemService);
   const sandboxSettings = useAdminSandboxSettings(infraEnabled, adminSystemService);
+  // Off-module deployments never ask for a configuration they cannot act on.
+  const documentRenderSettings = useAdminDocumentRenderSettings(
+    infraEnabled && documentRenderModule,
+    adminSystemService,
+  );
   const browserProfile = useAdminBrowserProfile(infraEnabled, adminSystemService);
   // Read permission, not operate: the pools also name the GPU the card reports read-only.
   const browserProfileOptions = useAdminBrowserProfileOptions(infraEnabled, adminSystemService);
@@ -135,6 +143,8 @@ const SystemGeneralPage = memo(() => {
         <SystemGeneralPageView
           canOperate={canOperate}
           data={settings.data}
+          documentRenderData={documentRenderSettings.data}
+          documentRenderModuleEnabled={documentRenderModule}
           error={settings.error}
           isLoading={settings.isLoading}
           probeBusy={probe.busy}

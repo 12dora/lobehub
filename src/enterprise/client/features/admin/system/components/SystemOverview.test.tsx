@@ -40,7 +40,10 @@ const health = {
   status: 'healthy' as const,
 };
 
-const status = (sandbox?: AdminSystemStatus['dependencies']['sandbox']): AdminSystemStatus =>
+const status = (
+  sandbox?: AdminSystemStatus['dependencies']['sandbox'],
+  documentRender?: AdminSystemStatus['dependencies']['documentRender'],
+): AdminSystemStatus =>
   ({
     build: { gitSha: 'abc1234', version: '1.0.0' },
     dependencies: {
@@ -50,6 +53,7 @@ const status = (sandbox?: AdminSystemStatus['dependencies']['sandbox']): AdminSy
       objectStorage: health,
       redis: health,
       ...(sandbox ? { sandbox } : {}),
+      ...(documentRender ? { documentRender } : {}),
     },
     domains: [],
     featureFlags: {
@@ -107,5 +111,55 @@ describe('DependencyGrid sandbox row', () => {
     expect(screen.getByText(/system.sandbox.containers/)).toBeTruthy();
     expect(screen.getByText(/system.sandbox.daemon/)).toBeTruthy();
     expect(screen.getByText(/system.sandbox.image/)).toBeTruthy();
+  });
+});
+
+describe('DependencyGrid document render row', () => {
+  it('hides the document render row when the probe is omitted', () => {
+    render(<DependencyGrid status={status()} />);
+    expect(screen.queryByText('system.dependencies.documentRender')).toBeNull();
+  });
+
+  it('shows sidecar, version, latency and queue depth when the probe reports', () => {
+    render(
+      <DependencyGrid
+        status={status(undefined, {
+          configured: true,
+          errorCategory: null,
+          lastCheckedAt: new Date('2026-08-22T00:00:00.000Z'),
+          latencyMs: 12,
+          queuePending: 3,
+          queueRunning: 1,
+          status: 'healthy',
+          version: '8.5.0',
+        })}
+      />,
+    );
+
+    expect(screen.getByText('system.dependencies.documentRender')).toBeTruthy();
+    expect(screen.getByText(/system.documentRender.sidecar/)).toBeTruthy();
+    expect(screen.getByText(/system.documentRender.version/)).toBeTruthy();
+    expect(screen.getByText(/system.documentRender.queue/)).toBeTruthy();
+    expect(screen.getByText(/systemGeneral.test.latency/)).toBeTruthy();
+  });
+
+  /** An unconfigured deployment still gets the tile — "not set up" is the answer it needs. */
+  it('reports an unconfigured sidecar without a version line', () => {
+    render(
+      <DependencyGrid
+        status={status(undefined, {
+          configured: false,
+          errorCategory: null,
+          lastCheckedAt: new Date('2026-08-22T00:00:00.000Z'),
+          queuePending: 0,
+          queueRunning: 0,
+          status: 'disabled',
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/system.documentRender.sidecar/)).toBeTruthy();
+    expect(screen.queryByText(/system.documentRender.version/)).toBeNull();
+    expect(screen.queryByText(/systemGeneral.test.latency/)).toBeNull();
   });
 });

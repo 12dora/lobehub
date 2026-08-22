@@ -214,6 +214,10 @@ export default {
   'pageList.transferTo': 'Transfer to…',
   'pageList.transferWarning': 'This is a one-way move; reverting requires another transfer.',
   'pageList.untitled': 'Untitled',
+  'render.failed': 'Page images failed',
+  'render.pending': 'Preparing page images',
+  'render.ready': 'Page images ready',
+  'render.textOnly': 'Text only',
   'resourceList.batchCopyDescription':
     'You can copy to personal or workspaces that have permission to create resources.',
   'resourceList.batchCopyTitle': 'Copy resources',

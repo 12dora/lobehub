@@ -7,6 +7,7 @@ import {
   Boxes,
   CircleAlert,
   Container,
+  FileImage,
   KeyRound,
   Mail,
   Network,
@@ -102,6 +103,7 @@ BuildSummary.displayName = 'AdminSystemBuildSummary';
 
 export const DependencyGrid = memo<{ status: AdminSystemStatus }>(({ status }) => {
   const { t } = useTranslation('admin');
+  const documentRender = status.dependencies.documentRender;
   return (
     <Flexbox gap={8}>
       <SectionTitle>{t('system.dependencies.title')}</SectionTitle>
@@ -168,6 +170,51 @@ export const DependencyGrid = memo<{ status: AdminSystemStatus }>(({ status }) =
                   {t(
                     `system.values.dependencyError.${status.dependencies.sandbox.errorCategory}` as never,
                   )}
+                </Text>
+              ) : null}
+            </Flexbox>
+          </Block>
+        ) : null}
+        {documentRender ? (
+          <Block className={styles.dependency} key="documentRender" padding={12} variant="outlined">
+            <Flexbox gap={8}>
+              <Flexbox horizontal align="center" gap={8} justify="space-between">
+                <Flexbox horizontal align="center" gap={8}>
+                  <Icon icon={FileImage} size={16} />
+                  <Text strong>{t('system.dependencies.documentRender')}</Text>
+                </Flexbox>
+                <OperationalStatus status={documentRender.status} />
+              </Flexbox>
+              <Text className={styles.code} type="secondary">
+                {t('system.documentRender.sidecar', {
+                  value: t(
+                    documentRender.configured
+                      ? 'systemGeneral.values.yes'
+                      : 'systemGeneral.values.no',
+                  ),
+                })}
+              </Text>
+              {documentRender.version ? (
+                <Text className={styles.code} type="secondary">
+                  {t('system.documentRender.version', { version: documentRender.version })}
+                </Text>
+              ) : null}
+              {typeof documentRender.latencyMs === 'number' ? (
+                <Text className={styles.code} type="secondary">
+                  {t('systemGeneral.test.latency', { ms: documentRender.latencyMs })}
+                </Text>
+              ) : null}
+              <Text className={styles.code} type="secondary">
+                {t('system.documentRender.queue', {
+                  pending: documentRender.queuePending,
+                  running: documentRender.queueRunning,
+                })}
+              </Text>
+              {documentRender.lastError ? (
+                <Text type="secondary">{documentRender.lastError}</Text>
+              ) : documentRender.errorCategory ? (
+                <Text type="secondary">
+                  {t(`system.values.dependencyError.${documentRender.errorCategory}` as never)}
                 </Text>
               ) : null}
             </Flexbox>

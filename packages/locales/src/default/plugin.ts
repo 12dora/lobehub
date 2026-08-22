@@ -214,6 +214,10 @@ export default {
   'builtins.lobe-agent.apiName.updatePlan.completed': 'Completed',
   'builtins.lobe-agent.apiName.updatePlan.modified': 'Modified',
   'builtins.lobe-agent.apiName.updateTodos': 'Update todos',
+  'builtins.lobe-document-pages.apiName.viewDocumentPages': 'View document pages',
+  'builtins.lobe-document-pages.description':
+    'View additional page images of attached office documents and PDFs',
+  'builtins.lobe-document-pages.title': 'Document Pages',
   'builtins.lobe-delivery-checker.apiName.generateVerifyPlan': 'Create automated checks',
   'builtins.lobe-delivery-checker.verifyPlan.optional': 'Optional',
   'builtins.lobe-delivery-checker.verifyPlan.portal.fields.description': 'Summary',

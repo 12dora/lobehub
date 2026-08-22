@@ -9,6 +9,7 @@ import { AdminLoadingSurface } from '@/enterprise/client/features/admin/pages/Ad
 import type {
   AdminBrowserProfileOptions,
   AdminBrowserProfileSummary,
+  AdminSystemDocumentRenderSettings,
   AdminSystemInfraSettings,
   AdminSystemSandboxSettings,
   AdminSystemTestDependencyResult,
@@ -17,6 +18,7 @@ import type { AdminSystemInfraDependency } from '@/server/enterprise/contracts/a
 
 import { BrowserProfileCard } from './infra/BrowserProfileCard';
 import type { BrowserProfileSaveInput } from './infra/browserProfileSelection';
+import { DocumentRenderCard } from './infra/DocumentRenderCard';
 import { MailCard } from './infra/MailCard';
 import { ObjectStorageCard } from './infra/ObjectStorageCard';
 import { SandboxCard } from './infra/SandboxCard';
@@ -25,6 +27,8 @@ import { infraSettingsStyles as styles } from './styles';
 export interface SystemGeneralPageViewProps {
   canOperate: boolean;
   data?: AdminSystemInfraSettings;
+  documentRenderData?: AdminSystemDocumentRenderSettings;
+  documentRenderModuleEnabled?: boolean;
   error: unknown;
   isLoading: boolean;
   onProfileRegenerate?: () => Promise<void>;
@@ -57,6 +61,8 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
   ({
     canOperate,
     data,
+    documentRenderData,
+    documentRenderModuleEnabled,
     error,
     isLoading,
     onProfileRegenerate = async () => undefined,
@@ -138,6 +144,13 @@ export const SystemGeneralPageView = memo<SystemGeneralPageViewProps>(
                     canOperate={canOperate}
                     moduleEnabled={sandboxModuleEnabled}
                     view={sandboxData}
+                  />
+                )}
+                {documentRenderModuleEnabled === undefined ? null : (
+                  <DocumentRenderCard
+                    canOperate={canOperate}
+                    moduleEnabled={documentRenderModuleEnabled}
+                    view={documentRenderData}
                   />
                 )}
               </>

@@ -8,7 +8,10 @@ import type {
   AdminBrowserProfileUpdateInput,
 } from '@/server/enterprise/contracts/adminBrowserProfile';
 import type {
+  adminSystemCancelDocumentRenderJobInputSchema,
   AdminSystemCancelJobInput,
+  adminSystemGetDocumentRenderSettingsOutputSchema,
+  adminSystemGetDocumentRenderStatusOutputSchema,
   adminSystemGetInfraSettingsOutputSchema,
   AdminSystemGetInstanceRevisionsInput,
   adminSystemGetInstanceRevisionsOutputSchema,
@@ -19,6 +22,7 @@ import type {
   AdminSystemRetryJobInput,
   AdminSystemTestDependencyInput,
   adminSystemTestDependencyOutputSchema,
+  AdminSystemUpdateDocumentRenderSettingsInput,
   AdminSystemUpdateInfraSettingsInput,
   AdminSystemUpdateInfraSettingsOutput,
   AdminSystemUpdateSandboxSettingsInput,
@@ -66,6 +70,42 @@ export interface AdminSandboxSettingsService {
   ) => Promise<AdminSystemUpdateSandboxSettingsOutput>;
 }
 
+/**
+ * 文档渲染 (Gotenberg sidecar) admin contract, inferred from the server schemas so the card and the
+ * procedures can never drift apart.
+ */
+export type AdminSystemDocumentRenderSettings = z.infer<
+  typeof adminSystemGetDocumentRenderSettingsOutputSchema
+>;
+/** The effective values, resolved as `DB ?? env ?? default`; `endpoint` is null when unset. */
+export type AdminSystemDocumentRenderConfig = AdminSystemDocumentRenderSettings['config'];
+export type AdminSystemDocumentRenderStatus = z.infer<
+  typeof adminSystemGetDocumentRenderStatusOutputSchema
+>;
+export type AdminSystemDocumentRenderQueue = AdminSystemDocumentRenderStatus['queue'];
+export type AdminSystemDocumentRenderSidecar = AdminSystemDocumentRenderStatus['sidecar'];
+/** One recent render job. Identified by file id + extension — never by the file's name. */
+export type AdminSystemDocumentRenderJob = AdminSystemDocumentRenderQueue['recent'][number];
+export type AdminSystemDocumentRenderJobActionInput = z.infer<
+  typeof adminSystemCancelDocumentRenderJobInputSchema
+>;
+
+export interface AdminDocumentRenderSettingsService {
+  cancelDocumentRenderJob: (
+    input: AdminSystemDocumentRenderJobActionInput,
+  ) => Promise<{ ok: boolean }>;
+  getDocumentRenderSettings: () => Promise<AdminSystemDocumentRenderSettings>;
+  getDocumentRenderStatus: () => Promise<AdminSystemDocumentRenderStatus>;
+  retryDocumentRenderJob: (
+    input: AdminSystemDocumentRenderJobActionInput,
+  ) => Promise<{ ok: boolean }>;
+  /** `testDependency({ dependency: 'documentRender' })` — probes Gotenberg `/health`. */
+  testDocumentRender: () => Promise<AdminSystemTestDependencyResult>;
+  updateDocumentRenderSettings: (
+    input: AdminSystemUpdateDocumentRenderSettingsInput,
+  ) => Promise<AdminSystemDocumentRenderSettings>;
+}
+
 export interface AdminBrowserProfileService {
   getBrowserProfile: () => Promise<AdminBrowserProfileSummary>;
   /** The curated pools a fingerprint may be composed from — the card never posts raw values. */
@@ -83,10 +123,28 @@ class AdminSystemServiceImpl
     AdminSystemService,
     AdminInfraSettingsService,
     AdminBrowserProfileService,
-    AdminSandboxSettingsService
+    AdminSandboxSettingsService,
+    AdminDocumentRenderSettingsService
 {
+  cancelDocumentRenderJob = (input: AdminSystemDocumentRenderJobActionInput) =>
+    lambdaClient.admin.system.cancelDocumentRenderJob.mutate(input);
+
   cancelJob = (input: AdminSystemCancelJobInput) =>
     lambdaClient.admin.system.cancelJob.mutate(input);
+
+  getDocumentRenderSettings = () => lambdaClient.admin.system.getDocumentRenderSettings.query();
+
+  getDocumentRenderStatus = () => lambdaClient.admin.system.getDocumentRenderStatus.query();
+
+  retryDocumentRenderJob = (input: AdminSystemDocumentRenderJobActionInput) =>
+    lambdaClient.admin.system.retryDocumentRenderJob.mutate(input);
+
+  /** One shared dependency probe rather than a sixth procedure to register. */
+  testDocumentRender = () =>
+    lambdaClient.admin.system.testDependency.mutate({ dependency: 'documentRender' });
+
+  updateDocumentRenderSettings = (input: AdminSystemUpdateDocumentRenderSettingsInput) =>
+    lambdaClient.admin.system.updateDocumentRenderSettings.mutate(input);
 
   getInfraSettings = () => lambdaClient.admin.system.getInfraSettings.query();
 
@@ -124,7 +182,8 @@ class AdminSystemServiceImpl
 export const adminSystemService: AdminSystemService &
   AdminInfraSettingsService &
   AdminBrowserProfileService &
-  AdminSandboxSettingsService = new AdminSystemServiceImpl();
+  AdminSandboxSettingsService &
+  AdminDocumentRenderSettingsService = new AdminSystemServiceImpl();
 
 export type {
   AdminSystemCancelJobInput,
@@ -132,6 +191,7 @@ export type {
   AdminSystemGetJobsInput,
   AdminSystemRetryJobInput,
   AdminSystemTestDependencyInput,
+  AdminSystemUpdateDocumentRenderSettingsInput,
   AdminSystemUpdateInfraSettingsInput,
   AdminSystemUpdateInfraSettingsOutput,
   AdminSystemUpdateSandboxSettingsInput,

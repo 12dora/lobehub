@@ -2906,6 +2906,12 @@ When I am ___, I need ___
     'Drive the web onboarding flow with a controlled agent runtime',
   'tools.builtins.lobe-web-onboarding.title': 'Web Onboarding',
   // ===== Builtin Agent Skills =====
+  'tools.builtins.document-processing.description':
+    'Use when the user attaches or asks about PDF, Word/PowerPoint/Excel, archives or unknown binaries, or needs more pages, OCR, table extraction, or page images beyond what is attached',
+  'tools.builtins.document-processing.title': 'Document processing',
+  'tools.builtins.lobe-document-pages.description':
+    'View additional page images of attached office documents and PDFs',
+  'tools.builtins.lobe-document-pages.title': 'Document Pages',
   'tools.builtins.find-skills.description':
     'Helps users discover and install agent skills when they ask "how do I do X", "find a skill for X", or want to extend capabilities',
   'tools.builtins.find-skills.title': 'Find Skills',

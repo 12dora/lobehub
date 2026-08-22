@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import type {
   AdminBrowserProfileService,
+  AdminDocumentRenderSettingsService,
   AdminInfraSettingsService,
   AdminSandboxSettingsService,
   AdminSystemInfraSettings,
@@ -15,9 +16,14 @@ import type { AdminSystemInfraDependency } from '@/server/enterprise/contracts/a
 import {
   buildAdminBrowserProfileKey,
   buildAdminBrowserProfileOptionsKey,
+  buildAdminDocumentRenderSettingsKey,
+  buildAdminDocumentRenderStatusKey,
   buildAdminInfraSettingsKey,
   buildAdminSandboxSettingsKey,
 } from './swrKeys';
+
+/** Queue depth and sidecar health move on their own; 15s is the same cadence 网络代理 polls at. */
+const DOCUMENT_RENDER_STATUS_REFRESH_MS = 15_000;
 
 export const useAdminBrowserProfile = (enabled: boolean, service: AdminBrowserProfileService) =>
   useClientDataSWR(buildAdminBrowserProfileKey(enabled), () => service.getBrowserProfile(), {
@@ -50,6 +56,35 @@ export const useAdminSandboxSettings = (enabled: boolean, service: AdminSandboxS
     keepPreviousData: true,
     revalidateOnFocus: false,
   });
+
+export const useAdminDocumentRenderSettings = (
+  enabled: boolean,
+  service: AdminDocumentRenderSettingsService,
+) =>
+  useClientDataSWR(
+    buildAdminDocumentRenderSettingsKey(enabled),
+    () => service.getDocumentRenderSettings(),
+    { keepPreviousData: true, revalidateOnFocus: false },
+  );
+
+/**
+ * Polled, unlike the settings: `refreshWhenHidden` stays off so a backgrounded admin tab stops
+ * asking the sidecar how it is.
+ */
+export const useAdminDocumentRenderStatus = (
+  enabled: boolean,
+  service: AdminDocumentRenderSettingsService,
+) =>
+  useClientDataSWR(
+    buildAdminDocumentRenderStatusKey(enabled),
+    () => service.getDocumentRenderStatus(),
+    {
+      keepPreviousData: true,
+      refreshInterval: DOCUMENT_RENDER_STATUS_REFRESH_MS,
+      refreshWhenHidden: false,
+      revalidateOnFocus: false,
+    },
+  );
 
 export interface InfraProbeState {
   busy: Partial<Record<AdminSystemInfraDependency, boolean>>;
