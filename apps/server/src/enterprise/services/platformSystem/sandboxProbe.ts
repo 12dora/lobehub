@@ -71,9 +71,18 @@ export type SandboxHealthProbe = () => Promise<AdminSystemSandboxHealth | null>;
 export const probeSandboxHealth = async (
   now: () => Date = () => new Date(),
 ): Promise<AdminSystemSandboxHealth | null> => {
-  if (!(await isModuleEnabled('sandbox'))) return null;
+  const moduleEnabled = await isModuleEnabled('sandbox');
+  if (!moduleEnabled) {
+    console.warn('[platformSystem] sandbox probe skipped: module disabled');
+    return null;
+  }
   const settings = await getEffectiveSandboxSettings();
-  if (settings.provider !== 'local') return null;
+  if (settings.provider !== 'local') {
+    console.warn(
+      `[platformSystem] sandbox probe skipped: provider=${settings.provider} (source=${settings.source})`,
+    );
+    return null;
+  }
 
   const { checkLocalSandboxHealth } = await import('@/server/services/sandbox/providers/local');
   const startedAt = performance.now();
