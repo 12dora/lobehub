@@ -216,6 +216,22 @@ describe('pollXAIVideoStatus', () => {
     });
   });
 
+  it('should return failed when status is expired', async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        status: 'expired',
+      }),
+    });
+
+    const result = await pollXAIVideoStatus('request-123', options);
+
+    expect(result).toEqual({
+      status: 'failed',
+      error: 'xAI video generation expired before completion',
+    });
+  });
+
   it('should return pending when status is processing', async () => {
     global.fetch = vi.fn().mockResolvedValueOnce({
       ok: true,

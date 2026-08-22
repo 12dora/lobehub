@@ -1,3 +1,4 @@
+import { decodedBase64ByteLength, sanitizedUrlHost } from '@lobechat/utils';
 import createDebug from 'debug';
 
 import type { CreateImageOptions } from '../../core/openaiCompatibleFactory';
@@ -5,6 +6,32 @@ import type { CreateImagePayload, CreateImageResponse } from '../../types/image'
 import { AgentRuntimeError } from '../../utils/createError';
 
 const log = createDebug('lobe-image:xai');
+
+const DATA_URI_PREFIX = 'data:';
+const BASE64_MARKER = ';base64,';
+
+/**
+ * Metadata-only descriptions of image inputs for debug logs.
+ * Never includes the URL, query string, or base64 payload.
+ */
+export const describeImageInputs = (urls: string[]) =>
+  urls.map((url) => {
+    if (url.startsWith(DATA_URI_PREFIX)) {
+      const markerIndex = url.indexOf(BASE64_MARKER);
+      const hasPayload = markerIndex > DATA_URI_PREFIX.length;
+      const mimeType = hasPayload ? url.slice(DATA_URI_PREFIX.length, markerIndex) : 'unknown';
+      const base64 = hasPayload ? url.slice(markerIndex + BASE64_MARKER.length) : '';
+      let byteLength = 0;
+      try {
+        byteLength = decodedBase64ByteLength(base64);
+      } catch {
+        // Invalid base64 — still report mime type without leaking the payload.
+      }
+      return { byteLength, mimeType };
+    }
+
+    return { host: sanitizedUrlHost(url) };
+  });
 
 interface XAIImageRequest {
   aspect_ratio?:
@@ -101,7 +128,17 @@ export async function createXAIImage(
       }
     }
 
-    log('Calling XAI image API: %s with body: %O', endpoint, requestBody);
+    const inputUrls = [
+      ...(requestBody.image?.url ? [requestBody.image.url] : []),
+      ...(requestBody.images?.map((item) => item.url) ?? []),
+    ];
+    log(
+      'Calling XAI image API: model=%s endpoint=%s imageCount=%d images=%O',
+      model,
+      endpoint,
+      inputUrls.length,
+      describeImageInputs(inputUrls),
+    );
 
     const response = await fetch(endpoint, {
       body: JSON.stringify(requestBody),

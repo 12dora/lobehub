@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CreateImageOptions } from '../../core/openaiCompatibleFactory';
 import type { CreateImagePayload } from '../../types/image';
-import { createXAIImage } from './createImage';
+import { createXAIImage, describeImageInputs } from './createImage';
+
+const debugLog = vi.hoisted(() => vi.fn());
+
+vi.mock('debug', () => ({
+  default: vi.fn(() => debugLog),
+}));
 
 // Mock the console.error to avoid polluting test output
 vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -21,6 +27,29 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+});
+
+describe('describeImageInputs', () => {
+  it('describes a data URI by MIME type and decoded byte length without the payload', () => {
+    const payload = 'U2VjcmV0UGF5bG9hZERvTm90TG9n';
+    const dataUri = `data:image/png;base64,${payload}`;
+
+    const result = describeImageInputs([dataUri]);
+
+    expect(result).toEqual([{ byteLength: 21, mimeType: 'image/png' }]);
+    expect(JSON.stringify(result)).not.toContain(payload);
+    expect(JSON.stringify(result)).not.toContain(dataUri);
+  });
+
+  it('describes an http URL by sanitized host without path or query', () => {
+    const url = 'https://files.example.test/private/ref.png?sig=secret-token';
+
+    const result = describeImageInputs([url]);
+
+    expect(result).toEqual([{ host: 'files.example.test' }]);
+    expect(JSON.stringify(result)).not.toContain('private');
+    expect(JSON.stringify(result)).not.toContain('secret-token');
+  });
 });
 
 describe('createXAIImage', () => {
@@ -228,6 +257,40 @@ describe('createXAIImage', () => {
       expect(result).toEqual({
         imageUrl: mockImageUrl,
       });
+    });
+
+    it('should not log reference image data URI payload', async () => {
+      const payload = 'U2VjcmV0UGF5bG9hZERvTm90TG9n';
+      const dataUri = `data:image/png;base64,${payload}`;
+      const mockImageUrl = 'https://xai-cdn.com/images/generated/edited-from-data-uri.jpg';
+
+      global.fetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            {
+              url: mockImageUrl,
+              revised_prompt: 'Edit from a data URI',
+            },
+          ],
+        }),
+      });
+
+      await createXAIImage(
+        {
+          model: 'grok-imagine-image',
+          params: {
+            prompt: 'Edit from a data URI',
+            imageUrl: dataUri,
+          },
+        },
+        mockOptions,
+      );
+
+      const logged = JSON.stringify(debugLog.mock.calls);
+      expect(logged).not.toContain(payload);
+      expect(logged).not.toContain(dataUri);
+      expect(logged).toContain('image/png');
     });
 
     it('should handle image editing mode with imageUrl', async () => {

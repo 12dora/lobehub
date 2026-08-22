@@ -2,6 +2,7 @@ import createDebug from 'debug';
 
 import type { CreateVideoOptions } from '../../core/openaiCompatibleFactory';
 import type { CreateVideoPayload, CreateVideoResponse } from '../../types/video';
+import { describeImageInputs } from './createImage';
 
 const log = createDebug('lobe-video:xai');
 
@@ -11,7 +12,7 @@ interface XAIVideoStatusResponse {
     message?: string;
   };
   model?: string;
-  status: 'processing' | 'done' | 'failed';
+  status: 'pending' | 'processing' | 'done' | 'expired' | 'failed';
   video?: {
     duration?: number;
     respect_moderation?: boolean;
@@ -74,6 +75,10 @@ export async function pollXAIVideoStatus(
     return { error: response.error?.message || 'Video generation failed', status: 'failed' };
   }
 
+  if (response.status === 'expired') {
+    return { error: 'xAI video generation expired before completion', status: 'failed' };
+  }
+
   return { status: 'pending' };
 }
 
@@ -90,9 +95,17 @@ export async function createXAIVideo(
   const { model, params } = payload;
   const { prompt, imageUrl, aspectRatio, duration, resolution, size } = params;
 
-  log('Creating video with XAI API - model: %s, params: %O', model, params);
-
   const baseURL = options.baseURL || 'https://api.x.ai/v1';
+  const endpoint = `${baseURL}/videos/generations`;
+  const imageUrls = imageUrl ? [imageUrl] : [];
+
+  log(
+    'Creating video with XAI API: model=%s endpoint=%s imageCount=%d images=%O',
+    model,
+    endpoint,
+    imageUrls.length,
+    describeImageInputs(imageUrls),
+  );
 
   const body: Record<string, unknown> = {
     model,
@@ -119,9 +132,14 @@ export async function createXAIVideo(
     body.size = size;
   }
 
-  log('XAI video API request body: %O', body);
+  log(
+    'XAI video API request: path=/videos/generations model=%s imageCount=%d images=%O',
+    model,
+    imageUrls.length,
+    describeImageInputs(imageUrls),
+  );
 
-  const response = await fetch(`${baseURL}/videos/generations`, {
+  const response = await fetch(endpoint, {
     body: JSON.stringify(body),
     headers: {
       'Authorization': `Bearer ${options.apiKey}`,
