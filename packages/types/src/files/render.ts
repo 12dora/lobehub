@@ -4,6 +4,10 @@
  */
 
 export const DOCUMENT_RENDER_JOB_TYPE = 'platform.document.render.v1';
+/** Daily artifact garbage collection: retention expiry + orphan-prefix scan + totals. */
+export const DOCUMENT_RENDER_GC_JOB_TYPE = 'platform.document.render.gc.v1';
+/** Per-page text excerpt length stored in the `text/index.json` artifact. */
+export const DOCUMENT_RENDER_TEXT_EXCERPT_CHARS = 1500;
 
 export const DOCUMENT_RENDER_TIERS = ['T0', 'T1', 'T2'] as const;
 export type DocumentRenderTier = (typeof DOCUMENT_RENDER_TIERS)[number];
@@ -47,9 +51,29 @@ export interface FileRenderContactSheetMeta {
   pages: number[];
 }
 
+export interface FileRenderSheetMeta {
+  /** 1-based sheet index in workbook order. */
+  index: number;
+  name: string;
+  /** First rendered PDF page of this sheet, when known. */
+  page?: number;
+}
+
+/**
+ * `text/index.json` artifact body: 1-based page number → text excerpt
+ * (≤ DOCUMENT_RENDER_TEXT_EXCERPT_CHARS). Used for relevance-ranked page
+ * selection at feed time; never fed to the model verbatim.
+ */
+export type FileRenderTextIndex = Record<string, string>;
+
 export interface FileRenderMetadata {
   /** Contact sheets (thumb grid with page numbers), in page order. */
   contactSheets?: FileRenderContactSheetMeta[];
+  /**
+   * Artifacts were copied from this file id (same sha256, already rendered)
+   * instead of rendering again. Keys still live under this file's own prefix.
+   */
+  copiedFrom?: string;
   durationMs?: number;
   engine?: DocumentRenderEngine;
   error?: string | null;
@@ -63,7 +87,11 @@ export interface FileRenderMetadata {
   pages?: Record<string, FileRenderPageMeta>;
   /** Pages with `png` present (T2 visual pages), ascending. */
   renderedPages?: number[];
+  /** xlsx workbook sheets (name + first rendered page), workbook order. */
+  sheets?: FileRenderSheetMeta[];
   status: DocumentRenderStatus;
+  /** Object key of the `text/index.json` page-text excerpt artifact (T2). */
+  textIndex?: string;
   tier?: DocumentRenderTier;
   updatedAt?: string;
 }
@@ -80,6 +108,7 @@ export const documentRenderArtifactKeys = {
   page: (fileId: string, page: number) => `${documentRenderArtifactPrefix(fileId)}pages/${page}.png`,
   pdf: (fileId: string) => `${documentRenderArtifactPrefix(fileId)}source.pdf`,
   text: (fileId: string, page: number) => `${documentRenderArtifactPrefix(fileId)}text/${page}.md`,
+  textIndex: (fileId: string) => `${documentRenderArtifactPrefix(fileId)}text/index.json`,
   thumb: (fileId: string, page: number) => `${documentRenderArtifactPrefix(fileId)}thumbs/${page}.png`,
   tile: (fileId: string, page: number, row: number, col: number) =>
     `${documentRenderArtifactPrefix(fileId)}tiles/${page}-${row}${col}.png`,

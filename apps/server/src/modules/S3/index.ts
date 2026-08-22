@@ -130,6 +130,44 @@ export class S3 {
     return keys;
   }
 
+  /**
+   * Like {@link listObjectKeysByPrefix} but also returns object sizes.
+   * Used by the document-render GC sweep to report artifact totals.
+   */
+  public async listObjectsByPrefix(prefix: string): Promise<Array<{ key: string; size: number }>> {
+    const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+    const client = await this.ensureClient();
+    const objects: Array<{ key: string; size: number }> = [];
+    let continuationToken: string | undefined;
+    do {
+      const response = await client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          ContinuationToken: continuationToken,
+          Prefix: prefix,
+        }),
+      );
+      for (const obj of response.Contents ?? []) {
+        if (obj.Key) objects.push({ key: obj.Key, size: obj.Size ?? 0 });
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return objects;
+  }
+
+  /** Server-side copy inside the bucket (document-render sha256 artifact reuse). */
+  public async copyObject(sourceKey: string, targetKey: string): Promise<void> {
+    const { CopyObjectCommand } = await import('@aws-sdk/client-s3');
+    const client = await this.ensureClient();
+    await client.send(
+      new CopyObjectCommand({
+        Bucket: this.bucket,
+        CopySource: `${this.bucket}/${encodeURIComponent(sourceKey).replaceAll('%2F', '/')}`,
+        Key: targetKey,
+      }),
+    );
+  }
+
   public async getFileContent(key: string): Promise<string> {
     const { GetObjectCommand } = await import('@aws-sdk/client-s3');
     const command = new GetObjectCommand({

@@ -955,9 +955,59 @@ export const adminSystemDocumentRenderQueueRecentSchema = z
   })
   .strict();
 
+/**
+ * Per-process feed counters (since process start). Reset on restart; the
+ * status page labels them accordingly.
+ */
+export const adminSystemDocumentRenderFeedStatsSchema = z
+  .object({
+    /** Requests where a document was still `pending` and the feed fell back to text. */
+    pendingFallbacks: z.number().int().nonnegative(),
+    /** Requests where the feed waited for a fresh pending render. */
+    pendingWaits: z.number().int().nonnegative(),
+    /** Documents that contributed at least one stored image. */
+    docsFed: z.number().int().nonnegative(),
+    /** Stored images (contact sheets + pages + tiles) attached to requests. */
+    imagesFed: z.number().int().nonnegative(),
+    /** Requests that attached at least one stored image. */
+    requestsWithImages: z.number().int().nonnegative(),
+    /** ISO timestamp of the counter epoch (process start). */
+    since: z.string(),
+    /** `viewDocumentPages` tool calls served with images. */
+    toolPageViews: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/** Summary of the last completed `platform.document.render.gc.v1` job. */
+export const adminSystemDocumentRenderMaintenanceSchema = z
+  .object({
+    /** Total objects / bytes under `files/render/` after the last sweep. */
+    artifactBytes: z.number().int().nonnegative().nullable(),
+    artifactObjects: z.number().int().nonnegative().nullable(),
+    /** Files whose artifacts were removed because `retentionDays` elapsed. */
+    expiredFiles: z.number().int().nonnegative().nullable(),
+    /** Last GC job status (`succeeded` / `failed` / `dead` / `running` / `pending`) or null when never run. */
+    jobStatus: z.string().nullable(),
+    lastError: z.string().nullable(),
+    lastRunAt: z.string().nullable(),
+    /** Orphan objects (no owning `files` row) deleted by the last sweep. */
+    orphanBytes: z.number().int().nonnegative().nullable(),
+    orphanObjects: z.number().int().nonnegative().nullable(),
+    /** Bytes currently under the worker temp dir (`os.tmpdir()/aihub-render`). */
+    tempDirBytes: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+
+export const adminSystemRunDocumentRenderGcInputSchema = z.object({}).strict();
+export const adminSystemRunDocumentRenderGcOutputSchema = z
+  .object({ jobId: z.string().nullable(), ok: z.boolean() })
+  .strict();
+
 export const adminSystemGetDocumentRenderStatusOutputSchema = z
   .object({
     configured: z.boolean(),
+    feed: adminSystemDocumentRenderFeedStatsSchema,
+    maintenance: adminSystemDocumentRenderMaintenanceSchema,
     moduleEnabled: z.boolean(),
     queue: z
       .object({
@@ -1009,3 +1059,12 @@ export type AdminSystemGetDocumentRenderStatus = z.infer<
   typeof adminSystemGetDocumentRenderStatusOutputSchema
 >;
 export type AdminSystemGetDocumentRenderStatusOutput = AdminSystemGetDocumentRenderStatus;
+export type AdminSystemDocumentRenderFeedStats = z.infer<
+  typeof adminSystemDocumentRenderFeedStatsSchema
+>;
+export type AdminSystemDocumentRenderMaintenance = z.infer<
+  typeof adminSystemDocumentRenderMaintenanceSchema
+>;
+export type AdminSystemRunDocumentRenderGcOutput = z.infer<
+  typeof adminSystemRunDocumentRenderGcOutputSchema
+>;

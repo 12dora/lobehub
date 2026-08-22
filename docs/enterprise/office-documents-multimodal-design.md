@@ -76,7 +76,7 @@
 ```
 
 - 整页 `@1800`(长边 ≤1800,投喂用)、缩略 `@512`(总览拼图用);密集页可额外存 2×2 切片(复用现有 `pdfPageImages` 切片逻辑)。
-- 每页文本 `text/<n>.md`(现有 loaders 按页切分;pptx 每页含标题/要点/备注)。
+- 每页文本摘录 `text/index.json`(P4 实现取舍:单个 JSON,`{ "<页码>": "≤1500 字摘录" }`,由 worker 在 pdfjs 抽字时顺手生成;只用于投喂阶段相关度挑页,一次 GET 即可,不按页拆成 `.md`;不喂给模型)。xlsx 额外记录 `render.sheets[]`(工作表名,按工作簿顺序)。
 - 产物随文件删除一并清理(前缀删除);可配置保留天数;配额并入文件配额。
 
 ---
@@ -243,9 +243,9 @@
 
 ### 13.3 产物(S3 `files/<fileId>/render/`)
 - 生命周期与 `files` 行绑定:文件删除流程追加前缀删除(`files/<fileId>/render/*`),与现有"删除文件→删除对象"在同一事务后置步骤中执行,失败进重试队列。
-- 按 `sha256` 去重时,产物仍归属首个 fileId;引用计数记录在 `files.metadata.render.refs`,最后一个引用删除时才物理删除。
+- 按 `sha256` 去重(P4 实现取舍):**不做引用计数**。新文件入队时若存在同 `file_hash` 且已渲染(ready/partial)的文件行,worker 直接把 `files/render/<源>/` 整前缀服务端复制到 `files/render/<新>/` 并重写元数据里的 key(`render.copiedFrom=<源>`),跳过 Gotenberg/光栅化。每个文件行独占自己的前缀,删除流程、按所有权钉 key 的校验均不变;代价是重复对象的存储空间,换来零跨文件生命周期耦合。
 - 可选保留天数(`retention.days`):到期由每日清理任务删除产物并把 `render.status` 置回 `skipped`(文本路径不受影响,需要时按需重渲)。
-- 每日「孤儿产物扫描」任务:列出 `render/` 前缀中没有对应 `files` 行或 `refs=0` 的对象并删除;结果(数量、字节)写入状态页。
+- 每日「孤儿产物扫描」任务(`platform.document.render.gc.v1`,幂等键 `document-render-gc:<UTC 日期>`,每小时调度器入队、当天只跑一次;管理端「立即清理」强制入队):列出 `files/render/` 前缀中没有对应 `files` 行的对象并删除、执行保留天数到期、统计产物总量与 worker 临时目录占用、清理 1 小时以上的临时目录残留;摘要写在任务行 `result_summary`,状态页读取最近一次。
 
 ### 13.4 任务表(`platform_jobs`)
 - `document.render` 任务完成后只保留摘要(状态、耗时、页数、错误码),payload 不含文件内容;完成/失败记录保留 7 天后由现有 jobs 清理任务删除。
