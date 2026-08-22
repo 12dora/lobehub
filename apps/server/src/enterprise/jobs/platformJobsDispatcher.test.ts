@@ -48,6 +48,7 @@ describe('resolveEnabledPlatformJobTypes', () => {
       'agentRollout',
       'connectorRuntimeAudit',
       'connectorSecretCleanup',
+      'documentRender',
     ]);
     expect(enabled.some((item) => item.jobType.startsWith('platform.audit.'))).toBe(false);
   });
@@ -57,13 +58,13 @@ describe('resolveEnabledPlatformJobTypes', () => {
       ...productionEnv,
       PLATFORM_KEY_PROVIDER: 'env',
     });
-    expect(off.map((item) => item.workerName)).toEqual([]);
+    expect(off.map((item) => item.workerName)).toEqual(['documentRender']);
 
     const on = resolveEnabledPlatformJobTypes(() => false, {
       ...productionEnv,
       PLATFORM_KEY_PROVIDER: 'vault',
     });
-    expect(on.map((item) => item.workerName)).toEqual(['secretRewrap']);
+    expect(on.map((item) => item.workerName)).toEqual(['secretRewrap', 'documentRender']);
   });
 });
 

@@ -26,12 +26,14 @@ export interface FileAccessUrlItem {
  * Provides file operation services using a modular implementation approach
  */
 export class FileService {
+  private db: LobeChatDatabase;
   private userId: string;
   private fileModel: FileModel;
 
   private impl: FileServiceImpl;
 
   constructor(db: LobeChatDatabase, userId: string, workspaceId?: string) {
+    this.db = db;
     this.userId = userId;
     this.fileModel = new FileModel(db, userId, workspaceId);
     this.impl = createFileServiceModule(db);
@@ -143,6 +145,13 @@ export class FileService {
   }
 
   /**
+   * List object keys under a prefix
+   */
+  public async listObjectKeysByPrefix(prefix: string): Promise<string[]> {
+    return this.impl.listObjectKeysByPrefix(prefix);
+  }
+
+  /**
    * Upload media file (images only)
    */
   public async uploadMedia(key: string, buffer: Buffer): Promise<{ key: string }> {
@@ -223,10 +232,22 @@ export class FileService {
       !isExist, // insertToGlobalFiles
     );
 
+    void this.enqueueDocumentRenderBestEffort(id);
+
     return {
       fileId: id,
       url: await this.getFileAccessUrl({ id, url: params.url }),
     };
+  }
+
+  private enqueueDocumentRenderBestEffort(fileId: string): void {
+    void import('@/server/enterprise/services/documentRender')
+      .then(({ enqueueDocumentRenderJob }) =>
+        enqueueDocumentRenderJob(this.db, { fileId, requestedBy: this.userId }),
+      )
+      .catch((error) => {
+        console.error('Failed to enqueue document render job', error);
+      });
   }
 
   /**

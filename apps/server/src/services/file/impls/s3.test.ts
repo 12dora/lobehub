@@ -61,6 +61,7 @@ const createS3Stub = () => ({
   getFileByteArray: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
   getFileContent: vi.fn().mockResolvedValue('file content'),
   getFileMetadata: vi.fn().mockResolvedValue({ contentLength: 1024, contentType: 'image/png' }),
+  listObjectKeysByPrefix: vi.fn().mockResolvedValue([]),
   uploadContent: vi.fn().mockResolvedValue({}),
   uploadMedia: vi.fn().mockResolvedValue({}),
 });

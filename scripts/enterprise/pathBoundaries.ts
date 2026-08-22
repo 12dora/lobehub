@@ -738,6 +738,25 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
       'Local Docker sandbox must not import the Docker client or probe health when the sandbox module is off',
   },
   {
+    file: 'apps/server/src/routers/lambda/file.ts',
+    importSpecifier: '@/server/enterprise/services/documentRender',
+    owner: 'G2',
+    reason:
+      'Upload/delete hooks enqueue document-render jobs and purge render artifacts alongside the files row',
+  },
+  {
+    file: 'apps/server/src/services/file/index.ts',
+    importSpecifier: '@/server/enterprise/services/documentRender',
+    owner: 'G2',
+    reason: 'createFileRecord (agent/sandbox uploads) enqueues document-render jobs like browser uploads',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/serverRuntimes/documentPages.ts',
+    importSpecifier: '@/server/enterprise/services/documentRender',
+    owner: 'G2',
+    reason: 'viewDocumentPages triggers an on-demand render when a document has no artifacts yet',
+  },
+  {
     file: 'apps/server/src/services/sandbox/factory.ts',
     importSpecifier: '@/server/enterprise/services/sandboxSettings/effective',
     owner: 'G2',

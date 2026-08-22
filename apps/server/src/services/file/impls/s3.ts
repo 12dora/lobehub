@@ -270,4 +270,8 @@ export class S3StaticFileImpl implements FileServiceImpl {
     else await s3.uploadBuffer(key, buffer, contentType);
     return { key };
   }
+
+  async listObjectKeysByPrefix(prefix: string): Promise<string[]> {
+    return (await this.getS3()).listObjectKeysByPrefix(prefix);
+  }
 }

@@ -34,6 +34,7 @@ vi.mock('../impls', () => ({
     getKeyFromFullUrl: vi.fn(),
     uploadBuffer: vi.fn(),
     uploadMedia: vi.fn(),
+    listObjectKeysByPrefix: vi.fn(),
   }),
 }));
 

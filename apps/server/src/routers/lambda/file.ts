@@ -272,6 +272,14 @@ export const fileRouter = router({
         );
       });
 
+      void import('@/server/enterprise/services/documentRender')
+        .then(({ enqueueDocumentRenderJob }) =>
+          enqueueDocumentRenderJob(ctx.serverDB, { fileId: id, requestedBy: ctx.userId }),
+        )
+        .catch((error) => {
+          console.error('Failed to enqueue document render job', error);
+        });
+
       return { id, url: await ctx.fileService.getFileAccessUrl({ id, url: input.url }) };
     }),
   findById: fileProcedure
@@ -506,6 +514,15 @@ export const fileRouter = router({
           serverDBEnv.REMOVE_GLOBAL_FILE,
         );
 
+        void import('@/server/enterprise/services/documentRender')
+          .then(async ({ cancelPendingDocumentRenderJobs, deleteDocumentRenderArtifacts }) => {
+            await cancelPendingDocumentRenderJobs(ctx.serverDB, fileIds);
+            await deleteDocumentRenderArtifacts(fileIds);
+          })
+          .catch((error) => {
+            console.error('Failed to cleanup document render artifacts', error);
+          });
+
         if (needToRemoveFileList && needToRemoveFileList.length > 0) {
           await ctx.fileService.deleteFiles(needToRemoveFileList.map((file) => file.url!));
         }
@@ -595,6 +612,15 @@ export const fileRouter = router({
     .mutation(async ({ input, ctx }) => {
       const file = await ctx.fileModel.delete(input.id, serverDBEnv.REMOVE_GLOBAL_FILE);
 
+      void import('@/server/enterprise/services/documentRender')
+        .then(async ({ cancelPendingDocumentRenderJobs, deleteDocumentRenderArtifacts }) => {
+          await cancelPendingDocumentRenderJobs(ctx.serverDB, [input.id]);
+          await deleteDocumentRenderArtifacts([input.id]);
+        })
+        .catch((error) => {
+          console.error('Failed to cleanup document render artifacts', error);
+        });
+
       if (!file) return;
 
       // delete the file from S3 if it is not used by other files
@@ -629,6 +655,15 @@ export const fileRouter = router({
         input.ids,
         serverDBEnv.REMOVE_GLOBAL_FILE,
       );
+
+      void import('@/server/enterprise/services/documentRender')
+        .then(async ({ cancelPendingDocumentRenderJobs, deleteDocumentRenderArtifacts }) => {
+          await cancelPendingDocumentRenderJobs(ctx.serverDB, input.ids);
+          await deleteDocumentRenderArtifacts(input.ids);
+        })
+        .catch((error) => {
+          console.error('Failed to cleanup document render artifacts', error);
+        });
 
       if (!needToRemoveFileList || needToRemoveFileList.length === 0) return;
 

@@ -50,6 +50,9 @@ export interface PdfPageImage {
   kind: 'page' | 'tile';
   page: number;
   png: Uint8Array;
+  thumb?: Uint8Array;
+  thumbHeight?: number;
+  thumbWidth?: number;
   tile?: { col: number; row: number };
   width: number;
 }
@@ -58,8 +61,28 @@ export interface RenderPdfPagesToPngOptions {
   maxBytesPerImage: number;
   maxLongEdgePx: number;
   maxPages: number;
-  tiles?: { grid: 2; maxLongEdgePx: number };
+  /** Called as each image is produced so callers can upload and drop the buffer. */
+  onPage?: (image: PdfPageImage) => void | Promise<void>;
+  /** 1-based page numbers to render. Defaults to `1..min(maxPages, pageCount)`. */
+  pages?: number[];
+  /**
+   * When false, skip accumulating PNG buffers in the returned array (use with `onPage`).
+   * Defaults to true so existing callers keep receiving the full result list.
+   */
+  retainResults?: boolean;
+  /** When set, page images also include a downscaled thumbnail PNG. */
+  thumbLongEdgePx?: number;
+  tiles?: { grid: 2; maxLongEdgePx: number; pages?: number[] };
 }
+
+export interface PdfPageInspectResult {
+  chars: number;
+  page: number;
+  visual: boolean;
+}
+
+/** Pages with fewer than this many extracted characters are treated as visual (scans). */
+export const PDF_VISUAL_CHAR_THRESHOLD = 20;
 
 interface CanvasAndContext {
   canvas: Canvas | null;
@@ -70,7 +93,13 @@ interface CanvasAndContext {
  * pdfjs `CanvasFactory` backed by `@napi-rs/canvas`.
  * Constructor accepts the `{ enableHWA, ownerDocument }` bag pdfjs passes.
  */
-type NapiCanvasModule = typeof import('@napi-rs/canvas');
+interface NapiCanvasModule {
+  createCanvas: (width: number, height: number) => Canvas;
+  DOMMatrix: unknown;
+  DOMPoint: unknown;
+  DOMRect: unknown;
+  Path2D: unknown;
+}
 
 /**
  * `@napi-rs/canvas` is a native addon: load it lazily (first PDF render) so a
@@ -105,7 +134,19 @@ class NapiCanvasFactory {
   }
 }
 
-let pdfjsLoader: Promise<{ getDocument: typeof getDocument }> | undefined;
+interface PdfJsOps {
+  paintImageMaskXObject: number;
+  paintImageXObject: number;
+  paintInlineImageXObject: number;
+  paintJpegXObject?: number;
+}
+
+interface PdfJsLoaded {
+  getDocument: typeof getDocument;
+  OPS: PdfJsOps;
+}
+
+let pdfjsLoader: Promise<PdfJsLoaded> | undefined;
 
 const installDomPolyfills = (mod: NapiCanvasModule): void => {
   // napi-rs types are structurally close to the DOM lib but not assignable.
@@ -115,7 +156,7 @@ const installDomPolyfills = (mod: NapiCanvasModule): void => {
   }
 };
 
-const loadPdfJs = (): Promise<{ getDocument: typeof getDocument }> => {
+const loadPdfJs = (): Promise<PdfJsLoaded> => {
   pdfjsLoader ??= (async () => {
     canvasModule = await import('@napi-rs/canvas');
     installDomPolyfills(canvasModule);
@@ -125,6 +166,86 @@ const loadPdfJs = (): Promise<{ getDocument: typeof getDocument }> => {
     return import('pdfjs-dist/legacy/build/pdf.mjs');
   })();
   return pdfjsLoader;
+};
+
+const collectImageOperatorIds = (OPS: PdfJsOps): Set<number> => {
+  const ids = new Set<number>([
+    OPS.paintImageMaskXObject,
+    OPS.paintImageXObject,
+    OPS.paintInlineImageXObject,
+  ]);
+  const jpeg = (OPS as { paintJpegXObject?: number }).paintJpegXObject;
+  if (typeof jpeg === 'number') ids.add(jpeg);
+  return ids;
+};
+
+const countTextChars = (items: Array<{ str?: unknown }>): number => {
+  let chars = 0;
+  for (const item of items) {
+    if (typeof item.str === 'string') chars += item.str.length;
+  }
+  return chars;
+};
+
+/**
+ * Per-page text length + visual-content flag (image XObjects or almost no text).
+ * Used by document-render classification. Failures skip the page rather than throw.
+ */
+export const inspectPdfPages = async (bytes: Uint8Array): Promise<PdfPageInspectResult[]> => {
+  if (bytes.byteLength === 0) return [];
+
+  let pdf: PDFDocumentProxy | undefined;
+  try {
+    const { getDocument, OPS } = await loadPdfJs();
+    const imageOps = collectImageOperatorIds(OPS);
+    const data = new Uint8Array(bytes.byteLength);
+    data.set(bytes);
+
+    const loadingTask = getDocument({
+      CanvasFactory: NapiCanvasFactory,
+      data,
+      useSystemFonts: true,
+    });
+    pdf = await loadingTask.promise;
+
+    const results: PdfPageInspectResult[] = [];
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      let page: PDFPageProxy | undefined;
+      try {
+        page = await pdf.getPage(pageNumber);
+        const text = await page.getTextContent();
+        const chars = countTextChars(text.items as Array<{ str?: unknown }>);
+        const operators = await page.getOperatorList();
+        const hasImage = operators.fnArray.some((fn) => imageOps.has(fn));
+        results.push({
+          chars,
+          page: pageNumber,
+          visual: chars < PDF_VISUAL_CHAR_THRESHOLD || hasImage,
+        });
+      } catch (error) {
+        log(
+          'failed to inspect PDF page %d: %s',
+          pageNumber,
+          error instanceof Error ? error.message : error,
+        );
+        results.push({ chars: 0, page: pageNumber, visual: true });
+      } finally {
+        page?.cleanup();
+      }
+    }
+    return results;
+  } catch (error) {
+    log('failed to inspect PDF: %s', error instanceof Error ? error.message : error);
+    console.error('failed to inspect PDF', error);
+    return [];
+  } finally {
+    try {
+      await pdf?.destroy();
+    } catch (error) {
+      log('failed to destroy PDF document: %s', error instanceof Error ? error.message : error);
+      console.error('failed to destroy PDF document', error);
+    }
+  }
 };
 
 const fitScale = (width: number, height: number, maxLongEdgePx: number): number => {
@@ -248,18 +369,53 @@ const renderPageTiles = async (
   }
 };
 
+const encodeThumbFromCanvas = (
+  source: Canvas,
+  thumbLongEdgePx: number,
+  factory: NapiCanvasFactory,
+): { height: number; png: Uint8Array; width: number } | undefined => {
+  const scale = fitScale(source.width, source.height, thumbLongEdgePx);
+  const width = Math.max(1, Math.round(source.width * scale));
+  const height = Math.max(1, Math.round(source.height * scale));
+  const dest = factory.create(width, height);
+  try {
+    const { canvas, context } = dest;
+    if (!canvas || !context) return undefined;
+    context.drawImage(source, 0, 0, width, height);
+    return { height: canvas.height, png: encodePng(canvas), width: canvas.width };
+  } finally {
+    factory.destroy(dest);
+  }
+};
+
 const renderPageAtScale = async (
   page: PDFPageProxy,
   scale: number,
   factory: NapiCanvasFactory,
-): Promise<{ height: number; png: Uint8Array; width: number } | undefined> => {
+  thumbLongEdgePx?: number,
+): Promise<
+  | {
+      height: number;
+      png: Uint8Array;
+      thumb?: Uint8Array;
+      thumbHeight?: number;
+      thumbWidth?: number;
+      width: number;
+    }
+  | undefined
+> => {
   const canvasAndContext = await renderPageToCanvas(page, scale, factory);
   if (!canvasAndContext?.canvas) return undefined;
   try {
     const { canvas } = canvasAndContext;
+    const thumb =
+      thumbLongEdgePx && thumbLongEdgePx > 0
+        ? encodeThumbFromCanvas(canvas, thumbLongEdgePx, factory)
+        : undefined;
     return {
       height: canvas.height,
       png: encodePng(canvas),
+      ...(thumb ? { thumb: thumb.png, thumbHeight: thumb.height, thumbWidth: thumb.width } : {}),
       width: canvas.width,
     };
   } finally {
@@ -285,6 +441,7 @@ const renderPdfPagesToPngUncapped = async (
   const maxPages = Math.max(0, Math.floor(opts.maxPages));
   const maxLongEdgePx = opts.maxLongEdgePx > 0 ? opts.maxLongEdgePx : DEFAULT_MAX_LONG_EDGE_PX;
   const { maxBytesPerImage } = opts;
+  const retainResults = opts.retainResults !== false;
   if (maxPages === 0 || bytes.byteLength === 0) return [];
 
   const factory = new NapiCanvasFactory();
@@ -302,17 +459,27 @@ const renderPdfPagesToPngUncapped = async (
       useSystemFonts: true,
     });
     pdf = await loadingTask.promise;
+    const pdfDocument = pdf;
+    const requested = opts.pages?.filter((page) => page >= 1 && page <= pdfDocument.numPages);
+    const pageNumbers = (
+      requested && requested.length > 0
+        ? requested
+        : Array.from({ length: pdfDocument.numPages }, (_, index) => index + 1)
+    ).slice(0, maxPages);
 
-    const pageCount = Math.min(maxPages, pdf.numPages);
     const results: PdfPageImage[] = [];
+    const emit = async (image: PdfPageImage) => {
+      if (opts.onPage) await opts.onPage(image);
+      if (retainResults) results.push(image);
+    };
 
-    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+    for (const pageNumber of pageNumbers) {
       let page: PDFPageProxy | undefined;
       try {
         page = await pdf.getPage(pageNumber);
         const baseViewport = page.getViewport({ scale: 1 });
         const scale = fitScale(baseViewport.width, baseViewport.height, maxLongEdgePx);
-        let rendered = await renderPageAtScale(page, scale, factory);
+        let rendered = await renderPageAtScale(page, scale, factory, opts.thumbLongEdgePx);
 
         if (rendered && rendered.png.byteLength > maxBytesPerImage) {
           log(
@@ -322,7 +489,12 @@ const renderPdfPagesToPngUncapped = async (
             maxBytesPerImage,
             RETRY_SCALE,
           );
-          rendered = await renderPageAtScale(page, scale * RETRY_SCALE, factory);
+          rendered = await renderPageAtScale(
+            page,
+            scale * RETRY_SCALE,
+            factory,
+            opts.thumbLongEdgePx,
+          );
           if (rendered && rendered.png.byteLength > maxBytesPerImage) {
             log(
               'page %d PNG still over cap after retry size=%d max=%d, skipping',
@@ -335,9 +507,13 @@ const renderPdfPagesToPngUncapped = async (
         }
 
         if (!rendered) continue;
-        results.push({ kind: 'page', page: pageNumber, ...rendered });
+        await emit({ kind: 'page', page: pageNumber, ...rendered });
 
-        if (opts.tiles?.grid === 2) {
+        const tilePages = opts.tiles?.pages;
+        const shouldTile =
+          opts.tiles?.grid === 2 &&
+          (!tilePages || tilePages.length === 0 || tilePages.includes(pageNumber));
+        if (shouldTile && opts.tiles) {
           try {
             const tiles = await renderPageTiles(
               page,
@@ -347,7 +523,9 @@ const renderPdfPagesToPngUncapped = async (
               maxBytesPerImage,
               factory,
             );
-            results.push(...tiles);
+            for (const tile of tiles) {
+              await emit(tile);
+            }
           } catch (error) {
             log(
               'failed to tile PDF page %d: %s',

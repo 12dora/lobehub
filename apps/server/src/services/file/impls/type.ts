@@ -63,6 +63,11 @@ export interface FileServiceImpl {
   getKeyFromFullUrl: (url: string) => Promise<string | null>;
 
   /**
+   * List object keys under a prefix (ListObjectsV2 pagination).
+   */
+  listObjectKeysByPrefix: (prefix: string) => Promise<string[]>;
+
+  /**
    * Upload buffer with specified content type (for any file type)
    */
   uploadBuffer: (

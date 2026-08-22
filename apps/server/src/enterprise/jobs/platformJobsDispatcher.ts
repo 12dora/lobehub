@@ -92,6 +92,13 @@ export const PLATFORM_JOB_DISPATCH_SPECS = [
     leaseMs: 60_000,
     workerName: 'secretRewrap',
   },
+  {
+    batchLimit: 2,
+    intervalMs: 2000,
+    jobType: 'platform.document.render.v1',
+    leaseMs: 180_000,
+    workerName: 'documentRender',
+  },
 ] as const satisfies readonly PlatformJobDispatchSpec[];
 
 const isSecretRewrapEnabled = (env: Record<string, string | undefined>): boolean => {
@@ -141,6 +148,10 @@ const defaultHandleClaimed: PlatformJobDispatchHandler = async (ctx) => {
     case 'secretRewrap': {
       const { handleClaimedPlatformSecretRewrapJob } = await import('./secretRewrap');
       return handleClaimedPlatformSecretRewrapJob(ctx);
+    }
+    case 'documentRender': {
+      const { handleClaimedDocumentRenderJob } = await import('./documentRender');
+      return handleClaimedDocumentRenderJob(ctx);
     }
     default: {
       return;

@@ -105,6 +105,31 @@ export class S3 {
     return (await this.ensureClient()).send(command);
   }
 
+  /**
+   * List object keys under `prefix` via ListObjectsV2 pagination.
+   * Used by document-render artifact cleanup (and similar prefix deletes).
+   */
+  public async listObjectKeysByPrefix(prefix: string): Promise<string[]> {
+    const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+    const client = await this.ensureClient();
+    const keys: string[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const response = await client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          ContinuationToken: continuationToken,
+          Prefix: prefix,
+        }),
+      );
+      for (const obj of response.Contents ?? []) {
+        if (obj.Key) keys.push(obj.Key);
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return keys;
+  }
+
   public async getFileContent(key: string): Promise<string> {
     const { GetObjectCommand } = await import('@aws-sdk/client-s3');
     const command = new GetObjectCommand({

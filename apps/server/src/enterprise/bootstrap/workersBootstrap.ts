@@ -120,6 +120,17 @@ export const ENTERPRISE_WORKER_SPECS: readonly WorkerSpec[] = [
     },
   },
   {
+    // Hot-kind: always register so T0/T1/PDF still run when the module is off.
+    // Gotenberg conversion is gated inside the handler via isModuleEnabled.
+    // moduleId is set so MODULE_BY_WORKER_NAME stays in sync with PLATFORM_MODULES.
+    moduleId: 'documentRender',
+    name: 'documentRender',
+    start: async () => {
+      const { ensureDocumentRenderWorkerStarted } = await import('../jobs/documentRender');
+      ensureDocumentRenderWorkerStarted();
+    },
+  },
+  {
     moduleId: 'audit',
     name: 'auditExport',
     start: async () => {
