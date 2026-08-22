@@ -19,6 +19,18 @@ const fileServiceMocks = vi.hoisted(() => ({
   getFileByteArray: vi.fn(),
 }));
 
+const pdfPageImagesMocks = vi.hoisted(() => ({
+  renderPdfPagesToPng: vi.fn(
+    async (): Promise<
+      Array<{ height: number; page: number; png: Uint8Array; width: number }>
+    > => [],
+  ),
+}));
+
+vi.mock('./pdfPageImages', () => ({
+  renderPdfPagesToPng: pdfPageImagesMocks.renderPdfPagesToPng,
+}));
+
 vi.mock('@/server/services/file', () => ({
   FileService: class FileService {
     getFileByteArray = fileServiceMocks.getFileByteArray;
@@ -44,6 +56,11 @@ const DATA_URI = 'data:image/png;base64,aaaa';
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 const PNG_DATA_URI = `data:image/png;base64,${Buffer.from(PNG_BYTES).toString('base64')}`;
 const CURSOR_IMAGE_INLINE_MAX_BYTES = 6 * 1024 * 1024;
+const PDF_BYTES = new TextEncoder().encode('%PDF-1.4\n% image-only fixture\n');
+const PAGE_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PAGE_PNG_DATA_URI = `data:image/png;base64,${Buffer.from(PAGE_PNG).toString('base64')}`;
+const IMAGE_ONLY_PDF_NOTICE =
+  '[PDF "card.pdf" has no text layer; its pages are attached above as images]';
 
 const imageMessage = (
   url: string,
@@ -54,6 +71,11 @@ const imageMessage = (
 });
 
 describe('inlineOwnOriginAttachments', () => {
+  beforeEach(() => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockReset();
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([]);
+  });
+
   it('replaces an own-origin image_url with a data URI', async () => {
     const resolver = vi.fn(async () => ({ bytes: PNG_BYTES, mimeType: 'image/png' }));
     const messages = [imageMessage(OWN_FILE_URL)];
@@ -252,6 +274,172 @@ describe('inlineOwnOriginAttachments', () => {
 
     expect(resolver).toHaveBeenCalledTimes(1);
     expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL, DEFAULT_FILE_INLINE_MAX_BYTES);
+  });
+
+  it('inserts rasterized page images after an image-only PDF file_url', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
+      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
+    ]);
+    const resolver = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            file_url: {
+              content: '<page pageNumber="1">\n\n</page>',
+              fileId: 'file-1',
+              mimeType: 'application/pdf',
+              name: 'card.pdf',
+              size: PDF_BYTES.byteLength,
+              url: OWN_FILE_URL,
+            },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
+
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).toHaveBeenCalledWith(
+      PDF_BYTES,
+      expect.objectContaining({
+        maxBytesPerImage: DEFAULT_IMAGE_INLINE_MAX_BYTES,
+        maxPages: 4,
+      }),
+    );
+    expect(messages[0].content).toEqual([
+      {
+        file_url: {
+          content: '<page pageNumber="1">\n\n</page>',
+          fileId: 'file-1',
+          mimeType: 'application/pdf',
+          name: 'card.pdf',
+          size: PDF_BYTES.byteLength,
+          url: `data:application/pdf;base64,${Buffer.from(PDF_BYTES).toString('base64')}`,
+        },
+        type: 'file_url',
+      },
+      { image_url: { detail: 'high', url: PAGE_PNG_DATA_URI }, type: 'image_url' },
+      { text: IMAGE_ONLY_PDF_NOTICE, type: 'text' },
+    ]);
+  });
+
+  it('does not rasterize a PDF that already has extracted text', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
+      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
+    ]);
+    const resolver = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            file_url: {
+              content: 'extracted text from a real text layer',
+              fileId: 'file-1',
+              mimeType: 'application/pdf',
+              name: 'report.pdf',
+              size: 12,
+              url: OWN_FILE_URL,
+            },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
+
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
+    expect(messages[0].content).toHaveLength(1);
+  });
+
+  it('skips rasterizing when the message already has 4 image parts', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
+      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
+    ]);
+    const resolver = vi.fn(async (url: string) =>
+      url === OWN_FILE_URL
+        ? { bytes: PDF_BYTES, mimeType: 'application/pdf' }
+        : { bytes: PNG_BYTES, mimeType: 'image/png' },
+    );
+    const imageUrl = 'http://localhost:3010/f/img-1';
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          { image_url: { url: imageUrl }, type: 'image_url' },
+          { image_url: { url: imageUrl }, type: 'image_url' },
+          { image_url: { url: imageUrl }, type: 'image_url' },
+          { image_url: { url: imageUrl }, type: 'image_url' },
+          {
+            file_url: {
+              fileId: 'file-1',
+              mimeType: 'application/pdf',
+              name: 'card.pdf',
+              url: OWN_FILE_URL,
+            },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
+
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
+    const content = messages[0].content as object[];
+    expect(content).toHaveLength(5);
+    expect(content.filter((part) => (part as { type: string }).type === 'image_url')).toHaveLength(
+      4,
+    );
+  });
+
+  it('does not throw when rasterization fails', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockRejectedValue(new Error('canvas exploded'));
+    const resolver = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            file_url: {
+              fileId: 'file-1',
+              mimeType: 'application/pdf',
+              name: 'card.pdf',
+              url: OWN_FILE_URL,
+            },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await expect(
+      inlineOwnOriginAttachments(messages, resolver, ownOrigins),
+    ).resolves.toBeUndefined();
+    expect(messages[0].content).toEqual([
+      {
+        file_url: {
+          fileId: 'file-1',
+          mimeType: 'application/pdf',
+          name: 'card.pdf',
+          url: `data:application/pdf;base64,${Buffer.from(PDF_BYTES).toString('base64')}`,
+        },
+        type: 'file_url',
+      },
+    ]);
   });
 });
 

@@ -21,10 +21,19 @@ import { FileModel } from '@/database/models/file';
 import type { LobeChatDatabase } from '@/database/type';
 import { FileService } from '@/server/services/file';
 
+import { renderPdfPagesToPng } from './pdfPageImages';
+
 const log = debug('lobe-server:attachment-inliner');
 
 const INLINE_RESOLVE_CONCURRENCY = 4;
 const FILE_PROXY_PATH = /^\/f\/([^/]+)$/;
+const PDF_MIME = 'application/pdf';
+const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46] as const; // %PDF
+const IMAGE_ONLY_PDF_MIN_TEXT_CHARS = 20;
+const IMAGE_ONLY_PDF_MAX_PAGES = 4;
+const IMAGE_ONLY_PDF_MAX_LONG_EDGE_PX = 1800;
+const IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE = 4;
+const PAGE_TAG_RE = /<\/?page\b[^>]*>/gi;
 
 const ATTACHMENT_MESSAGE_ROLES = new Set(['assistant', 'user']);
 
@@ -68,6 +77,58 @@ const isDataUri = (url: string): boolean => url.startsWith('data:');
 
 const toDataUri = (mimeType: string, bytes: Uint8Array): string =>
   `data:${mimeType};base64,${Buffer.from(bytes).toString('base64')}`;
+
+const normalizeMime = (mimeType: string | undefined): string =>
+  mimeType?.split(';')[0]?.trim().toLowerCase() ?? '';
+
+const hasPdfMagic = (bytes: Uint8Array): boolean =>
+  bytes.byteLength >= PDF_MAGIC.length &&
+  bytes[0] === PDF_MAGIC[0] &&
+  bytes[1] === PDF_MAGIC[1] &&
+  bytes[2] === PDF_MAGIC[2] &&
+  bytes[3] === PDF_MAGIC[3];
+
+const isPdfBytes = (
+  declaredMime: string | undefined,
+  resolvedMime: string | undefined,
+  bytes: Uint8Array,
+): boolean =>
+  normalizeMime(declaredMime) === PDF_MIME ||
+  normalizeMime(resolvedMime) === PDF_MIME ||
+  hasPdfMagic(bytes);
+
+/** Image-only = missing extracted text, or only `<page>` tags / whitespace under 20 chars. */
+const isImageOnlyPdfContent = (content: string | undefined): boolean => {
+  if (!content) return true;
+  const stripped = content.replaceAll(PAGE_TAG_RE, '').replaceAll(/\s+/g, '');
+  return stripped.length < IMAGE_ONLY_PDF_MIN_TEXT_CHARS;
+};
+
+const imageOnlyPdfNotice = (name: string): string =>
+  `[PDF "${name}" has no text layer; its pages are attached above as images]`;
+
+interface RasterizedPdfImages {
+  dataUris: string[];
+}
+
+const rasterizeImageOnlyPdf = async (
+  bytes: Uint8Array,
+  imageMaxBytes: number,
+): Promise<RasterizedPdfImages> => {
+  try {
+    const pages = await renderPdfPagesToPng(bytes, {
+      maxBytesPerImage: imageMaxBytes,
+      maxLongEdgePx: IMAGE_ONLY_PDF_MAX_LONG_EDGE_PX,
+      maxPages: IMAGE_ONLY_PDF_MAX_PAGES,
+    });
+    const dataUris = pages.map((page) => toDataUri('image/png', page.png));
+    return { dataUris };
+  } catch (error) {
+    log('image-only PDF rasterize failed: %s', error instanceof Error ? error.message : error);
+    console.error('image-only PDF rasterize failed', error);
+    return { dataUris: [] };
+  }
+};
 
 const extractFileProxyId = (url: string): string | undefined => {
   try {
@@ -306,23 +367,74 @@ export const inlineOwnOriginAttachments = async (
 
   const resolvedByUrl = await resolveUniqueUrls(maxBytesByUrl, resolver);
 
-  for (const message of messages) {
-    if (!ATTACHMENT_MESSAGE_ROLES.has(message.role) || !Array.isArray(message.content)) continue;
+  // User messages first so assistant history can reuse the per-fileId memo.
+  const rasterMemo = new Map<string, Promise<RasterizedPdfImages>>();
+  const applyInlinedParts = async (role: 'assistant' | 'user') => {
+    const allowRender = role === 'user';
 
-    for (const part of message.content) {
-      if (isImageUrlPart(part)) {
-        const url = part.image_url.url;
-        if (!resolvedByUrl.has(url)) continue;
-        part.image_url.url = applyInlinedUrl(url, resolvedByUrl.get(url) ?? null, imageMaxBytes);
-        continue;
+    for (const message of messages) {
+      if (message.role !== role || !Array.isArray(message.content)) continue;
+
+      const existingImages = message.content.filter(isImageUrlPart).length;
+      let imageSlots = IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE - existingImages;
+      const next: UserMessageContentPart[] = [];
+
+      for (const part of message.content) {
+        if (isImageUrlPart(part)) {
+          const url = part.image_url.url;
+          if (resolvedByUrl.has(url)) {
+            part.image_url.url = applyInlinedUrl(
+              url,
+              resolvedByUrl.get(url) ?? null,
+              imageMaxBytes,
+            );
+          }
+          next.push(part);
+          continue;
+        }
+
+        if (!isFileUrlPart(part)) {
+          next.push(part);
+          continue;
+        }
+
+        const url = part.file_url.url;
+        const resolved = resolvedByUrl.has(url) ? (resolvedByUrl.get(url) ?? null) : null;
+        if (resolvedByUrl.has(url)) {
+          part.file_url.url = applyInlinedUrl(url, resolved, fileMaxBytes);
+        }
+        next.push(part);
+
+        if (imageSlots <= 0 || !resolved) continue;
+        if (resolved.bytes.byteLength > fileMaxBytes) continue;
+        if (!isPdfBytes(part.file_url.mimeType, resolved.mimeType, resolved.bytes)) continue;
+        if (!isImageOnlyPdfContent(part.file_url.content)) continue;
+
+        const memoKey = part.file_url.fileId ?? url;
+        let pending = rasterMemo.get(memoKey);
+        if (!pending) {
+          if (!allowRender) continue;
+          pending = rasterizeImageOnlyPdf(resolved.bytes, imageMaxBytes);
+          rasterMemo.set(memoKey, pending);
+        }
+
+        const { dataUris } = await pending;
+        const used = dataUris.slice(0, imageSlots);
+        if (used.length === 0) continue;
+
+        for (const dataUri of used) {
+          next.push({ image_url: { detail: 'high', url: dataUri }, type: 'image_url' });
+        }
+        next.push({ text: imageOnlyPdfNotice(part.file_url.name), type: 'text' });
+        imageSlots -= used.length;
       }
 
-      if (!isFileUrlPart(part)) continue;
-      const url = part.file_url.url;
-      if (!resolvedByUrl.has(url)) continue;
-      part.file_url.url = applyInlinedUrl(url, resolvedByUrl.get(url) ?? null, fileMaxBytes);
+      message.content = next;
     }
-  }
+  };
+
+  await applyInlinedParts('user');
+  await applyInlinedParts('assistant');
 };
 
 const createFileServiceResolver = (
