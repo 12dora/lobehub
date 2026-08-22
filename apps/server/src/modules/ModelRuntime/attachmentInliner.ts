@@ -112,7 +112,19 @@ const isImageOnlyPdfContent = (content: string | undefined): boolean => {
 };
 
 const imageOnlyPdfNotice = (name: string): string =>
-  `[PDF "${name}" has no text layer; its pages are attached above as images]`;
+  `[PDF "${name}" is a scanned document with no text layer. Its pages are attached above as images — read the page images directly. Do not try to read or re-parse this file with tools; extracted text will always be empty.]`;
+
+/**
+ * Rewrite the empty `<file …>` body of an image-only PDF inside `<files_info>`
+ * so an agent loop does not "read the file" with tools (and trust the empty
+ * text) instead of looking at the attached page images.
+ */
+const markImageOnlyPdfInFilesInfo = (text: string, fileId: string): string =>
+  text.replace(
+    new RegExp(`(<file\\b[^>]*\\bid="${fileId}"[^>]*>)([\\s\\S]*?)(</file>)`, 'i'),
+    (_m, open: string, _body: string, close: string) =>
+      `${open}[scanned document: no text layer; its pages are attached to this message as images — read the images, do not re-read this file with tools]${close}`,
+  );
 
 interface FilesInfoEmptyPdf {
   fileId: string;
@@ -587,15 +599,22 @@ export const inlineOwnOriginAttachments = async (
           const resolved = await loadFileBytes(pdf.fileId);
           if (!resolved) continue;
           if (!isPdfBytes(undefined, resolved.mimeType, resolved.bytes)) continue;
-          appended =
-            (await appendRasterizedPages(
-              next,
-              pdf.fileId,
-              pdf.name,
-              resolved.bytes,
-              imageSlots,
-              true,
-            )) || appended;
+          const didAppend = await appendRasterizedPages(
+            next,
+            pdf.fileId,
+            pdf.name,
+            resolved.bytes,
+            imageSlots,
+            true,
+          );
+          if (didAppend) {
+            for (const part of next) {
+              if (part.type === 'text' && part.text.includes('<files_info>')) {
+                part.text = markImageOnlyPdfInFilesInfo(part.text, pdf.fileId);
+              }
+            }
+          }
+          appended = didAppend || appended;
         }
 
         if (appended) message.content = next;

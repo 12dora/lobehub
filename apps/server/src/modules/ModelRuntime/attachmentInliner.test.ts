@@ -60,7 +60,7 @@ const PDF_BYTES = new TextEncoder().encode('%PDF-1.4\n% image-only fixture\n');
 const PAGE_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PAGE_PNG_DATA_URI = `data:image/png;base64,${Buffer.from(PAGE_PNG).toString('base64')}`;
 const IMAGE_ONLY_PDF_NOTICE =
-  '[PDF "card.pdf" has no text layer; its pages are attached above as images]';
+  '[PDF "card.pdf" is a scanned document with no text layer. Its pages are attached above as images — read the page images directly. Do not try to read or re-parse this file with tools; extracted text will always be empty.]';
 
 const imageMessage = (
   url: string,
@@ -458,7 +458,7 @@ describe('inlineOwnOriginAttachments', () => {
     return `<files_info>\n<files>\n<files_docstring>here are user upload files you can refer to</files_docstring>\n<file id="${FILES_INFO_PDF_ID}" name="${name}" type="${type}" size="776756"${sandbox}>${body}</file>\n</files>\n</files_info>`;
   };
   const SCAN_PDF_NOTICE =
-    '[PDF "scan.pdf" has no text layer; its pages are attached above as images]';
+    '[PDF "scan.pdf" is a scanned document with no text layer. Its pages are attached above as images — read the page images directly. Do not try to read or re-parse this file with tools; extracted text will always be empty.]';
 
   it('rasterizes an empty-text PDF in string files_info into image parts and a notice', async () => {
     pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
@@ -476,7 +476,7 @@ describe('inlineOwnOriginAttachments', () => {
     expect(resolveByFileId).toHaveBeenCalledWith(FILES_INFO_PDF_ID, DEFAULT_FILE_INLINE_MAX_BYTES);
     expect(pdfPageImagesMocks.renderPdfPagesToPng).toHaveBeenCalledTimes(1);
     expect(messages[0].content).toEqual([
-      { text, type: 'text' },
+      { text: expect.stringContaining('scanned document: no text layer'), type: 'text' },
       { image_url: { detail: 'high', url: PAGE_PNG_DATA_URI }, type: 'image_url' },
       { text: SCAN_PDF_NOTICE, type: 'text' },
     ]);
@@ -496,7 +496,7 @@ describe('inlineOwnOriginAttachments', () => {
     await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, { resolveByFileId });
 
     expect(messages[0].content).toEqual([
-      { text, type: 'text' },
+      { text: expect.stringContaining('scanned document: no text layer'), type: 'text' },
       { image_url: { detail: 'high', url: PAGE_PNG_DATA_URI }, type: 'image_url' },
       { text: SCAN_PDF_NOTICE, type: 'text' },
     ]);
@@ -550,7 +550,7 @@ describe('inlineOwnOriginAttachments', () => {
 
     expect(resolveByFileId).toHaveBeenCalledWith(FILES_INFO_PDF_ID, DEFAULT_FILE_INLINE_MAX_BYTES);
     expect(messages[0].content).toEqual([
-      { text, type: 'text' },
+      { text: expect.stringContaining('scanned document: no text layer'), type: 'text' },
       { image_url: { detail: 'high', url: PAGE_PNG_DATA_URI }, type: 'image_url' },
       { text: SCAN_PDF_NOTICE, type: 'text' },
     ]);
