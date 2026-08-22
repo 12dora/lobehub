@@ -46,6 +46,7 @@ import { wrapModelRuntimeWithModeration } from '@/server/enterprise/services/con
 import { createDefaultModerationRuntimeDeps } from '@/server/enterprise/services/contentModeration/runtime/defaults';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 
+import * as attachmentInliner from './attachmentInliner';
 import {
   buildPayloadFromKeyVaults,
   hasModelRuntimeEnvironmentFallback,
@@ -1854,6 +1855,7 @@ describe('Grok installation identity injection', () => {
       installationId: browserProfile.installationId,
       userAgentPlatform: 'macos; aarch64',
     });
+    expect(params.ownOrigins).toBeDefined();
     // The turn index is the payload's user-message count, derived inside the runtime.
     expect(params.turnIndex).toBeUndefined();
   });
@@ -1914,6 +1916,21 @@ describe('Grok installation identity injection', () => {
     const second = spy.mock.calls[1][1] as Record<string, unknown>;
     expect(first.conversationKey).toMatch(/^installation:op:/);
     expect(second.conversationKey).not.toBe(first.conversationKey);
+  });
+});
+
+describe('ownOrigins for native file inlining', () => {
+  it('forwards ownOrigins to SuperGrok the same way as ChatGPT and Grok', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    initModelRuntimeWithUserPayload(ModelProvider.SuperGrok, {
+      apiKey: 'oauth-token-value',
+      runtimeProvider: ModelProvider.SuperGrok,
+    });
+
+    expect((spy.mock.calls[0][1] as Record<string, unknown>).ownOrigins).toBeDefined();
   });
 });
 
@@ -2100,6 +2117,27 @@ describe('own-origin attachment inline hook wiring', () => {
     spy.mockClear();
     initModelRuntimeWithUserPayload(ModelProvider.OpenAI, { apiKey: 'user-openai-key' });
     expect(spy.mock.calls[0]?.[2]?.beforeChat).toBeUndefined();
+  });
+
+  it('passes a 6 MiB image cap for Cursor and the default for other inline runtimes', () => {
+    const createSpy = vi.spyOn(attachmentInliner, 'createOwnOriginAttachmentInlineHooks');
+    vi.spyOn(ModelRuntime, 'initializeWithProvider').mockReturnValue({} as unknown as ModelRuntime);
+
+    initModelRuntimeWithUserPayload(ModelProvider.Cursor, {
+      apiKey: 'oauth-token-value',
+      runtimeProvider: ModelProvider.Cursor,
+    });
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ imageMaxBytes: 6 * 1024 * 1024 }),
+    );
+
+    createSpy.mockClear();
+    initModelRuntimeWithUserPayload(
+      ModelProvider.Grok,
+      { apiKey: 'oauth-token-value', runtimeProvider: ModelProvider.Grok },
+      { browserProfile: DEFAULT_BROWSER_DEVICE_PROFILE },
+    );
+    expect(createSpy.mock.calls[0]?.[0]?.imageMaxBytes).toBeUndefined();
   });
 });
 

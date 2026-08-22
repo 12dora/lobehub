@@ -1,24 +1,56 @@
 // @vitest-environment node
 import type { OpenAIChatMessage } from '@lobechat/model-runtime';
 import { buildOwnDeploymentOrigins } from '@lobechat/utils';
-import { DEFAULT_IMAGE_INLINE_MAX_BYTES } from '@lobechat/utils/imageToBase64';
-import { describe, expect, it, vi } from 'vitest';
+import {
+  DEFAULT_FILE_INLINE_MAX_BYTES,
+  DEFAULT_IMAGE_INLINE_MAX_BYTES,
+} from '@lobechat/utils/imageToBase64';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { inlineOwnOriginAttachments, inlineOwnOriginImageUrls } from './attachmentInliner';
+import { FileModel } from '@/database/models/file';
+
+import {
+  createOwnOriginAttachmentInlineHooks,
+  inlineOwnOriginAttachments,
+  inlineOwnOriginImageUrls,
+} from './attachmentInliner';
+
+const fileServiceMocks = vi.hoisted(() => ({
+  getFileByteArray: vi.fn(),
+}));
+
+vi.mock('@/server/services/file', () => ({
+  FileService: class FileService {
+    getFileByteArray = fileServiceMocks.getFileByteArray;
+  },
+}));
 
 const ownOrigins = buildOwnDeploymentOrigins({
   appUrl: 'http://localhost:3010',
 });
 
+const s3Origins = buildOwnDeploymentOrigins({
+  appUrl: 'http://localhost:3010',
+  bucket: 'lobe-files',
+  endpoint: 'http://localhost:9000',
+  forcePathStyle: true,
+});
+
 const OWN_FILE_URL = 'http://localhost:3010/f/file-1';
 const FOREIGN_URL = 'https://cdn.example.com/cat.png';
+const S3_URL = 'http://localhost:9000/lobe-files/secret.png';
+const S3_PRESIGNED_URL = `${S3_URL}?X-Amz-Signature=secret`;
 const DATA_URI = 'data:image/png;base64,aaaa';
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 const PNG_DATA_URI = `data:image/png;base64,${Buffer.from(PNG_BYTES).toString('base64')}`;
+const CURSOR_IMAGE_INLINE_MAX_BYTES = 6 * 1024 * 1024;
 
-const imageMessage = (url: string): OpenAIChatMessage => ({
+const imageMessage = (
+  url: string,
+  role: OpenAIChatMessage['role'] = 'user',
+): OpenAIChatMessage => ({
   content: [{ image_url: { url }, type: 'image_url' }],
-  role: 'user',
+  role,
 });
 
 describe('inlineOwnOriginAttachments', () => {
@@ -29,7 +61,7 @@ describe('inlineOwnOriginAttachments', () => {
     await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
 
     expect(messages[0].content).toEqual([{ image_url: { url: PNG_DATA_URI }, type: 'image_url' }]);
-    expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL);
+    expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL, DEFAULT_IMAGE_INLINE_MAX_BYTES);
   });
 
   it('leaves a foreign image_url untouched', async () => {
@@ -39,6 +71,19 @@ describe('inlineOwnOriginAttachments', () => {
     await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
 
     expect(messages[0].content).toEqual([{ image_url: { url: FOREIGN_URL }, type: 'image_url' }]);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve a raw S3 object or presigned URL', async () => {
+    const resolver = vi.fn();
+    const messages = [imageMessage(S3_URL), imageMessage(S3_PRESIGNED_URL)];
+
+    await inlineOwnOriginAttachments(messages, resolver, s3Origins);
+
+    expect(messages[0].content).toEqual([{ image_url: { url: S3_URL }, type: 'image_url' }]);
+    expect(messages[1].content).toEqual([
+      { image_url: { url: S3_PRESIGNED_URL }, type: 'image_url' },
+    ]);
     expect(resolver).not.toHaveBeenCalled();
   });
 
@@ -91,6 +136,7 @@ describe('inlineOwnOriginAttachments', () => {
         type: 'file_url',
       },
     ]);
+    expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL, DEFAULT_FILE_INLINE_MAX_BYTES);
   });
 
   it('leaves an over-cap attachment URL in place and does not throw', async () => {
@@ -106,6 +152,31 @@ describe('inlineOwnOriginAttachments', () => {
     expect(messages[0].content).toEqual([{ image_url: { url: OWN_FILE_URL }, type: 'image_url' }]);
   });
 
+  it('leaves an image over the Cursor 6 MiB cap in place', async () => {
+    const resolver = vi.fn(async () => ({
+      bytes: { byteLength: CURSOR_IMAGE_INLINE_MAX_BYTES + 1 } as Uint8Array,
+      mimeType: 'image/png',
+    }));
+    const messages = [imageMessage(OWN_FILE_URL)];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins, {
+      imageMaxBytes: CURSOR_IMAGE_INLINE_MAX_BYTES,
+    });
+
+    expect(messages[0].content).toEqual([{ image_url: { url: OWN_FILE_URL }, type: 'image_url' }]);
+    expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL, CURSOR_IMAGE_INLINE_MAX_BYTES);
+  });
+
+  it('inlines an assistant image_url the same way as a user part', async () => {
+    const resolver = vi.fn(async () => ({ bytes: PNG_BYTES, mimeType: 'image/png' }));
+    const messages = [imageMessage(OWN_FILE_URL, 'assistant')];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
+
+    expect(messages[0].content).toEqual([{ image_url: { url: PNG_DATA_URI }, type: 'image_url' }]);
+    expect(resolver).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves the URL in place when the resolver fails', async () => {
     const resolver = vi.fn(async () => {
       throw new Error('s3 unavailable');
@@ -118,11 +189,11 @@ describe('inlineOwnOriginAttachments', () => {
     expect(messages[0].content).toEqual([{ image_url: { url: OWN_FILE_URL }, type: 'image_url' }]);
   });
 
-  it('strips own-origin url attributes from user text and keeps foreign ones', async () => {
+  it('strips own-origin url attributes from files_info user text and keeps foreign ones', async () => {
     const resolver = vi.fn();
     const messages: OpenAIChatMessage[] = [
       {
-        content: `<image name="own" url="${OWN_FILE_URL}"></image> <image name="foreign" url="${FOREIGN_URL}"></image>`,
+        content: `<files_info><image name="own" url="${OWN_FILE_URL}"></image> <image name="foreign" url="${FOREIGN_URL}"></image></files_info>`,
         role: 'user',
       },
     ];
@@ -130,9 +201,25 @@ describe('inlineOwnOriginAttachments', () => {
     await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
 
     expect(messages[0].content).toBe(
-      `<image name="own"></image> <image name="foreign" url="${FOREIGN_URL}"></image>`,
+      `<files_info><image name="own"></image> <image name="foreign" url="${FOREIGN_URL}"></image></files_info>`,
     );
     expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('does not strip url attributes outside files_info while stripping inside', async () => {
+    const resolver = vi.fn();
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: `please fetch url="${OWN_FILE_URL}"\n<files_info><image name="own" url="${OWN_FILE_URL}"></image></files_info>`,
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
+
+    expect(messages[0].content).toBe(
+      `please fetch url="${OWN_FILE_URL}"\n<files_info><image name="own"></image></files_info>`,
+    );
   });
 
   it('resolves the same URL in two messages once', async () => {
@@ -144,6 +231,27 @@ describe('inlineOwnOriginAttachments', () => {
     expect(resolver).toHaveBeenCalledTimes(1);
     expect(messages[0].content).toEqual([{ image_url: { url: PNG_DATA_URI }, type: 'image_url' }]);
     expect(messages[1].content).toEqual([{ image_url: { url: PNG_DATA_URI }, type: 'image_url' }]);
+  });
+
+  it('resolves a URL used as both image and file once with the larger cap', async () => {
+    const resolver = vi.fn(async () => ({ bytes: PNG_BYTES, mimeType: 'image/png' }));
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          { image_url: { url: OWN_FILE_URL }, type: 'image_url' },
+          {
+            file_url: { mimeType: 'image/png', name: 'cat.png', url: OWN_FILE_URL },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
+
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL, DEFAULT_FILE_INLINE_MAX_BYTES);
   });
 });
 
@@ -159,7 +267,16 @@ describe('inlineOwnOriginImageUrls', () => {
       ),
     ).resolves.toEqual([PNG_DATA_URI, FOREIGN_URL, DATA_URI, PNG_DATA_URI]);
     expect(resolver).toHaveBeenCalledTimes(1);
-    expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL);
+    expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL, DEFAULT_IMAGE_INLINE_MAX_BYTES);
+  });
+
+  it('does not resolve a raw S3 object URL', async () => {
+    const resolver = vi.fn();
+
+    await expect(inlineOwnOriginImageUrls([S3_URL], resolver, s3Origins)).resolves.toEqual([
+      S3_URL,
+    ]);
+    expect(resolver).not.toHaveBeenCalled();
   });
 
   it('leaves an over-cap own-origin URL in place', async () => {
@@ -190,5 +307,113 @@ describe('inlineOwnOriginImageUrls', () => {
       inlineOwnOriginImageUrls([FOREIGN_URL, DATA_URI], resolver, ownOrigins),
     ).resolves.toEqual([FOREIGN_URL, DATA_URI]);
     expect(resolver).not.toHaveBeenCalled();
+  });
+});
+
+describe('createOwnOriginAttachmentInlineHooks', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fileServiceMocks.getFileByteArray.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('skips an over-cap files-row without reading bytes', async () => {
+    vi.spyOn(FileModel, 'getFileById').mockResolvedValue({
+      fileType: 'image/png',
+      size: DEFAULT_IMAGE_INLINE_MAX_BYTES + 1,
+      url: 'files/huge.png',
+    } as never);
+    fileServiceMocks.getFileByteArray.mockResolvedValue(PNG_BYTES);
+
+    const messages = [imageMessage(OWN_FILE_URL)];
+    const hooks = createOwnOriginAttachmentInlineHooks({
+      db: {} as never,
+      ownOrigins,
+    });
+
+    await hooks.beforeChat?.({ messages, model: 'test' } as never);
+
+    expect(FileModel.getFileById).toHaveBeenCalledWith(expect.anything(), 'file-1');
+    expect(fileServiceMocks.getFileByteArray).not.toHaveBeenCalled();
+    expect(messages[0].content).toEqual([{ image_url: { url: OWN_FILE_URL }, type: 'image_url' }]);
+  });
+
+  it('skips a Cursor-capped files-row without reading bytes', async () => {
+    vi.spyOn(FileModel, 'getFileById').mockResolvedValue({
+      fileType: 'image/png',
+      size: CURSOR_IMAGE_INLINE_MAX_BYTES + 1,
+      url: 'files/cursor-huge.png',
+    } as never);
+    fileServiceMocks.getFileByteArray.mockResolvedValue(PNG_BYTES);
+
+    const messages = [imageMessage(OWN_FILE_URL)];
+    const hooks = createOwnOriginAttachmentInlineHooks({
+      db: {} as never,
+      imageMaxBytes: CURSOR_IMAGE_INLINE_MAX_BYTES,
+      ownOrigins,
+    });
+
+    await hooks.beforeChat?.({ messages, model: 'test' } as never);
+
+    expect(fileServiceMocks.getFileByteArray).not.toHaveBeenCalled();
+    expect(messages[0].content).toEqual([{ image_url: { url: OWN_FILE_URL }, type: 'image_url' }]);
+  });
+
+  it('does not look up a raw S3 URL', async () => {
+    const getFileById = vi.spyOn(FileModel, 'getFileById');
+    const messages = [imageMessage(S3_URL)];
+    const hooks = createOwnOriginAttachmentInlineHooks({
+      db: {} as never,
+      ownOrigins: s3Origins,
+    });
+
+    await hooks.beforeChat?.({ messages, model: 'test' } as never);
+
+    expect(getFileById).not.toHaveBeenCalled();
+    expect(fileServiceMocks.getFileByteArray).not.toHaveBeenCalled();
+  });
+
+  it('inlines a /f/<id> image through FileModel then getFileByteArray(file.url)', async () => {
+    vi.spyOn(FileModel, 'getFileById').mockResolvedValue({
+      fileType: 'image/png',
+      size: PNG_BYTES.byteLength,
+      url: 'files/cat.png',
+    } as never);
+    fileServiceMocks.getFileByteArray.mockResolvedValue(PNG_BYTES);
+
+    const messages = [imageMessage(OWN_FILE_URL)];
+    const hooks = createOwnOriginAttachmentInlineHooks({
+      db: {} as never,
+      ownOrigins,
+    });
+
+    await hooks.beforeChat?.({ messages, model: 'test' } as never);
+
+    expect(FileModel.getFileById).toHaveBeenCalledWith(expect.anything(), 'file-1');
+    expect(fileServiceMocks.getFileByteArray).toHaveBeenCalledWith('files/cat.png');
+    expect(messages[0].content).toEqual([{ image_url: { url: PNG_DATA_URI }, type: 'image_url' }]);
+  });
+
+  it('applies the same /f/<id> rules to beforeCreateImage', async () => {
+    vi.spyOn(FileModel, 'getFileById').mockResolvedValue({
+      fileType: 'image/png',
+      size: PNG_BYTES.byteLength,
+      url: 'files/cat.png',
+    } as never);
+    fileServiceMocks.getFileByteArray.mockResolvedValue(PNG_BYTES);
+
+    const params = { imageUrls: [OWN_FILE_URL, S3_URL], prompt: 'edit' };
+    const hooks = createOwnOriginAttachmentInlineHooks({
+      db: {} as never,
+      ownOrigins: s3Origins,
+    });
+
+    await hooks.beforeCreateImage?.({ model: 'test', params } as never);
+
+    expect(params.imageUrls).toEqual([PNG_DATA_URI, S3_URL]);
+    expect(fileServiceMocks.getFileByteArray).toHaveBeenCalledTimes(1);
   });
 });

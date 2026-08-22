@@ -150,6 +150,9 @@ const OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES = new Set<string>([
   ModelProvider.SuperGrok,
 ]);
 
+/** Matches `MAX_IMAGE_DECODED_BYTES` in cursor-agent `transport.parseTurn.ts`. */
+const CURSOR_AGENT_IMAGE_INLINE_MAX_BYTES = 6 * 1024 * 1024;
+
 /**
  * Runtimes that actually CONSUME the conversation identity (upstream session id +
  * turn index): the CLI-shaped ones. ChatGPT Web presents an installation identity but
@@ -924,6 +927,9 @@ export const initModelRuntimeWithUserPayload = (
 
   const attachmentInlineHooks = OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES.has(runtimeProvider)
     ? createOwnOriginAttachmentInlineHooks({
+        ...(runtimeProvider === ModelProvider.Cursor
+          ? { imageMaxBytes: CURSOR_AGENT_IMAGE_INLINE_MAX_BYTES }
+          : {}),
         ownOrigins: resolveOwnDeploymentOrigins,
         userId: typeof restParams.userId === 'string' ? restParams.userId : undefined,
       })
@@ -979,7 +985,9 @@ export const initModelRuntimeWithUserPayload = (
               installationId,
             }
           : {}),
-        ...(runtimeProvider === ModelProvider.ChatGPT
+        ...(runtimeProvider === ModelProvider.ChatGPT ||
+        runtimeProvider === ModelProvider.Grok ||
+        runtimeProvider === ModelProvider.SuperGrok
           ? {
               ownOrigins:
                 (restParams as { ownOrigins?: unknown }).ownOrigins ??
