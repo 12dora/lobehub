@@ -11,8 +11,10 @@ const PNG_MIME = 'image/png';
 
 export interface PdfPageImage {
   height: number;
+  kind: 'page' | 'tile';
   page: number;
   png: Uint8Array;
+  tile?: { col: number; row: number };
   width: number;
 }
 
@@ -20,6 +22,7 @@ export interface RenderPdfPagesToPngOptions {
   maxBytesPerImage: number;
   maxLongEdgePx: number;
   maxPages: number;
+  tiles?: { grid: 2; maxLongEdgePx: number };
 }
 
 interface CanvasAndContext {
@@ -96,23 +99,128 @@ const fitScale = (width: number, height: number, maxLongEdgePx: number): number 
 
 const encodePng = (canvas: Canvas): Uint8Array => Uint8Array.from(canvas.toBuffer(PNG_MIME));
 
-const renderPageAtScale = async (
+const quadrantRects = (width: number, height: number, grid: 2) => {
+  const midX = Math.floor(width / grid);
+  const midY = Math.floor(height / grid);
+  return [
+    { col: 0, row: 0, sh: midY, sw: midX, sx: 0, sy: 0 },
+    { col: 1, row: 0, sh: midY, sw: width - midX, sx: midX, sy: 0 },
+    { col: 0, row: 1, sh: height - midY, sw: midX, sx: 0, sy: midY },
+    { col: 1, row: 1, sh: height - midY, sw: width - midX, sx: midX, sy: midY },
+  ].filter((rect) => rect.sw > 0 && rect.sh > 0);
+};
+
+const renderPageToCanvas = async (
   page: PDFPageProxy,
   scale: number,
   factory: NapiCanvasFactory,
-): Promise<{ height: number; png: Uint8Array; width: number } | undefined> => {
+): Promise<CanvasAndContext | undefined> => {
   const viewport = page.getViewport({ scale });
   const canvasAndContext = factory.create(viewport.width, viewport.height);
-  try {
-    const { canvas, context } = canvasAndContext;
-    if (!canvas || !context) return undefined;
+  const { canvas, context } = canvasAndContext;
+  if (!canvas || !context) {
+    factory.destroy(canvasAndContext);
+    return undefined;
+  }
 
+  try {
     await page.render({
       canvas: canvas as unknown as HTMLCanvasElement,
       canvasContext: context as unknown as CanvasRenderingContext2D,
       viewport,
     }).promise;
+    return canvasAndContext;
+  } catch (error) {
+    factory.destroy(canvasAndContext);
+    throw error;
+  }
+};
 
+const encodeQuadrant = (
+  source: Canvas,
+  rect: { sh: number; sw: number; sx: number; sy: number },
+  maxLongEdgePx: number,
+  maxBytesPerImage: number,
+  factory: NapiCanvasFactory,
+): { height: number; png: Uint8Array; width: number } | undefined => {
+  const tryEncode = (scale: number) => {
+    const width = Math.max(1, Math.round(rect.sw * scale));
+    const height = Math.max(1, Math.round(rect.sh * scale));
+    const dest = factory.create(width, height);
+    try {
+      const { canvas, context } = dest;
+      if (!canvas || !context) return undefined;
+      context.drawImage(source, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, width, height);
+      return { height: canvas.height, png: encodePng(canvas), width: canvas.width };
+    } finally {
+      factory.destroy(dest);
+    }
+  };
+
+  const fit = fitScale(rect.sw, rect.sh, maxLongEdgePx);
+  let rendered = tryEncode(fit);
+  if (rendered && rendered.png.byteLength > maxBytesPerImage) {
+    log(
+      'tile PNG over cap size=%d max=%d, retrying at %s×',
+      rendered.png.byteLength,
+      maxBytesPerImage,
+      RETRY_SCALE,
+    );
+    rendered = tryEncode(fit * RETRY_SCALE);
+    if (rendered && rendered.png.byteLength > maxBytesPerImage) {
+      log(
+        'tile PNG still over cap after retry size=%d max=%d, skipping',
+        rendered.png.byteLength,
+        maxBytesPerImage,
+      );
+      return undefined;
+    }
+  }
+
+  return rendered;
+};
+
+const renderPageTiles = async (
+  page: PDFPageProxy,
+  pageNumber: number,
+  baseScale: number,
+  tiles: { grid: 2; maxLongEdgePx: number },
+  maxBytesPerImage: number,
+  factory: NapiCanvasFactory,
+): Promise<PdfPageImage[]> => {
+  const tileMaxLongEdgePx =
+    tiles.maxLongEdgePx > 0 ? tiles.maxLongEdgePx : DEFAULT_MAX_LONG_EDGE_PX;
+  const canvasAndContext = await renderPageToCanvas(page, baseScale * tiles.grid, factory);
+  if (!canvasAndContext?.canvas) return [];
+
+  try {
+    const { canvas } = canvasAndContext;
+    const results: PdfPageImage[] = [];
+    for (const rect of quadrantRects(canvas.width, canvas.height, tiles.grid)) {
+      const encoded = encodeQuadrant(canvas, rect, tileMaxLongEdgePx, maxBytesPerImage, factory);
+      if (!encoded) continue;
+      results.push({
+        kind: 'tile',
+        page: pageNumber,
+        tile: { col: rect.col, row: rect.row },
+        ...encoded,
+      });
+    }
+    return results;
+  } finally {
+    factory.destroy(canvasAndContext);
+  }
+};
+
+const renderPageAtScale = async (
+  page: PDFPageProxy,
+  scale: number,
+  factory: NapiCanvasFactory,
+): Promise<{ height: number; png: Uint8Array; width: number } | undefined> => {
+  const canvasAndContext = await renderPageToCanvas(page, scale, factory);
+  if (!canvasAndContext?.canvas) return undefined;
+  try {
+    const { canvas } = canvasAndContext;
     return {
       height: canvas.height,
       png: encodePng(canvas),
@@ -184,7 +292,28 @@ export const renderPdfPagesToPng = async (
         }
 
         if (!rendered) continue;
-        results.push({ page: pageNumber, ...rendered });
+        results.push({ kind: 'page', page: pageNumber, ...rendered });
+
+        if (opts.tiles?.grid === 2) {
+          try {
+            const tiles = await renderPageTiles(
+              page,
+              pageNumber,
+              scale,
+              opts.tiles,
+              maxBytesPerImage,
+              factory,
+            );
+            results.push(...tiles);
+          } catch (error) {
+            log(
+              'failed to tile PDF page %d: %s',
+              pageNumber,
+              error instanceof Error ? error.message : error,
+            );
+            console.error('failed to tile PDF page', pageNumber, error);
+          }
+        }
       } catch (error) {
         log(
           'failed to render PDF page %d: %s',

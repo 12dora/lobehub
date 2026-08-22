@@ -152,6 +152,8 @@ const OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES = new Set<string>([
 
 /** Matches `MAX_IMAGE_DECODED_BYTES` in cursor-agent `transport.parseTurn.ts`. */
 const CURSOR_AGENT_IMAGE_INLINE_MAX_BYTES = 6 * 1024 * 1024;
+/** Cursor-agent transport rejects more than 4 images on a turn. */
+const CURSOR_AGENT_IMAGE_INLINE_MAX_COUNT = 4;
 
 /**
  * Runtimes that actually CONSUME the conversation identity (upstream session id +
@@ -928,7 +930,10 @@ export const initModelRuntimeWithUserPayload = (
   const attachmentInlineHooks = OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES.has(runtimeProvider)
     ? createOwnOriginAttachmentInlineHooks({
         ...(runtimeProvider === ModelProvider.Cursor
-          ? { imageMaxBytes: CURSOR_AGENT_IMAGE_INLINE_MAX_BYTES }
+          ? {
+              imageMaxBytes: CURSOR_AGENT_IMAGE_INLINE_MAX_BYTES,
+              imageMaxCount: CURSOR_AGENT_IMAGE_INLINE_MAX_COUNT,
+            }
           : {}),
         ownOrigins: resolveOwnDeploymentOrigins,
         userId: typeof restParams.userId === 'string' ? restParams.userId : undefined,

@@ -32,7 +32,8 @@ const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46] as const; // %PDF
 const IMAGE_ONLY_PDF_MIN_TEXT_CHARS = 20;
 const IMAGE_ONLY_PDF_MAX_PAGES = 4;
 const IMAGE_ONLY_PDF_MAX_LONG_EDGE_PX = 1800;
-const IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE = 4;
+const IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE = 6;
+const IMAGE_ONLY_PDF_TILE_GRID = 2 as const;
 const PAGE_TAG_RE = /<\/?page\b[^>]*>/gi;
 
 const ATTACHMENT_MESSAGE_ROLES = new Set(['assistant', 'user']);
@@ -61,6 +62,11 @@ export interface CreateOwnOriginAttachmentInlineHooksInput {
    * above 6 MiB; other providers use `DEFAULT_IMAGE_INLINE_MAX_BYTES`.
    */
   imageMaxBytes?: number;
+  /**
+   * Per-message rasterized PDF image ceiling. Cursor's CLI transport rejects
+   * more than 4 images; other providers use 6 (page + four quadrant tiles).
+   */
+  imageMaxCount?: number;
   ownOrigins: MaybeLazy<OwnDeploymentOrigins>;
   userId?: string;
 }
@@ -68,6 +74,7 @@ export interface CreateOwnOriginAttachmentInlineHooksInput {
 export interface InlineOwnOriginAttachmentsOptions {
   fileMaxBytes?: number;
   imageMaxBytes?: number;
+  imageMaxCount?: number;
   /** Resolves a `files` row by id (FileModel + FileService). Used for `<files_info>` PDFs. */
   resolveByFileId?: OwnOriginFileIdResolver;
 }
@@ -111,8 +118,12 @@ const isImageOnlyPdfContent = (content: string | undefined): boolean => {
   return stripped.length < IMAGE_ONLY_PDF_MIN_TEXT_CHARS;
 };
 
-const imageOnlyPdfNotice = (name: string): string =>
-  `[PDF "${name}" is a scanned document with no text layer. Its pages are attached above as images — read the page images directly. Do not try to read or re-parse this file with tools; extracted text will always be empty.]`;
+const imageOnlyPdfNotice = (name: string, tilesAttached: boolean): string => {
+  const tileClause = tilesAttached
+    ? ' The page is followed by four zoomed quadrant tiles (top-left, top-right, bottom-left, bottom-right).'
+    : '';
+  return `[PDF "${name}" is a scanned document with no text layer. Its pages are attached above as images — read the page images directly.${tileClause} Do not try to read or re-parse this file with tools; extracted text will always be empty.]`;
+};
 
 /**
  * Rewrite the empty `<file …>` body of an image-only PDF inside `<files_info>`
@@ -159,9 +170,29 @@ const collectEmptyTextPdfsFromFilesInfo = (text: string): FilesInfoEmptyPdf[] =>
   return found;
 };
 
-interface RasterizedPdfImages {
-  dataUris: string[];
+interface RasterizedPdfImage {
+  dataUri: string;
+  kind: 'page' | 'tile';
+  page: number;
 }
+
+interface RasterizedPdfImages {
+  images: RasterizedPdfImage[];
+}
+
+const selectRasterizedImages = (
+  images: RasterizedPdfImage[],
+  remaining: number,
+): RasterizedPdfImage[] => {
+  if (remaining <= 0) return [];
+
+  const pages = images.filter((image) => image.kind === 'page');
+  const uniquePages = new Set(pages.map((image) => image.page));
+  if (uniquePages.size !== 1) return pages.slice(0, remaining);
+
+  const tiles = images.filter((image) => image.kind === 'tile');
+  return [...pages, ...tiles].slice(0, remaining);
+};
 
 const rasterizeImageOnlyPdf = async (
   bytes: Uint8Array,
@@ -172,13 +203,22 @@ const rasterizeImageOnlyPdf = async (
       maxBytesPerImage: imageMaxBytes,
       maxLongEdgePx: IMAGE_ONLY_PDF_MAX_LONG_EDGE_PX,
       maxPages: IMAGE_ONLY_PDF_MAX_PAGES,
+      tiles: {
+        grid: IMAGE_ONLY_PDF_TILE_GRID,
+        maxLongEdgePx: IMAGE_ONLY_PDF_MAX_LONG_EDGE_PX,
+      },
     });
-    const dataUris = pages.map((page) => toDataUri('image/png', page.png));
-    return { dataUris };
+    return {
+      images: pages.map((page) => ({
+        dataUri: toDataUri('image/png', page.png),
+        kind: page.kind === 'tile' ? 'tile' : 'page',
+        page: page.page,
+      })),
+    };
   } catch (error) {
     log('image-only PDF rasterize failed: %s', error instanceof Error ? error.message : error);
     console.error('image-only PDF rasterize failed', error);
-    return { dataUris: [] };
+    return { images: [] };
   }
 };
 
@@ -404,6 +444,7 @@ export const inlineOwnOriginAttachments = async (
   options?: InlineOwnOriginAttachmentsOptions,
 ): Promise<void> => {
   const imageMaxBytes = options?.imageMaxBytes ?? DEFAULT_IMAGE_INLINE_MAX_BYTES;
+  const imageMaxCount = options?.imageMaxCount ?? IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE;
   const fileMaxBytes = options?.fileMaxBytes ?? DEFAULT_FILE_INLINE_MAX_BYTES;
   const resolveByFileId = options?.resolveByFileId;
 
@@ -485,14 +526,15 @@ export const inlineOwnOriginAttachments = async (
       rasterMemo.set(memoKey, pending);
     }
 
-    const { dataUris } = await pending;
-    const used = dataUris.slice(0, imageSlots.remaining);
+    const { images } = await pending;
+    const used = selectRasterizedImages(images, imageSlots.remaining);
     if (used.length === 0) return false;
 
-    for (const dataUri of used) {
-      next.push({ image_url: { detail: 'high', url: dataUri }, type: 'image_url' });
+    const tilesAttached = used.some((image) => image.kind === 'tile');
+    for (const image of used) {
+      next.push({ image_url: { detail: 'high', url: image.dataUri }, type: 'image_url' });
     }
-    next.push({ text: imageOnlyPdfNotice(name), type: 'text' });
+    next.push({ text: imageOnlyPdfNotice(name, tilesAttached), type: 'text' });
     imageSlots.remaining -= used.length;
     return true;
   };
@@ -504,7 +546,7 @@ export const inlineOwnOriginAttachments = async (
       if (message.role !== role || !Array.isArray(message.content)) continue;
 
       const existingImages = message.content.filter(isImageUrlPart).length;
-      const imageSlots = { remaining: IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE - existingImages };
+      const imageSlots = { remaining: imageMaxCount - existingImages };
       const next: UserMessageContentPart[] = [];
 
       for (const part of message.content) {
@@ -587,7 +629,7 @@ export const inlineOwnOriginAttachments = async (
         if (candidates.length === 0) continue;
 
         const existingImages = Array.isArray(content) ? content.filter(isImageUrlPart).length : 0;
-        const imageSlots = { remaining: IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE - existingImages };
+        const imageSlots = { remaining: imageMaxCount - existingImages };
         if (imageSlots.remaining <= 0) continue;
 
         const next: UserMessageContentPart[] =
@@ -720,6 +762,7 @@ export const createOwnOriginAttachmentInlineHooks = (
   input: CreateOwnOriginAttachmentInlineHooksInput,
 ): ModelRuntimeHooks => {
   const imageMaxBytes = input.imageMaxBytes ?? DEFAULT_IMAGE_INLINE_MAX_BYTES;
+  const imageMaxCount = input.imageMaxCount ?? IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE;
 
   return {
     beforeChat: async (payload) => {
@@ -730,6 +773,7 @@ export const createOwnOriginAttachmentInlineHooks = (
         const resolvers = createFileServiceResolvers(input, origins);
         await inlineOwnOriginAttachments(payload.messages, resolvers.resolveByUrl, origins, {
           imageMaxBytes,
+          imageMaxCount,
           resolveByFileId: resolvers.resolveByFileId,
         });
       } catch (error) {

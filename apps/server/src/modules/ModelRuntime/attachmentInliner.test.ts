@@ -22,7 +22,14 @@ const fileServiceMocks = vi.hoisted(() => ({
 const pdfPageImagesMocks = vi.hoisted(() => ({
   renderPdfPagesToPng: vi.fn(
     async (): Promise<
-      Array<{ height: number; page: number; png: Uint8Array; width: number }>
+      Array<{
+        height: number;
+        kind?: 'page' | 'tile';
+        page: number;
+        png: Uint8Array;
+        tile?: { col: number; row: number };
+        width: number;
+      }>
     > => [],
   ),
 }));
@@ -59,8 +66,31 @@ const CURSOR_IMAGE_INLINE_MAX_BYTES = 6 * 1024 * 1024;
 const PDF_BYTES = new TextEncoder().encode('%PDF-1.4\n% image-only fixture\n');
 const PAGE_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PAGE_PNG_DATA_URI = `data:image/png;base64,${Buffer.from(PAGE_PNG).toString('base64')}`;
+const PAGE_IMAGE_PART = {
+  image_url: { detail: 'high' as const, url: PAGE_PNG_DATA_URI },
+  type: 'image_url' as const,
+};
+const TILE_ORDER = [
+  { col: 0, row: 0 },
+  { col: 1, row: 0 },
+  { col: 0, row: 1 },
+  { col: 1, row: 1 },
+] as const;
+const rasterPageWithTiles = (page = 1) => [
+  { height: 100, kind: 'page' as const, page, png: PAGE_PNG, width: 200 },
+  ...TILE_ORDER.map((tile) => ({
+    height: 50,
+    kind: 'tile' as const,
+    page,
+    png: PAGE_PNG,
+    tile,
+    width: 100,
+  })),
+];
 const IMAGE_ONLY_PDF_NOTICE =
   '[PDF "card.pdf" is a scanned document with no text layer. Its pages are attached above as images — read the page images directly. Do not try to read or re-parse this file with tools; extracted text will always be empty.]';
+const IMAGE_ONLY_PDF_NOTICE_WITH_TILES =
+  '[PDF "card.pdf" is a scanned document with no text layer. Its pages are attached above as images — read the page images directly. The page is followed by four zoomed quadrant tiles (top-left, top-right, bottom-left, bottom-right). Do not try to read or re-parse this file with tools; extracted text will always be empty.]';
 
 const imageMessage = (
   url: string,
@@ -276,10 +306,8 @@ describe('inlineOwnOriginAttachments', () => {
     expect(resolver).toHaveBeenCalledWith(OWN_FILE_URL, DEFAULT_FILE_INLINE_MAX_BYTES);
   });
 
-  it('inserts rasterized page images after an image-only PDF file_url', async () => {
-    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
-      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
-    ]);
+  it('inserts the page plus four quadrant tiles after a one-page image-only PDF', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue(rasterPageWithTiles());
     const resolver = vi.fn(async () => ({
       bytes: PDF_BYTES,
       mimeType: 'application/pdf',
@@ -310,6 +338,7 @@ describe('inlineOwnOriginAttachments', () => {
       expect.objectContaining({
         maxBytesPerImage: DEFAULT_IMAGE_INLINE_MAX_BYTES,
         maxPages: 4,
+        tiles: { grid: 2, maxLongEdgePx: 1800 },
       }),
     );
     expect(messages[0].content).toEqual([
@@ -324,7 +353,100 @@ describe('inlineOwnOriginAttachments', () => {
         },
         type: 'file_url',
       },
-      { image_url: { detail: 'high', url: PAGE_PNG_DATA_URI }, type: 'image_url' },
+      PAGE_IMAGE_PART,
+      PAGE_IMAGE_PART,
+      PAGE_IMAGE_PART,
+      PAGE_IMAGE_PART,
+      PAGE_IMAGE_PART,
+      { text: IMAGE_ONLY_PDF_NOTICE_WITH_TILES, type: 'text' },
+    ]);
+  });
+
+  it('keeps the page and drops the last tile when the Cursor ceiling is 4', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue(rasterPageWithTiles());
+    const resolver = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            file_url: {
+              content: '<page pageNumber="1">\n\n</page>',
+              fileId: 'file-1',
+              mimeType: 'application/pdf',
+              name: 'card.pdf',
+              size: PDF_BYTES.byteLength,
+              url: OWN_FILE_URL,
+            },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins, { imageMaxCount: 4 });
+
+    const content = messages[0].content as object[];
+    expect(content.filter((part) => (part as { type: string }).type === 'image_url')).toHaveLength(
+      4,
+    );
+    expect(content).toEqual([
+      expect.objectContaining({ type: 'file_url' }),
+      PAGE_IMAGE_PART,
+      PAGE_IMAGE_PART,
+      PAGE_IMAGE_PART,
+      PAGE_IMAGE_PART,
+      { text: IMAGE_ONLY_PDF_NOTICE_WITH_TILES, type: 'text' },
+    ]);
+  });
+
+  it('attaches one image per page and no tiles for a multi-page PDF', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
+      ...rasterPageWithTiles(1),
+      ...rasterPageWithTiles(2),
+    ]);
+    const resolver = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            file_url: {
+              content: '<page pageNumber="1">\n\n</page>',
+              fileId: 'file-1',
+              mimeType: 'application/pdf',
+              name: 'card.pdf',
+              size: PDF_BYTES.byteLength,
+              url: OWN_FILE_URL,
+            },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins);
+
+    expect(messages[0].content).toEqual([
+      {
+        file_url: {
+          content: '<page pageNumber="1">\n\n</page>',
+          fileId: 'file-1',
+          mimeType: 'application/pdf',
+          name: 'card.pdf',
+          size: PDF_BYTES.byteLength,
+          url: `data:application/pdf;base64,${Buffer.from(PDF_BYTES).toString('base64')}`,
+        },
+        type: 'file_url',
+      },
+      PAGE_IMAGE_PART,
+      PAGE_IMAGE_PART,
       { text: IMAGE_ONLY_PDF_NOTICE, type: 'text' },
     ]);
   });
@@ -362,10 +484,8 @@ describe('inlineOwnOriginAttachments', () => {
     expect(messages[0].content).toHaveLength(1);
   });
 
-  it('skips rasterizing when the message already has 4 image parts', async () => {
-    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
-      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
-    ]);
+  it('skips rasterizing when the message already has 6 image parts', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue(rasterPageWithTiles());
     const resolver = vi.fn(async (url: string) =>
       url === OWN_FILE_URL
         ? { bytes: PDF_BYTES, mimeType: 'application/pdf' }
@@ -375,6 +495,8 @@ describe('inlineOwnOriginAttachments', () => {
     const messages: OpenAIChatMessage[] = [
       {
         content: [
+          { image_url: { url: imageUrl }, type: 'image_url' },
+          { image_url: { url: imageUrl }, type: 'image_url' },
           { image_url: { url: imageUrl }, type: 'image_url' },
           { image_url: { url: imageUrl }, type: 'image_url' },
           { image_url: { url: imageUrl }, type: 'image_url' },
@@ -397,9 +519,9 @@ describe('inlineOwnOriginAttachments', () => {
 
     expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
     const content = messages[0].content as object[];
-    expect(content).toHaveLength(5);
+    expect(content).toHaveLength(7);
     expect(content.filter((part) => (part as { type: string }).type === 'image_url')).toHaveLength(
-      4,
+      6,
     );
   });
 

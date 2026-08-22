@@ -2128,7 +2128,10 @@ describe('own-origin attachment inline hook wiring', () => {
       runtimeProvider: ModelProvider.Cursor,
     });
     expect(createSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ imageMaxBytes: 6 * 1024 * 1024 }),
+      expect.objectContaining({
+        imageMaxBytes: 6 * 1024 * 1024,
+        imageMaxCount: 4,
+      }),
     );
 
     createSpy.mockClear();
@@ -2138,6 +2141,7 @@ describe('own-origin attachment inline hook wiring', () => {
       { browserProfile: DEFAULT_BROWSER_DEVICE_PROFILE },
     );
     expect(createSpy.mock.calls[0]?.[0]?.imageMaxBytes).toBeUndefined();
+    expect(createSpy.mock.calls[0]?.[0]?.imageMaxCount).toBeUndefined();
   });
 });
 
