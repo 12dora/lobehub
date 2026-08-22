@@ -30,6 +30,17 @@ afterEach(async () => {
   await db.delete(users).where(inArray(users.id, [userId]));
 });
 
+describe('extractPackageInstalls — shell redirections', () => {
+  it('stops at redirections and never records numeric fd tokens', () => {
+    const found = extractPackageInstalls('pip install -q requests tabulate 2>&1 | tail -1');
+    expect(found.map((item) => item.package)).toEqual(['requests', 'tabulate']);
+    expect(
+      extractPackageInstalls('npm install lodash > /tmp/log 2>&1').map((i) => i.package),
+    ).toEqual(['lodash']);
+    expect(extractPackageInstalls('pip install 2 numpy').map((i) => i.package)).toEqual(['numpy']);
+  });
+});
+
 describe('normalizeSandboxPackageName', () => {
   it('strips pip extras and version specifiers and folds underscores', () => {
     expect(normalizeSandboxPackageName('requests[socks]==2.3', 'pip')).toBe('requests');

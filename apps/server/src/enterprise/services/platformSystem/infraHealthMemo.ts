@@ -105,6 +105,20 @@ const runLiveProbes = async (params: {
       params.probeDocumentRender ? params.probeDocumentRender() : Promise.resolve(null),
     ]);
   const checkedAt = params.now();
+  // A probe that throws (instead of reporting unavailable) would otherwise vanish from the
+  // status page with no trace — surface the reason so an operator can tell "module off"
+  // from "probe crashed".
+  for (const [name, result] of [
+    ['sandbox', sandboxResult],
+    ['documentRender', documentRenderResult],
+  ] as const) {
+    if (result.status === 'rejected') {
+      console.warn(
+        `[platformSystem] ${name} health probe failed:`,
+        result.reason instanceof Error ? result.reason.message : result.reason,
+      );
+    }
+  }
   return {
     documentRender: documentRenderResult.status === 'fulfilled' ? documentRenderResult.value : null,
     keyManagement: settledOrUnavailable(keyManagementResult, checkedAt),

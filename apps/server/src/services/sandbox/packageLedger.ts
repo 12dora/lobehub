@@ -94,6 +94,8 @@ export const normalizeSandboxPackageName = (
 ): string | null => {
   let name = raw.trim().replaceAll(/^['"]+|['"]+$/g, '');
   if (!name) return null;
+  // Shell leftovers (`2`, `1`, `&1`) and version-only tokens are never package names.
+  if (!/^[@A-Z]/i.test(name)) return null;
 
   if (manager === 'pip') {
     const extraIdx = name.indexOf('[');
@@ -143,6 +145,9 @@ const readTokens = (text: string, start: number): Token[] => {
     if (ch === '\n' || ch === '\r') break;
     if (ch === '#' || ch === ';' || ch === '|') break;
     if (ch === ')' || ch === '(' || ch === ',') break;
+    // Redirections end the argument list: `pip install x 2>&1`, `> log`, `< in`.
+    if (ch === '<' || ch === '>') break;
+    if (/\d/.test(ch) && (text[i + 1] === '>' || text[i + 1] === '<')) break;
     if (ch === '&' && text[i + 1] === '&') break;
     if (ch === '|' && text[i + 1] === '|') break;
     if (ch === '&' && text[i + 1] !== '&') break;
@@ -163,6 +168,7 @@ const readTokens = (text: string, start: number): Token[] => {
       const c = text[j]!;
       if (/\s/.test(c) || c === ';' || c === '#' || c === ')' || c === '(' || c === ',') break;
       if (c === '"' || c === "'" || c === '|' || c === '&') break;
+      if (c === '<' || c === '>') break;
       j += 1;
     }
     if (j === i) break;
