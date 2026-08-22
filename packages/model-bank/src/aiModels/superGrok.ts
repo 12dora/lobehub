@@ -11,6 +11,7 @@ import { xaiImageModels, xaiVideoModels } from './xai';
 const superGrokChatModels: AIChatModelCard[] = [
   {
     abilities: {
+      files: true,
       functionCall: true,
       reasoning: true,
       search: true,
@@ -34,6 +35,7 @@ const superGrokChatModels: AIChatModelCard[] = [
   },
   {
     abilities: {
+      files: true,
       functionCall: true,
       reasoning: true,
       search: true,

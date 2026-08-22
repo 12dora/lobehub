@@ -4,7 +4,7 @@ import type { Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { testProvider } from '../../providerTestUtils';
-import { LobeSuperGrokAI } from './index';
+import { LobeSuperGrokAI, SUPERGROK_ZDR_FILE_UNSUPPORTED_MESSAGE } from './index';
 
 vi.mock('@lobechat/business-model-bank/model-config', () => ({
   loadModels: vi.fn().mockResolvedValue([]),
@@ -351,5 +351,173 @@ describe('LobeSuperGrokAI - image and video', () => {
       }),
     );
     expect(result).toEqual({ status: 'success', videoUrl: 'https://cdn.example/v.mp4' });
+  });
+});
+
+describe('LobeSuperGrokAI - native file input', () => {
+  const pdfMessage = {
+    content: [
+      {
+        file_url: {
+          content: 'EXTRACTED TEXT',
+          mimeType: 'application/pdf',
+          name: 'report.pdf',
+          url: 'data:application/pdf;base64,cGRm',
+        },
+        type: 'file_url' as const,
+      },
+      { text: 'summarize', type: 'text' as const },
+    ],
+    role: 'user' as const,
+  };
+
+  const completedJson = () =>
+    new Response(JSON.stringify({ id: 'resp', output: [], status: 'completed' }), {
+      headers: { 'Content-Type': 'application/json' },
+      status: 200,
+    });
+
+  const jsonError = (message: string, status = 400) =>
+    new Response(JSON.stringify({ error: { message } }), {
+      headers: { 'Content-Type': 'application/json' },
+      status,
+    });
+
+  const requestUrl = (input: RequestInfo | URL): string => {
+    if (typeof input === 'string') return input;
+    if (input instanceof URL) return input.href;
+    return input.url;
+  };
+
+  const isFilesRequest = (input: RequestInfo | URL) =>
+    new URL(requestUrl(input)).pathname.endsWith('/files');
+
+  const isResponsesRequest = (input: RequestInfo | URL) =>
+    new URL(requestUrl(input)).pathname.endsWith('/responses');
+
+  const requestBody = (init?: RequestInit): Record<string, any> => {
+    expect(typeof init?.body).toBe('string');
+    return JSON.parse(init?.body as string);
+  };
+
+  const contentParts = (
+    body: Record<string, any>,
+  ): { file_id?: string; text?: string; type?: string }[] =>
+    (Array.isArray(body.input) ? body.input : []).flatMap((item: { content?: unknown }) =>
+      Array.isArray(item.content) ? item.content : [],
+    );
+
+  const formFieldOrder = (body: unknown): string[] => {
+    expect(body).toBeInstanceOf(FormData);
+    return [...(body as FormData).keys()];
+  };
+
+  it('uploads a data-URI file_url then sends input_file.file_id', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (isFilesRequest(input)) {
+        return new Response(JSON.stringify({ id: 'file-abc' }), {
+          headers: { 'Content-Type': 'application/json' },
+          status: 200,
+        });
+      }
+      return completedJson();
+    });
+    const runtime = new LobeSuperGrokAI({ apiKey: 'test_api_key', fetch: fetchImpl });
+
+    await runtime.chat({
+      messages: [pdfMessage],
+      model: 'grok-4.6',
+      stream: false,
+    });
+
+    const filesCall = fetchImpl.mock.calls.find(([input]) => isFilesRequest(input));
+    const conversationCall = fetchImpl.mock.calls.find(([input]) => isResponsesRequest(input));
+
+    expect(filesCall).toBeDefined();
+    expect(conversationCall).toBeDefined();
+    expect(filesCall?.[1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer test_api_key' }),
+        method: 'POST',
+      }),
+    );
+
+    const fieldOrder = formFieldOrder(filesCall?.[1]?.body);
+    expect(fieldOrder.indexOf('expires_after')).toBeGreaterThanOrEqual(0);
+    expect(fieldOrder.indexOf('expires_after')).toBeLessThan(fieldOrder.indexOf('file'));
+    expect((filesCall?.[1]?.body as FormData).get('purpose')).toBe('assistants');
+    expect((filesCall?.[1]?.body as FormData).get('expires_after')).toBe('86400');
+
+    expect(contentParts(requestBody(conversationCall?.[1]))).toEqual(
+      expect.arrayContaining([{ file_id: 'file-abc', type: 'input_file' }]),
+    );
+    expect(fetchImpl.mock.calls.filter(([input]) => isResponsesRequest(input))).toHaveLength(1);
+  });
+
+  it('falls back to files_info in the same conversation request when upload fails without ZDR', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (isFilesRequest(input)) return jsonError('upload exploded', 500);
+      return completedJson();
+    });
+    const runtime = new LobeSuperGrokAI({ apiKey: 'test_api_key', fetch: fetchImpl });
+
+    await runtime.chat({
+      messages: [pdfMessage],
+      model: 'grok-4.6',
+      stream: false,
+    });
+
+    const conversationCalls = fetchImpl.mock.calls.filter(([input]) => isResponsesRequest(input));
+    expect(conversationCalls).toHaveLength(1);
+
+    const parts = contentParts(requestBody(conversationCalls[0][1]));
+    expect(parts.some((part) => part.type === 'input_file')).toBe(false);
+    expect(parts.some((part) => part.text?.includes('<files_info>'))).toBe(true);
+    expect(parts.some((part) => part.text?.includes('EXTRACTED TEXT'))).toBe(true);
+  });
+
+  it('retries a ZDR 4xx on upload once with extracted text and no second upload', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (isFilesRequest(input)) {
+        return jsonError('File uploads are unsupported for ZDR customers.');
+      }
+      return completedJson();
+    });
+    const runtime = new LobeSuperGrokAI({ apiKey: 'test_api_key', fetch: fetchImpl });
+
+    await runtime.chat({
+      messages: [pdfMessage],
+      model: 'grok-4.6',
+      stream: false,
+    });
+
+    expect(fetchImpl.mock.calls.filter(([input]) => isFilesRequest(input))).toHaveLength(1);
+    const conversationCalls = fetchImpl.mock.calls.filter(([input]) => isResponsesRequest(input));
+    expect(conversationCalls).toHaveLength(1);
+
+    const parts = contentParts(requestBody(conversationCalls[0][1]));
+    expect(parts.some((part) => part.type === 'input_file')).toBe(false);
+    expect(parts.some((part) => part.text?.includes('<files_info>'))).toBe(true);
+    expect(parts.some((part) => part.text?.includes('EXTRACTED TEXT'))).toBe(true);
+    expect(parts.some((part) => part.text?.includes('name="report.pdf"'))).toBe(true);
+  });
+
+  it('maps a ZDR 4xx without file parts to a clear provider error', async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonError('File content is currently unsupported for ZDR customers.'),
+    );
+    const runtime = new LobeSuperGrokAI({ apiKey: 'test_api_key', fetch: fetchImpl });
+
+    await expect(
+      runtime.chat({
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'grok-4.6',
+        stream: false,
+      }),
+    ).rejects.toMatchObject({
+      errorType: 'ProviderBizError',
+      message: SUPERGROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
+    });
+    expect(fetchImpl.mock.calls.filter(([input]) => isResponsesRequest(input))).toHaveLength(1);
   });
 });

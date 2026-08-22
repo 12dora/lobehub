@@ -1583,6 +1583,125 @@ describe('convertOpenAIResponseInputs', () => {
       expect(content[0].text).toContain('EXTRACTED');
       expect(content[0].text).not.toContain('url=');
     });
+
+    it('should emit input_file with file_id when uploadFile succeeds', async () => {
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarize' },
+            {
+              file_url: {
+                content: 'EXTRACTED',
+                mimeType: 'application/pdf',
+                name: 'report.pdf',
+                url: 'data:application/pdf;base64,cGRm',
+              },
+              type: 'file_url',
+            } as any,
+          ],
+        },
+      ];
+
+      vi.mocked(parseDataUri).mockReturnValue({
+        type: 'base64',
+        base64: 'cGRm',
+        mimeType: 'application/pdf',
+      });
+      const uploadFile = vi.fn().mockResolvedValue({ fileId: 'file-abc' });
+
+      const result = await convertOpenAIResponseInputs(messages, {
+        forceFileBase64: true,
+        uploadFile,
+      });
+
+      expect(result).toEqual([
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'summarize' },
+            { file_id: 'file-abc', type: 'input_file' },
+          ],
+        },
+      ]);
+      expect(uploadFile).toHaveBeenCalledTimes(1);
+      expect(uploadFile).toHaveBeenCalledWith({
+        bytes: new Uint8Array([0x70, 0x64, 0x66]),
+        filename: 'report.pdf',
+        mimeType: 'application/pdf',
+      });
+      expect(imageUrlToBase64).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to files_info when uploadFile fails with a non-ZDR error', async () => {
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            {
+              file_url: {
+                content: 'EXTRACTED',
+                mimeType: 'application/pdf',
+                name: 'report.pdf',
+                url: 'data:application/pdf;base64,cGRm',
+              },
+              type: 'file_url',
+            } as any,
+          ],
+        },
+      ];
+
+      vi.mocked(parseDataUri).mockReturnValue({
+        type: 'base64',
+        base64: 'cGRm',
+        mimeType: 'application/pdf',
+      });
+      const uploadFile = vi.fn().mockRejectedValue(new Error('upload exploded'));
+
+      const result = await convertOpenAIResponseInputs(messages, {
+        forceFileBase64: true,
+        uploadFile,
+      });
+      const content = (result[0] as { content: Array<{ text?: string; type: string }> }).content;
+
+      expect(content[0].type).toBe('input_text');
+      expect(content[0].text).toContain('EXTRACTED');
+      expect(content[0].text).toContain('<files_info>');
+      expect(content[0].text).not.toContain('url=');
+    });
+
+    it('should propagate a ZDR refusal from uploadFile', async () => {
+      const messages: OpenAIChatMessage[] = [
+        {
+          role: 'user',
+          content: [
+            {
+              file_url: {
+                content: 'EXTRACTED',
+                mimeType: 'application/pdf',
+                name: 'report.pdf',
+                url: 'data:application/pdf;base64,cGRm',
+              },
+              type: 'file_url',
+            } as any,
+          ],
+        },
+      ];
+
+      vi.mocked(parseDataUri).mockReturnValue({
+        type: 'base64',
+        base64: 'cGRm',
+        mimeType: 'application/pdf',
+      });
+      const zdrError = Object.assign(new Error('File uploads are unsupported for ZDR customers.'), {
+        status: 400,
+      });
+      const uploadFile = vi.fn().mockRejectedValue(zdrError);
+
+      await expect(
+        convertOpenAIResponseInputs(messages, { forceFileBase64: true, uploadFile }),
+      ).rejects.toBe(zdrError);
+    });
   });
 });
 

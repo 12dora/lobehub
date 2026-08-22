@@ -1,7 +1,6 @@
 import type { ChatModelCard } from '@lobechat/types';
 import type { OwnDeploymentOrigins } from '@lobechat/utils';
 import { DEFAULT_FILE_INLINE_MAX_BYTES } from '@lobechat/utils';
-import { isRecord } from '@lobechat/utils/object';
 import debug from 'debug';
 import type { ExtendParamsType } from 'model-bank';
 import { ModelProvider } from 'model-bank';
@@ -10,11 +9,12 @@ import OpenAI, { type ClientOptions } from 'openai';
 import { deriveConversationSessionId, deriveGrokAgentId, isUuidV4 } from '../../browserProfile';
 import { degradeFileUrlPartsToText } from '../../core/contextBuilders';
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
-import type { ChatCompletionErrorPayload, ChatMethodOptions, ChatStreamPayload } from '../../types';
+import type { ChatMethodOptions, ChatStreamPayload } from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
 import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import type { XAIModelCard } from '../xai';
 import { handleXAIChatCompletionPayload, handleXAIResponsesPayload } from '../xai';
+import { isXaiZdrFileUnsupportedError, toXaiZdrBizError, xaiZdrErrorBody } from '../xai/zdr';
 
 const log = debug('lobe-grok:zdr');
 
@@ -381,28 +381,6 @@ const getGrokResponsesHeaders = (
 const suppressStainlessHeaders = (): Record<string, null> =>
   Object.fromEntries(STAINLESS_HEADERS.map((header) => [header, null]));
 
-const isHttp4xx = (status: unknown): status is number =>
-  typeof status === 'number' && status >= 400 && status < 500;
-
-const collectErrorStrings = (value: unknown, into: string[], depth = 0): void => {
-  if (depth > 8 || value == null) return;
-  if (typeof value === 'string') {
-    if (value) into.push(value);
-    return;
-  }
-  if (!isRecord(value)) return;
-  if (typeof value.message === 'string' && value.message) into.push(value.message);
-  collectErrorStrings(value.error, into, depth + 1);
-  collectErrorStrings(value.body, into, depth + 1);
-};
-
-const readStatus = (value: unknown, depth = 0): number | undefined => {
-  if (depth > 6 || !isRecord(value)) return undefined;
-  if (isHttp4xx(value.status)) return value.status;
-  if (isHttp4xx(value.statusCode)) return value.statusCode;
-  return readStatus(value.error, depth + 1);
-};
-
 /**
  * True for a 4xx whose body/message is the Grok CLI proxy ZDR file policy
  * (or the mapped ProviderBizError that already used that wording).
@@ -410,40 +388,17 @@ const readStatus = (value: unknown, depth = 0): number | undefined => {
  * Matches both the raw OpenAI `APIError` `handleError` receives and the
  * `ChatCompletionErrorPayload` the factory then throws (`error.error`).
  */
-const isGrokZdrFileUnsupportedError = (error: unknown): boolean => {
-  const texts: string[] = [];
-  collectErrorStrings(error, texts);
-  const matched = texts.some(
-    (text) => ZDR_FILE_UNSUPPORTED.test(text) || text === GROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
-  );
-  if (!matched) return false;
-  const status = readStatus(error);
-  return status === undefined || isHttp4xx(status);
-};
+const isGrokZdrFileUnsupportedError = (error: unknown): boolean =>
+  isXaiZdrFileUnsupportedError(error, {
+    exactMessages: [GROK_ZDR_FILE_UNSUPPORTED_MESSAGE],
+    pattern: ZDR_FILE_UNSUPPORTED,
+  });
 
-const grokZdrErrorBody = (error: unknown): Record<string, unknown> => {
-  if (!isRecord(error)) return { message: GROK_ZDR_FILE_UNSUPPORTED_MESSAGE };
-  const status = typeof error.status === 'number' ? error.status : undefined;
-  const nested = isRecord(error.error) ? error.error : undefined;
-  return {
-    ...(nested ?? {
-      message:
-        typeof error.message === 'string' ? error.message : GROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
-    }),
-    ...(status !== undefined ? { status } : {}),
-  };
-};
+const grokZdrErrorBody = (error: unknown): Record<string, unknown> =>
+  xaiZdrErrorBody(error, GROK_ZDR_FILE_UNSUPPORTED_MESSAGE);
 
-const toGrokZdrBizError = (error: unknown): ChatCompletionErrorPayload => {
-  const payload = isRecord(error) ? error : {};
-  return {
-    ...payload,
-    error: grokZdrErrorBody(error),
-    errorType: AgentRuntimeErrorType.ProviderBizError,
-    message: GROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
-    provider: (typeof payload.provider === 'string' && payload.provider) || ModelProvider.Grok,
-  };
-};
+const toGrokZdrBizError = (error: unknown) =>
+  toXaiZdrBizError(error, GROK_ZDR_FILE_UNSUPPORTED_MESSAGE, ModelProvider.Grok);
 
 /**
  * Wire shape of the CLI's system prompt (E4 §A.1): `{type:'message', role:'system',

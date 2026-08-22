@@ -23,6 +23,8 @@ const SuperGrok: ModelProviderCard = {
     // OAuth tokens are refreshed and persisted server-side; browser requests
     // would bypass the refresh pipeline, so they are hard-disabled.
     disableBrowserRequest: true,
+    // Responses `{type:'input_file', file_id}` after POST /v1/files.
+    nativeFileInput: true,
     oauthDeviceFlow: {
       clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
       defaultPollingInterval: 5,

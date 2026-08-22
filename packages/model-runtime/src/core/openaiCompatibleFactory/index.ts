@@ -221,6 +221,19 @@ export interface OpenAICompatibleFactoryOptions<T extends Record<string, any> = 
     inlineFile?: ImageUrlToBase64Options;
     /** Passed through to convertOpenAI* for image inlining. */
     inlineImage?: ImageUrlToBase64Options;
+    /**
+     * Upload document bytes and emit Responses `{ type: 'input_file', file_id }`.
+     * Bound by the factory with apiKey / baseURL / fetch / signal.
+     */
+    uploadFile?: (
+      input: { bytes: Uint8Array; filename: string; mimeType: string },
+      context?: {
+        apiKey?: string;
+        baseURL?: string;
+        fetch?: ClientOptions['fetch'];
+        signal?: AbortSignal;
+      },
+    ) => Promise<{ fileId: string }>;
     handleError?: (
       error: any,
       options: ConstructorOptions<T>,
@@ -425,6 +438,18 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         .ownOrigins;
       if (!ownOrigins) return inline;
       return { ...inline, ownOrigins };
+    }
+
+    private bindChatUploadFile(signal?: AbortSignal) {
+      const upload = chatCompletion?.uploadFile;
+      if (!upload) return undefined;
+      return (input: { bytes: Uint8Array; filename: string; mimeType: string }) =>
+        upload(input, {
+          apiKey: this._options.apiKey,
+          baseURL: this.baseURL,
+          fetch: this._options.fetch,
+          signal,
+        });
     }
 
     /**
@@ -754,6 +779,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           inlineFile: this.withOwnOrigins(chatCompletion?.inlineFile),
           inlineImage: this.withOwnOrigins(chatCompletion?.inlineImage),
           model: postPayload.model,
+          uploadFile: this.bindChatUploadFile(options?.signal),
         });
         const includeUsageRequested = Boolean(postPayload.stream && !chatCompletion?.excludeUsage);
 
@@ -1587,6 +1613,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         inlineImage: this.withOwnOrigins(chatCompletion?.inlineImage),
         reasoningSignatureScope,
         strictToolPairing: true,
+        uploadFile: this.bindChatUploadFile(options?.signal),
       });
 
       const isStreaming = payload.stream !== false;
@@ -1752,6 +1779,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           inlineImage: this.withOwnOrigins(chatCompletion?.inlineImage),
           reasoningSignatureScope,
           strictToolPairing: true,
+          uploadFile: this.bindChatUploadFile(options?.signal),
         });
 
         const preparedRequest = this.prepareResponsesRequest(

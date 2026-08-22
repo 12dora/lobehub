@@ -15,6 +15,7 @@ import type OpenAI from 'openai';
 import { toFile } from 'openai';
 
 import { disableStreamModels, systemToUserModels } from '../../providers/openai/openaiModelId';
+import { isXaiZdrFileUnsupportedError } from '../../providers/xai/zdr';
 import type { ChatStreamPayload, OpenAIChatMessage, UserMessageContentPart } from '../../types';
 import { fileUrlPartPlaceholder, isFileUrlPart, isFileUrlTypedPart } from '../../types/chat';
 import { isDeepSeekThinkingEligibleModel } from '../../utils/modelParse';
@@ -60,6 +61,15 @@ type ConvertMessageContentOptions = {
   onAttachmentOverLimit?: (skipped: SkippedAttachment[]) => void;
   reasoningSignatureScope?: SignatureScope;
   strictToolPairing?: boolean;
+  /**
+   * When set, document bytes are uploaded and the Responses part is
+   * `{ type: 'input_file', file_id }` instead of inline `file_data`.
+   */
+  uploadFile?: (input: {
+    bytes: Uint8Array;
+    filename: string;
+    mimeType: string;
+  }) => Promise<{ fileId: string }>;
 };
 
 const DOCUMENT_MIME_TYPES = new Set([
@@ -110,6 +120,7 @@ const isDocumentFileInput = (mimeType?: string, filename?: string): boolean => {
 
 type ResponseFilePart =
   | { file_data: string; filename: string; type: 'input_file' }
+  | { file_id: string; type: 'input_file' }
   | { text: string; type: 'input_text' };
 
 const toInputFilePart = (filename: string, mimeType: string, base64: string): ResponseFilePart => ({
@@ -121,11 +132,13 @@ const toInputFilePart = (filename: string, mimeType: string, base64: string): Re
 const convertFileUrlPart = async (
   part: UserMessageContentPart,
   skipped: SkippedAttachment[],
-  inlineFile?: ImageUrlToBase64Options,
+  options?: ConvertMessageContentOptions,
 ): Promise<ResponseFilePart | undefined> => {
   if (!isFileUrlPart(part)) return undefined;
 
   const { content, fileId, mimeType, name, size, url } = part.file_url;
+  const inlineFile = options?.inlineFile;
+  const uploadFile = options?.uploadFile;
   const maxBytes = inlineFile?.maxBytes ?? DEFAULT_FILE_INLINE_MAX_BYTES;
   const skip = (reason: SkippedAttachment['reason']): ResponseFilePart => {
     skipped.push({ content, filename: name, mimeType, reason, size, url });
@@ -133,6 +146,30 @@ const convertFileUrlPart = async (
       text: filesInfoWithoutUrl({ content, fileId, mimeType, name, size }),
       type: 'input_text',
     };
+  };
+
+  const toUploadedOrDataPart = async (
+    filename: string,
+    resolvedMime: string,
+    base64: string,
+  ): Promise<ResponseFilePart> => {
+    if (!uploadFile) return toInputFilePart(filename, resolvedMime, base64);
+    try {
+      const { fileId: uploadedFileId } = await uploadFile({
+        bytes: new Uint8Array(Buffer.from(base64, 'base64')),
+        filename,
+        mimeType: resolvedMime,
+      });
+      return { file_id: uploadedFileId, type: 'input_file' };
+    } catch (error) {
+      if (isXaiZdrFileUnsupportedError(error)) throw error;
+      log(
+        'input_file upload failed: host=%s error=%s',
+        sanitizedUrlHost(url),
+        error instanceof Error ? error.name : 'Error',
+      );
+      return skip('fetch_failed');
+    }
   };
 
   if (!isDocumentFileInput(mimeType, name)) {
@@ -149,17 +186,18 @@ const convertFileUrlPart = async (
       return skip('over_limit');
     }
     const resolvedMime = parsed.mimeType || mimeType || 'application/octet-stream';
-    return toInputFilePart(name, resolvedMime, parsed.base64);
+    return toUploadedOrDataPart(name, resolvedMime, parsed.base64);
   }
 
   try {
     const inlined = await imageUrlToBase64(url, inlineFile ?? { maxBytes });
-    return toInputFilePart(
+    return toUploadedOrDataPart(
       name,
       inlined.mimeType || mimeType || 'application/octet-stream',
       inlined.base64,
     );
   } catch (error) {
+    if (isXaiZdrFileUnsupportedError(error)) throw error;
     if (error instanceof AttachmentInlineLimitError) {
       return skip('over_limit');
     }
@@ -461,7 +499,7 @@ export const convertOpenAIResponseInputs = async (
                 if (isFileUrlTypedPart(c)) {
                   // Opt-in only: other Responses providers keep today's drop.
                   if (!options?.forceFileBase64) return undefined;
-                  return convertFileUrlPart(c, skippedAttachments, options.inlineFile);
+                  return convertFileUrlPart(c, skippedAttachments, options);
                 }
 
                 if (c.type === 'video_url') {
