@@ -748,7 +748,8 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     file: 'apps/server/src/services/file/index.ts',
     importSpecifier: '@/server/enterprise/services/documentRender',
     owner: 'G2',
-    reason: 'createFileRecord (agent/sandbox uploads) enqueues document-render jobs like browser uploads',
+    reason:
+      'createFileRecord (agent/sandbox uploads) enqueues document-render jobs like browser uploads',
   },
   {
     file: 'apps/server/src/services/toolExecution/serverRuntimes/documentPages.ts',
@@ -768,6 +769,12 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     importSpecifier: '@/server/enterprise/services/networkProxy/engine/bindEgress',
     owner: 'G2',
     reason: 'Binds G4 egress ALS only when the networkProxy module is on',
+  },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.ts',
+    importSpecifier: '@/server/enterprise/services/documentRenderSettings',
+    owner: 'G2',
+    reason: 'admin feed budgets apply to attachment feeding without restart',
   },
   {
     file: 'src/server/agent-hono/index.ts',

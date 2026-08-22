@@ -5,6 +5,13 @@ const CD_SIGNATURE = 0x02_01_4b_50;
 const EOCD_MIN_SIZE = 22;
 const MAX_COMMENT = 65_535;
 
+/** Per-entry cap for OOXML media (images). */
+export const ZIP_ENTRY_MEDIA_MAX_BYTES = 4 * 1024 * 1024;
+/** Per-entry cap for rels / XML. */
+export const ZIP_ENTRY_XML_MAX_BYTES = 512 * 1024;
+/** Aggregate decompressed bytes across extracted entries. */
+export const ZIP_INFLATE_AGGREGATE_MAX_BYTES = 64 * 1024 * 1024;
+
 const readU16 = (view: DataView, offset: number): number => view.getUint16(offset, true);
 const readU32 = (view: DataView, offset: number): number => view.getUint32(offset, true);
 
@@ -77,18 +84,41 @@ export interface ExtractedZipEntry {
   name: string;
 }
 
+export interface ExtractZipLimits {
+  /** Stop extracting further entries once this many decompressed bytes have been kept. */
+  aggregateMaxBytes?: number;
+  /** Per-entry decompressed cap; when exceeded the stream is terminated and the entry skipped. */
+  maxBytesFor?: (name: string) => number;
+}
+
+const concatChunks = (chunks: Uint8Array[], total: number): Uint8Array => {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+};
+
 /** Inflate only the named entries. Other files are skipped without decompression. */
 export const extractZipEntries = async (
   bytes: Uint8Array,
   wanted: ReadonlySet<string>,
+  limits: ExtractZipLimits = {},
 ): Promise<ExtractedZipEntry[]> => {
   if (wanted.size === 0) return [];
+
+  const aggregateMax = limits.aggregateMaxBytes ?? ZIP_INFLATE_AGGREGATE_MAX_BYTES;
+  const maxBytesFor = limits.maxBytesFor ?? (() => ZIP_ENTRY_MEDIA_MAX_BYTES);
 
   return new Promise((resolve, reject) => {
     const extracted: ExtractedZipEntry[] = [];
     let pending = 0;
     let finished = false;
     let failed: unknown;
+    let inflated = 0;
+    let aggregateExceeded = false;
 
     const maybeDone = () => {
       if (!finished || pending > 0 || failed) return;
@@ -103,28 +133,47 @@ export const extractZipEntries = async (
 
     try {
       const unzipper = new Unzip((file) => {
-        if (!wanted.has(file.name)) return;
+        if (!wanted.has(file.name) || aggregateExceeded) return;
+        const cap = maxBytesFor(file.name);
         pending += 1;
         const chunks: Uint8Array[] = [];
-        file.ondata = (error, data, final) => {
-          if (error) {
-            fail(error);
-            return;
-          }
-          if (data && data.byteLength > 0) chunks.push(data);
-          if (!final) return;
-          const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-          const out = new Uint8Array(total);
-          let offset = 0;
-          for (const chunk of chunks) {
-            out.set(chunk, offset);
-            offset += chunk.byteLength;
-          }
-          extracted.push({ bytes: out, name: file.name });
+        let size = 0;
+        let skipped = false;
+
+        const skip = () => {
+          if (skipped) return;
+          skipped = true;
+          file.terminate();
           pending -= 1;
           maybeDone();
         };
-        file.start();
+
+        file.ondata = (error, data, final) => {
+          if (skipped) return;
+          if (error) {
+            skip();
+            return;
+          }
+          if (data && data.byteLength > 0) {
+            size += data.byteLength;
+            if (size > cap || inflated + size > aggregateMax) {
+              if (inflated + size > aggregateMax) aggregateExceeded = true;
+              skip();
+              return;
+            }
+            chunks.push(data);
+          }
+          if (!final) return;
+          inflated += size;
+          extracted.push({ bytes: concatChunks(chunks, size), name: file.name });
+          pending -= 1;
+          maybeDone();
+        };
+        try {
+          file.start();
+        } catch {
+          skip();
+        }
       });
       unzipper.register(UnzipPassThrough);
       unzipper.register(UnzipInflate);

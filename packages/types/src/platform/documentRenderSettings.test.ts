@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PLATFORM_DOCUMENT_RENDER_SETTINGS,
   DOCUMENT_RENDER_DEFAULTS,
+  DOCUMENT_RENDER_SETTING_MAXIMA,
   normalizeDocumentRenderSettings,
   platformDocumentRenderSettingsSchema,
 } from './documentRenderSettings';
@@ -71,6 +72,41 @@ describe('normalizeDocumentRenderSettings', () => {
       }),
     ).toEqual({ enabled: true });
   });
+
+  it('drops values above schema maxima', () => {
+    expect(
+      normalizeDocumentRenderSettings({
+        concurrency: DOCUMENT_RENDER_SETTING_MAXIMA.concurrency + 1,
+        enabled: true,
+        maxDocsPerRequest: DOCUMENT_RENDER_SETTING_MAXIMA.maxDocsPerRequest + 1,
+        maxFileBytes: DOCUMENT_RENDER_SETTING_MAXIMA.maxFileBytes + 1,
+        maxImagesDefault: DOCUMENT_RENDER_SETTING_MAXIMA.maxImagesDefault + 1,
+        maxPages: DOCUMENT_RENDER_SETTING_MAXIMA.maxPages + 1,
+        timeoutSec: DOCUMENT_RENDER_SETTING_MAXIMA.timeoutSec + 1,
+      }),
+    ).toEqual({ enabled: true });
+  });
+
+  it('keeps values at schema maxima', () => {
+    expect(
+      normalizeDocumentRenderSettings({
+        concurrency: DOCUMENT_RENDER_SETTING_MAXIMA.concurrency,
+        enabled: true,
+        maxDocsPerRequest: DOCUMENT_RENDER_SETTING_MAXIMA.maxDocsPerRequest,
+        maxFileBytes: DOCUMENT_RENDER_SETTING_MAXIMA.maxFileBytes,
+        maxImagesDefault: DOCUMENT_RENDER_SETTING_MAXIMA.maxImagesDefault,
+        maxPages: DOCUMENT_RENDER_SETTING_MAXIMA.maxPages,
+        timeoutSec: DOCUMENT_RENDER_SETTING_MAXIMA.timeoutSec,
+      }),
+    ).toMatchObject({
+      concurrency: 8,
+      maxDocsPerRequest: 5,
+      maxFileBytes: 256 * 1024 * 1024,
+      maxImagesDefault: 20,
+      maxPages: 1000,
+      timeoutSec: 900,
+    });
+  });
 });
 
 describe('platformDocumentRenderSettingsSchema', () => {
@@ -106,5 +142,26 @@ describe('platformDocumentRenderSettingsSchema', () => {
       extra: true,
     });
     expect(result.success).toBe(false);
+  });
+
+  it('rejects values above schema maxima', () => {
+    expect(
+      platformDocumentRenderSettingsSchema.safeParse({
+        concurrency: 9,
+        enabled: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      platformDocumentRenderSettingsSchema.safeParse({
+        enabled: true,
+        maxPages: 1001,
+      }).success,
+    ).toBe(false);
+    expect(
+      platformDocumentRenderSettingsSchema.safeParse({
+        enabled: true,
+        timeoutSec: 901,
+      }).success,
+    ).toBe(false);
   });
 });

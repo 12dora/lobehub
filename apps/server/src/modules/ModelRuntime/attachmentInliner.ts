@@ -10,7 +10,11 @@ import type {
 } from '@lobechat/model-runtime';
 import { isFileUrlPart } from '@lobechat/model-runtime';
 import type { FileRenderMetadata } from '@lobechat/types';
-import { DOCUMENT_RENDER_DEFAULTS, readFileRenderMetadata } from '@lobechat/types';
+import {
+  DOCUMENT_RENDER_DEFAULTS,
+  documentRenderArtifactPrefix,
+  readFileRenderMetadata,
+} from '@lobechat/types';
 import type { OwnDeploymentOrigins } from '@lobechat/utils';
 import {
   isOwnDeploymentFileUrl,
@@ -28,11 +32,7 @@ import { FileModel } from '@/database/models/file';
 import type { LobeChatDatabase } from '@/database/type';
 import { FileService } from '@/server/services/file';
 
-import {
-  collectAttachedDocumentFiles,
-  collectUserText,
-  selectDocumentFeed,
-} from './documentFeed';
+import { collectAttachedDocumentFiles, collectUserText, selectDocumentFeed } from './documentFeed';
 import { renderPdfPagesToPng } from './pdfPageImages';
 
 const log = debug('lobe-server:attachment-inliner');
@@ -48,7 +48,6 @@ const IMAGE_ONLY_PDF_MAX_LONG_EDGE_PX = 1800;
 const IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE = 6;
 const IMAGE_ONLY_PDF_TILE_GRID = 2 as const;
 const PAYLOAD_MAX_RASTERIZED_PDFS = 2;
-const PAYLOAD_MAX_RASTERIZED_IMAGES = 6;
 const PAGE_TAG_RE = /<\/?page\b[^>]*>/gi;
 
 const filesInfoBlockRe = () => /<files_info>([\s\S]*?)<\/files_info>/g;
@@ -82,20 +81,30 @@ export interface CreateOwnOriginAttachmentInlineHooksInput {
   /**
    * Per-message rasterized PDF image ceiling. Cursor's CLI transport rejects
    * more than 4 images; other providers use 6 (page + four quadrant tiles).
+   * Admin `maxImagesDefault` is applied via `resolveFeedLimits` as
+   * `min(provider cap, settings.maxImagesDefault)`.
    */
   imageMaxCount?: number;
+  maxDocsPerRequest?: number;
   ownOrigins: MaybeLazy<OwnDeploymentOrigins>;
+  /** Admin document-render budgets; resolved lazily on the first payload with candidates. */
+  resolveFeedLimits?: () => Promise<{
+    imageMaxCount: number;
+    maxDocsPerRequest: number;
+  }>;
   /** When false (Cursor), document-feed notices tell the model to name pages. */
   tools?: boolean;
   userId?: string;
 }
 
 export interface InlineOwnOriginAttachmentsOptions {
+  /** Ownership check for tool-result file ids (scoped FileModel lookup). */
+  authorizeFile?: (fileId: string) => Promise<boolean>;
   fileMaxBytes?: number;
   imageMaxBytes?: number;
   imageMaxCount?: number;
   /** Load a render artifact PNG by object key (FileService.getFileByteArray). */
-  loadArtifact?: (key: string) => Promise<Uint8Array | null>;
+  loadArtifact?: (key: string, fileId: string) => Promise<Uint8Array | null>;
   /** files.metadata.render for an attached file id. */
   loadRender?: (fileId: string) => Promise<FileRenderMetadata | undefined>;
   maxDocsPerRequest?: number;
@@ -111,6 +120,14 @@ const isImageUrlPart = (
   part: UserMessageContentPart,
 ): part is Extract<UserMessageContentPart, { type: 'image_url' }> =>
   part.type === 'image_url' && typeof part.image_url?.url === 'string';
+
+const countImageUrlParts = (message: OpenAIChatMessage | undefined): number => {
+  if (!message || !Array.isArray(message.content)) return 0;
+  return message.content.filter(isImageUrlPart).length;
+};
+
+const isArtifactKeyForFile = (key: string, fileId: string): boolean =>
+  Boolean(fileId) && key.startsWith(documentRenderArtifactPrefix(fileId));
 
 const isDataUri = (url: string): boolean => url.startsWith('data:');
 
@@ -363,10 +380,7 @@ const setToolMessageText = (message: OpenAIChatMessage, text: string) => {
   message.content = next.length === 1 ? text : next;
 };
 
-const artifactToDataUri = (
-  bytes: Uint8Array | null,
-  imageMaxBytes: number,
-): string | undefined => {
+const artifactToDataUri = (bytes: Uint8Array | null, imageMaxBytes: number): string | undefined => {
   if (!bytes?.byteLength || bytes.byteLength > imageMaxBytes) return undefined;
   return toDataUri('image/png', bytes);
 };
@@ -551,8 +565,10 @@ export const inlineOwnOriginAttachments = async (
   const resolveByFileId = options?.resolveByFileId;
   const loadRender = options?.loadRender;
   const loadArtifact = options?.loadArtifact;
+  const authorizeFile = options?.authorizeFile;
   const tools = options?.tools ?? true;
-  const maxDocsPerRequest = options?.maxDocsPerRequest ?? DOCUMENT_RENDER_DEFAULTS.maxDocsPerRequest;
+  const maxDocsPerRequest =
+    options?.maxDocsPerRequest ?? DOCUMENT_RENDER_DEFAULTS.maxDocsPerRequest;
 
   for (const message of messages) {
     if (message.role !== 'user') continue;
@@ -583,7 +599,6 @@ export const inlineOwnOriginAttachments = async (
   const rasterMemo = new Map<string, Promise<RasterizedPdfImages>>();
   const fileBytesMemo = new Map<string, Promise<OwnOriginAttachmentBytes | null>>();
   const rasterBudget = {
-    imagesRemaining: PAYLOAD_MAX_RASTERIZED_IMAGES,
     pdfsRemaining: PAYLOAD_MAX_RASTERIZED_PDFS,
   };
 
@@ -596,6 +611,9 @@ export const inlineOwnOriginAttachments = async (
   }
 
   const fedFileIds = new Set<string>();
+  const imageBudget = {
+    remaining: Math.max(0, imageMaxCount - countImageUrlParts(messages[lastUserMessageIndex])),
+  };
 
   const loadFileBytes = async (fileId: string): Promise<OwnOriginAttachmentBytes | null> => {
     if (!resolveByFileId) return null;
@@ -642,9 +660,7 @@ export const inlineOwnOriginAttachments = async (
     allowRender: boolean,
     textKind: Exclude<PdfTextKind, 'rich'>,
   ): Promise<boolean> => {
-    const remaining = allowRender
-      ? Math.min(imageSlots.remaining, rasterBudget.imagesRemaining)
-      : imageSlots.remaining;
+    const remaining = imageSlots.remaining;
     if (remaining <= 0) return false;
 
     let pending = rasterMemo.get(memoKey);
@@ -669,7 +685,6 @@ export const inlineOwnOriginAttachments = async (
     }
     next.push({ text: imageOnlyPdfNotice(name, tilesAttached, textKind), type: 'text' });
     imageSlots.remaining -= used.length;
-    if (allowRender) rasterBudget.imagesRemaining -= used.length;
     return true;
   };
 
@@ -679,8 +694,7 @@ export const inlineOwnOriginAttachments = async (
       if (!message || message.role !== role || !Array.isArray(message.content)) continue;
 
       const allowRender = role === 'user' && index === lastUserMessageIndex;
-      const existingImages = message.content.filter(isImageUrlPart).length;
-      const imageSlots = { remaining: imageMaxCount - existingImages };
+      const imageSlots = allowRender ? imageBudget : { remaining: 0 };
       const next: UserMessageContentPart[] = [];
 
       for (const part of message.content) {
@@ -760,23 +774,22 @@ export const inlineOwnOriginAttachments = async (
       const seen = new Set<string>();
       for (const text of texts) {
         for (const pdf of collectImageOnlyPdfsFromFilesInfo(text)) {
-          if (handled.has(pdf.fileId) || seen.has(pdf.fileId) || fedFileIds.has(pdf.fileId)) continue;
+          if (handled.has(pdf.fileId) || seen.has(pdf.fileId) || fedFileIds.has(pdf.fileId))
+            continue;
           seen.add(pdf.fileId);
           candidates.push(pdf);
         }
       }
       if (candidates.length === 0) return;
 
-      const existingImages = Array.isArray(content) ? content.filter(isImageUrlPart).length : 0;
-      const imageSlots = { remaining: imageMaxCount - existingImages };
-      if (imageSlots.remaining <= 0) return;
+      if (imageBudget.remaining <= 0) return;
 
       const next: UserMessageContentPart[] =
         typeof content === 'string' ? [{ text: content, type: 'text' }] : [...content];
       let appended = false;
 
       for (const pdf of candidates) {
-        if (imageSlots.remaining <= 0 || rasterBudget.imagesRemaining <= 0) break;
+        if (imageBudget.remaining <= 0) break;
         if (!rasterMemo.has(pdf.fileId) && rasterBudget.pdfsRemaining <= 0) break;
 
         const resolved = await loadFileBytes(pdf.fileId);
@@ -788,7 +801,7 @@ export const inlineOwnOriginAttachments = async (
             pdf.fileId,
             pdf.name,
             resolved.bytes,
-            imageSlots,
+            imageBudget,
             true,
             pdf.textKind,
           );
@@ -824,23 +837,21 @@ export const inlineOwnOriginAttachments = async (
     if (files.length === 0) return;
 
     try {
-      const existingImages = Array.isArray(message.content)
-        ? message.content.filter(isImageUrlPart).length
-        : 0;
-      const remaining = Math.max(0, imageMaxCount - existingImages);
       const feed = await selectDocumentFeed({
         files,
-        imageMaxCount: remaining,
+        imageMaxCount: imageBudget.remaining,
         loadRender,
         maxDocsPerRequest,
         tools,
         userText: collectUserText(message),
       });
-      for (const id of feed.fedFileIds) fedFileIds.add(id);
 
       // Page images only ride with the latest user turn; later tool-follow-ups
       // keep fedFileIds so live PDF rasterization is skipped.
-      if (lastUserMessageIndex !== messages.length - 1) return;
+      if (lastUserMessageIndex !== messages.length - 1) {
+        for (const id of feed.fedFileIds) fedFileIds.add(id);
+        return;
+      }
       if (feed.images.length === 0 && feed.notices.length === 0) return;
 
       const next: UserMessageContentPart[] =
@@ -850,16 +861,29 @@ export const inlineOwnOriginAttachments = async (
             ? [...message.content]
             : [];
 
+      const attachedFileIds = new Set<string>();
       for (const image of feed.images) {
-        if (!loadArtifact) break;
+        if (!loadArtifact || imageBudget.remaining <= 0) break;
+        if (!isArtifactKeyForFile(image.key, image.fileId)) {
+          log(
+            'skip document-feed artifact outside prefix fileId=%s key=%s',
+            image.fileId,
+            image.key,
+          );
+          continue;
+        }
         try {
-          const dataUri = artifactToDataUri(await loadArtifact(image.key), imageMaxBytes);
+          const dataUri = artifactToDataUri(
+            await loadArtifact(image.key, image.fileId),
+            imageMaxBytes,
+          );
           if (!dataUri) continue;
           next.push({
             image_url: { detail: image.detail, url: dataUri },
             type: 'image_url',
           });
-          rasterBudget.imagesRemaining = Math.max(0, rasterBudget.imagesRemaining - 1);
+          attachedFileIds.add(image.fileId);
+          imageBudget.remaining -= 1;
         } catch (error) {
           log(
             'document-feed artifact load failed key=%s error=%s',
@@ -868,15 +892,13 @@ export const inlineOwnOriginAttachments = async (
           );
         }
       }
+      for (const id of attachedFileIds) fedFileIds.add(id);
       for (const notice of feed.notices) {
         next.push({ text: notice, type: 'text' });
       }
       message.content = next;
     } catch (error) {
-      log(
-        'document feed failed: %s',
-        error instanceof Error ? error.message : error,
-      );
+      log('document feed failed: %s', error instanceof Error ? error.message : error);
     }
   };
 
@@ -915,15 +937,28 @@ export const inlineOwnOriginAttachments = async (
     const parts: UserMessageContentPart[] = [];
     const attachedPages: number[] = [];
     for (const marker of markers) {
-      if (parts.length >= imageMaxCount) break;
+      if (imageBudget.remaining <= 0) break;
+      if (!isArtifactKeyForFile(marker.key, marker.fileId)) {
+        log(
+          'skip tool page-image artifact outside prefix fileId=%s key=%s',
+          marker.fileId,
+          marker.key,
+        );
+        continue;
+      }
+      if (authorizeFile && !(await authorizeFile(marker.fileId))) continue;
       try {
-        const dataUri = artifactToDataUri(await loadArtifact(marker.key), imageMaxBytes);
+        const dataUri = artifactToDataUri(
+          await loadArtifact(marker.key, marker.fileId),
+          imageMaxBytes,
+        );
         if (!dataUri) continue;
         parts.push({
           image_url: { detail: 'high', url: dataUri },
           type: 'image_url',
         });
         attachedPages.push(marker.page);
+        imageBudget.remaining -= 1;
       } catch (error) {
         log(
           'tool page-image artifact load failed key=%s error=%s',
@@ -940,7 +975,11 @@ export const inlineOwnOriginAttachments = async (
       text: `[Requested page images for "${nameMatch?.[1] ?? markers[0]?.fileId}": pages ${uniquePages.join(', ')}]`,
       type: 'text',
     });
-    messages.splice(lastIndex + 1, 0, { content: parts, role: 'user' });
+    let insertAt = lastIndex + 1;
+    while (insertAt < messages.length && messages[insertAt]?.role === 'tool') {
+      insertAt += 1;
+    }
+    messages.splice(insertAt, 0, { content: parts, role: 'user' });
   };
 
   await applyDocumentFeed();
@@ -954,23 +993,51 @@ const createFileServiceResolvers = (
   input: CreateOwnOriginAttachmentInlineHooksInput,
   origins: OwnDeploymentOrigins,
 ): {
-  loadArtifact: (key: string) => Promise<Uint8Array | null>;
+  authorizeFile: (fileId: string) => Promise<boolean>;
+  loadArtifact: (key: string, fileId: string) => Promise<Uint8Array | null>;
   loadRender: (fileId: string) => Promise<FileRenderMetadata | undefined>;
   resolveByFileId: OwnOriginFileIdResolver;
   resolveByUrl: OwnOriginAttachmentResolver;
 } => {
-  let loaded: Promise<{ db: LobeChatDatabase; fileService: FileService }> | undefined;
+  let loaded:
+    Promise<{ db: LobeChatDatabase; fileModel?: FileModel; fileService: FileService }> | undefined;
   const byFileId = new Map<string, Promise<OwnOriginAttachmentBytes | null>>();
+  const fileLookup = new Map<string, Promise<Awaited<ReturnType<FileModel['findById']>>>>();
+  const authorizedFileIds = new Set<string>();
 
   const load = () => {
     loaded ??= (async () => {
       const db = await resolveMaybeLazy(input.db ?? getServerDB);
       return {
         db,
+        fileModel: input.userId ? new FileModel(db, input.userId) : undefined,
         fileService: new FileService(db, input.userId ?? ''),
       };
     })();
     return loaded;
+  };
+
+  const lookupFile = async (fileId: string) => {
+    const existing = fileLookup.get(fileId);
+    if (existing) return existing;
+
+    const pending = (async () => {
+      const { db, fileModel } = await load();
+      if (fileModel) return fileModel.findById(fileId);
+
+      log('unscoped file lookup id=%s (no userId; internal caller)', fileId);
+      return FileModel.getFileById(db, fileId);
+    })();
+
+    fileLookup.set(fileId, pending);
+    const file = await pending;
+    if (file) authorizedFileIds.add(fileId);
+    return file;
+  };
+
+  const authorizeFile = async (fileId: string): Promise<boolean> => {
+    if (authorizedFileIds.has(fileId)) return true;
+    return Boolean(await lookupFile(fileId));
   };
 
   const resolveByFileId: OwnOriginFileIdResolver = async (fileId, maxBytes) => {
@@ -980,8 +1047,8 @@ const createFileServiceResolvers = (
 
     const pending = (async (): Promise<OwnOriginAttachmentBytes | null> => {
       try {
-        const { db, fileService } = await load();
-        const file = await FileModel.getFileById(db, fileId);
+        const { fileService } = await load();
+        const file = await lookupFile(fileId);
         if (!file) {
           log('file not found id=%s', fileId);
           return null;
@@ -1033,8 +1100,7 @@ const createFileServiceResolvers = (
 
   const loadRender = async (fileId: string): Promise<FileRenderMetadata | undefined> => {
     try {
-      const { db } = await load();
-      const file = await FileModel.getFileById(db, fileId);
+      const file = await lookupFile(fileId);
       return readFileRenderMetadata(file?.metadata);
     } catch (error) {
       log(
@@ -1046,8 +1112,14 @@ const createFileServiceResolvers = (
     }
   };
 
-  const loadArtifact = async (key: string): Promise<Uint8Array | null> => {
+  const loadArtifact = async (key: string, fileId: string): Promise<Uint8Array | null> => {
     try {
+      if (!(await authorizeFile(fileId))) return null;
+      if (!authorizedFileIds.has(fileId) || !isArtifactKeyForFile(key, fileId)) {
+        log('skip artifact outside allow-set or prefix fileId=%s key=%s', fileId, key);
+        return null;
+      }
+
       const { fileService } = await load();
       const bytes = await fileService.getFileByteArray(key);
       if (!bytes?.byteLength) return null;
@@ -1062,7 +1134,7 @@ const createFileServiceResolvers = (
     }
   };
 
-  return { loadArtifact, loadRender, resolveByFileId, resolveByUrl };
+  return { authorizeFile, loadArtifact, loadRender, resolveByFileId, resolveByUrl };
 };
 
 /**
@@ -1074,21 +1146,38 @@ export const createOwnOriginAttachmentInlineHooks = (
   input: CreateOwnOriginAttachmentInlineHooksInput,
 ): ModelRuntimeHooks => {
   const imageMaxBytes = input.imageMaxBytes ?? DEFAULT_IMAGE_INLINE_MAX_BYTES;
-  const imageMaxCount = input.imageMaxCount ?? IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE;
   const tools = input.tools ?? true;
+
+  const resolveLimits = async () => {
+    const fallback = {
+      imageMaxCount: input.imageMaxCount ?? IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE,
+      maxDocsPerRequest: input.maxDocsPerRequest ?? DOCUMENT_RENDER_DEFAULTS.maxDocsPerRequest,
+    };
+    if (!input.resolveFeedLimits) return fallback;
+    try {
+      return await input.resolveFeedLimits();
+    } catch (error) {
+      log('feed limits failed: %s', error instanceof Error ? error.message : error);
+      console.error('document-render feed limits failed', error);
+      return fallback;
+    }
+  };
 
   return {
     beforeChat: async (payload) => {
       try {
         if (!payload.messages?.length || !hasAttachmentCandidates(payload.messages)) return;
 
+        const limits = await resolveLimits();
         const origins = await resolveMaybeLazy(input.ownOrigins);
         const resolvers = createFileServiceResolvers(input, origins);
         await inlineOwnOriginAttachments(payload.messages, resolvers.resolveByUrl, origins, {
+          authorizeFile: resolvers.authorizeFile,
           imageMaxBytes,
-          imageMaxCount,
+          imageMaxCount: limits.imageMaxCount,
           loadArtifact: resolvers.loadArtifact,
           loadRender: resolvers.loadRender,
+          maxDocsPerRequest: limits.maxDocsPerRequest,
           resolveByFileId: resolvers.resolveByFileId,
           tools,
         });

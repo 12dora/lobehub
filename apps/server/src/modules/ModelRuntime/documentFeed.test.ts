@@ -70,8 +70,12 @@ describe('collectAttachedDocumentFiles', () => {
       role: 'user',
     });
     expect(files).toEqual([
-      { fileId: 'info-1', name: 'deck.pptx' },
-      { fileId: 'url-1', name: 'report.pdf' },
+      {
+        fileId: 'info-1',
+        mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        name: 'deck.pptx',
+      },
+      { fileId: 'url-1', mimeType: 'application/pdf', name: 'report.pdf' },
     ]);
   });
 });
@@ -120,9 +124,9 @@ describe('selectDocumentFeed', () => {
       userText: 'summarize this deck',
     });
 
-    expect(result.images.filter((image) => image.kind === 'page').map((image) => image.page)).toEqual(
-      [1, 2],
-    );
+    expect(
+      result.images.filter((image) => image.kind === 'page').map((image) => image.page),
+    ).toEqual([1, 2]);
     expect(result.notices[0]).toContain('name the page numbers in your next message');
     expect(result.notices[0]).not.toContain('viewDocumentPages');
   });
@@ -135,10 +139,20 @@ describe('selectDocumentFeed', () => {
     });
 
     expect(result.images).toEqual([]);
-    expect(result.fedFileIds).toEqual(['f1']);
+    expect(result.fedFileIds).toEqual([]);
     expect(result.notices).toEqual([
       '[Document "deck.pptx" page images are still being prepared; text only this turn]',
     ]);
+  });
+
+  it('does not mark a pending PDF as fed and emits no preparing notice', async () => {
+    const result = await selectDocumentFeed({
+      files: [{ fileId: 'f1', mimeType: 'application/pdf', name: 'scan.pdf' }],
+      loadRender: async () => ({ status: 'pending', tier: 'T2' }),
+      userText: 'hello',
+    });
+
+    expect(result).toEqual({ fedFileIds: [], images: [], notices: [] });
   });
 
   it('skips T0 and skipped renders with no notice', async () => {
@@ -148,9 +162,7 @@ describe('selectDocumentFeed', () => {
         { fileId: 'skip', name: 'huge.pptx' },
       ],
       loadRender: async (fileId) =>
-        fileId === 't0'
-          ? { status: 'skipped', tier: 'T0' }
-          : { status: 'skipped', tier: 'T2' },
+        fileId === 't0' ? { status: 'skipped', tier: 'T0' } : { status: 'skipped', tier: 'T2' },
       userText: 'read these',
     });
 
@@ -169,7 +181,7 @@ describe('selectDocumentFeed', () => {
       userText: 'all of them',
     });
 
-    expect(result.fedFileIds).toEqual(['a', 'b']);
+    expect(result.fedFileIds).toEqual([]);
     expect(result.notices).toHaveLength(2);
   });
 });

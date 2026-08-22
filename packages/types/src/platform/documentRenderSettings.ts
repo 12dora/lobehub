@@ -12,12 +12,12 @@ export const DOCUMENT_RENDER_TRIGGERS = ['onUpload', 'onDemand'] as const;
 export type DocumentRenderTrigger = (typeof DOCUMENT_RENDER_TRIGGERS)[number];
 
 export interface PlatformDocumentRenderSettings {
+  /** Worker concurrency for render jobs (default 2). */
+  concurrency?: number;
   /** Contact-sheet grid columns (default 3). */
   contactSheetCols?: number;
   /** Contact-sheet grid rows (default 4). */
   contactSheetRows?: number;
-  /** Worker concurrency for render jobs (default 2). */
-  concurrency?: number;
   /** When false, env owns every field. When true, stored fields override env. */
   enabled: boolean;
   /** Gotenberg base URL, e.g. `http://document-render:3000`. */
@@ -83,8 +83,18 @@ export const isHttpUrl = (value: string): boolean => {
 const optionalPositiveInt = z.number().int().positive().optional();
 const optionalNonNegativeInt = z.number().int().nonnegative().optional();
 
+/** Hard maxima for stored platform document-render settings. */
+export const DOCUMENT_RENDER_SETTING_MAXIMA = {
+  concurrency: 8,
+  maxDocsPerRequest: 5,
+  maxFileBytes: 256 * 1024 * 1024,
+  maxImagesDefault: 20,
+  maxPages: 1000,
+  timeoutSec: 900,
+} as const;
+
 export const platformDocumentRenderSettingsFields = {
-  concurrency: optionalPositiveInt,
+  concurrency: z.number().int().min(1).max(DOCUMENT_RENDER_SETTING_MAXIMA.concurrency).optional(),
   contactSheetCols: z.number().int().min(1).max(6).optional(),
   contactSheetRows: z.number().int().min(1).max(8).optional(),
   enabled: z.boolean(),
@@ -95,16 +105,26 @@ export const platformDocumentRenderSettingsFields = {
     .refine(isHttpUrl, { message: 'endpoint must be an http(s) URL' })
     .optional(),
   longEdgePx: z.number().int().min(256).max(4096).optional(),
-  maxDocsPerRequest: optionalPositiveInt,
-  maxFileBytes: optionalPositiveInt,
-  maxImagesDefault: optionalPositiveInt,
-  maxPages: optionalPositiveInt,
+  maxDocsPerRequest: z
+    .number()
+    .int()
+    .min(1)
+    .max(DOCUMENT_RENDER_SETTING_MAXIMA.maxDocsPerRequest)
+    .optional(),
+  maxFileBytes: z.number().int().min(1).max(DOCUMENT_RENDER_SETTING_MAXIMA.maxFileBytes).optional(),
+  maxImagesDefault: z
+    .number()
+    .int()
+    .min(1)
+    .max(DOCUMENT_RENDER_SETTING_MAXIMA.maxImagesDefault)
+    .optional(),
+  maxPages: z.number().int().min(1).max(DOCUMENT_RENDER_SETTING_MAXIMA.maxPages).optional(),
   mediaThresholdT2: optionalPositiveInt,
   pptxAlwaysT2: z.boolean().optional(),
   retentionDays: optionalNonNegativeInt,
   thumbEdgePx: z.number().int().min(128).max(1024).optional(),
   tilesForDensePages: z.boolean().optional(),
-  timeoutSec: optionalPositiveInt,
+  timeoutSec: z.number().int().min(1).max(DOCUMENT_RENDER_SETTING_MAXIMA.timeoutSec).optional(),
   trigger: z.enum(DOCUMENT_RENDER_TRIGGERS).optional(),
 };
 
@@ -128,9 +148,7 @@ const asOptionalBoolean = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined;
 
 /** Coerce an unknown jsonb blob into a stored document-render settings document. */
-export const normalizeDocumentRenderSettings = (
-  value: unknown,
-): PlatformDocumentRenderSettings => {
+export const normalizeDocumentRenderSettings = (value: unknown): PlatformDocumentRenderSettings => {
   const raw = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
   const next: PlatformDocumentRenderSettings = { enabled: raw.enabled === true };
 
@@ -139,18 +157,18 @@ export const normalizeDocumentRenderSettings = (
   if (raw.trigger === 'onUpload' || raw.trigger === 'onDemand') next.trigger = raw.trigger;
 
   const ints: Array<[keyof PlatformDocumentRenderSettings, number, number?]> = [
-    ['concurrency', 1],
+    ['concurrency', 1, DOCUMENT_RENDER_SETTING_MAXIMA.concurrency],
     ['contactSheetCols', 1, 6],
     ['contactSheetRows', 1, 8],
     ['longEdgePx', 256, 4096],
-    ['maxDocsPerRequest', 1],
-    ['maxFileBytes', 1],
-    ['maxImagesDefault', 1],
-    ['maxPages', 1],
+    ['maxDocsPerRequest', 1, DOCUMENT_RENDER_SETTING_MAXIMA.maxDocsPerRequest],
+    ['maxFileBytes', 1, DOCUMENT_RENDER_SETTING_MAXIMA.maxFileBytes],
+    ['maxImagesDefault', 1, DOCUMENT_RENDER_SETTING_MAXIMA.maxImagesDefault],
+    ['maxPages', 1, DOCUMENT_RENDER_SETTING_MAXIMA.maxPages],
     ['mediaThresholdT2', 1],
     ['retentionDays', 0],
     ['thumbEdgePx', 128, 1024],
-    ['timeoutSec', 1],
+    ['timeoutSec', 1, DOCUMENT_RENDER_SETTING_MAXIMA.timeoutSec],
   ];
   for (const [key, min, max] of ints) {
     const parsed = asOptionalInt(raw[key], min, max);

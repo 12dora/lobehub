@@ -22,6 +22,7 @@ import {
   type ClientSecretPayload,
   type CloudflareKeyVault,
   type ComfyUIKeyVault,
+  DOCUMENT_RENDER_DEFAULTS,
   type GithubCopilotKeyVault,
   type OAuthDeviceFlowKeyVault,
   type OpenAICompatibleKeyVault,
@@ -29,6 +30,7 @@ import {
   type VertexAIKeyVault,
 } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
+import { DEFAULT_IMAGE_INLINE_MAX_BYTES } from '@lobechat/utils/imageToBase64';
 import { ModelProvider } from 'model-bank';
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
@@ -44,6 +46,7 @@ import {
   bindChatGPTWebBrowserSession,
   buildChatGPTWebBrowserSessionAccountId,
 } from '@/server/enterprise/services/chatgptWeb/browserSession';
+import { getEffectiveDocumentRenderSettings } from '@/server/enterprise/services/documentRenderSettings';
 import { isBootModuleEnabled } from '@/server/enterprise/services/moduleSettings';
 import { bindNetworkProxyEgressIfEnabled } from '@/server/enterprise/services/networkProxy/engine/bindEgress';
 import {
@@ -924,11 +927,35 @@ export const initModelRuntimeWithUserPayload = (
   }
 
   const attachmentCaps = getAttachmentCapabilities(runtimeProvider);
+  let feedLimitsPromise: Promise<{ imageMaxCount: number; maxDocsPerRequest: number }> | undefined;
+  const resolveFeedLimits = async () => {
+    feedLimitsPromise ??= (async () => {
+      try {
+        const settings = await getEffectiveDocumentRenderSettings();
+        return {
+          imageMaxCount: Math.min(attachmentCaps.imageMaxCount, settings.maxImagesDefault),
+          maxDocsPerRequest: settings.maxDocsPerRequest,
+        };
+      } catch (error) {
+        console.error('document-render feed settings failed', error);
+        return {
+          imageMaxCount: attachmentCaps.imageMaxCount,
+          maxDocsPerRequest: DOCUMENT_RENDER_DEFAULTS.maxDocsPerRequest,
+        };
+      }
+    })();
+    return feedLimitsPromise;
+  };
   const attachmentInlineHooks = OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES.has(runtimeProvider)
     ? createOwnOriginAttachmentInlineHooks({
-        imageMaxBytes: attachmentCaps.imageMaxBytes,
-        imageMaxCount: attachmentCaps.imageMaxCount,
+        ...(attachmentCaps.imageMaxBytes !== DEFAULT_IMAGE_INLINE_MAX_BYTES
+          ? { imageMaxBytes: attachmentCaps.imageMaxBytes }
+          : {}),
+        ...(attachmentCaps.imageMaxCount !== DOCUMENT_RENDER_DEFAULTS.maxImagesDefault
+          ? { imageMaxCount: attachmentCaps.imageMaxCount }
+          : {}),
         ownOrigins: resolveOwnDeploymentOrigins,
+        resolveFeedLimits,
         tools: attachmentCaps.tools,
         userId: typeof restParams.userId === 'string' ? restParams.userId : undefined,
       })

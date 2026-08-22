@@ -1,9 +1,20 @@
 import type { FileRenderFigureMeta } from '@/types/files';
 
-import { extractZipEntries, listZipEntryNames } from './zipEntries';
+import {
+  extractZipEntries,
+  listZipEntryNames,
+  ZIP_ENTRY_MEDIA_MAX_BYTES,
+  ZIP_ENTRY_XML_MAX_BYTES,
+  ZIP_INFLATE_AGGREGATE_MAX_BYTES,
+} from './zipEntries';
 
 const MAX_FIGURES = 12;
-const MAX_FIGURE_BYTES = 4 * 1024 * 1024;
+const MAX_FIGURE_BYTES = ZIP_ENTRY_MEDIA_MAX_BYTES;
+
+const isXmlOrRelsEntry = (name: string): boolean => {
+  const lower = name.replaceAll('\\', '/').toLowerCase();
+  return lower.endsWith('.rels') || lower.endsWith('.xml');
+};
 
 const IMAGE_EXT_MIME: Record<string, string> = {
   gif: 'image/gif',
@@ -71,7 +82,11 @@ export const extractOoxmlFigures = async (
     for (const rel of relNames) wanted.add(rel);
   }
 
-  const entries = await extractZipEntries(bytes, wanted);
+  const entries = await extractZipEntries(bytes, wanted, {
+    aggregateMaxBytes: ZIP_INFLATE_AGGREGATE_MAX_BYTES,
+    maxBytesFor: (name) =>
+      isXmlOrRelsEntry(name) ? ZIP_ENTRY_XML_MAX_BYTES : ZIP_ENTRY_MEDIA_MAX_BYTES,
+  });
   const byName = new Map(entries.map((entry) => [normalizeZipName(entry.name), entry]));
 
   if (kind === 'pptx') {

@@ -5,10 +5,12 @@ import { DOCUMENT_RENDER_DEFAULTS } from '@lobechat/types';
 
 const FILE_PROXY_PATH = /^\/f\/([^/]+)$/;
 const FILE_ID_IN_ATTR_RE = /[\w-]{6,128}/;
+const PDF_MIME = 'application/pdf';
 const filesInfoBlockRe = () => /<files_info>([\s\S]*?)<\/files_info>/g;
 
 export interface DocumentFeedFileRef {
   fileId: string;
+  mimeType?: string;
   name: string;
 }
 
@@ -23,7 +25,7 @@ export interface DocumentFeedImage {
 }
 
 export interface DocumentFeedResult {
-  /** File ids whose render was consumed (ready/partial/pending) — skip live rasterization. */
+  /** File ids that contributed at least one stored image — skip live rasterization. */
   fedFileIds: string[];
   images: DocumentFeedImage[];
   notices: string[];
@@ -47,7 +49,10 @@ const extractFileProxyId = (url: string): string | undefined => {
   }
 };
 
-const collectFromFilesInfo = (text: string, add: (fileId: string, name?: string) => void) => {
+const collectFromFilesInfo = (
+  text: string,
+  add: (fileId: string, name?: string, mimeType?: string) => void,
+) => {
   if (!text.includes('<files_info>')) return;
 
   const fileIdRe = new RegExp(`\\bid="(${FILE_ID_IN_ATTR_RE.source})"`);
@@ -58,20 +63,31 @@ const collectFromFilesInfo = (text: string, add: (fileId: string, name?: string)
       const fileId = fileIdRe.exec(attrs)?.[1];
       if (!fileId) continue;
       const name = /\bname="([^"]*)"/.exec(attrs)?.[1];
-      add(fileId, name);
+      const mimeType = /\btype="([^"]*)"/.exec(attrs)?.[1];
+      add(fileId, name, mimeType);
     }
   }
 };
+
+const normalizeMime = (mimeType: string | undefined): string =>
+  mimeType?.split(';')[0]?.trim().toLowerCase() ?? '';
+
+const isPdfFileRef = (file: DocumentFeedFileRef): boolean =>
+  normalizeMime(file.mimeType) === PDF_MIME || /\.pdf$/i.test(file.name);
 
 /** Attached file ids on a user message: `file_url` parts + `<files_info>` `<file id>` tags. */
 export const collectAttachedDocumentFiles = (message: OpenAIChatMessage): DocumentFeedFileRef[] => {
   const found: DocumentFeedFileRef[] = [];
   const seen = new Set<string>();
 
-  const add = (fileId: string, name?: string) => {
+  const add = (fileId: string, name?: string, mimeType?: string) => {
     if (!fileId || seen.has(fileId)) return;
     seen.add(fileId);
-    found.push({ fileId, name: name || fileId });
+    found.push({
+      fileId,
+      name: name || fileId,
+      ...(mimeType ? { mimeType } : {}),
+    });
   };
 
   const content = message.content;
@@ -85,7 +101,7 @@ export const collectAttachedDocumentFiles = (message: OpenAIChatMessage): Docume
     if (part.type === 'text') collectFromFilesInfo(part.text, add);
     if (!isFileUrlPart(part)) continue;
     const fileId = part.file_url.fileId ?? extractFileProxyId(part.file_url.url);
-    if (fileId) add(fileId, part.file_url.name);
+    if (fileId) add(fileId, part.file_url.name, part.file_url.mimeType);
   }
 
   return found;
@@ -113,15 +129,13 @@ const addRange = (pages: Set<number>, start: number, end?: number) => {
 export const parseMentionedPages = (text: string): number[] => {
   const pages = new Set<number>();
 
-  for (const match of text.matchAll(
-    /\b(?:pages?|slides?|pp)\.?\s*(\d+)(?:\s*[-–—~]\s*(\d+))?/gi,
-  )) {
+  for (const match of text.matchAll(/\b(?:pages?|slides?|pp)\.?\s*(\d+)(?:\s*[-–—~]\s*(\d+))?/gi)) {
     addRange(pages, Number(match[1]), match[2] ? Number(match[2]) : undefined);
   }
   for (const match of text.matchAll(/\bp\.\s*(\d+)(?:\s*[-–—~]\s*(\d+))?/gi)) {
     addRange(pages, Number(match[1]), match[2] ? Number(match[2]) : undefined);
   }
-  for (const match of text.matchAll(/第\s*(\d+)\s*(?:[-–—~]\s*(\d+))?\s*页/g)) {
+  for (const match of text.matchAll(/第\s*(\d+)\s*(?:[-–—~]\s*(\d+)\s*)?页/g)) {
     addRange(pages, Number(match[1]), match[2] ? Number(match[2]) : undefined);
   }
   for (const match of text.matchAll(/幻灯片\s*(\d+)(?:\s*[-–—~]\s*(\d+))?/g)) {
@@ -131,10 +145,8 @@ export const parseMentionedPages = (text: string): number[] => {
   return [...pages].sort((a, b) => a - b);
 };
 
-const pageMeta = (
-  render: FileRenderMetadata,
-  page: number,
-): FileRenderPageMeta | undefined => render.pages?.[String(page)];
+const pageMeta = (render: FileRenderMetadata, page: number): FileRenderPageMeta | undefined =>
+  render.pages?.[String(page)];
 
 const pngPages = (render: FileRenderMetadata): number[] => {
   if (render.renderedPages?.length) return [...render.renderedPages].sort((a, b) => a - b);
@@ -218,10 +230,7 @@ const buildReadyNotice = (input: {
   return notice;
 };
 
-const selectFullPages = (
-  render: FileRenderMetadata,
-  mentioned: readonly number[],
-): number[] => {
+const selectFullPages = (render: FileRenderMetadata, mentioned: readonly number[]): number[] => {
   const available = new Set(pngPages(render));
   const mentionedAvailable = mentioned.filter((page) => available.has(page));
   if (mentionedAvailable.length > 0) return mentionedAvailable;
@@ -257,10 +266,10 @@ export const selectDocumentFeed = async (
       continue;
     }
 
-    docsUsed += 1;
-    fedFileIds.push(file.fileId);
-
     if (render.status === 'pending') {
+      // PDFs without artifacts fall through to live rasterization; do not mark fed.
+      if (isPdfFileRef(file)) continue;
+      docsUsed += 1;
       notices.push(
         `[Document "${file.name}" page images are still being prepared; text only this turn]`,
       );
@@ -268,7 +277,9 @@ export const selectDocumentFeed = async (
     }
 
     if (render.status !== 'ready' && render.status !== 'partial') continue;
+    if (remaining <= 0) continue;
 
+    const imagesBefore = images.length;
     const contactSheets = render.contactSheets ?? [];
     const attachedSheets: DocumentFeedImage[] = [];
     for (const sheet of contactSheets) {
@@ -316,7 +327,13 @@ export const selectDocumentFeed = async (
       }
     }
 
-    const pageCount = render.pageCount ?? Math.max(pngPages(render).at(-1) ?? 0, attachedPages.at(-1) ?? 0);
+    if (images.length === imagesBefore) continue;
+
+    docsUsed += 1;
+    fedFileIds.push(file.fileId);
+
+    const pageCount =
+      render.pageCount ?? Math.max(pngPages(render).at(-1) ?? 0, attachedPages.at(-1) ?? 0);
     notices.push(
       buildReadyNotice({
         attachedPages,

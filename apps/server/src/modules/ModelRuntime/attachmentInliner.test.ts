@@ -1,5 +1,6 @@
 // @vitest-environment node
 import type { OpenAIChatMessage } from '@lobechat/model-runtime';
+import type { FileRenderMetadata } from '@lobechat/types';
 import { buildOwnDeploymentOrigins } from '@lobechat/utils';
 import {
   DEFAULT_FILE_INLINE_MAX_BYTES,
@@ -17,6 +18,10 @@ import {
 
 const fileServiceMocks = vi.hoisted(() => ({
   getFileByteArray: vi.fn(),
+}));
+
+const fileModelMocks = vi.hoisted(() => ({
+  findById: vi.fn(),
 }));
 
 const pdfPageImagesMocks = vi.hoisted(() => ({
@@ -41,6 +46,14 @@ vi.mock('./pdfPageImages', () => ({
 vi.mock('@/server/services/file', () => ({
   FileService: class FileService {
     getFileByteArray = fileServiceMocks.getFileByteArray;
+  },
+}));
+
+vi.mock('@/database/models/file', () => ({
+  FileModel: class FileModel {
+    static getFileById = async (_db: unknown, _id: string) => undefined;
+    findById = fileModelMocks.findById;
+    constructor(_db?: unknown, _userId?: string) {}
   },
 }));
 
@@ -1012,6 +1025,8 @@ describe('createOwnOriginAttachmentInlineHooks', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fileServiceMocks.getFileByteArray.mockReset();
+    fileModelMocks.findById.mockReset();
+    fileModelMocks.findById.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -1114,12 +1129,68 @@ describe('createOwnOriginAttachmentInlineHooks', () => {
     expect(params.imageUrls).toEqual([PNG_DATA_URI, S3_URL]);
     expect(fileServiceMocks.getFileByteArray).toHaveBeenCalledTimes(1);
   });
+
+  it('does not attach images for a foreign files_info file id', async () => {
+    fileModelMocks.findById.mockResolvedValue(undefined);
+    const getFileById = vi.spyOn(FileModel, 'getFileById');
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue(rasterPageWithTiles());
+    fileServiceMocks.getFileByteArray.mockResolvedValue(PDF_BYTES);
+
+    const messages: OpenAIChatMessage[] = [
+      {
+        content:
+          '<files_info><file id="foreign-file" name="secret.pdf" type="application/pdf"></file></files_info>',
+        role: 'user',
+      },
+    ];
+    const hooks = createOwnOriginAttachmentInlineHooks({
+      db: {} as never,
+      ownOrigins,
+      userId: 'user-1',
+    });
+
+    await hooks.beforeChat?.({ messages, model: 'test' } as never);
+
+    expect(fileModelMocks.findById).toHaveBeenCalled();
+    expect(getFileById).not.toHaveBeenCalled();
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
+    expect(fileServiceMocks.getFileByteArray).not.toHaveBeenCalled();
+    expect(messages[0].content).toBe(
+      '<files_info><file id="foreign-file" name="secret.pdf" type="application/pdf"></file></files_info>',
+    );
+  });
+
+  it('uses findById when userId is set and skips getFileById', async () => {
+    fileModelMocks.findById.mockResolvedValue({
+      fileType: 'image/png',
+      size: PNG_BYTES.byteLength,
+      url: 'files/cat.png',
+    } as never);
+    const getFileById = vi.spyOn(FileModel, 'getFileById');
+    fileServiceMocks.getFileByteArray.mockResolvedValue(PNG_BYTES);
+
+    const messages = [imageMessage(OWN_FILE_URL)];
+    const hooks = createOwnOriginAttachmentInlineHooks({
+      db: {} as never,
+      ownOrigins,
+      userId: 'user-1',
+    });
+
+    await hooks.beforeChat?.({ messages, model: 'test' } as never);
+
+    expect(fileModelMocks.findById).toHaveBeenCalledWith('file-1');
+    expect(getFileById).not.toHaveBeenCalled();
+    expect(messages[0].content).toEqual([{ image_url: { url: PNG_DATA_URI }, type: 'image_url' }]);
+  });
 });
 
 describe('document render feed + viewDocumentPages markers', () => {
   beforeEach(() => {
     pdfPageImagesMocks.renderPdfPagesToPng.mockReset();
     pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([]);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
   const PAGE_KEY = 'files/render/file-1/pages/1.png';
   const SHEET_KEY = 'files/render/file-1/contact/0.png';
@@ -1132,7 +1203,7 @@ describe('document render feed + viewDocumentPages markers', () => {
       renderedPages: [1],
       status: 'ready' as const,
       tier: 'T2' as const,
-    }) satisfies import('@lobechat/types').FileRenderMetadata;
+    }) satisfies FileRenderMetadata;
 
   it('uses ready render artifacts instead of live PDF rasterization', async () => {
     const resolver = vi.fn(async () => ({ bytes: PDF_BYTES, mimeType: 'application/pdf' }));
@@ -1165,14 +1236,19 @@ describe('document render feed + viewDocumentPages markers', () => {
     });
 
     expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
-    const parts = messages[0].content as Array<{ image_url?: { detail?: string; url: string }; text?: string; type: string }>;
-    expect(parts.some((part) => part.type === 'image_url' && part.image_url?.detail === 'low')).toBe(
-      true,
-    );
+    const parts = messages[0].content as Array<{
+      image_url?: { detail?: string; url: string };
+      text?: string;
+      type: string;
+    }>;
+    expect(
+      parts.some((part) => part.type === 'image_url' && part.image_url?.detail === 'low'),
+    ).toBe(true);
     expect(parts.some((part) => part.text?.includes('Document "scan.pdf"'))).toBe(true);
   });
 
-  it('does not rasterize a pending render and attaches the preparing notice', async () => {
+  it('rasterizes a pending PDF with empty text instead of treating it as fed', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue(rasterPageWithTiles());
     const resolver = vi.fn(async () => ({ bytes: PDF_BYTES, mimeType: 'application/pdf' }));
     const messages: OpenAIChatMessage[] = [
       {
@@ -1196,8 +1272,10 @@ describe('document render feed + viewDocumentPages markers', () => {
       loadRender: async () => ({ status: 'pending', tier: 'T2' }),
     });
 
-    expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
-    expect(JSON.stringify(messages[0].content)).toContain(
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).toHaveBeenCalled();
+    const parts = messages[0].content as Array<{ text?: string; type: string }>;
+    expect(parts.filter((part) => part.type === 'image_url')).toHaveLength(5);
+    expect(JSON.stringify(messages[0].content)).not.toContain(
       'page images are still being prepared; text only this turn',
     );
   });
@@ -1226,12 +1304,182 @@ describe('document render feed + viewDocumentPages markers', () => {
     expect(messages[2].content).toContain('[page images were shown earlier]');
     expect(messages[2].content).not.toContain('<document_page_image');
     expect(messages[4]?.role).toBe('user');
-    const injected = messages[4]?.content as Array<{ image_url?: { url: string }; text?: string; type: string }>;
-    expect(injected.some((part) => part.type === 'image_url' && part.image_url?.url === PAGE_PNG_DATA_URI)).toBe(
-      true,
-    );
-    expect(injected.some((part) => part.text?.includes('Requested page images for "deck.pptx": pages 2'))).toBe(
-      true,
-    );
+    const injected = messages[4]?.content as Array<{
+      image_url?: { url: string };
+      text?: string;
+      type: string;
+    }>;
+    expect(
+      injected.some(
+        (part) => part.type === 'image_url' && part.image_url?.url === PAGE_PNG_DATA_URI,
+      ),
+    ).toBe(true);
+    expect(
+      injected.some((part) =>
+        part.text?.includes('Requested page images for "deck.pptx": pages 2'),
+      ),
+    ).toBe(true);
+  });
+
+  it('inserts the synthetic page-image message after a contiguous tool-result block', async () => {
+    const loadArtifact = vi.fn(async () => PAGE_PNG);
+    const marker =
+      '<document_page_image fileId="file-1" page="2" kind="page" key="files/render/file-1/pages/2.png"/>';
+    const messages: OpenAIChatMessage[] = [
+      { content: 'what is on slide 2?', role: 'user' },
+      { content: 'calling tools', role: 'assistant' },
+      {
+        content: `Requested page images for "deck.pptx": pages 2.\n${marker}`,
+        role: 'tool',
+        tool_call_id: 'pages',
+      },
+      { content: 'web search results', role: 'tool', tool_call_id: 'search' },
+    ];
+
+    await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, { loadArtifact });
+
+    expect(messages[2].role).toBe('tool');
+    expect(messages[3].role).toBe('tool');
+    expect(messages[3].content).toBe('web search results');
+    expect(messages[4]?.role).toBe('user');
+    const injected = messages[4]?.content as Array<{ type: string }>;
+    expect(injected.some((part) => part.type === 'image_url')).toBe(true);
+  });
+
+  it('ignores a viewDocumentPages marker whose key is outside the file prefix', async () => {
+    const loadArtifact = vi.fn(async () => PAGE_PNG);
+    const messages: OpenAIChatMessage[] = [
+      { content: 'what is on slide 2?', role: 'user' },
+      { content: 'calling tool', role: 'assistant' },
+      {
+        content:
+          'Requested page images for "deck.pptx": pages 2.\n<document_page_image fileId="file-1" page="2" kind="page" key="files/render/other-file/pages/2.png"/>',
+        role: 'tool',
+        tool_call_id: 'pages',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, { loadArtifact });
+
+    expect(loadArtifact).not.toHaveBeenCalled();
+    expect(messages).toHaveLength(3);
+    expect(messages[2].content).toContain('<document_page_image');
+  });
+
+  it('shares one image budget across the document feed and scanned-PDF fallback', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue(rasterPageWithTiles());
+    const loadArtifact = vi.fn(async () => PAGE_PNG);
+    const resolver = vi.fn(async () => ({ bytes: PDF_BYTES, mimeType: 'application/pdf' }));
+    const deckRender = {
+      contactSheets: [{ key: 'files/render/deck-1/contact/0.png', pages: [1] }],
+      hasTextLayer: true,
+      pageCount: 1,
+      pages: { '1': { chars: 40, png: 'files/render/deck-1/pages/1.png', visual: true } },
+      renderedPages: [1],
+      status: 'ready' as const,
+      tier: 'T2' as const,
+    };
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            text: '<files_info><file id="deck-1" name="deck.pptx" type="application/vnd.openxmlformats-officedocument.presentationml.presentation"></file></files_info>',
+            type: 'text',
+          },
+          {
+            file_url: {
+              content: '<page pageNumber="1">\n\n</page>',
+              fileId: 'scan-1',
+              mimeType: 'application/pdf',
+              name: 'scan.pdf',
+              url: 'http://localhost:3010/f/scan-1',
+            },
+            type: 'file_url',
+          },
+          { image_url: { url: DATA_URI }, type: 'image_url' },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins, {
+      imageMaxCount: 3,
+      loadArtifact,
+      loadRender: async (fileId) => (fileId === 'deck-1' ? deckRender : undefined),
+    });
+
+    const userParts = messages[0].content as Array<{ type: string }>;
+    expect(userParts.filter((part) => part.type === 'image_url')).toHaveLength(3);
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
+  });
+
+  it('shares one image budget across tool-image injection and scanned-PDF fallback', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue(rasterPageWithTiles());
+    const loadArtifact = vi.fn(async () => PAGE_PNG);
+    const resolver = vi.fn(async () => ({ bytes: PDF_BYTES, mimeType: 'application/pdf' }));
+    const marker =
+      '<document_page_image fileId="file-1" page="2" kind="page" key="files/render/file-1/pages/2.png"/>';
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            file_url: {
+              content: '<page pageNumber="1">\n\n</page>',
+              fileId: 'scan-1',
+              mimeType: 'application/pdf',
+              name: 'scan.pdf',
+              url: 'http://localhost:3010/f/scan-1',
+            },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+      { content: 'calling tool', role: 'assistant' },
+      {
+        content: `Requested page images for "deck.pptx": pages 2.\n${marker}`,
+        role: 'tool',
+        tool_call_id: 'pages',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins, {
+      imageMaxCount: 2,
+      loadArtifact,
+    });
+
+    expect(messages[3]?.role).toBe('user');
+    const injected = messages[3]?.content as Array<{ type: string }>;
+    expect(injected.filter((part) => part.type === 'image_url')).toHaveLength(1);
+    const userParts = messages[0].content as Array<{ type: string }>;
+    expect(userParts.filter((part) => part.type === 'image_url')).toHaveLength(1);
+  });
+
+  it('applies resolveFeedLimits to the shared per-request image budget', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue(rasterPageWithTiles());
+    vi.spyOn(FileModel, 'getFileById').mockResolvedValue({
+      fileType: 'application/pdf',
+      size: PDF_BYTES.byteLength,
+      url: 'files/scan.pdf',
+    } as never);
+    fileServiceMocks.getFileByteArray.mockResolvedValue(PDF_BYTES);
+
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [pdfFileUrlPart('file-1')],
+        role: 'user',
+      },
+    ];
+    const hooks = createOwnOriginAttachmentInlineHooks({
+      db: {} as never,
+      imageMaxCount: 6,
+      ownOrigins,
+      resolveFeedLimits: async () => ({ imageMaxCount: 1, maxDocsPerRequest: 2 }),
+    });
+
+    await hooks.beforeChat?.({ messages, model: 'test' } as never);
+
+    const parts = messages[0].content as Array<{ type: string }>;
+    expect(parts.filter((part) => part.type === 'image_url')).toHaveLength(1);
   });
 });

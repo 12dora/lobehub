@@ -1,5 +1,5 @@
 import debug from 'debug';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
 import { FileModel } from '@/database/models/file';
 import { PlatformJobModel } from '@/database/models/platform/job';
@@ -25,6 +25,7 @@ import {
 } from '../documentRenderSettings';
 import {
   composeContactSheet,
+  deleteDocumentRenderArtifacts,
   uploadImageArtifact,
   uploadPdfArtifact,
   uploadPngArtifact,
@@ -40,6 +41,28 @@ const log = debug('lobe-server:document-render');
 const DENSE_PAGE_CHARS = 1200;
 const MAX_BYTES_PER_IMAGE = 20 * 1024 * 1024;
 const SIDECAR_UNAVAILABLE = 'sidecar unavailable';
+const LEASE_TIMEOUT_GUARD_MS = 15_000;
+
+export class RenderAbortedError extends Error {
+  constructor(message = 'document render aborted') {
+    super(message);
+    this.name = 'RenderAbortedError';
+  }
+}
+
+export class FileDeletedDuringRenderError extends RenderAbortedError {
+  constructor() {
+    super('file deleted during render');
+    this.name = 'FileDeletedDuringRenderError';
+  }
+}
+
+/** Clamp the per-job timeout so work always finishes at least 15s before the lease expires. */
+export const clampJobTimeoutMs = (timeoutSec: number, leaseMs: number): number =>
+  Math.max(0, Math.min(timeoutSec * 1000, leaseMs - LEASE_TIMEOUT_GUARD_MS));
+
+export const heartbeatIntervalMs = (leaseMs: number): number =>
+  Math.max(1, Math.floor(leaseMs / 3));
 
 let tempCleared = false;
 let activeJobs = 0;
@@ -85,45 +108,71 @@ const asMetadataRecord = (metadata: FileItem['metadata']): Record<string, unknow
     ? { ...(metadata as Record<string, unknown>) }
     : {};
 
+interface RenderControl {
+  abortLease: () => void;
+  assertLive: () => void;
+  signal: AbortSignal;
+}
+
 const patchRenderMetadata = async (
   db: LobeChatDatabase,
   file: FileItem,
   patch: Partial<FileRenderMetadata> & Pick<FileRenderMetadata, 'status'>,
 ): Promise<FileRenderMetadata> => {
-  const prev = readFileRenderMetadata(file.metadata) ?? { status: patch.status };
-  const next: FileRenderMetadata = {
-    ...prev,
-    ...patch,
-    updatedAt: new Date().toISOString(),
-  };
-  await db
+  const updatedAt = new Date().toISOString();
+  const sqlPatch = { ...patch, updatedAt };
+  const [row] = await db
     .update(files)
     .set({
-      metadata: { ...asMetadataRecord(file.metadata), render: next },
-      updatedAt: new Date(),
+      metadata: sql`coalesce(${files.metadata}, '{}'::jsonb) || jsonb_build_object('render', coalesce(${files.metadata} -> 'render', '{}'::jsonb) || ${JSON.stringify(sqlPatch)}::jsonb)`,
+      updatedAt: sql`now()`,
     })
-    .where(eq(files.id, file.id));
-  file.metadata = { ...asMetadataRecord(file.metadata), render: next };
+    .where(eq(files.id, file.id))
+    .returning({ id: files.id, metadata: files.metadata });
+
+  if (!row) {
+    await deleteDocumentRenderArtifacts([file.id]);
+    throw new FileDeletedDuringRenderError();
+  }
+
+  const prev = readFileRenderMetadata(file.metadata) ?? { status: patch.status };
+  const next: FileRenderMetadata = readFileRenderMetadata(row.metadata) ?? {
+    ...prev,
+    ...patch,
+    updatedAt,
+  };
+  file.metadata = (row.metadata as FileItem['metadata']) ?? {
+    ...asMetadataRecord(file.metadata),
+    render: next,
+  };
   return next;
 };
 
-const assertNotAborted = (signal: AbortSignal): void => {
-  if (signal.aborted) throw new Error('document render timed out');
+const ensureFileStillExists = async (db: LobeChatDatabase, fileId: string): Promise<void> => {
+  const current = await FileModel.getFileById(db, fileId);
+  if (current) return;
+  await deleteDocumentRenderArtifacts([fileId]);
+  throw new FileDeletedDuringRenderError();
 };
 
 const uploadFigures = async (
   fileId: string,
   kind: DocumentRenderKind,
   bytes: Uint8Array,
+  db: LobeChatDatabase,
+  control: RenderControl,
 ): Promise<FileRenderMetadata['figures']> => {
   if (kind === 'pdf' || kind === 'other') return [];
+  control.assertLive();
   const extracted = await extractOoxmlFigures(bytes, kind);
   const figures = [];
   for (const [index, figure] of extracted.entries()) {
+    control.assertLive();
     const key = documentRenderArtifactKeys.figure(fileId, figure.page, index + 1, figure.ext);
-    await uploadImageArtifact(key, figure.bytes, figure.mimeType);
+    await uploadImageArtifact(key, figure.bytes, figure.mimeType, control.signal);
     figures.push({ key, mimeType: figure.mimeType, page: figure.page });
   }
+  await ensureFileStillExists(db, fileId);
   return figures;
 };
 
@@ -136,13 +185,14 @@ interface RasterizeResult {
 }
 
 const rasterizePdf = async (params: {
+  control: RenderControl;
+  db: LobeChatDatabase;
   fileId: string;
   jobs: PlatformJobModel;
   jobId: string;
   leaseMs: number;
   pdfBytes: Uint8Array;
   settings: EffectiveDocumentRenderSettings;
-  signal: AbortSignal;
   visualPages: Array<{ chars: number; page: number }>;
   workerId: string;
 }): Promise<RasterizeResult> => {
@@ -164,22 +214,22 @@ const rasterizePdf = async (params: {
 
   let progress = 0;
   const onPage = async (image: PdfPageImage) => {
-    assertNotAborted(params.signal);
+    params.control.assertLive();
     if (image.kind === 'page') {
       const key = documentRenderArtifactKeys.page(fileId, image.page);
-      await uploadPngArtifact(key, image.png);
+      await uploadPngArtifact(key, image.png, params.control.signal);
       const meta = pages[String(image.page)] ?? { chars: 0, visual: true };
       meta.png = key;
       if (image.thumb && image.thumb.byteLength > 0) {
         const thumbKey = documentRenderArtifactKeys.thumb(fileId, image.page);
-        await uploadPngArtifact(thumbKey, image.thumb);
+        await uploadPngArtifact(thumbKey, image.thumb, params.control.signal);
         meta.thumb = thumbKey;
         thumbs.push({ page: image.page, png: image.thumb });
       }
       pages[String(image.page)] = meta;
       renderedPages.push(image.page);
       progress += 1;
-      await params.jobs.checkpoint({
+      const checkpoint = await params.jobs.checkpoint({
         cursor: { page: image.page },
         jobId: params.jobId,
         leaseMs: params.leaseMs,
@@ -187,6 +237,11 @@ const rasterizePdf = async (params: {
         progressTotal: capped.length,
         workerId: params.workerId,
       });
+      if (!checkpoint) {
+        params.control.abortLease();
+        throw new RenderAbortedError('lease lost or cancelled');
+      }
+      await ensureFileStillExists(params.db, fileId);
       return;
     }
     if (image.kind === 'tile' && image.tile) {
@@ -196,7 +251,7 @@ const rasterizePdf = async (params: {
         image.tile.row,
         image.tile.col,
       );
-      await uploadPngArtifact(key, image.png);
+      await uploadPngArtifact(key, image.png, params.control.signal);
       const meta = pages[String(image.page)] ?? { chars: 0, visual: true };
       meta.tiles = [...(meta.tiles ?? []), key];
       pages[String(image.page)] = meta;
@@ -222,6 +277,7 @@ const rasterizePdf = async (params: {
   const contactSheets: NonNullable<FileRenderMetadata['contactSheets']> = [];
   const sheetSize = settings.contactSheetCols * settings.contactSheetRows;
   for (let index = 0; index < thumbs.length; index += sheetSize) {
+    params.control.assertLive();
     const chunk = thumbs.slice(index, index + sheetSize);
     const sheet = await composeContactSheet({
       cols: settings.contactSheetCols,
@@ -230,23 +286,31 @@ const rasterizePdf = async (params: {
     });
     if (!sheet) continue;
     const key = documentRenderArtifactKeys.contactSheet(fileId, contactSheets.length);
-    await uploadPngArtifact(key, sheet.png);
+    await uploadPngArtifact(key, sheet.png, params.control.signal);
     contactSheets.push({ key, pages: sheet.pages });
   }
+  await ensureFileStillExists(params.db, fileId);
 
   return { contactSheets, failedPages, pages, renderedPages, truncated };
 };
 
+interface RenderOutcome {
+  durationMs: number;
+  pages: number | null;
+  retry?: boolean;
+  status: DocumentRenderStatus;
+}
+
 const runRender = async (params: {
+  control: RenderControl;
   db: LobeChatDatabase;
   file: FileItem;
   jobId: string;
   jobs: PlatformJobModel;
   leaseMs: number;
   settings: EffectiveDocumentRenderSettings;
-  signal: AbortSignal;
   workerId: string;
-}): Promise<{ durationMs: number; pages: number | null; status: DocumentRenderStatus }> => {
+}): Promise<RenderOutcome> => {
   const started = Date.now();
   const { db, file, settings } = params;
   const kind = resolveDocumentKind(file.name, file.fileType);
@@ -264,14 +328,16 @@ const runRender = async (params: {
     return { durationMs: Date.now() - started, pages: null, status: 'skipped' };
   }
 
+  params.control.assertLive();
   const s3 = await createFileS3();
+  params.control.assertLive();
   const bytes = await s3.getFileByteArray(file.url);
-  assertNotAborted(params.signal);
-
+  params.control.assertLive();
   const classified = await classifyDocument(
     { bytes, fileType: file.fileType, name: file.name },
     { mediaThresholdT2: settings.mediaThresholdT2, pptxAlwaysT2: settings.pptxAlwaysT2 },
   );
+  params.control.assertLive();
   await patchRenderMetadata(db, file, {
     jobId: params.jobId,
     status: 'pending',
@@ -294,7 +360,7 @@ const runRender = async (params: {
   }
 
   if (classified.tier === 'T1') {
-    const figures = await uploadFigures(file.id, classified.kind, bytes);
+    const figures = await uploadFigures(file.id, classified.kind, bytes, db, params.control);
     await patchRenderMetadata(db, file, {
       engine: 'ooxml',
       figures,
@@ -311,6 +377,7 @@ const runRender = async (params: {
 const runTier2 = async (params: {
   bytes: Uint8Array;
   classified: ClassifyDocumentResult;
+  control: RenderControl;
   db: LobeChatDatabase;
   file: FileItem;
   jobId: string;
@@ -318,10 +385,9 @@ const runTier2 = async (params: {
   kind: DocumentRenderKind;
   leaseMs: number;
   settings: EffectiveDocumentRenderSettings;
-  signal: AbortSignal;
   started: number;
   workerId: string;
-}): Promise<{ durationMs: number; pages: number | null; status: DocumentRenderStatus }> => {
+}): Promise<RenderOutcome> => {
   const { bytes, classified, db, file, kind, settings } = params;
   const moduleOn = await isModuleEnabled('documentRender');
   const sidecarOk = moduleOn && isDocumentRenderConfigured(settings);
@@ -331,7 +397,7 @@ const runTier2 = async (params: {
 
   if (kind !== 'pdf') {
     if (!sidecarOk || !settings.endpoint) {
-      const figures = await uploadFigures(file.id, kind, bytes);
+      const figures = await uploadFigures(file.id, kind, bytes, db, params.control);
       await patchRenderMetadata(db, file, {
         engine: 'ooxml',
         error: SIDECAR_UNAVAILABLE,
@@ -343,16 +409,20 @@ const runTier2 = async (params: {
       return {
         durationMs: Date.now() - params.started,
         pages: figures?.length ?? 0,
+        retry: true,
         status: 'partial',
       };
     }
-    assertNotAborted(params.signal);
+    params.control.assertLive();
     pdfBytes = await convertToPdf(settings.endpoint, {
       bytes,
       filename: file.name,
-      timeoutMs: settings.timeoutSec * 1000,
+      signal: params.control.signal,
+      timeoutMs: clampJobTimeoutMs(settings.timeoutSec, params.leaseMs),
     });
-    await uploadPdfArtifact(file.id, pdfBytes);
+    params.control.assertLive();
+    await uploadPdfArtifact(file.id, pdfBytes, params.control.signal);
+    await ensureFileStillExists(db, file.id);
     engine = 'gotenberg';
   }
 
@@ -363,6 +433,7 @@ const runTier2 = async (params: {
           { bytes: pdfBytes, fileType: 'application/pdf', name: `${file.name}.pdf` },
           settings,
         );
+  params.control.assertLive();
   // Slides carry layout even when text-only, so a deck renders every page;
   // docx/xlsx/pdf render only pages that actually have visual content.
   const everyPageVisual = kind === 'pptx';
@@ -379,13 +450,14 @@ const runTier2 = async (params: {
   }
 
   const raster = await rasterizePdf({
+    control: params.control,
+    db,
     fileId: file.id,
     jobId: params.jobId,
     jobs: params.jobs,
     leaseMs: params.leaseMs,
     pdfBytes,
     settings,
-    signal: params.signal,
     visualPages:
       visualPages.length > 0
         ? visualPages
@@ -398,6 +470,7 @@ const runTier2 = async (params: {
   const partial = raster.failedPages > 0 || raster.truncated;
   const status: DocumentRenderStatus = partial ? 'partial' : 'ready';
 
+  await ensureFileStillExists(db, file.id);
   await patchRenderMetadata(db, file, {
     contactSheets: raster.contactSheets,
     engine,
@@ -438,38 +511,68 @@ const processClaimedDocumentRenderJobInner = async (
   const jobs = new PlatformJobModel(ctx.db);
   const fileId = typeof ctx.job.input?.fileId === 'string' ? ctx.job.input.fileId : '';
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), settings.timeoutSec * 1000);
+  let leaseLost = false;
+  const control: RenderControl = {
+    abortLease: () => {
+      leaseLost = true;
+      controller.abort();
+    },
+    assertLive: () => {
+      if (!controller.signal.aborted) return;
+      if (leaseLost) throw new RenderAbortedError('lease lost or cancelled');
+      throw new Error('document render timed out');
+    },
+    signal: controller.signal,
+  };
+  const timeoutMs = clampJobTimeoutMs(settings.timeoutSec, ctx.spec.leaseMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const stopHeartbeat = (() => {
+    const intervalMs = heartbeatIntervalMs(ctx.spec.leaseMs);
+    const heartbeatTimer = setInterval(() => {
+      if (controller.signal.aborted) return;
+      void jobs.heartbeat(ctx.job.id, ctx.workerId, ctx.spec.leaseMs).then((row) => {
+        if (!row) control.abortLease();
+      });
+    }, intervalMs);
+    return () => clearInterval(heartbeatTimer);
+  })();
+
+  const logLostOwnership = (action: 'complete' | 'fail') => {
+    log('lost ownership on %s jobId=%s', action, ctx.job.id);
+  };
 
   try {
     if (!fileId) {
-      await jobs.fail({
+      const failed = await jobs.fail({
         error: { message: 'missing fileId' },
         jobId: ctx.job.id,
         terminal: true,
         workerId: ctx.workerId,
       });
+      if (!failed) logLostOwnership('fail');
       return;
     }
 
     const file = await FileModel.getFileById(ctx.db, fileId);
     if (!file) {
-      await jobs.complete({
+      const completed = await jobs.complete({
         jobId: ctx.job.id,
         resultSummary: { status: 'skipped' },
         workerId: ctx.workerId,
       });
+      if (!completed) logLostOwnership('complete');
       return;
     }
 
     try {
       const result = await runRender({
+        control,
         db: ctx.db,
         file,
         jobId: ctx.job.id,
         jobs,
         leaseMs: ctx.spec.leaseMs,
         settings,
-        signal: controller.signal,
         workerId: ctx.workerId,
       });
       await patchRenderMetadata(ctx.db, file, {
@@ -477,7 +580,16 @@ const processClaimedDocumentRenderJobInner = async (
         status: (readFileRenderMetadata(file.metadata)?.status ??
           result.status) as DocumentRenderStatus,
       });
-      await jobs.complete({
+      if (result.retry) {
+        const failed = await jobs.fail({
+          error: { message: SIDECAR_UNAVAILABLE, retryable: true },
+          jobId: ctx.job.id,
+          workerId: ctx.workerId,
+        });
+        if (!failed) logLostOwnership('fail');
+        return;
+      }
+      const completed = await jobs.complete({
         jobId: ctx.job.id,
         resultSummary: {
           durationMs: result.durationMs,
@@ -488,19 +600,43 @@ const processClaimedDocumentRenderJobInner = async (
         },
         workerId: ctx.workerId,
       });
+      if (!completed) logLostOwnership('complete');
     } catch (error) {
+      if (error instanceof FileDeletedDuringRenderError) {
+        log('document render stopped, file deleted fileId=%s', fileId);
+        const completed = await jobs.complete({
+          jobId: ctx.job.id,
+          resultSummary: { status: 'skipped' },
+          workerId: ctx.workerId,
+        });
+        if (!completed) logLostOwnership('complete');
+        return;
+      }
+      if (error instanceof RenderAbortedError || leaseLost) {
+        log(
+          'document render aborted fileId=%s: %s',
+          fileId,
+          error instanceof Error ? error.message : error,
+        );
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       log('document render failed fileId=%s: %s', fileId, message);
       console.error('document render failed', error);
       await patchRenderMetadata(ctx.db, file, { error: message, status: 'failed' });
-      await jobs.fail({
+      const failed = await jobs.fail({
         error: { message },
         jobId: ctx.job.id,
         workerId: ctx.workerId,
       });
+      if (!failed) {
+        logLostOwnership('fail');
+        return;
+      }
       throw error;
     }
   } finally {
+    stopHeartbeat();
     clearTimeout(timer);
   }
 };

@@ -114,6 +114,28 @@ describe('enqueueDocumentRenderJob', () => {
     ).resolves.toEqual({ created: true, jobId: 'job-1' });
     expect(enqueue).toHaveBeenCalled();
   });
+
+  it('requeues an existing succeeded job by idempotency key when force and status is partial', async () => {
+    enqueue.mockResolvedValue({ created: false, job: { id: 'job-1', status: 'succeeded' } });
+    vi.mocked(FileModel.getFileById).mockResolvedValue({
+      fileType: 'application/pdf',
+      id: 'file-9',
+      metadata: { render: { error: 'sidecar unavailable', status: 'partial' } },
+      name: 'doc.pdf',
+    } as never);
+    const returning = vi.fn().mockResolvedValue([{ id: 'job-1' }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    const update = vi.fn().mockReturnValue({ set });
+    const result = await enqueueDocumentRenderJob({ update } as never, {
+      fileId: 'file-9',
+      force: true,
+    });
+    expect(result).toEqual({ created: false, jobId: 'job-1' });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ attempt: 0, status: 'pending' }));
+    expect(update).toHaveBeenCalled();
+  });
 });
 
 describe('retryDocumentRenderJob / cancelDocumentRenderJob', () => {

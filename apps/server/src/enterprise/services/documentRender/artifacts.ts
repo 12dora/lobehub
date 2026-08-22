@@ -7,6 +7,13 @@ const LABEL_PAD_Y = 3;
 const LABEL_FONT = '12px sans-serif';
 const S3_DELETE_CHUNK = 1000;
 
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (!signal?.aborted) return;
+  const error = new Error('The operation was aborted.');
+  error.name = 'AbortError';
+  throw error;
+};
+
 export interface ContactSheetThumb {
   page: number;
   png: Uint8Array;
@@ -79,8 +86,14 @@ export const composeContactSheet = async (params: {
   };
 };
 
-export const uploadPngArtifact = async (key: string, png: Uint8Array | Buffer): Promise<void> => {
+export const uploadPngArtifact = async (
+  key: string,
+  png: Uint8Array | Buffer,
+  signal?: AbortSignal,
+): Promise<void> => {
+  throwIfAborted(signal);
   const s3 = await createFileS3();
+  throwIfAborted(signal);
   await s3.uploadBuffer(key, Buffer.from(png), 'image/png');
 };
 
@@ -88,14 +101,23 @@ export const uploadImageArtifact = async (
   key: string,
   bytes: Uint8Array,
   contentType: string,
+  signal?: AbortSignal,
 ): Promise<void> => {
+  throwIfAborted(signal);
   const s3 = await createFileS3();
+  throwIfAborted(signal);
   await s3.uploadBuffer(key, Buffer.from(bytes), contentType);
 };
 
-export const uploadPdfArtifact = async (fileId: string, pdf: Uint8Array): Promise<string> => {
+export const uploadPdfArtifact = async (
+  fileId: string,
+  pdf: Uint8Array,
+  signal?: AbortSignal,
+): Promise<string> => {
+  throwIfAborted(signal);
   const key = documentRenderArtifactKeys.pdf(fileId);
   const s3 = await createFileS3();
+  throwIfAborted(signal);
   await s3.uploadBuffer(key, Buffer.from(pdf), 'application/pdf');
   return key;
 };

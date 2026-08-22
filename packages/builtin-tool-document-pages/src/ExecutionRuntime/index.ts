@@ -3,9 +3,9 @@ import { readFileRenderMetadata } from '@lobechat/types';
 
 import {
   type DocumentPageImageMarker,
+  formatDocumentPageImageMarker,
   type ViewDocumentPagesParams,
   type ViewDocumentPagesState,
-  formatDocumentPageImageMarker,
 } from '../types';
 
 export interface DocumentPagesFileRecord {
@@ -16,7 +16,7 @@ export interface DocumentPagesFileRecord {
 }
 
 export interface DocumentPagesRuntimeServices {
-  enqueueRender?: (fileId: string) => Promise<unknown>;
+  enqueueRender?: (fileId: string, options?: { force?: boolean }) => Promise<unknown>;
   findAccessibleFile: (fileId: string) => Promise<DocumentPagesFileRecord | undefined>;
 }
 
@@ -121,6 +121,24 @@ export class DocumentPagesExecutionRuntime {
       }
 
       if (markers.length === 0) {
+        if (render.status === 'partial' && this.services.enqueueRender) {
+          try {
+            await this.services.enqueueRender(fileId, { force: true });
+          } catch {
+            // enqueue is best-effort; the caller still retries later
+          }
+          return ok(
+            `Page images for pages ${missing.join(', ') || pages.join(', ')} of "${file.name}" are being prepared, try again later.`,
+            {
+              fileId,
+              fileName: file.name,
+              markerCount: 0,
+              pages,
+              status: 'processing',
+              zoom,
+            },
+          );
+        }
         return ok(
           missing.length > 0
             ? `No rendered images for pages ${missing.join(', ')} of "${file.name}".`
@@ -129,7 +147,9 @@ export class DocumentPagesExecutionRuntime {
         );
       }
 
-      const attachedPages = [...new Set(markers.map((marker) => marker.page))].sort((a, b) => a - b);
+      const attachedPages = [...new Set(markers.map((marker) => marker.page))].sort(
+        (a, b) => a - b,
+      );
       const lines = [
         `Requested page images for "${file.name}": pages ${attachedPages.join(', ')}.`,
         ...markers.map((marker) => formatDocumentPageImageMarker(marker)),

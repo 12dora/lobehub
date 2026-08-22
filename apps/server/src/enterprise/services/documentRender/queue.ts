@@ -8,7 +8,11 @@ import { FileModel } from '@/database/models/file';
 import { PlatformJobModel } from '@/database/models/platform/job';
 import { platformJobs } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
-import { DOCUMENT_RENDER_JOB_TYPE, documentRenderArtifactPrefix } from '@/types/files';
+import {
+  DOCUMENT_RENDER_JOB_TYPE,
+  documentRenderArtifactPrefix,
+  readFileRenderMetadata,
+} from '@/types/files';
 
 import { isPersistentEnterpriseWorkerRuntime } from '../../jobs/persistentWorkerRuntime';
 import { ensurePlatformJobsDispatcherStarted } from '../../jobs/platformJobsDispatcher';
@@ -53,13 +57,50 @@ export const enqueueDocumentRenderJob = async (
   if (settings.trigger === 'onDemand' && !params.force) return null;
 
   const jobs = new PlatformJobModel(db);
+  const idempotencyKey = `document-render:${params.fileId}`;
   const { created, job } = await jobs.enqueue({
-    idempotencyKey: `document-render:${params.fileId}`,
+    idempotencyKey,
     input: { ext: extOf(file.name), fileId: params.fileId },
     maxAttempts: JOB_MAX_ATTEMPTS,
     requestedBy: params.requestedBy ?? null,
     type: DOCUMENT_RENDER_JOB_TYPE,
   });
+
+  if (params.force && !created) {
+    const render = readFileRenderMetadata(file.metadata);
+    const skippedBySize =
+      render?.status === 'skipped' &&
+      typeof render.error === 'string' &&
+      render.error.includes('maxFileBytes');
+    const renderRetryable =
+      render?.status === 'partial' || render?.status === 'failed' || skippedBySize;
+    const jobRetryable =
+      job.status === 'succeeded' || job.status === 'dead' || job.status === 'failed';
+    if (jobRetryable && renderRetryable) {
+      const [updated] = await db
+        .update(platformJobs)
+        .set({
+          attempt: 0,
+          finishedAt: null,
+          lastError: null,
+          leaseOwner: null,
+          leaseUntil: null,
+          startedAt: null,
+          status: 'pending',
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(platformJobs.type, DOCUMENT_RENDER_JOB_TYPE),
+            eq(platformJobs.idempotencyKey, idempotencyKey),
+            inArray(platformJobs.status, ['succeeded', 'dead', 'failed']),
+          ),
+        )
+        .returning({ id: platformJobs.id });
+      return { created: false, jobId: updated?.id ?? job.id };
+    }
+  }
+
   return { created, jobId: job.id };
 };
 
@@ -211,7 +252,13 @@ export const retryDocumentRenderJob = async (
       and(
         eq(platformJobs.id, jobId),
         eq(platformJobs.type, DOCUMENT_RENDER_JOB_TYPE),
-        inArray(platformJobs.status, ['failed', 'dead']),
+        or(
+          inArray(platformJobs.status, ['failed', 'dead']),
+          and(
+            eq(platformJobs.status, 'succeeded'),
+            sql`${platformJobs.resultSummary}->>'status' = 'partial'`,
+          ),
+        ),
       ),
     )
     .returning({ id: platformJobs.id });
