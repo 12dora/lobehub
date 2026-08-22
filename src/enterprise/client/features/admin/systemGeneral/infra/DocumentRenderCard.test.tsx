@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import type {
 import { DocumentRenderCard } from './DocumentRenderCard';
 
 const statusMock = vi.hoisted(() => ({ data: undefined as unknown, mutate: vi.fn() }));
+const uiMocks = vi.hoisted(() => ({ confirmModal: vi.fn() }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -46,7 +47,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {children}
     </button>
   ),
-  confirmModal: vi.fn(),
+  confirmModal: (props: unknown) => uiMocks.confirmModal(props),
   Input: (props: Record<string, unknown>) => <input {...props} />,
   Segmented: ({
     onChange,
@@ -165,6 +166,26 @@ const status = (
   overrides: Partial<AdminSystemDocumentRenderStatus> = {},
 ): AdminSystemDocumentRenderStatus => ({
   configured: true,
+  feed: {
+    docsFed: 7,
+    imagesFed: 41,
+    pendingFallbacks: 1,
+    pendingWaits: 3,
+    requestsWithImages: 5,
+    since: '2026-08-22T00:00:00.000Z',
+    toolPageViews: 2,
+  },
+  maintenance: {
+    artifactBytes: 5 * 1024 * 1024,
+    artifactObjects: 120,
+    expiredFiles: 4,
+    jobStatus: 'succeeded',
+    lastError: null,
+    lastRunAt: '2026-08-22T00:00:00.000Z',
+    orphanBytes: 2048,
+    orphanObjects: 3,
+    tempDirBytes: 1024,
+  },
   moduleEnabled: true,
   queue: {
     avgMs: 1200,
@@ -202,6 +223,7 @@ const service = (
   getDocumentRenderSettings: vi.fn(),
   getDocumentRenderStatus: vi.fn(),
   retryDocumentRenderJob: vi.fn().mockResolvedValue({ ok: true }),
+  runDocumentRenderGc: vi.fn().mockResolvedValue({ jobId: 'gc-1', ok: true }),
   testDocumentRender: vi.fn().mockResolvedValue({ checkedAt: new Date(), latencyMs: 1, ok: true }),
   updateDocumentRenderSettings: vi.fn(),
   ...overrides,
@@ -304,5 +326,63 @@ describe('DocumentRenderCard', () => {
     expect(screen.queryByText('systemGeneral.documentRender.actions.retry')).toBeNull();
     expect(screen.queryByText('systemGeneral.edit.switchToDb')).toBeNull();
     expect(screen.queryByText('test-connection')).toBeNull();
+    expect(screen.queryByText('systemGeneral.documentRender.maintenance.run')).toBeNull();
+  });
+
+  it('summarises the last sweep and the per-process feed counters', () => {
+    statusMock.data = status();
+    renderCard(<DocumentRenderCard canOperate moduleEnabled service={service()} view={view()} />);
+
+    expect(screen.getByText('systemGeneral.documentRender.maintenance.title')).toBeTruthy();
+    // objects · human-readable bytes, on one line.
+    expect(screen.getByText('120 · 5.0 MB')).toBeTruthy();
+    expect(screen.getByText('3 · 2.0 KB')).toBeTruthy();
+    expect(screen.getByText('1.0 KB')).toBeTruthy();
+    expect(screen.getByText('system.values.status.succeeded')).toBeTruthy();
+
+    expect(screen.getByText('systemGeneral.documentRender.feed.title')).toBeTruthy();
+    expect(screen.getByText(/systemGeneral.documentRender.feed.since/)).toBeTruthy();
+    expect(screen.getByText('41')).toBeTruthy();
+  });
+
+  it('renders an em dash for every reading the sweep has never produced', () => {
+    statusMock.data = status({
+      maintenance: {
+        artifactBytes: null,
+        artifactObjects: null,
+        expiredFiles: null,
+        jobStatus: null,
+        lastError: null,
+        lastRunAt: null,
+        orphanBytes: null,
+        orphanObjects: null,
+        tempDirBytes: null,
+      },
+    });
+    renderCard(<DocumentRenderCard canOperate moduleEnabled service={service()} view={view()} />);
+
+    expect(screen.getByText('systemGeneral.documentRender.maintenance.never')).toBeTruthy();
+    expect(screen.getAllByText('— · —').length).toBe(2);
+  });
+
+  it('runs a cleanup sweep behind a confirmation', async () => {
+    statusMock.data = status();
+    const runDocumentRenderGc = vi.fn().mockResolvedValue({ jobId: 'gc-1', ok: true });
+    uiMocks.confirmModal.mockImplementation(
+      async (props: { onOk?: () => Promise<void> | void }) => {
+        await props.onOk?.();
+      },
+    );
+    renderCard(
+      <DocumentRenderCard
+        canOperate
+        moduleEnabled
+        service={service({ runDocumentRenderGc })}
+        view={view()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('systemGeneral.documentRender.maintenance.run'));
+    await waitFor(() => expect(runDocumentRenderGc).toHaveBeenCalledWith({}));
   });
 });

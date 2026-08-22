@@ -20,6 +20,8 @@ import type {
   adminSystemGetSandboxSettingsOutputSchema,
   adminSystemGetStatusOutputSchema,
   AdminSystemRetryJobInput,
+  adminSystemRunDocumentRenderGcInputSchema,
+  AdminSystemRunDocumentRenderGcOutput,
   AdminSystemTestDependencyInput,
   adminSystemTestDependencyOutputSchema,
   AdminSystemUpdateDocumentRenderSettingsInput,
@@ -89,6 +91,9 @@ export type AdminSystemDocumentRenderJob = AdminSystemDocumentRenderQueue['recen
 export type AdminSystemDocumentRenderJobActionInput = z.infer<
   typeof adminSystemCancelDocumentRenderJobInputSchema
 >;
+export type AdminSystemRunDocumentRenderGcInput = z.infer<
+  typeof adminSystemRunDocumentRenderGcInputSchema
+>;
 
 export interface AdminDocumentRenderSettingsService {
   cancelDocumentRenderJob: (
@@ -99,6 +104,10 @@ export interface AdminDocumentRenderSettingsService {
   retryDocumentRenderJob: (
     input: AdminSystemDocumentRenderJobActionInput,
   ) => Promise<{ ok: boolean }>;
+  /** Enqueues one artifact sweep; its summary shows up in `maintenance` once the job finishes. */
+  runDocumentRenderGc: (
+    input: AdminSystemRunDocumentRenderGcInput,
+  ) => Promise<AdminSystemRunDocumentRenderGcOutput>;
   /** `testDependency({ dependency: 'documentRender' })` — probes Gotenberg `/health`. */
   testDocumentRender: () => Promise<AdminSystemTestDependencyResult>;
   updateDocumentRenderSettings: (
@@ -138,6 +147,9 @@ class AdminSystemServiceImpl
 
   retryDocumentRenderJob = (input: AdminSystemDocumentRenderJobActionInput) =>
     lambdaClient.admin.system.retryDocumentRenderJob.mutate(input);
+
+  runDocumentRenderGc = (input: AdminSystemRunDocumentRenderGcInput) =>
+    lambdaClient.admin.system.runDocumentRenderGc.mutate(input);
 
   /** One shared dependency probe rather than a sixth procedure to register. */
   testDocumentRender = () =>

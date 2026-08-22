@@ -9,6 +9,14 @@ export const handleClaimedDocumentRenderJob = async (
   await processClaimedDocumentRenderJob(ctx);
 };
 
+/** Handle one already-claimed `platform.document.render.gc.v1` job. */
+export const handleClaimedDocumentRenderGcJob = async (
+  ctx: PlatformJobDispatchHandlerContext,
+): Promise<void> => {
+  const { processClaimedDocumentRenderGcJob } = await import('../services/documentRender/gc');
+  await processClaimedDocumentRenderGcJob(ctx);
+};
+
 /**
  * Registers this type with the merged `platform_jobs` dispatcher and clears
  * leftover `aihub-render/` temp dirs from a previous crash.

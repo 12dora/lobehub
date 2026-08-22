@@ -44,8 +44,20 @@ vi.mock('@/server/services/sandbox/factory', () => ({
 vi.mock('../../services/documentRender', () => ({
   cancelDocumentRenderJob: vi.fn(async () => ({ ok: true })),
   deleteDocumentRenderArtifacts: vi.fn(async () => undefined),
+  enqueueDocumentRenderGcJob: vi.fn(async () => ({ created: true, jobId: 'pjob_gc1' })),
   enqueueDocumentRenderJob: vi.fn(async () => null),
   ensureDocumentRenderWorkerStarted: vi.fn(),
+  getDocumentRenderMaintenanceSummary: vi.fn(async () => ({
+    artifactBytes: null,
+    artifactObjects: null,
+    expiredFiles: null,
+    jobStatus: null,
+    lastError: null,
+    lastRunAt: null,
+    orphanBytes: null,
+    orphanObjects: null,
+    tempDirBytes: null,
+  })),
   getDocumentRenderQueueStats: vi.fn(async () => ({
     avgMs: null,
     failed24h: 0,
@@ -61,8 +73,20 @@ vi.mock('../../services/documentRender', () => ({
 vi.mock('@/server/enterprise/services/documentRender', () => ({
   cancelDocumentRenderJob: vi.fn(async () => ({ ok: true })),
   deleteDocumentRenderArtifacts: vi.fn(async () => undefined),
+  enqueueDocumentRenderGcJob: vi.fn(async () => ({ created: true, jobId: 'pjob_gc1' })),
   enqueueDocumentRenderJob: vi.fn(async () => null),
   ensureDocumentRenderWorkerStarted: vi.fn(),
+  getDocumentRenderMaintenanceSummary: vi.fn(async () => ({
+    artifactBytes: null,
+    artifactObjects: null,
+    expiredFiles: null,
+    jobStatus: null,
+    lastError: null,
+    lastRunAt: null,
+    orphanBytes: null,
+    orphanObjects: null,
+    tempDirBytes: null,
+  })),
   getDocumentRenderQueueStats: vi.fn(async () => ({
     avgMs: null,
     failed24h: 0,
@@ -587,8 +611,12 @@ describe('admin.system operations gate', () => {
   });
 
   it('lets an operator probe, retry, and cancel document-render jobs', async () => {
-    const { cancelDocumentRenderJob, probeGotenberg, retryDocumentRenderJob } =
-      await import('../../services/documentRender');
+    const {
+      cancelDocumentRenderJob,
+      enqueueDocumentRenderGcJob,
+      probeGotenberg,
+      retryDocumentRenderJob,
+    } = await import('../../services/documentRender');
     const operator = await callerFor(ids.operator);
     await operator.updateDocumentRenderSettings({
       config: { enabled: true, endpoint: 'http://document-render:3000' },
@@ -613,5 +641,14 @@ describe('admin.system operations gate', () => {
       ok: true,
     });
     expect(cancelDocumentRenderJob).toHaveBeenCalledWith(db, 'pjob_render1');
+
+    await expect(operator.runDocumentRenderGc({})).resolves.toEqual({
+      jobId: 'pjob_gc1',
+      ok: true,
+    });
+    expect(enqueueDocumentRenderGcJob).toHaveBeenCalledWith(db, {
+      force: true,
+      requestedBy: ids.operator,
+    });
   });
 });

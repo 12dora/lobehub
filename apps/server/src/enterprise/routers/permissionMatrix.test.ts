@@ -60,6 +60,7 @@ const o04SystemProcedurePaths = [
   'admin.system.getStatus',
   'admin.system.retryDocumentRenderJob',
   'admin.system.retryJob',
+  'admin.system.runDocumentRenderGc',
   'admin.system.testDependency',
   'admin.system.updateDocumentRenderSettings',
   'admin.system.updateInfraSettings',

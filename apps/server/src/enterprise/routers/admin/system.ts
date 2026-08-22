@@ -31,6 +31,8 @@ import {
   adminSystemRetryDocumentRenderJobOutputSchema,
   adminSystemRetryJobInputSchema,
   adminSystemRetryJobOutputSchema,
+  adminSystemRunDocumentRenderGcInputSchema,
+  adminSystemRunDocumentRenderGcOutputSchema,
   adminSystemTestDependencyInputSchema,
   adminSystemTestDependencyOutputSchema,
   adminSystemUpdateDocumentRenderSettingsInputSchema,
@@ -46,7 +48,11 @@ import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import { AUDIT_ACTION } from '../../services/audit/auditActionCatalog';
-import { cancelDocumentRenderJob, retryDocumentRenderJob } from '../../services/documentRender';
+import {
+  cancelDocumentRenderJob,
+  enqueueDocumentRenderGcJob,
+  retryDocumentRenderJob,
+} from '../../services/documentRender';
 import {
   DOCUMENT_RENDER_SETTINGS_AUDIT_ACTION,
   DOCUMENT_RENDER_SETTINGS_AUDIT_TARGET_TYPE,
@@ -388,6 +394,20 @@ export const adminSystemRouter = router({
     .output(adminSystemRetryDocumentRenderJobOutputSchema)
     .mutation(({ ctx, input }) =>
       executePlatformSystem(() => retryDocumentRenderJob(ctx.serverDB, input.jobId)),
+    ),
+
+  runDocumentRenderGc: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
+    .input(adminSystemRunDocumentRenderGcInputSchema)
+    .output(adminSystemRunDocumentRenderGcOutputSchema)
+    .mutation(({ ctx }) =>
+      executePlatformSystem(async () => {
+        const result = await enqueueDocumentRenderGcJob(ctx.serverDB, {
+          force: true,
+          requestedBy: ctx.userId,
+        });
+        return { jobId: result.jobId, ok: true };
+      }),
     ),
 
   retryJob: platformSystemBase

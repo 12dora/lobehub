@@ -1,7 +1,11 @@
 import type { LobeChatDatabase } from '@/database/type';
 import type { AdminSystemGetDocumentRenderStatus } from '@/server/enterprise/contracts/adminSystem';
-import { getDocumentRenderQueueStats } from '@/server/enterprise/services/documentRender';
+import {
+  getDocumentRenderMaintenanceSummary,
+  getDocumentRenderQueueStats,
+} from '@/server/enterprise/services/documentRender';
 import { isModuleEnabled } from '@/server/enterprise/services/moduleSettings';
+import { getDocumentFeedStats } from '@/server/modules/ModelRuntime/documentFeedStats';
 
 import { probeDocumentRenderHealth } from './documentRenderProbe';
 import { getLiveInfraHealth } from './infraHealthMemo';
@@ -22,6 +26,18 @@ const emptyQueue = (): AdminSystemGetDocumentRenderStatus['queue'] => ({
   succeeded24h: 0,
 });
 
+const emptyMaintenance = (): AdminSystemGetDocumentRenderStatus['maintenance'] => ({
+  artifactBytes: null,
+  artifactObjects: null,
+  expiredFiles: null,
+  jobStatus: null,
+  lastError: null,
+  lastRunAt: null,
+  orphanBytes: null,
+  orphanObjects: null,
+  tempDirBytes: null,
+});
+
 /**
  * Dedicated document-render status for the admin settings/status cards.
  * Sidecar health reuses the 30s infra memo; queue stats are read fresh.
@@ -31,7 +47,7 @@ export const getDocumentRenderStatus = async (
   now: () => Date = () => new Date(),
 ): Promise<AdminSystemGetDocumentRenderStatus> => {
   const checkedAt = now();
-  const [moduleEnabled, live, queueResult] = await Promise.all([
+  const [moduleEnabled, live, queueResult, maintenance] = await Promise.all([
     isModuleEnabled('documentRender'),
     getLiveInfraHealth({
       keyManagementEnv: process.env,
@@ -40,7 +56,9 @@ export const getDocumentRenderStatus = async (
       probeDocumentRender: () => probeDocumentRenderHealth(now),
     }),
     getDocumentRenderQueueStats(db).catch(() => emptyQueue()),
+    getDocumentRenderMaintenanceSummary(db).catch(() => emptyMaintenance()),
   ]);
+  const feed = getDocumentFeedStats();
 
   const queue = {
     avgMs: queueResult.avgMs,
@@ -64,6 +82,8 @@ export const getDocumentRenderStatus = async (
   if (!moduleEnabled) {
     return {
       configured: false,
+      feed,
+      maintenance,
       moduleEnabled: false,
       queue,
       sidecar: { checkedAt: checkedAt.toISOString(), status: 'disabled' },
@@ -74,6 +94,8 @@ export const getDocumentRenderStatus = async (
   if (!health) {
     return {
       configured: false,
+      feed,
+      maintenance,
       moduleEnabled: true,
       queue,
       sidecar: { checkedAt: checkedAt.toISOString(), status: 'disabled' },
@@ -88,6 +110,8 @@ export const getDocumentRenderStatus = async (
 
   return {
     configured: health.configured,
+    feed,
+    maintenance,
     moduleEnabled: true,
     queue,
     sidecar: {

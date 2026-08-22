@@ -100,17 +100,18 @@ describe('admin procedure authorization registry', () => {
     // +2 mutations since: admin.users.{setPassword,disableTwoFactor} (admin credential takeover).
     // +1 query / +1 mutation since: admin.system.{getSandboxSettings,updateSandboxSettings}
     // (local sandbox general-settings card).
-    // +2 queries / +3 mutations since: admin.system.{getDocumentRenderSettings,
+    // +2 queries / +4 mutations since: admin.system.{getDocumentRenderSettings,
     // getDocumentRenderStatus, updateDocumentRenderSettings, retryDocumentRenderJob,
-    // cancelDocumentRenderJob} (Gotenberg document-render settings, status, and queue).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(240);
+    // cancelDocumentRenderJob, runDocumentRenderGc} (Gotenberg document-render settings,
+    // status, queue, and artifact GC).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(241);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(108);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(132);
-    expect(mutationPaths).toHaveLength(132);
+    ).toHaveLength(133);
+    expect(mutationPaths).toHaveLength(133);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -238,7 +239,7 @@ describe('admin procedure authorization registry', () => {
     const systemEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ path }) =>
       path.startsWith('admin.system.'),
     );
-    expect(systemEntries).toHaveLength(18);
+    expect(systemEntries).toHaveLength(19);
     expect(
       systemEntries.map((entry) =>
         'permission' in entry ? [entry.path, entry.permission.permissions[0]] : [entry.path, null],
@@ -258,6 +259,7 @@ describe('admin procedure authorization registry', () => {
       ['admin.system.requestRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
       ['admin.system.retryDocumentRenderJob', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
       ['admin.system.retryJob', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
+      ['admin.system.runDocumentRenderGc', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
       ['admin.system.testDependency', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
       ['admin.system.updateDocumentRenderSettings', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
       ['admin.system.updateInfraSettings', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],

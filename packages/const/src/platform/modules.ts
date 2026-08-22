@@ -309,7 +309,7 @@ export const PLATFORM_MODULES: Readonly<Record<PlatformModuleId, PlatformModuleD
     origin: 'fork',
     tier: 'full',
     toolsRouterKeys: [],
-    workers: ['documentRender'],
+    workers: ['documentRender', 'documentRenderGc'],
   }),
   imageGen: def({
     adminRouterKeys: [],

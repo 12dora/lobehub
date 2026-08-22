@@ -4,6 +4,7 @@ import type { PlatformModuleId } from '@/const/platform/modules';
 import { PlatformJobModel } from '@/database/models/platform/job';
 import type { PlatformJobItem } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
+import { DOCUMENT_RENDER_GC_JOB_TYPE } from '@/types/files';
 
 import { parsePlatformKeyProviderName } from '../security/secret/config';
 import { isBootModuleEnabled } from '../services/moduleSettings';
@@ -99,6 +100,13 @@ export const PLATFORM_JOB_DISPATCH_SPECS = [
     leaseMs: 180_000,
     workerName: 'documentRender',
   },
+  {
+    batchLimit: 1,
+    intervalMs: 60_000,
+    jobType: DOCUMENT_RENDER_GC_JOB_TYPE,
+    leaseMs: 15 * 60_000,
+    workerName: 'documentRenderGc',
+  },
 ] as const satisfies readonly PlatformJobDispatchSpec[];
 
 const isSecretRewrapEnabled = (env: Record<string, string | undefined>): boolean => {
@@ -152,6 +160,10 @@ const defaultHandleClaimed: PlatformJobDispatchHandler = async (ctx) => {
     case 'documentRender': {
       const { handleClaimedDocumentRenderJob } = await import('./documentRender');
       return handleClaimedDocumentRenderJob(ctx);
+    }
+    case 'documentRenderGc': {
+      const { handleClaimedDocumentRenderGcJob } = await import('./documentRender');
+      return handleClaimedDocumentRenderGcJob(ctx);
     }
     default: {
       return;

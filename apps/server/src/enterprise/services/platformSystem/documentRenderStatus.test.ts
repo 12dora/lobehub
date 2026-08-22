@@ -1,8 +1,12 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getDocumentRenderQueueStats } from '@/server/enterprise/services/documentRender';
+import {
+  getDocumentRenderMaintenanceSummary,
+  getDocumentRenderQueueStats,
+} from '@/server/enterprise/services/documentRender';
 import { isModuleEnabled } from '@/server/enterprise/services/moduleSettings';
+import { getDocumentFeedStats } from '@/server/modules/ModelRuntime/documentFeedStats';
 
 import { probeDocumentRenderHealth } from './documentRenderProbe';
 import { getDocumentRenderStatus } from './documentRenderStatus';
@@ -13,7 +17,12 @@ vi.mock('@/server/enterprise/services/moduleSettings', () => ({
 }));
 
 vi.mock('@/server/enterprise/services/documentRender', () => ({
+  getDocumentRenderMaintenanceSummary: vi.fn(),
   getDocumentRenderQueueStats: vi.fn(),
+}));
+
+vi.mock('@/server/modules/ModelRuntime/documentFeedStats', () => ({
+  getDocumentFeedStats: vi.fn(),
 }));
 
 vi.mock('./documentRenderProbe', () => ({
@@ -48,10 +57,34 @@ const queue = {
   succeeded24h: 9,
 };
 
+const feed = {
+  docsFed: 3,
+  imagesFed: 11,
+  pendingFallbacks: 1,
+  pendingWaits: 2,
+  requestsWithImages: 4,
+  since: '2026-08-22T00:00:00.000Z',
+  toolPageViews: 5,
+};
+
+const maintenance = {
+  artifactBytes: 2048,
+  artifactObjects: 12,
+  expiredFiles: 1,
+  jobStatus: 'succeeded',
+  lastError: null,
+  lastRunAt: checkedAt.toISOString(),
+  orphanBytes: 0,
+  orphanObjects: 0,
+  tempDirBytes: 64,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(isModuleEnabled).mockResolvedValue(true);
   vi.mocked(getDocumentRenderQueueStats).mockResolvedValue(queue);
+  vi.mocked(getDocumentRenderMaintenanceSummary).mockResolvedValue(maintenance);
+  vi.mocked(getDocumentFeedStats).mockReturnValue(feed);
   vi.mocked(getLiveInfraHealth).mockResolvedValue({
     documentRender: {
       configured: true,
@@ -73,6 +106,8 @@ describe('getDocumentRenderStatus', () => {
     vi.mocked(isModuleEnabled).mockResolvedValue(false);
     await expect(getDocumentRenderStatus(db, () => checkedAt)).resolves.toMatchObject({
       configured: false,
+      feed,
+      maintenance,
       moduleEnabled: false,
       sidecar: { status: 'disabled' },
     });
@@ -82,6 +117,8 @@ describe('getDocumentRenderStatus', () => {
     const status = await getDocumentRenderStatus(db, () => checkedAt);
     expect(status).toMatchObject({
       configured: true,
+      feed,
+      maintenance,
       moduleEnabled: true,
       queue: {
         pending: 1,

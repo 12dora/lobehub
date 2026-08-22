@@ -1,11 +1,12 @@
 'use client';
 
-import { Icon, Tag, Text } from '@lobehub/ui';
-import { Button, toast } from '@lobehub/ui/base-ui';
+import { Icon, Tag, Text, Tooltip } from '@lobehub/ui';
+import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import type { LucideIcon } from 'lucide-react';
 import { AlertTriangle, CheckCircle2, CircleDashed, XCircle } from 'lucide-react';
-import { memo, useCallback, useState } from 'react';
+import type { ReactNode } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { OperationalStatus } from '@/enterprise/client/features/admin/system/components/OperationalStatus';
@@ -14,6 +15,14 @@ import type {
   AdminSystemDocumentRenderJob,
   AdminSystemDocumentRenderStatus,
 } from '@/enterprise/client/services/adminSystem';
+
+import {
+  EM_DASH,
+  formatAbsolute,
+  formatArtifactBytes,
+  formatCount,
+  relativeLabel,
+} from './documentRenderMaintenanceFormat';
 
 const styles = createStaticStyles(({ css }) => ({
   cell: css`
@@ -75,6 +84,23 @@ const styles = createStaticStyles(({ css }) => ({
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
+  `,
+  /* Maintenance / feed live under the queue: a hairline keeps the three readings apart. */
+  subSection: css`
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    min-width: 0;
+    padding-block-start: 12px;
+    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
+  `,
+  subSectionHeader: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
   `,
   table: css`
     border-collapse: collapse;
@@ -153,6 +179,165 @@ const JobRow = memo<{
 });
 
 JobRow.displayName = 'AdminDocumentRenderJobRow';
+
+/** One label + value pair; the value is already a string or a node the caller composed. */
+const Metric = memo<{ children: ReactNode; label: string }>(({ children, label }) => (
+  <div>
+    <div className={styles.metricLabel}>{label}</div>
+    <div className={styles.metricValue}>{children}</div>
+  </div>
+));
+
+Metric.displayName = 'AdminDocumentRenderMetric';
+
+/** The feed counters, in the order that tells the story: how much went out, then what degraded. */
+const FEED_METRICS = [
+  'requestsWithImages',
+  'docsFed',
+  'imagesFed',
+  'pendingWaits',
+  'pendingFallbacks',
+  'toolPageViews',
+] as const;
+
+const FeedBlock = memo<{ feed: AdminSystemDocumentRenderStatus['feed'] }>(({ feed }) => {
+  const { t } = useTranslation('admin');
+
+  return (
+    <div className={styles.subSection}>
+      <div className={styles.subSectionHeader}>
+        <Text strong>{t('systemGeneral.documentRender.feed.title')}</Text>
+        <Text type="secondary">
+          {t('systemGeneral.documentRender.feed.since', { since: formatAbsolute(feed.since) })}
+        </Text>
+      </div>
+      <div className={styles.metricGrid}>
+        {FEED_METRICS.map((metric) => (
+          <Metric key={metric} label={t(`systemGeneral.documentRender.feed.${metric}` as never)}>
+            {formatCount(feed[metric])}
+          </Metric>
+        ))}
+      </div>
+    </div>
+  );
+});
+
+FeedBlock.displayName = 'AdminDocumentRenderFeedBlock';
+
+/** A finished sweep can take a moment to land; poll a bounded number of times, then stop. */
+const GC_POLL_INTERVAL_MS = 5000;
+const GC_POLL_ATTEMPTS = 6;
+
+const MaintenanceBlock = memo<{
+  canOperate: boolean;
+  maintenance: AdminSystemDocumentRenderStatus['maintenance'];
+  onRefresh: () => Promise<unknown> | void;
+  service: AdminDocumentRenderSettingsService;
+}>(({ canOperate, maintenance, onRefresh, service }) => {
+  const { t } = useTranslation('admin');
+  const [running, setRunning] = useState(false);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(
+    () => () => {
+      for (const timer of timers.current) clearTimeout(timer);
+      timers.current = [];
+    },
+    [],
+  );
+
+  const run = useCallback(async () => {
+    if (running) return;
+    setRunning(true);
+    try {
+      await service.runDocumentRenderGc({});
+      toast.success(t('systemGeneral.documentRender.maintenance.queued'));
+      await onRefresh();
+      for (let attempt = 1; attempt <= GC_POLL_ATTEMPTS; attempt += 1) {
+        timers.current.push(setTimeout(() => void onRefresh(), attempt * GC_POLL_INTERVAL_MS));
+      }
+    } catch {
+      toast.error(t('systemGeneral.documentRender.maintenance.failed'));
+    } finally {
+      setRunning(false);
+    }
+  }, [onRefresh, running, service, t]);
+
+  const confirm = useCallback(() => {
+    confirmModal({
+      cancelText: t('systemGeneral.documentRender.maintenance.confirmCancel'),
+      content: t('systemGeneral.documentRender.maintenance.confirmContent'),
+      okText: t('systemGeneral.documentRender.maintenance.confirmOk'),
+      title: t('systemGeneral.documentRender.maintenance.confirmTitle'),
+      onOk: async () => {
+        await run();
+      },
+    });
+  }, [run, t]);
+
+  const relative = relativeLabel(maintenance.lastRunAt);
+
+  return (
+    <div className={styles.subSection}>
+      <div className={styles.subSectionHeader}>
+        <Text strong>{t('systemGeneral.documentRender.maintenance.title')}</Text>
+        {canOperate ? (
+          <Button disabled={running} loading={running} size="small" onClick={confirm}>
+            {t('systemGeneral.documentRender.maintenance.run')}
+          </Button>
+        ) : null}
+      </div>
+
+      <div className={styles.metricGrid}>
+        <Metric label={t('systemGeneral.documentRender.maintenance.lastRun')}>
+          {relative ? (
+            <Tooltip title={formatAbsolute(maintenance.lastRunAt)}>
+              <span>
+                {t(
+                  `systemGeneral.documentRender.maintenance.relative.${relative.key}` as never,
+                  relative.count === undefined ? undefined : { count: relative.count },
+                )}
+              </span>
+            </Tooltip>
+          ) : (
+            EM_DASH
+          )}
+        </Metric>
+        <Metric label={t('systemGeneral.documentRender.maintenance.jobStatus')}>
+          {maintenance.jobStatus ? (
+            <OperationalStatus status={maintenance.jobStatus} />
+          ) : (
+            <Text type="secondary">{t('systemGeneral.documentRender.maintenance.never')}</Text>
+          )}
+        </Metric>
+        <Metric label={t('systemGeneral.documentRender.maintenance.artifacts')}>
+          {`${formatCount(maintenance.artifactObjects)} · ${formatArtifactBytes(maintenance.artifactBytes)}`}
+        </Metric>
+        <Metric label={t('systemGeneral.documentRender.maintenance.orphans')}>
+          {`${formatCount(maintenance.orphanObjects)} · ${formatArtifactBytes(maintenance.orphanBytes)}`}
+        </Metric>
+        <Metric label={t('systemGeneral.documentRender.maintenance.expiredFiles')}>
+          {formatCount(maintenance.expiredFiles)}
+        </Metric>
+        <Metric label={t('systemGeneral.documentRender.maintenance.tempDir')}>
+          {formatArtifactBytes(maintenance.tempDirBytes)}
+        </Metric>
+      </div>
+
+      {maintenance.lastError ? (
+        <Tooltip title={maintenance.lastError}>
+          <Text ellipsis type="danger">
+            {t('systemGeneral.documentRender.maintenance.lastError', {
+              message: maintenance.lastError,
+            })}
+          </Text>
+        </Tooltip>
+      ) : null}
+    </div>
+  );
+});
+
+MaintenanceBlock.displayName = 'AdminDocumentRenderMaintenanceBlock';
 
 /**
  * The compact monitoring summary that lives inside the settings card (design §6.3).
@@ -277,6 +462,14 @@ export const DocumentRenderStatusPanel = memo<DocumentRenderStatusPanelProps>(
             </table>
           </div>
         )}
+
+        <MaintenanceBlock
+          canOperate={canOperate && status.moduleEnabled}
+          maintenance={status.maintenance}
+          service={service}
+          onRefresh={onRefresh}
+        />
+        <FeedBlock feed={status.feed} />
       </div>
     );
   },

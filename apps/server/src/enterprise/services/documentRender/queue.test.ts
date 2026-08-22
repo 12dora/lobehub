@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FileModel } from '@/database/models/file';
 import { PlatformJobModel } from '@/database/models/platform/job';
@@ -8,8 +8,11 @@ import { DOCUMENT_RENDER_DEFAULTS } from '@/types/platform/documentRenderSetting
 import { getEffectiveDocumentRenderSettings } from '../documentRenderSettings';
 import {
   cancelDocumentRenderJob,
+  enqueueDocumentRenderGcJob,
   enqueueDocumentRenderJob,
+  ensureDocumentRenderWorkerStarted,
   getDocumentRenderQueueStats,
+  resetDocumentRenderGcSchedulerForTest,
   retryDocumentRenderJob,
 } from './queue';
 
@@ -22,6 +25,19 @@ vi.mock('@/database/models/file', () => ({
   FileModel: {
     getFileById: vi.fn(),
   },
+}));
+
+vi.mock('../../jobs/persistentWorkerRuntime', () => ({
+  isPersistentEnterpriseWorkerRuntime: vi.fn(() => false),
+}));
+
+vi.mock('../../jobs/persistentWorkerScheduler', () => ({
+  startPersistentWorkerScheduler: vi.fn(() => ({ stop: vi.fn(), wake: vi.fn() })),
+}));
+
+vi.mock('../../jobs/platformJobsDispatcher', () => ({
+  ensurePlatformJobsDispatcherStarted: vi.fn(),
+  wakePlatformJobsDispatcher: vi.fn(),
 }));
 
 const enqueue = vi.fn();
@@ -50,6 +66,10 @@ beforeEach(() => {
   enqueue.mockResolvedValue({ created: true, job: { id: 'job-1' } });
   cancel.mockResolvedValue({ id: 'job-1' });
   findById.mockResolvedValue({ id: 'job-1', type: 'platform.document.render.v1' });
+});
+
+afterEach(() => {
+  resetDocumentRenderGcSchedulerForTest();
 });
 
 describe('enqueueDocumentRenderJob', () => {
@@ -217,5 +237,76 @@ describe('getDocumentRenderQueueStats', () => {
         status: 'succeeded',
       },
     ]);
+  });
+});
+
+describe('enqueueDocumentRenderGcJob', () => {
+  it('enqueues one idempotent row per UTC day', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-22T15:04:05.000Z'));
+    try {
+      const { wakePlatformJobsDispatcher } = await import('../../jobs/platformJobsDispatcher');
+      await expect(enqueueDocumentRenderGcJob({} as never)).resolves.toEqual({
+        created: true,
+        jobId: 'job-1',
+      });
+      expect(enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          idempotencyKey: 'document-render-gc:2026-08-22',
+          maxAttempts: 1,
+          requestedBy: null,
+          type: 'platform.document.render.gc.v1',
+        }),
+      );
+      expect(wakePlatformJobsDispatcher).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses a unique manual key when force is true', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_724_400_000_000);
+    await enqueueDocumentRenderGcJob({} as never, { force: true, requestedBy: 'user-9' });
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: 'document-render-gc:manual:1724400000000',
+        input: { force: true },
+        requestedBy: 'user-9',
+        type: 'platform.document.render.gc.v1',
+      }),
+    );
+    vi.mocked(Date.now).mockRestore();
+  });
+});
+
+describe('ensureDocumentRenderWorkerStarted', () => {
+  it('registers both dispatcher lanes and starts the hourly GC scheduler once', async () => {
+    const { isPersistentEnterpriseWorkerRuntime } =
+      await import('../../jobs/persistentWorkerRuntime');
+    const { startPersistentWorkerScheduler } = await import('../../jobs/persistentWorkerScheduler');
+    const { ensurePlatformJobsDispatcherStarted } =
+      await import('../../jobs/platformJobsDispatcher');
+    vi.mocked(isPersistentEnterpriseWorkerRuntime).mockReturnValue(true);
+
+    try {
+      ensureDocumentRenderWorkerStarted();
+      ensureDocumentRenderWorkerStarted();
+
+      expect(ensurePlatformJobsDispatcherStarted).toHaveBeenCalledWith({
+        extraWorkerName: 'documentRender',
+      });
+      expect(ensurePlatformJobsDispatcherStarted).toHaveBeenCalledWith({
+        extraWorkerName: 'documentRenderGc',
+      });
+      expect(startPersistentWorkerScheduler).toHaveBeenCalledTimes(1);
+      expect(startPersistentWorkerScheduler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseIntervalMs: 60 * 60 * 1000,
+          namespace: 'document-render-gc',
+        }),
+      );
+    } finally {
+      vi.mocked(isPersistentEnterpriseWorkerRuntime).mockReturnValue(false);
+    }
   });
 });

@@ -10,12 +10,15 @@ import { files } from '@/database/schemas';
 import { platformJobs } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import {
+  DOCUMENT_RENDER_GC_JOB_TYPE,
   DOCUMENT_RENDER_JOB_TYPE,
   documentRenderArtifactPrefix,
   readFileRenderMetadata,
 } from '@/types/files';
 
 import { isPersistentEnterpriseWorkerRuntime } from '../../jobs/persistentWorkerRuntime';
+import type { PersistentWorkerScheduler } from '../../jobs/persistentWorkerScheduler';
+import { startPersistentWorkerScheduler } from '../../jobs/persistentWorkerScheduler';
 import {
   ensurePlatformJobsDispatcherStarted,
   wakePlatformJobsDispatcher,
@@ -33,12 +36,39 @@ export const clearDocumentRenderTempDir = async (): Promise<void> => {
   await rm(documentRenderTempRoot(), { force: true, recursive: true });
 };
 
+const DOCUMENT_RENDER_GC_SCHEDULER_KEY = Symbol.for('enterprise.documentRender.gcScheduler');
+type DocumentRenderGcSchedulerGlobal = {
+  [DOCUMENT_RENDER_GC_SCHEDULER_KEY]?: PersistentWorkerScheduler;
+};
+const documentRenderGcSchedulerGlobal = globalThis as unknown as DocumentRenderGcSchedulerGlobal;
+
+/** Test-only: drop the process-once GC scheduler latch. */
+export const resetDocumentRenderGcSchedulerForTest = (): void => {
+  documentRenderGcSchedulerGlobal[DOCUMENT_RENDER_GC_SCHEDULER_KEY]?.stop();
+  documentRenderGcSchedulerGlobal[DOCUMENT_RENDER_GC_SCHEDULER_KEY] = undefined;
+};
+
+const startDocumentRenderGcScheduler = (): void => {
+  if (documentRenderGcSchedulerGlobal[DOCUMENT_RENDER_GC_SCHEDULER_KEY]) return;
+  documentRenderGcSchedulerGlobal[DOCUMENT_RENDER_GC_SCHEDULER_KEY] =
+    startPersistentWorkerScheduler({
+      baseIntervalMs: 60 * 60 * 1000,
+      namespace: 'document-render-gc',
+      run: async () => {
+        const { getServerDB } = await import('@/database/core/db-adaptor');
+        await enqueueDocumentRenderGcJob(await getServerDB());
+      },
+    });
+};
+
 export const ensureDocumentRenderWorkerStarted = (): void => {
   if (!isPersistentEnterpriseWorkerRuntime()) return;
   void clearDocumentRenderTempDir().catch((error) => {
     console.error('Failed to clear document-render temp dir', error);
   });
   ensurePlatformJobsDispatcherStarted({ extraWorkerName: 'documentRender' });
+  ensurePlatformJobsDispatcherStarted({ extraWorkerName: 'documentRenderGc' });
+  startDocumentRenderGcScheduler();
 };
 
 export interface EnqueueDocumentRenderJobParams {
@@ -81,6 +111,32 @@ export const enqueueDocumentRenderJob = async (
   const result = await enqueueDocumentRenderJobRow(db, params);
   if (result) wakeDispatcher();
   return result;
+};
+
+export interface EnqueueDocumentRenderGcJobParams {
+  force?: boolean;
+  requestedBy?: string;
+}
+
+/** One idempotent daily GC row, or a unique manual row when `force` is set. */
+export const enqueueDocumentRenderGcJob = async (
+  db: LobeChatDatabase,
+  params: EnqueueDocumentRenderGcJobParams = {},
+): Promise<{ created: boolean; jobId: string }> => {
+  const utcDate = new Date().toISOString().slice(0, 10);
+  const idempotencyKey = params.force
+    ? `document-render-gc:manual:${Date.now()}`
+    : `document-render-gc:${utcDate}`;
+  const jobs = new PlatformJobModel(db);
+  const { created, job } = await jobs.enqueue({
+    idempotencyKey,
+    input: params.force ? { force: true } : {},
+    maxAttempts: 1,
+    requestedBy: params.requestedBy ?? null,
+    type: DOCUMENT_RENDER_GC_JOB_TYPE,
+  });
+  wakeDispatcher();
+  return { created, jobId: job.id };
 };
 
 const enqueueDocumentRenderJobRow = async (

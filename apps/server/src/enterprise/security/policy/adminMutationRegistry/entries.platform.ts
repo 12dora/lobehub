@@ -269,6 +269,17 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'Retry an eligible terminal platform job with atomic compare-and-set.',
     { reason: optionalReasonInput, reauth: recentReauth },
   ),
+  'admin.system.runDocumentRenderGc': regularMutation(
+    'admin.system.runDocumentRenderGc',
+    'low',
+    'Enqueue a document-render artifact sweep without changing saved settings.',
+    {
+      audit: notApplicable(
+        'The bounded queue control does not persist configuration or write an audit row.',
+      ),
+      reason: noReason,
+    },
+  ),
   'admin.system.testDependency': regularMutation(
     'admin.system.testDependency',
     'low',

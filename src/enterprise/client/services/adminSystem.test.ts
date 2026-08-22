@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   getStatus: vi.fn(),
   retryDocumentRenderJob: vi.fn(),
   retryJob: vi.fn(),
+  runDocumentRenderGc: vi.fn(),
   testDependency: vi.fn(),
   updateDocumentRenderSettings: vi.fn(),
   updateSandboxSettings: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock('@/libs/trpc/client', () => ({
         getStatus: { query: mocks.getStatus },
         retryDocumentRenderJob: { mutate: mocks.retryDocumentRenderJob },
         retryJob: { mutate: mocks.retryJob },
+        runDocumentRenderGc: { mutate: mocks.runDocumentRenderGc },
         testDependency: { mutate: mocks.testDependency },
         updateDocumentRenderSettings: { mutate: mocks.updateDocumentRenderSettings },
         updateSandboxSettings: { mutate: mocks.updateSandboxSettings },
@@ -139,6 +141,12 @@ describe('Admin System service adapter', () => {
     await expect(adminSystemService.cancelDocumentRenderJob({ jobId: 'job-1' })).resolves.toEqual({
       ok: true,
     });
+    mocks.runDocumentRenderGc.mockResolvedValue({ jobId: 'gc-1', ok: true });
+    await expect(adminSystemService.runDocumentRenderGc({})).resolves.toEqual({
+      jobId: 'gc-1',
+      ok: true,
+    });
+    expect(mocks.runDocumentRenderGc).toHaveBeenCalledWith({});
 
     expect(mocks.updateDocumentRenderSettings).toHaveBeenCalledWith({
       config: { enabled: true, endpoint: 'http://document-render:3000' },
