@@ -135,6 +135,7 @@ import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import type { EvalContext, ServerAgentToolsContext } from '@/server/modules/Mecha';
 import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
 import type { ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
+import { resolveRuntimeProviderId } from '@/server/modules/ModelRuntime/attachmentCapabilities';
 import { resolvePlatformAiExecutionConfigAtRevision } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import type { AgentConfigWithId } from '@/server/services/agent';
 import { AgentService } from '@/server/services/agent';
@@ -3170,6 +3171,10 @@ export class AiAgentService {
         },
         model,
         provider,
+        runtimeProvider: resolveRuntimeProviderId({
+          provider,
+          providerConfig: activeProviderMetadata,
+        }),
         // Org-mandate layer: while connector governance is active, every
         // builtin manifest the engine hands to the model carries the org
         // builtin tool permission matrix (disabled block / needs_approval

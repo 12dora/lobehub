@@ -59,3 +59,37 @@ export const getAttachmentCapabilities = (
   if (!runtimeProvider) return DEFAULT_ATTACHMENT_CAPABILITIES;
   return ATTACHMENT_CAPABILITIES_BY_PROVIDER[runtimeProvider] ?? DEFAULT_ATTACHMENT_CAPABILITIES;
 };
+
+export interface ResolveRuntimeProviderIdInput {
+  provider: string;
+  providerConfig?: {
+    settings?: { sdkType?: string } | null;
+    source?: string | null;
+  } | null;
+}
+
+const readSdkType = (settings: unknown): string | undefined => {
+  if (!settings || typeof settings !== 'object') return undefined;
+  const sdkType = (settings as { sdkType?: unknown }).sdkType;
+  return typeof sdkType === 'string' && sdkType.length > 0 ? sdkType : undefined;
+};
+
+/**
+ * Map a catalog provider id + optional DB row to the SDK runtime provider.
+ *
+ * Builtin providers (or rows with `source: 'builtin'`) keep their catalog id.
+ * Custom providers use `settings.sdkType`, defaulting to OpenAI-compatible.
+ * Mirrors `resolveModelRuntimeProvider` in `ModelRuntime/index.ts`.
+ */
+export const resolveRuntimeProviderId = ({
+  provider,
+  providerConfig,
+}: ResolveRuntimeProviderIdInput): string => {
+  const source = providerConfig?.source ?? undefined;
+  const isBuiltin = source
+    ? source === 'builtin'
+    : Object.values(ModelProvider).includes(provider as ModelProvider);
+  if (isBuiltin) return provider;
+
+  return readSdkType(providerConfig?.settings) || ModelProvider.OpenAI;
+};

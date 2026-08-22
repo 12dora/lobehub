@@ -397,6 +397,29 @@ describe('createServerAgentToolsEngine', () => {
     expect(result.enabledToolIds).toContain(DocumentPagesIdentifier);
   });
 
+  it('excludes lobe-document-pages for a custom provider whose sdkType is cursor', () => {
+    const cursor = createServerAgentToolsEngine(createMockContext(), {
+      agentConfig: { plugins: [] },
+      model: 'composer-2.5',
+      provider: 'my-cursor-proxy',
+      runtimeProvider: 'cursor',
+    });
+    expect(cursor.getAvailablePlugins()).not.toContain(DocumentPagesIdentifier);
+
+    const openai = createServerAgentToolsEngine(createMockContext(), {
+      agentConfig: { plugins: [] },
+      model: 'gpt-4',
+      provider: 'my-openai-proxy',
+      runtimeProvider: 'openai',
+    });
+    const result = openai.generateToolsDetailed({
+      model: 'gpt-4',
+      provider: 'my-openai-proxy',
+      toolIds: [],
+    });
+    expect(result.enabledToolIds).toContain(DocumentPagesIdentifier);
+  });
+
   it('hides lobe-agent callSubAgent when manifestContext.isSubAgent is true', () => {
     const context = createMockContext();
     const engine = createServerAgentToolsEngine(context, {

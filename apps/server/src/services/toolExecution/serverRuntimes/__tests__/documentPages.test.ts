@@ -1,4 +1,8 @@
 // @vitest-environment node
+import {
+  DOCUMENT_PAGES_TURN_LIMIT_MESSAGE,
+  resetDocumentPagesCallBudgetForTest,
+} from '@lobechat/builtin-tool-document-pages/executionRuntime';
 import { DocumentPagesIdentifier } from '@lobechat/builtin-tool-document-pages/manifest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,7 +21,8 @@ vi.mock('../../../../enterprise/services/documentRender', () => ({
   enqueueDocumentRenderJob: (...args: unknown[]) => enqueueDocumentRenderJob(...args),
 }));
 
-const { documentPagesRuntime } = await import('../documentPages');
+const { documentPagesRuntime, resolveDocumentPagesCallBudgetKey } =
+  await import('../documentPages');
 
 const context = (overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext => ({
   serverDB: {} as never,
@@ -29,6 +34,7 @@ const context = (overrides: Partial<ToolExecutionContext> = {}): ToolExecutionCo
 describe('documentPagesRuntime', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetDocumentPagesCallBudgetForTest();
   });
 
   it('registers the document-pages identifier', () => {
@@ -97,10 +103,10 @@ describe('documentPagesRuntime', () => {
     const result = await runtime.viewDocumentPages({ fileId: 'file-1', pages: [1, 2] });
 
     expect(result.content).toBe('Page images are processing, please retry later.');
-    expect(enqueueDocumentRenderJob).toHaveBeenCalledWith(
-      expect.anything(),
-      { fileId: 'file-1', force: true },
-    );
+    expect(enqueueDocumentRenderJob).toHaveBeenCalledWith(expect.anything(), {
+      fileId: 'file-1',
+      force: true,
+    });
   });
 
   it('returns not found when the scoped lookup misses', async () => {
@@ -143,5 +149,99 @@ describe('documentPagesRuntime', () => {
     expect(result.content).toContain('kind="tile" key="files/render/file-1/tiles/1-00.png"');
     expect(result.content).toContain('kind="tile" key="files/render/file-1/tiles/1-01.png"');
     expect(result.content).not.toContain('kind="page"');
+  });
+
+  it('falls back to the page PNG when zoom is tiles but page 9 has no tiles', async () => {
+    findById.mockResolvedValue({
+      fileType: 'application/pdf',
+      id: 'file-1',
+      metadata: {
+        render: {
+          pages: {
+            '9': {
+              chars: 40,
+              png: 'files/render/file-1/pages/9.png',
+              visual: true,
+            },
+          },
+          status: 'ready',
+        },
+      },
+      name: 'scan.pdf',
+    });
+
+    const runtime = documentPagesRuntime.factory(context());
+    const result = await runtime.viewDocumentPages({
+      fileId: 'file-1',
+      pages: [9],
+      zoom: 'tiles',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.content).toBeTruthy();
+    expect(result.content).toContain('<document_page_image');
+    expect(result.content).toContain(
+      '<document_page_image fileId="file-1" page="9" kind="page" key="files/render/file-1/pages/9.png"/>',
+    );
+  });
+
+  it('returns the per-turn limit message on the 4th call', async () => {
+    findById.mockResolvedValue({
+      fileType: 'application/pdf',
+      id: 'file-1',
+      metadata: {
+        render: {
+          pages: { '1': { chars: 10, png: 'files/render/file-1/pages/1.png', visual: true } },
+          status: 'ready',
+        },
+      },
+      name: 'deck.pdf',
+    });
+
+    const turnContext = context({ assistantMessageId: 'asst-turn-1' });
+    const first = documentPagesRuntime.factory(turnContext);
+    await first.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+    await first.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+    await first.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+
+    // Production constructs a new runtime per tool call; the budget lives on globalThis.
+    const fourth = documentPagesRuntime.factory(turnContext);
+    const result = await fourth.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+
+    expect(result.success).toBe(true);
+    expect(result.content).toBe(DOCUMENT_PAGES_TURN_LIMIT_MESSAGE);
+  });
+});
+
+describe('resolveDocumentPagesCallBudgetKey', () => {
+  it('prefers assistantMessageId as the per-turn key', () => {
+    expect(
+      resolveDocumentPagesCallBudgetKey({
+        assistantMessageId: 'asst-1',
+        operationId: 'op-1',
+        topicId: 'topic-1',
+        toolManifestMap: {},
+        userId: 'user-1',
+      }),
+    ).toBe('turn:asst-1');
+  });
+
+  it('falls back to operationId then user+topic', () => {
+    expect(
+      resolveDocumentPagesCallBudgetKey({
+        operationId: 'op-1',
+        topicId: 'topic-1',
+        toolManifestMap: {},
+        userId: 'user-1',
+      }),
+    ).toBe('op:op-1');
+    expect(
+      resolveDocumentPagesCallBudgetKey({
+        topicId: 'topic-1',
+        toolManifestMap: {},
+        userId: 'user-1',
+      }),
+    ).toBe('topic:user-1:topic-1');
+    expect(resolveDocumentPagesCallBudgetKey({ toolManifestMap: {} })).toBeUndefined();
   });
 });

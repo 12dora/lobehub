@@ -15,6 +15,7 @@
   "peerDependencies": {
     "@lobehub/ui": "^5",
     "antd-style": "*",
+    "debug": "*",
     "lucide-react": "*",
     "react": "*",
     "react-i18next": "*"
