@@ -364,8 +364,15 @@ export const runPlatformJobsDispatchTick = async (
   return { didWork: didWork || hasPendingRetry(now()) };
 };
 
-let dispatcherStarted = false;
-let dispatcherScheduler: PersistentWorkerScheduler | undefined;
+// Loop handle on `globalThis`: Next.js evaluates this module once for
+// instrumentation (which starts the loop) and again per route graph (which
+// enqueues and wants to wake it). Same rule as `moduleSettings` boot view.
+const DISPATCHER_GLOBAL_KEY = Symbol.for('enterprise.platformJobs.dispatcher');
+type DispatcherGlobal = {
+  [DISPATCHER_GLOBAL_KEY]?: { scheduler?: PersistentWorkerScheduler; started: boolean };
+};
+const dispatcherGlobal = globalThis as unknown as DispatcherGlobal;
+const dispatcherSlot = () => (dispatcherGlobal[DISPATCHER_GLOBAL_KEY] ??= { started: false });
 const extraWorkerNames = new Set<string>();
 
 /**
@@ -410,14 +417,15 @@ const noteTypeFailure = (spec: PlatformJobDispatchSpec, nowMs: number): void => 
  * user usually sends a message seconds after the upload).
  */
 export const wakePlatformJobsDispatcher = (): void => {
-  dispatcherScheduler?.wake();
+  dispatcherSlot().scheduler?.wake();
 };
 
 /** Test-only: drop the process-once latch and stop the loop. */
 export const resetPlatformJobsDispatcherForTest = (): void => {
-  dispatcherScheduler?.stop();
-  dispatcherScheduler = undefined;
-  dispatcherStarted = false;
+  const slot = dispatcherSlot();
+  slot.scheduler?.stop();
+  slot.scheduler = undefined;
+  slot.started = false;
   extraWorkerNames.clear();
   laneFailures.clear();
 };
@@ -448,7 +456,8 @@ export const ensurePlatformJobsDispatcherStarted = (
   } = {},
 ): void => {
   if (options.extraWorkerName) extraWorkerNames.add(options.extraWorkerName);
-  if (dispatcherStarted) return;
+  const slot = dispatcherSlot();
+  if (slot.started) return;
   if (!isPersistentEnterpriseWorkerRuntime(options.env ?? process.env)) return;
 
   const resolveEnabled = () =>
@@ -456,10 +465,10 @@ export const ensurePlatformJobsDispatcherStarted = (
   const enabled = resolveEnabled();
   if (enabled.length === 0) return;
 
-  dispatcherStarted = true;
+  slot.started = true;
   const workerId = `platform-jobs:${process.pid}:${randomUUID()}`;
   const baseIntervalMs = Math.min(...enabled.map((spec) => spec.intervalMs));
-  dispatcherScheduler = startPersistentWorkerScheduler({
+  slot.scheduler = startPersistentWorkerScheduler({
     baseIntervalMs,
     namespace: 'platform-jobs',
     run: async () => {
