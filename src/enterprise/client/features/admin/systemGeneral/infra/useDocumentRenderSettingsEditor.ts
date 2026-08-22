@@ -67,6 +67,8 @@ export const useDocumentRenderSettingsEditor = ({
   const [showErrors, setShowErrors] = useState(false);
   const [probing, setProbing] = useState(false);
   const [probe, setProbe] = useState<AdminSystemTestDependencyResult | undefined>(undefined);
+  /** Successful writes, so the 编辑 modal closes on 保存 / 恢复 and on nothing else. */
+  const [saveCount, setSaveCount] = useState(0);
 
   const [baselineDraft, setBaselineDraft] = useState<DocumentRenderDraft>(seed);
   const baselineFpRef = useRef<string | null>(null);
@@ -167,6 +169,7 @@ export const useDocumentRenderSettingsEditor = ({
           );
           applySnapshot(toDocumentRenderDraft(result), result.revision);
           setEditing(false);
+          setSaveCount((count) => count + 1);
           toast.success(t(enabled ? 'systemGeneral.edit.saved' : 'systemGeneral.edit.reverted'));
           await invalidateAdminDocumentRenderSettings();
           await invalidateAdminDocumentRenderStatus();
@@ -242,6 +245,7 @@ export const useDocumentRenderSettingsEditor = ({
     reload,
     revertToEnv,
     save,
+    saveCount,
     saving,
     stale,
     test,

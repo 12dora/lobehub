@@ -115,35 +115,49 @@ vi.mock('../InfraSettingsCard', () => ({
       ))}
     </div>
   ),
+  /**
+   * The card shell is exercised on its own in `InfraSettingsCard.test.tsx`. Here it is flattened —
+   * the 编辑 and 详情 modal bodies are rendered inline — so these tests keep asking what this card
+   * puts in them rather than how the shell opens them. `data-summary-rows` is the one structural
+   * fact that still matters here: the card itself must stay five rows tall.
+   */
   InfraSettingsCard: ({
     banner,
+    detailsFields,
+    editActions,
     editor,
     extraActions,
     fields,
     notice,
     status,
+    summary,
     title,
   }: {
     banner?: ReactNode;
+    detailsFields?: Array<{ label: string; value: ReactNode }>;
+    editActions?: ReactNode;
     editor?: ReactNode;
     extraActions?: ReactNode;
     fields?: Array<{ label: string; value: ReactNode }>;
     notice?: ReactNode;
     status?: string;
+    summary?: ReactNode;
     title: ReactNode;
   }) => (
-    <section>
+    <section data-summary-rows={String((fields ?? []).length)}>
       <h2>{title}</h2>
       <span data-testid="status">{status}</span>
       {banner}
+      {summary}
       {editor}
-      {fields?.map((field) => (
+      {(detailsFields ?? fields)?.map((field) => (
         <div key={field.label}>
           <span>{field.label}</span>
           <span>{field.value}</span>
         </div>
       ))}
       {extraActions}
+      {editActions}
       <p>{notice}</p>
     </section>
   ),
@@ -325,6 +339,25 @@ describe('BrowserProfileCard', () => {
     expect(screen.queryByText('#3')).toBeNull();
     expect(container.textContent).not.toContain('seed');
     expect(screen.queryByText('browserProfile.actions.regenerate')).toBeNull();
+  });
+
+  it('keeps the card five rows tall and leaves the rest of the fingerprint to 详情', () => {
+    const { container } = render(
+      <BrowserProfileCard
+        canOperate={false}
+        data={summary()}
+        error={undefined}
+        isLoading={false}
+        options={options()}
+        onRegenerate={vi.fn()}
+        onRetry={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+
+    // Screen, compute and the GPU are 详情 readings — eight rows would make this card the tallest
+    // in the grid and drag every neighbour up with it.
+    expect(container.querySelector('section')?.getAttribute('data-summary-rows')).toBe('5');
   });
 
   it('names the graphics adapter through the option it was chosen from', () => {

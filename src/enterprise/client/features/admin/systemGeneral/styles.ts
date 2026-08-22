@@ -7,25 +7,39 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
     gap: 8px;
     align-items: center;
   `,
+  /**
+   * An alert is the one body element that can grow without bound (a long server message, a
+   * two-line description). It is capped here so one unhappy card cannot set the height of the
+   * whole grid; the full text is repeated at the top of the 详情 modal.
+   */
+  bannerSlot: css`
+    overflow: hidden;
+    min-width: 0;
+    max-block-size: 108px;
+  `,
   card: css`
     display: flex;
     flex-direction: column;
     gap: 16px;
 
     min-width: 0;
+    block-size: 100%;
+    min-block-size: 320px;
     padding: 16px;
     border: 1px solid ${cssVar.colorBorderSecondary};
     border-radius: ${cssVar.borderRadiusLG};
 
     background: ${cssVar.colorBgContainer};
   `,
+  /** The summary never scrolls: five rows and a footer always fit inside `min-block-size`. */
   cardBody: css`
     display: flex;
     flex: 1;
     flex-direction: column;
     gap: 16px;
 
-    min-height: 0;
+    min-width: 0;
+    min-block-size: 0;
   `,
   code: css`
     font-family: ${cssVar.fontFamilyCode};
@@ -80,8 +94,10 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
     gap: 12px;
     margin-block-start: auto;
   `,
+  /** Equal-height rows: every card is as tall as the tallest one in its row, and no taller. */
   grid: css`
     display: grid;
+    grid-auto-rows: 1fr;
     grid-template-columns: 1fr;
     gap: 16px;
     align-items: stretch;
@@ -111,6 +127,43 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
 
     padding-block-start: 12px;
     border-block-start: 1px solid ${cssVar.colorBorderSecondary};
+  `,
+  /** Guidance is a footnote on the card: two lines at most, the rest lives in 详情. */
+  noticeClamp: css`
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  `,
+  /**
+   * Modal chrome: the body is capped and the ScrollArea inside it takes the whole of that cap, so
+   * the header and the action row stay put while a long panel scrolls. The flex pair is what makes
+   * the ScrollArea's viewport height definite — a bare `max-height` would leave it unscrollable.
+   */
+  modalBody: css`
+    overflow: hidden;
+    display: flex;
+    max-block-size: 70vh;
+  `,
+  modalScroller: css`
+    flex: 1;
+    min-width: 0;
+    min-block-size: 0;
+  `,
+  modalFooter: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
+  `,
+  modalSection: css`
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+
+    min-width: 0;
+    padding-inline-end: 4px;
   `,
   title: css`
     display: flex;

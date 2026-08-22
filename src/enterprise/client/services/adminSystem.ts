@@ -186,7 +186,7 @@ class AdminSystemServiceImpl
   getJobs = (input?: AdminSystemGetJobsInput) => lambdaClient.admin.system.getJobs.query(input);
 
   getSandboxPackageStats = (input?: AdminSystemGetSandboxPackageStatsInput) =>
-    lambdaClient.admin.system.getSandboxPackageStats.query(input);
+    lambdaClient.admin.system.getSandboxPackageStats.query(input ?? {});
 
   getSandboxSettings = () => lambdaClient.admin.system.getSandboxSettings.query();
 

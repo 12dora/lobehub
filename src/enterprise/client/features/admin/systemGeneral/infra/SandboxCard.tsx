@@ -1,7 +1,6 @@
 'use client';
 
 import { Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
 import { Container } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -16,7 +15,9 @@ import { InfraSettingsCard } from '../InfraSettingsCard';
 import { InfraEditorActions, InfraEditorAlerts, InfraSourceTag } from './editorChrome';
 import { useInfraValueFormatters } from './format';
 import { SandboxForm } from './SandboxForm';
+import { SandboxPackageStats } from './SandboxPackageStats';
 import { infraFormStyles as formStyles } from './styles';
+import { useInfraEditModal } from './useInfraEditModal';
 import { useSandboxSettingsEditor } from './useSandboxSettingsEditor';
 
 const SANDBOX_ENV = [
@@ -42,6 +43,7 @@ export interface SandboxCardProps {
   view?: AdminSystemSandboxSettings;
 }
 
+/** An off module still owns a full-height card, so the grid stays aligned. */
 export const SandboxDisabledHint = memo(() => {
   const { t } = useTranslation('admin');
   return (
@@ -82,51 +84,99 @@ const SandboxCardBody = memo<{
   const { t } = useTranslation('admin');
   const { unset } = useInfraValueFormatters();
   const editor = useSandboxSettingsEditor({ canOperate, service, view });
+  const editModal = useInfraEditModal({
+    beginEdit: editor.beginEdit,
+    cancelEdit: editor.cancelEdit,
+    saveCount: editor.saveCount,
+  });
   const locked = editor.conflict || editor.stale;
 
-  const localFields =
-    view.provider === 'local'
-      ? [
-          {
-            label: t('systemGeneral.sandbox.fields.dockerSocket'),
-            value: unset(view.dockerSocket),
-          },
-          { label: t('systemGeneral.sandbox.fields.dockerHost'), value: unset(view.dockerHost) },
-          { label: t('systemGeneral.sandbox.fields.image'), value: unset(view.image) },
-          {
-            label: t('systemGeneral.sandbox.fields.pullPolicy'),
-            value: t(`systemGeneral.sandbox.pullPolicy.${view.pullPolicy}` as never),
-          },
-          {
-            label: t('systemGeneral.sandbox.fields.network'),
-            value: t(`systemGeneral.sandbox.network.${view.network}` as never),
-          },
-          { label: t('systemGeneral.sandbox.fields.memoryMb'), value: unset(view.memoryMb) },
-          { label: t('systemGeneral.sandbox.fields.pidsLimit'), value: unset(view.pidsLimit) },
-          { label: t('systemGeneral.sandbox.fields.cpus'), value: unset(view.cpus) },
-          { label: t('systemGeneral.sandbox.fields.timeoutMs'), value: unset(view.timeoutMs) },
-          {
-            label: t('systemGeneral.sandbox.fields.maxOutputBytes'),
-            value: unset(view.maxOutputBytes),
-          },
-          { label: t('systemGeneral.sandbox.fields.idleTtlSec'), value: unset(view.idleTtlSec) },
-          {
-            label: t('systemGeneral.sandbox.fields.maxContainers'),
-            value: unset(view.maxContainers),
-          },
-        ]
-      : [];
+  const providerField = {
+    label: t('systemGeneral.sandbox.fields.provider'),
+    value: t(`systemGeneral.sandbox.provider.${view.provider}` as never),
+  };
+
+  const local = view.provider === 'local';
+
+  /** What a container gets: which image, and the three limits an operator actually tunes. */
+  const summaryFields = local
+    ? [
+        providerField,
+        { label: t('systemGeneral.sandbox.fields.image'), value: unset(view.image) },
+        { label: t('systemGeneral.sandbox.fields.cpus'), value: unset(view.cpus) },
+        { label: t('systemGeneral.sandbox.fields.memoryMb'), value: unset(view.memoryMb) },
+        { label: t('systemGeneral.sandbox.fields.timeoutMs'), value: unset(view.timeoutMs) },
+      ]
+    : [providerField];
+
+  const detailsFields = local
+    ? [
+        providerField,
+        { label: t('systemGeneral.sandbox.fields.dockerSocket'), value: unset(view.dockerSocket) },
+        { label: t('systemGeneral.sandbox.fields.dockerHost'), value: unset(view.dockerHost) },
+        { label: t('systemGeneral.sandbox.fields.image'), value: unset(view.image) },
+        {
+          label: t('systemGeneral.sandbox.fields.pullPolicy'),
+          value: t(`systemGeneral.sandbox.pullPolicy.${view.pullPolicy}` as never),
+        },
+        {
+          label: t('systemGeneral.sandbox.fields.network'),
+          value: t(`systemGeneral.sandbox.network.${view.network}` as never),
+        },
+        { label: t('systemGeneral.sandbox.fields.memoryMb'), value: unset(view.memoryMb) },
+        { label: t('systemGeneral.sandbox.fields.pidsLimit'), value: unset(view.pidsLimit) },
+        { label: t('systemGeneral.sandbox.fields.cpus'), value: unset(view.cpus) },
+        { label: t('systemGeneral.sandbox.fields.timeoutMs'), value: unset(view.timeoutMs) },
+        {
+          label: t('systemGeneral.sandbox.fields.maxOutputBytes'),
+          value: unset(view.maxOutputBytes),
+        },
+        { label: t('systemGeneral.sandbox.fields.idleTtlSec'), value: unset(view.idleTtlSec) },
+        {
+          label: t('systemGeneral.sandbox.fields.maxContainers'),
+          value: unset(view.maxContainers),
+        },
+      ]
+    : [providerField];
+
+  /**
+   * The package ledger reads what users installed inside the sandbox, not the settings row — it is
+   * evidence for the next image build, so it belongs in 详情 next to the configuration it argues
+   * about rather than on a card that has to stay one glance tall.
+   */
+  const packageLedger = <SandboxPackageStats service={service} />;
 
   return (
     <InfraSettingsCard
       canTest={false}
-      envVars={editor.editing ? undefined : SANDBOX_ENV}
+      details={packageLedger}
+      detailsFields={detailsFields}
+      editDirty={editor.dirty}
+      editOpen={editModal.open}
+      envVars={SANDBOX_ENV}
+      fields={summaryFields}
       headerExtra={<InfraSourceTag source={view.source} />}
       icon={Container}
       probing={false}
       title={t('systemGeneral.sandbox.title')}
+      editActions={
+        canOperate ? (
+          <InfraEditorActions
+            canCancel
+            canRevert={view.source === 'db'}
+            dirty={editor.dirty}
+            invalid={editor.invalid}
+            locked={locked}
+            saving={editor.saving}
+            source={view.source}
+            onCancel={() => editModal.onOpenChange(false)}
+            onRevert={editor.revertToEnv}
+            onSave={() => void editor.save()}
+          />
+        ) : undefined
+      }
       editor={
-        editor.editing ? (
+        canOperate ? (
           <div className={formStyles.stack}>
             <InfraEditorAlerts
               conflict={editor.conflict}
@@ -148,33 +198,7 @@ const SandboxCardBody = memo<{
           </div>
         ) : undefined
       }
-      extraActions={
-        editor.editing ? (
-          <InfraEditorActions
-            canCancel={view.source !== 'db'}
-            canRevert={view.source === 'db'}
-            dirty={editor.dirty}
-            invalid={editor.invalid}
-            locked={locked}
-            saving={editor.saving}
-            source={view.source}
-            onCancel={editor.cancelEdit}
-            onRevert={editor.revertToEnv}
-            onSave={() => void editor.save()}
-          />
-        ) : canOperate ? (
-          <Button size="small" onClick={editor.beginEdit}>
-            {t('systemGeneral.edit.switchToDb')}
-          </Button>
-        ) : null
-      }
-      fields={[
-        {
-          label: t('systemGeneral.sandbox.fields.provider'),
-          value: t(`systemGeneral.sandbox.provider.${view.provider}` as never),
-        },
-        ...localFields,
-      ]}
+      onEditOpenChange={editModal.onOpenChange}
       onTest={() => undefined}
     />
   );

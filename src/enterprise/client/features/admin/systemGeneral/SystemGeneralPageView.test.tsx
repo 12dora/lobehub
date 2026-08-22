@@ -49,6 +49,26 @@ vi.mock('@lobehub/ui/base-ui', () => ({
   confirmModal: vi.fn(),
   Input: (props: Record<string, unknown>) => <input {...props} />,
   InputPassword: (props: Record<string, unknown>) => <input type="password" {...props} />,
+  // The card's two secondary surfaces: rendered only while open, exactly as base-ui does.
+  Modal: ({
+    children,
+    footer,
+    open,
+    title,
+  }: {
+    children?: ReactNode;
+    footer?: ReactNode;
+    open?: boolean;
+    title?: ReactNode;
+  }) =>
+    open ? (
+      <div role="dialog">
+        <h3>{title}</h3>
+        {children}
+        {footer}
+      </div>
+    ) : null,
+  ScrollArea: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Segmented: () => <span />,
   Select: () => <span />,
   Switch: () => <span />,
@@ -335,12 +355,13 @@ describe('SystemGeneralPageView', () => {
     );
 
     expect(screen.getAllByText('systemGeneral.source.env')).toHaveLength(2);
-    expect(screen.getAllByText('systemGeneral.edit.switchToDb')).toHaveLength(2);
-    // Read-only rows, not a form.
+    expect(screen.getAllByText('systemGeneral.card.edit')).toHaveLength(2);
+    // Read-only rows, not a form: the editor only exists inside the 编辑 modal.
     expect(screen.queryByDisplayValue('files')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('shows the editable form for a dependency that is already managed here', () => {
+  it('opens the editor for a dependency that is already managed here in a modal', () => {
     render(
       <SystemGeneralPageView
         canOperate
@@ -355,9 +376,39 @@ describe('SystemGeneralPageView', () => {
     );
 
     expect(screen.getByText('systemGeneral.source.db')).toBeTruthy();
+    // The card stays a summary until 编辑 is pressed — that is what keeps the grid aligned.
+    expect(screen.queryByDisplayValue('files')).toBeNull();
+
+    fireEvent.click(screen.getAllByText('systemGeneral.card.edit')[0]!);
+
+    expect(screen.getByRole('dialog')).toBeTruthy();
     expect(screen.getByDisplayValue('files')).toBeTruthy();
     expect(screen.getByText('systemGeneral.edit.save')).toBeTruthy();
     expect(screen.getByText('systemGeneral.edit.revert')).toBeTruthy();
+  });
+
+  it('keeps every field of a dependency reachable through 详情', () => {
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={settings()}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    // Path-style access is not one of the five summary rows…
+    expect(screen.queryByText('systemGeneral.objectStorage.fields.pathStyle')).toBeNull();
+
+    fireEvent.click(screen.getAllByText('systemGeneral.card.details')[0]!);
+
+    // …but 详情 carries the complete list, plus the variables that drive it.
+    expect(screen.getByText('systemGeneral.objectStorage.fields.pathStyle')).toBeTruthy();
+    expect(screen.getByText('S3_ENDPOINT')).toBeTruthy();
   });
 
   it('warns when a saved override exists but is not the configuration in effect', () => {

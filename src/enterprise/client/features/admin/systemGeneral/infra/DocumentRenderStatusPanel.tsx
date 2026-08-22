@@ -38,7 +38,12 @@ const styles = createStaticStyles(({ css }) => ({
     font-variant-numeric: tabular-nums;
     overflow-wrap: anywhere;
   `,
+  /* Sticky, so a scrolled queue still says which column is which. */
   headCell: css`
+    position: sticky;
+    z-index: 1;
+    inset-block-start: 0;
+
     padding-block: 4px;
     padding-inline: 0;
 
@@ -46,6 +51,13 @@ const styles = createStaticStyles(({ css }) => ({
     font-weight: ${cssVar.fontWeightStrong};
     color: ${cssVar.colorTextSecondary};
     text-align: start;
+
+    background: ${cssVar.colorBgElevated};
+  `,
+  hint: css`
+    font-size: ${cssVar.fontSizeSM};
+    line-height: 1.5;
+    color: ${cssVar.colorTextTertiary};
   `,
   metricGrid: css`
     display: grid;
@@ -64,20 +76,21 @@ const styles = createStaticStyles(({ css }) => ({
   row: css`
     border-block-start: 1px solid ${cssVar.colorBorderSecondary};
   `,
-  /* A queue table on a half-width card: never let it push the page sideways. */
+  /* The queue scrolls inside its own box: twenty jobs must never lengthen the modal. */
   scroller: css`
-    overflow-x: auto;
+    overflow: auto;
     min-width: 0;
+    max-block-size: 320px;
   `,
-  /* Sits above the read-only rows, so the rule belongs under it rather than over it. */
+  /* Sits under the configuration rows in 详情; a hairline keeps monitoring apart from settings. */
   section: css`
     display: flex;
     flex-direction: column;
     gap: 8px;
 
     min-width: 0;
-    padding-block-end: 12px;
-    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
+    padding-block-start: 12px;
+    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
   `,
   sidecarRow: css`
     display: flex;
@@ -462,6 +475,11 @@ export const DocumentRenderStatusPanel = memo<DocumentRenderStatusPanelProps>(
             </table>
           </div>
         )}
+        {status.queue.recent.length > 0 ? (
+          <span className={styles.hint}>
+            {t('systemGeneral.card.showingLatest', { count: status.queue.recent.length })}
+          </span>
+        ) : null}
 
         <MaintenanceBlock
           canOperate={canOperate && status.moduleEnabled}

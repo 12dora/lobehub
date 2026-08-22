@@ -26,6 +26,7 @@ import {
   visibleBrowserProfileOptions,
 } from './browserProfileSelection';
 import { infraFormStyles as formStyles } from './styles';
+import { useInfraEditModal } from './useInfraEditModal';
 
 export interface BrowserProfileCardProps {
   canOperate: boolean;
@@ -66,6 +67,8 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
     const [saving, setSaving] = useState(false);
     const [stale, setStale] = useState(false);
     const [draft, setDraft] = useState<BrowserProfileDraft>();
+    /** Accepted writes; the 编辑 modal closes on each one and on nothing else. */
+    const [savedCount, setSavedCount] = useState(0);
 
     // The summary reports the option ids alongside the values they resolved to.
     const storedKey = browserProfileSelectionKey(data);
@@ -135,6 +138,7 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
       setSaving(true);
       try {
         await onSave({ ...complete, expectedRevision: data.revision });
+        setSavedCount((count) => count + 1);
         toast.success(t('browserProfile.toast.saved'));
       } catch (cause) {
         // A refused save is not a failed one. The fingerprint moved under this form, so the six ids
@@ -209,10 +213,80 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
     // Nothing to amend before there is a fingerprint: that card offers 生成 instead.
     const editing = canOperate && Boolean(data) && Boolean(selection) && Boolean(visible);
 
+    /**
+     * Opening adopts whatever the platform is running now (`draft` cleared), closing throws the
+     * choice away — the summary behind the modal must never disagree with what is stored.
+     */
+    const editModal = useInfraEditModal({
+      beginEdit: () => setDraft(undefined),
+      cancelEdit: () => setDraft(undefined),
+      saveCount: savedCount,
+    });
+
+    /** The identity itself, then the four dimensions upstream actually fingerprints on. */
+    const summaryFields = data
+      ? [
+          installationIdField,
+          {
+            label: t('browserProfile.fields.chrome'),
+            /**
+             * The version, once. The curl-impersonate target name next to it repeated the
+             * same major version in jargon; it stays reachable on hover for the operator
+             * who is diagnosing a transport, and off the card for everyone else.
+             */
+            value: (
+              <Tooltip
+                title={t('browserProfile.values.impersonateProfile', {
+                  profile: data.impersonateProfile,
+                })}
+              >
+                <span>{data.chromeVersion}</span>
+              </Tooltip>
+            ),
+          },
+          {
+            label: t('browserProfile.fields.platform'),
+            value: `${formatPlatform(data.platform, data.platformVersion)} · ${data.arch}`,
+          },
+          {
+            label: t('browserProfile.fields.localeTimezone'),
+            value: `${data.locale} · ${data.timezone}`,
+          },
+          generatedAtField,
+        ]
+      : [];
+
+    const detailsFields = data
+      ? [
+          ...summaryFields.slice(0, 4),
+          {
+            label: t('browserProfile.fields.screen'),
+            value: t('browserProfile.values.screen', data.screen),
+          },
+          {
+            label: t('browserProfile.fields.compute'),
+            value: t('browserProfile.values.compute', {
+              cores: data.cores,
+              memory: data.memoryGiB,
+            }),
+          },
+          {
+            label: t('browserProfile.fields.webgl'),
+            // The summary reports the GPU only as the option it was chosen from.
+            value: options?.webgl.find((entry) => entry.id === data.webglId)?.label,
+          },
+          generatedAtField,
+        ]
+      : [];
+
     return (
       <InfraSettingsCard
         banner={banner}
         canTest={false}
+        detailsFields={detailsFields}
+        editDirty={dirty}
+        editOpen={editModal.open}
+        fields={summaryFields}
         icon={Fingerprint}
         notice={t('browserProfile.description')}
         probing={false}
@@ -222,10 +296,31 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
         // (已配置), not the 正常 that a probed dependency earns.
         status={data ? 'unknown' : 'disabled'}
         title={t('browserProfile.title')}
+        editActions={
+          editing ? (
+            <>
+              {!complete ? (
+                <span className={formStyles.hint}>{t('systemGeneral.edit.invalidDraft')}</span>
+              ) : dirty ? (
+                <span className={formStyles.hint}>{t('browserProfile.states.dirty')}</span>
+              ) : null}
+              <Button disabled={saving} size="small" onClick={() => editModal.onOpenChange(false)}>
+                {t('systemGeneral.edit.cancel')}
+              </Button>
+              <Button
+                disabled={!dirty || !complete || regenerating}
+                loading={saving}
+                size="small"
+                type="primary"
+                onClick={() => void requestSave()}
+              >
+                {t('browserProfile.actions.save')}
+              </Button>
+            </>
+          ) : undefined
+        }
         editor={
-          isLoading && !data ? (
-            <Skeleton active paragraph={{ rows: 5 }} title={false} />
-          ) : editing ? (
+          editing ? (
             <div className={formStyles.stack}>
               <InfraFieldRows fields={[installationIdField, generatedAtField]} />
               <BrowserProfileFields
@@ -239,85 +334,22 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
         }
         extraActions={
           canOperate ? (
-            <>
-              <Button
-                // Regenerating is destructive and irreversible: never offered over a card that
-                // has not resolved what it is about to replace.
-                disabled={isLoading || Boolean(error)}
-                loading={regenerating}
-                size="small"
-                onClick={requestRegenerate}
-              >
-                {t(data ? 'browserProfile.actions.regenerate' : 'browserProfile.actions.generate')}
-              </Button>
-              {editing ? (
-                <Button
-                  disabled={!dirty || !complete || regenerating}
-                  loading={saving}
-                  size="small"
-                  type="primary"
-                  onClick={() => void requestSave()}
-                >
-                  {t('browserProfile.actions.save')}
-                </Button>
-              ) : null}
-              {editing && !complete ? (
-                <span className={formStyles.hint}>{t('systemGeneral.edit.invalidDraft')}</span>
-              ) : dirty && editing ? (
-                <span className={formStyles.hint}>{t('browserProfile.states.dirty')}</span>
-              ) : null}
-            </>
+            <Button
+              // Regenerating is destructive and irreversible: never offered over a card that
+              // has not resolved what it is about to replace.
+              disabled={isLoading || Boolean(error)}
+              loading={regenerating}
+              size="small"
+              onClick={requestRegenerate}
+            >
+              {t(data ? 'browserProfile.actions.regenerate' : 'browserProfile.actions.generate')}
+            </Button>
           ) : null
         }
-        fields={
-          data
-            ? [
-                installationIdField,
-                {
-                  label: t('browserProfile.fields.chrome'),
-                  /**
-                   * The version, once. The curl-impersonate target name next to it repeated the
-                   * same major version in jargon; it stays reachable on hover for the operator
-                   * who is diagnosing a transport, and off the card for everyone else.
-                   */
-                  value: (
-                    <Tooltip
-                      title={t('browserProfile.values.impersonateProfile', {
-                        profile: data.impersonateProfile,
-                      })}
-                    >
-                      <span>{data.chromeVersion}</span>
-                    </Tooltip>
-                  ),
-                },
-                {
-                  label: t('browserProfile.fields.platform'),
-                  value: `${formatPlatform(data.platform, data.platformVersion)} · ${data.arch}`,
-                },
-                {
-                  label: t('browserProfile.fields.localeTimezone'),
-                  value: `${data.locale} · ${data.timezone}`,
-                },
-                {
-                  label: t('browserProfile.fields.screen'),
-                  value: t('browserProfile.values.screen', data.screen),
-                },
-                {
-                  label: t('browserProfile.fields.compute'),
-                  value: t('browserProfile.values.compute', {
-                    cores: data.cores,
-                    memory: data.memoryGiB,
-                  }),
-                },
-                {
-                  label: t('browserProfile.fields.webgl'),
-                  // The summary reports the GPU only as the option it was chosen from.
-                  value: options?.webgl.find((entry) => entry.id === data.webglId)?.label,
-                },
-                generatedAtField,
-              ]
-            : undefined
+        summary={
+          isLoading && !data ? <Skeleton active paragraph={{ rows: 5 }} title={false} /> : undefined
         }
+        onEditOpenChange={editModal.onOpenChange}
         onTest={noop}
       />
     );

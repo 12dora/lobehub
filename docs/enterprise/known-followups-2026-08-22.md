@@ -61,3 +61,9 @@ Codex review findings judged over-defensive, plus what P4 deliberately left open
 ## Office preview batch (2026-08-23)
 
 - **GC expiry vs. an on-demand preview conversion of the same file** (codex #4): GC deletes the prefix and clears `render.pdf` without a lock; a conversion that uploads in that window can leave a dangling `pdf` key for one request. The preview path checks object existence before presigning and reconverts on the next request, so the damage is one failed load. Not serialized on purpose.
+
+## Sandbox interrupt + package ledger (2026-08-23)
+
+- **Stop during sandbox cold start / before the pid file exists** (codex #2): `interrupt()` finds no container (or no `/tmp/lobe-fg-*.pid` yet) and reports `killed: 0`; the command then runs to completion or GNU `timeout`. Window is the provisioning time plus a few ms; closing it needs a pending-exec registry consulted at exec start. Not done on purpose — a second Stop a moment later works.
+- **Ledger `installs` is a lifetime counter per (user, manager, package)** (codex #9): the window only selects which rows count (`last_at`), so a package installed 100× last year and once today shows 101. Documented in the contract and labelled "累计安装" in the UI; per-event storage is a follow-up if the ranking ever needs true windows.
+- **Ledger records attempts, not verified installs** — the pattern is matched before the command runs (including strings inside `executeCode` source), capped at 20 packages per call and 500 rows per user.

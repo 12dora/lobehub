@@ -78,6 +78,11 @@ export interface InfraSettingsEditor<TDraft> {
   reload: () => Promise<void>;
   revertToEnv: () => void;
   save: () => Promise<void>;
+  /**
+   * Number of writes the server has accepted. The card watches it to close the 编辑 modal exactly
+   * once per successful 保存 / 恢复 — a state that cannot be inferred from `dirty` or `saving`.
+   */
+  saveCount: number;
   saving: boolean;
   /** Server snapshot moved while this draft was dirty. */
   stale: boolean;
@@ -125,6 +130,7 @@ export const useInfraSettingsEditor = <TDraft>({
   );
   const [probe, setProbe] = useState<AdminSystemTestDependencyResult | undefined>();
   const [probing, setProbing] = useState(false);
+  const [saveCount, setSaveCount] = useState(0);
 
   /** Last accepted server snapshot — the revert payload and the destination-change rule read it. */
   const [baselineDraft, setBaselineDraft] = useState<TDraft>(seed);
@@ -256,6 +262,7 @@ export const useInfraSettingsEditor = <TDraft>({
           applySnapshot(settle(target), result.revision);
           setSwitchedToDb(false);
           setProbe(undefined);
+          setSaveCount((count) => count + 1);
           toast.success(t(enabled ? 'systemGeneral.edit.saved' : 'systemGeneral.edit.reverted'));
           await invalidateAdminInfraSettings();
         },
@@ -364,6 +371,7 @@ export const useInfraSettingsEditor = <TDraft>({
     reload,
     revertToEnv,
     save,
+    saveCount,
     saving,
     stale,
     test,

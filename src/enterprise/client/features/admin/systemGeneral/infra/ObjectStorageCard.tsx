@@ -10,7 +10,7 @@ import type {
   AdminSystemTestDependencyResult,
 } from '@/enterprise/client/services/adminSystem';
 
-import { InfraSettingsCard } from '../InfraSettingsCard';
+import { InfraProbeResult, InfraSettingsCard } from '../InfraSettingsCard';
 import {
   fingerprintObjectStorageDraft,
   settleObjectStorageDraft,
@@ -30,6 +30,7 @@ import { useInfraValueFormatters } from './format';
 import { ObjectStorageForm } from './ObjectStorageForm';
 import type { InfraSettingsMutationService } from './service';
 import { infraFormStyles as formStyles } from './styles';
+import { useInfraEditModal } from './useInfraEditModal';
 import { useInfraSettingsEditor } from './useInfraSettingsEditor';
 
 /** Environment variables that drive S3 when the platform is not configured from the admin panel. */
@@ -52,7 +53,7 @@ export interface ObjectStorageCardProps {
   view: AdminSystemInfraSettings['objectStorage'];
 }
 
-/** 对象存储 card: read-only while the environment owns it, editable once it is managed here. */
+/** 对象存储 card: five rows that say where files go; the form and the rest live behind 编辑 / 详情. */
 export const ObjectStorageCard = memo<ObjectStorageCardProps>(
   ({ canOperate, onTest, probe, probing, service, view }) => {
     const { t } = useTranslation('admin');
@@ -76,28 +77,81 @@ export const ObjectStorageCard = memo<ObjectStorageCardProps>(
       validate: validateObjectStorageDraft,
     });
 
+    const editModal = useInfraEditModal({
+      beginEdit: editor.beginEdit,
+      cancelEdit: editor.cancelEdit,
+      saveCount: editor.saveCount,
+    });
     const locked = editor.conflict || editor.stale;
+
+    /** Where the bytes land, in the order an operator reads an S3 configuration. */
+    const summaryFields = [
+      { label: t('systemGeneral.objectStorage.fields.endpoint'), value: unset(view.endpoint) },
+      { label: t('systemGeneral.objectStorage.fields.region'), value: unset(view.region) },
+      { label: t('systemGeneral.objectStorage.fields.bucket'), value: unset(view.bucket) },
+      { label: t('systemGeneral.objectStorage.fields.accessKeyId'), value: unset(view.accessId) },
+      {
+        label: t('systemGeneral.objectStorage.fields.publicDomain'),
+        value: unset(view.publicDomain),
+      },
+    ];
 
     return (
       <InfraSettingsCard
         banner={failOpen ? <InfraFailOpenAlert /> : undefined}
         canTest={canOperate}
-        envVars={editor.editing ? undefined : OBJECT_STORAGE_ENV}
+        editDirty={editor.dirty}
+        editOpen={editModal.open}
+        envVars={OBJECT_STORAGE_ENV}
+        fields={summaryFields}
         headerExtra={<InfraSourceTag source={view.source} />}
         icon={Box}
-        probe={editor.editing ? editor.probe : probe}
-        probing={editor.editing ? editor.probing : probing}
+        probe={probe}
+        probing={probing}
         status={view.status}
-        testDisabled={editor.editing && editor.blocked}
         title={t('systemGeneral.objectStorage.title')}
+        detailsFields={[
+          ...summaryFields,
+          {
+            label: t('systemGeneral.objectStorage.fields.pathStyle'),
+            value: yesNo(view.pathStyle),
+          },
+        ]}
+        editActions={
+          canOperate ? (
+            <>
+              <Button
+                disabled={editor.blocked || locked}
+                loading={editor.probing}
+                size="small"
+                onClick={() => void editor.test()}
+              >
+                {t('systemGeneral.testConnection')}
+              </Button>
+              <InfraEditorActions
+                canCancel
+                canRevert={view.source === 'db' || failOpen}
+                dirty={editor.dirty}
+                invalid={editor.blocked}
+                locked={locked}
+                saving={editor.saving}
+                source={view.source}
+                onCancel={() => editModal.onOpenChange(false)}
+                onRevert={editor.revertToEnv}
+                onSave={() => void editor.save()}
+              />
+            </>
+          ) : undefined
+        }
         editor={
-          editor.editing ? (
+          canOperate ? (
             <div className={formStyles.stack}>
               <InfraEditorAlerts
                 conflict={editor.conflict}
                 stale={editor.stale}
                 onReload={() => void editor.reload()}
               />
+              {failOpen ? <InfraFailOpenAlert /> : null}
               {view.source !== 'db' && !failOpen ? (
                 <span className={formStyles.hint}>{t('systemGeneral.edit.seededFromEnv')}</span>
               ) : null}
@@ -108,50 +162,12 @@ export const ObjectStorageCard = memo<ObjectStorageCardProps>(
                 onPatch={editor.patch}
               />
               <span className={formStyles.hint}>{t('systemGeneral.edit.applyHint')}</span>
+              <InfraProbeResult probe={editor.probe} />
             </div>
           ) : undefined
         }
-        extraActions={
-          editor.editing ? (
-            <InfraEditorActions
-              canCancel={view.source !== 'db'}
-              canRevert={view.source === 'db' || failOpen}
-              dirty={editor.dirty}
-              invalid={editor.blocked}
-              locked={locked}
-              saving={editor.saving}
-              source={view.source}
-              onCancel={editor.cancelEdit}
-              onRevert={editor.revertToEnv}
-              onSave={() => void editor.save()}
-            />
-          ) : canOperate ? (
-            <Button size="small" onClick={editor.beginEdit}>
-              {t('systemGeneral.edit.switchToDb')}
-            </Button>
-          ) : null
-        }
-        fields={[
-          {
-            label: t('systemGeneral.objectStorage.fields.endpoint'),
-            value: unset(view.endpoint),
-          },
-          { label: t('systemGeneral.objectStorage.fields.region'), value: unset(view.region) },
-          { label: t('systemGeneral.objectStorage.fields.bucket'), value: unset(view.bucket) },
-          {
-            label: t('systemGeneral.objectStorage.fields.accessKeyId'),
-            value: unset(view.accessId),
-          },
-          {
-            label: t('systemGeneral.objectStorage.fields.publicDomain'),
-            value: unset(view.publicDomain),
-          },
-          {
-            label: t('systemGeneral.objectStorage.fields.pathStyle'),
-            value: yesNo(view.pathStyle),
-          },
-        ]}
-        onTest={editor.editing ? () => void editor.test() : onTest}
+        onEditOpenChange={editModal.onOpenChange}
+        onTest={onTest}
       />
     );
   },

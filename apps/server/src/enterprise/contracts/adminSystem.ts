@@ -1095,7 +1095,11 @@ export const adminSystemGetSandboxPackageStatsInputSchema = z
 
 export const adminSystemSandboxPackageStatSchema = z
   .object({
-    /** Total install invocations (attempts, success not verified) in the window. */
+    /**
+     * Lifetime install invocations (attempts, success not verified) of this package by the
+     * users who touched it inside the window — the ledger keeps one counter per
+     * (user, manager, package), not per event, so this is "how popular", not "how many this month".
+     */
     installs: z.number().int().nonnegative(),
     lastInstalledAt: z.date(),
     manager: sandboxPackageManagerSchema,

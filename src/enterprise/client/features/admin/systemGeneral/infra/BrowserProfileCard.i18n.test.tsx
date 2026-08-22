@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { MotionProvider } from '@lobehub/ui';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import i18next from 'i18next';
 import { motion } from 'motion/react';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
@@ -139,26 +139,34 @@ const renderCard = (props: Partial<BrowserProfileCardProps> = {}) =>
 describe('BrowserProfileCard with the real admin bundle', () => {
   it('renders every label and value through a key the bundle really has', () => {
     const { container } = renderCard();
+    // The dimensions that are not among the five summary rows live behind 详情.
+    fireEvent.click(screen.getByText(defaultAdmin['systemGeneral.card.details']));
 
-    const text = container.textContent ?? '';
+    const text = document.body.textContent ?? '';
     // A missing key renders as its own path — the one failure mode a mocked `t` can never show.
     expect(text).not.toContain('browserProfile.');
     // The real card composition, not a stub: title, notice, action and the field rows.
-    expect(screen.getByText(defaultAdmin['browserProfile.title'])).toBeTruthy();
+    expect(screen.getAllByText(defaultAdmin['browserProfile.title']).length).toBeGreaterThan(0);
     expect(text).toContain(defaultAdmin['browserProfile.description']);
     expect(screen.getByText(defaultAdmin['browserProfile.actions.regenerate'])).toBeTruthy();
-    expect(screen.getByText(defaultAdmin['browserProfile.fields.installationId'])).toBeTruthy();
-    expect(screen.getByText('123e4567-e89b-42d3-a456-426614174000')).toBeTruthy();
+
+    // Once on the card, once in the open 详情 modal.
+    expect(screen.getAllByText(defaultAdmin['browserProfile.fields.installationId'])).toHaveLength(
+      2,
+    );
+    expect(screen.getAllByText('123e4567-e89b-42d3-a456-426614174000')).toHaveLength(2);
     // Interpolated values resolve against the bundle's placeholders.
     expect(text).toContain('1512 × 982 @ 2×');
     expect(text).toContain('12 cores · 36 GiB');
     expect(text).not.toContain('{{');
+    expect(container.textContent).toBeTruthy();
   });
 
   it('labels every dropdown, and the save beside them, through the bundle too', () => {
-    const { container } = renderCard({ options: options() });
+    renderCard({ options: options() });
+    fireEvent.click(screen.getByText(defaultAdmin['systemGeneral.card.edit']));
 
-    const text = container.textContent ?? '';
+    const text = document.body.textContent ?? '';
     expect(text).not.toContain('browserProfile.');
     expect(screen.getByLabelText(defaultAdmin['browserProfile.fields.chrome'])).toBeTruthy();
     expect(screen.getByLabelText(defaultAdmin['browserProfile.fields.platform'])).toBeTruthy();

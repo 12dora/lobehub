@@ -136,7 +136,7 @@ describe('Admin System service adapter', () => {
     );
     await expect(adminSystemService.getSandboxPackageStats()).resolves.toBe(stats);
     expect(mocks.getSandboxPackageStats).toHaveBeenNthCalledWith(1, { days: 7, limit: 20 });
-    expect(mocks.getSandboxPackageStats).toHaveBeenNthCalledWith(2, undefined);
+    expect(mocks.getSandboxPackageStats).toHaveBeenNthCalledWith(2, {});
   });
 
   it('forwards document-render settings, status and queue actions', async () => {

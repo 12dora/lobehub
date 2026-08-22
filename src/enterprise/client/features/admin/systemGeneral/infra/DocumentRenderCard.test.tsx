@@ -49,6 +49,26 @@ vi.mock('@lobehub/ui/base-ui', () => ({
   ),
   confirmModal: (props: unknown) => uiMocks.confirmModal(props),
   Input: (props: Record<string, unknown>) => <input {...props} />,
+  // Rendered only while open, exactly as base-ui does — so "behind 详情" is a real assertion.
+  Modal: ({
+    children,
+    footer,
+    open,
+    title,
+  }: {
+    children?: ReactNode;
+    footer?: ReactNode;
+    open?: boolean;
+    title?: ReactNode;
+  }) =>
+    open ? (
+      <div role="dialog">
+        <h3>{title}</h3>
+        {children}
+        {footer}
+      </div>
+    ) : null,
+  ScrollArea: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Segmented: ({
     onChange,
     options,
@@ -76,49 +96,6 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
   useAdminAccess: () => ({ authMethod: 'password', permissions: [] }),
-}));
-
-vi.mock('../InfraSettingsCard', () => ({
-  InfraSettingsCard: ({
-    banner,
-    canTest,
-    editor,
-    extraActions,
-    fields,
-    notice,
-    onTest,
-    status,
-    title,
-  }: {
-    banner?: ReactNode;
-    canTest?: boolean;
-    editor?: ReactNode;
-    extraActions?: ReactNode;
-    fields?: Array<{ label: string; value: ReactNode }>;
-    notice?: ReactNode;
-    onTest?: () => void;
-    status?: string;
-    title: ReactNode;
-  }) => (
-    <section>
-      <h2>{title}</h2>
-      {status ? <span>{`card-status:${status}`}</span> : null}
-      {notice}
-      {banner}
-      {canTest ? (
-        <button type="button" onClick={onTest}>
-          test-connection
-        </button>
-      ) : null}
-      {editor ??
-        fields?.map((field) => (
-          <div key={field.label}>
-            {field.label}: {field.value}
-          </div>
-        ))}
-      {extraActions}
-    </section>
-  ),
 }));
 
 vi.mock('../../primitives/useUnsavedChangesGuard', () => ({
@@ -234,6 +211,9 @@ const renderCard = (ui: ReactNode) => {
   return render(<RouterProvider router={router} />);
 };
 
+const openDetails = () => fireEvent.click(screen.getByText('systemGeneral.card.details'));
+const openEditor = () => fireEvent.click(screen.getByText('systemGeneral.card.edit'));
+
 describe('DocumentRenderCard', () => {
   it('shows a modules-page hint when the module is switched off', () => {
     statusMock.data = undefined;
@@ -241,10 +221,28 @@ describe('DocumentRenderCard', () => {
 
     expect(screen.getByText('systemGeneral.documentRender.moduleDisabled')).toBeTruthy();
     expect(screen.getByText('systemGeneral.documentRender.openModules')).toBeTruthy();
-    expect(screen.queryByText('systemGeneral.edit.switchToDb')).toBeNull();
+    expect(screen.queryByText('systemGeneral.card.edit')).toBeNull();
   });
 
-  it('renders the effective values and saves an override built from them', () => {
+  it('summarises the configuration in five rows and keeps the rest in 详情', () => {
+    statusMock.data = status();
+    renderCard(<DocumentRenderCard canOperate moduleEnabled service={service()} view={view()} />);
+
+    expect(screen.getByText('systemGeneral.documentRender.fields.endpoint')).toBeTruthy();
+    expect(
+      screen.getByText('systemGeneral.documentRender.queue.summary:{"pending":2,"running":1}'),
+    ).toBeTruthy();
+    // The size limit is a 详情 reading; the card would not stay one glance tall with fifteen rows.
+    expect(screen.queryByText('systemGeneral.documentRender.fields.maxFileBytesMib')).toBeNull();
+
+    openDetails();
+
+    expect(screen.getByText('systemGeneral.documentRender.fields.maxFileBytesMib')).toBeTruthy();
+    expect(screen.getByText('32')).toBeTruthy();
+    expect(screen.getByText('DOCUMENT_RENDER_URL')).toBeTruthy();
+  });
+
+  it('saves an override built from the effective values, from inside the 编辑 modal', () => {
     statusMock.data = undefined;
     const updateDocumentRenderSettings = vi
       .fn()
@@ -258,12 +256,9 @@ describe('DocumentRenderCard', () => {
       />,
     );
 
-    expect(screen.getByText(/systemGeneral.documentRender.fields.endpoint/)).toBeTruthy();
-    // The size limit is edited and displayed in MiB, never in bytes.
-    expect(screen.getByText(/systemGeneral.documentRender.fields.maxFileBytesMib/)).toBeTruthy();
-    expect(screen.getByText(/32/)).toBeTruthy();
-
-    fireEvent.click(screen.getByText('systemGeneral.edit.switchToDb'));
+    expect(screen.queryByText('systemGeneral.edit.save')).toBeNull();
+    openEditor();
+    expect(screen.getByRole('dialog')).toBeTruthy();
     fireEvent.click(screen.getByText('systemGeneral.edit.save'));
 
     expect(updateDocumentRenderSettings).toHaveBeenCalledWith({
@@ -291,11 +286,11 @@ describe('DocumentRenderCard', () => {
       />,
     );
 
-    fireEvent.click(screen.getByText('test-connection'));
+    fireEvent.click(screen.getByText('systemGeneral.testConnection'));
     expect(testDocumentRender).toHaveBeenCalled();
   });
 
-  it('summarises the sidecar and queue, and offers retry on a failed job', async () => {
+  it('summarises the sidecar and queue in 详情, and offers retry on a failed job', () => {
     statusMock.data = status();
     const retryDocumentRenderJob = vi.fn().mockResolvedValue({ ok: true });
     renderCard(
@@ -307,31 +302,42 @@ describe('DocumentRenderCard', () => {
       />,
     );
 
-    expect(screen.getByText('card-status:healthy')).toBeTruthy();
+    // Sidecar health is the one monitoring reading the card itself carries.
+    expect(screen.getByText('systemGeneral.status.healthy')).toBeTruthy();
+    expect(screen.queryByText('systemGeneral.documentRender.queue.pending')).toBeNull();
+
+    openDetails();
+
     expect(screen.getByText('systemGeneral.documentRender.status.up')).toBeTruthy();
     expect(screen.getByText(/systemGeneral.documentRender.status.version/)).toBeTruthy();
     expect(screen.getByText('systemGeneral.documentRender.queue.pending')).toBeTruthy();
     expect(screen.getByText('file-012.pptx')).toBeTruthy();
+    // One screenful at a time: the table scrolls and says how much of the queue it shows.
+    expect(screen.getByText('systemGeneral.card.showingLatest:{"count":1}')).toBeTruthy();
 
     fireEvent.click(screen.getByText('systemGeneral.documentRender.actions.retry'));
     expect(retryDocumentRenderJob).toHaveBeenCalledWith({ jobId: 'job-1' });
   });
 
-  it('never offers queue actions to a read-only admin', () => {
+  it('never offers queue actions, an editor or a probe to a read-only admin', () => {
     statusMock.data = status();
     renderCard(
       <DocumentRenderCard moduleEnabled canOperate={false} service={service()} view={view()} />,
     );
 
+    expect(screen.queryByText('systemGeneral.card.edit')).toBeNull();
+    expect(screen.queryByText('systemGeneral.testConnection')).toBeNull();
+
+    openDetails();
+
     expect(screen.queryByText('systemGeneral.documentRender.actions.retry')).toBeNull();
-    expect(screen.queryByText('systemGeneral.edit.switchToDb')).toBeNull();
-    expect(screen.queryByText('test-connection')).toBeNull();
     expect(screen.queryByText('systemGeneral.documentRender.maintenance.run')).toBeNull();
   });
 
-  it('summarises the last sweep and the per-process feed counters', () => {
+  it('summarises the last sweep and the per-process feed counters in 详情', () => {
     statusMock.data = status();
     renderCard(<DocumentRenderCard canOperate moduleEnabled service={service()} view={view()} />);
+    openDetails();
 
     expect(screen.getByText('systemGeneral.documentRender.maintenance.title')).toBeTruthy();
     // objects · human-readable bytes, on one line.
@@ -360,6 +366,7 @@ describe('DocumentRenderCard', () => {
       },
     });
     renderCard(<DocumentRenderCard canOperate moduleEnabled service={service()} view={view()} />);
+    openDetails();
 
     expect(screen.getByText('systemGeneral.documentRender.maintenance.never')).toBeTruthy();
     expect(screen.getAllByText('— · —').length).toBe(2);
@@ -381,6 +388,7 @@ describe('DocumentRenderCard', () => {
         view={view()}
       />,
     );
+    openDetails();
 
     fireEvent.click(screen.getByText('systemGeneral.documentRender.maintenance.run'));
     await waitFor(() => expect(runDocumentRenderGc).toHaveBeenCalledWith({}));

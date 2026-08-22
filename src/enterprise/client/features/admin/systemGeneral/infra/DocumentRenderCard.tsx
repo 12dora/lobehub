@@ -1,7 +1,6 @@
 'use client';
 
 import { Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
 import { FileImage } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -23,6 +22,7 @@ import { InfraEditorActions, InfraEditorAlerts, InfraSourceTag } from './editorC
 import { useInfraValueFormatters } from './format';
 import { infraFormStyles as formStyles } from './styles';
 import { useDocumentRenderSettingsEditor } from './useDocumentRenderSettingsEditor';
+import { useInfraEditModal } from './useInfraEditModal';
 
 const DOCUMENT_RENDER_ENV = [
   'DOCUMENT_RENDER_URL',
@@ -53,6 +53,7 @@ export interface DocumentRenderCardProps {
   view?: AdminSystemDocumentRenderSettings;
 }
 
+/** An off module still owns a full-height card, so the grid stays aligned. */
 export const DocumentRenderDisabledHint = memo(() => {
   const { t } = useTranslation('admin');
   return (
@@ -93,28 +94,63 @@ const DocumentRenderCardBody = memo<{
   const { t } = useTranslation('admin');
   const { unset, yesNo } = useInfraValueFormatters();
   const editor = useDocumentRenderSettingsEditor({ canOperate, service, view });
+  const editModal = useInfraEditModal({
+    beginEdit: editor.beginEdit,
+    cancelEdit: editor.cancelEdit,
+    saveCount: editor.saveCount,
+  });
   const locked = editor.conflict || editor.stale;
   // Polled only while the card is actually on screen with a configuration to report.
   const statusQuery = useAdminDocumentRenderStatus(true, service);
   const status = statusQuery.data;
 
-  const fields = [
-    {
-      label: t('systemGeneral.documentRender.fields.endpoint'),
-      value: unset(view.config.endpoint),
-    },
-    {
-      label: t('systemGeneral.documentRender.fields.trigger'),
-      value: t(`systemGeneral.documentRender.trigger.${view.config.trigger}` as never),
-    },
+  const endpointField = {
+    label: t('systemGeneral.documentRender.fields.endpoint'),
+    value: unset(view.config.endpoint),
+  };
+  const triggerField = {
+    label: t('systemGeneral.documentRender.fields.trigger'),
+    value: t(`systemGeneral.documentRender.trigger.${view.config.trigger}` as never),
+  };
+  const mediaThresholdField = {
+    label: t('systemGeneral.documentRender.fields.mediaThresholdT2'),
+    value: unset(view.config.mediaThresholdT2),
+  };
+  const retentionField = {
+    label: t('systemGeneral.documentRender.fields.retentionDays'),
+    value: unset(view.config.retentionDays),
+  };
+
+  /**
+   * The queue in one line. Depth is the reading an operator wants from the grid — everything else
+   * the sidecar reports (latencies, recent jobs, sweeps, feed counters) is a 详情 question.
+   */
+  const queueField = {
+    label: t('systemGeneral.documentRender.fields.queue'),
+    value: status
+      ? t('systemGeneral.documentRender.queue.summary', {
+          pending: status.queue.pending,
+          running: status.queue.running,
+        })
+      : undefined,
+  };
+
+  const summaryFields = [
+    endpointField,
+    triggerField,
+    mediaThresholdField,
+    retentionField,
+    queueField,
+  ];
+
+  const detailsFields = [
+    endpointField,
+    triggerField,
     {
       label: t('systemGeneral.documentRender.fields.pptxAlwaysT2'),
       value: yesNo(view.config.pptxAlwaysT2),
     },
-    {
-      label: t('systemGeneral.documentRender.fields.mediaThresholdT2'),
-      value: unset(view.config.mediaThresholdT2),
-    },
+    mediaThresholdField,
     {
       label: t('systemGeneral.documentRender.fields.maxPages'),
       value: unset(view.config.maxPages),
@@ -155,24 +191,24 @@ const DocumentRenderCardBody = memo<{
       label: t('systemGeneral.documentRender.fields.maxImagesDefault'),
       value: unset(view.config.maxImagesDefault),
     },
-    {
-      label: t('systemGeneral.documentRender.fields.retentionDays'),
-      value: unset(view.config.retentionDays),
-    },
+    retentionField,
   ];
 
   return (
     <InfraSettingsCard
       canTest={canOperate}
-      envVars={editor.editing ? undefined : DOCUMENT_RENDER_ENV}
-      fields={fields}
+      detailsFields={detailsFields}
+      editDirty={editor.dirty}
+      editOpen={editModal.open}
+      envVars={DOCUMENT_RENDER_ENV}
+      fields={summaryFields}
       headerExtra={<InfraSourceTag source={view.source} />}
       icon={FileImage}
       probe={editor.probe}
       probing={editor.probing}
       status={status ? CARD_STATUS[status.sidecar.status] : undefined}
       title={t('systemGeneral.documentRender.title')}
-      banner={
+      details={
         status ? (
           <DocumentRenderStatusPanel
             canOperate={canOperate}
@@ -182,8 +218,24 @@ const DocumentRenderCardBody = memo<{
           />
         ) : undefined
       }
+      editActions={
+        canOperate ? (
+          <InfraEditorActions
+            canCancel
+            canRevert={view.source === 'db'}
+            dirty={editor.dirty}
+            invalid={editor.invalid}
+            locked={locked}
+            saving={editor.saving}
+            source={view.source}
+            onCancel={() => editModal.onOpenChange(false)}
+            onRevert={editor.revertToEnv}
+            onSave={() => void editor.save()}
+          />
+        ) : undefined
+      }
       editor={
-        editor.editing ? (
+        canOperate ? (
           <div className={formStyles.stack}>
             <InfraEditorAlerts
               conflict={editor.conflict}
@@ -205,26 +257,7 @@ const DocumentRenderCardBody = memo<{
           </div>
         ) : undefined
       }
-      extraActions={
-        editor.editing ? (
-          <InfraEditorActions
-            canCancel={view.source !== 'db'}
-            canRevert={view.source === 'db'}
-            dirty={editor.dirty}
-            invalid={editor.invalid}
-            locked={locked}
-            saving={editor.saving}
-            source={view.source}
-            onCancel={editor.cancelEdit}
-            onRevert={editor.revertToEnv}
-            onSave={() => void editor.save()}
-          />
-        ) : canOperate ? (
-          <Button size="small" onClick={editor.beginEdit}>
-            {t('systemGeneral.edit.switchToDb')}
-          </Button>
-        ) : null
-      }
+      onEditOpenChange={editModal.onOpenChange}
       onTest={() => void editor.test()}
     />
   );

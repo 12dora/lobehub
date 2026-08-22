@@ -54,6 +54,8 @@ export const useSandboxSettingsEditor = ({
   const [conflict, setConflict] = useState(false);
   const [stale, setStale] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
+  /** Successful writes, so the 编辑 modal closes on 保存 / 恢复 and on nothing else. */
+  const [saveCount, setSaveCount] = useState(0);
 
   const [baselineDraft, setBaselineDraft] = useState<SandboxDraft>(seed);
   const baselineFpRef = useRef<string | null>(null);
@@ -154,6 +156,7 @@ export const useSandboxSettingsEditor = ({
           );
           applySnapshot(toSandboxDraft(result), result.revision);
           setEditing(false);
+          setSaveCount((count) => count + 1);
           toast.success(t(enabled ? 'systemGeneral.edit.saved' : 'systemGeneral.edit.reverted'));
           await invalidateAdminSandboxSettings();
         },
@@ -209,6 +212,7 @@ export const useSandboxSettingsEditor = ({
     reload,
     revertToEnv,
     save,
+    saveCount,
     saving,
     stale,
   };

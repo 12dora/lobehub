@@ -10,7 +10,7 @@ import type {
   AdminSystemTestDependencyResult,
 } from '@/enterprise/client/services/adminSystem';
 
-import { InfraSettingsCard } from '../InfraSettingsCard';
+import { InfraProbeResult, InfraSettingsCard } from '../InfraSettingsCard';
 import {
   fingerprintMailDraft,
   settleMailDraft,
@@ -30,6 +30,7 @@ import { useInfraValueFormatters } from './format';
 import { MailForm } from './MailForm';
 import type { InfraSettingsMutationService } from './service';
 import { infraFormStyles as formStyles } from './styles';
+import { useInfraEditModal } from './useInfraEditModal';
 import { useInfraSettingsEditor } from './useInfraSettingsEditor';
 
 /** Environment variables that drive outbound email when it is not configured from the panel. */
@@ -54,7 +55,7 @@ export interface MailCardProps {
   view: AdminSystemInfraSettings['mail'];
 }
 
-/** 邮件服务 card: read-only while the environment owns it, editable once it is managed here. */
+/** 邮件服务 card: who sends, from where; the credentials and the rest live behind 编辑 / 详情. */
 export const MailCard = memo<MailCardProps>(
   ({ canOperate, onTest, probe, probing, service, view }) => {
     const { t } = useTranslation('admin');
@@ -78,28 +79,78 @@ export const MailCard = memo<MailCardProps>(
       validate: validateMailDraft,
     });
 
+    const editModal = useInfraEditModal({
+      beginEdit: editor.beginEdit,
+      cancelEdit: editor.cancelEdit,
+      saveCount: editor.saveCount,
+    });
     const locked = editor.conflict || editor.stale;
+
+    /** Who the mail claims to be from, and the relay that has to accept it. */
+    const summaryFields = [
+      {
+        label: t('systemGeneral.mail.fields.provider'),
+        value: t(`systemGeneral.mail.provider.${view.provider}`),
+      },
+      { label: t('systemGeneral.mail.fields.fromAddress'), value: unset(view.fromAddress) },
+      { label: t('systemGeneral.mail.fields.host'), value: unset(view.host) },
+      { label: t('systemGeneral.mail.fields.port'), value: unset(view.port) },
+      { label: t('systemGeneral.mail.fields.secure'), value: yesNo(view.secure) },
+    ];
 
     return (
       <InfraSettingsCard
         banner={failOpen ? <InfraFailOpenAlert /> : undefined}
         canTest={canOperate}
-        envVars={editor.editing ? undefined : MAIL_ENV}
+        editDirty={editor.dirty}
+        editOpen={editModal.open}
+        envVars={MAIL_ENV}
+        fields={summaryFields}
         headerExtra={<InfraSourceTag source={view.source} />}
         icon={Mail}
-        probe={editor.editing ? editor.probe : probe}
-        probing={editor.editing ? editor.probing : probing}
+        probe={probe}
+        probing={probing}
         status={view.status}
-        testDisabled={editor.editing && editor.blocked}
         title={t('systemGeneral.mail.title')}
+        detailsFields={[
+          ...summaryFields,
+          { label: t('systemGeneral.mail.fields.senderName'), value: unset(view.senderName) },
+        ]}
+        editActions={
+          canOperate ? (
+            <>
+              <Button
+                disabled={editor.blocked || locked}
+                loading={editor.probing}
+                size="small"
+                onClick={() => void editor.test()}
+              >
+                {t('systemGeneral.testConnection')}
+              </Button>
+              <InfraEditorActions
+                canCancel
+                canRevert={view.source === 'db' || failOpen}
+                dirty={editor.dirty}
+                invalid={editor.blocked}
+                locked={locked}
+                saving={editor.saving}
+                source={view.source}
+                onCancel={() => editModal.onOpenChange(false)}
+                onRevert={editor.revertToEnv}
+                onSave={() => void editor.save()}
+              />
+            </>
+          ) : undefined
+        }
         editor={
-          editor.editing ? (
+          canOperate ? (
             <div className={formStyles.stack}>
               <InfraEditorAlerts
                 conflict={editor.conflict}
                 stale={editor.stale}
                 onReload={() => void editor.reload()}
               />
+              {failOpen ? <InfraFailOpenAlert /> : null}
               {view.source !== 'db' && !failOpen ? (
                 <span className={formStyles.hint}>{t('systemGeneral.edit.seededFromEnvMail')}</span>
               ) : null}
@@ -110,41 +161,12 @@ export const MailCard = memo<MailCardProps>(
                 onPatch={editor.patch}
               />
               <span className={formStyles.hint}>{t('systemGeneral.edit.applyHint')}</span>
+              <InfraProbeResult probe={editor.probe} />
             </div>
           ) : undefined
         }
-        extraActions={
-          editor.editing ? (
-            <InfraEditorActions
-              canCancel={view.source !== 'db'}
-              canRevert={view.source === 'db' || failOpen}
-              dirty={editor.dirty}
-              invalid={editor.blocked}
-              locked={locked}
-              saving={editor.saving}
-              source={view.source}
-              onCancel={editor.cancelEdit}
-              onRevert={editor.revertToEnv}
-              onSave={() => void editor.save()}
-            />
-          ) : canOperate ? (
-            <Button size="small" onClick={editor.beginEdit}>
-              {t('systemGeneral.edit.switchToDb')}
-            </Button>
-          ) : null
-        }
-        fields={[
-          {
-            label: t('systemGeneral.mail.fields.provider'),
-            value: t(`systemGeneral.mail.provider.${view.provider}`),
-          },
-          { label: t('systemGeneral.mail.fields.host'), value: unset(view.host) },
-          { label: t('systemGeneral.mail.fields.port'), value: unset(view.port) },
-          { label: t('systemGeneral.mail.fields.fromAddress'), value: unset(view.fromAddress) },
-          { label: t('systemGeneral.mail.fields.senderName'), value: unset(view.senderName) },
-          { label: t('systemGeneral.mail.fields.secure'), value: yesNo(view.secure) },
-        ]}
-        onTest={editor.editing ? () => void editor.test() : onTest}
+        onEditOpenChange={editModal.onOpenChange}
+        onTest={onTest}
       />
     );
   },
