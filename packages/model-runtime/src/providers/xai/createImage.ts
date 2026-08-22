@@ -164,7 +164,13 @@ export async function createXAIImage(
 
     const data: XAIImageResponse = await response.json();
 
-    log('Image generation response: %O', data);
+    log(
+      'Image generation response: status=%s images=%d',
+      response.status,
+      Array.isArray((data as { data?: unknown[] })?.data)
+        ? (data as { data: unknown[] }).data.length
+        : 0,
+    );
 
     if (!data.data || data.data.length === 0) {
       throw new Error('No images generated in response');
@@ -176,11 +182,11 @@ export async function createXAIImage(
       throw new Error('No valid image URL in response');
     }
 
-    log('Image generated successfully: %s', imageUrl);
+    log('Image generated successfully: host=%s', sanitizedUrlHost(imageUrl));
 
     return { imageUrl };
   } catch (error) {
-    log('Error in createXAIImage: %O', error);
+    log('Error in createXAIImage: %s', error instanceof Error ? error.message : String(error));
 
     throw AgentRuntimeError.createImage({
       error: error as any,

@@ -45,7 +45,7 @@ export async function queryXAIVideoStatus(
   }
 
   const data = (await response.json()) as XAIVideoStatusResponse;
-  log('Video status response: %O', data);
+  log('Video status response: status=%s', (data as { status?: unknown })?.status);
 
   return data;
 }
@@ -150,12 +150,12 @@ export async function createXAIVideo(
 
   if (!response.ok) {
     const errorText = await response.text();
-    log('XAI video API error: %s %s', response.status, errorText);
+    log('XAI video API error: status=%s bodyBytes=%d', response.status, errorText.length);
     throw new Error(`XAI video API error: ${response.status} ${errorText}`);
   }
 
   const data = await response.json();
-  log('XAI video API response: %O', data);
+  log('XAI video API response: keys=%s', Object.keys((data as object) ?? {}).join(','));
 
   if (!data?.request_id) {
     throw new Error('Invalid response: missing request_id');

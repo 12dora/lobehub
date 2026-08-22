@@ -7,8 +7,11 @@ import { AgentRuntimeErrorType } from '../../types/error';
 const isHttp4xx = (status: unknown): status is number =>
   typeof status === 'number' && status >= 400 && status < 500;
 
-const ZDR_TOKEN = /ZDR|zero.data.retention/i;
+const ZDR_TOKEN = /\bZDR\b|zero[\s-]?data[\s-]?retention/i;
 const ZDR_FILE = /file/i;
+/** The refusal must be a policy statement, not any transient error that mentions ZDR. */
+const ZDR_REFUSAL =
+  /unsupported|not supported|not available|not allowed|disabled|refus|prohibit|forbidden/i;
 
 export const collectErrorStrings = (value: unknown, into: string[], depth = 0): void => {
   if (depth > 8 || value == null) return;
@@ -22,16 +25,21 @@ export const collectErrorStrings = (value: unknown, into: string[], depth = 0): 
   collectErrorStrings(value.body, into, depth + 1);
 };
 
+const isHttpStatus = (status: unknown): status is number =>
+  typeof status === 'number' && status >= 100 && status < 600;
+
+/** First numeric HTTP status found on the error chain — ANY status, so a 5xx/429 is not mistaken for "unknown". */
 const readStatus = (value: unknown, depth = 0): number | undefined => {
   if (depth > 6 || !isRecord(value)) return undefined;
-  if (isHttp4xx(value.status)) return value.status;
-  if (isHttp4xx(value.statusCode)) return value.statusCode;
+  if (isHttpStatus(value.status)) return value.status;
+  if (isHttpStatus(value.statusCode)) return value.statusCode;
   return readStatus(value.error, depth + 1);
 };
 
 /**
- * True for a 4xx (or unstatused) error whose nested message/body mentions
- * zero-data-retention and files. `exactMessages` / `pattern` OR with the
+ * True for a 4xx (or unstatused) error whose nested message/body states a
+ * zero-data-retention FILE REFUSAL (policy wording). A 5xx / 429 that merely
+ * mentions ZDR is a transient failure and must NOT trigger the text fallback. `exactMessages` / `pattern` OR with the
  * default matcher so Grok's CLI-proxy wording stays covered.
  */
 export const isXaiZdrFileUnsupportedError = (
@@ -44,7 +52,7 @@ export const isXaiZdrFileUnsupportedError = (
     (text) =>
       extras?.exactMessages?.includes(text) ||
       extras?.pattern?.test(text) ||
-      (ZDR_TOKEN.test(text) && ZDR_FILE.test(text)),
+      (ZDR_TOKEN.test(text) && ZDR_FILE.test(text) && ZDR_REFUSAL.test(text)),
   );
   if (!matched) return false;
   const status = readStatus(error);
