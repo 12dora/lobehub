@@ -7,6 +7,24 @@ import {
   resetInfraHealthMemoForTest,
 } from './infraHealthMemo';
 
+const probeMocks = vi.hoisted(() => ({
+  probeDocumentRenderHealth: vi.fn(async () => null),
+  probeSandboxHealth: vi.fn(async () => ({
+    activeContainers: 1,
+    daemonReachable: true,
+    errorCategory: null,
+    imagePresent: true,
+    lastCheckedAt: new Date('2026-08-18T00:00:00.000Z'),
+    maxContainers: 8,
+    status: 'healthy' as const,
+  })),
+}));
+
+vi.mock('./sandboxProbe', () => ({ probeSandboxHealth: probeMocks.probeSandboxHealth }));
+vi.mock('./documentRenderProbe', () => ({
+  probeDocumentRenderHealth: probeMocks.probeDocumentRenderHealth,
+}));
+
 const completeS3 = {
   S3_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
   S3_BUCKET: 'files',
@@ -49,6 +67,35 @@ describe('infraHealthMemo', () => {
   afterEach(() => {
     vi.useRealTimers();
     resetInfraHealthMemoForTest();
+  });
+
+  it('always runs the full probe set so a partial caller cannot blank the sandbox tile', async () => {
+    // The document-render settings card asks only for its own probe…
+    const partial = await getLiveInfraHealth({
+      keyManagementEnv: completeKms,
+      objectStorageEnv: {},
+      probeDocumentRender: async () => null,
+      probeKeyManagement: async () => ({
+        errorCategory: null,
+        lastCheckedAt: new Date(),
+        status: 'healthy' as const,
+      }),
+    });
+    // …but the memo it fills (shared for 30s with the status page) still carries sandbox.
+    expect(partial.sandbox?.status).toBe('healthy');
+    expect(probeMocks.probeSandboxHealth).toHaveBeenCalledTimes(1);
+
+    const status = await getLiveInfraHealth({
+      keyManagementEnv: completeKms,
+      objectStorageEnv: {},
+      probeKeyManagement: async () => ({
+        errorCategory: null,
+        lastCheckedAt: new Date(),
+        status: 'healthy' as const,
+      }),
+    });
+    expect(status.sandbox?.status).toBe('healthy');
+    expect(probeMocks.probeSandboxHealth).toHaveBeenCalledTimes(1);
   });
 
   it('probes once within the 30s TTL and coalesces in-flight callers', async () => {

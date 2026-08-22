@@ -9,6 +9,7 @@ import type {
 
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
 import type { DocumentRenderHealthProbe } from './documentRenderProbe';
+import { probeDocumentRenderHealth } from './documentRenderProbe';
 import type { DependencyHealth, InfraEnvBag } from './infraDependencyConfig';
 import {
   keyManagementHealth,
@@ -17,6 +18,7 @@ import {
 } from './infraDependencyConfig';
 import { probeObjectStorageHealth } from './infraProbes';
 import type { SandboxHealthProbe } from './sandboxProbe';
+import { probeSandboxHealth } from './sandboxProbe';
 
 const LIVE_PROBE_TTL_MS = INFRA_SETTINGS_LIMITS.SNAPSHOT_TTL_MS;
 
@@ -166,10 +168,15 @@ export const getLiveInfraHealth = async (params: {
       keyManagementEnv: params.keyManagementEnv,
       now: params.now ?? (() => new Date()),
       objectStorageEnv: params.objectStorageEnv,
-      probeDocumentRender: params.probeDocumentRender,
+      // The memo is shared by every caller for 30s, so it must always hold the full
+      // probe set: a caller that only cares about one dependency (e.g. the
+      // document-render settings card) would otherwise leave the sandbox tile
+      // missing from the status page for the next 30s.
+      probeDocumentRender:
+        params.probeDocumentRender ?? (() => probeDocumentRenderHealth(params.now)),
       probeKeyManagement: params.probeKeyManagement ?? probeKeyManagement,
       probeObjectStorageHealth: params.probeObjectStorageHealth ?? probeObjectStorageHealth,
-      probeSandbox: params.probeSandbox,
+      probeSandbox: params.probeSandbox ?? (() => probeSandboxHealth(params.now)),
     });
     // A later epoch or invalidate() must not let this result become the memo.
     if (inflight === flight && generation === startedGeneration) {
