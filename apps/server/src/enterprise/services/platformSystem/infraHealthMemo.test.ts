@@ -107,6 +107,41 @@ describe('infraHealthMemo', () => {
     expect(objectStorageProbe).toHaveBeenCalledOnce();
   });
 
+  it('coalesces the document-render probe with the 30s single-flight memo', async () => {
+    const probeDocumentRender = vi.fn(async () => ({
+      configured: true,
+      errorCategory: null,
+      lastCheckedAt: new Date(),
+      latencyMs: 18,
+      queuePending: 1,
+      queueRunning: 0,
+      status: 'healthy' as const,
+      version: '8.21.0',
+    }));
+    const params = {
+      getScopeEpoch: async () => '1',
+      keyManagementEnv: completeKms,
+      objectStorageEnv: completeS3,
+      probeDocumentRender,
+      probeKeyManagement: async () => ({
+        errorCategory: null,
+        lastCheckedAt: new Date(),
+        status: 'healthy' as const,
+      }),
+      probeObjectStorageHealth: async () => ({
+        errorCategory: null,
+        lastCheckedAt: new Date(),
+        status: 'healthy' as const,
+      }),
+    };
+
+    const first = await getLiveInfraHealth(params);
+    const second = await getLiveInfraHealth(params);
+    expect(probeDocumentRender).toHaveBeenCalledOnce();
+    expect(first.documentRender).toMatchObject({ configured: true, version: '8.21.0' });
+    expect(second.documentRender).toBe(first.documentRender);
+  });
+
   it('coalesces the sandbox probe with the 30s single-flight memo', async () => {
     const probeSandbox = vi.fn(async () => ({
       activeContainers: 1,

@@ -49,19 +49,26 @@ const createProbeCaller = createCallerFactory(authorizationProbeRouter);
 const fixture = createAdminAuthorizationFixture({ namespace: 'permission-matrix' });
 
 const o04SystemProcedurePaths = [
+  'admin.system.cancelDocumentRenderJob',
   'admin.system.cancelJob',
+  'admin.system.getDocumentRenderSettings',
+  'admin.system.getDocumentRenderStatus',
   'admin.system.getInfraSettings',
   'admin.system.getInstanceRevisions',
   'admin.system.getJobs',
   'admin.system.getSandboxSettings',
   'admin.system.getStatus',
+  'admin.system.retryDocumentRenderJob',
   'admin.system.retryJob',
   'admin.system.testDependency',
+  'admin.system.updateDocumentRenderSettings',
   'admin.system.updateInfraSettings',
   'admin.system.updateSandboxSettings',
 ] as const;
 const o04SystemProcedurePathSet = new Set<string>(o04SystemProcedurePaths);
 const o04SystemReadProcedurePaths = [
+  'admin.system.getDocumentRenderSettings',
+  'admin.system.getDocumentRenderStatus',
   'admin.system.getInfraSettings',
   'admin.system.getInstanceRevisions',
   'admin.system.getJobs',
@@ -168,6 +175,7 @@ const MATRIX_ROLE_PERMISSIONS = {
     PLATFORM_PERMISSIONS.USER_READ,
     PLATFORM_PERMISSIONS.USER_CREATE,
     PLATFORM_PERMISSIONS.USER_BAN,
+    PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE,
     PLATFORM_PERMISSIONS.USER_DELETE,
     PLATFORM_PERMISSIONS.USER_SESSION_REVOKE,
     PLATFORM_PERMISSIONS.USER_ROLE_MANAGE,

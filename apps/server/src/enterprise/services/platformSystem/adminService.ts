@@ -11,6 +11,7 @@ import {
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type {
   AdminSystemCancelJobInput,
+  AdminSystemDocumentRenderHealth,
   AdminSystemGetInstanceRevisionsInput,
   AdminSystemGetJobsInput,
   AdminSystemInstanceState,
@@ -49,6 +50,7 @@ import {
   PlatformSecretRewrapInvalidError,
 } from '../secretRewrap/errors';
 import { decodeCursor, encodeCursor, parseJobCursor } from './cursors';
+import { probeDocumentRenderHealth } from './documentRenderProbe';
 import {
   PlatformSystemJobConflictError,
   PlatformSystemJobInvalidError,
@@ -80,6 +82,7 @@ const DEFAULT_INSTANCE_STATE: AdminSystemInstanceState = 'live';
 export const RECENT_PUBLISH_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 interface PlatformSystemAdminServiceOptions {
+  documentRenderProbe?: () => Promise<AdminSystemDocumentRenderHealth | null>;
   env?: Record<string, string | undefined>;
   getScopeEpoch?: () => Promise<string>;
   jobSummary?: () => Promise<{ active: number; completed: number; failed: number; total: number }>;
@@ -103,6 +106,9 @@ interface PlatformSystemAdminServiceOptions {
 }
 
 export class PlatformSystemAdminService {
+  private readonly documentRenderProbe: NonNullable<
+    PlatformSystemAdminServiceOptions['documentRenderProbe']
+  >;
   private readonly env: Record<string, string | undefined>;
   private readonly envOverride: boolean;
   private readonly getScopeEpoch: (() => Promise<string>) | undefined;
@@ -121,6 +127,9 @@ export class PlatformSystemAdminService {
     options: PlatformSystemAdminServiceOptions = {},
   ) {
     this.envOverride = options.env !== undefined;
+    this.documentRenderProbe =
+      options.documentRenderProbe ??
+      (this.envOverride ? async () => null : () => probeDocumentRenderHealth(this.now));
     this.env = options.env ?? process.env;
     this.getScopeEpoch = options.getScopeEpoch;
     this.jobSummary = options.jobSummary ?? (() => new PlatformJobModel(this.db).getAdminSummary());
@@ -151,6 +160,7 @@ export class PlatformSystemAdminService {
       keyManagementEnv: this.env,
       now: this.now,
       objectStorageEnv,
+      probeDocumentRender: this.documentRenderProbe,
       probeKeyManagement: this.keyManagementProbe,
       probeObjectStorageHealth: this.objectStorageProbe,
       probeSandbox: this.sandboxProbe,
@@ -497,6 +507,7 @@ export class PlatformSystemAdminService {
       dependencies: projectDependencies({
         checkedAt: snapshotAt,
         databaseResult,
+        documentRender: liveInfra.documentRender ?? undefined,
         env: this.env,
         keyManagement: liveInfra.keyManagement,
         objectStorage: liveInfra.objectStorage,

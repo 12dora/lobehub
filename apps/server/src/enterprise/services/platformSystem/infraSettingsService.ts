@@ -273,7 +273,7 @@ export class InfraSettingsService {
   };
 
   testDependency = async (input: {
-    dependency: AdminSystemInfraDependency;
+    dependency: Exclude<AdminSystemInfraDependency, 'documentRender'>;
     draft?: AdminSystemMailConfig | AdminSystemObjectStorageConfig;
   }): Promise<{
     checkedAt: Date;

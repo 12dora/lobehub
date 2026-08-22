@@ -10,8 +10,12 @@ import { rebuildSandboxProviderFromSettings } from '@/server/services/sandbox/fa
 
 import {
   adminSystemAuthSnapshotStatusOutputSchema,
+  adminSystemCancelDocumentRenderJobInputSchema,
+  adminSystemCancelDocumentRenderJobOutputSchema,
   adminSystemCancelJobInputSchema,
   adminSystemCancelJobOutputSchema,
+  adminSystemGetDocumentRenderSettingsOutputSchema,
+  adminSystemGetDocumentRenderStatusOutputSchema,
   adminSystemGetInfraSettingsOutputSchema,
   adminSystemGetInstanceRevisionsInputSchema,
   adminSystemGetInstanceRevisionsOutputSchema,
@@ -23,10 +27,14 @@ import {
   adminSystemPrepareRestartOutputSchema,
   adminSystemRequestRestartInputSchema,
   adminSystemRequestRestartOutputSchema,
+  adminSystemRetryDocumentRenderJobInputSchema,
+  adminSystemRetryDocumentRenderJobOutputSchema,
   adminSystemRetryJobInputSchema,
   adminSystemRetryJobOutputSchema,
   adminSystemTestDependencyInputSchema,
   adminSystemTestDependencyOutputSchema,
+  adminSystemUpdateDocumentRenderSettingsInputSchema,
+  adminSystemUpdateDocumentRenderSettingsOutputSchema,
   adminSystemUpdateInfraSettingsInputSchema,
   adminSystemUpdateInfraSettingsOutputSchema,
   adminSystemUpdateSandboxSettingsInputSchema,
@@ -38,6 +46,15 @@ import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import { AUDIT_ACTION } from '../../services/audit/auditActionCatalog';
+import { cancelDocumentRenderJob, retryDocumentRenderJob } from '../../services/documentRender';
+import {
+  DOCUMENT_RENDER_SETTINGS_AUDIT_ACTION,
+  DOCUMENT_RENDER_SETTINGS_AUDIT_TARGET_TYPE,
+  getDocumentRenderSettingsView,
+  invalidateEffectiveDocumentRenderSettings,
+  summarizeDocumentRenderAfterDiff,
+  updateDocumentRenderSettings,
+} from '../../services/documentRenderSettings';
 import {
   IdentityProviderSystemError,
   IdentityProviderSystemService,
@@ -59,6 +76,8 @@ import { InfraSettingsDestinationError } from '../../services/infraSettings/dest
 import { InfraSettingsSecretReuseError } from '../../services/infraSettings/errors';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { PlatformSystemAdminService } from '../../services/platformSystem/adminService';
+import { testDocumentRenderDependency } from '../../services/platformSystem/documentRenderProbe';
+import { getDocumentRenderStatus } from '../../services/platformSystem/documentRenderStatus';
 import {
   PlatformSystemJobConflictError,
   PlatformSystemJobInvalidError,
@@ -250,6 +269,14 @@ const assertJobMutationReauth = async (
   });
 
 export const adminSystemRouter = router({
+  cancelDocumentRenderJob: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
+    .input(adminSystemCancelDocumentRenderJobInputSchema)
+    .output(adminSystemCancelDocumentRenderJobOutputSchema)
+    .mutation(({ ctx, input }) =>
+      executePlatformSystem(() => cancelDocumentRenderJob(ctx.serverDB, input.jobId)),
+    ),
+
   cancelJob: platformSystemBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
     .input(adminSystemCancelJobInputSchema)
@@ -273,6 +300,16 @@ export const adminSystemRouter = router({
   getAuthSnapshotStatus: systemProcedure
     .output(adminSystemAuthSnapshotStatusOutputSchema)
     .query(({ ctx }) => execute(() => createSystemService(ctx.serverDB).getAuthSnapshotStatus())),
+
+  getDocumentRenderSettings: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_READ))
+    .output(adminSystemGetDocumentRenderSettingsOutputSchema)
+    .query(() => executePlatformSystem(async () => getDocumentRenderSettingsView())),
+
+  getDocumentRenderStatus: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_READ))
+    .output(adminSystemGetDocumentRenderStatusOutputSchema)
+    .query(({ ctx }) => executePlatformSystem(() => getDocumentRenderStatus(ctx.serverDB))),
 
   getInfraSettings: platformSystemBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_READ))
@@ -345,6 +382,14 @@ export const adminSystemRouter = router({
       return execute(() => createSystemService(ctx.serverDB).requestRestart(ctx.userId!, input));
     }),
 
+  retryDocumentRenderJob: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
+    .input(adminSystemRetryDocumentRenderJobInputSchema)
+    .output(adminSystemRetryDocumentRenderJobOutputSchema)
+    .mutation(({ ctx, input }) =>
+      executePlatformSystem(() => retryDocumentRenderJob(ctx.serverDB, input.jobId)),
+    ),
+
   retryJob: platformSystemBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
     .input(adminSystemRetryJobInputSchema)
@@ -370,7 +415,41 @@ export const adminSystemRouter = router({
     .input(adminSystemTestDependencyInputSchema)
     .output(adminSystemTestDependencyOutputSchema)
     .mutation(({ input }) =>
-      executePlatformSystem(() => new InfraSettingsService().testDependency(input)),
+      executePlatformSystem(async () => {
+        if (input.dependency === 'documentRender') return testDocumentRenderDependency();
+        return new InfraSettingsService().testDependency(input);
+      }),
+    ),
+
+  updateDocumentRenderSettings: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
+    .input(adminSystemUpdateDocumentRenderSettingsInputSchema)
+    .output(adminSystemUpdateDocumentRenderSettingsOutputSchema)
+    .mutation(async ({ ctx, input }) =>
+      executePlatformSystem(async () => {
+        const view = await ctx.serverDB.transaction(async (tx) => {
+          const row = await updateDocumentRenderSettings(tx, {
+            actorId: ctx.userId!,
+            config: input.config,
+            expectedRevision: input.expectedRevision,
+            reason: input.reason,
+          });
+          await new PlatformAuditService(tx).append({
+            action: DOCUMENT_RENDER_SETTINGS_AUDIT_ACTION,
+            actorUserId: ctx.userId!,
+            afterDiff: summarizeDocumentRenderAfterDiff(input.config),
+            configRevision: row.revision,
+            reason: input.reason,
+            result: 'success',
+            targetId: 'documentRender',
+            targetType: DOCUMENT_RENDER_SETTINGS_AUDIT_TARGET_TYPE,
+          });
+          return row;
+        });
+        invalidateEffectiveDocumentRenderSettings();
+        invalidateInfraHealthMemo();
+        return view;
+      }),
     ),
 
   updateInfraSettings: platformSystemBase

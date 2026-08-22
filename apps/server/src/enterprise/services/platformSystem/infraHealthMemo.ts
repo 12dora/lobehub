@@ -2,9 +2,13 @@ import {
   INFRA_SETTINGS_INVALIDATION_SCOPE,
   INFRA_SETTINGS_LIMITS,
 } from '@/const/platform/infraSettings';
-import type { AdminSystemSandboxHealth } from '@/server/enterprise/contracts/adminSystem';
+import type {
+  AdminSystemDocumentRenderHealth,
+  AdminSystemSandboxHealth,
+} from '@/server/enterprise/contracts/adminSystem';
 
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
+import type { DocumentRenderHealthProbe } from './documentRenderProbe';
 import type { DependencyHealth, InfraEnvBag } from './infraDependencyConfig';
 import {
   keyManagementHealth,
@@ -17,6 +21,7 @@ import type { SandboxHealthProbe } from './sandboxProbe';
 const LIVE_PROBE_TTL_MS = INFRA_SETTINGS_LIMITS.SNAPSHOT_TTL_MS;
 
 export interface LiveInfraHealth {
+  documentRender?: AdminSystemDocumentRenderHealth | null;
   keyManagement: DependencyHealth;
   objectStorage: DependencyHealth;
   sandbox?: AdminSystemSandboxHealth | null;
@@ -81,23 +86,27 @@ const runLiveProbes = async (params: {
   keyManagementEnv: InfraEnvBag;
   now: () => Date;
   objectStorageEnv: InfraEnvBag;
+  probeDocumentRender?: DocumentRenderHealthProbe;
   probeKeyManagement: LiveInfraHealthProbe;
   probeObjectStorageHealth: LiveInfraHealthProbe;
   probeSandbox?: SandboxHealthProbe;
 }): Promise<LiveInfraHealth> => {
   const objectStorageClassified = objectStorageHealth(params.objectStorageEnv);
   const keyManagementClassified = keyManagementHealth(params.keyManagementEnv);
-  const [objectStorageResult, keyManagementResult, sandboxResult] = await Promise.allSettled([
-    shouldSkipLiveProbe(objectStorageClassified)
-      ? Promise.resolve(objectStorageClassified)
-      : params.probeObjectStorageHealth(params.objectStorageEnv),
-    shouldSkipLiveProbe(keyManagementClassified)
-      ? Promise.resolve(keyManagementClassified)
-      : params.probeKeyManagement(params.keyManagementEnv),
-    params.probeSandbox ? params.probeSandbox() : Promise.resolve(null),
-  ]);
+  const [objectStorageResult, keyManagementResult, sandboxResult, documentRenderResult] =
+    await Promise.allSettled([
+      shouldSkipLiveProbe(objectStorageClassified)
+        ? Promise.resolve(objectStorageClassified)
+        : params.probeObjectStorageHealth(params.objectStorageEnv),
+      shouldSkipLiveProbe(keyManagementClassified)
+        ? Promise.resolve(keyManagementClassified)
+        : params.probeKeyManagement(params.keyManagementEnv),
+      params.probeSandbox ? params.probeSandbox() : Promise.resolve(null),
+      params.probeDocumentRender ? params.probeDocumentRender() : Promise.resolve(null),
+    ]);
   const checkedAt = params.now();
   return {
+    documentRender: documentRenderResult.status === 'fulfilled' ? documentRenderResult.value : null,
     keyManagement: settledOrUnavailable(keyManagementResult, checkedAt),
     objectStorage: settledOrUnavailable(objectStorageResult, checkedAt),
     sandbox: sandboxResult.status === 'fulfilled' ? sandboxResult.value : null,
@@ -116,6 +125,7 @@ export const getLiveInfraHealth = async (params: {
   keyManagementEnv: InfraEnvBag;
   now?: () => Date;
   objectStorageEnv: InfraEnvBag;
+  probeDocumentRender?: DocumentRenderHealthProbe;
   probeKeyManagement?: LiveInfraHealthProbe;
   probeObjectStorageHealth?: LiveInfraHealthProbe;
   probeSandbox?: SandboxHealthProbe;
@@ -142,6 +152,7 @@ export const getLiveInfraHealth = async (params: {
       keyManagementEnv: params.keyManagementEnv,
       now: params.now ?? (() => new Date()),
       objectStorageEnv: params.objectStorageEnv,
+      probeDocumentRender: params.probeDocumentRender,
       probeKeyManagement: params.probeKeyManagement ?? probeKeyManagement,
       probeObjectStorageHealth: params.probeObjectStorageHealth ?? probeObjectStorageHealth,
       probeSandbox: params.probeSandbox,

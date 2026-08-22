@@ -223,6 +223,17 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'Change the platform home-sidebar layout policy (user vs platform-managed).',
     { reason: noReason },
   ),
+  'admin.system.cancelDocumentRenderJob': regularMutation(
+    'admin.system.cancelDocumentRenderJob',
+    'low',
+    'Cancel a queued document-render job without changing saved settings.',
+    {
+      audit: notApplicable(
+        'The bounded queue control does not persist configuration or write an audit row.',
+      ),
+      reason: noReason,
+    },
+  ),
   'admin.system.cancelJob': dangerousMutation(
     'admin.system.cancelJob',
     'high',
@@ -240,6 +251,17 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'critical',
     'Request process restart to activate identity configuration.',
     { lastKnownGood: identityLkg, reauth: recentReauth },
+  ),
+  'admin.system.retryDocumentRenderJob': regularMutation(
+    'admin.system.retryDocumentRenderJob',
+    'low',
+    'Retry a failed document-render job without changing saved settings.',
+    {
+      audit: notApplicable(
+        'The bounded queue control does not persist configuration or write an audit row.',
+      ),
+      reason: noReason,
+    },
   ),
   'admin.system.retryJob': dangerousMutation(
     'admin.system.retryJob',
@@ -262,6 +284,12 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
       ),
       reason: noReason,
     },
+  ),
+  'admin.system.updateDocumentRenderSettings': regularMutation(
+    'admin.system.updateDocumentRenderSettings',
+    'medium',
+    'Replace platform document-render sidecar limits and trigger. Takes effect on the next upload or on-demand job.',
+    { reason: optionalReasonInput },
   ),
   'admin.system.updateInfraSettings': dangerousMutation(
     'admin.system.updateInfraSettings',

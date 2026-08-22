@@ -361,6 +361,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'mutation',
+    path: 'admin.system.cancelDocumentRenderJob',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.system.cancelJob',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
@@ -368,6 +373,16 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
     kind: 'query',
     path: 'admin.system.getAuthSnapshotStatus',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.OIDC_PUBLISH] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.system.getDocumentRenderSettings',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.system.getDocumentRenderStatus',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
   },
   {
     kind: 'query',
@@ -406,12 +421,22 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'mutation',
+    path: 'admin.system.retryDocumentRenderJob',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.system.retryJob',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
   {
     kind: 'mutation',
     path: 'admin.system.testDependency',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.system.updateDocumentRenderSettings',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
   {

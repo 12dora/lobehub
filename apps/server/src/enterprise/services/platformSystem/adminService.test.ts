@@ -1231,4 +1231,49 @@ describe('PlatformSystemAdminService status', () => {
       status: 'unavailable',
     });
   });
+
+  it('includes documentRender when the probe returns health and omits it when null', async () => {
+    const checkedAt = new Date('2026-08-22T12:00:00.000Z');
+    const withHealth = await new PlatformSystemAdminService(db, {
+      documentRenderProbe: async () => ({
+        configured: true,
+        errorCategory: null,
+        lastCheckedAt: checkedAt,
+        latencyMs: 18,
+        queuePending: 1,
+        queueRunning: 0,
+        status: 'healthy',
+        version: '8.21.0',
+      }),
+      env: { ENABLE_DATABASE_OIDC: '0', ENABLE_PLATFORM_ADMIN: '1' },
+      now: () => checkedAt,
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(withHealth)).not.toThrow();
+    expect(withHealth.dependencies.documentRender).toMatchObject({
+      configured: true,
+      status: 'healthy',
+      version: '8.21.0',
+    });
+
+    resetInfraHealthMemoForTest();
+
+    const omitted = await new PlatformSystemAdminService(db, {
+      documentRenderProbe: async () => null,
+      env: { ENABLE_DATABASE_OIDC: '0', ENABLE_PLATFORM_ADMIN: '1' },
+      now: () => checkedAt,
+      redisProbe: async () => ({
+        errorCategory: null,
+        lastCheckedAt: null,
+        status: 'disabled',
+      }),
+    }).getStatus();
+
+    expect(omitted.dependencies).not.toHaveProperty('documentRender');
+  });
 });

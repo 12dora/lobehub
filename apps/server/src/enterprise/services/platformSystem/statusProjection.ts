@@ -1,7 +1,10 @@
 import { getRedisConfig } from '@/envs/redis';
 import { createRedisWithPrefix, isRedisEnabled } from '@/libs/redis/manager';
 import type { BaseRedisProvider, RedisConfig } from '@/libs/redis/types';
-import type { AdminSystemSandboxHealth } from '@/server/enterprise/contracts/adminSystem';
+import type {
+  AdminSystemDocumentRenderHealth,
+  AdminSystemSandboxHealth,
+} from '@/server/enterprise/contracts/adminSystem';
 
 import type { IdentityProviderStartupHealth } from '../identityProvider/startupArtifact';
 import {
@@ -173,14 +176,23 @@ const withCheckedAt = (health: DependencyHealth, checkedAt: Date): DependencyHea
 export const projectDependencies = (params: {
   checkedAt: Date;
   databaseResult: PromiseSettledResult<unknown>;
+  documentRender?: AdminSystemDocumentRenderHealth | null;
   env: Record<string, string | undefined>;
   keyManagement: DependencyHealth;
   objectStorage: DependencyHealth;
   redisResult: PromiseSettledResult<DependencyHealth>;
   sandbox?: AdminSystemSandboxHealth | null;
 }) => {
-  const { checkedAt, env, databaseResult, keyManagement, objectStorage, redisResult, sandbox } =
-    params;
+  const {
+    checkedAt,
+    documentRender,
+    env,
+    databaseResult,
+    keyManagement,
+    objectStorage,
+    redisResult,
+    sandbox,
+  } = params;
   return {
     database:
       databaseResult.status === 'fulfilled'
@@ -201,6 +213,7 @@ export const projectDependencies = (params: {
             lastCheckedAt: checkedAt,
             status: 'unavailable',
           } as const),
+    ...(documentRender ? { documentRender } : {}),
     ...(sandbox ? { sandbox } : {}),
   };
 };

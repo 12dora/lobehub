@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { platformDocumentRenderSettingsSchema } from '@/types/platform/documentRenderSettings';
+
 import { containsEnterpriseSecretMaterial } from '../security/redaction';
 import {
   platformConvergenceDomainSchema,
@@ -58,6 +60,17 @@ export const adminSystemSandboxHealthSchema = adminSystemDependencyHealthSchema
     imagePresent: z.boolean(),
     lastError: z.string().trim().max(500).optional(),
     maxContainers: z.number().int().positive(),
+  })
+  .strict();
+
+export const adminSystemDocumentRenderHealthSchema = adminSystemDependencyHealthSchema
+  .extend({
+    configured: z.boolean(),
+    lastError: z.string().trim().max(500).optional(),
+    latencyMs: z.number().int().nonnegative().optional(),
+    queuePending: z.number().int().nonnegative(),
+    queueRunning: z.number().int().nonnegative(),
+    version: z.string().trim().max(64).optional(),
   })
   .strict();
 
@@ -151,6 +164,7 @@ export const adminSystemGetStatusOutputSchema = z
     dependencies: z
       .object({
         database: adminSystemDependencyHealthSchema,
+        documentRender: adminSystemDocumentRenderHealthSchema.optional(),
         keyManagement: adminSystemDependencyHealthSchema,
         mail: adminSystemDependencyHealthSchema,
         objectStorage: adminSystemDependencyHealthSchema,
@@ -452,7 +466,7 @@ export const adminSystemRequestRestartOutputSchema = z
   })
   .strict();
 
-export const adminSystemInfraDependencySchema = z.enum(['mail', 'objectStorage']);
+export const adminSystemInfraDependencySchema = z.enum(['documentRender', 'mail', 'objectStorage']);
 
 export const adminSystemTestDependencyReasonSchema = z.enum([
   'configured_unverified',
@@ -621,6 +635,13 @@ export const adminSystemTestDependencyInputSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'draft must be a mail config',
+        path: ['draft'],
+      });
+    }
+    if (value.dependency === 'documentRender') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'draft is not supported for documentRender',
         path: ['draft'],
       });
     }
@@ -876,3 +897,115 @@ export type AdminSystemUpdateSandboxSettingsInput = z.input<
 export type AdminSystemUpdateSandboxSettingsOutput = z.infer<
   typeof adminSystemUpdateSandboxSettingsOutputSchema
 >;
+
+export const adminSystemDocumentRenderJobIdSchema = z.string().trim().min(1).max(128);
+
+export const adminSystemDocumentRenderResolvedConfigSchema = z
+  .object({
+    concurrency: z.number().int().positive(),
+    contactSheetCols: z.number().int().min(1).max(6),
+    contactSheetRows: z.number().int().min(1).max(8),
+    endpoint: z.string().trim().max(512).nullable(),
+    longEdgePx: z.number().int().min(256).max(4096),
+    maxDocsPerRequest: z.number().int().positive(),
+    maxFileBytes: z.number().int().positive(),
+    maxImagesDefault: z.number().int().positive(),
+    maxPages: z.number().int().positive(),
+    mediaThresholdT2: z.number().int().positive(),
+    pptxAlwaysT2: z.boolean(),
+    retentionDays: z.number().int().nonnegative(),
+    thumbEdgePx: z.number().int().min(128).max(1024),
+    tilesForDensePages: z.boolean(),
+    timeoutSec: z.number().int().positive(),
+    trigger: z.enum(['onDemand', 'onUpload']),
+  })
+  .strict();
+
+export const adminSystemGetDocumentRenderSettingsOutputSchema = z
+  .object({
+    config: adminSystemDocumentRenderResolvedConfigSchema,
+    enabled: z.boolean(),
+    moduleEnabled: z.boolean(),
+    revision: z.number().int().nonnegative(),
+    source: z.enum(['db', 'env']),
+  })
+  .strict();
+
+export const adminSystemUpdateDocumentRenderSettingsInputSchema = z
+  .object({
+    config: platformDocumentRenderSettingsSchema,
+    expectedRevision: z.number().int().nonnegative(),
+    reason: reasonSchema.optional(),
+  })
+  .strict();
+
+export const adminSystemUpdateDocumentRenderSettingsOutputSchema =
+  adminSystemGetDocumentRenderSettingsOutputSchema;
+
+export const adminSystemDocumentRenderQueueRecentSchema = z
+  .object({
+    durationMs: z.number().int().nonnegative().nullable(),
+    error: z.string().nullable(),
+    ext: z.string(),
+    fileId: z.string(),
+    finishedAt: z.string().nullable(),
+    id: z.string(),
+    pages: z.number().int().nonnegative().nullable(),
+    status: z.string(),
+  })
+  .strict();
+
+export const adminSystemGetDocumentRenderStatusOutputSchema = z
+  .object({
+    configured: z.boolean(),
+    moduleEnabled: z.boolean(),
+    queue: z
+      .object({
+        avgMs: z.number().nullable(),
+        failed24h: z.number().int().nonnegative(),
+        p95Ms: z.number().nullable(),
+        pending: z.number().int().nonnegative(),
+        recent: z.array(adminSystemDocumentRenderQueueRecentSchema).max(20),
+        running: z.number().int().nonnegative(),
+        succeeded24h: z.number().int().nonnegative(),
+      })
+      .strict(),
+    sidecar: z
+      .object({
+        checkedAt: z.string(),
+        error: z.string().optional(),
+        latencyMs: z.number().int().nonnegative().optional(),
+        status: z.enum(['disabled', 'down', 'unconfigured', 'up']),
+        version: z.string().optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const adminSystemRetryDocumentRenderJobInputSchema = z
+  .object({ jobId: adminSystemDocumentRenderJobIdSchema })
+  .strict();
+export const adminSystemRetryDocumentRenderJobOutputSchema = z.object({ ok: z.boolean() }).strict();
+
+export const adminSystemCancelDocumentRenderJobInputSchema = z
+  .object({ jobId: adminSystemDocumentRenderJobIdSchema })
+  .strict();
+export const adminSystemCancelDocumentRenderJobOutputSchema = z
+  .object({ ok: z.boolean() })
+  .strict();
+
+export type AdminSystemDocumentRenderHealth = z.infer<typeof adminSystemDocumentRenderHealthSchema>;
+export type AdminSystemGetDocumentRenderSettings = z.infer<
+  typeof adminSystemGetDocumentRenderSettingsOutputSchema
+>;
+export type AdminSystemGetDocumentRenderSettingsOutput = AdminSystemGetDocumentRenderSettings;
+export type AdminSystemUpdateDocumentRenderSettingsInput = z.input<
+  typeof adminSystemUpdateDocumentRenderSettingsInputSchema
+>;
+export type AdminSystemUpdateDocumentRenderSettingsOutput = z.infer<
+  typeof adminSystemUpdateDocumentRenderSettingsOutputSchema
+>;
+export type AdminSystemGetDocumentRenderStatus = z.infer<
+  typeof adminSystemGetDocumentRenderStatusOutputSchema
+>;
+export type AdminSystemGetDocumentRenderStatusOutput = AdminSystemGetDocumentRenderStatus;

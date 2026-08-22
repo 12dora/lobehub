@@ -8,6 +8,7 @@ import { getTestDB } from '@/database/core/getTestDB';
 import {
   permissions,
   platformAuditLogs,
+  platformDocumentRenderSettings,
   platformIdentityProviderInstances,
   platformIdentityProviderRestartRequests,
   platformInfraSettings,
@@ -24,6 +25,7 @@ import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
 import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
+import { resetEffectiveDocumentRenderSettingsForTest } from '../../services/documentRenderSettings';
 import { resetEffectiveSandboxSettingsForTest } from '../../services/sandboxSettings';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { seedLiveActorSession } from '../../testing/seedLiveActorSession';
@@ -38,6 +40,40 @@ const readerRoleName = 'm11_system_unrelated_reader';
 vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(async () => db) }));
 vi.mock('@/server/services/sandbox/factory', () => ({
   rebuildSandboxProviderFromSettings: vi.fn(async () => undefined),
+}));
+vi.mock('../../services/documentRender', () => ({
+  cancelDocumentRenderJob: vi.fn(async () => ({ ok: true })),
+  deleteDocumentRenderArtifacts: vi.fn(async () => undefined),
+  enqueueDocumentRenderJob: vi.fn(async () => null),
+  ensureDocumentRenderWorkerStarted: vi.fn(),
+  getDocumentRenderQueueStats: vi.fn(async () => ({
+    avgMs: null,
+    failed24h: 0,
+    p95Ms: null,
+    pending: 0,
+    recent: [],
+    running: 0,
+    succeeded24h: 0,
+  })),
+  probeGotenberg: vi.fn(async () => ({ latencyMs: 12, ok: true, version: '8.21.0' })),
+  retryDocumentRenderJob: vi.fn(async () => ({ ok: true })),
+}));
+vi.mock('@/server/enterprise/services/documentRender', () => ({
+  cancelDocumentRenderJob: vi.fn(async () => ({ ok: true })),
+  deleteDocumentRenderArtifacts: vi.fn(async () => undefined),
+  enqueueDocumentRenderJob: vi.fn(async () => null),
+  ensureDocumentRenderWorkerStarted: vi.fn(),
+  getDocumentRenderQueueStats: vi.fn(async () => ({
+    avgMs: null,
+    failed24h: 0,
+    p95Ms: null,
+    pending: 0,
+    recent: [],
+    running: 0,
+    succeeded24h: 0,
+  })),
+  probeGotenberg: vi.fn(async () => ({ latencyMs: 12, ok: true, version: '8.21.0' })),
+  retryDocumentRenderJob: vi.fn(async () => ({ ok: true })),
 }));
 
 vi.mock('../../services/infraSettings/destinationPolicy', async (importOriginal) => {
@@ -56,6 +92,7 @@ const cleanup = async () => {
   await db.delete(platformJobs);
   await db.delete(platformInfraSettings);
   await db.delete(platformSandboxSettings);
+  await db.delete(platformDocumentRenderSettings);
   await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
   const ownedRoles = await db
     .select({ id: roles.id })
@@ -75,6 +112,7 @@ beforeEach(async () => {
   vi.stubEnv('ENABLE_DATABASE_OIDC', '1');
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   resetEffectiveSandboxSettingsForTest();
+  resetEffectiveDocumentRenderSettingsForTest();
   await cleanup();
   await db.insert(users).values(Object.values(ids).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -484,5 +522,96 @@ describe('admin.system operations gate', () => {
         expectedRevision: 0,
       }),
     ).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('lets a system reader load document-render settings and denies a write', async () => {
+    const operator = await callerFor(ids.operator);
+    await expect(operator.getDocumentRenderSettings()).resolves.toMatchObject({
+      config: { trigger: expect.any(String) },
+      enabled: false,
+      source: 'env',
+    });
+
+    const reader = await callerFor(ids.reader);
+    await expect(reader.getDocumentRenderSettings()).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'PLATFORM_PERMISSION_DENIED',
+    });
+    await expect(
+      reader.updateDocumentRenderSettings({
+        config: { enabled: true, endpoint: 'http://document-render:3000' },
+        expectedRevision: 0,
+      }),
+    ).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'PLATFORM_PERMISSION_DENIED',
+    });
+  });
+
+  it('persists document-render settings via CAS and writes an audit row', async () => {
+    const operator = await callerFor(ids.operator);
+    const result = await operator.updateDocumentRenderSettings({
+      config: {
+        enabled: true,
+        endpoint: 'http://document-render:3000',
+        trigger: 'onDemand',
+      },
+      expectedRevision: 0,
+    });
+    expect(result).toMatchObject({
+      config: {
+        endpoint: 'http://document-render:3000',
+        trigger: 'onDemand',
+      },
+      enabled: true,
+      revision: 1,
+      source: 'db',
+    });
+
+    const logs = await db.select().from(platformAuditLogs);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        action: 'system.infra.document_render.update',
+        result: 'success',
+        targetId: 'documentRender',
+        targetType: 'infra_settings',
+      }),
+    );
+
+    await expect(
+      operator.updateDocumentRenderSettings({
+        config: { enabled: false },
+        expectedRevision: 0,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('lets an operator probe, retry, and cancel document-render jobs', async () => {
+    const { cancelDocumentRenderJob, probeGotenberg, retryDocumentRenderJob } =
+      await import('../../services/documentRender');
+    const operator = await callerFor(ids.operator);
+    await operator.updateDocumentRenderSettings({
+      config: { enabled: true, endpoint: 'http://document-render:3000' },
+      expectedRevision: 0,
+    });
+
+    await expect(operator.testDependency({ dependency: 'documentRender' })).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(probeGotenberg).toHaveBeenCalledWith('http://document-render:3000', 5000);
+
+    await expect(operator.getDocumentRenderStatus()).resolves.toMatchObject({
+      sidecar: { checkedAt: expect.any(String) },
+    });
+
+    await expect(operator.retryDocumentRenderJob({ jobId: 'pjob_render1' })).resolves.toEqual({
+      ok: true,
+    });
+    expect(retryDocumentRenderJob).toHaveBeenCalledWith(db, 'pjob_render1');
+
+    await expect(operator.cancelDocumentRenderJob({ jobId: 'pjob_render1' })).resolves.toEqual({
+      ok: true,
+    });
+    expect(cancelDocumentRenderJob).toHaveBeenCalledWith(db, 'pjob_render1');
   });
 });
