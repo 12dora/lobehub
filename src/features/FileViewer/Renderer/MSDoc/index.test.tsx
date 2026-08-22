@@ -6,7 +6,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type DocumentPreviewResult } from '@/types/files/render';
 
 import MSDocViewer from './index';
-import { getPreviewRefreshInterval } from './useDocumentPreview';
+import {
+  DOCUMENT_PREVIEW_READY_REFRESH_INTERVAL,
+  getPreviewRefreshInterval,
+} from './useDocumentPreview';
 
 const getDocumentPreview = vi.hoisted(() => vi.fn());
 
@@ -143,7 +146,9 @@ describe('getPreviewRefreshInterval', () => {
   });
 
   it('stops polling once the preview resolves', () => {
-    expect(getPreviewRefreshInterval({ status: 'ready', url: 'https://s3/a.pdf' }, false)).toBe(0);
+    expect(getPreviewRefreshInterval({ status: 'ready', url: 'https://s3/a.pdf' }, false)).toBe(
+      DOCUMENT_PREVIEW_READY_REFRESH_INTERVAL,
+    );
     expect(getPreviewRefreshInterval({ status: 'failed' }, false)).toBe(0);
     expect(getPreviewRefreshInterval(undefined, false)).toBe(0);
   });

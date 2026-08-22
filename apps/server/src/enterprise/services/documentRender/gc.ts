@@ -2,7 +2,7 @@ import { readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import debug from 'debug';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 
 import { PlatformJobModel } from '@/database/models/platform/job';
 import { files } from '@/database/schemas';
@@ -118,7 +118,12 @@ const expireRetainedArtifacts = async (
     .from(files)
     .where(
       and(
-        inArray(sql<string>`${files.metadata} -> 'render' ->> 'status'`, ['partial', 'ready']),
+        or(
+          inArray(sql<string>`${files.metadata} -> 'render' ->> 'status'`, ['partial', 'ready']),
+          // On-demand preview renditions (T0 / legacy formats) keep `status: skipped`
+          // or no status at all; they still hold a source.pdf that must expire.
+          sql`${files.metadata} -> 'render' ->> 'pdf' is not null`,
+        ),
         sql`${files.metadata} -> 'render' ->> 'updatedAt' is not null`,
         sql`(CASE WHEN (${files.metadata} -> 'render' ->> 'updatedAt') ~ ${RENDER_UPDATED_AT_ISO_RE} THEN (${files.metadata} -> 'render' ->> 'updatedAt')::timestamptz END) < now() - (${retentionDays}::int * interval '1 day')`,
       ),

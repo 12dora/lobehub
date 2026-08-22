@@ -57,3 +57,7 @@ Codex review findings judged over-defensive, plus what P4 deliberately left open
 - **Artifact reuse trusts the client-supplied `files.file_hash`** (codex P4 review #1). The upstream upload contract already deduplicates object storage by that hash (`checkHash` / `global_files`), so a spoofed hash already serves the first uploader's bytes to later uploaders; render-artifact reuse adds no new exposure. A server-verified digest at upload would close both at once.
 - **Retention expiry vs. a concurrent retry/feed** (codex #4): GC selects old ready/partial rows and deletes without re-checking status under a lock; an operator retry issued in that window could lose its fresh artifacts once. Next scheduled render re-creates them; not serialized on purpose.
 - **Feed notices/counters describe planned images** (codex #11): if an artifact object is missing at load time the notice may still claim it was attached. Cosmetic; artifacts only vanish through deletion/GC.
+
+## Office preview batch (2026-08-23)
+
+- **GC expiry vs. an on-demand preview conversion of the same file** (codex #4): GC deletes the prefix and clears `render.pdf` without a lock; a conversion that uploads in that window can leave a dangling `pdf` key for one request. The preview path checks object existence before presigning and reconverts on the next request, so the damage is one failed load. Not serialized on purpose.

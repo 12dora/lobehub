@@ -209,6 +209,48 @@ describe('getDocumentPreview', () => {
     expect(uploadPdfArtifact).toHaveBeenCalledTimes(1);
   });
 
+  it('never presigns a client-supplied pdf key — the key is derived from the file id', async () => {
+    const file = officeFile({
+      metadata: {
+        render: { pdf: 'files/render/victim-file/source.pdf', status: 'ready', tier: 'T2' },
+      },
+    });
+
+    await expect(previewOf(file)).resolves.toMatchObject({ status: 'ready' });
+    expect(s3Mocks.getFileMetadata).toHaveBeenCalledWith('files/render/file-1/source.pdf');
+    expect(s3Mocks.createPreSignedUrlForPreview).toHaveBeenCalledWith(
+      'files/render/file-1/source.pdf',
+      15 * 60,
+    );
+    expect(s3Mocks.getFileMetadata).not.toHaveBeenCalledWith('files/render/victim-file/source.pdf');
+  });
+
+  it('serves a cached failure during the cooldown instead of reconverting', async () => {
+    vi.mocked(convertToPdf).mockRejectedValue(new Error('Gotenberg convert failed: HTTP 500'));
+
+    await expect(previewOf(officeFile())).resolves.toMatchObject({ status: 'failed' });
+    await expect(previewOf(officeFile())).resolves.toMatchObject({ status: 'failed' });
+    expect(convertToPdf).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps concurrent on-demand conversions and answers pending beyond the cap', async () => {
+    const releases: Array<() => void> = [];
+    vi.mocked(convertToPdf).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releases.push(() => resolve(new Uint8Array([1])));
+        }),
+    );
+
+    const first = previewOf(officeFile({ id: 'file-a' }));
+    const second = previewOf(officeFile({ id: 'file-b' }));
+    await Promise.resolve();
+    await expect(previewOf(officeFile({ id: 'file-c' }))).resolves.toEqual({ status: 'pending' });
+    expect(convertToPdf).toHaveBeenCalledTimes(2);
+    for (const release of releases) release();
+    await Promise.allSettled([first, second]);
+  });
+
   it('returns failed without leaking the sidecar endpoint', async () => {
     vi.mocked(convertToPdf).mockRejectedValue(
       new Error(

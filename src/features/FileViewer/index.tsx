@@ -170,7 +170,18 @@ const CODE_MIME_TYPES = new Set([
   'text/plain',
 ]);
 
-const MSDOC_EXTENSIONS = ['.doc', '.docx', '.odt', '.ppt', '.pptx', '.xls', '.xlsx'];
+const MSDOC_EXTENSIONS = [
+  '.doc',
+  '.docx',
+  '.odp',
+  '.ods',
+  '.odt',
+  '.ppt',
+  '.pptx',
+  '.rtf',
+  '.xls',
+  '.xlsx',
+];
 const MSDOC_MIME_TYPES = new Set([
   'doc',
   'docx',
@@ -182,6 +193,10 @@ const MSDOC_MIME_TYPES = new Set([
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.presentation',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/rtf',
+  'text/rtf',
   'application/vnd.ms-powerpoint',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   'application/vnd.ms-excel',

@@ -3,7 +3,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { isModuleEnabled } from '@/server/enterprise/services/moduleSettings';
 import { createFileS3 } from '@/server/modules/S3';
 import type { DocumentPreviewResult, FileRenderMetadata } from '@/types/files';
-import { readFileRenderMetadata } from '@/types/files';
+import { documentRenderArtifactKeys, readFileRenderMetadata } from '@/types/files';
 
 import {
   getEffectiveDocumentRenderSettings,
@@ -20,7 +20,13 @@ const PREVIEW_CONVERT_TIMEOUT_MS = 30_000;
 const PREVIEW_FLIGHT_WAIT_MS = 20_000;
 const PREVIEW_IN_FLIGHT_FRESH_MS = 2 * 60_000;
 const PREVIEW_SINGLE_FLIGHT_CAP = 200;
+/** Concurrent on-demand conversions per process; beyond this callers get `pending` and poll. */
+const PREVIEW_MAX_CONCURRENT_CONVERSIONS = 2;
+/** A failed conversion is served from cache for this long before the sidecar is asked again. */
+const PREVIEW_FAILURE_COOLDOWN_MS = 60_000;
+const PREVIEW_FAILURE_CACHE_CAP = 500;
 const PREVIEW_FLIGHTS_KEY = Symbol.for('enterprise.documentRender.previewFlights');
+const PREVIEW_FAILURES_KEY = Symbol.for('enterprise.documentRender.previewFailures');
 
 const SIDECAR_CONNECTION_CODES = new Set([
   'EAI_AGAIN',
@@ -30,7 +36,10 @@ const SIDECAR_CONNECTION_CODES = new Set([
   'ETIMEDOUT',
 ]);
 
+type PreviewFailure = { result: DocumentPreviewResult; until: number };
+
 type PreviewFlightsGlobal = {
+  [PREVIEW_FAILURES_KEY]?: Map<string, PreviewFailure>;
   [PREVIEW_FLIGHTS_KEY]?: Map<string, Promise<DocumentPreviewResult>>;
 };
 
@@ -39,9 +48,37 @@ const previewFlightsGlobal = globalThis as unknown as PreviewFlightsGlobal;
 const previewFlights = (): Map<string, Promise<DocumentPreviewResult>> =>
   (previewFlightsGlobal[PREVIEW_FLIGHTS_KEY] ??= new Map());
 
-/** Test-only: drop in-flight preview conversions. */
+const previewFailures = (): Map<string, PreviewFailure> =>
+  (previewFlightsGlobal[PREVIEW_FAILURES_KEY] ??= new Map());
+
+const cachedFailure = (fileId: string): DocumentPreviewResult | undefined => {
+  const failures = previewFailures();
+  const entry = failures.get(fileId);
+  if (!entry) return undefined;
+  if (entry.until <= Date.now()) {
+    failures.delete(fileId);
+    return undefined;
+  }
+  return entry.result;
+};
+
+const rememberFailure = (fileId: string, result: DocumentPreviewResult): void => {
+  const failures = previewFailures();
+  if (failures.size >= PREVIEW_FAILURE_CACHE_CAP) {
+    const now = Date.now();
+    for (const [key, entry] of failures) if (entry.until <= now) failures.delete(key);
+    if (failures.size >= PREVIEW_FAILURE_CACHE_CAP) {
+      const oldest = failures.keys().next().value;
+      if (oldest !== undefined) failures.delete(oldest);
+    }
+  }
+  failures.set(fileId, { result, until: Date.now() + PREVIEW_FAILURE_COOLDOWN_MS });
+};
+
+/** Test-only: drop in-flight preview conversions and cached failures. */
 export const resetDocumentPreviewFlightsForTest = (): void => {
   previewFlightsGlobal[PREVIEW_FLIGHTS_KEY]?.clear();
+  previewFlightsGlobal[PREVIEW_FAILURES_KEY]?.clear();
 };
 
 /**
@@ -95,14 +132,21 @@ const isPdfProducingJobInFlight = (render: FileRenderMetadata | undefined): bool
   return Date.now() - updatedAt < PREVIEW_IN_FLIGHT_FRESH_MS;
 };
 
+/**
+ * `files.metadata` is client-writable (`file.updateFile`), so `render.pdf` is only a
+ * hint that a rendition exists — the key that gets presigned is always derived from
+ * the file id, never read from metadata (otherwise a user could presign any bucket key).
+ */
 const tryPresignExistingPdf = async (
+  fileId: string,
   render: FileRenderMetadata,
 ): Promise<DocumentPreviewResult | undefined> => {
   if (typeof render.pdf !== 'string' || render.pdf.length === 0) return undefined;
+  const key = documentRenderArtifactKeys.pdf(fileId);
   try {
     const s3 = await createFileS3();
-    await s3.getFileMetadata(render.pdf);
-    const url = await s3.createPreSignedUrlForPreview(render.pdf, PREVIEW_PRESIGN_EXPIRES_SEC);
+    await s3.getFileMetadata(key);
+    const url = await s3.createPreSignedUrlForPreview(key, PREVIEW_PRESIGN_EXPIRES_SEC);
     return {
       status: 'ready',
       url,
@@ -178,13 +222,27 @@ const convertOnDemand = async (params: {
   const existing = flights.get(params.file.id);
   if (existing) return waitForSharedFlight(existing);
 
-  if (flights.size >= PREVIEW_SINGLE_FLIGHT_CAP) {
+  const failed = cachedFailure(params.file.id);
+  if (failed) return failed;
+
+  // Bounded: the sidecar is shared with the render worker, so on-demand previews
+  // never fan out past a couple of concurrent conversions per process — extra
+  // callers poll (`pending`) and pick up the result once a slot frees.
+  if (
+    flights.size >= PREVIEW_SINGLE_FLIGHT_CAP ||
+    flights.size >= PREVIEW_MAX_CONCURRENT_CONVERSIONS
+  ) {
     return { status: 'pending' };
   }
 
-  const flight = runPreviewConversion(params).finally(() => {
-    flights.delete(params.file.id);
-  });
+  const flight = runPreviewConversion(params)
+    .then((result) => {
+      if (result.status === 'failed') rememberFailure(params.file.id, result);
+      return result;
+    })
+    .finally(() => {
+      flights.delete(params.file.id);
+    });
   flights.set(params.file.id, flight);
   return flight;
 };
@@ -200,7 +258,7 @@ export const getDocumentPreview = async (params: {
 
   const render = readFileRenderMetadata(file.metadata);
   if (render) {
-    const existing = await tryPresignExistingPdf(render);
+    const existing = await tryPresignExistingPdf(file.id, render);
     if (existing) return existing;
   }
 

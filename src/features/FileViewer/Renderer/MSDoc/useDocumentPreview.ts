@@ -16,10 +16,17 @@ export const DOCUMENT_PREVIEW_POLL_TIMEOUT = 90 * 1000;
  * Poll only while the server says the conversion is still running, and only
  * until we gave up waiting — so an abandoned tab never polls forever.
  */
+/** The presigned PDF URL lives ~15 min; fetch a fresh one before it expires. */
+export const DOCUMENT_PREVIEW_READY_REFRESH_INTERVAL = 10 * 60 * 1000;
+
 export const getPreviewRefreshInterval = (
   data: DocumentPreviewResult | undefined,
   timedOut: boolean,
-): number => (data?.status === 'pending' && !timedOut ? DOCUMENT_PREVIEW_POLL_INTERVAL : 0);
+): number => {
+  if (data?.status === 'pending') return timedOut ? 0 : DOCUMENT_PREVIEW_POLL_INTERVAL;
+  if (data?.status === 'ready') return DOCUMENT_PREVIEW_READY_REFRESH_INTERVAL;
+  return 0;
+};
 
 export interface UseDocumentPreviewReturn {
   data?: DocumentPreviewResult;
