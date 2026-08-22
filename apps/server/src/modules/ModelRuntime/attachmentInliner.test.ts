@@ -441,6 +441,187 @@ describe('inlineOwnOriginAttachments', () => {
       },
     ]);
   });
+
+  const FILES_INFO_PDF_ID = 'file_owIsKmixZ3DV';
+  const filesInfoPdf = ({
+    body = '<page pageNumber="1">\n\n</page>',
+    name = 'scan.pdf',
+    sandboxPath = false,
+    type = 'application/pdf',
+  }: {
+    body?: string;
+    name?: string;
+    sandboxPath?: boolean;
+    type?: string;
+  } = {}) => {
+    const sandbox = sandboxPath ? ' sandboxPath="/mnt/data/uploads/scan.pdf"' : '';
+    return `<files_info>\n<files>\n<files_docstring>here are user upload files you can refer to</files_docstring>\n<file id="${FILES_INFO_PDF_ID}" name="${name}" type="${type}" size="776756"${sandbox}>${body}</file>\n</files>\n</files_info>`;
+  };
+  const SCAN_PDF_NOTICE =
+    '[PDF "scan.pdf" has no text layer; its pages are attached above as images]';
+
+  it('rasterizes an empty-text PDF in string files_info into image parts and a notice', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
+      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
+    ]);
+    const resolveByFileId = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const text = filesInfoPdf();
+    const messages: OpenAIChatMessage[] = [{ content: text, role: 'user' }];
+
+    await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, { resolveByFileId });
+
+    expect(resolveByFileId).toHaveBeenCalledWith(FILES_INFO_PDF_ID, DEFAULT_FILE_INLINE_MAX_BYTES);
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).toHaveBeenCalledTimes(1);
+    expect(messages[0].content).toEqual([
+      { text, type: 'text' },
+      { image_url: { detail: 'high', url: PAGE_PNG_DATA_URI }, type: 'image_url' },
+      { text: SCAN_PDF_NOTICE, type: 'text' },
+    ]);
+  });
+
+  it('rasterizes an empty-text PDF in a text part the same way', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
+      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
+    ]);
+    const resolveByFileId = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const text = filesInfoPdf();
+    const messages: OpenAIChatMessage[] = [{ content: [{ text, type: 'text' }], role: 'user' }];
+
+    await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, { resolveByFileId });
+
+    expect(messages[0].content).toEqual([
+      { text, type: 'text' },
+      { image_url: { detail: 'high', url: PAGE_PNG_DATA_URI }, type: 'image_url' },
+      { text: SCAN_PDF_NOTICE, type: 'text' },
+    ]);
+  });
+
+  it('leaves a files_info PDF with a real text layer untouched', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
+      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
+    ]);
+    const resolveByFileId = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const text = filesInfoPdf({ body: 'extracted text from a real text layer' });
+    const messages: OpenAIChatMessage[] = [{ content: text, role: 'user' }];
+
+    await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, { resolveByFileId });
+
+    expect(resolveByFileId).not.toHaveBeenCalled();
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
+    expect(messages[0].content).toBe(text);
+  });
+
+  it('leaves a non-PDF files_info file untouched', async () => {
+    const resolveByFileId = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const text = filesInfoPdf({ type: 'text/plain' });
+    const messages: OpenAIChatMessage[] = [{ content: text, role: 'user' }];
+
+    await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, { resolveByFileId });
+
+    expect(resolveByFileId).not.toHaveBeenCalled();
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
+    expect(messages[0].content).toBe(text);
+  });
+
+  it('rasterizes a sandboxPath empty-text PDF the same way as a url-less file', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
+      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
+    ]);
+    const resolveByFileId = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const text = filesInfoPdf({ sandboxPath: true });
+    const messages: OpenAIChatMessage[] = [{ content: text, role: 'user' }];
+
+    await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, { resolveByFileId });
+
+    expect(resolveByFileId).toHaveBeenCalledWith(FILES_INFO_PDF_ID, DEFAULT_FILE_INLINE_MAX_BYTES);
+    expect(messages[0].content).toEqual([
+      { text, type: 'text' },
+      { image_url: { detail: 'high', url: PAGE_PNG_DATA_URI }, type: 'image_url' },
+      { text: SCAN_PDF_NOTICE, type: 'text' },
+    ]);
+  });
+
+  it('rasterizes once when the same PDF is both a file_url part and files_info', async () => {
+    pdfPageImagesMocks.renderPdfPagesToPng.mockResolvedValue([
+      { height: 100, page: 1, png: PAGE_PNG, width: 200 },
+    ]);
+    const resolver = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const resolveByFileId = vi.fn(async () => ({
+      bytes: PDF_BYTES,
+      mimeType: 'application/pdf',
+    }));
+    const text = filesInfoPdf({ name: 'card.pdf' });
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          { text, type: 'text' },
+          {
+            file_url: {
+              content: '<page pageNumber="1">\n\n</page>',
+              fileId: FILES_INFO_PDF_ID,
+              mimeType: 'application/pdf',
+              name: 'card.pdf',
+              url: OWN_FILE_URL,
+            },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, resolver, ownOrigins, { resolveByFileId });
+
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).toHaveBeenCalledTimes(1);
+    expect(resolveByFileId).not.toHaveBeenCalled();
+    expect(messages[0].content).toEqual([
+      { text, type: 'text' },
+      {
+        file_url: {
+          content: '<page pageNumber="1">\n\n</page>',
+          fileId: FILES_INFO_PDF_ID,
+          mimeType: 'application/pdf',
+          name: 'card.pdf',
+          url: `data:application/pdf;base64,${Buffer.from(PDF_BYTES).toString('base64')}`,
+        },
+        type: 'file_url',
+      },
+      { image_url: { detail: 'high', url: PAGE_PNG_DATA_URI }, type: 'image_url' },
+      { text: IMAGE_ONLY_PDF_NOTICE, type: 'text' },
+    ]);
+  });
+
+  it('leaves files_info untouched and does not throw when the fileId resolver fails', async () => {
+    const resolveByFileId = vi.fn(async () => {
+      throw new Error('s3 unavailable');
+    });
+    const text = filesInfoPdf();
+    const messages: OpenAIChatMessage[] = [{ content: text, role: 'user' }];
+
+    await expect(
+      inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, { resolveByFileId }),
+    ).resolves.toBeUndefined();
+    expect(pdfPageImagesMocks.renderPdfPagesToPng).not.toHaveBeenCalled();
+    expect(messages[0].content).toBe(text);
+  });
 });
 
 describe('inlineOwnOriginImageUrls', () => {

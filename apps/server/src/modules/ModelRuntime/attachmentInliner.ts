@@ -47,6 +47,11 @@ export type OwnOriginAttachmentResolver = (
   maxBytes: number,
 ) => Promise<OwnOriginAttachmentBytes | null>;
 
+export type OwnOriginFileIdResolver = (
+  fileId: string,
+  maxBytes: number,
+) => Promise<OwnOriginAttachmentBytes | null>;
+
 type MaybeLazy<T> = T | Promise<T> | (() => T | Promise<T>);
 
 export interface CreateOwnOriginAttachmentInlineHooksInput {
@@ -63,6 +68,8 @@ export interface CreateOwnOriginAttachmentInlineHooksInput {
 export interface InlineOwnOriginAttachmentsOptions {
   fileMaxBytes?: number;
   imageMaxBytes?: number;
+  /** Resolves a `files` row by id (FileModel + FileService). Used for `<files_info>` PDFs. */
+  resolveByFileId?: OwnOriginFileIdResolver;
 }
 
 const resolveMaybeLazy = async <T>(value: MaybeLazy<T>): Promise<T> =>
@@ -107,6 +114,39 @@ const isImageOnlyPdfContent = (content: string | undefined): boolean => {
 const imageOnlyPdfNotice = (name: string): string =>
   `[PDF "${name}" has no text layer; its pages are attached above as images]`;
 
+interface FilesInfoEmptyPdf {
+  fileId: string;
+  name: string;
+}
+
+/**
+ * Empty-text PDFs inside `<files_info>` (with or without `sandboxPath` / `url`).
+ * Id must match `file_[A-Za-z0-9]+` — the live files-row prefix.
+ */
+const collectEmptyTextPdfsFromFilesInfo = (text: string): FilesInfoEmptyPdf[] => {
+  if (!text.includes('<files_info>')) return [];
+
+  const found: FilesInfoEmptyPdf[] = [];
+  const seen = new Set<string>();
+
+  for (const block of text.matchAll(/<files_info>([\s\S]*?)<\/files_info>/g)) {
+    const inner = block[1] ?? '';
+    for (const tag of inner.matchAll(/<file\b([^>]*)>([\s\S]*?)<\/file>/gi)) {
+      const attrs = tag[1] ?? '';
+      const body = tag[2] ?? '';
+      const fileId = /\bid="(file_[A-Za-z0-9]+)"/.exec(attrs)?.[1];
+      const type = /\btype="([^"]*)"/.exec(attrs)?.[1];
+      if (!fileId || seen.has(fileId)) continue;
+      if (normalizeMime(type) !== PDF_MIME) continue;
+      if (!isImageOnlyPdfContent(body)) continue;
+      seen.add(fileId);
+      found.push({ fileId, name: /\bname="([^"]*)"/.exec(attrs)?.[1] || fileId });
+    }
+  }
+
+  return found;
+};
+
 interface RasterizedPdfImages {
   dataUris: string[];
 }
@@ -137,6 +177,16 @@ const extractFileProxyId = (url: string): string | undefined => {
   } catch {
     return undefined;
   }
+};
+
+const collectFileUrlFileIds = (parts: UserMessageContentPart[]): Set<string> => {
+  const ids = new Set<string>();
+  for (const part of parts) {
+    if (!isFileUrlPart(part)) continue;
+    const fileId = part.file_url.fileId ?? extractFileProxyId(part.file_url.url);
+    if (fileId) ids.add(fileId);
+  }
+  return ids;
 };
 
 /** Only APP_URL / INTERNAL_APP_URL `/f/<id>` rules — never S3 endpoint or public-domain URLs. */
@@ -331,8 +381,9 @@ export const inlineOwnOriginImageUrls = async (
 
 /**
  * Replace own-deployment `/f/<id>` URLs in user and assistant structured parts
- * with data URIs, and strip own-origin `url="…"` attributes from `<files_info>`
- * blocks in user text only. Mutates `messages`.
+ * with data URIs, strip own-origin `url="…"` attributes from `<files_info>`
+ * blocks in user text only, and rasterize empty-text PDFs that arrive only as
+ * `<files_info>` markup (no `file_url` part). Mutates `messages`.
  */
 export const inlineOwnOriginAttachments = async (
   messages: OpenAIChatMessage[],
@@ -342,6 +393,7 @@ export const inlineOwnOriginAttachments = async (
 ): Promise<void> => {
   const imageMaxBytes = options?.imageMaxBytes ?? DEFAULT_IMAGE_INLINE_MAX_BYTES;
   const fileMaxBytes = options?.fileMaxBytes ?? DEFAULT_FILE_INLINE_MAX_BYTES;
+  const resolveByFileId = options?.resolveByFileId;
 
   for (const message of messages) {
     if (message.role !== 'user') continue;
@@ -363,12 +415,76 @@ export const inlineOwnOriginAttachments = async (
     fileMaxBytes,
     imageMaxBytes,
   });
-  if (maxBytesByUrl.size === 0) return;
-
-  const resolvedByUrl = await resolveUniqueUrls(maxBytesByUrl, resolver);
+  const resolvedByUrl =
+    maxBytesByUrl.size === 0
+      ? new Map<string, OwnOriginAttachmentBytes | null>()
+      : await resolveUniqueUrls(maxBytesByUrl, resolver);
 
   // User messages first so assistant history can reuse the per-fileId memo.
   const rasterMemo = new Map<string, Promise<RasterizedPdfImages>>();
+  const fileBytesMemo = new Map<string, Promise<OwnOriginAttachmentBytes | null>>();
+
+  const loadFileBytes = async (fileId: string): Promise<OwnOriginAttachmentBytes | null> => {
+    if (!resolveByFileId) return null;
+    let pending = fileBytesMemo.get(fileId);
+    if (!pending) {
+      pending = (async () => {
+        try {
+          return await resolveByFileId(fileId, fileMaxBytes);
+        } catch (error) {
+          log(
+            'failed to resolve attachment id=%s error=%s',
+            fileId,
+            error instanceof Error ? error.message : error,
+          );
+          return null;
+        }
+      })();
+      fileBytesMemo.set(fileId, pending);
+    }
+    const resolved = await pending;
+    if (!resolved) return null;
+    if (resolved.bytes.byteLength > fileMaxBytes) {
+      log(
+        'skip over-cap attachment id=%s size=%d max=%d',
+        fileId,
+        resolved.bytes.byteLength,
+        fileMaxBytes,
+      );
+      return null;
+    }
+    return resolved;
+  };
+
+  const appendRasterizedPages = async (
+    next: UserMessageContentPart[],
+    memoKey: string,
+    name: string,
+    bytes: Uint8Array,
+    imageSlots: { remaining: number },
+    allowRender: boolean,
+  ): Promise<boolean> => {
+    if (imageSlots.remaining <= 0) return false;
+
+    let pending = rasterMemo.get(memoKey);
+    if (!pending) {
+      if (!allowRender) return false;
+      pending = rasterizeImageOnlyPdf(bytes, imageMaxBytes);
+      rasterMemo.set(memoKey, pending);
+    }
+
+    const { dataUris } = await pending;
+    const used = dataUris.slice(0, imageSlots.remaining);
+    if (used.length === 0) return false;
+
+    for (const dataUri of used) {
+      next.push({ image_url: { detail: 'high', url: dataUri }, type: 'image_url' });
+    }
+    next.push({ text: imageOnlyPdfNotice(name), type: 'text' });
+    imageSlots.remaining -= used.length;
+    return true;
+  };
+
   const applyInlinedParts = async (role: 'assistant' | 'user') => {
     const allowRender = role === 'user';
 
@@ -376,7 +492,7 @@ export const inlineOwnOriginAttachments = async (
       if (message.role !== role || !Array.isArray(message.content)) continue;
 
       const existingImages = message.content.filter(isImageUrlPart).length;
-      let imageSlots = IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE - existingImages;
+      const imageSlots = { remaining: IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE - existingImages };
       const next: UserMessageContentPart[] = [];
 
       for (const part of message.content) {
@@ -405,43 +521,104 @@ export const inlineOwnOriginAttachments = async (
         }
         next.push(part);
 
-        if (imageSlots <= 0 || !resolved) continue;
+        if (!resolved) continue;
         if (resolved.bytes.byteLength > fileMaxBytes) continue;
         if (!isPdfBytes(part.file_url.mimeType, resolved.mimeType, resolved.bytes)) continue;
         if (!isImageOnlyPdfContent(part.file_url.content)) continue;
 
         const memoKey = part.file_url.fileId ?? url;
-        let pending = rasterMemo.get(memoKey);
-        if (!pending) {
-          if (!allowRender) continue;
-          pending = rasterizeImageOnlyPdf(resolved.bytes, imageMaxBytes);
-          rasterMemo.set(memoKey, pending);
-        }
-
-        const { dataUris } = await pending;
-        const used = dataUris.slice(0, imageSlots);
-        if (used.length === 0) continue;
-
-        for (const dataUri of used) {
-          next.push({ image_url: { detail: 'high', url: dataUri }, type: 'image_url' });
-        }
-        next.push({ text: imageOnlyPdfNotice(part.file_url.name), type: 'text' });
-        imageSlots -= used.length;
+        await appendRasterizedPages(
+          next,
+          memoKey,
+          part.file_url.name,
+          resolved.bytes,
+          imageSlots,
+          allowRender,
+        );
       }
 
       message.content = next;
     }
   };
 
+  const applyFilesInfoRasterization = async () => {
+    if (!resolveByFileId) return;
+
+    for (const message of messages) {
+      if (message.role !== 'user') continue;
+
+      try {
+        const content = message.content;
+        const texts: string[] = [];
+        if (typeof content === 'string') {
+          if (!content.includes('<files_info>')) continue;
+          texts.push(content);
+        } else if (Array.isArray(content)) {
+          for (const part of content) {
+            if (part.type === 'text' && part.text.includes('<files_info>')) texts.push(part.text);
+          }
+          if (texts.length === 0) continue;
+        } else {
+          continue;
+        }
+
+        const handled = Array.isArray(content) ? collectFileUrlFileIds(content) : new Set<string>();
+        const candidates: FilesInfoEmptyPdf[] = [];
+        const seen = new Set<string>();
+        for (const text of texts) {
+          for (const pdf of collectEmptyTextPdfsFromFilesInfo(text)) {
+            if (handled.has(pdf.fileId) || seen.has(pdf.fileId)) continue;
+            seen.add(pdf.fileId);
+            candidates.push(pdf);
+          }
+        }
+        if (candidates.length === 0) continue;
+
+        const existingImages = Array.isArray(content) ? content.filter(isImageUrlPart).length : 0;
+        const imageSlots = { remaining: IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE - existingImages };
+        if (imageSlots.remaining <= 0) continue;
+
+        const next: UserMessageContentPart[] =
+          typeof content === 'string' ? [{ text: content, type: 'text' }] : [...content];
+        let appended = false;
+
+        for (const pdf of candidates) {
+          if (imageSlots.remaining <= 0) break;
+          const resolved = await loadFileBytes(pdf.fileId);
+          if (!resolved) continue;
+          if (!isPdfBytes(undefined, resolved.mimeType, resolved.bytes)) continue;
+          appended =
+            (await appendRasterizedPages(
+              next,
+              pdf.fileId,
+              pdf.name,
+              resolved.bytes,
+              imageSlots,
+              true,
+            )) || appended;
+        }
+
+        if (appended) message.content = next;
+      } catch (error) {
+        log(
+          'files_info image-only PDF inline failed: %s',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+  };
+
   await applyInlinedParts('user');
+  await applyFilesInfoRasterization();
   await applyInlinedParts('assistant');
 };
 
-const createFileServiceResolver = (
+const createFileServiceResolvers = (
   input: CreateOwnOriginAttachmentInlineHooksInput,
   origins: OwnDeploymentOrigins,
-): OwnOriginAttachmentResolver => {
+): { resolveByFileId: OwnOriginFileIdResolver; resolveByUrl: OwnOriginAttachmentResolver } => {
   let loaded: Promise<{ db: LobeChatDatabase; fileService: FileService }> | undefined;
+  const byFileId = new Map<string, Promise<OwnOriginAttachmentBytes | null>>();
 
   const load = () => {
     loaded ??= (async () => {
@@ -454,7 +631,54 @@ const createFileServiceResolver = (
     return loaded;
   };
 
-  return async (url, maxBytes) => {
+  const resolveByFileId: OwnOriginFileIdResolver = async (fileId, maxBytes) => {
+    const memoKey = `${fileId}:${maxBytes}`;
+    const existing = byFileId.get(memoKey);
+    if (existing) return existing;
+
+    const pending = (async (): Promise<OwnOriginAttachmentBytes | null> => {
+      try {
+        const { db, fileService } = await load();
+        const file = await FileModel.getFileById(db, fileId);
+        if (!file) {
+          log('file not found id=%s', fileId);
+          return null;
+        }
+
+        // Check the files-row size before reading so over-cap objects never enter memory.
+        if (typeof file.size === 'number' && file.size > maxBytes) {
+          log('skip over-cap file id=%s size=%d max=%d', fileId, file.size, maxBytes);
+          return null;
+        }
+
+        const bytes = await fileService.getFileByteArray(file.url);
+        if (!bytes?.byteLength) {
+          log('empty attachment bytes id=%s', fileId);
+          return null;
+        }
+
+        if (bytes.byteLength > maxBytes) {
+          log('skip over-cap attachment id=%s size=%d max=%d', fileId, bytes.byteLength, maxBytes);
+          return null;
+        }
+
+        const mimeType = await resolveMimeTypeFromBytes(file.fileType, bytes);
+        return { bytes, mimeType };
+      } catch (error) {
+        log(
+          'failed to resolve attachment id=%s error=%s',
+          fileId,
+          error instanceof Error ? error.message : error,
+        );
+        return null;
+      }
+    })();
+
+    byFileId.set(memoKey, pending);
+    return pending;
+  };
+
+  const resolveByUrl: OwnOriginAttachmentResolver = async (url, maxBytes) => {
     if (!isResolvableAppFileUrl(url, origins)) {
       log('skip non-app-file attachment host=%s', sanitizedUrlHost(url));
       return null;
@@ -462,39 +686,10 @@ const createFileServiceResolver = (
 
     const fileId = extractFileProxyId(url);
     if (!fileId) return null;
-
-    const { db, fileService } = await load();
-    const file = await FileModel.getFileById(db, fileId);
-    if (!file) {
-      log('file not found id=%s', fileId);
-      return null;
-    }
-
-    // Check the files-row size before reading so over-cap objects never enter memory.
-    if (typeof file.size === 'number' && file.size > maxBytes) {
-      log('skip over-cap file id=%s size=%d max=%d', fileId, file.size, maxBytes);
-      return null;
-    }
-
-    const bytes = await fileService.getFileByteArray(file.url);
-    if (!bytes?.byteLength) {
-      log('empty attachment bytes host=%s', sanitizedUrlHost(url));
-      return null;
-    }
-
-    if (bytes.byteLength > maxBytes) {
-      log(
-        'skip over-cap attachment host=%s size=%d max=%d',
-        sanitizedUrlHost(url),
-        bytes.byteLength,
-        maxBytes,
-      );
-      return null;
-    }
-
-    const mimeType = await resolveMimeTypeFromBytes(file.fileType, bytes);
-    return { bytes, mimeType };
+    return resolveByFileId(fileId, maxBytes);
   };
+
+  return { resolveByFileId, resolveByUrl };
 };
 
 /**
@@ -513,12 +708,11 @@ export const createOwnOriginAttachmentInlineHooks = (
         if (!payload.messages?.length || !hasAttachmentCandidates(payload.messages)) return;
 
         const origins = await resolveMaybeLazy(input.ownOrigins);
-        await inlineOwnOriginAttachments(
-          payload.messages,
-          createFileServiceResolver(input, origins),
-          origins,
-          { imageMaxBytes },
-        );
+        const resolvers = createFileServiceResolvers(input, origins);
+        await inlineOwnOriginAttachments(payload.messages, resolvers.resolveByUrl, origins, {
+          imageMaxBytes,
+          resolveByFileId: resolvers.resolveByFileId,
+        });
       } catch (error) {
         log(
           'own-origin attachment inline failed: %s',
@@ -534,7 +728,7 @@ export const createOwnOriginAttachmentInlineHooks = (
         const origins = await resolveMaybeLazy(input.ownOrigins);
         payload.params.imageUrls = await inlineOwnOriginImageUrls(
           urls,
-          createFileServiceResolver(input, origins),
+          createFileServiceResolvers(input, origins).resolveByUrl,
           origins,
           imageMaxBytes,
         );
