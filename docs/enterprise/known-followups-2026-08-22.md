@@ -34,3 +34,14 @@ Items raised by code review that were judged low-impact / theoretical for this d
 - **Agent loops may still prefer tools over attached images** (Codex first trusted an empty tool read; Grok Build tried to upscale via the sandbox, which has no `pdftoppm`). Mitigated by the explicit notice + rewritten `<file>` body; dense pages get zoomed 2×2 tiles (t8). Consider adding poppler/pdf tooling to the sandbox image.
 - `docker logs --since` returned nothing after the Docker Desktop crash/restart (daemon clock skew); use `--tail N` instead.
 - Host crash on 2026-08-22: Docker image builds + parallel agent test suites + three agent-mode experiments (each spawning a sandbox container) saturated the CPU. Rule: one heavy job at a time; lower the Docker Desktop CPU cap before builds.
+
+## Document render batch (2026-08-22 evening, design v2 P1–P3)
+Codex review findings judged over-defensive or deferred to P4; everything else in the review was fixed in-batch.
+- **Gotenberg endpoint is admin-configured and not run through the SSRF destination policy.** It is an internal sidecar URL set by `SYSTEM_OPERATE` admins — the same trust model as the mail and object-storage endpoints. The setting is validated as an http(s) URL; a hostname allowlist can be added if deployments need it.
+- **Artifact cleanup after file deletion is best-effort (fire-and-forget after the row delete).** A crash between the row delete and the prefix purge leaves orphan objects under `files/render/<fileId>/`. The design's daily orphan-prefix scan (§13.3, P4) is the durable fix; until then `deleteDocumentRenderArtifacts` can be re-run by id.
+- **No sha256 artifact reuse / `render.refs`** (§13.3): each file row renders its own artifacts. Duplicate uploads of the same deck render twice.
+- **No per-page `text/<n>.md` artifacts, no xlsx `sheets[]` in metadata, no relevance-ranked page selection** (P4): the feed picks pages by explicit mention → visual pages → first page.
+- **Retention days / orphan scan / feed counters on the status page** (§6.3, §13.7) are not implemented; the setting is stored but unused.
+- **`viewDocumentPages` 3-calls-per-turn limit is prompt-only**; the runtime has no counter.
+- **Custom providers with `sdkType: 'cursor'`** still receive the `viewDocumentPages` tool (the Cursor exclusion keys on the builtin `cursor` provider id; the agent service does not pass the resolved runtime provider into the tools engine yet).
+- **Sidecar-outage retries have no backoff**: the worker marks the job failed (retryable) and the dispatcher retries on its next tick, so three attempts burn in seconds; `force` re-enqueue (tool or admin retry) recovers the document once the sidecar is back.
