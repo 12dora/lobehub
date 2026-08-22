@@ -82,6 +82,7 @@ describe('probeDocumentRenderHealth', () => {
     });
     await expect(probeDocumentRenderHealth(() => checkedAt)).resolves.toMatchObject({
       configured: false,
+      detail: 'Gotenberg',
       errorCategory: 'configuration_incomplete',
       queuePending: 3,
       queueRunning: 1,
@@ -98,6 +99,7 @@ describe('probeDocumentRenderHealth', () => {
     });
     await expect(probeDocumentRenderHealth(() => checkedAt)).resolves.toEqual({
       configured: true,
+      detail: 'Gotenberg',
       errorCategory: null,
       lastCheckedAt: checkedAt,
       latencyMs: 18,

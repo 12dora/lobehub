@@ -7,6 +7,9 @@ import type { DependencyHealth, InfraEnvBag } from './infraDependencyConfig';
 
 export const PROBE_TIMEOUT_MS = 8000;
 
+export const probeLatencyMs = (startedAt: number): number =>
+  Math.max(0, Math.round(performance.now() - startedAt));
+
 export type InfraProbeReason = AdminSystemTestDependencyReason;
 
 export class InfraProbeError extends Error {
@@ -132,13 +135,40 @@ export const probeObjectStorageHealth = async (
   now: () => Date = () => new Date(),
 ): Promise<DependencyHealth> => {
   const checkedAt = now();
+  const resolved = resolveFileS3Config(env);
+  if (resolved.kind === 'unconfigured') {
+    return { errorCategory: null, lastCheckedAt: null, status: 'disabled' };
+  }
+  if (resolved.kind === 'incomplete') {
+    return {
+      errorCategory: 'configuration_incomplete',
+      lastCheckedAt: null,
+      status: 'degraded',
+    };
+  }
+
+  const detail = `S3 · ${resolved.bucket}`.slice(0, 120);
+  const startedAt = performance.now();
   try {
     await probeObjectStorage(env, createS3Client);
-    return { errorCategory: null, lastCheckedAt: checkedAt, status: 'healthy' };
+    return {
+      ...(detail ? { detail } : {}),
+      errorCategory: null,
+      lastCheckedAt: checkedAt,
+      latencyMs: probeLatencyMs(startedAt),
+      status: 'healthy',
+    };
   } catch (error) {
+    const latencyMs = probeLatencyMs(startedAt);
     if (error instanceof InfraProbeError) {
       if (error.reason === 'timeout') {
-        return { errorCategory: 'timeout', lastCheckedAt: checkedAt, status: 'unavailable' };
+        return {
+          ...(detail ? { detail } : {}),
+          errorCategory: 'timeout',
+          lastCheckedAt: checkedAt,
+          latencyMs,
+          status: 'unavailable',
+        };
       }
       if (error.reason === 'not_configured') {
         return { errorCategory: null, lastCheckedAt: null, status: 'disabled' };
@@ -152,8 +182,10 @@ export const probeObjectStorageHealth = async (
       }
     }
     return {
+      ...(detail ? { detail } : {}),
       errorCategory: 'operation_unavailable',
       lastCheckedAt: checkedAt,
+      latencyMs,
       status: 'unavailable',
     };
   }

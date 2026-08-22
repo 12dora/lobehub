@@ -52,6 +52,7 @@ describe('projectSandboxHealth', () => {
     ).toEqual({
       activeContainers: 3,
       daemonReachable: true,
+      detail: 'Docker',
       errorCategory: null,
       imagePresent: true,
       lastCheckedAt: checkedAt,

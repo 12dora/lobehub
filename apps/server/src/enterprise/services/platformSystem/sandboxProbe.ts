@@ -3,6 +3,8 @@ import { isModuleEnabled } from '@/server/enterprise/services/moduleSettings';
 import { getEffectiveSandboxSettings } from '@/server/enterprise/services/sandboxSettings/effective';
 import type { LocalSandboxHealth } from '@/server/services/sandbox/providers/local';
 
+import { probeLatencyMs } from './infraProbes';
+
 const LAST_ERROR_MAX = 500;
 
 const clipError = (value: string | undefined): string | undefined => {
@@ -21,6 +23,7 @@ export const projectSandboxHealth = (
   const base = {
     activeContainers: health.activeContainers,
     daemonReachable: health.daemonReachable,
+    detail: 'Docker',
     imagePresent: health.imagePresent,
     lastCheckedAt: checkedAt,
     maxContainers,
@@ -73,23 +76,30 @@ export const probeSandboxHealth = async (
   if (settings.provider !== 'local') return null;
 
   const { checkLocalSandboxHealth } = await import('@/server/services/sandbox/providers/local');
+  const startedAt = performance.now();
   try {
     const health = await checkLocalSandboxHealth({
       host: settings.dockerHost,
       image: settings.image,
       socketPath: settings.dockerSocket,
     });
-    return projectSandboxHealth(health, settings.maxContainers, now());
+    return {
+      ...projectSandboxHealth(health, settings.maxContainers, now()),
+      latencyMs: probeLatencyMs(startedAt),
+    };
   } catch (error) {
-    return projectSandboxHealth(
-      {
-        activeContainers: 0,
-        daemonReachable: false,
-        imagePresent: false,
-        lastError: error instanceof Error ? error.message : 'unreachable',
-      },
-      settings.maxContainers,
-      now(),
-    );
+    return {
+      ...projectSandboxHealth(
+        {
+          activeContainers: 0,
+          daemonReachable: false,
+          imagePresent: false,
+          lastError: error instanceof Error ? error.message : 'unreachable',
+        },
+        settings.maxContainers,
+        now(),
+      ),
+      latencyMs: probeLatencyMs(startedAt),
+    };
   }
 };

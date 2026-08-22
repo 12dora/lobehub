@@ -468,6 +468,17 @@ describe('PlatformSystemAdminService status', () => {
       lastCheckedAt: null,
       status: 'disabled',
     });
+    expect(status.dependencies.database).toMatchObject({
+      detail: 'PostgreSQL',
+      errorCategory: null,
+      status: 'healthy',
+    });
+    const { database } = status.dependencies;
+    expect(database.status).toBe('healthy');
+    if (database.status === 'healthy') {
+      expect(database.latencyMs).toEqual(expect.any(Number));
+      if (database.version) expect(database.version).toMatch(/^\d+(\.\d+)*$/);
+    }
     expect(createRedisWithPrefix).not.toHaveBeenCalled();
   });
 
@@ -493,8 +504,10 @@ describe('PlatformSystemAdminService status', () => {
     }).getStatus();
 
     expect(status.dependencies.redis).toEqual({
+      detail: 'Redis',
       errorCategory: null,
       lastCheckedAt: expect.any(Date),
+      latencyMs: expect.any(Number),
       status: 'healthy',
     });
     expect(createRedisWithPrefix).toHaveBeenCalledWith(config, 'platformSystemHealth');
@@ -1237,6 +1250,7 @@ describe('PlatformSystemAdminService status', () => {
     const withHealth = await new PlatformSystemAdminService(db, {
       documentRenderProbe: async () => ({
         configured: true,
+        detail: 'Gotenberg',
         errorCategory: null,
         lastCheckedAt: checkedAt,
         latencyMs: 18,
@@ -1257,6 +1271,7 @@ describe('PlatformSystemAdminService status', () => {
     expect(() => adminSystemGetStatusOutputSchema.parse(withHealth)).not.toThrow();
     expect(withHealth.dependencies.documentRender).toMatchObject({
       configured: true,
+      detail: 'Gotenberg',
       status: 'healthy',
       version: '8.21.0',
     });

@@ -1,15 +1,36 @@
 import { resolveFileS3Config } from '@/server/modules/S3/resolveFileS3Config';
 
 import { PlatformSecretError, PlatformSecretService } from '../../security/secret';
-import { isTimeoutError } from './infraProbes';
+import { isTimeoutError, probeLatencyMs } from './infraProbes';
 
 export type InfraEnvBag = Record<string, string | undefined>;
 
 export type DependencyHealth = {
+  detail?: string;
   errorCategory:
     'configuration_incomplete' | 'operation_unavailable' | 'passive_check_only' | 'timeout' | null;
   lastCheckedAt: Date | null;
+  latencyMs?: number;
   status: 'degraded' | 'disabled' | 'healthy' | 'unavailable' | 'unknown';
+  version?: string;
+};
+
+const HEALTH_DETAIL_MAX = 120;
+
+const clipHealthDetail = (value: string): string | undefined => {
+  const trimmed = value.trim().slice(0, HEALTH_DETAIL_MAX);
+  return trimmed || undefined;
+};
+
+const withDetail = (health: DependencyHealth, detail: string | undefined): DependencyHealth => {
+  const clipped = detail ? clipHealthDetail(detail) : undefined;
+  return clipped ? { ...health, detail: clipped } : health;
+};
+
+const keyManagementModeDetail = (providerId: string): string | undefined => {
+  if (providerId === 'vault') return 'Vault';
+  if (providerId === 'env') return 'Environment master key';
+  return undefined;
 };
 
 export const DEFAULT_SMTP_HOST = 'localhost';
@@ -136,17 +157,33 @@ export const objectStorageHealth = (env: InfraEnvBag): DependencyHealth => {
   return passiveHealth();
 };
 
+const mailHealthDetail = (resolved: ResolvedEmailConfig, env: InfraEnvBag): string | undefined => {
+  if (resolved.kind === 'resend') return 'Resend';
+  if (resolved.kind === 'smtp') return `SMTP ${resolved.host}:${resolved.port}`;
+  if (resolved.kind !== 'incomplete') return undefined;
+  if (resolved.provider === 'resend') return 'Resend';
+  const host = trim(env.SMTP_HOST);
+  if (host || trim(env.SMTP_USER) || trim(env.SMTP_PORT) || trim(env.SMTP_PASS)) {
+    return `SMTP ${host ?? DEFAULT_SMTP_HOST}:${smtpPortOf(env.SMTP_PORT)}`;
+  }
+  if (trim(env.RESEND_API_KEY)) return 'Resend';
+  return undefined;
+};
+
 export const mailHealth = (env: InfraEnvBag): DependencyHealth => {
   const resolved = resolveEmailConfig(env);
   if (resolved.kind === 'unconfigured') return disabledHealth();
-  if (resolved.kind === 'incomplete') return incompleteHealth();
-  return passiveHealth();
+  if (resolved.kind === 'incomplete') {
+    return withDetail(incompleteHealth(), mailHealthDetail(resolved, env));
+  }
+  return withDetail(passiveHealth(), mailHealthDetail(resolved, env));
 };
 
 export const keyManagementHealth = (env: InfraEnvBag): DependencyHealth => {
   try {
     const service = PlatformSecretService.tryFromEnv(env);
-    return service ? passiveHealth() : disabledHealth();
+    if (!service) return disabledHealth();
+    return withDetail(passiveHealth(), keyManagementModeDetail(service.keyProviderId));
   } catch {
     return incompleteHealth();
   }
@@ -178,25 +215,29 @@ export const probeKeyManagement = async (
   if (!service) return disabledHealth();
 
   const checkedAt = now();
+  const startedAt = performance.now();
+  const modeDetail = keyManagementModeDetail(service.keyProviderId);
+  const withLiveFields = (health: DependencyHealth): DependencyHealth =>
+    withDetail({ ...health, latencyMs: probeLatencyMs(startedAt) }, modeDetail);
   try {
     await service.getActiveKeyId();
     if (service.keyProviderId === 'env') {
       const ciphertext = await service.encrypt('health');
       const plaintext = await service.decrypt(ciphertext);
       if (plaintext !== 'health') {
-        return {
+        return withLiveFields({
           errorCategory: 'operation_unavailable',
           lastCheckedAt: checkedAt,
           status: 'unavailable',
-        };
+        });
       }
     }
-    return { errorCategory: null, lastCheckedAt: checkedAt, status: 'healthy' };
+    return withLiveFields({ errorCategory: null, lastCheckedAt: checkedAt, status: 'healthy' });
   } catch (error) {
-    return {
+    return withLiveFields({
       errorCategory: isKeyProbeTimeout(error) ? 'timeout' : 'operation_unavailable',
       lastCheckedAt: checkedAt,
       status: 'unavailable',
-    };
+    });
   }
 };

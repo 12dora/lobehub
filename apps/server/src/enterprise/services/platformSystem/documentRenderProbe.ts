@@ -58,6 +58,7 @@ export const probeDocumentRenderHealth = async (
   const queue = await loadQueueCounts();
   const lastErrorBase = {
     configured: isDocumentRenderConfigured(settings),
+    detail: 'Gotenberg',
     lastCheckedAt: checkedAt,
     queuePending: queue.pending,
     queueRunning: queue.running,

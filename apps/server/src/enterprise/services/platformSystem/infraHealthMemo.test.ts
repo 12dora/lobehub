@@ -110,6 +110,7 @@ describe('infraHealthMemo', () => {
   it('coalesces the document-render probe with the 30s single-flight memo', async () => {
     const probeDocumentRender = vi.fn(async () => ({
       configured: true,
+      detail: 'Gotenberg',
       errorCategory: null,
       lastCheckedAt: new Date(),
       latencyMs: 18,
@@ -129,8 +130,10 @@ describe('infraHealthMemo', () => {
         status: 'healthy' as const,
       }),
       probeObjectStorageHealth: async () => ({
+        detail: 'S3 · files',
         errorCategory: null,
         lastCheckedAt: new Date(),
+        latencyMs: 24,
         status: 'healthy' as const,
       }),
     };
@@ -138,8 +141,15 @@ describe('infraHealthMemo', () => {
     const first = await getLiveInfraHealth(params);
     const second = await getLiveInfraHealth(params);
     expect(probeDocumentRender).toHaveBeenCalledOnce();
-    expect(first.documentRender).toMatchObject({ configured: true, version: '8.21.0' });
+    expect(first.documentRender).toMatchObject({
+      configured: true,
+      detail: 'Gotenberg',
+      latencyMs: 18,
+      version: '8.21.0',
+    });
+    expect(first.objectStorage).toMatchObject({ detail: 'S3 · files', latencyMs: 24 });
     expect(second.documentRender).toBe(first.documentRender);
+    expect(second.objectStorage).toBe(first.objectStorage);
   });
 
   it('coalesces the sandbox probe with the 30s single-flight memo', async () => {

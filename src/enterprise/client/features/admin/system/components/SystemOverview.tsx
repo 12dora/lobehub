@@ -2,6 +2,7 @@
 
 import { Alert, Block, Flexbox, Icon, Tag, Text } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import type { LucideIcon } from 'lucide-react';
 import {
   Box,
   Boxes,
@@ -44,11 +45,27 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   dependency: css`
     min-width: 0;
+    height: 100%;
   `,
   dependencyGrid: css`
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-auto-rows: 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 8px;
+  `,
+  /** Two fixed-height lines so every tile is the same height whatever the copy says. */
+  dependencyLine: css`
+    overflow: hidden;
+
+    min-width: 0;
+
+    font-size: ${cssVar.fontSizeSM};
+    line-height: 20px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  `,
+  dependencyLines: css`
+    min-height: 40px;
   `,
   flagGrid: css`
     display: grid;
@@ -69,6 +86,60 @@ const DEPENDENCIES = [
   ['mail', Mail],
   ['keyManagement', KeyRound],
 ] as const;
+
+type DependencyHealth = AdminSystemStatus['dependencies']['database'];
+
+const ELLIPSIS = { tooltip: true, tooltipWhenOverflow: true } as const;
+
+interface DependencyTileProps {
+  icon: LucideIcon;
+  /** What this dependency is — provider / engine / target, plus version when known. */
+  primary: string;
+  /** How it is doing — error, latency, or the workload it is carrying. */
+  secondary: string;
+  status: string;
+  title: string;
+}
+
+/**
+ * Every dependency renders the exact same shape: a header row and exactly two
+ * single-line info rows, so the grid never gets stretched by one chatty tile.
+ */
+const DependencyTile = memo<DependencyTileProps>(({ icon, primary, secondary, status, title }) => (
+  <Block className={styles.dependency} padding={12} variant="outlined">
+    <Flexbox gap={8}>
+      <Flexbox horizontal align="center" gap={8} justify="space-between">
+        <Flexbox horizontal align="center" gap={8}>
+          <Icon icon={icon} size={16} />
+          <Text strong ellipsis={ELLIPSIS}>
+            {title}
+          </Text>
+        </Flexbox>
+        <OperationalStatus status={status} />
+      </Flexbox>
+      <Flexbox className={styles.dependencyLines} gap={0}>
+        <Text
+          className={styles.dependencyLine}
+          data-testid="dependency-line"
+          ellipsis={ELLIPSIS}
+          type="secondary"
+        >
+          {primary}
+        </Text>
+        <Text
+          className={styles.dependencyLine}
+          data-testid="dependency-line"
+          ellipsis={ELLIPSIS}
+          type="secondary"
+        >
+          {secondary}
+        </Text>
+      </Flexbox>
+    </Flexbox>
+  </Block>
+));
+
+DependencyTile.displayName = 'AdminSystemDependencyTile';
 
 interface SectionTitleProps {
   children: ReactNode;
@@ -104,121 +175,88 @@ BuildSummary.displayName = 'AdminSystemBuildSummary';
 export const DependencyGrid = memo<{ status: AdminSystemStatus }>(({ status }) => {
   const { t } = useTranslation('admin');
   const documentRender = status.dependencies.documentRender;
+  const sandbox = status.dependencies.sandbox;
+
+  /** Line 1 — what is configured. Falls back to the plain state when nothing is reported. */
+  const describe = (dependency: DependencyHealth, fallback: string): string => {
+    if (dependency.detail)
+      return dependency.version ? `${dependency.detail} ${dependency.version}` : dependency.detail;
+    if (dependency.status === 'disabled') return t('system.dependencies.notEnabled');
+    if (dependency.status === 'unknown') return t('system.dependencies.notConfigured');
+    return fallback;
+  };
+
+  /** Line 2 — how it is doing. Errors first, then the measured round trip. */
+  const diagnose = (dependency: DependencyHealth, lastError?: string): string => {
+    if (lastError) return lastError;
+    if (dependency.errorCategory)
+      return t(`system.values.dependencyError.${dependency.errorCategory}` as never);
+    if (typeof dependency.latencyMs === 'number')
+      return t('system.dependencies.latency', { ms: dependency.latencyMs });
+    if (dependency.status === 'healthy') return t('system.dependencies.noLiveCheck');
+    return '—';
+  };
+
   return (
     <Flexbox gap={8}>
       <SectionTitle>{t('system.dependencies.title')}</SectionTitle>
       <div className={styles.dependencyGrid}>
         {DEPENDENCIES.map(([key, icon]) => {
           const dependency = status.dependencies[key];
+          const title = t(`system.dependencies.${key}` as never);
           return (
-            <Block className={styles.dependency} key={key} padding={12} variant="outlined">
-              <Flexbox gap={8}>
-                <Flexbox horizontal align="center" gap={8} justify="space-between">
-                  <Flexbox horizontal align="center" gap={8}>
-                    <Icon icon={icon} size={16} />
-                    <Text strong>{t(`system.dependencies.${key}` as never)}</Text>
-                  </Flexbox>
-                  <OperationalStatus status={dependency.status} />
-                </Flexbox>
-                {dependency.errorCategory ? (
-                  <Text type="secondary">
-                    {t(`system.values.dependencyError.${dependency.errorCategory}` as never)}
-                  </Text>
-                ) : null}
-              </Flexbox>
-            </Block>
+            <DependencyTile
+              icon={icon}
+              key={key}
+              primary={describe(dependency, title)}
+              secondary={diagnose(dependency)}
+              status={dependency.status}
+              title={title}
+            />
           );
         })}
-        {status.dependencies.sandbox ? (
-          <Block className={styles.dependency} key="sandbox" padding={12} variant="outlined">
-            <Flexbox gap={8}>
-              <Flexbox horizontal align="center" gap={8} justify="space-between">
-                <Flexbox horizontal align="center" gap={8}>
-                  <Icon icon={Container} size={16} />
-                  <Text strong>{t('system.dependencies.sandbox')}</Text>
-                </Flexbox>
-                <OperationalStatus status={status.dependencies.sandbox.status} />
-              </Flexbox>
-              <Text className={styles.code} type="secondary">
-                {t('system.sandbox.daemon', {
-                  value: t(
-                    status.dependencies.sandbox.daemonReachable
-                      ? 'systemGeneral.values.yes'
-                      : 'systemGeneral.values.no',
-                  ),
-                })}
-              </Text>
-              <Text className={styles.code} type="secondary">
-                {t('system.sandbox.image', {
-                  value: t(
-                    status.dependencies.sandbox.imagePresent
-                      ? 'systemGeneral.values.yes'
-                      : 'systemGeneral.values.no',
-                  ),
-                })}
-              </Text>
-              <Text className={styles.code} type="secondary">
-                {t('system.sandbox.containers', {
-                  active: status.dependencies.sandbox.activeContainers,
-                  max: status.dependencies.sandbox.maxContainers,
-                })}
-              </Text>
-              {status.dependencies.sandbox.lastError ? (
-                <Text type="secondary">{status.dependencies.sandbox.lastError}</Text>
-              ) : status.dependencies.sandbox.errorCategory ? (
-                <Text type="secondary">
-                  {t(
-                    `system.values.dependencyError.${status.dependencies.sandbox.errorCategory}` as never,
-                  )}
-                </Text>
-              ) : null}
-            </Flexbox>
-          </Block>
+        {sandbox ? (
+          <DependencyTile
+            icon={Container}
+            key="sandbox"
+            status={sandbox.status}
+            title={t('system.dependencies.sandbox')}
+            primary={[
+              t(sandbox.daemonReachable ? 'system.sandbox.daemonUp' : 'system.sandbox.daemonDown'),
+              t(sandbox.imagePresent ? 'system.sandbox.imageReady' : 'system.sandbox.imageMissing'),
+            ].join(' · ')}
+            secondary={
+              sandbox.lastError || sandbox.errorCategory
+                ? diagnose(sandbox, sandbox.lastError)
+                : t('system.sandbox.containersInUse', {
+                    active: sandbox.activeContainers,
+                    max: sandbox.maxContainers,
+                  })
+            }
+          />
         ) : null}
         {documentRender ? (
-          <Block className={styles.dependency} key="documentRender" padding={12} variant="outlined">
-            <Flexbox gap={8}>
-              <Flexbox horizontal align="center" gap={8} justify="space-between">
-                <Flexbox horizontal align="center" gap={8}>
-                  <Icon icon={FileImage} size={16} />
-                  <Text strong>{t('system.dependencies.documentRender')}</Text>
-                </Flexbox>
-                <OperationalStatus status={documentRender.status} />
-              </Flexbox>
-              <Text className={styles.code} type="secondary">
-                {t('system.documentRender.sidecar', {
-                  value: t(
-                    documentRender.configured
-                      ? 'systemGeneral.values.yes'
-                      : 'systemGeneral.values.no',
-                  ),
-                })}
-              </Text>
-              {documentRender.version ? (
-                <Text className={styles.code} type="secondary">
-                  {t('system.documentRender.version', { version: documentRender.version })}
-                </Text>
-              ) : null}
-              {typeof documentRender.latencyMs === 'number' ? (
-                <Text className={styles.code} type="secondary">
-                  {t('systemGeneral.test.latency', { ms: documentRender.latencyMs })}
-                </Text>
-              ) : null}
-              <Text className={styles.code} type="secondary">
-                {t('system.documentRender.queue', {
-                  pending: documentRender.queuePending,
-                  running: documentRender.queueRunning,
-                })}
-              </Text>
-              {documentRender.lastError ? (
-                <Text type="secondary">{documentRender.lastError}</Text>
-              ) : documentRender.errorCategory ? (
-                <Text type="secondary">
-                  {t(`system.values.dependencyError.${documentRender.errorCategory}` as never)}
-                </Text>
-              ) : null}
-            </Flexbox>
-          </Block>
+          <DependencyTile
+            icon={FileImage}
+            key="documentRender"
+            status={documentRender.status}
+            title={t('system.dependencies.documentRender')}
+            primary={
+              documentRender.configured
+                ? describe(documentRender, t('system.dependencies.documentRender'))
+                : t('system.documentRender.notConfigured')
+            }
+            secondary={
+              !documentRender.lastError &&
+              !documentRender.errorCategory &&
+              documentRender.status === 'healthy'
+                ? t('system.documentRender.queue', {
+                    pending: documentRender.queuePending,
+                    running: documentRender.queueRunning,
+                  })
+                : diagnose(documentRender, documentRender.lastError)
+            }
+          />
         ) : null}
       </div>
       {status.instanceStatus.status === 'unavailable' ||

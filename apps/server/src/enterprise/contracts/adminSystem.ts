@@ -47,9 +47,19 @@ export const adminSystemDependencyErrorCategorySchema = z.enum([
 
 const adminSystemDependencyHealthSchema = z
   .object({
+    /**
+     * Short operator-facing summary of what is configured (provider / engine /
+     * target), e.g. "PostgreSQL", "S3 · lobe-files", "SMTP smtp.example.com:587",
+     * "Vault". Never contains secrets. Rendered as the tile's first info line.
+     */
+    detail: z.string().trim().max(120).optional(),
     errorCategory: adminSystemDependencyErrorCategorySchema.nullable(),
     lastCheckedAt: z.date().nullable(),
+    /** Round-trip of the last health check in milliseconds (absent when no live probe ran). */
+    latencyMs: z.number().int().nonnegative().optional(),
     status: adminSystemDependencyStatusSchema,
+    /** Server/engine version reported by the dependency, when cheaply available. */
+    version: z.string().trim().max(64).optional(),
   })
   .strict();
 
@@ -67,10 +77,8 @@ export const adminSystemDocumentRenderHealthSchema = adminSystemDependencyHealth
   .extend({
     configured: z.boolean(),
     lastError: z.string().trim().max(500).optional(),
-    latencyMs: z.number().int().nonnegative().optional(),
     queuePending: z.number().int().nonnegative(),
     queueRunning: z.number().int().nonnegative(),
-    version: z.string().trim().max(64).optional(),
   })
   .strict();
 
@@ -1068,3 +1076,53 @@ export type AdminSystemDocumentRenderMaintenance = z.infer<
 export type AdminSystemRunDocumentRenderGcOutput = z.infer<
   typeof adminSystemRunDocumentRenderGcOutputSchema
 >;
+
+// ---------------------------------------------------------------------------
+// Sandbox package-install ledger (admin.system.getSandboxPackageStats)
+// ---------------------------------------------------------------------------
+
+export const SANDBOX_PACKAGE_MANAGERS = ['apt', 'npm', 'pip'] as const;
+export const sandboxPackageManagerSchema = z.enum(SANDBOX_PACKAGE_MANAGERS);
+export type SandboxPackageManager = z.infer<typeof sandboxPackageManagerSchema>;
+
+export const adminSystemGetSandboxPackageStatsInputSchema = z
+  .object({
+    /** Look-back window in days (installs older than this are ignored). */
+    days: z.number().int().min(1).max(365).default(30),
+    limit: z.number().int().min(1).max(100).default(20),
+  })
+  .strict();
+
+export const adminSystemSandboxPackageStatSchema = z
+  .object({
+    /** Total install invocations (attempts, success not verified) in the window. */
+    installs: z.number().int().nonnegative(),
+    lastInstalledAt: z.date(),
+    manager: sandboxPackageManagerSchema,
+    package: z.string().trim().min(1).max(120),
+    /** Already baked into the sandbox image (Dockerfile.sandbox preinstall list). */
+    preinstalled: z.boolean(),
+    /** Distinct users who installed it in the window. */
+    users: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const adminSystemGetSandboxPackageStatsOutputSchema = z
+  .object({
+    generatedAt: z.date(),
+    items: z.array(adminSystemSandboxPackageStatSchema).max(100),
+    /** Current image preinstall list (pip package names, lowercase). */
+    preinstalled: z.array(z.string()).max(200),
+    /** Distinct (manager, package) pairs recorded in the window. */
+    totalPackages: z.number().int().nonnegative(),
+    windowDays: z.number().int().positive(),
+  })
+  .strict();
+
+export type AdminSystemGetSandboxPackageStatsInput = z.input<
+  typeof adminSystemGetSandboxPackageStatsInputSchema
+>;
+export type AdminSystemGetSandboxPackageStatsOutput = z.infer<
+  typeof adminSystemGetSandboxPackageStatsOutputSchema
+>;
+export type AdminSystemSandboxPackageStat = z.infer<typeof adminSystemSandboxPackageStatSchema>;

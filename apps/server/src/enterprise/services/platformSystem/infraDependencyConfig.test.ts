@@ -96,9 +96,35 @@ describe('shared dependency health', () => {
 
   it('treats omitted email provider plus credentials as configured SMTP', () => {
     expect(mailHealth({ SMTP_PASS: 'secret', SMTP_USER: 'smtp-user' })).toEqual({
+      detail: 'SMTP localhost:587',
       errorCategory: 'passive_check_only',
       lastCheckedAt: null,
       status: 'unknown',
+    });
+    expect(
+      mailHealth({
+        SMTP_HOST: 'smtp.example.com',
+        SMTP_PASS: 'secret',
+        SMTP_PORT: '587',
+        SMTP_USER: 'smtp-user',
+      }),
+    ).toMatchObject({ detail: 'SMTP smtp.example.com:587' });
+    expect(
+      mailHealth({
+        EMAIL_SERVICE_PROVIDER: 'resend',
+        RESEND_API_KEY: 're_123',
+        RESEND_FROM: 'a@b.com',
+      }),
+    ).toEqual({
+      detail: 'Resend',
+      errorCategory: 'passive_check_only',
+      lastCheckedAt: null,
+      status: 'unknown',
+    });
+    expect(mailHealth({})).toEqual({
+      errorCategory: null,
+      lastCheckedAt: null,
+      status: 'disabled',
     });
   });
 
@@ -109,6 +135,7 @@ describe('shared dependency health', () => {
       status: 'disabled',
     });
     expect(keyManagementHealth({ PLATFORM_MASTER_KEY: FAKE_MASTER_KEY })).toEqual({
+      detail: 'Environment master key',
       errorCategory: 'passive_check_only',
       lastCheckedAt: null,
       status: 'unknown',
@@ -137,10 +164,13 @@ describe('probeKeyManagement', () => {
       () => checkedAt,
     );
     expect(result).toEqual({
+      detail: 'Environment master key',
       errorCategory: null,
       lastCheckedAt: checkedAt,
+      latencyMs: expect.any(Number),
       status: 'healthy',
     });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(result)).not.toContain('env:health');
     expect(JSON.stringify(result)).not.toContain(FAKE_MASTER_KEY);
   });
@@ -160,7 +190,12 @@ describe('probeKeyManagement', () => {
       VAULT_TOKEN: 'secret-vault-token',
     });
 
-    expect(result).toMatchObject({ errorCategory: 'timeout', status: 'unavailable' });
+    expect(result).toMatchObject({
+      detail: 'Vault',
+      errorCategory: 'timeout',
+      latencyMs: expect.any(Number),
+      status: 'unavailable',
+    });
     expect(result.lastCheckedAt).toBeInstanceOf(Date);
     expect(JSON.stringify(result)).not.toContain('vault.private.example');
     expect(JSON.stringify(result)).not.toContain('secret-vault-token');

@@ -59,13 +59,16 @@ import {
 import type { InfraEnvBag } from './infraDependencyConfig';
 import type { LiveInfraHealth, LiveInfraHealthProbe } from './infraHealthMemo';
 import { getLiveInfraHealth } from './infraHealthMemo';
+import { probeLatencyMs } from './infraProbes';
 import { fullJobProjection, projectJob } from './jobProjection';
 import { probeSandboxHealth } from './sandboxProbe';
 import {
   defaultRedisHealthDependencies,
   type DependencyHealth,
+  extractSqlVersionText,
   failureCategory,
   mutationFailureCategory,
+  parsePostgresVersion,
   probeRedis,
   projectDependencies,
   projectOidcStatus,
@@ -443,7 +446,15 @@ export class PlatformSystemAdminService {
       authSnapshotResult,
       liveInfraResult,
     ] = await Promise.allSettled([
-      this.db.execute(sql`select 1`),
+      (async () => {
+        const startedAt = performance.now();
+        const result = await this.db.execute(sql`select version()`);
+        const version = parsePostgresVersion(extractSqlVersionText(result));
+        return {
+          latencyMs: probeLatencyMs(startedAt),
+          ...(version ? { version } : {}),
+        };
+      })(),
       new PlatformInstanceStatusService(this.db, { env: this.env }).getStatus(),
       this.jobSummary(),
       this.redisProbe(),

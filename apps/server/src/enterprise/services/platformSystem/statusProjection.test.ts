@@ -2,7 +2,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { IdentityProviderStartupHealth } from '../identityProvider/startupArtifact';
-import { projectOidcStatus } from './statusProjection';
+import {
+  extractSqlVersionText,
+  parsePostgresVersion,
+  projectDependencies,
+  projectOidcStatus,
+} from './statusProjection';
 
 const health = (
   overrides: Partial<IdentityProviderStartupHealth> = {},
@@ -123,6 +128,50 @@ describe('projectOidcStatus', () => {
       configured: true,
       source: 'database',
       status: 'unavailable',
+    });
+  });
+});
+
+describe('parsePostgresVersion', () => {
+  it('takes the first numeric token after PostgreSQL and tolerates prefixes', () => {
+    expect(parsePostgresVersion('PostgreSQL 17.4 on x86_64-pc-linux-gnu')).toBe('17.4');
+    expect(parsePostgresVersion('ParadeDB 0.15.1 (PostgreSQL 17.4) compiled by gcc')).toBe('17.4');
+    expect(parsePostgresVersion('PostgreSQL 16')).toBe('16');
+    expect(parsePostgresVersion(undefined)).toBeUndefined();
+    expect(parsePostgresVersion('not a version string')).toBeUndefined();
+  });
+});
+
+describe('extractSqlVersionText', () => {
+  it('reads the version column from drizzle execute rows', () => {
+    expect(
+      extractSqlVersionText({ rows: [{ version: 'PostgreSQL 17.4 on x86_64-pc-linux-gnu' }] }),
+    ).toBe('PostgreSQL 17.4 on x86_64-pc-linux-gnu');
+    expect(extractSqlVersionText([{ version: 'PostgreSQL 16.9' }])).toBe('PostgreSQL 16.9');
+  });
+});
+
+describe('projectDependencies', () => {
+  const checkedAt = new Date('2026-08-23T00:00:00.000Z');
+  const disabled = { errorCategory: null, lastCheckedAt: null, status: 'disabled' as const };
+
+  it('projects a timed database probe including version when parseable', () => {
+    expect(
+      projectDependencies({
+        checkedAt,
+        databaseResult: { status: 'fulfilled', value: { latencyMs: 7, version: '17.4' } },
+        env: {},
+        keyManagement: disabled,
+        objectStorage: disabled,
+        redisResult: { status: 'fulfilled', value: disabled },
+      }).database,
+    ).toEqual({
+      detail: 'PostgreSQL',
+      errorCategory: null,
+      lastCheckedAt: checkedAt,
+      latencyMs: 7,
+      status: 'healthy',
+      version: '17.4',
     });
   });
 });

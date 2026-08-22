@@ -1,3 +1,5 @@
+import { isRecord, pickTrimmedString } from '@lobechat/utils/object';
+
 import { getRedisConfig } from '@/envs/redis';
 import { createRedisWithPrefix, isRedisEnabled } from '@/libs/redis/manager';
 import type { BaseRedisProvider, RedisConfig } from '@/libs/redis/types';
@@ -12,13 +14,15 @@ import {
   PlatformSystemJobInvalidError,
   PlatformSystemJobNotFoundError,
 } from './errors';
+import type { DependencyHealth } from './infraDependencyConfig';
 import { mailHealth } from './infraDependencyConfig';
+import { probeLatencyMs } from './infraProbes';
 
-export type DependencyHealth = {
-  errorCategory:
-    'configuration_incomplete' | 'operation_unavailable' | 'passive_check_only' | 'timeout' | null;
-  lastCheckedAt: Date | null;
-  status: 'degraded' | 'disabled' | 'healthy' | 'unavailable' | 'unknown';
+export type { DependencyHealth };
+
+export type DatabaseProbeResult = {
+  latencyMs: number;
+  version?: string;
 };
 
 export interface RedisHealthDependencies {
@@ -31,6 +35,25 @@ export const defaultRedisHealthDependencies: RedisHealthDependencies = {
   createRedisWithPrefix,
   getRedisConfig,
   isRedisEnabled,
+};
+
+export const parsePostgresVersion = (text: string | undefined): string | undefined => {
+  if (!text) return undefined;
+  const token =
+    text.match(/PostgreSQL\s+(\d+(?:\.\d+)*)/i)?.[1] ?? text.match(/(\d+(?:\.\d+)*)/)?.[1];
+  const version = token?.trim().slice(0, 64);
+  return version || undefined;
+};
+
+export const extractSqlVersionText = (result: unknown): string | undefined => {
+  const rows = Array.isArray(result)
+    ? result
+    : isRecord(result) && Array.isArray(result.rows)
+      ? result.rows
+      : undefined;
+  const first = rows?.[0];
+  if (!isRecord(first)) return undefined;
+  return pickTrimmedString(first.version) ?? pickTrimmedString(Object.values(first)[0]);
 };
 
 export const disabledHealth = (): DependencyHealth => ({
@@ -46,17 +69,26 @@ export const probeRedis = async (
   if (!dependencies.isRedisEnabled(config)) return disabledHealth();
   let client: BaseRedisProvider | null = null;
   const checkedAt = new Date();
+  const startedAt = performance.now();
   try {
     client = await dependencies.createRedisWithPrefix(config, 'platformSystemHealth');
     if (!client) return disabledHealth();
-    return { errorCategory: null, lastCheckedAt: checkedAt, status: 'healthy' };
+    return {
+      detail: 'Redis',
+      errorCategory: null,
+      lastCheckedAt: checkedAt,
+      latencyMs: probeLatencyMs(startedAt),
+      status: 'healthy',
+    };
   } catch (error) {
     return {
+      detail: 'Redis',
       errorCategory:
         error instanceof Error && /timeout/i.test(error.message)
           ? 'timeout'
           : 'operation_unavailable',
       lastCheckedAt: checkedAt,
+      latencyMs: probeLatencyMs(startedAt),
       status: 'unavailable',
     };
   } finally {
@@ -163,19 +195,18 @@ export const projectOidcStatus = (params: {
 };
 
 const withCheckedAt = (health: DependencyHealth, checkedAt: Date): DependencyHealth => ({
-  errorCategory: health.errorCategory,
+  ...health,
   lastCheckedAt:
     health.lastCheckedAt === undefined
       ? health.status === 'disabled' || health.errorCategory === 'configuration_incomplete'
         ? null
         : checkedAt
       : health.lastCheckedAt,
-  status: health.status,
 });
 
 export const projectDependencies = (params: {
   checkedAt: Date;
-  databaseResult: PromiseSettledResult<unknown>;
+  databaseResult: PromiseSettledResult<DatabaseProbeResult>;
   documentRender?: AdminSystemDocumentRenderHealth | null;
   env: Record<string, string | undefined>;
   keyManagement: DependencyHealth;
@@ -196,8 +227,16 @@ export const projectDependencies = (params: {
   return {
     database:
       databaseResult.status === 'fulfilled'
-        ? ({ errorCategory: null, lastCheckedAt: checkedAt, status: 'healthy' } as const)
+        ? ({
+            detail: 'PostgreSQL',
+            errorCategory: null,
+            lastCheckedAt: checkedAt,
+            latencyMs: databaseResult.value.latencyMs,
+            status: 'healthy',
+            ...(databaseResult.value.version ? { version: databaseResult.value.version } : {}),
+          } as const)
         : ({
+            detail: 'PostgreSQL',
             errorCategory: 'operation_unavailable',
             lastCheckedAt: checkedAt,
             status: 'unavailable',
