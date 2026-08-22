@@ -82,27 +82,59 @@ export const MailCard = memo<MailCardProps>(
     const editModal = useInfraEditModal({
       beginEdit: editor.beginEdit,
       cancelEdit: editor.cancelEdit,
+      dirty: editor.dirty,
       saveCount: editor.saveCount,
     });
     const locked = editor.conflict || editor.stale;
 
-    /** Who the mail claims to be from, and the relay that has to accept it. */
+    const providerField = {
+      label: t('systemGeneral.mail.fields.provider'),
+      value: t(`systemGeneral.mail.provider.${view.provider}`),
+    };
+    const fromAddressField = {
+      label: t('systemGeneral.mail.fields.fromAddress'),
+      value: unset(view.fromAddress),
+    };
+    const hostField = { label: t('systemGeneral.mail.fields.host'), value: unset(view.host) };
+    const portField = { label: t('systemGeneral.mail.fields.port'), value: unset(view.port) };
+    const secureField = { label: t('systemGeneral.mail.fields.secure'), value: yesNo(view.secure) };
+
+    /**
+     * Who the mail claims to be from, and the relay that has to accept it.
+     *
+     * The sender name and the address are one identity — the way a recipient sees them — so they
+     * share a row in the form they are actually sent in, instead of costing a summary row each.
+     */
     const summaryFields = [
+      providerField,
       {
-        label: t('systemGeneral.mail.fields.provider'),
-        value: t(`systemGeneral.mail.provider.${view.provider}`),
+        ...fromAddressField,
+        value:
+          view.senderName && view.fromAddress
+            ? `${view.senderName} <${view.fromAddress}>`
+            : fromAddressField.value,
       },
-      { label: t('systemGeneral.mail.fields.fromAddress'), value: unset(view.fromAddress) },
-      { label: t('systemGeneral.mail.fields.host'), value: unset(view.host) },
-      { label: t('systemGeneral.mail.fields.port'), value: unset(view.port) },
-      { label: t('systemGeneral.mail.fields.secure'), value: yesNo(view.secure) },
+      hostField,
+      portField,
+      secureField,
+    ];
+
+    /** 详情 spells every stored field out, one row each — the username included. */
+    const detailsFields = [
+      providerField,
+      fromAddressField,
+      { label: t('systemGeneral.mail.fields.senderName'), value: unset(view.senderName) },
+      hostField,
+      portField,
+      secureField,
+      { label: t('systemGeneral.mail.fields.user'), value: unset(view.smtpUser) },
     ];
 
     return (
       <InfraSettingsCard
         banner={failOpen ? <InfraFailOpenAlert /> : undefined}
         canTest={canOperate}
-        editDirty={editor.dirty}
+        detailsFields={detailsFields}
         editOpen={editModal.open}
         envVars={MAIL_ENV}
         fields={summaryFields}
@@ -112,10 +144,6 @@ export const MailCard = memo<MailCardProps>(
         probing={probing}
         status={view.status}
         title={t('systemGeneral.mail.title')}
-        detailsFields={[
-          ...summaryFields,
-          { label: t('systemGeneral.mail.fields.senderName'), value: unset(view.senderName) },
-        ]}
         editActions={
           canOperate ? (
             <>
@@ -135,7 +163,7 @@ export const MailCard = memo<MailCardProps>(
                 locked={locked}
                 saving={editor.saving}
                 source={view.source}
-                onCancel={() => editModal.onOpenChange(false)}
+                onCancel={editModal.requestClose}
                 onRevert={editor.revertToEnv}
                 onSave={() => void editor.save()}
               />

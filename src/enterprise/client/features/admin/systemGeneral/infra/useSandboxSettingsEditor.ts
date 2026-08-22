@@ -196,11 +196,16 @@ export const useSandboxSettingsEditor = ({
 
   return {
     beginEdit: () => setEditing(true),
+    /**
+     * Discarding goes back to the CURRENT server snapshot, not to the baseline this draft started
+     * from: while the draft was dirty a newer snapshot may have arrived and been parked as
+     * `stale`. Restoring the stale baseline left the reopened form showing values the server no
+     * longer holds — and still locked behind the "reload" banner, over an edit nobody was making
+     * any more. `applySnapshot` adopts the new values and its revision, and clears both flags.
+     */
     cancelEdit: () => {
-      setDraft(baselineDraft);
       setEditing(false);
-      setShowErrors(false);
-      setConflict(false);
+      applySnapshot(seedRef.current, view.revision);
     },
     conflict,
     dirty,

@@ -3253,6 +3253,7 @@
   "systemGeneral.objectStorage.placeholders.publicDomain": "https://files.example.com",
   "systemGeneral.objectStorage.placeholders.region": "us-east-1",
   "systemGeneral.objectStorage.title": "Object storage",
+  "systemGeneral.objectStorage.values.pathStyle": "path-style",
   "systemGeneral.retry": "Retry",
   "systemGeneral.sandbox.edit.seededFromEnv": "Values are prefilled from the environment. Saved values override environment variables immediately.",
   "systemGeneral.sandbox.fields.cpus": "CPUs",

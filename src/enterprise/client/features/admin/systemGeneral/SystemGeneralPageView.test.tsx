@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +9,8 @@ import type {
 } from '@/enterprise/client/services/adminSystem';
 
 import { SystemGeneralPageView } from './SystemGeneralPageView';
+
+const uiMocks = vi.hoisted(() => ({ confirmModal: vi.fn() }));
 
 vi.mock('antd-style', () => ({
   createStaticStyles: () => new Proxy({}, { get: () => '' }),
@@ -46,7 +48,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {children}
     </button>
   ),
-  confirmModal: vi.fn(),
+  confirmModal: (props: unknown) => uiMocks.confirmModal(props),
   Input: (props: Record<string, unknown>) => <input {...props} />,
   InputPassword: (props: Record<string, unknown>) => <input type="password" {...props} />,
   // The card's two secondary surfaces: rendered only while open, exactly as base-ui does.
@@ -280,7 +282,8 @@ describe('SystemGeneralPageView', () => {
     );
 
     expect(screen.getByText('AKIA****MPLE')).toBeTruthy();
-    expect(screen.getByText('noreply@example.com')).toBeTruthy();
+    // The sender name shares the From row with the address it is sent under.
+    expect(screen.getByText('Platform <noreply@example.com>')).toBeTruthy();
     expect(screen.queryByText('systemGeneral.testConnection')).toBeNull();
   });
 
@@ -387,7 +390,29 @@ describe('SystemGeneralPageView', () => {
     expect(screen.getByText('systemGeneral.edit.revert')).toBeTruthy();
   });
 
-  it('keeps every field of a dependency reachable through 详情', () => {
+  /** Every stored field of the object-storage card, spelled out — 详情 is the complete reading. */
+  const OBJECT_STORAGE_DETAIL_FIELDS = [
+    'systemGeneral.objectStorage.fields.endpoint',
+    'systemGeneral.objectStorage.fields.region',
+    'systemGeneral.objectStorage.fields.bucket',
+    'systemGeneral.objectStorage.fields.accessKeyId',
+    'systemGeneral.objectStorage.fields.publicDomain',
+    'systemGeneral.objectStorage.fields.pathStyle',
+    'systemGeneral.objectStorage.fields.previewUrlExpireIn',
+    'systemGeneral.objectStorage.fields.setAcl',
+  ];
+
+  const MAIL_DETAIL_FIELDS = [
+    'systemGeneral.mail.fields.provider',
+    'systemGeneral.mail.fields.fromAddress',
+    'systemGeneral.mail.fields.senderName',
+    'systemGeneral.mail.fields.host',
+    'systemGeneral.mail.fields.port',
+    'systemGeneral.mail.fields.secure',
+    'systemGeneral.mail.fields.user',
+  ];
+
+  it('keeps every field of the object-storage card reachable through 详情', () => {
     render(
       <SystemGeneralPageView
         canOperate
@@ -401,14 +426,101 @@ describe('SystemGeneralPageView', () => {
       />,
     );
 
-    // Path-style access is not one of the five summary rows…
-    expect(screen.queryByText('systemGeneral.objectStorage.fields.pathStyle')).toBeNull();
+    // Only five readings reach the card; the rest are behind the door.
+    for (const label of [
+      'systemGeneral.objectStorage.fields.pathStyle',
+      'systemGeneral.objectStorage.fields.previewUrlExpireIn',
+      'systemGeneral.objectStorage.fields.setAcl',
+    ])
+      expect(screen.queryByText(label), label).toBeNull();
 
     fireEvent.click(screen.getAllByText('systemGeneral.card.details')[0]!);
 
-    // …but 详情 carries the complete list, plus the variables that drive it.
-    expect(screen.getByText('systemGeneral.objectStorage.fields.pathStyle')).toBeTruthy();
-    expect(screen.getByText('S3_ENDPOINT')).toBeTruthy();
+    // 详情 is where "what is stored" is answered in full — nothing may be write-only-and-invisible.
+    const details = within(screen.getByRole('dialog'));
+    for (const label of OBJECT_STORAGE_DETAIL_FIELDS)
+      expect(details.getByText(label), label).toBeTruthy();
+    expect(details.getByText('S3_ENDPOINT')).toBeTruthy();
+  });
+
+  it('keeps every field of the mail card reachable through 详情', () => {
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={settings()}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    // The SMTP username used to be reachable only by opening the form.
+    expect(screen.queryByText('systemGeneral.mail.fields.user')).toBeNull();
+
+    fireEvent.click(screen.getAllByText('systemGeneral.card.details')[1]!);
+
+    const details = within(screen.getByRole('dialog'));
+    for (const label of MAIL_DETAIL_FIELDS) expect(details.getByText(label), label).toBeTruthy();
+    expect(details.getByText('mailer')).toBeTruthy();
+  });
+
+  it('folds the two secondary readings into the row they belong to', () => {
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={settings()}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    // Path-style is a property of the endpoint, and the sender name is part of the From identity:
+    // both belong to a row that already exists rather than to a sixth one that does not fit.
+    expect(
+      screen.getByText('https://s3.example.com · systemGeneral.objectStorage.values.pathStyle'),
+    ).toBeTruthy();
+    expect(screen.getByText('Platform <noreply@example.com>')).toBeTruthy();
+  });
+
+  it('asks before the footer 取消 throws an unsaved draft away', () => {
+    // The regression: 取消 called the open-state setter directly, so the one button an operator
+    // presses to "get out of here" was the one path that skipped the unsaved-changes question.
+    uiMocks.confirmModal.mockClear();
+    render(
+      <SystemGeneralPageView
+        canOperate
+        data={managedHere()}
+        error={undefined}
+        isLoading={false}
+        probeBusy={{}}
+        probeResults={{}}
+        onRetry={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByText('systemGeneral.card.edit')[0]!);
+    fireEvent.change(screen.getByDisplayValue('files'), { target: { value: 'other-bucket' } });
+
+    fireEvent.click(screen.getByText('systemGeneral.edit.cancel'));
+
+    // Still open, still holding what was typed — nothing is thrown away before the answer.
+    expect(uiMocks.confirmModal).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(screen.getByDisplayValue('other-bucket')).toBeTruthy();
+
+    const config = uiMocks.confirmModal.mock.calls[0]![0] as { onOk: () => void; title: string };
+    expect(config.title).toBe('systemGeneral.unsaved.title');
+    act(() => config.onOk());
+
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('warns when a saved override exists but is not the configuration in effect', () => {

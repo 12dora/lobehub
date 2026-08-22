@@ -70,7 +70,11 @@ describe('getSandboxPackageStats', () => {
     const result = await getSandboxPackageStats(db, { days: 30, limit: 20 });
     expect(result.windowDays).toBe(30);
     expect(result.totalPackages).toBe(3);
-    expect(result.preinstalled).toEqual([...SANDBOX_PREINSTALLED_PIP_PACKAGES]);
+    // The image ships more than pip packages; the list the card counts covers all of them.
+    expect(result.preinstalled).toEqual(
+      expect.arrayContaining([...SANDBOX_PREINSTALLED_PIP_PACKAGES]),
+    );
+    expect(result.preinstalled).toEqual(expect.arrayContaining(['curl', 'git', 'tsx']));
     expect(result.items.map((item) => item.package)).toEqual(['requests', 'lodash', 'obscure-lib']);
     expect(result.items[0]).toMatchObject({
       installs: 10,
@@ -93,6 +97,34 @@ describe('getSandboxPackageStats', () => {
     });
     expect(result.items.every((item) => item.lastInstalledAt instanceof Date)).toBe(true);
     expect(result.generatedAt).toBeInstanceOf(Date);
+  });
+
+  it('reads "preinstalled" in the manager\'s own namespace, not against the pip list', async () => {
+    // apt and npm rows used to be measured against the pip list alone, so everything the image
+    // installs with apt-get or npm — curl, git, tsx — was reported as a "candidate" for an image
+    // it is already in, while a pip name reused by another manager would have been a false yes.
+    await db.insert(platformSandboxPackageInstalls).values([
+      { installCount: 9, manager: 'apt', package: 'curl', userId: userA },
+      { installCount: 8, manager: 'apt', package: 'vim', userId: userA },
+      { installCount: 7, manager: 'npm', package: 'tsx', userId: userA },
+      { installCount: 6, manager: 'npm', package: 'lodash', userId: userA },
+      // Same spelling, different namespace: neither claim may leak into the other.
+      { installCount: 5, manager: 'npm', package: 'requests', userId: userA },
+      { installCount: 4, manager: 'pip', package: 'curl', userId: userA },
+      { installCount: 3, manager: 'pip', package: 'requests', userId: userA },
+    ]);
+
+    const result = await getSandboxPackageStats(db, { days: 30, limit: 20 });
+    const flag = (manager: string, name: string) =>
+      result.items.find((item) => item.manager === manager && item.package === name)?.preinstalled;
+
+    expect(flag('apt', 'curl')).toBe(true);
+    expect(flag('apt', 'vim')).toBe(false);
+    expect(flag('npm', 'tsx')).toBe(true);
+    expect(flag('npm', 'lodash')).toBe(false);
+    expect(flag('npm', 'requests')).toBe(false);
+    expect(flag('pip', 'curl')).toBe(false);
+    expect(flag('pip', 'requests')).toBe(true);
   });
 
   it('applies the item limit without shrinking totalPackages', async () => {

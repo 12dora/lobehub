@@ -193,38 +193,17 @@ describe('InfraSettingsCard', () => {
     expect(screen.getByText('save')).toBeTruthy();
   });
 
-  it('closes a clean 编辑 modal without asking', () => {
-    const onEditOpenChange = vi.fn();
-    render(
-      <InfraSettingsCard
-        canTest
-        editOpen
-        editor={<div>the-form</div>}
-        fields={FIELDS}
-        icon={Box}
-        probing={false}
-        title="Object storage"
-        onEditOpenChange={onEditOpenChange}
-        onTest={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(
-      screen.getByText('dismiss:systemGeneral.card.editTitle:{"name":"Object storage"}'),
-    );
-
-    expect(uiMocks.confirmModal).not.toHaveBeenCalled();
-    expect(onEditOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it('confirms before throwing an unsaved draft away', () => {
+  it('routes every way out of 编辑 through the controller that owns the draft', () => {
+    // The card does not run its own unsaved-changes question: `useInfraEditModal` guards EVERY
+    // false transition, so the mask, Esc and the footer 取消 all ask exactly once — and the card
+    // can never become a second door that skips it (see useInfraEditModal.test.tsx).
     const onEditOpenChange = vi.fn();
     uiMocks.confirmModal.mockClear();
     render(
       <InfraSettingsCard
         canTest
-        editDirty
         editOpen
+        editActions={<button type="button">cancel</button>}
         editor={<div>the-form</div>}
         fields={FIELDS}
         icon={Box}
@@ -239,14 +218,35 @@ describe('InfraSettingsCard', () => {
       screen.getByText('dismiss:systemGeneral.card.editTitle:{"name":"Object storage"}'),
     );
 
-    expect(onEditOpenChange).not.toHaveBeenCalled();
-    const config = uiMocks.confirmModal.mock.calls[0]![0] as {
-      okText: string;
-      onOk: () => void;
-      title: string;
-    };
-    expect(config.title).toBe('systemGeneral.unsaved.title');
-    config.onOk();
     expect(onEditOpenChange).toHaveBeenCalledWith(false);
+    expect(uiMocks.confirmModal).not.toHaveBeenCalled();
+  });
+
+  it('keeps the editor and its actions in the modal, however long the form is', () => {
+    // The modal body is a capped, `overflow: hidden` box: everything below the cap has to remain
+    // in the DOM and reachable by scrolling — never dropped, and never clipped away with the
+    // action row (see styles.test.ts for the definite-size half of that contract).
+    const longForm = Array.from({ length: 40 }, (_, index) => (
+      <div key={index}>{`field-${index}`}</div>
+    ));
+
+    render(
+      <InfraSettingsCard
+        canTest
+        editOpen
+        editActions={<button type="button">save-action</button>}
+        editor={<div>{longForm}</div>}
+        fields={FIELDS}
+        icon={Box}
+        probing={false}
+        title="Sandbox"
+        onEditOpenChange={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('field-0')).toBeTruthy();
+    expect(screen.getByText('field-39')).toBeTruthy();
+    expect(screen.getByText('save-action')).toBeTruthy();
   });
 });

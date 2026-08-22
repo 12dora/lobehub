@@ -80,27 +80,72 @@ export const ObjectStorageCard = memo<ObjectStorageCardProps>(
     const editModal = useInfraEditModal({
       beginEdit: editor.beginEdit,
       cancelEdit: editor.cancelEdit,
+      dirty: editor.dirty,
       saveCount: editor.saveCount,
     });
     const locked = editor.conflict || editor.stale;
 
-    /** Where the bytes land, in the order an operator reads an S3 configuration. */
+    const endpointField = {
+      label: t('systemGeneral.objectStorage.fields.endpoint'),
+      value: unset(view.endpoint),
+    };
+    const regionField = {
+      label: t('systemGeneral.objectStorage.fields.region'),
+      value: unset(view.region),
+    };
+    const bucketField = {
+      label: t('systemGeneral.objectStorage.fields.bucket'),
+      value: unset(view.bucket),
+    };
+    const accessKeyField = {
+      label: t('systemGeneral.objectStorage.fields.accessKeyId'),
+      value: unset(view.accessId),
+    };
+    const publicDomainField = {
+      label: t('systemGeneral.objectStorage.fields.publicDomain'),
+      value: unset(view.publicDomain),
+    };
+
+    /**
+     * Where the bytes land, in the order an operator reads an S3 configuration.
+     *
+     * Path-style is a property OF the endpoint, not a sixth reading: folding it into that row
+     * keeps the addressing mode on the card (it is what distinguishes a MinIO from an AWS
+     * endpoint) without spending one of the five summary rows on a yes/no.
+     */
     const summaryFields = [
-      { label: t('systemGeneral.objectStorage.fields.endpoint'), value: unset(view.endpoint) },
-      { label: t('systemGeneral.objectStorage.fields.region'), value: unset(view.region) },
-      { label: t('systemGeneral.objectStorage.fields.bucket'), value: unset(view.bucket) },
-      { label: t('systemGeneral.objectStorage.fields.accessKeyId'), value: unset(view.accessId) },
       {
-        label: t('systemGeneral.objectStorage.fields.publicDomain'),
-        value: unset(view.publicDomain),
+        ...endpointField,
+        value: view.pathStyle
+          ? `${endpointField.value} · ${t('systemGeneral.objectStorage.values.pathStyle')}`
+          : endpointField.value,
       },
+      regionField,
+      bucketField,
+      accessKeyField,
+      publicDomainField,
+    ];
+
+    /** 详情 spells every stored field out, one row each — including the two the form owns. */
+    const detailsFields = [
+      endpointField,
+      regionField,
+      bucketField,
+      accessKeyField,
+      publicDomainField,
+      { label: t('systemGeneral.objectStorage.fields.pathStyle'), value: yesNo(view.pathStyle) },
+      {
+        label: t('systemGeneral.objectStorage.fields.previewUrlExpireIn'),
+        value: unset(view.previewUrlExpireIn),
+      },
+      { label: t('systemGeneral.objectStorage.fields.setAcl'), value: yesNo(view.setAcl) },
     ];
 
     return (
       <InfraSettingsCard
         banner={failOpen ? <InfraFailOpenAlert /> : undefined}
         canTest={canOperate}
-        editDirty={editor.dirty}
+        detailsFields={detailsFields}
         editOpen={editModal.open}
         envVars={OBJECT_STORAGE_ENV}
         fields={summaryFields}
@@ -110,13 +155,6 @@ export const ObjectStorageCard = memo<ObjectStorageCardProps>(
         probing={probing}
         status={view.status}
         title={t('systemGeneral.objectStorage.title')}
-        detailsFields={[
-          ...summaryFields,
-          {
-            label: t('systemGeneral.objectStorage.fields.pathStyle'),
-            value: yesNo(view.pathStyle),
-          },
-        ]}
         editActions={
           canOperate ? (
             <>
@@ -136,7 +174,7 @@ export const ObjectStorageCard = memo<ObjectStorageCardProps>(
                 locked={locked}
                 saving={editor.saving}
                 source={view.source}
-                onCancel={() => editModal.onOpenChange(false)}
+                onCancel={editModal.requestClose}
                 onRevert={editor.revertToEnv}
                 onSave={() => void editor.save()}
               />

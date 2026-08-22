@@ -1,10 +1,10 @@
 'use client';
 
 import { Flexbox, Icon, Tag, Text } from '@lobehub/ui';
-import { Button, confirmModal, Modal, ScrollArea } from '@lobehub/ui/base-ui';
+import { Button, Modal, ScrollArea } from '@lobehub/ui/base-ui';
 import type { LucideIcon } from 'lucide-react';
 import { AlertTriangle, CheckCircle2, CircleDashed, XCircle } from 'lucide-react';
-import { memo, type ReactNode, useCallback, useState } from 'react';
+import { memo, type ReactNode, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { AdminSystemTestDependencyResult } from '@/enterprise/client/services/adminSystem';
@@ -35,8 +35,6 @@ export interface InfraSettingsCardProps {
   detailsFields?: readonly Field[];
   /** 保存 / 恢复 / 取消 — rendered in the 编辑 modal footer. */
   editActions?: ReactNode;
-  /** Unsaved draft: closing the 编辑 modal asks for confirmation first. */
-  editDirty?: boolean;
   /** Whether the 编辑 modal is open. Owned by the card wrapper, which drives the editor hook. */
   editOpen?: boolean;
   /** Editable body, hosted by the 编辑 modal. Absent on read-only cards, which show 详情 only. */
@@ -52,6 +50,11 @@ export interface InfraSettingsCardProps {
   icon: LucideIcon;
   /** One or two lines of guidance under the actions (module disabled, what the card is). */
   notice?: ReactNode;
+  /**
+   * Drives the 编辑 modal. Every `false` transition — the mask, Esc, the footer 取消 — goes through
+   * the same guarded controller (`useInfraEditModal`), which is where the unsaved-changes
+   * confirmation lives, so the card never has to own a second copy of that rule.
+   */
   onEditOpenChange?: (open: boolean) => void;
   onTest: () => void;
   probe?: AdminSystemTestDependencyResult;
@@ -155,7 +158,6 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
     details,
     detailsFields,
     editActions,
-    editDirty,
     editOpen = false,
     editor,
     envVars,
@@ -177,21 +179,6 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
     const [detailsOpen, setDetailsOpen] = useState(false);
 
     const canEdit = Boolean(editor) && Boolean(onEditOpenChange);
-
-    /** An abandoned draft is a real loss: never let a stray click on the mask throw one away. */
-    const requestCloseEdit = useCallback(() => {
-      if (!editDirty) {
-        onEditOpenChange?.(false);
-        return;
-      }
-      confirmModal({
-        cancelText: t('systemGeneral.unsaved.stay'),
-        content: t('systemGeneral.unsaved.description'),
-        okText: t('systemGeneral.unsaved.leave'),
-        title: t('systemGeneral.unsaved.title'),
-        onOk: () => onEditOpenChange?.(false),
-      });
-    }, [editDirty, onEditOpenChange, t]);
 
     const summaryFields = (fields ?? []).slice(0, INFRA_SUMMARY_FIELD_LIMIT);
     const allFields = detailsFields ?? fields ?? [];
@@ -298,7 +285,7 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
             open={editOpen}
             title={t('systemGeneral.card.editTitle', { name: title })}
             width={INFRA_MODAL_WIDTH}
-            onCancel={requestCloseEdit}
+            onCancel={() => onEditOpenChange?.(false)}
           >
             <ScrollArea className={styles.modalScroller}>
               <div className={styles.modalSection}>{editor}</div>

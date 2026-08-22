@@ -136,13 +136,20 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
     -webkit-line-clamp: 2;
   `,
   /**
-   * Modal chrome: the body is capped and the ScrollArea inside it takes the whole of that cap, so
-   * the header and the action row stay put while a long panel scrolls. The flex pair is what makes
-   * the ScrollArea's viewport height definite — a bare `max-height` would leave it unscrollable.
+   * Modal chrome: the body is a column whose height is capped, and the ScrollArea inside it takes
+   * the whole of that cap, so the header and the action row stay put while a long panel scrolls.
+   *
+   * Both halves of the pair are load-bearing. The column direction plus `min-block-size: 0` is what
+   * gives the scroller a DEFINITE block size to resolve `flex: 1` against; without it the body is
+   * an `overflow: hidden` box whose content is only capped, and the longest form (沙箱) loses its
+   * last fields — including the footer of the form — to a clip with no way to scroll to them.
    */
   modalBody: css`
     overflow: hidden;
     display: flex;
+    flex-direction: column;
+
+    min-block-size: 0;
     max-block-size: 70vh;
   `,
   modalScroller: css`

@@ -220,6 +220,7 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
     const editModal = useInfraEditModal({
       beginEdit: () => setDraft(undefined),
       cancelEdit: () => setDraft(undefined),
+      dirty,
       saveCount: savedCount,
     });
 
@@ -284,7 +285,6 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
         banner={banner}
         canTest={false}
         detailsFields={detailsFields}
-        editDirty={dirty}
         editOpen={editModal.open}
         fields={summaryFields}
         icon={Fingerprint}
@@ -304,7 +304,7 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
               ) : dirty ? (
                 <span className={formStyles.hint}>{t('browserProfile.states.dirty')}</span>
               ) : null}
-              <Button disabled={saving} size="small" onClick={() => editModal.onOpenChange(false)}>
+              <Button disabled={saving} size="small" onClick={editModal.requestClose}>
                 {t('systemGeneral.edit.cancel')}
               </Button>
               <Button

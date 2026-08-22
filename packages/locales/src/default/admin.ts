@@ -2287,6 +2287,8 @@ export default {
   'systemGeneral.objectStorage.fields.accessKeyId': 'Access key ID',
   'systemGeneral.objectStorage.fields.publicDomain': 'Public domain',
   'systemGeneral.objectStorage.fields.pathStyle': 'Path-style access',
+  // Folded into the endpoint summary row: the addressing mode is a property of the endpoint.
+  'systemGeneral.objectStorage.values.pathStyle': 'path-style',
   'systemGeneral.mail.title': 'Mail service',
   'systemGeneral.mail.fields.provider': 'Provider',
   'systemGeneral.mail.fields.host': 'Host',

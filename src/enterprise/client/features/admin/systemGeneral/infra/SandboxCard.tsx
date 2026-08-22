@@ -87,6 +87,7 @@ const SandboxCardBody = memo<{
   const editModal = useInfraEditModal({
     beginEdit: editor.beginEdit,
     cancelEdit: editor.cancelEdit,
+    dirty: editor.dirty,
     saveCount: editor.saveCount,
   });
   const locked = editor.conflict || editor.stale;
@@ -151,7 +152,6 @@ const SandboxCardBody = memo<{
       canTest={false}
       details={packageLedger}
       detailsFields={detailsFields}
-      editDirty={editor.dirty}
       editOpen={editModal.open}
       envVars={SANDBOX_ENV}
       fields={summaryFields}
@@ -169,7 +169,7 @@ const SandboxCardBody = memo<{
             locked={locked}
             saving={editor.saving}
             source={view.source}
-            onCancel={() => editModal.onOpenChange(false)}
+            onCancel={editModal.requestClose}
             onRevert={editor.revertToEnv}
             onSave={() => void editor.save()}
           />

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
@@ -198,6 +198,50 @@ describe('SandboxCard', () => {
         expectedRevision: 0,
       }),
     );
+  });
+
+  /**
+   * 沙箱 is the longest form on the page: thirteen fields plus the footer. The modal body caps its
+   * height, so the whole form has to stay in the DOM and be reachable by scrolling — never
+   * clipped away with the action row (styles.test.ts pins the definite-size half of that).
+   */
+  it('renders the whole of the longest form, actions included, inside 编辑', () => {
+    renderCard(
+      <SandboxCard
+        canOperate
+        moduleEnabled
+        view={view()}
+        service={{
+          getSandboxPackageStats: vi.fn(),
+          getSandboxSettings: vi.fn(),
+          updateSandboxSettings: vi.fn(),
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('systemGeneral.card.edit'));
+
+    const dialog = within(screen.getByRole('dialog'));
+    for (const field of [
+      'provider',
+      'dockerSocket',
+      'dockerHost',
+      'image',
+      'pullPolicy',
+      'network',
+      'memoryMb',
+      'pidsLimit',
+      'cpus',
+      'timeoutMs',
+      'maxOutputBytes',
+      'idleTtlSec',
+      'maxContainers',
+    ])
+      expect(dialog.getByText(`systemGeneral.sandbox.fields.${field}`), field).toBeTruthy();
+
+    // The last field and the footer both survive the cap.
+    expect(dialog.getByText('systemGeneral.edit.save')).toBeTruthy();
+    expect(dialog.getByText('systemGeneral.edit.cancel')).toBeTruthy();
   });
 
   /** The ledger is evidence for the next image build, not a card reading — it lives in 详情. */

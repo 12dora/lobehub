@@ -97,6 +97,7 @@ const DocumentRenderCardBody = memo<{
   const editModal = useInfraEditModal({
     beginEdit: editor.beginEdit,
     cancelEdit: editor.cancelEdit,
+    dirty: editor.dirty,
     saveCount: editor.saveCount,
   });
   const locked = editor.conflict || editor.stale;
@@ -198,7 +199,6 @@ const DocumentRenderCardBody = memo<{
     <InfraSettingsCard
       canTest={canOperate}
       detailsFields={detailsFields}
-      editDirty={editor.dirty}
       editOpen={editModal.open}
       envVars={DOCUMENT_RENDER_ENV}
       fields={summaryFields}
@@ -228,7 +228,7 @@ const DocumentRenderCardBody = memo<{
             locked={locked}
             saving={editor.saving}
             source={view.source}
-            onCancel={() => editModal.onOpenChange(false)}
+            onCancel={editModal.requestClose}
             onRevert={editor.revertToEnv}
             onSave={() => void editor.save()}
           />
