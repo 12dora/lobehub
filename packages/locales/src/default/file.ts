@@ -252,6 +252,15 @@ export default {
   'resourceList.transferTo': 'Transfer to…',
   'resourceList.viewTransferred': 'View',
   'portal.openInPageEditor': 'Edit in Page',
+  'preview.document.failed': 'Could not render a preview for this file.',
+  'preview.document.preparing': 'Preparing preview…',
+  'preview.document.preparingDesc': 'Converting this document so it can be previewed here.',
+  'preview.document.retry': 'Check again',
+  'preview.document.slow': 'This is taking longer than expected.',
+  'preview.document.slowDesc':
+    'The document is still being converted. Check again in a moment, or download the file.',
+  'preview.document.unavailable':
+    'Preview requires the document rendering service; ask an administrator to enable it.',
   'preview.downloadFile': 'Download File',
   'preview.unsupportedFileAndContact':
     'This file format is not currently supported for online preview. If you have a request for previewing, feel free to <1>contact us</1>.',

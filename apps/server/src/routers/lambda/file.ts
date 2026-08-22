@@ -311,6 +311,23 @@ export const fileRouter = router({
       };
     }),
 
+  getDocumentPreview: fileProcedure
+    .input(z.object({ id: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const file = await ctx.fileModel.findById(input.id);
+      if (!file) throw new TRPCError({ code: 'NOT_FOUND', message: 'File not found' });
+
+      const mod = await import('@/server/enterprise/services/documentRender').catch(
+        (error: unknown) => {
+          console.error('[file:getDocumentPreview]', error);
+          return null;
+        },
+      );
+      if (!mod) return { status: 'unavailable' as const };
+
+      return mod.getDocumentPreview({ db: ctx.serverDB, file, userId: ctx.userId });
+    }),
+
   getFileItemById: fileProcedure
     .input(
       z.object({

@@ -3,6 +3,7 @@ import { CUSTOM_DOCUMENT_FILE_TYPE, DERIVED_DOCUMENT_SOURCE_TYPE } from '@lobech
 import { lambdaClient } from '@/libs/trpc/client';
 import {
   type CheckFileHashResult,
+  type DocumentPreviewResult,
   type FileItem,
   type FileListItem,
   type KnowledgeItemStatus,
@@ -51,6 +52,14 @@ export class FileService {
       updatedAt: item.updatedAt,
       url: item.url,
     };
+  };
+
+  /**
+   * Server-side PDF rendition of an office document (docx/pptx/xlsx/...).
+   * `pending` means the conversion is running — poll again shortly.
+   */
+  getDocumentPreview = async (id: string): Promise<DocumentPreviewResult> => {
+    return lambdaClient.file.getDocumentPreview.query({ id });
   };
 
   removeFile = async (id: string): Promise<void> => {

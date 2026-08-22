@@ -47,6 +47,7 @@ export const rebaseRenderMetadataKeys = (
       key: rebaseKey(figure.key, sourcePrefix, targetPrefix),
     })),
     pages,
+    pdf: rebase(render.pdf),
     textIndex: rebase(render.textIndex),
   };
 };
@@ -55,6 +56,7 @@ export const hasReusableRenderArtifactKeys = (render: FileRenderMetadata): boole
   render.contactSheets !== undefined ||
   render.pages !== undefined ||
   render.figures !== undefined ||
+  typeof render.pdf === 'string' ||
   render.textIndex !== undefined;
 
 /**

@@ -2,6 +2,7 @@ export { composeContactSheet, deleteDocumentRenderArtifacts } from './artifacts'
 export { classifyDocument, resolveDocumentKind } from './classify';
 export { getDocumentRenderMaintenanceSummary, processClaimedDocumentRenderGcJob } from './gc';
 export { probeGotenberg } from './gotenbergClient';
+export { getDocumentPreview } from './preview';
 export {
   cancelDocumentRenderJob,
   cancelPendingDocumentRenderJobs,

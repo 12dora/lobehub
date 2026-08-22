@@ -92,6 +92,7 @@ const markRenderSkippedExpired = async (db: LobeChatDatabase, fileId: string): P
     error: 'retention expired',
     figures: null,
     pages: null,
+    pdf: null,
     renderedPages: null,
     status: 'skipped',
     textIndex: null,

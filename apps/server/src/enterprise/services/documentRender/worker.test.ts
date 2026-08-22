@@ -142,6 +142,25 @@ vi.mock('./queue', async (importOriginal) => {
   };
 });
 
+const flattenSql = (value: unknown, seen: Set<unknown> = new Set()): string => {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value == null) return '';
+  if (typeof value === 'object') {
+    if (seen.has(value)) return '';
+    seen.add(value);
+  }
+  if (Array.isArray(value)) return value.map((item) => flattenSql(item, seen)).join(' ');
+  const record = value as Record<string, unknown>;
+  if ('queryChunks' in record) return flattenSql(record.queryChunks, seen);
+  if (typeof record.value === 'string' || typeof record.value === 'number') {
+    return String(record.value);
+  }
+  return Object.values(record)
+    .map((item) => flattenSql(item, seen))
+    .join(' ');
+};
+
 const settings = {
   ...DOCUMENT_RENDER_DEFAULTS,
   concurrency: 2,
@@ -327,6 +346,7 @@ describe('processClaimedDocumentRenderJob', () => {
         resultSummary: expect.objectContaining({ status: 'ready' }),
       }),
     );
+    expect(flattenSql(updateSet.mock.calls)).toContain('"pdf":"files/render/f1/source.pdf"');
   });
 
   it('aborts without complete/ready when checkpoint loses the lease', async () => {
@@ -423,6 +443,7 @@ describe('processClaimedDocumentRenderJob', () => {
           pages: {
             '1': { chars: 40, png: 'files/render/src-file/pages/1.png', visual: true },
           },
+          pdf: 'files/render/src-file/source.pdf',
           renderedPages: [1],
           status: 'ready',
           tier: 'T2',
@@ -440,5 +461,6 @@ describe('processClaimedDocumentRenderJob', () => {
         resultSummary: expect.objectContaining({ reused: true, status: 'ready' }),
       }),
     );
+    expect(flattenSql(updateSet.mock.calls)).toContain('"pdf":"files/render/file-1/source.pdf"');
   });
 });

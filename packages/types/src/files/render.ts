@@ -85,6 +85,11 @@ export interface FileRenderMetadata {
   pageCount?: number;
   /** Per-page metadata keyed by 1-based page number as string. */
   pages?: Record<string, FileRenderPageMeta>;
+  /**
+   * Object key of the converted `source.pdf` (Gotenberg output). Present after a T2
+   * render or after an on-demand preview conversion of a T0/T1 office document.
+   */
+  pdf?: string;
   /** Pages with `png` present (T2 visual pages), ascending. */
   renderedPages?: number[];
   /** xlsx workbook sheets (name + first rendered page), workbook order. */
@@ -127,3 +132,26 @@ export const readFileRenderMetadata = (metadata: unknown): FileRenderMetadata | 
     return undefined;
   return render as FileRenderMetadata;
 };
+
+/** Preview state for office documents (`file.getDocumentPreview`). */
+export const DOCUMENT_PREVIEW_STATUSES = [
+  /** `url` points at a PDF rendition of the document (presigned, short-lived). */
+  'ready',
+  /** Conversion is in progress; poll again shortly. */
+  'pending',
+  /** Conversion failed for this file (`error` carries a short, non-sensitive reason). */
+  'failed',
+  /** Document render sidecar is not configured/enabled on this deployment. */
+  'unavailable',
+  /** File kind cannot be converted to PDF. */
+  'unsupported',
+] as const;
+export type DocumentPreviewStatus = (typeof DOCUMENT_PREVIEW_STATUSES)[number];
+
+export interface DocumentPreviewResult {
+  error?: string;
+  pageCount?: number;
+  status: DocumentPreviewStatus;
+  /** Presigned URL of the PDF rendition; only when `status === 'ready'`. */
+  url?: string;
+}

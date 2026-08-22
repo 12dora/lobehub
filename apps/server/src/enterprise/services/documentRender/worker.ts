@@ -162,10 +162,11 @@ interface RenderControl {
   signal: AbortSignal;
 }
 
-const patchRenderMetadata = async (
+/** jsonb-merge into `files.metadata.render`. Omitting `status` leaves the worker's value intact. */
+export const patchRenderMetadata = async (
   db: LobeChatDatabase,
   file: FileItem,
-  patch: Partial<FileRenderMetadata> & Pick<FileRenderMetadata, 'status'>,
+  patch: Partial<FileRenderMetadata>,
 ): Promise<FileRenderMetadata> => {
   const updatedAt = new Date().toISOString();
   const sqlPatch = { ...patch, updatedAt };
@@ -183,7 +184,7 @@ const patchRenderMetadata = async (
     throw new FileDeletedDuringRenderError();
   }
 
-  const prev = readFileRenderMetadata(file.metadata) ?? { status: patch.status };
+  const prev = readFileRenderMetadata(file.metadata) ?? { status: patch.status ?? 'pending' };
   const next: FileRenderMetadata = readFileRenderMetadata(row.metadata) ?? {
     ...prev,
     ...patch,
@@ -530,6 +531,7 @@ const runTier2 = async (params: {
 
   let pdfBytes = bytes;
   let engine: DocumentRenderEngine = 'pdfjs';
+  let pdfKey: string | undefined;
 
   if (kind !== 'pdf') {
     if (!sidecarOk || !settings.endpoint) {
@@ -590,7 +592,7 @@ const runTier2 = async (params: {
       };
     }
     params.control.assertLive();
-    await uploadPdfArtifact(file.id, pdfBytes, params.control.signal);
+    pdfKey = await uploadPdfArtifact(file.id, pdfBytes, params.control.signal);
     await ensureFileStillExists(db, file.id);
     engine = 'gotenberg';
   }
@@ -667,6 +669,7 @@ const runTier2 = async (params: {
         hasTextLayer,
         pageCount: pdfClassified.pageCount ?? allPages.length,
         pages,
+        ...(pdfKey ? { pdf: pdfKey } : {}),
         renderedPages: raster.renderedPages,
         status,
         ...(textIndexKey ? { textIndex: textIndexKey } : {}),

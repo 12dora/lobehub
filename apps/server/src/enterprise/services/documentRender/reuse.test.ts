@@ -19,13 +19,14 @@ const sourceRender = (): FileRenderMetadata => ({
       visual: true,
     },
   },
+  pdf: 'files/render/src/source.pdf',
   status: 'ready',
   textIndex: 'files/render/src/text/index.json',
   tier: 'T2',
 });
 
 describe('rebaseRenderMetadataKeys', () => {
-  it('rewrites contactSheets, pages, figures, and textIndex onto the target prefix', () => {
+  it('rewrites contactSheets, pages, figures, pdf, and textIndex onto the target prefix', () => {
     const rebased = rebaseRenderMetadataKeys(sourceRender(), 'src', 'dst');
 
     expect(rebased.contactSheets?.[0]?.key).toBe('files/render/dst/contact/0.png');
@@ -36,6 +37,7 @@ describe('rebaseRenderMetadataKeys', () => {
       'files/render/dst/tiles/1-01.png',
     ]);
     expect(rebased.figures?.[0]?.key).toBe('files/render/dst/figures/1-1.png');
+    expect(rebased.pdf).toBe('files/render/dst/source.pdf');
     expect(rebased.textIndex).toBe('files/render/dst/text/index.json');
     expect(rebased.copiedFrom).toBe('even-older');
     expect(rebased.status).toBe('ready');
