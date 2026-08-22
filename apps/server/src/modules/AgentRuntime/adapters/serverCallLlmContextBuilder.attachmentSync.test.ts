@@ -5,6 +5,7 @@ import { sandboxOverLimitUploadPath } from '@lobechat/builtin-tool-cloud-sandbox
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildServerCallLlmContext } from './serverCallLlmContextBuilder';
+import { resolveServerCallLlmContextHints } from './serverCallLlmContextHints';
 
 const { createCachedPreSignedUrlForPreview, serverMessagesEngine, syncOverLimitAttachments } =
   vi.hoisted(() => ({
@@ -73,6 +74,15 @@ const botDocument = {
   url: 'files/test-user-id/xxx/doc.pdf',
 };
 
+const smallDocument = {
+  content: 'tiny pdf',
+  fileType: 'application/pdf',
+  id: 'file-small',
+  name: 'small.pdf',
+  size: 1024,
+  url: 'files/test-user-id/xxx/small.pdf',
+};
+
 const makeCtx = () => ({
   agentConfig: { chatConfig: {}, files: [], knowledgeBases: [], systemRole: 'sys' },
   operationId: 'op-1',
@@ -90,9 +100,52 @@ const tooling = {
   },
 };
 
+const chatgptNativeFilesCapabilities = {
+  isCanUseAudio: () => false,
+  isCanUseFC: () => true,
+  isCanUseFiles: (model: string, provider: string) =>
+    model === 'gpt-5.6-sol' && provider === 'chatgpt',
+  isCanUseVideo: () => false,
+  isCanUseVision: () => false,
+};
+
+const mockHintsWithNativeFiles = () => {
+  vi.mocked(resolveServerCallLlmContextHints).mockImplementation(async ({ llmPayload }) => ({
+    capabilities: chatgptNativeFilesCapabilities,
+    messagesForContext: llmPayload.messages,
+    modelDisplayName: 'GPT-5.6 Sol',
+    preserveThinkingForPayload: false,
+    resolvedExtendParams: undefined,
+    shouldReplayAssistantReasoning: false,
+  }));
+};
+
+const engineInput = () =>
+  serverMessagesEngine.mock.calls[0][0] as {
+    capabilities?: { isCanUseFiles: (model: string, provider: string) => boolean };
+    fileContext?: {
+      omitFileUrlFileIds?: string[];
+      sandboxPathByFileId?: Record<string, string>;
+    };
+  };
+
 describe('buildServerCallLlmContext — over-limit attachment sync', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(resolveServerCallLlmContextHints).mockImplementation(async ({ llmPayload }) => ({
+      capabilities: {
+        isCanUseAudio: () => false,
+        isCanUseFC: () => true,
+        isCanUseFiles: () => false,
+        isCanUseVideo: () => false,
+        isCanUseVision: () => false,
+      },
+      messagesForContext: llmPayload.messages,
+      modelDisplayName: 'Test model',
+      preserveThinkingForPayload: false,
+      resolvedExtendParams: undefined,
+      shouldReplayAssistantReasoning: false,
+    }));
     syncOverLimitAttachments.mockImplementation(
       async (files: Array<{ id: string; name: string }>) =>
         Object.fromEntries(
@@ -125,19 +178,14 @@ describe('buildServerCallLlmContext — over-limit attachment sync', () => {
       },
     ]);
 
-    const input = serverMessagesEngine.mock.calls[0][0] as {
-      fileContext?: {
-        omitFileUrlFileIds?: string[];
-        sandboxPathByFileId?: Record<string, string>;
-      };
-    };
+    const input = engineInput();
     expect(input.fileContext?.sandboxPathByFileId).toEqual({
       'file-pdf': sandboxOverLimitUploadPath('doc.pdf', 'file-pdf'),
     });
     expect(input.fileContext?.omitFileUrlFileIds).toEqual(['file-pdf']);
   });
 
-  it('still omits URLs when every sandbox download fails', async () => {
+  it('does not omit URLs when every sandbox download fails', async () => {
     syncOverLimitAttachments.mockResolvedValue({});
 
     await buildServerCallLlmContext({
@@ -152,17 +200,11 @@ describe('buildServerCallLlmContext — over-limit attachment sync', () => {
       tooling: tooling as never,
     });
 
-    const input = serverMessagesEngine.mock.calls[0][0] as {
-      fileContext?: {
-        omitFileUrlFileIds?: string[];
-        sandboxPathByFileId?: Record<string, string>;
-      };
-    };
-    expect(input.fileContext?.sandboxPathByFileId).toBeUndefined();
-    expect(input.fileContext?.omitFileUrlFileIds).toEqual(['file-pdf']);
+    const input = engineInput();
+    expect(input.fileContext).toBeUndefined();
   });
 
-  it('keeps successful paths and omits URLs for the failed member of a batch', async () => {
+  it('omits only ids that received a sandboxPath in a partial batch', async () => {
     const second = { ...botDocument, id: 'file-zip', name: 'data.zip', url: 'files/user/data.zip' };
     syncOverLimitAttachments.mockResolvedValue({
       'file-pdf': sandboxOverLimitUploadPath('doc.pdf', 'file-pdf'),
@@ -180,15 +222,54 @@ describe('buildServerCallLlmContext — over-limit attachment sync', () => {
       tooling: tooling as never,
     });
 
-    const input = serverMessagesEngine.mock.calls[0][0] as {
-      fileContext?: {
-        omitFileUrlFileIds?: string[];
-        sandboxPathByFileId?: Record<string, string>;
-      };
-    };
+    const input = engineInput();
     expect(input.fileContext?.sandboxPathByFileId).toEqual({
       'file-pdf': sandboxOverLimitUploadPath('doc.pdf', 'file-pdf'),
     });
-    expect(input.fileContext?.omitFileUrlFileIds).toEqual(['file-pdf', 'file-zip']);
+    expect(input.fileContext?.omitFileUrlFileIds).toEqual(['file-pdf']);
+  });
+
+  it('retains native file_url when sandbox sync fails and the provider can use files', async () => {
+    mockHintsWithNativeFiles();
+    syncOverLimitAttachments.mockResolvedValue({});
+
+    await buildServerCallLlmContext({
+      ctx: makeCtx() as never,
+      llmPayload: {
+        messages: [{ content: 'summarize', fileList: [botDocument], role: 'user' }],
+      } as never,
+      model: 'gpt-5.6-sol',
+      provider: 'chatgpt',
+      resolvedExecution: { runtimeProvider: 'chatgpt' } as never,
+      state: { metadata: { topicId: 'topic-1' } } as never,
+      tooling: tooling as never,
+    });
+
+    const input = engineInput();
+    expect(syncOverLimitAttachments).toHaveBeenCalled();
+    expect(input.fileContext).toBeUndefined();
+    expect(input.capabilities?.isCanUseFiles('gpt-5.6-sol', 'chatgpt')).toBe(true);
+  });
+
+  it('uses the runtime provider for native-file checks on a custom catalog key', async () => {
+    mockHintsWithNativeFiles();
+
+    await buildServerCallLlmContext({
+      ctx: makeCtx() as never,
+      llmPayload: {
+        messages: [{ content: 'summarize', fileList: [smallDocument], role: 'user' }],
+      } as never,
+      model: 'gpt-5.6-sol',
+      provider: 'corp-chatgpt',
+      resolvedExecution: { runtimeProvider: 'chatgpt' } as never,
+      state: { metadata: { topicId: 'topic-1' } } as never,
+      tooling: tooling as never,
+    });
+
+    const input = engineInput();
+    expect(syncOverLimitAttachments).not.toHaveBeenCalled();
+    expect(input.fileContext).toBeUndefined();
+    expect(input.capabilities?.isCanUseFiles('gpt-5.6-sol', 'corp-chatgpt')).toBe(true);
+    expect(input.capabilities?.isCanUseFiles('gpt-5.6-sol', 'chatgpt')).toBe(true);
   });
 });

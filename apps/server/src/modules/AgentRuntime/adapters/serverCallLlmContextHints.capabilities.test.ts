@@ -10,9 +10,24 @@ const { loadModels } = vi.hoisted(() => ({ loadModels: vi.fn() }));
 vi.mock('@/business/client/model-bank/loadModels', () => ({ loadModels }));
 
 const builtinModels = [
-  // ChatGPT Web: the only provider whose runtime uploads documents natively.
+  // ChatGPT Web and ChatGPT (Codex) implement native document parts.
   { abilities: { files: true, vision: true }, id: 'auto', providerId: 'chatgptweb', type: 'chat' },
   { abilities: { vision: true }, id: 'gpt-5-3-mini', providerId: 'chatgptweb', type: 'chat' },
+  // ChatGPT (Codex) subscription runtime.
+  {
+    abilities: { files: true, vision: true },
+    id: 'gpt-5.6-sol',
+    providerId: 'chatgpt',
+    type: 'chat',
+  },
+  // Same card addressed by Azure-style deploymentName rather than catalog id.
+  {
+    abilities: { files: true, vision: true },
+    config: { deploymentName: 'gpt-5.6-sol-deployed' },
+    id: 'corp-sol',
+    providerId: 'chatgpt',
+    type: 'chat',
+  },
   // OpenCode Zen advertises `abilities.files` on an OpenAI-compatible wire
   // format that has no file part.
   {
@@ -49,6 +64,18 @@ describe('resolveServerCallLlmContextHints — capabilities', () => {
     expect(capabilities.isCanUseFiles('gemini-3.1-pro', 'opencodezen')).toBe(false);
     expect(capabilities.isCanUseFiles('gpt-5-3-mini', 'chatgptweb')).toBe(false);
     expect(capabilities.isCanUseFiles('unknown-model', 'chatgptweb')).toBe(false);
+  });
+
+  it('enables native file parts for ChatGPT Codex models', async () => {
+    const capabilities = await resolveCapabilities();
+
+    expect(capabilities.isCanUseFiles('gpt-5.6-sol', 'chatgpt')).toBe(true);
+  });
+
+  it('resolves files ability by deploymentName when the catalog id differs', async () => {
+    const capabilities = await resolveCapabilities();
+
+    expect(capabilities.isCanUseFiles('gpt-5.6-sol-deployed', 'chatgpt')).toBe(true);
   });
 
   it('keeps the vision ability untouched by the native-file gate', async () => {

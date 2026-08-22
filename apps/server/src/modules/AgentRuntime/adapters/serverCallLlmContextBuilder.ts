@@ -293,9 +293,25 @@ export const buildServerCallLlmContext = async ({
     }
   }
 
+  // Catalog keys (e.g. `corp-chatgpt`) are not builtin provider ids, so native
+  // file-input checks must use the SDK/runtime provider already resolved for
+  // this step. Same value is later passed to the messages engine as webApp.
+  const runtimeProvider =
+    resolvedExecution !== undefined
+      ? resolvedExecution?.runtimeProvider
+      : (await resolveOperationPlatformExecution(ctx, provider, model, state)).execution
+          ?.runtimeProvider;
+  const fileProvider = runtimeProvider ?? provider;
+  const fileCapabilities: ServerCallLlmContextHints['capabilities'] = {
+    ...capabilities,
+    isCanUseFiles: (targetModel) => capabilities.isCanUseFiles(targetModel, fileProvider),
+  };
+
   // Over-limit / non-native attachments: upload into /mnt/data/uploads before
   // the model call so sandbox tools can read them. Best-effort — a failure
-  // never breaks the turn (files_info falls back to extracted text, no URL).
+  // never breaks the turn. Only ids that actually received a sandboxPath are
+  // omitted from native `file_url` / files_info URL delivery; a failed sync
+  // keeps the native part (when the provider can use files) or the URL.
   let sandboxPathByFileId: Record<string, string> | undefined;
   let omitFileUrlFileIds: string[] | undefined;
   const sandboxTopicId = ctx.topicId || lobehubSkillTopicId;
@@ -308,10 +324,9 @@ export const buildServerCallLlmContext = async ({
   ) {
     try {
       const files = selectAttachmentsForSandboxSync(messagesForContext, {
-        nativeFileInput: capabilities.isCanUseFiles(model, provider),
+        nativeFileInput: fileCapabilities.isCanUseFiles(model, fileProvider),
       });
       if (files.length > 0) {
-        omitFileUrlFileIds = files.map((file) => file.id);
         const fileService = new FileService(ctx.serverDB, ctx.userId, ctx.workspaceId);
         const sandboxService = createSandboxService({
           fileService,
@@ -328,8 +343,10 @@ export const buildServerCallLlmContext = async ({
           enabled: true,
           files,
         });
-        if (Object.keys(synced.sandboxPathByFileId).length > 0) {
+        const syncedIds = Object.keys(synced.sandboxPathByFileId);
+        if (syncedIds.length > 0) {
           sandboxPathByFileId = synced.sandboxPathByFileId;
+          omitFileUrlFileIds = syncedIds;
         }
       }
     } catch (error) {
@@ -504,12 +521,6 @@ export const buildServerCallLlmContext = async ({
     }
   }
 
-  const runtimeProvider =
-    resolvedExecution !== undefined
-      ? resolvedExecution?.runtimeProvider
-      : (await resolveOperationPlatformExecution(ctx, provider, model, state)).execution
-          ?.runtimeProvider;
-
   const contextEngineInput = {
     agentDocuments,
     ...(!isManagedPlatformOperation && agentBuilderContext && { agentBuilderContext }),
@@ -538,7 +549,7 @@ export const buildServerCallLlmContext = async ({
           username: serverUsername,
         },
     userTimezone: isManagedPlatformOperation ? undefined : ctx.userTimezone,
-    capabilities,
+    capabilities: fileCapabilities,
     botPlatformContext: isManagedPlatformOperation ? undefined : ctx.botPlatformContext,
     discordContext: isManagedPlatformOperation ? undefined : ctx.discordContext,
     enableHistoryCount: agentConfig.chatConfig?.enableHistoryCount ?? undefined,

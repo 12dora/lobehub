@@ -150,9 +150,17 @@ export const resolveServerCallLlmContextHints = async ({
     ? (llmPayload.messages as UIChatMessage[])
     : stripAssistantReasoningForReplay(llmPayload.messages as UIChatMessage[]);
 
+  // Same id / deploymentName matching as the display-name lookup above, plus
+  // a same-id fallback across providers when the exact pair is missing.
   const findModelInfo = (targetModel: string, targetProvider: string) =>
-    builtinModels.find((item) => item.id === targetModel && item.providerId === targetProvider) ??
-    builtinModels.find((item) => item.id === targetModel);
+    builtinModels.find(
+      (item) =>
+        item.providerId === targetProvider &&
+        (item.id === targetModel || item.config?.deploymentName === targetModel),
+    ) ??
+    builtinModels.find(
+      (item) => item.id === targetModel || item.config?.deploymentName === targetModel,
+    );
 
   return {
     capabilities: {

@@ -149,7 +149,8 @@ const emptySyncResult = (attemptedFileIds: string[] = []): SyncSandboxAttachment
 /**
  * Upload non-native attachments into the session sandbox at a collision-free
  * `/mnt/data/uploads/<name>-<id>.<ext>` path. Failures are logged and omitted
- * from `sandboxPathByFileId` so the turn can fall back to text-only files_info.
+ * from `sandboxPathByFileId` so the caller can keep native `file_url` delivery
+ * (or the files_info URL) instead of treating the file as synced.
  *
  * URLs are resolved concurrently (bound 3). Downloads are delegated to
  * {@link SyncSandboxAttachmentsDeps.downloadFiles}, which must skip general
