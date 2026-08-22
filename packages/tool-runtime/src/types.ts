@@ -186,6 +186,7 @@ export interface RunCommandState {
   commandId?: string;
   error?: string;
   exitCode?: number;
+  interrupted?: boolean;
   isBackground: boolean;
   output?: string;
   outputFiles?: {

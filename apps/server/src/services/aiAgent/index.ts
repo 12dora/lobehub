@@ -5164,12 +5164,18 @@ export class AiAgentService {
       throw new Error('Operation ID not found');
     }
 
+    const recordTopicId = await this.resolveOwnedSandboxTopicId({
+      callerTopicId: topicId,
+      operationId: resolvedOperationId,
+      threadTopicId: thread?.topicId,
+    });
+
     // 2. Cancel remote hetero process (openclaw / hermes) if applicable.
     // Check topic.metadata.runningOperation for device + heteroType info seeded by execAgent.
     // This runs regardless of whether interruptOperation succeeds — the remote process
     // is independent of the local operation registry.
-    if (topicId) {
-      const topic = await this.topicModel.findById(topicId);
+    if (recordTopicId) {
+      const topic = await this.topicModel.findById(recordTopicId);
       const runningOp = (topic?.metadata as any)?.runningOperation as
         { deviceId?: string; heteroType?: string; operationId?: string } | undefined;
 
@@ -5205,7 +5211,7 @@ export class AiAgentService {
           .catch((err) => log('interruptTask: cancelHeteroTask dispatch failed: %O', err));
       }
 
-      void this.interruptSandboxSession(topicId);
+      await this.interruptSandboxSession(recordTopicId);
     }
 
     // 3. Interrupt the runtime operation first. Only mark the thread cancelled
@@ -5243,6 +5249,29 @@ export class AiAgentService {
       success: true,
       threadId: thread?.id,
     };
+  }
+
+  /**
+   * Resolve the sandbox topic for interrupt from the user-scoped thread/operation
+   * record. Caller-supplied topicId is ignored when the record disagrees.
+   * Only a topic owned by `this.userId` is returned.
+   */
+  private async resolveOwnedSandboxTopicId(input: {
+    callerTopicId?: string;
+    operationId: string;
+    threadTopicId?: string | null;
+  }): Promise<string | undefined> {
+    let recordTopicId = input.threadTopicId ?? undefined;
+    if (!recordTopicId) {
+      const operation = await this.agentOperationModel.findById(input.operationId);
+      recordTopicId = operation?.topicId ?? undefined;
+    }
+
+    const candidate = recordTopicId ?? input.callerTopicId;
+    if (!candidate) return undefined;
+
+    const owned = await this.topicModel.findById(candidate);
+    return owned?.id;
   }
 
   /**

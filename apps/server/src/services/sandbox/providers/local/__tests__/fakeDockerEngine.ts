@@ -461,7 +461,10 @@ const isHangCommand = (cmd: string[]) => {
 const isBlockCommand = (cmd: string[]) => cmd.join(' ').includes('BLOCK');
 
 const isForegroundTimeoutWrap = (cmd: string[]) =>
-  cmd[0] === 'sh' && cmd[1] === '-c' && (cmd[2] ?? '').includes('exec timeout');
+  cmd[0] === 'sh' &&
+  cmd[1] === '-c' &&
+  (cmd[2] ?? '').includes('/tmp/lobe-fg-') &&
+  (cmd[2] ?? '').includes('timeout -k');
 
 const unwrapForegroundExec = (cmd: string[]): string[] | undefined => {
   if (!isForegroundTimeoutWrap(cmd)) return undefined;
@@ -485,7 +488,7 @@ const tryKill = (
   }
 
   const script = extractShellScript(cmd);
-  if (!script?.includes('/tmp/lobe-fg-') || !script.includes('kill -TERM')) {
+  if (!script?.includes('/tmp/lobe-fg-') || !script.includes('lobe_killpg')) {
     return { handled: false, stdout: '' };
   }
 
@@ -626,7 +629,11 @@ const runShell = (
     return { exitCode: 0, stderr: '', stdout: tokens[1] === '-n' ? text : `${text}\n` };
   }
 
-  if (script.startsWith('(') && script.includes('echo $!')) {
+  if (script.includes('echo $$') && script.includes('lobe-bg-')) {
+    return { exitCode: 0, stderr: '', stdout: '' };
+  }
+
+  if (script.includes('echo $!')) {
     return { exitCode: 0, stderr: '', stdout: '' };
   }
 

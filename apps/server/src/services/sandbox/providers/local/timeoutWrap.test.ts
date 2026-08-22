@@ -4,6 +4,7 @@ import {
   buildForegroundInterruptScript,
   FOREGROUND_PID_GLOB,
   foregroundPidFile,
+  KILL_PROCESS_GROUP_HELPERS,
   wrapForegroundExec,
   wrapWithCoreutilsTimeout,
 } from './timeoutWrap';
@@ -24,11 +25,11 @@ describe('timeoutWrap', () => {
     ]);
   });
 
-  it('wraps a foreground command so the pid file and timeout share the group leader', () => {
+  it('wraps a foreground command so the supervising shell records the pid then runs timeout', () => {
     expect(wrapForegroundExec(['python3', '-c', 'print(1)'], 120_000, 'abc')).toEqual([
       'sh',
       '-c',
-      'echo $$ > /tmp/lobe-fg-abc.pid; trap \'rm -f /tmp/lobe-fg-abc.pid\' EXIT; exec timeout -k 5 120 sh -c \'exec "$0" "$@"\' "$@"',
+      'echo $$ > /tmp/lobe-fg-abc.pid; timeout -k 5 120 sh -c \'exec "$0" "$@"\' "$@"; rc=$?; rm -f /tmp/lobe-fg-abc.pid; exit $rc',
       '--',
       'python3',
       '-c',
@@ -46,9 +47,17 @@ describe('timeoutWrap', () => {
   it('builds a kill script that only targets foreground pid files', () => {
     const script = buildForegroundInterruptScript();
     expect(script).toContain(`for f in ${FOREGROUND_PID_GLOB}`);
-    expect(script).toContain('kill -TERM -- -$pid');
-    expect(script).toContain('kill -TERM "$pid"');
-    expect(script).toContain('kill -KILL -- -$pid');
+    expect(script).toContain('kill -0 "$pid"');
+    expect(script).toContain('lobe_killpg "$pid" 15');
+    expect(script).toContain('lobe_killpg "$pid" 9');
+    expect(script).toContain('os.killpg');
     expect(script).not.toContain('lobe-bg-');
+    expect(script).toContain('rm -f "$f"; continue');
+  });
+
+  it('treats zombie process groups as not running', () => {
+    expect(KILL_PROCESS_GROUP_HELPERS).toContain("glob.glob('/proc/[0-9]*/stat')");
+    expect(KILL_PROCESS_GROUP_HELPERS).toContain("rest[0] != 'Z'");
+    expect(KILL_PROCESS_GROUP_HELPERS).not.toContain('os.killpg(p, 0)');
   });
 });

@@ -61,6 +61,7 @@ import { asWebReadable, createTarFileExtractStream, packTarFiles } from './tarAr
 import {
   buildForegroundInterruptScript,
   httpWatchdogMs,
+  KILL_PROCESS_GROUP_HELPERS,
   TIMEOUT_KILL_AFTER_SEC,
   wrapForegroundExec,
   wrapWithCoreutilsTimeout,
@@ -518,9 +519,23 @@ export class LocalSandboxProvider implements SandboxProvider {
     const stdoutFile = `${SANDBOX_TMP}/lobe-bg-${id}.stdout`;
     const stderrFile = `${SANDBOX_TMP}/lobe-bg-${id}.stderr`;
     const pidFile = `${SANDBOX_TMP}/lobe-bg-${id}.pid`;
-    // Detached jobs are not signalled by interrupt(); cap them so they cannot
-    // outlive GNU timeout the way a bare `&` would (idle reaper is 30 min).
-    const wrapped = `( timeout -k ${TIMEOUT_KILL_AFTER_SEC} ${DEFAULT_BACKGROUND_TIMEOUT_SEC} sh -c ${this.shellQuote(command)} ) >${this.shellQuote(stdoutFile)} 2>${this.shellQuote(stderrFile)} & echo $! >${this.shellQuote(pidFile)}`;
+    const stdoutQ = this.shellQuote(stdoutFile);
+    const stderrQ = this.shellQuote(stderrFile);
+    const pidQ = this.shellQuote(pidFile);
+    // Session leader writes $$ then execs timeout so $! of a forking `setsid`
+    // cannot point at a dead parent / the wrong process group. Timeout stays
+    // pid 1 of that group; a failed kill still cannot outlive the 600s cap.
+    const timeoutCmd = `timeout --foreground -k ${TIMEOUT_KILL_AFTER_SEC} ${DEFAULT_BACKGROUND_TIMEOUT_SEC} sh -c ${this.shellQuote(command)}`;
+    const sessionCmd = `echo $$ > ${pidFile}; exec ${timeoutCmd}`;
+    const wrapped = [
+      'if command -v setsid >/dev/null 2>&1; then',
+      `  setsid sh -c ${this.shellQuote(sessionCmd)} >${stdoutQ} 2>${stderrQ} &`,
+      'else',
+      '  set -m',
+      `  sh -c ${this.shellQuote(sessionCmd)} >${stdoutQ} 2>${stderrQ} &`,
+      'fi',
+      `n=0; while [ ! -s ${pidQ} ] && [ "$n" -lt 20 ]; do sleep 0.05; n=$((n + 1)); done`,
+    ].join('\n');
     const result = await this.execCapture(['sh', '-lc', wrapped], timeoutMs, SANDBOX_WORKSPACE);
 
     if (result.exitCode !== 0) {
@@ -545,7 +560,7 @@ export class LocalSandboxProvider implements SandboxProvider {
     const stdoutFile = `${SANDBOX_TMP}/lobe-bg-${commandId}.stdout`;
     const stderrFile = `${SANDBOX_TMP}/lobe-bg-${commandId}.stderr`;
     const pidFile = `${SANDBOX_TMP}/lobe-bg-${commandId}.pid`;
-    const script = `pid=$(cat ${this.shellQuote(pidFile)} 2>/dev/null || true); stdout=$(cat ${this.shellQuote(stdoutFile)} 2>/dev/null || true); stderr=$(cat ${this.shellQuote(stderrFile)} 2>/dev/null || true); running=0; if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then running=1; fi; printf '%s' "$running"; printf '\\n--stdout--\\n'; printf '%s' "$stdout"; printf '\\n--stderr--\\n'; printf '%s' "$stderr"`;
+    const script = `pid=$(cat ${this.shellQuote(pidFile)} 2>/dev/null || true); stdout=$(cat ${this.shellQuote(stdoutFile)} 2>/dev/null || true); stderr=$(cat ${this.shellQuote(stderrFile)} 2>/dev/null || true); running=0; if [ -n "$pid" ] && { kill -0 -- -$pid 2>/dev/null || kill -0 "$pid" 2>/dev/null; }; then running=1; fi; printf '%s' "$running"; printf '\\n--stdout--\\n'; printf '%s' "$stdout"; printf '\\n--stderr--\\n'; printf '%s' "$stderr"`;
     const result = await this.execCapture(['sh', '-lc', script], this.timeout(params));
     const parts = result.stdout.split('\n--stdout--\n');
     const running = parts[0]?.trim() === '1';
@@ -570,17 +585,37 @@ export class LocalSandboxProvider implements SandboxProvider {
     if (!commandId) return this.errorResult('commandId is required');
 
     const pidFile = `${SANDBOX_TMP}/lobe-bg-${commandId}.pid`;
-    const result = await this.execCapture(
-      [
-        'sh',
-        '-lc',
-        `pid=$(cat ${this.shellQuote(pidFile)} 2>/dev/null || true); if [ -n "$pid" ]; then kill -9 "$pid" 2>/dev/null || true; fi`,
-      ],
-      this.timeout(params),
-    );
+    const pidQ = this.shellQuote(pidFile);
+    const script = [
+      KILL_PROCESS_GROUP_HELPERS,
+      `pid=$(cat ${pidQ} 2>/dev/null || true)`,
+      // Never signal pid 1 (container keepalive). Invalid/empty pidfiles are a no-op.
+      'case "$pid" in \'\'|*[!0-9]*|1) pid= ;; esac',
+      'if [ -n "$pid" ]; then',
+      '  lobe_killpg "$pid" 15',
+      '  n=0',
+      '  while [ "$n" -lt 20 ]; do',
+      '    lobe_alivepg "$pid" || break',
+      '    sleep 0.1',
+      '    n=$((n + 1))',
+      '  done',
+      '  lobe_killpg "$pid" 9',
+      '  n=0',
+      '  while [ "$n" -lt 5 ]; do',
+      '    lobe_alivepg "$pid" || break',
+      '    sleep 0.1',
+      '    n=$((n + 1))',
+      '  done',
+      'fi',
+      'running=0',
+      'if [ -n "$pid" ] && lobe_alivepg "$pid"; then running=1; fi',
+      'printf \'%s\\n\' "$running"',
+    ].join('\n');
+    const result = await this.execCapture(['sh', '-lc', script], this.timeout(params));
+    const running = result.stdout.trim() === '1';
 
     return {
-      result: { success: result.exitCode === 0 },
+      result: { running, success: !running },
       success: result.exitCode === 0,
     };
   }
@@ -777,20 +812,25 @@ export class LocalSandboxProvider implements SandboxProvider {
       (inspect.ExitCode == null && !started.timedOut);
     const interrupted = interruptRequested && (signaled || started.timedOut);
 
+    if (started.timedOut) {
+      // HTTP watchdog means in-container timeout did not finish. Always drop
+      // the session so the next call gets a fresh container — even when the
+      // result is labelled interrupted because the user hit Stop.
+      if (!interrupted) {
+        exitCode = EXEC_TIMEOUT_EXIT_CODE;
+        stderr = joinStderr(stderr, `command timed out after ${timeoutMs}ms`);
+      }
+      await this.supervisor.invalidate(session);
+    } else if (exitCode === EXEC_TIMEOUT_EXIT_CODE) {
+      stderr = joinStderr(stderr, `command timed out after ${timeoutMs}ms`);
+    }
+
     if (interrupted) {
       stderr = joinStderr(stderr, COMMAND_INTERRUPTED_MESSAGE);
       if (inspect.ExitCode == null && !started.timedOut) {
         exitCode = EXEC_SIGNAL_TERM_EXIT_CODE;
       }
       return { execId: created.Id, exitCode, interrupted: true, stderr, stdout };
-    }
-
-    if (started.timedOut) {
-      exitCode = EXEC_TIMEOUT_EXIT_CODE;
-      stderr = joinStderr(stderr, `command timed out after ${timeoutMs}ms`);
-      await this.supervisor.invalidate(session);
-    } else if (exitCode === EXEC_TIMEOUT_EXIT_CODE) {
-      stderr = joinStderr(stderr, `command timed out after ${timeoutMs}ms`);
     }
 
     return { execId: created.Id, exitCode, interrupted: false, stderr, stdout };
@@ -815,7 +855,7 @@ export class LocalSandboxProvider implements SandboxProvider {
         stdout: result.stdout,
         success: false,
       },
-      success: false,
+      success: true,
     };
   }
 

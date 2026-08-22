@@ -21,6 +21,16 @@ export const DEFAULT_MAX_EXPORT_BYTES = 100 * 1024 * 1024;
 export const SANDBOX_WORKSPACE = '/mnt/data';
 export const SANDBOX_TMP = '/tmp';
 export const SANDBOX_USER = '1000:1000';
+/**
+ * Container pid 1. `trap '' CHLD` ignores SIGCHLD so the kernel auto-reaps
+ * adopted children. `exec sleep` as pid 1 left killed background jobs as
+ * zombies, so `kill -0` / `killpg(0)` still succeeded.
+ */
+export const SANDBOX_KEEPALIVE_CMD = [
+  'sh',
+  '-c',
+  "trap '' CHLD; while true; do sleep 2147483647; done",
+];
 export const SANDBOX_LABEL = 'aihub.sandbox';
 export const SANDBOX_LABEL_VALUE = 'local';
 export const TRUNCATION_MARKER = '\n[truncated: output exceeded {limit} bytes]';

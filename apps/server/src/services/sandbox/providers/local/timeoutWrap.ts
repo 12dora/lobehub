@@ -25,17 +25,12 @@ export const wrapWithCoreutilsTimeout = (cmd: string[], timeoutMs: number): stri
 };
 
 /**
- * Foreground exec wrap: record the process-group leader pid, then `exec` into
- * GNU `timeout` (same argv-preserving inner `sh` as {@link wrapWithCoreutilsTimeout}).
+ * Foreground exec wrap: a supervising `sh` records its pid (the docker-exec
+ * process-group leader), runs GNU `timeout` without `exec`, then removes the
+ * pid file and exits with timeout's status (including 124/137/143).
  *
- * `echo $$` runs in the wrapping `sh`; `exec timeout` replaces that shell so
- * the pid file holds timeout's pid — the group leader docker exec started.
- * `kill -- -<pid>` then hits the whole group; interrupt falls back to
- * `kill <pid>` when the pid is not a group leader.
- *
- * The EXIT trap is best-effort: `exec` replaces the shell so the trap only
- * fires if `exec` itself fails. Interrupt deletes leftover pid files; a
- * completed exec's stale pid is harmless (`kill` of a dead pid is ignored).
+ * `kill -- -<pid>` hits the whole group (timeout + command). Interrupt ignores
+ * pid files whose pid is not alive (`kill -0`) so leftovers are not counted.
  */
 export const wrapForegroundExec = (
   cmd: string[],
@@ -44,7 +39,12 @@ export const wrapForegroundExec = (
 ): string[] => {
   const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
   const pidFile = foregroundPidFile(markerId);
-  const script = `echo $$ > ${pidFile}; trap 'rm -f ${pidFile}' EXIT; exec timeout -k ${TIMEOUT_KILL_AFTER_SEC} ${seconds} sh -c 'exec "$0" "$@"' "$@"`;
+  // Supervising shell stays alive so EXIT-equivalent cleanup runs (`rm -f` after
+  // timeout). Do not `exec` into timeout — that skipped the trap and leaked pid
+  // files. This shell is the docker-exec process-group leader (`echo $$`), so
+  // `kill -- -$pid` still reaches timeout and the command. `rc` propagates
+  // timeout's 124/137/143.
+  const script = `echo $$ > ${pidFile}; timeout -k ${TIMEOUT_KILL_AFTER_SEC} ${seconds} sh -c 'exec "$0" "$@"' "$@"; rc=$?; rm -f ${pidFile}; exit $rc`;
   return ['sh', '-c', script, '--', ...cmd];
 };
 
@@ -54,24 +54,69 @@ export const foregroundPidFile = (markerId: string): string =>
 export const FOREGROUND_PID_GLOB = '/tmp/lobe-fg-*.pid';
 
 /**
+ * dash's `kill` cannot address a process group (`kill -- -$pid` →
+ * "Illegal number: -"). python3 is in the sandbox image and `os.killpg`
+ * matches `kill -- -$pid` semantics.
+ */
+export const KILL_PROCESS_GROUP_HELPERS = [
+  'lobe_killpg() {',
+  '  python3 - "$1" "$2" <<\'PY\'',
+  'import os, sys',
+  'p, s = int(sys.argv[1]), int(sys.argv[2])',
+  'try:',
+  '    os.killpg(p, s)',
+  'except OSError:',
+  '    try:',
+  '        os.kill(p, s)',
+  '    except OSError:',
+  '        pass',
+  'PY',
+  '}',
+  'lobe_alivepg() {',
+  '  python3 - "$1" <<\'PY\'',
+  'import glob, sys',
+  'p = int(sys.argv[1])',
+  'live = False',
+  "for path in glob.glob('/proc/[0-9]*/stat'):",
+  '    try:',
+  '        st = open(path).read()',
+  '    except OSError:',
+  '        continue',
+  "    rp = st.rfind(')')",
+  '    if rp < 0:',
+  '        continue',
+  '    rest = st[rp + 2 :].split()',
+  '    if len(rest) < 3:',
+  '        continue',
+  "    if rest[0] != 'Z' and int(rest[2]) == p:",
+  '        live = True',
+  '        break',
+  'raise SystemExit(0 if live else 1)',
+  'PY',
+  '}',
+].join('\n');
+
+/**
  * In-container interrupt of foreground execs only. Does **not** touch
  * `/tmp/lobe-bg-*.pid` — those jobs are explicitly detached.
  */
 export const buildForegroundInterruptScript = (): string =>
   [
+    KILL_PROCESS_GROUP_HELPERS,
     'killed=0',
     `for f in ${FOREGROUND_PID_GLOB}; do`,
     '  [ -f "$f" ] || continue',
     '  pid=$(cat "$f" 2>/dev/null) || true',
-    '  case "$pid" in \'\'|*[!0-9]*) continue ;; esac',
-    '  kill -TERM -- -$pid 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true',
+    '  case "$pid" in \'\'|*[!0-9]*) rm -f "$f"; continue ;; esac',
+    '  kill -0 "$pid" 2>/dev/null || { rm -f "$f"; continue; }',
+    '  lobe_killpg "$pid" 15',
     '  n=0',
     '  while [ "$n" -lt 20 ]; do',
     '    kill -0 "$pid" 2>/dev/null || break',
     '    sleep 0.1',
     '    n=$((n + 1))',
     '  done',
-    '  kill -KILL -- -$pid 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true',
+    '  lobe_killpg "$pid" 9',
     '  rm -f "$f"',
     '  killed=$((killed + 1))',
     'done',

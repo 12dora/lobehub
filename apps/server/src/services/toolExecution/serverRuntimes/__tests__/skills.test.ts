@@ -415,6 +415,40 @@ describe('skillsRuntime', () => {
     expect(result.state).toMatchObject({ executionEnv: 'sandbox' });
   });
 
+  it('forwards an interrupted sandbox runCommand instead of collapsing to Command execution failed', async () => {
+    mocks.sandboxService.callTool.mockResolvedValue({
+      result: {
+        exitCode: 143,
+        interrupted: true,
+        output: 'partial-out',
+        stderr: 'command interrupted by user',
+        stdout: 'partial-out',
+        success: false,
+      },
+      success: true,
+    });
+
+    const { skillsRuntime } = await import('../skills');
+    const runtime = await skillsRuntime.factory({
+      serverDB: {} as never,
+      toolManifestMap: {},
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
+
+    const result = await runtime.runCommand({ command: 'sleep 60' });
+
+    expect(result.success).toBe(true);
+    expect(result.state).toMatchObject({
+      executionEnv: 'sandbox',
+      exitCode: 143,
+      interrupted: true,
+      success: false,
+    });
+    expect(result.content).toContain('partial-out');
+    expect(result.content).not.toContain('Command execution failed');
+  });
+
   it('passes workspace scope when preprocessing sandbox lh commands', async () => {
     mocks.preprocessLhCommand.mockResolvedValueOnce({
       command: 'LOBEHUB_WORKSPACE_ID=workspace-1 npx -y @lobehub/cli agent edit agt_123',

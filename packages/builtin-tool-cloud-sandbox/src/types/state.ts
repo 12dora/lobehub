@@ -38,6 +38,8 @@ export interface ExecuteCodeState {
   error?: string;
   /** Exit code of the execution */
   exitCode?: number;
+  /** True when the user interrupted a still-running exec. */
+  interrupted?: boolean;
   /** The programming language used */
   language: 'javascript' | 'python' | 'typescript';
   /** Standard output from execution */

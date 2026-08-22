@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformSandboxPackageInstall,
@@ -7,7 +7,11 @@ import {
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
 
-const LAST_COMMAND_MAX = 500;
+/** Truncate `last_command` after redaction. Credentials must not survive this cap. */
+export const LAST_COMMAND_MAX = 300;
+
+/** Distinct (user, manager, package) rows allowed per user. At the cap, only updates. */
+export const PER_USER_PACKAGE_INSTALL_CAP = 500;
 
 export interface SandboxPackageInstallUpsertRow {
   lastCommand: string;
@@ -49,7 +53,10 @@ export class PlatformSandboxPackageInstallsModel {
     if (uniqueRows.length === 0) return 0;
 
     const table = platformSandboxPackageInstalls;
-    const values: NewPlatformSandboxPackageInstall[] = uniqueRows.map((row) => ({
+    const accepted = await this.filterToCardinalityCap(table, uniqueRows);
+    if (accepted.length === 0) return 0;
+
+    const values: NewPlatformSandboxPackageInstall[] = accepted.map((row) => ({
       installCount: 1,
       lastCommand: truncateCommand(row.lastCommand),
       manager: row.manager,
@@ -70,6 +77,58 @@ export class PlatformSandboxPackageInstallsModel {
         target: [table.userId, table.manager, table.package],
       });
 
-    return uniqueRows.length;
+    return accepted.length;
+  };
+
+  /**
+   * Enforce {@link PER_USER_PACKAGE_INSTALL_CAP}. One `count(*)` per distinct
+   * user in the batch. When a user is already at the cap, only rows that
+   * already exist are kept (updates); new packages are dropped.
+   */
+  private filterToCardinalityCap = async (
+    table: typeof platformSandboxPackageInstalls,
+    uniqueRows: SandboxPackageInstallUpsertRow[],
+  ): Promise<SandboxPackageInstallUpsertRow[]> => {
+    const userIds = [...new Set(uniqueRows.map((row) => row.userId))];
+    const remainingByUser = new Map<string, number>();
+    const existingKeys = new Set<string>();
+
+    for (const userId of userIds) {
+      const [countRow] = await this.db
+        .select({ value: sql<number>`count(*)::int` })
+        .from(table)
+        .where(eq(table.userId, userId));
+      remainingByUser.set(
+        userId,
+        Math.max(0, PER_USER_PACKAGE_INSTALL_CAP - (countRow?.value ?? 0)),
+      );
+
+      const userPackages = [
+        ...new Set(uniqueRows.filter((row) => row.userId === userId).map((row) => row.package)),
+      ];
+      if (userPackages.length === 0) continue;
+
+      const existing = await this.db
+        .select({ manager: table.manager, package: table.package })
+        .from(table)
+        .where(and(eq(table.userId, userId), inArray(table.package, userPackages)));
+      for (const row of existing) {
+        existingKeys.add(`${userId}\0${row.manager}\0${row.package}`);
+      }
+    }
+
+    const accepted: SandboxPackageInstallUpsertRow[] = [];
+    for (const row of uniqueRows) {
+      const key = `${row.userId}\0${row.manager}\0${row.package}`;
+      if (existingKeys.has(key)) {
+        accepted.push(row);
+        continue;
+      }
+      const remaining = remainingByUser.get(row.userId) ?? 0;
+      if (remaining <= 0) continue;
+      accepted.push(row);
+      remainingByUser.set(row.userId, remaining - 1);
+    }
+    return accepted;
   };
 }

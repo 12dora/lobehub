@@ -33,7 +33,11 @@ import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { deviceGateway } from '@/server/services/deviceGateway';
 import { FileService } from '@/server/services/file';
 import { MarketService } from '@/server/services/market';
-import { createSandboxService, normalizeSandboxCommandResult } from '@/server/services/sandbox';
+import {
+  createSandboxService,
+  isInterruptedSandboxResult,
+  normalizeSandboxCommandResult,
+} from '@/server/services/sandbox';
 import { SkillResourceService } from '@/server/services/skill/resource';
 import { preprocessLhCommand } from '@/server/services/toolExecution/preprocessLhCommand';
 
@@ -193,7 +197,7 @@ class SkillServerRuntimeService implements SkillRuntimeService {
 
       log('runCommand response: %O', response);
 
-      if (!response.success) {
+      if (!response.success && !isInterruptedSandboxResult(response)) {
         return {
           executionEnv: 'sandbox',
           exitCode: 1,
@@ -502,7 +506,7 @@ class SkillServerRuntimeService implements SkillRuntimeService {
 
       log('execScript response: %O', response);
 
-      if (!response.success) {
+      if (!response.success && !isInterruptedSandboxResult(response)) {
         return {
           executionEnv: 'sandbox',
           exitCode: 1,

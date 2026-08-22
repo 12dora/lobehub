@@ -27,7 +27,7 @@ export const platformSandboxPackageInstalls = pgTable(
     /** Normalized package name (lowercase; pip `_`→`-`; extras/version stripped). */
     package: text('package').notNull(),
     installCount: integer('install_count').notNull().default(1),
-    /** Raw install command (≤ 500 chars); not the whole script. */
+    /** Raw install command (≤ 300 chars, secrets redacted); not the whole script. */
     lastCommand: text('last_command'),
     firstAt: timestamptz('first_at').notNull().defaultNow(),
     lastAt: timestamptz('last_at').notNull().defaultNow(),

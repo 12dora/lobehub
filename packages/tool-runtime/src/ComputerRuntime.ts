@@ -294,8 +294,9 @@ export abstract class ComputerRuntime {
   async runCommand(args: RunCommandParams): Promise<BuiltinServerRuntimeOutput> {
     try {
       const result = await this.callService('runCommand', args);
+      const interrupted = result.result?.interrupted === true;
 
-      if (!result.success) {
+      if (!result.success && !interrupted) {
         return this.errorOutput(result, {
           error: result.error?.message,
           exitCode: result.result?.exitCode ?? result.result?.exit_code,
@@ -307,13 +308,15 @@ export abstract class ComputerRuntime {
       }
 
       const r = result.result || {};
-      const commandSuccess = typeof r.success === 'boolean' ? r.success : result.success;
+      const commandSuccess =
+        typeof r.success === 'boolean' ? r.success : !interrupted && result.success;
       const outputFiles = r.outputFiles ?? r.output_files;
 
       const state: RunCommandState = {
         commandId: r.commandId || r.shell_id,
         error: r.error,
         exitCode: r.exitCode ?? r.exit_code,
+        ...(interrupted ? { interrupted: true } : {}),
         isBackground: args.background || false,
         output: r.output,
         outputFiles,

@@ -6,7 +6,10 @@ import { getTestDB } from '../../core/getTestDB';
 import { platformSandboxPackageInstalls } from '../../schemas/platform';
 import { users } from '../../schemas/user';
 import type { LobeChatDatabase } from '../../type';
-import { PlatformSandboxPackageInstallsModel } from './sandboxPackageInstalls';
+import {
+  PER_USER_PACKAGE_INSTALL_CAP,
+  PlatformSandboxPackageInstallsModel,
+} from './sandboxPackageInstalls';
 
 const db: LobeChatDatabase = await getTestDB();
 const userId = 'pspi-model-user';
@@ -84,5 +87,37 @@ describe('PlatformSandboxPackageInstallsModel', () => {
     const rows = await db.select().from(platformSandboxPackageInstalls);
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((row) => row.userId))).toEqual(new Set([userId, otherUserId]));
+  });
+
+  it('truncates last_command to 300 characters', async () => {
+    const model = new PlatformSandboxPackageInstallsModel(db);
+    const lastCommand = `pip install ${'n'.repeat(400)}`;
+    await model.upsert([{ lastCommand, manager: 'pip', package: 'numpy', userId }]);
+    const [row] = await db.select().from(platformSandboxPackageInstalls);
+    expect(row?.lastCommand).toHaveLength(300);
+  });
+
+  it('at the per-user cap only updates existing rows and never inserts', async () => {
+    const model = new PlatformSandboxPackageInstallsModel(db);
+    await db.insert(platformSandboxPackageInstalls).values(
+      Array.from({ length: PER_USER_PACKAGE_INSTALL_CAP }, (_, i) => ({
+        lastCommand: 'pip install seed',
+        manager: 'pip' as const,
+        package: `seed-${i}`,
+        userId,
+      })),
+    );
+
+    expect(
+      await model.upsert([
+        { lastCommand: 'pip install seed-0==2', manager: 'pip', package: 'seed-0', userId },
+        { lastCommand: 'pip install newbie', manager: 'pip', package: 'newbie', userId },
+      ]),
+    ).toBe(1);
+
+    const rows = await db.select().from(platformSandboxPackageInstalls);
+    expect(rows).toHaveLength(PER_USER_PACKAGE_INSTALL_CAP);
+    expect(rows.some((row) => row.package === 'newbie')).toBe(false);
+    expect(rows.find((row) => row.package === 'seed-0')?.installCount).toBe(2);
   });
 });

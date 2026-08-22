@@ -16,7 +16,11 @@ import {
 } from '@/server/enterprise/services/skillCatalog';
 import { deviceGateway } from '@/server/services/deviceGateway';
 import { MarketService } from '@/server/services/market';
-import { createSandboxService, normalizeSandboxCommandResult } from '@/server/services/sandbox';
+import {
+  createSandboxService,
+  isInterruptedSandboxResult,
+  normalizeSandboxCommandResult,
+} from '@/server/services/sandbox';
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const log = debug('lobe-server:managed-skill-runtime');
@@ -112,7 +116,7 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
       };
     }
     const response = await this.sandboxService().callTool('runCommand', { command });
-    if (!response.success) {
+    if (!response.success && !isInterruptedSandboxResult(response)) {
       return {
         executionEnv: 'sandbox',
         exitCode: 1,
@@ -177,7 +181,9 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
       const response = await sandbox.callTool('runCommand', {
         command: `cd ${shellQuote(runDir!)} && ${command}`,
       });
-      if (!response.success) throw new Error(response.error?.message || 'Command execution failed');
+      if (!response.success && !isInterruptedSandboxResult(response)) {
+        throw new Error(response.error?.message || 'Command execution failed');
+      }
       return { ...normalizeSandboxCommandResult(response), executionEnv: 'sandbox' };
     } catch (error) {
       return {

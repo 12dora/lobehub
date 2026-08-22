@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { type LobeChatDatabase } from '@lobechat/database';
-import { agents, chatGroups, sessions, threads, topics } from '@lobechat/database/schemas';
+import {
+  agentOperations,
+  agents,
+  chatGroups,
+  sessions,
+  threads,
+  topics,
+} from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
 import { ThreadStatus, ThreadType } from '@lobechat/types';
 import { eq } from 'drizzle-orm';
@@ -16,12 +23,20 @@ vi.mock('@/database/core/db-adaptor', () => ({
 }));
 
 const mockInterruptOperation = vi.fn();
+const mockSandboxInterrupt = vi.fn();
+const mockCreateSandboxService = vi.fn((_options?: unknown) => ({
+  interrupt: mockSandboxInterrupt,
+}));
 
 // Mock AgentRuntimeService
 vi.mock('@/server/services/agentRuntime', () => ({
   AgentRuntimeService: vi.fn().mockImplementation(() => ({
     interruptOperation: mockInterruptOperation,
   })),
+}));
+
+vi.mock('@/server/services/sandbox', () => ({
+  createSandboxService: (options: unknown) => mockCreateSandboxService(options),
 }));
 
 // Mock AiChatService
@@ -43,6 +58,9 @@ describe('aiAgentRouter.interruptTask', () => {
     userId = await createTestUser(serverDB);
     mockInterruptOperation.mockReset();
     mockInterruptOperation.mockResolvedValue(true);
+    mockSandboxInterrupt.mockReset();
+    mockSandboxInterrupt.mockResolvedValue({ killed: 1 });
+    mockCreateSandboxService.mockClear();
 
     // Create test agent
     const [agent] = await serverDB
@@ -293,6 +311,51 @@ describe('aiAgentRouter.interruptTask', () => {
       });
 
       expect(result.success).toBe(true);
+    });
+  });
+
+  describe('sandbox topic resolution', () => {
+    it('interrupts the sandbox using the thread topic when the caller omits topicId', async () => {
+      const caller = aiAgentRouter.createCaller(createTestContext());
+
+      await caller.interruptTask({ threadId: testThreadId });
+
+      expect(mockCreateSandboxService).toHaveBeenCalledWith(
+        expect.objectContaining({ topicId: testTopicId, userId }),
+      );
+      expect(mockSandboxInterrupt).toHaveBeenCalled();
+    });
+
+    it('resolves topicId from the user-scoped operation when only operationId is provided', async () => {
+      await serverDB.insert(agentOperations).values({
+        id: 'op-sandbox-topic',
+        status: 'running',
+        topicId: testTopicId,
+        userId,
+      });
+
+      const caller = aiAgentRouter.createCaller(createTestContext());
+      await caller.interruptTask({ operationId: 'op-sandbox-topic' });
+
+      expect(mockCreateSandboxService).toHaveBeenCalledWith(
+        expect.objectContaining({ topicId: testTopicId, userId }),
+      );
+    });
+
+    it('prefers the record topic over a disagreeing caller-supplied topicId', async () => {
+      const caller = aiAgentRouter.createCaller(createTestContext());
+
+      await caller.interruptTask({
+        threadId: testThreadId,
+        topicId: 'attacker-topic',
+      });
+
+      expect(mockCreateSandboxService).toHaveBeenCalledWith(
+        expect.objectContaining({ topicId: testTopicId, userId }),
+      );
+      expect(mockCreateSandboxService).not.toHaveBeenCalledWith(
+        expect.objectContaining({ topicId: 'attacker-topic' }),
+      );
     });
   });
 });

@@ -45,16 +45,23 @@ export class CloudSandboxExecutionRuntime extends ComputerRuntime {
         language,
       });
 
+      const interrupted = result.result?.interrupted === true;
+      const innerSuccess =
+        typeof result.result?.success === 'boolean'
+          ? result.result.success
+          : !interrupted && (result.success || false);
+
       const state: ExecuteCodeState = {
         error: result.result?.error,
         exitCode: result.result?.exitCode,
+        ...(interrupted ? { interrupted: true } : {}),
         language,
         output: result.result?.output,
         stderr: result.result?.stderr,
-        success: result.success || false,
+        success: innerSuccess,
       };
 
-      if (!result.success) {
+      if (!result.success && !interrupted) {
         return {
           content: result.error?.message || JSON.stringify(result.error),
           state,

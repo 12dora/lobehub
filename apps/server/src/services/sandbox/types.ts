@@ -162,6 +162,7 @@ export interface SandboxProviderFileExportResult {
 
 export interface SandboxCommandResult {
   exitCode: number;
+  interrupted?: boolean;
   output: string;
   stderr?: string;
   success: boolean;

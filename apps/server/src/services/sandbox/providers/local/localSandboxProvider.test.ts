@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalSandboxProviderOptions } from '../../types';
 import { SANDBOX_PUT_FILES_MAX_FILE_BYTES } from '../../types';
 import { FakeDockerEngine } from './__tests__/fakeDockerEngine';
+import { SANDBOX_KEEPALIVE_CMD } from './constants';
 import { DockerEngineClient } from './dockerEngineClient';
 import { LocalSandboxProvider } from './localSandboxProvider';
 import { runWithLocalSandboxSession } from './sessionContext';
@@ -150,7 +151,7 @@ describe('LocalSandboxProvider', () => {
     await provider.callTool('runCommand', { command: 'echo ok', timeout: 999_000 });
 
     const exec = [...fake.execs.values()].find((item) =>
-      (item.cmd[2] ?? '').includes('exec timeout'),
+      (item.cmd[2] ?? '').includes('timeout -k'),
     );
     expect(exec?.cmd[0]).toBe('sh');
     expect(exec?.cmd[2]).toContain('timeout -k 5 1 ');
@@ -540,13 +541,13 @@ describe('LocalSandboxProvider', () => {
     expect(fake.containers.size).toBe(1);
 
     const killExec = [...fake.execs.values()].find((item) => {
-      const script = item.cmd.find((part) => part.includes('kill -TERM'));
+      const script = item.cmd.find((part) => part.includes('lobe_killpg'));
       return Boolean(script?.includes('/tmp/lobe-fg-'));
     });
     expect(killExec).toBeDefined();
-    const script = killExec!.cmd.find((part) => part.includes('kill -TERM'))!;
+    const script = killExec!.cmd.find((part) => part.includes('lobe_killpg'))!;
     expect(script).toContain('for f in /tmp/lobe-fg-*.pid');
-    expect(script).toContain('kill -TERM -- -$pid');
+    expect(script).toContain('lobe_killpg "$pid" 15');
     expect(script).not.toContain('lobe-bg-');
   });
 
@@ -572,7 +573,7 @@ describe('LocalSandboxProvider', () => {
         interrupted: true,
         success: false,
       },
-      success: false,
+      success: true,
     });
     expect(String(result.result?.stderr ?? '')).toContain('command interrupted by user');
     expect(fake.containers.size).toBe(1);
@@ -589,17 +590,108 @@ describe('LocalSandboxProvider', () => {
     expect(started.success).toBe(true);
 
     const launcher = [...fake.execs.values()].find((item) =>
-      item.cmd.some((part) => part.includes('echo $!')),
+      item.cmd.some((part) => part.includes('echo $$') && part.includes('lobe-bg-')),
     );
-    const script = launcher?.cmd.find((part) => part.includes('echo $!'));
-    expect(script).toContain('timeout -k 5 600');
+    const script = launcher?.cmd.find(
+      (part) => part.includes('lobe-bg-') && part.includes('timeout --foreground -k 5 600'),
+    );
+    expect(script).toContain('timeout --foreground -k 5 600');
+    expect(script).toContain('setsid');
     expect(script).toContain('echo bg-job');
 
     await provider.interrupt({ topicId: 'topic-1', userId: 'user-1' });
     const killScript = [...fake.execs.values()]
-      .map((item) => item.cmd.find((part) => part.includes('kill -TERM')))
+      .map((item) => item.cmd.find((part) => part.includes('lobe_killpg')))
       .find(Boolean);
     expect(killScript).not.toContain('lobe-bg-');
+  });
+
+  it('invalidates the session on HTTP watchdog timeout even when interrupt was requested', async () => {
+    const fake = await start();
+    const opts = engineOptions(fake.socketPath);
+    const provider = new LocalSandboxProvider(opts);
+    const session = { topicId: 'topic-1', userId: 'user-1' };
+
+    await provider.callTool('runCommand', { command: 'echo ok' });
+    expect(fake.containers.size).toBe(1);
+
+    const supervisor = getLocalSandboxSupervisor(
+      new DockerEngineClient({ socketPath: fake.socketPath }),
+      {
+        diskMb: opts.diskMb ?? 512,
+        idleTtlSec: opts.idleTtlSec,
+        image: opts.image,
+        maxContainers: opts.maxContainers,
+        memoryBytes: opts.memoryBytes,
+        nanoCpus: opts.nanoCpus,
+        network: opts.network,
+        pidsLimit: opts.pidsLimit,
+        pullOnDemand: opts.pullOnDemand,
+        pullPolicy: opts.pullPolicy,
+      },
+    );
+    const record = await supervisor.peekSession(session);
+    expect(record).toBeDefined();
+    record!.interruptedAt = Date.now() + 60_000;
+
+    const execStart = vi.spyOn(DockerEngineClient.prototype, 'execStart').mockResolvedValue({
+      stderr: Buffer.from(''),
+      stdout: Buffer.from('partial\n'),
+      timedOut: true,
+      truncated: false,
+    });
+    const execInspect = vi
+      .spyOn(DockerEngineClient.prototype, 'execInspect')
+      .mockResolvedValue({ ExitCode: null, Running: false });
+
+    try {
+      const result = await provider.callTool('runCommand', {
+        command: 'echo later',
+        timeout: 1000,
+      });
+      expect(result).toMatchObject({
+        result: { interrupted: true, stdout: 'partial\n', success: false },
+        success: true,
+      });
+      expect(fake.containers.size).toBe(0);
+    } finally {
+      execStart.mockRestore();
+      execInspect.mockRestore();
+    }
+  });
+
+  it('kills background jobs by process group and reports running only while the group lives', async () => {
+    const fake = await start();
+    const provider = new LocalSandboxProvider(engineOptions(fake.socketPath));
+
+    const started = await provider.callTool('runCommand', {
+      background: true,
+      command: 'sleep 300',
+    });
+    expect(started.success).toBe(true);
+    const commandId = String(started.result?.commandId || started.result?.shell_id || '');
+    expect(commandId).toMatch(/^bg-/);
+
+    const killed = await provider.callTool('killCommand', { commandId });
+    const killScript = [...fake.execs.values()]
+      .map((item) => item.cmd.find((part) => part.includes('lobe_killpg "$pid" 15')))
+      .find(Boolean);
+    expect(killScript).toContain('lobe_killpg "$pid" 15');
+    expect(killScript).toContain('lobe_killpg "$pid" 9');
+    expect(killScript).toContain('os.killpg');
+    expect(killScript).toContain("rest[0] != 'Z'");
+    expect(killScript).toContain('|1) pid=');
+    expect(killScript).toContain('n=0');
+    expect(killScript).toContain('sleep 0.1');
+    expect(killed.result).toMatchObject({ running: false });
+  });
+
+  it('uses a pid-1 reaper so killed background jobs do not stay as zombies', () => {
+    expect(SANDBOX_KEEPALIVE_CMD).toEqual([
+      'sh',
+      '-c',
+      "trap '' CHLD; while true; do sleep 2147483647; done",
+    ]);
   });
 });
 

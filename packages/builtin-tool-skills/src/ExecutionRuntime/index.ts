@@ -530,11 +530,12 @@ export class SkillsExecutionRuntime {
         command,
         ...(result.executionEnv && { executionEnv: result.executionEnv }),
         exitCode: result.exitCode,
+        ...(result.interrupted ? { interrupted: true } : {}),
         ...(result.outputFiles && { outputFiles: result.outputFiles }),
         ...(result.shellId && { shellId: result.shellId }),
         success: result.success,
       },
-      success: result.success,
+      success: result.interrupted ? true : result.success,
     };
   }
 }

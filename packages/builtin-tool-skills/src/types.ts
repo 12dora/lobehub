@@ -78,6 +78,7 @@ export interface CommandResult {
    * elapsed — the formatter reports it as still running instead of completed.
    */
   exitCode?: number;
+  interrupted?: boolean;
   output: string;
   /**
    * Saved-output file handles reported by the shell when stdout/stderr exceed

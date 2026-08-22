@@ -11,6 +11,7 @@ import {
   DEFAULT_NANO_CPUS,
   DEFAULT_PIDS_LIMIT,
   DEFAULT_SANDBOX_IMAGE,
+  SANDBOX_KEEPALIVE_CMD,
   SANDBOX_LABEL,
   SANDBOX_LABEL_VALUE,
   SANDBOX_TMP,
@@ -311,7 +312,7 @@ export class LocalSandboxSupervisor {
 
     try {
       const created = await this.client.containerCreate(record.containerName, {
-        Cmd: ['sh', '-c', 'exec sleep 2147483647'],
+        Cmd: [...SANDBOX_KEEPALIVE_CMD],
         Env: ['HOME=/mnt/data', 'TMPDIR=/tmp'],
         HostConfig: {
           CapDrop: ['ALL'],

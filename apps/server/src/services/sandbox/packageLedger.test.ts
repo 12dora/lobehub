@@ -9,8 +9,11 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import {
   extractPackageInstalls,
+  LAST_COMMAND_MAX_CHARS,
+  MAX_TOOL_CALL_TEXT_CHARS,
   normalizeSandboxPackageName,
   recordSandboxPackageInstalls,
+  redactInstallCommand,
 } from './packageLedger';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -90,6 +93,20 @@ describe('extractPackageInstalls', () => {
     const extracted = extractPackageInstalls(`pip install ${names}`);
     expect(extracted).toHaveLength(20);
     expect(extracted.at(-1)?.package).toBe('pkg19');
+  });
+
+  it('caps at 20 packages per tool call across multiple install matches', () => {
+    const first = Array.from({ length: 15 }, (_, i) => `one${i}`).join(' ');
+    const second = Array.from({ length: 15 }, (_, i) => `two${i}`).join(' ');
+    const extracted = extractPackageInstalls(`pip install ${first}\nnpm i ${second}`);
+    expect(extracted).toHaveLength(20);
+    expect(extracted.filter((item) => item.manager === 'pip')).toHaveLength(15);
+    expect(extracted.filter((item) => item.manager === 'npm')).toHaveLength(5);
+  });
+
+  it('skips recording when the tool-call text exceeds 64 KiB', () => {
+    const huge = `pip install requests\n${'x'.repeat(MAX_TOOL_CALL_TEXT_CHARS)}`;
+    expect(extractPackageInstalls(huge)).toEqual([]);
   });
 
   it('ignores install lines inside a heredoc', () => {
@@ -189,5 +206,85 @@ describe('recordSandboxPackageInstalls', () => {
         toolName: 'runCommand',
       }),
     ).resolves.toBe(0);
+  });
+
+  it('persists a redacted last_command and skips oversized tool-call text', async () => {
+    await expect(
+      recordSandboxPackageInstalls(db, {
+        params: { command: 'pip install --password=s3cret requests' },
+        toolName: 'runCommand',
+        userId,
+      }),
+    ).resolves.toBe(1);
+
+    const [row] = await db.select().from(platformSandboxPackageInstalls);
+    expect(row?.lastCommand).toBe('pip install --password=*** requests');
+    expect(row?.lastCommand).not.toContain('s3cret');
+
+    await db.delete(platformSandboxPackageInstalls);
+    await expect(
+      recordSandboxPackageInstalls(db, {
+        params: { command: `pip install requests\n${'x'.repeat(MAX_TOOL_CALL_TEXT_CHARS)}` },
+        toolName: 'runCommand',
+        userId,
+      }),
+    ).resolves.toBe(0);
+  });
+});
+
+describe('redactInstallCommand', () => {
+  it.each([
+    [
+      'URL userinfo',
+      'pip install https://user:pass@pypi.example.com/pkg',
+      'pip install https://***@pypi.example.com/pkg',
+    ],
+    [
+      'query string',
+      'pip install https://pypi.example.com/pkg?token=abc',
+      'pip install https://pypi.example.com/pkg',
+    ],
+    [
+      'userinfo and query',
+      'pip install https://user:pass@pypi.example.com/pkg?token=abc',
+      'pip install https://***@pypi.example.com/pkg',
+    ],
+    [
+      '--password value',
+      'pip install --password s3cret requests',
+      'pip install --password *** requests',
+    ],
+    ['-p value', 'npm install -p s3cret lodash', 'npm install -p *** lodash'],
+    ['--token=', 'poetry add --token=s3cret django', 'poetry add --token=*** django'],
+    ['--api-key', 'pip install --api-key s3cret requests', 'pip install --api-key *** requests'],
+    [
+      '--index-url keeps host only',
+      'pip install --index-url https://user:pass@pypi.example.com/simple?x=1 requests',
+      'pip install --index-url https://pypi.example.com requests',
+    ],
+    [
+      '--extra-index-url keeps host only',
+      'pip install --extra-index-url https://pypi.org/simple/foo pandas',
+      'pip install --extra-index-url https://pypi.org pandas',
+    ],
+    [
+      '--registry keeps host only',
+      'npm install --registry https://npm.example.com/path lodash',
+      'npm install --registry https://npm.example.com lodash',
+    ],
+    ['_auth=', 'npm install _auth=abcd lodash', 'npm install _auth=*** lodash'],
+    ['NPM_TOKEN=', 'NPM_TOKEN=s3cret npm install lodash', 'NPM_TOKEN=*** npm install lodash'],
+    [
+      'PIP_INDEX_URL=',
+      'PIP_INDEX_URL=https://u:p@host/simple pip install requests',
+      'PIP_INDEX_URL=*** pip install requests',
+    ],
+  ] as const)('redacts %s', (_name, input, expected) => {
+    expect(redactInstallCommand(input)).toBe(expected);
+  });
+
+  it('caps redacted commands at 300 characters', () => {
+    const redacted = redactInstallCommand(`pip install ${'pkg'.repeat(200)}`);
+    expect(redacted).toHaveLength(LAST_COMMAND_MAX_CHARS);
   });
 });

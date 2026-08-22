@@ -6,7 +6,13 @@ import type { LobeChatDatabase } from '@/database/type';
 
 const log = debug('lobe-server:sandbox:packageLedger');
 
-const MAX_PACKAGES_PER_COMMAND = 20;
+/** Unique packages recorded from a single tool invocation (not per regex match). */
+export const MAX_PACKAGES_PER_TOOL_CALL = 20;
+
+/** Skip the ledger entirely for oversized tool-call payloads. */
+export const MAX_TOOL_CALL_TEXT_CHARS = 64 * 1024;
+
+export const LAST_COMMAND_MAX_CHARS = 300;
 
 const RECORDABLE_TOOLS = new Set(['executeCode', 'execScript', 'runCommand']);
 
@@ -172,7 +178,7 @@ const collectPackages = (
 ): { end: number; packages: string[] } => {
   const packages: string[] = [];
   let end = 0;
-  for (let i = 0; i < tokens.length && packages.length < MAX_PACKAGES_PER_COMMAND; i += 1) {
+  for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i]!;
     end = token.end;
     if (token.value === '--') continue;
@@ -194,8 +200,48 @@ const collectPackages = (
   return { end, packages };
 };
 
+/**
+ * Redact secrets from an install command before it is persisted to
+ * `last_command`. URL userinfo, query strings, credential flags, index/registry
+ * hosts-only, and `NPM_TOKEN=` / `PIP_*=` / `_auth=` assignments.
+ */
+export const redactInstallCommand = (command: string): string => {
+  let out = command.replaceAll(
+    /(^|[\s;|&])(NPM_TOKEN|PIP_\w+)=(?:"[^"]*"|'[^']*'|\S+)/gi,
+    '$1$2=***',
+  );
+  out = out.replaceAll(/_auth=(?:"[^"]*"|'[^']*'|\S+)/gi, '_auth=***');
+  out = out.replaceAll(
+    /(^|[\s;|&])(--index-url|--extra-index-url|--registry)(=|\s+)("[^"]*"|'[^']*'|\S+)/gi,
+    (_match, pre: string, flag: string, sep: string, value: string) =>
+      `${pre}${flag}${sep}${originOnly(value)}`,
+  );
+  out = out.replaceAll(
+    /(^|[\s;|&])(--password|--token|--api-key|-p)(=|\s+)(?:"[^"]*"|'[^']*'|\S+)/gi,
+    '$1$2$3***',
+  );
+  out = redactUrls(out);
+  return out.length > LAST_COMMAND_MAX_CHARS ? out.slice(0, LAST_COMMAND_MAX_CHARS) : out;
+};
+
+const unwrapQuoted = (value: string): string => value.replaceAll(/^['"]+|['"]+$/g, '');
+
+const originOnly = (raw: string): string => {
+  const value = unwrapQuoted(raw);
+  try {
+    return new URL(value).origin;
+  } catch {
+    return redactUrls(value);
+  }
+};
+
+const redactUrls = (text: string): string =>
+  text
+    .replaceAll(/([a-z][a-z0-9+.-]*):\/\/[^/@\s]+@/gi, '$1://***@')
+    .replaceAll(/(https?:\/\/[^\s?]+)\?\S*/gi, '$1');
+
 export const extractPackageInstalls = (text: string): ExtractedPackageInstall[] => {
-  if (!text) return [];
+  if (!text || text.length > MAX_TOOL_CALL_TEXT_CHARS) return [];
   const source = stripHeredocs(text);
   const found: ExtractedPackageInstall[] = [];
   const seen = new Set<string>();
@@ -217,11 +263,14 @@ export const extractPackageInstalls = (text: string): ExtractedPackageInstall[] 
     matcher.lastIndex = cursor;
 
     for (const pkg of packages) {
+      if (found.length >= MAX_PACKAGES_PER_TOOL_CALL) break;
       const key = `${manager}\0${pkg}`;
       if (seen.has(key)) continue;
       seen.add(key);
       found.push({ command, manager, package: pkg });
     }
+
+    if (found.length >= MAX_PACKAGES_PER_TOOL_CALL) break;
   }
 
   return found;
@@ -256,7 +305,7 @@ export const recordSandboxPackageInstalls = async (
     if (extracted.length === 0) return 0;
     return await new PlatformSandboxPackageInstallsModel(db).upsert(
       extracted.map((item) => ({
-        lastCommand: item.command,
+        lastCommand: redactInstallCommand(item.command),
         manager: item.manager,
         package: item.package,
         userId: input.userId!,

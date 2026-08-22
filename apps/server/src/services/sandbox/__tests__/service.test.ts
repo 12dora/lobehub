@@ -152,3 +152,66 @@ describe('SandboxMiddlewareService', () => {
     expect(interrupt).toHaveBeenCalledWith({ topicId: 'topic-1', userId: 'user-1' });
   });
 });
+
+describe('normalizeSandboxCommandResult', () => {
+  it('keeps interrupted execs as a transported result with partial output', async () => {
+    const { normalizeSandboxCommandResult } = await import('../service');
+    expect(
+      normalizeSandboxCommandResult({
+        result: {
+          exitCode: 143,
+          interrupted: true,
+          output: 'partial-out',
+          stderr: 'command interrupted by user',
+          stdout: 'partial-out',
+          success: false,
+        },
+        success: true,
+      }),
+    ).toEqual({
+      exitCode: 143,
+      interrupted: true,
+      output: 'partial-out',
+      stderr: 'command interrupted by user',
+      success: false,
+    });
+  });
+
+  it('does not collapse interrupted results when the outer transport flag is false', async () => {
+    const { normalizeSandboxCommandResult } = await import('../service');
+    expect(
+      normalizeSandboxCommandResult({
+        result: {
+          exitCode: 137,
+          interrupted: true,
+          stdout: 'still-here',
+          stderr: 'killed',
+          success: false,
+        },
+        success: false,
+      }),
+    ).toMatchObject({
+      exitCode: 137,
+      interrupted: true,
+      output: 'still-here',
+      stderr: 'killed',
+      success: false,
+    });
+  });
+
+  it('still collapses genuine transport failures to Command execution failed', async () => {
+    const { normalizeSandboxCommandResult } = await import('../service');
+    expect(
+      normalizeSandboxCommandResult({
+        error: { message: 'boom' },
+        result: null,
+        success: false,
+      }),
+    ).toEqual({
+      exitCode: 1,
+      output: '',
+      stderr: 'boom',
+      success: false,
+    });
+  });
+});

@@ -458,10 +458,15 @@ export class SandboxMiddlewareService implements SandboxService {
   }
 }
 
+export const isInterruptedSandboxResult = (result: SandboxCallToolResult): boolean =>
+  result.result?.interrupted === true;
+
 export const normalizeSandboxCommandResult = (
   result: SandboxCallToolResult,
 ): SandboxCommandResult => {
-  if (!result.success) {
+  const interrupted = isInterruptedSandboxResult(result);
+
+  if (!result.success && !interrupted) {
     return {
       exitCode: 1,
       output: '',
@@ -472,13 +477,14 @@ export const normalizeSandboxCommandResult = (
 
   const raw = result.result || {};
   const rawExitCode = raw.exitCode ?? raw.exit_code;
-  const exitCode = typeof rawExitCode === 'number' ? rawExitCode : 0;
+  const exitCode = typeof rawExitCode === 'number' ? rawExitCode : interrupted ? 143 : 0;
   const output = String(raw.stdout || raw.output || '');
   const stderr = raw.stderr === undefined ? undefined : String(raw.stderr);
-  const success = typeof raw.success === 'boolean' ? raw.success : exitCode === 0;
+  const success = typeof raw.success === 'boolean' ? raw.success : !interrupted && exitCode === 0;
 
   return {
     exitCode,
+    ...(interrupted ? { interrupted: true } : {}),
     output,
     stderr,
     success,
