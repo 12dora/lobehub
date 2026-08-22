@@ -35,6 +35,7 @@ vi.mock('@/server/services/sandbox', async () => {
       callTool: vi.fn(),
       syncOverLimitAttachments,
     })),
+    isAttachmentNotDeliveredNatively: attachmentSync.isAttachmentNotDeliveredNatively,
     selectAttachmentsForSandboxSync: attachmentSync.selectAttachmentsForSandboxSync,
     syncOverLimitAttachmentsIfSandboxEnabled:
       attachmentSync.syncOverLimitAttachmentsIfSandboxEnabled,
@@ -129,7 +130,7 @@ const engineInput = () =>
     };
   };
 
-describe('buildServerCallLlmContext — over-limit attachment sync', () => {
+describe('buildServerCallLlmContext — sandbox attachment sync', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(resolveServerCallLlmContextHints).mockImplementation(async ({ llmPayload }) => ({
@@ -251,7 +252,7 @@ describe('buildServerCallLlmContext — over-limit attachment sync', () => {
     expect(input.capabilities?.isCanUseFiles('gpt-5.6-sol', 'chatgpt')).toBe(true);
   });
 
-  it('uses the runtime provider for native-file checks on a custom catalog key', async () => {
+  it('syncs natively-deliverable files and keeps file_url on a custom catalog key', async () => {
     mockHintsWithNativeFiles();
 
     await buildServerCallLlmContext({
@@ -267,9 +268,42 @@ describe('buildServerCallLlmContext — over-limit attachment sync', () => {
     });
 
     const input = engineInput();
-    expect(syncOverLimitAttachments).not.toHaveBeenCalled();
-    expect(input.fileContext).toBeUndefined();
+    expect(syncOverLimitAttachments).toHaveBeenCalledTimes(1);
+    expect(input.fileContext?.sandboxPathByFileId).toEqual({
+      'file-small': sandboxOverLimitUploadPath('small.pdf', 'file-small'),
+    });
+    expect(input.fileContext?.omitFileUrlFileIds).toBeUndefined();
     expect(input.capabilities?.isCanUseFiles('gpt-5.6-sol', 'corp-chatgpt')).toBe(true);
     expect(input.capabilities?.isCanUseFiles('gpt-5.6-sol', 'chatgpt')).toBe(true);
+  });
+
+  it('omits native file_url only for files the provider cannot inline', async () => {
+    mockHintsWithNativeFiles();
+    const archive = {
+      fileType: 'application/zip',
+      id: 'file-zip',
+      name: 'data.zip',
+      size: 2048,
+      url: 'files/test-user-id/xxx/data.zip',
+    };
+
+    await buildServerCallLlmContext({
+      ctx: makeCtx() as never,
+      llmPayload: {
+        messages: [{ content: 'summarize', fileList: [smallDocument, archive], role: 'user' }],
+      } as never,
+      model: 'gpt-5.6-sol',
+      provider: 'chatgpt',
+      resolvedExecution: { runtimeProvider: 'chatgpt' } as never,
+      state: { metadata: { topicId: 'topic-1' } } as never,
+      tooling: tooling as never,
+    });
+
+    const input = engineInput();
+    expect(input.fileContext?.sandboxPathByFileId).toEqual({
+      'file-small': sandboxOverLimitUploadPath('small.pdf', 'file-small'),
+      'file-zip': sandboxOverLimitUploadPath('data.zip', 'file-zip'),
+    });
+    expect(input.fileContext?.omitFileUrlFileIds).toEqual(['file-zip']);
   });
 });

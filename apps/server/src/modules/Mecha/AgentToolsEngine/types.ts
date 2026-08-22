@@ -149,6 +149,12 @@ export interface ServerCreateAgentToolsEngineParams {
   /** Provider name for function calling compatibility check */
   provider: string;
   /**
+   * SDK runtime provider (e.g. `cursor` when a custom catalog id uses sdkType
+   * cursor). Used to hide tools the wire format cannot call. Falls back to
+   * `provider` when omitted.
+   */
+  runtimeProvider?: string;
+  /**
    * Org-mandate layer (connector governance) applied to builtin manifests.
    * Forwarded to `createServerToolsEngine` — see
    * `ServerAgentToolsEngineConfig.transformBuiltinManifest`.

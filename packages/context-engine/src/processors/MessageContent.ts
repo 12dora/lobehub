@@ -62,7 +62,11 @@ const partitionFileList = (
   for (const file of fileList) {
     const sandboxPath = file?.id ? sandboxPathByFileId?.[file.id] : undefined;
     if (sandboxPath) {
+      // Sandbox copy and native delivery are complementary: the model keeps the
+      // native file part (when the provider can take one and the builder did not
+      // mark it as not-natively-deliverable) and also learns the sandbox path.
       promptFileList.push({ ...file, sandboxPath });
+      if (canUseFiles && !(file?.id && omitFileUrl.has(file.id))) nativeFileList.push(file);
     } else if (file?.id && omitFileUrl.has(file.id)) {
       promptFileList.push({ ...file, omitUrl: true });
     } else if (canUseFiles) {
@@ -87,9 +91,9 @@ export interface FileContextConfig {
   omitFileUrlFileIds?: string[];
   /**
    * Map of file id → sandbox path for attachments that were synced into the
-   * session sandbox because they were not delivered natively. When set, those
-   * files are described in `<files_info>` with `sandboxPath` (no http URL)
-   * instead of being emitted as native `file_url` parts.
+   * session sandbox. Those files are described in `<files_info>` with
+   * `sandboxPath` (no http URL); they are still emitted as native `file_url`
+   * parts unless listed in `omitFileUrlFileIds`.
    */
   sandboxPathByFileId?: Record<string, string>;
 }

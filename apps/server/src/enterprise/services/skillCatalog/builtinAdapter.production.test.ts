@@ -34,11 +34,11 @@ const readMdTree = (dir: string, base = dir): Record<string, string> => {
   return out;
 };
 
-/** Disk-backed skills that ship Markdown (task, verify). */
+/** Disk-backed skills that ship Markdown (task, verify, document-processing). */
 const loadMarkdownBuiltinSkills = (): BuiltinSkill[] => {
   const skills: BuiltinSkill[] = [];
 
-  for (const dirName of ['task', 'verify'] as const) {
+  for (const dirName of ['task', 'verify', 'document-processing'] as const) {
     const skillDir = path.join(packageSrc, dirName);
     const files = readMdTree(skillDir);
     const content = files['SKILL.md'];

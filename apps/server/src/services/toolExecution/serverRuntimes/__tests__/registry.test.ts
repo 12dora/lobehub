@@ -13,6 +13,7 @@ import { BriefIdentifier } from '@lobechat/builtin-tool-brief/manifest';
 import { CalculatorIdentifier } from '@lobechat/builtin-tool-calculator/manifest';
 import { CloudSandboxIdentifier } from '@lobechat/builtin-tool-cloud-sandbox/manifest';
 import { CredsIdentifier } from '@lobechat/builtin-tool-creds/manifest';
+import { DocumentPagesIdentifier } from '@lobechat/builtin-tool-document-pages/manifest';
 import { GroupManagementIdentifier } from '@lobechat/builtin-tool-group-management/manifest';
 import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base/manifest';
 import { LobeAgentIdentifier } from '@lobechat/builtin-tool-lobe-agent/manifest';
@@ -73,6 +74,9 @@ vi.mock('../cloudSandbox', () =>
 );
 vi.mock('../calculator', () =>
   mockRuntime('calculatorRuntime', 'lobe-calculator', { id: 'calculator' }),
+);
+vi.mock('../documentPages', () =>
+  mockRuntime('documentPagesRuntime', 'lobe-document-pages', { id: 'documentPages' }),
 );
 vi.mock('../agentDocuments', () =>
   mockRuntime('agentDocumentsRuntime', 'lobe-agent-documents', { id: 'agentDocuments' }),
@@ -166,6 +170,7 @@ const STATIC_IDENTIFIERS = [
   WebBrowsingManifest.identifier,
   CloudSandboxIdentifier,
   CalculatorIdentifier,
+  DocumentPagesIdentifier,
   AgentDocumentsIdentifier,
   AgentManagementIdentifier,
   SkillMaintainerIdentifier,

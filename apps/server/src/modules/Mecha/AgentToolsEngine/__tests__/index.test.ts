@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { DocumentPagesIdentifier } from '@lobechat/builtin-tool-document-pages/manifest';
 import { GroupAgentBuilderManifest } from '@lobechat/builtin-tool-group-agent-builder';
 import { GroupManagementManifest } from '@lobechat/builtin-tool-group-management';
 import { KnowledgeBaseManifest } from '@lobechat/builtin-tool-knowledge-base';
@@ -373,6 +374,27 @@ describe('createServerAgentToolsEngine', () => {
       (m) => m.identifier === LobeAgentManifest.identifier,
     );
     expect(lobeAgent?.api.map((a) => a.name)).toContain(LobeAgentApiName.callSubAgent);
+  });
+
+  it('excludes lobe-document-pages when the runtime cannot call tools', () => {
+    const cursor = createServerAgentToolsEngine(createMockContext(), {
+      agentConfig: { plugins: [] },
+      model: 'composer-2.5',
+      provider: 'cursor',
+    });
+    expect(cursor.getAvailablePlugins()).not.toContain(DocumentPagesIdentifier);
+
+    const openai = createServerAgentToolsEngine(createMockContext(), {
+      agentConfig: { plugins: [] },
+      model: 'gpt-4',
+      provider: 'openai',
+    });
+    const result = openai.generateToolsDetailed({
+      model: 'gpt-4',
+      provider: 'openai',
+      toolIds: [],
+    });
+    expect(result.enabledToolIds).toContain(DocumentPagesIdentifier);
   });
 
   it('hides lobe-agent callSubAgent when manifestContext.isSubAgent is true', () => {

@@ -1,4 +1,7 @@
-import { CloudSandboxIdentifier } from '@lobechat/builtin-tool-cloud-sandbox';
+import {
+  CloudSandboxIdentifier,
+  SANDBOX_INIT_MAX_FILE_SIZE,
+} from '@lobechat/builtin-tool-cloud-sandbox';
 import type { ChatFileItem } from '@lobechat/types';
 import { DEFAULT_FILE_INLINE_MAX_BYTES } from '@lobechat/utils';
 import debug from 'debug';
@@ -11,8 +14,9 @@ const log = debug('lobe-server:sandbox:attachmentSync');
 
 /**
  * Document types the Responses `input_file` path can inline. Mirrors the
- * runtime check in `packages/model-runtime/src/core/contextBuilders/openai.ts`
- * so we only sync files that would not be delivered natively.
+ * runtime check in `packages/model-runtime/src/core/contextBuilders/openai.ts`.
+ * Used by {@link isAttachmentNotDeliveredNatively} (caller-side native vs
+ * sandbox-only split); selection itself syncs every attachment.
  */
 const DOCUMENT_MIME_TYPES = new Set([
   'application/json',
@@ -110,24 +114,34 @@ const dedupeByFileId = <T extends { id: string }>(files: T[]): T[] => {
   return unique;
 };
 
+const hasUsableDownloadUrl = (url: unknown): url is string =>
+  typeof url === 'string' && url.trim().length > 0;
+
+const hasSaneAttachmentSize = (size: number | undefined): boolean => {
+  if (size == null) return true;
+  return Number.isFinite(size) && size >= 0 && size <= SANDBOX_INIT_MAX_FILE_SIZE;
+};
+
 /**
- * Collect user-message attachments that were not delivered natively and should
- * be synced into `/mnt/data/uploads` when the sandbox is the execution target.
+ * Collect every user-message attachment on this turn that can be synced into
+ * `/mnt/data/uploads`. Native delivery is no longer a reason to skip — the
+ * caller decides whether to keep `file_url` alongside `sandboxPath`.
+ *
+ * `options.nativeFileInput` / `inlineMaxBytes` are accepted for call-site
+ * compatibility and are unused; use {@link isAttachmentNotDeliveredNatively}
+ * at the caller if you still need the native-vs-sandbox split.
  */
 export const selectAttachmentsForSandboxSync = (
   messages: Array<{ fileList?: ChatFileItem[] }>,
-  options: { nativeFileInput: boolean; inlineMaxBytes?: number },
+  _options?: { nativeFileInput?: boolean; inlineMaxBytes?: number },
 ): SandboxAttachmentToSync[] => {
   const collected: SandboxAttachmentToSync[] = [];
 
   for (const message of messages) {
     for (const file of message.fileList ?? []) {
       if (!file?.id || !file.name) continue;
-      if (
-        !isAttachmentNotDeliveredNatively(file, options.nativeFileInput, options.inlineMaxBytes)
-      ) {
-        continue;
-      }
+      if (!hasUsableDownloadUrl(file.url)) continue;
+      if (!hasSaneAttachmentSize(file.size)) continue;
       collected.push({
         fileType: file.fileType,
         id: file.id,
@@ -147,7 +161,7 @@ const emptySyncResult = (attemptedFileIds: string[] = []): SyncSandboxAttachment
 });
 
 /**
- * Upload non-native attachments into the session sandbox at a collision-free
+ * Upload attachments into the session sandbox at a collision-free
  * `/mnt/data/uploads/<name>-<id>.<ext>` path. Failures are logged and omitted
  * from `sandboxPathByFileId` so the caller can keep native `file_url` delivery
  * (or the files_info URL) instead of treating the file as synced.
@@ -189,7 +203,7 @@ export const syncSandboxAttachments = async (
   try {
     const sandboxPathByFileId = await deps.downloadFiles(downloads);
     log(
-      'Synced %d/%d over-limit attachments into the sandbox',
+      'Synced %d/%d attachments into the sandbox',
       Object.keys(sandboxPathByFileId).length,
       unique.length,
     );

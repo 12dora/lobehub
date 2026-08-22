@@ -1,4 +1,7 @@
-import { sandboxOverLimitUploadPath } from '@lobechat/builtin-tool-cloud-sandbox';
+import {
+  SANDBOX_INIT_MAX_FILE_SIZE,
+  sandboxOverLimitUploadPath,
+} from '@lobechat/builtin-tool-cloud-sandbox';
 import type { ChatFileItem } from '@lobechat/types';
 import { DEFAULT_FILE_INLINE_MAX_BYTES } from '@lobechat/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -64,7 +67,7 @@ describe('selectAttachmentsForSandboxSync', () => {
     expect(files.map((file) => file.id)).toEqual(['file-1', 'file-2']);
   });
 
-  it('only collects over-limit / unsupported files when native file input is on', () => {
+  it('collects every attachment even when native file input is on', () => {
     const files = selectAttachmentsForSandboxSync(
       [
         {
@@ -82,7 +85,32 @@ describe('selectAttachmentsForSandboxSync', () => {
       { nativeFileInput: true },
     );
 
-    expect(files.map((file) => file.id)).toEqual(['big', 'zip']);
+    expect(files.map((file) => file.id)).toEqual(['file-1', 'big', 'zip']);
+  });
+
+  it('skips attachments without a download url', () => {
+    const files = selectAttachmentsForSandboxSync(
+      [{ fileList: [pdf({ url: '' }), pdf({ id: 'file-2', name: 'ok.pdf' })] }],
+      { nativeFileInput: false },
+    );
+
+    expect(files.map((file) => file.id)).toEqual(['file-2']);
+  });
+
+  it('skips attachments over the sandbox init size cap', () => {
+    const files = selectAttachmentsForSandboxSync(
+      [
+        {
+          fileList: [
+            pdf(),
+            pdf({ id: 'huge', name: 'huge.pdf', size: SANDBOX_INIT_MAX_FILE_SIZE + 1 }),
+          ],
+        },
+      ],
+      { nativeFileInput: false },
+    );
+
+    expect(files.map((file) => file.id)).toEqual(['file-1']);
   });
 
   it('de-dupes by file id across messages', () => {

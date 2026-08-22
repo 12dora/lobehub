@@ -1,9 +1,16 @@
+import {
+  PAGE_IMAGES_SHOWN_EARLIER,
+  parseDocumentPageImageMarkers,
+  replaceDocumentPageImageMarkers,
+} from '@lobechat/builtin-tool-document-pages';
 import type {
   ModelRuntimeHooks,
   OpenAIChatMessage,
   UserMessageContentPart,
 } from '@lobechat/model-runtime';
 import { isFileUrlPart } from '@lobechat/model-runtime';
+import type { FileRenderMetadata } from '@lobechat/types';
+import { DOCUMENT_RENDER_DEFAULTS, readFileRenderMetadata } from '@lobechat/types';
 import type { OwnDeploymentOrigins } from '@lobechat/utils';
 import {
   isOwnDeploymentFileUrl,
@@ -21,6 +28,11 @@ import { FileModel } from '@/database/models/file';
 import type { LobeChatDatabase } from '@/database/type';
 import { FileService } from '@/server/services/file';
 
+import {
+  collectAttachedDocumentFiles,
+  collectUserText,
+  selectDocumentFeed,
+} from './documentFeed';
 import { renderPdfPagesToPng } from './pdfPageImages';
 
 const log = debug('lobe-server:attachment-inliner');
@@ -73,6 +85,8 @@ export interface CreateOwnOriginAttachmentInlineHooksInput {
    */
   imageMaxCount?: number;
   ownOrigins: MaybeLazy<OwnDeploymentOrigins>;
+  /** When false (Cursor), document-feed notices tell the model to name pages. */
+  tools?: boolean;
   userId?: string;
 }
 
@@ -80,8 +94,14 @@ export interface InlineOwnOriginAttachmentsOptions {
   fileMaxBytes?: number;
   imageMaxBytes?: number;
   imageMaxCount?: number;
+  /** Load a render artifact PNG by object key (FileService.getFileByteArray). */
+  loadArtifact?: (key: string) => Promise<Uint8Array | null>;
+  /** files.metadata.render for an attached file id. */
+  loadRender?: (fileId: string) => Promise<FileRenderMetadata | undefined>;
+  maxDocsPerRequest?: number;
   /** Resolves a `files` row by id (FileModel + FileService). Used for `<files_info>` PDFs. */
   resolveByFileId?: OwnOriginFileIdResolver;
+  tools?: boolean;
 }
 
 const resolveMaybeLazy = async <T>(value: MaybeLazy<T>): Promise<T> =>
@@ -312,7 +332,48 @@ const stripOwnOriginUrlAttributesInFilesInfo = (
   });
 };
 
+const hasDocumentPageImageMarkers = (messages: OpenAIChatMessage[]): boolean => {
+  for (const message of messages) {
+    const { content } = message;
+    if (typeof content === 'string' && content.includes('<document_page_image')) return true;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (part.type === 'text' && part.text.includes('<document_page_image')) return true;
+    }
+  }
+  return false;
+};
+
+const toolMessageText = (message: OpenAIChatMessage): string | undefined => {
+  if (typeof message.content === 'string') return message.content;
+  if (!Array.isArray(message.content)) return undefined;
+  const texts = message.content.filter((part) => part.type === 'text').map((part) => part.text);
+  return texts.length > 0 ? texts.join('\n') : undefined;
+};
+
+const setToolMessageText = (message: OpenAIChatMessage, text: string) => {
+  if (typeof message.content === 'string' || !Array.isArray(message.content)) {
+    message.content = text;
+    return;
+  }
+  const next: UserMessageContentPart[] = [{ text, type: 'text' }];
+  for (const part of message.content) {
+    if (part.type !== 'text') next.push(part);
+  }
+  message.content = next.length === 1 ? text : next;
+};
+
+const artifactToDataUri = (
+  bytes: Uint8Array | null,
+  imageMaxBytes: number,
+): string | undefined => {
+  if (!bytes?.byteLength || bytes.byteLength > imageMaxBytes) return undefined;
+  return toDataUri('image/png', bytes);
+};
+
 const hasAttachmentCandidates = (messages: OpenAIChatMessage[]): boolean => {
+  if (hasDocumentPageImageMarkers(messages)) return true;
+
   for (const message of messages) {
     const { content } = message;
     if (typeof content === 'string') {
@@ -488,6 +549,10 @@ export const inlineOwnOriginAttachments = async (
   const imageMaxCount = options?.imageMaxCount ?? IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE;
   const fileMaxBytes = options?.fileMaxBytes ?? DEFAULT_FILE_INLINE_MAX_BYTES;
   const resolveByFileId = options?.resolveByFileId;
+  const loadRender = options?.loadRender;
+  const loadArtifact = options?.loadArtifact;
+  const tools = options?.tools ?? true;
+  const maxDocsPerRequest = options?.maxDocsPerRequest ?? DOCUMENT_RENDER_DEFAULTS.maxDocsPerRequest;
 
   for (const message of messages) {
     if (message.role !== 'user') continue;
@@ -529,6 +594,8 @@ export const inlineOwnOriginAttachments = async (
       break;
     }
   }
+
+  const fedFileIds = new Set<string>();
 
   const loadFileBytes = async (fileId: string): Promise<OwnOriginAttachmentBytes | null> => {
     if (!resolveByFileId) return null;
@@ -650,6 +717,8 @@ export const inlineOwnOriginAttachments = async (
         if (textKind === 'rich') continue;
 
         const memoKey = part.file_url.fileId ?? url;
+        if (fedFileIds.has(part.file_url.fileId ?? '') || fedFileIds.has(memoKey)) continue;
+
         await appendRasterizedPages(
           next,
           memoKey,
@@ -691,7 +760,7 @@ export const inlineOwnOriginAttachments = async (
       const seen = new Set<string>();
       for (const text of texts) {
         for (const pdf of collectImageOnlyPdfsFromFilesInfo(text)) {
-          if (handled.has(pdf.fileId) || seen.has(pdf.fileId)) continue;
+          if (handled.has(pdf.fileId) || seen.has(pdf.fileId) || fedFileIds.has(pdf.fileId)) continue;
           seen.add(pdf.fileId);
           candidates.push(pdf);
         }
@@ -745,6 +814,137 @@ export const inlineOwnOriginAttachments = async (
     }
   };
 
+  const applyDocumentFeed = async () => {
+    if (!loadRender || lastUserMessageIndex < 0) return;
+
+    const message = messages[lastUserMessageIndex];
+    if (!message || message.role !== 'user') return;
+
+    const files = collectAttachedDocumentFiles(message);
+    if (files.length === 0) return;
+
+    try {
+      const existingImages = Array.isArray(message.content)
+        ? message.content.filter(isImageUrlPart).length
+        : 0;
+      const remaining = Math.max(0, imageMaxCount - existingImages);
+      const feed = await selectDocumentFeed({
+        files,
+        imageMaxCount: remaining,
+        loadRender,
+        maxDocsPerRequest,
+        tools,
+        userText: collectUserText(message),
+      });
+      for (const id of feed.fedFileIds) fedFileIds.add(id);
+
+      // Page images only ride with the latest user turn; later tool-follow-ups
+      // keep fedFileIds so live PDF rasterization is skipped.
+      if (lastUserMessageIndex !== messages.length - 1) return;
+      if (feed.images.length === 0 && feed.notices.length === 0) return;
+
+      const next: UserMessageContentPart[] =
+        typeof message.content === 'string'
+          ? [{ text: message.content, type: 'text' }]
+          : Array.isArray(message.content)
+            ? [...message.content]
+            : [];
+
+      for (const image of feed.images) {
+        if (!loadArtifact) break;
+        try {
+          const dataUri = artifactToDataUri(await loadArtifact(image.key), imageMaxBytes);
+          if (!dataUri) continue;
+          next.push({
+            image_url: { detail: image.detail, url: dataUri },
+            type: 'image_url',
+          });
+          rasterBudget.imagesRemaining = Math.max(0, rasterBudget.imagesRemaining - 1);
+        } catch (error) {
+          log(
+            'document-feed artifact load failed key=%s error=%s',
+            image.key,
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }
+      for (const notice of feed.notices) {
+        next.push({ text: notice, type: 'text' });
+      }
+      message.content = next;
+    } catch (error) {
+      log(
+        'document feed failed: %s',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  };
+
+  const injectToolPageImages = async () => {
+    if (!loadArtifact) return;
+
+    const markerIndexes: number[] = [];
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (!message || message.role !== 'tool') continue;
+      const text = toolMessageText(message);
+      if (text && parseDocumentPageImageMarkers(text).length > 0) markerIndexes.push(index);
+    }
+    if (markerIndexes.length === 0) return;
+
+    const lastIndex = markerIndexes.at(-1)!;
+    const isToolFollowUp = lastUserMessageIndex < lastIndex;
+
+    for (const index of markerIndexes) {
+      if (isToolFollowUp && index === lastIndex) continue;
+      const message = messages[index];
+      if (!message) continue;
+      const text = toolMessageText(message);
+      if (!text) continue;
+      setToolMessageText(message, replaceDocumentPageImageMarkers(text, PAGE_IMAGES_SHOWN_EARLIER));
+    }
+
+    if (!isToolFollowUp) return;
+
+    const last = messages[lastIndex];
+    if (!last) return;
+    const text = toolMessageText(last);
+    if (!text) return;
+
+    const markers = parseDocumentPageImageMarkers(text);
+    const parts: UserMessageContentPart[] = [];
+    const attachedPages: number[] = [];
+    for (const marker of markers) {
+      if (parts.length >= imageMaxCount) break;
+      try {
+        const dataUri = artifactToDataUri(await loadArtifact(marker.key), imageMaxBytes);
+        if (!dataUri) continue;
+        parts.push({
+          image_url: { detail: 'high', url: dataUri },
+          type: 'image_url',
+        });
+        attachedPages.push(marker.page);
+      } catch (error) {
+        log(
+          'tool page-image artifact load failed key=%s error=%s',
+          marker.key,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    if (parts.length === 0) return;
+
+    const nameMatch = /Requested page images for "([^"]+)"/.exec(text);
+    const uniquePages = [...new Set(attachedPages)].sort((a, b) => a - b);
+    parts.push({
+      text: `[Requested page images for "${nameMatch?.[1] ?? markers[0]?.fileId}": pages ${uniquePages.join(', ')}]`,
+      type: 'text',
+    });
+    messages.splice(lastIndex + 1, 0, { content: parts, role: 'user' });
+  };
+
+  await applyDocumentFeed();
+  await injectToolPageImages();
   await applyInlinedParts('user');
   await applyFilesInfoRasterization();
   await applyInlinedParts('assistant');
@@ -753,7 +953,12 @@ export const inlineOwnOriginAttachments = async (
 const createFileServiceResolvers = (
   input: CreateOwnOriginAttachmentInlineHooksInput,
   origins: OwnDeploymentOrigins,
-): { resolveByFileId: OwnOriginFileIdResolver; resolveByUrl: OwnOriginAttachmentResolver } => {
+): {
+  loadArtifact: (key: string) => Promise<Uint8Array | null>;
+  loadRender: (fileId: string) => Promise<FileRenderMetadata | undefined>;
+  resolveByFileId: OwnOriginFileIdResolver;
+  resolveByUrl: OwnOriginAttachmentResolver;
+} => {
   let loaded: Promise<{ db: LobeChatDatabase; fileService: FileService }> | undefined;
   const byFileId = new Map<string, Promise<OwnOriginAttachmentBytes | null>>();
 
@@ -826,7 +1031,38 @@ const createFileServiceResolvers = (
     return resolveByFileId(fileId, maxBytes);
   };
 
-  return { resolveByFileId, resolveByUrl };
+  const loadRender = async (fileId: string): Promise<FileRenderMetadata | undefined> => {
+    try {
+      const { db } = await load();
+      const file = await FileModel.getFileById(db, fileId);
+      return readFileRenderMetadata(file?.metadata);
+    } catch (error) {
+      log(
+        'failed to load render metadata id=%s error=%s',
+        fileId,
+        error instanceof Error ? error.message : error,
+      );
+      return undefined;
+    }
+  };
+
+  const loadArtifact = async (key: string): Promise<Uint8Array | null> => {
+    try {
+      const { fileService } = await load();
+      const bytes = await fileService.getFileByteArray(key);
+      if (!bytes?.byteLength) return null;
+      return bytes;
+    } catch (error) {
+      log(
+        'failed to load render artifact key=%s error=%s',
+        key,
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    }
+  };
+
+  return { loadArtifact, loadRender, resolveByFileId, resolveByUrl };
 };
 
 /**
@@ -839,6 +1075,7 @@ export const createOwnOriginAttachmentInlineHooks = (
 ): ModelRuntimeHooks => {
   const imageMaxBytes = input.imageMaxBytes ?? DEFAULT_IMAGE_INLINE_MAX_BYTES;
   const imageMaxCount = input.imageMaxCount ?? IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE;
+  const tools = input.tools ?? true;
 
   return {
     beforeChat: async (payload) => {
@@ -850,7 +1087,10 @@ export const createOwnOriginAttachmentInlineHooks = (
         await inlineOwnOriginAttachments(payload.messages, resolvers.resolveByUrl, origins, {
           imageMaxBytes,
           imageMaxCount,
+          loadArtifact: resolvers.loadArtifact,
+          loadRender: resolvers.loadRender,
           resolveByFileId: resolvers.resolveByFileId,
+          tools,
         });
       } catch (error) {
         log(

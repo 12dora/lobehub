@@ -24,6 +24,7 @@ import { BriefIdentifier } from '@lobechat/builtin-tool-brief/manifest';
 import { CalculatorIdentifier } from '@lobechat/builtin-tool-calculator/manifest';
 import { CloudSandboxIdentifier } from '@lobechat/builtin-tool-cloud-sandbox/manifest';
 import { CredsIdentifier } from '@lobechat/builtin-tool-creds/manifest';
+import { DocumentPagesIdentifier } from '@lobechat/builtin-tool-document-pages/manifest';
 import { GroupManagementIdentifier } from '@lobechat/builtin-tool-group-management/manifest';
 import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base/manifest';
 import { LobeAgentIdentifier } from '@lobechat/builtin-tool-lobe-agent/manifest';
@@ -94,6 +95,10 @@ const SERVER_RUNTIME_REGISTRATIONS: ServerRuntimeRegistration[] = [
     async () => (await import('./cloudSandbox')).cloudSandboxRuntime,
   ),
   lazyRuntime(CalculatorIdentifier, async () => (await import('./calculator')).calculatorRuntime),
+  lazyRuntime(
+    DocumentPagesIdentifier,
+    async () => (await import('./documentPages')).documentPagesRuntime,
+  ),
   lazyRuntime(
     AgentDocumentsIdentifier,
     async () => (await import('./agentDocuments')).agentDocumentsRuntime,

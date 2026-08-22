@@ -65,6 +65,7 @@ import { ensureFreshOAuthToken } from '@/server/services/oauthDeviceFlow/refresh
 
 import { KeyVaultsGateKeeper } from '../KeyVaultsEncrypt';
 import apiKeyManager from './apiKeyManager';
+import { getAttachmentCapabilities } from './attachmentCapabilities';
 import { createOwnOriginAttachmentInlineHooks } from './attachmentInliner';
 import type { ModelRuntimeConversation } from './conversationIdentity';
 
@@ -149,11 +150,6 @@ const OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES = new Set<string>([
   ModelProvider.Grok,
   ModelProvider.SuperGrok,
 ]);
-
-/** Matches `MAX_IMAGE_DECODED_BYTES` in cursor-agent `transport.parseTurn.ts`. */
-const CURSOR_AGENT_IMAGE_INLINE_MAX_BYTES = 6 * 1024 * 1024;
-/** Cursor-agent transport rejects more than 4 images on a turn. */
-const CURSOR_AGENT_IMAGE_INLINE_MAX_COUNT = 4;
 
 /**
  * Runtimes that actually CONSUME the conversation identity (upstream session id +
@@ -927,15 +923,13 @@ export const initModelRuntimeWithUserPayload = (
     return wrap(new ModelRuntime(runtime, hooks));
   }
 
+  const attachmentCaps = getAttachmentCapabilities(runtimeProvider);
   const attachmentInlineHooks = OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES.has(runtimeProvider)
     ? createOwnOriginAttachmentInlineHooks({
-        ...(runtimeProvider === ModelProvider.Cursor
-          ? {
-              imageMaxBytes: CURSOR_AGENT_IMAGE_INLINE_MAX_BYTES,
-              imageMaxCount: CURSOR_AGENT_IMAGE_INLINE_MAX_COUNT,
-            }
-          : {}),
+        imageMaxBytes: attachmentCaps.imageMaxBytes,
+        imageMaxCount: attachmentCaps.imageMaxCount,
         ownOrigins: resolveOwnDeploymentOrigins,
+        tools: attachmentCaps.tools,
         userId: typeof restParams.userId === 'string' ? restParams.userId : undefined,
       })
     : undefined;

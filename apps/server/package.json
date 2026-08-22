@@ -4,5 +4,8 @@
   "private": true,
   "scripts": {
     "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lobechat/builtin-tool-document-pages": "workspace:*"
   }
 }

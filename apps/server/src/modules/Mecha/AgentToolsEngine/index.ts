@@ -10,6 +10,7 @@
  * - No dependency on frontend stores (useToolStore, useAgentStore, etc.)
  */
 import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
+import { DocumentPagesIdentifier } from '@lobechat/builtin-tool-document-pages/manifest';
 import { KnowledgeBaseManifest } from '@lobechat/builtin-tool-knowledge-base';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MemoryManifest } from '@lobechat/builtin-tool-memory';
@@ -38,6 +39,7 @@ import {
   resolveExecutionTarget,
   resolveToolMode,
 } from '@/helpers/executionTarget';
+import { getAttachmentCapabilities } from '@/server/modules/ModelRuntime/attachmentCapabilities';
 import {
   buildAllowedBuiltinTools,
   DEVICE_TOOL_IDENTIFIERS,
@@ -173,9 +175,12 @@ export const createServerAgentToolsEngine = (
     manifestContext,
     model,
     provider,
+    runtimeProvider,
     transformBuiltinManifest,
     useApplicationBuiltinSearchTool,
   } = params;
+
+  const dropDocumentPages = !getAttachmentCapabilities(runtimeProvider ?? provider).tools;
 
   if (exactBuiltinToolIds) {
     const exactIds = new Set([
@@ -183,6 +188,7 @@ export const createServerAgentToolsEngine = (
       ...(agentConfig.plugins ?? []),
       ...(additionalManifests ?? []).map(({ identifier }) => identifier),
     ]);
+    if (dropDocumentPages) exactIds.delete(DocumentPagesIdentifier);
     return createServerToolsEngine(
       { ...context, installedPlugins: [] },
       {
@@ -193,6 +199,7 @@ export const createServerAgentToolsEngine = (
           allowExplicitActivation: false,
           rules: Object.fromEntries([...exactIds].map((id) => [id, true])),
         }),
+        excludeIdentifiers: dropDocumentPages ? new Set([DocumentPagesIdentifier]) : undefined,
         manifestContext,
         transformBuiltinManifest,
       },
@@ -264,6 +271,7 @@ export const createServerAgentToolsEngine = (
   // web-browsing needs search on). `allowExplicitActivation` is off so the
   // activator can't smuggle anything else in.
   const chatModeRules = {
+    [DocumentPagesIdentifier]: true,
     [KnowledgeBaseManifest.identifier]: hasEnabledKnowledgeBases,
     [MemoryManifest.identifier]: globalMemoryEnabled,
     [WebBrowsingManifest.identifier]: isSearchEnabled,
@@ -321,6 +329,7 @@ export const createServerAgentToolsEngine = (
     canUseDevice ? (deviceLocked ? REMOTE_DEVICE_TOOL_IDENTIFIERS : []) : DEVICE_TOOL_IDENTIFIERS,
   );
   if (!isSearchEnabled) excludeIdentifiers.add(WebBrowsingManifest.identifier);
+  if (dropDocumentPages) excludeIdentifiers.add(DocumentPagesIdentifier);
 
   return createServerToolsEngine(context, {
     // Pass additional manifests (e.g., LobeHub Skills)

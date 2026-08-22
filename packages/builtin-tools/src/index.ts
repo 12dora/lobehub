@@ -12,6 +12,7 @@ import { BriefManifest } from '@lobechat/builtin-tool-brief';
 import { CalculatorManifest } from '@lobechat/builtin-tool-calculator';
 import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
 import { CredsManifest } from '@lobechat/builtin-tool-creds';
+import { DocumentPagesManifest } from '@lobechat/builtin-tool-document-pages';
 import { GroupAgentBuilderManifest } from '@lobechat/builtin-tool-group-agent-builder';
 import { GroupManagementManifest } from '@lobechat/builtin-tool-group-management';
 import { KnowledgeBaseManifest } from '@lobechat/builtin-tool-knowledge-base';
@@ -50,6 +51,7 @@ export const defaultToolIds = [
   CloudSandboxManifest.identifier,
   TopicReferenceManifest.identifier,
   AgentDocumentsManifest.identifier,
+  DocumentPagesManifest.identifier,
   TaskManifest.identifier,
   LobeAgentManifest.identifier,
 ];
@@ -74,6 +76,7 @@ export const alwaysOnToolIds = [
   LobeActivatorManifest.identifier,
   SkillsManifest.identifier,
   SkillStoreManifest.identifier,
+  DocumentPagesManifest.identifier,
 ];
 
 /**
@@ -102,6 +105,7 @@ export const chatModeAllowedToolIds = [
   KnowledgeBaseManifest.identifier,
   MemoryManifest.identifier,
   WebBrowsingManifest.identifier,
+  DocumentPagesManifest.identifier,
 ];
 
 /**
@@ -301,6 +305,13 @@ const builtinToolRegistry: LobeBuiltinTool[] = [
   {
     identifier: CalculatorManifest.identifier,
     manifest: CalculatorManifest,
+    type: 'builtin',
+  },
+  {
+    discoverable: false,
+    hidden: true,
+    identifier: DocumentPagesManifest.identifier,
+    manifest: DocumentPagesManifest,
     type: 'builtin',
   },
   {

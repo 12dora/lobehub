@@ -681,7 +681,7 @@ describe('MessageContentProcessor', () => {
       );
     });
 
-    it('should keep sandbox-synced files on files_info even when native file input is available', async () => {
+    it('should deliver sandbox-synced files natively and on files_info when native file input is available', async () => {
       mockIsCanUseVision.mockReturnValue(false);
 
       const processor = new MessageContentProcessor({
@@ -709,13 +709,47 @@ describe('MessageContentProcessor', () => {
       );
 
       const content = result.messages[0].content as any[];
+      expect(content.map((part) => part.type)).toEqual(['file_url', 'text']);
+      expect(content[0].file_url).toMatchObject({ fileId: 'file1', name: 'report.pdf' });
+      expect(content[1].text).toContain('sandboxPath="/mnt/data/uploads/report.pdf"');
+      expect(content[1].text).not.toContain('http://internal.example.com');
+    });
+
+    it('should keep sandbox-synced files off native delivery when they are marked omitFileUrl', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        fileContext: {
+          enabled: true,
+          omitFileUrlFileIds: ['file1'],
+          sandboxPathByFileId: { file1: '/mnt/data/uploads/report.pdf' },
+        },
+        isCanUseFiles: () => true,
+        isCanUseVision: mockIsCanUseVision,
+        model: 'auto',
+        provider: 'chatgptweb',
+      });
+
+      const result = await processor.process(
+        createContext([
+          {
+            content: 'summarize it',
+            createdAt: Date.now(),
+            fileList: [docFile],
+            id: 'test',
+            role: 'user',
+            updatedAt: Date.now(),
+          } as UIChatMessage,
+        ]),
+      );
+
+      const content = result.messages[0].content as any[];
       expect(content.map((part) => part.type)).toEqual(['text']);
       expect(content[0].text).toContain('sandboxPath="/mnt/data/uploads/report.pdf"');
-      expect(content[0].text).not.toContain('<file_url');
       expect(content[0].text).not.toContain('http://internal.example.com');
     });
 
-    it('should keep under-limit native files as file_url while sandbox-synced files go to files_info', async () => {
+    it('should keep under-limit native files as file_url while sandbox-synced files are also on files_info', async () => {
       mockIsCanUseVision.mockReturnValue(false);
 
       const processor = new MessageContentProcessor({
@@ -752,11 +786,12 @@ describe('MessageContentProcessor', () => {
       );
 
       const content = result.messages[0].content as any[];
-      expect(content.map((part) => part.type)).toEqual(['file_url', 'text']);
-      expect(content[0].file_url).toMatchObject({ fileId: 'small', name: 'notes.pdf' });
-      expect(content[1].text).toContain('sandboxPath="/mnt/data/uploads/report.pdf"');
-      expect(content[1].text).not.toContain('notes.pdf');
-      expect(content[1].text).not.toContain('http://internal.example.com');
+      expect(content.map((part) => part.type)).toEqual(['file_url', 'file_url', 'text']);
+      expect(content[0].file_url).toMatchObject({ fileId: 'file1', name: 'report.pdf' });
+      expect(content[1].file_url).toMatchObject({ fileId: 'small', name: 'notes.pdf' });
+      expect(content[2].text).toContain('sandboxPath="/mnt/data/uploads/report.pdf"');
+      expect(content[2].text).not.toContain('notes.pdf');
+      expect(content[2].text).not.toContain('http://internal.example.com');
     });
 
     it('should omit the url for selected-but-failed sandbox files (all failed)', async () => {

@@ -41,6 +41,7 @@ import { MarketService } from '@/server/services/market';
 import { OnboardingService } from '@/server/services/onboarding';
 import {
   createSandboxService,
+  isAttachmentNotDeliveredNatively,
   selectAttachmentsForSandboxSync,
   syncOverLimitAttachmentsIfSandboxEnabled,
 } from '@/server/services/sandbox';
@@ -307,14 +308,17 @@ export const buildServerCallLlmContext = async ({
     isCanUseFiles: (targetModel) => capabilities.isCanUseFiles(targetModel, fileProvider),
   };
 
-  // Over-limit / non-native attachments: upload into /mnt/data/uploads before
-  // the model call so sandbox tools can read them. Best-effort — a failure
-  // never breaks the turn. Only ids that actually received a sandboxPath are
-  // omitted from native `file_url` / files_info URL delivery; a failed sync
-  // keeps the native part (when the provider can use files) or the URL.
+  // Every current-turn attachment is uploaded into /mnt/data/uploads before
+  // the model call so sandbox tools (and document-processing) can read them.
+  // Best-effort — a failure never breaks the turn. Native-capable providers
+  // keep `file_url` for files the runtime would inline; only non-native files
+  // (unsupported type, over the inline cap, or no native file input) omit the
+  // native part and rely on sandboxPath alone. A failed sync keeps the native
+  // part (when the provider can use files) or the URL.
   let sandboxPathByFileId: Record<string, string> | undefined;
   let omitFileUrlFileIds: string[] | undefined;
   const sandboxTopicId = ctx.topicId || lobehubSkillTopicId;
+  const nativeFileInput = fileCapabilities.isCanUseFiles(model, fileProvider);
   if (
     !isManagedPlatformOperation &&
     sandboxEnabled === 'true' &&
@@ -324,7 +328,7 @@ export const buildServerCallLlmContext = async ({
   ) {
     try {
       const files = selectAttachmentsForSandboxSync(messagesForContext, {
-        nativeFileInput: fileCapabilities.isCanUseFiles(model, fileProvider),
+        nativeFileInput,
       });
       if (files.length > 0) {
         const fileService = new FileService(ctx.serverDB, ctx.userId, ctx.workspaceId);
@@ -346,11 +350,16 @@ export const buildServerCallLlmContext = async ({
         const syncedIds = Object.keys(synced.sandboxPathByFileId);
         if (syncedIds.length > 0) {
           sandboxPathByFileId = synced.sandboxPathByFileId;
-          omitFileUrlFileIds = syncedIds;
+          const filesById = new Map(files.map((file) => [file.id, file]));
+          const omitIds = syncedIds.filter((id) => {
+            const file = filesById.get(id);
+            return !file || isAttachmentNotDeliveredNatively(file, nativeFileInput);
+          });
+          if (omitIds.length > 0) omitFileUrlFileIds = omitIds;
         }
       }
     } catch (error) {
-      log('Failed to sync over-limit attachments into the sandbox: %O', error);
+      log('Failed to sync attachments into the sandbox: %O', error);
     }
   }
 
