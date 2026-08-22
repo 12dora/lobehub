@@ -1,6 +1,7 @@
 import { readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
+import debug from 'debug';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 
 import { PlatformJobModel } from '@/database/models/platform/job';
@@ -16,19 +17,39 @@ import { getEffectiveDocumentRenderSettings } from '../documentRenderSettings';
 import { deleteDocumentRenderArtifacts } from './artifacts';
 import { documentRenderTempRoot } from './queue';
 
+const log = debug('lobe-server:document-render');
+
 const RETENTION_BATCH = 500;
 const FILE_LOOKUP_CHUNK = 500;
 const S3_DELETE_CHUNK = 1000;
 const TEMP_DIR_MAX_AGE_MS = 60 * 60 * 1000;
 const RENDER_PREFIX = 'files/render/';
 
+/**
+ * ISO-8601 instant shape. `updatedAt` is client-writable file metadata, so the
+ * retention query must not cast non-matching values to timestamptz.
+ */
+const RENDER_UPDATED_AT_ISO_RE = String.raw`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$`;
+
 const heartbeatIntervalMs = (leaseMs: number): number => Math.max(1, Math.floor(leaseMs / 3));
+
+export class GcAbortedError extends Error {
+  constructor(message = 'document render gc aborted') {
+    super(message);
+    this.name = 'GcAbortedError';
+  }
+}
+
+const throwIfGcAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted) throw new GcAbortedError();
+};
 
 export type DocumentRenderGcResultSummary = {
   artifactBytes: number;
   artifactObjects: number;
   durationMs: number;
   expiredFiles: number;
+  failedFiles?: number;
   orphanBytes: number;
   orphanObjects: number;
   ranAt: string;
@@ -87,8 +108,9 @@ const markRenderSkippedExpired = async (db: LobeChatDatabase, fileId: string): P
 const expireRetainedArtifacts = async (
   db: LobeChatDatabase,
   retentionDays: number,
-): Promise<number> => {
-  if (retentionDays <= 0) return 0;
+  signal?: AbortSignal,
+): Promise<{ expiredFiles: number; failedFiles: number }> => {
+  if (retentionDays <= 0) return { expiredFiles: 0, failedFiles: 0 };
 
   const expired = await db
     .select({ id: files.id })
@@ -97,16 +119,27 @@ const expireRetainedArtifacts = async (
       and(
         inArray(sql<string>`${files.metadata} -> 'render' ->> 'status'`, ['partial', 'ready']),
         sql`${files.metadata} -> 'render' ->> 'updatedAt' is not null`,
-        sql`(${files.metadata} -> 'render' ->> 'updatedAt')::timestamptz < now() - (${retentionDays}::int * interval '1 day')`,
+        sql`(CASE WHEN (${files.metadata} -> 'render' ->> 'updatedAt') ~ ${RENDER_UPDATED_AT_ISO_RE} THEN (${files.metadata} -> 'render' ->> 'updatedAt')::timestamptz END) < now() - (${retentionDays}::int * interval '1 day')`,
       ),
     )
     .limit(RETENTION_BATCH);
 
+  let expiredFiles = 0;
+  let failedFiles = 0;
   for (const row of expired) {
-    await deleteDocumentRenderArtifacts([row.id]);
+    throwIfGcAborted(signal);
+    try {
+      await deleteDocumentRenderArtifacts([row.id]);
+    } catch (error) {
+      if (error instanceof GcAbortedError) throw error;
+      console.error('Failed to delete document-render artifacts for retention', row.id, error);
+      failedFiles += 1;
+      continue;
+    }
     await markRenderSkippedExpired(db, row.id);
+    expiredFiles += 1;
   }
-  return expired.length;
+  return { expiredFiles, failedFiles };
 };
 
 const existingFileIds = async (db: LobeChatDatabase, ids: string[]): Promise<Set<string>> => {
@@ -122,12 +155,30 @@ const existingFileIds = async (db: LobeChatDatabase, ids: string[]): Promise<Set
 
 const deleteObjectChunks = async (
   s3: { deleteFiles: (keys: string[]) => Promise<unknown> },
-  keys: string[],
-): Promise<void> => {
-  for (let offset = 0; offset < keys.length; offset += S3_DELETE_CHUNK) {
-    const chunk = keys.slice(offset, offset + S3_DELETE_CHUNK);
-    if (chunk.length > 0) await s3.deleteFiles(chunk);
+  objects: Array<{ key: string; size: number }>,
+  signal?: AbortSignal,
+): Promise<{ failedKeys: number; orphanBytes: number; orphanObjects: number }> => {
+  let failedKeys = 0;
+  let orphanBytes = 0;
+  let orphanObjects = 0;
+  for (let offset = 0; offset < objects.length; offset += S3_DELETE_CHUNK) {
+    throwIfGcAborted(signal);
+    const chunk = objects.slice(offset, offset + S3_DELETE_CHUNK);
+    if (chunk.length === 0) continue;
+    try {
+      await s3.deleteFiles(chunk.map((object) => object.key));
+    } catch (error) {
+      if (error instanceof GcAbortedError) throw error;
+      console.error('Failed to delete orphan document-render objects', error);
+      failedKeys += chunk.length;
+      continue;
+    }
+    for (const object of chunk) {
+      orphanBytes += object.size;
+      orphanObjects += 1;
+    }
   }
+  return { failedKeys, orphanBytes, orphanObjects };
 };
 
 const scanOrphans = async (
@@ -136,13 +187,16 @@ const scanOrphans = async (
     deleteFiles: (keys: string[]) => Promise<unknown>;
     listObjectsByPrefix: (prefix: string) => Promise<Array<{ key: string; size: number }>>;
   },
+  signal?: AbortSignal,
 ): Promise<{
   artifactBytes: number;
   artifactObjects: number;
+  failedFiles: number;
   orphanBytes: number;
   orphanObjects: number;
 }> => {
   const objects = await s3.listObjectsByPrefix(RENDER_PREFIX);
+  throwIfGcAborted(signal);
   const byFileId = new Map<string, Array<{ key: string; size: number }>>();
   let totalBytes = 0;
   for (const object of objects) {
@@ -155,24 +209,20 @@ const scanOrphans = async (
   }
 
   const present = await existingFileIds(db, [...byFileId.keys()]);
-  const orphanKeys: string[] = [];
-  let orphanBytes = 0;
-  let orphanObjects = 0;
+  throwIfGcAborted(signal);
+  const orphanObjectsList: Array<{ key: string; size: number }> = [];
   for (const [fileId, group] of byFileId) {
     if (present.has(fileId)) continue;
-    for (const object of group) {
-      orphanKeys.push(object.key);
-      orphanBytes += object.size;
-      orphanObjects += 1;
-    }
+    orphanObjectsList.push(...group);
   }
-  await deleteObjectChunks(s3, orphanKeys);
+  const deleted = await deleteObjectChunks(s3, orphanObjectsList, signal);
 
   return {
-    artifactBytes: totalBytes - orphanBytes,
-    artifactObjects: objects.length - orphanObjects,
-    orphanBytes,
-    orphanObjects,
+    artifactBytes: totalBytes - deleted.orphanBytes,
+    artifactObjects: objects.length - deleted.orphanObjects,
+    failedFiles: deleted.failedKeys,
+    orphanBytes: deleted.orphanBytes,
+    orphanObjects: deleted.orphanObjects,
   };
 };
 
@@ -187,7 +237,8 @@ const directorySize = async (dir: string): Promise<number> => {
   return total;
 };
 
-const sweepTempDir = async (): Promise<number> => {
+const sweepTempDir = async (signal?: AbortSignal): Promise<number> => {
+  throwIfGcAborted(signal);
   const root = documentRenderTempRoot();
   try {
     await stat(root);
@@ -199,6 +250,7 @@ const sweepTempDir = async (): Promise<number> => {
   const now = Date.now();
   const entries = await readdir(root, { withFileTypes: true });
   for (const entry of entries) {
+    throwIfGcAborted(signal);
     if (!entry.isDirectory()) continue;
     const full = path.join(root, entry.name);
     const info = await stat(full);
@@ -227,6 +279,7 @@ const zeros = (
 
 const runDocumentRenderGcSweep = async (
   db: LobeChatDatabase,
+  signal?: AbortSignal,
 ): Promise<DocumentRenderGcResultSummary> => {
   const started = Date.now();
   const ranAt = new Date(started).toISOString();
@@ -238,21 +291,28 @@ const runDocumentRenderGcSweep = async (
     return zeros(Date.now() - started, ranAt, { skipped: true });
   }
 
+  throwIfGcAborted(signal);
   const settings = await getEffectiveDocumentRenderSettings({ db });
-  const expiredFiles = await expireRetainedArtifacts(db, settings.retentionDays);
-  const orphans = await scanOrphans(db, s3);
+  throwIfGcAborted(signal);
+  const expired = await expireRetainedArtifacts(db, settings.retentionDays, signal);
+  throwIfGcAborted(signal);
+  const orphans = await scanOrphans(db, s3, signal);
+  throwIfGcAborted(signal);
   let tempDirBytes = 0;
   try {
-    tempDirBytes = await sweepTempDir();
+    tempDirBytes = await sweepTempDir(signal);
   } catch (error) {
+    if (error instanceof GcAbortedError) throw error;
     console.error('Failed to sweep document-render temp dir', error);
   }
 
+  const failedFiles = expired.failedFiles + orphans.failedFiles;
   return {
     artifactBytes: orphans.artifactBytes,
     artifactObjects: orphans.artifactObjects,
     durationMs: Date.now() - started,
-    expiredFiles,
+    expiredFiles: expired.expiredFiles,
+    ...(failedFiles > 0 ? { failedFiles } : {}),
     orphanBytes: orphans.orphanBytes,
     orphanObjects: orphans.orphanObjects,
     ranAt,
@@ -265,28 +325,47 @@ export const processClaimedDocumentRenderGcJob = async (
   ctx: PlatformJobDispatchHandlerContext,
 ): Promise<void> => {
   const jobs = new PlatformJobModel(ctx.db);
+  const controller = new AbortController();
+  const logLostOwnership = (action: 'complete' | 'fail') => {
+    log('lost ownership on %s jobId=%s', action, ctx.job.id);
+  };
   const intervalMs = heartbeatIntervalMs(ctx.spec.leaseMs);
   const heartbeatTimer = setInterval(() => {
-    void jobs.heartbeat(ctx.job.id, ctx.workerId, ctx.spec.leaseMs);
+    if (controller.signal.aborted) return;
+    void jobs
+      .heartbeat(ctx.job.id, ctx.workerId, ctx.spec.leaseMs)
+      .then((row) => {
+        if (!row) controller.abort();
+      })
+      .catch(() => {
+        controller.abort();
+      });
   }, intervalMs);
 
   try {
-    const resultSummary = await runDocumentRenderGcSweep(ctx.db);
-    await jobs.complete({
+    const resultSummary = await runDocumentRenderGcSweep(ctx.db, controller.signal);
+    const completed = await jobs.complete({
       jobId: ctx.job.id,
       resultSummary,
       workerId: ctx.workerId,
     });
+    if (!completed) logLostOwnership('complete');
   } catch (error) {
+    if (error instanceof GcAbortedError) {
+      log('document render gc aborted jobId=%s: %s', ctx.job.id, error.message);
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error('document render gc failed', error);
-    await jobs.fail({
+    const failed = await jobs.fail({
       error: { message },
       jobId: ctx.job.id,
       terminal: true,
       workerId: ctx.workerId,
     });
+    if (!failed) logLostOwnership('fail');
   } finally {
+    controller.abort();
     clearInterval(heartbeatTimer);
   }
 };

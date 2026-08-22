@@ -161,6 +161,7 @@ describe('syncSandboxAttachments', () => {
       {
         id: 'file-1',
         name: 'report.pdf',
+        size: 1024,
         storageKey: 'files/user/report.pdf',
         url: 'https://download.example.com/files/user/report.pdf',
       },

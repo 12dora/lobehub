@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createDocumentPagesCallBudget,
+  DOCUMENT_PAGES_CALL_BUDGET_MAX_ENTRIES,
   DOCUMENT_PAGES_CALL_LIMIT,
   resetDocumentPagesCallBudgetForTest,
 } from './callBudget';
@@ -46,5 +47,17 @@ describe('createDocumentPagesCallBudget', () => {
     vi.advanceTimersByTime(1001);
 
     expect(budget.consume('turn-1')).toEqual({ allowed: true, used: 1 });
+  });
+
+  it('evicts the oldest key when the map exceeds the cap', () => {
+    const budget = createDocumentPagesCallBudget({ limit: 3, ttlMs: 60_000 });
+
+    for (let index = 0; index < DOCUMENT_PAGES_CALL_BUDGET_MAX_ENTRIES; index += 1) {
+      budget.consume(`key-${index}`);
+    }
+
+    expect(budget.consume('newest')).toEqual({ allowed: true, used: 1 });
+    expect(budget.consume('key-0')).toEqual({ allowed: true, used: 1 });
+    expect(budget.consume('newest').used).toBe(2);
   });
 });

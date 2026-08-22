@@ -189,7 +189,7 @@ export const syncSandboxAttachments = async (
           log('Skipping attachment %s: empty download url', file.id);
           return null;
         }
-        return { id: file.id, name: file.name, storageKey: file.url, url };
+        return { id: file.id, name: file.name, size: file.size, storageKey: file.url, url };
       } catch (error) {
         log('Failed to resolve download url for attachment %s: %O', file.id, error);
         return null;

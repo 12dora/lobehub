@@ -102,7 +102,15 @@ export class S3 {
       Delete: { Objects: keys.map((key) => ({ Key: key })) },
     });
 
-    return (await this.ensureClient()).send(command);
+    const response = await (await this.ensureClient()).send(command);
+    const errors = response.Errors ?? [];
+    if (errors.length > 0) {
+      const first = errors[0]!;
+      throw new Error(
+        `S3 deleteFiles failed for ${errors.length} keys: ${first.Key ?? 'unknown'}: ${first.Code ?? 'Error'}`,
+      );
+    }
+    return response;
   }
 
   /**

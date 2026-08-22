@@ -263,6 +263,28 @@ describe('rankPagesByRelevance', () => {
     expect(rankPagesByRelevance(index, '', [1])).toEqual([]);
   });
 
+  it('ranks when a single query token is at least 4 characters', () => {
+    const index = { '1': 'hello world there', '2': 'other' };
+    expect(rankPagesByRelevance(index, 'hello', [1, 2])).toEqual([1]);
+  });
+
+  it('ranks Korean pages by Hangul bigrams', () => {
+    const index = {
+      '1': '분기별 매출액이 증가했다',
+      '2': '부록 내용',
+    };
+    expect(rankPagesByRelevance(index, '매출액', [1, 2])).toEqual([1]);
+  });
+
+  it('ranks the page containing both Q1 and revenue', () => {
+    const index = {
+      '1': 'Q1 revenue beat expectations',
+      '2': 'revenue outlook only',
+      '3': 'Q1 weather notes',
+    };
+    expect(rankPagesByRelevance(index, 'Q1 revenue', [1, 2, 3])).toEqual([1, 2, 3]);
+  });
+
   it('strips files_info blocks before tokenizing', () => {
     const index = {
       '1': 'quarterly revenue grew',

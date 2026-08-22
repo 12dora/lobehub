@@ -3,22 +3,28 @@
 Items raised by code review that were judged low-impact / theoretical for this deployment and deliberately deferred. Each entry names the reviewing pass and the reason it was not fixed in-batch.
 
 ## Auth / sessions
+
 - **Cross-instance positive liveness cache (5s).** `assertUserActiveCached` caches a positive session-liveness result for 5s per process; a revoke performed on another replica is honoured only after that window. Single-replica deployments are unaffected. (t4c #4)
 
 ## Settings policy admin page
+
 - `headless` option label in the approval policy differs from the chat-side "Managed by your organization" wording; the option is not user-selectable so no behaviour impact. (t6a #1)
 
 ## Native search
+
 - Chats that stored `useModelBuiltinSearch: false` on a provider whose search metadata is `internal` keep the flag; routing already ignores it. (C7 report)
 
 ## ChatGPT Web SSE
+
 - Default `maxResumes` (3) may chain extra empty resumes when a leg withheld an ambiguous prefix; safe, only delays document recovery. (C5 report)
 
 ## Local sandbox
+
 - Idle reaper / capacity are per-process plus label reconcile on start; cross-replica leasing is out of scope (single replica assumed). (t3 #4, by design)
 - Sandbox egress is allowed by default (product decision); blocking private CIDRs requires a dedicated Docker network — see docs/self-hosting/environment-variables/cloud-sandbox.mdx.
 
 ## Batch 2026-08-22b (attachments / native files / generation)
+
 - **ChatGPT Web `auto` / `instant` still served as `gpt-5-5-mini` on the demo account.** The conduit-less conversation POST was fixed (prepare now awaited ≤4 s and the token attached — logs: `sending conversation with a conduit token`), but the served `model_slug` is unchanged, so the conduit timing was not the discriminator. Egress is the same `mac-upstream` node as Chrome. Next step per `chatgpt-web-pro-downgrade-investigation.md`: capture ONE fresh Chrome HAR of an `auto` turn (both prepares + `/f/conversation`) and A/B one variable at a time (cookie jar, `OAI-Session-Id`, `oai-echo-logs`, device id). Do not spam the account meanwhile.
 - **Grok Build (cli-chat-proxy) refuses native files on zero-data-retention accounts** (`400 File content is currently unsupported for ZDR customers`). The runtime retries once with extracted text (`lobe-grok:zdr ZDR account refused native files; retried with extracted text`), so file turns still succeed. True native files need ZDR turned off at the xAI team level. `generateObject` is not retried.
 - **SuperGrok Files API**: uploads use a fixed 24 h `expires_after`; public http(s) document URLs are downloaded and uploaded rather than passed as `file_url`.
@@ -29,21 +35,25 @@ Items raised by code review that were judged low-impact / theoretical for this d
 - Demo compose: recreate `app` and `s3-forward` together (`up -d --force-recreate` without a service name); recreating only `app` leaves the sidecar's shared network namespace stale (`ECONNREFUSED 127.0.0.1:9010` in the inliner).
 
 ## Scanned-PDF batch (2026-08-22 afternoon, live-tested on a 16-card scanned collage)
+
 - **Image-only PDFs are rasterized server-side** (pdfjs + @napi-rs/canvas) and attached as page images for ChatGPT/ChatGPTWeb/Grok/SuperGrok/Cursor; triggered only when the extracted text is < 20 chars. Plain API providers (OpenAI/Anthropic/…) are not in the hook's provider set — add them to `OWN_ORIGIN_ATTACHMENT_INLINE_RUNTIMES` if needed.
 - **Codex backend does not rasterize PDFs** (`input_file` of a scan → "blank page"); the official Codex client and ChatGPT web do their own conversion. Our page images are the equivalent.
 - **Agent loops may still prefer tools over attached images** (Codex first trusted an empty tool read; Grok Build tried to upscale via the sandbox, which has no `pdftoppm`). Mitigated by the explicit notice + rewritten `<file>` body; dense pages get zoomed 2×2 tiles (t8). Consider adding poppler/pdf tooling to the sandbox image.
 - `docker logs --since` returned nothing after the Docker Desktop crash/restart (daemon clock skew); use `--tail N` instead.
 - Host crash on 2026-08-22: Docker image builds + parallel agent test suites + three agent-mode experiments (each spawning a sandbox container) saturated the CPU. Rule: one heavy job at a time; lower the Docker Desktop CPU cap before builds.
 
-## Document render batch (2026-08-22 evening, design v2 P1–P3)
-Codex review findings judged over-defensive or deferred to P4; everything else in the review was fixed in-batch.
+## Document render batch (2026-08-22 evening, design v2 P1–P3; P4 closed 2026-08-22 night)
+
+Codex review findings judged over-defensive, plus what P4 deliberately left open.
+
 - **Gotenberg endpoint is admin-configured and not run through the SSRF destination policy.** It is an internal sidecar URL set by `SYSTEM_OPERATE` admins — the same trust model as the mail and object-storage endpoints. The setting is validated as an http(s) URL; a hostname allowlist can be added if deployments need it.
-- **Artifact cleanup after file deletion is best-effort (fire-and-forget after the row delete).** A crash between the row delete and the prefix purge leaves orphan objects under `files/render/<fileId>/`. The design's daily orphan-prefix scan (§13.3, P4) is the durable fix; until then `deleteDocumentRenderArtifacts` can be re-run by id.
-- **No sha256 artifact reuse / `render.refs`** (§13.3): each file row renders its own artifacts. Duplicate uploads of the same deck render twice.
-- **No per-page `text/<n>.md` artifacts, no xlsx `sheets[]` in metadata, no relevance-ranked page selection** (P4): the feed picks pages by explicit mention → visual pages → first page.
-- **Retention days / orphan scan / feed counters on the status page** (§6.3, §13.7) are not implemented; the setting is stored but unused.
-- **`viewDocumentPages` 3-calls-per-turn limit is prompt-only**; the runtime has no counter.
-- **Custom providers with `sdkType: 'cursor'`** still receive the `viewDocumentPages` tool (the Cursor exclusion keys on the builtin `cursor` provider id; the agent service does not pass the resolved runtime provider into the tools engine yet).
-- **Sidecar-outage retries have no backoff**: the worker marks the job failed (retryable) and the dispatcher retries on its next tick, so three attempts burn in seconds; `force` re-enqueue (tool or admin retry) recovers the document once the sidecar is back.
-- **Sandbox attachment copies depend on an S3 URL the sandbox container can reach.** `Sandbox file init` hands the sandbox a presigned `S3_PUBLIC_DOMAIN` URL; on the demo that is `localhost:9010` (a socat forward inside the app container's namespace), so the curl inside the sibling sandbox container fails and `/mnt/data/uploads/` stays empty (the marker still reports `success=true`). Pre-existing; affects any deployment where the public S3 host is not routable from the sandbox network. Durable fix: push bytes through the local provider (Docker `putArchive`/exec-stdin) instead of curl. Live-tested 2026-08-22 (topic `tpc_3GOJtHIgRsdn`): Grok Build spent several tool turns hunting for the file.
-- **`viewDocumentPages` tool message persisted with empty `content`** in one live run (topic `tpc_FtgwInJ6EPkg`, call `pages:[9], zoom:'tiles'`, page had no tiles so the runtime should have fallen back to the page PNG). The runtime never returns an empty string, so something between `ToolExecutionService` and message persistence dropped it; verify with `DEBUG=lobe-server:tools:*` on the next run and check the synthetic image turn reached the provider.
+- **Artifact cleanup after file deletion is still fire-and-forget**, but the daily GC job (`platform.document.render.gc.v1`: orphan `files/render/` prefix scan + retention expiry + temp-dir sweep, admin "Run cleanup now") is now the durable backstop.
+- **sha256 reuse copies artifacts per file** (no `render.refs`): duplicate uploads cost storage, not a second render. Reuse is not user-scoped on purpose — artifacts derive from identical bytes and carry no per-user data.
+- **xlsx `sheets[].page` is not filled** — LibreOffice's page-per-sheet mapping is not reliable; sheet names only.
+- **Feed counters are per process** (since process start; multi-replica deployments see one replica's numbers).
+- **`viewDocumentPages` budget keys on `operationId`** (the whole user turn, 15 min TTL); fallbacks are `assistantMessageId`, then user+topic.
+- **`viewDocumentPages` empty `content` (topic `tpc_FtgwInJ6EPkg`)**: no code path producing an empty string was found (runtime `ok()/fail()` always return text; executor/archive/persist pass it through). The runtime now logs `markerCount`/`contentChars` under `DEBUG=lobe-server:tools:document-pages` and never returns empty content; re-check on the next live run.
+- **Sandbox push path does not reuse the topic-init copy** (`cp /mnt/data/<name>` → `uploads/…`): the push re-reads the object from S3. Remote sandbox providers (market/onlyboxes) still use presigned-URL curl.
+- **Artifact reuse trusts the client-supplied `files.file_hash`** (codex P4 review #1). The upstream upload contract already deduplicates object storage by that hash (`checkHash` / `global_files`), so a spoofed hash already serves the first uploader's bytes to later uploaders; render-artifact reuse adds no new exposure. A server-verified digest at upload would close both at once.
+- **Retention expiry vs. a concurrent retry/feed** (codex #4): GC selects old ready/partial rows and deletes without re-checking status under a lock; an operator retry issued in that window could lose its fresh artifacts once. Next scheduled render re-creates them; not serialized on purpose.
+- **Feed notices/counters describe planned images** (codex #11): if an artifact object is missing at load time the notice may still claim it was attached. Cosmetic; artifacts only vanish through deletion/GC.

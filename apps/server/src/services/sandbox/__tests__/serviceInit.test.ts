@@ -7,7 +7,7 @@ import type { MarketService } from '@/server/services/market';
 import { SANDBOX_FILES_INIT_MARKER } from '../bootstrap';
 import { SandboxMiddlewareService } from '../service';
 import type { SandboxProvider } from '../types';
-import { SANDBOX_PUT_FILES_MAX_FILE_BYTES } from '../types';
+import { SANDBOX_PUT_FILES_MAX_FILE_BYTES, SANDBOX_PUT_FILES_MAX_TOTAL_BYTES } from '../types';
 
 const findFilesToInitInSandbox = vi.fn();
 
@@ -193,6 +193,43 @@ describe('SandboxMiddlewareService file initialization', () => {
     expect(options.fileService.getFileByteArray).toHaveBeenCalledWith('key-1');
     expect(putFiles.mock.calls[0]![0].map((file: { path: string }) => file.path)).toEqual([
       '/mnt/data/data.csv',
+      SANDBOX_FILES_INIT_MARKER,
+    ]);
+  });
+
+  it('stops fetching once declared sizes would exceed the per-call total cap', async () => {
+    const fileSize = SANDBOX_PUT_FILES_MAX_FILE_BYTES;
+    findFilesToInitInSandbox.mockResolvedValue(
+      Array.from({ length: 5 }, (_, index) => ({
+        fileType: 'application/octet-stream',
+        id: `f${index}`,
+        name: `f${index}.bin`,
+        size: fileSize,
+        url: `key-${index}`,
+      })),
+    );
+    const putFiles = vi.fn(async (files: Array<{ path: string }>) => ({
+      failed: [],
+      written: files.map((file) => file.path),
+    }));
+    const provider = createProvider();
+    Object.assign(provider, { putFiles });
+    const options = baseOptions();
+    vi.mocked(options.fileService.getFileByteArray).mockResolvedValue({
+      byteLength: fileSize,
+    } as Uint8Array);
+    const service = new SandboxMiddlewareService(provider, options);
+
+    await service.callTool('listFiles', {});
+
+    expect(options.fileService.getFileByteArray).toHaveBeenCalledTimes(4);
+    expect(options.fileService.getFileByteArray).not.toHaveBeenCalledWith('key-4');
+    expect(SANDBOX_PUT_FILES_MAX_FILE_BYTES * 4).toBe(SANDBOX_PUT_FILES_MAX_TOTAL_BYTES);
+    expect(putFiles.mock.calls[0]![0].map((file: { path: string }) => file.path)).toEqual([
+      '/mnt/data/f0.bin',
+      '/mnt/data/f1.bin',
+      '/mnt/data/f2.bin',
+      '/mnt/data/f3.bin',
       SANDBOX_FILES_INIT_MARKER,
     ]);
   });

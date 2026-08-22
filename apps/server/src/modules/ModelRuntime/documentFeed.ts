@@ -197,7 +197,7 @@ const formatPageList = (pages: readonly number[]): string => {
 
 type PageSelectionReason = 'mentioned' | 'relevance' | 'visual' | 'first';
 
-const CJK_CHAR_RE = /[\u3400-\u9FFF]/;
+const CJK_CHAR_RE = /[\u1100-\u11FF\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]/;
 const EXTRA_OCCURRENCE_CAP = 4;
 
 const stripFilesInfoBlocks = (text: string): string =>
@@ -205,12 +205,18 @@ const stripFilesInfoBlocks = (text: string): string =>
 
 const isCjkChar = (ch: string): boolean => CJK_CHAR_RE.test(ch);
 
+const isUsableQuery = (tokens: readonly string[]): boolean =>
+  tokens.length >= 2 || (tokens.length === 1 && tokens[0]!.length >= 4);
+
 const tokenizeQuery = (userText: string): string[] => {
   const stripped = stripFilesInfoBlocks(userText).toLowerCase();
   const tokens = new Set<string>();
 
-  for (const match of stripped.matchAll(/[a-z]{3,}/g)) {
-    tokens.add(match[0]!);
+  for (const match of stripped.matchAll(/[a-z][a-z0-9]*/g)) {
+    const token = match[0]!;
+    if (token.length >= 3 || (token.length >= 2 && /\d/.test(token))) {
+      tokens.add(token);
+    }
   }
   for (const match of stripped.matchAll(/\d{2,}/g)) {
     tokens.add(match[0]!);
@@ -267,7 +273,8 @@ const scorePageText = (pageText: string, tokens: readonly string[]): number => {
 /**
  * Rank candidate pages by how many distinct query tokens appear in the page
  * excerpt. Extra occurrences add 0.5 each (capped). Ties break toward the
- * lower page number. Returns [] when the query has fewer than 2 tokens.
+ * lower page number. Returns [] when the query has fewer than 2 tokens and
+ * no single token of length ≥ 4.
  */
 export const rankPagesByRelevance = (
   textIndex: FileRenderTextIndex,
@@ -275,7 +282,7 @@ export const rankPagesByRelevance = (
   candidates: readonly number[],
 ): number[] => {
   const tokens = tokenizeQuery(userText);
-  if (tokens.length < 2) return [];
+  if (!isUsableQuery(tokens)) return [];
 
   const scored: Array<{ page: number; score: number }> = [];
   for (const page of candidates) {

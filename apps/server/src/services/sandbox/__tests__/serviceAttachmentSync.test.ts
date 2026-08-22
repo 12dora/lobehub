@@ -12,7 +12,7 @@ import {
 } from '../bootstrap';
 import { SandboxMiddlewareService } from '../service';
 import type { SandboxProvider, SandboxProviderCapabilities } from '../types';
-import { SANDBOX_PUT_FILES_MAX_FILE_BYTES } from '../types';
+import { SANDBOX_PUT_FILES_MAX_FILE_BYTES, SANDBOX_PUT_FILES_MAX_TOTAL_BYTES } from '../types';
 
 const capabilities: SandboxProviderCapabilities = {
   backgroundCommands: true,
@@ -196,5 +196,78 @@ describe('SandboxMiddlewareService.syncOverLimitAttachments', () => {
       sandboxOverLimitUploadPath('ok.pdf', 'ok'),
       sandboxAttachmentSyncMarker('ok'),
     ]);
+  });
+
+  it('skips an oversize attachment before downloading when size is declared', async () => {
+    const callTool = vi.fn(async () => ({ result: { stdout: '' }, success: true }));
+    const putFiles = vi.fn(async (files: Array<{ path: string }>) => ({
+      failed: [],
+      written: files.map((file) => file.path),
+    }));
+    const getFileByteArray = vi.fn(async () => new Uint8Array([1]));
+    const provider = createProvider(callTool);
+    Object.assign(provider, { putFiles });
+    const service = new SandboxMiddlewareService(provider, {
+      fileService: { getFileByteArray } as unknown as FileService,
+      marketService: {} as MarketService,
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
+
+    const result = await service.syncOverLimitAttachments([
+      {
+        id: 'ok',
+        name: 'ok.pdf',
+        size: 1,
+        storageKey: 'files/ok',
+        url: 'https://files.example.com/ok',
+      },
+      {
+        id: 'huge',
+        name: 'huge.bin',
+        size: SANDBOX_PUT_FILES_MAX_FILE_BYTES + 1,
+        storageKey: 'files/huge',
+        url: 'https://files.example.com/huge',
+      },
+    ]);
+
+    expect(getFileByteArray).toHaveBeenCalledTimes(1);
+    expect(getFileByteArray).toHaveBeenCalledWith('files/ok');
+    expect(getFileByteArray).not.toHaveBeenCalledWith('files/huge');
+    expect(result).toEqual({
+      ok: sandboxOverLimitUploadPath('ok.pdf', 'ok'),
+    });
+  });
+
+  it('stops fetching over-limit attachments once declared sizes hit the per-call cap', async () => {
+    const callTool = vi.fn(async () => ({ result: { stdout: '' }, success: true }));
+    const fileSize = SANDBOX_PUT_FILES_MAX_FILE_BYTES;
+    const getFileByteArray = vi.fn(async () => ({ byteLength: fileSize }) as Uint8Array);
+    const putFiles = vi.fn(async (files: Array<{ path: string }>) => ({
+      failed: [],
+      written: files.map((file) => file.path),
+    }));
+    const provider = createProvider(callTool);
+    Object.assign(provider, { putFiles });
+    const service = new SandboxMiddlewareService(provider, {
+      fileService: { getFileByteArray } as unknown as FileService,
+      marketService: {} as MarketService,
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
+
+    await service.syncOverLimitAttachments(
+      Array.from({ length: 5 }, (_, index) => ({
+        id: `file-${index}`,
+        name: `f-${index}.bin`,
+        size: fileSize,
+        storageKey: `files/${index}`,
+        url: `https://files.example.com/${index}`,
+      })),
+    );
+
+    expect(getFileByteArray).toHaveBeenCalledTimes(4);
+    expect(getFileByteArray).not.toHaveBeenCalledWith('files/4');
+    expect(SANDBOX_PUT_FILES_MAX_FILE_BYTES * 4).toBe(SANDBOX_PUT_FILES_MAX_TOTAL_BYTES);
   });
 });

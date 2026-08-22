@@ -8,7 +8,11 @@
 
 export const DOCUMENT_PAGES_CALL_LIMIT = 3;
 
-export const DOCUMENT_PAGES_CALL_BUDGET_TTL_MS = 60_000;
+/** Budget keys last 15 minutes so a multi-round user turn still shares one counter. */
+export const DOCUMENT_PAGES_CALL_BUDGET_TTL_MS = 15 * 60 * 1000;
+
+/** Hard cap on in-memory keys; oldest entries are evicted first. */
+export const DOCUMENT_PAGES_CALL_BUDGET_MAX_ENTRIES = 10_000;
 
 export const DOCUMENT_PAGES_TURN_LIMIT_MESSAGE =
   'viewDocumentPages limit reached for this turn (3). Name the page numbers in your reply; they will be attached next turn.';
@@ -34,6 +38,15 @@ const prune = (now: number) => {
   }
 };
 
+const evictOldest = () => {
+  const entries = store();
+  while (entries.size >= DOCUMENT_PAGES_CALL_BUDGET_MAX_ENTRIES) {
+    const oldest = entries.keys().next().value;
+    if (oldest === undefined) break;
+    entries.delete(oldest);
+  }
+};
+
 export interface DocumentPagesCallBudget {
   consume: (key: string) => { allowed: boolean; used: number };
 }
@@ -51,6 +64,7 @@ export const createDocumentPagesCallBudget = ({
     const entries = store();
     const existing = entries.get(key);
     if (!existing || existing.expiresAt <= now) {
+      evictOldest();
       entries.set(key, { count: 1, expiresAt: now + ttlMs });
       return { allowed: true, used: 1 };
     }

@@ -12,17 +12,17 @@ import type { ToolExecutionContext } from '../types';
 import type { ServerRuntimeRegistration } from './types';
 
 /**
- * Narrowest stable id for an assistant turn. `assistantMessageId` is the
- * assistant message that carries this turn's tool calls (set by
- * ServerToolTransport from `parentMessageId`). `operationId` spans the whole
- * agent loop, so it is only a fallback. A per-(userId, topicId) key is last
- * resort and relies on the 60s TTL as a sliding window.
+ * Stable id for the current user turn. `operationId` spans the whole agent
+ * loop (every LLM continuation / new assistant message of that turn).
+ * `assistantMessageId` is next: it is the assistant message that carries this
+ * round's tool calls. A per-(userId, topicId) key is last resort and relies on
+ * the 15-minute TTL as a sliding window.
  */
 export const resolveDocumentPagesCallBudgetKey = (
   context: ToolExecutionContext,
 ): string | undefined => {
-  if (context.assistantMessageId) return `turn:${context.assistantMessageId}`;
   if (context.operationId) return `op:${context.operationId}`;
+  if (context.assistantMessageId) return `turn:${context.assistantMessageId}`;
   if (context.userId && context.topicId) return `topic:${context.userId}:${context.topicId}`;
   return undefined;
 };

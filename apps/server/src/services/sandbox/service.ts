@@ -238,7 +238,7 @@ export class SandboxMiddlewareService implements SandboxService {
       if (seen.has(path)) continue;
       seen.add(path);
 
-      if (typeof file.size === 'number' && file.size > SANDBOX_PUT_FILES_MAX_FILE_BYTES) {
+      if (typeof file.size === 'number' && exceedsPutFilesCaps(file.size, totalBytes)) {
         failed += 1;
         continue;
       }
@@ -252,10 +252,7 @@ export class SandboxMiddlewareService implements SandboxService {
         continue;
       }
 
-      if (
-        bytes.byteLength > SANDBOX_PUT_FILES_MAX_FILE_BYTES ||
-        totalBytes + bytes.byteLength > SANDBOX_PUT_FILES_MAX_TOTAL_BYTES
-      ) {
+      if (exceedsPutFilesCaps(bytes.byteLength, totalBytes)) {
         failed += 1;
         continue;
       }
@@ -301,6 +298,10 @@ export class SandboxMiddlewareService implements SandboxService {
       const key = resolveAttachmentStorageKey(file);
       if (!key) continue;
 
+      if (typeof file.size === 'number' && exceedsPutFilesCaps(file.size, totalBytes)) {
+        continue;
+      }
+
       let bytes: Uint8Array;
       try {
         bytes = await fileService.getFileByteArray(key);
@@ -309,10 +310,7 @@ export class SandboxMiddlewareService implements SandboxService {
         continue;
       }
 
-      if (
-        bytes.byteLength > SANDBOX_PUT_FILES_MAX_FILE_BYTES ||
-        totalBytes + bytes.byteLength > SANDBOX_PUT_FILES_MAX_TOTAL_BYTES
-      ) {
+      if (exceedsPutFilesCaps(bytes.byteLength, totalBytes)) {
         continue;
       }
 
@@ -468,6 +466,9 @@ export const normalizeSandboxCommandResult = (
 };
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", String.raw`'\''`)}'`;
+
+const exceedsPutFilesCaps = (size: number, totalBytes: number): boolean =>
+  size > SANDBOX_PUT_FILES_MAX_FILE_BYTES || totalBytes + size > SANDBOX_PUT_FILES_MAX_TOTAL_BYTES;
 
 const resolveAttachmentStorageKey = (file: SandboxOverLimitAttachment): string | undefined => {
   if (file.storageKey && !isHttpUrl(file.storageKey)) return file.storageKey;

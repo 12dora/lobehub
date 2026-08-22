@@ -97,31 +97,33 @@ export interface FileRenderMetadata {
 }
 
 /** Root S3 prefix for all render artifacts of a file. Deleting the file deletes this prefix. */
-export const documentRenderArtifactPrefix = (fileId: string): string =>
-  `files/render/${fileId}/`;
+export const documentRenderArtifactPrefix = (fileId: string): string => `files/render/${fileId}/`;
 
 export const documentRenderArtifactKeys = {
   contactSheet: (fileId: string, index: number) =>
     `${documentRenderArtifactPrefix(fileId)}contact/${index}.png`,
   figure: (fileId: string, page: number, index: number, ext: string) =>
     `${documentRenderArtifactPrefix(fileId)}figures/${page}-${index}.${ext}`,
-  page: (fileId: string, page: number) => `${documentRenderArtifactPrefix(fileId)}pages/${page}.png`,
+  page: (fileId: string, page: number) =>
+    `${documentRenderArtifactPrefix(fileId)}pages/${page}.png`,
   pdf: (fileId: string) => `${documentRenderArtifactPrefix(fileId)}source.pdf`,
   text: (fileId: string, page: number) => `${documentRenderArtifactPrefix(fileId)}text/${page}.md`,
   textIndex: (fileId: string) => `${documentRenderArtifactPrefix(fileId)}text/index.json`,
-  thumb: (fileId: string, page: number) => `${documentRenderArtifactPrefix(fileId)}thumbs/${page}.png`,
+  thumb: (fileId: string, page: number) =>
+    `${documentRenderArtifactPrefix(fileId)}thumbs/${page}.png`,
   tile: (fileId: string, page: number, row: number, col: number) =>
     `${documentRenderArtifactPrefix(fileId)}tiles/${page}-${row}${col}.png`,
 };
 
-export const readFileRenderMetadata = (
-  metadata: unknown,
-): FileRenderMetadata | undefined => {
+export const readFileRenderMetadata = (metadata: unknown): FileRenderMetadata | undefined => {
   if (!metadata || typeof metadata !== 'object') return undefined;
   const render = (metadata as { render?: unknown }).render;
   if (!render || typeof render !== 'object') return undefined;
   const status = (render as { status?: unknown }).status;
-  if (typeof status !== 'string' || !(DOCUMENT_RENDER_STATUSES as readonly string[]).includes(status))
+  if (
+    typeof status !== 'string' ||
+    !(DOCUMENT_RENDER_STATUSES as readonly string[]).includes(status)
+  )
     return undefined;
   return render as FileRenderMetadata;
 };

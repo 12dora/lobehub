@@ -356,7 +356,11 @@ export class LocalSandboxProvider implements SandboxProvider {
       }
 
       totalBytes += size;
-      accepted.push({ bytes: Buffer.from(file.bytes), jailed, mode: file.mode });
+      accepted.push({
+        bytes: Buffer.isBuffer(file.bytes) ? file.bytes : Buffer.from(file.bytes),
+        jailed,
+        mode: file.mode,
+      });
     }
 
     if (accepted.length === 0) return { failed, written };

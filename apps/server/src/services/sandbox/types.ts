@@ -100,6 +100,11 @@ export interface SandboxOverLimitAttachment {
   id: string;
   name: string;
   /**
+   * Declared object size in bytes, when known. Used to skip oversize files
+   * before downloading them into memory.
+   */
+  size?: number;
+  /**
    * Original object-storage key (S3). Used by {@link SandboxProvider.putFiles}
    * to read bytes server-side; the curl path ignores it.
    */

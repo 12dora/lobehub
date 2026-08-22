@@ -2,7 +2,12 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { composeContactSheet, copyDocumentRenderArtifacts, uploadJsonArtifact } from './artifacts';
+import {
+  composeContactSheet,
+  copyDocumentRenderArtifacts,
+  deleteDocumentRenderArtifacts,
+  uploadJsonArtifact,
+} from './artifacts';
 
 const s3Mocks = vi.hoisted(() => ({
   copyObject: vi.fn(),
@@ -103,5 +108,22 @@ describe('copyDocumentRenderArtifacts', () => {
 
     await expect(copyDocumentRenderArtifacts('src', 'dst')).rejects.toThrow('count mismatch');
     expect(s3Mocks.deleteFiles).toHaveBeenCalledWith(['files/render/dst/pages/1.png']);
+  });
+});
+
+describe('deleteDocumentRenderArtifacts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    s3Mocks.listObjectKeysByPrefix.mockResolvedValue(['files/render/f1/pages/1.png']);
+    s3Mocks.deleteFiles.mockResolvedValue(undefined);
+  });
+
+  it('propagates deleteFiles errors', async () => {
+    s3Mocks.deleteFiles.mockRejectedValue(
+      new Error('S3 deleteFiles failed for 1 keys: files/render/f1/pages/1.png: AccessDenied'),
+    );
+    await expect(deleteDocumentRenderArtifacts(['f1'])).rejects.toThrow(
+      'S3 deleteFiles failed for 1 keys: files/render/f1/pages/1.png: AccessDenied',
+    );
   });
 });

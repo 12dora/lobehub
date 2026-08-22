@@ -21,8 +21,34 @@ const writeOctal = (header: Buffer, offset: number, length: number, value: numbe
   header[offset + length - 1] = 0;
 };
 
+const USTAR_NAME_SIZE = 100;
+const USTAR_PREFIX_SIZE = 155;
+/** Usable bytes in a NUL-terminated ustar name/prefix field. */
+const USTAR_NAME_MAX = USTAR_NAME_SIZE - 1;
+const USTAR_PREFIX_MAX = USTAR_PREFIX_SIZE - 1;
+
+const utf8Len = (value: string) => Buffer.byteLength(value, 'utf8');
+
+/**
+ * Truncate `value` to at most `maxBytes` of UTF-8, never splitting a codepoint.
+ */
+const truncateUtf8 = (value: string, maxBytes: number): string => {
+  const buf = Buffer.from(value, 'utf8');
+  if (buf.length <= maxBytes) return value;
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
+  return buf.subarray(0, end).toString('utf8');
+};
+
+/**
+ * Write a UTF-8 string into a ustar header field. Callers must pass a string
+ * that already fits (`utf8Len(value) <= length - 1`); never cut mid-sequence.
+ */
 const writeString = (header: Buffer, offset: number, length: number, value: string) => {
-  const bytes = Buffer.from(value, 'utf8').subarray(0, length - 1);
+  const bytes = Buffer.from(value, 'utf8');
+  if (bytes.length > length - 1) {
+    throw new Error(`ustar field exceeds ${length - 1} bytes`);
+  }
   bytes.copy(header, offset);
 };
 
@@ -32,48 +58,108 @@ const checksum = (header: Buffer) => {
   return sum;
 };
 
-const splitName = (name: string): { name: string; prefix: string } => {
-  if (name.length < 100) return { name, prefix: '' };
+/**
+ * Split a path into ustar `prefix` (≤154 bytes) + `name` (≤99 bytes).
+ * Returns `undefined` when no slash-split fits — caller must emit PAX.
+ */
+const splitName = (name: string): { name: string; prefix: string } | undefined => {
+  if (utf8Len(name) <= USTAR_NAME_MAX) return { name, prefix: '' };
 
   const parts = name.split('/');
   let prefix = '';
   let rest = name;
 
-  while (parts.length > 1 && rest.length >= 100) {
-    prefix = prefix ? `${prefix}/${parts.shift()}` : (parts.shift() ?? '');
+  while (parts.length > 1 && utf8Len(rest) > USTAR_NAME_MAX) {
+    const head = parts[0] ?? '';
+    const nextPrefix = prefix ? `${prefix}/${head}` : head;
+    if (utf8Len(nextPrefix) > USTAR_PREFIX_MAX) break;
+    parts.shift();
+    prefix = nextPrefix;
     rest = parts.join('/');
-    if (prefix.length > 155) break;
   }
 
-  return { name: rest.slice(0, 100), prefix: prefix.slice(0, 155) };
+  if (utf8Len(rest) <= USTAR_NAME_MAX && utf8Len(prefix) <= USTAR_PREFIX_MAX) {
+    return { name: rest, prefix };
+  }
+  return undefined;
 };
 
-const headerFor = (entry: TarEntry): Buffer => {
-  const header = Buffer.alloc(BLOCK);
-  const { name, prefix } = splitName(entry.name.replaceAll(/^\/+/g, ''));
-  const typeflag = entry.type === 'directory' ? '5' : entry.type === 'symlink' ? '2' : '0';
-  const mode = entry.mode ?? (entry.type === 'directory' ? 0o755 : 0o644);
-  const size = entry.type === 'file' ? entry.content.length : 0;
+const formatPaxRecord = (keyword: string, value: string): Buffer => {
+  const suffix = Buffer.from(` ${keyword}=${value}\n`, 'utf8');
+  let length = suffix.length + 1;
+  let record = Buffer.concat([Buffer.from(String(length), 'ascii'), suffix]);
+  while (record.length !== length) {
+    length = record.length;
+    record = Buffer.concat([Buffer.from(String(length), 'ascii'), suffix]);
+  }
+  return record;
+};
 
-  writeString(header, 0, 100, name);
-  writeOctal(header, 100, 8, mode);
-  writeOctal(header, 108, 8, entry.uid ?? 0);
-  writeOctal(header, 116, 8, entry.gid ?? 0);
-  writeOctal(header, 124, 12, size);
+const paxHeaderUstarName = (target: string): string => {
+  const base = target.split('/').pop() || 'file';
+  const dir = 'PaxHeaders.0/';
+  const budget = USTAR_NAME_MAX - utf8Len(dir);
+  return dir + (truncateUtf8(base, budget) || 'file');
+};
+
+const parsePaxPath = (data: Buffer): string | undefined => {
+  let offset = 0;
+  let path: string | undefined;
+  while (offset < data.length) {
+    const space = data.indexOf(0x20, offset);
+    if (space <= offset) break;
+    const len = Number.parseInt(data.subarray(offset, space).toString('ascii'), 10);
+    if (!Number.isFinite(len) || len <= 0) break;
+    const record = data.subarray(offset, Math.min(offset + len, data.length));
+    const eq = record.indexOf(0x3d);
+    if (eq === -1) break;
+    const key = record.subarray(space - offset + 1, eq).toString('utf8');
+    const end = record.at(-1) === 0x0a ? record.length - 1 : record.length;
+    if (key === 'path') path = record.subarray(eq + 1, end).toString('utf8');
+    offset += len;
+  }
+  return path;
+};
+
+interface UstarHeaderFields {
+  gid?: number;
+  linkname?: string;
+  mode: number;
+  name: string;
+  prefix: string;
+  size: number;
+  typeflag: string;
+  uid?: number;
+}
+
+const writeHeader = (fields: UstarHeaderFields): Buffer => {
+  const header = Buffer.alloc(BLOCK);
+
+  writeString(header, 0, USTAR_NAME_SIZE, fields.name);
+  writeOctal(header, 100, 8, fields.mode);
+  writeOctal(header, 108, 8, fields.uid ?? 0);
+  writeOctal(header, 116, 8, fields.gid ?? 0);
+  writeOctal(header, 124, 12, fields.size);
   writeOctal(header, 136, 12, Math.floor(Date.now() / 1000));
   header.fill(0x20, 148, 156);
-  header.write(typeflag, 156, 1, 'latin1');
-  if (entry.linkname) writeString(header, 157, 100, entry.linkname);
+  header.write(fields.typeflag, 156, 1, 'latin1');
+  if (fields.linkname) writeString(header, 157, USTAR_NAME_SIZE, fields.linkname);
   header.write(USTAR_MAGIC, 257, 5, 'latin1');
   header[262] = 0;
   header.write('00', 263, 2, 'latin1');
-  writeString(header, 345, 155, prefix);
+  writeString(header, 345, USTAR_PREFIX_SIZE, fields.prefix);
 
   const sum = checksum(header);
   const sumField = `${sum.toString(8).padStart(6, '0')}\0 `;
   header.write(sumField, 148, 8, 'latin1');
 
   return header;
+};
+
+const pushPaddedContent = (chunks: Buffer[], content: Buffer) => {
+  chunks.push(content);
+  const pad = padToBlock(content.length);
+  if (pad > 0) chunks.push(Buffer.alloc(pad));
 };
 
 const padToBlock = (size: number) => {
@@ -85,11 +171,43 @@ export const packTar = (entries: TarEntry[]): Buffer => {
   const chunks: Buffer[] = [];
 
   for (const entry of entries) {
-    chunks.push(headerFor(entry));
+    const normalized = entry.name.replaceAll(/^\/+/g, '');
+    const split = splitName(normalized);
+    const typeflag = entry.type === 'directory' ? '5' : entry.type === 'symlink' ? '2' : '0';
+    const mode = entry.mode ?? (entry.type === 'directory' ? 0o755 : 0o644);
+    const size = entry.type === 'file' ? entry.content.length : 0;
+
+    if (!split) {
+      const paxBody = formatPaxRecord('path', normalized);
+      chunks.push(
+        writeHeader({
+          gid: entry.gid,
+          mode: 0o644,
+          name: paxHeaderUstarName(normalized),
+          prefix: '',
+          size: paxBody.length,
+          typeflag: 'x',
+          uid: entry.uid,
+        }),
+      );
+      pushPaddedContent(chunks, paxBody);
+    }
+
+    chunks.push(
+      writeHeader({
+        gid: entry.gid,
+        linkname: entry.linkname,
+        mode,
+        name: split?.name ?? (truncateUtf8(normalized, USTAR_NAME_MAX) || 'file'),
+        prefix: split?.prefix ?? '',
+        size,
+        typeflag,
+        uid: entry.uid,
+      }),
+    );
+
     if (entry.type === 'file' && entry.content.length > 0) {
-      chunks.push(entry.content);
-      const pad = padToBlock(entry.content.length);
-      if (pad > 0) chunks.push(Buffer.alloc(pad));
+      pushPaddedContent(chunks, entry.content);
     }
   }
 
@@ -163,6 +281,7 @@ const readOctal = (block: Buffer, offset: number, length: number) => {
 export const extractTar = (archive: Buffer): TarEntry[] => {
   const entries: TarEntry[] = [];
   let offset = 0;
+  let paxPath: string | undefined;
 
   while (offset + BLOCK <= archive.length) {
     const header = archive.subarray(offset, offset + BLOCK);
@@ -179,12 +298,20 @@ export const extractTar = (archive: Buffer): TarEntry[] => {
     const data = archive.subarray(offset, offset + size);
     offset += size + padToBlock(size);
 
+    if (typeflag === 'x') {
+      paxPath = parsePaxPath(data) ?? paxPath;
+      continue;
+    }
+
+    const resolvedName = paxPath ?? fullName;
+    paxPath = undefined;
+
     if (typeflag === '5') {
-      entries.push({ content: Buffer.alloc(0), name: fullName, type: 'directory' });
+      entries.push({ content: Buffer.alloc(0), name: resolvedName, type: 'directory' });
     } else if (typeflag === '2') {
-      entries.push({ content: Buffer.alloc(0), linkname, name: fullName, type: 'symlink' });
+      entries.push({ content: Buffer.alloc(0), linkname, name: resolvedName, type: 'symlink' });
     } else if (typeflag === '0' || typeflag === '\0' || typeflag === '7') {
-      entries.push({ content: Buffer.from(data), name: fullName, type: 'file' });
+      entries.push({ content: Buffer.from(data), name: resolvedName, type: 'file' });
     }
   }
 

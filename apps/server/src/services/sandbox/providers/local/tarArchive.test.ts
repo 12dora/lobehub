@@ -48,4 +48,26 @@ describe('tarArchive', () => {
     );
     expect(extractTarFile(tar, 'uploads/a.txt').toString('utf8')).toBe('a');
   });
+
+  it('round-trips a 40-character CJK name via a PAX path header', () => {
+    const name = `${'测'.repeat(40)}.txt`;
+    expect(Buffer.byteLength(name, 'utf8')).toBeGreaterThan(100);
+
+    const tar = packTarFile(name, 'hello-cjk');
+    const files = extractTar(tar).filter((entry) => entry.type === 'file');
+
+    expect(files).toHaveLength(1);
+    expect(files[0]?.name).toBe(name);
+    expect(files[0]?.content.toString('utf8')).toBe('hello-cjk');
+    expect(extractTarFile(tar, name).toString('utf8')).toBe('hello-cjk');
+  });
+
+  it('keeps a collision-preventing suffix on a CJK upload basename', () => {
+    const name = `uploads/${'测'.repeat(40)}-file-1.pdf`;
+    const tar = packTarFiles([{ content: Buffer.from('pdf'), name }]);
+    const files = extractTar(tar).filter((entry) => entry.type === 'file');
+
+    expect(files.map((entry) => entry.name)).toEqual([name]);
+    expect(files[0]?.content.toString('utf8')).toBe('pdf');
+  });
 });

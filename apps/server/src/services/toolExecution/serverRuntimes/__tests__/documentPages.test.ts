@@ -211,10 +211,69 @@ describe('documentPagesRuntime', () => {
     expect(result.success).toBe(true);
     expect(result.content).toBe(DOCUMENT_PAGES_TURN_LIMIT_MESSAGE);
   });
+
+  it('refuses the 4th call across two assistant messages of the same operation', async () => {
+    findById.mockResolvedValue({
+      fileType: 'application/pdf',
+      id: 'file-1',
+      metadata: {
+        render: {
+          pages: { '1': { chars: 10, png: 'files/render/file-1/pages/1.png', visual: true } },
+          status: 'ready',
+        },
+      },
+      name: 'deck.pdf',
+    });
+
+    const first = documentPagesRuntime.factory(
+      context({ assistantMessageId: 'asst-1', operationId: 'op-shared' }),
+    );
+    await first.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+    await first.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+    await first.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+
+    const second = documentPagesRuntime.factory(
+      context({ assistantMessageId: 'asst-2', operationId: 'op-shared' }),
+    );
+    const result = await second.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+
+    expect(result.success).toBe(true);
+    expect(result.content).toBe(DOCUMENT_PAGES_TURN_LIMIT_MESSAGE);
+  });
+
+  it('keeps different operations independent', async () => {
+    findById.mockResolvedValue({
+      fileType: 'application/pdf',
+      id: 'file-1',
+      metadata: {
+        render: {
+          pages: { '1': { chars: 10, png: 'files/render/file-1/pages/1.png', visual: true } },
+          status: 'ready',
+        },
+      },
+      name: 'deck.pdf',
+    });
+
+    const first = documentPagesRuntime.factory(
+      context({ assistantMessageId: 'asst-a', operationId: 'op-a' }),
+    );
+    await first.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+    await first.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+    await first.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+
+    const second = documentPagesRuntime.factory(
+      context({ assistantMessageId: 'asst-b', operationId: 'op-b' }),
+    );
+    const result = await second.viewDocumentPages({ fileId: 'file-1', pages: [1] });
+
+    expect(result.success).toBe(true);
+    expect(result.content).toContain('Requested page images');
+    expect(result.content).not.toBe(DOCUMENT_PAGES_TURN_LIMIT_MESSAGE);
+  });
 });
 
 describe('resolveDocumentPagesCallBudgetKey', () => {
-  it('prefers assistantMessageId as the per-turn key', () => {
+  it('prefers operationId so continuations of the same turn share a budget', () => {
     expect(
       resolveDocumentPagesCallBudgetKey({
         assistantMessageId: 'asst-1',
@@ -223,18 +282,18 @@ describe('resolveDocumentPagesCallBudgetKey', () => {
         toolManifestMap: {},
         userId: 'user-1',
       }),
-    ).toBe('turn:asst-1');
+    ).toBe('op:op-1');
   });
 
-  it('falls back to operationId then user+topic', () => {
+  it('falls back to assistantMessageId then user+topic', () => {
     expect(
       resolveDocumentPagesCallBudgetKey({
-        operationId: 'op-1',
+        assistantMessageId: 'asst-1',
         topicId: 'topic-1',
         toolManifestMap: {},
         userId: 'user-1',
       }),
-    ).toBe('op:op-1');
+    ).toBe('turn:asst-1');
     expect(
       resolveDocumentPagesCallBudgetKey({
         topicId: 'topic-1',

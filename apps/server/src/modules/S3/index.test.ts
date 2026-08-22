@@ -247,6 +247,20 @@ describe('FileS3', () => {
         },
       });
     });
+
+    it('throws when DeleteObjectsCommand returns per-key Errors', async () => {
+      const s3 = new FileS3();
+      mockS3ClientSend.mockResolvedValue({
+        Errors: [
+          { Code: 'AccessDenied', Key: 'file1.txt' },
+          { Code: 'InternalError', Key: 'file2.txt' },
+        ],
+      });
+
+      await expect(s3.deleteFiles(['file1.txt', 'file2.txt'])).rejects.toThrow(
+        'S3 deleteFiles failed for 2 keys: file1.txt: AccessDenied',
+      );
+    });
   });
 
   describe('getFileContent', () => {
