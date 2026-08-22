@@ -11,11 +11,19 @@ import {
   isDocumentRenderConfigured,
 } from '../documentRenderSettings';
 import type * as artifactsModule from './artifacts';
+import { copyDocumentRenderArtifacts } from './artifacts';
 import type * as classifyModule from './classify';
 import { classifyDocument } from './classify';
 import { convertToPdf } from './gotenbergClient';
 import type * as queueModule from './queue';
-import { clampJobTimeoutMs, heartbeatIntervalMs, processClaimedDocumentRenderJob } from './worker';
+import type * as reuseModule from './reuse';
+import { findReusableRenderSource } from './reuse';
+import {
+  clampJobTimeoutMs,
+  heartbeatIntervalMs,
+  processClaimedDocumentRenderJob,
+  SidecarUnavailableError,
+} from './worker';
 
 const uploadBuffer = vi.fn();
 const getFileByteArray = vi.fn();
@@ -48,6 +56,7 @@ vi.mock('@/database/models/platform/job', () => ({
 
 vi.mock('@/server/modules/S3', () => ({
   createFileS3: vi.fn(async () => ({
+    copyObject: vi.fn(),
     deleteFiles: vi.fn(),
     getFileByteArray,
     listObjectKeysByPrefix: vi.fn(async () => []),
@@ -85,7 +94,9 @@ vi.mock('./artifacts', async (importOriginal) => {
       png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
       width: 44,
     })),
+    copyDocumentRenderArtifacts: vi.fn(async () => 2),
     uploadImageArtifact: vi.fn(),
+    uploadJsonArtifact: vi.fn(),
     uploadPdfArtifact: vi.fn(async () => 'files/render/f1/source.pdf'),
     uploadPngArtifact: vi.fn(),
   };
@@ -112,6 +123,15 @@ vi.mock('@/server/modules/ModelRuntime/pdfPageImages', async (importOriginal) =>
       return opts?.retainResults === false ? [] : [{ png }];
     }),
   };
+});
+
+const reuseMocks = vi.hoisted(() => ({
+  findReusableRenderSource: vi.fn(),
+}));
+
+vi.mock('./reuse', async (importOriginal) => {
+  const actual = await importOriginal<typeof reuseModule>();
+  return { ...actual, findReusableRenderSource: reuseMocks.findReusableRenderSource };
 });
 
 vi.mock('./queue', async (importOriginal) => {
@@ -166,6 +186,7 @@ beforeEach(() => {
   updateSet.mockReturnValue({
     where: vi.fn().mockReturnValue({ returning }),
   });
+  reuseMocks.findReusableRenderSource.mockResolvedValue(undefined);
 });
 
 describe('clampJobTimeoutMs / heartbeatIntervalMs', () => {
@@ -221,13 +242,60 @@ describe('processClaimedDocumentRenderJob', () => {
       endpoint: undefined,
     });
     vi.mocked(isDocumentRenderConfigured).mockReturnValue(false);
-    await processClaimedDocumentRenderJob(ctx);
+    await expect(processClaimedDocumentRenderJob(ctx)).rejects.toBeInstanceOf(
+      SidecarUnavailableError,
+    );
     expect(convertToPdf).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
     expect(fail).toHaveBeenCalledWith(
       expect.objectContaining({
         error: expect.objectContaining({ message: 'sidecar unavailable', retryable: true }),
         jobId: 'job-1',
+      }),
+    );
+  });
+
+  it('throws SidecarUnavailableError so the lane backs off, leaving the job pending', async () => {
+    vi.mocked(classifyDocument).mockResolvedValue({
+      kind: 'pptx',
+      mediaCount: 4,
+      reason: 'pptxAlwaysT2',
+      tier: 'T2',
+    });
+    vi.mocked(getEffectiveDocumentRenderSettings).mockResolvedValue({
+      ...settings,
+      endpoint: undefined,
+    });
+    vi.mocked(isDocumentRenderConfigured).mockReturnValue(false);
+    fail.mockResolvedValue({ id: 'job-1', status: 'pending' });
+    await expect(processClaimedDocumentRenderJob(ctx)).rejects.toBeInstanceOf(
+      SidecarUnavailableError,
+    );
+    expect(fail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({ retryable: true }),
+      }),
+    );
+    await expect(fail.mock.results[0]!.value).resolves.toMatchObject({ status: 'pending' });
+  });
+
+  it('retries when convertToPdf fails with a connection-level error', async () => {
+    vi.mocked(classifyDocument).mockResolvedValue({
+      kind: 'pptx',
+      mediaCount: 4,
+      reason: 'pptxAlwaysT2',
+      tier: 'T2',
+    });
+    const error = new Error('fetch failed');
+    (error as Error & { cause: { code: string } }).cause = { code: 'ECONNREFUSED' };
+    vi.mocked(convertToPdf).mockRejectedValue(error);
+    await expect(processClaimedDocumentRenderJob(ctx)).rejects.toBeInstanceOf(
+      SidecarUnavailableError,
+    );
+    expect(complete).not.toHaveBeenCalled();
+    expect(fail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({ message: 'sidecar unavailable', retryable: true }),
       }),
     );
   });
@@ -338,5 +406,39 @@ describe('processClaimedDocumentRenderJob', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('reuses sha256 artifacts without downloading bytes', async () => {
+    vi.mocked(FileModel.getFileById).mockResolvedValue({
+      ...file,
+      fileHash: 'abc123',
+    } as never);
+    vi.mocked(findReusableRenderSource).mockResolvedValue({
+      id: 'src-file',
+      metadata: {
+        render: {
+          contactSheets: [{ key: 'files/render/src-file/contact/0.png', pages: [1] }],
+          engine: 'pdfjs',
+          pageCount: 1,
+          pages: {
+            '1': { chars: 40, png: 'files/render/src-file/pages/1.png', visual: true },
+          },
+          renderedPages: [1],
+          status: 'ready',
+          tier: 'T2',
+        },
+      },
+    } as never);
+
+    await processClaimedDocumentRenderJob(ctx);
+
+    expect(copyDocumentRenderArtifacts).toHaveBeenCalledWith('src-file', 'file-1');
+    expect(getFileByteArray).not.toHaveBeenCalled();
+    expect(classifyDocument).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resultSummary: expect.objectContaining({ reused: true, status: 'ready' }),
+      }),
+    );
   });
 });

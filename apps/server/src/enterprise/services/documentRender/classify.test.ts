@@ -5,7 +5,12 @@ import path from 'node:path';
 import { strToU8, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 
-import { classifyDocument, countOoxmlMediaEntries, resolveDocumentKind } from './classify';
+import {
+  classifyDocument,
+  countOoxmlMediaEntries,
+  parseXlsxWorkbookSheets,
+  resolveDocumentKind,
+} from './classify';
 import { listZipEntryNames } from './zipEntries';
 
 const fixture = (...parts: string[]) =>
@@ -164,6 +169,7 @@ describe('classifyDocument', () => {
     expect(text.kind).toBe('pdf');
     expect(text.tier).toBe('T0');
     expect(text.pages?.[0]?.visual).toBe(false);
+    expect(text.pages?.[0]?.text).toContain('Hello world');
 
     const visual = await classifyDocument({
       bytes: makeVisualPdf(),
@@ -172,5 +178,29 @@ describe('classifyDocument', () => {
     });
     expect(visual.tier).toBe('T2');
     expect(visual.pages?.[0]?.visual).toBe(true);
+  });
+});
+
+describe('parseXlsxWorkbookSheets', () => {
+  it('returns workbook-order sheets and decodes XML entities', async () => {
+    const bytes = makeOoxml({
+      'xl/workbook.xml': `<workbook><sheets>
+        <sheet name="Summary" sheetId="3" r:id="rId1"/>
+        <sheet name="Q3 &amp; Q4" sheetId="1" r:id="rId2"/>
+        <sheet name="Notes &lt;draft&gt;" sheetId="2" r:id="rId3"/>
+      </sheets></workbook>`,
+    });
+    const sheets = await parseXlsxWorkbookSheets(bytes);
+    expect(sheets).toEqual([
+      { index: 1, name: 'Summary' },
+      { index: 2, name: 'Q3 & Q4' },
+      { index: 3, name: 'Notes <draft>' },
+    ]);
+    expect(sheets.every((sheet) => sheet.page === undefined)).toBe(true);
+  });
+
+  it('returns an empty list when workbook.xml is missing', async () => {
+    const bytes = makeOoxml({ '[Content_Types].xml': '<Types/>' });
+    await expect(parseXlsxWorkbookSheets(bytes)).resolves.toEqual([]);
   });
 });

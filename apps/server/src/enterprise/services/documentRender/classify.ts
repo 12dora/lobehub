@@ -1,9 +1,9 @@
 import type { PdfPageInspectResult } from '@/server/modules/ModelRuntime/pdfPageImages';
 import { inspectPdfPages } from '@/server/modules/ModelRuntime/pdfPageImages';
-import type { DocumentRenderTier } from '@/types/files';
+import type { DocumentRenderTier, FileRenderSheetMeta } from '@/types/files';
 import { DOCUMENT_RENDER_DEFAULTS } from '@/types/platform/documentRenderSettings';
 
-import { listZipEntryNames } from './zipEntries';
+import { extractZipEntries, listZipEntryNames, ZIP_ENTRY_XML_MAX_BYTES } from './zipEntries';
 
 export type DocumentRenderKind = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'other';
 
@@ -22,7 +22,7 @@ export interface ClassifyDocumentResult {
   kind: DocumentRenderKind;
   mediaCount: number;
   pageCount?: number;
-  pages?: PdfPageInspectResult[];
+  pages?: Array<PdfPageInspectResult & { text?: string }>;
   reason: string;
   tier: DocumentRenderTier;
 }
@@ -145,4 +145,55 @@ export const classifyDocument = async (
   }
   if (kind === 'pdf') return classifyPdf(input.bytes);
   return classifyOoxml(kind, input.bytes, settings);
+};
+
+/** Decode XML entities (`&amp;`, `&#39;`, `&#x20;`, …). `&amp;` is last so `&amp;lt;` stays `&lt;`. */
+export const decodeXmlEntities = (value: string): string =>
+  value
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => {
+      const code = Number.parseInt(hex, 16);
+      return Number.isFinite(code) && code <= 0x10_ffff ? String.fromCodePoint(code) : '';
+    })
+    .replaceAll(/&#(\d+);/g, (_, dec: string) => {
+      const code = Number(dec);
+      return Number.isFinite(code) && code <= 0x10_ffff ? String.fromCodePoint(code) : '';
+    })
+    .replaceAll('&amp;', '&');
+
+const WORKBOOK_XML_NAMES = new Set(['xl/workbook.xml']);
+
+const sheetNameFromAttrs = (attrs: string): string | undefined => {
+  const quoted = /\bname\s*=\s*"([^"]*)"/i.exec(attrs) ?? /\bname\s*=\s*'([^']*)'/i.exec(attrs);
+  const raw = quoted?.[1];
+  if (raw === undefined) return undefined;
+  return decodeXmlEntities(raw);
+};
+
+/**
+ * Workbook-order sheets from `xl/workbook.xml`. `page` is left undefined —
+ * Gotenberg/LibreOffice page-per-sheet mapping is not reliable.
+ */
+export const parseXlsxWorkbookSheets = async (
+  bytes: Uint8Array,
+): Promise<FileRenderSheetMeta[]> => {
+  const entries = await extractZipEntries(bytes, WORKBOOK_XML_NAMES, {
+    maxBytesFor: () => ZIP_ENTRY_XML_MAX_BYTES,
+  });
+  const xmlBytes = entries[0]?.bytes;
+  if (!xmlBytes || xmlBytes.byteLength === 0) return [];
+
+  const xml = new TextDecoder().decode(xmlBytes);
+  const sheets: FileRenderSheetMeta[] = [];
+  const sheetRe = /<sheet\b([^>]*)>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = sheetRe.exec(xml))) {
+    const name = sheetNameFromAttrs(match[1] ?? '');
+    if (!name) continue;
+    sheets.push({ index: sheets.length + 1, name });
+  }
+  return sheets;
 };

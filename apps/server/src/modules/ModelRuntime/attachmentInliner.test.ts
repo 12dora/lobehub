@@ -15,9 +15,11 @@ import {
   inlineOwnOriginAttachments,
   inlineOwnOriginImageUrls,
 } from './attachmentInliner';
+import { getDocumentFeedStats, resetDocumentFeedStatsForTest } from './documentFeedStats';
 
 const fileServiceMocks = vi.hoisted(() => ({
   getFileByteArray: vi.fn(),
+  getFileContent: vi.fn(),
 }));
 
 const fileModelMocks = vi.hoisted(() => ({
@@ -46,6 +48,7 @@ vi.mock('./pdfPageImages', () => ({
 vi.mock('@/server/services/file', () => ({
   FileService: class FileService {
     getFileByteArray = fileServiceMocks.getFileByteArray;
+    getFileContent = fileServiceMocks.getFileContent;
   },
 }));
 
@@ -1481,5 +1484,130 @@ describe('document render feed + viewDocumentPages markers', () => {
 
     const parts = messages[0].content as Array<{ type: string }>;
     expect(parts.filter((part) => part.type === 'image_url')).toHaveLength(1);
+  });
+
+  it('bumps feed counters when stored page images are attached', async () => {
+    resetDocumentFeedStatsForTest();
+    const loadArtifact = vi.fn(async (key: string) => {
+      if (key === SHEET_KEY || key === PAGE_KEY) return PAGE_PNG;
+      return null;
+    });
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            file_url: {
+              content: '<page pageNumber="1">\n\n</page>',
+              fileId: 'file-1',
+              mimeType: 'application/pdf',
+              name: 'scan.pdf',
+              size: PDF_BYTES.byteLength,
+              url: OWN_FILE_URL,
+            },
+            type: 'file_url',
+          },
+        ],
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, {
+      loadArtifact,
+      loadRender: loadReadyRender,
+    });
+
+    expect(getDocumentFeedStats()).toMatchObject({
+      docsFed: 1,
+      imagesFed: 2,
+      pendingFallbacks: 0,
+      requestsWithImages: 1,
+    });
+  });
+
+  it('bumps pendingFallbacks when a pending office document is text-only', async () => {
+    resetDocumentFeedStatsForTest();
+    const messages: OpenAIChatMessage[] = [
+      {
+        content:
+          '<files_info><file id="deck-1" name="deck.pptx" type="application/vnd.openxmlformats-officedocument.presentationml.presentation"></file></files_info>',
+        role: 'user',
+      },
+    ];
+
+    await inlineOwnOriginAttachments(messages, vi.fn(), ownOrigins, {
+      loadRender: async () => ({ status: 'pending', tier: 'T2' }),
+    });
+
+    expect(getDocumentFeedStats().pendingFallbacks).toBe(1);
+    expect(getDocumentFeedStats().pendingWaits).toBe(0);
+  });
+
+  it('bumps pendingWaits when polling a fresh pending render', async () => {
+    resetDocumentFeedStatsForTest();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-22T00:00:00.000Z'));
+    try {
+      const updatedAt = new Date().toISOString();
+      fileModelMocks.findById.mockResolvedValue({
+        id: 'file-1',
+        metadata: { render: { status: 'pending', tier: 'T2', updatedAt } },
+        name: 'deck.pptx',
+      } as never);
+      const messages: OpenAIChatMessage[] = [
+        {
+          content:
+            '<files_info><file id="file-1" name="deck.pptx" type="application/vnd.openxmlformats-officedocument.presentationml.presentation"></file></files_info>',
+          role: 'user',
+        },
+      ];
+      const hooks = createOwnOriginAttachmentInlineHooks({
+        db: {} as never,
+        ownOrigins,
+        userId: 'user-1',
+      });
+      const pending = hooks.beforeChat?.({ messages, model: 'test' } as never);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await pending;
+      expect(getDocumentFeedStats().pendingWaits).toBe(1);
+      expect(getDocumentFeedStats().pendingFallbacks).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not fetch a text index whose key is outside the file prefix', async () => {
+    fileModelMocks.findById.mockResolvedValue({
+      id: 'file-1',
+      metadata: {
+        render: {
+          contactSheets: [{ key: 'files/render/file-1/contact/0.png', pages: [1] }],
+          pages: { '1': { chars: 10, png: 'files/render/file-1/pages/1.png', visual: true } },
+          renderedPages: [1],
+          status: 'ready',
+          textIndex: 'files/render/other/text/index.json',
+          tier: 'T2',
+        },
+      },
+      name: 'deck.pptx',
+    } as never);
+    fileServiceMocks.getFileByteArray.mockResolvedValue(PAGE_PNG);
+    fileServiceMocks.getFileContent.mockResolvedValue('{"1":"secret"}');
+
+    const messages: OpenAIChatMessage[] = [
+      {
+        content:
+          '<files_info><file id="file-1" name="deck.pptx" type="application/vnd.openxmlformats-officedocument.presentationml.presentation"></file></files_info>',
+        role: 'user',
+      },
+    ];
+    const hooks = createOwnOriginAttachmentInlineHooks({
+      db: {} as never,
+      ownOrigins,
+      userId: 'user-1',
+    });
+
+    await hooks.beforeChat?.({ messages, model: 'test' } as never);
+
+    expect(fileServiceMocks.getFileContent).not.toHaveBeenCalled();
   });
 });

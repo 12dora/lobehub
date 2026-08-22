@@ -1,8 +1,19 @@
 // @vitest-environment node
 import { createCanvas } from '@napi-rs/canvas';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { composeContactSheet } from './artifacts';
+import { composeContactSheet, copyDocumentRenderArtifacts, uploadJsonArtifact } from './artifacts';
+
+const s3Mocks = vi.hoisted(() => ({
+  copyObject: vi.fn(),
+  deleteFiles: vi.fn(),
+  listObjectKeysByPrefix: vi.fn(),
+  uploadBuffer: vi.fn(),
+}));
+
+vi.mock('@/server/modules/S3', () => ({
+  createFileS3: vi.fn(async () => s3Mocks),
+}));
 
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47];
 
@@ -33,5 +44,64 @@ describe('composeContactSheet', () => {
 
   it('returns undefined when there are no thumbs', async () => {
     await expect(composeContactSheet({ cols: 3, rows: 4, thumbs: [] })).resolves.toBeUndefined();
+  });
+});
+
+describe('uploadJsonArtifact', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('uploads JSON with application/json', async () => {
+    await uploadJsonArtifact('files/render/f1/text/index.json', { '1': 'hello' });
+    expect(s3Mocks.uploadBuffer).toHaveBeenCalledWith(
+      'files/render/f1/text/index.json',
+      expect.any(Buffer),
+      'application/json',
+    );
+    const body = s3Mocks.uploadBuffer.mock.calls[0]![1] as Buffer;
+    expect(JSON.parse(body.toString())).toEqual({ '1': 'hello' });
+  });
+});
+
+describe('copyDocumentRenderArtifacts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    s3Mocks.copyObject.mockResolvedValue(undefined);
+    s3Mocks.deleteFiles.mockResolvedValue(undefined);
+  });
+
+  it('copies each listed key onto the target prefix and verifies the count', async () => {
+    const sourceKeys = [
+      'files/render/src/pages/1.png',
+      'files/render/src/contact/0.png',
+      'files/render/src/text/index.json',
+    ];
+    const targetKeys = [
+      'files/render/dst/pages/1.png',
+      'files/render/dst/contact/0.png',
+      'files/render/dst/text/index.json',
+    ];
+    s3Mocks.listObjectKeysByPrefix
+      .mockResolvedValueOnce(sourceKeys)
+      .mockResolvedValueOnce(targetKeys);
+
+    await expect(copyDocumentRenderArtifacts('src', 'dst')).resolves.toBe(3);
+    expect(s3Mocks.copyObject).toHaveBeenCalledTimes(3);
+    expect(s3Mocks.copyObject).toHaveBeenCalledWith(
+      'files/render/src/pages/1.png',
+      'files/render/dst/pages/1.png',
+    );
+    expect(s3Mocks.deleteFiles).not.toHaveBeenCalled();
+  });
+
+  it('deletes the target prefix and throws when the copied count mismatches', async () => {
+    s3Mocks.listObjectKeysByPrefix
+      .mockResolvedValueOnce(['files/render/src/pages/1.png', 'files/render/src/pages/2.png'])
+      .mockResolvedValueOnce(['files/render/dst/pages/1.png'])
+      .mockResolvedValueOnce(['files/render/dst/pages/1.png']);
+
+    await expect(copyDocumentRenderArtifacts('src', 'dst')).rejects.toThrow('count mismatch');
+    expect(s3Mocks.deleteFiles).toHaveBeenCalledWith(['files/render/dst/pages/1.png']);
   });
 });

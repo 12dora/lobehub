@@ -15,6 +15,8 @@ import type {
   DocumentRenderStatus,
   FileRenderMetadata,
   FileRenderPageMeta,
+  FileRenderSheetMeta,
+  FileRenderTextIndex,
 } from '@/types/files';
 import { documentRenderArtifactKeys, readFileRenderMetadata } from '@/types/files';
 
@@ -25,16 +27,24 @@ import {
 } from '../documentRenderSettings';
 import {
   composeContactSheet,
+  copyDocumentRenderArtifacts,
   deleteDocumentRenderArtifacts,
   uploadImageArtifact,
+  uploadJsonArtifact,
   uploadPdfArtifact,
   uploadPngArtifact,
 } from './artifacts';
 import type { ClassifyDocumentResult, DocumentRenderKind } from './classify';
-import { classifyDocument, isRenderableDocumentKind, resolveDocumentKind } from './classify';
+import {
+  classifyDocument,
+  isRenderableDocumentKind,
+  parseXlsxWorkbookSheets,
+  resolveDocumentKind,
+} from './classify';
 import { extractOoxmlFigures } from './figures';
 import { convertToPdf } from './gotenbergClient';
 import { clearDocumentRenderTempDir } from './queue';
+import { findReusableRenderSource, rebaseRenderMetadataKeys } from './reuse';
 
 const log = debug('lobe-server:document-render');
 
@@ -42,6 +52,36 @@ const DENSE_PAGE_CHARS = 1200;
 const MAX_BYTES_PER_IMAGE = 20 * 1024 * 1024;
 const SIDECAR_UNAVAILABLE = 'sidecar unavailable';
 const LEASE_TIMEOUT_GUARD_MS = 15_000;
+const SIDECAR_CONNECTION_CODES = new Set([
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+]);
+
+const isSidecarConnectionError = (error: unknown, depth = 0): boolean => {
+  if (!error || depth > 4) return false;
+  if (typeof error !== 'object') return false;
+  const rec = error as { cause?: unknown; code?: unknown; message?: unknown; name?: unknown };
+  // Worker abort (lease / job timeout) is not a sidecar outage.
+  if (rec.name === 'AbortError') return false;
+  if (typeof rec.code === 'string' && SIDECAR_CONNECTION_CODES.has(rec.code)) return true;
+  if (typeof rec.message === 'string') {
+    const message = rec.message.toLowerCase();
+    if (
+      message.includes('econnrefused') ||
+      message.includes('enotfound') ||
+      message.includes('econnreset') ||
+      message.includes('fetch failed') ||
+      message.includes('timed out') ||
+      message.includes('timeout')
+    ) {
+      return true;
+    }
+  }
+  return isSidecarConnectionError(rec.cause, depth + 1);
+};
 
 export class RenderAbortedError extends Error {
   constructor(message = 'document render aborted') {
@@ -54,6 +94,14 @@ export class FileDeletedDuringRenderError extends RenderAbortedError {
   constructor() {
     super('file deleted during render');
     this.name = 'FileDeletedDuringRenderError';
+  }
+}
+
+/** Sidecar down / unreachable — thrown after a retryable `jobs.fail` so the lane backs off. */
+export class SidecarUnavailableError extends Error {
+  constructor(message = SIDECAR_UNAVAILABLE) {
+    super(message);
+    this.name = 'SidecarUnavailableError';
   }
 }
 
@@ -298,8 +346,71 @@ interface RenderOutcome {
   durationMs: number;
   pages: number | null;
   retry?: boolean;
+  reused?: boolean;
   status: DocumentRenderStatus;
 }
+
+const withSheets = (
+  patch: Partial<FileRenderMetadata> & Pick<FileRenderMetadata, 'status'>,
+  sheets: FileRenderSheetMeta[] | undefined,
+): Partial<FileRenderMetadata> & Pick<FileRenderMetadata, 'status'> =>
+  sheets && sheets.length > 0 ? { ...patch, sheets } : patch;
+
+const tryReuseRender = async (params: {
+  control: RenderControl;
+  db: LobeChatDatabase;
+  file: FileItem;
+  jobId: string;
+  started: number;
+}): Promise<RenderOutcome | undefined> => {
+  const hash = params.file.fileHash;
+  if (!hash) return undefined;
+
+  const source = await findReusableRenderSource(params.db, {
+    fileHash: hash,
+    fileId: params.file.id,
+  });
+  if (!source) return undefined;
+  const sourceRender = readFileRenderMetadata(source.metadata);
+  if (!sourceRender) return undefined;
+
+  params.control.assertLive();
+  try {
+    await copyDocumentRenderArtifacts(source.id, params.file.id);
+  } catch (error) {
+    log(
+      'artifact reuse copy failed source=%s target=%s: %s',
+      source.id,
+      params.file.id,
+      error instanceof Error ? error.message : error,
+    );
+    return undefined;
+  }
+  params.control.assertLive();
+
+  const rebased = rebaseRenderMetadataKeys(sourceRender, source.id, params.file.id);
+  const durationMs = Date.now() - params.started;
+  const status: DocumentRenderStatus =
+    sourceRender.status === 'partial'
+      ? 'partial'
+      : sourceRender.status === 'ready'
+        ? 'ready'
+        : 'partial';
+  await patchRenderMetadata(params.db, params.file, {
+    ...rebased,
+    copiedFrom: source.id,
+    durationMs,
+    jobId: params.jobId,
+    status,
+  });
+
+  return {
+    durationMs,
+    pages: sourceRender.renderedPages?.length ?? sourceRender.pageCount ?? null,
+    reused: true,
+    status,
+  };
+};
 
 const runRender = async (params: {
   control: RenderControl;
@@ -328,6 +439,15 @@ const runRender = async (params: {
     return { durationMs: Date.now() - started, pages: null, status: 'skipped' };
   }
 
+  const reused = await tryReuseRender({
+    control: params.control,
+    db,
+    file,
+    jobId: params.jobId,
+    started,
+  });
+  if (reused) return reused;
+
   params.control.assertLive();
   const s3 = await createFileS3();
   params.control.assertLive();
@@ -338,6 +458,7 @@ const runRender = async (params: {
     { mediaThresholdT2: settings.mediaThresholdT2, pptxAlwaysT2: settings.pptxAlwaysT2 },
   );
   params.control.assertLive();
+  const sheets = classified.kind === 'xlsx' ? await parseXlsxWorkbookSheets(bytes) : undefined;
   await patchRenderMetadata(db, file, {
     jobId: params.jobId,
     status: 'pending',
@@ -345,13 +466,20 @@ const runRender = async (params: {
   });
 
   if (classified.tier === 'T0') {
-    await patchRenderMetadata(db, file, {
-      engine: classified.kind === 'pdf' ? 'pdfjs' : 'ooxml',
-      hasTextLayer: true,
-      pageCount: classified.pageCount,
-      status: 'skipped',
-      tier: 'T0',
-    });
+    await patchRenderMetadata(
+      db,
+      file,
+      withSheets(
+        {
+          engine: classified.kind === 'pdf' ? 'pdfjs' : 'ooxml',
+          hasTextLayer: true,
+          pageCount: classified.pageCount,
+          status: 'skipped',
+          tier: 'T0',
+        },
+        sheets,
+      ),
+    );
     return {
       durationMs: Date.now() - started,
       pages: classified.pageCount ?? 0,
@@ -361,17 +489,24 @@ const runRender = async (params: {
 
   if (classified.tier === 'T1') {
     const figures = await uploadFigures(file.id, classified.kind, bytes, db, params.control);
-    await patchRenderMetadata(db, file, {
-      engine: 'ooxml',
-      figures,
-      hasTextLayer: true,
-      status: 'ready',
-      tier: 'T1',
-    });
+    await patchRenderMetadata(
+      db,
+      file,
+      withSheets(
+        {
+          engine: 'ooxml',
+          figures,
+          hasTextLayer: true,
+          status: 'ready',
+          tier: 'T1',
+        },
+        sheets,
+      ),
+    );
     return { durationMs: Date.now() - started, pages: figures?.length ?? 0, status: 'ready' };
   }
 
-  return runTier2({ ...params, bytes, classified, kind, started });
+  return runTier2({ ...params, bytes, classified, kind, sheets, started });
 };
 
 const runTier2 = async (params: {
@@ -385,10 +520,11 @@ const runTier2 = async (params: {
   kind: DocumentRenderKind;
   leaseMs: number;
   settings: EffectiveDocumentRenderSettings;
+  sheets: FileRenderSheetMeta[] | undefined;
   started: number;
   workerId: string;
 }): Promise<RenderOutcome> => {
-  const { bytes, classified, db, file, kind, settings } = params;
+  const { bytes, classified, db, file, kind, settings, sheets } = params;
   const moduleOn = await isModuleEnabled('documentRender');
   const sidecarOk = moduleOn && isDocumentRenderConfigured(settings);
 
@@ -398,14 +534,21 @@ const runTier2 = async (params: {
   if (kind !== 'pdf') {
     if (!sidecarOk || !settings.endpoint) {
       const figures = await uploadFigures(file.id, kind, bytes, db, params.control);
-      await patchRenderMetadata(db, file, {
-        engine: 'ooxml',
-        error: SIDECAR_UNAVAILABLE,
-        figures,
-        hasTextLayer: true,
-        status: 'partial',
-        tier: 'T2',
-      });
+      await patchRenderMetadata(
+        db,
+        file,
+        withSheets(
+          {
+            engine: 'ooxml',
+            error: SIDECAR_UNAVAILABLE,
+            figures,
+            hasTextLayer: true,
+            status: 'partial',
+            tier: 'T2',
+          },
+          sheets,
+        ),
+      );
       return {
         durationMs: Date.now() - params.started,
         pages: figures?.length ?? 0,
@@ -414,12 +557,38 @@ const runTier2 = async (params: {
       };
     }
     params.control.assertLive();
-    pdfBytes = await convertToPdf(settings.endpoint, {
-      bytes,
-      filename: file.name,
-      signal: params.control.signal,
-      timeoutMs: clampJobTimeoutMs(settings.timeoutSec, params.leaseMs),
-    });
+    try {
+      pdfBytes = await convertToPdf(settings.endpoint, {
+        bytes,
+        filename: file.name,
+        signal: params.control.signal,
+        timeoutMs: clampJobTimeoutMs(settings.timeoutSec, params.leaseMs),
+      });
+    } catch (error) {
+      if (params.control.signal.aborted || !isSidecarConnectionError(error)) throw error;
+      const figures = await uploadFigures(file.id, kind, bytes, db, params.control);
+      await patchRenderMetadata(
+        db,
+        file,
+        withSheets(
+          {
+            engine: 'ooxml',
+            error: SIDECAR_UNAVAILABLE,
+            figures,
+            hasTextLayer: true,
+            status: 'partial',
+            tier: 'T2',
+          },
+          sheets,
+        ),
+      );
+      return {
+        durationMs: Date.now() - params.started,
+        pages: figures?.length ?? 0,
+        retry: true,
+        status: 'partial',
+      };
+    }
     params.control.assertLive();
     await uploadPdfArtifact(file.id, pdfBytes, params.control.signal);
     await ensureFileStillExists(db, file.id);
@@ -470,22 +639,42 @@ const runTier2 = async (params: {
   const partial = raster.failedPages > 0 || raster.truncated;
   const status: DocumentRenderStatus = partial ? 'partial' : 'ready';
 
+  const textIndex: FileRenderTextIndex = {};
+  for (const page of allPages) {
+    if (!page.text) continue;
+    textIndex[String(page.page)] = page.text;
+  }
+  const textIndexKey =
+    Object.keys(textIndex).length > 0 ? documentRenderArtifactKeys.textIndex(file.id) : undefined;
+  if (textIndexKey) {
+    params.control.assertLive();
+    await uploadJsonArtifact(textIndexKey, textIndex, params.control.signal);
+  }
+
   await ensureFileStillExists(db, file.id);
-  await patchRenderMetadata(db, file, {
-    contactSheets: raster.contactSheets,
-    engine,
-    error: raster.truncated
-      ? 'maxPages truncated'
-      : raster.failedPages > 0
-        ? 'some pages failed'
-        : null,
-    hasTextLayer,
-    pageCount: pdfClassified.pageCount ?? allPages.length,
-    pages,
-    renderedPages: raster.renderedPages,
-    status,
-    tier: 'T2',
-  });
+  await patchRenderMetadata(
+    db,
+    file,
+    withSheets(
+      {
+        contactSheets: raster.contactSheets,
+        engine,
+        error: raster.truncated
+          ? 'maxPages truncated'
+          : raster.failedPages > 0
+            ? 'some pages failed'
+            : null,
+        hasTextLayer,
+        pageCount: pdfClassified.pageCount ?? allPages.length,
+        pages,
+        renderedPages: raster.renderedPages,
+        status,
+        ...(textIndexKey ? { textIndex: textIndexKey } : {}),
+        tier: 'T2',
+      },
+      sheets,
+    ),
+  );
 
   return {
     durationMs: Date.now() - params.started,
@@ -586,8 +775,11 @@ const processClaimedDocumentRenderJobInner = async (
           jobId: ctx.job.id,
           workerId: ctx.workerId,
         });
-        if (!failed) logLostOwnership('fail');
-        return;
+        if (!failed) {
+          logLostOwnership('fail');
+          return;
+        }
+        throw new SidecarUnavailableError();
       }
       const completed = await jobs.complete({
         jobId: ctx.job.id,
@@ -596,12 +788,14 @@ const processClaimedDocumentRenderJobInner = async (
           ext: extOf(file.name),
           fileId: file.id,
           pages: result.pages,
+          ...(result.reused ? { reused: true } : {}),
           status: result.status,
         },
         workerId: ctx.workerId,
       });
       if (!completed) logLostOwnership('complete');
     } catch (error) {
+      if (error instanceof SidecarUnavailableError) throw error;
       if (error instanceof FileDeletedDuringRenderError) {
         log('document render stopped, file deleted fileId=%s', fileId);
         const completed = await jobs.complete({

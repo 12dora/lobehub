@@ -3,6 +3,8 @@ import debug from 'debug';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
+import { DOCUMENT_RENDER_TEXT_EXCERPT_CHARS } from '@/types/files';
+
 const log = debug('lobe-server:pdf-page-images');
 
 const DEFAULT_MAX_LONG_EDGE_PX = 1800;
@@ -78,6 +80,8 @@ export interface RenderPdfPagesToPngOptions {
 export interface PdfPageInspectResult {
   chars: number;
   page: number;
+  /** Whitespace-collapsed excerpt (≤ DOCUMENT_RENDER_TEXT_EXCERPT_CHARS). */
+  text?: string;
   visual: boolean;
 }
 
@@ -187,6 +191,29 @@ const countTextChars = (items: Array<{ str?: unknown }>): number => {
   return chars;
 };
 
+/** Collapse whitespace while truncating so the excerpt never exceeds `maxChars`. */
+const excerptPageText = (items: Array<{ str?: unknown }>, maxChars: number): string => {
+  let text = '';
+  let pendingSpace = false;
+  for (const item of items) {
+    if (typeof item.str !== 'string' || item.str.length === 0) continue;
+    for (const ch of item.str) {
+      if (text.length >= maxChars) return text;
+      if (/\s/.test(ch)) {
+        pendingSpace = text.length > 0;
+        continue;
+      }
+      if (pendingSpace) {
+        text += ' ';
+        pendingSpace = false;
+        if (text.length >= maxChars) return text;
+      }
+      text += ch;
+    }
+  }
+  return text;
+};
+
 /**
  * Per-page text length + visual-content flag (image XObjects or almost no text).
  * Used by document-render classification. Failures skip the page rather than throw.
@@ -214,12 +241,15 @@ export const inspectPdfPages = async (bytes: Uint8Array): Promise<PdfPageInspect
       try {
         page = await pdf.getPage(pageNumber);
         const text = await page.getTextContent();
-        const chars = countTextChars(text.items as Array<{ str?: unknown }>);
+        const items = text.items as Array<{ str?: unknown }>;
+        const chars = countTextChars(items);
+        const excerpt = excerptPageText(items, DOCUMENT_RENDER_TEXT_EXCERPT_CHARS);
         const operators = await page.getOperatorList();
         const hasImage = operators.fnArray.some((fn) => imageOps.has(fn));
         results.push({
           chars,
           page: pageNumber,
+          ...(excerpt ? { text: excerpt } : {}),
           visual: chars < PDF_VISUAL_CHAR_THRESHOLD || hasImage,
         });
       } catch (error) {

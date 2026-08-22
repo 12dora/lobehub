@@ -181,3 +181,69 @@ export const deleteDocumentRenderArtifacts = async (fileIds: string[]): Promise<
     }
   }
 };
+
+export const uploadJsonArtifact = async (
+  key: string,
+  value: unknown,
+  signal?: AbortSignal,
+): Promise<void> => {
+  throwIfAborted(signal);
+  const s3 = await createFileS3();
+  throwIfAborted(signal);
+  await s3.uploadBuffer(key, Buffer.from(JSON.stringify(value)), 'application/json');
+};
+
+const COPY_CONCURRENCY = 4;
+
+const mapCopyConcurrency = async (
+  keys: readonly string[],
+  copy: (key: string) => Promise<void>,
+): Promise<void> => {
+  if (keys.length === 0) return;
+  let next = 0;
+  const workerCount = Math.min(COPY_CONCURRENCY, keys.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = next;
+        next += 1;
+        if (index >= keys.length) return;
+        await copy(keys[index]!);
+      }
+    }),
+  );
+};
+
+/**
+ * Server-side copy of `files/render/<source>/` onto `files/render/<target>/`.
+ * On any failure the target prefix is deleted so a normal render can proceed.
+ */
+export const copyDocumentRenderArtifacts = async (
+  sourceFileId: string,
+  targetFileId: string,
+): Promise<number> => {
+  const sourcePrefix = documentRenderArtifactPrefix(sourceFileId);
+  const targetPrefix = documentRenderArtifactPrefix(targetFileId);
+  const s3 = await createFileS3();
+  const listed = await s3.listObjectKeysByPrefix(sourcePrefix);
+  if (listed.length === 0) {
+    throw new Error('no source render artifacts to copy');
+  }
+
+  try {
+    await mapCopyConcurrency(listed, async (key) => {
+      const targetKey = key.replace(sourcePrefix, targetPrefix);
+      await s3.copyObject(key, targetKey);
+    });
+    const copied = await s3.listObjectKeysByPrefix(targetPrefix);
+    if (copied.length !== listed.length) {
+      throw new Error(
+        `copied artifact count mismatch: listed ${listed.length}, copied ${copied.length}`,
+      );
+    }
+    return copied.length;
+  } catch (error) {
+    await deleteDocumentRenderArtifacts([targetFileId]);
+    throw error;
+  }
+};

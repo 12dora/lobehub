@@ -1,6 +1,6 @@
 import type { OpenAIChatMessage } from '@lobechat/model-runtime';
 import { isFileUrlPart } from '@lobechat/model-runtime';
-import type { FileRenderMetadata, FileRenderPageMeta } from '@lobechat/types';
+import type { FileRenderMetadata, FileRenderPageMeta, FileRenderTextIndex } from '@lobechat/types';
 import { DOCUMENT_RENDER_DEFAULTS } from '@lobechat/types';
 
 const FILE_PROXY_PATH = /^\/f\/([^/]+)$/;
@@ -35,6 +35,7 @@ export interface SelectDocumentFeedInput {
   files: readonly DocumentFeedFileRef[];
   imageMaxCount?: number;
   loadRender: (fileId: string) => Promise<FileRenderMetadata | undefined>;
+  loadTextIndex?: (fileId: string, key: string) => Promise<FileRenderTextIndex | undefined>;
   maxDocsPerRequest?: number;
   tools?: boolean;
   userText: string;
@@ -194,13 +195,112 @@ const formatPageList = (pages: readonly number[]): string => {
   return parts.join(', ');
 };
 
+type PageSelectionReason = 'mentioned' | 'relevance' | 'visual' | 'first';
+
+const CJK_CHAR_RE = /[\u3400-\u9FFF]/;
+const EXTRA_OCCURRENCE_CAP = 4;
+
+const stripFilesInfoBlocks = (text: string): string =>
+  text.replaceAll(/<files_info>[\s\S]*?<\/files_info>/gi, ' ');
+
+const isCjkChar = (ch: string): boolean => CJK_CHAR_RE.test(ch);
+
+const tokenizeQuery = (userText: string): string[] => {
+  const stripped = stripFilesInfoBlocks(userText).toLowerCase();
+  const tokens = new Set<string>();
+
+  for (const match of stripped.matchAll(/[a-z]{3,}/g)) {
+    tokens.add(match[0]!);
+  }
+  for (const match of stripped.matchAll(/\d{2,}/g)) {
+    tokens.add(match[0]!);
+  }
+
+  let run = '';
+  const flushCjk = () => {
+    if (run.length < 2) {
+      run = '';
+      return;
+    }
+    for (let index = 0; index < run.length - 1; index += 1) {
+      tokens.add(run.slice(index, index + 2));
+    }
+    run = '';
+  };
+  for (const ch of stripped) {
+    if (isCjkChar(ch)) {
+      run += ch;
+    } else {
+      flushCjk();
+    }
+  }
+  flushCjk();
+
+  return [...tokens];
+};
+
+const countTokenOccurrences = (haystack: string, token: string): number => {
+  if (!token) return 0;
+  let count = 0;
+  let from = 0;
+  while (from <= haystack.length - token.length) {
+    const at = haystack.indexOf(token, from);
+    if (at < 0) break;
+    count += 1;
+    from = at + 1;
+  }
+  return count;
+};
+
+const scorePageText = (pageText: string, tokens: readonly string[]): number => {
+  const haystack = pageText.toLowerCase();
+  let score = 0;
+  for (const token of tokens) {
+    const count = countTokenOccurrences(haystack, token);
+    if (count === 0) continue;
+    const extras = Math.min(count - 1, EXTRA_OCCURRENCE_CAP);
+    score += 1 + 0.5 * extras;
+  }
+  return score;
+};
+
+/**
+ * Rank candidate pages by how many distinct query tokens appear in the page
+ * excerpt. Extra occurrences add 0.5 each (capped). Ties break toward the
+ * lower page number. Returns [] when the query has fewer than 2 tokens.
+ */
+export const rankPagesByRelevance = (
+  textIndex: FileRenderTextIndex,
+  userText: string,
+  candidates: readonly number[],
+): number[] => {
+  const tokens = tokenizeQuery(userText);
+  if (tokens.length < 2) return [];
+
+  const scored: Array<{ page: number; score: number }> = [];
+  for (const page of candidates) {
+    const pageText = textIndex[String(page)];
+    if (!pageText) continue;
+    const score = scorePageText(pageText, tokens);
+    if (score <= 0) continue;
+    scored.push({ page, score });
+  }
+
+  scored.sort((a, b) => b.score - a.score || a.page - b.page);
+  return scored.map((entry) => entry.page);
+};
+
 const contactSheetLabel = (count: number): string =>
   count === 1 ? '1 contact sheet' : `${count} contact sheets`;
 
-const fullPagesClause = (pages: readonly number[]): string => {
+const fullPagesClause = (
+  pages: readonly number[],
+  selectionReason: PageSelectionReason,
+): string => {
   if (pages.length === 0) return '';
   const list = formatPageList(pages);
-  return pages.length === 1 ? `full page ${list}` : `full pages ${list}`;
+  const base = pages.length === 1 ? `full page ${list}` : `full pages ${list}`;
+  return selectionReason === 'relevance' ? `${base} (matched your question)` : base;
 };
 
 const buildReadyNotice = (input: {
@@ -209,11 +309,12 @@ const buildReadyNotice = (input: {
   name: string;
   pageCount: number;
   render: FileRenderMetadata;
+  selectionReason: PageSelectionReason;
   tools: boolean;
 }): string => {
   const textLayer = resolveHasTextLayer(input.render) ? 'yes' : 'no';
   const attachedBits = [contactSheetLabel(input.contactSheetCount)];
-  const pagesClause = fullPagesClause(input.attachedPages);
+  const pagesClause = fullPagesClause(input.attachedPages, input.selectionReason);
   if (pagesClause) attachedBits.push(pagesClause);
 
   const otherPages = input.tools
@@ -230,16 +331,31 @@ const buildReadyNotice = (input: {
   return notice;
 };
 
-const selectFullPages = (render: FileRenderMetadata, mentioned: readonly number[]): number[] => {
+const selectFullPages = (
+  render: FileRenderMetadata,
+  mentioned: readonly number[],
+  textIndex: FileRenderTextIndex | undefined,
+  userText: string,
+  remaining: number,
+): { pages: number[]; reason: PageSelectionReason } => {
   const available = new Set(pngPages(render));
   const mentionedAvailable = mentioned.filter((page) => available.has(page));
-  if (mentionedAvailable.length > 0) return mentionedAvailable;
+  if (mentionedAvailable.length > 0) return { pages: mentionedAvailable, reason: 'mentioned' };
+
+  if (textIndex && remaining > 0) {
+    const ranked = rankPagesByRelevance(textIndex, userText, [...available]);
+    const budget = Math.max(1, remaining);
+    const picked = ranked
+      .filter((page) => available.has(page) && Boolean(pageMeta(render, page)?.png))
+      .slice(0, budget);
+    if (picked.length > 0) return { pages: picked, reason: 'relevance' };
+  }
 
   const visual = pngPages(render);
-  if (visual.length > 0) return visual;
+  if (visual.length > 0) return { pages: visual, reason: 'visual' };
 
   const first = pageMeta(render, 1)?.png ? [1] : [];
-  return first;
+  return { pages: first, reason: 'first' };
 };
 
 export const selectDocumentFeed = async (
@@ -294,9 +410,18 @@ export const selectDocumentFeed = async (
     }
     images.push(...attachedSheets);
 
-    const wantedPages = selectFullPages(render, mentioned);
+    let textIndex: FileRenderTextIndex | undefined;
+    if (mentioned.length === 0 && remaining > 0 && render.textIndex && input.loadTextIndex) {
+      try {
+        textIndex = await input.loadTextIndex(file.fileId, render.textIndex);
+      } catch {
+        textIndex = undefined;
+      }
+    }
+
+    const selected = selectFullPages(render, mentioned, textIndex, input.userText, remaining);
     const attachedPages: number[] = [];
-    for (const page of wantedPages) {
+    for (const page of selected.pages) {
       if (remaining <= 0) break;
       const meta = pageMeta(render, page);
       const key = meta?.png;
@@ -341,6 +466,7 @@ export const selectDocumentFeed = async (
         name: file.name,
         pageCount,
         render,
+        selectionReason: selected.reason,
         tools,
       }),
     );

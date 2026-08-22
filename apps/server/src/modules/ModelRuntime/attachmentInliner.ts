@@ -9,7 +9,7 @@ import type {
   UserMessageContentPart,
 } from '@lobechat/model-runtime';
 import { isFileUrlPart } from '@lobechat/model-runtime';
-import type { FileRenderMetadata } from '@lobechat/types';
+import type { FileRenderMetadata, FileRenderTextIndex } from '@lobechat/types';
 import {
   DOCUMENT_RENDER_DEFAULTS,
   documentRenderArtifactPrefix,
@@ -33,6 +33,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { FileService } from '@/server/services/file';
 
 import { collectAttachedDocumentFiles, collectUserText, selectDocumentFeed } from './documentFeed';
+import { bumpDocumentFeedStat } from './documentFeedStats';
 import { renderPdfPagesToPng } from './pdfPageImages';
 
 const log = debug('lobe-server:attachment-inliner');
@@ -117,6 +118,8 @@ export interface InlineOwnOriginAttachmentsOptions {
   loadArtifact?: (key: string, fileId: string) => Promise<Uint8Array | null>;
   /** files.metadata.render for an attached file id. */
   loadRender?: (fileId: string) => Promise<FileRenderMetadata | undefined>;
+  /** `text/index.json` body for relevance-ranked page selection. */
+  loadTextIndex?: (fileId: string, key: string) => Promise<FileRenderTextIndex | undefined>;
   maxDocsPerRequest?: number;
   /** Resolves a `files` row by id (FileModel + FileService). Used for `<files_info>` PDFs. */
   resolveByFileId?: OwnOriginFileIdResolver;
@@ -575,6 +578,7 @@ export const inlineOwnOriginAttachments = async (
   const resolveByFileId = options?.resolveByFileId;
   const loadRender = options?.loadRender;
   const loadArtifact = options?.loadArtifact;
+  const loadTextIndex = options?.loadTextIndex;
   const authorizeFile = options?.authorizeFile;
   const tools = options?.tools ?? true;
   const maxDocsPerRequest =
@@ -851,6 +855,7 @@ export const inlineOwnOriginAttachments = async (
         files,
         imageMaxCount: imageBudget.remaining,
         loadRender,
+        loadTextIndex,
         maxDocsPerRequest,
         tools,
         userText: collectUserText(message),
@@ -872,6 +877,7 @@ export const inlineOwnOriginAttachments = async (
             : [];
 
       const attachedFileIds = new Set<string>();
+      let attachedImageCount = 0;
       for (const image of feed.images) {
         if (!loadArtifact || imageBudget.remaining <= 0) break;
         if (!isArtifactKeyForFile(image.key, image.fileId)) {
@@ -893,6 +899,7 @@ export const inlineOwnOriginAttachments = async (
             type: 'image_url',
           });
           attachedFileIds.add(image.fileId);
+          attachedImageCount += 1;
           imageBudget.remaining -= 1;
         } catch (error) {
           log(
@@ -907,6 +914,18 @@ export const inlineOwnOriginAttachments = async (
         next.push({ text: notice, type: 'text' });
       }
       message.content = next;
+
+      if (feed.fedFileIds.length > 0) {
+        bumpDocumentFeedStat('docsFed', feed.fedFileIds.length);
+      }
+      if (attachedImageCount > 0) {
+        bumpDocumentFeedStat('imagesFed', attachedImageCount);
+        bumpDocumentFeedStat('requestsWithImages');
+      }
+      const pendingNoticeCount = feed.notices.filter((notice) =>
+        notice.includes('text only this turn'),
+      ).length;
+      if (pendingNoticeCount > 0) bumpDocumentFeedStat('pendingFallbacks', pendingNoticeCount);
     } catch (error) {
       log('document feed failed: %s', error instanceof Error ? error.message : error);
     }
@@ -1006,6 +1025,7 @@ const createFileServiceResolvers = (
   authorizeFile: (fileId: string) => Promise<boolean>;
   loadArtifact: (key: string, fileId: string) => Promise<Uint8Array | null>;
   loadRender: (fileId: string) => Promise<FileRenderMetadata | undefined>;
+  loadTextIndex: (fileId: string, key: string) => Promise<FileRenderTextIndex | undefined>;
   resolveByFileId: OwnOriginFileIdResolver;
   resolveByUrl: OwnOriginAttachmentResolver;
 } => {
@@ -1118,6 +1138,7 @@ const createFileServiceResolvers = (
       let render = readFileRenderMetadata(file?.metadata);
       if (!file || !isFreshPendingRender(render)) return render;
 
+      bumpDocumentFeedStat('pendingWaits');
       const { fileModel, db } = await load();
       renderWaitDeadline ??= Date.now() + RENDER_WAIT_BUDGET_MS;
       while (render && render.status === 'pending' && Date.now() < renderWaitDeadline) {
@@ -1132,6 +1153,32 @@ const createFileServiceResolvers = (
       log(
         'failed to load render metadata id=%s error=%s',
         fileId,
+        error instanceof Error ? error.message : error,
+      );
+      return undefined;
+    }
+  };
+
+  const loadTextIndex = async (
+    fileId: string,
+    key: string,
+  ): Promise<FileRenderTextIndex | undefined> => {
+    try {
+      if (!isArtifactKeyForFile(key, fileId)) {
+        log('skip text-index artifact outside prefix fileId=%s key=%s', fileId, key);
+        return undefined;
+      }
+      if (!(await authorizeFile(fileId))) return undefined;
+      const { fileService } = await load();
+      const raw = await fileService.getFileContent(key);
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+      return parsed as FileRenderTextIndex;
+    } catch (error) {
+      log(
+        'failed to load text index fileId=%s key=%s error=%s',
+        fileId,
+        key,
         error instanceof Error ? error.message : error,
       );
       return undefined;
@@ -1160,7 +1207,7 @@ const createFileServiceResolvers = (
     }
   };
 
-  return { authorizeFile, loadArtifact, loadRender, resolveByFileId, resolveByUrl };
+  return { authorizeFile, loadArtifact, loadRender, loadTextIndex, resolveByFileId, resolveByUrl };
 };
 
 /**
@@ -1203,6 +1250,7 @@ export const createOwnOriginAttachmentInlineHooks = (
           imageMaxCount: limits.imageMaxCount,
           loadArtifact: resolvers.loadArtifact,
           loadRender: resolvers.loadRender,
+          loadTextIndex: resolvers.loadTextIndex,
           maxDocsPerRequest: limits.maxDocsPerRequest,
           resolveByFileId: resolvers.resolveByFileId,
           tools,

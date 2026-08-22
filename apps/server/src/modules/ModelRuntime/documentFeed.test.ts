@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   collectAttachedDocumentFiles,
   parseMentionedPages,
+  rankPagesByRelevance,
   selectDocumentFeed,
 } from './documentFeed';
 
@@ -183,5 +184,92 @@ describe('selectDocumentFeed', () => {
 
     expect(result.fedFileIds).toEqual([]);
     expect(result.notices).toHaveLength(2);
+  });
+
+  it('ranks pages by relevance when the user did not mention a page', async () => {
+    const loadTextIndex = vi.fn(async () => ({
+      '1': 'cover letter and agenda',
+      '2': 'quarterly revenue grew across regions',
+      '3': 'appendix tables',
+      '4': 'revenue forecast and revenue outlook',
+    }));
+    const result = await selectDocumentFeed({
+      files: [
+        {
+          fileId: 'f1',
+          name: 'deck.pptx',
+        },
+      ],
+      imageMaxCount: 3,
+      loadRender: async () =>
+        readyRender({
+          textIndex: 'files/render/f1/text/index.json',
+        }),
+      loadTextIndex,
+      userText: 'What is the quarterly revenue?',
+    });
+
+    expect(loadTextIndex).toHaveBeenCalledWith('f1', 'files/render/f1/text/index.json');
+    expect(
+      result.images.filter((image) => image.kind === 'page').map((image) => image.page),
+    ).toEqual([2]);
+    expect(result.notices[0]).toContain('full page 2 (matched your question)');
+  });
+
+  it('does not load the text index when the user mentioned a page', async () => {
+    const loadTextIndex = vi.fn();
+    await selectDocumentFeed({
+      files: [{ fileId: 'f1', name: 'deck.pptx' }],
+      imageMaxCount: 3,
+      loadRender: async () => readyRender({ textIndex: 'files/render/f1/text/index.json' }),
+      loadTextIndex,
+      userText: 'What is on page 3?',
+    });
+    expect(loadTextIndex).not.toHaveBeenCalled();
+  });
+});
+
+describe('rankPagesByRelevance', () => {
+  it('ranks English pages by distinct tokens then extra occurrences, ties by page number', () => {
+    const index = {
+      '1': 'quarterly revenue grew',
+      '2': 'appendix',
+      '3': 'revenue revenue revenue',
+    };
+    expect(rankPagesByRelevance(index, 'quarterly revenue figures', [1, 2, 3])).toEqual([1, 3]);
+  });
+
+  it('ranks Chinese pages by CJK bigrams', () => {
+    const index = {
+      '1': '市场分析报告',
+      '2': '附录内容',
+      '3': '市场分析与展望',
+    };
+    expect(rankPagesByRelevance(index, '市场分析', [1, 2, 3])).toEqual([1, 3]);
+  });
+
+  it('returns the lower page first when scores tie', () => {
+    const index = {
+      '2': 'alpha beta',
+      '5': 'alpha beta',
+      '9': 'unrelated',
+    };
+    expect(rankPagesByRelevance(index, 'alpha beta gamma', [9, 5, 2])).toEqual([2, 5]);
+  });
+
+  it('returns empty when the query has fewer than two tokens', () => {
+    const index = { '1': 'hello world there' };
+    expect(rankPagesByRelevance(index, 'hi', [1])).toEqual([]);
+    expect(rankPagesByRelevance(index, '', [1])).toEqual([]);
+  });
+
+  it('strips files_info blocks before tokenizing', () => {
+    const index = {
+      '1': 'quarterly revenue grew',
+      '2': 'unrelated',
+    };
+    const userText =
+      'quarterly revenue <files_info><file id="abc123" name="deck.pptx"></file></files_info>';
+    expect(rankPagesByRelevance(index, userText, [1, 2])).toEqual([1]);
   });
 });
