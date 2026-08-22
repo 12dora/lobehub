@@ -254,8 +254,14 @@ COPY --from=builder /app/scripts/_shared /app/scripts/_shared
 # @vitejs/devtools is a build-time leak (require.resolve fails at runtime).
 # Extra @napi-rs/canvas skia.node copies under .pnpm are byte-identical to the
 # hoisted /app/node_modules/@napi-rs/canvas-linux-* that require() resolves.
+# Do NOT delete them outright: Turbopack externalises `@napi-rs/canvas` through the
+# .pnpm store copy, whose sibling `@napi-rs/canvas-linux-*` must still expose the
+# addon. Replace each store copy with a symlink to the hoisted, identical binary.
 RUN find /app/node_modules/.pnpm -maxdepth 1 -name '@vitejs+devtools*' -exec rm -rf {} + || true && \
-    find /app/node_modules/.pnpm -name 'skia*.node' -type f -delete || true
+    for f in $(find /app/node_modules/.pnpm -name 'skia*.node' -type f); do \
+      hoisted="/app/node_modules/@napi-rs/$(basename "$(dirname "$f")")/$(basename "$f")"; \
+      if [ -f "$hoisted" ] && [ "$hoisted" != "$f" ]; then rm -f "$f" && ln -s "$hoisted" "$f"; fi; \
+    done
 
 # koffi (FFI for the persistent ChatGPT Web transport) locates its prebuilt native
 # addon at `<koffi pkg dir>/../@koromix/koffi-<platform>`. Output tracing writes the

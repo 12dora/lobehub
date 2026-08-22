@@ -1,5 +1,4 @@
 import type { Canvas, SKRSContext2D } from '@napi-rs/canvas';
-import { createCanvas, DOMMatrix, DOMPoint, DOMRect, Path2D } from '@napi-rs/canvas';
 import debug from 'debug';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -32,9 +31,21 @@ interface CanvasAndContext {
  * pdfjs `CanvasFactory` backed by `@napi-rs/canvas`.
  * Constructor accepts the `{ enableHWA, ownerDocument }` bag pdfjs passes.
  */
+type NapiCanvasModule = typeof import('@napi-rs/canvas');
+
+/**
+ * `@napi-rs/canvas` is a native addon: load it lazily (first PDF render) so a
+ * missing/misresolved binding degrades this feature instead of crashing server boot.
+ */
+let canvasModule: NapiCanvasModule | undefined;
+
 class NapiCanvasFactory {
   create(width: number, height: number): CanvasAndContext {
-    const canvas = createCanvas(Math.max(1, Math.ceil(width)), Math.max(1, Math.ceil(height)));
+    if (!canvasModule) throw new Error('@napi-rs/canvas not loaded');
+    const canvas = canvasModule.createCanvas(
+      Math.max(1, Math.ceil(width)),
+      Math.max(1, Math.ceil(height)),
+    );
     const context = canvas.getContext('2d');
     return { canvas, context };
   }
@@ -57,16 +68,18 @@ class NapiCanvasFactory {
 
 let pdfjsLoader: Promise<{ getDocument: typeof getDocument }> | undefined;
 
-const installDomPolyfills = (): void => {
+const installDomPolyfills = (mod: NapiCanvasModule): void => {
   // napi-rs types are structurally close to the DOM lib but not assignable.
   if (typeof (globalThis as { DOMMatrix?: unknown }).DOMMatrix === 'undefined') {
+    const { DOMMatrix, DOMPoint, DOMRect, Path2D } = mod;
     Object.assign(globalThis, { DOMMatrix, DOMPoint, DOMRect, Path2D });
   }
 };
 
 const loadPdfJs = (): Promise<{ getDocument: typeof getDocument }> => {
   pdfjsLoader ??= (async () => {
-    installDomPolyfills();
+    canvasModule = await import('@napi-rs/canvas');
+    installDomPolyfills(canvasModule);
     // Side-effect import, same pattern as packages/file-loaders PdfLoader.
     // @ts-expect-error pdfjs worker ships without declaration files
     await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
