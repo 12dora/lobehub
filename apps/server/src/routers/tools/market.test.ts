@@ -6,11 +6,13 @@ import { marketRouter } from './market';
 const mockPreprocessLhCommand = vi.hoisted(() => vi.fn());
 const mockSandboxCallTool = vi.hoisted(() => vi.fn());
 const mockExportAndUploadFile = vi.hoisted(() => vi.fn());
+const mockInterruptSandbox = vi.hoisted(() => vi.fn());
 const mockAssertModuleEnabled = vi.hoisted(() => vi.fn(async () => undefined));
 const mockCreateSandboxService = vi.hoisted(() =>
   vi.fn(() => ({
     callTool: mockSandboxCallTool,
     exportAndUploadFile: mockExportAndUploadFile,
+    interrupt: mockInterruptSandbox,
     kind: 'market' as 'local' | 'market' | 'onlyboxes',
   })),
 );
@@ -132,6 +134,7 @@ describe('tools marketRouter', () => {
     mockCreateSandboxService.mockImplementation(() => ({
       callTool: mockSandboxCallTool,
       exportAndUploadFile: mockExportAndUploadFile,
+      interrupt: mockInterruptSandbox,
       kind: 'market' as const,
     }));
     managedSkillMocks.assertUserActive.mockResolvedValue(undefined);
@@ -896,6 +899,7 @@ describe('tools marketRouter', () => {
         mockCreateSandboxService.mockImplementation(() => ({
           callTool: mockSandboxCallTool,
           exportAndUploadFile: mockExportAndUploadFile,
+          interrupt: mockInterruptSandbox,
           kind,
         }));
         mockSandboxCallTool.mockResolvedValue({
@@ -916,6 +920,7 @@ describe('tools marketRouter', () => {
       mockCreateSandboxService.mockImplementation(() => ({
         callTool: mockSandboxCallTool,
         exportAndUploadFile: mockExportAndUploadFile,
+        interrupt: mockInterruptSandbox,
         kind: 'local' as const,
       }));
       mockSandboxCallTool.mockRejectedValue(new Error('unauthorized docker socket'));
@@ -949,6 +954,7 @@ describe('tools marketRouter', () => {
       mockCreateSandboxService.mockImplementation(() => ({
         callTool: mockSandboxCallTool,
         exportAndUploadFile: mockExportAndUploadFile,
+        interrupt: mockInterruptSandbox,
         kind: 'onlyboxes' as const,
       }));
       mockExportAndUploadFile.mockResolvedValue({
@@ -1046,6 +1052,19 @@ describe('tools marketRouter', () => {
 
       expect(mockCreateSandboxService).not.toHaveBeenCalled();
       expect(mockExportAndUploadFile).not.toHaveBeenCalled();
+    });
+
+    it('interruptSandbox calls the sandbox service interrupt for the bound topic', async () => {
+      mockInterruptSandbox.mockResolvedValue({ killed: 1 });
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+      await expect(caller.interruptSandbox({ topicId: 'topic-1' })).resolves.toEqual({
+        killed: 1,
+      });
+      expect(mockCreateSandboxService).toHaveBeenCalledWith(
+        expect.objectContaining({ topicId: 'topic-1', userId: 'user-1' }),
+      );
+      expect(mockInterruptSandbox).toHaveBeenCalledTimes(1);
     });
   });
 });

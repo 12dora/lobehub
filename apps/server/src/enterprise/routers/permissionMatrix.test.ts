@@ -56,6 +56,7 @@ const o04SystemProcedurePaths = [
   'admin.system.getInfraSettings',
   'admin.system.getInstanceRevisions',
   'admin.system.getJobs',
+  'admin.system.getSandboxPackageStats',
   'admin.system.getSandboxSettings',
   'admin.system.getStatus',
   'admin.system.retryDocumentRenderJob',
@@ -73,6 +74,7 @@ const o04SystemReadProcedurePaths = [
   'admin.system.getInfraSettings',
   'admin.system.getInstanceRevisions',
   'admin.system.getJobs',
+  'admin.system.getSandboxPackageStats',
   'admin.system.getSandboxSettings',
   'admin.system.getStatus',
 ] as const;

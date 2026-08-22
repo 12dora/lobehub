@@ -80,12 +80,23 @@ export interface SandboxPutFilesResult {
   written: string[];
 }
 
+export interface SandboxInterruptResult {
+  killed: number;
+}
+
 export interface SandboxProvider extends Pick<ISandboxService, 'callTool'> {
   readonly capabilities: SandboxProviderCapabilities;
 
   exportFileToUploadUrl: (
     request: SandboxProviderFileExportRequest,
   ) => Promise<SandboxProviderFileExportResult>;
+
+  /**
+   * Signal-level interrupt of in-container foreground process groups.
+   * Optional: remote providers no-op with `{ killed: 0 }`.
+   * Must not provision a new container or `invalidate()` an existing one.
+   */
+  interrupt?: (session: SandboxSessionContext) => Promise<SandboxInterruptResult>;
 
   readonly kind: SandboxProviderKind;
 
@@ -115,6 +126,11 @@ export interface SandboxOverLimitAttachment {
 
 export interface SandboxService extends ISandboxService {
   readonly capabilities: SandboxProviderCapabilities;
+  /**
+   * Interrupt foreground sandbox execs for this service's bound session.
+   * No-ops when the provider has no container or does not implement interrupt.
+   */
+  interrupt: () => Promise<SandboxInterruptResult>;
   readonly kind: SandboxProviderKind;
   /**
    * Internal: place over-limit / non-native attachments at collision-free

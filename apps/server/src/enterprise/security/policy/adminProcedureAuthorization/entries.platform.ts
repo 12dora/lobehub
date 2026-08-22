@@ -401,6 +401,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'query',
+    path: 'admin.system.getSandboxPackageStats',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'query',
     path: 'admin.system.getSandboxSettings',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
   },

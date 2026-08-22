@@ -4,12 +4,14 @@ import debug from 'debug';
 
 import { SandboxMiddlewareService } from '../service';
 import type {
+  SandboxInterruptResult,
   SandboxProvider,
   SandboxProviderCapabilities,
   SandboxProviderFileExportRequest,
   SandboxProviderFileExportResult,
   SandboxService,
   SandboxServiceOptions,
+  SandboxSessionContext,
 } from '../types';
 
 const log = debug('lobe-server:sandbox:market');
@@ -92,6 +94,10 @@ export class MarketSandboxProvider implements SandboxProvider {
         success: false,
       };
     }
+  }
+
+  async interrupt(_session: SandboxSessionContext): Promise<SandboxInterruptResult> {
+    return { killed: 0 };
   }
 
   async exportFileToUploadUrl({

@@ -551,4 +551,17 @@ describe('OnlyboxesSandboxProvider', () => {
     expect(setupBody.command).toContain('/legacy-skill/');
     expect(commandBody.command).toContain('/legacy-skill');
   });
+
+  it('interrupt is a no-op', async () => {
+    const { OnlyboxesSandboxProvider } = await import('./onlyboxes');
+    const provider = new OnlyboxesSandboxProvider({
+      marketService: {} as MarketService,
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
+
+    await expect(provider.interrupt({ topicId: 'topic-1', userId: 'user-1' })).resolves.toEqual({
+      killed: 0,
+    });
+  });
 });

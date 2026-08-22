@@ -11,6 +11,7 @@ import { OnlyboxesSandboxProvider } from './providers/onlyboxes';
 import { SandboxMiddlewareService } from './service';
 import type {
   LocalSandboxProviderOptions,
+  SandboxInterruptResult,
   SandboxProvider,
   SandboxProviderCapabilities,
   SandboxProviderFileExportRequest,
@@ -18,6 +19,7 @@ import type {
   SandboxPutFile,
   SandboxService,
   SandboxServiceOptions,
+  SandboxSessionContext,
 } from './types';
 
 const LOCAL_SANDBOX_CAPABILITIES = {
@@ -187,6 +189,12 @@ class DispatchingSandboxProvider implements SandboxProvider {
   async exportFileToUploadUrl(request: SandboxProviderFileExportRequest) {
     const provider = await this.resolve();
     return provider.exportFileToUploadUrl(request);
+  }
+
+  async interrupt(session: SandboxSessionContext): Promise<SandboxInterruptResult> {
+    const provider = await this.resolve();
+    if (typeof provider.interrupt !== 'function') return { killed: 0 };
+    return provider.interrupt(session);
   }
 
   private async resolve(): Promise<SandboxProvider> {

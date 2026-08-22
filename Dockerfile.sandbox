@@ -37,14 +37,26 @@ RUN apt-get update \
 RUN pip install --no-cache-dir --upgrade pip \
   && pip install --no-cache-dir \
     beautifulsoup4 \
+    chardet \
+    lxml \
     matplotlib \
     numpy \
     openpyxl \
     pandas \
+    pdfplumber \
+    pillow \
+    pymupdf \
     pypdf \
+    python-dateutil \
     python-docx \
     python-pptx \
-    requests
+    pyyaml \
+    reportlab \
+    requests \
+    scipy \
+    tabulate \
+    xlrd \
+    xlsxwriter
 
 RUN useradd --uid 1000 --create-home --shell /bin/bash sandbox \
   && mkdir -p /mnt/data \

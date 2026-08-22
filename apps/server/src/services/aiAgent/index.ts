@@ -174,6 +174,7 @@ import { FileService } from '@/server/services/file';
 import { resolveAttachmentsByFileIds } from '@/server/services/file/resolveAttachments';
 import type { ConversationHistoryEntry } from '@/server/services/heterogeneousAgent/cloudHeteroContext';
 import { MarketService } from '@/server/services/market';
+import { createSandboxService } from '@/server/services/sandbox';
 import { markdownToTxt } from '@/utils/markdownToTxt';
 
 import { resolveDeviceAccessPolicy } from './deviceAccessPolicy';
@@ -5203,6 +5204,8 @@ export class AiAgentService {
           )
           .catch((err) => log('interruptTask: cancelHeteroTask dispatch failed: %O', err));
       }
+
+      void this.interruptSandboxSession(topicId);
     }
 
     // 3. Interrupt the runtime operation first. Only mark the thread cancelled
@@ -5240,5 +5243,23 @@ export class AiAgentService {
       success: true,
       threadId: thread?.id,
     };
+  }
+
+  /**
+   * Signal-level interrupt of a Cloud Sandbox foreground exec for this topic.
+   * Never fails the parent interrupt: missing module/provider/container is a no-op.
+   */
+  private async interruptSandboxSession(topicId: string): Promise<void> {
+    try {
+      const sandbox = createSandboxService({
+        marketService: this.marketService,
+        serverDB: this.db,
+        topicId,
+        userId: this.userId,
+      });
+      await sandbox.interrupt();
+    } catch (error) {
+      log('interruptTask: sandbox interrupt failed: %O', error);
+    }
   }
 }

@@ -56,6 +56,7 @@ const prefixes = {
   platformManagedResourcePolicies: 'pmrp',
   networkProxySubscriptions: 'nps',
   platformResourceRevisions: 'prev',
+  platformSandboxPackageInstalls: 'pspi',
   platformSkills: 'pskl',
   platformSkillVersions: 'pskv',
   platformUserConnectorBindings: 'pucb',

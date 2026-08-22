@@ -307,7 +307,10 @@ export class FakeDockerEngine {
           WorkingDir?: string;
         };
         const execId = `exec-${randomUUID().slice(0, 12)}`;
-        const hanging = isHangCommand(body.Cmd) && body.Cmd[0] !== 'timeout';
+        const inner = unwrapForegroundExec(body.Cmd) ?? body.Cmd;
+        const hanging =
+          isBlockCommand(body.Cmd) ||
+          (isHangCommand(inner) && inner[0] !== 'timeout' && !isForegroundTimeoutWrap(body.Cmd));
         this.execs.set(execId, {
           cmd: body.Cmd,
           containerId: container.id,
@@ -426,9 +429,12 @@ export class FakeDockerEngine {
       }
 
       const killed = tryKill(exec, container, this.execs, this.hangingResponses);
-      if (killed) {
+      if (killed.handled) {
+        exec.running = false;
         res.writeHead(200, { 'Content-Type': 'application/vnd.docker.raw-stream' });
-        res.end();
+        const frames: Buffer[] = [];
+        if (killed.stdout) frames.push(muxFrame(1, killed.stdout));
+        res.end(frames.length ? Buffer.concat(frames) : Buffer.alloc(0));
         return;
       }
 
@@ -452,6 +458,18 @@ const isHangCommand = (cmd: string[]) => {
   return joined.includes('HANG') || /\bsleep\s+(?:999|2147483647|infinity)\b/.test(joined);
 };
 
+const isBlockCommand = (cmd: string[]) => cmd.join(' ').includes('BLOCK');
+
+const isForegroundTimeoutWrap = (cmd: string[]) =>
+  cmd[0] === 'sh' && cmd[1] === '-c' && (cmd[2] ?? '').includes('exec timeout');
+
+const unwrapForegroundExec = (cmd: string[]): string[] | undefined => {
+  if (!isForegroundTimeoutWrap(cmd)) return undefined;
+  const dd = cmd.indexOf('--');
+  if (dd === -1) return undefined;
+  return cmd.slice(dd + 1);
+};
+
 const tryKill = (
   exec: FakeExec,
   _container: FakeContainer,
@@ -459,22 +477,61 @@ const tryKill = (
   hanging: Map<string, ServerResponse>,
 ) => {
   const cmd = exec.cmd;
-  if (cmd[0] !== 'kill') return false;
-  const pid = Number(cmd.at(-1));
-  if (!Number.isFinite(pid)) return true;
+  if (cmd[0] === 'kill') {
+    const pid = Number(cmd.at(-1));
+    if (!Number.isFinite(pid)) return { handled: true, stdout: '' };
+    killHangingByPid(pid, execs, hanging, 137);
+    return { handled: true, stdout: '' };
+  }
 
+  const script = extractShellScript(cmd);
+  if (!script?.includes('/tmp/lobe-fg-') || !script.includes('kill -TERM')) {
+    return { handled: false, stdout: '' };
+  }
+
+  let killed = 0;
+  for (const other of execs.values()) {
+    if (other.id === exec.id) continue;
+    if (!other.hanging && !other.running) continue;
+    other.running = false;
+    other.hanging = false;
+    other.exitCode = 143;
+    const res = hanging.get(other.id);
+    if (res) {
+      res.end();
+      hanging.delete(other.id);
+    }
+    killed += 1;
+  }
+  exec.exitCode = 0;
+  return { handled: true, stdout: `${killed}\n` };
+};
+
+const killHangingByPid = (
+  pid: number,
+  execs: Map<string, FakeExec>,
+  hanging: Map<string, ServerResponse>,
+  exitCode: number,
+) => {
   for (const other of execs.values()) {
     if (other.pid !== pid) continue;
     other.running = false;
     other.hanging = false;
-    other.exitCode = 137;
+    other.exitCode = exitCode;
     const res = hanging.get(other.id);
     if (res) {
       res.end();
       hanging.delete(other.id);
     }
   }
-  return true;
+};
+
+const extractShellScript = (cmd: string[]): string | undefined => {
+  const inner = unwrapForegroundExec(cmd) ?? (cmd[0] === 'timeout' ? unwrapTimeout(cmd) : cmd);
+  if (inner[0] === 'sh' && (inner[1] === '-c' || inner[1] === '-lc')) {
+    return inner.slice(2).join(' ');
+  }
+  return undefined;
 };
 
 const unwrapTimeout = (cmd: string[]): string[] => {
@@ -493,6 +550,15 @@ const runExec = (
   container: FakeContainer,
   missingInterpreters: Set<string>,
 ): { exitCode: number; stderr: string; stdout: string } => {
+  const unwrappedFg = unwrapForegroundExec(exec.cmd);
+  if (unwrappedFg) {
+    if (isHangCommand(unwrappedFg) && !unwrappedFg.join(' ').includes('echo $!')) {
+      exec.exitCode = 124;
+      return { exitCode: 124, stderr: 'timeout: sending signal KILL\n', stdout: '' };
+    }
+    return runExec({ ...exec, cmd: unwrappedFg }, container, missingInterpreters);
+  }
+
   if (exec.cmd[0] === 'timeout') {
     const inner = unwrapTimeout(exec.cmd);
     if (isHangCommand(inner)) {

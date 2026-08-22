@@ -18,6 +18,7 @@ import type {
   SubAgentTask,
 } from '@lobechat/agent-runtime';
 import { UsageCounter } from '@lobechat/agent-runtime';
+import { CloudSandboxIdentifier } from '@lobechat/builtin-tool-cloud-sandbox';
 import { countContextTokens, type ToolsEngine } from '@lobechat/context-engine';
 import { chainCompressContext } from '@lobechat/prompts';
 import {
@@ -39,6 +40,7 @@ import { LOADING_FLAT } from '@/const/message';
 import { aiAgentService } from '@/services/aiAgent';
 import { chatService } from '@/services/chat';
 import { type ResolvedAgentConfig } from '@/services/chat/mecha';
+import { cloudSandboxService } from '@/services/cloudSandbox';
 import { messageService } from '@/services/message';
 import { type ChatStore } from '@/store/chat/store';
 import { getCompressionCandidateMessageIds } from '@/store/chat/utils/compression';
@@ -974,6 +976,12 @@ export const createAgentExecutors = (context: {
         // Register cancel handler: Just update message (message already exists)
         context.get().onOperationCancel(executeToolOpId, async () => {
           log('[%s][call_tool] executeToolCall cancelled, updating message', sessionLogId);
+
+          if (chatToolPayload.identifier === CloudSandboxIdentifier && opContext.topicId) {
+            void cloudSandboxService.interrupt(opContext.topicId).catch((error) => {
+              log('[%s][call_tool] sandbox interrupt failed: %O', sessionLogId, error);
+            });
+          }
 
           // Update message to aborted state (cleanup strategy)
           await Promise.all([

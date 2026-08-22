@@ -1039,4 +1039,33 @@ export const marketRouter = router({
         } as ExportAndUploadFileResult;
       }
     }),
+
+  /**
+   * Signal-level interrupt of a Cloud Sandbox foreground exec for this topic.
+   * Does not remove the container. No-ops when no session exists.
+   */
+  interruptSandbox: managedSkillExecutionProcedure
+    .input(z.object({ topicId: z.string() }).strict())
+    .mutation(async ({ input, ctx }) => {
+      log('interruptSandbox: topicId=%s', input.topicId);
+      try {
+        await assertModuleEnabled('sandbox');
+        const sandboxService = createSandboxService({
+          fileService: ctx.fileService,
+          marketService: ctx.marketService,
+          serverDB: ctx.serverDB,
+          topicId: input.topicId,
+          userId: ctx.userId,
+        });
+        return await sandboxService.interrupt();
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        log('interruptSandbox failed: %O', error);
+        throw new TRPCError({
+          cause: error,
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to interrupt sandbox',
+        });
+      }
+    }),
 });

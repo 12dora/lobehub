@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import type { SandboxCallToolResult } from '@lobechat/builtin-tool-cloud-sandbox';
 import { isRecord } from '@lobechat/utils';
 import debug from 'debug';
@@ -5,6 +7,7 @@ import { sha256 } from 'js-sha256';
 
 import type {
   LocalSandboxProviderOptions,
+  SandboxInterruptResult,
   SandboxProvider,
   SandboxProviderCapabilities,
   SandboxProviderFileExportRequest,
@@ -15,6 +18,8 @@ import type {
 } from '../../types';
 import { SANDBOX_PUT_FILES_MAX_FILE_BYTES, SANDBOX_PUT_FILES_MAX_TOTAL_BYTES } from '../../types';
 import {
+  COMMAND_INTERRUPTED_MESSAGE,
+  DEFAULT_BACKGROUND_TIMEOUT_SEC,
   DEFAULT_DISK_MB,
   DEFAULT_IDLE_TTL_SEC,
   DEFAULT_MAX_CONTAINERS,
@@ -25,6 +30,8 @@ import {
   DEFAULT_PIDS_LIMIT,
   DEFAULT_SANDBOX_IMAGE,
   DEFAULT_TIMEOUT_MS,
+  EXEC_SIGNAL_KILL_EXIT_CODE,
+  EXEC_SIGNAL_TERM_EXIT_CODE,
   EXEC_TIMEOUT_EXIT_CODE,
   SANDBOX_TMP,
   SANDBOX_USER,
@@ -51,7 +58,13 @@ import {
   type SandboxSessionRecord,
 } from './supervisor';
 import { asWebReadable, createTarFileExtractStream, packTarFiles } from './tarArchive';
-import { httpWatchdogMs, wrapWithCoreutilsTimeout } from './timeoutWrap';
+import {
+  buildForegroundInterruptScript,
+  httpWatchdogMs,
+  TIMEOUT_KILL_AFTER_SEC,
+  wrapForegroundExec,
+  wrapWithCoreutilsTimeout,
+} from './timeoutWrap';
 
 const log = debug('lobe-server:sandbox:local');
 
@@ -395,6 +408,34 @@ export class LocalSandboxProvider implements SandboxProvider {
     return { failed, written };
   }
 
+  /**
+   * Signal-level interrupt of foreground process groups. Keeps the container
+   * (workspace `/mnt/data` and installed packages survive). Does not kill
+   * detached background jobs (`/tmp/lobe-bg-*.pid`).
+   */
+  async interrupt(session: SandboxSessionContext): Promise<SandboxInterruptResult> {
+    const record = await this.supervisor.peekSession(session);
+    if (!record?.containerId) return { killed: 0 };
+
+    record.interruptedAt = Date.now();
+
+    try {
+      const result = await this.execInContainer(
+        record,
+        session,
+        ['sh', '-lc', buildForegroundInterruptScript()],
+        15_000,
+        SANDBOX_WORKSPACE,
+        { trackForeground: false },
+      );
+      const killed = Number.parseInt(result.stdout.trim(), 10);
+      return { killed: Number.isFinite(killed) && killed > 0 ? killed : 0 };
+    } catch (error) {
+      log('local sandbox interrupt failed: %O', error);
+      return { killed: 0 };
+    }
+  }
+
   private async executeCode(params: Record<string, unknown>): Promise<SandboxCallToolResult> {
     const code = String(params.code || '');
     const language = String(params.language || 'python');
@@ -418,6 +459,7 @@ export class LocalSandboxProvider implements SandboxProvider {
         ['sh', '-c', `printf '%s' "$1" > "$2"`, 'lobe-write', code, filePath],
         timeoutMs,
       );
+      if (write.interrupted) return this.interruptedResult(write);
       if (write.exitCode !== 0) {
         return this.errorResult(
           write.stderr || write.stdout || 'Failed to write TypeScript source',
@@ -429,6 +471,7 @@ export class LocalSandboxProvider implements SandboxProvider {
     }
 
     const result = await this.execCapture(cmd, timeoutMs);
+    if (result.interrupted) return this.interruptedResult(result);
     return {
       result: {
         error: result.exitCode === 0 ? undefined : result.stderr,
@@ -453,6 +496,7 @@ export class LocalSandboxProvider implements SandboxProvider {
       this.timeout(params),
       SANDBOX_WORKSPACE,
     );
+    if (result.interrupted) return this.interruptedResult(result, { commandId: result.execId });
     return {
       result: {
         commandId: result.execId,
@@ -474,7 +518,9 @@ export class LocalSandboxProvider implements SandboxProvider {
     const stdoutFile = `${SANDBOX_TMP}/lobe-bg-${id}.stdout`;
     const stderrFile = `${SANDBOX_TMP}/lobe-bg-${id}.stderr`;
     const pidFile = `${SANDBOX_TMP}/lobe-bg-${id}.pid`;
-    const wrapped = `( ${command} ) >${this.shellQuote(stdoutFile)} 2>${this.shellQuote(stderrFile)} & echo $! >${this.shellQuote(pidFile)}`;
+    // Detached jobs are not signalled by interrupt(); cap them so they cannot
+    // outlive GNU timeout the way a bare `&` would (idle reaper is 30 min).
+    const wrapped = `( timeout -k ${TIMEOUT_KILL_AFTER_SEC} ${DEFAULT_BACKGROUND_TIMEOUT_SEC} sh -c ${this.shellQuote(command)} ) >${this.shellQuote(stdoutFile)} 2>${this.shellQuote(stderrFile)} & echo $! >${this.shellQuote(pidFile)}`;
     const result = await this.execCapture(['sh', '-lc', wrapped], timeoutMs, SANDBOX_WORKSPACE);
 
     if (result.exitCode !== 0) {
@@ -555,6 +601,7 @@ export class LocalSandboxProvider implements SandboxProvider {
     const setupCommand = this.buildSkillSetupCommand({ skillZipUrls, workspaceDir });
     const setup = await this.execCapture(['sh', '-lc', setupCommand], timeoutMs);
 
+    if (setup.interrupted) return this.interruptedResult(setup);
     if (setup.exitCode !== 0) {
       return {
         error: { message: setup.stderr || setup.stdout || 'Failed to prepare skill resources' },
@@ -575,6 +622,7 @@ export class LocalSandboxProvider implements SandboxProvider {
       timeoutMs,
     );
 
+    if (result.interrupted) return this.interruptedResult(result, { commandId: result.execId });
     return {
       result: {
         commandId: result.execId,
@@ -689,8 +737,13 @@ export class LocalSandboxProvider implements SandboxProvider {
     cmd: string[],
     timeoutMs: number,
     workingDir = SANDBOX_WORKSPACE,
+    options?: { trackForeground?: boolean },
   ) {
-    const wrapped = wrapWithCoreutilsTimeout(cmd, timeoutMs);
+    const execStartedAt = Date.now();
+    const trackForeground = options?.trackForeground !== false;
+    const wrapped = trackForeground
+      ? wrapForegroundExec(cmd, timeoutMs, nextForegroundMarkerId())
+      : wrapWithCoreutilsTimeout(cmd, timeoutMs);
     const created = await this.client.execCreate(record.containerId, {
       AttachStderr: true,
       AttachStdout: true,
@@ -716,6 +769,22 @@ export class LocalSandboxProvider implements SandboxProvider {
     let stderr = capOutput(started.stderr.toString('utf8'), this.engine.maxOutputBytes, false);
     let exitCode = inspect.ExitCode ?? (started.timedOut ? EXEC_TIMEOUT_EXIT_CODE : 1);
 
+    const interruptRequested =
+      typeof record.interruptedAt === 'number' && record.interruptedAt >= execStartedAt;
+    const signaled =
+      exitCode === EXEC_SIGNAL_TERM_EXIT_CODE ||
+      exitCode === EXEC_SIGNAL_KILL_EXIT_CODE ||
+      (inspect.ExitCode == null && !started.timedOut);
+    const interrupted = interruptRequested && (signaled || started.timedOut);
+
+    if (interrupted) {
+      stderr = joinStderr(stderr, COMMAND_INTERRUPTED_MESSAGE);
+      if (inspect.ExitCode == null && !started.timedOut) {
+        exitCode = EXEC_SIGNAL_TERM_EXIT_CODE;
+      }
+      return { execId: created.Id, exitCode, interrupted: true, stderr, stdout };
+    }
+
     if (started.timedOut) {
       exitCode = EXEC_TIMEOUT_EXIT_CODE;
       stderr = joinStderr(stderr, `command timed out after ${timeoutMs}ms`);
@@ -724,7 +793,30 @@ export class LocalSandboxProvider implements SandboxProvider {
       stderr = joinStderr(stderr, `command timed out after ${timeoutMs}ms`);
     }
 
-    return { execId: created.Id, exitCode, stderr, stdout };
+    return { execId: created.Id, exitCode, interrupted: false, stderr, stdout };
+  }
+
+  private interruptedResult(
+    result: {
+      execId: string;
+      exitCode: number;
+      stderr: string;
+      stdout: string;
+    },
+    extra: Record<string, unknown> = {},
+  ): SandboxCallToolResult {
+    return {
+      result: {
+        ...extra,
+        exitCode: result.exitCode,
+        interrupted: true,
+        output: result.stdout,
+        stderr: result.stderr,
+        stdout: result.stdout,
+        success: false,
+      },
+      success: false,
+    };
   }
 
   private requireSession(): LocalSandboxSession {
@@ -867,6 +959,8 @@ const isDiskQuota = (error: unknown) => {
   if (!(error instanceof Error)) return false;
   return /ENOSPC|no space left|disk quota/i.test(error.message);
 };
+
+const nextForegroundMarkerId = (): string => `fg-${randomBytes(5).toString('hex')}`;
 
 const parseSandboxUser = (user: string): [uid: number, gid: number] => {
   const [uidRaw, gidRaw] = user.split(':');

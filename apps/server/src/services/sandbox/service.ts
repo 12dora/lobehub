@@ -9,6 +9,7 @@ import {
 import debug from 'debug';
 import { sha256 } from 'js-sha256';
 
+import { getServerDB } from '@/database/core/db-adaptor';
 import { FileModel } from '@/database/models/file';
 
 import {
@@ -22,9 +23,11 @@ import {
   sandboxAttachmentSyncMarker,
   type SandboxInitDownload,
 } from './bootstrap';
+import { recordSandboxPackageInstalls } from './packageLedger';
 import { mapWithConcurrency } from './pool';
 import type {
   SandboxCommandResult,
+  SandboxInterruptResult,
   SandboxOverLimitAttachment,
   SandboxProvider,
   SandboxProviderCapabilities,
@@ -37,6 +40,8 @@ import type {
 import { SANDBOX_PUT_FILES_MAX_FILE_BYTES, SANDBOX_PUT_FILES_MAX_TOTAL_BYTES } from './types';
 
 const log = debug('lobe-server:sandbox:service');
+
+const LEDGER_TOOL_NAMES = new Set(['executeCode', 'execScript', 'runCommand']);
 
 export class SandboxMiddlewareService implements SandboxService {
   readonly capabilities: SandboxProviderCapabilities;
@@ -58,7 +63,22 @@ export class SandboxMiddlewareService implements SandboxService {
   ): Promise<SandboxCallToolResult> {
     return this.withLocalSession(async () => {
       await this.ensureFilesInitialized();
+      if (LEDGER_TOOL_NAMES.has(toolName) && this.options.userId) {
+        // Package-install ledger (admin "frequently installed packages"); never throws.
+        const db = this.options.serverDB ?? (await getServerDB());
+        void recordSandboxPackageInstalls(db, { params, toolName, userId: this.options.userId });
+      }
       return this.provider.callTool(toolName, params);
+    });
+  }
+
+  async interrupt(): Promise<SandboxInterruptResult> {
+    return this.withLocalSession(async () => {
+      if (typeof this.provider.interrupt !== 'function') return { killed: 0 };
+      return this.provider.interrupt({
+        topicId: this.options.topicId,
+        userId: this.options.userId,
+      });
     });
   }
 

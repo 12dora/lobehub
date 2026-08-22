@@ -30,6 +30,14 @@ class CloudSandboxService {
   }
 
   /**
+   * Signal-level interrupt of a Cloud Sandbox foreground exec for this topic.
+   * Fire-and-forget from the client cancel path; the container is kept.
+   */
+  async interrupt(topicId: string): Promise<{ killed: number }> {
+    return toolsClient.market.interruptSandbox.mutate({ topicId });
+  }
+
+  /**
    * Export a file from sandbox and upload to S3, then create a persistent file record
    * This is a single call that combines: getUploadUrl + callTool(exportFile) + createFileRecord
    * Returns a permanent /f/:id URL instead of a temporary pre-signed URL

@@ -5,4 +5,8 @@ export { LocalSandboxProvider } from './localSandboxProvider';
 export { resolveSandboxPath } from './paths';
 export { runWithLocalSandboxSession } from './sessionContext';
 export { getLocalSandboxSupervisor, resetLocalSandboxSupervisors, sessionKey } from './supervisor';
-export { wrapWithCoreutilsTimeout } from './timeoutWrap';
+export {
+  buildForegroundInterruptScript,
+  wrapForegroundExec,
+  wrapWithCoreutilsTimeout,
+} from './timeoutWrap';

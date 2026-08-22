@@ -203,4 +203,18 @@ describe('MarketSandboxProvider', () => {
       expect(redacted.command).toBe('[redacted sandbox download command]');
     });
   });
+
+  it('interrupt is a no-op that does not call Market', async () => {
+    const marketService = createMarketService({ success: true });
+    const provider = new MarketSandboxProvider({
+      marketService,
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
+
+    await expect(provider.interrupt({ topicId: 'topic-1', userId: 'user-1' })).resolves.toEqual({
+      killed: 0,
+    });
+    expect(marketService.getSDK).not.toHaveBeenCalled();
+  });
 });

@@ -104,10 +104,11 @@ describe('admin procedure authorization registry', () => {
     // getDocumentRenderStatus, updateDocumentRenderSettings, retryDocumentRenderJob,
     // cancelDocumentRenderJob, runDocumentRenderGc} (Gotenberg document-render settings,
     // status, queue, and artifact GC).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(241);
+    // +1 query since: admin.system.getSandboxPackageStats (sandbox pip/npm/apt ledger).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(242);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(108);
+    ).toHaveLength(109);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
     ).toHaveLength(133);
@@ -239,7 +240,7 @@ describe('admin procedure authorization registry', () => {
     const systemEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ path }) =>
       path.startsWith('admin.system.'),
     );
-    expect(systemEntries).toHaveLength(19);
+    expect(systemEntries).toHaveLength(20);
     expect(
       systemEntries.map((entry) =>
         'permission' in entry ? [entry.path, entry.permission.permissions[0]] : [entry.path, null],
@@ -253,6 +254,7 @@ describe('admin procedure authorization registry', () => {
       ['admin.system.getInfraSettings', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getInstanceRevisions', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getJobs', PLATFORM_PERMISSIONS.SYSTEM_READ],
+      ['admin.system.getSandboxPackageStats', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getSandboxSettings', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getStatus', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.prepareRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],

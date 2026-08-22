@@ -122,4 +122,33 @@ describe('SandboxMiddlewareService', () => {
     expect(fileService.getFileMetadata).not.toHaveBeenCalled();
     expect(fileService.createFileRecord).not.toHaveBeenCalled();
   }, 15_000);
+
+  it('forwards interrupt through withLocalSession', async () => {
+    const interrupt = vi.fn(async () => ({ killed: 3 }));
+    const provider = {
+      capabilities: {
+        backgroundCommands: true,
+        exportFile: true,
+        files: true,
+        languages: ['python'],
+        persistentSession: true,
+        shell: true,
+        skillScripts: true,
+      },
+      callTool: vi.fn(),
+      exportFileToUploadUrl: vi.fn(),
+      interrupt,
+      kind: 'local',
+    } satisfies SandboxProvider;
+
+    const { SandboxMiddlewareService } = await import('../service');
+    const service = new SandboxMiddlewareService(provider, {
+      marketService: {} as MarketService,
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
+
+    await expect(service.interrupt()).resolves.toEqual({ killed: 3 });
+    expect(interrupt).toHaveBeenCalledWith({ topicId: 'topic-1', userId: 'user-1' });
+  });
 });

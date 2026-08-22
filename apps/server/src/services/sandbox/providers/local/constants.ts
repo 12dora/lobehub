@@ -3,6 +3,14 @@ export const DEFAULT_DOCKER_SOCKET = '/var/run/docker.sock';
 export const DEFAULT_IDLE_TTL_SEC = 1800;
 export const DEFAULT_MAX_CONTAINERS = 8;
 export const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * Hard cap for detached (`background: true`) jobs. They are not under the
+ * foreground GNU `timeout` wrap and are not signalled by `interrupt`.
+ */
+export const DEFAULT_BACKGROUND_TIMEOUT_SEC = 600;
+export const EXEC_SIGNAL_TERM_EXIT_CODE = 143;
+export const EXEC_SIGNAL_KILL_EXIT_CODE = 137;
+export const COMMAND_INTERRUPTED_MESSAGE = 'command interrupted by user';
 export const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576;
 export const DEFAULT_MEMORY_BYTES = 1024 * 1024 * 1024;
 export const DEFAULT_PIDS_LIMIT = 256;

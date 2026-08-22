@@ -9,11 +9,13 @@ import { appEnv } from '@/envs/app';
 import { sandboxEnv } from '@/envs/sandbox';
 
 import type {
+  SandboxInterruptResult,
   SandboxProvider,
   SandboxProviderCapabilities,
   SandboxProviderFileExportRequest,
   SandboxProviderFileExportResult,
   SandboxServiceOptions,
+  SandboxSessionContext,
 } from '../types';
 
 const log = debug('lobe-server:sandbox:onlyboxes');
@@ -171,6 +173,10 @@ export class OnlyboxesSandboxProvider implements SandboxProvider {
       log('Onlyboxes tool %s failed: %O', toolName, error);
       return this.errorResult((error as Error).message, (error as Error).name);
     }
+  }
+
+  async interrupt(_session: SandboxSessionContext): Promise<SandboxInterruptResult> {
+    return { killed: 0 };
   }
 
   async exportFileToUploadUrl({

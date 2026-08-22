@@ -31,6 +31,7 @@ class MockLocalSandboxProvider {
 
   callTool = vi.fn(async () => ({ result: { exitCode: 0 }, success: true }));
   exportFileToUploadUrl = vi.fn();
+  interrupt = vi.fn(async () => ({ killed: 0 }));
 }
 
 vi.mock('../providers/local', () => ({
@@ -271,5 +272,22 @@ describe('sandbox service factory', () => {
     expect(service.kind).toBe('onlyboxes');
     expect(service.capabilities.languages).toEqual(['python', 'javascript', 'typescript']);
     expect(MockLocalSandboxProvider.instances).toHaveLength(0);
+  });
+
+  it('forwards interrupt to the resolved provider without creating a new session', async () => {
+    vi.doMock('@/envs/sandbox', () => ({
+      sandboxEnv: defaultLocalEnv,
+    }));
+
+    const { createSandboxService } = await import('../factory');
+    const service = createSandboxService(baseOptions);
+    await service.callTool('runCommand', { command: 'true' });
+
+    MockLocalSandboxProvider.instances[0]!.interrupt.mockResolvedValue({ killed: 2 });
+    await expect(service.interrupt()).resolves.toEqual({ killed: 2 });
+    expect(MockLocalSandboxProvider.instances[0]!.interrupt).toHaveBeenCalledWith({
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
   });
 });

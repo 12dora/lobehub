@@ -7,6 +7,8 @@ export {
   resetEffectiveSandboxSettingsForTest,
   settingsFromEnv,
 } from './effective';
+export { getSandboxPackageStats } from './packageStats';
+export type { GetSandboxPackageStatsInput } from './packageStats';
 export type { SandboxSettingsView } from './settingsService';
 export {
   getSandboxSettingsView,

@@ -21,6 +21,8 @@ import {
   adminSystemGetInstanceRevisionsOutputSchema,
   adminSystemGetJobsInputSchema,
   adminSystemGetJobsOutputSchema,
+  adminSystemGetSandboxPackageStatsInputSchema,
+  adminSystemGetSandboxPackageStatsOutputSchema,
   adminSystemGetSandboxSettingsOutputSchema,
   adminSystemGetStatusOutputSchema,
   adminSystemPrepareRestartInputSchema,
@@ -92,6 +94,7 @@ import {
 import { invalidateInfraHealthMemo } from '../../services/platformSystem/infraHealthMemo';
 import { InfraSettingsService } from '../../services/platformSystem/infraSettingsService';
 import {
+  getSandboxPackageStats,
   getSandboxSettingsView,
   SANDBOX_SETTINGS_AUDIT_ACTION,
   SANDBOX_SETTINGS_AUDIT_TARGET_TYPE,
@@ -338,6 +341,14 @@ export const adminSystemRouter = router({
     .output(adminSystemGetJobsOutputSchema)
     .query(({ ctx, input }) =>
       executePlatformSystem(() => new PlatformSystemAdminService(ctx.serverDB).getJobs(input)),
+    ),
+
+  getSandboxPackageStats: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_READ))
+    .input(adminSystemGetSandboxPackageStatsInputSchema)
+    .output(adminSystemGetSandboxPackageStatsOutputSchema)
+    .query(({ ctx, input }) =>
+      executePlatformSystem(() => getSandboxPackageStats(ctx.serverDB, input)),
     ),
 
   getSandboxSettings: platformSystemBase

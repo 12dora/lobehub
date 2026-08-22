@@ -17,6 +17,8 @@ import type {
   adminSystemGetInstanceRevisionsOutputSchema,
   AdminSystemGetJobsInput,
   adminSystemGetJobsOutputSchema,
+  AdminSystemGetSandboxPackageStatsInput,
+  adminSystemGetSandboxPackageStatsOutputSchema,
   adminSystemGetSandboxSettingsOutputSchema,
   adminSystemGetStatusOutputSchema,
   AdminSystemRetryJobInput,
@@ -65,7 +67,21 @@ export interface AdminInfraSettingsService {
   ) => Promise<AdminSystemUpdateInfraSettingsOutput>;
 }
 
+/**
+ * The sandbox package-install ledger: what users reached for with pip/npm/apt inside the sandbox,
+ * so the image's preinstall list can be decided from evidence rather than guesswork.
+ */
+export type AdminSystemSandboxPackageStats = z.infer<
+  typeof adminSystemGetSandboxPackageStatsOutputSchema
+>;
+/** One (manager, package) pair counted over the window. */
+export type AdminSystemSandboxPackageStat = AdminSystemSandboxPackageStats['items'][number];
+
 export interface AdminSandboxSettingsService {
+  /** Read-only ledger; `days` and `limit` fall back to the contract defaults (30 / 20). */
+  getSandboxPackageStats: (
+    input?: AdminSystemGetSandboxPackageStatsInput,
+  ) => Promise<AdminSystemSandboxPackageStats>;
   getSandboxSettings: () => Promise<AdminSystemSandboxSettings>;
   updateSandboxSettings: (
     input: AdminSystemUpdateSandboxSettingsInput,
@@ -169,6 +185,9 @@ class AdminSystemServiceImpl
 
   getJobs = (input?: AdminSystemGetJobsInput) => lambdaClient.admin.system.getJobs.query(input);
 
+  getSandboxPackageStats = (input?: AdminSystemGetSandboxPackageStatsInput) =>
+    lambdaClient.admin.system.getSandboxPackageStats.query(input);
+
   getSandboxSettings = () => lambdaClient.admin.system.getSandboxSettings.query();
 
   getStatus = () => lambdaClient.admin.system.getStatus.query();
@@ -201,6 +220,7 @@ export type {
   AdminSystemCancelJobInput,
   AdminSystemGetInstanceRevisionsInput,
   AdminSystemGetJobsInput,
+  AdminSystemGetSandboxPackageStatsInput,
   AdminSystemRetryJobInput,
   AdminSystemTestDependencyInput,
   AdminSystemUpdateDocumentRenderSettingsInput,

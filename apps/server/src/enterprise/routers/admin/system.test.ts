@@ -13,6 +13,7 @@ import {
   platformIdentityProviderRestartRequests,
   platformInfraSettings,
   platformJobs,
+  platformSandboxPackageInstalls,
   platformSandboxSettings,
   rolePermissions,
   roles,
@@ -115,6 +116,7 @@ const cleanup = async () => {
   await db.delete(platformIdentityProviderInstances);
   await db.delete(platformJobs);
   await db.delete(platformInfraSettings);
+  await db.delete(platformSandboxPackageInstalls);
   await db.delete(platformSandboxSettings);
   await db.delete(platformDocumentRenderSettings);
   await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
@@ -497,6 +499,35 @@ describe('admin.system operations gate', () => {
         expectedRevision: 0,
       }),
     ).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'PLATFORM_PERMISSION_DENIED',
+    });
+  });
+
+  it('lets a system reader load sandbox package stats and denies an unrelated reader', async () => {
+    await db.insert(platformSandboxPackageInstalls).values({
+      installCount: 2,
+      manager: 'pip',
+      package: 'requests',
+      userId: ids.operator,
+    });
+    const operator = await callerFor(ids.operator);
+    await expect(operator.getSandboxPackageStats({})).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({
+          installs: 2,
+          manager: 'pip',
+          package: 'requests',
+          preinstalled: true,
+          users: 1,
+        }),
+      ],
+      totalPackages: 1,
+      windowDays: 30,
+    });
+
+    const reader = await callerFor(ids.reader);
+    await expect(reader.getSandboxPackageStats({})).rejects.toMatchObject({
       code: 'FORBIDDEN',
       message: 'PLATFORM_PERMISSION_DENIED',
     });

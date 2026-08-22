@@ -149,8 +149,12 @@ describe('LocalSandboxProvider', () => {
 
     await provider.callTool('runCommand', { command: 'echo ok', timeout: 999_000 });
 
-    const exec = [...fake.execs.values()].find((item) => item.cmd[0] === 'timeout');
-    expect(exec?.cmd.slice(0, 4)).toEqual(['timeout', '-k', '5', '1']);
+    const exec = [...fake.execs.values()].find((item) =>
+      (item.cmd[2] ?? '').includes('exec timeout'),
+    );
+    expect(exec?.cmd[0]).toBe('sh');
+    expect(exec?.cmd[2]).toContain('timeout -k 5 1 ');
+    expect(exec?.cmd.slice(-3)).toEqual(['sh', '-lc', 'echo ok']);
   });
 
   it('honours in-container timeout for hanging commands without host-PID kill', async () => {
@@ -511,6 +515,91 @@ describe('LocalSandboxProvider', () => {
     } finally {
       putArchive.mockRestore();
     }
+  });
+
+  it('returns killed 0 when interrupt finds no container', async () => {
+    const fake = await start();
+    const provider = new LocalSandboxProvider(engineOptions(fake.socketPath));
+
+    await expect(provider.interrupt({ topicId: 'topic-1', userId: 'user-1' })).resolves.toEqual({
+      killed: 0,
+    });
+    expect(fake.containers.size).toBe(0);
+  });
+
+  it('interrupt runs the foreground kill script and does not remove the container', async () => {
+    const fake = await start();
+    const provider = new LocalSandboxProvider(engineOptions(fake.socketPath));
+    const session = { topicId: 'topic-1', userId: 'user-1' };
+
+    await provider.callTool('runCommand', { command: 'echo ok' });
+    expect(fake.containers.size).toBe(1);
+
+    const result = await provider.interrupt(session);
+    expect(result).toEqual({ killed: 0 });
+    expect(fake.containers.size).toBe(1);
+
+    const killExec = [...fake.execs.values()].find((item) => {
+      const script = item.cmd.find((part) => part.includes('kill -TERM'));
+      return Boolean(script?.includes('/tmp/lobe-fg-'));
+    });
+    expect(killExec).toBeDefined();
+    const script = killExec!.cmd.find((part) => part.includes('kill -TERM'))!;
+    expect(script).toContain('for f in /tmp/lobe-fg-*.pid');
+    expect(script).toContain('kill -TERM -- -$pid');
+    expect(script).not.toContain('lobe-bg-');
+  });
+
+  it('returns interrupted: true when a foreground BLOCK exec is signalled', async () => {
+    const fake = await start();
+    const provider = new LocalSandboxProvider(
+      engineOptions(fake.socketPath, { timeoutMs: 30_000 }),
+    );
+    const session = { topicId: 'topic-1', userId: 'user-1' };
+
+    const running = provider.callTool('runCommand', { command: 'BLOCK', timeout: 30_000 });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+
+    const interrupt = await provider.interrupt(session);
+    expect(interrupt.killed).toBe(1);
+
+    const result = await running;
+    expect(result).toMatchObject({
+      result: {
+        exitCode: 143,
+        interrupted: true,
+        success: false,
+      },
+      success: false,
+    });
+    expect(String(result.result?.stderr ?? '')).toContain('command interrupted by user');
+    expect(fake.containers.size).toBe(1);
+  });
+
+  it('wraps detached background commands in GNU timeout without interrupting them', async () => {
+    const fake = await start();
+    const provider = new LocalSandboxProvider(engineOptions(fake.socketPath));
+
+    const started = await provider.callTool('runCommand', {
+      background: true,
+      command: 'echo bg-job',
+    });
+    expect(started.success).toBe(true);
+
+    const launcher = [...fake.execs.values()].find((item) =>
+      item.cmd.some((part) => part.includes('echo $!')),
+    );
+    const script = launcher?.cmd.find((part) => part.includes('echo $!'));
+    expect(script).toContain('timeout -k 5 600');
+    expect(script).toContain('echo bg-job');
+
+    await provider.interrupt({ topicId: 'topic-1', userId: 'user-1' });
+    const killScript = [...fake.execs.values()]
+      .map((item) => item.cmd.find((part) => part.includes('kill -TERM')))
+      .find(Boolean);
+    expect(killScript).not.toContain('lobe-bg-');
   });
 });
 

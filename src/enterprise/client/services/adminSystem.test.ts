@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getDocumentRenderSettings: vi.fn(),
   getDocumentRenderStatus: vi.fn(),
   getInfraSettings: vi.fn(),
+  getSandboxPackageStats: vi.fn(),
   getSandboxSettings: vi.fn(),
   getInstanceRevisions: vi.fn(),
   getJobs: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock('@/libs/trpc/client', () => ({
         getDocumentRenderSettings: { query: mocks.getDocumentRenderSettings },
         getDocumentRenderStatus: { query: mocks.getDocumentRenderStatus },
         getInfraSettings: { query: mocks.getInfraSettings },
+        getSandboxPackageStats: { query: mocks.getSandboxPackageStats },
         getSandboxSettings: { query: mocks.getSandboxSettings },
         getInstanceRevisions: { query: mocks.getInstanceRevisions },
         getJobs: { query: mocks.getJobs },
@@ -116,6 +118,25 @@ describe('Admin System service adapter', () => {
       config: { enabled: true, provider: 'local' },
       expectedRevision: 0,
     });
+  });
+
+  /** The ledger is a plain read: the window/limit go through untouched, and omitting them is legal. */
+  it('forwards the sandbox package ledger query', async () => {
+    const stats = {
+      generatedAt: new Date('2026-08-23T00:00:00.000Z'),
+      items: [],
+      preinstalled: ['numpy'],
+      totalPackages: 0,
+      windowDays: 7,
+    };
+    mocks.getSandboxPackageStats.mockResolvedValue(stats);
+
+    await expect(adminSystemService.getSandboxPackageStats({ days: 7, limit: 20 })).resolves.toBe(
+      stats,
+    );
+    await expect(adminSystemService.getSandboxPackageStats()).resolves.toBe(stats);
+    expect(mocks.getSandboxPackageStats).toHaveBeenNthCalledWith(1, { days: 7, limit: 20 });
+    expect(mocks.getSandboxPackageStats).toHaveBeenNthCalledWith(2, undefined);
   });
 
   it('forwards document-render settings, status and queue actions', async () => {

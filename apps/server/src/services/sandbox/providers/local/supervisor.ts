@@ -72,6 +72,8 @@ export interface SandboxSessionRecord {
   containerId: string;
   containerName: string;
   inFlight: number;
+  /** Set when the user interrupts; compared to exec start time for result shape. */
+  interruptedAt?: number;
   lastUsedAt: number;
   provision?: Promise<void>;
   volumeName: string;
@@ -189,6 +191,15 @@ export class LocalSandboxSupervisor {
         }
       });
     }
+  }
+
+  /**
+   * Return the existing session record without leasing or provisioning.
+   * Used by interrupt so a Stop click never creates a container.
+   */
+  async peekSession(session: LocalSandboxSession): Promise<SandboxSessionRecord | undefined> {
+    await this.ready;
+    return this.sessions.get(sessionKey(session));
   }
 
   /**
