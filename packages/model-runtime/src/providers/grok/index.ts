@@ -1,15 +1,22 @@
 import type { ChatModelCard } from '@lobechat/types';
+import type { OwnDeploymentOrigins } from '@lobechat/utils';
+import { DEFAULT_FILE_INLINE_MAX_BYTES } from '@lobechat/utils';
+import { isRecord } from '@lobechat/utils/object';
+import debug from 'debug';
 import type { ExtendParamsType } from 'model-bank';
 import { ModelProvider } from 'model-bank';
 import OpenAI, { type ClientOptions } from 'openai';
 
 import { deriveConversationSessionId, deriveGrokAgentId, isUuidV4 } from '../../browserProfile';
+import { degradeFileUrlPartsToText } from '../../core/contextBuilders';
 import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
-import type { ChatStreamPayload } from '../../types';
+import type { ChatCompletionErrorPayload, ChatMethodOptions, ChatStreamPayload } from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
 import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import type { XAIModelCard } from '../xai';
 import { handleXAIChatCompletionPayload, handleXAIResponsesPayload } from '../xai';
+
+const log = debug('lobe-grok:zdr');
 
 /**
  * Grok Build CLI version the proxy expects.
@@ -24,6 +31,10 @@ export const GROK_DEFAULT_USER_AGENT_PLATFORM = 'linux; x86_64';
 const GROK_CLI_CHAT_PROXY_BASE_URL = 'https://cli-chat-proxy.grok.com/v1';
 const GROK_DIRECT_CONVERSATION_KEY = 'grok:direct-runtime-default-conversation';
 export const GROK_IDENTITY_MISSING_MESSAGE = 'Grok installation identity missing';
+export const GROK_ZDR_FILE_UNSUPPORTED_MESSAGE =
+  'This Grok account has zero-data-retention enabled; native file attachments are refused by xAI';
+
+const ZDR_FILE_UNSUPPORTED = /unsupported for ZDR|file content .* unsupported/i;
 
 /**
  * Thrown instead of sending a request that would carry a made-up device id.
@@ -84,6 +95,11 @@ export interface GrokClientOptions {
    * earth present the same device.
    */
   installationId?: string;
+  /**
+   * Deployment origins used when inlining own-origin file URLs. The factory's
+   * `withOwnOrigins` copies this onto `inlineFile`.
+   */
+  ownOrigins?: OwnDeploymentOrigins | Promise<OwnDeploymentOrigins>;
   /**
    * 1-based turn index inside the conversation. Normally derived from the payload's
    * user-message count (replica-stable); an explicit value is for tests / replay.
@@ -365,6 +381,70 @@ const getGrokResponsesHeaders = (
 const suppressStainlessHeaders = (): Record<string, null> =>
   Object.fromEntries(STAINLESS_HEADERS.map((header) => [header, null]));
 
+const isHttp4xx = (status: unknown): status is number =>
+  typeof status === 'number' && status >= 400 && status < 500;
+
+const collectErrorStrings = (value: unknown, into: string[], depth = 0): void => {
+  if (depth > 8 || value == null) return;
+  if (typeof value === 'string') {
+    if (value) into.push(value);
+    return;
+  }
+  if (!isRecord(value)) return;
+  if (typeof value.message === 'string' && value.message) into.push(value.message);
+  collectErrorStrings(value.error, into, depth + 1);
+  collectErrorStrings(value.body, into, depth + 1);
+};
+
+const readStatus = (value: unknown, depth = 0): number | undefined => {
+  if (depth > 6 || !isRecord(value)) return undefined;
+  if (isHttp4xx(value.status)) return value.status;
+  if (isHttp4xx(value.statusCode)) return value.statusCode;
+  return readStatus(value.error, depth + 1);
+};
+
+/**
+ * True for a 4xx whose body/message is the Grok CLI proxy ZDR file policy
+ * (or the mapped ProviderBizError that already used that wording).
+ *
+ * Matches both the raw OpenAI `APIError` `handleError` receives and the
+ * `ChatCompletionErrorPayload` the factory then throws (`error.error`).
+ */
+const isGrokZdrFileUnsupportedError = (error: unknown): boolean => {
+  const texts: string[] = [];
+  collectErrorStrings(error, texts);
+  const matched = texts.some(
+    (text) => ZDR_FILE_UNSUPPORTED.test(text) || text === GROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
+  );
+  if (!matched) return false;
+  const status = readStatus(error);
+  return status === undefined || isHttp4xx(status);
+};
+
+const grokZdrErrorBody = (error: unknown): Record<string, unknown> => {
+  if (!isRecord(error)) return { message: GROK_ZDR_FILE_UNSUPPORTED_MESSAGE };
+  const status = typeof error.status === 'number' ? error.status : undefined;
+  const nested = isRecord(error.error) ? error.error : undefined;
+  return {
+    ...(nested ?? {
+      message:
+        typeof error.message === 'string' ? error.message : GROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
+    }),
+    ...(status !== undefined ? { status } : {}),
+  };
+};
+
+const toGrokZdrBizError = (error: unknown): ChatCompletionErrorPayload => {
+  const payload = isRecord(error) ? error : {};
+  return {
+    ...payload,
+    error: grokZdrErrorBody(error),
+    errorType: AgentRuntimeErrorType.ProviderBizError,
+    message: GROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
+    provider: (typeof payload.provider === 'string' && payload.provider) || ModelProvider.Grok,
+  };
+};
+
 /**
  * Wire shape of the CLI's system prompt (E4 §A.1): `{type:'message', role:'system',
  * content}` as `input[0]`, never an `instructions` field. The shared converter emits
@@ -385,27 +465,40 @@ const normalizeGrokInput = (input: unknown) => {
   });
 };
 
-export const LobeGrokAI = createOpenAICompatibleRuntime<GrokClientOptions>({
+const LobeGrokAIBase = createOpenAICompatibleRuntime<GrokClientOptions>({
   baseURL: GROK_CLI_CHAT_PROXY_BASE_URL,
   chatCompletion: {
+    forceFileBase64: true,
     /**
      * A request without the installation identity is refused BEFORE it leaves, so the
      * failure has to reach the caller as a provider error rather than an unmapped
      * crash (`handleOpenAIError` would otherwise label it a generic runtime error).
+     * ZDR file refusals are mapped here so generateObject and the chat wrapper share
+     * one ProviderBizError message; the wrapper still retries chat once with text.
      */
-    handleError: (error) =>
-      error instanceof GrokIdentityMissingError
-        ? {
-            error: { message: error.message },
-            errorType: AgentRuntimeErrorType.ProviderBizError,
-            message: error.message,
-          }
-        : undefined,
+    handleError: (error) => {
+      if (error instanceof GrokIdentityMissingError) {
+        return {
+          error: { message: error.message },
+          errorType: AgentRuntimeErrorType.ProviderBizError,
+          message: error.message,
+        };
+      }
+      if (isGrokZdrFileUnsupportedError(error)) {
+        return {
+          error: grokZdrErrorBody(error),
+          errorType: AgentRuntimeErrorType.ProviderBizError,
+          message: GROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
+        };
+      }
+      return undefined;
+    },
     handlePayload: handleGrokChatCompletionPayload,
+    inlineFile: { maxBytes: DEFAULT_FILE_INLINE_MAX_BYTES, ownOriginOnly: true },
     useResponse: true,
   },
   customClient: {
-    createClient: (options) =>
+    createClient: ({ ownOrigins: _ownOrigins, ...options }) =>
       new OpenAI({
         ...options,
         defaultHeaders: {
@@ -486,3 +579,29 @@ export const LobeGrokAI = createOpenAICompatibleRuntime<GrokClientOptions>({
     },
   },
 });
+
+/**
+ * Wraps factory `chat` so a ZDR file refusal retries the same turn once with
+ * extracted text. `beforeChat` lives on ModelRuntime, outside this class, so
+ * the retry does not re-run attachment inlining (or any other outer hook).
+ */
+export class LobeGrokAI extends LobeGrokAIBase {
+  async chat(payload: ChatStreamPayload, options?: ChatMethodOptions) {
+    try {
+      return await super.chat(payload, options);
+    } catch (error) {
+      if (!isGrokZdrFileUnsupportedError(error)) throw error;
+
+      const { degraded, messages } = degradeFileUrlPartsToText(payload.messages ?? []);
+      if (degraded === 0) throw toGrokZdrBizError(error);
+
+      log('ZDR account refused native files; retried with extracted text');
+      try {
+        return await super.chat({ ...payload, messages }, options);
+      } catch (retryError) {
+        if (isGrokZdrFileUnsupportedError(retryError)) throw toGrokZdrBizError(retryError);
+        throw retryError;
+      }
+    }
+  }
+}

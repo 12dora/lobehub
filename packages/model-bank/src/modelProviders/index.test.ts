@@ -147,7 +147,7 @@ describe('model provider predicates', () => {
     expect(isProviderNativeFileInput()).toBe(false);
   });
 
-  it('marks chatgpt and chatgptweb as native file input in the real catalog', () => {
+  it('marks chatgpt, chatgptweb and grok as native file input in the real catalog', () => {
     DEFAULT_MODEL_PROVIDER_LIST.length = 0;
     DEFAULT_MODEL_PROVIDER_LIST.push(...originalProviders);
 
@@ -155,12 +155,13 @@ describe('model provider predicates', () => {
       isProviderNativeFileInput(provider.id),
     ).map((provider) => provider.id);
 
-    expect(nativeFileProviders).toEqual(['chatgpt', 'chatgptweb']);
+    expect(nativeFileProviders).toEqual(['chatgpt', 'chatgptweb', 'grok']);
     // Catalogs that advertise `abilities.files` on models but have no native
     // file part on the wire must stay on the `<files_info>` text injection.
     expect(isProviderNativeFileInput('opencodezen')).toBe(false);
     expect(isProviderNativeFileInput('openai')).toBe(false);
     expect(isProviderNativeFileInput('anthropic')).toBe(false);
+    expect(isProviderNativeFileInput('supergrok')).toBe(false);
   });
 
   it('detects webApp providers from the card settings', () => {

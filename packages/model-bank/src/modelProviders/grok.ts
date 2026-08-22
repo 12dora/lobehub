@@ -25,6 +25,8 @@ const Grok: ModelProviderCard = {
     // OAuth tokens are refreshed and persisted server-side; browser requests
     // would bypass the refresh pipeline, so they are hard-disabled.
     disableBrowserRequest: true,
+    // Responses `{type:'input_file', file_data}` — same wire as Codex.
+    nativeFileInput: true,
     // Web-app provider: skip generic date / model-info / default-assistant
     // boilerplate (see `isWebAppProvider`).
     webApp: true,

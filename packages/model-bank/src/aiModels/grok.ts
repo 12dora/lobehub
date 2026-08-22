@@ -8,6 +8,7 @@ import type { AIChatModelCard } from '../types/aiModel';
 const grokChatModels: AIChatModelCard[] = [
   {
     abilities: {
+      files: true,
       functionCall: true,
       reasoning: true,
       search: true,
@@ -31,6 +32,7 @@ const grokChatModels: AIChatModelCard[] = [
   },
   {
     abilities: {
+      files: true,
       functionCall: true,
       reasoning: true,
       search: true,

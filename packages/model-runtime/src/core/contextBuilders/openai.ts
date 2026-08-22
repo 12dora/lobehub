@@ -21,6 +21,7 @@ import { isDeepSeekThinkingEligibleModel } from '../../utils/modelParse';
 import type { SignatureScope } from '../../utils/signatureScope';
 import { resolveScopedSignature } from '../../utils/signatureScope';
 import { parseDataUri } from '../../utils/uriParser';
+import { filesInfoWithoutUrl } from './fileParts';
 
 export type ExtendedChatCompletionContentPart = {
   type: 'video_url';
@@ -105,28 +106,6 @@ const isDocumentFileInput = (mimeType?: string, filename?: string): boolean => {
 
   const extension = filename?.split('.').pop()?.toLowerCase();
   return !!extension && DOCUMENT_EXTENSIONS.has(extension);
-};
-
-const filesInfoWithoutUrl = (file: {
-  content?: string;
-  fileId?: string;
-  mimeType?: string;
-  name: string;
-  size?: number;
-}): string => {
-  const attrs = [
-    file.fileId ? `id="${file.fileId}"` : undefined,
-    `name="${file.name}"`,
-    file.mimeType ? `type="${file.mimeType}"` : undefined,
-    file.size === undefined ? undefined : `size="${file.size}"`,
-  ]
-    .filter(Boolean)
-    .join(' ');
-
-  return `<files_info>
-<files_docstring>here are user upload files you can refer to</files_docstring>
-<file ${attrs}>${file.content ?? ''}</file>
-</files_info>`;
 };
 
 type ResponseFilePart =

@@ -15,6 +15,7 @@ import {
   GROK_DEFAULT_USER_AGENT_PLATFORM,
   GROK_IDENTITY_MISSING_MESSAGE,
   GROK_TOKEN_AUTH,
+  GROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
   LobeGrokAI,
 } from './index';
 
@@ -1137,6 +1138,138 @@ describe('LobeGrokAI', () => {
       expect(headers).not.toHaveProperty('x-grok-req-id');
       expect(headers).not.toHaveProperty('traceparent');
       expectNoStainlessHeaders(headers);
+    });
+  });
+
+  describe('native file input', () => {
+    const pdfMessage = {
+      content: [
+        {
+          file_url: {
+            content: 'EXTRACTED TEXT',
+            mimeType: 'application/pdf',
+            name: 'report.pdf',
+            url: 'data:application/pdf;base64,cGRm',
+          },
+          type: 'file_url' as const,
+        },
+        { text: 'summarize', type: 'text' as const },
+      ],
+      role: 'user' as const,
+    };
+
+    const completedJson = () =>
+      new Response(JSON.stringify({ id: 'resp', output: [], status: 'completed' }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      });
+
+    const jsonError = (message: string, status = 400) =>
+      new Response(JSON.stringify({ error: { message } }), {
+        headers: { 'Content-Type': 'application/json' },
+        status,
+      });
+
+    const contentParts = (body: Record<string, any>): { type?: string; text?: string }[] =>
+      (Array.isArray(body.input) ? body.input : []).flatMap((item: { content?: unknown }) =>
+        Array.isArray(item.content) ? item.content : [],
+      );
+
+    const createFileRuntime = (
+      fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+    ) =>
+      new LobeGrokAI({
+        apiKey: 'access-token',
+        conversationKey: CONVERSATION_KEY,
+        fetch: fetchImpl,
+        firstSeenMs: FIRST_SEEN_MS,
+        installationId: INSTALLATION_ID,
+      });
+
+    it('sends file_url parts as input_file with file_data', async () => {
+      const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        completedJson(),
+      );
+      const runtime = createFileRuntime(fetchImpl);
+
+      await runtime.chat({
+        messages: [pdfMessage],
+        model: 'grok-4.6',
+        stream: false,
+      });
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const body = requestBody(fetchImpl.mock.calls[0][1]);
+      expect(contentParts(body)).toEqual(
+        expect.arrayContaining([
+          {
+            file_data: 'data:application/pdf;base64,cGRm',
+            filename: 'report.pdf',
+            type: 'input_file',
+          },
+        ]),
+      );
+    });
+
+    it('retries a ZDR 400 once with extracted text and no input_file', async () => {
+      const fetchImpl = vi
+        .fn(async (_input: RequestInfo | URL, _init?: RequestInit) => completedJson())
+        .mockResolvedValueOnce(
+          jsonError('File content is currently unsupported for ZDR customers.'),
+        )
+        .mockResolvedValueOnce(completedJson());
+      const runtime = createFileRuntime(fetchImpl);
+
+      await runtime.chat({
+        messages: [pdfMessage],
+        model: 'grok-4.6',
+        stream: false,
+      });
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      const first = contentParts(requestBody(fetchImpl.mock.calls[0][1]));
+      const second = contentParts(requestBody(fetchImpl.mock.calls[1][1]));
+
+      expect(first.some((part) => part.type === 'input_file')).toBe(true);
+      expect(second.some((part) => part.type === 'input_file')).toBe(false);
+      expect(second.some((part) => part.text?.includes('EXTRACTED TEXT'))).toBe(true);
+      expect(second.some((part) => part.text?.includes('name="report.pdf"'))).toBe(true);
+    });
+
+    it('does not retry a non-ZDR 400', async () => {
+      const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonError('stub'),
+      );
+      const runtime = createFileRuntime(fetchImpl);
+
+      await expect(
+        runtime.chat({
+          messages: [pdfMessage],
+          model: 'grok-4.6',
+          stream: false,
+        }),
+      ).rejects.toBeDefined();
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('maps a ZDR 400 without file parts to a clear provider error', async () => {
+      const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonError('File content is currently unsupported for ZDR customers.'),
+      );
+      const runtime = createFileRuntime(fetchImpl);
+
+      await expect(
+        runtime.chat({
+          messages: [{ content: 'Hello', role: 'user' }],
+          model: 'grok-4.6',
+          stream: false,
+        }),
+      ).rejects.toMatchObject({
+        errorType: 'ProviderBizError',
+        message: GROK_ZDR_FILE_UNSUPPORTED_MESSAGE,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
   });
 });
