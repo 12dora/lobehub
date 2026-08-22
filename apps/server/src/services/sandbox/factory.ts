@@ -15,6 +15,7 @@ import type {
   SandboxProviderCapabilities,
   SandboxProviderFileExportRequest,
   SandboxProviderKind,
+  SandboxPutFile,
   SandboxService,
   SandboxServiceOptions,
 } from './types';
@@ -172,6 +173,15 @@ class DispatchingSandboxProvider implements SandboxProvider {
   async callTool(toolName: string, params: Record<string, unknown>) {
     const provider = await this.resolve();
     return provider.callTool(toolName, params);
+  }
+
+  /** Local provider only; remote providers throw and the service falls back to curl. */
+  async putFiles(files: SandboxPutFile[]) {
+    const provider = await this.resolve();
+    if (typeof provider.putFiles !== 'function') {
+      throw new Error('putFiles is not supported by this sandbox provider');
+    }
+    return provider.putFiles(files);
   }
 
   async exportFileToUploadUrl(request: SandboxProviderFileExportRequest) {

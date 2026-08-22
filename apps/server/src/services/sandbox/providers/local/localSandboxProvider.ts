@@ -9,8 +9,11 @@ import type {
   SandboxProviderCapabilities,
   SandboxProviderFileExportRequest,
   SandboxProviderFileExportResult,
+  SandboxPutFile,
+  SandboxPutFilesResult,
   SandboxSessionContext,
 } from '../../types';
+import { SANDBOX_PUT_FILES_MAX_FILE_BYTES, SANDBOX_PUT_FILES_MAX_TOTAL_BYTES } from '../../types';
 import {
   DEFAULT_DISK_MB,
   DEFAULT_IDLE_TTL_SEC,
@@ -36,7 +39,7 @@ import {
   wrapDockerUnreachable,
 } from './dockerEngineClient';
 import { buildFileOpCommand } from './fileOps';
-import { resolveSandboxPath } from './paths';
+import { resolveSandboxPath, sandboxRelative } from './paths';
 import type { LocalSandboxSession } from './sessionContext';
 import { getLocalSandboxSession } from './sessionContext';
 import {
@@ -47,7 +50,7 @@ import {
   type LocalSandboxSupervisor,
   type SandboxSessionRecord,
 } from './supervisor';
-import { asWebReadable, createTarFileExtractStream } from './tarArchive';
+import { asWebReadable, createTarFileExtractStream, packTarFiles } from './tarArchive';
 import { httpWatchdogMs, wrapWithCoreutilsTimeout } from './timeoutWrap';
 
 const log = debug('lobe-server:sandbox:local');
@@ -76,6 +79,7 @@ export class LocalSandboxProvider implements SandboxProvider {
     files: true,
     languages: ['python', 'javascript', 'typescript'],
     persistentSession: true,
+    pushFiles: true,
     shell: true,
     skillScripts: true,
   } as const satisfies SandboxProviderCapabilities;
@@ -317,6 +321,74 @@ export class LocalSandboxProvider implements SandboxProvider {
         success: false,
       };
     }
+  }
+
+  /**
+   * Push file bytes through the Docker Engine archive API so the sandbox does
+   * not need to fetch a (possibly unreachable) presigned URL. Oversize files
+   * are skipped and listed in `failed`; Docker API errors still throw so the
+   * caller can fall back to curl.
+   */
+  async putFiles(files: SandboxPutFile[]): Promise<SandboxPutFilesResult> {
+    const written: string[] = [];
+    const failed: SandboxPutFilesResult['failed'] = [];
+    const accepted: Array<{ bytes: Buffer; jailed: string; mode?: number }> = [];
+    let totalBytes = 0;
+    const [uid, gid] = parseSandboxUser(SANDBOX_USER);
+
+    for (const file of files) {
+      let jailed: string;
+      try {
+        jailed = resolveSandboxPath(file.path);
+      } catch {
+        failed.push({ path: file.path, reason: 'path escapes sandbox workspace' });
+        continue;
+      }
+
+      const size = file.bytes.byteLength;
+      if (size > SANDBOX_PUT_FILES_MAX_FILE_BYTES) {
+        failed.push({ path: jailed, reason: 'file exceeds 64 MiB' });
+        continue;
+      }
+      if (totalBytes + size > SANDBOX_PUT_FILES_MAX_TOTAL_BYTES) {
+        failed.push({ path: jailed, reason: 'batch exceeds 256 MiB' });
+        continue;
+      }
+
+      totalBytes += size;
+      accepted.push({ bytes: Buffer.from(file.bytes), jailed, mode: file.mode });
+    }
+
+    if (accepted.length === 0) return { failed, written };
+
+    const session = this.requireSession();
+    await this.supervisor.withSession(session, async (record) => {
+      const mkdir = await this.execInContainer(
+        record,
+        session,
+        ['sh', '-lc', `mkdir -p ${this.shellQuote(`${SANDBOX_WORKSPACE}/uploads`)}`],
+        this.engine.timeoutMs,
+      );
+      if (mkdir.exitCode !== 0) {
+        throw new Error(
+          mkdir.stderr || mkdir.stdout || 'Failed to create sandbox uploads directory',
+        );
+      }
+
+      const tar = packTarFiles(
+        accepted.map((file) => ({
+          content: file.bytes,
+          gid,
+          mode: file.mode,
+          name: sandboxRelative(file.jailed),
+          uid,
+        })),
+      );
+      await this.client.putArchive(record.containerId, SANDBOX_WORKSPACE, tar);
+    });
+
+    written.push(...accepted.map((file) => file.jailed));
+    return { failed, written };
   }
 
   private async executeCode(params: Record<string, unknown>): Promise<SandboxCallToolResult> {
@@ -790,6 +862,13 @@ const isPathEscape = (error: unknown) =>
 const isDiskQuota = (error: unknown) => {
   if (!(error instanceof Error)) return false;
   return /ENOSPC|no space left|disk quota/i.test(error.message);
+};
+
+const parseSandboxUser = (user: string): [uid: number, gid: number] => {
+  const [uidRaw, gidRaw] = user.split(':');
+  const uid = Number.parseInt(uidRaw ?? '1000', 10);
+  const gid = Number.parseInt(gidRaw ?? uidRaw ?? '1000', 10);
+  return [Number.isFinite(uid) ? uid : 1000, Number.isFinite(gid) ? gid : 1000];
 };
 
 const guessMimeType = (path: string) => {

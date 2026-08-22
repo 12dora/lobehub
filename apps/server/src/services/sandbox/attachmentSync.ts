@@ -6,9 +6,9 @@ import type { ChatFileItem } from '@lobechat/types';
 import { DEFAULT_FILE_INLINE_MAX_BYTES } from '@lobechat/utils';
 import debug from 'debug';
 
-import type { SandboxAttachmentUpload } from './bootstrap';
 import { SANDBOX_ATTACHMENT_SYNC_CONCURRENCY } from './bootstrap';
 import { mapWithConcurrency } from './pool';
+import type { SandboxOverLimitAttachment } from './types';
 
 const log = debug('lobe-server:sandbox:attachmentSync');
 
@@ -72,9 +72,9 @@ export interface SyncSandboxAttachmentsResult {
 export interface SyncSandboxAttachmentsDeps {
   /**
    * Dedicated sandbox download (must skip topic-file bootstrap). Receives
-   * already-presigned URLs.
+   * already-presigned URLs plus the original storage key for the local push path.
    */
-  downloadFiles: (files: SandboxAttachmentUpload[]) => Promise<Record<string, string>>;
+  downloadFiles: (files: SandboxOverLimitAttachment[]) => Promise<Record<string, string>>;
   resolveDownloadUrl?: (storageUrl: string) => Promise<string>;
 }
 
@@ -182,14 +182,14 @@ export const syncSandboxAttachments = async (
   const resolved = await mapWithConcurrency(
     withStorage,
     SANDBOX_ATTACHMENT_SYNC_CONCURRENCY,
-    async (file): Promise<SandboxAttachmentUpload | null> => {
+    async (file): Promise<SandboxOverLimitAttachment | null> => {
       try {
         const url = deps.resolveDownloadUrl ? await deps.resolveDownloadUrl(file.url) : file.url;
         if (!url) {
           log('Skipping attachment %s: empty download url', file.id);
           return null;
         }
-        return { id: file.id, name: file.name, url };
+        return { id: file.id, name: file.name, storageKey: file.url, url };
       } catch (error) {
         log('Failed to resolve download url for attachment %s: %O', file.id, error);
         return null;
@@ -197,7 +197,7 @@ export const syncSandboxAttachments = async (
     },
   );
 
-  const downloads = resolved.filter((item): item is SandboxAttachmentUpload => item !== null);
+  const downloads = resolved.filter((item): item is SandboxOverLimitAttachment => item !== null);
   if (downloads.length === 0) return emptySyncResult(attemptedFileIds);
 
   try {

@@ -1,15 +1,18 @@
 import { sandboxOverLimitUploadPath } from '@lobechat/builtin-tool-cloud-sandbox';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { FileService } from '@/server/services/file';
 import type { MarketService } from '@/server/services/market';
 
 import {
   SANDBOX_ATTACHMENT_SYNC_CONCURRENCY,
   SANDBOX_ATTACHMENT_SYNC_FILE_TIMEOUT_MS,
   SANDBOX_ATTACHMENT_SYNC_OK_PREFIX,
+  sandboxAttachmentSyncMarker,
 } from '../bootstrap';
 import { SandboxMiddlewareService } from '../service';
 import type { SandboxProvider, SandboxProviderCapabilities } from '../types';
+import { SANDBOX_PUT_FILES_MAX_FILE_BYTES } from '../types';
 
 const capabilities: SandboxProviderCapabilities = {
   backgroundCommands: true,
@@ -110,5 +113,88 @@ describe('SandboxMiddlewareService.syncOverLimitAttachments', () => {
     expect(max).toBeLessThanOrEqual(SANDBOX_ATTACHMENT_SYNC_CONCURRENCY);
     expect(max).toBeGreaterThan(1);
     expect(callTool).toHaveBeenCalledTimes(6);
+  });
+
+  it('pushes bytes through putFiles instead of curling, and writes the per-file marker', async () => {
+    const callTool = vi.fn(async () => ({ result: { stdout: '' }, success: true }));
+    const putFiles = vi.fn(async (files: Array<{ path: string }>) => ({
+      failed: [],
+      written: files.map((file) => file.path),
+    }));
+    const getFileByteArray = vi.fn(async () => new Uint8Array([9, 8, 7]));
+    const provider = createProvider(callTool);
+    Object.assign(provider, { putFiles });
+    const service = new SandboxMiddlewareService(provider, {
+      fileService: { getFileByteArray } as unknown as FileService,
+      marketService: {} as MarketService,
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
+
+    const result = await service.syncOverLimitAttachments([
+      {
+        id: 'file-a',
+        name: 'report.pdf',
+        storageKey: 'files/user/report.pdf',
+        url: 'https://files.example.com/a',
+      },
+    ]);
+
+    expect(getFileByteArray).toHaveBeenCalledWith('files/user/report.pdf');
+    expect(putFiles).toHaveBeenCalledTimes(1);
+    expect(putFiles.mock.calls[0]![0].map((file: { path: string }) => file.path)).toEqual([
+      sandboxOverLimitUploadPath('report.pdf', 'file-a'),
+      sandboxAttachmentSyncMarker('file-a'),
+    ]);
+    expect(result).toEqual({
+      'file-a': sandboxOverLimitUploadPath('report.pdf', 'file-a'),
+    });
+
+    const curlCommands = (callTool as ReturnType<typeof vi.fn>).mock.calls.filter((call) => {
+      const tool = call[0];
+      const command = call[1]?.command;
+      return tool === 'runCommand' && typeof command === 'string' && command.includes('curl');
+    });
+    expect(curlCommands).toHaveLength(0);
+  });
+
+  it('skips an oversize attachment on the push path and omits it from the result', async () => {
+    const callTool = vi.fn(async () => ({ result: { stdout: '' }, success: true }));
+    const putFiles = vi.fn(async (files: Array<{ path: string }>) => ({
+      failed: [],
+      written: files.map((file) => file.path),
+    }));
+    const getFileByteArray = vi.fn(async (key: string) => {
+      if (key === 'files/huge') {
+        return { byteLength: SANDBOX_PUT_FILES_MAX_FILE_BYTES + 1 } as Uint8Array;
+      }
+      return new Uint8Array([1]);
+    });
+    const provider = createProvider(callTool);
+    Object.assign(provider, { putFiles });
+    const service = new SandboxMiddlewareService(provider, {
+      fileService: { getFileByteArray } as unknown as FileService,
+      marketService: {} as MarketService,
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
+
+    const result = await service.syncOverLimitAttachments([
+      { id: 'ok', name: 'ok.pdf', storageKey: 'files/ok', url: 'https://files.example.com/ok' },
+      {
+        id: 'huge',
+        name: 'huge.bin',
+        storageKey: 'files/huge',
+        url: 'https://files.example.com/huge',
+      },
+    ]);
+
+    expect(result).toEqual({
+      ok: sandboxOverLimitUploadPath('ok.pdf', 'ok'),
+    });
+    expect(putFiles.mock.calls[0]![0].map((file: { path: string }) => file.path)).toEqual([
+      sandboxOverLimitUploadPath('ok.pdf', 'ok'),
+      sandboxAttachmentSyncMarker('ok'),
+    ]);
   });
 });

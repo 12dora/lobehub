@@ -5,10 +5,12 @@ const USTAR_MAGIC = 'ustar';
 
 export interface TarEntry {
   content: Buffer;
+  gid?: number;
   linkname?: string;
   mode?: number;
   name: string;
   type: 'file' | 'directory' | 'symlink';
+  uid?: number;
 }
 
 const writeOctal = (header: Buffer, offset: number, length: number, value: number) => {
@@ -55,8 +57,8 @@ const headerFor = (entry: TarEntry): Buffer => {
 
   writeString(header, 0, 100, name);
   writeOctal(header, 100, 8, mode);
-  writeOctal(header, 108, 8, 0);
-  writeOctal(header, 116, 8, 0);
+  writeOctal(header, 108, 8, entry.uid ?? 0);
+  writeOctal(header, 116, 8, entry.gid ?? 0);
   writeOctal(header, 124, 12, size);
   writeOctal(header, 136, 12, Math.floor(Date.now() / 1000));
   header.fill(0x20, 148, 156);
@@ -97,17 +99,47 @@ export const packTar = (entries: TarEntry[]): Buffer => {
 
 export const packTarFile = (name: string, content: Buffer | string, mode = 0o644): Buffer => {
   const body = typeof content === 'string' ? Buffer.from(content) : content;
-  const normalized = name.replaceAll(/^\/+/g, '');
-  const parts = normalized.split('/').filter(Boolean);
-  const entries: TarEntry[] = [];
-  let prefix = '';
+  return packTarFiles([{ content: body, mode, name }]);
+};
 
-  for (const [index, part] of parts.entries()) {
-    prefix = prefix ? `${prefix}/${part}` : part;
-    if (index < parts.length - 1) {
-      entries.push({ content: Buffer.alloc(0), name: prefix, type: 'directory', mode: 0o755 });
-    } else {
-      entries.push({ content: body, name: prefix, type: 'file', mode });
+/**
+ * Pack many files into one ustar archive, emitting intermediate directory
+ * entries so `putArchive` can create nested paths in a single call.
+ */
+export const packTarFiles = (
+  files: Array<{ content: Buffer; gid?: number; mode?: number; name: string; uid?: number }>,
+): Buffer => {
+  const dirs = new Set<string>();
+  const entries: TarEntry[] = [];
+
+  for (const file of files) {
+    const normalized = file.name.replaceAll(/^\/+/g, '');
+    const parts = normalized.split('/').filter(Boolean);
+    let prefix = '';
+
+    for (const [index, part] of parts.entries()) {
+      prefix = prefix ? `${prefix}/${part}` : part;
+      if (index < parts.length - 1) {
+        if (dirs.has(prefix)) continue;
+        dirs.add(prefix);
+        entries.push({
+          content: Buffer.alloc(0),
+          gid: file.gid,
+          mode: 0o755,
+          name: prefix,
+          type: 'directory',
+          uid: file.uid,
+        });
+      } else {
+        entries.push({
+          content: file.content,
+          gid: file.gid,
+          mode: file.mode ?? 0o644,
+          name: prefix,
+          type: 'file',
+          uid: file.uid,
+        });
+      }
     }
   }
 

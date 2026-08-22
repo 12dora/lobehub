@@ -52,8 +52,32 @@ export interface SandboxProviderCapabilities {
   files: boolean;
   languages: string[];
   persistentSession: boolean;
+  /** Present when {@link SandboxProvider.putFiles} can push bytes without curl. */
+  pushFiles?: boolean;
   shell: boolean;
   skillScripts: boolean;
+}
+
+/** Per-file cap for {@link SandboxProvider.putFiles}. Oversize files are skipped, never thrown. */
+export const SANDBOX_PUT_FILES_MAX_FILE_BYTES = 64 * 1024 * 1024;
+
+/** Total cap per {@link SandboxProvider.putFiles} call. Remaining files are skipped. */
+export const SANDBOX_PUT_FILES_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+
+export interface SandboxPutFile {
+  bytes: Uint8Array;
+  mode?: number;
+  path: string;
+}
+
+export interface SandboxPutFilesFailure {
+  path: string;
+  reason: string;
+}
+
+export interface SandboxPutFilesResult {
+  failed: SandboxPutFilesFailure[];
+  written: string[];
 }
 
 export interface SandboxProvider extends Pick<ISandboxService, 'callTool'> {
@@ -64,11 +88,22 @@ export interface SandboxProvider extends Pick<ISandboxService, 'callTool'> {
   ) => Promise<SandboxProviderFileExportResult>;
 
   readonly kind: SandboxProviderKind;
+
+  /**
+   * Optional: push file bytes into the sandbox (local Docker `putArchive`).
+   * Remote providers omit this so the curl path stays in use.
+   */
+  putFiles?: (files: SandboxPutFile[]) => Promise<SandboxPutFilesResult>;
 }
 
 export interface SandboxOverLimitAttachment {
   id: string;
   name: string;
+  /**
+   * Original object-storage key (S3). Used by {@link SandboxProvider.putFiles}
+   * to read bytes server-side; the curl path ignores it.
+   */
+  storageKey?: string;
   /** Presigned (or otherwise fetchable) download URL. */
   url: string;
 }

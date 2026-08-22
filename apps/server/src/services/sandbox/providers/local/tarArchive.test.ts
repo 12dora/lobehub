@@ -2,7 +2,13 @@ import { Readable } from 'node:stream';
 
 import { describe, expect, it } from 'vitest';
 
-import { createTarFileExtractStream, extractTarFile, packTarFile } from './tarArchive';
+import {
+  createTarFileExtractStream,
+  extractTar,
+  extractTarFile,
+  packTarFile,
+  packTarFiles,
+} from './tarArchive';
 
 describe('tarArchive', () => {
   it('round-trips a packed file', () => {
@@ -25,5 +31,21 @@ describe('tarArchive', () => {
       Readable.from(tar).pipe(extract);
     });
     expect(Buffer.concat(chunks).toString('utf8')).toBe('streamed-export');
+  });
+
+  it('packs multiple files with parent directory entries', () => {
+    const tar = packTarFiles([
+      { content: Buffer.from('a'), name: 'uploads/a.txt' },
+      { content: Buffer.alloc(0), name: '.lobe-files-initialized' },
+    ]);
+    const entries = extractTar(tar);
+    expect(entries.map((entry) => `${entry.type}:${entry.name}`)).toEqual(
+      expect.arrayContaining([
+        'directory:uploads',
+        'file:uploads/a.txt',
+        'file:.lobe-files-initialized',
+      ]),
+    );
+    expect(extractTarFile(tar, 'uploads/a.txt').toString('utf8')).toBe('a');
   });
 });

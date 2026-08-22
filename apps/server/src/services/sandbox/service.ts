@@ -1,7 +1,9 @@
 import {
+  SANDBOX_OVER_LIMIT_UPLOADS_DIR,
   type SandboxCallToolResult,
   type SandboxExportFileResult,
   sandboxOverLimitUploadPath,
+  sandboxUploadedFilePath,
   selectSandboxInitFiles,
 } from '@lobechat/builtin-tool-cloud-sandbox';
 import debug from 'debug';
@@ -15,7 +17,9 @@ import {
   SANDBOX_ATTACHMENT_SYNC_CONCURRENCY,
   SANDBOX_ATTACHMENT_SYNC_FILE_TIMEOUT_MS,
   SANDBOX_ATTACHMENT_SYNC_OK_PREFIX,
+  SANDBOX_FILES_INIT_MARKER,
   SANDBOX_INIT_TIMEOUT_MS,
+  sandboxAttachmentSyncMarker,
   type SandboxInitDownload,
 } from './bootstrap';
 import { mapWithConcurrency } from './pool';
@@ -25,9 +29,12 @@ import type {
   SandboxProvider,
   SandboxProviderCapabilities,
   SandboxProviderKind,
+  SandboxPutFile,
+  SandboxPutFilesResult,
   SandboxService,
   SandboxServiceOptions,
 } from './types';
+import { SANDBOX_PUT_FILES_MAX_FILE_BYTES, SANDBOX_PUT_FILES_MAX_TOTAL_BYTES } from './types';
 
 const log = debug('lobe-server:sandbox:service');
 
@@ -96,6 +103,20 @@ export class SandboxMiddlewareService implements SandboxService {
 
       if (files.length === 0) return;
 
+      const putFiles = this.provider.putFiles?.bind(this.provider);
+      if (putFiles) {
+        try {
+          await this.pushTopicFiles(files, putFiles, fileService, topicId);
+          return;
+        } catch (error) {
+          log(
+            'Sandbox file init (push) failed for topic %s, falling back to curl: %O',
+            topicId,
+            error,
+          );
+        }
+      }
+
       const downloads = (
         await Promise.all(
           files.map(async (file): Promise<SandboxInitDownload | null> => {
@@ -145,6 +166,15 @@ export class SandboxMiddlewareService implements SandboxService {
       }
       if (unique.length === 0) return {};
 
+      const putFiles = this.provider.putFiles?.bind(this.provider);
+      if (putFiles) {
+        try {
+          return await this.pushOverLimitAttachments(unique, putFiles);
+        } catch (error) {
+          log('Over-limit attachment push failed, falling back to curl: %O', error);
+        }
+      }
+
       const sandboxPathByFileId: Record<string, string> = {};
 
       await mapWithConcurrency(unique, SANDBOX_ATTACHMENT_SYNC_CONCURRENCY, async (file) => {
@@ -172,6 +202,165 @@ export class SandboxMiddlewareService implements SandboxService {
 
       return sandboxPathByFileId;
     });
+  }
+
+  /**
+   * Push topic-bootstrap files through {@link SandboxProvider.putFiles} and
+   * write the same `/mnt/data/.lobe-files-initialized` marker the curl path
+   * uses, so a recycled sandbox (marker gone) re-syncs and a live session is
+   * a cheap no-op.
+   */
+  private async pushTopicFiles(
+    files: Array<{ name: string; size?: number; url: string }>,
+    putFiles: (entries: SandboxPutFile[]) => Promise<SandboxPutFilesResult>,
+    fileService: NonNullable<SandboxServiceOptions['fileService']>,
+    topicId: string,
+  ): Promise<void> {
+    const markerCheck = await this.provider.callTool('runCommand', {
+      command: `if [ -f ${shellQuote(SANDBOX_FILES_INIT_MARKER)} ]; then echo LOBE_FILES_INIT_DONE; fi`,
+      timeout: SANDBOX_INIT_TIMEOUT_MS,
+    });
+    if (normalizeSandboxCommandResult(markerCheck).output.includes('LOBE_FILES_INIT_DONE')) {
+      return;
+    }
+
+    const seen = new Set<string>();
+    const payload: SandboxPutFile[] = [];
+    let failed = 0;
+    let totalBytes = 0;
+
+    for (const file of files) {
+      if (!file.url) {
+        failed += 1;
+        continue;
+      }
+      const path = sandboxUploadedFilePath(file.name);
+      if (seen.has(path)) continue;
+      seen.add(path);
+
+      if (typeof file.size === 'number' && file.size > SANDBOX_PUT_FILES_MAX_FILE_BYTES) {
+        failed += 1;
+        continue;
+      }
+
+      let bytes: Uint8Array;
+      try {
+        bytes = await fileService.getFileByteArray(file.url);
+      } catch (error) {
+        log('Sandbox file init (push) failed to read %s: %O', file.url, error);
+        failed += 1;
+        continue;
+      }
+
+      if (
+        bytes.byteLength > SANDBOX_PUT_FILES_MAX_FILE_BYTES ||
+        totalBytes + bytes.byteLength > SANDBOX_PUT_FILES_MAX_TOTAL_BYTES
+      ) {
+        failed += 1;
+        continue;
+      }
+
+      totalBytes += bytes.byteLength;
+      payload.push({ bytes, path });
+    }
+
+    // Match curl: the marker is always written once a sync is attempted, even
+    // if some (or all) downloads failed, so we do not retry every tool call.
+    payload.push({ bytes: new Uint8Array(0), path: SANDBOX_FILES_INIT_MARKER });
+
+    const result = await putFiles(payload);
+    failed += result.failed.filter((item) => item.path !== SANDBOX_FILES_INIT_MARKER).length;
+
+    log(
+      'Sandbox file init (push) for topic %s: %d files, %d failed',
+      topicId,
+      files.length,
+      failed,
+    );
+  }
+
+  private async pushOverLimitAttachments(
+    unique: SandboxOverLimitAttachment[],
+    putFiles: (entries: SandboxPutFile[]) => Promise<SandboxPutFilesResult>,
+  ): Promise<Record<string, string>> {
+    const fileService = this.options.fileService;
+    if (!fileService) {
+      throw new Error('fileService is required for sandbox file push');
+    }
+
+    const sandboxPathByFileId = await this.readAttachmentSyncMarkers(unique);
+    const pending = unique.filter((file) => !sandboxPathByFileId[file.id]);
+    if (pending.length === 0) return sandboxPathByFileId;
+
+    const payload: SandboxPutFile[] = [];
+    const destById = new Map<string, string>();
+    let totalBytes = 0;
+
+    for (const file of pending) {
+      const dest = sandboxOverLimitUploadPath(file.name, file.id);
+      const key = resolveAttachmentStorageKey(file);
+      if (!key) continue;
+
+      let bytes: Uint8Array;
+      try {
+        bytes = await fileService.getFileByteArray(key);
+      } catch (error) {
+        log('Over-limit attachment %s read failed: %O', file.id, error);
+        continue;
+      }
+
+      if (
+        bytes.byteLength > SANDBOX_PUT_FILES_MAX_FILE_BYTES ||
+        totalBytes + bytes.byteLength > SANDBOX_PUT_FILES_MAX_TOTAL_BYTES
+      ) {
+        continue;
+      }
+
+      totalBytes += bytes.byteLength;
+      destById.set(file.id, dest);
+      payload.push({ bytes, path: dest });
+      payload.push({ bytes: new Uint8Array(0), path: sandboxAttachmentSyncMarker(file.id) });
+    }
+
+    if (payload.length > 0) {
+      const result = await putFiles(payload);
+      const written = new Set(result.written);
+      for (const [id, dest] of destById) {
+        if (written.has(dest)) sandboxPathByFileId[id] = dest;
+      }
+    }
+
+    log(
+      'Over-limit attachment sync (push) finished: %d/%d files',
+      Object.keys(sandboxPathByFileId).length,
+      unique.length,
+    );
+
+    return sandboxPathByFileId;
+  }
+
+  private async readAttachmentSyncMarkers(
+    files: SandboxOverLimitAttachment[],
+  ): Promise<Record<string, string>> {
+    const checks = files.map((file) => {
+      const dest = sandboxOverLimitUploadPath(file.name, file.id);
+      const marker = sandboxAttachmentSyncMarker(file.id);
+      const echoedId = file.id.replaceAll(/[\n\r]/g, '');
+      return `if [ -f ${shellQuote(marker)} ] && [ -f ${shellQuote(dest)} ]; then echo ${shellQuote(`${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}${echoedId}`)}; fi`;
+    });
+    const raw = await this.provider.callTool('runCommand', {
+      command: [`mkdir -p ${shellQuote(SANDBOX_OVER_LIMIT_UPLOADS_DIR)}`, ...checks].join('; '),
+      timeout: SANDBOX_ATTACHMENT_SYNC_FILE_TIMEOUT_MS,
+    });
+    const result = normalizeSandboxCommandResult(raw);
+    const output = [result.output, result.stderr].filter(Boolean).join('\n');
+    const found: Record<string, string> = {};
+    for (const file of files) {
+      if (`\n${output}\n`.includes(`\n${SANDBOX_ATTACHMENT_SYNC_OK_PREFIX}${file.id}\n`)) {
+        found[file.id] = sandboxOverLimitUploadPath(file.name, file.id);
+      }
+    }
+    return found;
   }
 
   async exportAndUploadFile(path: string, filename: string): Promise<SandboxExportFileResult> {
@@ -277,3 +466,13 @@ export const normalizeSandboxCommandResult = (
     success,
   };
 };
+
+const shellQuote = (value: string): string => `'${value.replaceAll("'", String.raw`'\''`)}'`;
+
+const resolveAttachmentStorageKey = (file: SandboxOverLimitAttachment): string | undefined => {
+  if (file.storageKey && !isHttpUrl(file.storageKey)) return file.storageKey;
+  if (file.url && !isHttpUrl(file.url)) return file.url;
+  return undefined;
+};
+
+const isHttpUrl = (value: string): boolean => /^https?:\/\//i.test(value);

@@ -4,8 +4,10 @@ import type { LobeChatDatabase } from '@/database/type';
 import type { FileService } from '@/server/services/file';
 import type { MarketService } from '@/server/services/market';
 
+import { SANDBOX_FILES_INIT_MARKER } from '../bootstrap';
 import { SandboxMiddlewareService } from '../service';
 import type { SandboxProvider } from '../types';
+import { SANDBOX_PUT_FILES_MAX_FILE_BYTES } from '../types';
 
 const findFilesToInitInSandbox = vi.fn();
 
@@ -32,6 +34,7 @@ const createProvider = (): SandboxProvider =>
 const createFileService = (): FileService =>
   ({
     createCachedPreSignedUrlForPreview: vi.fn(async () => 'https://download.example.com/x'),
+    getFileByteArray: vi.fn(async () => new Uint8Array([1, 2, 3])),
   }) as unknown as FileService;
 
 const baseOptions = () => ({
@@ -132,5 +135,84 @@ describe('SandboxMiddlewareService file initialization', () => {
     // oversized file is filtered out → nothing to download → only the real tool runs
     expect(provider.callTool).toHaveBeenCalledTimes(1);
     expect(provider.callTool).toHaveBeenCalledWith('listFiles', {});
+  });
+
+  it('pushes bytes through putFiles instead of curling a presigned URL', async () => {
+    const putFiles = vi.fn(async (files: Array<{ path: string }>) => ({
+      failed: [],
+      written: files.map((file) => file.path),
+    }));
+    const provider = createProvider();
+    Object.assign(provider, { putFiles });
+    const options = baseOptions();
+    const service = new SandboxMiddlewareService(provider, options);
+
+    await service.callTool('listFiles', { directoryPath: '/mnt/data' });
+
+    expect(options.fileService.createCachedPreSignedUrlForPreview).not.toHaveBeenCalled();
+    expect(options.fileService.getFileByteArray).toHaveBeenCalledWith('key-1');
+    expect(putFiles).toHaveBeenCalledTimes(1);
+    expect(putFiles.mock.calls[0]![0].map((file: { path: string }) => file.path)).toEqual([
+      '/mnt/data/data.csv',
+      SANDBOX_FILES_INIT_MARKER,
+    ]);
+
+    const curlCommands = (provider.callTool as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([tool, params]) =>
+        tool === 'runCommand' &&
+        typeof params?.command === 'string' &&
+        params.command.includes('curl'),
+    );
+    expect(curlCommands).toHaveLength(0);
+    expect(provider.callTool).toHaveBeenCalledWith('listFiles', { directoryPath: '/mnt/data' });
+  });
+
+  it('skips an oversize file on the push path and still writes the init marker', async () => {
+    findFilesToInitInSandbox.mockResolvedValue([
+      { fileType: 'text/csv', id: 'f1', name: 'data.csv', size: 10, url: 'key-1' },
+      {
+        fileType: 'application/zip',
+        id: 'big',
+        name: 'huge.zip',
+        size: SANDBOX_PUT_FILES_MAX_FILE_BYTES + 1,
+        url: 'key-big',
+      },
+    ]);
+    const putFiles = vi.fn(async (files: Array<{ path: string }>) => ({
+      failed: [],
+      written: files.map((file) => file.path),
+    }));
+    const provider = createProvider();
+    Object.assign(provider, { putFiles });
+    const options = baseOptions();
+    const service = new SandboxMiddlewareService(provider, options);
+
+    await service.callTool('listFiles', {});
+
+    expect(options.fileService.getFileByteArray).toHaveBeenCalledTimes(1);
+    expect(options.fileService.getFileByteArray).toHaveBeenCalledWith('key-1');
+    expect(putFiles.mock.calls[0]![0].map((file: { path: string }) => file.path)).toEqual([
+      '/mnt/data/data.csv',
+      SANDBOX_FILES_INIT_MARKER,
+    ]);
+  });
+
+  it('falls back to curl when putFiles throws', async () => {
+    const putFiles = vi.fn(async () => {
+      throw new Error('docker archive failed');
+    });
+    const provider = createProvider();
+    Object.assign(provider, { putFiles });
+    const service = new SandboxMiddlewareService(provider, baseOptions());
+
+    await service.callTool('listFiles', {});
+
+    const curlCommands = (provider.callTool as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([tool, params]) =>
+        tool === 'runCommand' &&
+        typeof params?.command === 'string' &&
+        params.command.includes('curl'),
+    );
+    expect(curlCommands).toHaveLength(1);
   });
 });

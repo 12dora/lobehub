@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { LocalSandboxProviderOptions } from '../../types';
+import { SANDBOX_PUT_FILES_MAX_FILE_BYTES } from '../../types';
 import { FakeDockerEngine } from './__tests__/fakeDockerEngine';
 import { DockerEngineClient } from './dockerEngineClient';
 import { LocalSandboxProvider } from './localSandboxProvider';
 import { runWithLocalSandboxSession } from './sessionContext';
 import { getLocalSandboxSupervisor, resetLocalSandboxSupervisors, sessionKey } from './supervisor';
+import { extractTar } from './tarArchive';
 
 const engineOptions = (
   socketPath: string,
@@ -436,6 +438,78 @@ describe('LocalSandboxProvider', () => {
       expect(uploaded[0]?.toString('utf8')).toBe('exported');
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('putFiles packs one tar and putArchives it onto the session container', async () => {
+    const fake = await start();
+    const putArchive = vi.spyOn(DockerEngineClient.prototype, 'putArchive');
+    const provider = new LocalSandboxProvider(engineOptions(fake.socketPath));
+
+    try {
+      const result = await provider.putFiles([
+        { bytes: new Uint8Array([1, 2, 3]), path: '/mnt/data/uploads/report-file-1.pdf' },
+        { bytes: new Uint8Array(0), path: '/mnt/data/uploads/.synced-file-1' },
+      ]);
+
+      expect(result.written).toEqual([
+        '/mnt/data/uploads/report-file-1.pdf',
+        '/mnt/data/uploads/.synced-file-1',
+      ]);
+      expect(result.failed).toEqual([]);
+      expect(putArchive).toHaveBeenCalledTimes(1);
+
+      const [containerId, dest, tar] = putArchive.mock.calls[0]!;
+      expect(containerId).toBe([...fake.containers.values()][0]?.id);
+      expect(dest).toBe('/mnt/data');
+      const entries = extractTar(tar as Buffer);
+      expect(entries.map((entry) => `${entry.type}:${entry.name}`)).toEqual(
+        expect.arrayContaining([
+          'directory:uploads',
+          'file:uploads/report-file-1.pdf',
+          'file:uploads/.synced-file-1',
+        ]),
+      );
+      expect(entries.find((entry) => entry.name === 'uploads/report-file-1.pdf')?.content).toEqual(
+        Buffer.from([1, 2, 3]),
+      );
+
+      const read = await provider.callTool('readFile', {
+        path: '/mnt/data/uploads/report-file-1.pdf',
+      });
+      expect(read).toMatchObject({
+        result: { content: '\u0001\u0002\u0003' },
+        success: true,
+      });
+    } finally {
+      putArchive.mockRestore();
+    }
+  });
+
+  it('putFiles skips an oversize file without throwing and still writes the rest', async () => {
+    const fake = await start();
+    const putArchive = vi.spyOn(DockerEngineClient.prototype, 'putArchive');
+    const provider = new LocalSandboxProvider(engineOptions(fake.socketPath));
+    const huge = { byteLength: SANDBOX_PUT_FILES_MAX_FILE_BYTES + 1 } as Uint8Array;
+
+    try {
+      const result = await provider.putFiles([
+        { bytes: new Uint8Array([9]), path: '/mnt/data/uploads/ok.txt' },
+        { bytes: huge, path: '/mnt/data/uploads/huge.bin' },
+      ]);
+
+      expect(result.written).toEqual(['/mnt/data/uploads/ok.txt']);
+      expect(result.failed).toEqual([
+        { path: '/mnt/data/uploads/huge.bin', reason: 'file exceeds 64 MiB' },
+      ]);
+      expect(putArchive).toHaveBeenCalledTimes(1);
+      const tar = putArchive.mock.calls[0]![2] as Buffer;
+      const names = extractTar(tar)
+        .filter((entry) => entry.type === 'file')
+        .map((entry) => entry.name);
+      expect(names).toEqual(['uploads/ok.txt']);
+    } finally {
+      putArchive.mockRestore();
     }
   });
 });
