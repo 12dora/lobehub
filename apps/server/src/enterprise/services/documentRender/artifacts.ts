@@ -3,8 +3,51 @@ import { documentRenderArtifactKeys, documentRenderArtifactPrefix } from '@/type
 
 const CONTACT_SHEET_GUTTER_PX = 8;
 const LABEL_PAD_X = 5;
-const LABEL_PAD_Y = 3;
-const LABEL_FONT = '12px sans-serif';
+const LABEL_PAD_Y = 4;
+const DIGIT_W = 7;
+const DIGIT_H = 12;
+const DIGIT_GAP = 2;
+const DIGIT_STROKE = 2;
+
+/**
+ * Seven-segment digit masks (a b c d e f g). The app image ships no system
+ * fonts, so `fillText` would draw nothing — page numbers are drawn as rectangles.
+ */
+const SEVEN_SEGMENT: Record<string, number> = {
+  '0': 0b111_1110,
+  '1': 0b011_0000,
+  '2': 0b110_1101,
+  '3': 0b111_1001,
+  '4': 0b011_0011,
+  '5': 0b101_1011,
+  '6': 0b101_1111,
+  '7': 0b111_0000,
+  '8': 0b111_1111,
+  '9': 0b111_1011,
+};
+
+const drawDigit = (
+  ctx: { fillRect: (x: number, y: number, w: number, h: number) => void },
+  digit: string,
+  x: number,
+  y: number,
+): void => {
+  const mask = SEVEN_SEGMENT[digit] ?? 0;
+  const half = DIGIT_H / 2;
+  const t = DIGIT_STROKE;
+  const segments: Array<[number, number, number, number]> = [
+    [x, y, DIGIT_W, t], // a (top)
+    [x + DIGIT_W - t, y, t, half], // b (top-right)
+    [x + DIGIT_W - t, y + half, t, half], // c (bottom-right)
+    [x, y + DIGIT_H - t, DIGIT_W, t], // d (bottom)
+    [x, y + half, t, half], // e (bottom-left)
+    [x, y, t, half], // f (top-left)
+    [x, y + half - t / 2, DIGIT_W, t], // g (middle)
+  ];
+  for (const [index, rect] of segments.entries()) {
+    if (mask & (1 << (6 - index))) ctx.fillRect(...rect);
+  }
+};
 const S3_DELETE_CHUNK = 1000;
 
 const throwIfAborted = (signal?: AbortSignal): void => {
@@ -32,9 +75,11 @@ export const composeContactSheet = async (params: {
   thumbs: readonly ContactSheetThumb[];
 }): Promise<ContactSheetComposeResult | undefined> => {
   const cols = Math.max(1, params.cols);
-  const rows = Math.max(1, params.rows);
-  const thumbs = params.thumbs.slice(0, cols * rows);
+  const maxRows = Math.max(1, params.rows);
+  const thumbs = params.thumbs.slice(0, cols * maxRows);
   if (thumbs.length === 0) return undefined;
+  // A trailing sheet only gets the rows it fills — no blank grid below the thumbs.
+  const rows = Math.min(maxRows, Math.ceil(thumbs.length / cols));
 
   const canvasMod = await import('@napi-rs/canvas');
   const images = await Promise.all(
@@ -53,9 +98,6 @@ export const composeContactSheet = async (params: {
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
-  ctx.font = LABEL_FONT;
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'center';
 
   for (const [index, item] of images.entries()) {
     const col = index % cols;
@@ -67,15 +109,21 @@ export const composeContactSheet = async (params: {
     ctx.drawImage(item.image, dx, dy);
 
     const label = String(item.page);
-    const metrics = ctx.measureText(label);
-    const labelWidth = Math.ceil(metrics.width) + LABEL_PAD_X * 2;
-    const labelHeight = 16 + LABEL_PAD_Y;
+    const labelWidth = label.length * DIGIT_W + (label.length - 1) * DIGIT_GAP + LABEL_PAD_X * 2;
+    const labelHeight = DIGIT_H + LABEL_PAD_Y * 2;
     const lx = x + cellWidth - labelWidth - 4;
     const ly = y + cellHeight - labelHeight - 4;
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
     ctx.fillRect(lx, ly, labelWidth, labelHeight);
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(label, lx + labelWidth / 2, ly + labelHeight / 2);
+    for (const [digitIndex, digit] of [...label].entries()) {
+      drawDigit(
+        ctx,
+        digit,
+        lx + LABEL_PAD_X + digitIndex * (DIGIT_W + DIGIT_GAP),
+        ly + LABEL_PAD_Y,
+      );
+    }
   }
 
   return {
