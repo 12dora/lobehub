@@ -29,12 +29,17 @@ const INLINE_RESOLVE_CONCURRENCY = 4;
 const FILE_PROXY_PATH = /^\/f\/([^/]+)$/;
 const PDF_MIME = 'application/pdf';
 const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46] as const; // %PDF
+const FILE_ID_IN_ATTR_RE = /[\w-]{6,128}/;
 const IMAGE_ONLY_PDF_MIN_TEXT_CHARS = 20;
 const IMAGE_ONLY_PDF_MAX_PAGES = 4;
 const IMAGE_ONLY_PDF_MAX_LONG_EDGE_PX = 1800;
 const IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE = 6;
 const IMAGE_ONLY_PDF_TILE_GRID = 2 as const;
+const PAYLOAD_MAX_RASTERIZED_PDFS = 2;
+const PAYLOAD_MAX_RASTERIZED_IMAGES = 6;
 const PAGE_TAG_RE = /<\/?page\b[^>]*>/gi;
+
+const filesInfoBlockRe = () => /<files_info>([\s\S]*?)<\/files_info>/g;
 
 const ATTACHMENT_MESSAGE_ROLES = new Set(['assistant', 'user']);
 
@@ -111,59 +116,95 @@ const isPdfBytes = (
   normalizeMime(resolvedMime) === PDF_MIME ||
   hasPdfMagic(bytes);
 
-/** Image-only = missing extracted text, or only `<page>` tags / whitespace under 20 chars. */
-const isImageOnlyPdfContent = (content: string | undefined): boolean => {
-  if (!content) return true;
-  const stripped = content.replaceAll(PAGE_TAG_RE, '').replaceAll(/\s+/g, '');
-  return stripped.length < IMAGE_ONLY_PDF_MIN_TEXT_CHARS;
+const escapeRegExp = (value: string): string => value.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const strippedPdfTextLength = (content: string | undefined): number => {
+  if (!content) return 0;
+  return content.replaceAll(PAGE_TAG_RE, '').replaceAll(/\s+/g, '').length;
 };
 
-const imageOnlyPdfNotice = (name: string, tilesAttached: boolean): string => {
+type PdfTextKind = 'empty' | 'sparse' | 'rich';
+
+const pdfTextKind = (content: string | undefined): PdfTextKind => {
+  const length = strippedPdfTextLength(content);
+  if (length === 0) return 'empty';
+  if (length < IMAGE_ONLY_PDF_MIN_TEXT_CHARS) return 'sparse';
+  return 'rich';
+};
+
+const imageOnlyPdfNotice = (
+  name: string,
+  tilesAttached: boolean,
+  textKind: Exclude<PdfTextKind, 'rich'>,
+): string => {
   const tileClause = tilesAttached
     ? ' The page is followed by four zoomed quadrant tiles (top-left, top-right, bottom-left, bottom-right).'
     : '';
+  if (textKind === 'sparse') {
+    return `[PDF "${name}" text layer is sparse; pages attached as images — read the page images directly.${tileClause} Do not try to read or re-parse this file with tools.]`;
+  }
   return `[PDF "${name}" is a scanned document with no text layer. Its pages are attached above as images — read the page images directly.${tileClause} Do not try to read or re-parse this file with tools; extracted text will always be empty.]`;
 };
 
 /**
- * Rewrite the empty `<file …>` body of an image-only PDF inside `<files_info>`
- * so an agent loop does not "read the file" with tools (and trust the empty
- * text) instead of looking at the attached page images.
+ * Rewrite the empty `<file …>` body of an image-only PDF, only inside
+ * `<files_info>` blocks, so an agent loop does not "read the file" with tools
+ * (and trust the empty text) instead of looking at the attached page images.
+ * Never touches free user text that happens to contain a `<file>` tag.
  */
-const markImageOnlyPdfInFilesInfo = (text: string, fileId: string): string =>
-  text.replace(
-    new RegExp(`(<file\\b[^>]*\\bid="${fileId}"[^>]*>)([\\s\\S]*?)(</file>)`, 'i'),
-    (_m, open: string, _body: string, close: string) =>
-      `${open}[scanned document: no text layer; its pages are attached to this message as images — read the images, do not re-read this file with tools]${close}`,
+const markImageOnlyPdfInFilesInfo = (text: string, fileId: string): string => {
+  if (!text.includes('<files_info>')) return text;
+
+  const fileRe = new RegExp(
+    `(<file\\b[^>]*\\bid="${escapeRegExp(fileId)}"[^>]*>)([\\s\\S]*?)(</file>)`,
+    'i',
   );
 
-interface FilesInfoEmptyPdf {
+  return text.replaceAll(filesInfoBlockRe(), (_block, inner: string) => {
+    const marked = inner.replace(
+      fileRe,
+      (_m, open: string, _body: string, close: string) =>
+        `${open}[scanned document: no text layer; its pages are attached to this message as images — read the images, do not re-read this file with tools]${close}`,
+    );
+    return `<files_info>${marked}</files_info>`;
+  });
+};
+
+interface FilesInfoImageOnlyPdf {
   fileId: string;
   name: string;
+  textKind: Exclude<PdfTextKind, 'rich'>;
 }
 
 /**
- * Empty-text PDFs inside `<files_info>` (with or without `sandboxPath` / `url`).
- * Id must match `file_[A-Za-z0-9]+` — the live files-row prefix.
+ * Image-only PDFs inside `<files_info>` (with or without `sandboxPath` / `url`).
+ * Id is `[A-Za-z0-9_-]{6,128}` — FileModel lookup is the real validation
+ * (bot/IM uploads use UUID ids from `uploadFromBuffer`).
  */
-const collectEmptyTextPdfsFromFilesInfo = (text: string): FilesInfoEmptyPdf[] => {
+const collectImageOnlyPdfsFromFilesInfo = (text: string): FilesInfoImageOnlyPdf[] => {
   if (!text.includes('<files_info>')) return [];
 
-  const found: FilesInfoEmptyPdf[] = [];
+  const found: FilesInfoImageOnlyPdf[] = [];
   const seen = new Set<string>();
+  const fileIdRe = new RegExp(`\\bid="(${FILE_ID_IN_ATTR_RE.source})"`);
 
-  for (const block of text.matchAll(/<files_info>([\s\S]*?)<\/files_info>/g)) {
+  for (const block of text.matchAll(filesInfoBlockRe())) {
     const inner = block[1] ?? '';
     for (const tag of inner.matchAll(/<file\b([^>]*)>([\s\S]*?)<\/file>/gi)) {
       const attrs = tag[1] ?? '';
       const body = tag[2] ?? '';
-      const fileId = /\bid="(file_[A-Za-z0-9]+)"/.exec(attrs)?.[1];
+      const fileId = fileIdRe.exec(attrs)?.[1];
       const type = /\btype="([^"]*)"/.exec(attrs)?.[1];
       if (!fileId || seen.has(fileId)) continue;
       if (normalizeMime(type) !== PDF_MIME) continue;
-      if (!isImageOnlyPdfContent(body)) continue;
+      const textKind = pdfTextKind(body);
+      if (textKind === 'rich') continue;
       seen.add(fileId);
-      found.push({ fileId, name: /\bname="([^"]*)"/.exec(attrs)?.[1] || fileId });
+      found.push({
+        fileId,
+        name: /\bname="([^"]*)"/.exec(attrs)?.[1] || fileId,
+        textKind,
+      });
     }
   }
 
@@ -265,7 +306,7 @@ const stripOwnOriginUrlAttributesInFilesInfo = (
 ): string => {
   if (!text.includes('<files_info>')) return text;
 
-  return text.replaceAll(/<files_info>([\s\S]*?)<\/files_info>/g, (_block, inner: string) => {
+  return text.replaceAll(filesInfoBlockRe(), (_block, inner: string) => {
     const stripped = stripOwnOriginUrlAttributes(inner, origins);
     return `<files_info>${stripped}</files_info>`;
   });
@@ -476,6 +517,18 @@ export const inlineOwnOriginAttachments = async (
   // User messages first so assistant history can reuse the per-fileId memo.
   const rasterMemo = new Map<string, Promise<RasterizedPdfImages>>();
   const fileBytesMemo = new Map<string, Promise<OwnOriginAttachmentBytes | null>>();
+  const rasterBudget = {
+    imagesRemaining: PAYLOAD_MAX_RASTERIZED_IMAGES,
+    pdfsRemaining: PAYLOAD_MAX_RASTERIZED_PDFS,
+  };
+
+  let lastUserMessageIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      lastUserMessageIndex = index;
+      break;
+    }
+  }
 
   const loadFileBytes = async (fileId: string): Promise<OwnOriginAttachmentBytes | null> => {
     if (!resolveByFileId) return null;
@@ -509,6 +562,10 @@ export const inlineOwnOriginAttachments = async (
     return resolved;
   };
 
+  const dropPdfBytesMemo = (memoKey: string) => {
+    fileBytesMemo.delete(memoKey);
+  };
+
   const appendRasterizedPages = async (
     next: UserMessageContentPart[],
     memoKey: string,
@@ -516,35 +573,45 @@ export const inlineOwnOriginAttachments = async (
     bytes: Uint8Array,
     imageSlots: { remaining: number },
     allowRender: boolean,
+    textKind: Exclude<PdfTextKind, 'rich'>,
   ): Promise<boolean> => {
-    if (imageSlots.remaining <= 0) return false;
+    const remaining = allowRender
+      ? Math.min(imageSlots.remaining, rasterBudget.imagesRemaining)
+      : imageSlots.remaining;
+    if (remaining <= 0) return false;
 
     let pending = rasterMemo.get(memoKey);
     if (!pending) {
       if (!allowRender) return false;
-      pending = rasterizeImageOnlyPdf(bytes, imageMaxBytes);
+      if (rasterBudget.pdfsRemaining <= 0) return false;
+      rasterBudget.pdfsRemaining -= 1;
+      pending = rasterizeImageOnlyPdf(bytes, imageMaxBytes).finally(() => {
+        // Keep only data URIs in rasterMemo; drop the raw PDF buffer.
+        dropPdfBytesMemo(memoKey);
+      });
       rasterMemo.set(memoKey, pending);
     }
 
     const { images } = await pending;
-    const used = selectRasterizedImages(images, imageSlots.remaining);
+    const used = selectRasterizedImages(images, remaining);
     if (used.length === 0) return false;
 
     const tilesAttached = used.some((image) => image.kind === 'tile');
     for (const image of used) {
       next.push({ image_url: { detail: 'high', url: image.dataUri }, type: 'image_url' });
     }
-    next.push({ text: imageOnlyPdfNotice(name, tilesAttached), type: 'text' });
+    next.push({ text: imageOnlyPdfNotice(name, tilesAttached, textKind), type: 'text' });
     imageSlots.remaining -= used.length;
+    if (allowRender) rasterBudget.imagesRemaining -= used.length;
     return true;
   };
 
   const applyInlinedParts = async (role: 'assistant' | 'user') => {
-    const allowRender = role === 'user';
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (!message || message.role !== role || !Array.isArray(message.content)) continue;
 
-    for (const message of messages) {
-      if (message.role !== role || !Array.isArray(message.content)) continue;
-
+      const allowRender = role === 'user' && index === lastUserMessageIndex;
       const existingImages = message.content.filter(isImageUrlPart).length;
       const imageSlots = { remaining: imageMaxCount - existingImages };
       const next: UserMessageContentPart[] = [];
@@ -578,7 +645,9 @@ export const inlineOwnOriginAttachments = async (
         if (!resolved) continue;
         if (resolved.bytes.byteLength > fileMaxBytes) continue;
         if (!isPdfBytes(part.file_url.mimeType, resolved.mimeType, resolved.bytes)) continue;
-        if (!isImageOnlyPdfContent(part.file_url.content)) continue;
+
+        const textKind = pdfTextKind(part.file_url.content);
+        if (textKind === 'rich') continue;
 
         const memoKey = part.file_url.fileId ?? url;
         await appendRasterizedPages(
@@ -588,6 +657,7 @@ export const inlineOwnOriginAttachments = async (
           resolved.bytes,
           imageSlots,
           allowRender,
+          textKind,
         );
       }
 
@@ -596,49 +666,52 @@ export const inlineOwnOriginAttachments = async (
   };
 
   const applyFilesInfoRasterization = async () => {
-    if (!resolveByFileId) return;
+    if (!resolveByFileId || lastUserMessageIndex < 0) return;
 
-    for (const message of messages) {
-      if (message.role !== 'user') continue;
+    const message = messages[lastUserMessageIndex];
+    if (!message || message.role !== 'user') return;
 
-      try {
-        const content = message.content;
-        const texts: string[] = [];
-        if (typeof content === 'string') {
-          if (!content.includes('<files_info>')) continue;
-          texts.push(content);
-        } else if (Array.isArray(content)) {
-          for (const part of content) {
-            if (part.type === 'text' && part.text.includes('<files_info>')) texts.push(part.text);
-          }
-          if (texts.length === 0) continue;
-        } else {
-          continue;
+    try {
+      const content = message.content;
+      const texts: string[] = [];
+      if (typeof content === 'string') {
+        if (!content.includes('<files_info>')) return;
+        texts.push(content);
+      } else if (Array.isArray(content)) {
+        for (const part of content) {
+          if (part.type === 'text' && part.text.includes('<files_info>')) texts.push(part.text);
         }
+        if (texts.length === 0) return;
+      } else {
+        return;
+      }
 
-        const handled = Array.isArray(content) ? collectFileUrlFileIds(content) : new Set<string>();
-        const candidates: FilesInfoEmptyPdf[] = [];
-        const seen = new Set<string>();
-        for (const text of texts) {
-          for (const pdf of collectEmptyTextPdfsFromFilesInfo(text)) {
-            if (handled.has(pdf.fileId) || seen.has(pdf.fileId)) continue;
-            seen.add(pdf.fileId);
-            candidates.push(pdf);
-          }
+      const handled = Array.isArray(content) ? collectFileUrlFileIds(content) : new Set<string>();
+      const candidates: FilesInfoImageOnlyPdf[] = [];
+      const seen = new Set<string>();
+      for (const text of texts) {
+        for (const pdf of collectImageOnlyPdfsFromFilesInfo(text)) {
+          if (handled.has(pdf.fileId) || seen.has(pdf.fileId)) continue;
+          seen.add(pdf.fileId);
+          candidates.push(pdf);
         }
-        if (candidates.length === 0) continue;
+      }
+      if (candidates.length === 0) return;
 
-        const existingImages = Array.isArray(content) ? content.filter(isImageUrlPart).length : 0;
-        const imageSlots = { remaining: imageMaxCount - existingImages };
-        if (imageSlots.remaining <= 0) continue;
+      const existingImages = Array.isArray(content) ? content.filter(isImageUrlPart).length : 0;
+      const imageSlots = { remaining: imageMaxCount - existingImages };
+      if (imageSlots.remaining <= 0) return;
 
-        const next: UserMessageContentPart[] =
-          typeof content === 'string' ? [{ text: content, type: 'text' }] : [...content];
-        let appended = false;
+      const next: UserMessageContentPart[] =
+        typeof content === 'string' ? [{ text: content, type: 'text' }] : [...content];
+      let appended = false;
 
-        for (const pdf of candidates) {
-          if (imageSlots.remaining <= 0) break;
-          const resolved = await loadFileBytes(pdf.fileId);
+      for (const pdf of candidates) {
+        if (imageSlots.remaining <= 0 || rasterBudget.imagesRemaining <= 0) break;
+        if (!rasterMemo.has(pdf.fileId) && rasterBudget.pdfsRemaining <= 0) break;
+
+        const resolved = await loadFileBytes(pdf.fileId);
+        try {
           if (!resolved) continue;
           if (!isPdfBytes(undefined, resolved.mimeType, resolved.bytes)) continue;
           const didAppend = await appendRasterizedPages(
@@ -648,8 +721,9 @@ export const inlineOwnOriginAttachments = async (
             resolved.bytes,
             imageSlots,
             true,
+            pdf.textKind,
           );
-          if (didAppend) {
+          if (didAppend && pdf.textKind === 'empty') {
             for (const part of next) {
               if (part.type === 'text' && part.text.includes('<files_info>')) {
                 part.text = markImageOnlyPdfInFilesInfo(part.text, pdf.fileId);
@@ -657,15 +731,17 @@ export const inlineOwnOriginAttachments = async (
             }
           }
           appended = didAppend || appended;
+        } finally {
+          dropPdfBytesMemo(pdf.fileId);
         }
-
-        if (appended) message.content = next;
-      } catch (error) {
-        log(
-          'files_info image-only PDF inline failed: %s',
-          error instanceof Error ? error.message : error,
-        );
       }
+
+      if (appended) message.content = next;
+    } catch (error) {
+      log(
+        'files_info image-only PDF inline failed: %s',
+        error instanceof Error ? error.message : error,
+      );
     }
   };
 

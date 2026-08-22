@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { renderPdfPagesToPng } from './pdfPageImages';
+import { renderPdfPagesToPng, withPdfRenderSemaphore } from './pdfPageImages';
 
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47];
 
@@ -94,5 +94,30 @@ describe('renderPdfPagesToPng', () => {
         maxPages: 4,
       }),
     ).resolves.toEqual([]);
+  });
+});
+
+describe('withPdfRenderSemaphore', () => {
+  it('limits concurrent fake renders to 2', async () => {
+    let current = 0;
+    let maxConcurrent = 0;
+
+    const fakeRender = async () => {
+      current += 1;
+      maxConcurrent = Math.max(maxConcurrent, current);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 40);
+      });
+      current -= 1;
+      return 'ok';
+    };
+
+    const results = await Promise.all(
+      [1, 2, 3, 4, 5].map(() => withPdfRenderSemaphore(fakeRender)),
+    );
+
+    expect(results).toEqual(['ok', 'ok', 'ok', 'ok', 'ok']);
+    expect(maxConcurrent).toBe(2);
+    expect(current).toBe(0);
   });
 });

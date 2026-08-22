@@ -8,6 +8,42 @@ const log = debug('lobe-server:pdf-page-images');
 const DEFAULT_MAX_LONG_EDGE_PX = 1800;
 const RETRY_SCALE = 0.7;
 const PNG_MIME = 'image/png';
+const PDF_RENDER_CONCURRENCY = 2;
+
+let activePdfRenders = 0;
+const pdfRenderWaiters: Array<() => void> = [];
+
+const acquirePdfRenderSlot = (): Promise<void> =>
+  new Promise((resolve) => {
+    if (activePdfRenders < PDF_RENDER_CONCURRENCY) {
+      activePdfRenders += 1;
+      resolve();
+      return;
+    }
+    pdfRenderWaiters.push(() => {
+      activePdfRenders += 1;
+      resolve();
+    });
+  });
+
+const releasePdfRenderSlot = (): void => {
+  activePdfRenders -= 1;
+  const next = pdfRenderWaiters.shift();
+  if (next) next();
+};
+
+/**
+ * Process-wide semaphore: at most two `renderPdfPagesToPng` calls run at once.
+ * Exported so tests can drive it with fake renders without loading pdfjs.
+ */
+export const withPdfRenderSemaphore = async <T>(task: () => Promise<T>): Promise<T> => {
+  await acquirePdfRenderSlot();
+  try {
+    return await task();
+  } finally {
+    releasePdfRenderSlot();
+  }
+};
 
 export interface PdfPageImage {
   height: number;
@@ -234,8 +270,15 @@ const renderPageAtScale = async (
 /**
  * Rasterize the first `maxPages` of a PDF to PNG. Per-page failures are logged
  * and skipped; document-level failures return an empty array (never throw).
+ * Concurrent calls are capped process-wide by `withPdfRenderSemaphore`.
  */
 export const renderPdfPagesToPng = async (
+  bytes: Uint8Array,
+  opts: RenderPdfPagesToPngOptions,
+): Promise<PdfPageImage[]> =>
+  withPdfRenderSemaphore(() => renderPdfPagesToPngUncapped(bytes, opts));
+
+const renderPdfPagesToPngUncapped = async (
   bytes: Uint8Array,
   opts: RenderPdfPagesToPngOptions,
 ): Promise<PdfPageImage[]> => {
