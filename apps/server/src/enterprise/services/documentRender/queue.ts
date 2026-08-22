@@ -6,6 +6,7 @@ import { and, count, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
 
 import { FileModel } from '@/database/models/file';
 import { PlatformJobModel } from '@/database/models/platform/job';
+import { files } from '@/database/schemas';
 import { platformJobs } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import {
@@ -15,7 +16,10 @@ import {
 } from '@/types/files';
 
 import { isPersistentEnterpriseWorkerRuntime } from '../../jobs/persistentWorkerRuntime';
-import { ensurePlatformJobsDispatcherStarted } from '../../jobs/platformJobsDispatcher';
+import {
+  ensurePlatformJobsDispatcherStarted,
+  wakePlatformJobsDispatcher,
+} from '../../jobs/platformJobsDispatcher';
 import { getEffectiveDocumentRenderSettings } from '../documentRenderSettings';
 import { isRenderableDocumentKind, resolveDocumentKind } from './classify';
 
@@ -43,7 +47,43 @@ export interface EnqueueDocumentRenderJobParams {
   requestedBy?: string;
 }
 
+/**
+ * Pull the dispatcher out of its idle backoff so the job starts now. The user
+ * typically sends a message seconds after the upload; without this the first
+ * turn sees `pending` for up to 60s.
+ */
+const markRenderPending = async (
+  db: LobeChatDatabase,
+  fileId: string,
+  jobId: string,
+): Promise<void> => {
+  const patch = JSON.stringify({ jobId, status: 'pending', updatedAt: new Date().toISOString() });
+  await db
+    .update(files)
+    .set({
+      metadata: sql`coalesce(${files.metadata}, '{}'::jsonb) || jsonb_build_object('render', coalesce(${files.metadata} -> 'render', '{}'::jsonb) || ${patch}::jsonb)`,
+    })
+    .where(eq(files.id, fileId));
+};
+
+const wakeDispatcher = (): void => {
+  try {
+    wakePlatformJobsDispatcher();
+  } catch {
+    // best-effort: the next scheduled tick picks the job up anyway
+  }
+};
+
 export const enqueueDocumentRenderJob = async (
+  db: LobeChatDatabase,
+  params: EnqueueDocumentRenderJobParams,
+): Promise<{ created: boolean; jobId: string } | null> => {
+  const result = await enqueueDocumentRenderJobRow(db, params);
+  if (result) wakeDispatcher();
+  return result;
+};
+
+const enqueueDocumentRenderJobRow = async (
   db: LobeChatDatabase,
   params: EnqueueDocumentRenderJobParams,
 ): Promise<{ created: boolean; jobId: string } | null> => {
@@ -65,6 +105,9 @@ export const enqueueDocumentRenderJob = async (
     requestedBy: params.requestedBy ?? null,
     type: DOCUMENT_RENDER_JOB_TYPE,
   });
+  // Stamp `pending` now so a message sent seconds after the upload can wait
+  // for the render instead of treating the file as never rendered.
+  if (created) await markRenderPending(db, params.fileId, job.id);
 
   if (params.force && !created) {
     const render = readFileRenderMetadata(file.metadata);

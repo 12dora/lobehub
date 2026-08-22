@@ -53,6 +53,13 @@ beforeEach(() => {
 });
 
 describe('enqueueDocumentRenderJob', () => {
+  const dbWithUpdate = () =>
+    ({
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      }),
+    }) as never;
+
   it('returns null for unsupported types', async () => {
     vi.mocked(FileModel.getFileById).mockResolvedValue({
       fileType: 'image/png',
@@ -83,7 +90,7 @@ describe('enqueueDocumentRenderJob', () => {
       id: 'file-9',
       name: 'doc.pdf',
     } as never);
-    const result = await enqueueDocumentRenderJob({} as never, {
+    const result = await enqueueDocumentRenderJob(dbWithUpdate(), {
       fileId: 'file-9',
       requestedBy: 'user-1',
     });
@@ -110,7 +117,7 @@ describe('enqueueDocumentRenderJob', () => {
       trigger: 'onDemand',
     });
     await expect(
-      enqueueDocumentRenderJob({} as never, { fileId: 'f1', force: true }),
+      enqueueDocumentRenderJob(dbWithUpdate(), { fileId: 'f1', force: true }),
     ).resolves.toEqual({ created: true, jobId: 'job-1' });
     expect(enqueue).toHaveBeenCalled();
   });

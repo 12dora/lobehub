@@ -49,6 +49,16 @@ const IMAGE_ONLY_PDF_MAX_IMAGES_PER_MESSAGE = 6;
 const IMAGE_ONLY_PDF_TILE_GRID = 2 as const;
 const PAYLOAD_MAX_RASTERIZED_PDFS = 2;
 const PAGE_TAG_RE = /<\/?page\b[^>]*>/gi;
+const RENDER_WAIT_BUDGET_MS = 10_000;
+const RENDER_WAIT_POLL_MS = 1000;
+const RENDER_WAIT_MAX_AGE_MS = 120_000;
+
+/** Pending renders younger than two minutes are worth a short wait; older ones are stuck. */
+const isFreshPendingRender = (render: FileRenderMetadata | undefined): boolean => {
+  if (!render || render.status !== 'pending') return false;
+  const updatedAt = render.updatedAt ? Date.parse(render.updatedAt) : Number.NaN;
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt < RENDER_WAIT_MAX_AGE_MS;
+};
 
 const filesInfoBlockRe = () => /<files_info>([\s\S]*?)<\/files_info>/g;
 
@@ -1098,10 +1108,26 @@ const createFileServiceResolvers = (
     return resolveByFileId(fileId, maxBytes);
   };
 
+  // One wait budget per request: a render enqueued by the upload seconds ago
+  // usually finishes within a few seconds, so the first turn can still use it.
+  let renderWaitDeadline: number | undefined;
+
   const loadRender = async (fileId: string): Promise<FileRenderMetadata | undefined> => {
     try {
       const file = await lookupFile(fileId);
-      return readFileRenderMetadata(file?.metadata);
+      let render = readFileRenderMetadata(file?.metadata);
+      if (!file || !isFreshPendingRender(render)) return render;
+
+      const { fileModel, db } = await load();
+      renderWaitDeadline ??= Date.now() + RENDER_WAIT_BUDGET_MS;
+      while (render && render.status === 'pending' && Date.now() < renderWaitDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, RENDER_WAIT_POLL_MS));
+        const current = fileModel
+          ? await fileModel.findById(fileId)
+          : await FileModel.getFileById(db, fileId);
+        render = readFileRenderMetadata(current?.metadata) ?? render;
+      }
+      return render;
     } catch (error) {
       log(
         'failed to load render metadata id=%s error=%s',

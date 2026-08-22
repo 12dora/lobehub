@@ -404,6 +404,15 @@ const noteTypeFailure = (spec: PlatformJobDispatchSpec, nowMs: number): void => 
   laneFailures.set(spec.jobType, { consecutive, retryAt });
 };
 
+/**
+ * Run a dispatch tick now instead of waiting out the idle backoff (up to 60s).
+ * Called right after enqueueing latency-sensitive jobs (document render: the
+ * user usually sends a message seconds after the upload).
+ */
+export const wakePlatformJobsDispatcher = (): void => {
+  dispatcherScheduler?.wake();
+};
+
 /** Test-only: drop the process-once latch and stop the loop. */
 export const resetPlatformJobsDispatcherForTest = (): void => {
   dispatcherScheduler?.stop();

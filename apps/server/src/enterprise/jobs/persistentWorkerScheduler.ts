@@ -7,6 +7,8 @@ const JITTER_RATIO = 0.2;
 
 export interface PersistentWorkerScheduler {
   stop: () => void;
+  /** Run the next tick now (resets idle backoff). No-op while a tick is in flight. */
+  wake: () => void;
 }
 
 export interface PersistentWorkerRunResult {
@@ -68,6 +70,7 @@ export const startPersistentWorkerScheduler = (
   let consecutiveFailures = 0;
   let consecutiveIdle = 0;
   let stopped = false;
+  let running = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const schedule = (delayMs: number) => {
@@ -77,6 +80,8 @@ export const startPersistentWorkerScheduler = (
   };
 
   const run = async () => {
+    if (running) return;
+    running = true;
     let delayMs = options.baseIntervalMs;
     try {
       const result = await options.run();
@@ -106,6 +111,7 @@ export const startPersistentWorkerScheduler = (
         retryDelayMs: delayMs,
       });
     } finally {
+      running = false;
       schedule(delayMs);
     }
   };
@@ -115,6 +121,12 @@ export const startPersistentWorkerScheduler = (
     stop: () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+    },
+    wake: () => {
+      if (stopped || running) return;
+      consecutiveIdle = 0;
+      if (timer) clearTimeout(timer);
+      void run();
     },
   };
 };
