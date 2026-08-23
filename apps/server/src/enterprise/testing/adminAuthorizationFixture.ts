@@ -11,6 +11,8 @@ import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/se
 import { seedWorkspaceRoles } from '@/database/utils/seedWorkspaceRoles';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../contracts/adminUsers';
+
 import { deletePlatformAuditLogsForTest } from './deletePlatformAuditLogs';
 
 export interface AdminAuthorizationFixtureOptions {
@@ -135,7 +137,10 @@ export const createAdminAuthorizationFixture = (options: AdminAuthorizationFixtu
       authenticatedAt: contextOptions.apiKey
         ? null
         : contextOptions.staleReauth
-          ? new Date(now.getTime() - 2 * 60 * 60 * 1000)
+          ? // Derived from the window itself. A literal two hours stopped being stale the day the
+            // reauth window moved to eight, and every `staleReauthSuper` case went on asserting a
+            // denial that the guard was no longer being asked for.
+            new Date(now.getTime() - ADMIN_REAUTH_MAX_AGE_MS - 1000)
           : now,
       authMethod: contextOptions.apiKey ? 'api-key' : 'better-auth',
       credentialIssuedAt: now,

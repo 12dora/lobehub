@@ -18,6 +18,7 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
 import { createAdminAuthorizationFixture } from '../../testing/adminAuthorizationFixture';
 import { adminRouter } from '../admin';
 
@@ -29,6 +30,11 @@ vi.mock('@/database/core/db-adaptor', () => ({
 
 const createCaller = createCallerFactory(adminRouter);
 const fixture = createAdminAuthorizationFixture({ namespace: 'admin-audit-a2' });
+
+const staleReauthContext = (contexts: Awaited<ReturnType<typeof fixture.createContexts>>) => ({
+  ...contexts.staleReauthSuper,
+  authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
+});
 
 const clearAuditLogs = async () => {
   await db.transaction(async (tx) => {
@@ -155,7 +161,7 @@ describe('admin.audit router', () => {
 
   it('requires reauth for exports.create and policy.update', async () => {
     const contexts = await fixture.createContexts(db);
-    const stale = createCaller(contexts.staleReauthSuper as never);
+    const stale = createCaller(staleReauthContext(contexts) as never);
     const from = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
     const to = new Date();
 
@@ -171,7 +177,7 @@ describe('admin.audit router', () => {
 
   it('requires reauth for policy.update and legalHolds.create', async () => {
     const contexts = await fixture.createContexts(db);
-    const stale = createCaller(contexts.staleReauthSuper as never);
+    const stale = createCaller(staleReauthContext(contexts) as never);
     const fresh = createCaller(contexts.superAdmin as never);
 
     await expect(
@@ -208,7 +214,7 @@ describe('admin.audit router', () => {
 
   it('records denied reauth without applying policy mutation', async () => {
     const contexts = await fixture.createContexts(db);
-    const stale = createCaller(contexts.staleReauthSuper as never);
+    const stale = createCaller(staleReauthContext(contexts) as never);
     const fresh = createCaller(contexts.superAdmin as never);
 
     const before = await fresh.audit.policy.get();
@@ -291,7 +297,7 @@ describe('admin.audit router', () => {
 
   it('requires reauth for retention.dryRun / run / cancel', async () => {
     const contexts = await fixture.createContexts(db);
-    const stale = createCaller(contexts.staleReauthSuper as never);
+    const stale = createCaller(staleReauthContext(contexts) as never);
     const fresh = createCaller(contexts.superAdmin as never);
 
     await expect(

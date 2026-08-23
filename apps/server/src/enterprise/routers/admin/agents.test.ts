@@ -24,6 +24,7 @@ import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
 import { platformAgentDraftToken } from '../../services/agentCatalog';
 import { adminRouter } from '../admin';
 
@@ -371,7 +372,7 @@ describe('adminAgentsRouter security gates', () => {
     for (const auth of [
       { authenticatedAt: null, authMethod: 'better-auth' as const },
       {
-        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
         authMethod: 'better-auth' as const,
       },
       { authenticatedAt: new Date(), authMethod: 'api-key' as const },
@@ -446,7 +447,7 @@ describe('adminAgentsRouter security gates', () => {
     for (const auth of [
       { authenticatedAt: null, authMethod: 'better-auth' as const },
       {
-        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
         authMethod: 'better-auth' as const,
       },
       { authenticatedAt: new Date(), authMethod: 'api-key' as const },

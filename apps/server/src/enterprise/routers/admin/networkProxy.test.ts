@@ -11,6 +11,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createDefaultNetworkProxyConfig } from '@/types/platform/networkProxy';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import { createAdminAuthorizationFixture } from '../../testing/adminAuthorizationFixture';
 import { adminRouter } from '../admin';
@@ -198,7 +199,14 @@ const callerFor = async (
   principal: 'auditor' | 'aiAdmin' | 'staleReauthSuper' | 'superAdmin' = 'superAdmin',
 ) => {
   const contexts = await fixture.createContexts(db);
-  return createRootCaller(contexts[principal] as never).networkProxy;
+  const context =
+    principal === 'staleReauthSuper'
+      ? {
+          ...contexts.staleReauthSuper,
+          authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
+        }
+      : contexts[principal];
+  return createRootCaller(context as never).networkProxy;
 };
 
 describe('admin.networkProxy permissions', () => {

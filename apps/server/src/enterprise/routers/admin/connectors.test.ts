@@ -23,6 +23,7 @@ import { seedWorkspaceRoles } from '@/database/utils/seedWorkspaceRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
 import {
   InMemoryAdminMutationRateLimiter,
   resetSharedAdminMutationRateLimiter,
@@ -421,7 +422,7 @@ describe('admin.connectors reauthentication and error redaction', () => {
   it('requires reauth for Secret replacement and never persists the denied Secret', async () => {
     const secret = 'opaque-router-replacement-leaf';
     const stale = await callerFor({
-      authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
       userId: ids.aiAdmin,
     });
     await expect(
@@ -637,7 +638,7 @@ describe('admin.connectors.applyImmediate', () => {
   it('rejects stale reauth before mutating', async () => {
     const draft = await createNoneDraft(ids.aiAdmin);
     const stale = await callerFor({
-      authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      authenticatedAt: new Date(Date.now() - ADMIN_REAUTH_MAX_AGE_MS - 1000),
       userId: ids.aiAdmin,
     });
     await expect(

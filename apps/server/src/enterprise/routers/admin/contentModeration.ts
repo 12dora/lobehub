@@ -1,24 +1,19 @@
-import { TRPCError } from '@trpc/server';
-import { z } from 'zod';
-
+/**
+ * admin.contentModeration.* — platform content-moderation settings, overview, records.
+ */
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PlatformContentModerationDecisionModel } from '@/database/models/platform/contentModerationDecisions';
 import { PlatformContentModerationHourlyStatsModel } from '@/database/models/platform/contentModerationHourlyStats';
 import { PlatformContentModerationRecordModel } from '@/database/models/platform/contentModerationRecords';
 import { PlatformContentModerationSettingsModel } from '@/database/models/platform/contentModerationSettings';
-import { PlatformRevisionConflictError } from '@/database/models/platform/errors';
-import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import {
-  type ContentModerationConfig,
   contentModerationOverviewSchema,
   contentModerationRecordListInputSchema,
   contentModerationRecordListOutputSchema,
-  contentModerationRecordSchema,
   contentModerationSettingsUpdateInputSchema,
-  contentModerationSettingsViewSchema,
   contentModerationStatsInputSchema,
   contentModerationStatsOutputSchema,
   contentModerationTestClassifierInputSchema,
@@ -33,33 +28,26 @@ import {
   CONTENT_MODERATION_AUDIT_ACTIONS,
   CONTENT_MODERATION_AUDIT_TARGET_TYPES,
 } from '../../services/contentModeration/constants';
-import { obtainPlatformSecretService } from '../../services/contentModeration/secrets';
 import { PlatformAuditService } from '../../services/platformAudit';
+import { mapModerationError } from './contentModeration.errors';
+import { getSettingsPayload, testClassifier, updateSettings } from './contentModeration.handlers';
 import {
-  assertCombinedApiKeyBound,
-  assertKeywordRegexesSafe,
-  assertRetainedKeysBoundToPersistedEndpoint,
+  clearCacheOutputSchema,
+  deleteRecordsInputSchema,
+  deleteRecordsOutputSchema,
+  getRecordOutputSchema,
+  getSettingsOutputSchema,
+  idInputSchema,
+  revealOutputSchema,
+} from './contentModeration.schemas';
+import {
   assertStatsRange,
   assertStatsTimeZone,
   buildOverview,
   hasPublishedClientFetchBypass,
-  invalidateModerationSettingsCache,
-  loadPublishedModelCatalog,
   loadRecordUser,
-  loadSystemRoles,
-  logModerationFailure,
-  maskStoredApiKeys,
-  RECORDS_DELETE_MAX,
-  resolveDryRunConfig,
-  resolvePlaintextApiKeys,
   revealRecordPromptAtomic,
-  runClassifierDryRun,
   statsBucketForRange,
-  storedRefsOf,
-  summarizeSettingsDiff,
-  toPersistedConfig,
-  toSettingsView,
-  validateCatalogBoundModels,
 } from './contentModerationSupport';
 
 const adminBase = authedProcedure
@@ -72,146 +60,6 @@ const moderationManage = adminBase.use(
   withPlatformPermission(PLATFORM_PERMISSIONS.MODERATION_MANAGE),
 );
 
-const publishedCatalogProviderSchema = z
-  .object({
-    models: z.array(
-      z
-        .object({
-          displayName: z.string(),
-          id: z.string(),
-        })
-        .strict(),
-    ),
-    provider: z.string(),
-    providerName: z.string(),
-  })
-  .strict();
-
-const getSettingsOutputSchema = z
-  .object({
-    catalog: z.array(publishedCatalogProviderSchema),
-    roles: z.array(
-      z
-        .object({
-          displayName: z.string().optional(),
-          name: z.string(),
-        })
-        .strict(),
-    ),
-    settings: contentModerationSettingsViewSchema,
-  })
-  .strict();
-
-const getRecordOutputSchema = contentModerationRecordSchema
-  .extend({
-    user: z
-      .object({
-        avatar: z.string().nullable(),
-        email: z.string().nullable(),
-        fullName: z.string().nullable(),
-        username: z.string().nullable(),
-      })
-      .strict()
-      .nullable(),
-  })
-  .strict();
-
-const idInputSchema = z.object({ id: z.string().min(1) }).strict();
-
-const deleteRecordsInputSchema = z
-  .object({
-    ids: z.array(z.string().min(1)).min(1).max(RECORDS_DELETE_MAX),
-  })
-  .strict();
-
-const revealOutputSchema = z
-  .object({
-    prompt: z.string().nullable(),
-  })
-  .strict();
-
-const deleteRecordsOutputSchema = z
-  .object({
-    deleted: z.number().int().min(0),
-  })
-  .strict();
-
-const clearCacheOutputSchema = z
-  .object({
-    deleted: z.number().int().min(0),
-  })
-  .strict();
-
-const mapModerationError = (error: unknown): never => {
-  if (error instanceof TRPCError) throw error;
-  if (error instanceof PlatformRevisionConflictError) {
-    return throwEnterpriseError({
-      code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
-      details: error.details as Record<string, string | number | boolean | null> | undefined,
-    });
-  }
-  if (error instanceof z.ZodError) {
-    return throwEnterpriseError({
-      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-      details: { issueCount: error.issues.length },
-    });
-  }
-  if (error instanceof Error && error.message === 'Unknown IANA time zone') {
-    return throwEnterpriseError({
-      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-      details: { field: 'timezone', reason: 'unknown_timezone' },
-    });
-  }
-  if (error instanceof Error && error.message.startsWith('Unknown IANA time zone:')) {
-    return throwEnterpriseError({
-      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-      details: { field: 'timezone', reason: 'unknown_timezone' },
-    });
-  }
-  logModerationFailure('unexpected operation failure', error, 'operation_failed');
-  return throwEnterpriseError({
-    code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
-    details: { reason: 'operation_failed' },
-    httpCode: 'INTERNAL_SERVER_ERROR',
-  });
-};
-
-const settingsViewFor = async (
-  db: LobeChatDatabase,
-  row: {
-    config: ContentModerationConfig;
-    revision: number;
-    updatedAt: Date;
-    updatedBy: string | null;
-  },
-) => {
-  const apiKeys = await maskStoredApiKeys({
-    refs: storedRefsOf(row.config),
-    secretService: obtainPlatformSecretService(),
-  });
-  return toSettingsView({
-    apiKeys,
-    config: row.config,
-    revision: row.revision,
-    updatedAt: row.updatedAt,
-    updatedBy: row.updatedBy,
-  });
-};
-
-const getSettingsPayload = async (db: LobeChatDatabase) => {
-  const model = new PlatformContentModerationSettingsModel(db);
-  const row = await model.ensureDefault();
-  const [settings, catalog, roles] = await Promise.all([
-    settingsViewFor(db, row),
-    loadPublishedModelCatalog(db),
-    loadSystemRoles(db),
-  ]);
-  return { catalog, roles, settings };
-};
-
-/**
- * admin.contentModeration.* — platform content-moderation settings, overview, records.
- */
 export const adminContentModerationRouter = router({
   clearDecisionCache: moderationManage.output(clearCacheOutputSchema).mutation(async ({ ctx }) => {
     try {
@@ -384,139 +232,10 @@ export const adminContentModerationRouter = router({
   testClassifier: moderationManage
     .input(contentModerationTestClassifierInputSchema)
     .output(contentModerationTestClassifierOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      try {
-        const settings = await new PlatformContentModerationSettingsModel(
-          ctx.serverDB,
-        ).ensureDefault();
-        const config = resolveDryRunConfig({
-          override: input.config,
-          persisted: settings.config,
-        });
-        const catalog = await loadPublishedModelCatalog(ctx.serverDB);
-        validateCatalogBoundModels({ catalog, config });
-        await assertKeywordRegexesSafe({
-          next: config.keywords,
-          previous: settings.config.keywords,
-        });
-        const storedRefs = storedRefsOf(settings.config);
-        const secretService = obtainPlatformSecretService();
-        const keep = input.config
-          ? (input.config.classifier.moderationsApi?.apiKeys.keep ?? [])
-          : (await maskStoredApiKeys({ refs: storedRefs, secretService })).map(
-              (key) => key.fingerprint,
-            );
-        const add = input.config?.classifier.moderationsApi?.apiKeys.add ?? [];
-        assertCombinedApiKeyBound(keep, add);
-        assertRetainedKeysBoundToPersistedEndpoint({
-          keep,
-          persistedBaseUrl: settings.config.classifier.moderationsApi?.baseUrl,
-          submittedBaseUrl: config.classifier.moderationsApi?.baseUrl,
-        });
-        const plaintextKeys =
-          config.classifier.kind === 'moderations_api'
-            ? await resolvePlaintextApiKeys({
-                add,
-                keep,
-                secretService,
-                storedRefs,
-              })
-            : [];
-
-        const result = await runClassifierDryRun({
-          config,
-          db: ctx.serverDB,
-          plaintextKeys,
-          text: input.text,
-        });
-
-        await new PlatformAuditService(ctx.serverDB).append({
-          action: CONTENT_MODERATION_AUDIT_ACTIONS.CLASSIFIER_TEST,
-          actorUserId: ctx.userId!,
-          afterDiff: {
-            kind: config.classifier.kind,
-            latencyMs: result.latencyMs,
-            policyAction: result.policyAction,
-          },
-          result: 'success',
-          targetId: 'default',
-          targetType: CONTENT_MODERATION_AUDIT_TARGET_TYPES.SETTINGS,
-        });
-
-        return result;
-      } catch (error) {
-        return mapModerationError(error);
-      }
-    }),
+    .mutation(testClassifier),
 
   updateSettings: moderationManage
     .input(contentModerationSettingsUpdateInputSchema)
     .output(getSettingsOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      try {
-        const catalog = await loadPublishedModelCatalog(ctx.serverDB);
-        validateCatalogBoundModels({ catalog, config: input.config });
-
-        const secretService = obtainPlatformSecretService();
-        const current = await new PlatformContentModerationSettingsModel(ctx.serverDB).get();
-        await assertKeywordRegexesSafe({
-          next: input.config.keywords,
-          previous: current?.config.keywords ?? null,
-        });
-
-        return await ctx.serverDB
-          .transaction(async (tx) => {
-            const settingsModel = new PlatformContentModerationSettingsModel(
-              tx as unknown as LobeChatDatabase,
-            );
-            const latest = await settingsModel.get();
-            const persisted = await toPersistedConfig({
-              persistedBaseUrl: latest?.config.classifier.moderationsApi?.baseUrl,
-              secretService,
-              storedRefs: latest ? storedRefsOf(latest.config) : [],
-              update: input.config,
-            });
-            validateCatalogBoundModels({ catalog, config: persisted });
-
-            const next = await settingsModel.update({
-              config: persisted,
-              expectedRevision: input.expectedRevision,
-              updatedBy: ctx.userId!,
-            });
-
-            const diff = summarizeSettingsDiff({
-              next: persisted,
-              previous: latest?.config ?? null,
-            });
-
-            await new PlatformAuditService(tx).append({
-              action: CONTENT_MODERATION_AUDIT_ACTIONS.SETTINGS_UPDATE,
-              actorUserId: ctx.userId!,
-              afterDiff: {
-                apiKeyCount: diff.apiKeyCount,
-                changedSections: diff.changedSections,
-                keywordCount: diff.keywordCount,
-                revision: next.revision,
-              },
-              configRevision: next.revision,
-              result: 'success',
-              targetId: 'default',
-              targetType: CONTENT_MODERATION_AUDIT_TARGET_TYPES.SETTINGS,
-            });
-
-            const [settings, roles] = await Promise.all([
-              settingsViewFor(tx as unknown as LobeChatDatabase, next),
-              loadSystemRoles(tx as unknown as LobeChatDatabase),
-            ]);
-
-            return { catalog, roles, settings };
-          })
-          .then((payload) => {
-            invalidateModerationSettingsCache(ctx.serverDB);
-            return payload;
-          });
-      } catch (error) {
-        return mapModerationError(error);
-      }
-    }),
+    .mutation(updateSettings),
 });
