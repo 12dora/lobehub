@@ -50,7 +50,7 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const enabled = accessStatus === 'allowed' && canRead;
   const [pageSize, setPageSize] = useState(IDENTITY_PROVIDER_LIST_PAGE_SIZE);
   // Page size is part of the reset key so changing it returns to page 1.
-  const { cursor, goNext, goPrevious, hasPrevious } = useCursorStack(
+  const { cursor, goNext, goPrevious, goTo, hasPrevious, page } = useCursorStack(
     `identity-providers:${pageSize}`,
   );
   const providers = useIdentityProviders(enabled, cursor, pageSize);
@@ -235,11 +235,16 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                 if (!next || providers.isLoading) return;
                 goNext(next);
               },
+              onJumpTo: (target) => {
+                if (providers.isLoading) return;
+                goTo(target);
+              },
               onPrevious: () => {
                 if (providers.isLoading) return;
                 goPrevious();
               },
               onPageSizeChange: setPageSize,
+              page,
               pageSize,
             }}
             onRetry={() => void providers.mutate()}

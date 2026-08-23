@@ -104,9 +104,11 @@ const RetentionPage = memo(() => {
     currentCursor,
     hasPrevious,
     limit,
+    onJumpTo,
     onNext,
     onPageSizeChange,
     onPrevious,
+    page,
     reset: resetCursor,
   } = useCursorPagination();
   const [highlightIds, setHighlightIds] = useState<string[]>([]);
@@ -293,8 +295,10 @@ const RetentionPage = memo(() => {
               cursorPagination={{
                 hasNext: Boolean(data?.nextCursor),
                 hasPrevious,
+                onJumpTo,
                 onNext: () => onNext(data?.nextCursor),
                 onPrevious,
+                page,
                 pageSize: limit,
                 onPageSizeChange,
               }}

@@ -10,7 +10,10 @@ import { useTranslation } from 'react-i18next';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { enumColumnFilter } from '../primitives/columnFilters';
-import DataTable, { type AdminTableChangeMeta } from '../primitives/DataTable';
+import DataTable, {
+  type AdminCursorPagination,
+  type AdminTableChangeMeta,
+} from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import type { AdminConnectorPermissions } from './controller';
 import type { AdminConnectorListInput, AdminConnectorListItem } from './types';
@@ -40,14 +43,9 @@ const firstFilterValue = (value: FilterValue | null | undefined): string | undef
 };
 
 interface ConnectorListViewProps {
-  cursorPagination: {
-    hasNext: boolean;
-    hasPrevious: boolean;
-    onNext: () => void;
-    onPageSizeChange: (pageSize: number) => void;
-    onPrevious: () => void;
-    pageSize: number;
-  };
+  // Forwarded verbatim to DataTable, so it stays on the shared cursor contract rather than a
+  // local copy that can drift from it.
+  cursorPagination: AdminCursorPagination;
   data?: AdminConnectorListItem[];
   error?: boolean;
   filters: Pick<AdminConnectorListInput, 'credentialMode' | 'enabled' | 'query' | 'status'>;

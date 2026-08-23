@@ -26,6 +26,32 @@ export const toAdminPagination = (
   return pagination;
 };
 
+export interface AdminPaginationChromeOptions {
+  pageSizeOptions?: string[];
+  t: TFunction<'admin'>;
+}
+
+/**
+ * Chrome shared by the two admin paginators (offset/numeric and keyset/cursor).
+ *
+ * Both are the same antd `Pagination` under the hood, so alignment, the page-size option
+ * list and the localized control labels live here exactly once — a cursor table must be
+ * visually indistinguishable from a `pagination={{ current, pageSize, total }}` table.
+ * Anything that depends on knowing an exact total (`showTotal`, `showQuickJumper`, `total`)
+ * deliberately stays out of here; only the cursor-honest caller decides those.
+ */
+export const buildPaginationChrome = ({ pageSizeOptions, t }: AdminPaginationChromeOptions) => ({
+  align: 'end' as const,
+  locale: {
+    items_per_page: t('primitives.dataTable.itemsPerPage'),
+    jump_to: t('primitives.dataTable.jumpTo'),
+    next_page: t('primitives.dataTable.nextPage'),
+    page: t('primitives.dataTable.page'),
+    prev_page: t('primitives.dataTable.prevPage'),
+  },
+  pageSizeOptions: pageSizeOptions ?? [...DEFAULT_PAGE_SIZE_OPTIONS],
+});
+
 export interface BuildTablePaginationOptions {
   cursorPagination?: AdminCursorPagination;
   pagination?: false | AdminTablePagination;
@@ -43,17 +69,9 @@ export const buildTablePagination = ({
   const totalKnown = typeof p.total === 'number' && Number.isFinite(p.total);
   const showTotal = p.showTotal ?? totalKnown;
   return {
-    align: 'end',
+    ...buildPaginationChrome({ pageSizeOptions: p.pageSizeOptions, t }),
     current: p.current,
-    locale: {
-      items_per_page: t('primitives.dataTable.itemsPerPage'),
-      jump_to: t('primitives.dataTable.jumpTo'),
-      next_page: t('primitives.dataTable.nextPage'),
-      page: t('primitives.dataTable.page'),
-      prev_page: t('primitives.dataTable.prevPage'),
-    },
     pageSize: p.pageSize || DEFAULT_PAGE_SIZE,
-    pageSizeOptions: p.pageSizeOptions ?? [...DEFAULT_PAGE_SIZE_OPTIONS],
     placement: ['bottomEnd'],
     showQuickJumper: p.showQuickJumper ?? totalKnown,
     showSizeChanger: p.showSizeChanger ?? true,

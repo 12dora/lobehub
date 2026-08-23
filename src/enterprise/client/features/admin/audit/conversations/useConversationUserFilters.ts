@@ -22,9 +22,11 @@ export const useConversationUserFilters = (userId: string) => {
     currentCursor,
     hasPrevious,
     limit,
+    onJumpTo,
     onNext,
     onPageSizeChange,
     onPrevious,
+    page,
     reset: resetCursor,
   } = useCursorPagination();
   const {
@@ -99,9 +101,11 @@ export const useConversationUserFilters = (userId: string) => {
       currentCursor,
       hasPrevious,
       limit,
+      onJumpTo,
       onNext,
       onPageSizeChange,
       onPrevious,
+      page,
     },
     q,
     /** Both feeds must rewind together when the redaction authority tightens. */

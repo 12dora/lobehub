@@ -94,9 +94,11 @@ const ExportsPage = memo(() => {
     currentCursor,
     hasPrevious,
     limit,
+    onJumpTo,
     onNext,
     onPageSizeChange,
     onPrevious,
+    page,
     reset: resetCursor,
   } = useCursorPagination();
   const [createOpen, setCreateOpen] = useState(searchParams.get('create') === '1');
@@ -295,8 +297,10 @@ const ExportsPage = memo(() => {
         cursorPagination={{
           hasNext: Boolean(nextCursor),
           hasPrevious,
+          onJumpTo,
           onNext: () => onNext(nextCursor),
           onPrevious,
+          page,
           pageSize: limit,
           onPageSizeChange,
         }}

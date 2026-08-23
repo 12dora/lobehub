@@ -41,9 +41,11 @@ const LegalHoldsPage = memo(() => {
     currentCursor,
     hasPrevious,
     limit,
+    onJumpTo,
     onNext,
     onPageSizeChange,
     onPrevious,
+    page,
     reset: resetCursor,
   } = useCursorPagination();
   const [createOpen, setCreateOpen] = useState(false);
@@ -133,8 +135,10 @@ const LegalHoldsPage = memo(() => {
         cursorPagination={{
           hasNext: Boolean(list.data?.nextCursor),
           hasPrevious,
+          onJumpTo,
           onNext: () => onNext(list.data?.nextCursor),
           onPrevious,
+          page,
           pageSize: limit,
           onPageSizeChange,
         }}

@@ -24,7 +24,11 @@ export interface UseCursorStackResult {
   cursor: string | undefined;
   goNext: (nextCursor: string) => void;
   goPrevious: () => void;
+  /** Exact backward jump to an already-visited page (1-based). Forward jumps are ignored. */
+  goTo: (page: number) => void;
   hasPrevious: boolean;
+  /** 1-based index of the page currently shown; an empty stack is page 1. */
+  page: number;
 }
 
 /**
@@ -54,7 +58,16 @@ export const useCursorStack = (resetKey?: string | number | null): UseCursorStac
     goPrevious: () => {
       setCursorStack((current) => current.slice(0, -1));
     },
+    // The stack holds every cursor visited on the way here, so truncating it lands on the
+    // requested page exactly. Forward jumps are ignored — the cursor for an unvisited page is
+    // only known once the server hands it over via `goNext`.
+    goTo: (page) => {
+      setCursorStack((current) =>
+        page < 1 || page > current.length ? current : current.slice(0, page - 1),
+      );
+    },
     hasPrevious: cursorStack.length > 0,
+    page: cursorStack.length + 1,
   };
 };
 

@@ -34,9 +34,13 @@ export interface CursorPaginationControls {
   cursorStack: (string | null)[];
   hasPrevious: boolean;
   limit: number;
+  /** Exact backward jump to an already-visited page (1-based). Forward jumps are ignored. */
+  onJumpTo: (page: number) => void;
   onNext: (nextCursor: string | null | undefined) => void;
   onPageSizeChange: (size: number) => void;
   onPrevious: () => void;
+  /** 1-based index of the page currently shown; an empty stack is page 1. */
+  page: number;
   reset: () => void;
   setCursorStack: Dispatch<SetStateAction<(string | null)[]>>;
   setLimit: Dispatch<SetStateAction<number>>;
@@ -55,6 +59,7 @@ export const useCursorPagination = (
 
   const currentCursor = cursorStack.at(-1) ?? null;
   const hasPrevious = cursorStack.length > 0;
+  const page = cursorStack.length + 1;
 
   const onNext = useCallback((nextCursor: string | null | undefined) => {
     if (!nextCursor) return;
@@ -63,6 +68,15 @@ export const useCursorPagination = (
 
   const onPrevious = useCallback(() => {
     setCursorStack((prev) => prev.slice(0, -1));
+  }, []);
+
+  // The stack holds every cursor visited on the way here, so truncating it lands on the
+  // requested page exactly. Forward jumps are ignored: the cursor for an unvisited page is
+  // only known once the server hands it over via `onNext`.
+  const onJumpTo = useCallback((target: number) => {
+    setCursorStack((prev) =>
+      target < 1 || target > prev.length ? prev : prev.slice(0, target - 1),
+    );
   }, []);
 
   const onPageSizeChange = useCallback((size: number) => {
@@ -80,13 +94,26 @@ export const useCursorPagination = (
       cursorStack,
       hasPrevious,
       limit,
+      onJumpTo,
       onNext,
       onPageSizeChange,
       onPrevious,
+      page,
       reset,
       setCursorStack,
       setLimit,
     }),
-    [currentCursor, cursorStack, hasPrevious, limit, onNext, onPageSizeChange, onPrevious, reset],
+    [
+      currentCursor,
+      cursorStack,
+      hasPrevious,
+      limit,
+      onJumpTo,
+      onNext,
+      onPageSizeChange,
+      onPrevious,
+      page,
+      reset,
+    ],
   );
 };

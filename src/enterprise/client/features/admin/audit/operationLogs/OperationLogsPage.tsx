@@ -122,8 +122,10 @@ const OperationLogsPage = memo(() => {
         cursorPagination={{
           hasNext: Boolean(nextCursor),
           hasPrevious: cursor.hasPrevious,
+          onJumpTo: cursor.onJumpTo,
           onNext: () => cursor.onNext(nextCursor),
           onPrevious: cursor.onPrevious,
+          page: cursor.page,
           pageSize: cursor.limit,
           onPageSizeChange: cursor.onPageSizeChange,
         }}

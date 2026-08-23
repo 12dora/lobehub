@@ -151,7 +151,15 @@ const ConnectorListPage = memo(() => {
           setLimit(pageSize);
           setCursorState({ fingerprint, stack: [] });
         },
+        // The stack holds every cursor visited on the way here, so truncating it lands on the
+        // requested page exactly. Forward jumps are ignored — the cursor for an unvisited page
+        // is only known once the server hands it over as `nextCursor`.
+        onJumpTo: (target) => {
+          if (target < 1 || target > cursorStack.length) return;
+          setCursorState({ fingerprint, stack: cursorStack.slice(0, target - 1) });
+        },
         onPrevious: () => setCursorState({ fingerprint, stack: cursorStack.slice(0, -1) }),
+        page: cursorStack.length + 1,
         pageSize: limit,
       }}
       filters={{

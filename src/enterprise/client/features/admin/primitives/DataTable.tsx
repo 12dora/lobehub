@@ -120,14 +120,25 @@ export interface AdminTablePagination {
 
 /**
  * Honest keyset/cursor pagination when exact total is unknown.
- * Renders previous/next controls without inventing an offset total.
+ * Renders the same paginator as `pagination` minus the two controls that would require a
+ * real total (the `N items` line and the quick jumper).
  */
 export interface AdminCursorPagination {
   hasNext: boolean;
   hasPrevious: boolean;
+  /**
+   * Exact backward jump to an already-visited page (1-based). Provide it whenever the owner
+   * retains its cursor stack; without it the paginator clamps a page click to a single step.
+   */
+  onJumpTo?: (page: number) => void;
   onNext: () => void;
   onPageSizeChange?: (pageSize: number) => void;
   onPrevious: () => void;
+  /**
+   * 1-based index of the page currently shown, derived from the owner's cursor stack.
+   * Omit only when the page index is genuinely not derivable.
+   */
+  page?: number;
   pageSize?: number;
   pageSizeOptions?: string[];
 }

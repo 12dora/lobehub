@@ -153,7 +153,12 @@ const ConversationUserPage = memo(() => {
                 if (!listRenderable) return;
                 listCursor.onNext(list.data?.nextCursor);
               },
+              onJumpTo: (target) => {
+                if (!listRenderable) return;
+                listCursor.onJumpTo(target);
+              },
               onPrevious: listRenderable ? listCursor.onPrevious : () => undefined,
+              page: listCursor.page,
               pageSize: listCursor.limit,
               onPageSizeChange: listCursor.onPageSizeChange,
             }}

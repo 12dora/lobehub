@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import DataTable from './DataTable';
@@ -10,7 +10,9 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       const catalog: Record<string, string> = {
-        'primitives.dataTable.pageSizeOption': '{{count}} / page',
+        'primitives.dataTable.itemsPerPage': '/ page',
+        'primitives.dataTable.nextPage': 'Next page',
+        'primitives.dataTable.prevPage': 'Previous page',
       };
       let text = catalog[key] ?? key;
       if (options) {
@@ -54,10 +56,16 @@ vi.mock('@/components/NeuralNetworkLoading', () => ({ default: () => null }));
 
 type Row = { id: string; name: string };
 
+/** The cursor paginator is antd's `Pagination`; page buttons are `li.ant-pagination-item-N`. */
+const cursorNav = () => screen.getByLabelText('primitives.dataTable.cursorNav');
+const pageButton = (page: number) =>
+  cursorNav().querySelector(`.ant-pagination-item-${page}`) as HTMLElement;
+const nextArrow = () => cursorNav().querySelector('.ant-pagination-next') as HTMLElement;
+const prevArrow = () => cursorNav().querySelector('.ant-pagination-prev') as HTMLElement;
+
 describe('DataTable cursor pagination', () => {
-  it('renders previous/next without a fabricated total', () => {
+  it('renders numeric page buttons without a fabricated total', () => {
     const onNext = vi.fn();
-    const onPrevious = vi.fn();
     const onRowActivate = vi.fn();
 
     render(
@@ -70,14 +78,25 @@ describe('DataTable cursor pagination', () => {
           hasNext: true,
           hasPrevious: false,
           onNext,
-          onPrevious,
+          onPrevious: vi.fn(),
+          page: 1,
+          pageSize: 20,
         }}
         onRowActivate={onRowActivate}
       />,
     );
 
-    expect(screen.queryByText(/total/i)).toBeNull();
-    fireEvent.click(screen.getByText('primitives.dataTable.next'));
+    // No total line and no quick jumper — a keyset list does not know its size.
+    expect(cursorNav().querySelector('.ant-pagination-total-text')).toBeNull();
+    expect(cursorNav().querySelector('.ant-pagination-options-quick-jumper')).toBeNull();
+
+    // The reachable pages stop exactly one past the current one.
+    expect(pageButton(1)).toBeTruthy();
+    expect(pageButton(2)).toBeTruthy();
+    expect(pageButton(3)).toBeNull();
+    expect(within(pageButton(1)).getByText('1')).toBeTruthy();
+
+    fireEvent.click(within(pageButton(2)).getByText('2'));
     expect(onNext).toHaveBeenCalledTimes(1);
 
     const row = screen.getByRole('link');
@@ -85,7 +104,87 @@ describe('DataTable cursor pagination', () => {
     expect(onRowActivate).toHaveBeenCalledWith({ id: '1', name: 'A' });
   });
 
-  it('empty cursor page retains Previous', () => {
+  it('disables the next arrow at the end of the list and enables previous', () => {
+    const onNext = vi.fn();
+
+    render(
+      <DataTable<Row>
+        columns={[{ dataIndex: 'name', key: 'name', title: 'Name' }]}
+        dataSource={[{ id: '1', name: 'A' }]}
+        pagination={false}
+        rowKey="id"
+        cursorPagination={{
+          hasNext: false,
+          hasPrevious: true,
+          onNext,
+          onPrevious: vi.fn(),
+          page: 3,
+          pageSize: 20,
+        }}
+      />,
+    );
+
+    expect(pageButton(3)?.className).toContain('ant-pagination-item-active');
+    expect(pageButton(4)).toBeNull();
+    expect(nextArrow().className).toContain('ant-pagination-disabled');
+    expect(prevArrow().className).not.toContain('ant-pagination-disabled');
+
+    fireEvent.click(nextArrow());
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
+  it('jumps backwards to the exact page when the owner tracks its cursor stack', () => {
+    const onJumpTo = vi.fn();
+    const onPrevious = vi.fn();
+
+    render(
+      <DataTable<Row>
+        columns={[{ dataIndex: 'name', key: 'name', title: 'Name' }]}
+        dataSource={[{ id: '1', name: 'A' }]}
+        pagination={false}
+        rowKey="id"
+        cursorPagination={{
+          hasNext: true,
+          hasPrevious: true,
+          onJumpTo,
+          onNext: vi.fn(),
+          onPrevious,
+          page: 3,
+          pageSize: 20,
+        }}
+      />,
+    );
+
+    fireEvent.click(within(pageButton(1)).getByText('1'));
+    expect(onJumpTo).toHaveBeenCalledWith(1);
+    expect(onPrevious).not.toHaveBeenCalled();
+  });
+
+  it('clamps a backward page click to a single step when no onJumpTo is provided', () => {
+    const onPrevious = vi.fn();
+
+    render(
+      <DataTable<Row>
+        columns={[{ dataIndex: 'name', key: 'name', title: 'Name' }]}
+        dataSource={[{ id: '1', name: 'A' }]}
+        pagination={false}
+        rowKey="id"
+        cursorPagination={{
+          hasNext: false,
+          hasPrevious: true,
+          onNext: vi.fn(),
+          onPrevious,
+          page: 4,
+          pageSize: 20,
+        }}
+      />,
+    );
+
+    fireEvent.click(within(pageButton(1)).getByText('1'));
+    expect(onPrevious).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty cursor page retains the paginator so the user is not trapped', () => {
     const onPrevious = vi.fn();
 
     render(
@@ -99,18 +198,21 @@ describe('DataTable cursor pagination', () => {
           hasPrevious: true,
           onNext: vi.fn(),
           onPrevious,
+          page: 2,
+          pageSize: 20,
         }}
       />,
     );
 
     expect(screen.getByText('primitives.dataTable.empty')).toBeTruthy();
-    const previous = screen.getByText('primitives.dataTable.previous');
-    expect(previous).toBeTruthy();
-    fireEvent.click(previous);
+    fireEvent.click(prevArrow());
     expect(onPrevious).toHaveBeenCalledTimes(1);
   });
 
-  it('labels the page-size select with the i18n suffix, not a bare number', () => {
+  it('shares the numeric paginator page-size changer, resetting to page 1', () => {
+    const onPageSizeChange = vi.fn();
+    const onJumpTo = vi.fn();
+
     render(
       <DataTable<Row>
         columns={[{ dataIndex: 'name', key: 'name', title: 'Name' }]}
@@ -119,22 +221,27 @@ describe('DataTable cursor pagination', () => {
         rowKey="id"
         cursorPagination={{
           hasNext: true,
-          hasPrevious: false,
+          hasPrevious: true,
+          onJumpTo,
           onNext: vi.fn(),
-          onPageSizeChange: vi.fn(),
+          onPageSizeChange,
           onPrevious: vi.fn(),
+          page: 2,
           pageSize: 20,
         }}
       />,
     );
 
-    const select = screen.getByLabelText('primitives.dataTable.pageSize') as HTMLSelectElement;
-    expect([...select.options].map((option) => option.value)).toEqual(['20', '50', '100']);
-    expect([...select.options].map((option) => option.textContent)).toEqual([
-      '20 / page',
-      '50 / page',
-      '100 / page',
-    ]);
+    const sizeChanger = cursorNav().querySelector('.ant-pagination-options') as HTMLElement;
+    expect(sizeChanger).toBeTruthy();
+    expect(within(sizeChanger).getByText('20 / page')).toBeTruthy();
+
+    fireEvent.mouseDown(sizeChanger.querySelector('.ant-select-content') as HTMLElement);
+    fireEvent.click(screen.getByTitle('50 / page'));
+
+    expect(onPageSizeChange).toHaveBeenCalledWith(50);
+    // A size change must not be mistaken for a page jump.
+    expect(onJumpTo).not.toHaveBeenCalled();
   });
 
   it('does not activate the row when a nested button is clicked or keyboard-activated', () => {

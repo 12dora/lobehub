@@ -146,6 +146,14 @@ export const useSkillListQuery = () => {
     setCursorState({ fingerprint: filterFingerprint, stack: cursorStack.slice(0, -1) });
   };
 
+  // The stack holds every cursor visited on the way here, so truncating it lands on the
+  // requested page exactly. Forward jumps are ignored — the cursor for an unvisited page is
+  // only known once the server hands it over via `onNext`.
+  const onJumpTo = (page: number, isLoading: boolean) => {
+    if (isLoading || page < 1 || page > cursorStack.length) return;
+    setCursorState({ fingerprint: filterFingerprint, stack: cursorStack.slice(0, page - 1) });
+  };
+
   return {
     cursorStack,
     distribution,
@@ -155,9 +163,11 @@ export const useSkillListQuery = () => {
     handleTableChange,
     input,
     limit,
+    onJumpTo,
     onNext,
     onPageSizeChange,
     onPrevious,
+    page: cursorStack.length + 1,
     queryDraft,
     setQueryDraft,
     status,
