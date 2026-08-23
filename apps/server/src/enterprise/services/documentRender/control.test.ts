@@ -23,6 +23,18 @@ describe('isSidecarConnectionError', () => {
     expect(isSidecarConnectionError(abort)).toBe(false);
   });
 
+  it('does not treat processing timeout errors as sidecar outages', () => {
+    const abort = new Error('The operation was aborted.');
+    abort.name = 'AbortError';
+    const timedOut = new Error('Gotenberg convert timed out after 1000ms', { cause: abort });
+
+    expect(isSidecarConnectionError(timedOut)).toBe(false);
+    expect(
+      isSidecarConnectionError(new DOMException('The operation timed out', 'TimeoutError')),
+    ).toBe(false);
+    expect(isSidecarConnectionError(new Error('response timeout'))).toBe(false);
+  });
+
   it('returns false for unrelated errors and non-objects', () => {
     expect(isSidecarConnectionError(null)).toBe(false);
     expect(isSidecarConnectionError('ECONNREFUSED')).toBe(false);

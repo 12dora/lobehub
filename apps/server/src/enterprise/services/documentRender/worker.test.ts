@@ -319,6 +319,31 @@ describe('processClaimedDocumentRenderJob', () => {
     );
   });
 
+  it('fails without retrying when Gotenberg conversion times out', async () => {
+    vi.mocked(classifyDocument).mockResolvedValue({
+      kind: 'pptx',
+      mediaCount: 4,
+      reason: 'pptxAlwaysT2',
+      tier: 'T2',
+    });
+    const abort = new Error('The operation was aborted.');
+    abort.name = 'AbortError';
+    vi.mocked(convertToPdf).mockRejectedValue(
+      new Error('Gotenberg convert timed out after 1000ms', { cause: abort }),
+    );
+
+    await expect(processClaimedDocumentRenderJob(ctx)).rejects.toThrow(
+      'Gotenberg convert timed out after 1000ms',
+    );
+    expect(fail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: { message: 'Gotenberg convert timed out after 1000ms' },
+        jobId: 'job-1',
+      }),
+    );
+    expect(fail.mock.calls[0]?.[0].error).not.toHaveProperty('retryable');
+  });
+
   it('converts office T2 via Gotenberg then rasterizes without retaining page buffers', async () => {
     vi.mocked(classifyDocument).mockResolvedValue({
       kind: 'pptx',
@@ -428,6 +453,46 @@ describe('processClaimedDocumentRenderJob', () => {
     }
   });
 
+  it('survives a rejected heartbeat instead of leaving the rejection unhandled', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(classifyDocument).mockResolvedValue({
+        kind: 'pptx',
+        mediaCount: 4,
+        pageCount: 1,
+        pages: [{ chars: 40, page: 1, visual: true }],
+        reason: 'pptxAlwaysT2',
+        tier: 'T2',
+      });
+      let resolveConvert!: (value: Uint8Array) => void;
+      let convertStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        convertStarted = resolve;
+      });
+      vi.mocked(convertToPdf).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            convertStarted();
+            resolveConvert = resolve;
+          }),
+      );
+      heartbeat.mockRejectedValueOnce(new Error('database unavailable'));
+
+      const pending = processClaimedDocumentRenderJob(ctx);
+      await started;
+      await vi.advanceTimersByTimeAsync(heartbeatIntervalMs(180_000));
+      resolveConvert(new Uint8Array([0x25, 0x50, 0x44, 0x46]));
+      await pending;
+
+      // The render is not killed by one failed heartbeat: only a heartbeat that answers with no
+      // row proves the lease is gone, and this one never answered.
+      expect(complete).toHaveBeenCalled();
+      expect(fail).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reuses sha256 artifacts without downloading bytes', async () => {
     vi.mocked(FileModel.getFileById).mockResolvedValue({
       ...file,
@@ -463,4 +528,35 @@ describe('processClaimedDocumentRenderJob', () => {
     );
     expect(flattenSql(updateSet.mock.calls)).toContain('"pdf":"files/render/file-1/source.pdf"');
   });
+
+  it.each(['failed', 'skipped'] as const)(
+    'preserves a reusable source status of %s',
+    async (status) => {
+      vi.mocked(FileModel.getFileById).mockResolvedValue({
+        ...file,
+        fileHash: `abc-${status}`,
+      } as never);
+      vi.mocked(findReusableRenderSource).mockResolvedValue({
+        id: 'src-file',
+        metadata: {
+          render: {
+            engine: 'pdfjs',
+            pages: {
+              '1': { chars: 40, png: 'files/render/src-file/pages/1.png', visual: true },
+            },
+            status,
+            tier: 'T2',
+          },
+        },
+      } as never);
+
+      await processClaimedDocumentRenderJob(ctx);
+
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resultSummary: expect.objectContaining({ reused: true, status }),
+        }),
+      );
+    },
+  );
 });

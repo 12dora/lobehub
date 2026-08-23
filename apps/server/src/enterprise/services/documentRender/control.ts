@@ -5,6 +5,8 @@ const SIDECAR_CONNECTION_CODES = new Set([
   'ECONNRESET',
   'ENOTFOUND',
   'ETIMEDOUT',
+  // Undici uses this code for TCP connection setup; response timeout codes are intentionally omitted.
+  'UND_ERR_CONNECT_TIMEOUT',
 ]);
 
 export const SIDECAR_UNAVAILABLE = 'sidecar unavailable';
@@ -14,7 +16,7 @@ export const isSidecarConnectionError = (error: unknown, depth = 0): boolean => 
   if (typeof error !== 'object') return false;
   const rec = error as { cause?: unknown; code?: unknown; message?: unknown; name?: unknown };
   // Worker abort (lease / job timeout) is not a sidecar outage.
-  if (rec.name === 'AbortError') return false;
+  if (rec.name === 'AbortError' || rec.name === 'TimeoutError') return false;
   if (typeof rec.code === 'string' && SIDECAR_CONNECTION_CODES.has(rec.code)) return true;
   if (typeof rec.message === 'string') {
     const message = rec.message.toLowerCase();
@@ -22,9 +24,7 @@ export const isSidecarConnectionError = (error: unknown, depth = 0): boolean => 
       message.includes('econnrefused') ||
       message.includes('enotfound') ||
       message.includes('econnreset') ||
-      message.includes('fetch failed') ||
-      message.includes('timed out') ||
-      message.includes('timeout')
+      message.includes('fetch failed')
     ) {
       return true;
     }

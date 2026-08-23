@@ -93,6 +93,13 @@ const startJobGuards = (params: {
       .heartbeat(params.ctx.job.id, params.ctx.workerId, params.ctx.spec.leaseMs)
       .then((row) => {
         if (!row) params.control.abortLease();
+      })
+      .catch((error) => {
+        // A rejected call is not evidence the lease is gone — only a heartbeat that ANSWERS with
+        // no row proves that, and the tick above already aborts on it. Killing an in-flight render
+        // on one transient database blip would make renders more fragile than the unhandled
+        // rejection this replaces; the next tick either succeeds or reports the lease lost.
+        console.error('document render heartbeat failed', error);
       });
   }, intervalMs);
   return () => {

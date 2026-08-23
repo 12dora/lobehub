@@ -121,12 +121,7 @@ const tryReuseRender = async (params: {
 
   const rebased = rebaseRenderMetadataKeys(sourceRender, source.id, params.file.id);
   const durationMs = Date.now() - params.started;
-  const status: RenderOutcome['status'] =
-    sourceRender.status === 'partial'
-      ? 'partial'
-      : sourceRender.status === 'ready'
-        ? 'ready'
-        : 'partial';
+  const status: RenderOutcome['status'] = sourceRender.status;
   await patchRenderMetadata(params.db, params.file, {
     ...rebased,
     copiedFrom: source.id,
