@@ -1,6 +1,6 @@
 'use client';
 
-import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Flexbox, Tag, Text } from '@lobehub/ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import type { TFunction } from 'i18next';
@@ -14,6 +14,7 @@ import type { useAdminUserMutations } from '../hooks/useAdminUsers';
 import UsersListRowActions from '../UsersListRowActions';
 import UserSourceTags from '../UserSourceTags';
 import { displayUserName, formatAdminDateTime } from '../utils';
+import AdminUserAvatar from './AdminUserAvatar';
 import type { AdminUserListItem } from './useUsersListSelection';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -76,7 +77,7 @@ export const buildUsersListColumns = ({
     width: 200,
     render: (_, row) => (
       <div className={styles.identity}>
-        <Avatar avatar={row.avatar ?? undefined} size={32} />
+        <AdminUserAvatar avatar={row.avatar} name={displayUserName(row)} size={32} />
         <div className={styles.identityText}>
           <Text ellipsis style={{ fontWeight: 600, margin: 0 }}>
             {displayUserName(row)}
