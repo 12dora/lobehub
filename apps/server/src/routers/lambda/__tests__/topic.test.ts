@@ -127,7 +127,7 @@ describe('topicRouter', () => {
       () =>
         ({
           deleteByUpdatedAtRange: mockDeleteByUpdatedAtRange,
-        }) as TopicModel,
+        }) as unknown as TopicModel,
     );
 
     const ctx = {

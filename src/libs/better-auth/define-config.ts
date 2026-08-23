@@ -101,7 +101,7 @@ const isPlatformSsoCallback = (path: string | undefined): boolean =>
  */
 const storeMaterializedSsoAvatar = async (
   user: { id: string; image?: string | null },
-  context?: { path?: string },
+  context?: { path?: string } | null,
 ): Promise<void> => {
   if (!isPlatformSsoCallback(context?.path) || typeof user.image !== 'string') return;
 

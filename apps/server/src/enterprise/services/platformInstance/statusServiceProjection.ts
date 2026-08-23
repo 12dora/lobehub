@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type {
   PlatformInstanceInventoryCounts,
   PlatformInstanceInventoryDiagnostic,
+  PlatformInstanceRevisionInventoryCursor,
 } from '@/database/repositories/platformInstance';
 import type { PlatformIdentityProviderInstanceItem } from '@/database/schemas/platform';
 import {
@@ -16,6 +17,12 @@ import {
   type PlatformRevisionToken,
 } from '@/server/enterprise/contracts/platformInstanceStatus';
 
+import type {
+  getIdentityProviderInstanceRegistrationState,
+  getIdentityProviderProcessInstance,
+} from '../identityProvider/instanceRegistry';
+import type { IdentityProviderStartupHealth } from '../identityProvider/startupArtifact';
+import type { loadPublishedIdentityTarget } from '../identityProvider/systemService';
 import {
   projectDomainDiagnostic,
   resolvePlatformDomainStatus,

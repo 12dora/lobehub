@@ -28,12 +28,21 @@ import {
   identityDiagnostic,
   type IdentityInventory,
   platformDiagnostic,
+  type PlatformInstanceRevisionInventoryBoundCursor,
+  type PlatformInstanceStatusServiceOptions,
+  PlatformInstanceTargetRevisionMismatchError,
   projectDomainConvergence,
   sortDiagnostics,
   ZERO_COUNTS,
 } from './statusServiceProjection';
 
-export { fingerprintDomainTargets, projectDomainConvergence } from './statusServiceProjection';
+export {
+  fingerprintDomainTargets,
+  type PlatformInstanceRevisionInventoryBoundCursor,
+  type PlatformInstanceStatusServiceOptions,
+  PlatformInstanceTargetRevisionMismatchError,
+  projectDomainConvergence,
+} from './statusServiceProjection';
 
 /** Secret-free, read-only projection over platform and OIDC startup inventories. */
 export class PlatformInstanceStatusService {
