@@ -379,7 +379,7 @@
       "count": 1
     }
   },
-  "src/features/CreatePlatformAgent/index.tsx": {
+  "src/features/CreatePlatformAgent/DeviceStep.tsx": {
     "no-restricted-imports": {
       "count": 1
     }
@@ -584,7 +584,17 @@
       "count": 1
     }
   },
+  "src/features/Onboarding/Agent/DevActions.tsx": {
+    "no-restricted-imports": {
+      "count": 1
+    }
+  },
   "src/features/Onboarding/Agent/FeedbackPanel.tsx": {
+    "no-restricted-imports": {
+      "count": 1
+    }
+  },
+  "src/features/Onboarding/Agent/HistoryDrawer.tsx": {
     "no-restricted-imports": {
       "count": 1
     }
@@ -600,11 +610,6 @@
     }
   },
   "src/features/Onboarding/Agent/WrapUpHint.tsx": {
-    "no-restricted-imports": {
-      "count": 1
-    }
-  },
-  "src/features/Onboarding/Agent/index.tsx": {
     "no-restricted-imports": {
       "count": 1
     }
