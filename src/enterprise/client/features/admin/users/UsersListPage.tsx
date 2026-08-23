@@ -1,10 +1,8 @@
 'use client';
 
-import { Alert } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
@@ -16,19 +14,19 @@ import DataTable from '../primitives/DataTable';
 import UserDetailDrawer from './detail/UserDetailDrawer';
 import { useAdminUserMutations } from './hooks/useAdminUsers';
 import { buildUsersListColumns } from './list/usersListColumns';
+import { UsersListStaleAlert } from './list/UsersListStaleAlert';
 import { UsersListToolbar } from './list/UsersListToolbar';
+import { deriveUsersListViewState } from './list/usersListViewState';
+import { useSelectedUserPanel } from './list/useSelectedUserPanel';
 import { useUsersListQuery } from './list/useUsersListQuery';
 import type { AdminUserListItem } from './list/useUsersListSelection';
 import { useUsersListSelection } from './list/useUsersListSelection';
 import { openCreateUserModal } from './modals/CreateUserModal';
 import { hasPermission } from './utils';
 
-/** Search param that drives the slide-in detail panel — shareable and Back-closable. */
-const SELECTED_USER_PARAM = 'user';
-
 const UsersListPage = memo(() => {
   const { t } = useTranslation('admin');
-  const [searchParams, setSearchParams] = useSearchParams();
+  const { closeUserPanel, openUserPanel, selectedUserId } = useSelectedUserPanel();
   const { permissions, roles: actorRoles, authMethod } = useAdminAccess();
   const currentUserId = useUserStore(userProfileSelectors.userId);
   const { createUser, banUser, unbanUser, deleteUser, replaceGlobalRoles } =
@@ -55,32 +53,10 @@ const UsersListPage = memo(() => {
     setSearchDraft,
   } = useUsersListQuery();
 
-  const { createdFrom, createdTo, page, pageSize, query, role, source, status } = queryState;
+  const { page, pageSize, role, source, status } = queryState;
 
-  const items = data?.items ?? [];
-  const total = data?.total ?? 0;
-  const showLoading = isLoading && !data;
-  const showError = Boolean(error) && !data;
-  const showStaleWarning = Boolean(error) && Boolean(data);
-  const hasFilters = Boolean(query || status || role || source || createdFrom || createdTo);
-
-  const selectedUserId = searchParams.get(SELECTED_USER_PARAM);
-
-  // Push on open so Back closes the panel; replace on close so Back does not reopen it.
-  const openUserPanel = useCallback(
-    (userId: string) => {
-      const next = new URLSearchParams(searchParams);
-      next.set(SELECTED_USER_PARAM, userId);
-      setSearchParams(next);
-    },
-    [searchParams, setSearchParams],
-  );
-
-  const closeUserPanel = useCallback(() => {
-    const next = new URLSearchParams(searchParams);
-    next.delete(SELECTED_USER_PARAM);
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+  const { hasFilters, items, showError, showStaleWarning, tableLoading, total } =
+    deriveUsersListViewState({ data, error, isLoading, isValidating, queryState });
 
   const selfTitle = t('users.list.selfActionDisabled');
   const { clearSelection, rowSelection, selectedRows, toBulkTargets } = useUsersListSelection({
@@ -156,28 +132,14 @@ const UsersListPage = memo(() => {
         ) : undefined
       }
     >
-      {showStaleWarning ? (
-        <Alert
-          showIcon
-          style={{ marginBottom: 12 }}
-          type="warning"
-          action={
-            <Button size="small" onClick={() => void mutate()}>
-              {t('primitives.dataTable.retry')}
-            </Button>
-          }
-          message={t('users.stale.refreshFailed', {
-            defaultValue: 'Showing cached data — the latest refresh failed.',
-          })}
-        />
-      ) : null}
+      {showStaleWarning ? <UsersListStaleAlert onRetry={() => void mutate()} /> : null}
       <DataTable<AdminUserListItem>
         virtual
         columns={columns}
         dataSource={items}
         emptyDescription={hasFilters ? t('users.list.emptyFiltered') : t('users.list.empty')}
         error={showError}
-        loading={showLoading || (isValidating && !data)}
+        loading={tableLoading}
         rowKey="id"
         rowSelection={rowSelection}
         scroll={{ x: 1440, y: 560 }}

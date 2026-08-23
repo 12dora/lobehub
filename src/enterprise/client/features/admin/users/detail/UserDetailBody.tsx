@@ -3,31 +3,24 @@
 import { Tabs } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { useReducedMotion } from 'motion/react';
-import { memo, useMemo, useState } from 'react';
+import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
-import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
-import { useAdminUserMutations, useFetchAdminUserDetail } from '../hooks/useAdminUsers';
+import { useFetchAdminUserDetail } from '../hooks/useAdminUsers';
 import { useUserDetailActions } from '../hooks/useUserDetailActions';
 import { getEligibleAssignableRoles } from '../modals/actions';
-import { displayUserName, hasPermission } from '../utils';
-import { isNotFoundError } from './isNotFoundError';
+import { displayUserName } from '../utils';
 import { resolveUserDetailActionFlags } from './resolveUserDetailActionFlags';
+import { resolveUserDetailPermissions } from './resolveUserDetailPermissions';
 import { UserDetailIdentityHeader } from './UserDetailIdentityHeader';
-import {
-  UserDetailError,
-  UserDetailLoading,
-  UserDetailNotFound,
-  UserPanelError,
-  UserPanelLoading,
-  UserPanelNotFound,
-} from './UserDetailStates';
+import { renderUserDetailNotFound, renderUserDetailStateFallback } from './UserDetailStateFallback';
 import type { UserDetailTab } from './UserDetailTabPanels';
 import { UserDetailTabPanels } from './UserDetailTabPanels';
+import { useUserDetailMutationBundle } from './useUserDetailMutationBundle';
 
 const styles = createStaticStyles(({ css }) => ({
   panelRoot: css`
@@ -67,15 +60,8 @@ const UserDetailBody = memo<UserDetailBodyProps>(
     const [tab, setTab] = useState<UserDetailTab>('overview');
     const isPanel = variant === 'drawer';
 
-    const canBan = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_BAN);
-    const canDelete = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_DELETE);
-    const canRevoke = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_SESSION_REVOKE);
-    const canManageRoles = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_ROLE_MANAGE);
-    const canManageCredentials = hasPermission(
-      permissions,
-      PLATFORM_PERMISSIONS.USER_CREDENTIAL_MANAGE,
-    );
-    const canReadAudit = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_READ);
+    const { canBan, canDelete, canManageCredentials, canManageRoles, canReadAudit, canRevoke } =
+      resolveUserDetailPermissions(permissions);
 
     // Same eligibility the replace-permissions modal uses: non-super actors cannot
     // revoke the super_admin role, so don't offer a button the server would reject.
@@ -83,36 +69,7 @@ const UserDetailBody = memo<UserDetailBodyProps>(
     const canRevokeRoleName = (roleName: string) => eligibleRoleNames.has(roleName);
 
     const { data, error, isLoading, mutate } = useFetchAdminUserDetail(userId);
-    const {
-      banUser,
-      unbanUser,
-      deleteUser,
-      disableUserTwoFactor,
-      revokeSessions,
-      replaceGlobalRoles,
-      setUserPassword,
-    } = useAdminUserMutations();
-
-    const mutations = useMemo(
-      () => ({
-        banUser,
-        deleteUser,
-        disableUserTwoFactor,
-        replaceGlobalRoles,
-        revokeSessions,
-        setUserPassword,
-        unbanUser,
-      }),
-      [
-        banUser,
-        deleteUser,
-        disableUserTwoFactor,
-        replaceGlobalRoles,
-        revokeSessions,
-        setUserPassword,
-        unbanUser,
-      ],
-    );
+    const mutations = useUserDetailMutationBundle();
 
     const {
       openBan,
@@ -136,40 +93,22 @@ const UserDetailBody = memo<UserDetailBodyProps>(
     });
 
     // ── State ordering (UI-R1-03) ────────────────────────────────────────────
-    // 1) Loading (no settled data)
-    if (isLoading && !data && !error) {
-      return isPanel ? (
-        <UserPanelLoading reduceMotion={reduceMotion} t={t} />
-      ) : (
-        <UserDetailLoading reduceMotion={reduceMotion} t={t} />
-      );
-    }
-
-    // 2) Structured not-found only
-    if (isNotFoundError(error)) {
-      return isPanel ? (
-        <UserPanelNotFound t={t} onDismiss={onDismiss} />
-      ) : (
-        <UserDetailNotFound navigate={navigate} t={t} />
-      );
-    }
-
-    // 3) Generic network/server error + retry (must be reachable)
-    if (error && !data) {
-      return isPanel ? (
-        <UserPanelError t={t} onRetry={() => void mutate()} />
-      ) : (
-        <UserDetailError t={t} onRetry={() => void mutate()} />
-      );
-    }
+    const stateFallback = renderUserDetailStateFallback({
+      data,
+      error,
+      isLoading,
+      isPanel,
+      navigate,
+      onDismiss,
+      reduceMotion,
+      t,
+      onRetry: () => void mutate(),
+    });
+    if (stateFallback) return stateFallback;
 
     // 4) No-data fallback (should be rare after loading/error)
     if (!data || !userId) {
-      return isPanel ? (
-        <UserPanelNotFound t={t} onDismiss={onDismiss} />
-      ) : (
-        <UserDetailNotFound navigate={navigate} t={t} />
-      );
+      return renderUserDetailNotFound({ isPanel, navigate, onDismiss, t });
     }
 
     const titleName = displayUserName(data);

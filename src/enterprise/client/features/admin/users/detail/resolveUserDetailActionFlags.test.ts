@@ -144,3 +144,181 @@ describe('resolveUserDetailActionFlags', () => {
     expect(writeHandlers(result).every((handler) => handler === undefined)).toBe(true);
   });
 });
+
+/**
+ * Literal truth tables — one row per (allowHighRisk × permission) pair.
+ *
+ * This is a permission surface: the values below are written out by hand rather than
+ * derived, so a refactor that "simplifies" a gate has to move a visible cell to pass.
+ */
+type TruthRow = { allowHighRisk: boolean; expected: boolean; granted: boolean };
+
+/** Withheld while the detail data is stale. */
+const gated: TruthRow[] = [
+  { allowHighRisk: false, expected: false, granted: false },
+  { allowHighRisk: false, expected: false, granted: true },
+  { allowHighRisk: true, expected: false, granted: false },
+  { allowHighRisk: true, expected: true, granted: true },
+];
+
+/** Read-only fact: staleness does not touch it. */
+const ungated: TruthRow[] = [
+  { allowHighRisk: false, expected: false, granted: false },
+  { allowHighRisk: false, expected: true, granted: true },
+  { allowHighRisk: true, expected: false, granted: false },
+  { allowHighRisk: true, expected: true, granted: true },
+];
+
+type PermissionKey = keyof typeof allPermissions;
+type Flags = ReturnType<typeof resolveUserDetailActionFlags>;
+
+const resolveWith = (
+  permission: PermissionKey,
+  granted: boolean,
+  allowHighRisk: boolean,
+  base = noPermissions,
+): Flags =>
+  resolveUserDetailActionFlags({
+    ...base,
+    [permission]: granted,
+    allowHighRisk,
+    openers,
+  });
+
+const booleanFlagCases: {
+  flag: string;
+  permission: PermissionKey;
+  read: (result: Flags) => boolean;
+  table: TruthRow[];
+}[] = [
+  {
+    flag: 'access.canManageRoles',
+    permission: 'canManageRoles',
+    read: (r) => r.access.canManageRoles,
+    table: gated,
+  },
+  {
+    flag: 'audit.canReadAudit',
+    permission: 'canReadAudit',
+    read: (r) => r.audit.canReadAudit,
+    table: ungated,
+  },
+  { flag: 'overview.canBan', permission: 'canBan', read: (r) => r.overview.canBan, table: gated },
+  {
+    flag: 'overview.canDelete',
+    permission: 'canDelete',
+    read: (r) => r.overview.canDelete,
+    table: gated,
+  },
+  {
+    flag: 'overview.canManageCredentials',
+    permission: 'canManageCredentials',
+    read: (r) => r.overview.canManageCredentials,
+    table: ungated,
+  },
+  {
+    flag: 'sessions.canRevoke',
+    permission: 'canRevoke',
+    read: (r) => r.sessions.canRevoke,
+    table: gated,
+  },
+];
+
+/** Every handler is gated: present only when its permission is held AND data is live. */
+const handlerCases: {
+  flag: string;
+  opener: UserDetailActionOpeners[keyof UserDetailActionOpeners];
+  permission: PermissionKey;
+  read: (result: Flags) => unknown;
+}[] = [
+  {
+    flag: 'access.onRevokeRole',
+    opener: openers.openRevokeRole,
+    permission: 'canManageRoles',
+    read: (r) => r.access.onRevokeRole,
+  },
+  {
+    flag: 'access.onUpdatePermissions',
+    opener: openers.openUpdatePermissions,
+    permission: 'canManageRoles',
+    read: (r) => r.access.onUpdatePermissions,
+  },
+  {
+    flag: 'overview.onBan',
+    opener: openers.openBan,
+    permission: 'canBan',
+    read: (r) => r.overview.onBan,
+  },
+  {
+    flag: 'overview.onUnban',
+    opener: openers.openUnban,
+    permission: 'canBan',
+    read: (r) => r.overview.onUnban,
+  },
+  {
+    flag: 'overview.onDelete',
+    opener: openers.openDelete,
+    permission: 'canDelete',
+    read: (r) => r.overview.onDelete,
+  },
+  {
+    flag: 'overview.onSetPassword',
+    opener: openers.openSetPassword,
+    permission: 'canManageCredentials',
+    read: (r) => r.overview.onSetPassword,
+  },
+  {
+    flag: 'overview.onDisableTwoFactor',
+    opener: openers.openDisableTwoFactor,
+    permission: 'canManageCredentials',
+    read: (r) => r.overview.onDisableTwoFactor,
+  },
+  {
+    flag: 'sessions.onRevokeAll',
+    opener: openers.openRevokeAll,
+    permission: 'canRevoke',
+    read: (r) => r.sessions.onRevokeAll,
+  },
+  {
+    flag: 'sessions.onRevokeSession',
+    opener: openers.openRevokeSingle,
+    permission: 'canRevoke',
+    read: (r) => r.sessions.onRevokeSession,
+  },
+];
+
+describe('resolveUserDetailActionFlags truth table', () => {
+  describe.each(booleanFlagCases)('$flag', ({ permission, read, table }) => {
+    it.each(table)(
+      'is $expected when granted=$granted and allowHighRisk=$allowHighRisk',
+      ({ allowHighRisk, expected, granted }) => {
+        expect(read(resolveWith(permission, granted, allowHighRisk))).toBe(expected);
+      },
+    );
+  });
+
+  describe.each(handlerCases)('$flag', ({ opener, permission, read }) => {
+    it.each(gated)(
+      'is $expected when granted=$granted and allowHighRisk=$allowHighRisk',
+      ({ allowHighRisk, expected, granted }) => {
+        const value = read(resolveWith(permission, granted, allowHighRisk));
+        if (expected) expect(value).toBe(opener);
+        else expect(value).toBeUndefined();
+      },
+    );
+  });
+
+  it.each(booleanFlagCases)(
+    '$flag stays off when every OTHER permission is granted',
+    ({ permission, read }) => {
+      expect(read(resolveWith(permission, false, true, allPermissions))).toBe(false);
+    },
+  );
+
+  it.each(handlerCases)(
+    '$flag stays undefined when every OTHER permission is granted',
+    ({ permission, read }) => {
+      expect(read(resolveWith(permission, false, true, allPermissions))).toBeUndefined();
+    },
+  );
+});
