@@ -1,14 +1,18 @@
 'use client';
 
-import { Alert, Flexbox, Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
+import { Flexbox } from '@lobehub/ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
-import RevisionBanner from '../primitives/RevisionBanner';
 import ConnectorAuditPanel from './ConnectorAuditPanel';
+import ConnectorDetailBanner from './ConnectorDetailBanner';
+import ConnectorDetailFooter from './ConnectorDetailFooter';
+import ConnectorDetailHeaderActions from './ConnectorDetailHeaderActions';
+import {
+  type AdminConnectorSaveState,
+  resolveConnectorDetailViewModel,
+} from './connectorDetailViewModel';
 import ConnectorEditorFields from './ConnectorEditorFields';
 import type {
   AdminConnectorDraftValidation,
@@ -20,26 +24,8 @@ import type {
 import ToolPolicyEditor from './ToolPolicyEditor';
 import type { AdminConnectorGetOutput, AdminConnectorToolDraft } from './types';
 
-const styles = createStaticStyles(({ css }) => ({
-  footer: css`
-    position: sticky;
-    z-index: 2;
-    inset-block-end: 0;
-
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: center;
-    justify-content: space-between;
-
-    padding-block: 16px;
-    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
-
-    background: ${cssVar.colorBgLayout};
-  `,
-}));
-
-export type AdminConnectorSaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'failed';
+// Kept exported here: the save-state union has always been part of this module's public surface.
+export type { AdminConnectorSaveState };
 
 interface ConnectorDetailViewProps {
   actionError: string | null;
@@ -108,119 +94,57 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
     validation,
   }) => {
     const { t } = useTranslation('admin');
-    const readOnly = !permissions.canUpdate;
-    const hasUnsavedChanges =
-      saveState === 'dirty' || saveState === 'failed' || saveState === 'saving';
-    const secretConfigured =
-      draft.credentialMode === snapshot.draft.credentialMode
-        ? draft.credentialMode === 'shared_service_account'
-          ? snapshot.draft.sharedSecret.configured
-          : draft.credentialMode === 'per_user_oauth'
-            ? snapshot.draft.oauthClientSecret.configured
-            : false
-        : false;
+    const view = resolveConnectorDetailViewModel({
+      busyAction,
+      conflict,
+      draft,
+      permissions,
+      primaryAction,
+      saveState,
+      snapshot,
+      validation,
+    });
 
     return (
       <AdminPageTemplate
         description={t('connectorCatalog.detail.description')}
         title={snapshot.draft.displayName}
         actions={
-          <Flexbox horizontal gap={8}>
-            {permissions.canDiscover ? (
-              <Button
-                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
-                onClick={onDiscover}
-              >
-                {t('connectorCatalog.actions.discover')}
-              </Button>
-            ) : null}
-            {permissions.canRevokeBindings && snapshot.published ? (
-              <Button
-                danger
-                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
-                onClick={onRevokeBindings}
-              >
-                {t('connectorCatalog.actions.revokeBindings')}
-              </Button>
-            ) : null}
-            {permissions.canPublish && snapshot.published ? (
-              <Button
-                danger
-                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
-                loading={busyAction === 'rollback'}
-                onClick={onRollback}
-              >
-                {t('connectorCatalog.actions.rollback')}
-              </Button>
-            ) : null}
-            {permissions.canArchive && snapshot.published ? (
-              <Button
-                danger
-                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
-                onClick={onArchive}
-              >
-                {t('connectorCatalog.actions.archive')}
-              </Button>
-            ) : null}
-            {permissions.canDelete && !snapshot.published ? (
-              <Button
-                danger
-                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
-                onClick={onDeleteDraft}
-              >
-                {t('connectorCatalog.actions.deleteDraft')}
-              </Button>
-            ) : null}
-          </Flexbox>
+          <ConnectorDetailHeaderActions
+            model={view.headerActions}
+            onArchive={onArchive}
+            onDeleteDraft={onDeleteDraft}
+            onDiscover={onDiscover}
+            onRevokeBindings={onRevokeBindings}
+            onRollback={onRollback}
+          />
         }
         banner={
-          <>
-            <RevisionBanner
-              conflict={conflict}
-              draftRevision={snapshot.baseRevision}
-              publishedRevision={snapshot.published?.publishedRevision ?? null}
-              status={snapshot.draft.status}
-            />
-            {readOnly ? (
-              <Alert showIcon message={t('connectorCatalog.readOnly')} type={'info'} />
-            ) : null}
-            {restoreNotice ? <Alert showIcon message={restoreNotice} type={'warning'} /> : null}
-            {conflict ? (
-              <Alert
-                showIcon
-                description={t('connectorCatalog.conflict.description')}
-                message={t('connectorCatalog.conflict.title')}
-                type={'warning'}
-                extra={
-                  <Flexbox horizontal gap={8}>
-                    <Button onClick={onRefreshConflict}>
-                      {t('connectorCatalog.conflict.refresh')}
-                    </Button>
-                    <Button onClick={onDiscardConflict}>
-                      {t('connectorCatalog.conflict.discard')}
-                    </Button>
-                  </Flexbox>
-                }
-              />
-            ) : null}
-            {actionError ? <Alert showIcon message={actionError} type={'error'} /> : null}
-          </>
+          <ConnectorDetailBanner
+            actionError={actionError}
+            conflict={conflict}
+            readOnly={view.readOnly}
+            restoreNotice={restoreNotice}
+            snapshot={snapshot}
+            onDiscardConflict={onDiscardConflict}
+            onRefreshConflict={onRefreshConflict}
+          />
         }
       >
         <Flexbox gap={16}>
           <ConnectorEditorFields
-            disabled={readOnly || conflict || Boolean(busyAction)}
+            disabled={view.editorDisabled}
             draft={draft}
             errors={validation.errors}
             secret={secret}
-            secretConfigured={secretConfigured}
+            secretConfigured={view.secretConfigured}
             onChange={onChange}
             onSecretChange={onSecretChange}
             onSecretClear={onSecretClear}
             onSecretKeep={onSecretKeep}
           />
           <ToolPolicyEditor
-            disabled={readOnly || conflict || Boolean(busyAction)}
+            disabled={view.editorDisabled}
             tools={draft.tools}
             onChange={onToolChange}
           />
@@ -228,49 +152,11 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
             canReadAudit={permissions.canReadAudit}
             connectorId={snapshot.draft.id}
           />
-          <div className={styles.footer}>
-            <Text type={saveState === 'failed' ? 'danger' : 'secondary'}>
-              {t(`connectorCatalog.saveState.${saveState}` as never)}
-            </Text>
-            <Flexbox horizontal gap={8}>
-              {permissions.canTest ? (
-                <Button
-                  loading={busyAction === 'test'}
-                  type={primaryAction === 'test' ? 'primary' : undefined}
-                  disabled={
-                    conflict || hasUnsavedChanges || Boolean(busyAction) || !validation.valid
-                  }
-                  onClick={() => onPrimaryAction('test')}
-                >
-                  {t('connectorCatalog.actions.test')}
-                </Button>
-              ) : null}
-              {primaryAction === 'save' || primaryAction === 'retry' ? (
-                <Button
-                  disabled={conflict || Boolean(busyAction) || !validation.valid}
-                  loading={busyAction === 'save'}
-                  type={'primary'}
-                  onClick={() => onPrimaryAction(primaryAction)}
-                >
-                  {t(
-                    primaryAction === 'retry'
-                      ? 'connectorCatalog.actions.retrySave'
-                      : 'connectorCatalog.actions.save',
-                  )}
-                </Button>
-              ) : null}
-              {primaryAction === 'publish' ? (
-                <Button
-                  disabled={conflict || Boolean(busyAction)}
-                  loading={busyAction === 'publish'}
-                  type={'primary'}
-                  onClick={() => onPrimaryAction('publish')}
-                >
-                  {t('connectorCatalog.actions.publish')}
-                </Button>
-              ) : null}
-            </Flexbox>
-          </div>
+          <ConnectorDetailFooter
+            model={view.footer}
+            saveState={saveState}
+            onPrimaryAction={onPrimaryAction}
+          />
         </Flexbox>
       </AdminPageTemplate>
     );

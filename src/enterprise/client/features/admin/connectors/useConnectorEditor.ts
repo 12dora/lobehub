@@ -6,9 +6,13 @@ import { useTranslation } from 'react-i18next';
 
 import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import {
+  restoreNoticeKeyForIntent,
+  secretEditFromIntent,
+  secretIntentFromEdit,
+} from './connectorSecretIntent';
+import {
   changeConnectorCredentialMode,
   clearConnectorSecretEdit,
-  type ConnectorSecretEdit,
   createEmptyConnectorSecretEdit,
   type EditableAdminConnectorDraft,
   toEditableAdminConnectorDraft,
@@ -20,32 +24,8 @@ import {
   clearAdminConnectorDraft,
   loadAdminConnectorDraft,
   saveAdminConnectorDraft,
-  type StoredConnectorSecretIntent,
 } from './localDraftStorage';
 import type { AdminConnectorGetOutput, AdminConnectorToolDraft } from './types';
-
-/**
- * Map live secret edit → durable intent. When the admin previously typed a
- * replacement that was not yet saved, we retain `replace_requires_reentry`
- * even though the bytes themselves are never stored.
- */
-const secretIntentFromEdit = (
-  edit: ConnectorSecretEdit,
-  requiresReentry: boolean,
-): StoredConnectorSecretIntent => {
-  if (edit.operation === 'clear') return 'clear';
-  if (edit.operation === 'replace') return 'replace_requires_reentry';
-  if (requiresReentry) return 'replace_requires_reentry';
-  return 'keep';
-};
-
-const secretEditFromIntent = (
-  intent: StoredConnectorSecretIntent | undefined,
-): ConnectorSecretEdit => {
-  if (intent === 'clear') return clearConnectorSecretEdit();
-  // Replacement bytes are never stored — admin must re-enter after restore.
-  return createEmptyConnectorSecretEdit();
-};
 
 export const useConnectorEditor = (
   snapshot: AdminConnectorGetOutput | undefined,
@@ -86,15 +66,8 @@ export const useConnectorEditor = (
     setSaveState(stored ? 'dirty' : 'idle');
     setActionError(null);
     setSecret(secretEditFromIntent(stored?.secretIntent));
-    const needsReentry = stored?.secretIntent === 'replace_requires_reentry';
-    setRequiresSecretReentry(needsReentry);
-    setRestoreNoticeKey(
-      needsReentry
-        ? 'connectorCatalog.unsaved.secretReentry'
-        : stored?.secretIntent === 'clear'
-          ? 'connectorCatalog.unsaved.secretClearRestored'
-          : null,
-    );
+    setRequiresSecretReentry(stored?.secretIntent === 'replace_requires_reentry');
+    setRestoreNoticeKey(restoreNoticeKeyForIntent(stored?.secretIntent));
   }, [editable, snapshot]);
 
   const restoreNotice = useMemo(
@@ -135,6 +108,36 @@ export const useConnectorEditor = (
   );
   useUnsavedChangesGuard({ enabled: editable && dirty, messages: unsavedMessages });
 
+  /** Every draft edit lands in the same place: local change pending, previous action error void. */
+  const markDirty = useCallback(() => {
+    setDirty(true);
+    setSaveState('dirty');
+    setActionError(null);
+  }, []);
+
+  /** Any deliberate secret decision retires the restored-replacement sentinel and its notice. */
+  const clearSecretReentry = useCallback(() => {
+    setRequiresSecretReentry(false);
+    setRestoreNoticeKey(null);
+  }, []);
+
+  const resetSecretState = useCallback(() => {
+    setSecret(createEmptyConnectorSecretEdit());
+    clearSecretReentry();
+  }, [clearSecretReentry]);
+
+  /** Local copy and server copy agree again — nothing pending, nothing to recover. */
+  const settle = useCallback(
+    (nextSaveState: 'idle' | 'saved') => {
+      setDirty(false);
+      setConflict(false);
+      setSaveState(nextSaveState);
+      setActionError(null);
+      resetSecretState();
+    },
+    [resetSecretState],
+  );
+
   const updateDraft = useCallback(
     <Key extends keyof EditableAdminConnectorDraft>(
       key: Key,
@@ -150,20 +153,14 @@ export const useConnectorEditor = (
               )
             : current,
         );
-        setSecret(createEmptyConnectorSecretEdit());
-        setRequiresSecretReentry(false);
-        setRestoreNoticeKey(null);
-        setDirty(true);
-        setSaveState('dirty');
-        setActionError(null);
+        resetSecretState();
+        markDirty();
         return;
       }
       setDraft((current) => (current ? { ...current, [key]: value } : current));
-      setDirty(true);
-      setSaveState('dirty');
-      setActionError(null);
+      markDirty();
     },
-    [editable],
+    [editable, markDirty, resetSecretState],
   );
 
   const updateTool = useCallback(
@@ -182,11 +179,9 @@ export const useConnectorEditor = (
           ? { ...current, tools: updateConnectorToolPolicy(current.tools, toolId, patch) }
           : current,
       );
-      setDirty(true);
-      setSaveState('dirty');
-      setActionError(null);
+      markDirty();
     },
-    [editable],
+    [editable, markDirty],
   );
 
   const changeSecret = useCallback(
@@ -194,59 +189,37 @@ export const useConnectorEditor = (
       if (!editable) return;
       setSecret(updateConnectorSecretEdit(value));
       // Entering a replacement clears the reentry sentinel.
-      setRequiresSecretReentry(false);
-      setRestoreNoticeKey(null);
-      setDirty(true);
-      setSaveState('dirty');
-      setActionError(null);
+      clearSecretReentry();
+      markDirty();
     },
-    [editable],
+    [clearSecretReentry, editable, markDirty],
   );
 
   const clearSecret = useCallback(() => {
     if (!editable) return;
     setSecret(clearConnectorSecretEdit());
-    setRequiresSecretReentry(false);
-    setRestoreNoticeKey(null);
-    setDirty(true);
-    setSaveState('dirty');
-    setActionError(null);
-  }, [editable]);
+    clearSecretReentry();
+    markDirty();
+  }, [clearSecretReentry, editable, markDirty]);
 
   const keepSecret = useCallback(() => {
     if (!editable) return;
-    setSecret(createEmptyConnectorSecretEdit());
-    setRequiresSecretReentry(false);
-    setRestoreNoticeKey(null);
-    setDirty(true);
-    setSaveState('dirty');
-    setActionError(null);
-  }, [editable]);
+    resetSecretState();
+    markDirty();
+  }, [editable, markDirty, resetSecretState]);
 
   const discardLocal = useCallback(() => {
     if (!snapshot) return;
     clearAdminConnectorDraft(snapshot.draft.id);
     setDraft(toEditableAdminConnectorDraft(snapshot.draft));
-    setDirty(false);
-    setConflict(false);
-    setSaveState('idle');
-    setActionError(null);
-    setSecret(createEmptyConnectorSecretEdit());
-    setRequiresSecretReentry(false);
-    setRestoreNoticeKey(null);
-  }, [snapshot]);
+    settle('idle');
+  }, [settle, snapshot]);
 
   const markSaved = useCallback(() => {
     if (!snapshot) return;
     clearAdminConnectorDraft(snapshot.draft.id);
-    setDirty(false);
-    setConflict(false);
-    setSaveState('saved');
-    setActionError(null);
-    setSecret(createEmptyConnectorSecretEdit());
-    setRequiresSecretReentry(false);
-    setRestoreNoticeKey(null);
-  }, [snapshot]);
+    settle('saved');
+  }, [settle, snapshot]);
 
   const validation = useMemo(() => {
     if (!draft) return { errors: {}, valid: false };
