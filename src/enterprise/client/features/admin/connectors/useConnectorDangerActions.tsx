@@ -177,7 +177,8 @@ export const useConnectorDangerActions = ({
   }, [authMethod, busyAction, data, editor.conflict, editor.dirty, permissions.canPublish, run, t]);
 
   const deleteDraft = useCallback(() => {
-    if (!permissions.canDelete || data.published || editor.dirty || editor.conflict) return;
+    if (!permissions.canDelete || data.published || editor.dirty || editor.conflict || busyAction)
+      return;
     openReasonModal({
       authMethod: authMethod ?? undefined,
       autoReason: CONNECTOR_AUTO_REASON.deleteDraft,
@@ -208,7 +209,17 @@ export const useConnectorDangerActions = ({
       targetLabel: data.draft.displayName,
       title: t('connectorCatalog.mutations.delete.title'),
     });
-  }, [authMethod, data, editor, errorText, navigate, permissions.canDelete, setBusyAction, t]);
+  }, [
+    authMethod,
+    busyAction,
+    data,
+    editor,
+    errorText,
+    navigate,
+    permissions.canDelete,
+    setBusyAction,
+    t,
+  ]);
 
   return { archive, deleteDraft, revokeBindings, rollback };
 };

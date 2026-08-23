@@ -127,6 +127,10 @@ export const useAdminConnectorPolicies = ({
       if (toolId.startsWith(BUILTIN_ROW_PREFIX)) {
         // `admin-builtin:<identifier>:<toolName>` → org governance matrix entry.
         const { name: toolName, owner: identifier } = splitPrefixedToolId(toolId);
+        // A truncated id (`admin-builtin:`) splits into empty segments; writing it
+        // would persist a matrix entry keyed by '' that no row can ever address.
+        // `groupToolIdsByTarget` drops the same ids on the bulk path.
+        if (!identifier || !toolName) return;
         await updateBuiltinPolicies((policies) => ({
           ...policies,
           [identifier]: { ...policies[identifier], [toolName]: permission },
@@ -135,6 +139,10 @@ export const useAdminConnectorPolicies = ({
       }
       if (!toolId.startsWith(PLATFORM_TOOL_PREFIX)) return;
       const { name: toolKey, owner: connectorId } = splitPrefixedToolId(toolId);
+      // Same truncation hole: an empty connector id would fetch a nonexistent
+      // document and an empty tool key would match no tool, spending a CAS write
+      // (and an audit row) on an unchanged tool list.
+      if (!connectorId || !toolKey) return;
       const policy = permissionToPolicy(permission);
       await applyConnectorToolsPatch(connectorId, (tools) =>
         tools.map((tool) => (tool.toolKey === toolKey ? { ...tool, ...policy } : tool)),
