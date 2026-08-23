@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '../../../core/getTestDB';
 import {
@@ -10,6 +10,7 @@ import {
   sessions,
   topics,
   users,
+  workspaces,
 } from '../../../schemas';
 import type { LobeChatDatabase } from '../../../type';
 import { TopicModel } from '../../topic';
@@ -30,6 +31,7 @@ describe('TopicModel - Delete', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await serverDB.delete(users);
   });
 
@@ -325,6 +327,95 @@ describe('TopicModel - Delete', () => {
 
       expect(await serverDB.select().from(topics).where(eq(topics.userId, userId))).toHaveLength(0);
       expect(await serverDB.select().from(topics)).toHaveLength(1);
+    });
+  });
+
+  describe('deleteByUpdatedAtRange', () => {
+    const now = new Date('2026-08-23T12:00:00.000Z');
+
+    it.each([
+      ['24h', 24 * 60 * 60 * 1000],
+      ['7d', 7 * 24 * 60 * 60 * 1000],
+      ['30d', 30 * 24 * 60 * 60 * 1000],
+    ] as const)(
+      'should include the exact %s cutoff, preserve older rows, return ids, and cascade messages',
+      async (range, durationMs) => {
+        vi.spyOn(Date, 'now').mockReturnValue(now.getTime());
+        const cutoff = new Date(now.getTime() - durationMs);
+
+        await serverDB.insert(topics).values([
+          { id: 'topic-at-cutoff', updatedAt: cutoff, userId },
+          { id: 'topic-just-outside', updatedAt: new Date(cutoff.getTime() - 1), userId },
+          { id: 'topic-recent', updatedAt: now, userId },
+        ]);
+        await serverDB.insert(messages).values([
+          { id: 'message-at-cutoff', role: 'user', topicId: 'topic-at-cutoff', userId },
+          { id: 'message-just-outside', role: 'user', topicId: 'topic-just-outside', userId },
+        ]);
+
+        const deleted = await topicModel.deleteByUpdatedAtRange(range);
+
+        expect(deleted.map(({ id }) => id).sort()).toEqual(['topic-at-cutoff', 'topic-recent']);
+        expect((await serverDB.select().from(topics)).map(({ id }) => id)).toEqual([
+          'topic-just-outside',
+        ]);
+        expect((await serverDB.select().from(messages)).map(({ id }) => id)).toEqual([
+          'message-just-outside',
+        ]);
+      },
+    );
+
+    it("should remove all owned personal topics while preserving another user's topics", async () => {
+      await serverDB.insert(topics).values([
+        { id: 'owned-old', updatedAt: new Date('2020-01-01T00:00:00.000Z'), userId },
+        { id: 'owned-new', updatedAt: now, userId },
+        { id: 'other-user-topic', updatedAt: now, userId: userId2 },
+      ]);
+
+      const deleted = await topicModel.deleteByUpdatedAtRange('all');
+
+      expect(deleted.map(({ id }) => id).sort()).toEqual(['owned-new', 'owned-old']);
+      expect((await serverDB.select().from(topics)).map(({ id }) => id)).toEqual([
+        'other-user-topic',
+      ]);
+    });
+
+    it('should only delete topics in the selected workspace', async () => {
+      const workspaceId = 'topic-delete-workspace';
+      const otherWorkspaceId = 'topic-delete-other-workspace';
+      const workspaceTopicModel = new TopicModel(serverDB, userId, workspaceId);
+
+      await serverDB.insert(workspaces).values([
+        {
+          id: workspaceId,
+          name: 'Topic Delete Workspace',
+          primaryOwnerId: userId,
+          slug: workspaceId,
+        },
+        {
+          id: otherWorkspaceId,
+          name: 'Other Topic Delete Workspace',
+          primaryOwnerId: userId2,
+          slug: otherWorkspaceId,
+        },
+      ]);
+      await serverDB.insert(topics).values([
+        { id: 'selected-workspace-topic', userId, workspaceId },
+        { id: 'selected-workspace-member-topic', userId: userId2, workspaceId },
+        { id: 'other-workspace-topic', userId, workspaceId: otherWorkspaceId },
+        { id: 'personal-topic', userId },
+      ]);
+
+      const deleted = await workspaceTopicModel.deleteByUpdatedAtRange('all');
+
+      expect(deleted.map(({ id }) => id).sort()).toEqual([
+        'selected-workspace-member-topic',
+        'selected-workspace-topic',
+      ]);
+      expect((await serverDB.select().from(topics)).map(({ id }) => id).sort()).toEqual([
+        'other-workspace-topic',
+        'personal-topic',
+      ]);
     });
   });
 });

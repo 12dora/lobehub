@@ -160,6 +160,12 @@ const buildTopicOrderBy = (topicActivityAt: SQL, sortBy?: TopicQuerySortBy): SQL
     ? [desc(topics.favorite), asc(STATUS_SORT_RANK), desc(topicActivityAt)]
     : [desc(topics.favorite), desc(topicActivityAt)];
 
+const TOPIC_DELETE_RANGE_MS = {
+  '24h': 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+} as const;
+
 export class TopicModel {
   private userId: string;
   private db: LobeChatDatabase;
@@ -1009,6 +1015,20 @@ export class TopicModel {
 
   deleteAll = async () => {
     return this.db.delete(topics).where(and(this.ownership()));
+  };
+
+  deleteByUpdatedAtRange = async (
+    range: 'all' | '24h' | '7d' | '30d',
+  ): Promise<{ id: string }[]> => {
+    const where =
+      range === 'all'
+        ? this.ownership()
+        : and(
+            this.ownership(),
+            gte(topics.updatedAt, new Date(Date.now() - TOPIC_DELETE_RANGE_MS[range])),
+          );
+
+    return this.db.delete(topics).where(where).returning({ id: topics.id });
   };
 
   // **************** Update *************** //

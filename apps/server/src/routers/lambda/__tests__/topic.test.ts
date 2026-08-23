@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { TopicModel } from '@/database/models/topic';
 import { TopicShareModel } from '@/database/models/topicShare';
+import type { LobeChatDatabase } from '@/database/type';
 
 vi.mock('@/database/models/topic', () => ({
   TopicModel: vi.fn(),
@@ -116,6 +117,28 @@ describe('topicRouter', () => {
 
     expect(mockBatchDelete).toHaveBeenCalledWith(['topic1', 'topic2', 'topic3']);
     expect(result.rowCount).toBe(3);
+  });
+
+  it('should handle removeTopicsByTimeRange and return deleted topic ids', async () => {
+    const mockDeleteByUpdatedAtRange = vi
+      .fn<TopicModel['deleteByUpdatedAtRange']>()
+      .mockResolvedValue([{ id: 'topic1' }, { id: 'topic2' }]);
+    vi.mocked(TopicModel).mockImplementation(
+      () =>
+        ({
+          deleteByUpdatedAtRange: mockDeleteByUpdatedAtRange,
+        }) as TopicModel,
+    );
+
+    const ctx = {
+      topicModel: new TopicModel({} as LobeChatDatabase, 'user1'),
+    };
+
+    const deleted = await ctx.topicModel.deleteByUpdatedAtRange('7d');
+    const result = deleted.map(({ id }) => id);
+
+    expect(mockDeleteByUpdatedAtRange).toHaveBeenCalledWith('7d');
+    expect(result).toEqual(['topic1', 'topic2']);
   });
 
   it('should handle countTopics', async () => {

@@ -612,6 +612,14 @@ export const topicRouter = router({
       return ctx.topicModel.delete(input.id);
     }),
 
+  removeTopicsByTimeRange: topicProcedure
+    .use(withScopedPermission('topic:delete'))
+    .input(z.object({ range: z.enum(['24h', '7d', '30d', 'all']) }))
+    .mutation(async ({ input, ctx }) => {
+      const deletedTopics = await ctx.topicModel.deleteByUpdatedAtRange(input.range);
+      return deletedTopics.map(({ id }) => id);
+    }),
+
   searchTopics: topicProcedure
     .input(
       z.object({
