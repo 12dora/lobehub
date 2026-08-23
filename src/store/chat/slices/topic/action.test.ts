@@ -1680,6 +1680,24 @@ describe('topic action', () => {
 
       expect(switchTopicSpy).not.toHaveBeenCalled();
     });
+
+    it('still resolves and switches away when the recents refresh fails', async () => {
+      const { result } = renderHook(() => useChatStore());
+      (topicService.removeTopicsByTimeRange as Mock).mockResolvedValue(['topic-2']);
+      vi.spyOn(useHomeStore.getState(), 'refreshRecents').mockRejectedValue(new Error('offline'));
+      const switchTopicSpy = vi.spyOn(result.current, 'switchTopic').mockResolvedValue(undefined);
+
+      await act(async () => {
+        useChatStore.setState({ activeTopicId: 'topic-2' });
+      });
+
+      // The rows are already gone; a flaky revalidation must not surface as a failed deletion.
+      await act(async () => {
+        await expect(result.current.removeTopicsByTimeRange('24h')).resolves.toEqual(['topic-2']);
+      });
+
+      expect(switchTopicSpy).toHaveBeenCalledWith(null);
+    });
   });
   describe('removeTopic', () => {
     it('should remove a specific topic and its messages, then refresh the topic list', async () => {

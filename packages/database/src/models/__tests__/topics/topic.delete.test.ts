@@ -380,7 +380,7 @@ describe('TopicModel - Delete', () => {
       ]);
     });
 
-    it('should only delete topics in the selected workspace', async () => {
+    it("should only delete the caller's topics in the selected workspace", async () => {
       const workspaceId = 'topic-delete-workspace';
       const otherWorkspaceId = 'topic-delete-other-workspace';
       const workspaceTopicModel = new TopicModel(serverDB, userId, workspaceId);
@@ -408,13 +408,11 @@ describe('TopicModel - Delete', () => {
 
       const deleted = await workspaceTopicModel.deleteByUpdatedAtRange('all');
 
-      expect(deleted.map(({ id }) => id).sort()).toEqual([
-        'selected-workspace-member-topic',
-        'selected-workspace-topic',
-      ]);
+      expect(deleted.map(({ id }) => id)).toEqual(['selected-workspace-topic']);
       expect((await serverDB.select().from(topics)).map(({ id }) => id).sort()).toEqual([
         'other-workspace-topic',
         'personal-topic',
+        'selected-workspace-member-topic',
       ]);
     });
   });

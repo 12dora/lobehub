@@ -29,6 +29,21 @@ export const findUserAvatarByPrefix = async (
   return key ? getAvatarWebapiUrl(key) : undefined;
 };
 
+/**
+ * Drop every stored avatar under `fileNamePrefix` except the one at `keepUrl`. A provider that
+ * rotates its avatar URL would otherwise leave one orphaned object behind per login.
+ */
+export const pruneUserAvatars = async (
+  userId: string,
+  fileNamePrefix: string,
+  keepUrl: string,
+): Promise<void> => {
+  const s3 = await createFileS3();
+  const keys = await s3.listObjectKeysByPrefix(getAvatarFilePath(userId, fileNamePrefix));
+  const stale = keys.filter((key) => getAvatarWebapiUrl(key) !== keepUrl);
+  if (stale.length > 0) await s3.deleteFiles(stale);
+};
+
 export const uploadUserAvatar = async ({
   buffer,
   fileName,

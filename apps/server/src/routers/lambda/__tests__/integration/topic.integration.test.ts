@@ -399,6 +399,45 @@ describe('Topic Router Integration Tests', () => {
     });
   });
 
+  describe('removeTopicsByTimeRange', () => {
+    it('should reject invalid ranges, return deleted ids, and preserve topics outside the range', async () => {
+      const caller = topicRouter.createCaller(createTestContext(userId));
+
+      await expect(
+        caller.removeTopicsByTimeRange({ range: 'invalid' } as never),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+      const now = Date.now();
+      await serverDB.insert(topics).values([
+        {
+          id: 'topic-in-7d-range',
+          title: 'Topic in range',
+          updatedAt: new Date(now - 6 * 24 * 60 * 60 * 1000),
+          userId,
+        },
+        {
+          id: 'topic-recent',
+          title: 'Recent topic',
+          updatedAt: new Date(now - 60 * 60 * 1000),
+          userId,
+        },
+        {
+          id: 'topic-outside-7d-range',
+          title: 'Topic outside range',
+          updatedAt: new Date(now - 8 * 24 * 60 * 60 * 1000),
+          userId,
+        },
+      ]);
+
+      const deletedIds = await caller.removeTopicsByTimeRange({ range: '7d' });
+
+      expect(deletedIds.sort()).toEqual(['topic-in-7d-range', 'topic-recent']);
+      expect(
+        (await serverDB.select().from(topics).where(eq(topics.userId, userId))).map(({ id }) => id),
+      ).toEqual(['topic-outside-7d-range']);
+    });
+  });
+
   // BM25 search requires pg_search extension (ParadeDB), not available in the
   // default integration test DB (PGlite). Run with TEST_SERVER_DB=1 +
   // DATABASE_TEST_URL pointing at a ParadeDB instance to exercise these.

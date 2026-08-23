@@ -1597,9 +1597,6 @@ export class ChatTopicActionImpl {
   removeTopicsByTimeRange = async (range: TopicTimeRange): Promise<string[]> => {
     const removedIds = await topicService.removeTopicsByTimeRange(range);
 
-    await getHomeStoreState().refreshRecents();
-    await this.#refreshAllTopicLists();
-
     if (range === 'all') {
       // every topic is gone — wipe all cached message lists
       void evictMessageCache(() => true);
@@ -1611,6 +1608,10 @@ export class ChatTopicActionImpl {
     // Read the active topic after the round trip — the user may have switched during it.
     const { activeTopicId, switchTopic } = this.#get();
     if (activeTopicId && removedIds.includes(activeTopicId)) switchTopic(null);
+
+    // Revalidation runs last and cannot fail the call: the rows are already gone, so a flaky
+    // refresh must not make the caller report a deletion that happened as a failure.
+    await Promise.allSettled([getHomeStoreState().refreshRecents(), this.#refreshAllTopicLists()]);
 
     return removedIds;
   };

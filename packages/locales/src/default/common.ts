@@ -569,6 +569,7 @@ export default {
     'Every conversation updated in the last 30 days will be permanently deleted, along with all of its messages. This cannot be undone.',
   'recentsDelete.confirm.desc.all':
     'Every conversation will be permanently deleted, along with all of its messages. This cannot be undone.',
+  'recentsDelete.confirm.okAll': 'Delete every conversation',
   'recentsDelete.confirm.title': 'Delete conversations?',
   'recentsDelete.error': 'Failed to delete conversations',
   'recentsDelete.range.24h': 'Last 24 hours',

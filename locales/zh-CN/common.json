@@ -412,6 +412,7 @@
   "recentsDelete.confirm.desc.30d": "最近 30 天内更新过的对话将被永久删除，其中的全部消息也会一并删除，且无法恢复。",
   "recentsDelete.confirm.desc.7d": "最近 7 天内更新过的对话将被永久删除，其中的全部消息也会一并删除，且无法恢复。",
   "recentsDelete.confirm.desc.all": "全部对话将被永久删除，其中的全部消息也会一并删除，且无法恢复。",
+  "recentsDelete.confirm.okAll": "删除全部对话",
   "recentsDelete.confirm.title": "确定删除对话？",
   "recentsDelete.error": "删除对话失败",
   "recentsDelete.range.24h": "最近 24 小时",

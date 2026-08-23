@@ -3,13 +3,18 @@ import { createHash } from 'node:crypto';
 import { ssrfSafeFetch } from '@lobechat/ssrf-safe-fetch';
 import debug from 'debug';
 
-import { findUserAvatarByPrefix, uploadUserAvatar } from './avatar';
+import { findUserAvatarByPrefix, pruneUserAvatars, uploadUserAvatar } from './avatar';
 
 const log = debug('lobe-server:auth:provider-avatar');
 
 const PROVIDER_AVATAR_PREFIX = 'provider-';
 const PROVIDER_AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 const PROVIDER_AVATAR_TIMEOUT_MS = 3000;
+/**
+ * Ceiling for the whole copy — the object-store LIST/PUT have no deadline of their own, and this
+ * runs inside the SSO callback. A blackholed bucket must cost a login this much and no more.
+ */
+const PROVIDER_AVATAR_BUDGET_MS = 6000;
 
 /**
  * Raster formats only. An SVG is a script-bearing document and this store is served from the app's
@@ -44,11 +49,7 @@ const getProviderAvatarFileNamePrefix = (sourceUrl: string) =>
 const getProviderAvatarWebapiPrefix = (userId: string, sourceUrl: string) =>
   `/webapi/user/avatar/${userId}/${getProviderAvatarFileNamePrefix(sourceUrl)}`;
 
-/**
- * Copies an external identity-provider avatar into the immutable local avatar store.
- * Every failure is best-effort: authentication must continue with the original URL.
- */
-export const materializeProviderAvatar = async ({
+const copyProviderAvatar = async ({
   currentAvatarUrl,
   sourceUrl,
   userId,
@@ -105,14 +106,45 @@ export const materializeProviderAvatar = async ({
       throw new Error('Provider avatar exceeds the maximum size');
     }
 
-    return await uploadUserAvatar({
+    const avatarUrl = await uploadUserAvatar({
       buffer,
       fileName: `${getProviderAvatarFileNamePrefix(sourceUrl)}${extension}`,
       mimeType,
       userId,
     });
+
+    try {
+      await pruneUserAvatars(userId, PROVIDER_AVATAR_PREFIX, avatarUrl);
+    } catch (error) {
+      log('Failed to prune superseded provider avatars for userId=%s: %O', userId, error);
+    }
+
+    return avatarUrl;
   } catch (error) {
     log('Failed to materialize provider avatar for userId=%s: %O', userId, error);
     return sourceUrl;
+  }
+};
+
+/**
+ * Copies an external identity-provider avatar into the immutable local avatar store.
+ * Every failure is best-effort: authentication must continue with the original URL, and the whole
+ * copy is bounded so a stalled provider or object store cannot hold an SSO login open.
+ */
+export const materializeProviderAvatar = async (
+  params: MaterializeProviderAvatarParams,
+): Promise<string> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<string>((resolve) => {
+    timer = setTimeout(() => {
+      log('Provider avatar copy exceeded its budget for userId=%s', params.userId);
+      resolve(params.sourceUrl);
+    }, PROVIDER_AVATAR_BUDGET_MS);
+  });
+
+  try {
+    return await Promise.race([copyProviderAvatar(params), budget]);
+  } finally {
+    clearTimeout(timer);
   }
 };

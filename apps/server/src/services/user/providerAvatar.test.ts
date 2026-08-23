@@ -9,13 +9,18 @@ vi.mock('@lobechat/ssrf-safe-fetch', () => ({ ssrfSafeFetch: vi.fn() }));
 vi.mock('@/server/modules/S3', () => ({ createFileS3: vi.fn() }));
 
 const uploadBuffer = vi.fn();
+const deleteFiles = vi.fn();
 const listObjectKeysByPrefix = vi.fn<(prefix: string) => Promise<string[]>>();
 
 describe('materializeProviderAvatar', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listObjectKeysByPrefix.mockResolvedValue([]);
-    vi.mocked(createFileS3).mockResolvedValue({ listObjectKeysByPrefix, uploadBuffer } as never);
+    vi.mocked(createFileS3).mockResolvedValue({
+      deleteFiles,
+      listObjectKeysByPrefix,
+      uploadBuffer,
+    } as never);
   });
 
   it('downloads and uploads an HTTPS image to the local avatar store', async () => {
@@ -132,15 +137,49 @@ describe('materializeProviderAvatar', () => {
   // value cannot answer "already copied?" — the deterministic object name has to.
   it('reuses an already-stored object even when the row still holds the provider URL', async () => {
     const sourceUrl = 'https://cdn.example.com/avatar.png';
-    listObjectKeysByPrefix.mockResolvedValue([
-      'user/avatar/user-1/provider-0123456789abcdef.png',
-    ]);
+    listObjectKeysByPrefix.mockResolvedValue(['user/avatar/user-1/provider-0123456789abcdef.png']);
 
     await expect(
       materializeProviderAvatar({ currentAvatarUrl: sourceUrl, sourceUrl, userId: 'user-1' }),
     ).resolves.toBe('/webapi/user/avatar/user-1/provider-0123456789abcdef.png');
     expect(ssrfSafeFetch).not.toHaveBeenCalled();
     expect(uploadBuffer).not.toHaveBeenCalled();
+  });
+
+  it('deletes the provider objects a rotated source URL left behind', async () => {
+    vi.mocked(ssrfSafeFetch).mockResolvedValue(
+      new Response(new Uint8Array([1]), { headers: { 'content-type': 'image/png' } }),
+    );
+    // First the "already copied?" probe (empty), then the post-upload prune listing.
+    listObjectKeysByPrefix
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        'user/avatar/user-1/provider-old.png',
+        'user/avatar/user-1/provider-newer.png',
+      ]);
+
+    const result = await materializeProviderAvatar({
+      sourceUrl: 'https://cdn.example.com/avatar.png',
+      userId: 'user-1',
+    });
+
+    expect(deleteFiles).toHaveBeenCalledWith([
+      'user/avatar/user-1/provider-old.png',
+      'user/avatar/user-1/provider-newer.png',
+    ]);
+    expect(result).toMatch(/^\/webapi\/user\/avatar\/user-1\/provider-[a-f\d]{64}\.png$/);
+  });
+
+  it('gives up on the source URL when the object store never answers', async () => {
+    vi.useFakeTimers();
+    listObjectKeysByPrefix.mockReturnValue(new Promise(() => {}));
+    const sourceUrl = 'https://cdn.example.com/avatar.png';
+
+    const pending = materializeProviderAvatar({ sourceUrl, userId: 'user-1' });
+    await vi.advanceTimersByTimeAsync(6000);
+
+    await expect(pending).resolves.toBe(sourceUrl);
+    vi.useRealTimers();
   });
 
   it('still downloads when the store has no object for this source URL', async () => {

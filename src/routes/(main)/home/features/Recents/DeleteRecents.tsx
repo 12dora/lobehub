@@ -25,7 +25,9 @@ const DeleteRecents = memo(() => {
         cancelText: t('cancel'),
         content: t(`recentsDelete.confirm.desc.${range}`),
         okButtonProps: { danger: true },
-        okText: t('delete'),
+        // "All" sits one menu row away from "Last 24 hours" and is unrecoverable, so its
+        // confirm button spells out the scope instead of reading the same generic "Delete".
+        okText: range === 'all' ? t('recentsDelete.confirm.okAll') : t('delete'),
         onOk: async () => {
           try {
             const removed = await removeTopicsByTimeRange(range);

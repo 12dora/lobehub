@@ -1020,15 +1020,15 @@ export class TopicModel {
   deleteByUpdatedAtRange = async (
     range: 'all' | '24h' | '7d' | '30d',
   ): Promise<{ id: string }[]> => {
-    const where =
+    const rangeWhere =
       range === 'all'
-        ? this.ownership()
-        : and(
-            this.ownership(),
-            gte(topics.updatedAt, new Date(Date.now() - TOPIC_DELETE_RANGE_MS[range])),
-          );
+        ? undefined
+        : gte(topics.updatedAt, new Date(Date.now() - TOPIC_DELETE_RANGE_MS[range]));
 
-    return this.db.delete(topics).where(where).returning({ id: topics.id });
+    return this.db
+      .delete(topics)
+      .where(and(this.ownership(), eq(topics.userId, this.userId), rangeWhere))
+      .returning({ id: topics.id });
   };
 
   // **************** Update *************** //
