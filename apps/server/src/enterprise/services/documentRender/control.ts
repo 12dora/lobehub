@@ -5,8 +5,13 @@ const SIDECAR_CONNECTION_CODES = new Set([
   'ECONNRESET',
   'ENOTFOUND',
   'ETIMEDOUT',
-  // Undici uses this code for TCP connection setup; response timeout codes are intentionally omitted.
+  // Undici uses this code for TCP connection setup; response timeout codes are intentionally
+  // omitted — by then the sidecar has answered and it is the conversion that is slow.
   'UND_ERR_CONNECT_TIMEOUT',
+  // The socket died mid-response: undici rejects body consumption with `TypeError('terminated')`
+  // whose cause carries this code. Headers arrived, so no timeout code is involved — without it
+  // a sidecar that goes away mid-PDF is recorded as a failed document rather than an outage.
+  'UND_ERR_SOCKET',
 ]);
 
 export const SIDECAR_UNAVAILABLE = 'sidecar unavailable';

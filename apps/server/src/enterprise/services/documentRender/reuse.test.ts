@@ -79,6 +79,35 @@ describe('findReusableRenderSource', () => {
     expect(limit).toHaveBeenCalledWith(1);
   });
 
+  it('only ever offers a ready or partial source', async () => {
+    // The reuse path copies the source's status verbatim, so this predicate is what keeps a
+    // `failed` or `skipped` render from being handed to it and copied onto another file.
+    const where = vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })) }));
+    const db = { select: vi.fn(() => ({ from: vi.fn(() => ({ where })) })) };
+
+    await findReusableRenderSource(db as never, { fileHash: 'abc', fileId: 'dst' });
+
+    // The condition is a drizzle SQL tree (self-referential), so collect its literal chunks
+    // rather than serialising it.
+    const seen = new Set<unknown>();
+    const literals: string[] = [];
+    const collect = (node: unknown): void => {
+      if (typeof node === 'string') {
+        literals.push(node);
+        return;
+      }
+      if (!node || typeof node !== 'object' || seen.has(node)) return;
+      seen.add(node);
+      for (const value of Object.values(node as Record<string, unknown>)) collect(value);
+    };
+    collect(where.mock.calls[0]);
+    const condition = literals.join(' ');
+
+    expect(condition).toContain("in ('ready', 'partial')");
+    expect(condition).not.toContain('failed');
+    expect(condition).not.toContain('skipped');
+  });
+
   it('returns undefined when the row has no artifact keys', async () => {
     const row = {
       id: 'src',

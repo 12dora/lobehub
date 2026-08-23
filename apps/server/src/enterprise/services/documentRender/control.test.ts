@@ -35,6 +35,26 @@ describe('isSidecarConnectionError', () => {
     expect(isSidecarConnectionError(new Error('response timeout'))).toBe(false);
   });
 
+  it('treats a socket that dies mid-response as an outage, not a failed document', () => {
+    // What undici actually throws when the sidecar sends headers and then goes away: a
+    // `TypeError('terminated')` whose cause is a SocketError. No timeout code is involved — the
+    // response had already started — so nothing but the code identifies it.
+    const socketError = new Error('other side closed');
+    (socketError as Error & { code: string }).code = 'UND_ERR_SOCKET';
+    const terminated = new TypeError('terminated', { cause: socketError });
+
+    expect(isSidecarConnectionError(terminated)).toBe(true);
+  });
+
+  it('still refuses undici response-timeout codes, which mean slow work not an outage', () => {
+    // Gotenberg only sends headers once the conversion is done, so a headers timeout IS the
+    // document taking too long.
+    expect(isSidecarConnectionError({ code: 'UND_ERR_HEADERS_TIMEOUT' })).toBe(false);
+    expect(isSidecarConnectionError({ code: 'UND_ERR_BODY_TIMEOUT' })).toBe(false);
+    // A connection that never opened is an outage, though.
+    expect(isSidecarConnectionError({ code: 'UND_ERR_CONNECT_TIMEOUT' })).toBe(true);
+  });
+
   it('returns false for unrelated errors and non-objects', () => {
     expect(isSidecarConnectionError(null)).toBe(false);
     expect(isSidecarConnectionError('ECONNREFUSED')).toBe(false);

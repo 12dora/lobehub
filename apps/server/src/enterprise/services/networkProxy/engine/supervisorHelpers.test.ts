@@ -28,6 +28,14 @@ describe('issueCodeForStartFailure', () => {
     expect(issueCodeForStartFailure(new Error('EADDRINUSE: port taken'), false)).toBe(
       'ports_unavailable',
     );
+    // The one this repo actually raises, and the only case the word matcher carries on its own:
+    // no address code, just the word. `ports.ts` throws it verbatim when the OS hands back 0.
+    expect(issueCodeForStartFailure(new Error('failed to allocate loopback port'), false)).toBe(
+      'ports_unavailable',
+    );
+    expect(issueCodeForStartFailure(new Error('ports unavailable'), false)).toBe(
+      'ports_unavailable',
+    );
   });
 
   it('keeps unsupported-platform errors out of port allocation', () => {

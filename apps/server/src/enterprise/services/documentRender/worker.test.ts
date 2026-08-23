@@ -529,34 +529,34 @@ describe('processClaimedDocumentRenderJob', () => {
     expect(flattenSql(updateSet.mock.calls)).toContain('"pdf":"files/render/file-1/source.pdf"');
   });
 
-  it.each(['failed', 'skipped'] as const)(
-    'preserves a reusable source status of %s',
-    async (status) => {
-      vi.mocked(FileModel.getFileById).mockResolvedValue({
-        ...file,
-        fileHash: `abc-${status}`,
-      } as never);
-      vi.mocked(findReusableRenderSource).mockResolvedValue({
-        id: 'src-file',
-        metadata: {
-          render: {
-            engine: 'pdfjs',
-            pages: {
-              '1': { chars: 40, png: 'files/render/src-file/pages/1.png', visual: true },
-            },
-            status,
-            tier: 'T2',
+  it('copies a partial source as partial, not as a fresh ready render', async () => {
+    // `partial` is the one non-ready status the source query admits, so it is the only one this
+    // path can actually be handed — see `findReusableRenderSource`, whose own test pins that
+    // restriction. Copying it as `ready` would claim pages the source never produced.
+    vi.mocked(FileModel.getFileById).mockResolvedValue({
+      ...file,
+      fileHash: 'abc-partial',
+    } as never);
+    vi.mocked(findReusableRenderSource).mockResolvedValue({
+      id: 'src-file',
+      metadata: {
+        render: {
+          engine: 'pdfjs',
+          pages: {
+            '1': { chars: 40, png: 'files/render/src-file/pages/1.png', visual: true },
           },
+          status: 'partial',
+          tier: 'T2',
         },
-      } as never);
+      },
+    } as never);
 
-      await processClaimedDocumentRenderJob(ctx);
+    await processClaimedDocumentRenderJob(ctx);
 
-      expect(complete).toHaveBeenCalledWith(
-        expect.objectContaining({
-          resultSummary: expect.objectContaining({ reused: true, status }),
-        }),
-      );
-    },
-  );
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resultSummary: expect.objectContaining({ reused: true, status: 'partial' }),
+      }),
+    );
+  });
 });

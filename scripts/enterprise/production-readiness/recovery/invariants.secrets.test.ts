@@ -4,7 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { verifySecretReferenceDomains } from './invariants.secrets';
 
-const makeClient = (options?: { aiMismatch?: boolean; identityDangling?: boolean }) => {
+const makeClient = (options?: {
+  aiDangling?: boolean;
+  aiMismatch?: boolean;
+  identityDangling?: boolean;
+}) => {
+  const aiDangling = options?.aiDangling ?? false;
   const aiMismatch = options?.aiMismatch ?? false;
   const identityDangling = options?.identityDangling ?? false;
   const query = vi.fn().mockImplementation((sql: string) => {
@@ -38,7 +43,7 @@ const makeClient = (options?: { aiMismatch?: boolean; identityDangling?: boolean
       });
     }
     if (sql.includes('FROM platform_ai_provider_secrets h')) {
-      return Promise.resolve({ rows: [{ n: '0' }] });
+      return Promise.resolve({ rows: [{ n: aiDangling ? '1' : '0' }] });
     }
     if (sql.includes('FROM platform_connectors ORDER BY id')) {
       return Promise.resolve({ rows: [] });
@@ -67,6 +72,26 @@ describe('verifySecretReferenceDomains', () => {
     const result = await verifySecretReferenceDomains(makeClient({ aiMismatch: true }));
 
     expect(result.domains.ai.match).toBe(false);
+    expect(result.match).toBe(false);
+  });
+
+  it('still fails the AI domain on an orphaned AI secret', async () => {
+    // The half the domain-isolation fix must NOT have thrown away: an AI orphan is the AI
+    // domain's own problem, and it has to keep failing there and in the aggregate.
+    const result = await verifySecretReferenceDomains(makeClient({ aiDangling: true }));
+
+    expect(result.dangling).toBe(true);
+    expect(result.domains.ai.match).toBe(false);
+    expect(result.match).toBe(false);
+  });
+
+  it('fails both domains when each has its own orphan', async () => {
+    const result = await verifySecretReferenceDomains(
+      makeClient({ aiDangling: true, identityDangling: true }),
+    );
+
+    expect(result.domains.ai.match).toBe(false);
+    expect(result.domains.identity.match).toBe(false);
     expect(result.match).toBe(false);
   });
 });
