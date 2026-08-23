@@ -10,43 +10,30 @@ import type {
   ChatGPTWebImagePointer,
   ChatGPTWebRecoveredFile,
 } from '../../core/streams/chatgptWeb';
-import { ChatGPTWebStream } from '../../core/streams/chatgptWeb';
 import type {
   ChatMethodOptions,
   ChatStreamPayload,
   CreateImageMethodOptions,
   GenerateObjectOptions,
   GenerateObjectPayload,
-  OpenAIChatMessage,
   StreamFileData,
-  UserMessageContentPart,
-  UserMessageContentPartFile,
 } from '../../types';
-import { fileUrlPartPlaceholder, isFileUrlPart, isFileUrlTypedPart } from '../../types/chat';
 import { AgentRuntimeErrorType } from '../../types/error';
 import type { CreateImagePayload, CreateImageResponse } from '../../types/image';
 import { AgentRuntimeError } from '../../utils/createError';
-import { debugStream } from '../../utils/debugStream';
-import { StreamingResponse } from '../../utils/response';
-import { parseDataUri } from '../../utils/uriParser';
-import { assertBoundedBase64, extensionFor, fetchBytes } from './assetDownload';
-import type { AttachmentRef, ChatGPTWebMessage, Citation, ConversationEvent } from './client';
+import { buildChatGPTWebMessages } from './chatPayload';
+import { runChatGPTWebChat } from './chatStream';
+import type { Citation, ConversationEvent } from './client';
 import {
   abortableSleep,
-  base64ToBytes,
-  buildConversationBody,
-  buildFConversationBody,
-  buildPrepareBody,
   bytesToBase64,
   callerAbortReason,
   ChatGPTWebClient,
   ChatGPTWebError,
   composeSignals,
-  createTurnRequestIdentity,
   deriveSentinelContextKey,
   extractCitations,
   isBentoOnlyText,
-  isCallerAbort,
   isChatGPTWebError,
   MAX_DOWNLOAD_BYTES,
   RETRYABLE_POLL_STATUSES,
@@ -55,32 +42,19 @@ import {
   toAgentRuntimeErrorType,
   turnAnswerMessage,
 } from './client';
-import { CONDUIT_PREPARE_WAIT_MS } from './constants';
 import { createChatGPTWebImage } from './createImage';
-import { createDebugRedactor } from './debugRedactor';
 import { runChatGPTWebGenerateObject } from './generateObject';
-import { readImageDimensions, readImageMimeType } from './imageDimensions';
+import { readImageMimeType } from './imageDimensions';
 import { extractSandboxFiles, resolveFileMimeType, sandboxFileName } from './interpreterFiles';
-import { resolveChatGPTWebTurn } from './resolveTurnModel';
 import type { ChatGPTWebSessionContext } from './sessionContext';
-import { getDurationMs, timing } from './timing';
 import type { TurnState } from './turnHelpers';
 import {
   describeRequestBody,
-  isAbortError,
-  isMissingConduitPrepareError,
-  isRecoverablePrepareError,
-  lastUserMessageId,
-  lastUserText,
   messageParts,
-  replayPendingFirst,
-  throwingEvents,
-  toAttachmentRef,
   toGroundingCitation,
   undeliveredSuffix,
-  waitForStreamHeaders,
 } from './turnHelpers';
-import { getCachedUpload, setCachedUpload, uploadCacheKey, uploadNamespace } from './uploadCache';
+import { uploadNamespace } from './uploadCache';
 
 export { ChatGPTWebClient } from './client';
 export { describeRequestBody, undeliveredSuffix };
@@ -88,7 +62,6 @@ export { describeRequestBody, undeliveredSuffix };
 const log = createDebug('lobe-chatgptweb:runtime');
 
 const DEFAULT_PROVIDER = 'chatgptweb';
-const DEBUG_FLAG = 'DEBUG_CHATGPTWEB_CHAT_COMPLETION';
 
 /** Slugs the web app advertises but that cannot serve a normal chat turn. */
 const HIDDEN_MODEL_SLUGS = new Set(['research']);
@@ -97,8 +70,6 @@ const isHiddenModelSlug = (slug: string) => HIDDEN_MODEL_SLUGS.has(slug) || slug
 /** Fallback context window for a live slug the catalogue does not carry yet. */
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 
-const STREAM_HARD_CAP_MS = 300_000;
-const STREAM_IDLE_MS = 60_000;
 const CITATION_FETCH_TIMEOUT_MS = 10_000;
 const HIDE_TIMEOUT_MS = 5000;
 /** Background (thinking-effort) turns: how long to wait for the written answer. */
@@ -123,64 +94,6 @@ const timeoutSignalHandle = (ms: number): { cleanup: () => void; signal: AbortSi
   );
   return { cleanup: () => clearTimeout(timer), signal: controller.signal };
 };
-
-/**
- * Wait for every `/f/conversation/prepare` to settle, or for
- * {@link CONDUIT_PREPARE_WAIT_MS} to elapse — whichever comes first.
- * Honours `signal` the same way other awaits in `chat` do (already-aborted
- * throws immediately; abort while waiting rejects). The timer is always
- * cleared so a resolved race cannot leave a dangling handle.
- */
-const waitForConduitPrepare = async (
-  trackedPrepares: Array<Promise<{ conduitToken?: string }>>,
-  signal?: AbortSignal,
-): Promise<'settled' | 'timeout'> => {
-  const abortReason = callerAbortReason(signal);
-  if (abortReason !== undefined) throw abortReason;
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), CONDUIT_PREPARE_WAIT_MS);
-  });
-
-  let onAbort: (() => void) | undefined;
-  const aborted = signal
-    ? new Promise<never>((_, reject) => {
-        onAbort = () => {
-          reject(callerAbortReason(signal));
-        };
-        signal.addEventListener('abort', onAbort, { once: true });
-      })
-    : undefined;
-
-  try {
-    return await Promise.race([
-      Promise.allSettled(trackedPrepares).then(() => 'settled' as const),
-      timeout,
-      ...(aborted ? [aborted] : []),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-  }
-};
-
-/**
- * `-pro` model ids (`gpt-5-6-pro`, `gpt-5-5-pro`, …) are the top research-grade tier —
- * on the real chatgpt.com client, PICKING Pro in the model switcher IS the effort
- * selection; there is no separate slider for it the way there is for `-thinking`
- * models, so a real Pro turn always carries `thinking_effort`. Verified against a
- * captured real Chrome session (2026-08-19, `chatgpt.com.har`): a Pro turn with no
- * explicit user-chosen effort sends `thinking_effort: "standard"` — the SAME
- * default other reasoning-capable tiers get, not `"max"`. (A `conduit_token: null`
- * prepare response turned out to be normal for this tier regardless of the effort
- * value sent — see the fix in `client.ts#prepareConversation` — so this default
- * is about matching the real request shape, not about unblocking the token.)
- *
- * `resolveChatGPTWebTurn` always attaches `thinking_effort: standard` for these
- * slugs, so a Pro turn takes the same dual-prepare path as the live web client.
- */
-const isProTierModel = (model: string): boolean => model.endsWith('-pro');
 
 /** Shared settings for a live slug the catalogue does not carry yet. */
 const LIVE_MODEL_SETTINGS: NonNullable<ChatModelCard['settings']> = {
@@ -299,360 +212,20 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
   }
 
   async chat(payload: ChatStreamPayload, options?: ChatMethodOptions): Promise<Response> {
-    const inputStartAt = Date.now();
-    const signal = options?.signal;
-    let streamConstructed = false;
-    let leaseReleased = false;
-    const releaseLease = () => {
-      if (leaseReleased) return;
-      leaseReleased = true;
-      this.releaseSessionContext();
-    };
-
-    try {
-      const { echoHistory, inputText, messages, mimeTypes } = await this.buildMessages(
-        payload.messages,
-        signal,
-      );
-
-      const search = payload.enabledSearch === true;
-      const hasAttachments = mimeTypes.length > 0;
-      /**
-       * Dedicated ChatGPT Web fields only. Generic `reasoning_effort` is never
-       * consulted — leftover values on auto / instant / minis / o3 must not
-       * leak onto the wire. Pro ignores the persisted value anyway
-       * (`resolveChatGPTWebTurn` always sends `standard`).
-       */
-      const resolved = resolveChatGPTWebTurn({
-        model: payload.model,
-        thinkingEffort: payload.model.endsWith('-pro')
-          ? payload.chatgptWebProThinkingEffort
-          : payload.chatgptWebThinkingEffort,
-      });
-      const model = resolved.model;
-      const thinkingEffort = resolved.thinkingEffort;
-      /**
-       * The `/f/` conduit path is what the web client uses for EVERY turn, and
-       * it is the only one whose conversation the upstream keeps: the plain
-       * `/backend-api/conversation` body sends `history_and_training_disabled`,
-       * so its conversation cannot be read back afterwards (verified live
-       * 2026-08-15 — the document, the interpreter download and even the hide
-       * call all answer 404). Everything post-turn depends on that document:
-       * code-interpreter files, citation recovery, background-answer recovery.
-       *
-       * Search / attachments / an explicit effort additionally CANNOT be
-       * expressed by the plain body at all (`thinking_effort` is rejected with
-       * 422 "Invalid conversation body"), so those turns never fall back.
-       */
-      const mayFallBack = !search && !hasAttachments && !thinkingEffort;
-
-      const contextKey = this.resolveSentinelContextKey();
-      timing('runtime init durationMs=%d', getDurationMs(inputStartAt));
-      let lastSentinelStage = Date.now();
-      const acquired = await this.client.acquireSentinelBundle({
-        contextKey,
-        onProgress: (stage) => {
-          timing('sentinel %s (onProgress) durationMs=%d', stage, getDurationMs(lastSentinelStage));
-          lastSentinelStage = Date.now();
-        },
-        signal,
-      });
-      const requirements = acquired.requirements;
-      const turnIdentity = createTurnRequestIdentity();
-
-      const prepare = (clientPrepareState: 'sent' | 'success') =>
-        buildPrepareBody({
-          attachmentMimeTypes: hasAttachments ? mimeTypes : undefined,
-          browserProfile: this.client.browserProfile,
-          clientPrepareState,
-          model,
-          prompt: lastUserText(messages),
-          systemHints: search ? ['search'] : [],
-          thinkingEffort,
-        });
-      const prepareStates: Array<'sent' | 'success'> = isProTierModel(model)
-        ? ['success', 'sent']
-        : ['success'];
-      /**
-       * Wait briefly for `/f/conversation/prepare` before the conversation POST.
-       * The real web client issues prepare while the user types, so the token is
-       * already present by send time; the HAR "+98 ms" note was measured against
-       * a prepare that had already been issued. Firing both in the same
-       * millisecond produces a conduit-less turn that chatgpt.com answers 200
-       * for but silently routes to `gpt-5-5-mini` — for every model, including
-       * `auto` and `*-instant`.
-       *
-       * If prepare fails, times out, or returns `conduit_token: null`, send
-       * without a token; a missing-conduit 4xx still retries once after awaiting
-       * prepare. Pro fires two prepares (`success`, `sent`): wait for both to
-       * settle, but if any token has arrived and the rest are still pending
-       * when the bound elapses, proceed with the token we have.
-       */
-      const pendingPrepares = prepareStates.map((clientPrepareState) =>
-        this.client.prepareConversation(prepare(clientPrepareState), {
-          requirements,
-          signal,
-          turnIdentity,
-        }),
-      );
-      let latestConduitToken: string | undefined;
-      const trackedPrepares = pendingPrepares.map((pending) =>
-        pending.then((result) => {
-          if (result.conduitToken) latestConduitToken = result.conduitToken;
-          return result;
-        }),
-      );
-      const prepareWaitStartedAt = Date.now();
-      const prepareWaitOutcome = await waitForConduitPrepare(trackedPrepares, signal);
-      timing('prepare wait durationMs=%d', getDurationMs(prepareWaitStartedAt));
-
-      let useFPath = true;
-      let conduitToken = latestConduitToken;
-      log(
-        conduitToken
-          ? 'sending conversation with a conduit token'
-          : 'sending conversation without a conduit token',
-      );
-      // A token that arrives after the bound is too late for this POST; the
-      // missing-conduit 4xx retry still awaits the same prepares.
-      if (prepareWaitOutcome === 'timeout' && !conduitToken) {
-        void Promise.allSettled(trackedPrepares).then((results) => {
-          for (const result of results) {
-            if (result.status === 'fulfilled' && result.value.conduitToken) {
-              log(
-                'prepare returned a conduit token after the wait timed out; conversation already sent without it',
-              );
-            }
-          }
-        });
-      }
-
-      const describeFlow = (fPath: boolean) =>
-        fPath
-          ? search
-            ? 'f:search'
-            : hasAttachments
-              ? 'f:attachments'
-              : thinkingEffort
-                ? 'f:effort'
-                : 'f:plain'
-          : 'conversation';
-
-      // Built once: a conduit retry must POST the same message ids / create_time
-      // as the first send. Only the `X-Conduit-Token` header may change.
-      const fBody = buildFConversationBody({
-        browserProfile: this.client.browserProfile,
-        messages,
-        model,
-        search,
-        thinkingEffort,
-      });
-
-      const logRequest = (nextBody: Record<string, any>, fPath: boolean) => {
-        if (process.env[DEBUG_FLAG] !== '1') return;
-        log(
-          'request: %o',
-          describeRequestBody(nextBody, {
-            flow: describeFlow(fPath),
-            model,
-            thinkingEffort,
-          }),
-        );
-      };
-      logRequest(fBody, true);
-
-      const launchStream = (
-        nextBody: Record<string, any>,
-        fPath: boolean,
-        token: string | undefined,
-      ) => {
-        let resolveHeaders: () => void = () => {};
-        const headersPromise = new Promise<void>((resolve) => {
-          resolveHeaders = resolve;
-        });
-        const conversation = this.client.streamConversation(nextBody, {
-          conduitToken: token,
-          echoHistory,
-          hardCapMs: STREAM_HARD_CAP_MS,
-          idleTimeoutMs: STREAM_IDLE_MS,
-          onHeaders: resolveHeaders,
-          requirements,
-          signal,
-          turnIdentity,
-          useFPath: fPath,
-        });
-        const nextIterator = conversation[Symbol.asyncIterator]();
-        return {
-          body: nextBody,
-          firstPromise: nextIterator.next(),
-          headersPromise,
-          iterator: nextIterator,
-        };
-      };
-
-      const abandon = (iterator: AsyncIterator<ConversationEvent>) => {
-        const closing = iterator.return?.();
-        if (closing && typeof (closing as Promise<unknown>).then === 'function') {
-          void (closing as Promise<unknown>).catch(() => undefined);
-        }
-      };
-
-      let launched = launchStream(fBody, useFPath, conduitToken);
-      this.client.replenishSentinelBundle({ contextKey });
-
-      const openOrRetry = async () => {
-        try {
-          await waitForStreamHeaders(launched.headersPromise, launched.firstPromise);
-        } catch (error) {
-          if (!isMissingConduitPrepareError(error) || isCallerAbort(signal)) throw error;
-
-          const prepared = await Promise.allSettled(trackedPrepares);
-          const fulfilled = prepared.filter(
-            (result): result is PromiseFulfilledResult<{ conduitToken?: string }> =>
-              result.status === 'fulfilled',
-          );
-
-          // `{status:"ok", conduit_token:null}` is a normal prepare response.
-          // Retry once whenever prepare itself succeeded, token or not — the
-          // server-side prepare state is what the 4xx was waiting on.
-          if (fulfilled.length > 0) {
-            const retryToken = fulfilled.findLast((result) => result.value.conduitToken)?.value
-              .conduitToken;
-            log(
-              retryToken
-                ? 'conversation 4xx missing conduit; retrying once with prepare token'
-                : 'conversation 4xx missing conduit; retrying once after prepare (no token)',
-            );
-            abandon(launched.iterator);
-            launched = launchStream(fBody, true, retryToken);
-            await waitForStreamHeaders(launched.headersPromise, launched.firstPromise);
-            return;
-          }
-
-          const allRecoverable =
-            prepared.length > 0 &&
-            prepared.every(
-              (result) => result.status === 'rejected' && isRecoverablePrepareError(result.reason),
-            );
-          if (mayFallBack && allRecoverable) {
-            log(
-              'conduit prepare failed (%s); falling back to the plain path',
-              String(
-                (prepared[0] as PromiseRejectedResult | undefined)?.reason ?? 'prepare failed',
-              ),
-            );
-            abandon(launched.iterator);
-            useFPath = false;
-            conduitToken = undefined;
-            const plainBody = buildConversationBody({
-              browserProfile: this.client.browserProfile,
-              messages,
-              model,
-              thinkingEffort,
-            });
-            logRequest(plainBody, false);
-            launched = launchStream(plainBody, false, undefined);
-            await waitForStreamHeaders(launched.headersPromise, launched.firstPromise);
-            return;
-          }
-
-          const prepareFailure = prepared.find(
-            (result): result is PromiseRejectedResult => result.status === 'rejected',
-          );
-          if (prepareFailure) throw prepareFailure.reason;
-          throw error;
-        }
-      };
-
-      await openOrRetry();
-
-      const { body, firstPromise, iterator } = launched;
-
-      // Correlation anchors for the document fallback: everything we might read
-      // back must descend from THIS user message (or post-date this request).
-      const turn: TurnState = {
-        startedAtSec: Date.now() / 1000,
-        userMessageId: lastUserMessageId(body),
-      };
-
-      // HTTP-status errors already threw at openLeg (401/403 stay pre-stream
-      // for re-auth). Skip waiting for the first ConversationEvent so the
-      // client can paint a generating state as soon as headers are OK.
-      const events = this.trackConversation(replayPendingFirst(firstPromise, iterator), turn);
-
-      const stream = ChatGPTWebStream(events, {
-        callbacks: options?.callback,
-        inputStartAt,
-        inputText,
-        model,
-        // runs on success, failure AND abort — the created conversation must
-        // never be left visible in the account history. The session lease
-        // lives until this cleanup so overflow eviction cannot drain a live
-        // stream.
-        onCleanup: ({ conversationId }) => {
-          try {
-            this.hideTurn(turn, conversationId);
-          } finally {
-            releaseLease();
-          }
-        },
-        onDone: (context) => this.finalizeTurn(context, turn, search, signal),
-        provider: this.provider,
-        resolveFile: (pointer) => this.resolveFile(pointer, turn, signal),
-        resolveImage: (pointer) => this.resolveImage(pointer, turn, signal),
-        signal,
-      });
-
-      const cancelLeaseSources = () => {
-        void stream.cancel().catch(() => undefined);
-        const closing = iterator.return?.();
-        if (closing && typeof (closing as Promise<unknown>).then === 'function') {
-          void (closing as Promise<unknown>).catch(() => undefined);
-        }
-      };
-
-      try {
-        if (process.env[DEBUG_FLAG] === '1') {
-          const [prod, useForDebug] = stream.tee();
-          // never dump full base64 payloads / signed URLs into the log
-          debugStream(useForDebug.pipeThrough(createDebugRedactor())).catch(console.error);
-          const response = StreamingResponse(prod, { headers: options?.headers });
-          streamConstructed = true;
-          return response;
-        }
-
-        const response = StreamingResponse(stream, { headers: options?.headers });
-        streamConstructed = true;
-        return response;
-      } catch (wrapError) {
-        cancelLeaseSources();
-        throw wrapError;
-      }
-    } catch (error) {
-      // The user pressing stop is not a provider failure: surface the runtime's
-      // abort terminal instead of an error card.
-      if (isCallerAbort(signal) || isAbortError(error)) {
-        const abortStream = ChatGPTWebStream(throwingEvents(error), {
-          callbacks: options?.callback,
-          model: payload.model,
-          onCleanup: () => releaseLease(),
-          provider: this.provider,
-          signal,
-        });
-        try {
-          const response = StreamingResponse(abortStream, { headers: options?.headers });
-          streamConstructed = true;
-          return response;
-        } catch (wrapError) {
-          void abortStream.cancel().catch(() => undefined);
-          throw wrapError;
-        }
-      }
-
-      throw this.toRuntimeError(error);
-    } finally {
-      if (!streamConstructed) releaseLease();
-    }
+    return runChatGPTWebChat(payload, options, {
+      buildMessages: (messages, signal) => this.buildMessages(messages, signal),
+      client: this.client,
+      finalizeTurn: this.finalizeTurn,
+      hideTurn: this.hideTurn,
+      log,
+      provider: this.provider,
+      releaseSessionContext: () => this.releaseSessionContext(),
+      resolveFile: this.resolveFile,
+      resolveImage: this.resolveImage,
+      sentinelContextKey: this.resolveSentinelContextKey(),
+      toRuntimeError: (error) => this.toRuntimeError(error),
+      trackConversation: (events, turn) => this.trackConversation(events, turn),
+    });
   }
 
   /**
@@ -761,244 +334,17 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
 
   // ------------------------------------------------------------------ payload
 
-  private async buildMessages(
-    messages: OpenAIChatMessage[],
-    signal?: AbortSignal,
-  ): Promise<{
-    echoHistory: string[];
-    inputText: string;
-    messages: ChatGPTWebMessage[];
-    mimeTypes: string[];
-  }> {
-    const mapped: ChatGPTWebMessage[] = [];
-    const echoHistory: string[] = [];
-    const inputParts: string[] = [];
-    const mimeTypes = new Set<string>();
-    let imageIndex = 0;
-    /** System instructions waiting to be folded into the user turn they precede. */
-    const pendingInstructions: string[] = [];
-
-    const pushMessage = (message: ChatGPTWebMessage) => {
-      if (message.content) inputParts.push(message.content);
-      mapped.push(message);
-    };
-
-    /**
-     * Emit the buffered instructions as the user turn they now are, at the
-     * position the caller put them. Called whenever they would otherwise have to
-     * CROSS an assistant turn to reach a later user message — carrying them past
-     * it would reorder the conversation.
-     */
-    const flushInstructions = () => {
-      if (pendingInstructions.length === 0) return;
-      pushMessage({ content: pendingInstructions.join('\n\n'), role: 'user' });
-      pendingInstructions.length = 0;
-    };
-
-    for (const message of messages) {
-      const { attachments, text } = await this.buildContent(message.content, signal, () => {
-        imageIndex += 1;
-        return imageIndex;
-      });
-
-      if (!text && attachments.length === 0) continue;
-
-      /**
-       * A browser session NEVER authors a `system` turn. chatgpt.com's own
-       * clients carry their instructions out of band (custom instructions ride
-       * on flagged metadata, project/GPT instructions on the conversation
-       * itself), so an `author.role: "system"` message with freeform text in
-       * `content.parts` is a shape only an API/automation client produces — and
-       * every AIHub turn produced one, because the context engine always
-       * unshifts a system message (persona, date, model info, tool prompts).
-       *
-       * Fold it into the user turn it IMMEDIATELY precedes instead: the model
-       * reads the same text in the same position, and the body keeps the
-       * strictly user/assistant shape the web app sends. When no user turn
-       * follows before the next assistant turn (or before the end), the
-       * instruction is emitted as its own user turn rather than travelling
-       * forward — see {@link flushInstructions}. A system message that carries
-       * attachments is not an instruction block at all, so it falls through and
-       * becomes a normal user turn (its files must not be dropped).
-       */
-      if (message.role === 'system' && attachments.length === 0) {
-        if (text) pendingInstructions.push(text);
-        continue;
-      }
-
-      const role = message.role === 'assistant' ? 'assistant' : 'user';
-
-      // instructions may never be carried across an assistant turn
-      if (role === 'assistant') flushInstructions();
-
-      for (const attachment of attachments) mimeTypes.add(attachment.mimeType);
-      if (role === 'assistant' && text) echoHistory.push(text);
-
-      let content = text;
-      if (role === 'user' && pendingInstructions.length > 0) {
-        content = [...pendingInstructions, text].filter(Boolean).join('\n\n');
-        pendingInstructions.length = 0;
-      }
-
-      pushMessage({
-        attachments: attachments.length > 0 ? attachments : undefined,
-        content,
-        role,
-      });
-    }
-
-    // A trailing system message (e.g. the force-finish injector) still has to
-    // reach the model.
-    flushInstructions();
-
-    return {
-      echoHistory,
-      inputText: inputParts.join('\n\n'),
-      messages: mapped,
-      mimeTypes: [...mimeTypes],
-    };
-  }
-
-  private async buildContent(
-    content: OpenAIChatMessage['content'],
-    signal: AbortSignal | undefined,
-    nextImageIndex: () => number,
-  ): Promise<{ attachments: AttachmentRef[]; text: string }> {
-    if (typeof content === 'string') return { attachments: [], text: content };
-
-    const attachments: AttachmentRef[] = [];
-    const texts: string[] = [];
-
-    for (const part of (content ?? []) as UserMessageContentPart[]) {
-      if (isFileUrlTypedPart(part)) {
-        // a malformed `file_url` part must never reach the wire
-        if (!isFileUrlPart(part)) {
-          texts.push(fileUrlPartPlaceholder(part));
-          continue;
-        }
-
-        const attachment = await this.uploadDocumentPart(part, signal);
-        if (attachment) attachments.push(attachment);
-        else if (part.file_url.content)
-          texts.push(`[Attached file: ${part.file_url.name}]\n${part.file_url.content}`);
-        // no parsed content to fall back on: the shared placeholder contract
-        else texts.push(fileUrlPartPlaceholder(part));
-        continue;
-      }
-
-      switch (part.type) {
-        case 'text': {
-          if (part.text) texts.push(part.text);
-          break;
-        }
-        case 'image_url': {
-          const attachment = await this.uploadImagePart(
-            part.image_url.url,
-            nextImageIndex(),
-            signal,
-          );
-          if (attachment) attachments.push(attachment);
-          else texts.push('[image omitted: upload failed]');
-          break;
-        }
-        // thinking blocks are internal; audio/video are unsupported upstream
-        default: {
-          break;
-        }
-      }
-    }
-
-    return { attachments, text: texts.join('\n\n') };
-  }
-
-  private async uploadImagePart(
-    url: string,
-    index: number,
-    signal?: AbortSignal,
-  ): Promise<AttachmentRef | undefined> {
-    try {
-      const parsed = parseDataUri(url);
-
-      let bytes: Uint8Array;
-      let mimeType: string | undefined;
-      if (parsed.type === 'base64' && parsed.base64) {
-        assertBoundedBase64(parsed.base64, 'image');
-        bytes = base64ToBytes(parsed.base64);
-        mimeType = parsed.mimeType ?? undefined;
-      } else {
-        // deliberately NOT `imageUrlToBase64`: that helper is unbounded and
-        // ignores the caller's signal
-        const downloaded = await fetchBytes(url, signal);
-        bytes = downloaded.bytes;
-        mimeType = downloaded.mimeType;
-      }
-
-      const dimensions = readImageDimensions(bytes);
-      const resolvedMime = dimensions?.mimeType ?? mimeType ?? 'image/png';
-      const name = `image_${index}.${extensionFor(resolvedMime)}`;
-
-      const key = uploadCacheKey(this.uploadNamespace, bytes);
-      const cached = getCachedUpload(key);
-      if (cached) return toAttachmentRef(cached, name);
-
-      const uploaded = await this.client.uploadFile(
-        bytes,
-        {
-          height: dimensions?.height,
-          kind: 'image',
-          mimeType: resolvedMime,
-          name,
-          width: dimensions?.width,
-        },
-        { signal },
-      );
-      setCachedUpload(key, uploaded);
-
-      return toAttachmentRef(uploaded, name);
-    } catch (error) {
-      log('image upload failed: %s', String(error));
-      return undefined;
-    }
-  }
-
-  private async uploadDocumentPart(
-    part: UserMessageContentPartFile,
-    signal?: AbortSignal,
-  ): Promise<AttachmentRef | undefined> {
-    const { mimeType, name, url } = part.file_url;
-    try {
-      const parsed = parseDataUri(url);
-      let downloaded: { bytes: Uint8Array; mimeType?: string };
-      if (parsed.type === 'base64' && parsed.base64) {
-        assertBoundedBase64(parsed.base64, 'attachment');
-        downloaded = {
-          bytes: base64ToBytes(parsed.base64),
-          mimeType: parsed.mimeType ?? undefined,
-        };
-      } else downloaded = await fetchBytes(url, signal);
-
-      const resolvedMime = mimeType || downloaded.mimeType || 'application/octet-stream';
-      const key = uploadCacheKey(this.uploadNamespace, downloaded.bytes);
-      const cached = getCachedUpload(key);
-      if (cached) return toAttachmentRef(cached, name);
-
-      const uploaded = await this.client.uploadFile(
-        downloaded.bytes,
-        { kind: 'document', mimeType: resolvedMime, name },
-        { signal },
-      );
-
-      // documents are indexed asynchronously; attaching one too early yields an
-      // empty retrieval upstream
-      const ready = await this.client.waitForFileReady(uploaded.fileId, { signal });
-      const ref = { ...uploaded, fileTokenSize: ready.fileTokenSize };
-      setCachedUpload(key, ref);
-
-      return toAttachmentRef(ref, name);
-    } catch (error) {
-      log('document upload failed: %s', String(error));
-      return undefined;
-    }
+  private buildMessages(messages: ChatStreamPayload['messages'], signal?: AbortSignal) {
+    return buildChatGPTWebMessages(messages, {
+      client: this.client,
+      logUploadFailure: (kind, error) =>
+        log(
+          kind === 'image' ? 'image upload failed: %s' : 'document upload failed: %s',
+          String(error),
+        ),
+      signal,
+      uploadNamespace: this.uploadNamespace,
+    });
   }
 
   // ------------------------------------------------------------------ helpers

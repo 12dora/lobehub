@@ -22,6 +22,8 @@ export { stripHistory };
 
 const log = createDebug('lobe-chatgptweb:events');
 
+type ProtocolEvent = NonNullable<ReturnType<typeof asRecord>>;
+
 interface MessageState {
   citationCount: number;
   /** a divergent (non prefix-compatible) replay was already reported once */
@@ -102,30 +104,7 @@ export class ConversationEventRouter {
 
   feed(payload: string): ConversationEvent[] {
     if (!payload) return [];
-    if (payload === '[DONE]') {
-      const events: ConversationEvent[] = [];
-      const handedOff = this.sawHandoff;
-      // A terminal leg (no handoff) never patches `status`/`end_turn` on some
-      // streams. Release any withheld `{` / `{"lay` observed on THIS leg so
-      // reasoning-then-`{` cannot vanish: reasoning already counts as output,
-      // so the client will not poll. A handed-off leg must NOT flush — the
-      // prefix may still become bento on resume — so quarantine it instead.
-      if (handedOff) this.quarantinePendingAmbiguous();
-      else this.flushPendingAmbiguous(events);
-      this.sawHandoff = false;
-      // Generated files must be reported BEFORE `done`: the consumer resolves
-      // them inside the stream, while the conversation is still readable.
-      for (const [messageId, state] of this.messages)
-        this.emitSandboxFiles(messageId, state, events);
-      const recoveryRequired = !handedOff && this.hasUnresolvedAmbiguous();
-      events.push({
-        conversationId: this.conversationId,
-        endTurn: this.endTurn,
-        type: 'done',
-        ...(recoveryRequired ? { recoveryRequired: true } : {}),
-      });
-      return events;
-    }
+    if (payload === '[DONE]') return this.handleDone();
 
     let parsed: unknown;
     try {
@@ -140,65 +119,107 @@ export class ConversationEventRouter {
 
     const events: ConversationEvent[] = [];
     this.captureConversationId(event, events);
+    if (this.dispatchProtocolEvent(event, events)) return events;
+    this.handlePatchEvent(event, events);
+    return events;
+  }
 
+  private dispatchProtocolEvent(event: ProtocolEvent, events: ConversationEvent[]): boolean {
     switch (event.type) {
       case 'moderation': {
-        const blocked = asRecord(event.moderation_response)?.blocked === true;
-        if (blocked) events.push({ blocked: true, type: 'moderation' });
-        return events;
+        this.handleModeration(event, events);
+        return true;
       }
       case 'server_ste_metadata': {
-        const metadata = asRecord(event.metadata) ?? {};
-        events.push({
-          modelSlug: typeof metadata.model_slug === 'string' ? metadata.model_slug : undefined,
-          toolInvoked:
-            typeof metadata.tool_invoked === 'boolean' ? metadata.tool_invoked : undefined,
-          turnUseCase:
-            typeof metadata.turn_use_case === 'string' ? metadata.turn_use_case : undefined,
-          type: 'metadata',
-        });
-        return events;
+        this.handleMetadata(event, events);
+        return true;
       }
       case 'resume_conversation_token': {
-        // Not an output event — but the token is what lets us pick the turn back
-        // up on `/f/conversation/resume` once the upstream hands it off.
-        if (typeof event.token === 'string' && event.token) this.resumeTokenValue = event.token;
-        return events;
+        this.handleResumeToken(event);
+        return true;
       }
       case 'stream_handoff': {
-        this.sawHandoff = true;
-        events.push({
-          conversationId:
-            typeof event.conversation_id === 'string' ? event.conversation_id : this.conversationId,
-          options: toHandoffOptions(event.options),
-          resumeToken: this.resumeTokenValue,
-          turnExchangeId:
-            typeof event.turn_exchange_id === 'string' ? event.turn_exchange_id : undefined,
-          type: 'handoff',
-        });
-        return events;
+        this.handleHandoff(event, events);
+        return true;
       }
       case 'input_message':
       case 'message_marker':
       case 'title_generation': {
         // Internal bookkeeping only. `input_message` in particular carries the
         // user's uploaded attachment pointers, which are NOT generated output.
-        return events;
+        return true;
       }
       default: {
-        break;
+        return false;
       }
     }
+  }
 
-    if (!applyPatchEvent(this.patch, event)) return events;
-
+  private handlePatchEvent(event: ProtocolEvent, events: ConversationEvent[]) {
+    if (!applyPatchEvent(this.patch, event)) return;
     const root = asRecord(this.patch.root);
     this.captureConversationId(root ?? {}, events);
     const message = asRecord(root?.message);
-    if (!message) return events;
-
+    if (!message) return;
     this.deriveMessageEvents(message, events);
+  }
+
+  private handleDone(): ConversationEvent[] {
+    const events: ConversationEvent[] = [];
+    const handedOff = this.sawHandoff;
+    // A terminal leg (no handoff) never patches `status`/`end_turn` on some
+    // streams. Release any withheld `{` / `{"lay` observed on THIS leg so
+    // reasoning-then-`{` cannot vanish: reasoning already counts as output,
+    // so the client will not poll. A handed-off leg must NOT flush — the
+    // prefix may still become bento on resume — so quarantine it instead.
+    if (handedOff) this.quarantinePendingAmbiguous();
+    else this.flushPendingAmbiguous(events);
+    this.sawHandoff = false;
+    // Generated files must be reported BEFORE `done`: the consumer resolves
+    // them inside the stream, while the conversation is still readable.
+    for (const [messageId, state] of this.messages) this.emitSandboxFiles(messageId, state, events);
+    const recoveryRequired = !handedOff && this.hasUnresolvedAmbiguous();
+    events.push({
+      conversationId: this.conversationId,
+      endTurn: this.endTurn,
+      type: 'done',
+      ...(recoveryRequired ? { recoveryRequired: true } : {}),
+    });
     return events;
+  }
+
+  private handleModeration(event: ProtocolEvent, events: ConversationEvent[]) {
+    const blocked = asRecord(event.moderation_response)?.blocked === true;
+    if (blocked) events.push({ blocked: true, type: 'moderation' });
+  }
+
+  private handleMetadata(event: ProtocolEvent, events: ConversationEvent[]) {
+    const metadata = asRecord(event.metadata) ?? {};
+    events.push({
+      modelSlug: typeof metadata.model_slug === 'string' ? metadata.model_slug : undefined,
+      toolInvoked: typeof metadata.tool_invoked === 'boolean' ? metadata.tool_invoked : undefined,
+      turnUseCase: typeof metadata.turn_use_case === 'string' ? metadata.turn_use_case : undefined,
+      type: 'metadata',
+    });
+  }
+
+  private handleResumeToken(event: ProtocolEvent) {
+    // Not an output event — but the token is what lets us pick the turn back
+    // up on `/f/conversation/resume` once the upstream hands it off.
+    if (typeof event.token === 'string' && event.token) this.resumeTokenValue = event.token;
+  }
+
+  private handleHandoff(event: ProtocolEvent, events: ConversationEvent[]) {
+    this.sawHandoff = true;
+    events.push({
+      conversationId:
+        typeof event.conversation_id === 'string' ? event.conversation_id : this.conversationId,
+      options: toHandoffOptions(event.options),
+      resumeToken: this.resumeTokenValue,
+      turnExchangeId:
+        typeof event.turn_exchange_id === 'string' ? event.turn_exchange_id : undefined,
+      type: 'handoff',
+    });
   }
 
   private captureConversationId(source: Record<string, any>, events: ConversationEvent[]) {
