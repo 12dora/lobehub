@@ -13,21 +13,22 @@ import type {
 } from '@/types/platform/contentModeration';
 
 import { moderationEndpointChanged } from '../format';
+import type { ModerationConfigView, ModerationSettingsDraft } from './draftTypes';
 
-/** Config half of the settings view (masked API keys, no revision metadata). */
-export type ModerationConfigView = Omit<
-  ContentModerationSettingsView,
-  'revision' | 'updatedAt' | 'updatedBy'
->;
-
-export interface ModerationSettingsDraft {
-  /**
-   * Plaintext Moderations API keys typed in this session. They are sent once on save and
-   * never round-trip: the server returns fingerprints + masks only.
-   */
-  addedApiKeys: string[];
-  config: ModerationConfigView;
-}
+// The draft shapes and the validation rules live next door; this module stays the one import
+// path every caller already uses.
+export type { DraftIssue, ModerationConfigView, ModerationSettingsDraft } from './draftTypes';
+export {
+  effectiveApiKeyCount,
+  encodedHeaderLength,
+  isValidKeywordRegex,
+  MODERATION_BLOCK_MESSAGE_MAX,
+  MODERATION_DOWNGRADE_MESSAGE_MAX,
+  MODERATION_DOWNGRADE_MESSAGE_MAX_ENCODED_BYTES,
+  validateDraft,
+  validateDraftBase,
+  validateKeywordRules,
+} from './draftValidation';
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -107,190 +108,6 @@ const sortDeep = (value: unknown): unknown => {
   }
   return value;
 };
-
-/**
- * Copy-length contracts the browser enforces up front.
- *
- * `blockMessage` matches the server schema (2,000). `downgradeMessage` is capped far lower
- * because it travels back on a RESPONSE HEADER (`MODERATION_HEADERS.MODEL`-adjacent override):
- * a 2,000-character CJK string is ~18 KB once percent-encoded, past what common proxies accept.
- */
-export const MODERATION_BLOCK_MESSAGE_MAX = 2000;
-export const MODERATION_DOWNGRADE_MESSAGE_MAX = 300;
-
-/** Percent-encoded byte budget for the downgrade override that rides on a response header. */
-export const MODERATION_DOWNGRADE_MESSAGE_MAX_ENCODED_BYTES = 2048;
-
-/** Encoded size of the header value the runtime will emit for this message. */
-export const encodedHeaderLength = (value: string): number => encodeURIComponent(value).length;
-
-/**
- * API keys that will still exist AFTER the wire conversion.
- *
- * `toUpdateConfig` drops retained fingerprints once the endpoint moved, so validation has to
- * count the same set — otherwise an admin can acknowledge the endpoint warning, save, and end up
- * with a `moderations_api` classifier that has no key at all.
- */
-export const effectiveApiKeyCount = (
-  draft: ModerationSettingsDraft,
-  persistedBaseUrl?: string,
-): number => {
-  const api = draft.config.classifier.moderationsApi;
-  if (!api) return 0;
-  const retained = moderationEndpointChanged(persistedBaseUrl, api.baseUrl)
-    ? 0
-    : api.apiKeys.length;
-  return retained + draft.addedApiKeys.filter((key) => key.trim()).length;
-};
-
-export interface DraftIssue {
-  /** i18n key under `admin` → `contentModeration.errors.*`. */
-  key: string;
-  params?: Record<string, string | number>;
-}
-
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@][^\s.@]*\.[^\s@]+$/;
-
-/**
- * Compile results are memoized: validation re-runs over the whole rule list on every keyword
- * edit, and recompiling thousands of regexes per keystroke is the actual cost at the 10k ceiling.
- * The cache is bounded so a long editing session cannot grow it without limit.
- */
-const REGEX_VALIDITY_CACHE_MAX = 20_000;
-const regexValidityCache = new Map<string, boolean>();
-
-/** Regex rules must compile the same way the server compiles them (`iu`). */
-export const isValidKeywordRegex = (pattern: string): boolean => {
-  const cached = regexValidityCache.get(pattern);
-  if (cached !== undefined) return cached;
-  let valid = true;
-  try {
-    new RegExp(pattern, 'iu');
-  } catch {
-    valid = false;
-  }
-  if (regexValidityCache.size >= REGEX_VALIDITY_CACHE_MAX) regexValidityCache.clear();
-  regexValidityCache.set(pattern, valid);
-  return valid;
-};
-
-/**
- * Keyword-rule validation, split out so callers can memoize it on the rule array identity —
- * at the 10,000-rule ceiling this is the only part of validation that is expensive.
- */
-export const validateKeywordRules = (rules: readonly KeywordRule[]): DraftIssue[] => {
-  const issues: DraftIssue[] = [];
-  if (rules.length > MODERATION_LIMITS.KEYWORD_MAX_RULES) {
-    issues.push({ key: 'keywordCount', params: { max: MODERATION_LIMITS.KEYWORD_MAX_RULES } });
-  }
-  rules.forEach((rule, index) => {
-    if (!rule.pattern.trim()) issues.push({ key: 'keywordEmpty', params: { row: index + 1 } });
-    else if (rule.pattern.length > MODERATION_LIMITS.KEYWORD_MAX_LENGTH) {
-      issues.push({
-        key: 'keywordTooLong',
-        params: { max: MODERATION_LIMITS.KEYWORD_MAX_LENGTH, row: index + 1 },
-      });
-    } else if (rule.isRegex && !isValidKeywordRegex(rule.pattern)) {
-      issues.push({ key: 'keywordRegex', params: { pattern: rule.pattern, row: index + 1 } });
-    }
-  });
-  return issues;
-};
-
-/**
- * Everything except the keyword rules. Cheap enough to run on every keystroke.
- */
-export const validateDraftBase = (
-  draft: ModerationSettingsDraft,
-  options: { persistedBaseUrl?: string } = {},
-): DraftIssue[] => {
-  const issues: DraftIssue[] = [];
-  const { config } = draft;
-
-  if (config.requestKinds.length === 0) issues.push({ key: 'requestKindsRequired' });
-
-  if (config.scope.sampleRate < 0 || config.scope.sampleRate > 100) {
-    issues.push({ key: 'sampleRateRange' });
-  }
-
-  for (const category of MODERATION_CATEGORIES) {
-    const policy = config.categories[category];
-    if (!policy) continue;
-    if (policy.threshold < 0 || policy.threshold > 1) {
-      issues.push({ key: 'thresholdRange', params: { category } });
-    }
-  }
-
-  if (config.classifier.kind === 'llm_judge') {
-    const judge = config.classifier.llmJudge;
-    if (!judge?.provider || !judge?.model) issues.push({ key: 'llmJudgeRequired' });
-  }
-  if (config.classifier.kind === 'moderations_api') {
-    const api = config.classifier.moderationsApi;
-    if (!api?.baseUrl || !api?.model) issues.push({ key: 'moderationsApiRequired' });
-    else if (!/^https?:\/\//.test(api.baseUrl)) issues.push({ key: 'moderationsApiUrl' });
-    // Count the keys that survive the save, not the ones currently on screen.
-    if (api && effectiveApiKeyCount(draft, options.persistedBaseUrl) === 0) {
-      issues.push({ key: 'moderationsApiKeyRequired' });
-    }
-  }
-
-  if (config.downgrade && (!config.downgrade.provider || !config.downgrade.model)) {
-    issues.push({ key: 'downgradeIncomplete' });
-  }
-
-  if (config.messages.blockMessage.length > MODERATION_BLOCK_MESSAGE_MAX) {
-    issues.push({ key: 'blockMessageTooLong', params: { max: MODERATION_BLOCK_MESSAGE_MAX } });
-  }
-  if (config.messages.downgradeMessage.length > MODERATION_DOWNGRADE_MESSAGE_MAX) {
-    issues.push({
-      key: 'downgradeMessageTooLong',
-      params: { max: MODERATION_DOWNGRADE_MESSAGE_MAX },
-    });
-  } else if (
-    encodedHeaderLength(config.messages.downgradeMessage) >
-    MODERATION_DOWNGRADE_MESSAGE_MAX_ENCODED_BYTES
-  ) {
-    // Within the character cap but still too heavy once percent-encoded (CJK is 9 bytes/char).
-    issues.push({
-      key: 'downgradeMessageTooHeavy',
-      params: { max: MODERATION_DOWNGRADE_MESSAGE_MAX_ENCODED_BYTES },
-    });
-  }
-
-  if (config.records.nonHitRetentionDays > MODERATION_LIMITS.NON_HIT_RETENTION_MAX_DAYS) {
-    issues.push({
-      key: 'nonHitRetention',
-      params: { max: MODERATION_LIMITS.NON_HIT_RETENTION_MAX_DAYS },
-    });
-  }
-  if (config.records.hitRetentionDays < 1) issues.push({ key: 'hitRetention' });
-
-  if (config.notify.enabled) {
-    if (config.notify.emails.length === 0) issues.push({ key: 'notifyEmailsRequired' });
-    for (const email of config.notify.emails) {
-      if (!EMAIL_PATTERN.test(email)) issues.push({ key: 'notifyEmailInvalid', params: { email } });
-    }
-  }
-
-  if (config.autoBan.enabled && config.autoBan.threshold < 1) {
-    issues.push({ key: 'autoBanThreshold' });
-  }
-
-  return issues;
-};
-
-/**
- * Client-side mirror of the server validation (design §5). It exists so a mistake is named
- * next to the field that caused it instead of coming back as one opaque 400.
- */
-export const validateDraft = (
-  draft: ModerationSettingsDraft,
-  options: { persistedBaseUrl?: string } = {},
-): DraftIssue[] => [
-  ...validateDraftBase(draft, options),
-  ...validateKeywordRules(draft.config.keywords),
-];
 
 /** 恢复默认 for the category table — thresholds and actions together (design §3.3). */
 export const defaultCategoryPolicies = (): Record<

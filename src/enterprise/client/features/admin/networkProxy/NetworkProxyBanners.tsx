@@ -2,19 +2,27 @@
 
 import { Alert } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
-import { memo, useEffect, useRef, useState } from 'react';
+import type { TFunction } from 'i18next';
+import type { ReactNode } from 'react';
+import { Fragment, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type {
   ArtifactStatusView,
-  EngineIssue,
-  InstanceStatusView,
   NetworkProxyConfigView,
   NetworkProxyStatusView,
 } from '@/types/platform/networkProxy';
 
-import { networkProxyIssueKey } from './errors';
+import {
+  groupEngineInstances,
+  healingOf,
+  LIVE_STATES,
+  type NetworkProxyBannerState,
+  resolveNetworkProxyBanners,
+} from './bannerState';
+import { useCountdown, useSelfHealed } from './bannerTimers';
 import type { NetworkProxyGeodataState } from './geodataState';
+import IssueDescription from './IssueDescription';
 import { networkProxyStyles as styles } from './styles';
 import { NETWORK_PROXY_FIELDS, type NetworkProxyActions } from './useNetworkProxyActions';
 
@@ -40,138 +48,214 @@ export interface NetworkProxyBannersProps {
   statusStale?: boolean;
 }
 
-/** How long the "it came back on its own" confirmation stays before it gets out of the way. */
-const SELF_HEALED_VISIBLE_MS = 8000;
+/** Everything the banner copy needs beyond the resolved state itself. */
+interface BannerRenderContext {
+  actions: NetworkProxyActions;
+  canManage: boolean;
+  onInstallGeodata: () => void;
+  onReloadArtifacts: () => void;
+  onReloadStatus: () => void;
+  restartAction: ReactNode;
+  t: TFunction<'admin'>;
+}
+
+const stackStyle = { display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 } as const;
 
 /**
- * A server that predates the engine-issue model answers without these fields; an admin panel that
- * crashed on that would be worse than one that says nothing.
+ * One banner per resolved state (see `bannerState.ts` for the precedence). Each case only says
+ * "what is happening / what to do" (DESIGN.md, 确定性) — the decision of *whether* it shows was
+ * already taken by the resolver.
  */
-const issueOf = (instance: InstanceStatusView): EngineIssue | null => instance.lastIssue ?? null;
-
-const healingOf = (instance: InstanceStatusView): InstanceStatusView['healing'] =>
-  instance.healing ?? null;
-
-/**
- * States that speak for themselves. `running` and `degraded` are live engines, and a `stopped`
- * engine is usually one an admin turned off — none of them is an outage just because the last
- * issue recorded before them is still on the row.
- */
-const SELF_EXPLANATORY_STATES = new Set(['degraded', 'running', 'stopped']);
-
-const hasEngineIssue = (instance: InstanceStatusView): boolean =>
-  instance.engineState === 'error' ||
-  (issueOf(instance) !== null && !SELF_EXPLANATORY_STATES.has(instance.engineState));
-
-/** Whole seconds until `at`, ticking down once a second without touching the network. */
-const useCountdown = (at: string | null | undefined): number => {
-  const target = at ? Date.parse(at) : Number.NaN;
-  const [seconds, setSeconds] = useState(0);
-
-  useEffect(() => {
-    if (!Number.isFinite(target)) {
-      setSeconds(0);
-      return;
+const renderBanner = (state: NetworkProxyBannerState, ctx: BannerRenderContext): ReactNode => {
+  const { actions, canManage, t } = ctx;
+  switch (state.kind) {
+    case 'conflict': {
+      return (
+        <Alert
+          showIcon
+          description={t('networkProxy.conflict.desc', { count: state.count })}
+          message={t('networkProxy.conflict.title')}
+          type="warning"
+          action={
+            <div className={styles.inlineActions}>
+              <Button size="small" onClick={() => void actions.retryAll()}>
+                {t('networkProxy.conflict.retryAll')}
+              </Button>
+              <Button size="small" onClick={actions.dismissAll}>
+                {t('networkProxy.conflict.dismissAll')}
+              </Button>
+            </div>
+          }
+        />
+      );
     }
-    const compute = () => Math.max(0, Math.ceil((target - Date.now()) / 1000));
-    setSeconds(compute());
-    const timer = setInterval(() => setSeconds(compute()), 1000);
-    return () => clearInterval(timer);
-  }, [target]);
-
-  return seconds;
+    case 'globalProxy': {
+      return (
+        <Alert
+          showIcon
+          description={t('networkProxy.banners.globalProxyDesc')}
+          message={t('networkProxy.banners.globalProxy')}
+          type="warning"
+        />
+      );
+    }
+    case 'statusUnknown': {
+      return (
+        <Alert
+          showIcon
+          description={t('networkProxy.banners.statusUnknownDesc')}
+          message={t('networkProxy.banners.statusUnknown')}
+          type="error"
+          action={
+            <Button size="small" onClick={ctx.onReloadStatus}>
+              {t('networkProxy.actions.retry')}
+            </Button>
+          }
+        />
+      );
+    }
+    case 'artifactsUnknown': {
+      return (
+        <Alert
+          showIcon
+          description={t('networkProxy.banners.artifactsUnknownDesc')}
+          message={t('networkProxy.banners.artifactsUnknown')}
+          type="error"
+          action={
+            <Button size="small" onClick={ctx.onReloadArtifacts}>
+              {t('networkProxy.actions.retry')}
+            </Button>
+          }
+        />
+      );
+    }
+    case 'statusStale': {
+      return (
+        <Alert
+          showIcon
+          description={t('networkProxy.banners.statusStaleDesc')}
+          message={t('networkProxy.banners.statusStale')}
+          type="warning"
+          action={
+            <Button size="small" onClick={ctx.onReloadStatus}>
+              {t('networkProxy.actions.retry')}
+            </Button>
+          }
+        />
+      );
+    }
+    case 'artifactsStale': {
+      return (
+        <Alert
+          showIcon
+          description={t('networkProxy.banners.artifactsStaleDesc')}
+          message={t('networkProxy.banners.artifactsStale')}
+          type="warning"
+          action={
+            <Button size="small" onClick={ctx.onReloadArtifacts}>
+              {t('networkProxy.actions.retry')}
+            </Button>
+          }
+        />
+      );
+    }
+    case 'unsupported': {
+      return (
+        <Alert
+          showIcon
+          description={t('networkProxy.banners.unsupportedDesc')}
+          message={t('networkProxy.banners.unsupported')}
+          type="warning"
+        />
+      );
+    }
+    case 'selfHealed': {
+      return <Alert showIcon message={t('networkProxy.banners.selfHealed')} type="success" />;
+    }
+    case 'engineIssue': {
+      return (
+        <Alert
+          showIcon
+          action={ctx.restartAction}
+          type="error"
+          description={
+            <div style={stackStyle}>
+              <IssueDescription issue={state.issue} />
+              {/* The recovering instances are real, but they are not what this banner is
+                  asking the admin to act on. */}
+              {state.healingCount > 0 ? (
+                <span>
+                  {t('networkProxy.banners.selfHealingAlso', { count: state.healingCount })}
+                </span>
+              ) : null}
+            </div>
+          }
+          message={
+            state.terminalCount > 1
+              ? t('networkProxy.banners.engineIssueMulti', { count: state.terminalCount })
+              : t('networkProxy.banners.engineIssue')
+          }
+        />
+      );
+    }
+    case 'selfHealing': {
+      return (
+        <Alert
+          showIcon
+          action={ctx.restartAction}
+          message={t('networkProxy.banners.selfHealing')}
+          type="warning"
+          description={
+            <div style={stackStyle}>
+              <span>{t('networkProxy.banners.selfHealingDesc', { seconds: state.seconds })}</span>
+              <IssueDescription issue={state.issue} />
+            </div>
+          }
+        />
+      );
+    }
+    case 'fallback': {
+      return (
+        <Alert
+          showIcon
+          message={t('networkProxy.banners.fallback')}
+          type="warning"
+          description={t('networkProxy.banners.fallbackDesc', {
+            scopes: state.scopes.join(', '),
+          })}
+        />
+      );
+    }
+    case 'geodata': {
+      return (
+        <Alert
+          showIcon
+          description={t('networkProxy.banners.geodataDesc')}
+          message={t('networkProxy.banners.geodata')}
+          type="info"
+          action={
+            <Button
+              disabled={!canManage || actions.isBusy(NETWORK_PROXY_FIELDS.installGeodata)}
+              loading={actions.isBusy(NETWORK_PROXY_FIELDS.installGeodata)}
+              size="small"
+              type="primary"
+              onClick={ctx.onInstallGeodata}
+            >
+              {t('networkProxy.engine.geodata.install')}
+            </Button>
+          }
+        />
+      );
+    }
+  }
 };
 
-/** Engine states that mean the process is up and serving, whatever it reported before. */
-const LIVE_STATES = new Set(['degraded', 'running']);
-
-const ID_SEPARATOR = '\u0000';
-
-const splitIds = (key: string): string[] => (key ? key.split(ID_SEPARATOR) : []);
-
 /**
- * `true` for one moment after an engine the supervisor was *automatically* retrying comes back
- * up, so the admin who saw the recovery banner learns it worked instead of just finding it gone.
- *
- * Tracked **per instance id**, because a fleet recovers one machine at a time: counting healthy
- * instances instead would let a neighbour that was up all along stand in for the one that was
- * actually being retried. An id only earns the confirmation by being seen healing and then
- * turning up live itself; an id that leaves the list was not repaired, it just stopped answering.
- *
- * `suppressed` keeps the green line off the page while another instance still needs a human —
- * "recovered" next to "not running" reads as a contradiction.
- */
-const useSelfHealed = (
-  healingIds: string[],
-  liveIds: string[],
-  knownIds: string[],
-  suppressed: boolean,
-): boolean => {
-  const pending = useRef(new Set<string>());
-  const [healedAt, setHealedAt] = useState<number | null>(null);
-  // Arrays are rebuilt every render; the joined form is what the effect can actually depend on.
-  const healingKey = healingIds.join(ID_SEPARATOR);
-  const liveKey = liveIds.join(ID_SEPARATOR);
-  const knownKey = knownIds.join(ID_SEPARATOR);
-
-  useEffect(() => {
-    const known = new Set(splitIds(knownKey));
-    for (const id of pending.current) if (!known.has(id)) pending.current.delete(id);
-
-    const healingNow = splitIds(healingKey);
-    if (healingNow.length > 0) {
-      for (const id of healingNow) pending.current.add(id);
-      // A retry still in flight supersedes any earlier confirmation.
-      setHealedAt(null);
-      return;
-    }
-
-    // `delete` answers whether this id was one we were waiting on, and clears it in one step.
-    const recovered = splitIds(liveKey).filter((id) => pending.current.delete(id));
-    if (recovered.length > 0 && !suppressed) setHealedAt(Date.now());
-  }, [healingKey, knownKey, liveKey, suppressed]);
-
-  useEffect(() => {
-    if (healedAt === null) return;
-    const timer = setTimeout(() => setHealedAt(null), SELF_HEALED_VISIBLE_MS);
-    return () => clearTimeout(timer);
-  }, [healedAt]);
-
-  return healedAt !== null;
-};
-
-/** The engine's own reason, plus its technical detail folded away behind a toggle. */
-const IssueDescription = memo<{ issue: EngineIssue | null }>(({ issue }) => {
-  const { t } = useTranslation('admin');
-  const [detailOpen, setDetailOpen] = useState(false);
-  const detail = issue?.detail ?? null;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-      <span>{t(networkProxyIssueKey(issue?.code) as never)}</span>
-      {detail ? (
-        <div className={styles.inlineActions}>
-          <Button size="small" onClick={() => setDetailOpen((open) => !open)}>
-            {t('networkProxy.engineIssue.detailToggle')}
-          </Button>
-          {detailOpen ? <span className={styles.code}>{detail}</span> : null}
-        </div>
-      ) : null}
-    </div>
-  );
-});
-IssueDescription.displayName = 'NetworkProxyIssueDescription';
-
-/**
- * Every failure state on this page, stated as "what is happening / what to do" (DESIGN.md,
- * 确定性). Ordered by how much of the platform each one affects.
+ * Every failure state on this page, in one pass: the resolver names which states hold (and which
+ * one of the two engine states wins), this component turns each name into its banner.
  *
  * A failed *query* is reported as unknown state with a Retry — never as a healthy-looking
  * "not installed / no nodes", which would send an admin chasing an outage that is not there.
- *
- * The engine gets exactly one banner: an instance id means nothing to the person reading it, and
- * two banners about one engine read as two outages. While the supervisor is retrying by itself,
- * that banner says so — with the countdown — instead of demanding an action nobody needs to take.
  */
 const NetworkProxyBanners = memo<NetworkProxyBannersProps>(
   ({
@@ -192,19 +276,8 @@ const NetworkProxyBanners = memo<NetworkProxyBannersProps>(
   }) => {
     const { t } = useTranslation('admin');
     const instances = status?.instances ?? [];
-    const troubled = instances.filter(hasEngineIssue);
-    // Missing rule data is a setup step, not a breakage — it gets the install banner below.
-    const geodataMissing = troubled.some(
-      (instance) => issueOf(instance)?.code === 'geodata_missing',
-    );
-    const actionable = troubled.filter((instance) => issueOf(instance)?.code !== 'geodata_missing');
-    // Automatic recovery only exists on an instance the supervisor has given up starting; every
-    // other broken instance is terminal and still needs a human. One recovering instance must
-    // never hide the ones that are not — they are different problems on different machines.
-    const healing = actionable.filter(
-      (instance) => instance.engineState === 'error' && healingOf(instance) !== null,
-    );
-    const terminal = actionable.filter((instance) => !healing.includes(instance));
+    const groups = groupEngineInstances(instances);
+    const { healing, terminal } = groups;
     const healingSeconds = useCountdown(healing[0] ? healingOf(healing[0])?.nextAttemptAt : null);
     const selfHealed = useSelfHealed(
       healing.map((instance) => instance.instanceId),
@@ -214,191 +287,48 @@ const NetworkProxyBanners = memo<NetworkProxyBannersProps>(
       instances.map((instance) => instance.instanceId),
       terminal.length > 0,
     );
-    const fallbackScopes = status?.fallbackScopes ?? [];
-    const conflictCount = actions.conflicts.length;
-    const restartAction = (
-      <Button
-        disabled={!canManage || actions.isBusy(NETWORK_PROXY_FIELDS.restart)}
-        loading={actions.isBusy(NETWORK_PROXY_FIELDS.restart)}
-        size="small"
-        onClick={() => void actions.restartEngine()}
-      >
-        {t('networkProxy.engine.restart')}
-      </Button>
-    );
+
+    const banners = resolveNetworkProxyBanners({
+      artifacts,
+      artifactsError,
+      artifactsStale,
+      config,
+      conflictCount: actions.conflicts.length,
+      fallbackScopes: status?.fallbackScopes ?? [],
+      geodataState,
+      globalProxyActive,
+      groups,
+      healingSeconds,
+      selfHealed,
+      status,
+      statusError,
+      statusStale,
+    });
+
+    const context: BannerRenderContext = {
+      actions,
+      canManage,
+      onInstallGeodata,
+      onReloadArtifacts,
+      onReloadStatus,
+      restartAction: (
+        <Button
+          disabled={!canManage || actions.isBusy(NETWORK_PROXY_FIELDS.restart)}
+          loading={actions.isBusy(NETWORK_PROXY_FIELDS.restart)}
+          size="small"
+          onClick={() => void actions.restartEngine()}
+        >
+          {t('networkProxy.engine.restart')}
+        </Button>
+      ),
+      t,
+    };
 
     return (
       <>
-        {conflictCount > 0 ? (
-          <Alert
-            showIcon
-            description={t('networkProxy.conflict.desc', { count: conflictCount })}
-            message={t('networkProxy.conflict.title')}
-            type="warning"
-            action={
-              <div className={styles.inlineActions}>
-                <Button size="small" onClick={() => void actions.retryAll()}>
-                  {t('networkProxy.conflict.retryAll')}
-                </Button>
-                <Button size="small" onClick={actions.dismissAll}>
-                  {t('networkProxy.conflict.dismissAll')}
-                </Button>
-              </div>
-            }
-          />
-        ) : null}
-
-        {globalProxyActive ? (
-          <Alert
-            showIcon
-            description={t('networkProxy.banners.globalProxyDesc')}
-            message={t('networkProxy.banners.globalProxy')}
-            type="warning"
-          />
-        ) : null}
-
-        {statusError && !status ? (
-          <Alert
-            showIcon
-            description={t('networkProxy.banners.statusUnknownDesc')}
-            message={t('networkProxy.banners.statusUnknown')}
-            type="error"
-            action={
-              <Button size="small" onClick={onReloadStatus}>
-                {t('networkProxy.actions.retry')}
-              </Button>
-            }
-          />
-        ) : null}
-
-        {artifactsError && !artifacts ? (
-          <Alert
-            showIcon
-            description={t('networkProxy.banners.artifactsUnknownDesc')}
-            message={t('networkProxy.banners.artifactsUnknown')}
-            type="error"
-            action={
-              <Button size="small" onClick={onReloadArtifacts}>
-                {t('networkProxy.actions.retry')}
-              </Button>
-            }
-          />
-        ) : null}
-
-        {statusStale ? (
-          <Alert
-            showIcon
-            description={t('networkProxy.banners.statusStaleDesc')}
-            message={t('networkProxy.banners.statusStale')}
-            type="warning"
-            action={
-              <Button size="small" onClick={onReloadStatus}>
-                {t('networkProxy.actions.retry')}
-              </Button>
-            }
-          />
-        ) : null}
-
-        {artifactsStale ? (
-          <Alert
-            showIcon
-            description={t('networkProxy.banners.artifactsStaleDesc')}
-            message={t('networkProxy.banners.artifactsStale')}
-            type="warning"
-            action={
-              <Button size="small" onClick={onReloadArtifacts}>
-                {t('networkProxy.actions.retry')}
-              </Button>
-            }
-          />
-        ) : null}
-
-        {artifacts && !artifacts.engine.supported ? (
-          <Alert
-            showIcon
-            description={t('networkProxy.banners.unsupportedDesc')}
-            message={t('networkProxy.banners.unsupported')}
-            type="warning"
-          />
-        ) : null}
-
-        {selfHealed ? (
-          <Alert showIcon message={t('networkProxy.banners.selfHealed')} type="success" />
-        ) : null}
-
-        {terminal.length > 0 ? (
-          <Alert
-            showIcon
-            action={restartAction}
-            type="error"
-            description={
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-                <IssueDescription issue={terminal[0] ? issueOf(terminal[0]) : null} />
-                {/* The recovering instances are real, but they are not what this banner is
-                    asking the admin to act on. */}
-                {healing.length > 0 ? (
-                  <span>
-                    {t('networkProxy.banners.selfHealingAlso', { count: healing.length })}
-                  </span>
-                ) : null}
-              </div>
-            }
-            message={
-              terminal.length > 1
-                ? t('networkProxy.banners.engineIssueMulti', { count: terminal.length })
-                : t('networkProxy.banners.engineIssue')
-            }
-          />
-        ) : healing.length > 0 ? (
-          <Alert
-            showIcon
-            action={restartAction}
-            message={t('networkProxy.banners.selfHealing')}
-            type="warning"
-            description={
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-                <span>
-                  {t('networkProxy.banners.selfHealingDesc', { seconds: healingSeconds })}
-                </span>
-                <IssueDescription issue={healing[0] ? issueOf(healing[0]) : null} />
-              </div>
-            }
-          />
-        ) : null}
-
-        {fallbackScopes.length > 0 ? (
-          <Alert
-            showIcon
-            message={t('networkProxy.banners.fallback')}
-            type="warning"
-            description={t('networkProxy.banners.fallbackDesc', {
-              scopes: fallbackScopes.join(', '),
-            })}
-          />
-        ) : null}
-
-        {/* Only claim geodata is missing when we actually know what is installed — an
-            unreachable status query is not evidence of an empty disk. */}
-        {(geodataMissing || (config.ruleMode === 'smart' && geodataState === 'missing')) &&
-        !(artifactsError && !artifacts) ? (
-          <Alert
-            showIcon
-            description={t('networkProxy.banners.geodataDesc')}
-            message={t('networkProxy.banners.geodata')}
-            type="info"
-            action={
-              <Button
-                disabled={!canManage || actions.isBusy(NETWORK_PROXY_FIELDS.installGeodata)}
-                loading={actions.isBusy(NETWORK_PROXY_FIELDS.installGeodata)}
-                size="small"
-                type="primary"
-                onClick={onInstallGeodata}
-              >
-                {t('networkProxy.engine.geodata.install')}
-              </Button>
-            }
-          />
-        ) : null}
+        {banners.map((state) => (
+          <Fragment key={state.kind}>{renderBanner(state, context)}</Fragment>
+        ))}
       </>
     );
   },

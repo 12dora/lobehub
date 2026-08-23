@@ -1,28 +1,21 @@
 'use client';
 
-import { Tag, Text, Tooltip } from '@lobehub/ui';
+import { Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
-import type { TableColumnsType } from 'antd';
-import { memo, useMemo, useState } from 'react';
+import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { NETWORK_PROXY_ENGINE_MANIFEST } from '@/const/platform/networkProxy';
 import type { AdminNetworkProxyService } from '@/enterprise/client/services/adminNetworkProxy';
-import type {
-  ArtifactStatusView,
-  EngineIssue,
-  InstanceStatusView,
-} from '@/types/platform/networkProxy';
+import type { ArtifactStatusView, InstanceStatusView } from '@/types/platform/networkProxy';
 
 import DataTable from '../../primitives/DataTable';
-import { findArtifact } from '../engineArtifacts';
-import { networkProxyIssueKey } from '../errors';
 import FieldStatus from '../FieldStatus';
-import { formatDateTime, shortInstanceId } from '../format';
-import { Field, Section } from '../Section';
+import { Section } from '../Section';
 import { networkProxyStyles as styles } from '../styles';
 import { NETWORK_PROXY_FIELDS, type NetworkProxyActions } from '../useNetworkProxyActions';
 import { EngineDependencyPanel } from './EngineDependencyPanel';
+import EngineIdentityFields from './EngineIdentityFields';
+import { useEngineInstanceColumns } from './engineInstanceTable';
 import EngineLogsDrawer from './EngineLogsDrawer';
 
 export interface EngineSectionProps {
@@ -40,20 +33,6 @@ export interface EngineSectionProps {
   /** The status query failed with nothing cached — the instances table is unknown, not empty. */
   statusUnknown?: boolean;
 }
-
-const ENGINE_STATE_TAG_COLOR: Record<string, 'default' | 'success' | 'warning' | 'error'> = {
-  degraded: 'warning',
-  error: 'error',
-  installing: 'warning',
-  not_installed: 'default',
-  running: 'success',
-  starting: 'warning',
-  stopped: 'default',
-  unsupported: 'error',
-};
-
-/** A server that predates the engine-issue model has no `lastIssue` on the row. */
-const issueOf = (instance: InstanceStatusView): EngineIssue | null => instance.lastIssue ?? null;
 
 /**
  * 引擎（插件）(design §6.1).
@@ -83,83 +62,8 @@ const EngineSection = memo<EngineSectionProps>(
     const [logsOpen, setLogsOpen] = useState(false);
 
     const current = instances.find((instance) => instance.isCurrent) ?? instances[0];
-    const engineArtifact = findArtifact(current?.artifacts, 'engine');
     const supported = artifacts?.engine.supported ?? true;
-
-    const columns = useMemo<TableColumnsType<InstanceStatusView>>(
-      () => [
-        {
-          dataIndex: 'instanceId',
-          key: 'instanceId',
-          // The current instance is named, never identified by its opaque id; other
-          // instances (multi-node deployments only) fall back to the shortened id.
-          render: (_: unknown, row) =>
-            row.isCurrent ? (
-              <span>{t('networkProxy.engine.thisInstance')}</span>
-            ) : (
-              <span className={styles.code}>{shortInstanceId(row.instanceId)}</span>
-            ),
-          title: t('networkProxy.engine.columns.instance'),
-        },
-        {
-          dataIndex: 'engineState',
-          key: 'engineState',
-          render: (_: unknown, row) => (
-            <Tag color={ENGINE_STATE_TAG_COLOR[row.engineState] ?? 'default'} size="small">
-              {t(`networkProxy.engineState.${row.engineState}` as never)}
-            </Tag>
-          ),
-          title: t('networkProxy.engine.columns.state'),
-        },
-        {
-          dataIndex: 'engineVersion',
-          key: 'engineVersion',
-          render: (_: unknown, row) => row.engineVersion ?? '—',
-          title: t('networkProxy.engine.columns.version'),
-        },
-        {
-          dataIndex: 'appliedRevision',
-          // A revision number tells an admin nothing; whether this instance is on the current
-          // configuration is the only thing the column is asked.
-          key: 'appliedRevision',
-          render: (_: unknown, row) => {
-            if (row.appliedRevision === null) return '—';
-            const synced = row.appliedRevision === revision;
-            return (
-              <Tag color={synced ? 'success' : 'warning'} size="small">
-                {t(
-                  synced ? 'networkProxy.engine.configSynced' : 'networkProxy.engine.configPending',
-                )}
-              </Tag>
-            );
-          },
-          title: t('networkProxy.engine.columns.appliedRevision'),
-        },
-        {
-          dataIndex: 'lastIssue',
-          key: 'lastIssue',
-          // The engine reports a code; the raw text behind it is technical detail, not copy.
-          render: (_: unknown, row) => {
-            const issue = issueOf(row);
-            if (!issue) return '—';
-            const label = (
-              <Text style={{ fontSize: 12 }} type="danger">
-                {t(networkProxyIssueKey(issue.code) as never)}
-              </Text>
-            );
-            return issue.detail ? <Tooltip title={issue.detail}>{label}</Tooltip> : label;
-          },
-          title: t('networkProxy.engine.columns.lastIssue'),
-        },
-        {
-          dataIndex: 'updatedAt',
-          key: 'updatedAt',
-          render: (_: unknown, row) => formatDateTime(row.updatedAt),
-          title: t('networkProxy.engine.columns.updatedAt'),
-        },
-      ],
-      [revision, t],
-    );
+    const columns = useEngineInstanceColumns(revision);
 
     /** Both artifact catalogue and instance status describe an install; refresh both. */
     const onArtifactInstalled = () => {
@@ -203,46 +107,11 @@ const EngineSection = memo<EngineSectionProps>(
 
         <div className={styles.splitRow}>
           {/* Left: what this deployment runs. */}
-          <div className={styles.stack}>
-            <Field
-              hint={t('networkProxy.engine.pinnedVersionHint')}
-              label={t('networkProxy.engine.pinnedVersion')}
-            >
-              <span className={styles.code}>
-                {artifacts?.engine.version ?? NETWORK_PROXY_ENGINE_MANIFEST.version}
-              </span>
-            </Field>
-            <Field label={t('networkProxy.engine.platform')}>
-              <span className={styles.code}>
-                {artifacts?.engine.platformKey ??
-                  (current ? `${current.platform}/${current.arch}` : '—')}
-              </span>
-            </Field>
-            <Field label={t('networkProxy.engine.currentState')}>
-              {current && !statusUnknown ? (
-                <div className={styles.badgeRow}>
-                  <Tag
-                    color={ENGINE_STATE_TAG_COLOR[current.engineState] ?? 'default'}
-                    size="small"
-                  >
-                    {t(`networkProxy.engineState.${current.engineState}` as never)}
-                  </Tag>
-                  {current.engineVersion ? (
-                    <span className={styles.code}>{current.engineVersion}</span>
-                  ) : null}
-                </div>
-              ) : (
-                <span className={styles.hintText}>
-                  {t('networkProxy.engine.installStateUnknown')}
-                </span>
-              )}
-            </Field>
-            {engineArtifact?.source === 'operator_override' ? (
-              <Text style={{ fontSize: 12 }} type="warning">
-                {t('networkProxy.engine.operatorOverride')}
-              </Text>
-            ) : null}
-          </div>
+          <EngineIdentityFields
+            artifacts={artifacts}
+            current={current}
+            statusUnknown={statusUnknown}
+          />
 
           {/* Right: dependencies and how to install them. */}
           <EngineDependencyPanel

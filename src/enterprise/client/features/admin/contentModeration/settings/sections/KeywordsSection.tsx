@@ -1,29 +1,24 @@
 'use client';
 
 import { Text } from '@lobehub/ui';
-import { Button, Input, Select, Switch, TextArea, toast } from '@lobehub/ui/base-ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
-  MODERATION_CATEGORIES,
-  MODERATION_CATEGORY_ACTIONS,
   MODERATION_LIMITS,
   type ModerationCategory,
   type ModerationCategoryAction,
 } from '@/const/platform/contentModeration';
 import type { KeywordRule } from '@/types/platform/contentModeration';
 
-import { DEFAULT_PAGE_SIZE, DEFAULT_PAGE_SIZE_OPTIONS } from '../../../primitives/dataTableChange';
-import { categoryLabel, policyActionLabel } from '../../format';
+import { DEFAULT_PAGE_SIZE } from '../../../primitives/dataTableChange';
 import { moderationStyles as styles } from '../../styles';
-import {
-  isValidKeywordRegex,
-  type ModerationConfigView,
-  newKeywordRuleId,
-  parseKeywordImport,
-} from '../draft';
+import { type ModerationConfigView, newKeywordRuleId, parseKeywordImport } from '../draft';
 import SettingsSection from '../SettingsSection';
+import KeywordImportPanel from './KeywordImportPanel';
+import KeywordListToolbar from './KeywordListToolbar';
+import KeywordRowEditor, { type KeywordRow } from './KeywordRowEditor';
 
 export interface KeywordsSectionProps {
   config: ModerationConfigView;
@@ -35,131 +30,6 @@ export interface KeywordsSectionProps {
   onImportTextChange: (text: string) => void;
   onPatch: (patch: Partial<ModerationConfigView>) => void;
 }
-
-/** Shared admin page-size ladder, numeric for the local slice math. */
-const PAGE_SIZE_OPTIONS = DEFAULT_PAGE_SIZE_OPTIONS.map(Number);
-
-/** Row identity for the paged view — never the array index, which shifts under search. */
-interface KeywordRow {
-  index: number;
-  rule: KeywordRule;
-}
-
-const KeywordRowEditor = memo<{
-  disabled: boolean;
-  onChange: (id: string, patch: Partial<KeywordRule>) => void;
-  onRemove: (id: string) => void;
-  /** Server-side rejection for this specific rule (catastrophic backtracking / too slow). */
-  rejection?: string;
-  row: KeywordRow;
-}>(({ disabled, onChange, onRemove, rejection, row }) => {
-  const { t } = useTranslation('admin');
-  const { index, rule } = row;
-  const regexInvalid = rule.isRegex && !isValidKeywordRegex(rule.pattern);
-
-  return (
-    <div
-      data-rejected={rejection ? 'true' : undefined}
-      data-testid={`keyword-row-${index}`}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 4,
-        ...(rejection ? { borderRadius: 6, boxShadow: '0 0 0 2px var(--lobe-color-error)' } : {}),
-      }}
-    >
-      <div className={styles.formRow}>
-        <Text className={styles.hintText} style={{ minWidth: 48 }}>
-          #{index + 1}
-        </Text>
-        <Input
-          aria-label={t('contentModeration.settings.keywords.pattern')}
-          disabled={disabled}
-          maxLength={MODERATION_LIMITS.KEYWORD_MAX_LENGTH}
-          placeholder={t('contentModeration.settings.keywords.patternPlaceholder')}
-          style={{ flex: 1, minWidth: 220 }}
-          value={rule.pattern}
-          onChange={(event) => onChange(rule.id, { pattern: event.target.value })}
-        />
-        <label className={styles.toolbarRow}>
-          <Switch
-            checked={rule.isRegex}
-            disabled={disabled}
-            size="small"
-            onChange={(checked) => onChange(rule.id, { isRegex: Boolean(checked) })}
-          />
-          <span className={styles.hintText}>
-            {t('contentModeration.settings.keywords.isRegex')}
-          </span>
-        </label>
-        <Select
-          disabled={disabled}
-          style={{ width: 150 }}
-          value={rule.category}
-          options={MODERATION_CATEGORIES.map((value) => ({
-            label: categoryLabel(t, value),
-            value,
-          }))}
-          onChange={(next) =>
-            onChange(rule.id, { category: (next as ModerationCategory) ?? 'other' })
-          }
-        />
-        <Select
-          disabled={disabled}
-          style={{ width: 140 }}
-          value={rule.action}
-          options={MODERATION_CATEGORY_ACTIONS.map((value) => ({
-            label: policyActionLabel(t, value),
-            value,
-          }))}
-          onChange={(next) =>
-            onChange(rule.id, { action: (next as ModerationCategoryAction) ?? 'log' })
-          }
-        />
-        <Input
-          aria-label={t('contentModeration.settings.keywords.note')}
-          disabled={disabled}
-          maxLength={200}
-          placeholder={t('contentModeration.settings.keywords.notePlaceholder')}
-          style={{ width: 180 }}
-          value={rule.note ?? ''}
-          onChange={(event) => onChange(rule.id, { note: event.target.value || undefined })}
-        />
-        <label className={styles.toolbarRow}>
-          <Switch
-            checked={rule.enabled}
-            disabled={disabled}
-            size="small"
-            onChange={(checked) => onChange(rule.id, { enabled: Boolean(checked) })}
-          />
-          <span className={styles.hintText}>
-            {t('contentModeration.settings.keywords.enabled')}
-          </span>
-        </label>
-        <Button
-          danger
-          disabled={disabled}
-          size="small"
-          type="text"
-          onClick={() => onRemove(rule.id)}
-        >
-          {t('contentModeration.settings.keywords.remove')}
-        </Button>
-      </div>
-      {regexInvalid ? (
-        <Text data-testid={`keyword-regex-error-${index}`} type="danger">
-          {t('contentModeration.errors.keywordRegex', { pattern: rule.pattern, row: index + 1 })}
-        </Text>
-      ) : null}
-      {rejection ? (
-        <Text data-testid={`keyword-server-error-${index}`} type="danger">
-          {rejection}
-        </Text>
-      ) : null}
-    </div>
-  );
-});
-KeywordRowEditor.displayName = 'ModerationKeywordRowEditor';
 
 /**
  * 关键词规则 (design §6.3.5). The list is allowed to hold 10,000 rules, so only one page of rows
@@ -313,41 +183,17 @@ const KeywordsSection = memo<KeywordsSectionProps>(
         ) : null}
 
         {importOpen ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <Text className={styles.hintText}>
-              {t('contentModeration.settings.keywords.importHint')}
-            </Text>
-            <TextArea
-              aria-label={t('contentModeration.settings.keywords.import')}
-              disabled={disabled}
-              rows={5}
-              value={importText}
-              onChange={(event) => onImportTextChange(event.target.value)}
-            />
-            <div className={styles.toolbarRow}>
-              <Text className={styles.hintText} data-testid="keyword-import-preview">
-                {t('contentModeration.settings.keywords.importPreview', {
-                  capacity: preview?.skippedByCapacity ?? 0,
-                  duplicates: preview?.skippedDuplicates ?? 0,
-                  invalid: preview?.invalidLines.length ?? 0,
-                  valid: preview?.rules.length ?? 0,
-                })}
-              </Text>
-              <Button disabled={disabled} size="small" type="primary" onClick={applyImport}>
-                {t('contentModeration.settings.keywords.importApply')}
-              </Button>
-              <Button
-                size="small"
-                type="text"
-                onClick={() => {
-                  setImportOpen(false);
-                  onImportTextChange('');
-                }}
-              >
-                {t('contentModeration.settings.keywords.importCancel')}
-              </Button>
-            </div>
-          </div>
+          <KeywordImportPanel
+            disabled={disabled}
+            importText={importText}
+            preview={preview}
+            onApply={applyImport}
+            onImportTextChange={onImportTextChange}
+            onCancel={() => {
+              setImportOpen(false);
+              onImportTextChange('');
+            }}
+          />
         ) : null}
 
         {rules.length === 0 ? (
@@ -359,52 +205,22 @@ const KeywordsSection = memo<KeywordsSectionProps>(
           </div>
         ) : (
           <>
-            <div className={styles.toolbarRow}>
-              <Input
-                aria-label={t('contentModeration.settings.keywords.search')}
-                placeholder={t('contentModeration.settings.keywords.searchPlaceholder')}
-                style={{ width: 260 }}
-                value={search}
-                onChange={(event) => {
-                  setSearch(event.target.value);
-                  setPage(1);
-                }}
-              />
-              <Text className={styles.hintText} data-testid="keyword-page-info">
-                {t('contentModeration.settings.keywords.pageInfo', {
-                  matched: rows.length,
-                  page: currentPage,
-                  pages: pageCount,
-                })}
-              </Text>
-              <Select
-                aria-label={t('contentModeration.settings.keywords.pageSize')}
-                style={{ width: 120 }}
-                value={String(pageSize)}
-                options={PAGE_SIZE_OPTIONS.map((size) => ({
-                  label: t('contentModeration.settings.keywords.pageSizeOption', { size }),
-                  value: String(size),
-                }))}
-                onChange={(next) => {
-                  setPageSize(Number(next ?? DEFAULT_PAGE_SIZE));
-                  setPage(1);
-                }}
-              />
-              <Button
-                disabled={currentPage <= 1}
-                size="small"
-                onClick={() => setPage((value) => Math.max(1, value - 1))}
-              >
-                {t('contentModeration.settings.keywords.prevPage')}
-              </Button>
-              <Button
-                disabled={currentPage >= pageCount}
-                size="small"
-                onClick={() => setPage((value) => Math.min(pageCount, value + 1))}
-              >
-                {t('contentModeration.settings.keywords.nextPage')}
-              </Button>
-            </div>
+            <KeywordListToolbar
+              currentPage={currentPage}
+              matched={rows.length}
+              pageCount={pageCount}
+              pageSize={pageSize}
+              search={search}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
+              onSearchChange={(value) => {
+                setSearch(value);
+                setPage(1);
+              }}
+            />
 
             {rows.length === 0 ? (
               <Text className={styles.hintText} data-testid="keyword-search-empty">
