@@ -55,10 +55,12 @@ describe('parseSetCookie', () => {
     ).toBe(true);
   });
 
-  it('does not treat Unix-epoch Expires as a deletion (expires=0 is a session cookie)', () => {
-    const parsed = parseSetCookie('a=b; Expires=Thu, 01 Jan 1970 00:00:00 GMT', NOW, defaults);
-    expect(parsed?.expires).toBe(0);
-    expect(parsed?.deleted).toBe(false);
+  it('treats Unix-epoch and pre-epoch Expires as deletions', () => {
+    const epoch = parseSetCookie('a=b; Expires=Thu, 01 Jan 1970 00:00:00 GMT', NOW, defaults);
+    expect(epoch).toMatchObject({ deleted: true, expires: 1 });
+
+    const preEpoch = parseSetCookie('a=b; Expires=Wed, 31 Dec 1969 23:59:59 GMT', NOW, defaults);
+    expect(preEpoch).toMatchObject({ deleted: true, expires: 1 });
   });
 
   it('defaults Path to / when the attribute is present but empty', () => {

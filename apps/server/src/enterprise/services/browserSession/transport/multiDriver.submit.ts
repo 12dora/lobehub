@@ -82,7 +82,7 @@ const attachWriteCallback = (
             req.stallTimer = undefined;
             controller.enqueue(pool, {
               error: new TypeError(
-                'fetch failed: the ChatGPT Web transport response body was not consumed within 60s; the request was cancelled.',
+                `fetch failed: the ChatGPT Web transport response body was not consumed within ${req.stallTimeoutMs}ms; the request was cancelled.`,
               ),
               req,
               type: 'abort',

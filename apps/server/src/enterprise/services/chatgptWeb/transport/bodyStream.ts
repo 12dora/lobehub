@@ -76,7 +76,7 @@ export const createBodyStream = (params: {
       stallTimer = undefined;
       fail(
         new TypeError(
-          'fetch failed: the ChatGPT Web transport response body was not consumed within 60s; the request was cancelled.',
+          `fetch failed: the ChatGPT Web transport response body was not consumed within ${params.stallTimeoutMs}ms; the request was cancelled.`,
         ),
       );
       params.kill();

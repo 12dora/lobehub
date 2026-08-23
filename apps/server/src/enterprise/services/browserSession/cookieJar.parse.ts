@@ -191,7 +191,9 @@ const setCookieExpires = (attrs: SetCookieAttributes, nowMs: number): number => 
     return attrs.maxAge <= 0 ? 1 : Math.floor(nowMs / 1000) + attrs.maxAge;
   }
   if (attrs.expiresAt !== undefined) {
-    return attrs.expiresAt;
+    // Netscape uses 0 for session cookies, so normalize epoch-or-earlier expiry to the
+    // existing expired sentinel instead of persisting a deletion as a session cookie.
+    return attrs.expiresAt <= 0 ? 1 : attrs.expiresAt;
   }
   return 0;
 };
