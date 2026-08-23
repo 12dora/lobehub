@@ -1,32 +1,22 @@
 'use client';
 
-import { Alert, CopyButton, Flexbox, Skeleton, Tooltip } from '@lobehub/ui';
-import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
+import { Alert, Skeleton } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { Fingerprint } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import type {
   AdminBrowserProfileOptions,
   AdminBrowserProfileSummary,
 } from '@/enterprise/client/services/adminSystem';
 
 import { InfraFieldRows, InfraSettingsCard } from '../InfraSettingsCard';
-import { infraSettingsStyles as styles } from '../styles';
 import { BrowserProfileFields } from './BrowserProfileFields';
-import {
-  adoptBrowserProfileSelection,
-  type BrowserProfileDraft,
-  type BrowserProfileSaveInput,
-  browserProfileSelectionKey,
-  completeBrowserProfileSelection,
-  isBrowserProfileSelectionDirty,
-  repairBrowserProfileSelection,
-  visibleBrowserProfileOptions,
-} from './browserProfileSelection';
+import type { BrowserProfileSaveInput } from './browserProfileSelection';
+import { buildBrowserProfileSummary } from './browserProfileSummary';
 import { infraFormStyles as formStyles } from './styles';
-import { useInfraEditModal } from './useInfraEditModal';
+import { useBrowserProfileEditor } from './useBrowserProfileEditor';
 
 export interface BrowserProfileCardProps {
   canOperate: boolean;
@@ -42,62 +32,20 @@ export interface BrowserProfileCardProps {
 
 const noop = () => undefined;
 
-/**
- * What an operator calls the operating system, from what the profile reports as a UA client
- * hint.
- *
- * Windows reports its `Sec-CH-UA-Platform-Version` on a scale of its own: Windows 11 is 13+,
- * Windows 10 is 1–12, and printing it raw put "Windows 15.0.0" on the card — a release that
- * does not exist. macOS and the rest already report their marketing version, so they are
- * joined verbatim; a profile without a version prints the platform alone rather than a
- * dangling separator.
- */
-const formatPlatform = (platform: string, platformVersion: string): string => {
-  const major = Number.parseInt(platformVersion, 10);
-  if (platform === 'Windows' && Number.isFinite(major))
-    return major >= 13 ? 'Windows 11' : 'Windows 10';
-  return platformVersion ? `${platform} ${platformVersion}` : platform;
-};
-
 /** Installation-wide identity shared by every browser-impersonating transport. */
 export const BrowserProfileCard = memo<BrowserProfileCardProps>(
   ({ canOperate, data, error, isLoading, onRegenerate, onRetry, onSave, options }) => {
     const { t } = useTranslation('admin');
-    const [regenerating, setRegenerating] = useState(false);
-    const [saving, setSaving] = useState(false);
-    const [stale, setStale] = useState(false);
-    const [draft, setDraft] = useState<BrowserProfileDraft>();
-    /** Accepted writes; the 编辑 modal closes on each one and on nothing else. */
-    const [savedCount, setSavedCount] = useState(0);
 
-    // The summary reports the option ids alongside the values they resolved to.
-    const storedKey = browserProfileSelectionKey(data);
-    /**
-     * A same-revision revalidation of the same six ids must leave an edit in progress
-     * alone. A regeneration can land on those same ids (the pools are finite) while
-     * minting a new revision and a new installation identity — that is a choice the
-     * platform made, so it re-seeds too.
-     */
-    useEffect(() => setDraft(undefined), [data?.installationId, data?.revision, storedKey]);
-    // Any revision the card has now caught up with is no longer the one it was refused on.
-    useEffect(() => setStale(false), [data?.revision]);
-
-    const settled = useMemo(() => adoptBrowserProfileSelection(options, data), [options, data]);
-    const selection = draft ?? settled;
-    const complete = useMemo(() => completeBrowserProfileSelection(selection), [selection]);
-    const dirty = isBrowserProfileSelectionDirty(data, selection);
-
-    const visible = useMemo(
-      () => (options ? visibleBrowserProfileOptions(options, selection?.systemId) : undefined),
-      [options, selection?.systemId],
-    );
-
-    /** Every change goes back through the settle step: a new machine invalidates its own hardware. */
-    const patch = useCallback(
-      (next: Partial<BrowserProfileDraft>) =>
-        setDraft(repairBrowserProfileSelection(options, { ...selection, ...next })),
-      [options, selection],
-    );
+    const editor = useBrowserProfileEditor({
+      canOperate,
+      data,
+      onRegenerate,
+      onRetry,
+      onSave,
+      options,
+      t,
+    });
 
     const generatedAt = useMemo(() => {
       if (!data) return undefined;
@@ -107,61 +55,16 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
       }).format(data.updatedAt);
     }, [data]);
 
-    const requestRegenerate = useCallback(() => {
-      confirmModal({
-        // The shared cancel label, not a private copy of the same word.
-        cancelText: t('cancel', { ns: 'common' }),
-        content: t('browserProfile.confirm.description'),
-        okButtonProps: { danger: true },
-        okText: t('browserProfile.actions.regenerate'),
-        title: t('browserProfile.confirm.title'),
-        onOk: async () => {
-          setRegenerating(true);
-          try {
-            await onRegenerate();
-            // Even if the new summary reused the previous six ids, this click
-            // produced a new fingerprint — drop the operator's unsaved draft.
-            setDraft(undefined);
-            toast.success(t('browserProfile.toast.regenerated'));
-          } catch (cause) {
-            toast.error(t('browserProfile.toast.failed'));
-            throw cause;
-          } finally {
-            setRegenerating(false);
-          }
-        },
-      });
-    }, [onRegenerate, t]);
+    const { detailsFields, generatedAtField, installationIdField, summaryFields } = useMemo(
+      () => buildBrowserProfileSummary({ data, generatedAt, options, t }),
+      [data, generatedAt, options, t],
+    );
 
-    const requestSave = useCallback(async () => {
-      if (!complete || !data) return;
-      setSaving(true);
-      try {
-        await onSave({ ...complete, expectedRevision: data.revision });
-        setSavedCount((count) => count + 1);
-        toast.success(t('browserProfile.toast.saved'));
-      } catch (cause) {
-        // A refused save is not a failed one. The fingerprint moved under this form, so the six ids
-        // on screen would reinstate what the other operator just replaced — say so, and offer the
-        // reload, instead of inviting a retry of the same payload.
-        if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') {
-          setStale(true);
-          toast.error(t('systemGeneral.conflict.title'));
-        } else {
-          // The draft stays: the operator's choice is still on screen to retry or amend.
-          toast.error(t('browserProfile.toast.saveFailed'));
-        }
-      } finally {
-        setSaving(false);
-      }
-    }, [complete, data, onSave, t]);
-
-    const requestReload = useCallback(() => {
-      setStale(false);
-      setDraft(undefined);
-      onRetry();
-    }, [onRetry]);
-
+    /**
+     * One state at a time, in the order that decides what the operator can do next: a failed read
+     * offers 重试, a write refused on a moved revision offers the reload that makes a retry
+     * meaningful, and only a settled card with nothing in it says there is no fingerprint yet.
+     */
     const banner = error ? (
       <Alert
         showIcon
@@ -174,14 +77,14 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
           </Button>
         }
       />
-    ) : stale ? (
+    ) : editor.stale ? (
       <Alert
         showIcon
         description={t('systemGeneral.conflict.description')}
         message={t('systemGeneral.conflict.title')}
         type="warning"
         action={
-          <Button size="small" onClick={requestReload}>
+          <Button size="small" onClick={editor.requestReload}>
             {t('systemGeneral.conflict.reload')}
           </Button>
         }
@@ -190,102 +93,12 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
       <Alert showIcon message={t('browserProfile.states.empty')} type="info" />
     ) : undefined;
 
-    /** Minted, not chosen: regenerating is the only thing that moves either of them. */
-    const installationIdField = {
-      label: t('browserProfile.fields.installationId'),
-      /**
-       * In full, and copyable. It is not a secret — it identifies this deployment to upstream and
-       * is what an operator quotes in a support thread — and the 8-char mask it used to carry
-       * could neither be read nor copied.
-       */
-      value: data ? (
-        <Flexbox horizontal align={'center'} gap={4} justify={'flex-end'}>
-          <span className={styles.code}>{data.installationId}</span>
-          <CopyButton content={data.installationId} size={'small'} />
-        </Flexbox>
-      ) : undefined,
-    };
-    const generatedAtField = {
-      label: t('browserProfile.fields.generatedAt'),
-      value: generatedAt,
-    };
-
-    // Nothing to amend before there is a fingerprint: that card offers 生成 instead.
-    const editing = canOperate && Boolean(data) && Boolean(selection) && Boolean(visible);
-
-    /**
-     * Opening adopts whatever the platform is running now (`draft` cleared), closing throws the
-     * choice away — the summary behind the modal must never disagree with what is stored.
-     */
-    const editModal = useInfraEditModal({
-      beginEdit: () => setDraft(undefined),
-      cancelEdit: () => setDraft(undefined),
-      dirty,
-      saveCount: savedCount,
-    });
-
-    /** The identity itself, then the four dimensions upstream actually fingerprints on. */
-    const summaryFields = data
-      ? [
-          installationIdField,
-          {
-            label: t('browserProfile.fields.chrome'),
-            /**
-             * The version, once. The curl-impersonate target name next to it repeated the
-             * same major version in jargon; it stays reachable on hover for the operator
-             * who is diagnosing a transport, and off the card for everyone else.
-             */
-            value: (
-              <Tooltip
-                title={t('browserProfile.values.impersonateProfile', {
-                  profile: data.impersonateProfile,
-                })}
-              >
-                <span>{data.chromeVersion}</span>
-              </Tooltip>
-            ),
-          },
-          {
-            label: t('browserProfile.fields.platform'),
-            value: `${formatPlatform(data.platform, data.platformVersion)} · ${data.arch}`,
-          },
-          {
-            label: t('browserProfile.fields.localeTimezone'),
-            value: `${data.locale} · ${data.timezone}`,
-          },
-          generatedAtField,
-        ]
-      : [];
-
-    const detailsFields = data
-      ? [
-          ...summaryFields.slice(0, 4),
-          {
-            label: t('browserProfile.fields.screen'),
-            value: t('browserProfile.values.screen', data.screen),
-          },
-          {
-            label: t('browserProfile.fields.compute'),
-            value: t('browserProfile.values.compute', {
-              cores: data.cores,
-              memory: data.memoryGiB,
-            }),
-          },
-          {
-            label: t('browserProfile.fields.webgl'),
-            // The summary reports the GPU only as the option it was chosen from.
-            value: options?.webgl.find((entry) => entry.id === data.webglId)?.label,
-          },
-          generatedAtField,
-        ]
-      : [];
-
     return (
       <InfraSettingsCard
         banner={banner}
         canTest={false}
         detailsFields={detailsFields}
-        editOpen={editModal.open}
+        editOpen={editor.editModal.open}
         fields={summaryFields}
         icon={Fingerprint}
         probing={false}
@@ -296,22 +109,22 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
         status={data ? 'unknown' : 'disabled'}
         title={t('browserProfile.title')}
         editActions={
-          editing ? (
+          editor.editing ? (
             <>
-              {!complete ? (
+              {!editor.complete ? (
                 <span className={formStyles.hint}>{t('systemGeneral.edit.invalidDraft')}</span>
-              ) : dirty ? (
+              ) : editor.dirty ? (
                 <span className={formStyles.hint}>{t('browserProfile.states.dirty')}</span>
               ) : null}
-              <Button disabled={saving} size="small" onClick={editModal.requestClose}>
+              <Button disabled={editor.saving} size="small" onClick={editor.editModal.requestClose}>
                 {t('systemGeneral.edit.cancel')}
               </Button>
               <Button
-                disabled={!dirty || !complete || regenerating}
-                loading={saving}
+                disabled={!editor.dirty || !editor.complete || editor.regenerating}
+                loading={editor.saving}
                 size="small"
                 type="primary"
-                onClick={() => void requestSave()}
+                onClick={() => void editor.requestSave()}
               >
                 {t('browserProfile.actions.save')}
               </Button>
@@ -319,14 +132,14 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
           ) : undefined
         }
         editor={
-          editing ? (
+          editor.editing ? (
             <div className={formStyles.stack}>
               <InfraFieldRows fields={[installationIdField, generatedAtField]} />
               <BrowserProfileFields
-                disabled={saving || regenerating}
-                options={visible!}
-                selection={selection!}
-                onChange={patch}
+                disabled={editor.saving || editor.regenerating}
+                options={editor.visible!}
+                selection={editor.selection!}
+                onChange={editor.patch}
               />
             </div>
           ) : undefined
@@ -337,9 +150,9 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
               // Regenerating is destructive and irreversible: never offered over a card that
               // has not resolved what it is about to replace.
               disabled={isLoading || Boolean(error)}
-              loading={regenerating}
+              loading={editor.regenerating}
               size="small"
-              onClick={requestRegenerate}
+              onClick={editor.requestRegenerate}
             >
               {t(data ? 'browserProfile.actions.regenerate' : 'browserProfile.actions.generate')}
             </Button>
@@ -348,7 +161,7 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
         summary={
           isLoading && !data ? <Skeleton active paragraph={{ rows: 5 }} title={false} /> : undefined
         }
-        onEditOpenChange={editModal.onOpenChange}
+        onEditOpenChange={editor.editModal.onOpenChange}
         onTest={noop}
       />
     );
