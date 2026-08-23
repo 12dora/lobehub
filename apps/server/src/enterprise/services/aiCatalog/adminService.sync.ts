@@ -2,6 +2,7 @@ import type { ChatModelCard } from 'model-bank';
 import { isProviderOAuthDeviceFlow } from 'model-bank/modelProviders';
 
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
+import type { PlatformAiProviderSettings } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import {
   buildPayloadFromKeyVaults,
@@ -20,11 +21,12 @@ import {
   AiCatalogUpstreamSyncError,
   AiCatalogValidationError,
 } from './errors';
-import type { AiCatalogSecretManager } from './secretManager';
+import type { AiCatalogSecretManager, PlatformProviderKeyVaults } from './secretManager';
 import {
   isOAuthAuthorizationExpiredError,
   isSharedOAuthRefreshConsumedError,
   refreshSharedOAuthVault,
+  type RefreshSharedOAuthVaultParams,
 } from './sharedOAuthRefresh';
 
 export {
@@ -47,15 +49,9 @@ const toUpstreamSyncError = (error: unknown): AiCatalogUpstreamSyncError => {
   });
 };
 
-const refreshVaultForUpstreamSync = async (params: {
-  ciphertext: string;
-  db: LobeChatDatabase;
-  fingerprint: string;
-  keyVaults: Record<string, unknown>;
-  providerKey: string;
-  providerRowId: string;
-  secrets: AiCatalogSecretManager;
-}): Promise<Record<string, unknown>> => {
+const refreshVaultForUpstreamSync = async (
+  params: RefreshSharedOAuthVaultParams,
+): Promise<PlatformProviderKeyVaults> => {
   try {
     return await refreshSharedOAuthVault(params);
   } catch (error) {
@@ -69,7 +65,7 @@ const refreshVaultForUpstreamSync = async (params: {
 };
 
 const assertSharedAccountConnected = (
-  provider: { providerKey: string; settings: { authType?: string } },
+  provider: { providerKey: string; settings: PlatformAiProviderSettings },
   refreshed: Record<string, unknown>,
 ) => {
   const isSharedAccountProvider =

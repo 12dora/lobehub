@@ -15,11 +15,24 @@ import {
   checkVersionOwner,
   checkVersionPointerResolvedCount,
 } from './invariants.pointers.checks';
-import type { FixedHolderRevisionPointerSource } from './invariants.pointers.result';
+import type {
+  FixedHolderRevisionPointerSource,
+  PointerCheckResult,
+} from './invariants.pointers.result';
 import {
   collectPointerChecks,
   RESOURCE_REVISION_PUBLISHED_STATUS,
 } from './invariants.pointers.result';
+
+/**
+ * Narrow to the failing arm before reading its message. A check that was supposed to report a
+ * finding and instead passed is itself a failure of this suite — say so, rather than reading
+ * `detail` off a union where only one arm carries it.
+ */
+const detailOf = (result: PointerCheckResult): string => {
+  if (result.match) throw new Error('expected a failing pointer check, got a pass');
+  return result.detail;
+};
 
 const brandingSource = {
   holderIdColumn: 'id',
@@ -46,7 +59,7 @@ describe('publication pointer named checks', () => {
 
   it('emits holder resource-type mismatch only when the holder column disagrees', () => {
     expect(
-      checkHolderResourceType('platform_connectors', 'c1', true, 'skill', 'connector').detail,
+      detailOf(checkHolderResourceType('platform_connectors', 'c1', true, 'skill', 'connector')),
     ).toBe('holder-resource-type-mismatch:platform_connectors:c1:skill');
     expect(
       checkHolderResourceType('platform_connectors', 'c1', true, 'connector', 'connector').match,
@@ -61,14 +74,14 @@ describe('publication pointer named checks', () => {
 
   it('rejects missing, empty, or non-lowercase-sha256 holder checksums', () => {
     const table = 'platform_connectors';
-    expect(checkHolderChecksumFormat(table, 'c1', 'published_checksum', null).detail).toBe(
+    expect(detailOf(checkHolderChecksumFormat(table, 'c1', 'published_checksum', null))).toBe(
       'missing-or-invalid-holder-checksum:platform_connectors:c1',
     );
-    expect(checkHolderChecksumFormat(table, 'c1', 'published_checksum', '').detail).toBe(
+    expect(detailOf(checkHolderChecksumFormat(table, 'c1', 'published_checksum', ''))).toBe(
       'missing-or-invalid-holder-checksum:platform_connectors:c1',
     );
     expect(
-      checkHolderChecksumFormat(table, 'c1', 'published_checksum', 'A'.repeat(64)).detail,
+      detailOf(checkHolderChecksumFormat(table, 'c1', 'published_checksum', 'A'.repeat(64))),
     ).toBe('missing-or-invalid-holder-checksum:platform_connectors:c1');
     expect(
       checkHolderChecksumFormat(table, 'c1', 'published_checksum', 'ab'.repeat(32)).match,
@@ -78,30 +91,34 @@ describe('publication pointer named checks', () => {
 
   it('emits dangling then ambiguous resource-revision findings', () => {
     expect(
-      checkResourceRevisionResolvedCount(
-        'platform_connectors',
-        'c1',
-        '3',
-        'connector',
-        'owner-1',
-        0,
-      ).detail,
+      detailOf(
+        checkResourceRevisionResolvedCount(
+          'platform_connectors',
+          'c1',
+          '3',
+          'connector',
+          'owner-1',
+          0,
+        ),
+      ),
     ).toBe('dangling-pointer:platform_connectors:c1:3:connector:owner=owner-1');
     expect(
-      checkResourceRevisionResolvedCount(
-        'platform_connectors',
-        'c1',
-        '3',
-        'connector',
-        'owner-1',
-        2,
-      ).detail,
+      detailOf(
+        checkResourceRevisionResolvedCount(
+          'platform_connectors',
+          'c1',
+          '3',
+          'connector',
+          'owner-1',
+          2,
+        ),
+      ),
     ).toBe('ambiguous-pointer:platform_connectors:c1:3');
   });
 
   it('requires the published revision status token', () => {
     expect(RESOURCE_REVISION_PUBLISHED_STATUS).toBe('published');
-    expect(checkTargetRevisionStatus('platform_connectors', 'c1', '3', 'draft').detail).toBe(
+    expect(detailOf(checkTargetRevisionStatus('platform_connectors', 'c1', '3', 'draft'))).toBe(
       'target-revision-status-mismatch:platform_connectors:c1:3:status=draft:expected=published',
     );
     expect(checkTargetRevisionStatus('platform_connectors', 'c1', '3', 'published').match).toBe(
@@ -110,7 +127,7 @@ describe('publication pointer named checks', () => {
   });
 
   it('joins extra published holder ids in inventory order', () => {
-    expect(checkExtraPublishedHolders('platform_branding', ['a', 'b']).detail).toBe(
+    expect(detailOf(checkExtraPublishedHolders('platform_branding', ['a', 'b']))).toBe(
       'extra-published-holder:platform_branding:a,b',
     );
   });
@@ -134,41 +151,47 @@ describe('publication pointer named checks', () => {
   });
 
   it('fails closed when the fixed holder is missing but revision history exists', () => {
-    expect(checkFixedHolderPresence(brandingSource, 0, true, 4).detail).toBe(
+    expect(detailOf(checkFixedHolderPresence(brandingSource, 0, true, 4))).toBe(
       'missing-fixed-holder-with-revision-history:platform_branding:branding:published:branding/global:history=4',
     );
-    expect(checkFixedHolderPresence(brandingSource, 2, false, 0).detail).toBe(
+    expect(detailOf(checkFixedHolderPresence(brandingSource, 2, false, 0))).toBe(
       'ambiguous-fixed-holder-id:platform_branding:branding:published',
     );
   });
 
   it('rejects non-positive or non-integer fixed holder revisions', () => {
     expect(
-      checkFixedHolderPublishedShape(
-        'platform_branding',
-        { holder_id: 'branding:published', pointer: '0', status: 'published' },
-        'published',
-      ).detail,
+      detailOf(
+        checkFixedHolderPublishedShape(
+          'platform_branding',
+          { holder_id: 'branding:published', pointer: '0', status: 'published' },
+          'published',
+        ),
+      ),
     ).toBe('invalid-fixed-holder-revision:platform_branding:branding:published:0');
     expect(
-      checkFixedHolderPublishedShape(
-        'platform_branding',
-        { holder_id: 'branding:published', pointer: '2', status: 'draft' },
-        'published',
-      ).detail,
+      detailOf(
+        checkFixedHolderPublishedShape(
+          'platform_branding',
+          { holder_id: 'branding:published', pointer: '2', status: 'draft' },
+          'published',
+        ),
+      ),
     ).toBe('fixed-holder-status-mismatch:platform_branding:branding:published:draft');
   });
 
   it('rejects empty revision-history status and version owner mismatch', () => {
     expect(
-      checkRevisionHistoryStatuses('platform_branding', 'branding', 'global', [
-        { revision: '1', status: '' },
-      ]).detail,
+      detailOf(
+        checkRevisionHistoryStatuses('platform_branding', 'branding', 'global', [
+          { revision: '1', status: '' },
+        ]),
+      ),
     ).toBe('revision-history-status-invalid:platform_branding:branding/global:rev=1');
-    expect(checkVersionPointerResolvedCount('platform_skills', 's1', 'v1', 0).detail).toBe(
+    expect(detailOf(checkVersionPointerResolvedCount('platform_skills', 's1', 'v1', 0))).toBe(
       'dangling-version-pointer:platform_skills:s1:v1',
     );
-    expect(checkVersionOwner('platform_skills', 's1', 'v1', 'other').detail).toBe(
+    expect(detailOf(checkVersionOwner('platform_skills', 's1', 'v1', 'other'))).toBe(
       'version-owner-mismatch:platform_skills:s1:v1:owner=other',
     );
   });
@@ -176,7 +199,7 @@ describe('publication pointer named checks', () => {
   it('treats a falsy prior pointer digest as no drift', () => {
     expect(checkPointerDigestDrift('abc', undefined).match).toBe(true);
     expect(checkPointerDigestDrift('abc', '').match).toBe(true);
-    expect(checkPointerDigestDrift('abc', 'def').detail).toBe('pointer-digest-drift');
+    expect(detailOf(checkPointerDigestDrift('abc', 'def'))).toBe('pointer-digest-drift');
   });
 });
 

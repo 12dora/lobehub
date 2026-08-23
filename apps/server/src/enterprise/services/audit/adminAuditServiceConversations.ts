@@ -235,11 +235,14 @@ export const listConversationMessages = async (
       window,
     };
 
+    // `return await`, not `return`: a promise returned out of this `try` settles after the block
+    // has been left, so a failed read would skip the failure access log below — and an evidence
+    // read that fails without leaving a record is exactly what this catch exists to prevent.
     if (wantBody) {
-      return listConversationMessageBodies(ctx);
+      return await listConversationMessageBodies(ctx);
     }
 
-    return listConversationMessageMetadata(ctx);
+    return await listConversationMessageMetadata(ctx);
   } catch (error) {
     await appendAuditAccessLog(host.db, {
       action: 'admin.audit.conversations.messages',

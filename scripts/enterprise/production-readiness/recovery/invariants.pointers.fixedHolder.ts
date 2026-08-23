@@ -71,19 +71,26 @@ const loadFixedHolderSnapshot = async (
     [source.holderStatusValue, source.holderIdValue],
   );
 
-  // Any revision history for the constant owner (status-independent).
-  const historyRows = await client.query<{
-    revision: string;
-    status: string | null;
-  }>(
-    `SELECT revision::text AS revision, status
+  /**
+   * Any revision history for the constant owner (status-independent).
+   *
+   * Deliberately NOT awaited here. The extra-published-holder finding is decided before this runs,
+   * and on a partial restore `platform_resource_revisions` is exactly the table that may be
+   * missing — reading it eagerly would replace that structured finding with a thrown query error.
+   */
+  const loadHistory = () =>
+    client.query<{
+      revision: string;
+      status: string | null;
+    }>(
+      `SELECT revision::text AS revision, status
          FROM platform_resource_revisions
          WHERE resource_type = $1 AND resource_id = $2
          ORDER BY revision`,
-    [source.resourceType, source.resourceOwnerConstant],
-  );
+      [source.resourceType, source.resourceOwnerConstant],
+    );
 
-  return { extraPublished, historyRows, holders };
+  return { extraPublished, holders, loadHistory };
 };
 
 const resolveFixedHolderTarget = async (
@@ -187,25 +194,28 @@ export const scanFixedHolderRevisionPointers = async (
   const statusColumn = await checkHolderStatusColumnPresent(client, source);
   if (!statusColumn.match) return statusColumn;
 
-  const { extraPublished, historyRows, holders } = await loadFixedHolderSnapshot(client, source);
+  const { extraPublished, holders, loadHistory } = await loadFixedHolderSnapshot(client, source);
+  let historyRows: Awaited<ReturnType<typeof loadHistory>> | undefined;
   const snapshot = await collectPointerChecks([
     () =>
       checkExtraPublishedHolders(
         source.table,
         extraPublished.rows.map((r) => r.holder_id),
       ),
-    () =>
-      checkFixedHolderPresence(
+    async () => {
+      historyRows = await loadHistory();
+      return checkFixedHolderPresence(
         source,
         holders.rows.length,
         (historyRows.rowCount ?? 0) > 0,
         historyRows.rowCount,
-      ),
+      );
+    },
   ]);
   if (!snapshot.match) return snapshot;
   if (snapshot.skipSource) return snapshot;
 
   const holder = holders.rows[0]!;
   // Fixed row present: must be exactly published with positive revision.
-  return verifyPublishedFixedHolder(client, source, holder, historyRows.rows);
+  return verifyPublishedFixedHolder(client, source, holder, historyRows!.rows);
 };

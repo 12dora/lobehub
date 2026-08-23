@@ -7,7 +7,8 @@ import { mergeModelUpdateFields } from './modelBatchDml';
 const MODEL_KEY_MAX = 150;
 const DISPLAY_NAME_MAX = 200;
 const DESCRIPTION_MAX = 4000;
-const MODEL_TYPES = new Set([
+/** `as const` so the guard below can return the literal union the batch item declares. */
+const MODEL_TYPES = [
   'asr',
   'chat',
   'embedding',
@@ -16,7 +17,9 @@ const MODEL_TYPES = new Set([
   'text2music',
   'tts',
   'video',
-]);
+] as const;
+type ModelType = (typeof MODEL_TYPES)[number];
+const MODEL_TYPE_SET: ReadonlySet<string> = new Set(MODEL_TYPES);
 const ABILITY_KEYS = [
   'files',
   'functionCall',
@@ -115,8 +118,8 @@ const metadataChanged = (current: DraftModel, patch: BatchUpdateItem): boolean =
 const optionalPositiveInt = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 
-const optionalModelType = (value: unknown): string | undefined =>
-  typeof value === 'string' && MODEL_TYPES.has(value) ? value : undefined;
+const optionalModelType = (value: unknown): ModelType | undefined =>
+  typeof value === 'string' && MODEL_TYPE_SET.has(value) ? (value as ModelType) : undefined;
 
 const optionalSettingsRecord = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === 'object' && !Array.isArray(value)

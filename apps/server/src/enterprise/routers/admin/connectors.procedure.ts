@@ -10,7 +10,9 @@ import { createAdminConnectorReadRuntime, createAdminConnectorRuntime } from './
 
 export type AdminConnectorCtx = {
   authenticatedAt?: Date | null;
-  authMethod?: AuthMethod;
+  // `| null` because that is what the request context really carries: an API-key request has no
+  // auth method, and a resolver whose ctx cannot represent that is not a resolver tRPC accepts.
+  authMethod?: AuthMethod | null;
   getAdminConnectorReadService: () => ReturnType<typeof createAdminConnectorReadRuntime>['service'];
   getAdminConnectorRuntime: () => AdminConnectorRuntime;
   serverDB: LobeChatDatabase;

@@ -37,7 +37,9 @@ import {
 
 export type ModerationHandlerCtx = {
   authenticatedAt?: Date | null;
-  authMethod?: AuthMethod;
+  // `| null` because that is what the request context really carries: an API-key request has no
+  // auth method, and a resolver whose ctx cannot represent that is not a resolver tRPC accepts.
+  authMethod?: AuthMethod | null;
   serverDB: LobeChatDatabase;
   userId?: string | null;
 };

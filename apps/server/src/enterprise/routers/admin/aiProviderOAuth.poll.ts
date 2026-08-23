@@ -114,7 +114,7 @@ export const pollSharedAuthStatus = async ({
       result: 'failure',
       targetId,
     });
-    return { ...unfinished, error: 'provider_store_failed', status: 'denied' as const };
+    return { ...unfinished, error: 'provider_store_failed' as const, status: 'denied' as const };
   }
   browserSession?.commitVerifiedChatGPTWebSession(connectionTokens.deviceId);
 
