@@ -1,43 +1,32 @@
 'use client';
 
-import { isValidDingTalkProviderKey, type PlatformIdentityProviderDraft } from '@lobechat/types';
+import type { PlatformIdentityProviderDraft } from '@lobechat/types';
 import { Flexbox, Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
 import { AnimatePresence, m, useReducedMotion } from 'motion/react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
-import type { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 
-import {
-  buildIdentityProviderTestFailureMessage,
-  type IdentityProviderCallbackUrls,
-  type IdentityProviderCreateDraftSeed,
-  isFixedProtocolIdentityProviderType,
-  isIdentityProviderDraftWorkflowReady,
-  parseIdentityProviderJsonObject,
-  resolveIdentityProviderRevisionRefresh,
-} from './controller';
+import type { IdentityProviderCallbackUrls, IdentityProviderCreateDraftSeed } from './controller';
 import { IdentityProviderConflictAlert } from './IdentityProviderConflictAlert';
 import IdentityProviderStatusBadge from './IdentityProviderStatusBadge';
+import { IdentityProviderWizardFooter } from './IdentityProviderWizardFooter';
 import {
-  IDENTITY_PROVIDER_STEPS,
   type IdentityProviderStep,
   type IdentityProviderStepState,
   IdentityProviderWizardNavigation,
 } from './IdentityProviderWizardNavigation';
-import { formatIdentityProviderAutoSavedAt, type IdentityProviderPersistResult } from './persist';
+import type { IdentityProviderPersistResult } from './persist';
 import { getIdentityProviderStatusPresentation } from './statusPresentation';
-import type { EditableDraft } from './steps';
 import { identityProviderStyles as styles } from './styles';
-import { useDingTalkCorpCapture } from './useDingTalkCorpCapture';
-import { useIdentityProviderTestResult } from './useIdentityProviders';
-import { useIdentityProviderTestWait } from './useIdentityProviderTestWait';
 import { useIdentityProviderWizardMutations } from './useIdentityProviderWizardMutations';
-import { useUnsavedIdentityProviderGuard } from './useUnsavedIdentityProviderGuard';
+import { useIdentityProviderWizardState } from './useIdentityProviderWizardState';
 import { resolveDingTalkCaptureBlockedReason } from './wizardCaptureGuard';
-import { DEFAULT_IDENTITY_PROVIDER_SEED, fromProvider, fromSeed } from './wizardDraft';
+import {
+  resolveIdentityProviderWizardMessages,
+  resolveIdentityProviderWizardReadiness,
+} from './wizardReadiness';
 import { WizardStepBody } from './WizardStepBody';
 import { computeIdentityProviderStepStates } from './wizardStepStates';
 
@@ -66,6 +55,14 @@ interface IdentityProviderWizardProps {
   secretDirtyRef?: { current: boolean };
 }
 
+/**
+ * The identity-provider wizard: navigation, one step's body, and the action row.
+ *
+ * What it *holds* is `useIdentityProviderWizardState`; what it *concludes* from that (the publish
+ * gate, the step list, the messages under the test button) is `wizardReadiness`. This component is
+ * the seam between the two — it wires state into mutations and renders the result, and that is the
+ * only reason for anything to be in this file.
+ */
 const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
   ({
     authMethod,
@@ -86,168 +83,54 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
   }) => {
     const { t } = useTranslation('admin');
     const reduceMotion = useReducedMotion();
-    const [step, setStep] = useState<IdentityProviderStep>('basic');
-    const [stepDirection, setStepDirection] = useState(1);
-    const [draft, setDraft] = useState<EditableDraft>(() =>
-      provider
-        ? fromProvider(provider)
-        : createSeed
-          ? fromSeed(createSeed)
-          : fromSeed(DEFAULT_IDENTITY_PROVIDER_SEED),
-    );
-    const [claimJson, setClaimJson] = useState(() => JSON.stringify(draft.claimMapping, null, 2));
-    const [jsonErrors, setJsonErrors] = useState({ claims: false });
-    const [secret, setSecret] = useState('');
-    const [clearSecret, setClearSecret] = useState(false);
-    const [discovery, setDiscovery] = useState<Awaited<
-      ReturnType<typeof adminIdentityProvidersService.discover>
-    > | null>(null);
-    const [networkValid, setNetworkValid] = useState(false);
-    const [busy, setBusy] = useState<string | null>(null);
-    // Session test signal is revision-scoped (ASI-009): a success for rev N must not
-    // enable Publish after a save bumps the provider to N+1.
-    const [attempt, setAttempt] = useState<{
-      id: string;
-      revision: number;
-      startedAt: number;
-    } | null>(null);
-    const [testPolling, setTestPolling] = useState(false);
-    const testResult = useIdentityProviderTestResult(attempt?.id ?? null, testPolling, () =>
-      setTestPolling(false),
-    );
-    const testPopupRef = useRef<Window | null>(null);
-    const [testWaitMessage, setTestWaitMessage] = useState<string | null>(null);
-    const [conflict, setConflict] = useState(false);
-    const [conflictRefreshFailed, setConflictRefreshFailed] = useState(false);
-    const lastProviderRevisionRef = useRef(provider?.revision);
-    const providerRef = useRef(provider);
-    providerRef.current = provider;
-    const preserveDraftOnRefreshRef = useRef(false);
-    const [lastAutoSavedAt, setLastAutoSavedAt] = useState<Date | null>(null);
-    /** Attempt id of the in-flight/last organisation capture (vs a plain safe-login test). */
-    const [captureAttemptId, setCaptureAttemptId] = useState<string | null>(null);
-    const baseline = useMemo(
-      () =>
-        JSON.stringify(
-          provider ? fromProvider(provider) : createSeed ? fromSeed(createSeed) : draft,
-        ),
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- baseline is fixed at mount via key remount
-      [provider, createSeed],
-    );
-    const invalidJson = jsonErrors.claims;
-    // Kinds with a protocol-fixed issuer, endpoints and claim mapping (DingTalk) have nothing
-    // to discover and nothing to remap, so those two steps are dropped instead of shown empty.
-    const fixedProtocol = isFixedProtocolIdentityProviderType(provider?.type ?? draft.type);
-    const contentDirty = JSON.stringify(draft) !== baseline;
-    const secretDirty = Boolean(secret) || clearSecret;
-    const dirty = contentDirty || secretDirty;
-    const draftWorkflowReady = isIdentityProviderDraftWorkflowReady(provider);
-    const sessionTestSucceeded =
-      attempt != null &&
-      attempt.revision === provider?.revision &&
-      testResult.data?.status === 'succeeded' &&
-      Boolean(testResult.data.result?.valid);
-    // Authoritative readiness: current-revision session success OR server publishTestReady.
-    const testSucceeded = sessionTestSucceeded || Boolean(provider?.publishTestReady);
-    // Fail-closed parity with the runtime: an empty organisation allowlist lets nobody sign in,
-    // so publication is blocked (the server refuses it too).
-    const corpAllowlistMissing =
-      (provider?.type ?? draft.type) === 'dingtalk' && draft.dingtalkAllowedCorps.length === 0;
-    const publishReady =
-      Boolean(provider) &&
-      draftWorkflowReady &&
-      !dirty &&
-      !corpAllowlistMissing &&
-      canPublish &&
-      testSucceeded;
-    const steps: readonly IdentityProviderStep[] = useMemo(
-      () =>
-        fixedProtocol
-          ? IDENTITY_PROVIDER_STEPS.filter((item) => item !== 'discovery' && item !== 'claims')
-          : IDENTITY_PROVIDER_STEPS,
-      [fixedProtocol],
-    );
-    const isLastStep = step === steps.at(-1);
 
-    useEffect(() => {
-      const refresh = resolveIdentityProviderRevisionRefresh({
-        currentRevision: lastProviderRevisionRef.current,
-        nextRevision: provider?.revision,
-        preserveDraft: preserveDraftOnRefreshRef.current,
-      });
-      if (!provider || refresh === 'unchanged') return;
-      lastProviderRevisionRef.current = provider.revision;
-      if (refresh === 'preserve') {
-        preserveDraftOnRefreshRef.current = false;
-        return;
-      }
-      const refreshed = fromProvider(provider);
-      setDraft(refreshed);
-      setClaimJson(JSON.stringify(refreshed.claimMapping, null, 2));
-      setJsonErrors({ claims: false });
-      setSecret('');
-      setClearSecret(false);
-      // Drop session test state when the server revision changes — stale successes
-      // must not keep Publish enabled (ASI-009 passed-stale-revision).
-      setAttempt(null);
-      setTestPolling(false);
-    }, [provider]);
-
-    useDingTalkCorpCapture({
-      attempt,
-      captureAttemptId,
-      setDraft,
+    const state = useIdentityProviderWizardState({
+      createSeed,
+      onDirtyChange,
+      provider,
+      secretDirtyRef,
       t,
+    });
+    const { draft, dirty, step, testResult } = state;
+    const invalidJson = state.jsonErrors.claims;
+
+    const {
+      corpAllowlistMissing,
+      draftWorkflowReady,
+      fixedProtocol,
+      publishReady,
+      steps,
+      testSucceeded,
+    } = resolveIdentityProviderWizardReadiness({
+      attempt: state.attempt,
+      canPublish,
+      dirty,
+      draft,
+      provider,
       testResultData: testResult.data,
     });
+    const isLastStep = step === steps.at(-1);
 
-    useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
-    useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
-    useEffect(() => {
-      if (secretDirtyRef) secretDirtyRef.current = secretDirty;
-    }, [secretDirty, secretDirtyRef]);
-
-    useUnsavedIdentityProviderGuard(dirty);
-
-    const { resetWait } = useIdentityProviderTestWait({
-      attempt,
-      mutate: testResult.mutate,
-      onStopPolling: () => setTestPolling(false),
-      onWaitMessage: setTestWaitMessage,
+    const {
+      captureFailureMessage,
+      capturePending,
+      providerKeyError,
+      testFailureMessage,
+      typeLabel,
+    } = resolveIdentityProviderWizardMessages({
+      attempt: state.attempt,
+      busy: state.busy,
+      captureAttemptId: state.captureAttemptId,
+      draft,
+      fixedProtocol,
+      provider,
       t,
-      testPolling,
-      testPopupRef,
+      testPolling: state.testPolling,
+      testResultData: testResult.data,
+      testResultError: testResult.error,
+      testWaitMessage: state.testWaitMessage,
     });
 
-    const patch = <Key extends keyof EditableDraft>(key: Key, value: EditableDraft[Key]) =>
-      setDraft((current) => ({ ...current, [key]: value }));
-
-    // The DingTalk provider key becomes the sub-domain of the synthesized login email
-    // (`<unionId>@<providerKey>.dingtalk.sso`), so it must be a DNS label — `_` or a leading /
-    // trailing `-` would produce an address the runtime rejects at claim validation.
-    const providerKeyError =
-      fixedProtocol && draft.providerKey.trim() && !isValidDingTalkProviderKey(draft.providerKey)
-        ? t('identityProviders.dingtalk.providerKeyInvalid')
-        : null;
-
-    /**
-     * Admin-facing explanation of a terminal safe-login / capture failure: our own instruction
-     * plus the identity provider's stable error code when it reported one.
-     */
-    const testFailureMessage =
-      testResult.data?.status === 'failed'
-        ? buildIdentityProviderTestFailureMessage(
-            { errorCode: testResult.data.errorCode, type: provider?.type ?? draft.type },
-            (key, options) => String(t(key as never, options as never)),
-          )
-        : testResult.error
-          ? t('identityProviders.test.resultLoadError')
-          : testWaitMessage;
-    /** True while THIS wizard's organisation capture is still waiting on DingTalk. */
-    const capturePending =
-      busy === 'capture' || (testPolling && attempt != null && attempt.id === captureAttemptId);
-    const captureFailureMessage =
-      attempt != null && attempt.id === captureAttemptId ? testFailureMessage : null;
     /** Why the capture button is unavailable, or `null` when it can run. */
     const captureBlockedReason = resolveDingTalkCaptureBlockedReason(
       {
@@ -267,37 +150,37 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         canCreate,
         canUpdate,
         captureBlockedReason,
-        clearSecret,
-        contentDirty,
+        clearSecret: state.clearSecret,
+        contentDirty: state.contentDirty,
         dirty,
         draft,
         draftWorkflowReady,
         invalidJson,
-        lastProviderRevisionRef,
+        lastProviderRevisionRef: state.lastProviderRevisionRef,
         onRefresh,
         onSaved,
         persistRef,
-        preserveDraftOnRefreshRef,
+        preserveDraftOnRefreshRef: state.preserveDraftOnRefreshRef,
         provider,
         providerKeyError,
-        providerRef,
-        resetWait,
-        secret,
-        secretDirty,
-        setAttempt,
-        setBusy,
-        setCaptureAttemptId,
-        setClearSecret,
-        setConflict,
-        setConflictRefreshFailed,
-        setDiscovery,
-        setLastAutoSavedAt,
-        setNetworkValid,
-        setSecret,
-        setTestPolling,
-        setTestWaitMessage,
+        providerRef: state.providerRef,
+        resetWait: state.resetWait,
+        secret: state.secret,
+        secretDirty: state.secretDirty,
+        setAttempt: state.setAttempt,
+        setBusy: state.setBusy,
+        setCaptureAttemptId: state.setCaptureAttemptId,
+        setClearSecret: state.setClearSecret,
+        setConflict: state.setConflict,
+        setConflictRefreshFailed: state.setConflictRefreshFailed,
+        setDiscovery: state.setDiscovery,
+        setLastAutoSavedAt: state.setLastAutoSavedAt,
+        setNetworkValid: state.setNetworkValid,
+        setSecret: state.setSecret,
+        setTestPolling: state.setTestPolling,
+        setTestWaitMessage: state.setTestWaitMessage,
         t,
-        testPopupRef,
+        testPopupRef: state.testPopupRef,
         testSucceeded,
       });
 
@@ -305,8 +188,8 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       const currentIndex = steps.indexOf(step);
       const nextIndex = steps.indexOf(next);
       if (nextIndex === -1 || nextIndex === currentIndex) return;
-      setStepDirection(nextIndex > currentIndex ? 1 : -1);
-      setStep(next);
+      state.setStepDirection(nextIndex > currentIndex ? 1 : -1);
+      state.setStep(next);
       scheduleAutosave();
     };
 
@@ -315,53 +198,38 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       goToStep(steps[nextIndex]);
     };
 
-    const handleClaimJsonChange = (raw: string) => {
-      setClaimJson(raw);
-      const parsed = parseIdentityProviderJsonObject(raw);
-      setJsonErrors((current) => ({ ...current, claims: !parsed.valid }));
-      if (parsed.valid)
-        patch('claimMapping', parsed.value as unknown as EditableDraft['claimMapping']);
-    };
-
     const stepStates = useMemo((): Partial<
       Record<IdentityProviderStep, IdentityProviderStepState>
     > => {
       return computeIdentityProviderStepStates({
-        discovery,
+        discovery: state.discovery,
         draft: {
           clientId: draft.clientId,
           displayName: draft.displayName,
           issuer: draft.issuer,
           providerKey: draft.providerKey,
         },
-        jsonErrorsClaims: jsonErrors.claims,
-        networkValid,
+        jsonErrorsClaims: state.jsonErrors.claims,
+        networkValid: state.networkValid,
         providerSecretConfigured: provider?.secret.configured,
         providerStatus: provider?.status,
-        secret,
+        secret: state.secret,
         testResultData: testResult.data,
       });
     }, [
-      discovery,
+      state.discovery,
       draft.clientId,
       draft.displayName,
       draft.issuer,
       draft.providerKey,
-      jsonErrors.claims,
-      networkValid,
+      state.jsonErrors.claims,
+      state.networkValid,
       provider?.secret.configured,
       provider?.status,
-      secret,
+      state.secret,
       testResult.data,
     ]);
 
-    const resolvedType = provider?.type ?? draft.type;
-    const typeLabel =
-      resolvedType === 'authentik'
-        ? 'Authentik'
-        : resolvedType === 'dingtalk'
-          ? t('identityProviders.templates.dingtalk.label')
-          : t('identityProviders.templates.genericOidc.label');
     const statusPresentation = getIdentityProviderStatusPresentation({
       clientId: draft.clientId,
       dingtalkAllowedCorps: draft.dingtalkAllowedCorps,
@@ -369,7 +237,8 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       issuer: draft.issuer,
       providerKey: draft.providerKey,
       secret: {
-        configured: Boolean(provider?.secret.configured && !clearSecret) || Boolean(secret),
+        configured:
+          Boolean(provider?.secret.configured && !state.clearSecret) || Boolean(state.secret),
       },
       status: provider?.status ?? 'draft',
       type: draft.type,
@@ -399,9 +268,9 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
           value={step}
           onChange={goToStep}
         />
-        {conflict ? (
+        {state.conflict ? (
           <IdentityProviderConflictAlert
-            refreshFailed={conflictRefreshFailed}
+            refreshFailed={state.conflictRefreshFailed}
             onDiscard={onDiscard}
             onRefresh={refreshConflict}
           />
@@ -409,40 +278,40 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         <AnimatePresence initial={false} mode="wait">
           <m.div
             animate={{ opacity: 1, x: 0 }}
-            exit={reduceMotion ? undefined : { opacity: 0, x: stepDirection * -8 }}
-            initial={reduceMotion ? false : { opacity: 0, x: stepDirection * 12 }}
+            exit={reduceMotion ? undefined : { opacity: 0, x: state.stepDirection * -8 }}
+            initial={reduceMotion ? false : { opacity: 0, x: state.stepDirection * 12 }}
             key={step}
             transition={{ duration: reduceMotion ? 0 : 0.18 }}
           >
             <WizardStepBody
-              attempt={attempt}
-              busy={busy}
+              attempt={state.attempt}
+              busy={state.busy}
               callbacks={callbacks}
               canPublish={canPublish}
               canTest={canTest}
               captureBlockedReason={captureBlockedReason}
               captureFailureMessage={captureFailureMessage}
               capturePending={capturePending}
-              claimJson={claimJson}
-              clearSecret={clearSecret}
+              claimJson={state.claimJson}
+              clearSecret={state.clearSecret}
               copyUrl={copyUrl}
               corpAllowlistMissing={corpAllowlistMissing}
               dirty={dirty}
               discover={discover}
-              discovery={discovery}
+              discovery={state.discovery}
               draft={draft}
               draftWorkflowReady={draftWorkflowReady}
-              handleClaimJsonChange={handleClaimJsonChange}
-              jsonErrors={jsonErrors}
-              networkValid={networkValid}
-              patch={patch}
+              handleClaimJsonChange={state.handleClaimJsonChange}
+              jsonErrors={state.jsonErrors}
+              networkValid={state.networkValid}
+              patch={state.patch}
               provider={provider}
               providerKeyError={providerKeyError}
-              secret={secret}
-              setClearSecret={setClearSecret}
-              setDiscovery={setDiscovery}
-              setNetworkValid={setNetworkValid}
-              setSecret={setSecret}
+              secret={state.secret}
+              setClearSecret={state.setClearSecret}
+              setDiscovery={state.setDiscovery}
+              setNetworkValid={state.setNetworkValid}
+              setSecret={state.setSecret}
               startTest={startTest}
               step={step}
               t={t}
@@ -452,46 +321,23 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             />
           </m.div>
         </AnimatePresence>
-        <Flexbox horizontal align="center" justify="space-between">
-          <Button disabled={step === steps[0]} onClick={() => navigateStep(-1)}>
-            {t('identityProviders.actions.previous')}
-          </Button>
-          <Flexbox horizontal align="center" gap={8}>
-            {lastAutoSavedAt ? (
-              <Text type="secondary">
-                {t('identityProviders.save.autoSaved', {
-                  time: formatIdentityProviderAutoSavedAt(lastAutoSavedAt),
-                })}
-              </Text>
-            ) : dirty ? (
-              <Text type="secondary">{t('identityProviders.unsaved')}</Text>
-            ) : null}
-            <Button
-              loading={busy === 'save'}
-              type={isLastStep ? 'default' : 'primary'}
-              disabled={
-                invalidJson || conflictRefreshFailed || (provider ? !canUpdate : !canCreate)
-              }
-              onClick={save}
-            >
-              {t('identityProviders.actions.save')}
-            </Button>
-            {isLastStep ? (
-              <Button
-                disabled={!publishReady}
-                loading={busy === 'publish'}
-                type="primary"
-                onClick={publish}
-              >
-                {t('identityProviders.actions.publish')}
-              </Button>
-            ) : (
-              <Button disabled={invalidJson} onClick={() => navigateStep(1)}>
-                {t('identityProviders.actions.next')}
-              </Button>
-            )}
-          </Flexbox>
-        </Flexbox>
+        <IdentityProviderWizardFooter
+          atFirstStep={step === steps[0]}
+          busy={state.busy}
+          canCreate={canCreate}
+          canUpdate={canUpdate}
+          conflictRefreshFailed={state.conflictRefreshFailed}
+          dirty={dirty}
+          editing={Boolean(provider)}
+          invalidJson={invalidJson}
+          isLastStep={isLastStep}
+          lastAutoSavedAt={state.lastAutoSavedAt}
+          publishReady={publishReady}
+          onNext={() => navigateStep(1)}
+          onPrevious={() => navigateStep(-1)}
+          onPublish={publish}
+          onSave={save}
+        />
       </div>
     );
   },
