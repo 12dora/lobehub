@@ -160,7 +160,8 @@ async function envBagFromObjectStorageDraft(
   };
 }
 
-function mailFromAddress(config: MailUpdate): string {
+/** Optional, like the draft field it comes from: an incomplete draft writes no SMTP_FROM. */
+function mailFromAddress(config: MailUpdate): string | undefined {
   return config.senderName ? `"${config.senderName}" <${config.fromAddress}>` : config.fromAddress;
 }
 

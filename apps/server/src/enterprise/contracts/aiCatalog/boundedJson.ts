@@ -229,7 +229,8 @@ const validateNonSecretJson = (root: unknown, ctx: z.RefinementCtx): void => {
       continue;
     }
 
-    if (enqueuePlainObjectChildren(stack, value, path, depth, ctx) === 'stop') {
+    // Everything that is neither a leaf nor an array is an object, by elimination above.
+    if (enqueuePlainObjectChildren(stack, value as object, path, depth, ctx) === 'stop') {
       return;
     }
   }

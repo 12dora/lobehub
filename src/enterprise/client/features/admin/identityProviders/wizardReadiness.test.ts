@@ -111,7 +111,10 @@ describe('resolveIdentityProviderWizardReadiness', () => {
       attempt: null,
       canPublish: true,
       dirty: false,
-      draft: draft({ dingtalkAllowedCorps: ['corp'], type: 'dingtalk' }),
+      draft: draft({
+        dingtalkAllowedCorps: [{ addedAt: '2026-08-23T00:00:00.000Z', corpId: 'corp' }],
+        type: 'dingtalk',
+      }),
       provider: provider({ type: 'dingtalk' }),
       testResultData: undefined,
     });

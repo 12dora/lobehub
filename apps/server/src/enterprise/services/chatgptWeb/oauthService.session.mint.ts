@@ -70,7 +70,15 @@ export const rethrowMintCookieJarKeyError = (error: unknown): never => {
   throw error;
 };
 
-export const throwMintTransportFailure = (error: unknown, signal: AbortSignal): never => {
+/**
+ * The annotation is on the CONST, not just the arrow: TypeScript only treats a call as
+ * never-returning — and so only keeps `response` definitely-assigned in the caller's try/catch —
+ * when the callee is a name with an explicit type annotation.
+ */
+export const throwMintTransportFailure: (error: unknown, signal: AbortSignal) => never = (
+  error,
+  signal,
+) => {
   // A missing transport binary is an operator problem, not a dead session — let it out.
   if (isChatGPTWebTransportUnavailableError(error)) throw error;
   if (isBrowserSessionResettingError(error)) {
