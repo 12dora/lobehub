@@ -28,6 +28,31 @@ describe('computeJsonDiff', () => {
     expect(lines.some((l) => l.kind === 'added' && l.path === 'a')).toBe(true);
   });
 
+  it('marks the whole node changed when only one side is an object, then walks its keys', () => {
+    const lines = computeJsonDiff(1, { a: 1 });
+    expect(lines[0]).toMatchObject({ after: { a: 1 }, before: 1, kind: 'changed', path: '(root)' });
+    expect(lines[1]).toMatchObject({ after: 1, kind: 'added', path: 'a' });
+  });
+
+  it('reports keys in sorted order', () => {
+    const lines = computeJsonDiff({ b: 1, a: 1 }, { b: 1, a: 1 });
+    expect(lines.map((l) => l.path)).toEqual(['a', 'b']);
+  });
+
+  it('treats arrays as opaque values rather than recursing', () => {
+    expect(computeJsonDiff({ a: [1, 2] }, { a: [1, 2] })[0].kind).toBe('same');
+    const changed = computeJsonDiff({ a: [1, 2] }, { a: [1, 3] });
+    expect(changed).toHaveLength(1);
+    expect(changed[0]).toMatchObject({ kind: 'changed', path: 'a' });
+  });
+
+  it('reports root scalars as added / removed / same', () => {
+    expect(computeJsonDiff(undefined, undefined)).toEqual([]);
+    expect(computeJsonDiff('x', undefined)[0]).toMatchObject({ kind: 'removed', path: '(root)' });
+    expect(computeJsonDiff(undefined, 'x')[0]).toMatchObject({ kind: 'added', path: '(root)' });
+    expect(computeJsonDiff('x', 'x')[0]).toMatchObject({ kind: 'same', path: '(root)' });
+  });
+
   it('formats JSON values', () => {
     expect(formatJsonValue({ x: 1 })).toContain('"x"');
     expect(formatJsonValue(undefined)).toBe('undefined');
