@@ -1,87 +1,40 @@
 import { listDefaultEnabledBuiltinModels } from '@lobechat/utils/builtinModelDefaults';
 import type { z } from 'zod';
 
-import { PlatformAiCatalogModel, PlatformRevisionConflictError } from '@/database/models/platform';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import {
   type NewPlatformAiModel,
   type PlatformAiModelAbilities,
-  type PlatformAiModelConfig,
-  type PlatformAiModelItem,
   type PlatformAiModelParameters,
   type PlatformAiModelPricing,
   type PlatformAiModelSettings,
 } from '@/database/schemas/platform';
-import type { LobeChatDatabase, Transaction } from '@/database/type';
 
-import {
-  type AdminAiModelApplyImmediateInput,
-  type adminAiModelCreateInputSchema,
-  type adminAiModelDeleteInputSchema,
-  type adminAiModelReorderInputSchema,
-  type adminAiModelUpdateInputSchema,
-  aiModelDraftSchema,
-  type AiProviderDraft,
+import type {
+  AdminAiModelApplyImmediateInput,
+  adminAiModelCreateInputSchema,
+  AiProviderDraft,
 } from '../../contracts/aiCatalog';
 import type { AuditAction } from '../audit/auditActionCatalog';
-import { PlatformAuditService } from '../platformAudit';
+import { AiCatalogAdminServiceModelBatchOps } from './adminService.models.batch';
+import { type AiCatalogModelApplyCapabilities } from './adminService.models.crud';
 import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
-import { resolveAiCatalogDependents, resolveAiCatalogDependentsForModels } from './dependencies';
+import { resolveAiCatalogDependents } from './dependencies';
 import {
   type AiCatalogDependent,
   AiCatalogNotFoundError,
-  AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from './errors';
-import { buildBatchModelAuditEntries, modelBatchDml, planBatchModelWrites } from './modelBatchDml';
-import type { AiCatalogSecretManager, AiSecretMutation } from './secretManager';
-import type { getLockedAiCatalogDraft } from './shared';
-import { aiCatalogDraftToken } from './shared';
+import { modelBatchDml } from './modelBatchDml';
+
+export type { AiCatalogModelApplyCapabilities } from './adminService.models.crud';
 
 type CreateModelInput = z.infer<typeof adminAiModelCreateInputSchema>;
-type UpdateModelInput = z.infer<typeof adminAiModelUpdateInputSchema>;
-type DeleteModelInput = z.infer<typeof adminAiModelDeleteInputSchema>;
-type ReorderModelsInput = z.infer<typeof adminAiModelReorderInputSchema>;
 
 type ApplyImmediateCreate = Extract<AdminAiModelApplyImmediateInput, { operation: 'create' }>;
 type ApplyImmediateUpdate = Extract<AdminAiModelApplyImmediateInput, { operation: 'update' }>;
 type ApplyImmediateDelete = Extract<AdminAiModelApplyImmediateInput, { operation: 'delete' }>;
 type ApplyImmediateReorder = Extract<AdminAiModelApplyImmediateInput, { operation: 'reorder' }>;
-type ApplyImmediateBatchToggle = Extract<
-  AdminAiModelApplyImmediateInput,
-  { operation: 'batchToggle' }
->;
-type ApplyImmediateBatchUpdate = Extract<
-  AdminAiModelApplyImmediateInput,
-  { operation: 'batchUpdate' }
->;
-type ApplyImmediateClear = Extract<AdminAiModelApplyImmediateInput, { operation: 'clear' }>;
-
-/** Caller grants that only the executing transaction can decide the need for. */
-export interface AiCatalogModelApplyCapabilities {
-  /** Caller holds AI_MODEL_CREATE — required for any `batchUpdate` item that inserts. */
-  allowModelCreate: boolean;
-}
-
-const toModelDraft = (row: PlatformAiModelItem) =>
-  aiModelDraftSchema.parse({
-    abilities: row.abilities ?? {},
-    config: row.config ?? null,
-    contextWindowTokens: row.contextWindowTokens ?? null,
-    description: row.description ?? null,
-    displayName: row.displayName ?? null,
-    enabled: row.enabled,
-    id: row.id,
-    modelKey: row.modelKey,
-    parameters: row.parameters ?? {},
-    pricing: row.pricing ?? null,
-    providerId: row.providerId,
-    revision: row.revision,
-    settings: row.settings ?? {},
-    sort: row.sort,
-    status: row.status,
-    type: row.type,
-  });
 
 /**
  * Model mutation surface of {@link AiCatalogAdminService}.
@@ -90,26 +43,10 @@ const toModelDraft = (row: PlatformAiModelItem) =>
  * Host fields/methods are abstract properties so the concrete service can supply
  * arrow-function implementations without signature friction.
  */
-export abstract class AiCatalogAdminServiceModelOps {
-  protected abstract readonly db: LobeChatDatabase;
-  protected abstract readonly secrets: AiCatalogSecretManager;
-  protected abstract getLockedDraft: (
-    tx: Transaction,
-    providerId: string,
-    expectedDraftToken: string,
-    expectedRevision?: number,
-  ) => ReturnType<typeof getLockedAiCatalogDraft>;
-  protected abstract sanitizeReason: (
-    reason: string,
-    providerId?: string,
-    secretMutation?: AiSecretMutation,
-  ) => Promise<string>;
-  protected abstract appendFailureAudit: (params: {
-    action: AuditAction;
-    actorUserId: string;
-    reason: string;
-    targetId?: string;
-  }) => Promise<unknown> | unknown;
+export abstract class AiCatalogAdminServiceModelOps extends AiCatalogAdminServiceModelBatchOps {
+  abstract getDetail: (
+    providerIdOrLookup: string | { id?: string; providerKey?: string },
+  ) => Promise<{ draft: AiProviderDraft; draftToken: string }>;
   protected abstract publishAfterMutation: (
     actorUserId: string,
     providerId: string,
@@ -128,89 +65,6 @@ export abstract class AiCatalogAdminServiceModelOps {
     // subclass that runs a model transaction needs to reach its own protected members on it.
     run: (scoped: this) => Promise<T>,
   ) => Promise<T>;
-  abstract getDetail: (
-    providerIdOrLookup: string | { id?: string; providerKey?: string },
-  ) => Promise<{ draft: AiProviderDraft; draftToken: string }>;
-
-  protected withFailureAudit = async <T>(
-    action: AuditAction,
-    actorUserId: string,
-    reasonText: string,
-    providerId: string,
-    run: () => Promise<T>,
-  ): Promise<T> => {
-    try {
-      return await run();
-    } catch (error) {
-      await this.appendFailureAudit({
-        action,
-        actorUserId,
-        reason: reasonText,
-        targetId: providerId,
-      });
-      throw error;
-    }
-  };
-
-  private createModelInTx = async (
-    tx: Transaction,
-    actorUserId: string,
-    input: CreateModelInput,
-    reason: string,
-  ) => {
-    const { expectedDraftToken, providerId, reason: _reason, ...values } = input;
-    const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
-    const repository = new PlatformAiCatalogRepository(tx);
-    const provider = await repository.getProvider(providerId);
-    if (!provider) throw new AiCatalogNotFoundError();
-    const keyVaults = await this.secrets.resolveMutationKeyVaults(provider, undefined);
-    assertAiCatalogPublicFieldsExcludeCredentials(values, keyVaults);
-    const row = await repository.createModel({
-      ...values,
-      abilities: values.abilities as PlatformAiModelAbilities | undefined,
-      config: values.config as PlatformAiModelConfig | null | undefined,
-      createdBy: actorUserId,
-      parameters: values.parameters as PlatformAiModelParameters | undefined,
-      pricing: values.pricing as PlatformAiModelPricing | null | undefined,
-      providerId,
-      revision: draft.revision,
-      settings: values.settings as PlatformAiModelSettings | undefined,
-      status: 'draft',
-      updatedBy: actorUserId,
-    });
-    await repository.updateProvider(providerId, {
-      status: 'draft',
-      updatedBy: actorUserId,
-    });
-    await new PlatformAuditService(tx).append({
-      action: 'admin.aiModels.create',
-      actorUserId,
-      afterDiff: { modelKey: row.modelKey, providerId },
-      reason,
-      result: 'success',
-      targetId: row.id,
-      targetType: 'model',
-    });
-    return toModelDraft(row);
-  };
-
-  createModel = async (actorUserId: string, input: CreateModelInput) => {
-    const { providerId, reason: rawReason } = input;
-    const reason = await this.sanitizeReason(rawReason, providerId);
-    try {
-      return await this.db.transaction(async (tx) =>
-        this.createModelInTx(tx, actorUserId, input, reason),
-      );
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: 'admin.aiModels.create',
-        actorUserId,
-        reason,
-        targetId: providerId,
-      });
-      throw error;
-    }
-  };
 
   /**
    * Seed a freshly created BUILTIN provider with the model rows its card ships as enabled.
@@ -324,172 +178,6 @@ export abstract class AiCatalogAdminServiceModelOps {
     return resolveAiCatalogDependents(this.db, provider.providerKey, model.modelKey);
   };
 
-  /** Transaction-scoped model update (shared by public update + atomic batch apply). */
-  private updateModelInTx = async (
-    tx: Transaction,
-    actorUserId: string,
-    input: UpdateModelInput,
-    reason: string,
-  ) => {
-    const {
-      expectedDraftToken,
-      expectedRevision,
-      id,
-      providerId,
-      reason: _reason,
-      ...values
-    } = input;
-    const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken, expectedRevision);
-    const repository = new PlatformAiCatalogRepository(tx);
-    const provider = await repository.getProvider(providerId);
-    if (!provider) throw new AiCatalogNotFoundError();
-    const current = await repository.getModel(providerId, id);
-    if (!current) throw new AiCatalogNotFoundError();
-    const keyVaults = await this.secrets.resolveMutationKeyVaults(provider, undefined);
-    assertAiCatalogPublicFieldsExcludeCredentials({ ...current, ...values }, keyVaults);
-    if (current.enabled && values.enabled === false) {
-      const dependents = await resolveAiCatalogDependents(tx, draft.providerKey, current.modelKey);
-      if (dependents.some((item) => item.blocking)) {
-        throw new AiCatalogResourceInUseError(dependents);
-      }
-    }
-    const row = await repository.updateModel(providerId, id, {
-      ...values,
-      abilities: values.abilities as PlatformAiModelAbilities | undefined,
-      config: values.config as PlatformAiModelConfig | null | undefined,
-      parameters: values.parameters as PlatformAiModelParameters | undefined,
-      pricing: values.pricing as PlatformAiModelPricing | null | undefined,
-      settings: values.settings as PlatformAiModelSettings | undefined,
-      status: 'draft',
-      updatedBy: actorUserId,
-    });
-    if (!row) throw new AiCatalogNotFoundError();
-    await repository.updateProvider(providerId, { status: 'draft', updatedBy: actorUserId });
-    await new PlatformAuditService(tx).append({
-      action: 'admin.aiModels.update',
-      actorUserId,
-      afterDiff: { modelId: id, providerId },
-      reason,
-      result: 'success',
-      targetId: id,
-      targetType: 'model',
-    });
-    return toModelDraft(row);
-  };
-
-  updateModel = async (actorUserId: string, input: UpdateModelInput) => {
-    const { id, providerId, reason: rawReason } = input;
-    const reason = await this.sanitizeReason(rawReason, providerId);
-    try {
-      return await this.db.transaction(async (tx) =>
-        this.updateModelInTx(tx, actorUserId, input, reason),
-      );
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: 'admin.aiModels.update',
-        actorUserId,
-        reason,
-        targetId: id,
-      });
-      throw error;
-    }
-  };
-
-  /** Transaction-scoped model delete (shared by public delete + atomic batch clear). */
-  private deleteModelInTx = async (
-    tx: Transaction,
-    actorUserId: string,
-    input: DeleteModelInput,
-    reason: string,
-  ) => {
-    const { expectedDraftToken, id, providerId } = input;
-    const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
-    const repository = new PlatformAiCatalogRepository(tx);
-    const current = await repository.getModel(providerId, id);
-    if (!current) throw new AiCatalogNotFoundError();
-    const dependents = await resolveAiCatalogDependents(tx, draft.providerKey, current.modelKey);
-    if (dependents.some((item) => item.blocking)) {
-      throw new AiCatalogResourceInUseError(dependents);
-    }
-    await repository.deleteModel(providerId, id);
-    await repository.updateProvider(providerId, { status: 'draft', updatedBy: actorUserId });
-    await new PlatformAuditService(tx).append({
-      action: 'admin.aiModels.deleteFromDraft',
-      actorUserId,
-      beforeDiff: { modelId: id, modelKey: current.modelKey, providerId },
-      reason,
-      result: 'success',
-      targetId: id,
-      targetType: 'model',
-    });
-    return { deleted: true as const };
-  };
-
-  deleteModel = async (actorUserId: string, input: DeleteModelInput) => {
-    const { id, providerId, reason: rawReason } = input;
-    const reason = await this.sanitizeReason(rawReason, providerId);
-    try {
-      return await this.db.transaction(async (tx) =>
-        this.deleteModelInTx(tx, actorUserId, input, reason),
-      );
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: 'admin.aiModels.deleteFromDraft',
-        actorUserId,
-        reason,
-        targetId: id,
-      });
-      throw error;
-    }
-  };
-
-  reorderModels = async (actorUserId: string, input: ReorderModelsInput) => {
-    const { expectedDraftToken, items, providerId, reason: rawReason } = input;
-    const reason = await this.sanitizeReason(rawReason, providerId);
-    try {
-      return await this.db.transaction(async (tx) => {
-        await this.getLockedDraft(tx, providerId, expectedDraftToken);
-        const repository = new PlatformAiCatalogRepository(tx);
-        const current = await repository.listModels(providerId);
-        const requestedIds = new Set(items.map((item) => item.id));
-        if (
-          requestedIds.size !== items.length ||
-          current.length !== items.length ||
-          current.some((model) => !requestedIds.has(model.id))
-        ) {
-          throw new PlatformRevisionConflictError(
-            'Reorder must contain the complete provider draft model collection',
-          );
-        }
-        const updated = await repository.reorderModels(providerId, items);
-        if (updated !== current.length) {
-          throw new PlatformRevisionConflictError('Model collection changed during reorder');
-        }
-        await repository.updateProvider(providerId, { status: 'draft', updatedBy: actorUserId });
-        const draft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
-        if (!draft) throw new AiCatalogNotFoundError();
-        await new PlatformAuditService(tx).append({
-          action: 'admin.aiModels.reorder',
-          actorUserId,
-          afterDiff: { items: items.map(({ id, sort }) => ({ id, sort })) },
-          reason,
-          result: 'success',
-          targetId: providerId,
-          targetType: 'provider',
-        });
-        return { draftToken: aiCatalogDraftToken(draft), updated };
-      });
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: 'admin.aiModels.reorder',
-        actorUserId,
-        reason,
-        targetId: providerId,
-      });
-      throw error;
-    }
-  };
-
   /**
    * Atomic model mutation followed by an unconditional publish of the parent provider.
    *
@@ -591,229 +279,5 @@ export abstract class AiCatalogAdminServiceModelOps {
   private applyImmediateReorder = async (actorUserId: string, input: ApplyImmediateReorder) => {
     const { operation: _operation, ...rest } = input;
     await this.reorderModels(actorUserId, rest);
-  };
-
-  private applyImmediateBatchToggle = async (
-    actorUserId: string,
-    input: ApplyImmediateBatchToggle,
-  ) => {
-    // One lock + one draft load; dependents once; bulk UPDATE + bulk audit (no per-row DML).
-    // Input may contain duplicate ids (schema permits them). DML is unique-set;
-    // RETURNING is checked against that set. Audits stay one-per-input like the
-    // legacy sequential path (duplicate toggles compose to the same final state).
-    const { enabled, expectedDraftToken, modelIds, providerId, reason } = input;
-    const reasonText = await this.sanitizeReason(reason, providerId);
-    await this.withFailureAudit(
-      'admin.aiModels.batchToggle',
-      actorUserId,
-      reasonText,
-      providerId,
-      async () => {
-        await this.db.transaction(async (tx) => {
-          const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
-          const repository = new PlatformAiCatalogRepository(tx);
-          const provider = await repository.getProvider(providerId);
-          if (!provider) throw new AiCatalogNotFoundError();
-          const modelsById = new Map(draft.models.map((m) => [m.id, m]));
-          for (const modelId of modelIds) {
-            if (!modelsById.has(modelId)) throw new AiCatalogNotFoundError();
-          }
-          // Preserve first-seen order; DROP later dups for multi-row UPDATE only.
-          const uniqueModelIds: string[] = [];
-          const seenModelIds = new Set<string>();
-          for (const modelId of modelIds) {
-            if (seenModelIds.has(modelId)) continue;
-            seenModelIds.add(modelId);
-            uniqueModelIds.push(modelId);
-          }
-          if (enabled === false) {
-            const keysToCheck = uniqueModelIds
-              .map((modelId) => modelsById.get(modelId)!)
-              .filter((model) => model.enabled)
-              .map((model) => model.modelKey);
-            if (keysToCheck.length > 0) {
-              const dependents = await resolveAiCatalogDependentsForModels(
-                tx,
-                draft.providerKey,
-                keysToCheck,
-              );
-              if (dependents.some((item) => item.blocking)) {
-                throw new AiCatalogResourceInUseError(dependents);
-              }
-            }
-          }
-          const keyVaults = await this.secrets.resolveMutationKeyVaults(provider, undefined);
-          for (const modelId of uniqueModelIds) {
-            const current = modelsById.get(modelId)!;
-            assertAiCatalogPublicFieldsExcludeCredentials({ ...current, enabled }, keyVaults);
-          }
-          const updated = await modelBatchDml.bulkSetModelsEnabled(tx, {
-            enabled,
-            modelIds: uniqueModelIds,
-            providerId,
-            updatedBy: actorUserId,
-          });
-          // Never compare RETURNING to the raw (possibly duplicate) input length.
-          if (updated.length !== uniqueModelIds.length) throw new AiCatalogNotFoundError();
-          // Per-input audits (including duplicate targetIds) match sequential toggles.
-          await modelBatchDml.bulkAppendAuditEntries(
-            tx,
-            modelIds.map((modelId) => ({
-              action: 'admin.aiModels.update',
-              actorUserId,
-              afterDiff: { modelId, providerId },
-              reason: reasonText,
-              result: 'success' as const,
-              targetId: modelId,
-              targetType: 'model',
-            })),
-          );
-          await repository.updateProvider(providerId, {
-            status: 'draft',
-            updatedBy: actorUserId,
-          });
-        });
-      },
-    );
-  };
-
-  private applyImmediateBatchUpdate = async (
-    actorUserId: string,
-    input: ApplyImmediateBatchUpdate,
-    capabilities: AiCatalogModelApplyCapabilities,
-  ) => {
-    // Lock once; validate + plan in memory; bounded multi-row insert/update + bulk audit.
-    const { expectedDraftToken, models, providerId, reason } = input;
-    const reasonText = await this.sanitizeReason(reason, providerId);
-    await this.withFailureAudit(
-      'admin.aiModels.batchUpdate',
-      actorUserId,
-      reasonText,
-      providerId,
-      async () => {
-        await this.db.transaction(async (tx) => {
-          const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
-          const repository = new PlatformAiCatalogRepository(tx);
-          const provider = await repository.getProvider(providerId);
-          if (!provider) throw new AiCatalogNotFoundError();
-          const modelsById = new Map(draft.models.map((m) => [m.id, m]));
-          const keyVaults = await this.secrets.resolveMutationKeyVaults(provider, undefined);
-          const disableKeys: string[] = [];
-          for (const item of models) {
-            const current = modelsById.get(item.id);
-            if (current?.enabled && item.enabled === false) {
-              disableKeys.push(current.modelKey);
-            }
-          }
-          if (disableKeys.length > 0) {
-            const dependents = await resolveAiCatalogDependentsForModels(
-              tx,
-              draft.providerKey,
-              disableKeys,
-            );
-            if (dependents.some((item) => item.blocking)) {
-              throw new AiCatalogResourceInUseError(dependents);
-            }
-          }
-
-          const { createAuditModelKeys, creates, updateAuditIds, updatesById } =
-            planBatchModelWrites({
-              actorUserId,
-              capabilities,
-              draftRevision: draft.revision,
-              keyVaults,
-              models,
-              modelsById,
-              providerId,
-            });
-
-          const createdRows = await modelBatchDml.bulkCreateModels(tx, creates);
-          if (createdRows.length !== creates.length) throw new AiCatalogNotFoundError();
-          const createdByModelKey = new Map(createdRows.map((row) => [row.modelKey, row]));
-          for (const modelKey of createAuditModelKeys) {
-            if (!createdByModelKey.has(modelKey)) throw new AiCatalogNotFoundError();
-          }
-
-          const updates = [...updatesById.values()];
-          const updatedRows = await modelBatchDml.bulkUpdateModelsMerged(tx, providerId, updates);
-          // RETURNING is unique-id count; never compare to raw input length with dups.
-          if (updatedRows.length !== updates.length) throw new AiCatalogNotFoundError();
-
-          // Audits follow input order (duplicate update targets produce multiple audits).
-          await modelBatchDml.bulkAppendAuditEntries(
-            tx,
-            buildBatchModelAuditEntries({
-              actorUserId,
-              createAuditModelKeys,
-              createdByModelKey,
-              models,
-              modelsById,
-              providerId,
-              reasonText,
-              updateAuditIds,
-            }),
-          );
-
-          await repository.updateProvider(providerId, {
-            status: 'draft',
-            updatedBy: actorUserId,
-          });
-        });
-      },
-    );
-  };
-
-  private applyImmediateClear = async (actorUserId: string, input: ApplyImmediateClear) => {
-    // Lock once, batch dependency check, bulk delete + bulk audit, single provider update.
-    const { expectedDraftToken, providerId, reason } = input;
-    const reasonText = await this.sanitizeReason(reason, providerId);
-    await this.withFailureAudit(
-      'admin.aiModels.clear',
-      actorUserId,
-      reasonText,
-      providerId,
-      async () => {
-        await this.db.transaction(async (tx) => {
-          const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
-          const repository = new PlatformAiCatalogRepository(tx);
-          const models = draft.models;
-          if (models.length === 0) return;
-          const dependents = await resolveAiCatalogDependentsForModels(
-            tx,
-            draft.providerKey,
-            models.map((model) => model.modelKey),
-          );
-          if (dependents.some((item) => item.blocking)) {
-            throw new AiCatalogResourceInUseError(dependents);
-          }
-          const deleted = await modelBatchDml.bulkDeleteModels(
-            tx,
-            providerId,
-            models.map((model) => model.id),
-          );
-          if (deleted !== models.length) throw new AiCatalogNotFoundError();
-          await modelBatchDml.bulkAppendAuditEntries(
-            tx,
-            models.map((model) => ({
-              action: 'admin.aiModels.deleteFromDraft',
-              actorUserId,
-              beforeDiff: {
-                modelId: model.id,
-                modelKey: model.modelKey,
-                providerId,
-              },
-              reason: reasonText,
-              result: 'success' as const,
-              targetId: model.id,
-              targetType: 'model',
-            })),
-          );
-          await repository.updateProvider(providerId, {
-            status: 'draft',
-            updatedBy: actorUserId,
-          });
-        });
-      },
-    );
   };
 }

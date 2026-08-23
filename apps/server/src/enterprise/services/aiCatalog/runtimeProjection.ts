@@ -215,6 +215,153 @@ const cannotExecuteWithoutManagedSecret = (
   return !canExecuteAiCatalogProviderWithoutStoredSecret(providerKey, provider);
 };
 
+interface EnabledProviderPayload {
+  displayName: string;
+  providerKey: string;
+}
+
+const isEnabledProviderPayload = (
+  provider: Record<string, unknown>,
+): provider is Record<string, unknown> & EnabledProviderPayload =>
+  provider.enabled === true &&
+  typeof provider.providerKey === 'string' &&
+  typeof provider.displayName === 'string';
+
+const isEnabledModelPayload = (
+  rawModel: unknown,
+): rawModel is Record<string, unknown> & { modelKey: string } =>
+  isRecord(rawModel) && rawModel.enabled === true && typeof rawModel.modelKey === 'string';
+
+const pickIfString = <T>(value: unknown, fallback: T): string | T =>
+  typeof value === 'string' ? value : fallback;
+
+const pickIfNumber = <T>(value: unknown, fallback: T): number | T =>
+  typeof value === 'number' ? value : fallback;
+
+const publishedMetadataOr = <T>(value: unknown, fallback: T): T =>
+  hasPublishedMetadata(value) ? (value as T) : fallback;
+
+const toSortedEnabledProvider = (
+  provider: Record<string, unknown> & EnabledProviderPayload,
+): { provider: EnabledProvider; sort: number } => ({
+  provider: {
+    id: provider.providerKey,
+    logo: typeof provider.logo === 'string' ? provider.logo : undefined,
+    name: provider.displayName,
+    source: provider.source === 'builtin' ? 'builtin' : 'custom',
+  },
+  sort: typeof provider.sort === 'number' ? provider.sort : Number.MAX_SAFE_INTEGER,
+});
+
+const toPublicRuntimeConfig = (
+  providerKey: string,
+  provider: Record<string, unknown>,
+): AiProviderRuntimeConfig => {
+  const capabilities = projectPublicAiProviderRuntimeCapabilities(
+    providerKey,
+    provider.settings,
+    provider.source,
+  );
+  return {
+    ...(capabilities ? { capabilities } : {}),
+    config: projectPublicAiProviderRuntimeConfig(provider.config),
+    fetchOnClient: false,
+    keyVaults: {},
+    settings: projectPublicAiProviderRuntimeSettings(),
+  };
+};
+
+const mergePublishedModelSettings = (
+  published: unknown,
+  builtinSettings: EnabledAiModel['settings'] | undefined,
+) => (hasPublishedMetadata(published) ? merge(builtinSettings || {}, published) : builtinSettings);
+
+const toEnabledAiModel = (
+  providerKey: string,
+  rawModel: Record<string, unknown> & { modelKey: string },
+): EnabledAiModel => {
+  const builtin = builtinModelMap.get(`${providerKey}:${rawModel.modelKey}`);
+  const publishedConfig = isRecord(rawModel.config) ? rawModel.config : {};
+  const deploymentName = pickIfString(publishedConfig.deploymentName, undefined);
+  const abilities = publishedMetadataOr(rawModel.abilities, builtin?.abilities ?? {});
+  const policy = applyChatGPTWebModelPolicy({
+    abilities,
+    modelId: rawModel.modelKey,
+    providerId: providerKey,
+    settings: mergePublishedModelSettings(rawModel.settings, builtin?.settings),
+  });
+  return {
+    ...builtin,
+    abilities,
+    config: {
+      ...builtin?.config,
+      ...(deploymentName ? { deploymentName } : {}),
+    },
+    contextWindowTokens: pickIfNumber(rawModel.contextWindowTokens, builtin?.contextWindowTokens),
+    description: pickIfString(rawModel.description, builtin?.description),
+    displayName: pickIfString(rawModel.displayName, builtin?.displayName),
+    enabled: true,
+    id: rawModel.modelKey,
+    parameters: publishedMetadataOr(rawModel.parameters, builtin?.parameters),
+    pricing: publishedMetadataOr(rawModel.pricing, builtin?.pricing),
+    providerId: providerKey,
+    settings: policy.settings,
+    sort: pickIfNumber(rawModel.sort, undefined),
+    source: builtin ? 'builtin' : 'custom',
+    type: pickIfString(rawModel.type, 'chat'),
+    ...projectPickerVisibility(policy.settings),
+  } as EnabledAiModel;
+};
+
+const projectEnabledRevision = (revision: PlatformResourceRevisionItem) => {
+  if (!isRecord(revision.payload.provider) || !Array.isArray(revision.payload.models)) {
+    return undefined;
+  }
+  const provider = revision.payload.provider;
+  if (!isEnabledProviderPayload(provider)) return undefined;
+  if (cannotExecuteWithoutManagedSecret(provider, provider.providerKey)) return undefined;
+
+  const models: EnabledAiModel[] = [];
+  for (const rawModel of revision.payload.models) {
+    if (!isEnabledModelPayload(rawModel)) continue;
+    models.push(toEnabledAiModel(provider.providerKey, rawModel));
+  }
+
+  return {
+    models,
+    providerKey: provider.providerKey,
+    runtimeConfig: toPublicRuntimeConfig(provider.providerKey, provider),
+    sortedProvider: toSortedEnabledProvider(provider),
+  };
+};
+
+const compareProviderSort = (
+  left: { provider: EnabledProvider; sort: number },
+  right: { provider: EnabledProvider; sort: number },
+) => left.sort - right.sort || left.provider.id.localeCompare(right.provider.id);
+
+const compareModelSort = (left: EnabledAiModel, right: EnabledAiModel) =>
+  (left.sort ?? Number.MAX_SAFE_INTEGER) - (right.sort ?? Number.MAX_SAFE_INTEGER) ||
+  left.providerId.localeCompare(right.providerId) ||
+  left.id.localeCompare(right.id);
+
+const assembleAiProviderRuntimeState = (
+  providers: EnabledProvider[],
+  models: EnabledAiModel[],
+  runtimeConfig: Record<string, AiProviderRuntimeConfig>,
+): AiProviderRuntimeState => {
+  const providerHasType = (provider: EnabledProvider, type: string) =>
+    models.some((model) => model.providerId === provider.id && model.type === type);
+  return {
+    enabledAiModels: models,
+    enabledAiProviders: providers,
+    enabledChatAiProviders: providers.filter((provider) => providerHasType(provider, 'chat')),
+    enabledImageAiProviders: providers.filter((provider) => providerHasType(provider, 'image')),
+    enabledVideoAiProviders: providers.filter((provider) => providerHasType(provider, 'video')),
+    runtimeConfig,
+  } satisfies AiProviderRuntimeState;
+};
+
 export const projectAiCatalogRuntimeState = (
   revisions: PlatformResourceRevisionItem[],
 ): AiProviderRuntimeState => {
@@ -223,113 +370,18 @@ export const projectAiCatalogRuntimeState = (
   const runtimeConfig: Record<string, AiProviderRuntimeConfig> = {};
 
   for (const revision of revisions) {
-    if (!isRecord(revision.payload.provider) || !Array.isArray(revision.payload.models)) continue;
-    const provider = revision.payload.provider;
-    if (
-      provider.enabled !== true ||
-      typeof provider.providerKey !== 'string' ||
-      typeof provider.displayName !== 'string'
-    ) {
-      continue;
-    }
-    const providerKey = provider.providerKey;
-    if (cannotExecuteWithoutManagedSecret(provider, providerKey)) continue;
-    sortedProviders.push({
-      provider: {
-        id: providerKey,
-        logo: typeof provider.logo === 'string' ? provider.logo : undefined,
-        name: provider.displayName,
-        source: provider.source === 'builtin' ? 'builtin' : 'custom',
-      },
-      sort: typeof provider.sort === 'number' ? provider.sort : Number.MAX_SAFE_INTEGER,
-    });
-    const capabilities = projectPublicAiProviderRuntimeCapabilities(
-      providerKey,
-      provider.settings,
-      provider.source,
-    );
-    runtimeConfig[providerKey] = {
-      ...(capabilities ? { capabilities } : {}),
-      config: projectPublicAiProviderRuntimeConfig(provider.config),
-      fetchOnClient: false,
-      keyVaults: {},
-      settings: projectPublicAiProviderRuntimeSettings(),
-    };
-
-    for (const rawModel of revision.payload.models) {
-      if (
-        !isRecord(rawModel) ||
-        rawModel.enabled !== true ||
-        typeof rawModel.modelKey !== 'string'
-      ) {
-        continue;
-      }
-      const builtin = builtinModelMap.get(`${providerKey}:${rawModel.modelKey}`);
-      const publishedConfig = isRecord(rawModel.config) ? rawModel.config : {};
-      const deploymentName =
-        typeof publishedConfig.deploymentName === 'string'
-          ? publishedConfig.deploymentName
-          : undefined;
-      const abilities = hasPublishedMetadata(rawModel.abilities)
-        ? rawModel.abilities
-        : (builtin?.abilities ?? {});
-      const mergedSettings = hasPublishedMetadata(rawModel.settings)
-        ? merge(builtin?.settings || {}, rawModel.settings)
-        : builtin?.settings;
-      const policy = applyChatGPTWebModelPolicy({
-        abilities,
-        modelId: rawModel.modelKey,
-        providerId: providerKey,
-        settings: mergedSettings,
-      });
-      models.push({
-        ...builtin,
-        abilities,
-        config: {
-          ...builtin?.config,
-          ...(deploymentName ? { deploymentName } : {}),
-        },
-        contextWindowTokens:
-          typeof rawModel.contextWindowTokens === 'number'
-            ? rawModel.contextWindowTokens
-            : builtin?.contextWindowTokens,
-        description:
-          typeof rawModel.description === 'string' ? rawModel.description : builtin?.description,
-        displayName:
-          typeof rawModel.displayName === 'string' ? rawModel.displayName : builtin?.displayName,
-        enabled: true,
-        id: rawModel.modelKey,
-        parameters: hasPublishedMetadata(rawModel.parameters)
-          ? rawModel.parameters
-          : builtin?.parameters,
-        pricing: hasPublishedMetadata(rawModel.pricing) ? rawModel.pricing : builtin?.pricing,
-        providerId: providerKey,
-        settings: policy.settings,
-        sort: typeof rawModel.sort === 'number' ? rawModel.sort : undefined,
-        source: builtin ? 'builtin' : 'custom',
-        type: typeof rawModel.type === 'string' ? rawModel.type : 'chat',
-        ...projectPickerVisibility(policy.settings),
-      } as EnabledAiModel);
-    }
+    const projected = projectEnabledRevision(revision);
+    if (!projected) continue;
+    sortedProviders.push(projected.sortedProvider);
+    runtimeConfig[projected.providerKey] = projected.runtimeConfig;
+    models.push(...projected.models);
   }
 
-  sortedProviders.sort((a, b) => a.sort - b.sort || a.provider.id.localeCompare(b.provider.id));
-  const providers = sortedProviders.map(({ provider }) => provider);
-  models.sort(
-    (a, b) =>
-      (a.sort ?? Number.MAX_SAFE_INTEGER) - (b.sort ?? Number.MAX_SAFE_INTEGER) ||
-      a.providerId.localeCompare(b.providerId) ||
-      a.id.localeCompare(b.id),
-  );
-  const providerHasType = (provider: EnabledProvider, type: string) =>
-    models.some((model) => model.providerId === provider.id && model.type === type);
-  const state = {
-    enabledAiModels: models,
-    enabledAiProviders: providers,
-    enabledChatAiProviders: providers.filter((provider) => providerHasType(provider, 'chat')),
-    enabledImageAiProviders: providers.filter((provider) => providerHasType(provider, 'image')),
-    enabledVideoAiProviders: providers.filter((provider) => providerHasType(provider, 'video')),
+  sortedProviders.sort(compareProviderSort);
+  models.sort(compareModelSort);
+  return assembleAiProviderRuntimeState(
+    sortedProviders.map(({ provider }) => provider),
+    models,
     runtimeConfig,
-  } satisfies AiProviderRuntimeState;
-  return state;
+  );
 };

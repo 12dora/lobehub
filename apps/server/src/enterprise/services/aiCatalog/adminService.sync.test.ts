@@ -134,7 +134,12 @@ const seedProvider = async (providerKey: string) => {
 const listThroughChatGPT = async (data: Array<Record<string, unknown>>) => {
   const instance = new LobeChatGPTAI({ apiKey: 'sync-ability-fixture' });
   vi.spyOn(instance['client'], 'get').mockResolvedValue({ data } as never);
-  return instance.models();
+  const listed = await instance.models();
+  const requested = new Set(
+    data.map((item) => item.id).filter((id): id is string => typeof id === 'string'),
+  );
+  // models() also unions bank image cards; these cases only care about the fixture payload.
+  return listed.filter((card) => requested.has(card.id));
 };
 
 describe('mapCardsToBatchUpdate', () => {
