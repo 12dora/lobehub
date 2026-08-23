@@ -2,6 +2,7 @@
 import { EFFORT_CONTROL_KEYS } from '@lobechat/model-runtime';
 import { describe, expect, it } from 'vitest';
 
+import { resolvePathUserOverride } from './effectiveResolveAll';
 import {
   buildSettingsCacheKey,
   resolveEffectiveSettings,
@@ -529,5 +530,23 @@ describe('buildSettingsCacheKey', () => {
       userOverrideRevision: 0,
     });
     expect(withMemory).not.toBe(withAgent);
+  });
+});
+
+describe('resolvePathUserOverride', () => {
+  const legacy = { general: { fontSize: 18 } };
+
+  it('prefers an explicit override row even when a legacy leaf exists', () => {
+    expect(resolvePathUserOverride({ value: 12 }, legacy, 'general.fontSize')).toEqual({
+      value: 12,
+    });
+  });
+
+  it('treats a pre-policy legacy leaf as user intent when no override row exists', () => {
+    expect(resolvePathUserOverride(undefined, legacy, 'general.fontSize')).toEqual({ value: 18 });
+  });
+
+  it('returns null when neither an override row nor a legacy leaf is present', () => {
+    expect(resolvePathUserOverride(undefined, legacy, 'general.animationMode')).toBeNull();
   });
 });

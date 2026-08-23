@@ -12,13 +12,8 @@
 import { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PlatformSettingsModel } from '@/database/models/platform';
 import { UserModel } from '@/database/models/user';
-import type { LobeChatDatabase, Transaction } from '@/database/type';
-import type {
-  EffectiveSettingsResult,
-  SettingClientSurface,
-  SettingPolicyMode,
-  SettingPolicyVisibility,
-} from '@/types/platform/settings';
+import type { LobeChatDatabase } from '@/database/type';
+import type { EffectiveSettingsResult, SettingClientSurface } from '@/types/platform/settings';
 
 import { getEnterpriseFeatureFlags } from '../../featureFlags';
 import {
@@ -26,58 +21,30 @@ import {
   type PlatformConfigInvalidationPublisher,
 } from '../platformConfigInvalidation';
 import {
-  classifyRuntimeMaterializationError,
   type PlatformRuntimeMaterializationReporter,
   reportPlatformRuntimeMaterialization,
-  reportPlatformRuntimeMaterializationSafely,
 } from '../platformInstance/runtimeReporter';
-import { buildSettingsCacheKey, resolveEffectiveSettings } from './effectiveResolver';
+import { resolveEffectiveSettings } from './effectiveResolver';
 import {
-  buildResolvedLayerKey,
   clearAllSettingsCaches,
   dropUserCache,
-  legacyCacheChecksum,
-  type PublishedPolicyMap,
-  readPublishedPoliciesCache,
-  readResolvedLayerCache,
-  readSoftCache,
   settingsSoftCacheSize,
-  writePublishedPoliciesCache,
-  writeResolvedLayerCache,
-  writeSoftCache,
 } from './effectiveSettingsCache';
+import { SettingsPathError } from './effectiveSettingsErrors';
+import { collectLegacyOverrideOps } from './effectiveSettingsLegacyOps';
+import { publishedRowsToPolicyMap } from './effectiveSettingsMaps';
+import { loadEffectiveSettings, reportSettingsUnavailable } from './effectiveSettingsRead';
+import type { SettingsMutationLifecycle } from './effectiveSettingsTypes';
 import { validateLegacySettingsUpdate } from './legacySettingsCatalog';
 import { buildLegacySettingsPartial } from './legacySettingsPartial';
-import { deleteByPath, flattenLeaves, getByPath } from './pathUtils';
+import { deleteByPath } from './pathUtils';
 import { settingsRegistry } from './registry';
 
-export class SettingsPathError extends Error {
-  constructor(
-    public readonly code: string,
-    message?: string,
-  ) {
-    super(message ?? code);
-    this.name = 'SettingsPathError';
-  }
-}
+export { SettingsPathError } from './effectiveSettingsErrors';
+export type { SettingsMutationLifecycle } from './effectiveSettingsTypes';
 
 // Re-export codes for call sites
 export { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES };
-
-/**
- * Narrow transaction lifecycle seam. Production leaves this empty; causal
- * concurrency and rollback tests use promise barriers/fault injection without
- * replacing the service or mirroring its transaction logic.
- */
-export interface SettingsMutationLifecycle {
-  afterBundleLock?: (operation: 'fullReset' | 'legacyUpdate' | 'patch' | 'reset') => Promise<void>;
-  afterManagedOverrideWrite?: (operation: 'legacyUpdate', index: number) => Promise<void>;
-  afterManagedWrites?: (operation: 'fullReset' | 'legacyUpdate') => Promise<void>;
-  beforeBundleLock?: (operation: 'fullReset' | 'legacyUpdate' | 'patch' | 'reset') => Promise<void>;
-  beforeLegacyBackfillCleanup?: () => Promise<void>;
-  beforeLegacyWrite?: (operation: 'fullReset' | 'legacyUpdate') => Promise<void>;
-  beforeOverrideRevisionBump?: (operation: 'legacyUpdate') => Promise<void>;
-}
 
 export class EffectiveSettingsService {
   private readonly db: LobeChatDatabase;
@@ -123,30 +90,13 @@ export class EffectiveSettingsService {
       this.reportUnavailable(error);
       throw error;
     }
-    const policies: Record<
-      string,
-      {
-        mode: SettingPolicyMode;
-        schemaVersion: number;
-        value: unknown;
-        visibility: SettingPolicyVisibility;
-      }
-    > = {};
-    for (const row of snapshot.published) {
-      policies[row.path] = {
-        mode: row.mode as SettingPolicyMode,
-        schemaVersion: row.schemaVersion,
-        value: row.value,
-        visibility: (row.visibility ?? 'visible') as SettingPolicyVisibility,
-      };
-    }
 
     return resolveEffectiveSettings({
       legacyUserSettings: {},
       overrides: {},
       platformPolicyEnabled: true,
       platformRevision: snapshot.platformRevision,
-      policies,
+      policies: publishedRowsToPolicyMap(snapshot.published),
       userOverrideRevision: 0,
     });
   };
@@ -160,325 +110,24 @@ export class EffectiveSettingsService {
   getEffectiveSettings = async (params: {
     legacyUserSettings?: Record<string, unknown> | null;
     userId: string;
-  }): Promise<EffectiveSettingsResult> => {
-    const flagOn = this.isPolicyEnabled();
-    const legacyUserSettings = params.legacyUserSettings ?? {};
-
-    if (!flagOn) {
-      return resolveEffectiveSettings({
-        legacyUserSettings,
-        platformPolicyEnabled: false,
-        platformRevision: 0,
-        userOverrideRevision: 0,
-      });
-    }
-
-    // Cheap single-statement revision probe for soft-cache hits.
-    // On miss, reuse process-local published policies for the platform revision
-    // and skip override SELECTs when the user revision token is still 0 (never written).
-    let probePlatformRevision: number;
-    let probeUserOverrideRevision: number;
-    try {
-      const probe = await this.model.getRevisionTokens(params.userId);
-      probePlatformRevision = probe.platformRevision;
-      probeUserOverrideRevision = probe.userOverrideRevision;
-    } catch (error) {
-      this.reportUnavailable(error);
-      throw error;
-    }
-
-    const legacyChecksum = legacyCacheChecksum(legacyUserSettings);
-    const probeCacheKey = buildSettingsCacheKey({
-      legacyChecksum,
-      platformRevision: probePlatformRevision,
-      registryVersion: settingsRegistry.version,
-      userId: params.userId,
-      userOverrideRevision: probeUserOverrideRevision,
-    });
-
-    const cached = readSoftCache(probeCacheKey);
-    if (cached) {
-      return cached;
-    }
-
-    let platformRevision: number;
-    let userOverrideRevision: number;
-    let policies: PublishedPolicyMap;
-    let overrides: Record<string, { value: unknown }>;
-    try {
-      const materialised = await this.materializeUserSettingsLayers({
-        seedRevisions: {
-          platformRevision: probePlatformRevision,
-          userOverrideRevision: probeUserOverrideRevision,
-        },
-        userId: params.userId,
-      });
-      platformRevision = materialised.platformRevision;
-      userOverrideRevision = materialised.userOverrideRevision;
-      policies = materialised.policies;
-      overrides = materialised.overrides;
-    } catch (error) {
-      this.reportUnavailable(error);
-      throw error;
-    }
-
-    // One-time migration: copy validated registered legacy leaves into override rows.
-    // Idempotent (ON CONFLICT DO NOTHING); never overwrites an existing override.
-    try {
-      const backfilled = await this.backfillRegisteredLegacyOverrides({
-        legacyUserSettings,
-        overrides,
-        userId: params.userId,
-      });
-      if (backfilled) {
-        userOverrideRevision = backfilled.revision;
-        for (const [path, value] of Object.entries(backfilled.overrides)) {
-          overrides[path] = value;
-        }
-      }
-    } catch (error) {
-      this.reportUnavailable(error);
-      throw error;
-    }
-
-    // Pure resolve is identical for every user at the same platform revision with no
-    // overrides and the same legacy checksum — reuse it so multi-user cold fill is
-    // dominated by the revision probe, not registry walks.
-    const canShareResolved = userOverrideRevision === 0 && Object.keys(overrides).length === 0;
-    const layerKey = canShareResolved
-      ? buildResolvedLayerKey({
-          legacyChecksum,
-          platformRevision,
-          registryVersion: settingsRegistry.version,
-          userOverrideRevision,
-        })
-      : null;
-    let result = layerKey ? readResolvedLayerCache(layerKey) : undefined;
-    if (!result) {
-      result = resolveEffectiveSettings({
-        legacyUserSettings,
-        overrides,
-        platformPolicyEnabled: true,
-        platformRevision,
-        policies,
-        userOverrideRevision,
-      });
-      if (layerKey) writeResolvedLayerCache(layerKey, result);
-    }
-
-    // Soft-cache stays per-user (LRU bound); layer memo only skips pure resolve work.
-    writeSoftCache(
-      buildSettingsCacheKey({
-        legacyChecksum,
-        platformRevision,
-        registryVersion: settingsRegistry.version,
-        userId: params.userId,
-        userOverrideRevision,
-      }),
-      result,
+  }): Promise<EffectiveSettingsResult> =>
+    loadEffectiveSettings(
+      {
+        db: this.db,
+        isPolicyEnabled: this.isPolicyEnabled,
+        lifecycle: this.lifecycle,
+        model: this.model,
+        reportUnavailable: this.reportUnavailable,
+        runtimeReporter: this.runtimeReporter,
+      },
+      params,
     );
-    reportPlatformRuntimeMaterializationSafely(this.runtimeReporter, this.db, {
-      domain: 'settings',
-      health: 'healthy',
-      revision: platformRevision,
-      source: 'database',
-    });
-    return result;
-  };
-
-  /**
-   * Load published policies + user overrides coherently for one user.
-   *
-   * Hot path: process-cached policies by platform revision + skip override reads
-   * when userOverrideRevision is 0. Bracket with a closing token read when any
-   * row SELECT ran; on sustained mismatch fall back to a single-statement snapshot
-   * (never throw SETTINGS_SNAPSHOT_RETRY to the caller).
-   */
-  private materializeUserSettingsLayers = async (params: {
-    seedRevisions: { platformRevision: number; userOverrideRevision: number };
-    userId: string;
-  }): Promise<{
-    overrides: Record<string, { value: unknown }>;
-    platformRevision: number;
-    policies: PublishedPolicyMap;
-    userOverrideRevision: number;
-  }> => {
-    const maxAttempts = 5;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const before =
-        attempt === 0 ? params.seedRevisions : await this.model.getRevisionTokens(params.userId);
-
-      let policyMap = readPublishedPoliciesCache(before.platformRevision);
-      let loadedPoliciesFromDb = false;
-      if (!policyMap) {
-        const rows = await this.model.listPublishedPolicies();
-        policyMap = {};
-        for (const row of rows) {
-          policyMap[row.path] = {
-            mode: row.mode as SettingPolicyMode,
-            schemaVersion: row.schemaVersion,
-            value: row.value,
-            visibility: (row.visibility ?? 'visible') as SettingPolicyVisibility,
-          };
-        }
-        loadedPoliciesFromDb = true;
-      }
-
-      // Revision 0 means the user has never written overrides (bump is transactional
-      // with every insert/delete). Skip the empty SELECT on the common first-read path.
-      let overrideRows: Awaited<ReturnType<PlatformSettingsModel['listUserOverrides']>> = [];
-      let loadedOverridesFromDb = false;
-      if (before.userOverrideRevision > 0) {
-        overrideRows = await this.model.listUserOverrides(params.userId);
-        loadedOverridesFromDb = true;
-      }
-
-      // Cached policies for revision R plus empty overrides at user rev 0 need no
-      // recheck: concurrent publish advances the platform token (next probe misses),
-      // and concurrent first patch advances the user token the same way.
-      const needsRecheck = loadedPoliciesFromDb || loadedOverridesFromDb;
-      if (needsRecheck) {
-        const after = await this.model.getRevisionTokens(params.userId);
-        if (
-          before.platformRevision !== after.platformRevision ||
-          before.userOverrideRevision !== after.userOverrideRevision
-        ) {
-          continue;
-        }
-        if (loadedPoliciesFromDb) {
-          writePublishedPoliciesCache(before.platformRevision, policyMap);
-        }
-      }
-
-      const overrides: Record<string, { value: unknown }> = {};
-      for (const row of overrideRows) {
-        overrides[row.path] = { value: row.value };
-      }
-
-      return {
-        overrides,
-        platformRevision: before.platformRevision,
-        policies: policyMap,
-        userOverrideRevision: before.userOverrideRevision,
-      };
-    }
-
-    // Sustained churn: one statement-level snapshot — coherent and never throws
-    // SETTINGS_SNAPSHOT_RETRY (settings reads must not become an outage mode).
-    const snapshot = await this.model.readEffectiveSettingsSnapshot({ userId: params.userId });
-    const policies: PublishedPolicyMap = {};
-    for (const row of snapshot.published) {
-      policies[row.path] = {
-        mode: row.mode as SettingPolicyMode,
-        schemaVersion: row.schemaVersion,
-        value: row.value,
-        visibility: (row.visibility ?? 'visible') as SettingPolicyVisibility,
-      };
-    }
-    writePublishedPoliciesCache(snapshot.platformRevision, policies);
-    const overrides: Record<string, { value: unknown }> = {};
-    for (const row of snapshot.overrideRows) {
-      overrides[row.path] = { value: row.value };
-    }
-    return {
-      overrides,
-      platformRevision: snapshot.platformRevision,
-      policies,
-      userOverrideRevision: snapshot.userOverrideRevision,
-    };
-  };
-
-  /**
-   * Copy registered legacy leaves into `user_setting_overrides` when no override exists.
-   * Strips those leaves from the caller's legacy blob in DB after insert so a later
-   * reset does not re-materialize the same preference.
-   */
-  private backfillRegisteredLegacyOverrides = async (params: {
-    legacyUserSettings: Record<string, unknown>;
-    overrides: Record<string, { value: unknown }>;
-    userId: string;
-  }): Promise<{ overrides: Record<string, { value: unknown }>; revision: number } | null> => {
-    const ops: Array<{ path: string; value: unknown }> = [];
-    for (const entry of settingsRegistry.list()) {
-      if (params.overrides[entry.path]) continue;
-      if (settingsRegistry.isSecretPath(entry.path)) continue;
-      const leaf = getByPath(params.legacyUserSettings, entry.path);
-      if (leaf === undefined) continue;
-      const validated = settingsRegistry.validateValue(entry.path, leaf);
-      if (!validated.ok) continue;
-      ops.push({ path: entry.path, value: validated.value });
-    }
-    if (ops.length === 0) return null;
-
-    const migrated = await this.db.transaction(async (tx) => {
-      const { insertedPaths, revision } = await new PlatformSettingsModel(
-        tx,
-      ).insertUserOverridesIfAbsent({
-        alreadyInTransaction: true,
-        ops,
-        source: 'legacy_migration',
-        userId: params.userId,
-      });
-      if (insertedPaths.length === 0) return null;
-      await this.lifecycle.beforeLegacyBackfillCleanup?.();
-      await this.stripRegisteredLegacyLeaves(params.userId, insertedPaths, tx);
-      return { insertedPaths, revision };
-    });
-    if (!migrated) return null;
-    const { insertedPaths, revision } = migrated;
-
-    const nextOverrides = { ...params.overrides };
-    for (const path of insertedPaths) {
-      const op = ops.find((item) => item.path === path);
-      if (op) nextOverrides[path] = { value: op.value };
-    }
-
-    return { overrides: nextOverrides, revision };
-  };
-
-  private stripRegisteredLegacyLeaves = async (
-    userId: string,
-    paths: string[],
-    db: LobeChatDatabase | Transaction = this.db,
-  ): Promise<void> => {
-    if (paths.length === 0) return;
-    const userModel = new UserModel(db as LobeChatDatabase, userId);
-    const row = await userModel.getUserSettings();
-    if (!row) return;
-
-    const touchedTops = new Set<string>();
-    for (const path of paths) {
-      const top = path.split('.')[0];
-      if (top && top !== 'keyVaults') touchedTops.add(top);
-    }
-    if (touchedTops.size === 0) return;
-
-    // Build a full top-level snapshot for the columns we will rewrite.
-    let tree: Record<string, unknown> = {};
-    for (const top of touchedTops) {
-      tree[top] = (row as Record<string, unknown>)[top];
-    }
-    for (const path of paths) {
-      tree = deleteByPath(tree, path);
-    }
-
-    const patch: Record<string, unknown> = {};
-    for (const top of touchedTops) {
-      patch[top] = tree[top] ?? null;
-    }
-    await userModel.updateSetting(patch as Parameters<UserModel['updateSetting']>[0]);
-  };
 
   private reportUnavailable = (error: unknown): void => {
-    // Force recovery through a new materialization instead of leaving the reporter unavailable
-    // while subsequent requests keep serving a pre-failure cache hit at the same revision.
-    clearAllSettingsCaches();
-    reportPlatformRuntimeMaterializationSafely(this.runtimeReporter, this.db, {
-      domain: 'settings',
-      errorCategory: classifyRuntimeMaterializationError(error),
-      health: 'unavailable',
-      source: 'unavailable',
+    reportSettingsUnavailable({
+      db: this.db,
+      error,
+      runtimeReporter: this.runtimeReporter,
     });
   };
 
@@ -651,34 +300,7 @@ export class EffectiveSettingsService {
     }
 
     const validatedInput = catalog.value as Record<string, unknown>;
-    const leaves = flattenLeaves(validatedInput).filter((l) => !l.path.startsWith('keyVaults'));
-    const ops: Array<{ path: string; value: unknown }> = [];
-
-    for (const leaf of leaves) {
-      const { path, value } = leaf;
-      if (settingsRegistry.isSecretPath(path)) {
-        throw new SettingsPathError(
-          MANAGED_ERROR_CODES.MANAGED_SETTING_SECRET_PATH,
-          `Secret path not allowed: ${path}`,
-        );
-      }
-      if (!settingsRegistry.has(path)) {
-        // known catalog leaf not in platform registry → stays in legacy partial
-        continue;
-      }
-      // Legacy updateSettings is a user-facing client API (web/desktop/mobile)
-      const gate = settingsRegistry.assertPathWritable({ client: 'web', path });
-      if (gate) throw new SettingsPathError(gate);
-
-      const validated = settingsRegistry.validateValue(path, value);
-      if (!validated.ok) {
-        throw new SettingsPathError(
-          MANAGED_ERROR_CODES.MANAGED_SETTING_INVALID_VALUE,
-          validated.message,
-        );
-      }
-      ops.push({ path, value: validated.value });
-    }
+    const ops = collectLegacyOverrideOps(validatedInput);
 
     // Build legacy partial (non-registered known leaves + hotkey etc.)
     const legacyPartial = buildLegacySettingsPartial(validatedInput, settingsRegistry);
