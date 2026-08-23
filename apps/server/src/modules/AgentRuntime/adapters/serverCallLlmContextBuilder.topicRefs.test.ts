@@ -27,7 +27,7 @@ vi.mock('@/database/models/message', () => ({
 
 vi.mock('./serverCallLlmContextHints', () => ({
   resolveServerCallLlmContextHints: vi.fn(async ({ llmPayload }) => ({
-    capabilities: {},
+    capabilities: { isCanUseFiles: () => false },
     messagesForContext: llmPayload.messages,
     modelDisplayName: 'model',
     modelKnowledgeCutoff: '2025-01',

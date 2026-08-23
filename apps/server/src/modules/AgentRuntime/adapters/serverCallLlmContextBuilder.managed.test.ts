@@ -43,7 +43,7 @@ vi.mock('@/database/models/agentOperation', async (importOriginal) => ({
 
 vi.mock('./serverCallLlmContextHints', () => ({
   resolveServerCallLlmContextHints: vi.fn(async ({ llmPayload }) => ({
-    capabilities: { vision: true },
+    capabilities: { isCanUseFiles: () => false, vision: true },
     messagesForContext: llmPayload.messages,
     modelDisplayName: 'Exact model',
     modelKnowledgeCutoff: '2025-01',

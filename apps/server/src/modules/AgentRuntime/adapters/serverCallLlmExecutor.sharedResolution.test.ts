@@ -51,7 +51,7 @@ vi.mock('@/database/models/agentOperation', async (importOriginal) => ({
 
 vi.mock('./serverCallLlmContextHints', () => ({
   resolveServerCallLlmContextHints: vi.fn(async ({ llmPayload }) => ({
-    capabilities: {},
+    capabilities: { isCanUseFiles: () => false },
     messagesForContext: llmPayload.messages,
     modelDisplayName: 'Composer 2.5',
     modelKnowledgeCutoff: '2024-06',
@@ -77,6 +77,17 @@ vi.mock('@/server/services/file', () => ({
     getFileAccessUrl: vi.fn(),
     uploadBase64: vi.fn(),
     uploadFromBuffer: vi.fn(),
+  })),
+}));
+
+vi.mock('@/server/services/market', () => ({
+  MarketService: vi.fn().mockImplementation(() => ({
+    market: {
+      creds: { list: vi.fn().mockResolvedValue({ data: [] }) },
+      organizations: {
+        creds: vi.fn(() => ({ list: vi.fn().mockResolvedValue({ data: [] }) })),
+      },
+    },
   })),
 }));
 

@@ -7,18 +7,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildServerCallLlmContext } from './serverCallLlmContextBuilder';
 import { resolveServerCallLlmContextHints } from './serverCallLlmContextHints';
 
-const { createCachedPreSignedUrlForPreview, serverMessagesEngine, syncOverLimitAttachments } =
-  vi.hoisted(() => ({
-    createCachedPreSignedUrlForPreview: vi.fn(
-      async (url: string) => `https://signed.example/${url}`,
+const {
+  callTool,
+  createCachedPreSignedUrlForPreview,
+  serverMessagesEngine,
+  syncOverLimitAttachments,
+} = vi.hoisted(() => ({
+  callTool: vi.fn(),
+  createCachedPreSignedUrlForPreview: vi.fn(async (url: string) => `https://signed.example/${url}`),
+  serverMessagesEngine: vi.fn(async (input: { messages: unknown[] }) => input.messages),
+  syncOverLimitAttachments: vi.fn(async (files: Array<{ id: string; name: string }>) =>
+    Object.fromEntries(
+      files.map((file) => [file.id, sandboxOverLimitUploadPath(file.name, file.id)]),
     ),
-    serverMessagesEngine: vi.fn(async (input: { messages: unknown[] }) => input.messages),
-    syncOverLimitAttachments: vi.fn(async (files: Array<{ id: string; name: string }>) =>
-      Object.fromEntries(
-        files.map((file) => [file.id, sandboxOverLimitUploadPath(file.name, file.id)]),
-      ),
-    ),
-  }));
+  ),
+}));
 
 vi.mock('@/server/modules/Mecha/ContextEngineering', () => ({ serverMessagesEngine }));
 
@@ -32,7 +35,7 @@ vi.mock('@/server/services/sandbox', async () => {
   const attachmentSync = await import('@/server/services/sandbox/attachmentSync');
   return {
     createSandboxService: vi.fn(() => ({
-      callTool: vi.fn(),
+      callTool,
       syncOverLimitAttachments,
     })),
     isAttachmentNotDeliveredNatively: attachmentSync.isAttachmentNotDeliveredNatively,
@@ -45,6 +48,17 @@ vi.mock('@/server/services/sandbox', async () => {
 vi.mock('@/database/models/file', () => ({
   FileModel: vi.fn().mockImplementation(() => ({
     findFilesToInitInSandbox: vi.fn(async () => []),
+  })),
+}));
+
+vi.mock('@/server/services/market', () => ({
+  MarketService: vi.fn().mockImplementation(() => ({
+    market: {
+      creds: { list: vi.fn().mockResolvedValue({ data: [] }) },
+      organizations: {
+        creds: vi.fn(() => ({ list: vi.fn().mockResolvedValue({ data: [] }) })),
+      },
+    },
   })),
 }));
 
@@ -175,9 +189,12 @@ describe('buildServerCallLlmContext — sandbox attachment sync', () => {
       {
         id: 'file-pdf',
         name: 'doc.pdf',
+        size: 40 * 1024 * 1024,
+        storageKey: 'files/test-user-id/xxx/doc.pdf',
         url: 'https://signed.example/files/test-user-id/xxx/doc.pdf',
       },
     ]);
+    expect(callTool).not.toHaveBeenCalled();
 
     const input = engineInput();
     expect(input.fileContext?.sandboxPathByFileId).toEqual({
