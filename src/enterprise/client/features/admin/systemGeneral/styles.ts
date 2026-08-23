@@ -17,26 +17,32 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
     min-width: 0;
     max-block-size: 108px;
   `,
+  /**
+   * No `min-block-size`: the row already equalises the cards (`grid-auto-rows: 1fr`), so a floor
+   * on top of it only buys empty space — every card in the grid grows to the tallest card's
+   * height, and the floor made that height a constant instead of a measurement. The gap between
+   * the last reading and the action row is the slack of ONE card against the tallest one, and
+   * that is the only blank the grid should ever show.
+   */
   card: css`
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
 
     min-width: 0;
     block-size: 100%;
-    min-block-size: 320px;
     padding: 16px;
     border: 1px solid ${cssVar.colorBorderSecondary};
     border-radius: ${cssVar.borderRadiusLG};
 
     background: ${cssVar.colorBgContainer};
   `,
-  /** The summary never scrolls: five rows and a footer always fit inside `min-block-size`. */
+  /** The summary never scrolls: five rows and a footer are what the row height is measured from. */
   cardBody: css`
     display: flex;
     flex: 1;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
 
     min-width: 0;
     min-block-size: 0;
@@ -91,7 +97,7 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
   footer: css`
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     margin-block-start: auto;
   `,
   /** Equal-height rows: every card is as tall as the tallest one in its row, and no taller. */
@@ -125,7 +131,7 @@ export const infraSettingsStyles = createStaticStyles(({ css }) => ({
     flex-direction: column;
     gap: 8px;
 
-    padding-block-start: 12px;
+    padding-block-start: 8px;
     border-block-start: 1px solid ${cssVar.colorBorderSecondary};
   `,
   /** Guidance is a footnote on the card: two lines at most, the rest lives in 详情. */

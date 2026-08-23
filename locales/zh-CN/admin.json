@@ -1072,7 +1072,6 @@
   "browserProfile.actions.save": "保存",
   "browserProfile.confirm.description": "使用浏览器身份的服务会将后续请求视为来自新设备，共享账号可能需要重新验证。",
   "browserProfile.confirm.title": "重新生成浏览器指纹？",
-  "browserProfile.description": "平台使用同一套浏览器身份访问需要模拟浏览器的服务；修改或重新生成后，这些服务会将平台视为新设备。",
   "browserProfile.fields.chrome": "Chrome 版本",
   "browserProfile.fields.compute": "CPU / 内存",
   "browserProfile.fields.generatedAt": "生成时间",

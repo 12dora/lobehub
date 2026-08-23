@@ -145,9 +145,8 @@ describe('BrowserProfileCard with the real admin bundle', () => {
     const text = document.body.textContent ?? '';
     // A missing key renders as its own path — the one failure mode a mocked `t` can never show.
     expect(text).not.toContain('browserProfile.');
-    // The real card composition, not a stub: title, notice, action and the field rows.
+    // The real card composition, not a stub: title, action and the field rows.
     expect(screen.getAllByText(defaultAdmin['browserProfile.title']).length).toBeGreaterThan(0);
-    expect(text).toContain(defaultAdmin['browserProfile.description']);
     expect(screen.getByText(defaultAdmin['browserProfile.actions.regenerate'])).toBeTruthy();
 
     // Once on the card, once in the open 详情 modal.

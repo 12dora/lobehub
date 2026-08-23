@@ -44,6 +44,17 @@ describe('infraSettingsStyles modal chrome', () => {
     expect(scroller).toMatch(/min-block-size:\s*0/);
   });
 
+  it('lets the tallest card measure the row instead of a hard-coded floor', () => {
+    // `grid-auto-rows: 1fr` already makes every card as tall as the tallest one. A
+    // `min-block-size` on the card on top of that cannot make anything line up that was not
+    // lined up already — all it can do is hold every card open at a constant, which is where the
+    // blank band between the last reading and the action row came from.
+    expect(rule('card')).not.toMatch(/min-block-size:/);
+    expect(rule('grid')).toMatch(/grid-auto-rows:\s*1fr/);
+    // The action rows still line up across the grid: that is what the slack is spent on.
+    expect(rule('footer')).toMatch(/margin-block-start:\s*auto/);
+  });
+
   it('never leaves a clipping box without a size to clip against', () => {
     // Any rule that hides its overflow has to say how tall it is, or its content is simply lost.
     const rules = [...source.matchAll(/(\w+): css`([^`]*)`/g)];

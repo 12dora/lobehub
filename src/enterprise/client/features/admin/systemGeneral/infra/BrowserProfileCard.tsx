@@ -288,7 +288,6 @@ export const BrowserProfileCard = memo<BrowserProfileCardProps>(
         editOpen={editModal.open}
         fields={summaryFields}
         icon={Fingerprint}
-        notice={t('browserProfile.description')}
         probing={false}
         // The same binary the neighbouring infra cards report, through the same tag: this card
         // used to be the only one with an empty header-right, so its title row read as a
