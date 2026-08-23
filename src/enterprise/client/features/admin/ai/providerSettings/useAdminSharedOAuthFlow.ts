@@ -1,76 +1,33 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback } from 'react';
 
-import { withReauth } from '@/enterprise/client/services/adminAiInfraAdapter/shared';
-import { lambdaClient } from '@/libs/trpc/client';
+import { createSharedOAuthDevicePoll } from './createSharedOAuthDevicePoll';
+import { decidePastePollResult } from './sharedOAuthFlowDecisions';
+import {
+  initiateSharedOAuthDeviceCode,
+  pollSharedOAuthAuthStatus,
+} from './sharedOAuthFlowRequests';
+import type {
+  SharedOAuthApiKeyPhase,
+  SharedOAuthDeviceCode,
+  SharedOAuthPastePayload,
+  SharedOAuthPasteSource,
+  SharedOAuthStoreOutcome,
+} from './sharedOAuthFlowTypes';
+import { useSharedOAuthFlowRuntime } from './useSharedOAuthFlowRuntime';
 
-import { decideDevicePollTick, decidePastePollResult } from './sharedOAuthFlowDecisions';
-
-export type SharedOAuthFlowState = 'idle' | 'requesting' | 'awaiting' | 'success' | 'error';
-
-export type SharedOAuthFlowError = 'authError' | 'codeExpired' | 'denied' | 'providerStoreFailed';
-
-/**
- * Which grant the provider's connect flow uses. `authorization_code_paste` (chatgptweb)
- * has nothing to poll for: the redirect URI belongs to the provider, so the operator signs
- * in in a browser and carries the callback URL back into this panel.
- */
-export type SharedOAuthGrantFlow = 'device_code' | 'authorization_code_paste';
-
-/**
- * Recoverable errors of a paste submit. They keep the form on screen — the operator can
- * fix the pasted value and submit again without redoing the browser sign-in.
- */
-export type SharedOAuthPasteError =
-  | 'invalidCallback'
-  | 'stateMismatch'
-  | 'exchangeFailed'
-  | 'accessTokenInvalid'
-  /** The paste carried both `OAI-Device-Id` and `oai-did`, and they disagree. */
-  | 'deviceMismatch'
-  /** The pasted web session is expired or revoked — it mints no access token. */
-  | 'sessionInvalid'
-  /** The credential works, but belongs to a client with no chatgpt.com web permission. */
-  | 'tokenNotWeb'
-  | 'authError';
-
-/**
- * Which input produced the material of the failed submit. Kept WITH the error, because a
- * generic failure (network blip, unknown literal) carries no field of its own — without the
- * source it lands on the callback box even when the operator submitted an access token.
- */
-export type SharedOAuthPasteSource = 'callback' | 'token';
-
-/**
- * Phase of the API-key connect route. The two halves fail for different reasons — an envelope
- * the server refused is an authorization/network failure and says nothing about the key, only
- * a rejected exchange does — so the panel has to be able to tell them apart.
- */
-export type SharedOAuthApiKeyPhase = 'idle' | 'requestingEnvelope' | 'exchangingKey';
-
-export interface SharedOAuthDeviceCode {
-  /** Provider accepts a manually pasted access token as a fallback credential. */
-  allowAccessTokenPaste?: boolean;
-  deviceCode: string;
-  expiresIn: number | null;
-  /** Defaults to `device_code` when the server does not declare one. */
-  flow: SharedOAuthGrantFlow;
-  interval: number;
-  userCode: string;
-  verificationUri: string;
-  verificationUriComplete: string | null;
-}
-
-/**
- * Result of the one write the flow performs. The server applies and publishes the connected
- * account unconditionally, so a `success` poll means the credentials are committed — NOT that
- * members are served: the provider's `enabled` state is preserved and takeover requires the
- * platform-managed policy. `revision` is only kept so callers can tell a create from an update.
- */
-export interface SharedOAuthStoreOutcome {
-  revision: number | null;
-}
+export type {
+  SharedOAuthApiKeyPhase,
+  SharedOAuthDeviceCode,
+  SharedOAuthFlowError,
+  SharedOAuthFlowState,
+  SharedOAuthGrantFlow,
+  SharedOAuthPasteError,
+  SharedOAuthPastePayload,
+  SharedOAuthPasteSource,
+  SharedOAuthStoreOutcome,
+} from './sharedOAuthFlowTypes';
 
 interface UseAdminSharedOAuthFlowOptions {
   /**
@@ -81,9 +38,6 @@ interface UseAdminSharedOAuthFlowOptions {
   onSuccess?: (outcome: SharedOAuthStoreOutcome) => void;
   providerId: string;
 }
-
-/** Audit reason recorded for the reauth-gated store step. */
-const CONNECT_REASON = 'admin shared provider account connect';
 
 /**
  * Device-flow driver for the platform-owned (shared) provider account.
@@ -101,123 +55,42 @@ export const useAdminSharedOAuthFlow = ({
   onStatusStale,
   onSuccess,
 }: UseAdminSharedOAuthFlowOptions) => {
-  const [state, setState] = useState<SharedOAuthFlowState>('idle');
-  const [deviceCode, setDeviceCode] = useState<SharedOAuthDeviceCode | undefined>();
-  const [error, setError] = useState<SharedOAuthFlowError | undefined>();
-  const [outcome, setOutcome] = useState<SharedOAuthStoreOutcome | undefined>();
-  const [submitError, setSubmitError] = useState<SharedOAuthPasteError | undefined>();
-  const [submitErrorSource, setSubmitErrorSource] = useState<SharedOAuthPasteSource | undefined>();
-  const [submitting, setSubmitting] = useState(false);
-  const [apiKeyPhase, setApiKeyPhaseState] = useState<SharedOAuthApiKeyPhase>('idle');
-
-  /** Paste flow: the envelope the pasted callback URL has to be redeemed against. */
-  const deviceCodeRef = useRef<string | null>(null);
-  const submittingRef = useRef(false);
-  /** Mirrors `apiKeyPhase` synchronously — two clicks in one render read the same state. */
-  const apiKeyPhaseRef = useRef<SharedOAuthApiKeyPhase>('idle');
-  /** Bumped by cancel and by every new API-key submit; a superseded one may not write. */
-  const apiKeySubmitIdRef = useRef(0);
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Bumped by cancel / a new connect / unmount; every run owns the id it started with. */
-  const runIdRef = useRef(0);
-  /** Set by the unmount cleanup: no state write and no re-arm may survive it. */
-  const disposedRef = useRef(false);
-  const onSuccessRef = useRef(onSuccess);
-  onSuccessRef.current = onSuccess;
-  const onStatusStaleRef = useRef(onStatusStale);
-  onStatusStaleRef.current = onStatusStale;
-
-  const clearTimers = useCallback(() => {
-    if (pollTimerRef.current) {
-      clearTimeout(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
-    if (expiryTimerRef.current) {
-      clearTimeout(expiryTimerRef.current);
-      expiryTimerRef.current = null;
-    }
-  }, []);
-
-  const setApiKeyPhase = useCallback((phase: SharedOAuthApiKeyPhase) => {
-    apiKeyPhaseRef.current = phase;
-    if (!disposedRef.current) setApiKeyPhaseState(phase);
-  }, []);
-
-  /** Ask the caller to re-read the connection status; never fired after unmount. */
-  const markStatusStale = useCallback(() => {
-    if (disposedRef.current) return;
-    onStatusStaleRef.current?.();
-  }, []);
-
-  const reset = useCallback(() => {
-    clearTimers();
-    runIdRef.current += 1;
-    deviceCodeRef.current = null;
-    // Supersede the API-key route with the flow it was driving: a submit still in flight may
-    // no longer report its phase, and the box unlocks for a fresh attempt.
-    apiKeySubmitIdRef.current += 1;
-    setApiKeyPhase('idle');
-    // Release the submit latch with the run that owned it: leaving it set until an
-    // abandoned paste mutation settles blocks the flow the operator just started.
-    submittingRef.current = false;
-    setSubmitting(false);
-    setState('idle');
-    setDeviceCode(undefined);
-    setError(undefined);
-    setOutcome(undefined);
-    setSubmitError(undefined);
-    setSubmitErrorSource(undefined);
-    // Cancelling does not undo whatever the server already stored — re-read it so the
-    // idle card cannot claim "Not connected" for a connection that just landed.
-    markStatusStale();
-  }, [clearTimers, markStatusStale, setApiKeyPhase]);
+  const runtime = useSharedOAuthFlowRuntime({ onStatusStale, onSuccess });
+  const {
+    apiKeyPhaseRef,
+    apiKeySubmitIdRef,
+    beginConnectRun,
+    clearTimers,
+    completeWithOutcome,
+    deviceCodeRef,
+    disposedRef,
+    expiryTimerRef,
+    failFlow,
+    markStatusStale,
+    pollTimerRef,
+    runIdRef,
+    setApiKeyPhase,
+    setDeviceCode,
+    setError,
+    setState,
+    setSubmitError,
+    setSubmitErrorSource,
+    setSubmitting,
+    submittingRef,
+  } = runtime;
 
   const connect = useCallback(async (): Promise<SharedOAuthDeviceCode | undefined> => {
-    clearTimers();
-    const runId = ++runIdRef.current;
-    setDeviceCode(undefined);
-    setError(undefined);
-    setOutcome(undefined);
-    setSubmitError(undefined);
-    setSubmitErrorSource(undefined);
-    deviceCodeRef.current = null;
-    // A superseding connect retires the previous run's submit latch as well.
-    submittingRef.current = false;
-    setSubmitting(false);
-    setState('requesting');
+    const runId = beginConnectRun();
 
     /** True once this run was cancelled, superseded, or the hook unmounted. */
     const isStale = () => disposedRef.current || runIdRef.current !== runId;
 
-    const fail = (reason: SharedOAuthFlowError) => {
-      clearTimers();
-      runIdRef.current += 1;
-      submittingRef.current = false;
-      // The envelope dies with the run — expiry, denial and a terminal poll all spend it.
-      // Leaving it behind let the next submit redeem a grant the provider had already
-      // retired, and report the resulting rejection as a bad API key.
-      deviceCodeRef.current = null;
-      if (!disposedRef.current) {
-        setDeviceCode(undefined);
-        // The rendered submit flag belongs to the run too: `submitPasted`'s own cleanup is
-        // skipped once the run is stale, which left the box spinning after a terminal failure.
-        setSubmitting(false);
-      }
-      setError(reason);
-      setState('error');
-      // A failed flow may still follow a stored connection (e.g. expiry after success).
-      markStatusStale();
-    };
-
     let response;
     try {
-      response = await withReauth(() =>
-        lambdaClient.admin.aiProviderOAuth.initiateDeviceCode.mutate({ id: providerId }),
-      );
+      response = await initiateSharedOAuthDeviceCode(providerId);
     } catch {
       if (isStale()) return;
-      fail('authError');
+      failFlow('authError');
       return;
     }
 
@@ -236,74 +109,17 @@ export const useAdminSharedOAuthFlow = ({
       verificationUriComplete: response.verificationUriComplete,
     };
 
-    /** Consecutive transient rejections; any server answer clears it. */
-    let consecutiveFailures = 0;
-
-    // Function declarations: schedule and poll are mutually recursive.
-    function schedule(seconds: number) {
-      if (isStale()) return;
-      pollTimerRef.current = setTimeout(() => {
-        void poll(seconds);
-      }, seconds * 1000);
-    }
-
-    async function poll(seconds: number) {
-      if (isStale()) return;
-
-      let result;
-      let threw = false;
-      try {
-        result = await withReauth(() =>
-          lambdaClient.admin.aiProviderOAuth.pollAuthStatus.mutate({
-            deviceCode: info.deviceCode,
-            id: providerId,
-            reason: CONNECT_REASON,
-          }),
-        );
-      } catch {
-        threw = true;
-      }
-
-      const decision = decideDevicePollTick({
-        consecutiveFailures,
-        intervalSeconds: seconds,
-        result,
-        stale: isStale(),
-        threw,
-      });
-
-      switch (decision.kind) {
-        case 'success': {
-          consecutiveFailures = 0;
-          clearTimers();
-          runIdRef.current += 1;
-          const stored: SharedOAuthStoreOutcome = { revision: decision.revision };
-          setOutcome(stored);
-          setState('success');
-          onSuccessRef.current?.(stored);
-          return;
-        }
-        case 'fail': {
-          fail(decision.reason);
-          return;
-        }
-        case 'retry': {
-          if (threw) consecutiveFailures += 1;
-          else consecutiveFailures = 0;
-          schedule(decision.delaySeconds);
-          return;
-        }
-        case 'staleSuccess': {
-          // The server already stored the connection even though this run is gone —
-          // surface it via a status re-read rather than dropping the outcome entirely.
-          markStatusStale();
-          return;
-        }
-        case 'ignore': {
-          return;
-        }
-      }
-    }
+    const { schedule } = createSharedOAuthDevicePoll({
+      clearTimers,
+      completeWithOutcome,
+      deviceCode: info.deviceCode,
+      failFlow,
+      isStale,
+      markStatusStale,
+      pollTimerRef,
+      providerId,
+      runIdRef,
+    });
 
     setDeviceCode(info);
     deviceCodeRef.current = info.deviceCode;
@@ -312,7 +128,7 @@ export const useAdminSharedOAuthFlow = ({
     if (info.expiresIn) {
       expiryTimerRef.current = setTimeout(() => {
         if (isStale()) return;
-        fail('codeExpired');
+        failFlow('codeExpired');
       }, info.expiresIn * 1000);
     }
 
@@ -321,7 +137,21 @@ export const useAdminSharedOAuthFlow = ({
     if (info.flow !== 'authorization_code_paste') schedule(info.interval);
 
     return info;
-  }, [clearTimers, markStatusStale, providerId]);
+  }, [
+    beginConnectRun,
+    clearTimers,
+    completeWithOutcome,
+    deviceCodeRef,
+    disposedRef,
+    expiryTimerRef,
+    failFlow,
+    markStatusStale,
+    pollTimerRef,
+    providerId,
+    runIdRef,
+    setDeviceCode,
+    setState,
+  ]);
 
   /**
    * Redeem pasted material (callback URL or raw access token) against the current envelope.
@@ -329,13 +159,7 @@ export const useAdminSharedOAuthFlow = ({
    * operator can fix the paste without repeating the browser sign-in.
    */
   const submitPasted = useCallback(
-    async (payload: {
-      accessToken?: string;
-      callbackUrl?: string;
-      deviceId?: string;
-      sessionChunks?: string[];
-      sessionToken?: string;
-    }) => {
+    async (payload: SharedOAuthPastePayload) => {
       const code = deviceCodeRef.current;
       if (!code || submittingRef.current) return;
 
@@ -362,14 +186,7 @@ export const useAdminSharedOAuthFlow = ({
         let result;
         let threw = false;
         try {
-          result = await withReauth(() =>
-            lambdaClient.admin.aiProviderOAuth.pollAuthStatus.mutate({
-              deviceCode: code,
-              id: providerId,
-              reason: CONNECT_REASON,
-              ...payload,
-            }),
-          );
+          result = await pollSharedOAuthAuthStatus(providerId, code, payload);
         } catch {
           threw = true;
         }
@@ -388,10 +205,7 @@ export const useAdminSharedOAuthFlow = ({
             clearTimers();
             runIdRef.current += 1;
             deviceCodeRef.current = null;
-            const stored: SharedOAuthStoreOutcome = { revision: decision.revision };
-            setOutcome(stored);
-            setState('success');
-            onSuccessRef.current?.(stored);
+            completeWithOutcome(decision.revision);
             return;
           }
           case 'expired': {
@@ -399,8 +213,8 @@ export const useAdminSharedOAuthFlow = ({
             runIdRef.current += 1;
             deviceCodeRef.current = null;
             setDeviceCode(undefined);
-            // Same reason as `fail()`: the `finally` below cannot clear this once the run it
-            // belonged to is retired, and a spinning box refuses the retry it just asked for.
+            // Same reason as `failFlow()`: the `finally` below cannot clear this once the run
+            // it belonged to is retired, and a spinning box refuses the retry it just asked for.
             setSubmitting(false);
             setError('codeExpired');
             setState('error');
@@ -425,7 +239,22 @@ export const useAdminSharedOAuthFlow = ({
         if (!isStale()) setSubmitting(false);
       }
     },
-    [clearTimers, markStatusStale, providerId],
+    [
+      clearTimers,
+      completeWithOutcome,
+      deviceCodeRef,
+      disposedRef,
+      markStatusStale,
+      providerId,
+      runIdRef,
+      setDeviceCode,
+      setError,
+      setState,
+      setSubmitError,
+      setSubmitErrorSource,
+      setSubmitting,
+      submittingRef,
+    ],
   );
 
   const submitCallback = useCallback(
@@ -486,35 +315,31 @@ export const useAdminSharedOAuthFlow = ({
         setPhase('idle');
       }
     },
-    [connect, setApiKeyPhase, submitPasted],
+    [
+      apiKeyPhaseRef,
+      apiKeySubmitIdRef,
+      connect,
+      deviceCodeRef,
+      setApiKeyPhase,
+      submitPasted,
+      submittingRef,
+    ],
   );
 
-  useEffect(() => {
-    disposedRef.current = false;
-    return () => {
-      disposedRef.current = true;
-      // Invalidate the running flow as well: an awaited call that resolves after unmount
-      // must not re-arm the loop (the cleared timers would otherwise come straight back).
-      runIdRef.current += 1;
-      submittingRef.current = false;
-      clearTimers();
-    };
-  }, [clearTimers]);
-
   return {
-    apiKeyPhase,
+    apiKeyPhase: runtime.apiKeyPhase,
     connect,
-    deviceCode,
-    error,
-    outcome,
-    reset,
-    state,
+    deviceCode: runtime.deviceCode,
+    error: runtime.error,
+    outcome: runtime.outcome,
+    reset: runtime.reset,
+    state: runtime.state,
     submitAccessToken,
     submitApiKey,
     submitCallback,
-    submitError,
-    submitErrorSource,
+    submitError: runtime.submitError,
+    submitErrorSource: runtime.submitErrorSource,
     submitSessionToken,
-    submitting,
+    submitting: runtime.submitting,
   };
 };

@@ -1,15 +1,17 @@
 'use client';
 
-import { Alert, Flexbox, Text } from '@lobehub/ui';
+import { Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import type { ReactNode } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { ConnectedCardModel, SharedOAuthConnectionStatus } from './deriveConnectedCardModel';
+import type { SharedOAuthConnectionStatus } from './deriveConnectedCardModel';
 import { deriveConnectedCardModel } from './deriveConnectedCardModel';
+import SharedOAuthAccountHealth from './SharedOAuthAccountHealth';
 import SharedOAuthSessionFixActions from './SharedOAuthSessionFixActions';
+import SharedOAuthTokenUntil from './SharedOAuthTokenUntil';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   hint: css`
@@ -47,8 +49,6 @@ interface SharedOAuthConnectedCardProps {
   webSessionOnly: boolean;
 }
 
-type AccountModel = Extract<ConnectedCardModel, { view: 'account' }>;
-
 const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
   ({
     apiKeyForm,
@@ -77,95 +77,6 @@ const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
       />
     );
 
-    const renderHealth = (account: AccountModel) => {
-      switch (account.health) {
-        case 'reauth': {
-          /**
-           * The one actionable state on this card, so it carries the ONE primary action and
-           * the footer drops its duplicate. Pasting a web session is the cheap fix where that
-           * route exists; a device-code provider has no paste box and must be sent to its own
-           * authorization flow.
-           */
-          return (
-            <Alert
-              showIcon
-              message={t('aiProviderSettings.sharedOAuth.reauth.message', { name })}
-              type={'warning'}
-              action={
-                account.pasteFlow ? (
-                  sessionFix
-                ) : (
-                  <Flexbox horizontal gap={8}>
-                    <Button
-                      disabled={connectDisabled}
-                      size={'small'}
-                      type={'primary'}
-                      onClick={onConnect}
-                    >
-                      {t('aiProviderSettings.sharedOAuth.reconnect')}
-                    </Button>
-                  </Flexbox>
-                )
-              }
-            />
-          );
-        }
-        case 'cannotRenew': {
-          // Copy has to name the remedies that are actually on screen, so a web-session-only
-          // provider drops the sentence about the authorization page along with the button.
-          let message: string;
-          if (account.expiry && webSessionOnly) {
-            message = t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBeforeSessionOnly', {
-              time: account.expiry,
-            });
-          } else if (account.expiry) {
-            message = t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore', {
-              time: account.expiry,
-            });
-          } else if (webSessionOnly) {
-            message = t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenewSessionOnly');
-          } else {
-            message = t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenew');
-          }
-          return <Alert showIcon action={sessionFix} message={message} type={'warning'} />;
-        }
-        case 'healthy': {
-          let renewalKindLabel: string | undefined;
-          if (account.renewalKind === 'web_session') {
-            renewalKindLabel = t('aiProviderSettings.sharedOAuth.renewalKind.webSession');
-          } else if (account.renewalKind === 'cursor_api_key') {
-            renewalKindLabel = t('aiProviderSettings.sharedOAuth.renewalKind.apiKey');
-          } else if (account.renewalKind === 'oauth') {
-            renewalKindLabel = t('aiProviderSettings.sharedOAuth.renewalKind.oauth');
-          }
-          let hint = t('aiProviderSettings.sharedOAuth.autoRefresh');
-          if (account.autoRenews && renewalKindLabel) {
-            hint = t('aiProviderSettings.sharedOAuth.autoRenewKind', { kind: renewalKindLabel });
-          } else if (!account.autoRenews && account.expiry) {
-            hint = t('aiProviderSettings.sharedOAuth.expiresAt', { time: account.expiry });
-          }
-          return <Text className={styles.hint}>{hint}</Text>;
-        }
-      }
-    };
-
-    const renderTokenUntil = (account: AccountModel) => {
-      if (!account.autoRenews || (!account.expiry && !account.lastRefresh)) return null;
-      const { expiry, lastRefresh } = account;
-      let message: string;
-      if (expiry && lastRefresh) {
-        message = t('aiProviderSettings.sharedOAuth.tokenUntilWithLastRefresh', {
-          lastRefresh,
-          time: expiry,
-        });
-      } else if (expiry) {
-        message = t('aiProviderSettings.sharedOAuth.currentTokenUntil', { time: expiry });
-      } else {
-        message = t('aiProviderSettings.sharedOAuth.lastRefreshAt', { time: lastRefresh });
-      }
-      return <Text className={styles.hint}>{message}</Text>;
-    };
-
     let body: ReactNode;
     switch (model.view) {
       case 'disconnected': {
@@ -187,9 +98,16 @@ const SharedOAuthConnectedCard = memo<SharedOAuthConnectedCardProps>(
                 {t('aiProviderSettings.sharedOAuth.account', { account: model.account })}
               </Text>
             )}
-            {renderHealth(model)}
+            <SharedOAuthAccountHealth
+              account={model}
+              connectDisabled={connectDisabled}
+              name={name}
+              sessionFix={sessionFix}
+              webSessionOnly={webSessionOnly}
+              onConnect={onConnect}
+            />
             {model.health === 'reauth' && <Text className={styles.hint}>{reauthDetail}</Text>}
-            {renderTokenUntil(model)}
+            <SharedOAuthTokenUntil account={model} />
             {enforcementHint}
           </Flexbox>
         );
