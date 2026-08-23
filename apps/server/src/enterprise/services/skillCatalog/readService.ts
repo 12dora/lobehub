@@ -1,10 +1,6 @@
 import { z } from 'zod';
 
-import {
-  checksumPayload,
-  PlatformSkillCatalogModel,
-  platformSkillVersionChecksum,
-} from '@/database/models/platform';
+import { checksumPayload, PlatformSkillCatalogModel } from '@/database/models/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import {
@@ -12,28 +8,38 @@ import {
   platformSkillPinnedRefSchema,
   type PublishedSkill,
   serverResolvedSkillSchema,
-  type SkillManifest,
-  type SkillResource,
 } from '../../contracts/skillCatalog';
-import { DomainConfigCache, invalidateDomainConfigCacheNamespace } from '../../runtimeConfig';
+import { DomainConfigCache } from '../../runtimeConfig';
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
 import type { CurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
 import { loadCurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
-import type { SkillCatalogTokenEntry } from '../platformInstance/catalogTokens';
-import { buildSkillCatalogRevisionToken } from '../platformInstance/catalogTokens';
 import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import {
   classifyRuntimeMaterializationError,
   reportPlatformRuntimeMaterialization,
   reportPlatformRuntimeMaterializationSafely,
 } from '../platformInstance/runtimeReporter';
+import { loadPublishedSkillProjection } from './publishedSkillProjection';
+import {
+  cacheReadiness,
+  cloneCatalog,
+  getSourceId,
+  invalidatePublishedSkillCatalogReadCache,
+  projectionByRevision,
+  readinessByRevision,
+  resetPublishedSkillCatalogReadCacheForTest,
+  SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE,
+} from './readServiceCache';
+import type { BuiltinSkillDefinition, ResolvedSkill } from './resolvedSkill';
+import {
+  exactRefKey,
+  isCanonicalExactResolution,
+  parseResolvedBuiltinSkill,
+  parseResolvedPlatformSkill,
+} from './resolvedSkill';
 
-export interface BuiltinSkillDefinition extends PublishedSkill {
-  content: string;
-  contentRef?: string | null;
-  manifest: SkillManifest;
-  resources?: SkillResource[];
-}
+export type { BuiltinSkillDefinition } from './resolvedSkill';
+export { invalidatePublishedSkillCatalogReadCache, resetPublishedSkillCatalogReadCacheForTest };
 
 export interface SkillCatalogReadOptions {
   builtinSkills?: BuiltinSkillDefinition[];
@@ -60,81 +66,46 @@ export const builtinSkillDefinitionSchema = serverResolvedSkillSchema
   .extend({ source: z.literal('builtin') })
   .strict();
 export const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchema).max(100);
-const MAX_PUBLISHED_SKILLS = 10_000;
-const MAX_PUBLISHED_SKILL_PAYLOAD_BYTES = 8 * 1024 * 1024;
-const MAX_RETAINED_PROJECTION_BYTES = 32 * 1024 * 1024;
-const MAX_READINESS_REVISIONS = 32;
-const SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE = 'skill-catalog-active-projection';
-const readinessByRevision = new Map<string, boolean>();
-
-interface CachedPublishedProjection {
-  catalog: { revision: string; skills: PublishedSkill[] };
-  executionIndex: ReadonlyMap<string, ResolvedSkill>;
-  executionReady: boolean;
-  payloadBytes: number;
-  targetRevisionId: string;
-}
-
-const projectionByRevision = new Map<string, CachedPublishedProjection>();
-let retainedProjectionBytes = 0;
-const sourceIds = new WeakMap<object, number>();
-let nextSourceId = 1;
-
-type ResolvedSkill = z.infer<typeof serverResolvedSkillSchema>;
-
-const getSourceId = (source: object) => {
-  const current = sourceIds.get(source);
-  if (current) return current;
-  const id = nextSourceId++;
-  sourceIds.set(source, id);
-  return id;
-};
-
-const cloneCatalog = (catalog: CachedPublishedProjection['catalog']) => structuredClone(catalog);
-
-/**
- * Publication is the authority for moving the active projection. Cache entries are immutable and
- * revision-keyed; invalidation only drops the active source pointers so in-flight operations can
- * retain their already captured revision without observing a partially rebuilt projection.
- */
-export const invalidatePublishedSkillCatalogReadCache = () => {
-  invalidateDomainConfigCacheNamespace(SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE);
-};
-
-export const resetPublishedSkillCatalogReadCacheForTest = () => {
-  invalidatePublishedSkillCatalogReadCache();
-  projectionByRevision.clear();
-  retainedProjectionBytes = 0;
-  readinessByRevision.clear();
-};
-
-const exactRefKey = ({ checksum, skillKey, version }: PlatformSkillPinnedRef) =>
-  `${skillKey}\0${version}\0${checksum}`;
-
-const isCanonicalExactResolution = (ref: PlatformSkillPinnedRef, resolved: ResolvedSkill) =>
-  resolved.skillKey === ref.skillKey &&
-  resolved.version === ref.version &&
-  resolved.checksum === ref.checksum &&
-  platformSkillVersionChecksum({
-    content: resolved.content,
-    contentRef: resolved.contentRef,
-    manifest: resolved.manifest,
-    resources: resolved.resources,
-  }) === ref.checksum;
-
-const cacheReadiness = (revision: string, ready: boolean) => {
-  readinessByRevision.delete(revision);
-  readinessByRevision.set(revision, ready);
-  if (readinessByRevision.size > MAX_READINESS_REVISIONS) {
-    const oldest = readinessByRevision.keys().next().value;
-    if (oldest) readinessByRevision.delete(oldest);
-  }
-};
 
 export const getEmptyPublishedSkillCatalog = () => ({ revision: 'disabled', skills: [] });
 
-const compareCodepoint = (left: string, right: string) =>
-  left < right ? -1 : left > right ? 1 : 0;
+const reportProjectionStored = (
+  reportRuntimeState: typeof reportPlatformRuntimeMaterialization,
+  database: LobeChatDatabase,
+) => {
+  return (projectionKey: string | null) => {
+    const projection = projectionKey ? projectionByRevision.get(projectionKey) : undefined;
+    if (!projection?.executionReady) {
+      reportPlatformRuntimeMaterializationSafely(reportRuntimeState, database, {
+        domain: 'skill_catalog',
+        errorCategory: 'configuration_invalid',
+        health: 'unavailable',
+        source: 'unavailable',
+      });
+      return;
+    }
+    reportPlatformRuntimeMaterializationSafely(reportRuntimeState, database, {
+      domain: 'skill_catalog',
+      health: 'healthy',
+      revisionId: projection.targetRevisionId,
+      source: 'database',
+    });
+  };
+};
+
+const reportProjectionLoadFailure = (
+  reportRuntimeState: typeof reportPlatformRuntimeMaterialization,
+  database: LobeChatDatabase,
+) => {
+  return (error: unknown) => {
+    reportPlatformRuntimeMaterializationSafely(reportRuntimeState, database, {
+      domain: 'skill_catalog',
+      errorCategory: classifyRuntimeMaterializationError(error),
+      health: 'unavailable',
+      source: 'unavailable',
+    });
+  };
+};
 
 export class SkillCatalogReadService {
   private readonly activeProjectionCache: DomainConfigCache<string>;
@@ -176,198 +147,20 @@ export class SkillCatalogReadService {
       now: options.now,
       observabilityDomain: 'skill_catalog',
       onEntryStored: runtimeReporting
-        ? (projectionKey) => {
-            const projection = projectionKey ? projectionByRevision.get(projectionKey) : undefined;
-            if (!projection?.executionReady) {
-              reportPlatformRuntimeMaterializationSafely(
-                reportRuntimeState,
-                runtimeReporting.database,
-                {
-                  domain: 'skill_catalog',
-                  errorCategory: 'configuration_invalid',
-                  health: 'unavailable',
-                  source: 'unavailable',
-                },
-              );
-              return;
-            }
-            reportPlatformRuntimeMaterializationSafely(
-              reportRuntimeState,
-              runtimeReporting.database,
-              {
-                domain: 'skill_catalog',
-                health: 'healthy',
-                revisionId: projection.targetRevisionId,
-                source: 'database',
-              },
-            );
-          }
+        ? reportProjectionStored(reportRuntimeState, runtimeReporting.database)
         : undefined,
       onLoadFailure: runtimeReporting
-        ? (error) => {
-            reportPlatformRuntimeMaterializationSafely(
-              reportRuntimeState,
-              runtimeReporting.database,
-              {
-                domain: 'skill_catalog',
-                errorCategory: classifyRuntimeMaterializationError(error),
-                health: 'unavailable',
-                source: 'unavailable',
-              },
-            );
-          }
+        ? reportProjectionLoadFailure(reportRuntimeState, runtimeReporting.database)
         : undefined,
     });
   }
 
-  private loadPublishedProjection = async (): Promise<string> => {
-    const snapshot = await this.loadCurrentSnapshot();
-    if (snapshot.items.length > MAX_PUBLISHED_SKILLS) {
-      throw new Error('Published Skill item limit was exceeded');
-    }
-    const platformItems = snapshot.items;
-    const catalogTokenEntries: SkillCatalogTokenEntry[] = snapshot.tokenEntries;
-    const builtins = new Map(this.builtinSkills.map((skill) => [skill.skillKey, skill] as const));
-    for (const skillKey of snapshot.builtinOverrideTombstones) builtins.delete(skillKey);
-    const platformSkills: PublishedSkill[] = [];
-    const platformResolvedByKey = new Map<string, ResolvedSkill>();
-    let projectionContainsInvalidItems = false;
-    for (const item of platformItems) {
-      if (builtins.has(item.skillKey) && !item.allowBuiltinOverride) continue;
-      // Per-item resilience: one corrupt published skill must not take down the entire
-      // managed catalog projection (availability DoS from stale sizeBytes/etc.).
-      let resolved: ResolvedSkill;
-      try {
-        resolved = serverResolvedSkillSchema.parse({
-          allowBuiltinOverride: item.allowBuiltinOverride,
-          checksum: item.version.checksum,
-          content: item.version.content,
-          contentRef: item.version.contentRef,
-          description: item.description,
-          displayName: item.displayName,
-          distribution: item.distribution,
-          manifest: item.version.manifest,
-          resources: item.version.resources,
-          skillId: item.skillId,
-          skillKey: item.skillKey,
-          source: item.source,
-          version: item.version.version,
-          versionId: item.version.id,
-        });
-      } catch {
-        projectionContainsInvalidItems = true;
-        continue;
-      }
-      platformSkills.push({
-        checksum: item.version.checksum,
-        description: item.description,
-        displayName: item.displayName,
-        distribution: item.distribution,
-        skillKey: item.skillKey,
-        source: item.source,
-        version: item.version.version,
-      });
-      platformResolvedByKey.set(item.skillKey, resolved);
-    }
-
-    const merged = new Map<string, PublishedSkill>(builtins);
-    for (const skill of platformSkills) merged.set(skill.skillKey, skill);
-    const skills = [...merged.values()]
-      .map(({ checksum, description, displayName, distribution, skillKey, source, version }) => ({
-        checksum,
-        description,
-        displayName,
-        distribution,
-        skillKey,
-        source,
-        version,
-      }))
-      .sort((left, right) => compareCodepoint(left.skillKey, right.skillKey));
-    if (skills.length > MAX_PUBLISHED_SKILLS) {
-      throw new Error('Published Skill item limit was exceeded after builtin merge');
-    }
-    const revision = buildSkillCatalogRevisionToken({
-      builtins: this.builtinSkills.map(({ checksum, skillKey, version }) => ({
-        checksum,
-        skillKey,
-        version,
-      })),
-      platform: catalogTokenEntries,
-    }).value;
-    const executionIndex = new Map<string, ResolvedSkill>();
-    let executionReady = !projectionContainsInvalidItems;
-    let payloadBytes = 0;
-    for (const skill of skills) {
-      const builtin = this.builtinSkills.find((item) => item.skillKey === skill.skillKey);
-      const resolved =
-        platformResolvedByKey.get(skill.skillKey) ??
-        (builtin
-          ? serverResolvedSkillSchema.parse({
-              allowBuiltinOverride: false,
-              checksum: builtin.checksum,
-              content: builtin.content,
-              contentRef: builtin.contentRef ?? null,
-              description: builtin.description,
-              displayName: builtin.displayName,
-              distribution: builtin.distribution,
-              manifest: builtin.manifest,
-              resources: builtin.resources ?? [],
-              skillId: `builtin:${builtin.skillKey}`,
-              skillKey: builtin.skillKey,
-              source: 'builtin',
-              version: builtin.version,
-              versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
-            })
-          : undefined);
-      const ref = { checksum: skill.checksum, skillKey: skill.skillKey, version: skill.version };
-      if (
-        !resolved ||
-        !isCanonicalExactResolution(ref, resolved) ||
-        resolved.contentRef !== null ||
-        resolved.resources.some(
-          (resource) => resource.content === undefined || resource.contentRef !== undefined,
-        )
-      ) {
-        executionReady = false;
-        continue;
-      }
-      const resolvedBytes = Buffer.byteLength(JSON.stringify(resolved), 'utf8');
-      payloadBytes += resolvedBytes;
-      if (payloadBytes > MAX_PUBLISHED_SKILL_PAYLOAD_BYTES) {
-        throw new Error('Published Skill aggregate payload limit was exceeded');
-      }
-      executionIndex.set(exactRefKey(ref), structuredClone(resolved));
-    }
-    const ready = executionReady && executionIndex.size === skills.length;
-    cacheReadiness(revision, ready);
-    const catalog = {
-      revision,
-      skills,
-    };
-    const projectionKey = `${this.projectionSource}:${revision}`;
-    const previous = projectionByRevision.get(projectionKey);
-    if (previous) retainedProjectionBytes -= previous.payloadBytes;
-    projectionByRevision.delete(projectionKey);
-    projectionByRevision.set(projectionKey, {
-      catalog: cloneCatalog(catalog),
-      executionIndex,
-      executionReady: ready,
-      payloadBytes,
-      targetRevisionId: revision,
+  private loadPublishedProjection = async (): Promise<string> =>
+    loadPublishedSkillProjection({
+      builtinSkills: this.builtinSkills,
+      loadCurrentSnapshot: this.loadCurrentSnapshot,
+      projectionSource: this.projectionSource,
     });
-    retainedProjectionBytes += payloadBytes;
-    while (
-      projectionByRevision.size > MAX_READINESS_REVISIONS ||
-      retainedProjectionBytes > MAX_RETAINED_PROJECTION_BYTES
-    ) {
-      const oldest = projectionByRevision.keys().next().value;
-      if (!oldest) break;
-      const evicted = projectionByRevision.get(oldest);
-      projectionByRevision.delete(oldest);
-      if (evicted) retainedProjectionBytes -= evicted.payloadBytes;
-    }
-    return projectionKey;
-  };
 
   getPublishedCatalog = async () => {
     let projectionKey = await this.activeProjectionCache.get();
@@ -393,105 +186,52 @@ export class SkillCatalogReadService {
   resolveForExecution = async (skillKey: string, version?: string) => {
     const builtin = this.builtinSkills.find((item) => item.skillKey === skillKey);
     if (!version) {
-      const catalog = await this.getPublishedCatalog();
-      const current = catalog.skills.find((skill) => skill.skillKey === skillKey);
-      if (!current) return undefined;
-      const indexed = this.publishedExecutionIndex.get(
-        exactRefKey({
-          checksum: current.checksum,
-          skillKey: current.skillKey,
-          version: current.version,
-        }),
-      );
-      if (indexed) return structuredClone(indexed);
-      if (current.source === 'builtin') {
-        if (
-          !builtin ||
-          builtin.version !== current.version ||
-          builtin.checksum !== current.checksum
-        ) {
-          return undefined;
-        }
-        return serverResolvedSkillSchema.parse({
-          allowBuiltinOverride: false,
-          checksum: builtin.checksum,
-          content: builtin.content,
-          contentRef: builtin.contentRef ?? null,
-          description: builtin.description,
-          displayName: builtin.displayName,
-          distribution: builtin.distribution,
-          manifest: builtin.manifest,
-          resources: builtin.resources ?? [],
-          skillId: `builtin:${builtin.skillKey}`,
-          skillKey: builtin.skillKey,
-          source: 'builtin',
-          version: builtin.version,
-          versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
-        });
-      }
-      const platform = await this.model.resolvePublishedVersion(skillKey);
-      if (
-        !platform ||
-        platform.version.version !== current.version ||
-        platform.version.checksum !== current.checksum
-      ) {
-        return undefined;
-      }
-      return serverResolvedSkillSchema.parse({
-        allowBuiltinOverride: platform.allowBuiltinOverride,
-        checksum: platform.version.checksum,
-        content: platform.version.content,
-        contentRef: platform.version.contentRef,
-        description: platform.description,
-        displayName: platform.displayName,
-        distribution: platform.distribution,
-        manifest: platform.version.manifest,
-        resources: platform.version.resources,
-        skillId: platform.skillId,
-        skillKey: platform.skillKey,
-        source: platform.source,
-        version: platform.version.version,
-        versionId: platform.version.id,
-      });
+      return this.resolveCurrentForExecution(skillKey, builtin);
     }
     const platform = await this.model.resolvePublishedVersion(skillKey, version);
     if (platform && (!builtin || platform.allowBuiltinOverride)) {
-      return serverResolvedSkillSchema.parse({
-        allowBuiltinOverride: platform.allowBuiltinOverride,
-        checksum: platform.version.checksum,
-        content: platform.version.content,
-        contentRef: platform.version.contentRef,
-        description: platform.description,
-        displayName: platform.displayName,
-        distribution: platform.distribution,
-        manifest: platform.version.manifest,
-        resources: platform.version.resources,
-        skillId: platform.skillId,
-        skillKey: platform.skillKey,
-        source: platform.source,
-        version: platform.version.version,
-        versionId: platform.version.id,
-      });
+      return parseResolvedPlatformSkill(platform);
     }
     if (builtin?.version === version) {
-      return serverResolvedSkillSchema.parse({
-        allowBuiltinOverride: false,
-        checksum: builtin.checksum,
-        content: builtin.content,
-        contentRef: builtin.contentRef ?? null,
-        description: builtin.description,
-        displayName: builtin.displayName,
-        distribution: builtin.distribution,
-        manifest: builtin.manifest,
-        resources: builtin.resources ?? [],
-        skillId: `builtin:${builtin.skillKey}`,
-        skillKey: builtin.skillKey,
-        source: 'builtin',
-        version: builtin.version,
-        versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
-      });
+      return parseResolvedBuiltinSkill(builtin);
     }
     return undefined;
+  };
+
+  private resolveCurrentForExecution = async (
+    skillKey: string,
+    builtin: BuiltinSkillDefinition | undefined,
+  ) => {
+    const catalog = await this.getPublishedCatalog();
+    const current = catalog.skills.find((skill) => skill.skillKey === skillKey);
+    if (!current) return undefined;
+    const indexed = this.publishedExecutionIndex.get(
+      exactRefKey({
+        checksum: current.checksum,
+        skillKey: current.skillKey,
+        version: current.version,
+      }),
+    );
+    if (indexed) return structuredClone(indexed);
+    if (current.source === 'builtin') {
+      if (
+        !builtin ||
+        builtin.version !== current.version ||
+        builtin.checksum !== current.checksum
+      ) {
+        return undefined;
+      }
+      return parseResolvedBuiltinSkill(builtin);
+    }
+    const platform = await this.model.resolvePublishedVersion(skillKey);
+    if (
+      !platform ||
+      platform.version.version !== current.version ||
+      platform.version.checksum !== current.checksum
+    ) {
+      return undefined;
+    }
+    return parseResolvedPlatformSkill(platform);
   };
 
   /**
@@ -508,73 +248,38 @@ export class SkillCatalogReadService {
     for (const ref of refs) {
       unique.set(`${ref.skillKey}\0${ref.version}`, ref);
     }
-    const platformBatch =
-      typeof this.model.resolvePublishedVersionsExact === 'function'
-        ? await this.model.resolvePublishedVersionsExact([...unique.values()])
-        : new Map(
-            await Promise.all(
-              [...unique.values()].map(async (ref) => {
-                const platform = await this.model.resolvePublishedVersion(
-                  ref.skillKey,
-                  ref.version,
-                );
-                // Key as plain string so the Map union with resolvePublishedVersionsExact
-                // does not force callers to pass a template-literal branded key.
-                return [`${ref.skillKey}\0${ref.version}`, platform] as [string, typeof platform];
-              }),
-            ),
-          );
+    const platformBatch = await this.loadExactPlatformBatch([...unique.values()]);
 
     for (const [key, ref] of unique) {
       const builtin = this.builtinSkills.find((item) => item.skillKey === ref.skillKey);
       const platform = platformBatch.get(key);
       if (platform && (!builtin || platform.allowBuiltinOverride)) {
-        out.set(
-          key,
-          serverResolvedSkillSchema.parse({
-            allowBuiltinOverride: platform.allowBuiltinOverride,
-            checksum: platform.version.checksum,
-            content: platform.version.content,
-            contentRef: platform.version.contentRef,
-            description: platform.description,
-            displayName: platform.displayName,
-            distribution: platform.distribution,
-            manifest: platform.version.manifest,
-            resources: platform.version.resources,
-            skillId: platform.skillId,
-            skillKey: platform.skillKey,
-            source: platform.source,
-            version: platform.version.version,
-            versionId: platform.version.id,
-          }),
-        );
+        out.set(key, parseResolvedPlatformSkill(platform));
         continue;
       }
       if (builtin?.version === ref.version) {
-        out.set(
-          key,
-          serverResolvedSkillSchema.parse({
-            allowBuiltinOverride: false,
-            checksum: builtin.checksum,
-            content: builtin.content,
-            contentRef: builtin.contentRef ?? null,
-            description: builtin.description,
-            displayName: builtin.displayName,
-            distribution: builtin.distribution,
-            manifest: builtin.manifest,
-            resources: builtin.resources ?? [],
-            skillId: `builtin:${builtin.skillKey}`,
-            skillKey: builtin.skillKey,
-            source: 'builtin',
-            version: builtin.version,
-            versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
-          }),
-        );
+        out.set(key, parseResolvedBuiltinSkill(builtin));
         continue;
       }
       out.set(key, undefined);
     }
     return out;
+  };
+
+  private loadExactPlatformBatch = async (refs: Array<{ skillKey: string; version: string }>) => {
+    if (typeof this.model.resolvePublishedVersionsExact === 'function') {
+      return this.model.resolvePublishedVersionsExact(refs);
+    }
+    return new Map(
+      await Promise.all(
+        refs.map(async (ref) => {
+          const platform = await this.model.resolvePublishedVersion(ref.skillKey, ref.version);
+          // Key as plain string so the Map union with resolvePublishedVersionsExact
+          // does not force callers to pass a template-literal branded key.
+          return [`${ref.skillKey}\0${ref.version}`, platform] as [string, typeof platform];
+        }),
+      ),
+    );
   };
 
   /**

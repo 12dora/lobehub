@@ -1,15 +1,10 @@
 import type { z } from 'zod';
 
 import {
-  PlatformRevisionConflictError,
   PlatformSkillCatalogModel,
-  type PlatformSkillDetailView,
-  platformSkillDraftToken,
   platformSkillVersionChecksum,
-  type PlatformSkillVersionView,
 } from '@/database/models/platform';
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
-import type { PlatformSkillValidationResult } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type {
@@ -22,17 +17,13 @@ import type {
   adminSkillRollbackInputSchema,
   adminSkillUpdateDraftInputSchema,
   adminSkillValidateInputSchema,
-  ImmutableSkillVersion,
-  SkillValidationResult,
 } from '../../contracts/skillCatalog';
 import type { AuditAction } from '../audit/auditActionCatalog';
-import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
-import {
-  SkillCatalogInvalidCursorError,
-  SkillCatalogNotFoundError,
-  SkillCatalogValidationError,
-} from './errors';
+import { encodeCursor, parseDependentCursor, parseVersionCursor } from './adminCursors';
+import { assertSkillDraft, runSkillCatalogAtomicMutation } from './adminMutations';
+import { detailOutput, toStoredValidation, versionSummary, versionView } from './adminViews';
+import { SkillCatalogNotFoundError, SkillCatalogValidationError } from './errors';
 import {
   type PublishSkillInput,
   type SkillCatalogPublicationOptions,
@@ -61,92 +52,6 @@ export interface SkillCatalogAdminServiceOptions {
     beforeSuccessAudit?: () => Promise<void>;
   };
 }
-
-const validationView = (
-  validation: PlatformSkillVersionView['validation'],
-): SkillValidationResult | null => {
-  if (!validation) return null;
-  return {
-    ...validation,
-    validatedAt: new Date(validation.validatedAt),
-  };
-};
-
-/** Persist validation with ISO string timestamps (DB jsonb shape). */
-const toStoredValidation = (validation: SkillValidationResult): PlatformSkillValidationResult => ({
-  issues: validation.issues,
-  validatedAt: validation.validatedAt.toISOString(),
-  validatorVersion: validation.validatorVersion,
-});
-
-const versionView = (version: PlatformSkillVersionView): ImmutableSkillVersion => ({
-  ...version,
-  validation: validationView(version.validation),
-});
-
-const versionSummary = (
-  version: PlatformSkillVersionView,
-  lastPublishedRevision: number | null = null,
-) => ({
-  checksum: version.checksum,
-  createdAt: version.createdAt,
-  createdBy: version.createdBy,
-  id: version.id,
-  lastPublishedRevision,
-  skillId: version.skillId,
-  validation: validationView(version.validation),
-  version: version.version,
-});
-
-const encodeCursor = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
-
-const decodeCursor = <T>(cursor: string | undefined, guard: (value: unknown) => value is T) => {
-  if (!cursor) return undefined;
-  try {
-    const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-    if (!guard(value)) throw new SkillCatalogInvalidCursorError();
-    return value;
-  } catch (error) {
-    if (error instanceof SkillCatalogInvalidCursorError) throw error;
-    throw new SkillCatalogInvalidCursorError();
-  }
-};
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value && typeof value === 'object' && !Array.isArray(value));
-
-const parseVersionCursor = (cursor?: string) => {
-  const decoded = decodeCursor(cursor, (value): value is { createdAt: string; id: string } =>
-    Boolean(
-      isRecord(value) &&
-      typeof value.createdAt === 'string' &&
-      !Number.isNaN(new Date(value.createdAt).getTime()) &&
-      typeof value.id === 'string' &&
-      value.id.length > 0,
-    ),
-  );
-  return decoded ? { createdAt: new Date(decoded.createdAt), id: decoded.id } : undefined;
-};
-
-const parseDependentCursor = (cursor?: string) =>
-  decodeCursor(
-    cursor,
-    (
-      value,
-    ): value is {
-      id: string;
-      key: string;
-      type: 'agent' | 'skill';
-      version: string;
-    } =>
-      Boolean(
-        isRecord(value) &&
-        typeof value.id === 'string' &&
-        typeof value.key === 'string' &&
-        (value.type === 'agent' || value.type === 'skill') &&
-        typeof value.version === 'string',
-      ),
-  );
 
 export class SkillCatalogAdminService {
   private readonly modelOptions: ConstructorParameters<typeof PlatformSkillCatalogModel>[1];
@@ -185,45 +90,6 @@ export class SkillCatalogAdminService {
   private model = (db: LobeChatDatabase | Transaction = this.db) =>
     new PlatformSkillCatalogModel(db, this.modelOptions);
 
-  private appendAudit = async (params: {
-    action: AuditAction;
-    actorUserId: string;
-    afterDiff?: Record<string, unknown>;
-    db?: LobeChatDatabase | Transaction;
-    reason?: string | null;
-    result: 'failure' | 'success';
-    targetId: string;
-  }) => {
-    await new PlatformAuditService(params.db ?? this.db).append({
-      action: params.action,
-      actorUserId: params.actorUserId,
-      afterDiff: params.afterDiff,
-      reason: params.reason,
-      result: params.result,
-      targetId: params.targetId,
-      targetType: 'skill',
-    });
-  };
-
-  private appendFailureAudit = async (params: {
-    action: AuditAction;
-    actorUserId: string;
-    reason?: string | null;
-    targetId: string;
-  }) => {
-    try {
-      await this.appendAudit({
-        ...params,
-        afterDiff: { error: 'skill_catalog_mutation_failed' },
-        result: 'failure',
-      });
-    } catch (auditError) {
-      console.error('[admin.skills] failure audit append failed', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-  };
-
   private atomicMutation = async <T>(params: {
     action: AuditAction;
     actorUserId: string;
@@ -231,82 +97,12 @@ export class SkillCatalogAdminService {
     run: (tx: Transaction) => Promise<T>;
     summarize: (result: T) => Record<string, unknown>;
     targetId: (result?: T) => string;
-  }): Promise<T> => {
-    try {
-      return await this.db.transaction(async (tx) => {
-        const result = await params.run(tx);
-        await this.lifecycle.beforeSuccessAudit?.();
-        await this.appendAudit({
-          action: params.action,
-          actorUserId: params.actorUserId,
-          afterDiff: params.summarize(result),
-          db: tx,
-          reason: params.reason,
-          result: 'success',
-          targetId: params.targetId(result),
-        });
-        return result;
-      });
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        reason: params.reason,
-        targetId: params.targetId(),
-      });
-      throw error;
-    }
-  };
-
-  private assertDraft = async (
-    tx: Transaction,
-    input: {
-      expectedDraftToken: string;
-      expectedRevision: number;
-      id: string;
-    },
-  ) => {
-    const repository = new PlatformSkillCatalogRepository(tx);
-    const locked = await repository.lockSkill(input.id);
-    if (!locked) throw new SkillCatalogNotFoundError();
-    const detail = await this.model(tx).getDetail(input.id);
-    if (!detail) throw new SkillCatalogNotFoundError();
-    // Archived is terminal for draft mutations; recovery is rollback only.
-    if (detail.draft.status === 'archived') throw new SkillCatalogNotFoundError();
-    if (
-      detail.baseRevision !== input.expectedRevision ||
-      platformSkillDraftToken(detail.draft) !== input.expectedDraftToken
-    ) {
-      throw new PlatformRevisionConflictError('Skill draft changed', {
-        currentRevision: detail.baseRevision,
-        expectedRevision: input.expectedRevision,
-        resourceId: input.id,
-        resourceType: 'skill',
-      });
-    }
-    return detail;
-  };
-
-  private detailOutput = (
-    detail: PlatformSkillDetailView,
-    publishedRevisions: ReadonlyMap<string, number>,
-  ) => ({
-    baseRevision: detail.baseRevision,
-    draft: detail.draft,
-    draftToken: detail.draftToken,
-    latestVersion: detail.latestVersion
-      ? versionSummary(
-          detail.latestVersion,
-          publishedRevisions.get(detail.latestVersion.id) ?? null,
-        )
-      : null,
-    publishedVersion: detail.publishedVersion
-      ? versionSummary(
-          detail.publishedVersion,
-          publishedRevisions.get(detail.publishedVersion.id) ?? null,
-        )
-      : null,
-  });
+  }): Promise<T> =>
+    runSkillCatalogAtomicMutation({
+      ...params,
+      beforeSuccessAudit: this.lifecycle.beforeSuccessAudit,
+      db: this.db,
+    });
 
   getDetail = async (id: string) => {
     const detail = await this.model().getDetail(id);
@@ -317,7 +113,7 @@ export class SkillCatalogAdminService {
     const publishedRevisions = await new PlatformSkillCatalogRepository(
       this.db,
     ).getLastPublishedRevisions(id, versionIds);
-    return this.detailOutput(detail, publishedRevisions);
+    return detailOutput(detail, publishedRevisions);
   };
 
   getVersion = async (skillId: string, versionId: string) => {
@@ -474,7 +270,7 @@ export class SkillCatalogAdminService {
       actorUserId,
       reason: input.reason,
       run: async (tx) => {
-        await this.assertDraft(tx, { ...input, id: input.skillId });
+        await assertSkillDraft(tx, this.model(tx), { ...input, id: input.skillId });
         const validation = await this.validation.validateStoredVersion(
           tx,
           input.skillId,

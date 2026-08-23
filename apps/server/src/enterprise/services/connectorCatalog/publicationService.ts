@@ -1,117 +1,42 @@
-import { randomUUID } from 'node:crypto';
-
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import type { z } from 'zod';
 
-import {
-  checksumPayload,
-  PlatformRevisionConflictError,
-  type ResourcePointerAdapter,
-} from '@/database/models/platform';
-import {
-  PlatformConnectorCatalogRepository,
-  type PlatformConnectorRevisionPayload,
-} from '@/database/repositories/platformConnectorCatalog';
-import {
-  platformConnectors,
-  platformConnectorTools,
-  platformResourceRevisions,
-} from '@/database/schemas/platform';
-import type { LobeChatDatabase, Transaction } from '@/database/type';
+import { PlatformRevisionConflictError } from '@/database/models/platform';
+import { PlatformConnectorCatalogRepository } from '@/database/repositories/platformConnectorCatalog';
+import { platformConnectors } from '@/database/schemas/platform';
+import type { LobeChatDatabase } from '@/database/type';
 
 import {
   adminConnectorArchiveInputSchema,
   adminConnectorPublishInputSchema,
   adminConnectorRevokeAllBindingsInputSchema,
   adminConnectorRollbackInputSchema,
-  collectConnectorSecretLeaves,
 } from '../../contracts/platformConnectors';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
-import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import { PlatformPublisherService } from '../platformPublisher';
 import type { ConnectorFailureAuditWriter } from './catalogAudit';
-import {
-  connectorAuditSummary,
-  loadConnectorSecretSourcesSafe,
-  sanitizeConnectorReason,
-  withConnectorFailureAudit,
-} from './catalogAudit';
-import { parseConnectorRevisionPayload, resolveConnectorSecretVersion } from './catalogSnapshot';
-import type {
-  ConnectorCatalogLifecycle,
-  ConnectorCatalogSecretStore,
-  ConnectorDraft,
-  ConnectorResolvedSecret,
-} from './catalogTypes';
+import { sanitizeConnectorReason, withConnectorFailureAudit } from './catalogAudit';
+import type { ConnectorCatalogLifecycle, ConnectorCatalogSecretStore } from './catalogTypes';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
-import { connectorToolInsertValues, loadConnectorDraft } from './draftService';
 import { PlatformConnectorContractError } from './errors';
+import {
+  acquireConnectorPublicationDependencyLock,
+  createConnectorPublicationPointer,
+} from './publicationPointer';
+import { preflightPublish, preflightRevision } from './publicationPreflight';
+import { revokeConnectorBindings, sanitizeEmergencyReason } from './publicationRevoke';
 import { invalidateConnectorPublishedIndex } from './publishedIndex';
 import { mapRevisionBoundaryError } from './revisionErrors';
-import {
-  assertNoRevisionCredentialMaterial,
-  revisionPayload,
-  revisionSecretFingerprint,
-  sanitizeConnectorRevisionPayload,
-} from './revisionPayload';
-import { cleanupConnectorSecretRefs, type ConnectorSecretCleanupRef } from './secretCleanup';
-import {
-  parseConnectorToolsForWrite,
-  parseDiscoveredConnectorTools,
-} from './toolDefinitionValidator';
+import { sanitizeConnectorRevisionPayload } from './revisionPayload';
+import { cleanupConnectorSecretRefs } from './secretCleanup';
+
+export { acquireConnectorPublicationDependencyLock };
 
 type PublishInput = z.input<typeof adminConnectorPublishInputSchema>;
 type RollbackInput = z.input<typeof adminConnectorRollbackInputSchema>;
 type ArchiveInput = z.input<typeof adminConnectorArchiveInputSchema>;
 type RevokeAllInput = z.input<typeof adminConnectorRevokeAllBindingsInputSchema>;
-
-interface ConnectorPublicationProof {
-  afterDiff: Record<string, unknown>;
-  cleanupRefs: ConnectorSecretCleanupRef[];
-  draftToken: string;
-  endpoint: string;
-  payload: PlatformConnectorRevisionPayload;
-  payloadChecksum: string;
-  policyVersion: number | string | null;
-  resolved: {
-    oauth: ConnectorResolvedSecret | null;
-    shared: ConnectorResolvedSecret | null;
-  };
-  secretFingerprint: string | null;
-  targetRevision: number | null;
-}
-
-const MAX_REVOKE_BINDINGS = 10_000;
-const MAX_REVOKE_PAGES = 100;
-const REVOKE_PAGE_SIZE = 100;
-const EMERGENCY_STOP_AUDIT_REASON = 'emergency_connector_stop';
-
-const sanitizeEmergencyReason = async (
-  secrets: ConnectorCatalogSecretStore,
-  connectorId: string,
-  reason: string | null | undefined,
-): Promise<string | null> => {
-  try {
-    return await sanitizeConnectorReason(secrets, connectorId, reason);
-  } catch (error) {
-    console.error('[connectorCatalog] emergency reason sanitization unavailable', {
-      connectorId,
-      errorClass: error instanceof Error ? error.name : 'UnknownError',
-    });
-    return EMERGENCY_STOP_AUDIT_REASON;
-  }
-};
-
-/** Shared by the production pointer and the real-PostgreSQL lock probe. */
-export const acquireConnectorPublicationDependencyLock = async (
-  tx: Transaction,
-  connectorId: string,
-  lifecycle: ConnectorCatalogLifecycle,
-): Promise<void> => {
-  await acquirePlatformDependencyPublicationLock(tx);
-  await lifecycle.afterPublicationDependencyLock?.(connectorId, tx);
-};
 
 export class ConnectorCatalogPublicationService {
   private readonly publisher: PlatformPublisherService;
@@ -127,345 +52,18 @@ export class ConnectorCatalogPublicationService {
     this.publisher = new PlatformPublisherService(db, invalidation);
   }
 
-  private prepareRevisionPayload = (
-    draft: ConnectorDraft,
-    secretLeaves: ReadonlySet<string>,
-  ): PlatformConnectorRevisionPayload => {
-    const payload = revisionPayload(draft);
-    assertNoRevisionCredentialMaterial(payload, secretLeaves);
-    return payload;
-  };
-
-  private resolvePayloadSecrets = async (
-    payload: PlatformConnectorRevisionPayload,
-  ): Promise<{
-    oauth: ConnectorResolvedSecret | null;
-    shared: ConnectorResolvedSecret | null;
-  }> => {
-    const connector = payload.connector;
-    const oauth = connector.oauthClientSecretConfigured
-      ? await resolveConnectorSecretVersion(
-          this.secrets,
-          connector.id,
-          'oauthClientSecret',
-          connector.oauthClientSecretFingerprint,
-        )
-      : null;
-    const shared = connector.sharedSecretConfigured
-      ? await resolveConnectorSecretVersion(
-          this.secrets,
-          connector.id,
-          'sharedSecret',
-          connector.sharedSecretFingerprint,
-        )
-      : null;
-    return { oauth, shared };
-  };
-
-  private preflightPublish = async (
-    connectorId: string,
-    expectedDraftToken: string,
-  ): Promise<ConnectorPublicationProof> => {
-    // Single connector select (includes durable connection-test columns) + tools.
-    // No request-time DDL, no separate connection-test query, no process-local fallback.
-    const detail = await loadConnectorDraft(this.db, connectorId);
-    if (detail.draftToken !== expectedDraftToken) throw new PlatformRevisionConflictError();
-    parseConnectorToolsForWrite(detail.draft.tools);
-    if (!detail.draft.enabled || !detail.draft.tools.some((tool) => tool.enabled)) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-    }
-    // Fail closed: publish requires a durable, non-stale, non-expired success bound
-    // to the exact draft revision + token. Absent/unreadable durable state denies.
-    const connectionTest = detail.draft.connectionTest;
-    if (
-      !connectionTest ||
-      connectionTest.status !== 'success' ||
-      connectionTest.stale ||
-      connectionTest.testedRevision !== detail.draft.revision ||
-      connectionTest.testedDraftToken !== detail.draftToken
-    ) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-    }
-    const outboundProof = await this.outbound.preflight(detail.draft.endpoint);
-    const sources = await loadConnectorSecretSourcesSafe(this.secrets, connectorId);
-    const payload = this.prepareRevisionPayload(
-      detail.draft,
-      collectConnectorSecretLeaves(sources.oauthClientSecret, sources.sharedSecret),
-    );
-    return {
-      afterDiff: { connector: connectorAuditSummary(detail.draft) },
-      cleanupRefs: [],
-      draftToken: detail.draftToken,
-      endpoint: payload.connector.endpoint,
-      payload,
-      payloadChecksum: checksumPayload(payload),
-      policyVersion: outboundProof.policyVersion,
-      resolved: await this.resolvePayloadSecrets(payload),
-      secretFingerprint: revisionSecretFingerprint(payload),
-      targetRevision: null,
-    };
-  };
-
-  private preflightRevision = async (
-    connectorId: string,
-    expectedDraftToken: string,
-    targetRevision: number,
-    mode: 'archive' | 'rollback',
-  ): Promise<ConnectorPublicationProof> => {
-    const detail = await loadConnectorDraft(this.db, connectorId);
-    if (detail.draftToken !== expectedDraftToken) throw new PlatformRevisionConflictError();
-    const target = await this.db.query.platformResourceRevisions.findFirst({
-      where: and(
-        eq(platformResourceRevisions.resourceType, 'connector'),
-        eq(platformResourceRevisions.resourceId, connectorId),
-        eq(platformResourceRevisions.revision, targetRevision),
-        eq(platformResourceRevisions.status, 'published'),
-      ),
-    });
-    if (!target || checksumPayload(target.payload) !== target.checksum) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-    }
-    const payload = parseConnectorRevisionPayload(target.payload);
-    if (
-      payload.connector.id !== connectorId ||
-      revisionSecretFingerprint(payload) !== target.secretFingerprint
-    ) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-    }
-    let policyVersion: number | string | null = null;
-    if (mode === 'rollback') {
-      parseDiscoveredConnectorTools(payload.tools.map((tool) => ({ ...tool, enabled: true })));
-      if (!payload.connector.enabled || payload.tools.length === 0) {
-        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-      }
-      policyVersion = (await this.outbound.preflight(payload.connector.endpoint)).policyVersion;
-    }
-    return {
-      afterDiff:
-        mode === 'archive'
-          ? { connectorId, status: 'archived' }
-          : { restoredFromRevision: targetRevision },
-      cleanupRefs: [],
-      draftToken: detail.draftToken,
-      endpoint: payload.connector.endpoint,
-      payload,
-      payloadChecksum: target.checksum,
-      policyVersion,
-      resolved:
-        mode === 'archive'
-          ? { oauth: null, shared: null }
-          : await this.resolvePayloadSecrets(payload),
-      secretFingerprint: target.secretFingerprint,
-      targetRevision,
-    };
-  };
-
-  private revokeBindings = async (
-    tx: Transaction,
-    connectorId: string,
-  ): Promise<{ cleanupRefs: ConnectorSecretCleanupRef[]; revoked: number }> => {
-    const repository = new PlatformConnectorCatalogRepository(tx);
-    const cleanupRefs: ConnectorSecretCleanupRef[] = [];
-    let cursor: string | undefined;
-    let revoked = 0;
-    const seenCursors = new Set<string>();
-    for (let pageIndex = 0; pageIndex < MAX_REVOKE_PAGES; pageIndex += 1) {
-      const page = await repository.revokeAllBindingsPage({
-        afterId: cursor,
-        connectorId,
-        limit: REVOKE_PAGE_SIZE,
-      });
-      revoked += page.revoked;
-      cleanupRefs.push(
-        ...page.tokenRefs.map((ref) => ({ connectorId, ref, slot: 'oauthBindingToken' as const })),
-        ...page.pkceVerifierRefs.map((ref) => ({
-          connectorId,
-          ref,
-          slot: 'oauthPkceVerifier' as const,
-        })),
-      );
-      if (revoked > MAX_REVOKE_BINDINGS) {
-        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
-      }
-      const nextCursor = page.nextCursor ?? undefined;
-      if (!nextCursor) {
-        await this.lifecycle.afterRevokeAll?.(connectorId, tx);
-        return { cleanupRefs, revoked };
-      }
-      if (nextCursor === cursor || seenCursors.has(nextCursor)) {
-        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
-      }
-      seenCursors.add(nextCursor);
-      cursor = nextCursor;
-    }
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
-  };
-
-  private materializeRevision = async (
-    tx: Transaction,
-    connectorId: string,
-    rawPayload: Record<string, unknown>,
-    revision: number,
-    status: 'archived' | 'published',
-    actorUserId: string,
-    storedSecretFingerprint: string | null,
-    proof: ConnectorPublicationProof,
-  ): Promise<void> => {
-    const payload = parseConnectorRevisionPayload(rawPayload);
-    if (
-      payload.connector.id !== connectorId ||
-      checksumPayload(payload) !== proof.payloadChecksum ||
-      payload.connector.endpoint !== proof.endpoint
-    ) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-    }
-    const connector = payload.connector;
-    if (revisionSecretFingerprint(payload) !== storedSecretFingerprint) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-    }
-    const { oauth, shared } = proof.resolved;
-    await tx
-      .update(platformConnectors)
-      .set({
-        connectorKey: connector.key,
-        credentialMode: connector.credentialMode,
-        description: connector.description,
-        displayName: connector.displayName,
-        enabled: status === 'published' && connector.enabled,
-        endpoint: connector.endpoint,
-        legacyConnectionType: 'http',
-        legacyMcpServerUrl: connector.endpoint,
-        legacyName: connector.displayName,
-        oauthClientSecretFingerprint: oauth?.fingerprint ?? null,
-        oauthClientSecretRef: oauth?.ref ?? null,
-        oauthClientSecretUpdatedAt: oauth?.updatedAt ?? null,
-        oauthConfig: connector.oauthConfig,
-        sharedSecretFingerprint: shared?.fingerprint ?? null,
-        sharedSecretRef: shared?.ref ?? null,
-        sharedSecretUpdatedAt: shared?.updatedAt ?? null,
-        sort: connector.sort,
-        status,
-        transport: 'http',
-        updatedAt: new Date(),
-        updatedBy: actorUserId,
-      })
-      .where(eq(platformConnectors.id, connectorId));
-    await tx
-      .delete(platformConnectorTools)
-      .where(eq(platformConnectorTools.connectorId, connectorId));
-    if (payload.tools.length > 0) {
-      const tools = parseDiscoveredConnectorTools(
-        payload.tools.map((tool) => ({ ...tool, enabled: true })),
-      );
-      await tx.insert(platformConnectorTools).values(
-        connectorToolInsertValues(
-          tools.map((tool) => ({
-            ...tool,
-            id: randomUUID(),
-            outputSchema: tool.outputSchema ?? {},
-          })),
-        ).map((tool) => ({ ...tool, connectorId })),
-      );
-    }
-    // Published revisions are immutable operation inputs. Keep a binding pinned
-    // to its historical revision alive for already-approved operations; new
-    // operations on a newer revision will reject it and require reconnect.
-    // Archive is the emergency-stop boundary and revokes every binding.
-    if (status === 'archived') {
-      const revoked = await this.revokeBindings(tx, connectorId);
-      proof.cleanupRefs.push(...revoked.cleanupRefs);
-    }
-  };
-
   private pointer = (
     connectorId: string,
     actorUserId: string,
-    proof: ConnectorPublicationProof,
-  ): ResourcePointerAdapter => ({
-    assertLockedState: async (tx) => {
-      // lockAndGetRevision has already acquired the connector row lock. Joining
-      // the shared dependency protocol here serializes Agent exact validation
-      // with every publish, rollback and archive pointer/materialization change.
-      await acquireConnectorPublicationDependencyLock(tx, connectorId, this.lifecycle);
-      const detail = await loadConnectorDraft(tx, connectorId);
-      if (detail.draftToken !== proof.draftToken) throw new PlatformRevisionConflictError();
-      if (proof.policyVersion !== null) {
-        let currentPolicyVersion: number | string;
-        try {
-          currentPolicyVersion = this.outbound.getPolicyVersion();
-        } catch {
-          throw new PlatformRevisionConflictError();
-        }
-        if (currentPolicyVersion !== proof.policyVersion) {
-          throw new PlatformRevisionConflictError();
-        }
-      }
-      if (proof.targetRevision !== null) {
-        const target = await tx.query.platformResourceRevisions.findFirst({
-          where: and(
-            eq(platformResourceRevisions.resourceType, 'connector'),
-            eq(platformResourceRevisions.resourceId, connectorId),
-            eq(platformResourceRevisions.revision, proof.targetRevision),
-            eq(platformResourceRevisions.status, 'published'),
-          ),
-        });
-        if (
-          !target ||
-          target.checksum !== proof.payloadChecksum ||
-          target.secretFingerprint !== proof.secretFingerprint ||
-          checksumPayload(target.payload) !== proof.payloadChecksum ||
-          parseConnectorRevisionPayload(target.payload).connector.endpoint !== proof.endpoint
-        ) {
-          throw new PlatformRevisionConflictError();
-        }
-      }
-    },
-    lockAndGetRevision: async (tx) => {
-      const [row] = await tx
-        .select({ revision: platformConnectors.revision })
-        .from(platformConnectors)
-        .where(eq(platformConnectors.id, connectorId))
-        .limit(1)
-        .for('update');
-      if (!row) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
-      return row.revision;
-    },
-    materializePublished: async (tx, { payload, revision, secretFingerprint, status }) => {
-      await this.materializeRevision(
-        tx,
-        connectorId,
-        payload,
-        revision,
-        status === 'archived' ? 'archived' : 'published',
-        actorUserId,
-        secretFingerprint ?? null,
-        proof,
-      );
-    },
-    prepareLockedPublish: async () => ({ afterDiff: proof.afterDiff, payload: proof.payload }),
-    updatePointer: async (tx, { revision, status }) => {
-      const row = await tx.query.platformResourceRevisions.findFirst({
-        where: and(
-          eq(platformResourceRevisions.resourceType, 'connector'),
-          eq(platformResourceRevisions.resourceId, connectorId),
-          eq(platformResourceRevisions.revision, revision),
-        ),
-      });
-      if (!row) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-      await tx
-        .update(platformConnectors)
-        .set({
-          publishedAt: row.publishedAt ?? row.createdAt,
-          publishedChecksum: row.checksum,
-          publishedRevision: revision,
-          revision,
-          status: status === 'archived' ? 'archived' : 'published',
-          updatedAt: new Date(),
-          updatedBy: actorUserId,
-        })
-        .where(eq(platformConnectors.id, connectorId));
-    },
-  });
+    proof: Parameters<typeof createConnectorPublicationPointer>[0]['proof'],
+  ) =>
+    createConnectorPublicationPointer({
+      actorUserId,
+      connectorId,
+      lifecycle: this.lifecycle,
+      outbound: this.outbound,
+      proof,
+    });
 
   private publishInvalidation = async (connectorId: string, revision: number): Promise<void> => {
     if (!this.invalidation) return;
@@ -501,7 +99,13 @@ export class ConnectorCatalogPublicationService {
         writer: this.failureAuditWriter,
       },
       async () => {
-        const proof = await this.preflightPublish(command.id, command.expectedDraftToken);
+        const proof = await preflightPublish({
+          connectorId: command.id,
+          db: this.db,
+          expectedDraftToken: command.expectedDraftToken,
+          outbound: this.outbound,
+          secrets: this.secrets,
+        });
         await this.lifecycle.afterPublicationPreflight?.(command.id);
         const result = await this.publisher.publish({
           actorUserId,
@@ -536,12 +140,15 @@ export class ConnectorCatalogPublicationService {
         writer: this.failureAuditWriter,
       },
       async () => {
-        const proof = await this.preflightRevision(
-          command.id,
-          command.expectedDraftToken,
-          command.targetRevision,
-          'rollback',
-        );
+        const proof = await preflightRevision({
+          connectorId: command.id,
+          db: this.db,
+          expectedDraftToken: command.expectedDraftToken,
+          mode: 'rollback',
+          outbound: this.outbound,
+          secrets: this.secrets,
+          targetRevision: command.targetRevision,
+        });
         await this.lifecycle.afterPublicationPreflight?.(command.id);
         const result = await this.publisher.rollback({
           actorUserId,
@@ -580,12 +187,15 @@ export class ConnectorCatalogPublicationService {
         if (!connector?.publishedRevision) {
           throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
         }
-        const proof = await this.preflightRevision(
-          command.id,
-          command.expectedDraftToken,
-          connector.publishedRevision,
-          'archive',
-        );
+        const proof = await preflightRevision({
+          connectorId: command.id,
+          db: this.db,
+          expectedDraftToken: command.expectedDraftToken,
+          mode: 'archive',
+          outbound: this.outbound,
+          secrets: this.secrets,
+          targetRevision: connector.publishedRevision,
+        });
         await this.lifecycle.afterPublicationPreflight?.(command.id);
         const result = await this.publisher.publish({
           actorUserId,
@@ -631,7 +241,7 @@ export class ConnectorCatalogPublicationService {
           if (connector.publishedRevision !== command.expectedRevision) {
             throw new PlatformRevisionConflictError();
           }
-          const revoked = await this.revokeBindings(tx, command.id);
+          const revoked = await revokeConnectorBindings(tx, command.id, this.lifecycle);
           const audit = await new PlatformAuditService(tx).append({
             action: 'admin.connectors.revokeAllBindings',
             actorUserId,
