@@ -30,6 +30,14 @@ describe('issueCodeForStartFailure', () => {
     );
   });
 
+  it('keeps unsupported-platform errors out of port allocation', () => {
+    try {
+      throwNetworkProxyError(NETWORK_PROXY_ENGINE_ERROR_CODES.UNSUPPORTED_PLATFORM);
+    } catch (error) {
+      expect(issueCodeForStartFailure(error, false)).toBe('unsupported_platform');
+    }
+  });
+
   it('maps TimeoutError to start_timeout', () => {
     const error = new Error('timed out');
     error.name = 'TimeoutError';

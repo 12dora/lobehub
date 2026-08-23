@@ -90,11 +90,14 @@ export const verifySecretReferenceDomains = async (
     `SELECT COUNT(*)::text AS n FROM platform_ai_provider_secrets h
      LEFT JOIN platform_ai_providers p ON p.id = h.provider_id WHERE p.id IS NULL`,
   );
+  let aiDomainDangling = false;
   if (Number(aiDangling.rows[0]?.n ?? 0) > 0) {
     dangling = true;
+    aiDomainDangling = true;
     match = false;
   }
-  let aiMatch = !dangling;
+  // The aggregate dangling flag may include an earlier domain; AI matching uses only AI orphans.
+  let aiMatch = !aiDomainDangling;
   for (const provider of aip.rows) {
     secretRecords.push({
       domain: 'ai',

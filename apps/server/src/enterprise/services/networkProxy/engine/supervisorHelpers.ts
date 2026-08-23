@@ -18,7 +18,8 @@ export const isTimeoutError = (error: unknown): boolean =>
 
 export const isPortsError = (error: unknown): boolean => {
   if (!(error instanceof Error)) return false;
-  return /port|EADDRINUSE|EADDRNOTAVAIL/i.test(error.message);
+  // Match port/ports as words so the unsupported-platform sentinel is not treated as a port error.
+  return /\bports?\b|EADDRINUSE|EADDRNOTAVAIL/i.test(error.message);
 };
 
 export const isPidAlive = (pid: number): boolean => {
