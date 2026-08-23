@@ -10,6 +10,13 @@ import {
   type TopicRankItem,
 } from '@/types/topic';
 
+/**
+ * Time window for a bulk conversation deletion, matched against `topics.updatedAt`.
+ * The client sends the token only — the server owns the cutoff arithmetic so a
+ * skewed client clock cannot widen the window.
+ */
+export type TopicTimeRange = '24h' | '7d' | '30d' | 'all';
+
 type OnboardingSessionMetadataPatch = Partial<NonNullable<ChatTopicMetadata['onboardingSession']>>;
 
 type UpdateTopicMetadataInput = Omit<Partial<ChatTopicMetadata>, 'onboardingSession'> & {
@@ -144,6 +151,11 @@ export class TopicService {
 
   removeAllTopic = () => {
     return lambdaClient.topic.removeAllTopics.mutate();
+  };
+
+  /** Resolves to the ids of the topics that were deleted. */
+  removeTopicsByTimeRange = (range: TopicTimeRange): Promise<string[]> => {
+    return lambdaClient.topic.removeTopicsByTimeRange.mutate({ range });
   };
 
   private toDbSessionId = (sessionId?: string | null) =>

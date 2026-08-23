@@ -21,7 +21,7 @@ import { chatService } from '@/services/chat';
 import { withSystemAgentEffortParams } from '@/services/chat/mecha/systemAgentEffort';
 import { type GitLinkedPRSummary, gitService } from '@/services/git';
 import { messageService } from '@/services/message';
-import { topicService } from '@/services/topic';
+import { topicService, type TopicTimeRange } from '@/services/topic';
 import { type ChatStore } from '@/store/chat';
 import { evictMessageCache } from '@/store/chat/utils/evictMessageCache';
 import { topicMapKey, type TopicMapScope } from '@/store/chat/utils/topicMapKey';
@@ -1575,6 +1575,44 @@ export class ChatTopicActionImpl {
     await refreshTopic();
     // every topic is gone — wipe all cached message lists
     void evictMessageCache(() => true);
+  };
+
+  /**
+   * Invalidate every loaded topic list, not just the active container's.
+   * `refreshTopic` matches the active scope alone, which is not enough for a
+   * mutation whose rows span agents and groups.
+   */
+  #refreshAllTopicLists = async (): Promise<void> => {
+    await mutate(
+      (key) =>
+        Array.isArray(key) &&
+        (key[0] === topicKeys.list.root || key[0] === topicKeys.agentView.root),
+    );
+  };
+
+  /**
+   * Delete every conversation whose `updatedAt` falls in `range`. Resolves to
+   * the deleted ids so callers can report how many rows went away.
+   */
+  removeTopicsByTimeRange = async (range: TopicTimeRange): Promise<string[]> => {
+    const removedIds = await topicService.removeTopicsByTimeRange(range);
+
+    await getHomeStoreState().refreshRecents();
+    await this.#refreshAllTopicLists();
+
+    if (range === 'all') {
+      // every topic is gone — wipe all cached message lists
+      void evictMessageCache(() => true);
+    } else {
+      const removed = new Set(removedIds);
+      void evictMessageCache((ctx) => !!ctx.topicId && removed.has(ctx.topicId));
+    }
+
+    // Read the active topic after the round trip — the user may have switched during it.
+    const { activeTopicId, switchTopic } = this.#get();
+    if (activeTopicId && removedIds.includes(activeTopicId)) switchTopic(null);
+
+    return removedIds;
   };
 
   removeTopic = async (id: string): Promise<void> => {

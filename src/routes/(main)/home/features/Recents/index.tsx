@@ -35,6 +35,7 @@ import { homeRecentSelectors } from '@/store/home/selectors';
 import { useUserStore } from '@/store/user';
 import { authSelectors } from '@/store/user/slices/auth/selectors';
 
+import DeleteRecents from './DeleteRecents';
 import RecentsList from './List';
 
 interface RecentsProps {
@@ -152,9 +153,12 @@ const Recents = memo<RecentsProps>(({ itemKey }) => {
       paddingBlock={4}
       paddingInline={'8px 4px'}
       action={
-        <DropdownMenu items={dropdownMenu} nativeButton={false}>
-          <ActionIcon icon={MoreHorizontalIcon} size={'small'} style={{ flex: 'none' }} />
-        </DropdownMenu>
+        <>
+          <DeleteRecents />
+          <DropdownMenu items={dropdownMenu} nativeButton={false}>
+            <ActionIcon icon={MoreHorizontalIcon} size={'small'} style={{ flex: 'none' }} />
+          </DropdownMenu>
+        </>
       }
       headerWrapper={(header) => (
         <ContextMenuTrigger items={dropdownMenu}>{header}</ContextMenuTrigger>

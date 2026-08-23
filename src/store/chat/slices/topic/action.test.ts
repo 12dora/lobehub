@@ -13,6 +13,7 @@ import { topicSelectors } from '@/store/chat/selectors';
 import { PortalViewType } from '@/store/chat/slices/portal/initialState';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 import { topicMapKey } from '@/store/chat/utils/topicMapKey';
+import { useHomeStore } from '@/store/home';
 import { useSessionStore } from '@/store/session';
 import { type ChatTopic } from '@/types/topic';
 
@@ -34,6 +35,7 @@ vi.mock('@/services/topic', () => ({
     removeTopics: vi.fn(),
     removeTopicsByAgentId: vi.fn(),
     removeAllTopic: vi.fn(),
+    removeTopicsByTimeRange: vi.fn(),
     removeTopic: vi.fn(),
     cloneTopic: vi.fn(),
     createTopic: vi.fn(),
@@ -1586,6 +1588,97 @@ describe('topic action', () => {
 
       expect(topicService.removeAllTopic).toHaveBeenCalled();
       expect(refreshTopicSpy).toHaveBeenCalled();
+    });
+  });
+  describe('removeTopicsByTimeRange', () => {
+    const matcherArgs = (argCount: number) =>
+      (mutate as Mock).mock.calls.filter((call) => call.length === argCount).map((call) => call[0]);
+
+    it('invalidates every loaded topic list, not just the active container', async () => {
+      const { result } = renderHook(() => useChatStore());
+      (topicService.removeTopicsByTimeRange as Mock).mockResolvedValue(['topic-1']);
+      const refreshRecentsSpy = vi
+        .spyOn(useHomeStore.getState(), 'refreshRecents')
+        .mockResolvedValue(undefined);
+
+      await act(async () => {
+        useChatStore.setState({ activeAgentId: 'agent-1' });
+      });
+
+      await act(async () => {
+        await result.current.removeTopicsByTimeRange('7d');
+      });
+
+      expect(topicService.removeTopicsByTimeRange).toHaveBeenCalledWith('7d');
+      expect(refreshRecentsSpy).toHaveBeenCalled();
+
+      const [listMatcher] = matcherArgs(1);
+      expect(listMatcher(['topic:list', 'agent_agent-1', {}])).toBe(true);
+      expect(listMatcher(['topic:list', 'agent_some-other-agent', {}])).toBe(true);
+      expect(listMatcher(['topic:agentView', 'agent_some-other-agent', {}])).toBe(true);
+      expect(listMatcher(['message:list', 'agent_agent-1', {}])).toBe(false);
+      expect(listMatcher('some-string')).toBe(false);
+    });
+
+    it('evicts the message cache of the deleted topics only', async () => {
+      const { result } = renderHook(() => useChatStore());
+      (topicService.removeTopicsByTimeRange as Mock).mockResolvedValue(['topic-1', 'topic-2']);
+      vi.spyOn(useHomeStore.getState(), 'refreshRecents').mockResolvedValue(undefined);
+
+      await act(async () => {
+        await result.current.removeTopicsByTimeRange('24h');
+      });
+
+      const [evictMatcher] = matcherArgs(3);
+      expect(evictMatcher(['message:list', { topicId: 'topic-1' }])).toBe(true);
+      expect(evictMatcher(['message:list', { topicId: 'topic-3' }])).toBe(false);
+    });
+
+    it('wipes every message cache for the "all" range', async () => {
+      const { result } = renderHook(() => useChatStore());
+      (topicService.removeTopicsByTimeRange as Mock).mockResolvedValue(['topic-1']);
+      vi.spyOn(useHomeStore.getState(), 'refreshRecents').mockResolvedValue(undefined);
+
+      await act(async () => {
+        await result.current.removeTopicsByTimeRange('all');
+      });
+
+      const [evictMatcher] = matcherArgs(3);
+      expect(evictMatcher(['message:list', { topicId: 'never-deleted-here' }])).toBe(true);
+    });
+
+    it('switches away when the active topic was deleted', async () => {
+      const { result } = renderHook(() => useChatStore());
+      (topicService.removeTopicsByTimeRange as Mock).mockResolvedValue(['topic-1', 'topic-2']);
+      vi.spyOn(useHomeStore.getState(), 'refreshRecents').mockResolvedValue(undefined);
+      const switchTopicSpy = vi.spyOn(result.current, 'switchTopic').mockResolvedValue(undefined);
+
+      await act(async () => {
+        useChatStore.setState({ activeTopicId: 'topic-2' });
+      });
+
+      await act(async () => {
+        await result.current.removeTopicsByTimeRange('30d');
+      });
+
+      expect(switchTopicSpy).toHaveBeenCalledWith(null);
+    });
+
+    it('keeps the active topic when it survived the deletion', async () => {
+      const { result } = renderHook(() => useChatStore());
+      (topicService.removeTopicsByTimeRange as Mock).mockResolvedValue(['topic-1']);
+      vi.spyOn(useHomeStore.getState(), 'refreshRecents').mockResolvedValue(undefined);
+      const switchTopicSpy = vi.spyOn(result.current, 'switchTopic').mockResolvedValue(undefined);
+
+      await act(async () => {
+        useChatStore.setState({ activeTopicId: 'topic-9' });
+      });
+
+      await act(async () => {
+        await result.current.removeTopicsByTimeRange('30d');
+      });
+
+      expect(switchTopicSpy).not.toHaveBeenCalled();
     });
   });
   describe('removeTopic', () => {
