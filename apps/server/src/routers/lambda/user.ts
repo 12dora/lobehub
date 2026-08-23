@@ -49,10 +49,10 @@ import { loadEffectiveUserSettings } from '@/server/enterprise/services/settings
 import { assertWorkspaceSettingsWritePermission } from '@/server/enterprise/services/settings/workspaceSettingsPermission';
 import { loadGetUserStateBundle } from '@/server/enterprise/services/user/getUserStateBundle';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
-import { createFileS3 } from '@/server/modules/S3';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { FileService } from '@/server/services/file';
 import { OnboardingService } from '@/server/services/onboarding';
+import { uploadUserAvatar } from '@/server/services/user/avatar';
 
 const usernameSchema = z
   .string()
@@ -345,35 +345,21 @@ export const userRouter = router({
         }
         const base64Data = input.slice(commaIndex + 1);
 
-        // Create S3 client
-        const s3 = await createFileS3();
-
         // Use UUID to generate unique filename to prevent caching issues
         // Get old avatar URL for later deletion
         const userState = await ctx.userModel.getUserState(KeyVaultsGateKeeper.getUserKeyVaults);
         const oldAvatarUrl = userState.avatar;
 
         const fileName = `${uuidv4()}.${fileType}`;
-        const filePath = `user/avatar/${ctx.userId}/${fileName}`;
-
         // Convert Base64 data to Buffer and upload to S3
         const buffer = Buffer.from(base64Data, 'base64');
-
-        await s3.uploadBuffer(filePath, buffer, mimeType);
-
-        // Delete old avatar — defense in depth: only touch keys inside the
-        // caller's own avatar prefix, never external URLs or traversal paths.
-        const ownAvatarWebapiPrefix = `${AVATAR_WEBAPI_PREFIX}user/avatar/${ctx.userId}/`;
-        if (
-          oldAvatarUrl &&
-          oldAvatarUrl.startsWith(ownAvatarWebapiPrefix) &&
-          !oldAvatarUrl.includes('..')
-        ) {
-          const oldFilePath = oldAvatarUrl.slice(AVATAR_WEBAPI_PREFIX.length);
-          await s3.deleteFile(oldFilePath);
-        }
-
-        const avatarUrl = '/webapi/' + filePath;
+        const avatarUrl = await uploadUserAvatar({
+          buffer,
+          fileName,
+          mimeType,
+          oldAvatarUrl,
+          userId: ctx.userId,
+        });
 
         return ctx.userModel.updateUser({ avatar: avatarUrl });
       } catch (error) {

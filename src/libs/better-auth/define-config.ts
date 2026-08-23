@@ -11,6 +11,7 @@ import { type BetterAuthOptions } from 'better-auth/minimal';
 import { betterAuth } from 'better-auth/minimal';
 import { admin, emailOTP, genericOAuth, magicLink, twoFactor } from 'better-auth/plugins';
 import { type BetterAuthPlugin } from 'better-auth/types';
+import debug from 'debug';
 import { eq } from 'drizzle-orm';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
 
@@ -45,8 +46,10 @@ import { createSecondaryStorage, getTrustedOrigins } from '@/libs/better-auth/ut
 import { parseSSOProviders } from '@/libs/better-auth/utils/server';
 import { EmailService } from '@/server/services/email';
 import { UserService } from '@/server/services/user';
+import { materializeProviderAvatar } from '@/server/services/user/providerAvatar';
 
 const LOCAL_NO_PROXY_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
+const log = debug('lobe-server:auth:provider-avatar');
 
 export const mergeLocalNoProxy = (noProxy?: string): string => {
   const entries = new Set(
@@ -86,6 +89,31 @@ if (process.env.NODE_ENV === 'development') {
 // Email verification link expiration time (in seconds)
 // Default is 1 hour (3600 seconds) as per Better Auth documentation
 const VERIFICATION_LINK_EXPIRES_IN = 3600;
+
+const isPlatformSsoCallback = (path: string | undefined): boolean =>
+  path?.startsWith('/oauth2/callback/') === true;
+
+/**
+ * Copy an SSO provider's avatar into the local avatar store and repoint the row at it. An external
+ * provider CDN can take seconds to answer (or never answer) in the browser, which is what leaves
+ * avatar cells blank; the local object is served immutable-cached from our own origin. Every
+ * failure is swallowed — the row keeps the provider URL and the login continues.
+ */
+const storeMaterializedSsoAvatar = async (
+  user: { id: string; image?: string | null },
+  context?: { path?: string },
+): Promise<void> => {
+  if (!isPlatformSsoCallback(context?.path) || typeof user.image !== 'string') return;
+
+  const avatar = await materializeProviderAvatar({ sourceUrl: user.image, userId: user.id });
+  if (avatar === user.image) return;
+
+  try {
+    await serverDB.update(schema.users).set({ avatar }).where(eq(schema.users.id, user.id));
+  } catch (error) {
+    log('Failed to store materialized provider avatar for userId=%s: %O', user.id, error);
+  }
+};
 
 /**
  * Safely extract hostname from APP_URL for passkey rpID.
@@ -352,7 +380,7 @@ export function defineConfig(
       },
       user: {
         create: {
-          after: async (user) => {
+          after: async (user, context) => {
             const userService = new UserService(serverDB);
             await userService.initUser({
               email: user.email,
@@ -370,6 +398,17 @@ export function defineConfig(
             } catch {
               // ignore — login/signup must succeed even if RBAC seed fails
             }
+
+            await storeMaterializedSsoAvatar(user, context);
+          },
+        },
+        update: {
+          // `update.before` only receives the write payload, so the row being updated cannot be
+          // identified from it. The after hook carries the persisted row — and `overrideUserInfo`
+          // rewrites the avatar with the provider URL on every SSO login, so this has to run again
+          // each time; `materializeProviderAvatar` short-circuits on the already-copied object.
+          after: async (user, context) => {
+            await storeMaterializedSsoAvatar(user, context);
           },
         },
       },
