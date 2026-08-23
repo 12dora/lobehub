@@ -71,7 +71,6 @@ export const useAdminSharedOAuthFlow = ({
     runIdRef,
     setApiKeyPhase,
     setDeviceCode,
-    setError,
     setState,
     setSubmitError,
     setSubmitErrorSource,
@@ -209,16 +208,11 @@ export const useAdminSharedOAuthFlow = ({
             return;
           }
           case 'expired': {
-            clearTimers();
-            runIdRef.current += 1;
-            deviceCodeRef.current = null;
-            setDeviceCode(undefined);
-            // Same reason as `failFlow()`: the `finally` below cannot clear this once the run
-            // it belonged to is retired, and a spinning box refuses the retry it just asked for.
-            setSubmitting(false);
-            setError('codeExpired');
-            setState('error');
-            markStatusStale();
+            // Exactly `failFlow`'s transition, so it IS `failFlow`: hand-copying it here dropped
+            // the latch release. This arm retires the run (`runIdRef`), which disqualifies the
+            // `finally` below from clearing `submittingRef` — the key box would then refuse the
+            // retry it had just asked for, until Cancel or Connect reset the latch.
+            failFlow('codeExpired');
             return;
           }
           case 'fieldError': {
@@ -244,12 +238,10 @@ export const useAdminSharedOAuthFlow = ({
       completeWithOutcome,
       deviceCodeRef,
       disposedRef,
+      failFlow,
       markStatusStale,
       providerId,
       runIdRef,
-      setDeviceCode,
-      setError,
-      setState,
       setSubmitError,
       setSubmitErrorSource,
       setSubmitting,

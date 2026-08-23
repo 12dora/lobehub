@@ -853,6 +853,34 @@ describe('useAdminSharedOAuthFlow API-key route', () => {
     expect(result.current.state).toBe('success');
   });
 
+  it('unlocks the key box after the envelope expired mid-exchange', async () => {
+    mocks.initiate
+      .mockResolvedValueOnce(apiKeyEnvelope('envelope-1'))
+      .mockResolvedValueOnce(apiKeyEnvelope('envelope-2'));
+    mocks.poll
+      .mockResolvedValueOnce({ error: 'expired', revision: null, status: 'error', stored: false })
+      .mockResolvedValueOnce(success);
+
+    const { result } = renderApiKeyFlow();
+
+    await act(async () => {
+      await result.current.submitApiKey('key_live_abc');
+    });
+    expect(result.current.state).toBe('error');
+    expect(result.current.error).toBe('codeExpired');
+
+    // The expired run is retired, so it owes the NEXT one an unlocked latch: the operator retries
+    // from the same panel, without pressing Cancel or Connect first.
+    await act(async () => {
+      await result.current.submitApiKey('key_live_abc');
+    });
+
+    expect(mocks.initiate).toHaveBeenCalledTimes(2);
+    expect(exchangeCalls()).toHaveLength(2);
+    expect(exchangeCalls()[1]![0]).toMatchObject({ deviceCode: 'envelope-2' });
+    expect(result.current.state).toBe('success');
+  });
+
   it('reuses a live envelope instead of discarding the device code in flight', async () => {
     mocks.initiate.mockResolvedValue(apiKeyEnvelope('envelope-1'));
     mocks.poll.mockResolvedValue(success);

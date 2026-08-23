@@ -82,6 +82,18 @@ export const writeAgentVersion = async ({
 };
 
 /**
+ * Every assignment write has to echo the CAS the previous one handed back, so the chain cannot
+ * start without one. Today it always has one — a create authors its version first, and that write
+ * is what mints the CAS — but the invariant lives in the CALLER, not here. State it, so a submit
+ * that ever reaches the chain without an identity is rejected like any other failed write (the
+ * editor classifies it and shows its error) instead of crashing on a null read.
+ */
+const requireCas = (cas: AgentEditorCas | null): AgentEditorCas => {
+  if (!cas) throw new Error('PLATFORM_AGENT_ASSIGNMENT_WITHOUT_IDENTITY');
+  return cas;
+};
+
+/**
  * Assignment writes are dangerous and each one advances the CAS, so the token from the
  * previous response feeds the next call — no re-GET in between. Removals always run first so a
  * dropped-and-re-added target cannot collide with the unique `(agent, target)` index.
@@ -103,7 +115,7 @@ export const applyAssignmentPlan = async ({
 }): Promise<AgentEditorCas | null> => {
   let next = cas;
   for (const assignmentId of plan.removals) {
-    const step: AgentEditorCas = next!;
+    const step = requireCas(next);
     const result = await withAdminReauthRetry(
       () =>
         adminAgentsService.removeAssignment({
@@ -123,7 +135,7 @@ export const applyAssignmentPlan = async ({
     onRemoved(assignmentId);
   }
   for (const entry of plan.upserts) {
-    const step: AgentEditorCas = next!;
+    const step = requireCas(next);
     const result = await withAdminReauthRetry(
       () =>
         adminAgentsService.upsertAssignment({

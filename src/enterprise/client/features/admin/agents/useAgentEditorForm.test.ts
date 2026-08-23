@@ -2,7 +2,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { classifySubmitFailure } from './agentEditorSubmit';
+import { applyAssignmentPlan, classifySubmitFailure } from './agentEditorSubmit';
 import type { AdminAgentDetailOutput } from './types';
 import { seedAgentEditorValue, suggestAgentKey, useAgentEditorForm } from './useAgentEditorForm';
 
@@ -891,5 +891,47 @@ describe('classifySubmitFailure', () => {
         reconcile,
       }),
     ).resolves.toBe('identity-failed');
+  });
+});
+
+describe('applyAssignmentPlan', () => {
+  const noop = vi.fn();
+  const entry = {
+    enabled: true,
+    mode: 'optional' as const,
+    targetId: 'user-1',
+    targetType: 'user' as const,
+  };
+
+  const run = (cas: null, plan: { removals: string[]; upserts: (typeof entry)[] }) =>
+    applyAssignmentPlan({
+      authMethod: null,
+      cas,
+      onCas: noop,
+      onRemoved: noop,
+      onUpserted: noop,
+      plan,
+    });
+
+  it.each([
+    ['a removal', { removals: ['assignment-1'], upserts: [] }],
+    ['an upsert', { removals: [], upserts: [entry] }],
+  ])('refuses %s it has no CAS to echo, instead of reading a null one', async (_label, plan) => {
+    const cause = await run(null, plan).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    // A null read raises a TypeError, which reaches the operator as a crash rather than as the
+    // editor's ordinary "the write was rejected" path.
+    expect(cause).toBeInstanceOf(Error);
+    expect(cause).not.toBeInstanceOf(TypeError);
+    expect((cause as Error).message).toBe('PLATFORM_AGENT_ASSIGNMENT_WITHOUT_IDENTITY');
+    expect(mocks.removeAssignment).not.toHaveBeenCalled();
+    expect(mocks.upsertAssignment).not.toHaveBeenCalled();
+  });
+
+  it('leaves an empty plan alone — nothing to write needs no identity', async () => {
+    await expect(run(null, { removals: [], upserts: [] })).resolves.toBeNull();
   });
 });
