@@ -269,21 +269,26 @@ const preparePdfForTier2 = async (
     return persistSidecarUnavailablePartial(params);
   }
   params.control.assertLive();
+  let pdfBytes: Uint8Array;
+  // ONLY the conversion is guarded. `isSidecarConnectionError` matches connection-shaped failures
+  // wherever they come from, so widening this to cover the artifact upload and the existence check
+  // would report a dropped S3 connection as "the sidecar is down": a retryable `partial` carrying
+  // SIDECAR_UNAVAILABLE, instead of the failure it is.
   try {
-    const pdfBytes = await convertToPdf(params.settings.endpoint, {
+    pdfBytes = await convertToPdf(params.settings.endpoint, {
       bytes: params.bytes,
       filename: params.file.name,
       signal: params.control.signal,
       timeoutMs: clampJobTimeoutMs(params.settings.timeoutSec, params.leaseMs),
     });
-    params.control.assertLive();
-    const pdfKey = await uploadPdfArtifact(params.file.id, pdfBytes, params.control.signal);
-    await ensureFileStillExists(params.db, params.file.id);
-    return { engine: 'gotenberg', pdfBytes, pdfKey };
   } catch (error) {
     if (params.control.signal.aborted || !isSidecarConnectionError(error)) throw error;
     return persistSidecarUnavailablePartial(params);
   }
+  params.control.assertLive();
+  const pdfKey = await uploadPdfArtifact(params.file.id, pdfBytes, params.control.signal);
+  await ensureFileStillExists(params.db, params.file.id);
+  return { engine: 'gotenberg', pdfBytes, pdfKey };
 };
 
 const classifyPdfForRaster = async (
