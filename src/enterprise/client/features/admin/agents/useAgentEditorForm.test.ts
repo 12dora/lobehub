@@ -3,6 +3,7 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { applyAssignmentPlan, classifySubmitFailure } from './agentEditorSubmit';
+import type { AssignmentPlan } from './assignmentDraft';
 import type { AdminAgentDetailOutput } from './types';
 import { seedAgentEditorValue, suggestAgentKey, useAgentEditorForm } from './useAgentEditorForm';
 
@@ -898,12 +899,15 @@ describe('applyAssignmentPlan', () => {
   const noop = vi.fn();
   const entry = {
     enabled: true,
+    id: null,
     mode: 'optional' as const,
+    pinnedVersionId: null,
     targetId: 'user-1',
     targetType: 'user' as const,
+    versionPolicy: 'latest_published' as const,
   };
 
-  const run = (cas: null, plan: { removals: string[]; upserts: (typeof entry)[] }) =>
+  const run = (cas: null, plan: AssignmentPlan) =>
     applyAssignmentPlan({
       authMethod: null,
       cas,

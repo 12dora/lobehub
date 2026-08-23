@@ -8,11 +8,15 @@ import { createDefaultContentModerationConfig } from '@/types/platform/contentMo
 
 import { useModerationDraftState } from './useModerationDraftState';
 
-const settings = (revision: number, sampleRate = 1): ContentModerationSettingsView =>
+/** `mode` is the top-level field an admin actually flips, so it stands in for "an edit" here. */
+const settings = (
+  revision: number,
+  mode: ContentModerationSettingsView['mode'] = 'off',
+): ContentModerationSettingsView =>
   ({
     ...createDefaultContentModerationConfig(),
+    mode,
     revision,
-    sampleRate,
     updatedAt: new Date('2026-08-23T00:00:00.000Z'),
     updatedBy: null,
   }) as unknown as ContentModerationSettingsView;
@@ -34,9 +38,9 @@ describe('useModerationDraftState snapshot adoption', () => {
     expect(result.current.draft).toBeNull();
     expect(result.current.baseRevision).toBeNull();
 
-    rerender({ settings: settings(7, 0.5) });
+    rerender({ settings: settings(7, 'enforce') });
 
-    expect(result.current.draft?.config.sampleRate).toBe(0.5);
+    expect(result.current.draft?.config.mode).toBe('enforce');
     expect(result.current.baseRevision).toBe(7);
     // The baseline was taken from the same bundle that became the draft, so it reads clean.
     expect(result.current.dirty).toBe(false);
@@ -44,19 +48,19 @@ describe('useModerationDraftState snapshot adoption', () => {
 
   it('never replaces a draft the admin has already edited, however many bundles arrive', () => {
     const { rerender, result } = renderHook((data: Bundle) => useModerationDraftState(data), {
-      initialProps: { settings: settings(1, 1) } as Bundle,
+      initialProps: { settings: settings(1, 'off') } as Bundle,
     });
 
     expect(result.current.baseRevision).toBe(1);
 
-    act(() => result.current.patch({ sampleRate: 0.5 }));
-    expect(result.current.draft?.config.sampleRate).toBe(0.5);
+    act(() => result.current.patch({ mode: 'enforce' }));
+    expect(result.current.draft?.config.mode).toBe('enforce');
 
     // A later revalidation of the same query must not throw the local edit away, and must not
     // move the concurrency token the edit will be saved against.
-    rerender({ settings: settings(2, 1) });
+    rerender({ settings: settings(2, 'off') });
 
-    expect(result.current.draft?.config.sampleRate).toBe(0.5);
+    expect(result.current.draft?.config.mode).toBe('enforce');
     expect(result.current.baseRevision).toBe(1);
     expect(result.current.dirty).toBe(true);
   });
@@ -66,11 +70,11 @@ describe('useModerationDraftState snapshot adoption', () => {
     // consistent outcome — which is why the decision no longer lives inside a `setDraft` updater,
     // where React is free to run it twice and would have replayed its side effects with it.
     const { result } = renderHook((data: Bundle) => useModerationDraftState(data), {
-      initialProps: { settings: settings(9, 0.25) } as Bundle,
+      initialProps: { settings: settings(9, 'enforce') } as Bundle,
       wrapper: StrictMode,
     });
 
-    expect(result.current.draft?.config.sampleRate).toBe(0.25);
+    expect(result.current.draft?.config.mode).toBe('enforce');
     expect(result.current.baseRevision).toBe(9);
     expect(result.current.dirty).toBe(false);
   });
