@@ -10,13 +10,12 @@ import {
   PlatformAuditRetentionRunModel,
 } from '@/database/models/platform';
 
-import {
-  type AuditExportArtifactStorage,
-  buildAuditExportStorageKey,
-  isAuditExportAttemptsPrefix,
-  isAuditExportObjectNotFoundError,
-} from './exportStorage';
+import { type AuditExportArtifactStorage, buildAuditExportStorageKey } from './exportStorage';
 import { AUDIT_RETENTION_BATCH_LIMIT } from './retentionConstants';
+import {
+  deleteExportArtifactObject,
+  exportArtifactObjectExists,
+} from './retentionWorkerArtifactIo';
 import {
   collectExportFilterHoldScopes,
   exportArtifactHeld,
@@ -80,33 +79,10 @@ export const deleteAuthorizedExportArtifacts = async (params: {
 
   try {
     return await params.repo.purgeExportArtifactObjectsUnderHoldLock({
-      deleteObject: async (storageKey) => {
-        // Prefer storage.deleteObject (S3 + InMemory expand attempts/ prefixes).
-        // If a custom adapter lacks listObjectKeysByPrefix, refuse prefix keys so
-        // the outbox stays pending instead of silently finalizing (SAO-002).
-        if (isAuditExportAttemptsPrefix(storageKey) && !params.storage.listObjectKeysByPrefix) {
-          throw new Error('AUDIT_EXPORT_PREFIX_LIST_REQUIRED');
-        }
-        await params.storage.deleteObject(storageKey);
-      },
+      deleteObject: (storageKey) => deleteExportArtifactObject(params.storage, storageKey),
       ids: params.ids,
       // HEAD reconciliation for crash-after-delete (DB-001).
-      objectExists: async (storageKey) => {
-        if (isAuditExportAttemptsPrefix(storageKey)) {
-          if (!params.storage.listObjectKeysByPrefix) {
-            throw new Error('AUDIT_EXPORT_PREFIX_LIST_REQUIRED');
-          }
-          const keys = await params.storage.listObjectKeysByPrefix(storageKey);
-          return keys.length > 0;
-        }
-        try {
-          await params.storage.getObjectMetadata(storageKey);
-          return true;
-        } catch (error) {
-          if (isAuditExportObjectNotFoundError(error)) return false;
-          throw error;
-        }
-      },
+      objectExists: (storageKey) => exportArtifactObjectExists(params.storage, storageKey),
       // Attribute accounting with outbox complete so a slow delete that outlives
       // the job lease still records exportArtifactsDeleted (F7).
       onObjectDeleted: params.runId
@@ -203,6 +179,145 @@ const countPostClaimHoldSkips = async (args: {
   }
 };
 
+const claimFreeExportArtifacts = async (
+  params: ArtifactScopeProcessorParams,
+  args: {
+    delta: PlatformAuditRetentionCounts;
+    freeIds: string[];
+    items: ExportArtifactCandidate[];
+    scopeRefs: ReturnType<typeof collectExportFilterHoldScopes>;
+  },
+): Promise<string[]> => {
+  // Phase 1: under lock, recheck holds + durable tombstone claim (outbox).
+  // Outbox is the pre-destruction journal; never delete objects before the
+  // durable run/job checkpoint for this page.
+  const claimed = await params.repo.claimExportArtifactsRechecked({
+    cutoffAt: params.cutoffAt,
+    ids: args.freeIds,
+    resolveHeldIds: resolveExportArtifactHeldIds,
+    runId: params.runId,
+  });
+  const claimedIds = claimed.map((c) => c.id);
+
+  if (claimed.length < args.freeIds.length) {
+    // Pre-filter free → claim skipped: count only those still held (not
+    // concurrent eligibility races).
+    await countPostClaimHoldSkips({
+      claimedIds,
+      db: params.db,
+      delta: args.delta,
+      freeIds: args.freeIds,
+      items: args.items,
+      scopeRefs: args.scopeRefs,
+    });
+  }
+
+  if (params.afterArtifactClaim) {
+    await params.afterArtifactClaim({
+      claimed: claimed.map((c) => ({ id: c.id, storageKey: c.storageKey })),
+    });
+  }
+
+  return claimedIds;
+};
+
+const purgeClaimedExportArtifacts = async (
+  params: ArtifactScopeProcessorParams,
+  claimedIds: string[],
+  counts: PlatformAuditRetentionCounts,
+): Promise<PlatformAuditRetentionCounts> => {
+  if (!params.storage) {
+    throw new Error('AUDIT_RETENTION_ARTIFACT_STORAGE_REQUIRED');
+  }
+
+  let nextCounts = counts;
+  // Phase 2–3: one object at a time with lease renew. Counts for deleted /
+  // deferred-hold are written inside the purge TX via runId (not a second
+  // job checkpoint that can fail after the object is already gone).
+  for (const id of claimedIds) {
+    await params.renewLease();
+    const result = await deleteAuthorizedExportArtifacts({
+      afterArtifactAuthorize: params.afterArtifactAuthorize,
+      ids: [id],
+      repo: params.repo,
+      runId: params.runId,
+      storage: params.storage,
+    });
+
+    // Mirror in-memory counts for subsequent local merges / complete().
+    // Domain attribution already committed with outbox complete (F7).
+    if (result.deleted > 0 || result.skippedHold > 0) {
+      nextCounts = mergeCounts(nextCounts, {
+        exportArtifactsDeleted: result.deleted,
+        skippedLegalHold: result.skippedHold,
+      });
+    }
+    // Heartbeat after each object; LeaseLost is safe — counts already durable.
+    await params.renewLease();
+  }
+  return nextCounts;
+};
+
+const processExportArtifactPage = async (
+  params: ArtifactScopeProcessorParams,
+  counts: PlatformAuditRetentionCounts,
+): Promise<{ counts: PlatformAuditRetentionCounts; done: boolean }> => {
+  await params.renewLease();
+  const page = await params.repo.listExportArtifactCandidates({
+    cursor: params.getKeyset(),
+    cutoffAt: params.cutoffAt,
+    limit: AUDIT_RETENTION_BATCH_LIMIT,
+  });
+
+  if (page.items.length === 0) return { counts, done: true };
+
+  // Targeted hold scopes from frozen filter snapshots (F11).
+  const scopeRefs = collectExportFilterHoldScopes(page.items);
+  const holds = await loadHoldIndexForScopes(params.db, scopeRefs);
+
+  const delta: PlatformAuditRetentionCounts = {
+    exportArtifactsScanned: page.items.length,
+    skippedLegalHold: 0,
+    exportArtifactsDeleted: 0,
+  };
+
+  const freeIds: string[] = [];
+  for (const art of page.items) {
+    if (exportArtifactHeld(holds, art.kind, art.filterSnapshot)) {
+      delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
+      continue;
+    }
+    if (params.execute) freeIds.push(art.id);
+  }
+
+  const nextKeyset = keysetAfterPage(page, (row) => row.sortAt);
+  if (!nextKeyset) return { counts, done: true };
+
+  let claimedIds: string[] = [];
+
+  if (params.execute && freeIds.length > 0) {
+    claimedIds = await claimFreeExportArtifacts(params, {
+      delta,
+      freeIds,
+      items: page.items,
+      scopeRefs,
+    });
+  }
+
+  // Durable checkpoint BEFORE object destruction: scanned / pre-filter hold
+  // skips + keyset cursor. Delete attribution lands atomically with outbox
+  // complete (F7) so a slow storage call that outlives the lease still counts.
+  let nextCounts = await params.checkpointBatch(mergeCounts(counts, delta), nextKeyset);
+  params.setKeyset(nextKeyset);
+
+  if (params.execute && claimedIds.length > 0) {
+    nextCounts = await purgeClaimedExportArtifacts(params, claimedIds, nextCounts);
+  }
+
+  if (!page.nextCursor) return { counts: nextCounts, done: true };
+  return { counts: nextCounts, done: false };
+};
+
 /**
  * Export-artifact retention: claim (durable purge outbox) → authorize
  * (hold recheck) → external object delete → complete outbox.
@@ -220,109 +335,9 @@ export const processExportArtifacts = async (
   if (params.execute) await drainStrandedArtifactPurges(params);
 
   for (;;) {
-    await params.renewLease();
-    const page = await params.repo.listExportArtifactCandidates({
-      cursor: params.getKeyset(),
-      cutoffAt: params.cutoffAt,
-      limit: AUDIT_RETENTION_BATCH_LIMIT,
-    });
-
-    if (page.items.length === 0) break;
-
-    // Targeted hold scopes from frozen filter snapshots (F11).
-    const scopeRefs = collectExportFilterHoldScopes(page.items);
-    const holds = await loadHoldIndexForScopes(params.db, scopeRefs);
-
-    const delta: PlatformAuditRetentionCounts = {
-      exportArtifactsScanned: page.items.length,
-      skippedLegalHold: 0,
-      exportArtifactsDeleted: 0,
-    };
-
-    const freeIds: string[] = [];
-    for (const art of page.items) {
-      if (exportArtifactHeld(holds, art.kind, art.filterSnapshot)) {
-        delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
-        continue;
-      }
-      if (params.execute) freeIds.push(art.id);
-    }
-
-    const nextKeyset = keysetAfterPage(page, (row) => row.sortAt);
-    if (!nextKeyset) break;
-
-    let claimedIds: string[] = [];
-
-    if (params.execute && freeIds.length > 0) {
-      // Phase 1: under lock, recheck holds + durable tombstone claim (outbox).
-      // Outbox is the pre-destruction journal; never delete objects before the
-      // durable run/job checkpoint for this page.
-      const claimed = await params.repo.claimExportArtifactsRechecked({
-        cutoffAt: params.cutoffAt,
-        ids: freeIds,
-        resolveHeldIds: resolveExportArtifactHeldIds,
-        runId: params.runId,
-      });
-      claimedIds = claimed.map((c) => c.id);
-
-      if (claimed.length < freeIds.length) {
-        // Pre-filter free → claim skipped: count only those still held (not
-        // concurrent eligibility races).
-        await countPostClaimHoldSkips({
-          claimedIds,
-          db: params.db,
-          delta,
-          freeIds,
-          items: page.items,
-          scopeRefs,
-        });
-      }
-
-      if (params.afterArtifactClaim) {
-        await params.afterArtifactClaim({
-          claimed: claimed.map((c) => ({ id: c.id, storageKey: c.storageKey })),
-        });
-      }
-    }
-
-    // Durable checkpoint BEFORE object destruction: scanned / pre-filter hold
-    // skips + keyset cursor. Delete attribution lands atomically with outbox
-    // complete (F7) so a slow storage call that outlives the lease still counts.
-    counts = await params.checkpointBatch(mergeCounts(counts, delta), nextKeyset);
-    params.setKeyset(nextKeyset);
-
-    if (params.execute && claimedIds.length > 0) {
-      if (!params.storage) {
-        throw new Error('AUDIT_RETENTION_ARTIFACT_STORAGE_REQUIRED');
-      }
-
-      // Phase 2–3: one object at a time with lease renew. Counts for deleted /
-      // deferred-hold are written inside the purge TX via runId (not a second
-      // job checkpoint that can fail after the object is already gone).
-      for (const id of claimedIds) {
-        await params.renewLease();
-        const result = await deleteAuthorizedExportArtifacts({
-          afterArtifactAuthorize: params.afterArtifactAuthorize,
-          ids: [id],
-          repo: params.repo,
-          runId: params.runId,
-          storage: params.storage,
-        });
-
-        // Mirror in-memory counts for subsequent local merges / complete().
-        // Domain attribution already committed with outbox complete (F7).
-        if (result.deleted > 0 || result.skippedHold > 0) {
-          counts = mergeCounts(counts, {
-            exportArtifactsDeleted: result.deleted,
-            skippedLegalHold: result.skippedHold,
-          });
-        }
-        // Heartbeat after each object; LeaseLost is safe — counts already durable.
-        await params.renewLease();
-      }
-    }
-
-    if (!page.nextCursor) break;
+    const page = await processExportArtifactPage(params, counts);
+    counts = page.counts;
+    if (page.done) break;
   }
 
   // Re-read domain counts so complete() reflects atomic F7 increments even if

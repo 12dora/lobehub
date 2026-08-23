@@ -10,11 +10,9 @@
  * in sibling modules.
  */
 
-import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import type { PlatformAuditExportKind } from '@/database/models/platform';
 import {
-  type PlatformAuditExportItem,
-  type PlatformAuditExportKind,
   PlatformAuditExportModel,
   PlatformAuditPolicyModel,
   PlatformJobModel,
@@ -27,49 +25,18 @@ import type {
   AdminAuditExportsDownloadInput,
   AdminAuditExportsListInputParsed,
 } from '../../contracts/adminAudit';
-import { ADMIN_AUDIT_EXPORT_DOWNLOAD_URL_TTL_SECONDS } from '../../contracts/adminAudit';
-import { getEnterpriseErrorBody, throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { assertPlatformPermission, loadPlatformAuthContext } from '../../guards/platformPermission';
-import { appendAuditAccessLog, buildAuditFilterSummary } from './accessLog';
-import { assertConversationAccessEnabled } from './contentPolicy';
-import {
-  buildAuditExportClientIdempotencyKey,
-  buildAuditExportJobIdempotencyKey,
-  parseAuditExportJobInput,
-  PLATFORM_AUDIT_EXPORT_JOB_TYPE,
-} from './exportConstants';
 import { cancelExport } from './exportServiceCancel';
-import {
-  accessLogResultForError,
-  type ActorAuthParams,
-  CONVERSATION_EXPORT_KINDS,
-  freezeFilterSnapshot,
-  isConversationExportKind,
-  isDeniedError,
-  toExportPublic,
-} from './exportServiceShared';
-import {
-  type AuditExportArtifactStorage,
-  AuditExportPrivateS3Storage,
-  checksumsMatch,
-} from './exportStorage';
-import { resolveAuditTimeWindow } from './timeWindow';
+import { createExport } from './exportServiceCreate';
+import { downloadExport } from './exportServiceDownload';
+import type { AdminAuditExportServiceOptions, ExportServiceHost } from './exportServiceHost';
+import { getExport, listExports } from './exportServiceRead';
+import type { ActorAuthParams } from './exportServiceShared';
+import { isConversationExportKind } from './exportServiceShared';
+import { type AuditExportArtifactStorage, AuditExportPrivateS3Storage } from './exportStorage';
 
+export type { AdminAuditExportServiceOptions } from './exportServiceHost';
 export { toExportPublic } from './exportServiceShared';
-
-export type AdminAuditExportServiceOptions = {
-  /**
-   * Test seam: after export row create, before job enqueue.
-   * Throw to exercise orphan-pending compensation.
-   */
-  afterCreateExport?: (info: { exportId: string }) => Promise<void> | void;
-  /**
-   * Test seam: after successful enqueue, before setJobId.
-   * Throw to exercise link-failure compensation (job cancelled, export failed).
-   */
-  afterEnqueue?: (info: { exportId: string; jobId: string }) => Promise<void> | void;
-  storage?: AuditExportArtifactStorage;
-};
 
 export class AdminAuditExportService {
   private readonly exportsModel: PlatformAuditExportModel;
@@ -158,23 +125,17 @@ export class AdminAuditExportService {
     return { canReadConversations, permissions: auth.permissions };
   };
 
-  /**
-   * Resolve an export already published under a client mutation idempotency key
-   * (job type + actor-scoped key → job.input.exportId → export row).
-   */
-  private findExportByClientIdempotencyKey = async (
-    actorUserId: string,
-    clientKey: string,
-  ): Promise<PlatformAuditExportItem | undefined> => {
-    const job = await this.jobsModel.findByIdempotencyKey(
-      PLATFORM_AUDIT_EXPORT_JOB_TYPE,
-      buildAuditExportClientIdempotencyKey(actorUserId, clientKey),
-    );
-    if (!job) return undefined;
-    const parsed = parseAuditExportJobInput(job.input as Record<string, unknown>);
-    if (!parsed) return undefined;
-    return this.exportsModel.get(parsed.exportId);
-  };
+  private host = (): ExportServiceHost => ({
+    afterCreateExport: this.afterCreateExport,
+    afterEnqueue: this.afterEnqueue,
+    assertConversationExportAccess: this.assertConversationExportAccess,
+    db: this.db,
+    exportsModel: this.exportsModel,
+    getStorage: () => this.storage,
+    inTransaction: this.inTransaction,
+    jobsModel: this.jobsModel,
+    policyModel: this.policyModel,
+  });
 
   create = async (params: {
     actorPermissions?: readonly string[];
@@ -186,458 +147,22 @@ export class AdminAuditExportService {
      */
     idempotencyKey?: string;
     input: AdminAuditExportsCreateInputParsed;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({
-      action: params.input.action,
-      actions: params.input.actions,
-      actorUserId: params.input.actorUserId,
-      from: params.input.from,
-      hasQ: Boolean(params.input.q),
-      includeBody: params.input.includeMessageBodies,
-      kind: params.input.kind,
-      result: params.input.result,
-      results: params.input.results,
-      targetId: params.input.targetId,
-      targetType: params.input.targetType,
-      to: params.input.to,
-      topicId: params.input.topicId,
-      userId: params.input.userId,
-    });
-    const clientIdempotencyKey =
-      params.idempotencyKey && params.idempotencyKey.length > 0 ? params.idempotencyKey : undefined;
-
-    try {
-      await this.assertConversationExportAccess(
-        { actorPermissions: params.actorPermissions, actorUserId: params.actorUserId },
-        params.input.kind,
-      );
-
-      // Fast path: prior successful publication under this client key.
-      if (clientIdempotencyKey) {
-        const existing = await this.findExportByClientIdempotencyKey(
-          params.actorUserId,
-          clientIdempotencyKey,
-        );
-        if (existing) return toExportPublic(existing);
-      }
-
-      const policy = await this.policyModel.getOrCreate();
-      // Conversation / timeline exports are conversation surfaces — honor the kill-switch.
-      if (isConversationExportKind(params.input.kind)) {
-        assertConversationAccessEnabled(policy.contentAccessMode);
-      }
-      const window = resolveAuditTimeWindow({
-        from: params.input.from,
-        maxListWindowDays: policy.maxListWindowDays,
-        to: params.input.to,
-      });
-
-      let includesMessageBodies = false;
-      if (params.input.kind === 'conversations' && params.input.includeMessageBodies) {
-        if (policy.contentAccessMode !== 'content_allowed' || !policy.messageBodyInExport) {
-          return throwEnterpriseError({
-            code: PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
-            details: {
-              reason: 'message_body_in_export_not_allowed',
-              contentAccessMode: policy.contentAccessMode,
-              messageBodyInExport: policy.messageBodyInExport,
-            },
-            httpCode: 'FORBIDDEN',
-            message: 'Message bodies are not allowed in audit exports by policy',
-          });
-        }
-        includesMessageBodies = true;
-      }
-
-      const filterSnapshot = freezeFilterSnapshot(params.input, window, {
-        exportArtifactRetentionDays: policy.exportArtifactRetentionDays,
-        maxExportRows: policy.maxExportRows,
-        revision: policy.revision,
-      });
-
-      // Create + enqueue + required audit must commit together so workers cannot
-      // claim a job for a request that never recorded its success audit (F1).
-      // Client idempotency (when set) uses job (type, key) dedup + export.job_id unique
-      // so concurrent publishers of the same logical key leave at most one export+job.
-      const linkedRow = await this.inTransaction(async (tx) => {
-        const exportsTx = new PlatformAuditExportModel(tx);
-        const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
-
-        const created = await exportsTx.create({
-          filterSnapshot,
-          includesMessageBodies,
-          kind: params.input.kind,
-          requestedBy: params.actorUserId,
-        });
-
-        if (this.afterCreateExport) {
-          await this.afterCreateExport({ exportId: created.id });
-        }
-
-        const jobIdempotencyKey = clientIdempotencyKey
-          ? buildAuditExportClientIdempotencyKey(params.actorUserId, clientIdempotencyKey)
-          : buildAuditExportJobIdempotencyKey(created.id);
-
-        const { created: jobCreated, job } = await jobsTx.enqueue({
-          idempotencyKey: jobIdempotencyKey,
-          input: { exportId: created.id },
-          maxAttempts: 3,
-          requestedBy: params.actorUserId,
-          type: PLATFORM_AUDIT_EXPORT_JOB_TYPE,
-        });
-
-        // Concurrent loser: another TX already published under this client key.
-        // Abort so our export row rolls back; caller reloads the winner.
-        if (clientIdempotencyKey && !jobCreated) {
-          const winnerId = parseAuditExportJobInput(job.input as Record<string, unknown>)?.exportId;
-          if (winnerId && winnerId !== created.id) {
-            throw new Error('AUDIT_EXPORT_PUBLICATION_DEDUP');
-          }
-        }
-
-        if (this.afterEnqueue) {
-          await this.afterEnqueue({ exportId: created.id, jobId: job.id });
-        }
-
-        const linked = await exportsTx.setJobId(created.id, job.id);
-        if (!linked || linked.jobId !== job.id) {
-          throw new Error('EXPORT_JOB_LINK_FAILED');
-        }
-
-        await appendAuditAccessLog(tx, {
-          action: 'admin.audit.exports.create',
-          actorUserId: params.actorUserId,
-          afterDiff: {
-            includesMessageBodies,
-            kind: linked.kind,
-            status: linked.status,
-          },
-          filterSummary,
-          reason: params.input.reason,
-          required: true,
-          result: 'success',
-          targetId: linked.id,
-          targetType: 'audit_export',
-        });
-
-        return linked;
-      });
-
-      return toExportPublic(linkedRow);
-    } catch (error) {
-      // Concurrent loser under the same client key: return the winning export (dedup).
-      // Do not swallow auth/policy denials — only publication races / link conflicts.
-      if (clientIdempotencyKey && !isDeniedError(error)) {
-        const existing = await this.findExportByClientIdempotencyKey(
-          params.actorUserId,
-          clientIdempotencyKey,
-        );
-        if (existing) return toExportPublic(existing);
-      }
-
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.create',
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          error: accessLogResultForError(error) === 'denied' ? 'denied' : 'failure',
-          kind: params.input.kind,
-        },
-        filterSummary,
-        reason: params.input.reason,
-        result: accessLogResultForError(error),
-        targetType: 'audit_export',
-      });
-      throw error;
-    }
-  };
+  }) => createExport(this.host(), params);
 
   list = async (params: {
     actorPermissions?: readonly string[];
     actorUserId: string;
     input: AdminAuditExportsListInputParsed;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({
-      cursor: params.input.cursor,
-      kind: params.input.kind,
-      limit: params.input.limit,
-      status: params.input.status,
-    });
-    try {
-      const { canReadConversations } = await this.assertConversationExportAccess(
-        { actorPermissions: params.actorPermissions, actorUserId: params.actorUserId },
-        params.input.kind,
-      );
+  }) => listExports(this.host(), params);
 
-      // Without conversation read: only surface operation_logs (never leak privileged exports).
-      const kindFilter: PlatformAuditExportKind | undefined = canReadConversations
-        ? params.input.kind
-        : 'operation_logs';
-
-      const page = await this.exportsModel.list({
-        cursor: params.input.cursor,
-        kind: kindFilter,
-        limit: params.input.limit,
-        requestedBy: params.input.mine ? params.actorUserId : undefined,
-        status: params.input.status,
-      });
-
-      // Defense in depth: drop any conversation kinds if somehow present.
-      const items = canReadConversations
-        ? page.items
-        : page.items.filter((row) => !CONVERSATION_EXPORT_KINDS.includes(row.kind));
-
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.list',
-        actorUserId: params.actorUserId,
-        afterDiff: canReadConversations
-          ? undefined
-          : { conversationKindsHidden: true, kindFilter: 'operation_logs' },
-        filterSummary,
-        result: 'success',
-        targetType: 'audit_export',
-      });
-      return {
-        items: items.map(toExportPublic),
-        nextCursor: page.nextCursor,
-      };
-    } catch (error) {
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.list',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: accessLogResultForError(error) },
-        filterSummary,
-        result: accessLogResultForError(error),
-        targetType: 'audit_export',
-      });
-      throw error;
-    }
-  };
-
-  get = async (params: {
-    actorPermissions?: readonly string[];
-    actorUserId: string;
-    id: string;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({});
-    try {
-      const row = await this.exportsModel.get(params.id);
-      if (!row) {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.exports.get',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'not_found' },
-          filterSummary,
-          result: 'failure',
-          targetId: params.id,
-          targetType: 'audit_export',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
-          httpCode: 'NOT_FOUND',
-        });
-      }
-
-      await this.assertConversationExportAccess(
-        { actorPermissions: params.actorPermissions, actorUserId: params.actorUserId },
-        row.kind,
-      );
-
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.get',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        result: 'success',
-        targetId: row.id,
-        targetType: 'audit_export',
-      });
-      return toExportPublic(row);
-    } catch (error) {
-      if (getEnterpriseErrorBody(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND) {
-        throw error;
-      }
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.get',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: accessLogResultForError(error) },
-        filterSummary,
-        result: accessLogResultForError(error),
-        targetId: params.id,
-        targetType: 'audit_export',
-      });
-      throw error;
-    }
-  };
+  get = async (params: { actorPermissions?: readonly string[]; actorUserId: string; id: string }) =>
+    getExport(this.host(), params);
 
   download = async (params: {
     actorPermissions?: readonly string[];
     actorUserId: string;
     input: AdminAuditExportsDownloadInput;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({});
-    try {
-      const row = await this.exportsModel.get(params.input.id);
-      if (!row) {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.exports.download',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'not_found' },
-          filterSummary,
-          reason: params.input.reason,
-          result: 'failure',
-          targetId: params.input.id,
-          targetType: 'audit_export',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
-          httpCode: 'NOT_FOUND',
-        });
-      }
-
-      // Conversation permission before any signed URL / storage access (download bypass guard).
-      await this.assertConversationExportAccess(
-        { actorPermissions: params.actorPermissions, actorUserId: params.actorUserId },
-        row.kind,
-      );
-
-      // Live kill-switch: conversation surfaces stay closed even for already-completed artifacts.
-      if (isConversationExportKind(row.kind)) {
-        const livePolicy = await this.policyModel.getOrCreate();
-        assertConversationAccessEnabled(livePolicy.contentAccessMode);
-      }
-
-      if (row.status === 'expired' || (row.expiresAt && row.expiresAt.getTime() <= Date.now())) {
-        if (row.status !== 'expired') {
-          await this.exportsModel.expired(row.id);
-        }
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.exports.download',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'expired' },
-          filterSummary,
-          reason: params.input.reason,
-          result: 'failure',
-          targetId: row.id,
-          targetType: 'audit_export',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
-          details: { reason: 'export_expired' },
-          httpCode: 'NOT_FOUND',
-          message: 'Export artifact expired',
-        });
-      }
-
-      if (row.status !== 'completed' || !row.storageKey) {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.exports.download',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'not_ready', status: row.status },
-          filterSummary,
-          reason: params.input.reason,
-          result: 'failure',
-          targetId: row.id,
-          targetType: 'audit_export',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-          details: { reason: 'export_not_ready', status: row.status },
-          httpCode: 'BAD_REQUEST',
-          message: 'Export is not ready for download',
-        });
-      }
-
-      // Integrity before issuing URL: length + trusted SHA-256 (detect same-length corruption).
-      const failIntegrity = async (error: string) => {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.exports.download',
-          actorUserId: params.actorUserId,
-          afterDiff: { error },
-          filterSummary,
-          reason: params.input.reason,
-          result: 'failure',
-          targetId: row.id,
-          targetType: 'audit_export',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-          details: { reason: 'export_integrity_failed' },
-          httpCode: 'BAD_REQUEST',
-          message: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-        });
-      };
-
-      const meta = await this.storage.getObjectMetadata(row.storageKey);
-      if (row.artifactBytes != null && meta.contentLength !== row.artifactBytes) {
-        return failIntegrity('size_mismatch');
-      }
-
-      // Stream-hash the object (F10) — never buffer the full artifact for download verify.
-      const objectHash = await this.storage.hashObject(row.storageKey);
-      if (row.artifactBytes != null && objectHash.artifactBytes !== row.artifactBytes) {
-        return failIntegrity('size_mismatch');
-      }
-      if (!checksumsMatch(objectHash.artifactChecksum, row.artifactChecksum)) {
-        return failIntegrity('checksum_mismatch');
-      }
-
-      // Shrink the replace-after-verify window: re-check size immediately before sign.
-      // Full TOCTOU elimination requires immutable/versioned object keys (see OOS).
-      const metaAfter = await this.storage.getObjectMetadata(row.storageKey);
-      if (metaAfter.contentLength !== objectHash.artifactBytes) {
-        return failIntegrity('size_mismatch_after_verify');
-      }
-
-      const ttl = ADMIN_AUDIT_EXPORT_DOWNLOAD_URL_TTL_SECONDS;
-
-      // Sign first, then audit success — never record a successful download if
-      // signing fails (which previously left a false success + catch failure pair).
-      const downloadUrl = await this.storage.getSignedDownloadUrl(row.storageKey, ttl);
-      const expiresAt = new Date(Date.now() + ttl * 1000);
-
-      // Fail closed: never return a signed URL without a durable access record.
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.download',
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          artifactBytes: row.artifactBytes,
-          // Never log URL or storageKey
-          signedUrlTtlSeconds: ttl,
-        },
-        filterSummary,
-        reason: params.input.reason,
-        required: true,
-        result: 'success',
-        targetId: row.id,
-        targetType: 'audit_export',
-      });
-
-      return {
-        artifactBytes: row.artifactBytes,
-        artifactChecksum: row.artifactChecksum,
-        downloadUrl,
-        expiresAt,
-        id: row.id,
-      };
-    } catch (error) {
-      if (
-        getEnterpriseErrorBody(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND ||
-        getEnterpriseErrorBody(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT
-      ) {
-        throw error;
-      }
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.download',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: accessLogResultForError(error) },
-        filterSummary,
-        reason: params.input.reason,
-        result: accessLogResultForError(error),
-        targetId: params.input.id,
-        targetType: 'audit_export',
-      });
-      throw error;
-    }
-  };
+  }) => downloadExport(this.host(), params);
 
   cancel = async (params: {
     actorPermissions?: readonly string[];

@@ -7,17 +7,18 @@ import {
   type PlatformAuditExportKind,
   type PlatformAuditLegalHoldItem,
   PlatformAuditLegalHoldModel,
-  RETENTION_OP_LOG_HOLD_TARGET_TYPES,
 } from '@/database/models/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
-export type HoldIndex = {
-  global: boolean;
-  sessions: Set<string>;
-  topics: Set<string>;
-  users: Set<string>;
-  workspaces: Set<string>;
-};
+import {
+  exportIdentityHeld,
+  type HoldIndex,
+  holdTargetIdHeld,
+  isHoldTargetType,
+} from './retentionWorkerHoldMatch';
+
+export type { HoldIndex } from './retentionWorkerHoldMatch';
+export { isHoldTargetType } from './retentionWorkerHoldMatch';
 
 export const buildHoldIndex = (holds: PlatformAuditLegalHoldItem[]): HoldIndex => {
   const index: HoldIndex = {
@@ -75,9 +76,6 @@ export const loadHoldIndexForScopes = async (
   return index;
 };
 
-export const isHoldTargetType = (targetType: string): boolean =>
-  (RETENTION_OP_LOG_HOLD_TARGET_TYPES as readonly string[]).includes(targetType);
-
 export const collectExportFilterHoldScopes = (
   rows: Array<{ filterSnapshot: PlatformAuditExportFilterSnapshot | null | undefined }>,
 ): Array<{ scopeId: string | null; scopeType: PlatformAuditLegalHoldItem['scopeType'] }> => {
@@ -116,23 +114,7 @@ export const operationLogHeld = (
 ): boolean => {
   if (index.global) return true;
   if (row.actorUserId && index.users.has(row.actorUserId)) return true;
-  if (row.targetId && isHoldTargetType(row.targetType)) {
-    if (row.targetType === 'user' && index.users.has(row.targetId)) return true;
-    if (row.targetType === 'session' && index.sessions.has(row.targetId)) return true;
-    if (row.targetType === 'topic' && index.topics.has(row.targetId)) return true;
-    if (row.targetType === 'workspace' && index.workspaces.has(row.targetId)) return true;
-  }
-  // Over-skip: unknown targetType with a targetId that matches any held id of any type.
-  if (
-    row.targetId &&
-    !isHoldTargetType(row.targetType) &&
-    (index.users.has(row.targetId) ||
-      index.sessions.has(row.targetId) ||
-      index.topics.has(row.targetId) ||
-      index.workspaces.has(row.targetId))
-  ) {
-    return true;
-  }
+  if (row.targetId && holdTargetIdHeld(index, row.targetId, row.targetType)) return true;
   return false;
 };
 
@@ -178,32 +160,8 @@ const computeFilterPins = (f: PlatformAuditExportFilterSnapshot): FilterPins => 
 });
 
 const exactScopeHeld = (index: HoldIndex, f: PlatformAuditExportFilterSnapshot): boolean => {
-  // Exact identity / scope fields frozen on the export.
-  if (f.userId && index.users.has(f.userId)) return true;
-  if (f.actorUserId && index.users.has(f.actorUserId)) return true;
-  if (f.actorUserIds?.some((id) => index.users.has(id))) return true;
-  if (f.topicId && index.topics.has(f.topicId)) return true;
-  if (f.sessionId && index.sessions.has(f.sessionId)) return true;
-  if (f.workspaceId && index.workspaces.has(f.workspaceId)) return true;
-
-  // Whitelisted targetType+targetId, plus over-skip for unknown/missing types.
-  if (f.targetId) {
-    const tt = f.targetType;
-    if (tt && isHoldTargetType(tt)) {
-      if (tt === 'user' && index.users.has(f.targetId)) return true;
-      if (tt === 'session' && index.sessions.has(f.targetId)) return true;
-      if (tt === 'topic' && index.topics.has(f.targetId)) return true;
-      if (tt === 'workspace' && index.workspaces.has(f.targetId)) return true;
-    } else if (
-      index.users.has(f.targetId) ||
-      index.sessions.has(f.targetId) ||
-      index.topics.has(f.targetId) ||
-      index.workspaces.has(f.targetId)
-    ) {
-      return true;
-    }
-  }
-
+  if (exportIdentityHeld(index, f)) return true;
+  if (f.targetId && holdTargetIdHeld(index, f.targetId, f.targetType)) return true;
   return false;
 };
 

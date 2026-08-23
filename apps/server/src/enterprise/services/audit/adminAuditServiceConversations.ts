@@ -11,6 +11,10 @@ import type {
 } from '../../contracts/adminAudit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { appendAuditAccessLog, buildAuditFilterSummary } from './accessLog';
+import {
+  listConversationMessageBodies,
+  listConversationMessageMetadata,
+} from './adminAuditServiceConversationMessages';
 import type { AdminAuditServiceHost } from './adminAuditServiceHost';
 import {
   accessLogResultForError,
@@ -18,6 +22,7 @@ import {
   isNotFoundError,
   maskOptionalText,
 } from './adminAuditServiceShared';
+import type { ConversationContentAccess } from './contentPolicy';
 import { assertConversationAccessEnabled, resolveConversationContentAccess } from './contentPolicy';
 import { resolveAuditTimeWindow } from './timeWindow';
 
@@ -85,6 +90,51 @@ export const listConversations = async (
   }
 };
 
+type ConversationPolicy = Awaited<ReturnType<AdminAuditServiceHost['policyModel']['getOrCreate']>>;
+type ConversationTopic = NonNullable<
+  Awaited<ReturnType<AdminAuditServiceHost['conversationModel']['getTopic']>>
+>;
+
+const toConversationGetResult = (
+  topic: ConversationTopic,
+  access: ConversationContentAccess,
+  redactionProfile: ConversationPolicy['redactionProfile'],
+) => {
+  const base = {
+    agentId: topic.agentId,
+    contentAccessMode: access.mode,
+    createdAt: topic.createdAt,
+    description: maskOptionalText(topic.description, redactionProfile) ?? null,
+    id: topic.id,
+    model: topic.model,
+    provider: topic.provider,
+    redactionProfile,
+    sessionId: topic.sessionId,
+    status: topic.status,
+    title: maskOptionalText(topic.title, redactionProfile) ?? null,
+    updatedAt: topic.updatedAt,
+    userId: topic.userId,
+  };
+
+  return access.allowBody
+    ? {
+        ...base,
+        content:
+          topic.content == null
+            ? null
+            : applyAuditConversationRedaction(topic.content, redactionProfile),
+        editorData:
+          topic.editorData == null
+            ? undefined
+            : applyAuditConversationRedaction(topic.editorData, redactionProfile),
+        historySummary:
+          topic.historySummary == null
+            ? null
+            : applyAuditConversationRedaction(topic.historySummary, redactionProfile),
+      }
+    : base;
+};
+
 export const getConversation = async (
   host: AdminAuditServiceHost,
   params: { actorUserId: string; input: ConversationsGetInput },
@@ -118,39 +168,7 @@ export const getConversation = async (
       });
     }
 
-    const base = {
-      agentId: topic.agentId,
-      contentAccessMode: access.mode,
-      createdAt: topic.createdAt,
-      description: maskOptionalText(topic.description, policy.redactionProfile) ?? null,
-      id: topic.id,
-      model: topic.model,
-      provider: topic.provider,
-      redactionProfile: policy.redactionProfile,
-      sessionId: topic.sessionId,
-      status: topic.status,
-      title: maskOptionalText(topic.title, policy.redactionProfile) ?? null,
-      updatedAt: topic.updatedAt,
-      userId: topic.userId,
-    };
-
-    const result = access.allowBody
-      ? {
-          ...base,
-          content:
-            topic.content == null
-              ? null
-              : applyAuditConversationRedaction(topic.content, policy.redactionProfile),
-          editorData:
-            topic.editorData == null
-              ? undefined
-              : applyAuditConversationRedaction(topic.editorData, policy.redactionProfile),
-          historySummary:
-            topic.historySummary == null
-              ? null
-              : applyAuditConversationRedaction(topic.historySummary, policy.redactionProfile),
-        }
-      : base;
+    const result = toConversationGetResult(topic, access, policy.redactionProfile);
 
     // Body-bearing conversation reads are sensitive — fail closed on audit failure.
     await appendAuditAccessLog(host.db, {
@@ -207,88 +225,21 @@ export const listConversationMessages = async (
     });
 
     const wantBody = Boolean(params.input.includeBody) && access.allowBody;
-
-    if (wantBody) {
-      const page = await host.conversationModel.listMessageDetails({
-        cursor: params.input.cursor,
-        from: window.from,
-        limit: params.input.limit,
-        to: window.to,
-        topicId: params.input.topicId,
-        userId: params.input.userId,
-      });
-
-      // Message bodies are sensitive evidence — never return them unaudited.
-      await appendAuditAccessLog(host.db, {
-        action: 'admin.audit.conversations.messages',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        required: true,
-        result: 'success',
-        targetId: params.input.topicId,
-        targetType: 'topic',
-      });
-
-      return {
-        contentAccessMode: access.mode,
-        redactionProfile: policy.redactionProfile,
-        items: page.items.map((row) => ({
-          agentId: row.agentId,
-          content:
-            row.content == null
-              ? null
-              : applyAuditConversationRedaction(row.content, policy.redactionProfile),
-          contentAccessMode: access.mode,
-          createdAt: row.createdAt,
-          editorData:
-            row.editorData == null
-              ? null
-              : applyAuditConversationRedaction(row.editorData, policy.redactionProfile),
-          error:
-            row.error == null
-              ? null
-              : applyAuditConversationRedaction(row.error, policy.redactionProfile),
-          id: row.id,
-          model: row.model,
-          parentId: row.parentId,
-          provider: row.provider,
-          role: row.role,
-          sessionId: row.sessionId,
-          topicId: row.topicId,
-          updatedAt: row.updatedAt,
-          userId: row.userId,
-        })),
-        nextCursor: page.nextCursor,
-      };
-    }
-
-    const page = await host.conversationModel.listMessages({
-      cursor: params.input.cursor,
-      from: window.from,
-      limit: params.input.limit,
-      to: window.to,
-      topicId: params.input.topicId,
-      userId: params.input.userId,
-    });
-
-    await appendAuditAccessLog(host.db, {
-      action: 'admin.audit.conversations.messages',
+    const ctx = {
+      access,
       actorUserId: params.actorUserId,
       filterSummary,
-      result: 'success',
-      targetId: params.input.topicId,
-      targetType: 'topic',
-    });
-
-    return {
-      contentAccessMode: access.mode,
-      items: page.items.map((row) => ({
-        ...row,
-        contentAccessMode: access.mode,
-      })),
-      nextCursor: page.nextCursor,
+      host,
+      input: params.input,
       redactionProfile: policy.redactionProfile,
+      window,
     };
+
+    if (wantBody) {
+      return listConversationMessageBodies(ctx);
+    }
+
+    return listConversationMessageMetadata(ctx);
   } catch (error) {
     await appendAuditAccessLog(host.db, {
       action: 'admin.audit.conversations.messages',

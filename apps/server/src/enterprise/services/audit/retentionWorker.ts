@@ -19,23 +19,21 @@ import {
 import type { PlatformJobItem } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { type AuditExportArtifactStorage, AuditExportPrivateS3Storage } from './exportStorage';
+import type { AuditExportArtifactStorage } from './exportStorage';
 import {
   AUDIT_RETENTION_DEFAULT_LEASE_MS,
   parseAuditRetentionJobCursor,
   parseAuditRetentionJobInput,
   PLATFORM_AUDIT_RETENTION_JOB_TYPE,
 } from './retentionConstants';
-import { processExportArtifacts } from './retentionWorkerArtifacts';
 import { createRetentionBatchCheckpoint } from './retentionWorkerCheckpoint';
-import { assertRunnableRun, settleNonRunnableRun } from './retentionWorkerClaim';
+import { AuditRetentionInvalidDataError } from './retentionWorkerErrors';
 import {
-  AuditRetentionInvalidDataError,
-  AuditRetentionLeaseLostError,
-} from './retentionWorkerErrors';
+  completeRetentionRun,
+  prepareRetentionRun,
+  processRetentionScope,
+} from './retentionWorkerExecute';
 import { settleRetentionJobError } from './retentionWorkerFailure';
-import { processConversations, processOperationLogs } from './retentionWorkerScopes';
-import { appendWorkerOutcome } from './retentionWorkerTerminal';
 
 export interface ProcessNextAuditRetentionOptions {
   /**
@@ -122,35 +120,15 @@ export const processNextAuditRetentionJob = async (
   const runId = parsedInput.runId;
 
   try {
-    const run = await runsModel.get(runId);
-    if (!run) {
-      await jobs.fail({
-        error: { code: 'NOT_FOUND' },
-        jobId: claimed.id,
-        terminal: true,
-        workerId: options.workerId,
-      });
-      return { claimed: true, jobId: claimed.id, outcome: 'failed', runId };
-    }
-
-    const settled = await settleNonRunnableRun({
+    const prepared = await prepareRetentionRun({
       jobId: claimed.id,
       jobs,
-      run,
       runId,
+      runsModel,
       workerId: options.workerId,
     });
-    if (settled) return settled;
-
-    assertRunnableRun(run);
-
-    // pending → running (or re-enter running after lease recovery / retry)
-    if (run.status === 'pending') {
-      await runsModel.updateProgress(runId, {
-        markRunning: true,
-        counts: run.counts ?? {},
-      });
-    }
+    if (prepared.result) return prepared.result;
+    const run = prepared.run;
 
     let counts: PlatformAuditRetentionCounts = { ...run.counts };
     // Resume cursor from job (never re-scan already advanced keyset).
@@ -181,56 +159,26 @@ export const processNextAuditRetentionJob = async (
 
     await renewLease();
 
-    if (run.scope === 'operation_logs') {
-      counts = await processOperationLogs({
-        checkpointBatch,
-        counts,
-        cutoffAt: run.cutoffAt,
-        db,
-        execute: run.mode === 'execute',
-        getKeyset: () => keyset,
-        renewLease,
-        repo,
-        setKeyset: (c) => {
-          keyset = c;
-        },
-      });
-    } else if (run.scope === 'conversations') {
-      counts = await processConversations({
-        checkpointBatch,
-        counts,
-        cutoffAt: run.cutoffAt,
-        db,
-        execute: run.mode === 'execute',
-        getKeyset: () => keyset,
-        renewLease,
-        repo,
-        setKeyset: (c) => {
-          keyset = c;
-        },
-      });
-    } else {
-      if (run.mode === 'execute' && !storage) {
-        storage = new AuditExportPrivateS3Storage();
-      }
-      counts = await processExportArtifacts({
-        afterArtifactAuthorize: options.afterArtifactAuthorize,
-        afterArtifactClaim: options.afterArtifactClaim,
-        checkpointBatch,
-        counts,
-        cutoffAt: run.cutoffAt,
-        db,
-        execute: run.mode === 'execute',
-        getKeyset: () => keyset,
-        renewLease,
-        repo,
-        runId,
-        setKeyset: (c) => {
-          keyset = c;
-        },
-        storage,
-      });
-    }
+    const scoped = await processRetentionScope({
+      afterArtifactAuthorize: options.afterArtifactAuthorize,
+      afterArtifactClaim: options.afterArtifactClaim,
+      checkpointBatch,
+      counts,
+      cutoffAt: run.cutoffAt,
+      db,
+      execute: run.mode === 'execute',
+      getKeyset: () => keyset,
+      renewLease,
+      repo,
+      runId,
+      scope: run.scope,
+      setKeyset: (c) => {
+        keyset = c;
+      },
+      storage,
+    });
+    counts = scoped.counts;
+    storage = scoped.storage;
 
     await assertNotCancelled();
     await renewLease();
@@ -246,43 +194,15 @@ export const processNextAuditRetentionJob = async (
       await options.afterDomainComplete({ jobId: claimed.id, runId });
     }
 
-    // Domain complete + job succeed + required outcome audit in one TX (F5).
-    const terminal = await db.transaction(async (tx) => {
-      const runsTx = new PlatformAuditRetentionRunModel(tx);
-      const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
-
-      const completed = await runsTx.complete(runId, { counts });
-      if (!completed) {
-        return 'cancelled' as const;
-      }
-
-      const jobDone = await jobsTx.complete({
-        jobId: claimed.id,
-        resultSummary: {
-          counts,
-          mode: run.mode,
-          runId,
-          scope: run.scope,
-        },
-        workerId: options.workerId,
-      });
-      if (!jobDone) {
-        // Lease ownership lost — roll back domain complete with this TX.
-        throw new AuditRetentionLeaseLostError();
-      }
-
-      await appendWorkerOutcome(tx, {
-        counts,
-        mode: run.mode,
-        outcome: 'completed',
-        requestedBy: run.requestedBy,
-        required: true,
-        result: 'success',
-        runId,
-        scope: run.scope,
-      });
-
-      return 'completed' as const;
+    const terminal = await completeRetentionRun({
+      counts,
+      db,
+      jobId: claimed.id,
+      mode: run.mode,
+      requestedBy: run.requestedBy,
+      runId,
+      scope: run.scope,
+      workerId: options.workerId,
     });
 
     if (terminal === 'cancelled') {

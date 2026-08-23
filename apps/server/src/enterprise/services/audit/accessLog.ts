@@ -10,6 +10,8 @@ import type { AdminAuditAccessFilterSummary } from '../../contracts/adminAudit';
 import { PlatformAuditService } from '../platformAudit';
 import type { AuditTargetType } from './auditActionCatalog';
 
+export { buildAuditFilterSummary } from './accessLogFilterSummary';
+
 export type AuditAccessAction =
   | 'admin.audit.conversations.get'
   | 'admin.audit.conversations.list'
@@ -60,60 +62,6 @@ export interface AppendAuditAccessLogParams {
   targetId?: string | null;
   targetType: AuditTargetType;
 }
-
-/** Build a bounded, free-text-free summary from known structured filter fields. */
-export const buildAuditFilterSummary = (params: {
-  action?: string | null;
-  actions?: string[] | null;
-  actorUserId?: string | null;
-  cursor?: string | null;
-  from?: Date | null;
-  hasQ?: boolean;
-  includeBody?: boolean;
-  /** Export kind only (structured enum string — never free text). */
-  kind?: string | null;
-  limit?: number;
-  /** Retention mode only (structured enum string). */
-  mode?: string | null;
-  requestId?: string | null;
-  result?: string | null;
-  results?: string[] | null;
-  /** Retention scope only (structured enum string). */
-  scope?: string | null;
-  scopeType?: string | null;
-  /** Export/retention status filter (structured enum string). */
-  status?: string | null;
-  targetId?: string | null;
-  targetType?: string | null;
-  to?: Date | null;
-  topicId?: string | null;
-  userId?: string | null;
-}): AdminAuditAccessFilterSummary => {
-  const summary: AdminAuditAccessFilterSummary = {};
-  if (params.action != null) summary.actionPresent = true;
-  if (params.actions != null) summary.actionsCount = params.actions.length;
-  if (params.actorUserId != null) summary.actorUserIdPresent = true;
-  if (params.cursor != null) summary.cursorPresent = true;
-  if (params.from != null) summary.fromPresent = true;
-  if (params.hasQ != null) summary.hasQ = params.hasQ;
-  if (params.includeBody != null) summary.includeBody = params.includeBody;
-  if (params.kind != null) summary.kind = params.kind;
-  if (params.limit != null) summary.limit = params.limit;
-  if (params.mode != null) summary.mode = params.mode;
-  if (params.requestId != null) summary.requestIdPresent = true;
-  if (params.result != null || (params.results != null && params.results.length > 0)) {
-    summary.resultPresent = true;
-  }
-  if (params.scope != null) summary.scope = params.scope;
-  if (params.scopeType != null) summary.scopeType = params.scopeType;
-  if (params.status != null) summary.status = params.status;
-  if (params.targetId != null) summary.targetIdPresent = true;
-  if (params.targetType != null) summary.targetTypePresent = true;
-  if (params.to != null) summary.toPresent = true;
-  if (params.topicId != null) summary.topicIdPresent = true;
-  if (params.userId != null) summary.userIdPresent = true;
-  return summary;
-};
 
 /**
  * Append an audit-the-auditor row.
