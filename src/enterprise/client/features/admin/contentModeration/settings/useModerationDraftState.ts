@@ -32,6 +32,12 @@ export const useModerationDraftState = (data?: { settings: ContentModerationSett
   const [importText, setImportText] = useState('');
   const [fieldError, setFieldError] = useState<ConfigValidationMessage | null>(null);
   const baselineRef = useRef<string>('');
+  /**
+   * The freshest draft, readable from an effect without making `draft` a dependency of it.
+   * Assigned during render, so it is already current by the time effects run.
+   */
+  const draftRef = useRef<ModerationSettingsDraft | null>(null);
+  draftRef.current = draft;
 
   /**
    * Replace the whole editor from an authoritative server payload (first load, save, reload).
@@ -49,16 +55,21 @@ export const useModerationDraftState = (data?: { settings: ContentModerationSett
     setFieldError(null);
   }, []);
 
-  // Adopt the server snapshot only while there is nothing local to lose.
+  /**
+   * Adopt the server snapshot only while there is nothing local to lose.
+   *
+   * The "is there a local draft" test reads the ref rather than deciding inside a `setDraft`
+   * updater. An updater has to be pure: React is free to run it more than once for one commit
+   * (StrictMode does exactly that), and this one used to write `baselineRef` and queue
+   * `setBaseRevision` from inside — side effects that would then run twice, and could stamp the
+   * baseline from a bundle that never became the draft.
+   */
   useEffect(() => {
-    if (!data) return;
-    setDraft((current) => {
-      if (current !== null) return current;
-      const next = toDraft(data.settings);
-      baselineRef.current = draftFingerprint(next);
-      setBaseRevision(data.settings.revision);
-      return next;
-    });
+    if (!data || draftRef.current !== null) return;
+    const next = toDraft(data.settings);
+    baselineRef.current = draftFingerprint(next);
+    setDraft(next);
+    setBaseRevision(data.settings.revision);
   }, [data]);
 
   /**
