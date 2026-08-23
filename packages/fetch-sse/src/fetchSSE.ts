@@ -653,8 +653,9 @@ export const fetchSSE = async (url: string, options: RequestInit & FetchSSEOptio
     signal: options.signal,
   });
 
-  // only call onFinish when response is available
-  // so like abort, we don't need to call onFinish
+  // onFinish only runs once a response exists, so an abort *before* the stream opens skips it.
+  // An abort after it opened does land here and reports `type: 'abort'` with whatever usage
+  // arrived before the cancel — it is not a "no onFinish" path.
   if (response) {
     textController.stopAnimation();
     thinkingController.stopAnimation();

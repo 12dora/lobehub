@@ -47,11 +47,20 @@ export const handleStreamFinish = async ({
     runtime;
 
   if (traceId) {
-    messageService.updateMessage(
-      assistantMessageId,
-      { traceId, observationId: observationId ?? undefined },
-      { agentId, groupId, topicId },
-    );
+    // Best-effort telemetry must not fail or delay the turn.
+    void messageService
+      .updateMessage(
+        assistantMessageId,
+        { traceId, observationId: observationId ?? undefined },
+        { agentId, groupId, topicId },
+      )
+      .catch((error) => {
+        log(
+          '[trace] failed to persist trace metadata messageId=%s, error=%o',
+          assistantMessageId,
+          error,
+        );
+      });
   }
 
   const result = await handler.handleFinish({
