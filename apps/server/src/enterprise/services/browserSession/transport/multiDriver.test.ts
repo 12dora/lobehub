@@ -207,7 +207,9 @@ describe.skipIf(!probe.available)('createLibcurlMultiDriver', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(driver.stats().bufferedBodyBytes).toBeLessThan(256 * 1024);
     await new Promise((resolve) => setTimeout(resolve, 400));
-    await expect(reader.read()).rejects.toThrow(/was not consumed/);
+    await expect(reader.read()).rejects.toThrow(
+      'fetch failed: the ChatGPT Web transport response body was not consumed within 250ms; the request was cancelled.',
+    );
     await waitFor(() => driver.stats().inFlight === 0);
   }, 10_000);
 
