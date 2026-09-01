@@ -145,9 +145,16 @@ const UserUpdater = memo(() => {
             // Preserve avatar from settings, don't override with auth provider value
             avatar: baseUser?.avatar || '',
             email: betterAuthUser.email,
-            fullName: betterAuthUser.name,
+            // fullName / username live on the users table and are edited in
+            // settings → profile via tRPC. Better Auth's session cookie cache
+            // (`session_data`, ~120s) still holds the pre-edit `name` /
+            // `username`, so copying them here after a successful save snaps
+            // the profile inputs back. Prefer the already-loaded store
+            // (useInitUserState / the save) and only fall back to the session
+            // on first hydration or account switch.
+            fullName: baseUser?.fullName ?? betterAuthUser.name,
             id: betterAuthUser.id,
-            username: betterAuthUser.username,
+            username: baseUser?.username ?? betterAuthUser.username,
           } as LobeUser,
         };
       });

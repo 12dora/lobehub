@@ -75,6 +75,70 @@ describe('createCommonSlice', () => {
     });
   });
 
+  describe('updateFullName', () => {
+    it('optimistically updates user.fullName before the service call resolves', async () => {
+      act(() => {
+        useUserStore.setState({ user: { id: 'u1', fullName: 'Admin' } as any });
+      });
+
+      let resolveService: () => void = () => {};
+      const updateSpy = vi.spyOn(userService, 'updateFullName').mockImplementation(
+        () =>
+          new Promise<void>((r) => {
+            resolveService = r;
+          }) as any,
+      );
+      const refreshSpy = vi.spyOn(useUserStore.getState(), 'refreshUserState').mockResolvedValue();
+
+      let pending: Promise<void> | undefined;
+      act(() => {
+        pending = useUserStore.getState().updateFullName('捷发管理员');
+      });
+
+      expect(useUserStore.getState().user?.fullName).toBe('捷发管理员');
+
+      await act(async () => {
+        resolveService();
+        await pending;
+      });
+
+      expect(updateSpy).toHaveBeenCalledWith('捷发管理员');
+      expect(refreshSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('updateUsername', () => {
+    it('optimistically updates user.username before the service call resolves', async () => {
+      act(() => {
+        useUserStore.setState({ user: { id: 'u1', username: 'admin' } as any });
+      });
+
+      let resolveService: () => void = () => {};
+      const updateSpy = vi.spyOn(userService, 'updateUsername').mockImplementation(
+        () =>
+          new Promise<void>((r) => {
+            resolveService = r;
+          }) as any,
+      );
+      const refreshSpy = vi.spyOn(useUserStore.getState(), 'refreshUserState').mockResolvedValue();
+
+      let pending: Promise<void> | undefined;
+      act(() => {
+        pending = useUserStore.getState().updateUsername('jiefa-admin');
+      });
+
+      expect(useUserStore.getState().user?.username).toBe('jiefa-admin');
+
+      await act(async () => {
+        resolveService();
+        await pending;
+      });
+
+      expect(updateSpy).toHaveBeenCalledWith('jiefa-admin');
+      expect(refreshSpy).toHaveBeenCalled();
+    });
+  });
+
   describe('updateInterests', () => {
     it('optimistically updates user.interests before the service call resolves', async () => {
       act(() => {

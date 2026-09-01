@@ -52,6 +52,10 @@ export class CommonActionImpl {
   };
 
   updateFullName = async (fullName: string): Promise<void> => {
+    const previousUser = this.#get().user;
+    if (previousUser) {
+      this.#set({ user: { ...previousUser, fullName } }, false, n('updateFullName/optimistic'));
+    }
     await userService.updateFullName(fullName);
     await this.#get().refreshUserState();
   };
@@ -73,6 +77,10 @@ export class CommonActionImpl {
   };
 
   updateUsername = async (username: string): Promise<void> => {
+    const previousUser = this.#get().user;
+    if (previousUser) {
+      this.#set({ user: { ...previousUser, username } }, false, n('updateUsername/optimistic'));
+    }
     await userService.updateUsername(username);
     await this.#get().refreshUserState();
   };

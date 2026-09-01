@@ -90,6 +90,33 @@ describe('UserUpdater', () => {
     expect(useUserStore.getState().user?.latestName).toBe('lice');
   });
 
+  it('does not snap fullName/username back to a stale Better Auth session after a profile save', () => {
+    // useInitUserState (or the profile save) already wrote the new values.
+    // The session cookie cache still holds the pre-edit name/username.
+    useUserStore.setState({
+      user: {
+        id: 'u1',
+        email: 'a@b.com',
+        fullName: '捷发管理员',
+        username: 'jiefa-admin',
+      },
+    });
+
+    useSessionMock.mockReturnValue(sampleSession({ name: 'Admin', username: 'admin' }));
+    render(<UserUpdater />);
+
+    expect(useUserStore.getState().user?.fullName).toBe('捷发管理员');
+    expect(useUserStore.getState().user?.username).toBe('jiefa-admin');
+  });
+
+  it('hydrates fullName/username from the session when the store has no profile yet', () => {
+    useSessionMock.mockReturnValue(sampleSession());
+    render(<UserUpdater />);
+
+    expect(useUserStore.getState().user?.fullName).toBe('Alice');
+    expect(useUserStore.getState().user?.username).toBe('alice');
+  });
+
   it('drops the previous user profile fields when the session switches to a different account', () => {
     // Simulate user A is signed in with profile fields populated.
     useUserStore.setState({
@@ -117,6 +144,8 @@ describe('UserUpdater', () => {
     const user = useUserStore.getState().user;
     expect(user?.id).toBe('userB');
     expect(user?.email).toBe('b@c.com');
+    expect(user?.fullName).toBe('Bob');
+    expect(user?.username).toBe('bob');
     expect(user?.interests).toBeUndefined();
     expect(user?.firstName).toBeUndefined();
     expect(user?.latestName).toBeUndefined();
