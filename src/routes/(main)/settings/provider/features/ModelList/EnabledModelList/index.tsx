@@ -5,7 +5,6 @@ import { isLegacyAliasModel } from 'model-bank';
 import { use, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useManagedResource } from '@/features/ManagedResources';
 import { usePermission } from '@/hooks/usePermission';
 import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { aiModelSelectors } from '@/store/aiInfra/selectors';
@@ -13,6 +12,7 @@ import { aiModelSelectors } from '@/store/aiInfra/selectors';
 import ModelItem from '../ModelItem';
 import { ProviderSettingsContext } from '../ProviderSettingsContext';
 import SortModelModal from '../SortModelModal';
+import { useManagedAiModels } from '../useManagedAiModels';
 
 interface EnabledModelListProps {
   activeTab: string;
@@ -22,7 +22,7 @@ const EnabledModelList = ({ activeTab }: EnabledModelListProps) => {
   const { t } = useTranslation('modelProvider');
   const { modelEditable } = use(ProviderSettingsContext);
   const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
-  const { managed: aiModelsManaged } = useManagedResource('aiModels');
+  const aiModelsManaged = useManagedAiModels();
 
   const enabledModels = useAiInfraStore(aiModelSelectors.enabledAiProviderModelList, isEqual);
   const batchToggleAiModels = useAiInfraStore((s) => s.batchToggleAiModels);

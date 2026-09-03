@@ -6,7 +6,6 @@ import { CircleX, EllipsisVertical, LucideRefreshCcwDot, PlusIcon } from 'lucide
 import { memo, use, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useManagedResource } from '@/features/ManagedResources';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePermission } from '@/hooks/usePermission';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
@@ -15,6 +14,7 @@ import { aiModelSelectors } from '@/store/aiInfra/selectors';
 import { createCreateNewModelModal } from '../CreateNewModelModal';
 import { resolveFetchFailureMessage } from '../providerFailureCopy';
 import { ProviderSettingsContext } from '../ProviderSettingsContext';
+import { useManagedAiModels } from '../useManagedAiModels';
 import { useSyncUpstreamModels } from '../useSyncUpstreamModels';
 import Search from './Search';
 
@@ -31,7 +31,7 @@ const ModelTitle = memo<ModelFetcherProps>(
     const { t: tSetting } = useTranslation('setting');
     const { message } = App.useApp();
     const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
-    const { managed: aiModelsManaged } = useManagedResource('aiModels');
+    const aiModelsManaged = useManagedAiModels();
     const canMutateModels = canManageProvider && !aiModelsManaged;
     const aiInfraStoreApi = useAiInfraStoreApi();
     const [

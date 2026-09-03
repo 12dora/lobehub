@@ -564,6 +564,11 @@
       "count": 1
     }
   },
+  "src/features/ModelSelect/index.tsx": {
+    "no-restricted-imports": {
+      "count": 2
+    }
+  },
   "src/features/NavPanel/components/BackNav.tsx": {
     "no-restricted-imports": {
       "count": 1
@@ -1334,14 +1339,29 @@
       "count": 1
     }
   },
+  "src/routes/(main)/settings/provider/features/ModelList/EnabledModelList/index.tsx": {
+    "no-restricted-imports": {
+      "count": 2
+    }
+  },
   "src/routes/(main)/settings/provider/features/ModelList/ModelConfigModal/Footer.tsx": {
     "no-restricted-imports": {
       "count": 1
     }
   },
+  "src/routes/(main)/settings/provider/features/ModelList/ModelItem.tsx": {
+    "no-restricted-imports": {
+      "count": 4
+    }
+  },
   "src/routes/(main)/settings/provider/features/ModelList/ModelTitle/index.tsx": {
     "no-restricted-imports": {
-      "count": 1
+      "count": 3
+    }
+  },
+  "src/routes/(main)/settings/provider/features/ModelList/SearchResult.tsx": {
+    "no-restricted-imports": {
+      "count": 2
     }
   },
   "src/routes/(main)/settings/provider/features/ProviderConfig/Checker.tsx": {

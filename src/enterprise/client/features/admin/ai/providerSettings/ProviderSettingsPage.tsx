@@ -45,6 +45,9 @@ const AdminProviderSettingsContextBridge = memo<{ children: React.ReactNode }>((
   return (
     <ProviderSettingsContext
       value={{
+        // This IS the platform catalog, so the global `managedResources.aiModels` policy —
+        // which freezes members' overlay on it — must not disable the catalog's own editing.
+        adminPlatformCatalog: true,
         // Platform delete is a true hard delete for everyone — say so, instead of reusing the
         // personal-provider copy that only describes the viewer's own settings.
         deleteConfirmDescription: t('aiProviderSettings.deleteConfirmDescription'),

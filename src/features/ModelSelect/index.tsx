@@ -106,7 +106,19 @@ const ModelSelect = memo<ModelSelectProps>(
     const [enabling, setEnabling] = useState(false);
     const { blocked: aiModelMutationBlocked } = useManagedResource('aiModels');
     const { blocked: aiProviderMutationBlocked } = useManagedResource('aiProviders');
-    const canEnableStaleModel = !aiModelMutationBlocked && !aiProviderMutationBlocked;
+    /**
+     * Only the admin adapter implements `syncUpstreamModels`, so this is the scoped store
+     * saying "I administer the platform catalog" — the same signal `useSyncUpstreamModels`
+     * reads. It matters here because this picker also renders inside the admin catalog store
+     * (`ServiceModelSettingsPage`), where the two toggles below dispatch to
+     * `admin.ai{Models,Providers}.applyImmediate`; the managed-resource policy freezes the
+     * MEMBERS' overlay and its server-side mutation guard does not cover those admin paths.
+     * Without the exemption an admin fixing a platform default that points at a disabled model
+     * was shown the member "managed" state instead of the inline enable action.
+     */
+    const administersPlatformCatalog = useAiInfraStore((s) => s.supportsUpstreamSync);
+    const canEnableStaleModel =
+      administersPlatformCatalog || (!aiModelMutationBlocked && !aiProviderMutationBlocked);
     const enabledList = useAiInfraStore((s) =>
       modelType === 'embedding'
         ? aiProviderSelectors.enabledEmbeddingModelList(s)

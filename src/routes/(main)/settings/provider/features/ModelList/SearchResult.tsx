@@ -6,16 +6,16 @@ import { ToggleRightIcon } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useManagedResource } from '@/features/ManagedResources';
 import { usePermission } from '@/hooks/usePermission';
 import { aiModelSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import ModelItem from './ModelItem';
+import { useManagedAiModels } from './useManagedAiModels';
 
 const SearchResult = memo(() => {
   const { t } = useTranslation('modelProvider');
   const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
-  const { managed: aiModelsManaged } = useManagedResource('aiModels');
+  const aiModelsManaged = useManagedAiModels();
 
   const searchKeyword = useAiInfraStore((s) => s.modelSearchKeyword);
   const batchToggleAiModels = useAiInfraStore((s) => s.batchToggleAiModels);

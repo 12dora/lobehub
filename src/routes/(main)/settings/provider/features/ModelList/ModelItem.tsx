@@ -10,7 +10,6 @@ import { useTranslation } from 'react-i18next';
 
 import { ModelInfoTags } from '@/components/ModelSelect';
 import NewModelBadge from '@/components/ModelSelect/NewModelBadge';
-import { useManagedResource } from '@/features/ManagedResources';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePermission } from '@/hooks/usePermission';
 import {
@@ -27,6 +26,7 @@ import {
 
 import { createModelConfigModal } from './ModelConfigModal';
 import { ProviderSettingsContext } from './ProviderSettingsContext';
+import { useManagedAiModels } from './useManagedAiModels';
 
 const styles = createStaticStyles(({ css, cx }) => {
   return {
@@ -88,7 +88,7 @@ const ModelItem = memo<ModelItemProps>(
     const { t } = useTranslation(['modelProvider', 'components', 'models', 'common']);
     const { modelEditable, showDeployName } = use(ProviderSettingsContext);
     const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
-    const { managed: aiModelsManaged } = useManagedResource('aiModels');
+    const aiModelsManaged = useManagedAiModels();
     const aiInfraStoreApi = useAiInfraStoreApi();
 
     const [activeAiProvider, isModelLoading, toggleModelEnabled, removeAiModel] = useAiInfraStore(

@@ -2,6 +2,14 @@ import { createContext, type ReactNode } from 'react';
 
 export interface ProviderSettingsContextValue {
   /**
+   * When true, these components are rendering the ADMIN platform catalog rather than a
+   * member's own provider settings. Supplied by the admin surface only.
+   *
+   * Read by {@link useManagedAiModels}: the managed-resource capability is global, so the
+   * admin catalog needs an explicit marker to stay editable under its own policy.
+   */
+  adminPlatformCatalog?: boolean;
+  /**
    * Override for the "delete provider" confirmation body. Supplied by the admin platform
    * catalog, where a delete is site-wide and purges credentials plus version history — a much
    * heavier consequence than deleting a personal provider. Absent = the normal user copy.
