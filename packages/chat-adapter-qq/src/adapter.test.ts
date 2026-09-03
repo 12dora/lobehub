@@ -423,6 +423,8 @@ describe('QQAdapter', () => {
       const data = await message.attachments[0].fetchData!();
 
       expect(data).toBeInstanceOf(Buffer);
+      // `fetchData` is typed `ArrayBuffer | Buffer`, and `toBeInstanceOf` does not narrow it.
+      if (!Buffer.isBuffer(data)) throw new Error('fetchData should resolve a Buffer');
       expect(data.length).toBe(4);
 
       vi.unstubAllGlobals();

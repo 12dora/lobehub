@@ -332,7 +332,8 @@ async function loadAttachmentBuffer(
   }
   if (typeof attachment.fetchData === 'function') {
     try {
-      return await attachment.fetchData();
+      // `fetchData` resolves `ArrayBuffer | Buffer`; normalize it the same way `data` is.
+      return await blobOrBufferToBuffer(await attachment.fetchData());
     } catch (error) {
       logger?.warn?.('Attachment fetchData failed: %s', error);
     }
