@@ -23,6 +23,7 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
+import { IdentityProviderValidationError } from './discoveryValidator';
 import {
   finalizeIdentityProviderRevocation,
   identityProviderLkgGeneration,
@@ -435,6 +436,43 @@ describe('identity provider startup snapshot', () => {
       source: 'break_glass',
     });
     expect(discover).toHaveBeenCalledOnce();
+  });
+
+  it('logs IdentityProviderValidationError code on critical database and LKG snapshot failure', async () => {
+    const env = { ...(await baseEnv()), AUTH_SSO_PROVIDERS: 'google' };
+    await seedPublished(env);
+    await loadSnapshot({ cache: false, db, env });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const discover = vi.fn(async () => {
+      throw new IdentityProviderValidationError('OIDC_NETWORK_BLOCKED');
+    });
+
+    try {
+      const snapshot = await loadIdentityProviderStartupSnapshot({
+        cache: false,
+        db,
+        discovery: { discover },
+        env,
+      });
+
+      expect(snapshot.source).toBe('break_glass');
+      const databaseLog = errorSpy.mock.calls.find((call) =>
+        String(call[0]).includes('critical database snapshot failure'),
+      );
+      const lkgLog = errorSpy.mock.calls.find((call) =>
+        String(call[0]).includes('critical LKG snapshot failure'),
+      );
+      expect(databaseLog?.[1]).toMatchObject({
+        code: 'OIDC_NETWORK_BLOCKED',
+        errorClass: 'IdentityProviderValidationError',
+      });
+      expect(lkgLog?.[1]).toMatchObject({
+        code: 'OIDC_NETWORK_BLOCKED',
+        errorClass: 'IdentityProviderValidationError',
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('preserves a good LKG when a newer revision has no matching secret', async () => {

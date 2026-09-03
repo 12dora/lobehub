@@ -7,8 +7,10 @@ import { platformIdentityProviderSecrets } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type { RuntimeIdentityProvider } from '@/libs/better-auth/sso/platformIdentityProvider';
 
+import { SafeOutboundHttpError } from '../../security/outboundHttp';
 import type { PlatformSecretService } from '../../security/secret';
 import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
+import { IdentityProviderValidationError } from './discoveryValidator';
 import { resolveStaticIdentityProviderMetadata } from './kinds';
 import type { IdentityProviderLkgPayload } from './lkg';
 import { IDENTITY_PROVIDER_LKG_VERSION, writeIdentityProviderLkg } from './lkg';
@@ -276,7 +278,11 @@ export const tryLoadDatabaseStartupSnapshot = async (input: {
     throw new Error('PLATFORM_IDENTITY_PROVIDER_SNAPSHOT_CHANGED');
   } catch (error) {
     console.error('[identityProviderStartup] critical database snapshot failure', {
+      ...(error instanceof IdentityProviderValidationError || error instanceof SafeOutboundHttpError
+        ? { code: error.code }
+        : {}),
       errorClass: error instanceof Error ? error.name : 'UnknownError',
+      ...(error instanceof SafeOutboundHttpError ? { message: error.message } : {}),
     });
     return { error, ok: false, validatedTombstones };
   }

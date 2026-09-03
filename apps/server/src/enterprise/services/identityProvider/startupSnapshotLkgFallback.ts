@@ -1,7 +1,9 @@
 import { checksumPayload } from '@/database/models/platform';
 
+import { SafeOutboundHttpError } from '../../security/outboundHttp';
 import type { PlatformSecretService } from '../../security/secret';
 import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
+import { IdentityProviderValidationError } from './discoveryValidator';
 import type { IdentityProviderLkgPayload, IdentityProviderRevocationJournalEntry } from './lkg';
 import { readIdentityProviderLkg } from './lkg';
 import { parsePublishedIdentityProviderPayload } from './publicationService';
@@ -145,7 +147,11 @@ export const tryLoadLkgFallback = async (input: {
     return { ok: false };
   } catch (error) {
     console.error('[identityProviderStartup] critical LKG snapshot failure', {
+      ...(error instanceof IdentityProviderValidationError || error instanceof SafeOutboundHttpError
+        ? { code: error.code }
+        : {}),
       errorClass: error instanceof Error ? error.name : 'UnknownError',
+      ...(error instanceof SafeOutboundHttpError ? { message: error.message } : {}),
     });
     return { error, ok: false };
   }

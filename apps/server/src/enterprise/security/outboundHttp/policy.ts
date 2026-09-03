@@ -270,7 +270,7 @@ const ipv4ToInteger = (ip: string): number =>
     .map(Number)
     .reduce((value, octet) => (value * 256 + octet) >>> 0, 0);
 
-const isIpv4InCidr = (ip: string, network: string, prefix: number): boolean => {
+export const isIpv4InCidr = (ip: string, network: string, prefix: number): boolean => {
   const shift = 32 - prefix;
   return ipv4ToInteger(ip) >>> shift === ipv4ToInteger(network) >>> shift;
 };
