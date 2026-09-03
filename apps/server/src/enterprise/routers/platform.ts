@@ -1,4 +1,5 @@
 import { TASK_TEMPLATE_RECOMMEND_MAX_COUNT } from '@lobechat/const';
+import { z } from 'zod';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import {
@@ -50,6 +51,17 @@ import { platformAgentsRouter } from './platformAgents';
 import { platformSkillsRouter } from './platformSkills';
 
 /**
+ * Client locale for first-run catalog seed. Same grammar as admin import: a trimmed tag,
+ * not an enum. Unknown tags are forwarded and the loaders fall back (they must not 400 the read).
+ */
+const templateCatalogListInputSchema = z
+  .object({
+    locale: z.string().trim().max(32).optional(),
+  })
+  .partial()
+  .optional();
+
+/**
  * Platform router (M00 read-only + access status).
  *
  * - getCapabilities: **authenticated** — adminAccess from Global RBAC when flag on.
@@ -84,13 +96,14 @@ export const platformRouter = router({
      */
     list: authedProcedure
       .use(serverDatabase)
+      .input(templateCatalogListInputSchema)
       .output(platformAgentTemplateListOutputSchema)
-      .query(async ({ ctx }) => {
+      .query(async ({ ctx, input }) => {
         const flags = parseEnterpriseFeatureFlags(process.env);
         if (!flags.ENABLE_PLATFORM_ADMIN || !(await isModuleEnabled('taskTemplates')))
           return { ...DISABLED_PLATFORM_AGENT_TEMPLATE_LIST };
 
-        await ensureAgentTemplateCatalogSeeded(ctx.serverDB);
+        await ensureAgentTemplateCatalogSeeded(ctx.serverDB, { locale: input?.locale });
 
         const model = new PlatformAgentTemplateModel(ctx.serverDB);
         const rows = await model.listEnabled(AGENT_TEMPLATE_DISPLAY_MAX);
@@ -113,13 +126,14 @@ export const platformRouter = router({
      */
     list: authedProcedure
       .use(serverDatabase)
+      .input(templateCatalogListInputSchema)
       .output(platformTaskTemplateListOutputSchema)
-      .query(async ({ ctx }) => {
+      .query(async ({ ctx, input }) => {
         const flags = parseEnterpriseFeatureFlags(process.env);
         if (!flags.ENABLE_PLATFORM_ADMIN || !(await isModuleEnabled('taskTemplates')))
           return { ...DISABLED_PLATFORM_TASK_TEMPLATE_LIST };
 
-        await ensureTaskTemplateCatalogSeeded(ctx.serverDB);
+        await ensureTaskTemplateCatalogSeeded(ctx.serverDB, { locale: input?.locale });
 
         const model = new PlatformTaskTemplateModel(ctx.serverDB);
         // Both consumers render at most TASK_TEMPLATE_RECOMMEND_MAX_COUNT cards; cap server-side

@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import { fetchPlatformAgentTemplates } from '@/enterprise/client/services/platform';
 import { useClientDataSWR } from '@/libs/swr';
 import type { PlatformAgentTemplateListOutput } from '@/server/enterprise/contracts/adminAgentTemplates';
@@ -29,15 +31,20 @@ const UNMANAGED: PlatformAgentTemplateListOutput = { managed: false, templates: 
  * issued and the unmanaged default is returned — matching the server flag gate.
  */
 export const usePlatformAgentTemplates = (): PlatformAgentTemplatesState => {
+  const { i18n } = useTranslation();
   const serverConfigInit = useServerConfigStore((s) => s.serverConfigInit);
   const platformAdmin = useServerConfigStore(
     (s) => s.serverConfig.enterprise?.platformAdmin === true,
   );
   const enabled = serverConfigInit && platformAdmin;
 
+  // UI locale is forwarded so a first-run auto-seed writes the user's language; it is part of
+  // the key so switching language refetches instead of reusing the previous locale's cache.
+  const locale = i18n.resolvedLanguage || i18n.language;
+
   const { data, error } = useClientDataSWR<PlatformAgentTemplateListOutput>(
-    enabled ? [PLATFORM_AGENT_TEMPLATES_KEY] : null,
-    () => fetchPlatformAgentTemplates(),
+    enabled ? [PLATFORM_AGENT_TEMPLATES_KEY, locale] : null,
+    () => fetchPlatformAgentTemplates(locale),
     { revalidateOnFocus: false },
   );
 

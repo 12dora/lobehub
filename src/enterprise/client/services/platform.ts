@@ -28,18 +28,26 @@ export const fetchPlatformSidebarLayoutPolicy = async (
  * Platform-managed agent templates. `managed: false` means the flag/module is off (or the
  * policy read failed) and the caller should keep using the built-in locale examples.
  * `managed: true` with an empty list is a deliberate empty catalog.
+ *
+ * `locale` is the UI language; the server uses it for the first-run auto-seed so the catalog
+ * is not written in English on a non-English deployment.
  */
 export const fetchPlatformAgentTemplates = async (
-  query: () => Promise<PlatformAgentTemplateListOutput> = () =>
-    lambdaClient.platform.agentTemplates.list.query(),
-): Promise<PlatformAgentTemplateListOutput> => query();
+  locale?: string,
+  query: (input: { locale?: string }) => Promise<PlatformAgentTemplateListOutput> = (input) =>
+    lambdaClient.platform.agentTemplates.list.query(input),
+): Promise<PlatformAgentTemplateListOutput> => query({ locale });
 
 /**
  * Platform-managed task templates. `managed: false` means the flag/module is off (or the
  * policy read failed) and the caller should keep using the bundled recommendations.
  * `managed: true` with an empty list is a deliberate empty catalog.
+ *
+ * `locale` is the UI language; the server uses it for the first-run auto-seed so the catalog
+ * is not written in English on a non-English deployment.
  */
 export const fetchPlatformTaskTemplates = async (
-  query: () => Promise<PlatformTaskTemplateListOutput> = () =>
-    lambdaClient.platform.taskTemplates.list.query(),
-): Promise<PlatformTaskTemplateListOutput> => query();
+  locale?: string,
+  query: (input: { locale?: string }) => Promise<PlatformTaskTemplateListOutput> = (input) =>
+    lambdaClient.platform.taskTemplates.list.query(input),
+): Promise<PlatformTaskTemplateListOutput> => query({ locale });

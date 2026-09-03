@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import { fetchPlatformTaskTemplates } from '@/enterprise/client/services/platform';
 import { useClientDataSWR } from '@/libs/swr';
 import type { PlatformTaskTemplateListOutput } from '@/server/enterprise/contracts/adminTaskTemplates';
@@ -29,15 +31,20 @@ const UNMANAGED: PlatformTaskTemplateListOutput = { managed: false, templates: [
  * issued and the unmanaged default is returned — matching the server flag gate.
  */
 export const usePlatformTaskTemplates = (): PlatformTaskTemplatesState => {
+  const { i18n } = useTranslation();
   const serverConfigInit = useServerConfigStore((s) => s.serverConfigInit);
   const platformAdmin = useServerConfigStore(
     (s) => s.serverConfig.enterprise?.platformAdmin === true,
   );
   const enabled = serverConfigInit && platformAdmin;
 
+  // UI locale is forwarded so a first-run auto-seed writes the user's language; it is part of
+  // the key so switching language refetches instead of reusing the previous locale's cache.
+  const locale = i18n.resolvedLanguage || i18n.language;
+
   const { data, error } = useClientDataSWR<PlatformTaskTemplateListOutput>(
-    enabled ? [PLATFORM_TASK_TEMPLATES_KEY] : null,
-    () => fetchPlatformTaskTemplates(),
+    enabled ? [PLATFORM_TASK_TEMPLATES_KEY, locale] : null,
+    () => fetchPlatformTaskTemplates(locale),
     { revalidateOnFocus: false },
   );
 

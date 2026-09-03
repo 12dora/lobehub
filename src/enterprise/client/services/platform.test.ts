@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DISABLED_PLATFORM_CAPABILITIES } from '@/types/platform/capabilities';
 import { DISABLED_PLATFORM_PUBLIC_SNAPSHOT } from '@/types/platform/publicSnapshot';
 
-import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from './platform';
+import {
+  fetchPlatformAgentTemplates,
+  fetchPlatformCapabilities,
+  fetchPlatformPublicSnapshot,
+  fetchPlatformTaskTemplates,
+} from './platform';
 
 describe('enterprise platform client service', () => {
   beforeEach(() => {
@@ -45,5 +50,30 @@ describe('enterprise platform client service', () => {
     });
 
     await expect(fetchPlatformPublicSnapshot(query)).rejects.toThrow();
+  });
+
+  it('sends the UI locale with the agent template read so the auto-seed is not English-only', async () => {
+    const query = vi.fn().mockResolvedValue({ managed: true, templates: [] });
+
+    await fetchPlatformAgentTemplates('zh-CN', query);
+    expect(query).toHaveBeenCalledWith({ locale: 'zh-CN' });
+  });
+
+  it('sends the UI locale with the task template read so the auto-seed is not English-only', async () => {
+    const query = vi.fn().mockResolvedValue({ managed: true, templates: [] });
+
+    await fetchPlatformTaskTemplates('zh-CN', query);
+    expect(query).toHaveBeenCalledWith({ locale: 'zh-CN' });
+  });
+
+  it('omits the locale when the caller has none, keeping the no-input server default', async () => {
+    const agentQuery = vi.fn().mockResolvedValue({ managed: false, templates: [] });
+    const taskQuery = vi.fn().mockResolvedValue({ managed: false, templates: [] });
+
+    await fetchPlatformAgentTemplates(undefined, agentQuery);
+    await fetchPlatformTaskTemplates(undefined, taskQuery);
+
+    expect(agentQuery).toHaveBeenCalledWith({ locale: undefined });
+    expect(taskQuery).toHaveBeenCalledWith({ locale: undefined });
   });
 });
