@@ -1938,6 +1938,8 @@ export default {
   'identityProviders.restart.reauthFailed': 'Verify your identity again before restarting.',
   'identityProviders.restart.reconnecting':
     'The service is restarting; status checks resume automatically.',
+  'identityProviders.restart.startupLoadFailed':
+    'The published configuration could not be loaded at the last start. Fix the cause, then restart.',
   'identityProviders.restart.monitoring': 'Monitoring restart progress',
   'identityProviders.restart.failed': 'The restart failed. Check the runtime status and try again.',
   'identityProviders.restart.failedWithCategory': 'Restart failed ({{category}})',

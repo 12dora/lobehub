@@ -1,4 +1,4 @@
-import { Alert, NeuralNetworkLoading } from '@lobehub/ui';
+import { Alert, Flexbox, NeuralNetworkLoading } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import type { TFunction } from 'i18next';
 
@@ -9,15 +9,17 @@ interface IdentityProviderRestartBannerProps {
   onRetry: () => void;
   phase: IdentityProviderRestartPhase;
   resultCategory?: string | null;
+  /** Last start fell back to break-glass / LKG, so another restart alone cannot activate. */
+  startupLoadFailed?: boolean;
   t: TFunction<'admin'>;
 }
 
-export const IdentityProviderRestartBanner = ({
+const RestartPhaseAlert = ({
   onRetry,
   phase,
   resultCategory,
   t,
-}: IdentityProviderRestartBannerProps) =>
+}: Omit<IdentityProviderRestartBannerProps, 'startupLoadFailed'>) =>
   phase === 'accepted' ? (
     <Alert
       showIcon
@@ -59,3 +61,22 @@ export const IdentityProviderRestartBanner = ({
       }
     />
   ) : null;
+
+export const IdentityProviderRestartBanner = ({
+  startupLoadFailed,
+  t,
+  ...phaseProps
+}: IdentityProviderRestartBannerProps) => {
+  const phaseAlert = <RestartPhaseAlert {...phaseProps} t={t} />;
+  if (!startupLoadFailed) return phaseAlert;
+  return (
+    <Flexbox gap={8}>
+      {phaseAlert}
+      <Alert
+        showIcon
+        description={t('identityProviders.restart.startupLoadFailed')}
+        type="warning"
+      />
+    </Flexbox>
+  );
+};

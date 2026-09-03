@@ -1802,6 +1802,7 @@
   "identityProviders.restart.reasonTitle": "Record restart reason",
   "identityProviders.restart.reauthFailed": "Verify your identity again before restarting.",
   "identityProviders.restart.reconnecting": "The service is restarting; status checks resume automatically.",
+  "identityProviders.restart.startupLoadFailed": "The published configuration could not be loaded at the last start. Fix the cause, then restart.",
   "identityProviders.restart.target": "Application service",
   "identityProviders.restart.title": "Restart to activate the published configuration?",
   "identityProviders.save.autoSaved": "Saved {{time}}",

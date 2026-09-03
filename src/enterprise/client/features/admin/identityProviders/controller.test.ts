@@ -19,6 +19,7 @@ import {
   isIdentityProviderDisableable,
   isIdentityProviderDraftWorkflowReady,
   isIdentityProviderSetupGuidanceError,
+  isIdentityProviderStartupLoadFailed,
   isIdentityProviderTestTerminal,
   openIdentityProviderTestPopup,
   parseIdentityProviderJsonObject,
@@ -428,6 +429,21 @@ describe('identity provider editor controller', () => {
         },
       }),
     ).toBe('accepted');
+  });
+
+  it('flags only a degraded fallback start as a failed published-configuration load', () => {
+    expect(isIdentityProviderStartupLoadFailed(undefined)).toBe(false);
+    expect(isIdentityProviderStartupLoadFailed({ health: 'degraded', source: 'break_glass' })).toBe(
+      true,
+    );
+    expect(isIdentityProviderStartupLoadFailed({ health: 'degraded', source: 'lkg' })).toBe(true);
+    // Degraded for another reason (e.g. the instance registry) is not a load failure.
+    expect(isIdentityProviderStartupLoadFailed({ health: 'degraded', source: 'database' })).toBe(
+      false,
+    );
+    expect(isIdentityProviderStartupLoadFailed({ health: 'healthy', source: 'break_glass' })).toBe(
+      false,
+    );
   });
 
   it('accepts restart polling only for matching server evidence', () => {

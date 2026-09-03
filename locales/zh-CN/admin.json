@@ -1802,6 +1802,7 @@
   "identityProviders.restart.reasonTitle": "记录重启原因",
   "identityProviders.restart.reauthFailed": "重启前需要重新验证身份。",
   "identityProviders.restart.reconnecting": "服务正在重启，状态检查会自动恢复。",
+  "identityProviders.restart.startupLoadFailed": "上次启动未能加载已发布配置。请排查原因后再重启。",
   "identityProviders.restart.target": "应用服务",
   "identityProviders.restart.title": "重启并激活已发布的配置？",
   "identityProviders.save.autoSaved": "已自动保存 {{time}}",

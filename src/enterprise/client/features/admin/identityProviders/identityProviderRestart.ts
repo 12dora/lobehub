@@ -109,6 +109,18 @@ export const resolveIdentityProviderRestartPhase = (input: {
   return 'accepted';
 };
 
+/**
+ * The responder booted on break-glass / LKG material, so the published configuration never
+ * loaded. Restarting again cannot clear the pending state until the cause is fixed.
+ */
+export const isIdentityProviderStartupLoadFailed = (artifact?: {
+  health: 'degraded' | 'healthy';
+  source: 'break_glass' | 'database' | 'environment' | 'lkg';
+}): boolean => {
+  if (!artifact || artifact.health !== 'degraded') return false;
+  return artifact.source === 'break_glass' || artifact.source === 'lkg';
+};
+
 export const resolveIdentityProviderRevisionRefresh = (input: {
   currentRevision?: number;
   nextRevision?: number;

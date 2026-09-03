@@ -338,6 +338,64 @@ describe('IdentityProviderPage rendering rules', () => {
       screen.getByRole('status', { name: 'identityProviders.restart.monitoring' }),
     ).toBeTruthy();
     expect(screen.getByTestId('restart-progress')).toBeTruthy();
+    // The rows are still legitimately pending while the restart converges.
+    expect(mocks.providers.mutate).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the provider list once activation retires the pending-restart rows', async () => {
+    mocks.restartLifecycle.phase = 'activated';
+    mocks.providers.data = { items: [{ ...sampleProvider, status: 'pending_restart' }] };
+    mocks.runtime.data = {
+      pendingRestart: false,
+      restart: { supported: true },
+    };
+
+    render(<IdentityProviderPage />);
+
+    await waitFor(() => {
+      expect(mocks.providers.mutate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('explains a failed startup load so the administrator does not just restart again', () => {
+    mocks.runtime.data = {
+      artifact: { health: 'degraded', source: 'break_glass' },
+      pendingRestart: true,
+      restart: { supported: true },
+    };
+
+    render(<IdentityProviderPage />);
+
+    expect(screen.getByText('identityProviders.restart.startupLoadFailed')).toBeTruthy();
+    // The restart control stays available — the fix may already be in place.
+    expect(screen.getByText('identityProviders.actions.restart')).toBeTruthy();
+  });
+
+  it('warns about a degraded startup load even when no restart is pending', () => {
+    // A successful LKG fallback can match the published revision, so `pendingRestart` is false
+    // while sign-in still runs on fallback material.
+    mocks.restartLifecycle.phase = 'idle';
+    mocks.runtime.data = {
+      artifact: { health: 'degraded', source: 'lkg' },
+      pendingRestart: false,
+      restart: { supported: true },
+    };
+
+    render(<IdentityProviderPage />);
+
+    expect(screen.getByText('identityProviders.restart.startupLoadFailed')).toBeTruthy();
+  });
+
+  it('keeps the startup-load warning out of a healthy pending restart', () => {
+    mocks.runtime.data = {
+      artifact: { health: 'healthy', source: 'database' },
+      pendingRestart: true,
+      restart: { supported: true },
+    };
+
+    render(<IdentityProviderPage />);
+
+    expect(screen.queryByText('identityProviders.restart.startupLoadFailed')).toBeNull();
   });
 
   it('disables New when the administrator can create but cannot update', () => {

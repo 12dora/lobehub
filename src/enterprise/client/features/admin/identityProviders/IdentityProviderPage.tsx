@@ -16,6 +16,7 @@ import {
   isIdentityProviderDeletable,
   isIdentityProviderDisableable,
   isIdentityProviderSetupGuidanceError,
+  isIdentityProviderStartupLoadFailed,
   type PublishedHistorySignal,
   resolvePublishedHistorySignal,
 } from './controller';
@@ -71,6 +72,13 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   useEffect(() => {
     setRestartPolling(restartLifecycle.phase === 'accepted');
   }, [restartLifecycle.phase]);
+
+  // The list never polls, so activation is the only moment that can retire its
+  // pending-restart badges. `accepted` is excluded: the rows are still legitimately pending.
+  useEffect(() => {
+    if (restartLifecycle.phase !== 'activated') return;
+    void mutateProviders();
+  }, [mutateProviders, restartLifecycle.phase]);
 
   /**
    * Published-history for draft heads — server-batched on list items (ASI-005).
@@ -158,6 +166,11 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const showCreateAction = canCreate && canUpdate && !setupGuidance;
   const showCreateNeedsUpdate = canCreate && !canUpdate && !setupGuidance;
   const showRuntime = canRestart && !setupGuidance;
+  // The degraded artifact is the signal on its own: a boot that fell back to break-glass / LKG
+  // can match the published revision (no pending restart) while sign-in still runs on fallback
+  // material, and the next boot may fail outright.
+  const startupLoadFailed =
+    showRuntime && isIdentityProviderStartupLoadFailed(runtime.data?.artifact);
 
   return (
     <AdminPageTemplate
@@ -189,10 +202,11 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         )
       }
       banner={
-        setupGuidance ? null : restartLifecycle.phase === 'idle' ? null : (
+        setupGuidance ? null : restartLifecycle.phase === 'idle' && !startupLoadFailed ? null : (
           <IdentityProviderRestartBanner
             phase={restartLifecycle.phase}
             resultCategory={runtime.data?.restartRequest?.resultCategory}
+            startupLoadFailed={startupLoadFailed}
             t={t}
             onRetry={() => restartLifecycle.retry(requestRestart)}
           />
