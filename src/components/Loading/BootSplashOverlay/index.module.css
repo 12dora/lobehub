@@ -30,22 +30,8 @@
   background: var(--lobe-boot-bg, #000);
 }
 
-.brand {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-
-  opacity: 0.6;
-  color: inherit;
-}
-
-.brand :global(.lobe-brand-loading) {
-  display: block;
-  color: inherit;
-}
-
 /*
- * Custom-branding builds have no brand mark to draw here, and this overlay
+ * Custom-branding builds with no published brand have no mark to draw here, and this overlay
  * renders outside every provider (no i18n, no ThemeProvider), so the spinner is
  * plain CSS with no component dependencies and no copy.
  */

@@ -1,7 +1,7 @@
-import { BrandLoading, LobeHubText } from '@lobehub/ui/brand';
-
 import { isCustomBranding } from '@/const/version';
 
+import BootBrandMark from '../BootBrandMark';
+import { readPublishedBootBrand } from '../BootBrandMark/bootBranding';
 import CircleLoading from '../CircleLoading';
 import styles from './index.module.css';
 
@@ -23,7 +23,12 @@ const BrandTextLoading = ({ debugId, variant = 'fullscreen' }: BrandTextLoadingP
   const isInline = variant === 'inline';
   const containerClassName = isInline ? `${styles.container} ${styles.inline}` : styles.container;
 
-  if (isCustomBranding)
+  /**
+   * The build-time flag must not shadow a brand the operator published at runtime: the server
+   * renders that brand into the static `#loading-screen` regardless of the flag, so dropping to
+   * the spinner here would swap the brand out the moment React mounts.
+   */
+  if (isCustomBranding && !readPublishedBootBrand())
     return (
       <div className={containerClassName}>
         <CircleLoading />
@@ -34,13 +39,7 @@ const BrandTextLoading = ({ debugId, variant = 'fullscreen' }: BrandTextLoadingP
 
   return (
     <div className={containerClassName}>
-      {isInline ? (
-        <CircleLoading />
-      ) : (
-        <div aria-label="Loading" className={styles.brand} role="status">
-          <BrandLoading size={40} text={LobeHubText} />
-        </div>
-      )}
+      {isInline ? <CircleLoading /> : <BootBrandMark aria-label="Loading" role="status" />}
       {showDebug && (
         <div className={styles.debug}>
           <div className={styles.debugRow}>

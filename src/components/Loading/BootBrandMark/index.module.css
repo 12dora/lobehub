@@ -1,0 +1,102 @@
+/*
+ * The published mark rendered here replaces the identical static markup of
+ * `src/server/loadingBrand.ts`, so the sizing and the animations below are kept in sync with it:
+ * any divergence shows up as a jump the moment React takes over the splash.
+ */
+.mark {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+
+  color: var(--brand-text-color, currentcolor);
+}
+
+/* Only the built-in wordmark is dimmed — a published logo or name paints at full strength,
+   exactly as the static splash does. */
+.wordmark {
+  opacity: 0.6;
+}
+
+.mark :global(.lobe-brand-loading) {
+  display: block;
+  color: inherit;
+}
+
+.logo {
+  display: block;
+
+  width: auto;
+  max-width: 240px;
+  height: 64px;
+
+  object-fit: contain;
+
+  animation: boot-brand-breathe 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.name {
+  overflow: hidden;
+
+  max-width: 80vw;
+
+  font-family:
+    -apple-system, blinkmacsystemfont, 'Segoe UI', roboto, 'Helvetica Neue', arial, sans-serif;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: currentcolor;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+
+  mask-image: linear-gradient(
+    90deg,
+    rgb(0 0 0 / 30%) 0%,
+    rgb(0 0 0 / 30%) 35%,
+    #000 50%,
+    rgb(0 0 0 / 30%) 65%,
+    rgb(0 0 0 / 30%) 100%
+  );
+  mask-size: 300% 100%;
+
+  animation:
+    boot-brand-sweep 2s cubic-bezier(0.4, 0, 0.2, 1) infinite,
+    boot-brand-fill 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes boot-brand-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.94);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes boot-brand-sweep {
+  0% {
+    mask-position: 100% 0;
+  }
+
+  100% {
+    mask-position: 0% 0;
+  }
+}
+
+@keyframes boot-brand-fill {
+  0% {
+    opacity: 0.2;
+  }
+
+  30% {
+    opacity: 0.35;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}

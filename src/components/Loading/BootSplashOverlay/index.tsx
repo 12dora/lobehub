@@ -1,8 +1,9 @@
-import { BrandLoading, LobeHubText } from '@lobehub/ui/brand';
 import type { CSSProperties } from 'react';
 
 import { isCustomBranding } from '@/const/version';
 
+import BootBrandMark from '../BootBrandMark';
+import { readPublishedBootBrand } from '../BootBrandMark/bootBranding';
 import styles from './index.module.css';
 
 const BOOT_BG_VAR = '--lobe-boot-bg';
@@ -62,6 +63,12 @@ const getBootBackground = () => {
  */
 const BootSplashOverlay = () => {
   const background = getBootBackground();
+  /**
+   * The build-time flag must not shadow a brand the operator published at runtime: the server
+   * renders that brand into the static `#loading-screen` regardless of the flag, so dropping to
+   * the spinner here would swap the brand out the moment React mounts.
+   */
+  const showSpinner = isCustomBranding && !readPublishedBootBrand();
 
   return (
     <div
@@ -70,13 +77,7 @@ const BootSplashOverlay = () => {
       role="status"
       style={background ? ({ [BOOT_BG_VAR]: background } as CSSProperties) : undefined}
     >
-      {isCustomBranding ? (
-        <div className={styles.spinner} />
-      ) : (
-        <div className={styles.brand}>
-          <BrandLoading size={40} text={LobeHubText} />
-        </div>
-      )}
+      {showSpinner ? <div className={styles.spinner} /> : <BootBrandMark />}
     </div>
   );
 };
