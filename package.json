@@ -1,6 +1,6 @@
 {
   "name": "lobehub-enhanced",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "LobeHub Enhanced — an enterprise-enhanced fork of LobeHub with an admin console, SSO/DingTalk login, ChatGPT Web provider, audit and platform governance",
   "keywords": [
     "framework",
