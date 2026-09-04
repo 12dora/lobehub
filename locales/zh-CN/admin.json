@@ -2740,6 +2740,7 @@
   "settingsPolicy.uiMode.default": "平台默认值",
   "settingsPolicy.uiMode.hint.default": "所有人以下方的值为默认值，用户仍可自行修改。",
   "settingsPolicy.uiMode.hint.platform": "强制所有人使用下方的值，并在用户端隐藏该设置。",
+  "settingsPolicy.uiMode.hint.platformVisible": "强制所有人使用下方的值，用户端仍可见该设置，但为置灰状态。",
   "settingsPolicy.uiMode.hint.user": "由用户自行设置，不下发平台值。",
   "settingsPolicy.uiMode.label": "管理方式",
   "settingsPolicy.uiMode.platform": "平台托管",

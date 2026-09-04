@@ -18,6 +18,12 @@ export type PlatformSettingMetaStatus = 'disabled' | 'loading' | 'error' | 'read
 
 export interface PlatformSettingMetaState {
   canReset: boolean;
+  /**
+   * Server-resolved value for this path, known only once metadata is `ready`. A locked control
+   * must display this instead of the user-store snapshot, which still holds the pre-policy value
+   * until the next user-state refresh.
+   */
+  effectiveValue?: unknown;
   enabled: boolean;
   error: Error | undefined;
   hidden: boolean;
@@ -102,6 +108,7 @@ export const usePlatformSettingMeta = (
 
   return {
     canReset,
+    effectiveValue: ready ? data?.effectiveValues[path] : undefined,
     enabled,
     error: error instanceof Error ? error : error ? new Error(String(error)) : undefined,
     hidden: unmanaged ? false : ready ? (meta?.hidden ?? false) : false,

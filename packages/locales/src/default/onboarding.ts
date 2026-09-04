@@ -151,6 +151,7 @@ export default {
   'telemetry.rows.evolve.desc':
     'Every interaction helps me understand you better—not just in response, but in comprehension.',
   'telemetry.rows.evolve.title': 'Evolve · The More You Use, the Better I Know You',
+  'telemetry.rows.managed': 'Managed by your administrator',
   'telemetry.rows.privacy.desc':
     'We use anonymized data to continuously improve the experience. You can change this anytime in your privacy preferences.',
   'telemetry.rows.privacy.title': "Let's Make {{appName}} Even Better Together",

@@ -147,6 +147,13 @@ describe('mergePlatformSettingMetas', () => {
     expect(mergePlatformSettingMetas([meta(), meta()]).status).toBe('ready');
   });
 
+  it('carries the leading leaf effective value, matching how `meta` is merged', () => {
+    expect(
+      mergePlatformSettingMetas([meta({ effectiveValue: 'gpt-5' }), meta({ effectiveValue: 'o3' })])
+        .effectiveValue,
+    ).toBe('gpt-5');
+  });
+
   it('retries every leaf', async () => {
     const first = meta();
     const second = meta();

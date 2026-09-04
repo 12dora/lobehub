@@ -1247,6 +1247,8 @@ export default {
     'Everyone starts from the value below, and can still change it themselves.',
   'settingsPolicy.uiMode.hint.platform':
     'The value below is enforced for everyone and the control is hidden from users.',
+  'settingsPolicy.uiMode.hint.platformVisible':
+    'The value below is enforced for everyone; users still see the setting, greyed out.',
   'settingsPolicy.uiMode.hint.user': 'Users choose their own value; no platform value is applied.',
   'settingsPolicy.groups.general': 'General',
   'settingsPolicy.groups.memory': 'Memory',

@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe('Analytics managed setting row', () => {
-  it('forces the telemetry switch off regardless of the stored setting (telemetry removed)', () => {
+  it('reflects and updates the stored setting when unmanaged', () => {
     const updateGeneralConfig = vi.fn();
     useUserStore.setState({
       settings: { general: { telemetry: true } },
@@ -54,9 +54,62 @@ describe('Analytics managed setting row', () => {
 
     render(<Analytics />, { wrapper });
 
-    // Even with telemetry:true in the store, the anonymous-usage switch renders OFF because the
-    // telemetry selector is hard-forced to false (built-in telemetry removed).
+    expect(screen.getByRole('switch')).toBeChecked();
+
+    fireEvent.click(screen.getByRole('switch'));
+    expect(updateGeneralConfig).toHaveBeenCalledWith({ telemetry: false });
+  });
+
+  it('defaults to off for a user who never opted in', () => {
+    useUserStore.setState({ settings: { general: {} } });
+    vi.spyOn(platformMetaModule, 'usePlatformSettingMeta').mockReturnValue(meta());
+
+    render(<Analytics />, { wrapper });
+
     expect(screen.getByRole('switch')).not.toBeChecked();
+  });
+
+  it('keeps a locked-off setting visible but greyed out', () => {
+    const updateGeneralConfig = vi.fn();
+    useUserStore.setState({ settings: { general: { telemetry: false } }, updateGeneralConfig });
+    vi.spyOn(platformMetaModule, 'usePlatformSettingMeta').mockReturnValue(
+      meta({ effectiveValue: false, enabled: true, locked: true, mode: 'locked', status: 'ready' }),
+    );
+
+    render(<Analytics />, { wrapper });
+
+    expect(screen.getByText('analytics.telemetry.title')).toBeInTheDocument();
+    expect(screen.getByRole('switch')).not.toBeChecked();
+    expect(screen.getByRole('switch')).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('switch'));
+    expect(updateGeneralConfig).not.toHaveBeenCalled();
+  });
+
+  it('shows the enforced value, not the stale stored opt-in, on a locked path', () => {
+    // The store still carries the pre-policy `true` until the next user-state refresh, so a
+    // store-driven switch would render disabled-but-ON against a policy that enforces OFF.
+    useUserStore.setState({ settings: { general: { telemetry: true } } });
+    vi.spyOn(platformMetaModule, 'usePlatformSettingMeta').mockReturnValue(
+      meta({ effectiveValue: false, enabled: true, locked: true, mode: 'locked', status: 'ready' }),
+    );
+
+    render(<Analytics />, { wrapper });
+
+    expect(screen.getByRole('switch')).not.toBeChecked();
+    expect(screen.getByRole('switch')).toBeDisabled();
+  });
+
+  it('shows a locked-on setting as on even when the store has not caught up', () => {
+    useUserStore.setState({ settings: { general: { telemetry: false } } });
+    vi.spyOn(platformMetaModule, 'usePlatformSettingMeta').mockReturnValue(
+      meta({ effectiveValue: true, enabled: true, locked: true, mode: 'locked', status: 'ready' }),
+    );
+
+    render(<Analytics />, { wrapper });
+
+    expect(screen.getByRole('switch')).toBeChecked();
+    expect(screen.getByRole('switch')).toBeDisabled();
   });
 
   it('removes the complete label, description and control when hidden', () => {

@@ -13,6 +13,7 @@ import { useTransferAgentsFormItem } from '@/business/client/hooks/useTransferAg
 import { FORM_STYLE } from '@/const/layoutTokens';
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import DataImporter from '@/features/DataImporter';
+import { resolveManagedBoolean } from '@/features/PlatformSettingSourceBadge/managedControlValue';
 import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
 import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { configService } from '@/services/config';
@@ -27,11 +28,14 @@ const AdvancedActions = () => {
   const { message } = App.useApp();
   const { hideDocs } = useServerConfigStore(featureFlagsSelectors);
   const enableBusinessFeatures = useServerConfigStore(serverConfigSelectors.enableBusinessFeatures);
-  const checked = useUserStore(userGeneralSettingsSelectors.telemetry);
+  const storedTelemetry = useUserStore(userGeneralSettingsSelectors.telemetry);
   const transferAgentsFormItems = useTransferAgentsFormItem();
   const resetSettings = useUserStore((s) => s.resetSettings);
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
   const telemetryMeta = usePlatformSettingMeta('general.telemetry');
+  // A locked path shows what the platform enforces, not the store snapshot, which can still
+  // carry the pre-policy value until the next user-state refresh.
+  const telemetryChecked = resolveManagedBoolean(telemetryMeta, storedTelemetry);
 
   const handleReset = useCallback(() => {
     confirmModal({
@@ -106,7 +110,7 @@ const AdvancedActions = () => {
           <ManagedSettingFieldContent meta={telemetryMeta}>
             {({ disabled }) => (
               <Switch
-                checked={!!checked}
+                checked={telemetryChecked}
                 disabled={disabled}
                 onChange={(value) => {
                   if (disabled) return;

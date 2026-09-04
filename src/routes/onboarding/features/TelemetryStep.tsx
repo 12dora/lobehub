@@ -3,8 +3,9 @@
 import { type IconProps } from '@lobehub/ui';
 import { Block, Button, Flexbox, Icon, Text } from '@lobehub/ui';
 import { TypewriterEffect } from '@lobehub/ui/awesome';
+import { Switch } from '@lobehub/ui/base-ui';
 import { LoadingDots } from '@lobehub/ui/chat';
-import { Steps, Switch } from 'antd';
+import { Steps } from 'antd';
 import { cssVar } from 'antd-style';
 import { BrainIcon, HeartHandshakeIcon, PencilRulerIcon, ShieldCheck } from 'lucide-react';
 import { memo, useCallback, useRef, useState } from 'react';
@@ -13,8 +14,11 @@ import { Trans, useTranslation } from 'react-i18next';
 import { ProductLogo } from '@/components/Branding';
 import { PRIVACY_URL, TERMS_URL } from '@/const/url';
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+import { resolveManagedBoolean } from '@/features/PlatformSettingSourceBadge/managedControlValue';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useUserStore } from '@/store/user';
+import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 
 interface TelemetryStepProps {
   onNext: () => void;
@@ -24,21 +28,30 @@ const TelemetryStep = memo<TelemetryStepProps>(({ onNext }) => {
   const { t, i18n } = useTranslation('onboarding');
   const locale = i18n.language;
   const branding = useBranding();
-  const [check, setCheck] = useState(true);
+  const storedTelemetry = useUserStore(userGeneralSettingsSelectors.telemetry);
+  const [check, setCheck] = useState(storedTelemetry);
   const [isNavigating, setIsNavigating] = useState(false);
   const inboxDisplayName = useDefaultInboxDisplayName();
   const isNavigatingRef = useRef(false);
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
+  const telemetryMeta = usePlatformSettingMeta('general.telemetry');
+
+  // `locked` is fail-closed: it is also true while the policy is loading or errored, so the
+  // wizard never lets someone opt in to a value the platform is about to overrule.
+  const managed = telemetryMeta.locked;
+  // Read the enforced value from the policy, not the store: the store can still hold the
+  // pre-policy value, which would render a disabled switch that lies about what is sent.
+  const checked = resolveManagedBoolean(telemetryMeta, check);
 
   const handleChoice = useCallback(
     (enabled: boolean) => {
       if (isNavigatingRef.current) return;
       isNavigatingRef.current = true;
       setIsNavigating(true);
-      updateGeneralConfig({ telemetry: enabled });
+      if (!managed) updateGeneralConfig({ telemetry: enabled });
       onNext();
     },
-    [updateGeneralConfig, onNext],
+    [managed, updateGeneralConfig, onNext],
   );
 
   // eslint-disable-next-line @eslint-react/no-nested-component-definitions
@@ -126,17 +139,29 @@ const TelemetryStep = memo<TelemetryStepProps>(({ onNext }) => {
           },
         ]}
       />
-      <Flexbox gap={8}>
-        <Text as={'p'} color={cssVar.colorTextSecondary}>
-          {t('telemetry.rows.privacy.desc', { appName: branding.name })}
-        </Text>
-        <Flexbox horizontal align="center" gap={8}>
-          <Switch checked={check} size={'small'} onChange={(v) => setCheck(v)} />
-          <Text fontSize={12} type={check ? undefined : 'secondary'}>
-            {t('telemetry.rows.privacy.title', { appName: branding.name })}
+      {!telemetryMeta.hidden && (
+        <Flexbox gap={8}>
+          <Text as={'p'} color={cssVar.colorTextSecondary}>
+            {t('telemetry.rows.privacy.desc', { appName: branding.name })}
           </Text>
+          <Flexbox horizontal align="center" gap={8}>
+            <Switch
+              checked={checked}
+              disabled={managed}
+              size={'small'}
+              onChange={(v) => setCheck(v)}
+            />
+            <Text fontSize={12} type={checked ? undefined : 'secondary'}>
+              {t('telemetry.rows.privacy.title', { appName: branding.name })}
+            </Text>
+          </Flexbox>
+          {managed && (
+            <Text fontSize={12} type={'secondary'}>
+              {t('telemetry.rows.managed')}
+            </Text>
+          )}
         </Flexbox>
-      </Flexbox>
+      )}
       <Button
         disabled={isNavigating}
         size={'large'}
@@ -145,11 +170,11 @@ const TelemetryStep = memo<TelemetryStepProps>(({ onNext }) => {
           marginBlock: 8,
           maxWidth: 240,
         }}
-        onClick={() => handleChoice(check)}
+        onClick={() => handleChoice(checked)}
       >
         {t('telemetry.next')}
       </Button>
-      {check && (
+      {checked && (
         <Block horizontal align="flex-start" gap={8} variant={'borderless'}>
           <Icon
             icon={ShieldCheck}

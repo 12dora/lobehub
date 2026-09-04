@@ -56,6 +56,7 @@ export default {
   'screen4.description':
     'Choose how you want to share data. Your choice helps us improve, and you can change this anytime in settings.',
   'screen4.footerNote': 'You can change this anytime in settings',
+  'screen4.managed': 'Managed by your administrator',
   'screen4.navigation.next': 'Continue',
   'screen4.privacy.description':
     'Disable anonymized usage analytics. No performance, model usage, or feature interaction data is shared.',

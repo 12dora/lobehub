@@ -137,6 +137,7 @@
   "telemetry.rows.create.title": "创造 · 灵感即刻成真",
   "telemetry.rows.evolve.desc": "每次互动都让助理更懂你。不止响应，更在理解",
   "telemetry.rows.evolve.title": "进化 · 越用越懂你",
+  "telemetry.rows.managed": "由管理员统一管理",
   "telemetry.rows.privacy.desc": "我们使用匿名数据持续优化体验。你可随时在隐私设置中调整",
   "telemetry.rows.privacy.title": "一起让 {{appName}} 变得更好",
   "telemetry.terms": "服务条款",

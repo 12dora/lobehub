@@ -111,6 +111,47 @@ describe('ManagedFormControlContent', () => {
     expect(screen.getByRole('switch')).toBeDisabled();
   });
 
+  it('shows the enforced value on a locked path when the form value is still the old one', () => {
+    render(
+      <Form initialValues={{ enabled: true }}>
+        <Form.Item name="enabled" valuePropName="checked">
+          <ManagedFormControlContent
+            meta={meta({
+              effectiveValue: false,
+              enabled: true,
+              locked: true,
+              mode: 'locked',
+              status: 'ready',
+            })}
+          >
+            <Switch aria-label="managed-switch" />
+          </ManagedFormControlContent>
+        </Form.Item>
+      </Form>,
+      { wrapper },
+    );
+
+    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByRole('switch')).toBeDisabled();
+  });
+
+  it('leaves the form value alone when the locked path resolves no value', () => {
+    render(
+      <Form initialValues={{ enabled: true }}>
+        <Form.Item name="enabled" valuePropName="checked">
+          <ManagedFormControlContent
+            meta={meta({ enabled: true, locked: true, mode: 'locked', status: 'ready' })}
+          >
+            <Switch aria-label="managed-switch" />
+          </ManagedFormControlContent>
+        </Form.Item>
+      </Form>,
+      { wrapper },
+    );
+
+    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('keeps the failed-load control visible, disabled, and retryable', () => {
     const retry = vi.fn().mockResolvedValue(undefined);
     render(

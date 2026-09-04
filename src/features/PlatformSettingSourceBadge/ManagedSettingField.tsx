@@ -83,6 +83,7 @@ export const mergePlatformSettingMetas = (
 
   return {
     canReset: resettable.length > 0,
+    effectiveValue: first?.effectiveValue,
     enabled: metas.some((m) => m.enabled),
     error: metas.find((m) => m.error !== undefined)?.error,
     hidden: metas.some((m) => m.hidden),

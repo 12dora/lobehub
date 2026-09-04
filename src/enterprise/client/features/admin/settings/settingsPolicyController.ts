@@ -38,10 +38,23 @@ export const SETTINGS_POLICY_GROUPS = [
 ] as const;
 
 /**
+ * Paths that stay on screen when locked, rendered read-only with the enforced value.
+ *
+ * Hiding a lock is the right default — a control nobody can move is noise. But a privacy
+ * promise is different: if the org turns anonymous telemetry off, users must be able to see
+ * that it is off, otherwise the only signal left is the wizard's opt-in copy, which now
+ * describes something that will never happen.
+ */
+export const LOCK_VISIBLE_PATHS = new Set(['general.telemetry']);
+
+export const isLockVisiblePath = (path: string): boolean => LOCK_VISIBLE_PATHS.has(path);
+
+/**
  * Admin UI exposes the three runtime tiers 1:1 with the stored policy mode:
  * - user:    mode user + visibility visible — users own the setting; the platform value is unused
  * - default: mode default + visibility visible — platform value pre-fills, users may still change it
  * - locked:  mode locked + visibility hidden — platform value is enforced and the control is hidden
+ *            (except for `LOCK_VISIBLE_PATHS`, which stay visible but greyed out)
  *
  * The UI mode intentionally mirrors `SettingPolicyMode` so nothing is lost on a
  * load → edit → save round-trip (an admin-published `default` must survive `save`).
@@ -67,6 +80,12 @@ export const SETTINGS_POLICY_UI_MODE_HINT_KEYS: Record<SettingsPolicyUiMode, str
   user: 'settingsPolicy.uiMode.hint.user',
 };
 
+/** Lock-visible paths hide nothing, so the generic "hidden from users" hint would be wrong. */
+export const settingsPolicyUiModeHintKey = (mode: SettingsPolicyUiMode, path: string): string =>
+  mode === 'locked' && isLockVisiblePath(path)
+    ? 'settingsPolicy.uiMode.hint.platformVisible'
+    : SETTINGS_POLICY_UI_MODE_HINT_KEYS[mode];
+
 /** The platform value only matters for the two tiers that publish one. */
 export const settingsPolicyUiModeUsesValue = (mode: SettingsPolicyUiMode): boolean =>
   mode !== 'user';
@@ -84,8 +103,13 @@ export const toSettingsPolicyUiMode = (policy: {
 /** Canonical write form for each tier. */
 export const fromSettingsPolicyUiMode = (
   mode: SettingsPolicyUiMode,
+  path?: string,
 ): Pick<DraftPolicy, 'mode' | 'visibility'> => {
-  if (mode === 'locked') return { mode: 'locked', visibility: 'hidden' };
+  if (mode === 'locked')
+    return {
+      mode: 'locked',
+      visibility: path && isLockVisiblePath(path) ? 'visible' : 'hidden',
+    };
   if (mode === 'default') return { mode: 'default', visibility: 'visible' };
   return { mode: 'user', visibility: 'visible' };
 };
@@ -105,7 +129,7 @@ export const normalizeSettingsPolicyDraft = (
       if (!policy) return [path, policy];
       if (options?.preservePath?.(path)) return [path, policy];
       const ui = toSettingsPolicyUiMode(policy);
-      return [path, { ...policy, ...fromSettingsPolicyUiMode(ui) }];
+      return [path, { ...policy, ...fromSettingsPolicyUiMode(ui, path) }];
     }),
   ) as DraftMap;
 

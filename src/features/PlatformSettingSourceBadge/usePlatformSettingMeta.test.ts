@@ -9,18 +9,20 @@ import { useUserStore } from '@/store/user';
 import { DISABLED_PLATFORM_CAPABILITIES } from '@/types/platform/capabilities';
 import { DISABLED_PLATFORM_PUBLIC_SNAPSHOT } from '@/types/platform/publicSnapshot';
 
+import { resolveManagedBoolean } from './managedControlValue';
 import { usePlatformSettingMeta } from './usePlatformSettingMeta';
 
 const PATH = 'general.telemetry';
 
 const effectiveData = (overrides?: {
+  effectiveValues?: Record<string, unknown>;
   hidden?: boolean;
   locked?: boolean;
   mode?: 'default' | 'locked' | 'user';
   source?: 'builtin' | 'environment' | 'legacy' | 'platform' | 'user';
 }): UserSettingsGetEffectiveOutput => ({
   effectiveSettings: {},
-  effectiveValues: { [PATH]: true },
+  effectiveValues: overrides?.effectiveValues ?? { [PATH]: true },
   pathMeta: {
     [PATH]: {
       canOverride: true,
@@ -148,6 +150,48 @@ describe('usePlatformSettingMeta', () => {
     expect(result.current).toMatchObject({ canReset, locked, status: 'ready' });
   });
 
+  it('exposes the server-resolved value for the path so locked controls need no store read', () => {
+    useClientDataSWR.mockReturnValue({
+      data: effectiveData({
+        effectiveValues: { 'general.fontSize': 14, [PATH]: false },
+        locked: true,
+        mode: 'locked',
+        source: 'platform',
+      }),
+      error: undefined,
+      isLoading: false,
+      mutate: revalidate,
+    } as never);
+
+    const { result } = renderHook(() => usePlatformSettingMeta(PATH));
+
+    expect(result.current.effectiveValue).toBe(false);
+  });
+
+  it('leaves the effective value unknown for a path the policy does not resolve', () => {
+    useClientDataSWR.mockReturnValue({
+      data: effectiveData({ effectiveValues: {} }),
+      error: undefined,
+      isLoading: false,
+      mutate: revalidate,
+    } as never);
+
+    const { result } = renderHook(() => usePlatformSettingMeta(PATH));
+
+    expect(result.current.effectiveValue).toBeUndefined();
+  });
+
+  it.each([
+    ['loading', { data: undefined, error: undefined, isLoading: true }],
+    ['error', { data: undefined, error: new Error('offline'), isLoading: false }],
+  ] as const)('has no effective value to show while metadata is %s', (_status, swrState) => {
+    useClientDataSWR.mockReturnValue({ ...swrState, mutate: revalidate } as never);
+
+    const { result } = renderHook(() => usePlatformSettingMeta(PATH));
+
+    expect(result.current.effectiveValue).toBeUndefined();
+  });
+
   it('single-flights reset and refreshes effective metadata plus the real user store', async () => {
     const pendingReset = deferred<{ deleted: boolean; path: string; revision: number }>();
     const resetOverride = vi
@@ -196,6 +240,24 @@ describe('usePlatformSettingMeta', () => {
     expect(resetOverride).toHaveBeenCalledTimes(2);
     expect(revalidate).toHaveBeenCalledTimes(1);
     expect(refreshUserState).toHaveBeenCalledTimes(1);
+  });
+
+  it('feeds resolveManagedBoolean the enforced value even when the store is stale', () => {
+    useClientDataSWR.mockReturnValue({
+      data: effectiveData({
+        effectiveValues: { [PATH]: false },
+        locked: true,
+        mode: 'locked',
+        source: 'platform',
+      }),
+      error: undefined,
+      isLoading: false,
+      mutate: revalidate,
+    } as never);
+
+    const { result } = renderHook(() => usePlatformSettingMeta(PATH));
+
+    expect(resolveManagedBoolean(result.current, true)).toBe(false);
   });
 
   it('retries a metadata load through the owning SWR response', async () => {

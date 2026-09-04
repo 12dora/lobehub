@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { type ReactNode } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { mapFeatureFlagsEnvToState } from '@/config/featureFlags';
+import type { PlatformSettingMetaState } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { initServerConfigStore, Provider } from '@/store/serverConfig/store';
 import { useUserStore } from '@/store/user';
 
@@ -58,11 +60,19 @@ vi.mock('@lobehub/ui', () => ({
       ))}
     </div>
   ),
+  Flexbox: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Icon: () => null,
   ShikiLobeTheme: {},
+  Skeleton: { Button: () => null },
+  Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
+  Button: ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) => (
+    <button type="button" onClick={onClick}>
+      {children}
+    </button>
+  ),
   confirmModal: mocks.confirmModal,
   Switch: ({
     checked,
@@ -107,6 +117,29 @@ vi.mock('@/services/config', () => ({
   },
 }));
 
+vi.mock('@/features/PlatformSettingSourceBadge/usePlatformSettingMeta', () => ({
+  usePlatformSettingMeta: vi.fn(),
+}));
+
+const lockedMeta = (overrides: Partial<PlatformSettingMetaState> = {}): PlatformSettingMetaState =>
+  ({
+    canReset: false,
+    enabled: false,
+    error: undefined,
+    hidden: false,
+    isLoading: false,
+    locked: false,
+    meta: undefined,
+    mode: undefined,
+    reset: vi.fn(),
+    resetError: null,
+    resetting: false,
+    retry: vi.fn(),
+    source: undefined,
+    status: 'disabled',
+    ...overrides,
+  }) as PlatformSettingMetaState;
+
 const createWrapper = (hideDocs: boolean) => {
   const Wrapper = ({ children }: { children: ReactNode }) => (
     <Provider
@@ -129,6 +162,10 @@ const createWrapper = (hideDocs: boolean) => {
 };
 
 const initialUserStoreState = useUserStore.getState();
+
+beforeEach(() => {
+  vi.mocked(usePlatformSettingMeta).mockReturnValue(lockedMeta());
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -155,10 +192,53 @@ describe('AdvancedActions', () => {
 
     expect(screen.getByText('analytics.title')).toBeDefined();
     expect(screen.getByText('analytics.telemetry.title')).toBeDefined();
+    expect(screen.getByRole('switch')).toBeChecked();
 
-    // Even with telemetry:true in the store, the anonymous-usage switch renders OFF because the
-    // telemetry selector is hard-forced to false (built-in telemetry removed).
+    fireEvent.click(screen.getByRole('switch'));
+    expect(updateGeneralConfig).toHaveBeenCalledWith({ telemetry: false });
+  });
+
+  it('keeps a locked-off telemetry setting visible but greyed out', () => {
+    const updateGeneralConfig = vi.fn();
+    vi.mocked(usePlatformSettingMeta).mockReturnValue(
+      lockedMeta({
+        effectiveValue: false,
+        enabled: true,
+        locked: true,
+        mode: 'locked',
+        status: 'ready',
+      }),
+    );
+    useUserStore.setState({ settings: { general: { telemetry: false } }, updateGeneralConfig });
+
+    render(<AdvancedActions />, { wrapper: createWrapper(true) });
+
+    expect(screen.getByText('analytics.telemetry.title')).toBeDefined();
     expect(screen.getByRole('switch')).not.toBeChecked();
+    expect(screen.getByRole('switch')).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('switch'));
+    expect(updateGeneralConfig).not.toHaveBeenCalled();
+  });
+
+  it('shows the enforced value, not the stale stored opt-in, on a locked path', () => {
+    // The store still carries the pre-policy `true` until the next user-state refresh, so a
+    // store-driven switch would render disabled-but-ON against a policy that enforces OFF.
+    vi.mocked(usePlatformSettingMeta).mockReturnValue(
+      lockedMeta({
+        effectiveValue: false,
+        enabled: true,
+        locked: true,
+        mode: 'locked',
+        status: 'ready',
+      }),
+    );
+    useUserStore.setState({ settings: { general: { telemetry: true } } });
+
+    render(<AdvancedActions />, { wrapper: createWrapper(true) });
+
+    expect(screen.getByRole('switch')).not.toBeChecked();
+    expect(screen.getByRole('switch')).toBeDisabled();
   });
 
   it('awaits reset completion before showing success feedback', async () => {

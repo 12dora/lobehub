@@ -44,6 +44,26 @@ describe('settingsSelectors', () => {
     });
   });
 
+  describe('telemetry', () => {
+    it('should default to opted out when the user never chose', () => {
+      const s: UserState = merge(initialState, { settings: { general: {} } });
+
+      expect(userGeneralSettingsSelectors.telemetry(s as UserStore)).toBe(false);
+    });
+
+    it('should return the stored choice', () => {
+      const optedIn: UserState = merge(initialState, {
+        settings: { general: { telemetry: true } },
+      });
+      const optedOut: UserState = merge(initialState, {
+        settings: { general: { telemetry: false } },
+      });
+
+      expect(userGeneralSettingsSelectors.telemetry(optedIn as UserStore)).toBe(true);
+      expect(userGeneralSettingsSelectors.telemetry(optedOut as UserStore)).toBe(false);
+    });
+  });
+
   describe('currentResponseLanguage', () => {
     it('should prefer the saved response language', () => {
       const s: UserState = merge(initialState, {

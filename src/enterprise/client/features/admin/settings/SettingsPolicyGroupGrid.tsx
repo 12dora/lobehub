@@ -15,9 +15,9 @@ import type { DraftPolicy, SettingsPolicyUiMode } from './settingsPolicyControll
 import {
   fromSettingsPolicyUiMode,
   SETTINGS_POLICY_GROUPS,
-  SETTINGS_POLICY_UI_MODE_HINT_KEYS,
   SETTINGS_POLICY_UI_MODE_LABEL_KEYS,
   SETTINGS_POLICY_UI_MODES,
+  settingsPolicyUiModeHintKey,
   settingsPolicyUiModeUsesValue,
   toSettingsPolicyUiMode,
 } from './settingsPolicyController';
@@ -140,7 +140,7 @@ const SettingsPolicyGroupGrid = memo<SettingsPolicyGroupGridProps>(
                                 settingsPolicyUiModeUsesValue(next) &&
                                 (policy.value === undefined || policy.value === null);
                               updatePolicy(entry.path, {
-                                ...fromSettingsPolicyUiMode(next),
+                                ...fromSettingsPolicyUiMode(next, entry.path),
                                 ...(needsValue ? { value: entry.builtInDefault } : {}),
                               });
                             }}
@@ -151,7 +151,7 @@ const SettingsPolicyGroupGrid = memo<SettingsPolicyGroupGridProps>(
                         {t(entry.descriptionKey as never, { defaultValue: '' })}
                       </Text>
                       <div className={styles.hint}>
-                        {t(SETTINGS_POLICY_UI_MODE_HINT_KEYS[uiMode] as never)}
+                        {t(settingsPolicyUiModeHintKey(uiMode, entry.path) as never)}
                       </div>
                       {/* mode=user ignores the platform value entirely — showing an editor
                           for a value nothing reads would be a lie about what gets applied. */}

@@ -383,6 +383,32 @@ describe('SettingsPolicyPage', () => {
     });
   });
 
+  it('publishes locked + visible for telemetry so users can see the enforced choice', async () => {
+    mocks.permissions = FULL_ACCESS;
+    const base = makeData(1);
+    mocks.data = {
+      ...base,
+      draft: { 'general.telemetry': { ...oldPolicy, value: false } },
+      publishedPolicies: { 'general.telemetry': { ...oldPolicy, value: false } },
+      registry: [{ ...base.registry[0]!, control: 'switch', path: 'general.telemetry' }],
+    };
+    render(<SettingsPolicyPage />);
+    await screen.findByLabelText('editor-font.title:Setting 1');
+
+    fireEvent.change(modeSelect(), { target: { value: 'locked' } });
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    // The generic "hidden from users" wording would be wrong for a lock that stays on screen.
+    expect(screen.getByText('settingsPolicy.uiMode.hint.platformVisible')).toBeInTheDocument();
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    expect(mocks.save.mock.calls[0]?.[0].policies['general.telemetry']).toMatchObject({
+      mode: 'locked',
+      value: false,
+      visibility: 'visible',
+    });
+  });
+
   it('drops the value editor and publishes mode user for the user-customizable tier', async () => {
     mocks.permissions = FULL_ACCESS;
     render(<SettingsPolicyPage />);

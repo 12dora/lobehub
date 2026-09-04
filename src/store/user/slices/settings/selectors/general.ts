@@ -30,10 +30,11 @@ const currentResponseLanguage = (s: UserStore): Locales => {
 
   return normalizeLocale(navigator.language);
 };
-// AIHub: built-in telemetry removed. Force this to `false` so the "发送匿名使用数据" switch always
-// renders off and every app-level send gate (product-usage / discover / trace / chat) short-circuits,
-// regardless of the stored user setting. `_s` is retained for selector-signature compatibility.
-const telemetry = (_s: UserStore) => false;
+// Anonymous usage reporting is opt-in: an unset value means the user never agreed, so every
+// app-level send gate (product-usage / discover / trace / chat) stays closed until they do.
+// When platform policy locks `general.telemetry`, the server already resolves the enforced
+// value into these settings, so reading the store is enough to honour the lock.
+const telemetry = (s: UserStore) => generalConfig(s).telemetry ?? false;
 const enableAutoScrollOnStreaming = (s: UserStore) =>
   generalConfig(s).enableAutoScrollOnStreaming ?? true;
 const enableMessageLinkIcon = (s: UserStore) => generalConfig(s).enableMessageLinkIcon ?? true;

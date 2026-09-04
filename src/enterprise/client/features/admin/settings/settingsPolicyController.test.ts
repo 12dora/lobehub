@@ -10,6 +10,7 @@ import {
   buildChangePreview,
   deriveSettingsPermissions,
   fromSettingsPolicyUiMode,
+  isLockVisiblePath,
   isServiceModelManaged,
   normalizeSettingsPolicyDraft,
   projectPolicyEditorOwnedDraft,
@@ -17,6 +18,7 @@ import {
   SETTINGS_POLICY_UI_MODE_HINT_KEYS,
   SETTINGS_POLICY_UI_MODE_LABEL_KEYS,
   SETTINGS_POLICY_UI_MODES,
+  settingsPolicyUiModeHintKey,
   settingsPolicyUiModeUsesValue,
   toSettingsPolicyUiMode,
 } from './settingsPolicyController';
@@ -116,11 +118,70 @@ describe('settingsPolicyController', () => {
       visibility: 'visible',
     });
     expect(fromSettingsPolicyUiMode('locked')).toEqual({ mode: 'locked', visibility: 'hidden' });
+    expect(fromSettingsPolicyUiMode('locked', 'general.fontSize')).toEqual({
+      mode: 'locked',
+      visibility: 'hidden',
+    });
 
     // Only the two publishing tiers carry a platform value.
     expect(settingsPolicyUiModeUsesValue('user')).toBe(false);
     expect(settingsPolicyUiModeUsesValue('default')).toBe(true);
     expect(settingsPolicyUiModeUsesValue('locked')).toBe(true);
+  });
+
+  it('locks telemetry in place instead of hiding it, without loosening other paths', () => {
+    expect(isLockVisiblePath('general.telemetry')).toBe(true);
+    expect(isLockVisiblePath('general.fontSize')).toBe(false);
+
+    // Turning anonymous reporting off must stay legible to the user it applies to.
+    expect(fromSettingsPolicyUiMode('locked', 'general.telemetry')).toEqual({
+      mode: 'locked',
+      visibility: 'visible',
+    });
+    // The other two tiers are unaffected — this is a lock-visibility rule, not a new mode.
+    expect(fromSettingsPolicyUiMode('default', 'general.telemetry')).toEqual({
+      mode: 'default',
+      visibility: 'visible',
+    });
+    expect(fromSettingsPolicyUiMode('user', 'general.telemetry')).toEqual({
+      mode: 'user',
+      visibility: 'visible',
+    });
+
+    expect(settingsPolicyUiModeHintKey('locked', 'general.telemetry')).toBe(
+      'settingsPolicy.uiMode.hint.platformVisible',
+    );
+    expect(settingsPolicyUiModeHintKey('locked', 'general.fontSize')).toBe(
+      'settingsPolicy.uiMode.hint.platform',
+    );
+    expect(settingsPolicyUiModeHintKey('default', 'general.telemetry')).toBe(
+      'settingsPolicy.uiMode.hint.default',
+    );
+
+    const normalized = normalizeSettingsPolicyDraft({
+      'general.fontSize': { mode: 'locked', schemaVersion: 1, value: 16, visibility: 'visible' },
+      'general.telemetry': { mode: 'locked', schemaVersion: 1, value: false, visibility: 'hidden' },
+    });
+    expect(normalized['general.telemetry']).toMatchObject({
+      mode: 'locked',
+      value: false,
+      visibility: 'visible',
+    });
+    expect(normalized['general.fontSize']).toMatchObject({
+      mode: 'locked',
+      visibility: 'hidden',
+    });
+  });
+
+  it('ships the lock-visible hint copy in en-US and zh-CN', () => {
+    const key = 'settingsPolicy.uiMode.hint.platformVisible';
+    for (const [name, bundle] of Object.entries({
+      'default': defaultAdmin as Record<string, string>,
+      'en-US': enUS as Record<string, string>,
+      'zh-CN': zhCN as Record<string, string>,
+    })) {
+      expect(bundle[key], `${name} is missing ${key}`).toBeTruthy();
+    }
   });
 
   it('normalize preserves `default` and only canonicalizes visibility', () => {

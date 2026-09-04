@@ -7,6 +7,8 @@ import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+import { resolveManagedBoolean } from '@/features/PlatformSettingSourceBadge/managedControlValue';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { useUserStore } from '@/store/user';
 import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 
@@ -25,19 +27,26 @@ const DataModeStep = memo<DataModeStepProps>(({ onBack, onNext }) => {
   const { name: appName } = useBranding();
   const telemetryEnabled = useUserStore(userGeneralSettingsSelectors.telemetry);
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
-  const [selectedMode, setSelectedMode] = useState<DataMode>(
-    telemetryEnabled ? 'share' : 'privacy',
-  );
+  const telemetryMeta = usePlatformSettingMeta('general.telemetry');
+  const [pickedMode, setPickedMode] = useState<DataMode>(telemetryEnabled ? 'share' : 'privacy');
+
+  // `locked` is fail-closed (also true while the policy loads), and the enforced value comes from
+  // the policy rather than the store, which can still hold the pre-policy telemetry choice.
+  const managed = telemetryMeta.locked;
+  const selectedMode: DataMode = resolveManagedBoolean(telemetryMeta, pickedMode === 'share')
+    ? 'share'
+    : 'privacy';
 
   const setMode = useCallback(
     (mode: DataMode) => {
-      setSelectedMode(mode);
+      if (managed) return;
+      setPickedMode(mode);
       const nextTelemetry = mode === 'share';
       if (telemetryEnabled !== nextTelemetry) {
         void updateGeneralConfig({ telemetry: nextTelemetry });
       }
     },
-    [telemetryEnabled, updateGeneralConfig],
+    [managed, telemetryEnabled, updateGeneralConfig],
   );
 
   const checkIcon = (
@@ -59,12 +68,15 @@ const DataModeStep = memo<DataModeStepProps>(({ onBack, onNext }) => {
       <Flexbox gap={16} style={{ width: '100%' }}>
         {/* Shared data option */}
         <Block
-          clickable
+          clickable={!managed}
           flex={1}
           gap={16}
           padding={16}
-          style={{ borderColor: selectedMode === 'share' ? cssVar.colorSuccess : undefined }}
           variant={'outlined'}
+          style={{
+            borderColor: selectedMode === 'share' ? cssVar.colorSuccess : undefined,
+            opacity: managed ? 0.6 : undefined,
+          }}
           onClick={() => setMode('share')}
         >
           {selectedMode === 'share' && checkIcon}
@@ -96,12 +108,15 @@ const DataModeStep = memo<DataModeStepProps>(({ onBack, onNext }) => {
 
         {/* Privacy mode option */}
         <Block
-          clickable
+          clickable={!managed}
           flex={1}
           gap={6}
           padding={16}
-          style={{ borderColor: selectedMode === 'privacy' ? cssVar.colorSuccess : undefined }}
           variant={'outlined'}
+          style={{
+            borderColor: selectedMode === 'privacy' ? cssVar.colorSuccess : undefined,
+            opacity: managed ? 0.6 : undefined,
+          }}
           onClick={() => setMode('privacy')}
         >
           {selectedMode === 'privacy' && checkIcon}
@@ -114,7 +129,7 @@ const DataModeStep = memo<DataModeStepProps>(({ onBack, onNext }) => {
         </Block>
       </Flexbox>
       <Text color={cssVar.colorTextSecondary} fontSize={12} style={{ marginTop: 16 }}>
-        {t('screen4.footerNote')}
+        {managed ? t('screen4.managed') : t('screen4.footerNote')}
       </Text>
       <OnboardingFooterActions
         left={
